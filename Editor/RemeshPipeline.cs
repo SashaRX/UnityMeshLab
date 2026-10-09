@@ -305,8 +305,8 @@ namespace SashaRX.UnityMeshLab
                 RemeshTrim.Result trim = null;
                 node.voxel = await Task.Run(() => {
                     if (shape == RemeshShape.BoundingBox) return captured.OrientedBoxes();
-                    if (shape == RemeshShape.Hull) return Hull(captured, options, token);
-                    var voxel = RemeshNative.Voxelize(captured.positions, captured.indices, options, token);
+                    if (shape == RemeshShape.Hull) return Hull(captured, options, token, node.name);
+                    var voxel = RemeshNative.VoxelizeCaptured(captured.positions, captured.indices, options, token, node.name);
                     if (!options.trimToSource || voxel == null) {
                         if (voxel != null) RemeshGeometryDiagnostics.Capture(captured, voxel, voxel, options);
                         return voxel;
@@ -387,11 +387,11 @@ namespace SashaRX.UnityMeshLab
         // design), then a strongly regularized simplification down to a small budget
         // with small-part pruning, so the result is a chunky silhouette that keeps L/T
         // footprints, courtyards and roof steps.
-        static RemeshNative.IndexedMesh Hull(RemeshSource captured, RemeshSettings options, CancellationToken token)
+        static RemeshNative.IndexedMesh Hull(RemeshSource captured, RemeshSettings options, CancellationToken token, string node)
         {
             var coarse = JsonUtility.FromJson<RemeshSettings>(JsonUtility.ToJson(options));
             coarse.voxelResolution = options.hullResolution; coarse.solve = false; coarse.shell = false;
-            var voxel = RemeshNative.Voxelize(captured.positions, captured.indices, coarse, token);
+            var voxel = RemeshNative.VoxelizeCaptured(captured.positions, captured.indices, coarse, token, node);
             coarse.targetTriangles = options.hullTriangles; coarse.maximumError = 0.5f;
             coarse.regularize = RemeshRegularize.Strong; coarse.preserveFolds = false; coarse.pruneSmallParts = true;
             return RemeshNative.Simplify(voxel, coarse, token, out _);
@@ -408,11 +408,20 @@ namespace SashaRX.UnityMeshLab
                 if (options.simplify) {
                     float error = 0;
                     var input = node.voxel;
-                    node.simplified = await Task.Run(() => {
-                        bool fit = options.solve && !options.shell && options.sourceShape == RemeshShape.LOD0;
-                        return fit ? RemeshSurfaceRefine.Simplify(input, node.source.positions, node.source.indices, options, token, out error)
-                            : RemeshNative.Simplify(input, options, token, out error);
-                    }, token);
+                    try {
+                        node.simplified = await Task.Run(() => {
+                            bool fit = options.solve && !options.shell && options.sourceShape == RemeshShape.LOD0;
+                            return fit ? RemeshSurfaceRefine.Simplify(input, node.source.positions, node.source.indices, options, token, out error)
+                                : RemeshNative.Simplify(input, options, token, out error);
+                        }, token);
+                    }
+                    catch (InvalidOperationException failure) {
+                        uint flags = (options.solve ? 1u : 0u) | (options.shell ? 2u : 0u);
+                        int resolution = options.sourceShape == RemeshShape.Hull ? options.hullResolution : options.voxelResolution;
+                        RemeshGeometryDiagnostics.CaptureFailure(node.source.positions, node.source.indices,
+                            node.voxelRaw, input, options, "Simplify", node.name, failure.Message, resolution, flags, flags);
+                        throw;
+                    }
                     node.simplifyError = error;
                     UvtLog.Info(UvtLog.Category.RemeshDiag, FormattableString.Invariant(
                         $"[{node.name}] Simplify: {input.TriangleCount} -> {node.simplified.TriangleCount} triangles; source={node.source.indices.Length / 3}; stopAt={options.targetTriangles}, maximumError={options.maximumError:G6}, achievedCollapseError={error:G6}."));

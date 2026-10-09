@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- Failed solid Remesh and pipeline Simplify attempts automatically capture exact source/result geometry, effective stage settings and node context for offline reproduction. Captures retain rejected Solve and fallback attempts without weakening topology guards; a Python decoder exports geometry and topology reports.
 - Add an autonomous UV transfer comparison benchmark with six methods, seven analytic controls, imported FBX aspect/symmetry preparation, portable frozen captures, repeated timing/determinism checks and JSON/CSV/HTML/SVG reports.
 - Diagnostics can capture the next Full Pipeline/Transfer run with exact binary mesh inputs, stage snapshots, texture proportions, cross-LOD hints and shell matching decisions. Replay runs each completed transfer twice and compares UV2 hashes and shell mappings against the captured output; geometry-based axis stretch and positive-area triangle overlaps are reported independently of the existing validator.
 - Universal mesh inspection shares the 2D/3D layout, projection and attribute shading. The Inspect panel is a model-level summary — vertex/triangle counts, size, present channels only (no skinning or blend-shape noise on static meshes) and per-channel UV ranges — with the shading dropdown offering only the modes the shown meshes carry data for; Ctrl+click a surface to inspect that mesh. Remesh source meshes are inspectable before baking; checker and UV island borders work in 3D.

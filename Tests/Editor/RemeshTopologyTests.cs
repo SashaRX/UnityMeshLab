@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Threading;
 using NUnit.Framework;
 using UnityEngine;
@@ -9,6 +10,82 @@ namespace SashaRX.UnityMeshLab.Tests
     {
         static readonly int[] Tetrahedron = { 0, 2, 1, 0, 1, 3, 1, 2, 3, 2, 0, 3 };
         static Vector3[] TetraPositions() => new[] { Vector3.zero, Vector3.right, Vector3.up, Vector3.forward };
+
+        [Test]
+        public void FailedSolidObserverReceivesBothAttemptsAndNeverRunsOnSuccessOrCancellation()
+        {
+            var opened = new RemeshNative.IndexedMesh { positions = TetraPositions(), indices = new[] { 0, 2, 1 } };
+            var retry = new RemeshNative.IndexedMesh { positions = TetraPositions(), indices = new[] { 0, 1, 3 } };
+            int observations = 0;
+            Assert.Throws<InvalidOperationException>(() => RemeshNative.GuardVoxelSolid(opened, 1u, 128,
+                CancellationToken.None, _ => retry, (first, rejected, flags, reason) => {
+                    observations++; Assert.AreSame(opened, first); Assert.AreSame(retry, rejected);
+                    Assert.AreEqual(0u, flags); StringAssert.Contains("boundary", reason);
+                }));
+            Assert.AreEqual(1, observations);
+            Assert.Throws<InvalidOperationException>(() => RemeshNative.GuardVoxelSolid(opened, 0u, 128,
+                CancellationToken.None, _ => throw new Exception("Unexpected retry"), (first, rejected, flags, _) => {
+                    observations++; Assert.AreSame(opened, first); Assert.AreSame(opened, rejected); Assert.AreEqual(0u, flags);
+                }));
+            Assert.AreEqual(2, observations);
+            var closed = new RemeshNative.IndexedMesh { positions = TetraPositions(), indices = (int[])Tetrahedron.Clone() };
+            RemeshNative.GuardVoxelSolid(opened, 1u, 128, CancellationToken.None, _ => closed,
+                (_, _, _, _) => Assert.Fail("Successful fallback must not produce a failure capture"));
+            RemeshNative.GuardVoxelSolid(closed, 0u, 128, CancellationToken.None, _ => closed,
+                (_, _, _, _) => Assert.Fail("Valid solid must not produce a failure capture"));
+            RemeshNative.GuardVoxelSolid(opened, 2u, 128, CancellationToken.None, _ => closed,
+                (_, _, _, _) => Assert.Fail("Shell bypass must not be reported as a rejected solid"));
+            using var cancellation = new CancellationTokenSource(); cancellation.Cancel();
+            Assert.Throws<OperationCanceledException>(() => RemeshNative.GuardVoxelSolid(opened, 1u, 128,
+                cancellation.Token, _ => retry, (_, _, _, _) => Assert.Fail("Cancellation is not topology failure")));
+        }
+
+        [Test]
+        public void FailureCaptureRoundTripsAllStagesAndPrunesOnlyCompletedFailureFiles()
+        {
+            string directory = Path.Combine(Path.GetTempPath(), "meshlab-failure-test-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try {
+                string unrelated = Path.Combine(directory, "unrelated.bin"); File.WriteAllText(unrelated, "keep");
+                var source = TetraPositions(); var original = (int[])Tetrahedron.Clone();
+                var raw = new RemeshNative.IndexedMesh { positions = TetraPositions(), indices = new[] { 0, 2, 1 } };
+                var input = new RemeshNative.IndexedMesh { positions = TetraPositions(), indices = new[] { 0, 1, 3 } };
+                var metadata = new RemeshGeometryDiagnostics.FailureMetadata {
+                    stage = "Simplify", node = "Synthetic tetra", reason = "invalid topology", resolution = 128,
+                    initialFlags = 1, resultFlags = 0, settingsJson = JsonUtility.ToJson(new RemeshSettings { shell = true })
+                };
+                for (int i = 0; i < 4; i++) {
+                    string path = RemeshGeometryDiagnostics.WriteFailure(directory, source, original, i == 3 ? null : raw, input, metadata);
+                    using var reader = new BinaryReader(File.OpenRead(path));
+                    Assert.AreEqual(0x524D4C42, reader.ReadInt32()); Assert.AreEqual(2, reader.ReadInt32());
+                    var readMetadata = JsonUtility.FromJson<RemeshGeometryDiagnostics.FailureMetadata>(reader.ReadString());
+                    Assert.AreEqual(metadata.node, readMetadata.node); Assert.AreEqual(metadata.stage, readMetadata.stage);
+                    Assert.AreEqual(128, readMetadata.resolution); Assert.AreEqual(0u, readMetadata.resultFlags);
+                    Assert.IsTrue(JsonUtility.FromJson<RemeshSettings>(readMetadata.settingsJson).shell);
+                    AssertCaptureMesh(reader, source, original);
+                    if (i == 3) Assert.IsFalse(reader.ReadBoolean());
+                    else AssertCaptureMesh(reader, raw.positions, raw.indices);
+                    AssertCaptureMesh(reader, input.positions, input.indices);
+                    Assert.AreEqual(reader.BaseStream.Length, reader.BaseStream.Position);
+                }
+                Assert.AreEqual(3, Directory.GetFiles(directory, "remesh_failure_*.bin").Length);
+                Assert.AreEqual(0, Directory.GetFiles(directory, "*.tmp").Length);
+                Assert.IsTrue(File.Exists(unrelated));
+                CollectionAssert.AreEqual(Tetrahedron, original);
+                CollectionAssert.AreEqual(new[] { 0, 1, 3 }, input.indices);
+            }
+            finally { Directory.Delete(directory, true); }
+        }
+
+        static void AssertCaptureMesh(BinaryReader reader, Vector3[] positions, int[] indices)
+        {
+            Assert.IsTrue(reader.ReadBoolean());
+            Assert.AreEqual(positions.Length, reader.ReadInt32()); Assert.AreEqual(indices.Length, reader.ReadInt32());
+            foreach (var p in positions) {
+                Assert.AreEqual(p.x, reader.ReadSingle()); Assert.AreEqual(p.y, reader.ReadSingle()); Assert.AreEqual(p.z, reader.ReadSingle());
+            }
+            foreach (int index in indices) Assert.AreEqual(index, reader.ReadInt32());
+        }
 
         static void AssertCompactedTetraPositions(Vector3[] input, Vector3[] output)
         {

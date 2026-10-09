@@ -4,6 +4,19 @@ Offline diagnostics for a proposed source Cap. These tools do not change Unity
 meshes, settings, native binaries, or the production Remesh pipeline. Private
 model captures and generated reports belong in ignored scratch directories.
 
+Failed production Remesh/Simplify attempts now save version 2 geometry captures
+in `%TEMP%/meshlab-uvmerge/failures/`, independently of Verbose logging. Decode
+one before selecting Cap or native experiments:
+
+```powershell
+python 'Tools~/RemeshCapBenchmark/failure_capture.py' --capture FAILURE.bin --output PRIVATE_OUTPUT
+```
+
+This exports exact source/raw/input mesh arrays, stage settings and independent
+topology summaries. A missing raw mesh remains explicit; it is not fabricated
+from the later input. Details and limitations:
+`Documentation~/REMESH_FAILURE_CAPTURE.md`.
+
 Python dependencies: NumPy 2.1.3 and Triangle 20250106 for the compound experiment
 and its tests; Matplotlib only for the optional plot. Triangle remains an external
 offline dependency; no library is vendored or linked into Unity.
