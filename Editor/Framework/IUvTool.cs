@@ -88,6 +88,12 @@ namespace SashaRX.UnityMeshLab
         void OnDraw3D(MeshViewport3D view);
     }
 
+    /// <summary>Optional input before the shared viewport handles orbit and spot selection.</summary>
+    internal interface IUvTool3DInput
+    {
+        void On3DInput(MeshViewport3D view, UnityEngine.Event input);
+    }
+
     /// <summary>
     /// Opt-in for tools whose own output should fill the shared UV canvas (the hub's
     /// UV mode) instead of the context's preview-LOD meshes — the Remesh &amp; Bake

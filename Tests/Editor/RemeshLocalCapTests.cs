@@ -117,11 +117,14 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        public void ThreeMissingFacesAndSmoothWarpedRimsAreNotForcedIntoTwoPlanes()
+        public void ThreeMissingFacesUseThreePlanesAndSmoothWarpedRimsRemainUnsupported()
         {
             var ix = Missing(0,2,4); var saved = (int[])ix.Clone();
-            StringAssert.Contains("no unique local closure",Assert.Throws<InvalidOperationException>(()=>
-                RemeshPlanarCap.Prepare(Box,ix,"0",default,true)).Message);
+            var cap = RemeshPlanarCap.Prepare(Box,ix,"0",default,true);
+            Assert.AreEqual(6,cap.addedFaces); Assert.AreEqual(3,cap.localPatches);
+            var closed = RemeshTopology.Inspect(cap.positions,cap.indices);
+            Assert.IsTrue(closed.Valid,closed.Description); Assert.AreEqual(0,closed.boundary.Count);
+            CollectionAssert.AreEqual(new[] {2},closed.euler);
             CollectionAssert.AreEqual(saved,ix);
             var p = Enumerable.Range(0,64).Select(i=> {
                 float a=i*Mathf.PI/32; return new Vector3(Mathf.Cos(a),Mathf.Sin(a),.15f*Mathf.Sin(3*a));

@@ -1350,6 +1350,7 @@ namespace SashaRX.UnityMeshLab
             {
                 var e = Event.current;
                 viewport.PrepareRect(rect, e.type);
+                if (rect.Contains(e.mousePosition)) (ActiveTool as IUvTool3DInput)?.On3DInput(viewport, e);
                 if (inspectMesh && e.type == EventType.MouseDown && e.button == 0 && e.control && rect.Contains(e.mousePosition) &&
                     viewport.TryScreenRay(e.mousePosition, out var origin, out var direction)) {
                     if (inspection.Pick(items, origin, direction, out int item)) { inspectedItem = item; Repaint(); }

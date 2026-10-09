@@ -37,7 +37,14 @@ namespace SashaRX.UnityMeshLab
             public RemeshSource source;
             internal RemeshSource unfilteredSource;
             internal RemeshPlanarCap.Support support;
+            internal int[] voxelSyntheticFaces;
+            internal RemeshSyntheticFaces.Regions syntheticRegions;
             public RemeshNative.IndexedMesh voxel, simplified;
+            internal RemeshNative.IndexedMesh completeSimplified;
+            internal int[] completeSyntheticFaces;
+            internal TriangleBvh syntheticPickBvh;
+            internal int[] syntheticFaces;
+            internal bool[] selectedSyntheticFaces;
             // Trim mask: the untrimmed remesh and the class of each of its faces
             // (RemeshTrim.Kept/Back/Rim), for the Remesh stage's preview; null without a trim.
             public RemeshNative.IndexedMesh voxelRaw;
@@ -66,7 +73,7 @@ namespace SashaRX.UnityMeshLab
 
         // Previews come from the primary node: the weld itself, or the largest node of
         // a hierarchy so the existing preview panel keeps working.
-        Mesh sourceMesh, voxelMesh, simplifiedMesh, trimMaskMesh;
+        Mesh sourceMesh, voxelMesh, simplifiedMesh, trimMaskMesh, syntheticMaskMesh;
         Texture2D baseColorPreview;
 
         /// <summary>Settings snapshot every stage output was built with, indexed by Stage.</summary>
@@ -105,6 +112,7 @@ namespace SashaRX.UnityMeshLab
         /// <summary>The untrimmed remesh of the primary node with one colour per trim
         /// class (green kept, red back of a sheet, orange rim); null when nothing was trimmed.</summary>
         public Mesh TrimMaskMesh => trimMaskMesh;
+        internal Mesh SyntheticMaskMesh => syntheticMaskMesh;
         /// <summary>Any node's capture renders both sides (two-sided materials or the setting).</summary>
         public bool ResultTwoSided => nodes.Exists(n => n.twoSided);
         public Mesh SimplifiedMesh => simplifiedMesh;
@@ -171,7 +179,7 @@ namespace SashaRX.UnityMeshLab
             switch (stage) {
                 case Stage.Remesh: return $"{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}|{s.lod0Only}|{s.keepHierarchy}|" +
                     $"{s.sourceShape}|{s.hullResolution}|{s.hullTriangles}|{s.minPartSize:R}|{s.minRodVoxels:R}|{s.voxelResolution}|{s.trimToSource}|{s.sourceBackfaces}|" +
-                    $"cap{RemeshPlanarCap.Revision}|{s.planarCap}|{s.planarCapLoops}|{s.planarCapLocalPlanes}";
+                    $"cap{RemeshPlanarCap.Revision}|{s.planarCap}|{s.planarCapLoops}|{s.planarCapLocalPlanes}|{s.closureMode}";
                 case Stage.Simplify: return $"{s.simplify}|{s.targetTriangles}|{s.maximumError}|{s.regularize}|{s.preserveFolds}|{s.pruneSmallParts}";
                 case Stage.Unwrap: return $"{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.normalWeighting}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
                     $"{s.chartNormalDeviation}|{s.chartNormalSeam}|{s.chartStraightness}|{s.chartRoundness}|{s.chartIterations}|" +
@@ -334,13 +342,13 @@ namespace SashaRX.UnityMeshLab
                     if (shape == RemeshShape.BoundingBox) return captured.OrientedBoxes();
                     if (options.planarCap && (shape == RemeshShape.Hull || !options.shell)) {
                         try {
-                            node.support = RemeshPlanarCap.Prepare(captured.positions, captured.indices, options.planarCapLoops, token, options.planarCapLocalPlanes);
+                            node.support = RemeshPlanarCap.Prepare(captured.positions, captured.indices, options.planarCapLoops, token, options.planarCapLocalPlanes, options.closureMode);
                             UvtLog.Info(LogPrefix + node.name + ": planar Cap " + node.support.Description);
                             RemeshGeometryDiagnostics.CaptureSupport(captured, node.support, options, node.name);
                             var closed = RemeshTopology.ClosedVolumeFaces(node.support.positions, node.support.indices, token);
                             foreach (bool face in closed) {
                                 if (!face) throw new InvalidOperationException("Planar Cap support still has an open or zero-volume component. " +
-                                    "Select every required disk loop explicitly; Bridge and unsupported compound closures require separate intent.");
+                                    "Select every required boundary loop and a supported closure method.");
                             }
                         }
                         catch (InvalidOperationException failure) {
@@ -370,6 +378,7 @@ namespace SashaRX.UnityMeshLab
                     return trim.mesh;
                 }, token);
                 if (node.voxel == null || node.voxel.TriangleCount == 0) throw new InvalidOperationException("The remesh produced no geometry.");
+                node.voxelSyntheticFaces = await Task.Run(() => RemeshSyntheticFaces.Classify(node.voxel.positions,node.voxel.indices,node.support,token),token);
                 if (trim != null) {
                     if (trim.gaveUp) UvtLog.Warn(LogPrefix + (hierarchy ? node.name + ": " : "") + "Trim to source surface kept under a tenth of the remesh " +
                         "with the source's winding and with its inverse, so nothing was trimmed. The source winding is mixed beyond one flip, or the remesh sits " +
@@ -484,15 +493,84 @@ namespace SashaRX.UnityMeshLab
                         $"[{node.name}] Simplify: {input.TriangleCount} -> {node.simplified.TriangleCount} triangles; source={node.source.indices.Length / 3}; stopAt={options.targetTriangles}, maximumError={options.maximumError:G6}, achievedCollapseError={error:G6}."));
                 }
                 else { node.simplified = node.voxel; node.simplifyError = 0; }
+                node.completeSimplified = node.simplified;
+                node.syntheticFaces = await Task.Run(() => RemeshSyntheticFaces.Project(node.simplified.positions,
+                    node.simplified.indices,node.voxel.positions,node.voxel.indices,node.voxelSyntheticFaces,token),token);
+                node.selectedSyntheticFaces = node.syntheticFaces != null ? new bool[node.simplified.TriangleCount] : null;
+                node.completeSyntheticFaces = node.syntheticFaces;
+                node.syntheticRegions = node.syntheticFaces != null ? await Task.Run(() => RemeshSyntheticFaces.Group(node.simplified,node.syntheticFaces,node.spaceToWorld),token) : null;
+                if (node.syntheticRegions != null) UvtLog.Info(UvtLog.Category.RemeshDiag,
+                    $"[{node.name}] Closure mask projected from remesh: {node.syntheticRegions.faces.Count} connected regions; areas measured in world-space square units. Mixed regions require manual inspection.");
+                node.syntheticPickBvh = node.syntheticFaces != null ? await Task.Run(() => new TriangleBvh(node.simplified.positions, node.simplified.indices), token) : null;
                 before += node.voxel.TriangleCount; after += node.simplified.TriangleCount;
             }
             token.ThrowIfCancellationRequested();
             var primary = Primary;
             simplifiedMesh = BuildMesh(ResultName + "_Simplified", primary.simplified.positions, primary.simplified.indices, primary.simplified.normals, uv: primary.simplified.uv, draftUv: primary.simplified.draftUv);
+            RebuildSyntheticPreview();
             Status = (hierarchy ? $"Simplify: {nodes.Count} node(s), " : "Simplify: ") + $"{before:N0} → {after:N0} triangles.";
         }
 
         public float SimplifyError => Primary?.simplifyError ?? 0f;
+
+        internal void RebuildSyntheticPreview()
+        {
+            if (syntheticMaskMesh) Object.DestroyImmediate(syntheticMaskMesh);
+            syntheticMaskMesh = Primary?.syntheticFaces != null ? RemeshSyntheticFaces.Preview(ResultName + "_SyntheticFaces",
+                Primary.simplified, Primary.syntheticFaces, Primary.selectedSyntheticFaces) : null;
+            Changed?.Invoke();
+        }
+
+        internal void RemoveSelectedSyntheticFaces()
+        {
+            if (IsRunning || !Has(Stage.Simplify)) return;
+            if (!nodes.Exists(node => node.selectedSyntheticFaces != null && Array.Exists(node.selectedSyntheticFaces, value => value))) return;
+            // Validate every node before replacing any stage output.
+            var replacements = new List<RemeshNative.IndexedMesh>();
+            foreach (var node in nodes) {
+                if (node.selectedSyntheticFaces != null) for (int f = 0; f < node.selectedSyntheticFaces.Length; ++f)
+                    if (node.selectedSyntheticFaces[f] && node.syntheticFaces[f] == 0)
+                        throw new InvalidOperationException("Original faces cannot be removed with the Cap selection.");
+                replacements.Add(node.selectedSyntheticFaces != null && Array.Exists(node.selectedSyntheticFaces, value => value)
+                    ? RemeshSyntheticFaces.Remove(node.simplified, node.selectedSyntheticFaces) : node.simplified);
+            }
+            ClearFrom(Stage.Unwrap);
+            for (int i = 0; i < nodes.Count; ++i) {
+                var node = nodes[i]; var previous = node.simplified;
+                node.simplified = replacements[i];
+                if (ReferenceEquals(previous, node.simplified)) continue;
+                var kept = new List<int>();
+                for (int f = 0; f < node.syntheticFaces.Length; ++f) if (!node.selectedSyntheticFaces[f]) kept.Add(node.syntheticFaces[f]);
+                node.syntheticFaces = kept.ToArray(); node.selectedSyntheticFaces = new bool[kept.Count];
+                node.syntheticPickBvh = null;
+                node.syntheticRegions = RemeshSyntheticFaces.Group(node.simplified,node.syntheticFaces,node.spaceToWorld);
+            }
+            Status = "Selected faces removed. Rerun Normals & UV, then Bake. Restore is available until Simplify is rerun.";
+            RebuildSimplifiedPreview();
+        }
+
+        internal void RestoreSyntheticFaces()
+        {
+            if (IsRunning || !Has(Stage.Simplify)) return;
+            ClearFrom(Stage.Unwrap);
+            foreach (var node in nodes) {
+                node.simplified = node.completeSimplified;
+                node.syntheticFaces = node.completeSyntheticFaces;
+                node.syntheticPickBvh = null;
+                node.selectedSyntheticFaces = node.syntheticFaces != null ? new bool[node.syntheticFaces.Length] : null;
+                node.syntheticRegions = node.syntheticFaces != null ? RemeshSyntheticFaces.Group(node.simplified,node.syntheticFaces,node.spaceToWorld) : null;
+            }
+            Status = "Restored optimized geometry. Rerun Normals & UV, then Bake."; RebuildSimplifiedPreview();
+        }
+
+        void RebuildSimplifiedPreview()
+        {
+            if (simplifiedMesh) Object.DestroyImmediate(simplifiedMesh);
+            var primary = Primary;
+            simplifiedMesh = BuildMesh(ResultName + "_Simplified", primary.simplified.positions, primary.simplified.indices,
+                primary.simplified.normals, uv: primary.simplified.uv, draftUv: primary.simplified.draftUv);
+            RebuildSyntheticPreview();
+        }
 
         async Task RunUnwrap(RemeshSettings options, CancellationToken token)
         {
@@ -647,9 +725,13 @@ namespace SashaRX.UnityMeshLab
                 }
             }
             if (stage <= Stage.Simplify) {
+                if (syntheticMaskMesh) Object.DestroyImmediate(syntheticMaskMesh);
+                syntheticMaskMesh = null;
                 if (simplifiedMesh) Object.DestroyImmediate(simplifiedMesh);
                 simplifiedMesh = null; keys[(int)Stage.Simplify] = null;
-                foreach (var node in nodes) { node.simplified = null; node.simplifyError = 0; }
+                foreach (var node in nodes) { node.simplified = node.completeSimplified = null; node.syntheticFaces = node.completeSyntheticFaces = null; node.syntheticPickBvh = null;
+                    node.syntheticRegions = null;
+                    node.selectedSyntheticFaces = null; node.simplifyError = 0; }
             }
             if (stage <= Stage.Remesh) {
                 if (voxelMesh) Object.DestroyImmediate(voxelMesh);

@@ -12,7 +12,7 @@ namespace SashaRX.UnityMeshLab
     /// <see cref="RemeshPipeline"/>, the export in <see cref="RemeshExporter"/>.
     /// </summary>
     [MeshLabTool("remesh_bake", MeshLabLibraries.Remesh, MeshLabLibraries.Baking, MeshLabLibraries.Assets)]
-    public sealed class RemeshBakeTool : IUvTool, IUvToolRightSidebar, IUvTool3D, IUvToolUvContent, IUvToolWindowPreferences
+    public sealed class RemeshBakeTool : IUvTool, IUvToolRightSidebar, IUvTool3D, IUvTool3DInput, IUvToolUvContent, IUvToolWindowPreferences
     {
         public string ToolName => "Remesh & Bake";
         public string ToolId => "remesh_bake";
@@ -49,6 +49,9 @@ namespace SashaRX.UnityMeshLab
         GameObject previewSourceRoot;
         bool sourcePreviewDirty = true, previewLod0Only;
         internal GameObject Source => source;
+        readonly PreviewWork<TriangleBvh> syntheticPickWork = new PreviewWork<TriangleBvh>("[Remesh] Cap picking");
+        RemeshNative.IndexedMesh syntheticPickInput;
+        float maximumClosureArea;
 
         [Serializable]
         sealed class WindowSettings
@@ -56,6 +59,7 @@ namespace SashaRX.UnityMeshLab
             public bool[] folds = { true, true, true, true };
             public bool chartFold;
             public bool highlightFilterPreview;
+            public float maximumClosureArea;
         }
 
         public RemeshBakeTool()
@@ -70,6 +74,7 @@ namespace SashaRX.UnityMeshLab
                 Array.Copy(window.folds, folds, Math.Min(window.folds.Length, folds.Length));
             chartFold = window.chartFold;
             highlightFilterPreview = window.highlightFilterPreview;
+            maximumClosureArea = Mathf.Max(0,window.maximumClosureArea);
             previews.RestoreWindowSettings();
             pipeline.Changed = () => { saveStatus = null; RequestRepaint?.Invoke(); };
         }
@@ -80,7 +85,7 @@ namespace SashaRX.UnityMeshLab
         {
             EditorPrefs.SetString(SettingsKey, JsonUtility.ToJson(settings));
             MeshLabWindowPreferences.Save("RemeshBake", new WindowSettings { folds = folds, chartFold = chartFold,
-                highlightFilterPreview = highlightFilterPreview });
+                highlightFilterPreview = highlightFilterPreview, maximumClosureArea = maximumClosureArea });
             previews.SaveWindowSettings();
         }
 
@@ -117,6 +122,7 @@ namespace SashaRX.UnityMeshLab
             SaveSettings();
             previews.Dispose();
             pipeline.Dispose();
+            syntheticPickWork.Dispose(); syntheticPickInput = null;
             highlight.Dispose();
             QueueHighlight(RebuildHighlight, false);
             highlightQueued = false;
@@ -326,6 +332,7 @@ namespace SashaRX.UnityMeshLab
         {
             SyncPreviewData();
             previews.Draw(previewData);
+            DrawSyntheticFaceSelection();
             using (new EditorGUI.DisabledScope(!previews.IsSource)) {
                 bool on = EditorGUILayout.ToggleLeft(new GUIContent("Part filter highlight",
                     "Source preview: green kept, orange removed by size, red removed by thickness. Follows the Remesh filter settings, including fully removed hierarchy nodes."), highlightFilterPreview);
@@ -349,6 +356,7 @@ namespace SashaRX.UnityMeshLab
             previewData.meshes[(int)RemeshPreview.Stage.Result] = pipeline.ResultMesh;
             previewData.geometry = pipeline.Geometry; previewData.maps = pipeline.Maps; previewData.baseColor = pipeline.BaseColorPreview;
             previewData.trimMask = pipeline.TrimMaskMesh;
+            previewData.syntheticMask = pipeline.SyntheticMaskMesh;
             previewData.spaceToWorld = pipeline.PreviewSpaceToWorld;
             // Live from the current settings so the cage preview reflects projection
             // distance changes before a re-bake; zero until a source snapshot exists.
@@ -394,6 +402,68 @@ namespace SashaRX.UnityMeshLab
 
         public void OnDraw3D(MeshViewport3D view) => previews.Overlay3D(previewData, view);
 
+        void DrawSyntheticFaceSelection()
+        {
+            var node = pipeline.Primary;
+            if (!previews.ShowsSyntheticFaces || node?.syntheticFaces == null) return;
+            EnsureSyntheticPicking(node);
+            int selected = 0, synthetic = 0, mixed = 0;
+            for (int f = 0; f < node.syntheticFaces.Length; ++f) {
+                if (node.selectedSyntheticFaces[f]) ++selected;
+                if (node.syntheticFaces[f] > 0) ++synthetic;
+                else if (node.syntheticFaces[f] < 0) ++mixed;
+            }
+            EditorGUILayout.LabelField($"{synthetic} closure · {mixed} mixed · {selected} selected", EditorStyles.wordWrappedMiniLabel);
+            using (new EditorGUI.DisabledScope(pipeline.IsRunning)) {
+                maximumClosureArea = Mathf.Max(0,EditorGUILayout.FloatField(new GUIContent("Max region area (m²)","Select connected masked regions by their total world-space surface area, not by triangle count. Mixed regions require manual inspection."),maximumClosureArea));
+                if (GUILayout.Button("Select closure regions by area")) {
+                    Array.Clear(node.selectedSyntheticFaces,0,node.selectedSyntheticFaces.Length);
+                    var regions = node.syntheticRegions;
+                    for (int r = 0; r < regions.faces.Count; ++r) if (regions.labels[r] > 0 && regions.areas[r] <= maximumClosureArea)
+                        foreach (int f in regions.faces[r]) node.selectedSyntheticFaces[f] = true;
+                    pipeline.RebuildSyntheticPreview();
+                }
+                if (GUILayout.Button("Select closure faces")) {
+                    for (int f = 0; f < node.syntheticFaces.Length; ++f) node.selectedSyntheticFaces[f] = node.syntheticFaces[f] > 0;
+                    pipeline.RebuildSyntheticPreview();
+                }
+                if (GUILayout.Button("Clear face selection")) {
+                    Array.Clear(node.selectedSyntheticFaces, 0, node.selectedSyntheticFaces.Length);
+                    pipeline.RebuildSyntheticPreview();
+                }
+                using (new EditorGUI.DisabledScope(selected == 0)) if (GUILayout.Button("Remove selected closure faces")) {
+                    previews.Invalidate();
+                    try { pipeline.RemoveSelectedSyntheticFaces(); }
+                    catch (InvalidOperationException ex) { saveStatus = ex.Message; }
+                }
+                using (new EditorGUI.DisabledScope(ReferenceEquals(node.simplified, node.completeSimplified)))
+                    if (GUILayout.Button("Restore removed faces")) { previews.Invalidate(); pipeline.RestoreSyntheticFaces(); }
+            }
+        }
+
+        void EnsureSyntheticPicking(RemeshPipeline.Node node)
+        {
+            if (node.syntheticPickBvh != null || ReferenceEquals(syntheticPickInput, node.simplified)) return;
+            var input = node.simplified; syntheticPickInput = input;
+            syntheticPickWork.Enqueue(() => token => { token.ThrowIfCancellationRequested(); return new TriangleBvh(input.positions, input.indices); },
+                bvh => { if (ReferenceEquals(node.simplified, input)) node.syntheticPickBvh = bvh; RequestRepaint?.Invoke(); });
+        }
+
+        void IUvTool3DInput.On3DInput(MeshViewport3D view, Event input)
+        {
+            var node = pipeline.Primary;
+            if (pipeline.IsRunning || !previews.ShowsSyntheticFaces || node?.syntheticPickBvh == null ||
+                input.type != EventType.MouseDown || input.button != 0 || !input.shift || input.alt || input.control ||
+                !view.TryScreenRay(input.mousePosition, out var origin, out var direction)) return;
+            var inverse = pipeline.PreviewSpaceToWorld.inverse;
+            var hit = node.syntheticPickBvh.Raycast(inverse.MultiplyPoint3x4(origin), inverse.MultiplyVector(direction).normalized, float.PositiveInfinity);
+            if (hit.triangleIndex < 0 || node.syntheticFaces[hit.triangleIndex] == 0) return;
+            int region = node.syntheticRegions.faceRegion[hit.triangleIndex];
+            bool select = !node.selectedSyntheticFaces[hit.triangleIndex];
+            foreach (int face in node.syntheticRegions.faces[region]) node.selectedSyntheticFaces[face] = select;
+            pipeline.RebuildSyntheticPreview(); input.Use(); RequestRepaint?.Invoke();
+        }
+
         public void OnDrawSidebar()
         {
             EditorGUILayout.LabelField("High-poly → Low-poly", EditorStyles.boldLabel);
@@ -438,15 +508,16 @@ namespace SashaRX.UnityMeshLab
                     }
                     using (new EditorGUI.DisabledScope(settings.sourceShape == RemeshShape.BoundingBox ||
                         settings.sourceShape == RemeshShape.LOD0 && settings.shell)) {
-                        settings.planarCap = EditorGUILayout.Toggle(new GUIContent("Cap planar holes (disks)",
-                            "Weld coincident positions in geometry-only support, then close selected continuous planar loops. " +
-                            "This explicitly requests disks, not Bridge. Original material/UV donors are preserved. " +
+                        settings.planarCap = EditorGUILayout.Toggle(new GUIContent("Close holes before remesh",
+                            "Weld coincident positions in geometry-only support, then close selected loops using Caps, Bridge or Automatic. " +
+                            "Original material/UV donors are preserved. " +
                             "Synthetic surfaces project from the original donor; missing projections remain visible as magenta."), settings.planarCap);
                         if (settings.planarCap) {
-                            settings.planarCapLocalPlanes = EditorGUILayout.Toggle(new GUIContent("Local two-plane caps",
+                            settings.closureMode = (RemeshClosureMode)EditorGUILayout.EnumPopup(new GUIContent("Closure method","Caps: selected disks. Bridge: exactly two rims. Automatic: mutual collar continuation selects Bridge; other supported contours use local planar Caps. Ambiguity refuses the run."),settings.closureMode);
+                            settings.planarCapLocalPlanes = EditorGUILayout.Toggle(new GUIContent("Local compound caps",
                                 "Allow a uniquely supported split into two continuous planar arcs. Close the first arc, recheck the new boundary, " +
-                                "then close the remaining planar disk. Ambiguous splits and Bridge are refused; source rim vertices remain fixed."), settings.planarCapLocalPlanes);
-                            settings.planarCapLoops = EditorGUILayout.TextField(new GUIContent("Cap loop numbers",
+                                "then recheck the remaining contour. Three-plane corner closures reconstruct their common corner. Ambiguous or intersecting closures are refused; source rim vertices remain fixed."), settings.planarCapLocalPlanes);
+                            settings.planarCapLoops = EditorGUILayout.TextField(new GUIContent("Closure loop numbers",
                             "Comma-separated loop numbers, starting at 0 in welded vertex order (e.g. 0,1). " +
                             "All openings must be closed for solid remesh. Unsupported/ambiguous loops refuse the run."), settings.planarCapLoops);
                         }

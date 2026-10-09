@@ -1,15 +1,67 @@
 # Planar Cap in the Unity Remesh pipeline
 
-Managed integration is an opt-in **disk** operation. In Remesh & Bake,
-enable **Cap planar holes (disks)** and enter comma-separated **Cap loop numbers**
+Managed integration is opt-in. In Remesh & Bake,
+enable **Close holes before remesh**, choose **Closure method**, and enter comma-separated **Closure loop numbers**
 (`0` for the single SandbagRoundedcorner floor opening). Numbers start at zero,
 ordered by the lowest welded vertex in each oriented boundary cycle. They belong
 to the current filtered capture; inspect the log again after changing the source.
-This prototype has no interactive rim selector and does not infer closure intent.
+Loop selection is explicit. **Caps** retains the original disk intent; **Bridge**
+requires exactly two rims; **Automatic** chooses a Bridge only for a unique mutual
+collar partner. Other supported contours receive local Caps. Ambiguous partners,
+unsupported geometry and exhausted search budgets refuse the complete operation.
 
-Enable **Local two-plane caps** to also allow a selected nonplanar cycle with one
+Enable **Local compound caps** to also allow a selected nonplanar cycle with one
 supported decomposition into two continuous planar arcs. The option is off in
-existing settings. It does not interpret two separate loops as a Bridge request.
+existing settings. Automatic mode enables local compound analysis implicitly.
+
+## Revision 3: Bridge, three planes and projected masks
+
+- `RemeshBridge` enumerates cyclic seams and two best monotone zippers per seam.
+  Unequal rims keep every source border vertex and edge. Each candidate must be a
+  single annulus, preserve remaining boundaries, and pass exact new/source and
+  new/new contact checks. Limits: 64 edges per rim, 100,000 DP states and the
+  shared two-million pair-trial audit budget. Budget exhaustion rejects even a
+  provisional winner. The selected strip is scored geometry, not a guarantee of
+  authored shape.
+- `RemeshCompoundCap` partitions one rim into three continuous planar arcs and
+  intersects their planes in double precision around a local origin. It adds one
+  corner in geometry-only support. Each patch is audited against freshly changed
+  boundaries and all existing faces. Different surviving corners are ambiguous.
+  The search is bounded to 64 rim edges, 32,768 fits and two million samples.
+  Arbitrary four-or-more-plane feature graphs remain unsupported.
+- Automatic mode permits at most 16 selected rims. At least 80% of each rim's
+  edge co-normals must point toward its unique partner with dot > 0.6. Opposite
+  box holes grow away from one another and use Caps; a cut torus uses Bridge.
+  This evidence selects a candidate family; the independent audits still apply.
+- Support patch IDs project to the remesh, then to the fitted simplified mesh
+  with normal-filtered interior samples. This is a geometric mask estimate,
+  not exact native triangle ancestry. Unanimous samples identify closure or
+  original surface; mixed/uncertain faces remain a separate orange mask.
+- **Simplified → Cap / Bridge faces** displays the mask. Shift-click selects a
+  connected region. **Max region area (m²)** selects pure closure regions by total
+  world-space area; native/UV vertex seams do not split a region. Mixed regions
+  require explicit selection and inspection.
+- **Remove selected closure faces** edits only working optimized geometry and
+  invalidates Normals & UV and Bake. **Restore removed faces** restores the exact
+  optimized baseline until the next Simplify/Remesh run. Original scene meshes,
+  captured attributes and material/lightmap donors are never edited.
+- Baking continues projecting rays to the original/full donor. No synthetic
+  material fill or hole closing is added during projection; misses remain explicit.
+
+Solid voxel preflight now removes only safe coincident opposite-winding fin pairs
+and accepts the result only after complete closed topology and volume checks.
+Sandbag at 256 succeeds for Solve off/on in the frozen replay; native raw output
+still contains the fin pair. This is a guarded cleanup, not a general native
+non-manifold repair. Native UV conditioning and shape-preserving packing are
+documented [separately](REMESH_NATIVE_ATLAS_CONDITIONING.md).
+
+Validation on 2026-10-09: 468 EditMode cases passed, zero failures, two
+platform/shader skips; all 115 independent offline Cap/Bridge tests passed.
+Native CI CTests passed on Windows, Linux and macOS. New fixtures cover all eight
+three-plane box corners, transformed/reversed winding, explicit/automatic torus
+closure, opposite box disks, unequal Bridge rims, obstacle refusal, projected
+mask classes, world-area regions and removal/restoration invalidation. Both
+FBX reference-build variants and static dependency/identifier gates pass.
 
 ## Local two-plane closure (revision 2)
 

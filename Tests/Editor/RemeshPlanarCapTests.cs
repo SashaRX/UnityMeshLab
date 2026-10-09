@@ -123,17 +123,18 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
-        // Known native limitation measured during integration. This verifies refusal,
-        // NOT successful geometry at 256. Do not delete the native guard to pass it.
+        // Accept the native fin-pair repair only after full closed topology validation.
         [TestCase(false)] [TestCase(true)]
-        public void PrivateSandbag256StillRejectsInvalidNativeOutputBeforeTrim(bool solve)
+        public void PrivateSandbag256RepairsOpposingFinBeforeTrim(bool solve)
         {
             var support = PrivateSandbag();
             Assert.IsTrue(RemeshTopology.ClosedVolumeFaces(support.positions, support.indices, default).All(v => v));
             var settings = new RemeshSettings { voxelResolution = 256, solve = solve };
-            var failure = Assert.Throws<InvalidOperationException>(() => RemeshNative.Voxelize(support.positions, support.indices, settings, default));
-            StringAssert.Contains("before trim", failure.Message);
-            StringAssert.Contains("duplicate faces 1", failure.Message);
+            var voxel = RemeshNative.Voxelize(support.positions,support.indices,settings,default);
+            var topology = RemeshTopology.Inspect(voxel.positions,voxel.indices);
+            Assert.AreEqual(102644,voxel.TriangleCount);
+            Assert.IsTrue(topology.Valid,topology.Description); Assert.AreEqual(0,topology.boundary.Count);
+            Assert.IsTrue(RemeshTopology.ClosedVolumeFaces(voxel.positions,voxel.indices,default).All(v=>v));
         }
 
         [Test]

@@ -29,6 +29,7 @@ namespace SashaRX.UnityMeshLab
             public Texture2D baseColor;
             // Remesh stage: the untrimmed remesh coloured per trim class (null without a trim).
             public Mesh trimMask;
+            public Mesh syntheticMask;
             // Ray travel of the bake projection (source diagonal × projection distance);
             // the Cage toggle draws the result mesh inflated by ±this along the cage
             // directions, i.e. the exact shells the projection rays start and end on.
@@ -49,7 +50,7 @@ namespace SashaRX.UnityMeshLab
         View view;
         Stage stage = Stage.Result;
         Channel channel;
-        bool textured = true, bumpMap = true, cageView, trimMaskView = true;
+        bool textured = true, bumpMap = true, cageView, trimMaskView = true, syntheticMaskView = true;
 
         [Serializable]
         sealed class WindowSettings
@@ -57,7 +58,7 @@ namespace SashaRX.UnityMeshLab
             public View view;
             public Stage stage = Stage.Result;
             public Channel channel;
-            public bool textured = true, bumpMap = true, cageView, trimMaskView = true;
+            public bool textured = true, bumpMap = true, cageView, trimMaskView = true, syntheticMaskView = true;
         }
 
         internal void RestoreWindowSettings()
@@ -68,12 +69,13 @@ namespace SashaRX.UnityMeshLab
             channel = MeshLabWindowPreferences.ValidEnum(state.channel, Channel.BaseColor);
             textured = state.textured; bumpMap = state.bumpMap;
             cageView = state.cageView; trimMaskView = state.trimMaskView;
+            syntheticMaskView = state.syntheticMaskView;
         }
 
         internal void SaveWindowSettings()
             => MeshLabWindowPreferences.Save("RemeshPreview", new WindowSettings {
                 view = view, stage = stage, channel = channel, textured = textured,
-                bumpMap = bumpMap, cageView = cageView, trimMaskView = trimMaskView
+                bumpMap = bumpMap, cageView = cageView, trimMaskView = trimMaskView, syntheticMaskView = syntheticMaskView
             });
 
         Material surface;
@@ -94,6 +96,7 @@ namespace SashaRX.UnityMeshLab
 
         public void Show(Stage value) { stage = value; }
         internal bool IsSource => stage == Stage.Source;
+        internal bool ShowsSyntheticFaces => stage == Stage.Simplified && syntheticMaskView;
 
         public void Draw(Data data)
         {
@@ -146,6 +149,8 @@ namespace SashaRX.UnityMeshLab
                 bumpMap = EditorGUILayout.ToggleLeft(new GUIContent("Baked normal map", "Result stage: shade with the baked tangent-space normal map using the saved material's shader and the viewport lights."), bumpMap);
             using (new EditorGUI.DisabledScope(stage != Stage.Remesh || !data.trimMask))
                 trimMaskView = EditorGUILayout.ToggleLeft(new GUIContent("Trim mask", "Remesh stage: colour the untrimmed remesh by what Trim to source surface did with each face."), trimMaskView);
+            using (new EditorGUI.DisabledScope(stage != Stage.Simplified || !data.syntheticMask))
+                syntheticMaskView = EditorGUILayout.ToggleLeft(new GUIContent("Cap / Bridge faces", "Simplified stage: geometric association to closure patches. Orange faces mix original and synthetic surface; inspect them before removal."), syntheticMaskView);
             using (new EditorGUI.DisabledScope(!result || data.geometry == null))
                 cageView = EditorGUILayout.ToggleLeft(new GUIContent("Cage shells", "Result stage: the projection limits — every corner pushed ±its reach along its cage direction; orange where the rays start, blue where they end."), cageView);
             if (cageView && result)
@@ -157,6 +162,8 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.LabelField(meshSummary, EditorStyles.miniLabel);
             if (ShowTrimMask(data))
                 EditorGUILayout.LabelField("Trim mask: green kept · red back of a sheet (opposite normal) · orange rim / no source within reach", EditorStyles.wordWrappedMiniLabel);
+            if (ShowsSyntheticFaces && data.syntheticMask)
+                EditorGUILayout.LabelField("Purple: closure · orange: mixed / uncertain · red: selected. Shift-click to select a connected region.", EditorStyles.wordWrappedMiniLabel);
             if (result && data.maps != null && data.maps.beauty && textured)
                 EditorGUILayout.LabelField("Beauty contains baked scene lighting and renders unlit.", EditorStyles.wordWrappedMiniLabel);
             if (result && data.twoSided && resultSurface && !resultSurface.HasProperty("_Cull"))
@@ -224,7 +231,7 @@ namespace SashaRX.UnityMeshLab
 
         // The mesh the 3D view shows for the stage: the trim mask stands in for the
         // trimmed remesh while its toggle is on.
-        internal Mesh DisplayMesh(Data data) => ShowTrimMask(data) ? data.trimMask : data.meshes[(int)stage];
+        internal Mesh DisplayMesh(Data data) => ShowTrimMask(data) ? data.trimMask : ShowsSyntheticFaces && data.syntheticMask ? data.syntheticMask : data.meshes[(int)stage];
 
         public bool Fill3D(Data data, List<MeshViewport3D.Item> items)
         {
@@ -255,7 +262,7 @@ namespace SashaRX.UnityMeshLab
             // Beauty maps already contain the lighting; shading them again would
             // double it, so the surface renders unlit exactly like the saved material.
             surface.SetFloat("_Lit", stage == Stage.Result && data.maps != null && data.maps.beauty ? 0 : 1);
-            surface.SetFloat("_UseVertexColor", trimMask && mesh.HasVertexAttribute(VertexAttribute.Color) ? 1 : 0);
+            surface.SetFloat("_UseVertexColor", (trimMask || ShowsSyntheticFaces) && mesh.HasVertexAttribute(VertexAttribute.Color) ? 1 : 0);
             surface.SetColor("_Color", Color.white);
             var materials = new Material[mesh.subMeshCount];
             for (int sub = 0; sub < materials.Length; ++sub) materials[sub] = surface;

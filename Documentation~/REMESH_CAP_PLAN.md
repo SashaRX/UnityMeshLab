@@ -1,9 +1,13 @@
 # Cap architecture and implementation plan
 
-2026-10-09. Baseline `292c47a`, branch `codex/remesh-and-bake`, PR #225.
-This follows [the research](REMESH_LOCAL_CAP_RESEARCH.md). Production Cap is not
-implemented. The offline benchmark now covers boundary extraction and plane
-hypotheses; the remaining stages are defined below.
+2026-10-09. Branch `codex/remesh-and-bake`, PR #225. This follows
+[the research](REMESH_LOCAL_CAP_RESEARCH.md). Managed revision 3 now supports
+selected planar disks, local two-plane and three-plane corner caps, explicit
+annular Bridge and opt-in automatic method selection from mutual collar evidence.
+Post-Simplify closure masks are projected from the remesh and grouped by world
+surface area for reversible removal. See [current integration](REMESH_PLANAR_CAP_UNITY.md).
+The architecture and earlier experiment notes below remain useful context;
+arbitrary feature graphs and unbounded compound reconstruction are not complete.
 
 ## Working model
 

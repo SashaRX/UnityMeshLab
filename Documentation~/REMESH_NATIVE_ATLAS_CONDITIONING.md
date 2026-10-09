@@ -30,3 +30,11 @@ unchanged. Unity fitted-mesh quality and padding are separate validation gates.
 
 `MESHLAB_COPY_PLUGINS=OFF` builds isolated diagnostic libraries without touching
 package Plugins. Published binaries are rebuilt by `build-native.yml`.
+
+Final Unity 6000.2.6f2 regression run with CI-built plugins `2858a74`: 468 passed,
+0 failed, 2 platform/shader-specific skips across Remesh and chart quality/repair.
+The diagonal fitted box previously failed the mapping check; after conditioning
+alone its worst stretch after repair was 106.075 against a 94.4533 limit. With
+shape-preserving packing and square normalization it passes in 0.64 s: mean
+stretch 1.00003, worst 1.23503, zero overlap pairs and degenerate UV faces,
+chart density CV 1.17e-6. The acceptance thresholds were not weakened.

@@ -2,6 +2,7 @@ using System;
 
 namespace SashaRX.UnityMeshLab
 {
+    public enum RemeshClosureMode { Caps, Bridge, Automatic }
     /// <summary>Where the result mesh gets hard (split) normals.</summary>
     public enum RemeshHardEdges
     {
@@ -86,11 +87,12 @@ namespace SashaRX.UnityMeshLab
         public int voxelResolution = 128;
         public bool solve = true;
         public bool shell;
-        // Explicit disk intent, opt-in. Loop numbers follow welded vertex order;
-        // rerun preparation after changing the source. No automatic Bridge inference.
+        // Opt-in support closure. Old serialized settings retain explicit Caps.
+        // Loop numbers follow welded vertex order; rerun after source changes.
         public bool planarCap;
         public string planarCapLoops = "0";
         public bool planarCapLocalPlanes;
+        public RemeshClosureMode closureMode;
         // After the voxel remesh, drop the faces the source has no surface for: the
         // voxelizer closes an open sheet into a slab, and its back side and rims have no
         // source face nearby with an aligned normal. Closed sources are left whole.

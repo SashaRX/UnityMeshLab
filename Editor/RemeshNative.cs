@@ -104,6 +104,8 @@ namespace SashaRX.UnityMeshLab
             if ((flags & 2u) != 0) return result;
             var topology = RemeshTopology.Inspect(result.positions, result.indices, token);
             if (result.TriangleCount > 0 && topology.Valid && topology.boundary.Count == 0) return result;
+            var repaired = RepairVoxelFins(result,token);
+            if (!ReferenceEquals(repaired,result)) return repaired;
             if ((flags & 1u) == 0) {
                 captureFailure?.Invoke(result, result, flags, topology.Description);
                 throw new InvalidOperationException($"Solid voxel remesh is not a valid closed surface before trim ({topology.Description}). " +
@@ -115,6 +117,8 @@ namespace SashaRX.UnityMeshLab
             token.ThrowIfCancellationRequested();
             var after = RemeshTopology.Inspect(retry.positions, retry.indices, token);
             if (retry.TriangleCount == 0 || !after.Valid || after.boundary.Count != 0) {
+                repaired = RepairVoxelFins(retry,token);
+                if (!ReferenceEquals(repaired,retry)) return repaired;
                 captureFailure?.Invoke(result, retry, flags & ~1u, after.Description);
                 throw new InvalidOperationException($"Solid voxel retry without source fitting is not a valid closed surface before trim ({after.Description}). " +
                     "Source trimming and Simplify were not run on this result.");
@@ -122,6 +126,17 @@ namespace SashaRX.UnityMeshLab
             UvtLog.Info(UvtLog.Category.RemeshDiag, $"Solid voxel fallback accepted at resolution {resolution}: " +
                 $"{result.TriangleCount} → {retry.TriangleCount} faces, boundary {topology.boundary.Count} → 0; source fitting disabled for this native attempt only.");
             return retry;
+        }
+
+        static IndexedMesh RepairVoxelFins(IndexedMesh result, CancellationToken token)
+        {
+            var candidate = RemeshTopology.RemoveCollapsedFins(result,token,out int removed);
+            if (removed == 0) return result;
+            var topology = RemeshTopology.Inspect(candidate.positions,candidate.indices,token);
+            if (!topology.Valid || topology.boundary.Count != 0) return result;
+            foreach (bool closed in RemeshTopology.ClosedVolumeFaces(candidate.positions,candidate.indices,token)) if (!closed) return result;
+            UvtLog.Info(UvtLog.Category.RemeshDiag,$"Solid voxel cleanup removed {removed} coincident opposing fin faces; retained {candidate.TriangleCount} faces, closed topology verified.");
+            return candidate.PrepareChannels();
         }
 
         static IndexedMesh VoxelizeRaw(Vector3[] positions, int[] indices, int resolution, uint flags, CancellationToken token)

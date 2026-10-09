@@ -214,6 +214,20 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(topology.Valid, topology.Description); Assert.AreEqual(0, topology.boundary.Count);
         }
 
+        [TestCase(0u)] [TestCase(1u)]
+        public void SolidVoxelGuardRepairsFinWithoutRetryAndRetainsStrictRefusal(uint flags)
+        {
+            var p = new[] {Vector3.zero,Vector3.right,Vector3.up,Vector3.forward,new Vector3(.5f,-1,0)};
+            var ix = new[] {0,2,1,0,1,3,1,2,3,2,0,3,0,1,4,1,0,4};
+            var input = new RemeshNative.IndexedMesh {positions=p,indices=ix};
+            var output = RemeshNative.GuardVoxelSolid(input,flags,256,default,_=>throw new Exception("Unexpected fallback"));
+            Assert.AreEqual(4,output.TriangleCount); CollectionAssert.AreEqual(ix,input.indices);
+            Assert.IsTrue(RemeshTopology.Inspect(output.positions,output.indices).Valid);
+            var broken = new RemeshNative.IndexedMesh {positions=p,indices=new[] {0,2,1,0,1,3,1,2,3,0,1,4,1,0,4}};
+            Assert.Throws<InvalidOperationException>(()=>RemeshNative.GuardVoxelSolid(broken,flags,256,default,_=>broken));
+            Assert.AreSame(input,RemeshNative.GuardVoxelSolid(input,flags|2,256,default,_=>throw new Exception("Unexpected shell fallback")));
+        }
+
         [Test]
         public void FinRemovalDoesNotOpenNeighbouringFaceOrEraseAnIsolatedDoubleSheet()
         {
