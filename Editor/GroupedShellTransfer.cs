@@ -344,6 +344,21 @@ namespace SashaRX.UnityMeshLab
 
         const int kMaxSampleVerts = 32;
 
+        static Vector3 ComputeShellAreaNormal(UvShell shell, int[] triangles, Vector3[] positions)
+        {
+            double x = 0, y = 0, z = 0, area = 0;
+            foreach (int face in shell.faceIndices) {
+                int a = triangles[face * 3], b = triangles[face * 3 + 1], c = triangles[face * 3 + 2];
+                if (a >= positions.Length || b >= positions.Length || c >= positions.Length) continue;
+                var cross = Vector3.Cross(positions[b] - positions[a], positions[c] - positions[a]);
+                x += cross.x; y += cross.y; z += cross.z;
+                area += System.Math.Sqrt((double)cross.x * cross.x + (double)cross.y * cross.y + (double)cross.z * cross.z);
+            }
+            double length = System.Math.Sqrt(x * x + y * y + z * z);
+            if (length <= area * 1e-6) return Vector3.zero;
+            return new Vector3((float)(x / length), (float)(y / length), (float)(z / length));
+        }
+
         // ═══════════════════════════════════════════════════════════
         //  Cross-LOD hint matching
         // ═══════════════════════════════════════════════════════════
@@ -475,7 +490,7 @@ namespace SashaRX.UnityMeshLab
             return -1;
         }
 
-        static void FindBestSourceShell(
+        static bool FindBestSourceShell(
             UvShell tShell,
             Vector3[] tVerts,
             List<UvShell> srcShells,
@@ -487,7 +502,8 @@ namespace SashaRX.UnityMeshLab
             HashSet<int> excludeSources,
             out int chosenSrc, out float chosenDistSq, out float chosenAvg3D,
             Vector3 tgtNormal = default, Vector3[] srcAvgNormal = null,
-            TransferMatchTrace.Shell trace = null, string tracePhase = "match")
+            TransferMatchTrace.Shell trace = null, string tracePhase = "match",
+            Vector3 targetAreaNormal = default, Vector3[] sourceAreaNormals = null, float exactSurfaceToleranceSq = 0)
         {
             chosenSrc = -1;
             chosenDistSq = float.MaxValue;
@@ -587,11 +603,19 @@ namespace SashaRX.UnityMeshLab
                 // parallel chart can be "good enough" while a later candidate is exact.
                 // Evaluate the complete bounded candidate set before choosing a source.
             }
-            if (compatibleSource >= 0 && bestDot < 0f) {
+            // Uneven tessellation can reverse a curved chart's unweighted mean.
+            // Retain an exact surface match when area-weighted directions agree;
+            // an actual opposite side of a thin sheet still fails this check.
+            bool exactAreaMatch = chosenSrc >= 0 && sourceAreaNormals != null
+                && chosenSrc < sourceAreaNormals.Length && chosenAvg3D <= exactSurfaceToleranceSq
+                && targetAreaNormal.sqrMagnitude > .5f
+                && Vector3.Dot(targetAreaNormal, sourceAreaNormals[chosenSrc]) >= .3f;
+            if (compatibleSource >= 0 && bestDot < 0f && !exactAreaMatch) {
                 chosenSrc = compatibleSource;
                 chosenDistSq = compatibleCentroidDistance;
                 chosenAvg3D = compatibleSurfaceDistance;
             }
+            return compatibleSource >= 0 && bestDot < 0f && exactAreaMatch;
         }
 
         // ═══════════════════════════════════════════════════════════
@@ -1151,6 +1175,7 @@ namespace SashaRX.UnityMeshLab
 
             // Precompute per-source-shell average face normal + total UV0 area
             var srcAvgNormal = new Vector3[srcShells.Count];
+            var srcAreaNormal = new Vector3[srcShells.Count];
             var srcUv0Area = new float[srcShells.Count];
             for (int si = 0; si < srcShells.Count; si++)
             {
@@ -1164,6 +1189,7 @@ namespace SashaRX.UnityMeshLab
                     areaSum += Mathf.Abs(cross) * 0.5f;
                 }
                 srcAvgNormal[si] = nSum.sqrMagnitude > 1e-8f ? nSum.normalized : Vector3.up;
+                srcAreaNormal[si] = ComputeShellAreaNormal(srcShells[si], srcTris, srcVerts);
                 srcUv0Area[si] = (float)areaSum;
             }
 
@@ -1286,11 +1312,13 @@ namespace SashaRX.UnityMeshLab
             result.targetShellIssues = new int[tgtShells.Count];
 
             var tgtChosenAvg3D = new float[tgtShells.Count];
+            var tgtExactAreaProtected = new bool[tgtShells.Count];
             var tgtIsMerged = new bool[tgtShells.Count];
             var tgtForce3DFallback = new bool[tgtShells.Count];
 
             // Precompute per-target-shell average face normal + total UV0 area
             var tgtAvgNormal = new Vector3[tgtShells.Count];
+            var tgtAreaNormal = new Vector3[tgtShells.Count];
             var tgtUv0Area = new float[tgtShells.Count];
             for (int tsi = 0; tsi < tgtShells.Count; tsi++)
             {
@@ -1309,6 +1337,7 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
                 tgtAvgNormal[tsi] = nSum.sqrMagnitude > 1e-8f ? nSum.normalized : Vector3.up;
+                tgtAreaNormal[tsi] = ComputeShellAreaNormal(tgtShells[tsi], tgtTris, tVerts);
                 tgtUv0Area[tsi] = (float)areaSum;
             }
 
@@ -1413,12 +1442,14 @@ namespace SashaRX.UnityMeshLab
                     else
                     {
                         // Find best source shell (with BVH acceleration + subsampling)
-                        FindBestSourceShell(tShell, tVerts, srcShells, srcCentroid3D,
+                        tgtExactAreaProtected[tsi] = FindBestSourceShell(tShell, tVerts, srcShells, srcCentroid3D,
                             triPosA, triPosB, triPosC,
                             shellBvh3D, shellBvh3DFaceMap,
                             tCentroid, kMaxRetries, null,
                             out chosenSrc, out chosenDistSq, out chosenAvg3D,
-                            tgtAvgNormal[tsi], srcAvgNormal, shellTrace);
+                            tgtAvgNormal[tsi], srcAvgNormal, shellTrace,
+                            targetAreaNormal: tgtAreaNormal[tsi], sourceAreaNormals: srcAreaNormal,
+                            exactSurfaceToleranceSq: meshDiagonal * meshDiagonal * 1e-10f);
                     }
                 }
 
@@ -1647,13 +1678,15 @@ namespace SashaRX.UnityMeshLab
                             float oldDistSq = result.targetShellMatchDistSqr[tsi];
                             float oldAvg3D = tgtChosenAvg3D[tsi];
 
-                            FindBestSourceShell(tShell, tVerts, srcShells, srcCentroid3D,
+                            bool newAreaProtected = FindBestSourceShell(tShell, tVerts, srcShells, srcCentroid3D,
                                 triPosA, triPosB, triPosC,
                                 shellBvh3D, shellBvh3DFaceMap,
                                 result.targetShellCentroids[tsi],
                                 kMaxRetries * 3, claimed,
                                 out int newSrc, out float newDistSq, out float newAvg3D,
-                                tgtAvgNormal[tsi], srcAvgNormal, trace?.ForShell(tsi), "dedup");
+                                tgtAvgNormal[tsi], srcAvgNormal, trace?.ForShell(tsi), "dedup",
+                                targetAreaNormal: tgtAreaNormal[tsi], sourceAreaNormals: srcAreaNormal,
+                                exactSurfaceToleranceSq: meshDiagonal * meshDiagonal * 1e-10f);
 
                             if (newSrc >= 0)
                             {
@@ -1687,6 +1720,7 @@ namespace SashaRX.UnityMeshLab
                                 }
 
                                 // Re-check merged status with new source (BVH + adaptive threshold)
+                                tgtExactAreaProtected[tsi] = newAreaProtected;
                                 var acceptedDedupTrace = trace?.ForShell(tsi);
                                 if (acceptedDedupTrace != null) {
                                     acceptedDedupTrace.dedupReassigned = newSrc != oldSrc;
@@ -3427,7 +3461,15 @@ namespace SashaRX.UnityMeshLab
                         }
                     }
 
-                    if (uv2_transform != null && issuesTransform < issuesInterp)
+                    // A corrected curved-chart match can still fold during a
+                    // normal-filtered UV0 query. On equal face-issue counts, use
+                    // the existing transform only when its overlap scan is clean
+                    // and interpolation has overlaps (or cannot certify its scan).
+                    bool preferTransform = uv2_transform != null && (issuesTransform < issuesInterp
+                        || (issuesTransform == issuesInterp && tgtExactAreaProtected[tsi]
+                            && !CandidateHasOverlap(tShell, tgtTris, tVerts, uv2_transform)
+                            && CandidateHasOverlap(tShell, tgtTris, tVerts, uv2_interp)));
+                    if (preferTransform)
                     {
                         chosenUv2 = uv2_transform;
                         shellsTransform++;

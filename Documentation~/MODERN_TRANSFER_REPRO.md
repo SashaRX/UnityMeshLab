@@ -355,3 +355,79 @@ The owned project's `BenchmarkReports/transfer_20261009_034547_988_a47f1f2d` and
 captures. Frozen results are regression baselines, not independent correspondence
 truth. Exact failing UI material/auto-tune settings remain outside the controlled
 preparation; the working scene, original FBX and importer metadata are preserved.
+
+## Tire_C: tessellation-dependent normal override
+
+Baseline `ebe5fcd`, PR #225. The actual Tire_C prefab references the Packed FBX,
+GUID `f23fd07c97f149d4bac9b04b087dfd44`; the Separate FBX has GUID
+`db234b86ec39c1a47b90d71ae761789d`. Both contain 816/560/144 faces at LOD0/1/2.
+Packed uses the square Courtyard atlas; Separate's Tire albedo is 2048×2048.
+The original FBX/importer pairs were copied without editing into the owned
+Unity 6000.2.6f2 / DX11 project. Preparation uses manual 512, square metric,
+weld on and pre-optimization off, with symmetry off/adaptive and ARAP off/on:
+16 target cases. Their source UV2 atlases have zero degenerates and overlaps.
+
+The chart matcher counts each triangle's normalized face normal equally.
+Uneven subdivision therefore changes its direction even when the represented
+surface stays the same. Packed LOD1's outer chart matches the correct source at
+squared sampled distance approximately 5.5e-13, but an opposed average-normal
+override replaces it with the inner chart at 0.00552. Its source/target
+unweighted Z sums are -13.86/+16.62; geometric area-weighted sums are
+-0.3767/-0.3586. This is tessellation bias, not a genuinely reversed surface.
+
+Globally replacing every average normal is rejected: it degrades Kitchen and
+Train in the comparison corpus. The final correction retains existing scoring
+and merged rescore, protecting only an almost exact sampled surface match
+(distance squared <= model diagonal squared × 1e-10) with agreeing area-weighted
+normals (dot >= 0.3). Closed/cancelled charts have no invented weighted normal.
+The opposite side of a thin sheet still fails the orientation check. Four
+analytic source/target subdivision fixtures first select a remote wall; the
+final code passes them and **129/129 related EditMode tests**, zero skips.
+Both reference C# variants and identifier/dependency guards pass.
+
+Correcting correspondence alone leaves 198 overlap pairs in normal-filtered UV0
+interpolation. For a protected match, the existing transform wins an equal
+face-issue tie only if its bounded positive-area overlap scan certifies it and
+interpolation fails the same check. A bounded scan that cannot complete does
+not certify the transform. Other matches retain the previous selection rule.
+
+| Controlled grouped target | Before: degenerates / overlaps | After | Weighted anisotropy after |
+|---|---:|---:|---:|
+| Packed LOD1, all four settings | 87 / 8727 | 0 / 0 | 1.283 |
+| Packed LOD2 | 0 / 14 | 0 / 14 | 2.485 |
+| Separate LOD1 | 0 / 0 | 0 / 0 | 1.288 |
+| Separate LOD2 | 0 / 14 | 0 / 14 | 2.430 |
+
+Final frozen comparison covers 60 captured pairs (Park/Modern/Shelf/Train/Tire,
+including four Tire Full Pipeline pairs) and seven analytic controls, six methods,
+two repeats: **402 rows**, no row errors, deterministic outputs and unchanged
+inputs. All Park/Modern/Shelf outputs/mappings match baseline. Train grouped
+LOD1 improves from 124 degenerates / 11830 overlaps to 66 / 11797; grouped LOD2
+is unchanged. The no-hints Train LOD2 baseline changes from 129 / 4319 to
+120 / 4327; its summed pair area increases slightly, from 0.009691 to 0.009693.
+Five Train nearest scans remain incomplete (lower bounds). All Tire scans
+complete; five positive analytic grouped controls retain independent truth.
+
+After reviewing the accepted dedup reassignment's protection flag, all 67 pairs
+were repeated with grouped and grouped-no-hints: **134 rows**, zero errors,
+deterministic outputs and unchanged inputs. Every UV2/mapping hash and quality
+counter matches the corresponding row of the six-method comparison.
+
+Two asynchronous Full Pipeline runs per variant with Checker at LOD1 and LOD2
+finish without missing renderer meshes through updates or preview mode changes.
+Their captures confirm clean LOD1 and the remaining fourteen LOD2 overlap pairs.
+The specific reported `src3` claimed by `t3/t4` warning was not reproduced in
+these controlled/full-pipeline settings. The diagnostic and its genuine UV0
+ambiguity constraints remain active; zero LOD1 overlaps is not a guarantee for
+unknown UI settings or an independently transformed scene instance.
+
+Local evidence: `_results~/tire-transfer-20261009/project-before.json`,
+`normal-baseline.xml`, `final-tests.xml`, normal probes and rejected global
+normal patch; native preparation `prepared-baseline/transfer_compare_20261009_035641_963_47453fe7`;
+final replay `frozen-publish/transfer_compare_20261009_041606_890_81347b6d`;
+final grouped revalidation `frozen-final/transfer_compare_20261009_042720_366_01baf460`
+and `final-revalidation.json`; `full-final.log` and `full-final-summary.json`.
+Final full-pipeline captures in the owned project's BenchmarkReports are
+`transfer_20261009_042932_982_f0127e7c` (Packed) and
+`transfer_20261009_042933_717_3d1b742e` (Separate). Originals and importer settings
+are preserved; captured outputs are regression baselines, not correspondence truth.

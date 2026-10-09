@@ -413,6 +413,58 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
         }
 
+        [TestCase(8, false)]
+        [TestCase(40, false)]
+        [TestCase(8, true)]
+        [TestCase(40, true)]
+        public void CurvedChartMatchDoesNotFlipWhenSmallFacesAreSubdivided(int subdivisions, bool subdivideSource)
+        {
+            var source = FoldedStrip(subdivideSource ? 1 : 4, subdivideSource ? subdivisions : 2,
+                remoteWall: true, remoteForward: subdivideSource);
+            var target = FoldedStrip(subdivideSource ? 4 : 1, subdivideSource ? 2 : subdivisions,
+                remoteWall: false, remoteForward: false);
+            try {
+                var expected = target.uv;
+                for (int i = 0; i < expected.Length; ++i) expected[i] = expected[i] * .25f + Vector2.one * .05f;
+                var result = GroupedShellTransfer.Transfer(target, source, sourceAtlasWidth: 512, sourceAtlasHeight: 512);
+                Assert.AreEqual(0, result.targetShellToSourceShell[0],
+                    "Changing tessellation must not make the chart match a remote wall.");
+                for (int i = 0; i < expected.Length; ++i)
+                    Assert.That(Vector2.Distance(expected[i], result.uv2[i]), Is.LessThan(1e-5f));
+                var quality = TransferUvQuality.Measure(target, result.uv2, Vector2.one, Matrix4x4.identity);
+                Assert.AreEqual(0, quality.degenerateFaces); Assert.AreEqual(0, quality.overlapPairs);
+                Assert.IsTrue(quality.overlapScanComplete);
+            }
+            finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
+        static Mesh FoldedStrip(int frontSegments, int backSegments, bool remoteWall, bool remoteForward)
+        {
+            var positions = new List<Vector3>(); var uv = new List<Vector2>(); var indices = new List<int>();
+            void Column(float x, float z, float distance) {
+                positions.Add(new Vector3(x, 0, z)); positions.Add(new Vector3(x, 1, z));
+                uv.Add(new Vector2(distance / 2.7f, 0)); uv.Add(new Vector2(distance / 2.7f, 1));
+            }
+            for (int i = 0; i <= frontSegments; ++i) Column(2f * i / frontSegments, 0, 2f * i / frontSegments);
+            Column(2, .2f, 2.2f);
+            for (int i = 1; i <= backSegments; ++i) Column(2f - .5f * i / backSegments, .2f, 2.2f + .5f * i / backSegments);
+            for (int i = 0; i < positions.Count - 2; i += 2)
+                indices.AddRange(new[] { i, i + 2, i + 3, i, i + 3, i + 1 });
+            var uv2 = new List<Vector2>();
+            foreach (var value in uv) uv2.Add(value * .25f + Vector2.one * .05f);
+            if (remoteWall) {
+                int first = positions.Count;
+                positions.AddRange(new[] { new Vector3(0, 0, 2), new Vector3(2, 0, 2), new Vector3(2, 1, 2), new Vector3(0, 1, 2) });
+                uv.AddRange(new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up });
+                uv2.AddRange(new[] { new Vector2(.65f, .65f), new Vector2(.9f, .65f), new Vector2(.9f, .9f), new Vector2(.65f, .9f) });
+                indices.AddRange(remoteForward ? new[] { first, first + 1, first + 2, first, first + 2, first + 3 }
+                    : new[] { first, first + 2, first + 1, first, first + 3, first + 2 });
+            }
+            var mesh = new Mesh { name = "Retessellated folded strip" };
+            mesh.SetVertices(positions); mesh.SetUVs(0, uv); mesh.SetUVs(1, uv2); mesh.SetTriangles(indices, 0);
+            mesh.RecalculateNormals(); return mesh;
+        }
+
         [Test]
         public void RetainedVerticesPreserveUv2WhenAuthoredUv0CornersCoincide()
         {

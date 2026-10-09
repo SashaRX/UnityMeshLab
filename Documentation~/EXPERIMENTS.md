@@ -3,6 +3,53 @@
 > **Обновлять этот документ при каждом эксперименте с transfer pipeline.**
 > Последнее обновление: v1.1.34 (2026-10-09)
 
+## Tire_C: tessellation-dependent normal override — 2026-10-09
+
+- Продолжение PR #225, baseline `ebe5fcd`. Actual Tire_C prefab использует
+  Packed FBX GUID `f23fd07c97f149d4bac9b04b087dfd44`; Separate — отдельный
+  input. Обе версии имеют LOD0/1/2: 816/560/144 faces. Копии original FBX/meta
+  импортированы в изолированный Unity 6000.2.6f2 / DX11 проект.
+- В controlled preparation source UV2 чистый у обеих версий. Packed LOD1
+  исходно имеет 87 degenerate faces / 8727 positive-area overlap pairs;
+  Separate LOD1 — 0 / 0. У обеих версий LOD2 остаются 14 overlap pairs.
+  Matrix: manual 512, weld on, pre-optimize off, square metric,
+  symmetry off/adaptive, ARAP off/on — 16 target cases.
+- Match trace Packed LOD1 выбирает внутреннюю поверхность вместо внешней:
+  правильный source находится на squared surface distance ≈5.5e-13,
+  но unweighted average normals имеют dot=-1. После decimation средняя normal
+  меняет знак из-за количества мелких граней. Weighted cross sums сохраняют
+  направление: source Z≈-0.3767, target Z≈-0.3586; unweighted sums дают
+  Z≈-13.86 и +16.62. Это не opposite side тонкого листа.
+- Полная замена всех средних нормалей отклонена: ухудшает Kitchen/Train
+  в 402-row comparison. Итоговый guard сохраняет прежнее scoring/rescore,
+  но запрещает opposed-normal override для почти точного sampled surface
+  match (squared tolerance = mesh diagonal² × 1e-10), если area-weighted
+  направления согласованы (dot≥0.3). Nearly closed chart не получает
+  выдуманную area-normal. Проверка обратной стороны thin sheets сохраняется.
+- После исправления matching остаются folds от normal-filtered interpolation
+  внутри правильного source. Только для защищённого match на равном числе
+  face issues выбирается существующий transform, если его bounded overlap
+  scan полный и чистый, а interpolation не проходит эту проверку.
+  POST-DEDUP warning и проверки настоящего shared-source ambiguity сохраняются.
+- Четыре analytic retessellation fixtures (subdivision source/target, 8/40
+  segments) сначала выбрали remote wall вместо правильного chart. Итоговый
+  subset: **129/129 EditMode tests**, без skips. Обе reference C# сборки,
+  identifier/dependency checks проходят. [Корпус и результаты](MODERN_TRANSFER_REPRO.md#tire_c-tessellation-dependent-normal-override).
+- Final frozen corpus: 60 captured pairs + 7 analytic controls × 6 methods =
+  **402 rows**, два повторения, deterministic, inputs unchanged, row errors=0.
+  Пять Train nearest scans неполные (lower bounds). Все Park/Modern/Shelf outputs
+  совпадают с baseline. Train grouped LOD1: 124/11830 → 66/11797; grouped LOD2
+  не меняется. No-hints LOD2: 129/4319 → 120/4327 (не чистый output и не
+  production hint path). Пять positive analytic grouped controls проходят.
+- После финальной проверки dedup propagation повторены **134 grouped/no-hints
+  rows** на всех 67 парах: UV2/mapping hashes и все quality counters совпадают
+  с 402-row comparison; ошибки=0, deterministic, inputs unchanged.
+- Tire Packed LOD1: **87/8727 → 0/0**, weighted anisotropy 23.139 → 1.283,
+  во всех четырёх prepared settings; Separate LOD1 не меняется. LOD2 обеих
+  версий сохраняет 14 pairs. По два async Full Pipeline с Checker на LOD1/2
+  завершились, missing render meshes=0. Specific src3/t3/t4 POST-DEDUP строка
+  в controlled/full probes не воспроизвелась; source-claim warnings не удалены.
+
 ## Park_Bench_A: internal Mesh LOD indices и отклонённые matching variants — 2026-10-09
 
 - Продолжение PR #225, baseline `2c40343`. Проверены две разные FBX версии:
