@@ -41,8 +41,81 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(2, one.loops); Assert.AreEqual(4, RemeshTopology.Inspect(one.positions, one.indices).boundary.Count);
             var both = RemeshPlanarCap.Prepare(Box, ix, "0,1", default);
             Assert.AreEqual(4, both.addedFaces); Assert.AreEqual(0, RemeshTopology.Inspect(both.positions, both.indices).boundary.Count);
-            foreach (string invalid in new[] { "", "all", "bridge", "0,0", "2", "-1" })
+            var all = RemeshPlanarCap.Prepare(Box, ix, " ALL ", default);
+            CollectionAssert.AreEqual(both.indices, all.indices);
+            foreach (string invalid in new[] { "", "bridge", "all,0", "0,0", "2", "-1" })
                 Assert.Throws<InvalidOperationException>(() => RemeshPlanarCap.Prepare(Box, ix, invalid, default));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void CapturedParkBenchMicrometreRimUsesExplicitPlaneToleranceWithoutMovingVertices(bool local)
+        {
+            var rim = new[] {
+                new Vector3(-1.018702507019043f,.054338473826646805f,-.24817068874835968f),
+                new Vector3(-1.0107016563415527f,.05163917690515518f,-.24064117670059204f),
+                new Vector3(-1.002703070640564f,.054338473826646805f,-.24817068874835968f),
+                new Vector3(-1.0107016563415527f,.05703570321202278f,-.25570225715637207f) };
+            var direction=Vector3.Cross(rim[1]-rim[0],rim[2]-rim[0]).normalized*.02f;
+            var p=rim.Concat(rim.Select(v=>v+direction)).ToArray();
+            var ix=new System.Collections.Generic.List<int>();
+            for(int i=0;i<4;++i) {int j=(i+1)%4; ix.AddRange(new[] {i,j,j+4,i,j+4,i+4});}
+            ix.AddRange(new[] {4,5,6,4,6,7}); var source=ix.ToArray();
+            var saved=(Vector3[])p.Clone();
+            Assert.Throws<InvalidOperationException>(()=>RemeshPlanarCap.Prepare(p,source,"all",default,local));
+            var cap=RemeshPlanarCap.Prepare(p,source,"all",default,local,planeTolerance:1e-5);
+            Assert.AreEqual(2,cap.addedFaces); Assert.AreEqual(0,RemeshTopology.Inspect(cap.positions,cap.indices).boundary.Count);
+            CollectionAssert.AreEqual(saved,p); CollectionAssert.AreEqual(p,cap.positions);
+            CollectionAssert.AreEqual(source,cap.indices.Take(source.Length));
+            // Real warping remains outside the explicit micrometre allowance.
+            p[2]+=direction*.1f;
+            Assert.Throws<InvalidOperationException>(()=>RemeshPlanarCap.Prepare(p,source,"all",default,local,planeTolerance:1e-5));
+        }
+
+        [TestCase(double.NaN)] [TestCase(double.PositiveInfinity)] [TestCase(-1)]
+        public void InvalidPlaneToleranceRefusesBeforePublishing(double tolerance)
+        {
+            Assert.Throws<InvalidOperationException>(()=>RemeshPlanarCap.Prepare(Box,Faces,"all",default,planeTolerance:tolerance));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void ExplicitToleranceDoesNotBypassIntersectionOrCompoundChecks(bool local)
+        {
+            var p=Box.Concat(new[] {new Vector3(0,-2,0),new Vector3(0,0,0),new Vector3(.4f,-1,.4f)}).ToArray();
+            var ix=Faces.Where((v,k)=>k/6!=2).Concat(new[] {8,9,10}).ToArray();
+            StringAssert.Contains("contacts face",Assert.Throws<InvalidOperationException>(()=>
+                RemeshPlanarCap.Prepare(p,ix,"0",default,local,planeTolerance:1e-5)).Message);
+            var adjacent=Faces.Where((v,k)=>k/6!=0 && k/6!=2).ToArray();
+            if(!local) Assert.Throws<InvalidOperationException>(()=>RemeshPlanarCap.Prepare(Box,adjacent,"all",default,planeTolerance:1e-5));
+            else Assert.AreEqual(4,RemeshPlanarCap.Prepare(Box,adjacent,"all",default,true,planeTolerance:1e-5).addedFaces);
+        }
+
+        [TestCase(0,false)] [TestCase(0,true)] [TestCase(1,false)] [TestCase(1,true)]
+        public void UserFrozenCapFailuresPreserveDonorsAndRefuseIntersectingClosure(int model,bool local)
+        {
+            string sources=Environment.GetEnvironmentVariable("MESH_LAB_CAP_FAILURE_SOURCES");
+            if(string.IsNullOrEmpty(sources)) Assert.Ignore("Set MESH_LAB_CAP_FAILURE_SOURCES to decoded source.bin captures.");
+            foreach(string path in sources.Split(';').Skip(model).Take(1))
+            {
+                using var reader=new BinaryReader(File.OpenRead(path));
+                int vertices=reader.ReadInt32(),count=reader.ReadInt32();
+                var p=new Vector3[vertices]; var ix=new int[count];
+                for(int i=0;i<vertices;++i) p[i]=new Vector3(reader.ReadSingle(),reader.ReadSingle(),reader.ReadSingle());
+                for(int i=0;i<count;++i) ix[i]=reader.ReadInt32();
+                var saved=(Vector3[])p.Clone(); var savedIndices=(int[])ix.Clone();
+                for(int loop=0;loop<(model==0?10:4);++loop) {
+                    try {var single=RemeshPlanarCap.Prepare(p,ix,loop.ToString(),default,local,planeTolerance:1e-5);
+                        TestContext.WriteLine($"Loop {loop}: {single.Description}");}
+                    catch(InvalidOperationException ex) {TestContext.WriteLine($"Loop {loop}: {ex.Message}");}
+                }
+                var error=Assert.Throws<InvalidOperationException>(()=>RemeshPlanarCap.Prepare(p,ix,"all",default,local,planeTolerance:1e-5));
+                StringAssert.Contains("contacts face",error.Message);
+                CollectionAssert.AreEqual(saved,p); CollectionAssert.AreEqual(savedIndices,ix);
+                // A non-intersecting subset succeeds but cannot be passed to solid Remesh.
+                var subset=RemeshPlanarCap.Prepare(p,ix,model==0?"3,4,6,8":"0,2,3",default,local,planeTolerance:1e-5);
+                Assert.Greater(subset.addedFaces,0);
+                Assert.Greater(RemeshTopology.Inspect(subset.positions,subset.indices).boundary.Count,0);
+                for(int i=0;i<ix.Length;++i) Assert.AreEqual(p[ix[i]],subset.positions[subset.indices[i]]);
+            }
         }
 
         [Test]

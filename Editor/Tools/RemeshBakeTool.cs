@@ -523,9 +523,14 @@ namespace SashaRX.UnityMeshLab
                             settings.planarCapLocalPlanes = EditorGUILayout.Toggle(new GUIContent("Local compound caps",
                                 "Allow a uniquely supported split into two continuous planar arcs. Close the first arc, recheck the new boundary, " +
                                 "then recheck the remaining contour. Three-plane corner closures reconstruct their common corner. Ambiguous or intersecting closures are refused; source rim vertices remain fixed."), settings.planarCapLocalPlanes);
-                            settings.planarCapLoops = EditorGUILayout.TextField(new GUIContent("Closure loop numbers",
-                            "Comma-separated loop numbers, starting at 0 in welded vertex order (e.g. 0,1). " +
-                            "All openings must be closed for solid remesh. Unsupported/ambiguous loops refuse the run."), settings.planarCapLoops);
+                            bool allLoops = string.Equals(settings.planarCapLoops?.Trim(),"all",StringComparison.OrdinalIgnoreCase);
+                            bool chooseAll = EditorGUILayout.Toggle(new GUIContent("All boundaries",
+                                "Close every detected opening with the chosen method. Bridge requires exactly two loops; use loop numbers to select a pair."),allLoops);
+                            if (chooseAll != allLoops) settings.planarCapLoops = chooseAll ? "all" : "0";
+                            if (!chooseAll) settings.planarCapLoops = EditorGUILayout.TextField(new GUIContent("Closure loop numbers",
+                                "Comma-separated loop numbers, starting at 0 in welded vertex order (e.g. 0,1). Solid remesh requires every opening to be closed."),settings.planarCapLoops);
+                            settings.capPlaneTolerance = Mathf.Max(0,EditorGUILayout.FloatField(new GUIContent("Cap plane tolerance",
+                                "Minimum plane-fit tolerance in source-local units (default 0.00001). Handles small import deviations without moving boundary vertices. The relative plane tolerance, topology and intersection checks still apply."),settings.capPlaneTolerance));
                         }
                     }
                     settings.sourceBackfaces = (RemeshBackfaces)EditorGUILayout.EnumPopup(new GUIContent("Source backfaces",

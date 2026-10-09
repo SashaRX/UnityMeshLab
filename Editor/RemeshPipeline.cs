@@ -179,7 +179,7 @@ namespace SashaRX.UnityMeshLab
             switch (stage) {
                 case Stage.Remesh: return $"{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}|{s.lod0Only}|{s.keepHierarchy}|" +
                     $"{s.sourceShape}|{s.hullResolution}|{s.hullTriangles}|{s.minPartSize:R}|{s.minRodVoxels:R}|{s.voxelResolution}|{s.trimToSource}|{s.sourceBackfaces}|" +
-                    $"cap{RemeshPlanarCap.Revision}|{s.planarCap}|{s.planarCapLoops}|{s.planarCapLocalPlanes}|{s.closureMode}";
+                    $"cap{RemeshPlanarCap.Revision}|{s.planarCap}|{s.planarCapLoops}|{s.planarCapLocalPlanes}|{s.closureMode}|{s.capPlaneTolerance:R}";
                 case Stage.Simplify: return $"{s.simplify}|{s.targetTriangles}|{s.maximumError}|{s.regularize}|{s.preserveFolds}|{s.pruneSmallParts}";
                 case Stage.Unwrap: return $"{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.normalWeighting}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
                     $"{s.chartNormalDeviation}|{s.chartNormalSeam}|{s.chartStraightness}|{s.chartRoundness}|{s.chartIterations}|" +
@@ -342,13 +342,18 @@ namespace SashaRX.UnityMeshLab
                     if (shape == RemeshShape.BoundingBox) return captured.OrientedBoxes();
                     if (options.planarCap && (shape == RemeshShape.Hull || !options.shell)) {
                         try {
-                            node.support = RemeshPlanarCap.Prepare(captured.positions, captured.indices, options.planarCapLoops, token, options.planarCapLocalPlanes, options.closureMode);
+                            node.support = RemeshPlanarCap.Prepare(captured.positions, captured.indices, options.planarCapLoops, token, options.planarCapLocalPlanes, options.closureMode, options.capPlaneTolerance);
                             UvtLog.Info(LogPrefix + node.name + ": planar Cap " + node.support.Description);
                             RemeshGeometryDiagnostics.CaptureSupport(captured, node.support, options, node.name);
                             var closed = RemeshTopology.ClosedVolumeFaces(node.support.positions, node.support.indices, token);
                             foreach (bool face in closed) {
-                                if (!face) throw new InvalidOperationException("Planar Cap support still has an open or zero-volume component. " +
-                                    "Select every required boundary loop and a supported closure method.");
+                                if (!face) {
+                                    var remaining = RemeshTopology.Inspect(node.support.positions, node.support.indices, token);
+                                    if (remaining.boundary.Count == 0)
+                                        throw new InvalidOperationException("Cap support has no boundary edges but includes a zero-volume component. Inspect its geometry before solid Remesh.");
+                                    throw new InvalidOperationException($"Cap support still has {remaining.boundary.Count} boundary edges " +
+                                        $"after selection '{options.planarCapLoops}' from {node.support.loops} loops. Choose All boundaries to close the remaining openings, or an explicit Bridge selection.");
+                                }
                             }
                         }
                         catch (InvalidOperationException failure) {

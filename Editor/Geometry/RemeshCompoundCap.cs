@@ -16,13 +16,13 @@ namespace SashaRX.UnityMeshLab
             internal int contacts;
         }
 
-        internal static Result Generate(Vector3[] p,int[] source,List<int> loop,CancellationToken token,ref int trials)
+        internal static Result Generate(Vector3[] p,int[] source,List<int> loop,CancellationToken token,ref int trials,double planeTolerance = 0)
         {
             if(loop.Count>64) throw Refuse("three-plane rim exceeds 64 edges");
             Result winner=null; int fits=0,samples=0;
             var low=p[loop[0]]; var high=low;
             foreach(int v in loop) { low=Vector3.Min(low,p[v]); high=Vector3.Max(high,p[v]); }
-            double tolerance=(high-low).magnitude*1e-5;
+            double tolerance=Math.Max((high-low).magnitude*1e-5,planeTolerance);
             for(int a=0;a<loop.Count;++a) for(int b=a+2;b<loop.Count;++b) for(int c=b+2;c<loop.Count;++c) {
                 token.ThrowIfCancellationRequested();
                 if(loop.Count-c+a<2) continue;
@@ -54,7 +54,7 @@ namespace SashaRX.UnityMeshLab
                         void Toggle(int x,int y) { var edge=Key(before.slots[x],before.slots[y]); if(!expected.Remove(edge)) expected.Add(edge); }
                         Toggle(arc[0],p.Length); Toggle(arc[arc.Count-1],p.Length);
                         var polygon=new List<int>(arc) {p.Length};
-                        var patch=RemeshPlanarCap.Triangulate(points,exact,polygon,token); int oldFaces=candidate.Count/3;
+                        var patch=RemeshPlanarCap.Triangulate(points,exact,polygon,token,planeTolerance); int oldFaces=candidate.Count/3;
                         candidate.AddRange(patch); var all=candidate.ToArray(); var after=RemeshTopology.Inspect(points,all,token);
                         if(!after.Valid || !Edges(after).SetEquals(expected)) throw Refuse("patch has invalid topology or changes another boundary");
                         RemeshPlanarCap.AuditContacts(points,exact,all,oldFaces,token,ref trials,out int tested);

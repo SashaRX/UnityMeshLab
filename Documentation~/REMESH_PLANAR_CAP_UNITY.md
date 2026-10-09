@@ -151,8 +151,8 @@ These local gates do not audit all old/old intersections or certify intended sha
 The solid pipeline additionally requires closed oriented nonzero-volume components.
 Partial selection may be analyzed by the managed generator, but cannot feed this
 solid Remesh integration. BoundingBox skips preparation. LOD0 Two-sided shell
-skips it as well; Hull is a solid operation and can use it. Multiple disks require
-explicit loop numbers; torus band gaps needing Bridge and unsupported compound
+skips it as well; Hull is a solid operation and can use it. Multiple disks can use
+**All boundaries** or explicit loop numbers; torus band gaps needing Bridge and unsupported compound
 holes are not inferred or silently sealed.
 
 Voxelize, Trim and source-fitted Simplify all use prepared support. Bake and cage
@@ -166,6 +166,36 @@ not exact provenance after voxelization/decimation.
 Cap enablement, loop selection and algorithm revision invalidate Remesh and its
 downstream stages. Managed support lives with its node; clear/dispose drops it.
 No source scene objects or source mesh assets are edited by preparation.
+
+### Small plane deviations and complete selection (revision 4)
+
+New settings select `all` boundaries by default when Cap is enabled. Existing
+serialized numeric selections remain unchanged. The UI exposes **All boundaries**
+and **Cap plane tolerance**. The latter defaults to `0.00001` in source-local units
+and sets a minimum for plane fitting in planar/local/three-plane preparation.
+Boundary positions remain unchanged, relative plane tolerance still applies,
+and exact topology/intersection checks remain mandatory. The tolerance is part of
+the Remesh cache key. Open-support errors report the remaining boundary count;
+zero-volume errors are reported separately.
+
+Frozen Park_Bench_A and BulletinBoard failures from 2026-10-09 exposed both an
+overly strict plane fit and selection `0` leaving other holes open. The fixed fit
+accepts the captured micrometre deviations, but full closure **still refuses**
+because some proposed Cap faces intersect original geometry. Park has 10 rims:
+3, 4, 6, 8 pass individually; 0, 1, 2, 5, 7, 9 fail contact checks. Bulletin has
+4 rims: 0, 2, 3 pass; 1 fails. All ear-clipping start rotations without Delaunay
+refinement were also tested and did not resolve those contacts. This experiment
+was not shipped. No intersection guard was relaxed.
+
+The private regression `UserFrozenCapFailuresPreserveDonorsAndRefuseIntersectingClosure`
+uses `MESH_LAB_CAP_FAILURE_SOURCES` with semicolon-separated decoded Park and
+Bulletin `source.bin` paths. It verifies whole-operation refusal, donor preservation
+and successful non-intersecting subsets, rather than claiming solid Remesh works.
+The MilitaryGabion capture named in the supplied log was already pruned from the
+bounded failure cache and was not replayed.
+The combined local Unity battery (including reverse UV/preview/export regressions)
+passes 309 checks with no failures and seven unavailable private fixtures skipped.
+The four Park/Bulletin full-refusal and partial-closure checks were executed.
 
 ## Diagnostics
 

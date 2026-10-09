@@ -90,7 +90,10 @@ namespace SashaRX.UnityMeshLab
         // Opt-in support closure. Old serialized settings retain explicit Caps.
         // Loop numbers follow welded vertex order; rerun after source changes.
         public bool planarCap;
-        public string planarCapLoops = "0";
+        public string planarCapLoops = "all";
+        // Minimum plane-fit tolerance in captured source units. Boundary positions
+        // remain exact; only classification/triangulation projection uses this bound.
+        public float capPlaneTolerance = .00001f;
         public bool planarCapLocalPlanes;
         public RemeshClosureMode closureMode;
         // After the voxel remesh, drop the faces the source has no surface for: the

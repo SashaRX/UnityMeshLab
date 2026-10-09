@@ -10,7 +10,7 @@ namespace SashaRX.UnityMeshLab
     /// donor arrays are never mutated. Ambiguous/invalid candidates fail atomically.</summary>
     internal static class RemeshPlanarCap
     {
-        internal const int Revision = 3;
+        internal const int Revision = 4;
         const int MaxVertices = 200000, MaxIndices = 1200000, MaxLoopEdges = 512;
         const int MaxPairTrials = 2000000;
 
@@ -27,10 +27,11 @@ namespace SashaRX.UnityMeshLab
         }
 
         internal static Support Prepare(Vector3[] positions, int[] indices, string selection, CancellationToken token, bool localPlanes = false,
-            RemeshClosureMode mode = RemeshClosureMode.Caps)
+            RemeshClosureMode mode = RemeshClosureMode.Caps, double planeTolerance = 0)
         {
             token.ThrowIfCancellationRequested();
             if (!Enum.IsDefined(typeof(RemeshClosureMode),mode)) throw Refuse("unknown closure method");
+            if (!double.IsFinite(planeTolerance) || planeTolerance < 0) throw Refuse("plane tolerance must be finite and nonnegative");
             if (positions == null || indices == null || positions.Length == 0 || indices.Length == 0 || indices.Length % 3 != 0)
                 throw new ArgumentException("Cap requires indexed triangle geometry.");
             if (positions.Length > MaxVertices || indices.Length > MaxIndices)
@@ -82,8 +83,8 @@ namespace SashaRX.UnityMeshLab
                     var patch = RemeshBridge.Generate(pWeld,assembled.ToArray(),loops[loop],loops[partner],token,ref contactTrials,out int tested);
                     result.contactTests += tested; assembled.AddRange(patch); result.patchEnds.Add(assembled.Count/3); finished.Add(partner);
                 }
-                else if (localPlanes || mode == RemeshClosureMode.Automatic) CloseLocal(ref pWeld, ref exact, assembled, loops[loop], token, result, ref contactTrials);
-                else { assembled.AddRange(Triangulate(pWeld, exact, loops[loop], token)); result.patchEnds.Add(assembled.Count / 3); }
+                else if (localPlanes || mode == RemeshClosureMode.Automatic) CloseLocal(ref pWeld, ref exact, assembled, loops[loop], token, result, ref contactTrials, planeTolerance);
+                else { assembled.AddRange(Triangulate(pWeld, exact, loops[loop], token, planeTolerance)); result.patchEnds.Add(assembled.Count / 3); }
                 finished.Add(loop);
                 if (assembled.Count - iWeld.Length > MaxLoopEdges * 3 * 8) throw Refuse("total Cap face budget exceeded");
             }
@@ -104,15 +105,15 @@ namespace SashaRX.UnityMeshLab
         }
 
         static void CloseLocal(ref Vector3[] p, ref RemeshCapIntersection.Q[][] exact, List<int> assembled,
-            List<int> loop, CancellationToken token, Support result, ref int contactTrials)
+            List<int> loop, CancellationToken token, Support result, ref int contactTrials, double planeTolerance)
         {
-            var analysis = RemeshCapPlanes.Analyze(p, loop, token); ++result.planeRechecks;
+            var analysis = RemeshCapPlanes.Analyze(p, loop, token, minimumTolerance: planeTolerance); ++result.planeRechecks;
             if (analysis.kind == RemeshCapPlanes.Kind.Planar) {
-                AppendPatch(p, exact, assembled, loop, true, token, result, ref contactTrials);
+                AppendPatch(p, exact, assembled, loop, true, token, result, ref contactTrials, planeTolerance);
                 return;
             }
             if (analysis.kind != RemeshCapPlanes.Kind.TwoPlanes) {
-                var compound = RemeshCompoundCap.Generate(p,assembled.ToArray(),loop,token,ref contactTrials);
+                var compound = RemeshCompoundCap.Generate(p,assembled.ToArray(),loop,token,ref contactTrials,planeTolerance);
                 p = compound.positions; exact = new RemeshCapIntersection.Q[p.Length][];
                 for (int i=0;i<p.Length;++i) exact[i]=RemeshCapIntersection.Point(p[i]);
                 foreach (var patch in compound.patches) { assembled.AddRange(patch); result.patchEnds.Add(assembled.Count/3); ++result.localPatches; ++result.planeRechecks; }
@@ -120,7 +121,7 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
             var arc = analysis.firstArc;
-            AppendPatch(p, exact, assembled, arc, false, token, result, ref contactTrials);
+            AppendPatch(p, exact, assembled, arc, false, token, result, ref contactTrials, planeTolerance);
             // Accepting the first patch changes the actual halfedge contour. Use
             // that new topology, not the stale second arc or guessed loop number.
             var fresh = Boundaries(RemeshTopology.Inspect(p, assembled.ToArray(), token), token);
@@ -132,9 +133,9 @@ namespace SashaRX.UnityMeshLab
                 remaining = candidate;
             }
             if (remaining == null) throw Refuse("the new closure chord is missing from the remaining contour");
-            var next = RemeshCapPlanes.Analyze(p, remaining, token); ++result.planeRechecks;
+            var next = RemeshCapPlanes.Analyze(p, remaining, token, minimumTolerance: planeTolerance); ++result.planeRechecks;
             if (next.kind != RemeshCapPlanes.Kind.Planar) throw Refuse("the remaining local contour is not wholly planar after the first patch");
-            AppendPatch(p, exact, assembled, remaining, true, token, result, ref contactTrials);
+            AppendPatch(p, exact, assembled, remaining, true, token, result, ref contactTrials, planeTolerance);
         }
 
         static (int, int) EdgeKey(int a, int b) => a < b ? (a, b) : (b, a);
@@ -147,7 +148,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         static void AppendPatch(Vector3[] p, RemeshCapIntersection.Q[][] exact, List<int> assembled,
-            List<int> arc, bool closed, CancellationToken token, Support result, ref int trials)
+            List<int> arc, bool closed, CancellationToken token, Support result, ref int trials, double planeTolerance)
         {
             int oldFaces = assembled.Count / 3;
             var before = RemeshTopology.Inspect(p, assembled.ToArray(), token);
@@ -167,7 +168,7 @@ namespace SashaRX.UnityMeshLab
             }
             if (!closed && !expected.Add(EdgeKey(before.slots[arc[0]], before.slots[arc[arc.Count - 1]])))
                 throw Refuse("local closure chord is already a boundary edge");
-            var added = Triangulate(p, exact, arc, token);
+            var added = Triangulate(p, exact, arc, token, planeTolerance);
             if (assembled.Count + added.Length - result.originalFaces * 3 > MaxLoopEdges * 3 * 8)
                 throw Refuse("total Cap face budget exceeded");
             var candidate = new List<int>(assembled); candidate.AddRange(added);
@@ -214,6 +215,10 @@ namespace SashaRX.UnityMeshLab
         static SortedSet<int> Selection(string text, int count)
         {
             var result = new SortedSet<int>();
+            if (string.Equals(text?.Trim(), "all", StringComparison.OrdinalIgnoreCase)) {
+                for (int loop = 0; loop < count; ++loop) result.Add(loop);
+                return result;
+            }
             foreach (string part in (text ?? "").Split(',')) {
                 if (!int.TryParse(part.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out int loop) || loop < 0 || loop >= count || !result.Add(loop))
                     throw Refuse($"disk selection '{text}' must list unique loop numbers from 0 to {count - 1}");
@@ -221,9 +226,9 @@ namespace SashaRX.UnityMeshLab
             return result;
         }
 
-        internal static int[] Triangulate(Vector3[] p, RemeshCapIntersection.Q[][] exact, List<int> loop, CancellationToken token)
+        internal static int[] Triangulate(Vector3[] p, RemeshCapIntersection.Q[][] exact, List<int> loop, CancellationToken token, double planeTolerance = 0)
         {
-            if (!RemeshCapPlanes.TryPlane(p, loop, -1, true, out var plane))
+            if (!RemeshCapPlanes.TryPlane(p, loop, -1, true, out var plane, planeTolerance))
                 throw Refuse("selected boundary is not wholly planar or is collinear; local compound Cap or Bridge is required");
             int drop = plane.drop;
             int ax = (drop + 1) % 3, ay = (drop + 2) % 3;

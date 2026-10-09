@@ -34,7 +34,7 @@ namespace SashaRX.UnityMeshLab
         // sample is checked; an RMS residual cannot hide an off-plane rim corner.
         // legacyRank preserves the already-shipped disk acceptance profile.
         internal static bool TryPlane(Vector3[] p, List<int> vertices, double tolerance,
-            bool legacyRank, out Plane plane)
+            bool legacyRank, out Plane plane, double minimumTolerance = 0)
         {
             plane = default;
             var origin = p[vertices[0]];
@@ -56,6 +56,7 @@ namespace SashaRX.UnityMeshLab
             plane = new Plane(nx, ny, nz);
             double norm = Math.Sqrt(best);
             if (tolerance < 0) tolerance = Math.Sqrt(longest) * 1e-5;
+            tolerance = Math.Max(tolerance, minimumTolerance);
             foreach (int v in vertices) {
                 double residual = Math.Abs(nx * ((double)p[v].x - origin.x) +
                     ny * ((double)p[v].y - origin.y) + nz * ((double)p[v].z - origin.z)) / norm;
@@ -65,16 +66,16 @@ namespace SashaRX.UnityMeshLab
         }
 
         internal static Analysis Analyze(Vector3[] p, List<int> loop, CancellationToken token,
-            int maxFits = 32768, int maxSamples = 2000000)
+            int maxFits = 32768, int maxSamples = 2000000, double minimumTolerance = 0)
         {
             token.ThrowIfCancellationRequested();
-            if (loop.Count < 3 || loop.Count > 512 || maxFits < 1 || maxSamples < 1)
+            if (loop.Count < 3 || loop.Count > 512 || maxFits < 1 || maxSamples < 1 || !double.IsFinite(minimumTolerance) || minimumTolerance < 0)
                 throw new InvalidOperationException("Local Cap plane analysis has invalid support or budgets.");
             var result = new Analysis { kind = Kind.Unsupported };
             var low = p[loop[0]]; var high = low;
             foreach (int v in loop) { low = Vector3.Min(low, p[v]); high = Vector3.Max(high, p[v]); }
             double dx = (double)high.x - low.x, dy = (double)high.y - low.y, dz = (double)high.z - low.z;
-            double tolerance = Math.Sqrt(dx * dx + dy * dy + dz * dz) * 1e-5;
+            double tolerance = Math.Max(Math.Sqrt(dx * dx + dy * dy + dz * dz) * 1e-5, minimumTolerance);
             int samples = 0;
             Plane Fit(List<int> support, out bool supported)
             {
