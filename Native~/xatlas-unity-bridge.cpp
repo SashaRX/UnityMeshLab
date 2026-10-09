@@ -1,7 +1,7 @@
 // xatlas-unity-bridge.cpp
 // Native bridge: wraps xatlas for Unity Editor tool.
-// Compile: cl /O2 /LD /EHsc xatlas-unity-bridge.cpp xatlas.cpp /Fe:xatlas-unity.dll
-// Place DLL in Assets/Plugins/x86_64/
+// Build with Native~/CMakeLists.txt; the pinned xatlas.cpp is included below.
+// Publish plugin binaries through the build-native CI workflow.
 
 #include "xatlas.h"
 #include "meshoptimizer.h"
