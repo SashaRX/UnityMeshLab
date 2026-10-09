@@ -62,6 +62,22 @@ Failures include the processing stage; degenerate geometry errors identify the
 offending triangle. Final audits also reject excessive normalized UV distortion,
 even when no overlaps are found.
 
+Projection and seed preparation use one translated world frame near the coarsest
+input. Matrix products and translation subtraction are computed in double before
+rounding positions for the float BVH. This preserves world-unit reach, scale,
+relative renderer positions and reflection winding while avoiding precision loss
+from a model's world position. Output vertex positions stay source-local.
+Source-local zero-area triangles are rejected before transformation, so rounding
+cannot turn a collinear source face into an apparently valid triangle. Errors
+distinguish source defects from projection-frame collapse and include vertex IDs.
+
+The Kamaz_Typhoon capture on 2026-10-09 contains a valid 0.24-micrometre-wide
+LOD1 face that collapses at a roughly 100-metre world position, and a separate
+exactly collinear source face. Relative coordinates fix the former; the latter
+still refuses transfer. The earlier reported working face 6768 cannot be equated
+with imported FBX face order after weld/processing. Exact captured triangles are
+regression fixtures; this does not certify the whole Kamaz chain as successful.
+
 For isolated EditMode runs, set `MESHLAB_REVERSE_MANIFESTS` to semicolon-separated
 manifest paths, `MESHLAB_REVERSE_OUTPUT` to the output directory, and run
 `ReverseUvTransferTests.FrozenCapturesProduceIndependentReverseBenchReports`.

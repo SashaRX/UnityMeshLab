@@ -107,10 +107,11 @@ namespace SashaRX.UnityMeshLab
             var all = new List<Surface[]>();
             int nextChart = 0;
             float width = options.seedResolution, height = width;
+            var origin = levels[0].inputs[0].toWorld.GetColumn(3);
             try
             {
                 token.ThrowIfCancellationRequested();
-                var seed = Capture(levels[0]);
+                var seed = Capture(levels[0], origin);
                 InitializeSeed(seed, options, ref nextChart, token);
                 float density = Density(seed);
                 result.report.texelsPerUnit = density;
@@ -118,7 +119,7 @@ namespace SashaRX.UnityMeshLab
                 for (int level = 1; level < levels.Length; ++level)
                 {
                     token.ThrowIfCancellationRequested();
-                    var targets = Capture(levels[level]);
+                    var targets = Capture(levels[level], origin);
                     var donor = all[level - 1];
                     if (useAsync)
                         await Task.Run(() => Project(donor, targets, options, token), token);
@@ -185,7 +186,37 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static Surface[] Capture(Level level)
+        // One translated world frame for the entire chain. Subtract translation
+        // in double before rounding positions to float for the BVH/unwrap.
+        internal static Vector3[] RelativePositions(Input input, Vector3 origin, int lod = -1)
+        {
+            var local = input.mesh.vertices;
+            var indices = input.mesh.triangles;
+            for (int f = 0; f < indices.Length; f += 3)
+            {
+                int a = indices[f], b = indices[f + 1], c = indices[f + 2];
+                if (!MeshGeometry.HasArea(local[a], local[b], local[c]))
+                    throw new InvalidOperationException($"Reverse UV input '{input.key ?? input.mesh.name}' LOD{lod} face {f / 3} has a degenerate geometric triangle in source-local coordinates "
+                        + $"(vertices {a}, {b}, {c}); check duplicate/collinear source vertices. No geometry was removed.");
+            }
+            var m = input.toWorld;
+            var positions = new Vector3[local.Length];
+            for (int i = 0; i < local.Length; ++i)
+            {
+                var p = local[i];
+                positions[i] = new Vector3(
+                    (float)((double)m.m00 * p.x + (double)m.m01 * p.y + (double)m.m02 * p.z + ((double)m.m03 - origin.x)),
+                    (float)((double)m.m10 * p.x + (double)m.m11 * p.y + (double)m.m12 * p.z + ((double)m.m13 - origin.y)),
+                    (float)((double)m.m20 * p.x + (double)m.m21 * p.y + (double)m.m22 * p.z + ((double)m.m23 - origin.z)));
+            }
+            for (int f = 0; f < indices.Length; f += 3)
+                if (!MeshGeometry.HasArea(positions[indices[f]], positions[indices[f + 1]], positions[indices[f + 2]]))
+                    throw new InvalidOperationException($"Reverse UV input '{input.key ?? input.mesh.name}' LOD{lod} face {f / 3} collapses in the shared projection frame; "
+                        + "check transform scale and geometry precision. No result was published.");
+            return positions;
+        }
+
+        static Surface[] Capture(Level level, Vector3 origin)
         {
             var surfaces = new Surface[level.inputs.Length];
             for (int node = 0; node < surfaces.Length; ++node)
@@ -194,10 +225,7 @@ namespace SashaRX.UnityMeshLab
                 var indices = input.mesh.triangles;
                 if (indices.Length == 0 || indices.Length > 750000)
                     throw new InvalidOperationException("Reverse UV prototype supports 1–250000 triangles per input.");
-                var positions = input.mesh.vertices.Select(input.toWorld.MultiplyPoint3x4).ToArray();
-                for (int f = 0; f < indices.Length; f += 3)
-                    if (!MeshGeometry.HasArea(positions[indices[f]], positions[indices[f + 1]], positions[indices[f + 2]]))
-                        throw new InvalidOperationException($"Reverse UV input '{input.key}' LOD{level.lod} face {f / 3} has a degenerate geometric triangle.");
+                var positions = RelativePositions(input, origin, level.lod);
                 surfaces[node] = new Surface { input = input, indices = indices, positions = positions,
                     pixels = new Vector2[indices.Length], faces = Enumerable.Range(0, indices.Length / 3).Select(_ => new Face()).ToArray(),
                     lod = level.lod, node = node, orientation = Math.Sign(input.toWorld.determinant) };

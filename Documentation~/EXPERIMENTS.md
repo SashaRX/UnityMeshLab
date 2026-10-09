@@ -57,6 +57,22 @@ degenerate input errors name the face and, for projection inputs, the LOD/key.
   the isolated placement negative control reached **95.587**. It did not recover
   any corpus trial, so that packing change is not included.
 
+### Reverse shared projection frame — 2026-10-09
+
+Continuation of the same PR225 prototype at baseline `33150eb`. Seed preparation
+and every projected LOD share a translated world frame. Double matrix products
+and translation subtraction happen before float BVH coordinates are stored;
+source-local geometry is checked first. The frozen Kamaz triangle fixtures cover
+world-position collapse and a genuinely collinear source face. The latter remains
+a refusal; no triangles are dropped, thresholds relaxed or legacy solvers changed.
+Translation controls compare complete UV output and inherited face counts in both
+overlap policies. The previously accepted frozen variants remain **86/112** with
+no lost success; all remaining 26 refusals are retained and stage-classified.
+The combined local Unity 6000.2.6f2 battery passes **309 checks**, with **7 private
+fixture checks skipped** and no failures. It includes the frozen reverse corpus,
+Kamaz exact-triangle controls, preview/export/capture and planar/local/bridge
+closure regressions. Reference compilation passes both FBX define variants.
+
 > **Обновлять этот документ при каждом эксперименте с transfer pipeline.**
 > Последнее обновление: v1.1.34 (2026-10-09)
 

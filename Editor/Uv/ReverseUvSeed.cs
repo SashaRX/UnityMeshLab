@@ -18,13 +18,14 @@ namespace SashaRX.UnityMeshLab
                 || float.IsNaN(texelsPerUnit) || float.IsInfinity(texelsPerUnit) || texelsPerUnit < 0)
                 throw new ArgumentException("Invalid reverse seed size, padding or density.");
             var corners = new List<Vector3>(); var originalIndices = new List<int[]>();
+            var origin = inputs[0].toWorld.GetColumn(3);
             double area = 0;
             foreach (var input in inputs)
             {
                 token.ThrowIfCancellationRequested();
-                var positions = input.mesh.vertices; var triangles = input.mesh.triangles;
+                var positions = ReverseUvTransfer.RelativePositions(input, origin); var triangles = input.mesh.triangles;
                 originalIndices.Add(triangles);
-                foreach (int index in triangles) corners.Add(input.toWorld.MultiplyPoint3x4(positions[index]));
+                foreach (int index in triangles) corners.Add(positions[index]);
             }
             if (corners.Count == 0 || corners.Count > 150000)
                 throw new InvalidOperationException("Reverse seed preparation supports 1–50000 faces in the combined coarsest LOD.");

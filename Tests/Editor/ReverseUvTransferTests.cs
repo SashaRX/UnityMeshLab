@@ -300,6 +300,80 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(double.IsPositiveInfinity(ReverseUvTransfer.TriangleAnisotropy(positions[0],positions[1],positions[2],uv[0],uv[1],uv[2])));
         }
 
+        [TestCase(false)] [TestCase(true)]
+        public void FarTranslatedChainKeepsUvsAndProjectionRelationships(bool overlap)
+        {
+            var coarse=Quad(size:.001f); var fine=Quad(size:.001f);
+            var near=new[] {Level(1,coarse),Level(0,fine)};
+            using var expected=Build(Options(overlap),near);
+            var translation=Matrix4x4.Translate(new Vector3(1000000,2000000,-1000000));
+            foreach(var level in near) foreach(var input in level.inputs) input.toWorld=translation;
+            var points=coarse.vertices.Select(translation.MultiplyPoint3x4).ToArray();
+            Assert.IsFalse(MeshGeometry.HasArea(points[0],points[1],points[2]),"Control must reproduce world-coordinate collapse.");
+            using var actual=Build(Options(overlap),near);
+            for(int i=0;i<2;++i) {
+                CollectionAssert.AreEqual(expected.meshes[i][0].uv2,actual.meshes[i][0].uv2);
+                var source=i==0?coarse:fine;
+                var output=actual.meshes[i][0];
+                CollectionAssert.AreEqual(source.triangles.Select(v=>source.vertices[v]),output.triangles.Select(v=>output.vertices[v]));
+            }
+            Assert.AreEqual(expected.report.inheritedFaces,actual.report.inheritedFaces);
+        }
+
+        [Test] public void SeedPreparationUsesTheSameRelativeWorldMetric()
+        {
+            var mesh=Quad(size:.001f); var input=new ReverseUvTransfer.Input {mesh=mesh,key="SmallSeed"};
+            var first=ReverseUvSeed.Prepare(new[] {input},128,2,0,default,out int firstSize);
+            owned.AddRange(first);
+            input.toWorld=Matrix4x4.Translate(new Vector3(1000000,2000000,-1000000));
+            var second=ReverseUvSeed.Prepare(new[] {input},128,2,0,default,out int secondSize);
+            owned.AddRange(second);
+            Assert.AreEqual(firstSize,secondSize);CollectionAssert.AreEqual(first[0].uv2,second[0].uv2);
+        }
+
+        [TestCase(0)] [TestCase(1)] [TestCase(2)]
+        public void CapturedKamazThinFaceSurvivesWorldTranslation(int transform)
+        {
+            var mesh=new Mesh {name="Kamaz_Typhoon_LOD1"};owned.Add(mesh);
+            mesh.vertices=new[] {
+                new Vector3(-.7542471289634705f,2.827155113220215f,-1.8186256885528564f),
+                new Vector3(-.7542471289634705f,2.854128122329712f,-1.8186254501342773f),
+                new Vector3(-.7542471289634705f,2.827155351638794f,-1.8186254501342773f) };
+            mesh.triangles=new[] {0,1,2};
+            var input=new ReverseUvTransfer.Input {mesh=mesh,toWorld=Matrix4x4.Translate(new Vector3(52.7f,-.07f,85.75f))};
+            if(transform==1) input.toWorld=new Matrix4x4(
+                new Vector4(-.04123282432556152f,-8.881784197001252e-15f,-.9991496801376343f,0),
+                new Vector4(4.36742055853756e-8f,1,-1.8023467163175155e-9f,0),
+                new Vector4(.9991496801376343f,-4.3711374075883214e-8f,-.04123282432556152f,0),
+                new Vector4(-47.790000915527344f,-.05875444412231445f,-104.54000091552734f,1));
+            if(transform==2) input.toWorld=new Matrix4x4(
+                new Vector4(-.8483419418334961f,-1.5260752661561128e-9f,-.5294487476348877f,0),
+                new Vector4(2.1834194896541703e-8f,1,-3.786757574175681e-8f,0),
+                new Vector4(.5294487476348877f,-4.3684739381433246e-8f,-.8483419418334961f,0),
+                new Vector4(52.70000076293945f,-.06999999284744263f,85.75f,1));
+            var rounded=mesh.vertices.Select(input.toWorld.MultiplyPoint3x4).ToArray();
+            Assert.IsFalse(MeshGeometry.HasArea(rounded[0],rounded[1],rounded[2]));
+            var relative=ReverseUvTransfer.RelativePositions(input,input.toWorld.GetColumn(3),1);
+            if(transform==0) CollectionAssert.AreEqual(mesh.vertices,relative);
+            Assert.IsTrue(MeshGeometry.HasArea(relative[0],relative[1],relative[2]));
+        }
+
+        [Test] public void CapturedKamazCollinearFaceRefusesBeforeRoundingCanInventArea()
+        {
+            var mesh=new Mesh {name="Kamaz_Typhoon_LOD1"};owned.Add(mesh);
+            mesh.vertices=new[] {
+                new Vector3(-.7542471289634705f,2.827155351638794f,-1.723873257637024f),
+                new Vector3(-.7542471289634705f,2.854128122329712f,-1.723873257637024f),
+                new Vector3(-.7542471289634705f,2.827155113220215f,-1.723873257637024f) };
+            mesh.triangles=new[] {0,1,2};
+            var input=new ReverseUvTransfer.Input {mesh=mesh,toWorld=Matrix4x4.TRS(new Vector3(48.349f,-.113f,-95.336f),Quaternion.Euler(1,224,0),Vector3.one)};
+            var before=TransferMeshSnapshot.Capture(mesh);
+            var error=Assert.Throws<InvalidOperationException>(()=>ReverseUvTransfer.RelativePositions(input,input.toWorld.GetColumn(3),1));
+            StringAssert.Contains("source-local coordinates",error.Message);
+            StringAssert.Contains("vertices 0, 1, 2",error.Message);
+            CollectionAssert.AreEqual(before,TransferMeshSnapshot.Capture(mesh));
+        }
+
         [Test] public void CapturedNanometreBacksplashRefusesPublicationWithoutChangingGeometry()
         {
             var fine=new Mesh {name="Backsplash nanometre face"}; owned.Add(fine);
