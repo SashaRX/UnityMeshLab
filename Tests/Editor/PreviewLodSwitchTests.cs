@@ -103,7 +103,6 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(Get<Vector3>(viewport, "pivot"), Is.EqualTo(new Vector3(3, 4, 5)));
             Assert.That(Get<Vector2>(viewport, "orbit"), Is.EqualTo(new Vector2(25, -15)));
             Assert.That(Get<float>(viewport, "distance"), Is.EqualTo(2f));
-            Assert.That(Get<float>(viewport, "radius"), Is.EqualTo(.75f));
         }
 
         // The hub on the group with the transfer tool active and UV1 picked, after one
@@ -502,6 +501,45 @@ namespace SashaRX.UnityMeshLab.Tests
                 Call(viewport, "FrameIfRequested", bounds, true);
                 AssertCameraFrame(viewport);
             }
+        }
+
+        [Test]
+        public void ContentSizeRefreshesZoomBoundsWithoutReframing([Values(.001f, 1000f)] float size)
+        {
+            using var view = new MeshViewport3D(); ChooseCameraFrame(view);
+            var bounds = new Bounds(new Vector3(40, -20, 10), Vector3.one * size);
+            Call(view, "FrameIfRequested", bounds, true);
+            AssertCameraFrame(view);
+            Assert.AreEqual(bounds.extents.magnitude, Get<float>(view, "radius"), size * .00001f);
+        }
+
+        [UnityTest]
+        public IEnumerator DistantContentRemainsVisibleWithoutReframing()
+        {
+            var mesh = Quad("Distant preview", true);
+            mesh.vertices = new[] { Vector3.zero, Vector3.right, new Vector3(1, 1, 0), Vector3.up };
+            var material = new Material(Shader.Find("Hidden/MeshLab/UvOverlay")); owned.Add(material);
+            material.SetColor("_Color", Color.red);
+            var items = new[] { new MeshViewport3D.Item(mesh, Matrix4x4.Translate(Vector3.forward * 20), new[] { material }) };
+            using var view = new MeshViewport3D { ViewProjection = MeshViewport3D.Projection.XY, ShowAxes = false, ShowGrid = false };
+            Set(view, "pivot", new Vector3(.5f, .5f, 0)); Set(view, "distance", 2f);
+            var window = OpenSpotInputWindow(); int redPixels = 0;
+            try {
+                window.Input = current => {
+                    if (current.type != EventType.Repaint) return;
+                    view.Draw(new Rect(0, 0, 256, 128), items, null);
+                    var copy = GpuReadback.Read(Get<RenderTexture>(view, "offscreen"), 256, 128, hdr: false);
+                    if (!copy) return;
+                    try { redPixels = 0; foreach (var pixel in copy.GetPixels()) if (pixel.r > .5f && pixel.g < .2f) ++redPixels; }
+                    finally { Object.DestroyImmediate(copy); }
+                };
+                for (int i = 0; i < 30 && redPixels < 30; ++i) { window.Repaint(); yield return null; }
+                Assert.Greater(redPixels, 30, "Current bounds must extend the clip plane without moving the camera.");
+                Assert.AreEqual(new Vector3(.5f, .5f, -2), view.Camera.transform.position);
+                Assert.AreEqual(2f, Get<float>(view, "distance"));
+                Assert.Greater(view.Camera.farClipPlane, 22f);
+            }
+            finally { window.Input = null; window.Close(); Object.DestroyImmediate(window); }
         }
 
         [Test]

@@ -144,7 +144,8 @@ namespace SashaRX.UnityMeshLab
             camera.transform.rotation = rotation;
             camera.transform.position = pivot - rotation * Vector3.forward * distance;
             camera.nearClipPlane = Mathf.Max(distance * 0.001f, 1e-4f);
-            camera.farClipPlane = distance + radius * 8f + 1f;
+            camera.farClipPlane = Mathf.Max(distance + radius * 8f + 1f,
+                any ? Vector3.Distance(camera.transform.position, bounds.center) + radius : 0f);
             utility.lights[0].intensity = 1.1f; utility.lights[0].transform.rotation = rotation * Quaternion.Euler(30f, 30f, 0f);
             utility.lights[1].intensity = 0.6f; utility.lights[1].transform.rotation = rotation * Quaternion.Euler(-20f, -150f, 0f);
             utility.ambientColor = new Color(0.25f, 0.25f, 0.25f, 1f);
@@ -456,7 +457,11 @@ namespace SashaRX.UnityMeshLab
 
         void FrameIfRequested(Bounds bounds, bool any)
         {
-            if (any && frameRequested) Frame(bounds);
+            if (!any) return;
+            // Content size drives clipping, axis size and navigation limits; it is
+            // independent of the camera position/orbit/distance chosen by the user.
+            radius = Mathf.Max(bounds.extents.magnitude, 1e-4f);
+            if (frameRequested) Frame(bounds);
         }
 
         /// <summary>Centres the camera on bounds at a distance that fits them.</summary>

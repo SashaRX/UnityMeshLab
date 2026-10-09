@@ -22,10 +22,14 @@
   временные overrides сняты. Camera и UV framing не сбрасываются. Surface-area
   display также обновляется при geometry edits на том же Mesh.
 - Исходная новая матрица воспроизвела 39 failures из 68 tests на `59d634d`.
-  После исправлений: 101/101 preview tests и 347 passed / 0 failed / 1 skipped
-  из 348 affected tests, Unity 6000.2.6f2 / DX11 / Built-in. Пропущенный line-render
+  Дополнительно подтверждено замечание PR про radius/clipping после смены модели:
+  3/3 новых fixtures упали на `08e13d4`, включая GPU pixels distant content.
+  Radius/clip/zoom bounds теперь следуют текущему content независимо от framing;
+  pivot/orbit/distance сохраняются. Changelog entries распределены по категориям.
+  После исправлений: 104/104 preview tests и 350 passed / 0 failed / 1 skipped
+  из 351 affected tests, Unity 6000.2.6f2 / DX11 / Built-in. Пропущенный line-render
   fixture требует URP. Оба FBX compile variants проходят.
-  Отдельный изолированный URP 17.2.0 / DX11 проект: 111/111 preview/line tests,
+  Отдельный изолированный URP 17.2.0 / DX11 проект: 114/114 preview/line tests,
   без skipped, включая тот же integration fixture и GPU pixel assertions.
   Это проверка отображения, не новая оценка correspondence/overlap quality реальной модели.
   [Матрица событий и ограничения](PREVIEW_UPDATE_EVENTS.md).

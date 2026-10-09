@@ -30,6 +30,7 @@ before rendering that frame. An unchanged frame reuses its preview resources.
 | Multiple renderers sharing a mesh | UV-layer render textures are keyed by mesh **and entry** | Each queued draw retains its renderer's atlas; shared mesh identity does not imply shared lighting |
 | Drawing a lightmap overlay | Apply the renderer's scale/offset when sampling UV2 in `UvOverlay` | Identity transform for checker, shell highlights and other overlay calls |
 | Disable/reload or switch tool/model | Existing teardown restores overrides, unsubscribes callbacks and releases derived resources | No temporary resources survive their owner |
+| Content bounds change | `FrameIfRequested` updates content radius; the camera's far plane includes current bounds, including content away from the retained pivot | Axis scale and zoom limits follow the new size; camera position, orbit and distance remain the user's choices |
 | Explicit Frame/F/Fit/manual navigation | Existing viewport/canvas input path | These are the actions that change framing; data refresh does not frame automatically |
 
 The public `DrawTextured` and `RenderUvLayer` signatures remain available.
@@ -41,17 +42,20 @@ ABI, package dependency or asset-writing algorithm changes in this correction.
 - Before the refresh correction, the new initial matrix failed **39 of 68**
   tests on baseline `59d634d`; the retained 28 older tests passed. Actual native
   transfers reproduced stale scene UV2, not just cache-key mismatches.
-- The final preview matrix passes **101/101**, including repeated native
+- The final preview matrix passes **104/104**, including repeated native
   transfer, original/repacked/transferred mesh replacement, same-instance edits,
   all three modes, UV/3D layouts, missing channels, resets, Undo, same-count LOD
   structural changes, nested/failed/successful writes and preserved navigation.
 - GPU pixel tests reproduce and check two atlas regions and two differently lit
   instances of one mesh. They also exposed the empty lightmap list inside
   `PreviewRenderUtility`; the authored-scene snapshot fixes that render path.
-- The affected Built-in subset passes **347 tests, 0 failed, 1 skipped**
-  (348 total), Unity **6000.2.6f2 / Direct3D 11**, in an isolated consuming
+- Three additional regressions failed on `08e13d4` before the content-bounds
+  correction: stale zoom limits for small/large models and clipped distant
+  content with an unchanged camera. They now pass, including GPU pixels.
+- The affected Built-in subset passes **350 tests, 0 failed, 1 skipped**
+  (351 total), Unity **6000.2.6f2 / Direct3D 11**, in an isolated consuming
   project. The skipped line-render integration test requires URP.
-- A separate isolated **URP 17.2.0 / DX11** project passes **111/111** preview
+- A separate isolated **URP 17.2.0 / DX11** project passes **114/114** preview
   and line-render tests, with no skips. This includes the previously skipped
   integration fixture and the new atlas/instance GPU pixel assertions.
 - Both C# reference-assembly builds pass, with and without
