@@ -1565,7 +1565,7 @@ namespace SashaRX.UnityMeshLab
                     // Multiple targets claim same source. Check if they are
                     // non-overlapping UV0 fragments (LOD polygon deletion splits
                     // a shell into pieces that cover different UV0 sub-regions).
-                    // If their UV0 bboxes don't overlap, each can independently
+                    // If their UV0 triangles don't overlap, each can independently
                     // use standard UV0→UV2 interpolation from the same source —
                     // no conflict, no eviction needed.
                     bool hasUv0Overlap = false;
@@ -1575,10 +1575,7 @@ namespace SashaRX.UnityMeshLab
                         for (int j = i + 1; j < claimants.Count && !hasUv0Overlap; j++)
                         {
                             var shellB = tgtShells[claimants[j].tsi];
-                            if (shellA.boundsMin.x < shellB.boundsMax.x &&
-                                shellA.boundsMax.x > shellB.boundsMin.x &&
-                                shellA.boundsMin.y < shellB.boundsMax.y &&
-                                shellA.boundsMax.y > shellB.boundsMin.y)
+                            if (CompareShellUvOverlap(shellA, shellB, tUv0, tgtTris) != ShellUvOverlap.None)
                             {
                                 hasUv0Overlap = true;
                             }
@@ -1903,21 +1900,16 @@ namespace SashaRX.UnityMeshLab
                     if (kv.Value.Count <= 1) continue;
                     sharedSources.Add(kv.Key);
 
-                    // Check if these targets have overlapping UV0 bboxes
-                    bool hasOverlap = false;
-                    for (int i = 0; i < kv.Value.Count && !hasOverlap; i++)
+                    // AABB intersections are candidates, not evidence of stacked triangles.
+                    var overlap = ShellUvOverlap.None;
+                    for (int i = 0; i < kv.Value.Count && overlap != ShellUvOverlap.Confirmed; i++)
                     {
                         var sA = tgtShells[kv.Value[i]];
-                        for (int j = i + 1; j < kv.Value.Count && !hasOverlap; j++)
+                        for (int j = i + 1; j < kv.Value.Count && overlap != ShellUvOverlap.Confirmed; j++)
                         {
                             var sB = tgtShells[kv.Value[j]];
-                            if (sA.boundsMin.x < sB.boundsMax.x &&
-                                sA.boundsMax.x > sB.boundsMin.x &&
-                                sA.boundsMin.y < sB.boundsMax.y &&
-                                sA.boundsMax.y > sB.boundsMin.y)
-                            {
-                                hasOverlap = true;
-                            }
+                            var pairOverlap = CompareShellUvOverlap(sA, sB, tUv0, tgtTris);
+                            if (pairOverlap != ShellUvOverlap.None) overlap = pairOverlap;
                         }
                     }
 
@@ -1925,12 +1917,13 @@ namespace SashaRX.UnityMeshLab
                     foreach (int tsi in kv.Value)
                         labels.Add($"t{tsi}(merged={tgtIsMerged[tsi]})");
 
-                    if (hasOverlap)
+                    if (overlap != ShellUvOverlap.None)
                     {
-                        // True overlap — constrain Phase 3
+                        // A witnessed overlap or an incomplete scan constrains Phase 3.
                         duplicateSources.Add(kv.Key);
-                        UvtLog.Warn($"[GroupedTransfer] POST-DEDUP DUPLICATE: src{kv.Key} " +
-                            $"claimed by {string.Join(", ", labels)}");
+                        string diagnostic = overlap == ShellUvOverlap.Confirmed
+                            ? "POST-DEDUP DUPLICATE" : "POST-DEDUP overlap check incomplete";
+                        UvtLog.Warn($"[GroupedTransfer] {diagnostic}: src{kv.Key} claimed by {string.Join(", ", labels)}");
                     }
                     else
                     {
@@ -4379,6 +4372,26 @@ namespace SashaRX.UnityMeshLab
             return face;
         }
 
+        internal enum ShellUvOverlap { None, Confirmed, Incomplete }
+
+        internal static ShellUvOverlap CompareShellUvOverlap(UvShell a, UvShell b, Vector2[] uv, int[] triangles,
+            int comparisonBudget = 200000)
+        {
+            if (a.boundsMin.x >= b.boundsMax.x || a.boundsMax.x <= b.boundsMin.x
+                || a.boundsMin.y >= b.boundsMax.y || a.boundsMax.y <= b.boundsMin.y)
+                return ShellUvOverlap.None;
+            var geometry = new RemeshNative.Geometry { uv = uv, indices = triangles };
+            var intersection = new UvAtlasDiagnostics.IntersectionTest();
+            int comparisons = 0;
+            foreach (int faceA in a.faceIndices)
+                foreach (int faceB in b.faceIndices)
+                {
+                    if (++comparisons > comparisonBudget) return ShellUvOverlap.Incomplete;
+                    if (intersection.Overlaps(geometry, faceA, faceB)) return ShellUvOverlap.Confirmed;
+                }
+            return ShellUvOverlap.None;
+        }
+
         static bool CandidateHasOverlap(UvShell shell, int[] triangles, Vector3[] positions, Dictionary<int, Vector2> candidate)
         {
             var uv = new Vector2[positions.Length];
@@ -5271,29 +5284,25 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>
         /// Post-transfer diagnostic: scan target shells for UV2 layouts that
-        /// have collapsed to a line / extreme sliver. Detection is geometric
-        /// only (UV2 bbox + UV2 aspect vs 3D in-plane aspect), independent of
+        /// have collapsed to a line / extreme sliver. Detection compares each
+        /// triangle's UV2 metric to its 3D metric, independent of rotation and
         /// the source/transfer path that produced the UV2. Pure logging — no
         /// modifications to uv2.
         ///
-        /// Flags:
-        ///   - bbox.x &lt; epsilon OR bbox.y &lt; epsilon → "line"
-        ///   - uv2_aspect / 3d_aspect ≥ 5 → "sliver" (UV stretched far beyond
-        ///     what the surface shape would warrant)
-        ///   - uv2 triangle-area / uv2 bbox-area &lt; 0.05 → "degenerate"
-        ///     (verts collinear within the bbox)
+        /// Triangle anisotropy must first be ≥ 5. A thin rectangle can have a square
+        /// world AABB just because it is rotated. Its UV AABB describes the warning
+        /// (line, low fill or sliver), not the validity of the mapping.
         /// </summary>
-        static void DiagnoseCollapsedTargetShells(
+        internal static int DiagnoseCollapsedTargetShells(
             List<UvShell> tgtShells, int[] tgtTris, Vector3[] tVerts, Vector2[] uv2)
         {
-            if (tgtShells == null || tgtTris == null || tVerts == null || uv2 == null) return;
+            if (tgtShells == null || tgtTris == null || tVerts == null || uv2 == null) return 0;
             const float LINE_EPS = 1e-5f;
-            const float ASPECT_RATIO_THRESHOLD = 5f;
+            const float STRETCH_RATIO_THRESHOLD = 5f;
             const float FILL_RATIO_THRESHOLD = 0.05f;
             int reported = 0;
             const int MAX_REPORTS = 15;
 
-            var sb = new System.Text.StringBuilder(128);
             int totalCollapsed = 0;
             for (int si = 0; si < tgtShells.Count; si++)
             {
@@ -5315,6 +5324,7 @@ namespace SashaRX.UnityMeshLab
 
                 double triAreaUv2 = 0.0;
                 double triArea3D = 0.0;
+                double worstStretch = 1.0;
                 foreach (int f in shell.faceIndices)
                 {
                     int t = f * 3;
@@ -5326,11 +5336,14 @@ namespace SashaRX.UnityMeshLab
                     if ((uint)i0 < (uint)tVerts.Length && (uint)i1 < (uint)tVerts.Length && (uint)i2 < (uint)tVerts.Length)
                     {
                         Vector3 p0 = tVerts[i0], p1 = tVerts[i1], p2 = tVerts[i2];
-                        triArea3D += Vector3.Cross(p1 - p0, p2 - p0).magnitude * 0.5;
+                        double area3D = Vector3.Cross(p1 - p0, p2 - p0).magnitude * 0.5;
+                        triArea3D += area3D;
+                        if (area3D > 0) worstStretch = System.Math.Max(worstStretch, TriangleStretch(p0, p1, p2, a, b, c));
                     }
                 }
 
-                string reason = null;
+                if (triArea3D <= 0 || worstStretch < STRETCH_RATIO_THRESHOLD) continue;
+                string reason;
 
                 bool collapsedToLine = sz.x < LINE_EPS || sz.y < LINE_EPS;
                 if (collapsedToLine)
@@ -5339,41 +5352,13 @@ namespace SashaRX.UnityMeshLab
                 }
                 else
                 {
-                    float uv2Aspect = Mathf.Max(sz.x, sz.y) / Mathf.Max(LINE_EPS, Mathf.Min(sz.x, sz.y));
-
-                    // Cheap 3D aspect estimate: AABB of shell verts, drop smallest
-                    // dim, ratio of the other two. Doesn't need PCA for a sanity
-                    // check.
-                    Vector3 mn3 = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
-                    Vector3 mx3 = new Vector3(float.MinValue, float.MinValue, float.MinValue);
-                    foreach (int v in shell.vertexIndices)
-                    {
-                        if ((uint)v >= (uint)tVerts.Length) continue;
-                        mn3 = Vector3.Min(mn3, tVerts[v]);
-                        mx3 = Vector3.Max(mx3, tVerts[v]);
-                    }
-                    Vector3 sz3 = mx3 - mn3;
-                    float dx = Mathf.Abs(sz3.x), dy = Mathf.Abs(sz3.y), dz = Mathf.Abs(sz3.z);
-                    float d0 = Mathf.Min(dx, Mathf.Min(dy, dz));
-                    float d2 = Mathf.Max(dx, Mathf.Max(dy, dz));
-                    float d1 = dx + dy + dz - d0 - d2;
-                    float aspect3D = d1 > 1e-8f ? d2 / d1 : 1f;
-
-                    if (uv2Aspect / Mathf.Max(1f, aspect3D) >= ASPECT_RATIO_THRESHOLD)
-                        reason = $"sliver (uv2 {uv2Aspect:F1}:1 vs 3D {aspect3D:F1}:1)";
-                    else
-                    {
-                        float bboxAreaUv2 = sz.x * sz.y;
-                        if (bboxAreaUv2 > 1e-12f)
-                        {
-                            float fill = (float)(triAreaUv2 / bboxAreaUv2);
-                            if (fill < FILL_RATIO_THRESHOLD && triAreaUv2 > 0)
-                                reason = $"degenerate (fill {fill * 100f:F1}%)";
-                        }
-                    }
+                    float bboxAreaUv2 = sz.x * sz.y;
+                    double fill = bboxAreaUv2 > 0 ? triAreaUv2 / bboxAreaUv2 : 0;
+                    reason = fill < FILL_RATIO_THRESHOLD
+                        ? $"degenerate (fill {fill * 100:F1}%, triangle anisotropy {worstStretch:F1}:1)"
+                        : $"sliver (triangle anisotropy {worstStretch:F1}:1)";
                 }
 
-                if (reason == null) continue;
                 totalCollapsed++;
                 if (reported < MAX_REPORTS)
                 {
@@ -5385,6 +5370,7 @@ namespace SashaRX.UnityMeshLab
             if (totalCollapsed > 0)
                 UvtLog.Warn(UvtLog.Category.Validation,
                     $"[CollapseDiag] {totalCollapsed} target shell(s) flagged as collapsed/sliver/degenerate (first {Mathf.Min(totalCollapsed, MAX_REPORTS)} logged above)");
+            return totalCollapsed;
         }
     }
 }

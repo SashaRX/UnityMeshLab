@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Removed the obsolete standalone Python/BAT sweep-gallery generator. It only understood the retired flat `BenchmarkReports/*_sweep_*.csv` + `{csvBase}_png/` layout; sweeps now generate their own `index.html` in the current nested run layout. Benchmark documentation and hierarchical-repack artefact descriptions now name the files the current code actually writes.
 
 ### Fixed
+- Shared-source transfer dedup requires positive-area UV triangle intersections instead of intersecting chart bounds; incomplete scans remain conservative and are labelled explicitly. Collapse diagnostics measure triangle anisotropy against 3D geometry so rotated thin charts no longer produce false sliver warnings.
 - Cross-LOD transfer hints are invalidated when their source mesh is replaced or edited in place. Auto-tune winner restoration and context refresh discard stale source chart indices before subsequent transfers.
 - UV0 edge welding keeps opposite tangent handedness separate instead of destroying mirrored normal-map seams. Pipeline mesh changes suspend preview overrides before releasing working meshes, and auto-tune restores the selected source atlas and dimensions together with its target transfers; discarded attempt meshes are released.
 - Current model bounds update viewport clipping, axis size and zoom limits without reframing or changing camera position, orbit or distance. Content outside the previous model's clipping range remains visible.

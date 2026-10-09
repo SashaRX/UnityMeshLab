@@ -45,6 +45,96 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        [TestCase(.6f, 0)]
+        [TestCase(0f, 0)]
+        [TestCase(-.2f, 1)]
+        public void SharedSourceOverlapRequiresPositiveTriangleArea(float corner, int expected)
+        {
+            var uv = FragmentUvs(corner);
+            var triangles = new[] { 0, 1, 2, 3, 4, 5 };
+            var shells = UvShellExtractor.Extract(uv, triangles);
+            Assert.AreEqual(expected, (int)GroupedShellTransfer.CompareShellUvOverlap(shells[0], shells[1], uv, triangles));
+        }
+
+        [Test]
+        public void SharedSourceOverlapBudgetDoesNotCertifyFragmentsAsClean()
+        {
+            var uv = FragmentUvs(.6f);
+            var triangles = new[] { 0, 1, 2, 3, 4, 5 };
+            var shells = UvShellExtractor.Extract(uv, triangles);
+            Assert.AreEqual(GroupedShellTransfer.ShellUvOverlap.Incomplete,
+                GroupedShellTransfer.CompareShellUvOverlap(shells[0], shells[1], uv, triangles, comparisonBudget: 0));
+        }
+
+        static Vector2[] FragmentUvs(float corner) => new[] { Vector2.zero, Vector2.right, Vector2.up,
+            Vector2.one, new Vector2(corner, 1), new Vector2(1, corner) };
+
+        [Test]
+        public void DisjointUvFragmentsWithIntersectingBoundsKeepTheirSharedSource()
+        {
+            var source = new Mesh { name = "Shared square chart" };
+            var target = new Mesh { name = "Disjoint triangular fragments" };
+            try {
+                // Another physical surface has the same authored UV0. This prevents
+                // pre-merging the fragments and exercises shared-source dedup itself.
+                source.vertices = new[] { Vector3.zero, Vector3.right, new Vector3(1, 1, 0), Vector3.up,
+                    Vector3.forward, new Vector3(1, 0, 1), Vector3.one, new Vector3(0, 1, 1) };
+                source.uv = new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up,
+                    Vector2.zero, Vector2.right, Vector2.one, Vector2.up };
+                source.uv2 = new[] { new Vector2(.1f, .1f), new Vector2(.45f, .1f),
+                    new Vector2(.45f, .45f), new Vector2(.1f, .45f), new Vector2(.55f, .55f), new Vector2(.9f, .55f),
+                    new Vector2(.9f, .9f), new Vector2(.55f, .9f) };
+                source.triangles = new[] { 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 }; source.RecalculateNormals();
+                var uv = FragmentUvs(.6f);
+                var vertices = new Vector3[uv.Length];
+                for (int i = 0; i < uv.Length; i++) vertices[i] = new Vector3(uv[i].x, uv[i].y, 0);
+                target.vertices = vertices; target.uv = uv;
+                target.triangles = new[] { 0, 1, 2, 3, 4, 5 }; target.RecalculateNormals();
+                var result = GroupedShellTransfer.Transfer(target, source);
+                Assert.AreEqual(2, result.shellsMatched);
+                Assert.AreEqual(0, result.dedupConflicts, "Disjoint UV triangles are not a shared-source conflict.");
+                Assert.AreEqual(0, result.shellsMerged, "Disjoint fragments must not be evicted or forced into a merged fallback.");
+                CollectionAssert.AreEqual(new[] { 0, 0 }, result.targetShellToSourceShell);
+                for (int i = 0; i < uv.Length; i++)
+                    Assert.That(Vector2.Distance(uv[i] * .35f + Vector2.one * .1f, result.uv2[i]), Is.LessThan(1e-5));
+                Assert.AreEqual(0, UvAtlasDiagnostics.Measure(new RemeshNative.Geometry
+                    { uv = result.uv2, indices = target.triangles, charts = new int[target.vertexCount] },
+                    System.Threading.CancellationToken.None).pairs);
+            }
+            finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
+        [TestCase(12f, 0f)]
+        [TestCase(100f, 45f)]
+        public void CollapseDiagnosticAcceptsIsometricThinChartsAtAnyRotation(float length, float uvAngle)
+        {
+            var uv = new[] { Vector2.zero, new Vector2(length, 0), new Vector2(length, 1), Vector2.up };
+            var vertices = new Vector3[uv.Length];
+            var packed = new Vector2[uv.Length];
+            for (int i = 0; i < uv.Length; i++) {
+                var point = new Vector3(uv[i].x, uv[i].y, 0);
+                vertices[i] = Quaternion.Euler(20, 30, 45) * point;
+                packed[i] = (Vector2)(Quaternion.Euler(0, 0, uvAngle) * point) * .005f + Vector2.one * .1f;
+            }
+            var original = (Vector2[])packed.Clone();
+            var triangles = new[] { 0, 1, 2, 0, 2, 3 };
+            Assert.AreEqual(0, GroupedShellTransfer.DiagnoseCollapsedTargetShells(
+                UvShellExtractor.Extract(uv, triangles), triangles, vertices, packed));
+            CollectionAssert.AreEqual(original, packed);
+        }
+
+        [TestCase(0f)]
+        [TestCase(.02f)]
+        public void CollapseDiagnosticStillReportsCollapsedAndStretchedCharts(float height)
+        {
+            var uv = new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up };
+            var vertices = new[] { Vector3.zero, Vector3.right, new Vector3(1, 1, 0), Vector3.up };
+            var packed = new[] { Vector2.zero, Vector2.right, new Vector2(1, height), new Vector2(0, height) };
+            var triangles = new[] { 0, 1, 2, 0, 2, 3 };
+            Assert.AreEqual(1, GroupedShellTransfer.DiagnoseCollapsedTargetShells(
+                UvShellExtractor.Extract(uv, triangles), triangles, vertices, packed));
+        }
+
         [TestCase(.0001f)]
         [TestCase(1f)]
         [TestCase(1000f)]

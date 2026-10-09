@@ -135,3 +135,65 @@ Both reference C# compile variants also passed. Evidence is local under
 `_results~/fbx-compression-20261009/` (`fbx-final.xml`, `metal-write-final.log`).
 This case establishes safe export of the tested meshes, not a fix for the
 remaining transfer overlaps or chart collapse described above.
+
+### Shelf_C: shared source and rotation-invariant diagnostics
+
+The reported Shelf_C case was tested on the current `f3cbb88` baseline. The
+actual E: project and an isolated copy preserve every triangle corner's tangent
+handedness through `UvEdgeWeld`: LOD0 587 → 551 vertices and LOD1 449 → 425,
+with zero changed corner signs and no zero tangent.w values. The supplied TBN
+warnings were not reproduced on this import. The original FBX and `.meta`
+remain unchanged. FBX SHA-256:
+`9CE4B1F0CC33509C73BEB0C52D0248797ABCAA984B87522E55EF18913E243BDD`.
+
+Shared-source dedup and its post-dedup diagnostic previously treated UV0 AABB
+intersections as triangle overlap. Both now use positive-area triangle tests.
+Shared edges and disjoint triangle interiors may use one source independently;
+a scan exceeding 200000 comparisons per shell pair retains the conservative
+conflict but reports an incomplete check rather than a witnessed duplicate.
+An integration fixture verifies the retained source assignments, affine UV2 and
+absence of output overlaps. Actual stacked UV0 remains a conflict.
+
+The former `shell #50` sliver warning compared UV2 bounds with a rotation-dependent
+world AABB. Its actual per-triangle anisotropy is approximately 1.37:1 in the
+square-metric forward capture; the reported 12.7:1 versus 1.4:1 was not a stretch
+measurement. `CollapseDiag` now uses per-triangle UV/3D anisotropy with a threshold
+of 5, then uses UV bounds/fill to describe the warning. Rotation alone cannot
+turn a valid thin chart into a collapse. Truly collapsed and stretched charts
+still report, and the diagnostic never edits UV2.
+
+Controlled preparation uses the Shelf_C group only (excluding decorations
+without a matching LOD), UV0 welding, vertex-preserving pre-optimization, ARAP
+and density normalization. It compares forward/reverse, 1024×1024/1024×2048
+texture metrics and off/legacy/adaptive symmetry. Actual materials and textures
+are not copied. All six methods across the 12 prepared cases, with two measured
+repetitions and no warmup, produce **72 frozen rows**. Every input hash, output
+UV2 hash and quality counter matches the baseline; all rows are deterministic
+and preserve their inputs. One false shared-source conflict disappears, while
+one confirmed UV0 shared-source ambiguity remains. This is a classification
+correction, not an improvement of the measured Shelf output UV2.
+
+Grouped transfer quality is the same across the three symmetry settings:
+
+| Direction / texture metric | Degenerate faces | Overlap pairs | Worst anisotropy | Area-weighted anisotropy |
+|---|---:|---:|---:|---:|
+| LOD0 → LOD1 / square | 0 | 0 | 4.974 | 2.215 |
+| LOD0 → LOD1 / 1:2 | 0 | 0 | 3.197 | 1.631 |
+| LOD1 → LOD0 / square | 0 | 22 | 8.880 | 2.220 |
+| LOD1 → LOD0 / 1:2 | 1 | 8 | 4.222 | 1.630 |
+
+The related EditMode subset passes **101/101**, without skips, on Unity
+6000.2.6f2 / DX11. Both reference C# variants and the identifier check pass.
+Two isolated async Full Pipeline runs with Checker keep all render meshes alive
+through editor updates and complete in approximately 2.6–2.9 seconds each.
+They do not emit TBN warnings, but still report a genuinely stretched target
+triangle at 5.2:1. These UI auto-tune runs are separate from the frozen comparison.
+Reverse quality and the real remaining stretch need further correspondence or
+source-parameterization work; neither is hidden by the new diagnostics.
+
+Local evidence is under `_results~/shelf-transfer-20261009/`: `affected.xml`,
+`full-pipeline.log`, `baseline-config.json`, `fixed-frozen-config.json`, the
+completed `baseline-reports/transfer_compare_20261009_015612_237_0085d91c/` and
+`fixed-frozen/transfer_compare_20261009_021210_307_24d37217/`. Replay uses the
+baseline `manifest.json` via the benchmark's `captures` array. The source FBX,
+copies and diagnostic outputs are not committed.

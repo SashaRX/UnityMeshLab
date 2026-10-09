@@ -3,6 +3,35 @@
 > **Обновлять этот документ при каждом эксперименте с transfer pipeline.**
 > Последнее обновление: v1.1.34 (2026-10-09)
 
+## Shelf_C: shared-source overlap и collapse diagnostics — 2026-10-09
+
+- Продолжение PR #225, baseline `f3cbb88`. Исходный `Shelf_C.fbx` и importer meta
+  проверены в проекте на E: и скопированы в изолированный Unity 6000.2.6f2 / DX11
+  проект. Сварка сохраняет `tangent.w` каждого угла: LOD0 587 → 551 vertices,
+  LOD1 449 → 425, изменённых handedness — 0. Присланные TBN warnings на текущем
+  импорте не воспроизвелись; новое изменение weld не требуется.
+- Два shared-source gate считали пересечение UV0 AABB доказательством overlap.
+  Теперь нужны пересечения треугольников положительной площади. Общая граница
+  и пустые области bbox не вызывают eviction. Лимит 200000 сравнений на пару
+  сохраняет консервативный conflict, но лог сообщает incomplete вместо
+  подтверждённого duplicate. На Shelf ложный shared-source conflict исчезает;
+  подтверждённый UV0 ambiguity остаётся видимым.
+- CollapseDiag сравнивал UV AABB с world AABB: повёрнутая тонкая деталь могла
+  выглядеть квадратной в 3D bbox. У target shell #50 реальная anisotropy ≈1.37,
+  хотя прежний лог сообщал 12.7:1 vs 1.4:1. Проверка теперь использует метрику
+  каждого треугольника и порог anisotropy 5; bbox только описывает дефект.
+  UV2 эта диагностика не меняет. Реальные collapsed/stretched charts остаются
+  предупреждениями, включая 5.2:1 в отдельном full-pipeline probe.
+- 12 подготовленных случаев (forward/reverse, square/1:2 metric,
+  off/legacy/adaptive symmetry), 6 методов, 2 повторения: **72 frozen rows**.
+  Все UV2 hashes и quality counters совпадают с baseline; outputs deterministic,
+  inputs unchanged. Это исправление классификации, не улучшение UV2 Shelf в
+  этом corpus. В reverse остаются 22 overlap pairs для square metric и 8 для 1:2.
+- **101/101** связанных EditMode tests; обе reference C# сборки и identifier
+  check проходят. Два async Full Pipeline с Checker завершились без missing
+  render meshes и TBN warnings. Материалы исходной сцены не скопированы;
+  реальные failing settings требуют Capture. [Данные и ограничения](MODERN_TRANSFER_REPRO.md#shelf_c-shared-source-and-rotation-invariant-diagnostics).
+
 ## Modern furniture: weld и владение мешами — 2026-10-09
 
 - Продолжение PR #225. Копии `Modern_DressingTable_A`, `Modern_Kitchen_A` и
