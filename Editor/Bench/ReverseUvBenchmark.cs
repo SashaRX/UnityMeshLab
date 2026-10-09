@@ -26,7 +26,9 @@ namespace SashaRX.UnityMeshLab
         }
 
         [MenuItem("Tools/Mesh Lab/Diagnostics/Reverse UV — benchmark last capture")]
-        static async void RunLastCapture()
+        static void RunLastCapture() => _ = RunLastCaptureAsync();
+
+        static async Task RunLastCaptureAsync()
         {
             if (UvProgress.IsActive) { UvtLog.Warn("[ReverseUV] Wait for the active operation to finish."); return; }
             UvProgress.Begin("Reverse UV frozen benchmark");
@@ -45,7 +47,7 @@ namespace SashaRX.UnityMeshLab
             var file = new FileInfo(manifestPath);
             if (!file.Exists || file.Length > TransferCaseCapture.MaxManifestBytes)
                 throw new InvalidDataException("Choose an existing bounded transfer capture first.");
-            var manifest = JsonUtility.FromJson<TransferCaseCapture.Manifest>(File.ReadAllText(file.FullName));
+            var manifest = JsonUtility.FromJson<TransferCaseCapture.Manifest>(await File.ReadAllTextAsync(file.FullName));
             if (manifest == null || manifest.pairs == null || manifest.pairs.Count == 0 || manifest.pairs.Count > TransferCaseCapture.MaxPairs)
                 throw new InvalidDataException("Capture has no supported transfer pairs.");
             Directory.CreateDirectory(outputDirectory);
@@ -86,7 +88,7 @@ namespace SashaRX.UnityMeshLab
                             if (seed) UnityEngine.Object.DestroyImmediate(seed);
                         }
                     }
-                File.WriteAllText(Path.Combine(outputDirectory,"summary.json"),JsonUtility.ToJson(summary,true));
+                await File.WriteAllTextAsync(Path.Combine(outputDirectory,"summary.json"),JsonUtility.ToJson(summary,true));
                 return summary;
             }
             finally { BenchmarkRecorder.OutputDirectoryOverride = previousOutput; }

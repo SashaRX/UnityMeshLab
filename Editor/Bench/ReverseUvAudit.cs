@@ -48,7 +48,8 @@ namespace SashaRX.UnityMeshLab
             {
                 var entry = report.nodes[i];
                 if (entry.lod != lod) { lod = entry.lod; node = 0; }
-                keys[i] = new NodeKey { lod = lod, node = node++, key = entry.key };
+                keys[i] = new NodeKey { lod = lod, node = node, key = entry.key };
+                ++node;
             }
             var json = new string[keys.Length];
             for (int i = 0; i < json.Length; ++i)

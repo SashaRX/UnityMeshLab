@@ -67,7 +67,12 @@ namespace SashaRX.UnityMeshLab
                 }
                 return output;
             }
-            catch { foreach(var mesh in output) if(mesh) UnityEngine.Object.DestroyImmediate(mesh); throw; }
+            catch
+            {
+                foreach (var mesh in output)
+                    if (mesh) UnityEngine.Object.DestroyImmediate(mesh);
+                throw;
+            }
             finally { UnityEngine.Object.DestroyImmediate(temporary); }
         }
     }

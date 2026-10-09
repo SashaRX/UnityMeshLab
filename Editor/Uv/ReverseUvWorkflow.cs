@@ -49,11 +49,11 @@ namespace SashaRX.UnityMeshLab
             void PollCancel() { if (UvProgress.CancelRequested) cancellation.Cancel(); }
             bool ownsProgress = !UvProgress.IsActive;
             if (ownsProgress) UvProgress.Begin("Reverse UV: coarse → fine", cancelable: true);
-            EditorApplication.update += PollCancel;
+            SubscribeReverseCancellation(PollCancel);
             try
             {
                 UvProgress.Report(0, "Prepare coarsest LOD");
-                // Repack into detached entries. The visible chain remains intact
+                // Prepare detached entries. The visible chain remains intact
                 // until every projection, expansion and audit has succeeded.
                 if (reversePrepareSeed)
                 {
@@ -111,14 +111,28 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Info($"[ReverseUV] {reverseSummary}. Audit: {auditPath}");
                 if (ownsProgress) UvProgress.End();
             }
-            catch (OperationCanceledException) { if (ownsProgress) UvProgress.Cancel(); throw; }
-            catch (Exception ex) { if (ownsProgress) UvProgress.Fail(ex.Message); throw; }
+            catch (OperationCanceledException)
+            {
+                if (ownsProgress) UvProgress.Cancel();
+                throw;
+            }
+            catch (Exception ex)
+            {
+                if (ownsProgress) UvProgress.Fail(ex.Message);
+                throw;
+            }
             finally
             {
                 if (reversePrepareSeed)
                     foreach (var entry in seedEntries) if (entry.repackedMesh) UnityEngine.Object.DestroyImmediate(entry.repackedMesh);
-                EditorApplication.update -= PollCancel; RequestRepaint?.Invoke();
+                UnsubscribeReverseCancellation(PollCancel);
+                RequestRepaint?.Invoke();
             }
         }
+
+        static void SubscribeReverseCancellation(EditorApplication.CallbackFunction callback)
+            => EditorApplication.update += callback;
+        static void UnsubscribeReverseCancellation(EditorApplication.CallbackFunction callback)
+            => EditorApplication.update -= callback;
     }
 }

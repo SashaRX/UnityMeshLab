@@ -85,7 +85,7 @@ namespace SashaRX.UnityMeshLab
             internal Vector2[] pixels;
             internal Face[] faces;
             internal int lod, node;
-            internal float orientation;
+            internal int orientation;
         }
 
         sealed class Chart
@@ -271,7 +271,7 @@ namespace SashaRX.UnityMeshLab
                     }
                     chart.normals[f] = Normal(s, face);
                     chart.nodes[f] = s.node; chart.faces[f] = face; chart.layers[f] = s.faces[face].layer;
-                    chart.orientations[f] = (int)s.orientation;
+                    chart.orientations[f] = s.orientation;
                 }
                 chart.bounds = new Bounds(chart.positions[0], Vector3.zero);
                 foreach (var p in chart.positions) chart.bounds.Encapsulate(p);
@@ -324,9 +324,9 @@ namespace SashaRX.UnityMeshLab
                         maxDistance = Math.Max(maxDistance, hit.distSq);
                     }
                     int donorCorner = best.triangleIndex * 3;
-                    double expectedSign = Math.Sign(Cross(winner.pixels[donorCorner + 1] - winner.pixels[donorCorner],
+                    int expectedSign = Math.Sign(Cross(winner.pixels[donorCorner + 1] - winner.pixels[donorCorner],
                         winner.pixels[donorCorner + 2] - winner.pixels[donorCorner])) * winner.orientations[best.triangleIndex];
-                    double actualSign = Math.Sign(Cross(target.pixels[t + 1] - target.pixels[t], target.pixels[t + 2] - target.pixels[t])) * target.orientation;
+                    int actualSign = Math.Sign(Cross(target.pixels[t + 1] - target.pixels[t], target.pixels[t + 2] - target.pixels[t])) * target.orientation;
                     if (!valid || actualSign != expectedSign || Anisotropy(target, f) > options.maxAnisotropy)
                     { record.ambiguous = true; continue; }
                     float span = Math.Max((target.pixels[t + 1] - target.pixels[t]).magnitude, (target.pixels[t + 2] - target.pixels[t]).magnitude);
