@@ -226,16 +226,107 @@ namespace SashaRX.UnityMeshLab.Tests
             string manifests=Environment.GetEnvironmentVariable("MESHLAB_REVERSE_MANIFESTS");
             if(string.IsNullOrEmpty(manifests)) Assert.Ignore("Set MESHLAB_REVERSE_MANIFESTS to replay frozen model captures.");
             string directory=Environment.GetEnvironmentVariable("MESHLAB_REVERSE_OUTPUT") ?? System.IO.Path.Combine(System.IO.Path.GetTempPath(),"MeshLabReverseBench");
+            string[] baselines=Environment.GetEnvironmentVariable("MESHLAB_REVERSE_BASELINES")?.Split(';');
             int index=0;
             foreach(string manifest in manifests.Split(';'))
             {
-                var task=ReverseUvBenchmark.Run(manifest,System.IO.Path.Combine(directory,(index++).ToString()));
+                int capture=index++;
+                var task=ReverseUvBenchmark.Run(manifest,System.IO.Path.Combine(directory,capture.ToString()));
                 while(!task.IsCompleted) yield return null;
                 var summary=task.GetAwaiter().GetResult();
                 Assert.Greater(summary.accepted+summary.refused,0);
                 // Refusal is a recorded prototype limitation, not a successful transfer.
-                foreach(var trial in summary.trials.Where(t=>t.accepted)) Assert.IsNotEmpty(trial.audit);
+                foreach(var trial in summary.trials.Where(t=>t.accepted))
+                {
+                    var audit=JsonUtility.FromJson<ReverseUvAudit.Audit>(System.IO.File.ReadAllText(trial.audit));
+                    foreach(var node in audit.measurements)
+                    {
+                        Assert.AreEqual(0,node.invalidFaces); Assert.AreEqual(0,node.degenerateFaces);
+                        Assert.AreEqual(0,node.outOfBounds); Assert.IsTrue(node.complete);
+                        Assert.LessOrEqual(node.worstAnisotropy,4.001);
+                    }
+                    foreach(var level in audit.levels)
+                    {
+                        Assert.IsTrue(level.complete); Assert.AreEqual(0,level.unexpectedOverlapPairs);
+                        Assert.Greater(level.texelsPerUnitMin,0); Assert.IsFalse(double.IsInfinity(level.texelsPerUnitMax));
+                    }
+                }
+                foreach(var trial in summary.trials.Where(t=>!t.accepted)) Assert.IsNotEmpty(trial.failureStage);
+                if(baselines!=null)
+                {
+                    Assert.Less(capture,baselines.Length);
+                    var baseline=JsonUtility.FromJson<ReverseUvBenchmark.Summary>(System.IO.File.ReadAllText(baselines[capture]));
+                    Assert.AreEqual(baseline.manifest,summary.manifest);
+                    Assert.AreEqual(baseline.trials.Count,summary.trials.Count);
+                    foreach(var previous in baseline.trials.Where(t=>t.accepted))
+                    {
+                        var current=summary.trials.Single(t=>t.pair==previous.pair && t.allowOverlap==previous.allowOverlap);
+                        Assert.AreEqual(previous.target,current.target);
+                        Assert.IsTrue(current.accepted,$"Previously accepted pair {current.pair}, overlap {current.allowOverlap}: {current.error}");
+                    }
+                }
             }
+        }
+
+        [TestCase(0,1,2)] [TestCase(1,2,0)] [TestCase(2,0,1)]
+        [TestCase(0,2,1)] [TestCase(2,1,0)] [TestCase(1,0,2)]
+        public void CapturedCountertopMetricDoesNotDependOnCornerOrder(int a,int b,int c)
+        {
+            // Exact raw coordinates of Kitchen Countertop LOD1 face 38.
+            var positions=new[] {
+                new Vector3(.3567301630973816f,.06804550439119339f,-.18836303055286407f),
+                new Vector3(.3572298288345337f,.06804550439119339f,-.18836303055286407f),
+                new Vector3(.632880687713623f,.06803926080465317f,-.18835678696632385f) };
+            // Independent double reference intrinsic coordinates from the capture.
+            var uv=new[] {Vector2.zero,new Vector2(.0004996657371520996f,0),new Vector2(.27615052461624146f,8.8297647630323e-6f)};
+            Assert.Less(ReverseUvTransfer.TriangleAnisotropy(positions[a],positions[b],positions[c],uv[a],uv[b],uv[c]),1.001);
+        }
+
+        [TestCase(1e-12f)] [TestCase(1e-8f)] [TestCase(1)] [TestCase(1e12f)]
+        public void TriangleMetricIsScaleIndependentAndDetectsStretch(float size)
+        {
+            var a=Vector3.zero; var b=Vector3.right*size; var c=Vector3.up*size;
+            Assert.AreEqual(1,ReverseUvTransfer.TriangleAnisotropy(a,b,c,Vector2.zero,Vector2.right,Vector2.up),1e-6);
+            Assert.AreEqual(8,ReverseUvTransfer.TriangleAnisotropy(a,b,c,Vector2.zero,Vector2.right,new Vector2(0,.125f)),1e-6);
+        }
+
+        [Test] public void FloatPlacementCollapseIsNotMistakenForGoodIntrinsicUv()
+        {
+            var positions=new[] {Vector3.zero,new Vector3(.0004996657371520996f,0,0),
+                new Vector3(.27615052461624146f,8.8297647630323e-6f,0)};
+            var uv=positions.Select(p=>new Vector2(p.x,p.y)).ToArray();
+            Assert.AreEqual(1,ReverseUvTransfer.TriangleAnisotropy(positions[0],positions[1],positions[2],uv[0],uv[1],uv[2]),1e-6);
+            uv=uv.Select(p=>p+Vector2.one*4096).ToArray();
+            Assert.IsTrue(double.IsPositiveInfinity(ReverseUvTransfer.TriangleAnisotropy(positions[0],positions[1],positions[2],uv[0],uv[1],uv[2])));
+        }
+
+        [Test] public void CapturedNanometreBacksplashRefusesPublicationWithoutChangingGeometry()
+        {
+            var fine=new Mesh {name="Backsplash nanometre face"}; owned.Add(fine);
+            fine.vertices=new[] {
+                new Vector3(-.013632268644869328f,.06390988081693649f,-.1929730921983719f),
+                new Vector3(-.7002735733985901f,.06392237544059753f,-.19298714399337769f),
+                new Vector3(-.7007233500480652f,.06392237544059753f,-.19298714399337769f) };
+            fine.triangles=new[] {0,1,2}; fine.uv=new[] {Vector2.zero,Vector2.right,Vector2.up};
+            // A normal neighbouring surface keeps Unity's connected unwrap alive;
+            // the nanometre triangle must then fail the final placement gate.
+            fine=Combine(fine,Quad(8));
+            var before=TransferMeshSnapshot.Capture(fine);
+            Assert.IsTrue(MeshGeometry.HasArea(fine.vertices[0],fine.vertices[1],fine.vertices[2]));
+            Assert.Throws<InvalidOperationException>(()=> {using var result=Build(Options(),Level(1,Quad(4)),Level(0,fine));});
+            CollectionAssert.AreEqual(before,TransferMeshSnapshot.Capture(fine));
+        }
+
+        [Test] public void AuditRefusesStretchedFinalUvEvenWhenOverlapScanIsClean()
+        {
+            var levels=new[] {Level(1,Quad()),Level(0,Quad())};
+            using var result=Build(Options(),levels);
+            var output=result.meshes[1][0];
+            output.uv2=output.uv2.Select(p=>new Vector2(p.x*.01f,p.y)).ToArray();
+            var quality=TransferUvQuality.Measure(output,output.uv2,Vector2.one,Matrix4x4.identity);
+            Assert.IsTrue(quality.overlapScanComplete); Assert.AreEqual(0,quality.overlapPairs);
+            Assert.Greater(quality.worstAnisotropy,4);
+            Assert.Throws<InvalidOperationException>(()=>ReverseUvAudit.Write(result,levels));
         }
 
         [Test] public void SplitsPreserveCornerAttributesSubmeshesBlendShapesAndSkinWeights()

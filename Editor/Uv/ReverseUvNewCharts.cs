@@ -31,7 +31,8 @@ namespace SashaRX.UnityMeshLab
             {
                 if (fallback[f]) continue;
                 int t=f*3;
-                worldArea+=Vector3.Cross(corners[t+1]-corners[t],corners[t+2]-corners[t]).magnitude;
+                var frame=ReverseUvTransfer.TriangleFrame(corners[t],corners[t+1],corners[t+2]);
+                worldArea+=frame.length*frame.y;
                 uvArea+=Math.Abs(Cross(uv[t+1]-uv[t],uv[t+2]-uv[t]));
                 for(int k=0;k<3;++k) { min=Vector2.Min(min,uv[t+k]); max=Vector2.Max(max,uv[t+k]); }
             }
@@ -45,9 +46,10 @@ namespace SashaRX.UnityMeshLab
             for(int f=0;f<fallback.Length;++f)
             {
                 if(!fallback[f]) continue;
-                int t=f*3; var e=corners[t+1]-corners[t]; var d=corners[t+2]-corners[t];
-                float length=e.magnitude; var b=new Vector2(length*density,0);
-                var c=new Vector2(Vector3.Dot(e,d)/length,Vector3.Cross(e,d).magnitude/length)*density;
+                int t=f*3;
+                var frame=ReverseUvTransfer.TriangleFrame(corners[t],corners[t+1],corners[t+2]);
+                var b=new Vector2((float)(frame.length*density),0);
+                var c=new Vector2((float)(frame.x*density),(float)(frame.y*density));
                 float minX=Math.Min(0,c.x),width=Math.Max(b.x,c.x)-minX;
                 rescue.Add((f,b,c,minX,width,c.y)); rectangles+=(width+options.padding)*(c.y+options.padding);
             }

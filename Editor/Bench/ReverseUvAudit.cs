@@ -72,6 +72,9 @@ namespace SashaRX.UnityMeshLab
                 {
                     var mesh = result.meshes[level][node];
                     var quality = TransferUvQuality.Measure(mesh, mesh.uv2, Vector2.one, inputs[level].inputs[node].toWorld);
+                    if (!quality.overlapScanComplete || quality.invalidFaces > 0 || quality.degenerateFaces > 0
+                        || quality.outOfBoundsVertices > 0 || double.IsNaN(quality.worstAnisotropy) || quality.worstAnisotropy > 4.001)
+                        throw new InvalidOperationException($"Final reverse UV metric failed for LOD{inputs[level].lod} '{inputs[level].inputs[node].key}'; no result was published.");
                     audit.measurements.Add(new Measurement { lod = inputs[level].lod, key = inputs[level].inputs[node].key,
                         triangles = mesh.triangles.Length / 3, invalidFaces = quality.invalidFaces,
                         degenerateFaces = quality.degenerateFaces, stretchedFaces = quality.stretchedFaces,

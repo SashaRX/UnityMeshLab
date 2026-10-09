@@ -24,6 +24,39 @@ See [REVERSE_UV_TRANSFER.md](REVERSE_UV_TRANSFER.md).
   clipped inherited pieces; intrinsic rescue fragments islands; no global compact
   packing, guaranteed uniform per-face density or production overlap bake queue.
 
+### Reverse precision and frozen regression gate — 2026-10-09
+
+Continuation of the same experiment at baseline `a72e06f`; legacy solvers remain
+unchanged. Double intermediates now begin before geometry/UV edge subtraction,
+dot/cross products and intrinsic rescue coordinates. Kitchen Countertop face 38
+previously reported different distortion for cyclic vertex order, despite the same
+geometry and UV. Six corner-order fixtures and four scale fixtures verify the
+metric; the quality threshold remains unchanged.
+
+The final independent audit now refuses excessive stretch after normalization,
+even if its positive-area overlap scan is clean. A negative control changes only
+final UV2 to verify this gate. The frozen test checks every accepted audit and,
+when `MESHLAB_REVERSE_BASELINES` is supplied, requires every previously accepted
+pair/policy to stay accepted. Benchmark failures record their processing stage;
+degenerate input errors name the face and, for projection inputs, the LOD/key.
+
+- **228/228** local Unity 6000.2.6f2 DX11 EditMode checks pass.
+- Same frozen corpus: **86/112 accepted, 26 refused**, no lost accepted variants,
+  and no unexpected overlap or incomplete scans in accepted outputs.
+- The remaining repeated Kitchen failures are not cured by metric precision:
+  Backsplash fine face 22 has altitude **1.2317e-8 m** over a **0.68664 m** edge;
+  its local UV collapses after atlas placement. Countertop coarse face 38 has an
+  **8.8298e-6 m** altitude, and prepared seed placement still yields distortion
+  **32.973**. Exact captured coordinates are regression fixtures. These are 16
+  trial refusals across repeated captures/policies; ten further trials contain
+  genuinely degenerate geometry (seed faces 8618/96 or detailed face 10925).
+- Geometry is not silently removed and the stretch threshold is not relaxed.
+  Connected unwrap/placement of very thin faces remains an open limitation.
+- A shortest-edge intrinsic basis was tested and rejected: it changed Backsplash
+  face 22 from a collapsed line to distortion **13.441**, still above the limit;
+  the isolated placement negative control reached **95.587**. It did not recover
+  any corpus trial, so that packing change is not included.
+
 > **Обновлять этот документ при каждом эксперименте с transfer pipeline.**
 > Последнее обновление: v1.1.34 (2026-10-09)
 

@@ -15,7 +15,7 @@ namespace SashaRX.UnityMeshLab
         {
             public int pair; public string source, target;
             public bool allowOverlap, accepted;
-            public string error, audit;
+            public string error, audit, failureStage;
             public ReverseUvTransfer.Report result;
         }
         [Serializable] internal sealed class Summary
@@ -62,12 +62,14 @@ namespace SashaRX.UnityMeshLab
                         var trial = new Trial { pair = pair.index, source = pair.source, target = pair.target, allowOverlap = overlap };
                         summary.trials.Add(trial);
                         Mesh coarse = null, fine = null, seed = null;
+                        string stage = "snapshot";
                         try
                         {
                             // A forward capture's target is the coarse mesh. Prepare
                             // it from geometry rather than copying failed forward UV2.
                             coarse = TransferCaseReplay.Load(file.DirectoryName, pair.targetMesh);
                             fine = TransferCaseReplay.Load(file.DirectoryName, pair.sourceMesh);
+                            stage = "seed";
                             if (coarse.triangles.Length > 150000) throw new InvalidOperationException("Benchmark seed exceeds the 50000-face unwrap limit.");
                             seed = ReverseUvSeed.Prepare(new[] {new ReverseUvTransfer.Input {mesh=coarse,toWorld=pair.localToWorld}},
                                 256,2,0,default,out int seedSize)[0];
@@ -75,12 +77,14 @@ namespace SashaRX.UnityMeshLab
                                 new ReverseUvTransfer.Level { lod = 1, inputs = new[] { new ReverseUvTransfer.Input { mesh = seed, key = pair.target, toWorld = pair.localToWorld } } },
                                 new ReverseUvTransfer.Level { lod = 0, inputs = new[] { new ReverseUvTransfer.Input { mesh = fine, key = pair.source, toWorld = pair.localToWorld } } }
                             };
+                            stage = "projection";
                             using var result = await ReverseUvTransfer.Build(levels, new ReverseUvTransfer.Options {
                                 seedResolution = seedSize, projectionReach = .05f, preserveProjectedOverlap = overlap }, true);
+                            stage = "audit";
                             trial.audit = ReverseUvAudit.Write(result, levels); trial.result = result.report;
                             trial.accepted = true; ++summary.accepted;
                         }
-                        catch (Exception ex) { trial.error = ex.Message; ++summary.refused; }
+                        catch (Exception ex) { trial.error = ex.Message; trial.failureStage = stage; ++summary.refused; }
                         finally
                         {
                             if (coarse) UnityEngine.Object.DestroyImmediate(coarse);

@@ -30,8 +30,9 @@ namespace SashaRX.UnityMeshLab
                 throw new InvalidOperationException("Reverse seed preparation supports 1–50000 faces in the combined coarsest LOD.");
             for (int t=0;t<corners.Count;t+=3)
             {
-                if(!MeshGeometry.HasArea(corners[t],corners[t+1],corners[t+2])) throw new InvalidOperationException("Reverse seed has a degenerate geometric triangle.");
-                area+=Vector3.Cross(corners[t+1]-corners[t],corners[t+2]-corners[t]).magnitude*.5;
+                if(!MeshGeometry.HasArea(corners[t],corners[t+1],corners[t+2])) throw new InvalidOperationException($"Reverse seed face {t / 3} has a degenerate geometric triangle.");
+                var frame=ReverseUvTransfer.TriangleFrame(corners[t],corners[t+1],corners[t+2]);
+                area+=frame.length*frame.y*.5;
             }
             var unique = new Dictionary<Vector3,int>(); var vertices = new List<Vector3>(); var indices = new int[corners.Count];
             for(int i=0;i<indices.Length;++i)

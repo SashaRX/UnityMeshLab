@@ -58,6 +58,9 @@ the last frozen transfer capture in both overlap modes. A forward capture's targ
 becomes the coarse seed; its source becomes the fine target. The seed is prepared
 from geometry. Trials use clones and do not modify scene or FBX assets. The summary
 records refused trials as failures, separately from successful transfers.
+Failures include the processing stage; degenerate geometry errors identify the
+offending triangle. Final audits also reject excessive normalized UV distortion,
+even when no overlaps are found.
 
 For isolated EditMode runs, set `MESHLAB_REVERSE_MANIFESTS` to semicolon-separated
 manifest paths, `MESHLAB_REVERSE_OUTPUT` to the output directory, and run
@@ -68,6 +71,12 @@ seams, donor holes, ambiguity, transforms, cancellation, resource limits, raw
 Float16/scalar UVs, materials, blend shapes, variable bone weights, source
 immutability, sidecar persistence and repeatability. Workflow tests check checker
 refresh, camera preservation and rollback after failure.
+Set `MESHLAB_REVERSE_BASELINES` to corresponding semicolon-separated prior summary
+paths to require every previously accepted pair and overlap policy to remain
+accepted. Accepted audits are checked for invalid/degenerate/out-of-bounds UVs,
+distortion, complete overlap scans, unexpected overlaps and finite density.
+Exact Kitchen triangles also cover corner-order independence of the double
+metric and refusal of float placement collapse without source geometry changes.
 
 ## Current limits
 

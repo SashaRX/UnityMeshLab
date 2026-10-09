@@ -197,7 +197,7 @@ namespace SashaRX.UnityMeshLab
                 var positions = input.mesh.vertices.Select(input.toWorld.MultiplyPoint3x4).ToArray();
                 for (int f = 0; f < indices.Length; f += 3)
                     if (!MeshGeometry.HasArea(positions[indices[f]], positions[indices[f + 1]], positions[indices[f + 2]]))
-                        throw new InvalidOperationException("Reverse UV input has a degenerate geometric triangle.");
+                        throw new InvalidOperationException($"Reverse UV input '{input.key}' LOD{level.lod} face {f / 3} has a degenerate geometric triangle.");
                 surfaces[node] = new Surface { input = input, indices = indices, positions = positions,
                     pixels = new Vector2[indices.Length], faces = Enumerable.Range(0, indices.Length / 3).Select(_ => new Face()).ToArray(),
                     lod = level.lod, node = node, orientation = Math.Sign(input.toWorld.determinant) };
@@ -602,17 +602,28 @@ namespace SashaRX.UnityMeshLab
 
         internal static double TriangleAnisotropy(Vector3 p, Vector3 q, Vector3 r, Vector2 aUv, Vector2 bUv, Vector2 cUv)
         {
-            var e = q - p;
-            var d = r - p;
-            double length = e.magnitude, y = Vector3.Cross(e, d).magnitude / length, x = Vector3.Dot(e, d) / length;
-            var u = bUv - aUv; var v = cUv - aUv;
-            double j00 = u.x / length, j10 = u.y / length, j01 = (v.x - u.x * x / length) / y, j11 = (v.y - u.y * x / length) / y;
+            var (length, x, y) = TriangleFrame(p, q, r);
+            // Promote before subtraction: float edge/dot arithmetic introduces
+            // order-dependent shear on nearly collinear captured triangles.
+            double ux = (double)bUv.x - aUv.x, uy = (double)bUv.y - aUv.y;
+            double vx = (double)cUv.x - aUv.x, vy = (double)cUv.y - aUv.y;
+            double j00 = ux / length, j10 = uy / length, j01 = (vx - ux * x / length) / y, j11 = (vy - uy * x / length) / y;
             double a = j00 * j00 + j10 * j10, b = j01 * j01 + j11 * j11, c = j00 * j01 + j10 * j11;
             double max = (a + b + Math.Sqrt(Math.Max(0, (a - b) * (a - b) + 4 * c * c))) * .5;
             double determinant = j00 * j11 - j01 * j10;
             double min = max > 0 ? determinant * determinant / max : 0;
             double ratio = min > 0 ? Math.Sqrt(max / min) : double.PositiveInfinity;
             return double.IsNaN(ratio) ? double.PositiveInfinity : ratio;
+        }
+
+        internal static (double length, double x, double y) TriangleFrame(Vector3 p, Vector3 q, Vector3 r)
+        {
+            double ex = (double)q.x - p.x, ey = (double)q.y - p.y, ez = (double)q.z - p.z;
+            double dx = (double)r.x - p.x, dy = (double)r.y - p.y, dz = (double)r.z - p.z;
+            double length = Math.Sqrt(ex * ex + ey * ey + ez * ez);
+            double cx = ey * dz - ez * dy, cy = ez * dx - ex * dz, cz = ex * dy - ey * dx;
+            return (length, (ex * dx + ey * dy + ez * dz) / length,
+                Math.Sqrt(cx * cx + cy * cy + cz * cz) / length);
         }
 
         static double Cross(Vector2 a, Vector2 b) => (double)a.x * b.y - (double)a.y * b.x;
