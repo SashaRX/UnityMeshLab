@@ -3909,19 +3909,7 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
-            // Shell quality summary
-            {
-                var sb = new System.Text.StringBuilder();
-                sb.Append($"[GroupedTransfer] Quality: {statusAccepted} accepted");
-                if (statusDegraded > 0) sb.Append($", {statusDegraded} degraded");
-                if (statusPoor > 0) sb.Append($", {statusPoor} poor");
-                if (statusRejected > 0) sb.Append($", {statusRejected} rejected");
-                if (statusUnmatched > 0) sb.Append($", {statusUnmatched} unmatched");
-                if (statusRejected > 0 || statusPoor > 0)
-                    UvtLog.Warn(sb.ToString());
-                else
-                    UvtLog.Info(sb.ToString());
-            }
+            LogShellQuality(statusAccepted, statusDegraded, statusPoor, statusRejected, statusUnmatched);
 
             // ── Visual-defect counters (computed on the FINAL UV2) ──
             // Post-topology so duplicate-pair detection runs on the bytes that
@@ -4604,6 +4592,18 @@ namespace SashaRX.UnityMeshLab
             var quality = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry { uv = uv, indices = indices,
                 charts = new int[positions.Length] }, System.Threading.CancellationToken.None, comparisonBudget: 200000);
             return !quality.complete || quality.pairs > 0;
+        }
+
+        static void LogShellQuality(int accepted, int degraded, int poor, int rejected, int unmatched)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.Append($"[GroupedTransfer] Quality: {accepted} accepted");
+            if (degraded > 0) sb.Append($", {degraded} degraded");
+            if (poor > 0) sb.Append($", {poor} poor");
+            if (rejected > 0) sb.Append($", {rejected} rejected");
+            if (unmatched > 0) sb.Append($", {unmatched} unmatched");
+            if (rejected > 0 || poor > 0) UvtLog.Warn(sb.ToString());
+            else UvtLog.Info(sb.ToString());
         }
 
         static Dictionary<int, Vector2> ShellCandidate(UvShell shell, Vector2[] uv)
