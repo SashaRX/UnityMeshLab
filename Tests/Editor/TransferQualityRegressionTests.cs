@@ -7,6 +7,44 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class TransferQualityRegressionTests
     {
+        [TestCase(-1f, 8)]
+        [TestCase(1f, 6)]
+        [TestCase(0f, 6)]
+        public void UvEdgeWeldPreservesMirroredTangentSeams(float secondHandedness, int expectedVertices)
+        {
+            var mesh = new Mesh { name = "Adjacent charts with a tangent seam" };
+            Mesh welded = null;
+            try {
+                mesh.vertices = new[] { Vector3.zero, Vector3.right, new Vector3(1, 1, 0), Vector3.up,
+                    Vector3.right, new Vector3(2, 0, 0), new Vector3(2, 1, 0), new Vector3(1, 1, 0) };
+                mesh.uv = new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up,
+                    Vector2.right, new Vector2(2, 0), new Vector2(2, 1), Vector2.one };
+                mesh.triangles = new[] { 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 };
+                mesh.RecalculateNormals();
+                if (secondHandedness != 0) {
+                    var tangents = new Vector4[8];
+                    for (int i = 0; i < tangents.Length; ++i)
+                        tangents[i] = new Vector4(1, 0, 0, i < 4 ? 1 : secondHandedness);
+                    mesh.tangents = tangents;
+                }
+                welded = Uv0Analyzer.UvEdgeWeld(mesh);
+                Assert.AreEqual(expectedVertices, welded.vertexCount);
+                var originalTriangles = mesh.triangles;
+                var weldedTriangles = welded.triangles;
+                for (int i = 0; i < originalTriangles.Length; ++i) {
+                    Assert.AreEqual(mesh.vertices[originalTriangles[i]], welded.vertices[weldedTriangles[i]]);
+                    Assert.AreEqual(mesh.uv[originalTriangles[i]], welded.uv[weldedTriangles[i]]);
+                    if (secondHandedness != 0)
+                        Assert.AreEqual(mesh.tangents[originalTriangles[i]].w, welded.tangents[weldedTriangles[i]].w,
+                            "Every triangle corner must keep its tangent handedness.");
+                }
+            }
+            finally {
+                if (welded != mesh) Object.DestroyImmediate(welded);
+                Object.DestroyImmediate(mesh);
+            }
+        }
+
         [TestCase(.0001f)]
         [TestCase(1f)]
         [TestCase(1000f)]

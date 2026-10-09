@@ -3,6 +3,40 @@
 > **Обновлять этот документ при каждом эксперименте с transfer pipeline.**
 > Последнее обновление: v1.1.34 (2026-10-09)
 
+## Modern furniture: weld и владение мешами — 2026-10-09
+
+- Продолжение PR #225. Копии `Modern_DressingTable_A`, `Modern_Kitchen_A` и
+  `speaker-retro` импортированы с исходными importer meta в изолированный Unity
+  6000.2.6f2 / DX11 проект. Исходные FBX не менялись; SHA256 сохранены.
+- Сварка UV0 теряла противоположный `tangent.w`, предупреждая уже после слияния.
+  Теперь такой шов сохраняется. На Kitchen Handle LOD1 в контролируемой adaptive
+  подготовке: 24 → 0 degenerate faces, 12 → 0 overlap pairs, area-weighted
+  anisotropy 512.56 → 1.05. На других деталях остаются дефекты; это не сертификация
+  всей модели. Matching/repack/symmetry core в итоговой правке не изменены.
+- Повторный Full Pipeline с Checker воспроизвёл уничтожение привязанных к
+  MeshFilter outputs до repaint: Speaker 2, DressingTable 2 и Kitchen 4 missing
+  meshes. Операции снимают overrides и ссылки на старые working outputs до
+  изменения мешей, затем сохраняют выбранный режим и framing. Проверены также
+  Off и Checker с working output в исходном scene binding/preview backup.
+- Auto-tune сохранял лучший target transfer, но source atlas оставался от
+  последней попытки. Выбранные source/target meshes, atlas dimensions, validation
+  и symmetry flags теперь восстанавливаются вместе. Заменённые попытки и snapshots
+  освобождаются, включая cancel/exception paths.
+- Новый набор сначала воспроизвёл 3 failures из 9 tests (TBN seam и Renderer
+  lifetime), отдельный auto-tune fixture и 2/2 scene-binding fixtures также упали.
+  Итоговый affected subset: **350/350 tests**, без skipped/failed. Обе reference
+  compile variants с/без FBX exporter проходят. Async full pipeline с обновлением
+  canvas на editor updates: два запуска каждой модели, missing meshes = 0.
+  Зависание Speaker не воспроизведено; время 0.45–0.68 s на контролируемых настройках.
+- Frozen comparison шести методов: 96 rows × 2 repetitions, deterministic,
+  inputs unchanged. Эксперимент с mesh-relative dedup guard убрал 11 схлопнувшихся
+  граней Countertop, но увеличил overlap area до ≈0.001. Geometry fallback не
+  решил конфликт. Эксперимент отвергнут, в production его нет; качество не
+  объявляется исправленным заменой одного дефекта другим.
+- [Корпус, команды, метрики и ограничения](MODERN_TRANSFER_REPRO.md).
+  Локальные logs/XML находятся в `_results~/modern-transfer-20261009/`, полные
+  frozen reports — в `BenchmarkReports/` изолированного consuming project.
+
 ## Синхронизация UV/3D preview после Transfer — 2026-10-09
 
 - Продолжение PR #225, без изменений core matching/repack/symmetry алгоритмов.

@@ -589,6 +589,8 @@ namespace SashaRX.UnityMeshLab.Tests
                     finally { UvProgress.End(); }
                     Assert.NotNull(target.transferredMesh);
                     Assert.IsTrue(previousOutput == null, "Repeated transfer releases its previous output.");
+                    Assert.IsNotNull(targetRenderer.GetComponent<MeshFilter>().sharedMesh,
+                        "Replacing a transfer output must not leave a renderer bound to a destroyed mesh until repaint.");
                     Call(hub, "CollectCanvasEntries");
                     AssertFreshPreview(ctx, target, mode);
                     AssertPreviewFrame();
@@ -633,6 +635,72 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.AreSame(currentPreview, entry.meshFilter.sharedMesh, "Repainting unchanged data must not recreate preview clones.");
             }
             finally { LightmapSettings.lightmaps = previousLightmaps; }
+        }
+
+        [Test]
+        public void AutoTuneRestoresTheSourceAtlasTogetherWithItsTransfer()
+        {
+            var ctx = Open(Group(true, out var sourceRenderer, out var targetRenderer));
+            var source = ctx.MeshEntries.Find(e => e.renderer == sourceRenderer);
+            var target = ctx.MeshEntries.Find(e => e.renderer == targetRenderer);
+            var bestType = typeof(UvTransferWorkflow).GetNestedType("AutoTuneChoice", BindingFlags.NonPublic);
+            var best = System.Activator.CreateInstance(bestType, true);
+            source.repackedMesh = Object.Instantiate(source.fbxMesh);
+            source.repackedMesh.uv2 = ShiftedUvs(.1f);
+            source.repackedAtlasWidth = 512; source.repackedAtlasHeight = 512;
+            target.transferredMesh = Object.Instantiate(target.fbxMesh);
+            target.transferredMesh.uv2 = ShiftedUvs(.1f);
+            var expected = source.repackedMesh.uv2;
+            CallWorkflow("CaptureAutoTuneChoice", best);
+            var savedAtlas = SavedAutoTuneMesh(best, "Atlases", source);
+            var savedTransfer = SavedAutoTuneMesh(best, "Transfers", target);
+            CallWorkflow("CaptureAutoTuneChoice", best);
+            Assert.IsTrue(savedAtlas == null, "Replacing the best attempt releases its atlas snapshot.");
+            Assert.IsTrue(savedTransfer == null, "Replacing the best attempt releases its transfer snapshot.");
+            var oldAtlas = source.repackedMesh; var oldTransfer = target.transferredMesh;
+            source.repackedMesh.uv2 = ShiftedUvs(.5f);
+            source.repackedAtlasWidth = 1024; source.repackedAtlasHeight = 1024;
+            target.transferredMesh.uv2 = ShiftedUvs(.5f);
+            var restore = typeof(UvTransferWorkflow).GetMethod("RestoreAutoTuneChoice", Private | BindingFlags.Static);
+            restore.Invoke(restore.IsStatic ? null : hub.DiagnosticWorkflow, new[] { best });
+            CollectionAssert.AreEqual(expected, source.repackedMesh.uv2, "The target cannot use an atlas from a discarded attempt.");
+            CollectionAssert.AreEqual(expected, target.transferredMesh.uv2);
+            Assert.AreEqual(512, source.repackedAtlasWidth); Assert.AreEqual(512, source.repackedAtlasHeight);
+            Assert.IsTrue(oldAtlas == null); Assert.IsTrue(oldTransfer == null);
+            ((System.IDisposable)best).Dispose();
+            Assert.IsNotNull(source.repackedMesh); Assert.IsNotNull(target.transferredMesh);
+        }
+
+        static Mesh SavedAutoTuneMesh(object best, string field, MeshEntry entry)
+        {
+            var dictionary = (System.Collections.IDictionary)best.GetType().GetField(field, Private).GetValue(best);
+            var snapshot = dictionary[entry];
+            return (Mesh)snapshot.GetType().GetField("Item1").GetValue(snapshot);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void TransferReleasesSceneBindingsToItsPreviousWorkingOutput(bool checker)
+        {
+            var ctx = Open(Group(true, out var sourceRenderer, out var targetRenderer));
+            var source = ctx.MeshEntries.Find(e => e.renderer == sourceRenderer);
+            var target = ctx.MeshEntries.Find(e => e.renderer == targetRenderer);
+            source.repackedMesh = Object.Instantiate(source.fbxMesh);
+            source.repackedAtlasWidth = source.repackedAtlasHeight = 512;
+            var previousOutput = target.transferredMesh = Object.Instantiate(target.fbxMesh);
+            target.meshFilter.sharedMesh = previousOutput;
+            SwitchLod(1);
+            if (checker) Call(hub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Checker);
+            UvProgress.Begin("Working output binding regression", cancelable: true);
+            try { ((System.Threading.Tasks.Task)CallWorkflow("ExecTransferLodImpl", 1, false)).GetAwaiter().GetResult(); }
+            finally { UvProgress.End(); }
+            Assert.IsTrue(previousOutput == null);
+            Assert.AreSame(target.fbxMesh, target.meshFilter.sharedMesh,
+                "Even a preview backup may refer to the previous working output.");
+            Call(hub, "CollectCanvasEntries");
+            if (checker) AssertFreshPreview(ctx, target, UvCanvasView.PreviewMode.Checker);
+            Call(hub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Off);
+            Assert.AreSame(target.fbxMesh, target.meshFilter.sharedMesh);
         }
 
         [Test]

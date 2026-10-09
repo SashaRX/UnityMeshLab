@@ -712,6 +712,9 @@ namespace SashaRX.UnityMeshLab
 
             int vertCount = verts.Length;
 
+            var tangents = mesh.tangents;
+            bool hasTangents = tangents != null && tangents.Length == vertCount;
+
             // Flatten all submesh triangles into one array
             int[] tris;
             {
@@ -926,6 +929,11 @@ namespace SashaRX.UnityMeshLab
                                 if (sAb >= 0 && sBb >= 0 && sAb != sBb
                                     && blockedShellPair[sAb, sBb]) continue;
                             }
+                            // A mirrored normal-map seam needs two tangent frames even
+                            // when position and UV0 coincide. A warning after merging
+                            // cannot recover the handedness of the discarded corner.
+                            if (hasTangents && (tangents[eA.vA].w * tangents[eB.vA].w < 0
+                                || tangents[eA.vB].w * tangents[eB.vB].w < 0)) continue;
                             if (welds.Union(eA.vA, eB.vA)) weldCount++;
                             if (welds.Union(eA.vB, eB.vB)) weldCount++;
                         }
@@ -990,8 +998,6 @@ namespace SashaRX.UnityMeshLab
             // Copy attributes
             var normals = mesh.normals;
             bool hasNormals = normals != null && normals.Length == vertCount;
-            var tangents = mesh.tangents;
-            bool hasTangents = tangents != null && tangents.Length == vertCount;
             var uv1List = new List<Vector2>();
             mesh.GetUVs(1, uv1List);
             bool hasUv1 = uv1List.Count == vertCount;

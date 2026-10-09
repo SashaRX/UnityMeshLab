@@ -15,8 +15,10 @@ before rendering that frame. An unchanged frame reuses its preview resources.
 
 | Event | Update path | State retained / lifetime rule |
 |---|---|---|
-| Completed or repeated Transfer | `ApplyTransferResult` releases the previous transferred output, assigns the result and clears context caches; the hub refreshes all active modes | Preferred channel returns when generated UV2 becomes available; current output drives both UV and 3D |
-| Repack, weld, symmetry preparation, generated-mesh replacement | Displayed mesh identity and context version invalidate derived preview data | Original UV0 remains the display source when that channel is selected |
+| Completed or repeated Transfer | Nested preview suspension restores renderer references before releasing the previous output; `ApplyTransferResult` assigns the result and clears context caches | Preferred channel returns when generated UV2 becomes available; current output drives both UV and 3D |
+| Repack, weld, symmetry preparation | Suspend overrides and detach renderer references to working meshes before mutation; resume the selected mode after the outer operation | Original UV0 remains the display source when that channel is selected; camera/pan/zoom are retained |
+| Full Pipeline / auto-tune retry and winner selection | Preview stays suspended across asynchronous stages; restore the selected source atlas, dimensions and target transfers together, then invalidate caches | Release discarded attempt meshes and snapshots; no renderer points to a destroyed output during editor updates |
+| Generated-mesh replacement | Displayed mesh identity and context version invalidate derived preview data | Keep navigation and the selected display mode |
 | UV/vertex/triangle edits on an existing mesh | `VertexChannels.Changed` advances context caches and invalidates viewport/layer resources | Callers must raise the event after direct mesh edits; identity alone cannot detect them |
 | UV channel change or missing-channel fallback | `OnPreviewChannelChanged`, `RestorePreferredChannel`, `EnsurePreviewChannel`, then all-mode reapplication | Preserve the user's preferred channel through temporary fallback |
 | Source or preview LOD change | Content key and queued reapplication use the newly collected entries | Restore the previous LOD's authored mesh/material references; preserve camera and UV pan/zoom |

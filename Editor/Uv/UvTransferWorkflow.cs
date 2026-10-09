@@ -1394,6 +1394,7 @@ namespace SashaRX.UnityMeshLab
         void ExecMeshOptimize()
         {
             if (ctx.LodGroup == null) return;
+            using var previewChange = PreservePreviewDuringMeshChange();
             foreach (var e in ctx.MeshEntries)
             {
                 if (!e.include || e.originalMesh == null) continue;
@@ -1428,6 +1429,7 @@ namespace SashaRX.UnityMeshLab
         void ExecWeldUv0(bool runMeshoptFirst = true)
         {
             if (ctx.LodGroup == null) return;
+            using var previewChange = PreservePreviewDuringMeshChange();
 
             if (runMeshoptFirst)
                 ExecMeshOptimize();
@@ -1446,6 +1448,7 @@ namespace SashaRX.UnityMeshLab
                 var welded = Uv0Analyzer.UvEdgeWeld(e.originalMesh);
                 if (welded != null && welded != e.originalMesh)
                 {
+                    DestroyWorkingMesh(ref e.originalMesh);
                     e.originalMesh = welded;
                     e.wasEdgeWelded = true;
                     UvtLog.Info($"[EdgeWeld] '{e.originalMesh.name}' LOD{e.lodIndex}: edge welded");
@@ -1460,6 +1463,7 @@ namespace SashaRX.UnityMeshLab
         void ExecSymmetrySplit(bool includeTargets, float separationThreshold = 0.10f)
         {
             if (ctx.LodGroup == null) return;
+            using var previewChange = PreservePreviewDuringMeshChange();
             SymmetrySplitShells.CurrentThresholdMode = SymmetrySplitMode;
             lastSymmetrySplitLods.Clear();
 
@@ -1545,6 +1549,7 @@ namespace SashaRX.UnityMeshLab
         async Task ExecFullPipelineImpl(string runLabel, bool useAsync)
         {
             if (ctx.LodGroup == null) return;
+            using var previewChange = PreservePreviewDuringMeshChange();
             var capture = TransferCaseCapture.Begin(ctx, this, runLabel);
             using var _bench = BenchmarkRecorder.NewRun(ctx, runLabel,
                 splitTargetsInSymmetryStep, SymmetrySplitMode);
@@ -1678,25 +1683,21 @@ namespace SashaRX.UnityMeshLab
             if (!hasTransferTargets)
                 UvtLog.Warn("[Pipeline] No included target LOD meshes; running source repack only and skipping transfer/auto-tune.");
 
-            var best = new AutoTuneChoice();
+            using var best = new AutoTuneChoice();
 
             bool cancelled = false;
             UvProgress.Begin("Auto-tune Pipeline", cancelable: true);
             try
             {
                 cancelled = await RunAutoTuneAttempts(separationConfigs, savedMeshes, best, hasTransferTargets, useAsync);
+                if (best.Meshes.Count > 0 && !cancelled) RestoreAutoTuneChoice(best);
+                ctx.DiagnosticCapture?.StageSafe(this, "selected-final");
             }
             finally
             {
                 if (cancelled) UvProgress.Cancel(); else UvProgress.End();
+                foreach (var m in savedMeshes.Values) UnityEngine.Object.DestroyImmediate(m);
             }
-
-            if (best.Meshes.Count > 0 && !cancelled) RestoreAutoTuneChoice(best);
-            ctx.DiagnosticCapture?.StageSafe(this, "selected-final");
-
-            // Cleanup saved copies
-            foreach (var m in savedMeshes.Values)
-                UnityEngine.Object.DestroyImmediate(m);
 
             if (cancelled)
             {
@@ -1814,6 +1815,7 @@ namespace SashaRX.UnityMeshLab
             // Restore saved meshes
             foreach (var kv in savedMeshes)
             {
+                ReleaseAttemptMeshes(kv.Key);
                 kv.Key.originalMesh = UnityEngine.Object.Instantiate(kv.Value);
                 kv.Key.originalMesh.name = kv.Value.name;
                 kv.Key.wasSymmetrySplit = false;
@@ -1830,13 +1832,27 @@ namespace SashaRX.UnityMeshLab
             ctx.HasTransfer = false;
         }
 
-        sealed class AutoTuneChoice
+        sealed class AutoTuneChoice : IDisposable
         {
             internal int Issues = int.MaxValue;
             internal float Coverage;
             internal int ConfigIndex;
             internal readonly Dictionary<MeshEntry, Mesh> Meshes = new Dictionary<MeshEntry, Mesh>();
+            internal readonly Dictionary<MeshEntry, (Mesh mesh, uint width, uint height, uint packedWidth, uint packedHeight)> Atlases =
+                new Dictionary<MeshEntry, (Mesh, uint, uint, uint, uint)>();
+            internal readonly Dictionary<MeshEntry, (bool symmetrySplit, TransferValidator.ValidationReport validation)> States =
+                new Dictionary<MeshEntry, (bool, TransferValidator.ValidationReport)>();
             internal readonly Dictionary<MeshEntry, (Mesh transferred, GroupedShellTransfer.TransferResult tr)> Transfers = new Dictionary<MeshEntry, (Mesh, GroupedShellTransfer.TransferResult)>();
+
+            public void Dispose()
+            {
+                foreach (var mesh in Meshes.Values) UnityEngine.Object.DestroyImmediate(mesh);
+                foreach (var atlas in Atlases.Values) UnityEngine.Object.DestroyImmediate(atlas.mesh);
+                foreach (var transfer in Transfers.Values) UnityEngine.Object.DestroyImmediate(transfer.transferred);
+                Clear();
+            }
+
+            internal void Clear() { Meshes.Clear(); Atlases.Clear(); Transfers.Clear(); States.Clear(); }
         }
 
         async Task<bool> RunAutoTuneAttempts(float[] separationConfigs, Dictionary<MeshEntry, Mesh> savedMeshes,
@@ -1911,31 +1927,59 @@ namespace SashaRX.UnityMeshLab
         void CaptureAutoTuneChoice(AutoTuneChoice best)
         {
             // Save best meshes
-            foreach (var m in best.Meshes.Values) UnityEngine.Object.DestroyImmediate(m);
-            best.Meshes.Clear();
-            best.Transfers.Clear();
+            best.Dispose();
             foreach (var e in ctx.MeshEntries)
             {
                 if (e.originalMesh != null)
                     best.Meshes[e] = UnityEngine.Object.Instantiate(e.originalMesh);
+                if (e.repackedMesh != null)
+                    best.Atlases[e] = (UnityEngine.Object.Instantiate(e.repackedMesh), e.repackedAtlasWidth, e.repackedAtlasHeight,
+                        e.diagnosticPackedAtlasWidth, e.diagnosticPackedAtlasHeight);
+                best.States[e] = (e.wasSymmetrySplit, e.validationReport);
                 if (e.transferredMesh != null)
                     best.Transfers[e] = (UnityEngine.Object.Instantiate(e.transferredMesh),
                         e.shellTransferResult);
             }
         }
 
-        static void RestoreAutoTuneChoice(AutoTuneChoice best)
+        void RestoreAutoTuneChoice(AutoTuneChoice best)
         {
             foreach (var kv in best.Meshes)
             {
+                ReleaseAttemptMeshes(kv.Key);
                 kv.Key.originalMesh = kv.Value;
                 kv.Key.originalMesh.name = kv.Value.name;
+            }
+            foreach (var kv in best.Atlases)
+            {
+                kv.Key.repackedMesh = kv.Value.mesh;
+                kv.Key.repackedAtlasWidth = kv.Value.width;
+                kv.Key.repackedAtlasHeight = kv.Value.height;
+                kv.Key.diagnosticPackedAtlasWidth = kv.Value.packedWidth;
+                kv.Key.diagnosticPackedAtlasHeight = kv.Value.packedHeight;
             }
             foreach (var kv in best.Transfers)
             {
                 kv.Key.transferredMesh = kv.Value.transferred;
                 kv.Key.shellTransferResult = kv.Value.tr;
             }
+            foreach (var kv in best.States)
+            {
+                kv.Key.wasSymmetrySplit = kv.Value.symmetrySplit;
+                kv.Key.validationReport = kv.Value.validation;
+            }
+            ctx.ClearAllCaches();
+            shellTransformCache.Clear();
+            // Ownership has moved to the entries. Cancel/error paths instead
+            // dispose the still-owned snapshot when the pipeline scope exits.
+            best.Clear();
+        }
+
+        static void ReleaseAttemptMeshes(MeshEntry entry)
+        {
+            DestroyWorkingMesh(ref entry.transferredMesh);
+            DestroyWorkingMesh(ref entry.repackedMesh);
+            if (entry.originalMesh != entry.fbxMesh) DestroyWorkingMesh(ref entry.originalMesh);
         }
 
         // Async entry — button-click path. Editor main thread is free during
@@ -1946,6 +1990,7 @@ namespace SashaRX.UnityMeshLab
         async Task ExecRepackImpl(List<MeshEntry> entries, bool useAsync)
         {
             if (entries.Count == 0) return;
+            using var previewChange = PreservePreviewDuringMeshChange();
             using var _bench = BenchmarkRecorder.NewRun(ctx, "Repack",
                 splitTargetsInSymmetryStep, SymmetrySplitMode);
             bool ownsSession = _bench is BenchmarkRecorder;
@@ -2116,6 +2161,7 @@ namespace SashaRX.UnityMeshLab
 
         async Task ExecTransferAllImpl(bool useAsync)
         {
+            using var previewChange = PreservePreviewDuringMeshChange();
             var capture = TransferCaseCapture.Begin(ctx, this, "TransferAll");
             using var _bench = BenchmarkRecorder.NewRun(ctx, "TransferAll",
                 splitTargetsInSymmetryStep, SymmetrySplitMode);
@@ -2206,6 +2252,7 @@ namespace SashaRX.UnityMeshLab
 
         async Task ExecTransferLodImpl(int tLod, bool useAsync)
         {
+            using var previewChange = PreservePreviewDuringMeshChange();
             var targets = ctx.ForLod(tLod);
             if (targets.Count == 0) return;
             var sources = ctx.ForLod(ctx.SourceLodIndex);
@@ -2323,6 +2370,28 @@ namespace SashaRX.UnityMeshLab
 
         public void BeforeAssetWrite() => RestoreAllPreviews();
         public void AfterAssetWrite() { OnRefresh(); SaveSettingsToSidecar(); RequestRepaint?.Invoke(); }
+
+        IDisposable PreservePreviewDuringMeshChange()
+        {
+            // Reuse the hub's nested suspension without refreshing the imported
+            // assets. Renderers must release working meshes before we destroy
+            // or mutate them; repaint may run while native packing is awaited.
+            var scope = ctx.Assets.PreservePreviewDuringWrite();
+            try
+            {
+                ctx.Assets.BeforeWrite?.Invoke();
+                foreach (var entry in ctx.MeshEntries)
+                {
+                    if (!entry.meshFilter || !entry.fbxMesh) continue;
+                    var shown = entry.meshFilter.sharedMesh;
+                    if (shown != entry.fbxMesh && (shown == entry.originalMesh
+                        || shown == entry.repackedMesh || shown == entry.transferredMesh))
+                        entry.meshFilter.sharedMesh = entry.fbxMesh;
+                }
+                return scope;
+            }
+            catch { scope.Dispose(); throw; }
+        }
 
         void RefreshSetupSelectionCache(GameObject selected, List<(GameObject go, int lodIndex)> siblings)
         {
