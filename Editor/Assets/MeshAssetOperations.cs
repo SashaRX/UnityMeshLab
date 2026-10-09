@@ -11,8 +11,22 @@ namespace SashaRX.UnityMeshLab
     {
         const string CancelButton = "Cancel";
         readonly UvToolContext ctx;
-        internal Action BeforeWrite, AfterWrite;
+        internal Action BeforeWrite, AfterWrite, WriteFinished;
+        int previewWriteDepth;
         public MeshAssetOperations(UvToolContext context) => ctx = context ?? throw new ArgumentNullException(nameof(context));
+
+        internal IDisposable PreservePreviewDuringWrite() => new PreviewWriteScope(this);
+
+        sealed class PreviewWriteScope : IDisposable
+        {
+            MeshAssetOperations operations;
+            public PreviewWriteScope(MeshAssetOperations operations) { this.operations = operations; ++operations.previewWriteDepth; }
+            public void Dispose()
+            {
+                var owner = operations; operations = null;
+                if (owner != null && --owner.previewWriteDepth == 0) owner.WriteFinished?.Invoke();
+            }
+        }
 
         void RestoreAllPreviews() => BeforeWrite?.Invoke();
         void SwitchToPostApplyView()
@@ -149,10 +163,13 @@ namespace SashaRX.UnityMeshLab
             return e.originalMesh;
         }
 
-        public void ExportFbxPublic(bool overwriteSource) => ExportFbx(overwriteSource, FbxExportIntent.All);
-        public void ExportFbxPublic(bool overwriteSource, FbxExportIntent intent) => ExportFbx(overwriteSource, intent);
-        public void ApplyUv2Public() => ApplyUv2ToFbx();
-        public void SaveAllPublic() => SaveAll();
+        public void ExportFbxPublic(bool overwriteSource) => ExportFbxPublic(overwriteSource, FbxExportIntent.All);
+        public void ExportFbxPublic(bool overwriteSource, FbxExportIntent intent)
+        { using var previewWrite = PreservePreviewDuringWrite(); ExportFbx(overwriteSource, intent); }
+        public void ApplyUv2Public()
+        { using var previewWrite = PreservePreviewDuringWrite(); ApplyUv2ToFbx(); }
+        public void SaveAllPublic()
+        { using var previewWrite = PreservePreviewDuringWrite(); SaveAll(); }
 
         /// <summary>
         /// Export only vertex colors (e.g. baked AO) to FBX without running the
@@ -161,6 +178,7 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public void ExportVertexColorsToFbx()
         {
+            using var previewWrite = PreservePreviewDuringWrite();
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             if (ctx?.MeshEntries == null || ctx.MeshEntries.Count == 0)
             {
@@ -195,6 +213,7 @@ namespace SashaRX.UnityMeshLab
         // so unrelated submeshes / instanced refs are not mutated.
         public void ExportVertexColorsToFbx(string sourceFbxPath, IEnumerable<MeshEntry> entries, int uvChannelOverride = -1)
         {
+            using var previewWrite = PreservePreviewDuringWrite();
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             if (string.IsNullOrEmpty(sourceFbxPath))
             {
@@ -225,6 +244,7 @@ namespace SashaRX.UnityMeshLab
             IEnumerable<MeshEntry> entries,
             int uvChannelOverride = -1)
         {
+            using var previewWrite = PreservePreviewDuringWrite();
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             if (string.IsNullOrEmpty(sourceFbxPath) || string.IsNullOrEmpty(outputFbxPath))
             {
@@ -419,6 +439,7 @@ namespace SashaRX.UnityMeshLab
             IEnumerable<MeshEntry> entries,
             FbxExportIntent intent)
         {
+            using var previewWrite = PreservePreviewDuringWrite();
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             if (intent == FbxExportIntent.None)
             {

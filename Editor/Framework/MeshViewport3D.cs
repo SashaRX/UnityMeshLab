@@ -106,6 +106,7 @@ namespace SashaRX.UnityMeshLab
 
         public Rect LastRect => currentRect;
         public Camera Camera => utility?.camera;
+        internal LightmapData[] SceneLightmaps { get; private set; }
 
         // GUILayout supplies a placeholder during Layout. Keep the usable rect for
         // async Spot completion, and refresh it before picking an input event.
@@ -130,6 +131,9 @@ namespace SashaRX.UnityMeshLab
             EditorGUI.DrawRect(rect, Background);
             if (!EnsureResources()) return;
 
+            // BeginPreview switches to an isolated scene with its own empty lightmaps.
+            // UV overlays need the authored scene's atlas references during that render.
+            SceneLightmaps = LightmapSettings.lightmaps;
             utility.BeginPreview(rect, GUIStyle.none);
             var camera = utility.camera;
             camera.clearFlags = CameraClearFlags.SolidColor;
@@ -182,6 +186,7 @@ namespace SashaRX.UnityMeshLab
             catch (Exception ex) { UvtLog.Warn("[3D] " + ex.Message); }
             finally {
                 drawing = false;
+                SceneLightmaps = null;
                 if (own) camera.targetTexture = target;
                 GUI.DrawTexture(rect, utility.EndPreview(), ScaleMode.StretchToFill, false);
                 foreach (var mesh in frameMeshes) if (mesh) Object.DestroyImmediate(mesh);
@@ -279,12 +284,16 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Draws a mesh with the given material and a per-draw texture/tint pair
         /// (the UV layer: texture + white, a shell highlight: white texture + colour).</summary>
         public void DrawTextured(Mesh mesh, Matrix4x4 matrix, Material material, Texture texture, Color tint, int uvChannel)
+            => DrawTextured(mesh, matrix, material, texture, tint, uvChannel, new Vector4(1, 1, 0, 0));
+
+        internal void DrawTextured(Mesh mesh, Matrix4x4 matrix, Material material, Texture texture, Color tint, int uvChannel, Vector4 uvScaleOffset)
         {
             if (!drawing || !mesh || !material) return;
             var block = Block();
             block.SetTexture("_MainTex", texture ? texture : Texture2D.whiteTexture);
             block.SetColor(ColorId, tint);
             block.SetFloat("_UVChannel", uvChannel);
+            block.SetVector("_UvScaleOffset", uvScaleOffset);
             for (int sub = 0; sub < mesh.subMeshCount; ++sub) utility.DrawMesh(mesh, matrix, material, sub, block);
         }
 

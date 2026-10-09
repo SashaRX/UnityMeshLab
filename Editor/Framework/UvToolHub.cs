@@ -53,6 +53,8 @@ namespace SashaRX.UnityMeshLab
         readonly List<MeshEntry> viewportEntries = new List<MeshEntry>();   // parallel to viewportItems; null for tool content
         readonly List<MeshEntry> uvContentEntries = new List<MeshEntry>();  // a tool's own UV canvas content (IUvToolUvContent)
         int uvContentKey;
+        int previewCacheVersion = -1;
+        UvCanvasView.PreviewMode? suspendedPreviewMode;
         bool reapplyPreview;        // re-apply the preview once the entries list the newly selected model/LOD
         int preferredUvChannel = 1; // the channel the user picked; a LOD switch returns to it when the LOD has it
         Vector2 viewportSpotPointer;
@@ -72,6 +74,7 @@ namespace SashaRX.UnityMeshLab
         Vector2 toolTabsScroll;
         int _cachedLodCount;
         int _cachedRendererCount;
+        int cachedLodRendererKey;
         int _checkerUvChannel = 1;
         bool _checkerColorMode;
         bool _checkerShowR = true;
@@ -119,6 +122,8 @@ namespace SashaRX.UnityMeshLab
             if (ShellColorModelPreview.IsActive) ShellColorModelPreview.Restore();
 
             ctx = new UvToolContext();
+            ctx.BeforeRefresh += PrepareModelSelection;
+            ctx.OnMeshEntriesChanged += OnContextEntriesChanged;
             canvas = new UvCanvasView();
             canvas.Init();
             canvas.RequestRepaint = Repaint;
@@ -134,6 +139,7 @@ namespace SashaRX.UnityMeshLab
 
             ctx.Assets.BeforeWrite = BeforeAssetWrite;
             ctx.Assets.AfterWrite = AfterAssetWrite;
+            ctx.Assets.WriteFinished = FinishAssetWrite;
             MeshLabProjectSettings.ModulesChanged -= OnModulesChanged;
             MeshLabProjectSettings.ModulesChanged += OnModulesChanged;
             ConfigureModules();
@@ -182,7 +188,11 @@ namespace SashaRX.UnityMeshLab
 
             MeshLabProjectSettings.ModulesChanged -= OnModulesChanged;
             DeactivateTool();
-            if (ctx != null) { ctx.Assets.BeforeWrite = null; ctx.Assets.AfterWrite = null; }
+            if (ctx != null) {
+                ctx.BeforeRefresh -= PrepareModelSelection;
+                ctx.OnMeshEntriesChanged -= OnContextEntriesChanged;
+                ctx.Assets.BeforeWrite = null; ctx.Assets.AfterWrite = null; ctx.Assets.WriteFinished = null;
+            }
 
             // Restore all previews
             if (canvas != null && (canvas.CheckerEnabled || CheckerTexturePreview.IsActive))
@@ -308,6 +318,41 @@ namespace SashaRX.UnityMeshLab
             reapplyPreview = true;
         }
 
+        void OnContextEntriesChanged()
+        {
+            _cachedLodCount = ctx.LodCount;
+            _cachedRendererCount = ctx.LodGroup ? CountValidRenderers(ctx.LodGroup) : ctx.MeshEntries.Count;
+            cachedLodRendererKey = LodRendererKey(ctx.LodGroup);
+            reapplyPreview = true;
+        }
+
+        static int LodRendererKey(LODGroup group)
+        {
+            int key = 0;
+            if (!group) return key;
+            unchecked {
+                foreach (var lod in group.GetLODs()) {
+                    key = key * 31 + 1;
+                    if (lod.renderers == null) continue;
+                    foreach (var renderer in lod.renderers) key = key * 31 + (renderer ? renderer.GetInstanceID() : 0);
+                }
+            }
+            return key;
+        }
+
+        void RefreshLodStructure()
+        {
+            if (!ctx.LodGroup) return;
+            int rendererCount = CountValidRenderers(ctx.LodGroup);
+            if (ctx.LodCount == _cachedLodCount && rendererCount == _cachedRendererCount
+                && LodRendererKey(ctx.LodGroup) == cachedLodRendererKey) return;
+            ctx.Refresh(ctx.LodGroup);
+            _cachedLodCount = ctx.LodCount;
+            _cachedRendererCount = CountValidRenderers(ctx.LodGroup);
+            ctx.PreviewLod = Mathf.Clamp(ctx.PreviewLod, 0, Mathf.Max(0, ctx.LodCount - 1));
+            ActiveTool?.OnRefresh(); InvalidateViewportCaches();
+        }
+
         void OnUndoRedo()
         {
             if (ctx == null) return;
@@ -315,9 +360,9 @@ namespace SashaRX.UnityMeshLab
             // Preview modes can temporarily replace MeshFilter.sharedMesh. Restore
             // those swaps and the imported meshes before rebuilding MeshEntries,
             // otherwise Refresh can cache a preview mesh as the new baseline.
-            if (canvas.CurrentPreviewMode != UvCanvasView.PreviewMode.Off)
-                ApplyPreviewMode(UvCanvasView.PreviewMode.Off);
+            RestorePreviewOverrides();
             RestoreWorkingMeshes();
+            reapplyPreview = true;
 
             if (ctx.LodGroup != null)
             {
@@ -350,18 +395,7 @@ namespace SashaRX.UnityMeshLab
                 EditorGUILayout.HelpBox("No tools enabled. Mesh inspection remains available; enable tools and their required libraries in Project Settings > Mesh Lab.", MessageType.Info);
 
             // Detect LODGroup structural changes (e.g. LOD deleted externally, renderer removed)
-            if (ctx.LodGroup != null)
-            {
-                int rendererCount = CountValidRenderers(ctx.LodGroup);
-                if (ctx.LodCount != _cachedLodCount || rendererCount != _cachedRendererCount)
-                {
-                    ctx.Refresh(ctx.LodGroup);
-                    _cachedLodCount = ctx.LodCount;
-                    _cachedRendererCount = CountValidRenderers(ctx.LodGroup);
-                    ctx.PreviewLod = Mathf.Clamp(ctx.PreviewLod, 0, Mathf.Max(0, ctx.LodCount - 1));
-                    ActiveTool?.OnRefresh(); InvalidateViewportCaches();
-                }
-            }
+            RefreshLodStructure();
 
             DrawHubToolbar();
 
@@ -1068,6 +1102,9 @@ namespace SashaRX.UnityMeshLab
         /// LOD meshes with their scene materials (the same meshes the UV canvas shows).</summary>
         List<MeshViewport3D.Item> CollectViewportItems()
         {
+            // Recollect from canonical entries, never from the output list that this
+            // method clears. Preview changes can require two collections in one frame.
+            canvas.EntriesOverride = toolOwnsUvContent ? uvContentEntries : null;
             viewportItems.Clear(); viewportEntries.Clear();
             canvas.DisplayMeshes.Clear();
             if (ActiveTool is IUvTool3D tool3D && tool3D.Get3DContent(viewportItems))
@@ -1084,6 +1121,7 @@ namespace SashaRX.UnityMeshLab
                     viewportEntries.Add(match);
                 }
                 PrepareInspectionEntries();
+                canvas.EntriesOverride = viewportEntries;
                 return viewportItems;
             }
             viewportItems.Clear();
@@ -1103,6 +1141,7 @@ namespace SashaRX.UnityMeshLab
                 viewportEntries.Add(e);
             }
             PrepareInspectionEntries();
+            canvas.EntriesOverride = viewportEntries;
             return viewportItems;
         }
 
@@ -1131,24 +1170,52 @@ namespace SashaRX.UnityMeshLab
             uvContentEntries.Clear();
             toolOwnsUvContent = ActiveTool is IUvToolUvContent uvContent && uvContent.GetUvContent(uvContentEntries);
             canvas.EntriesOverride = toolOwnsUvContent ? uvContentEntries : null;
-            if (reapplyPreview) RestorePreferredChannel();
+            bool dataChanged = previewCacheVersion != ctx.PreviewCacheVersion;
+            if (reapplyPreview || dataChanged) RestorePreferredChannel();
             CollectViewportItems();
             canvas.EntriesOverride = viewportEntries;
-            int contentKey = toolOwnsUvContent ? 1 : 0;
-            foreach (var entry in viewportEntries) {
-                var mesh = canvas.DisplayMesh(ctx, entry);
-                unchecked { contentKey = (contentKey * 31 + (mesh ? mesh.GetInstanceID() : 0)) * 31 + entry.GetHashCode(); }
-            }
-            if (uvContentKey != contentKey) {
-                uvContentKey = contentKey;
+            int contentKey = PreviewContentKey();
+            bool contentChanged = uvContentKey != contentKey;
+            if (contentChanged || dataChanged) {
+                int channel = ctx.PreviewUvChannel;
+                RestorePreferredChannel();
+                if (channel != ctx.PreviewUvChannel) CollectViewportItems();
                 canvas.ClearHoverState(); canvas.ClearFrameCaches();
                 InvalidateViewportCaches(false);
             }
             bool channelSwitched = canvas.EnsurePreviewChannel(ctx);
             var mode = canvas.CurrentPreviewMode;
-            if (mode != UvCanvasView.PreviewMode.Off && (reapplyPreview || (channelSwitched && mode == UvCanvasView.PreviewMode.Checker)))
+            if (!suspendedPreviewMode.HasValue && mode != UvCanvasView.PreviewMode.Off
+                && (reapplyPreview || contentChanged || dataChanged || channelSwitched)) {
                 ApplyPreviewMode(mode);
+                // Shell/lightmap overrides replace and release materials. Collect their
+                // new references before this frame renders, rather than one frame later.
+                CollectViewportItems();
+            }
+            uvContentKey = PreviewContentKey();
+            previewCacheVersion = ctx.PreviewCacheVersion;
             reapplyPreview = false;
+        }
+
+        int PreviewContentKey()
+        {
+            int key = toolOwnsUvContent ? 1 : 0;
+            var lightmaps = canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Lightmap ? LightmapSettings.lightmaps : null;
+            unchecked {
+                key = (key * 31 + ctx.SourceLodIndex) * 31 + ctx.PreviewUvChannel;
+                foreach (var entry in viewportEntries) {
+                    var mesh = canvas.DisplayMesh(ctx, entry);
+                    key = (key * 31 + (mesh ? mesh.GetInstanceID() : 0)) * 31 + (entry?.GetHashCode() ?? 0);
+                    if (lightmaps != null && entry?.renderer != null) {
+                        int index = entry.renderer.lightmapIndex;
+                        key = (key * 31 + index) * 31 + entry.renderer.lightmapScaleOffset.GetHashCode();
+                        var texture = index >= 0 && index < lightmaps.Length ? lightmaps[index]?.lightmapColor : null;
+                        key = key * 31 + (texture ? texture.GetInstanceID() : 0);
+                        if (texture) key = key * 31 + (int)texture.updateCount;
+                    }
+                }
+            }
+            return key;
         }
 
         // Back to the channel the user picked when the entries now shown carry it. Judged
@@ -1539,14 +1606,26 @@ namespace SashaRX.UnityMeshLab
 
         void BeforeAssetWrite()
         {
+            if (!suspendedPreviewMode.HasValue) suspendedPreviewMode = canvas.CurrentPreviewMode;
             (ActiveTool as IUvToolAssetLifecycle)?.BeforeAssetWrite();
-            ApplyPreviewMode(UvCanvasView.PreviewMode.Off);
+            RestorePreviewOverrides();
+            canvas.CurrentPreviewMode = suspendedPreviewMode.Value;
         }
 
         void AfterAssetWrite()
         {
             if (ActiveTool is IUvToolAssetLifecycle lifecycle) lifecycle.AfterAssetWrite();
             else ActiveTool?.OnRefresh();
+            InvalidateViewportCaches();
+            Repaint();
+        }
+
+        void FinishAssetWrite()
+        {
+            if (!suspendedPreviewMode.HasValue) return;
+            canvas.CurrentPreviewMode = suspendedPreviewMode.Value;
+            suspendedPreviewMode = null;
+            reapplyPreview = true;
             InvalidateViewportCaches();
             Repaint();
         }
@@ -1893,6 +1972,11 @@ namespace SashaRX.UnityMeshLab
 
         void ApplyPreviewMode(UvCanvasView.PreviewMode newMode)
         {
+            if (suspendedPreviewMode.HasValue) {
+                suspendedPreviewMode = newMode;
+                canvas.CurrentPreviewMode = newMode;
+                return;
+            }
             RestorePreviewOverrides();
 
             canvas.CurrentPreviewMode = newMode;
@@ -1916,18 +2000,10 @@ namespace SashaRX.UnityMeshLab
                     foreach (var e in canvas.Entries(ctx))
                     {
                         if (e == null || !e.include || e.renderer == null) continue;
-                        Mesh uvMesh = e.transferredMesh ?? e.repackedMesh;
-                        if (uvMesh == null)
-                        {
-                            Mesh fallback = e.originalMesh ?? e.fbxMesh;
-                            if (fallback != null)
-                            {
-                                var testUv = new List<Vector2>();
-                                fallback.GetUVs(_checkerUvChannel, testUv);
-                                if (testUv.Count > 0) uvMesh = fallback;
-                            }
-                        }
-                        if (uvMesh != null) checkerEntries.Add((e.renderer, uvMesh));
+                        Mesh uvMesh = ctx.DMesh(e);
+                        var readable = canvas.DisplayMesh(ctx, e);
+                        if (uvMesh != null && readable != null && canvas.RdUvCached(readable, _checkerUvChannel) != null)
+                            checkerEntries.Add((e.renderer, uvMesh));
                     }
                     if (hasCheckerUv)
                     {
@@ -1988,16 +2064,16 @@ namespace SashaRX.UnityMeshLab
                         mat.mainTextureOffset = Vector2.zero;
 
                         var mf = e.renderer.GetComponent<MeshFilter>();
-                        Mesh srcMesh = mf != null ? mf.sharedMesh : null;
+                        Mesh srcMesh = ctx.DMesh(e);
                         Mesh tempMesh = null;
                         if (srcMesh != null)
                         {
-                            tempMesh = Instantiate(srcMesh);
+                            tempMesh = MeshAccess.ReadableCopy(srcMesh);
                             tempMesh.name = srcMesh.name + "_LmPreview";
                             tempMesh.hideFlags = HideFlags.HideAndDontSave;
                             var uv1 = new List<Vector2>();
-                            srcMesh.GetUVs(1, uv1);
-                            if (uv1.Count == srcMesh.vertexCount)
+                            tempMesh.GetUVs(1, uv1);
+                            if (uv1.Count == tempMesh.vertexCount)
                             {
                                 var lmUvs = new Vector2[uv1.Count];
                                 for (int i = 0; i < uv1.Count; i++)
@@ -2051,8 +2127,7 @@ namespace SashaRX.UnityMeshLab
         void OnPreviewChannelChanged(int newChannel)
         {
             ctx.PreviewUvChannel = preferredUvChannel = newChannel;
-            if (canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Checker)
-                ApplyPreviewMode(UvCanvasView.PreviewMode.Checker);
+            reapplyPreview = true;
             canvas.ClearHoverState();
             canvas.HoveredShellDebug = null;
             canvas.SelectedShellDebug = null;
@@ -2082,6 +2157,8 @@ namespace SashaRX.UnityMeshLab
                 "Delete", "Cancel"))
                 return;
 
+            using var previewWrite = ctx.Assets.PreservePreviewDuringWrite();
+            BeforeAssetWrite();
             SidecarStore.Delete(new[] { selectedFbxPath });
             AssetDatabase.Refresh();
 

@@ -24,6 +24,7 @@ namespace SashaRX.UnityMeshLab
         readonly List<Mesh> _areaPreviewMeshes = new List<Mesh>();
         double _areaPreview;
         bool _hasAreaPreview;
+        int areaPreviewVersion;
 
         public Action RequestRepaint { get; set; }
 
@@ -62,7 +63,8 @@ namespace SashaRX.UnityMeshLab
 
         bool TryGetAreaPreview(List<Mesh> meshes, out double area)
         {
-            bool sameMeshes = _hasAreaPreview && meshes.Count == _areaPreviewMeshes.Count;
+            bool sameMeshes = _hasAreaPreview && areaPreviewVersion == (ctx?.PreviewCacheVersion ?? 0)
+                && meshes.Count == _areaPreviewMeshes.Count;
             for (int i = 0; sameMeshes && i < meshes.Count; i++)
                 sameMeshes = ReferenceEquals(meshes[i], _areaPreviewMeshes[i]);
 
@@ -76,6 +78,7 @@ namespace SashaRX.UnityMeshLab
             _areaPreviewMeshes.Clear();
             _areaPreviewMeshes.AddRange(meshes);
             _hasAreaPreview = true;
+            areaPreviewVersion = ctx?.PreviewCacheVersion ?? 0;
             return _areaPreview;
         }
 
@@ -127,15 +130,8 @@ namespace SashaRX.UnityMeshLab
         bool stageRunRepack     = true;
         bool stageRunTransfer   = true;
 
-        // Weld stage sub-step: meshopt binary-equivalence dedup +
-        // GPU cache/overdraw/fetch reorder. This is NOT a UV weld — it
-        // removes vertices that are byte-identical in position + normal
-        // + uv0 (a GPU optimisation per meshoptimizer's
-        // generateVertexRemap, which the library docs explicitly warn
-        // is unsuitable for attribute-seam handling). The actual UV-aware
-        // seam weld is Uv0Analyzer.UvEdgeWeld. Kept ON by default to
-        // preserve prior behaviour, but now a separate, clearly-labelled
-        // toggle so the operator can run the pure UV weld alone.
+        // Optional cache/overdraw triangle ordering preserves vertex identity.
+        // The actual UV-aware seam weld is Uv0Analyzer.UvEdgeWeld.
         bool stageWeldRunMeshopt = true;
 
         internal void AppendDiagnosticSettings(List<TransferCaseCapture.Setting> output)
@@ -2298,6 +2294,7 @@ namespace SashaRX.UnityMeshLab
                         $"Clamped {clamped} UV2 vert(s) into [0,1] on '{tgt.renderer.name}'");
             }
             om.SetUVs(1, new List<Vector2>(tr.uv2));
+            DestroyWorkingMesh(ref tgt.transferredMesh);
             tgt.transferredMesh = om;
             tgt.shellTransferResult = tr;
 
@@ -2308,6 +2305,7 @@ namespace SashaRX.UnityMeshLab
 
             float pct = tr.verticesTotal > 0 ? tr.verticesTransferred * 100f / tr.verticesTotal : 0;
             UvtLog.Info($"[Transfer] '{tgt.renderer.name}' LOD{tLod}: {tr.shellsMatched} shells, {pct:F0}% coverage");
+            ctx.ClearAllCaches();
         }
 
         void ApplyUv2ToFbx() => ctx.Assets.ApplyUv2Public();
@@ -2364,7 +2362,9 @@ namespace SashaRX.UnityMeshLab
 
         void ResetWorkingCopies()
         {
+            var mode = canvas.CurrentPreviewMode;
             RestoreAllPreviews();
+            canvas.CurrentPreviewMode = mode;
             // Destroy all working mesh copies and restore fbxMesh on MeshFilters.
             // Does NOT delete sidecar assets — use ResetUv2FromFbx for that.
             foreach (var e in ctx.MeshEntries)
@@ -2404,6 +2404,8 @@ namespace SashaRX.UnityMeshLab
         void ResetUv2FromFbx()
         {
             if (ctx.LodGroup == null) return;
+            using var previewWrite = ctx.Assets.PreservePreviewDuringWrite();
+            ctx.Assets.BeforeWrite?.Invoke();
             var fbxPaths = SidecarStore.FbxPaths(ctx.MeshEntries);
             SidecarStore.Delete(fbxPaths);
             AssetDatabase.Refresh();
@@ -2421,7 +2423,8 @@ namespace SashaRX.UnityMeshLab
             if (ctx.LodGroup == null) return;
             if (!EditorUtility.DisplayDialog("Reset Pipeline State", "Delete all sidecars and reset?", "Reset", CancelButton)) return;
 
-            RestoreAllPreviews();
+            using var previewWrite = ctx.Assets.PreservePreviewDuringWrite();
+            ctx.Assets.BeforeWrite?.Invoke();
             var fbxPaths = SidecarStore.FbxPaths(ctx.MeshEntries);
             SidecarStore.Delete(fbxPaths);
             AssetDatabase.Refresh();

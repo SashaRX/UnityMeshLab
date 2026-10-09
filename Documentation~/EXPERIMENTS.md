@@ -3,6 +3,33 @@
 > **Обновлять этот документ при каждом эксперименте с transfer pipeline.**
 > Последнее обновление: v1.1.34 (2026-10-09)
 
+## Синхронизация UV/3D preview после Transfer — 2026-10-09
+
+- Продолжение PR #225, без изменений core matching/repack/symmetry алгоритмов.
+  Смена transferredMesh сбрасывала кеши, но не переустанавливала активный Checker.
+  Изменение UV на том же Mesh также не наблюдалось hub. Теперь учитываются
+  displayed mesh/entry identities и context cache version; переустанавливаются
+  Checker, Shells3D и Lightmap, затем собираются актуальные material references
+  для того же кадра. Старый transfer output освобождается.
+- Lightmap preview клонировало MeshFilter.sharedMesh вместо текущего working mesh;
+  GPU layer игнорировал renderer atlas scale/offset и делил одну texture между
+  экземплярами одного mesh. Пиксельный тест выявил ещё один дефект: BeginPreview
+  переключает сцену, и LightmapSettings внутри preview становится пустым. Атласы
+  теперь берутся из snapshot исходной сцены перед BeginPreview, слои принадлежат
+  отдельным entries и sampled UV получает renderer scale/offset.
+- Preview сохраняется через UV/LOD/context/Undo/reset и save/apply/export,
+  включая nested write, early return, cancel и exception paths. Во время записи
+  временные overrides сняты. Camera и UV framing не сбрасываются. Surface-area
+  display также обновляется при geometry edits на том же Mesh.
+- Исходная новая матрица воспроизвела 39 failures из 68 tests на `59d634d`.
+  После исправлений: 101/101 preview tests и 347 passed / 0 failed / 1 skipped
+  из 348 affected tests, Unity 6000.2.6f2 / DX11 / Built-in. Пропущенный line-render
+  fixture требует URP. Оба FBX compile variants проходят.
+  Отдельный изолированный URP 17.2.0 / DX11 проект: 111/111 preview/line tests,
+  без skipped, включая тот же integration fixture и GPU pixel assertions.
+  Это проверка отображения, не новая оценка correspondence/overlap quality реальной модели.
+  [Матрица событий и ограничения](PREVIEW_UPDATE_EVENTS.md).
+
 ## Эксперимент 2026-10-08 — Пропорции исходной текстуры и квадратного lightmap
 
 - Исходный случай: текстура 1024×2048 и соответствующие ей UV0. До упаковки UV2

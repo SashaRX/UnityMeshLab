@@ -427,6 +427,9 @@ namespace SashaRX.UnityMeshLab
             => RenderUvLayer(ctx, mesh, entry, target, size, true);
 
         public RenderTexture RenderUvLayer(UvToolContext ctx, Mesh mesh, MeshEntry entry, RenderTexture target, int size, bool drawBorders)
+            => RenderUvLayer(ctx, mesh, entry, target, size, drawBorders, null);
+
+        internal RenderTexture RenderUvLayer(UvToolContext ctx, Mesh mesh, MeshEntry entry, RenderTexture target, int size, bool drawBorders, LightmapData[] lightmaps)
         {
             SyncSnapshotVersion(ctx);
             if (GlMat == null || mesh == null) return null;
@@ -444,7 +447,7 @@ namespace SashaRX.UnityMeshLab
                 GlMat.SetPass(0);
                 GL.PushMatrix(); push = true;
                 GL.LoadPixelMatrix(0, size, size, 0);
-                DrawUvLayerBackground(ctx, mesh, entry, size);
+                DrawUvLayerBackground(ctx, mesh, entry, size, lightmaps);
                 DrawUvLayerMesh(ctx, mesh, entry, size, drawBorders);
             }
             catch (Exception ex) { UvtLog.Warn("[UV] 3D layer GL: " + ex.Message); }
@@ -453,12 +456,12 @@ namespace SashaRX.UnityMeshLab
             return target;
         }
 
-        void DrawUvLayerBackground(UvToolContext ctx, Mesh mesh, MeshEntry entry, float sz)
+        void DrawUvLayerBackground(UvToolContext ctx, Mesh mesh, MeshEntry entry, float sz, LightmapData[] lightmaps)
         {
             float cx = 0f, cy = 0f;
             var draws = new List<ValueTuple<Mesh, MeshEntry, int>> { new ValueTuple<Mesh, MeshEntry, int>(mesh, entry, 0) };
             var tile = new HashSet<Vector2Int> { new Vector2Int(0, 0) };
-            Texture bgTex = ResolveUvPreviewBackgroundTexture(ctx, draws);
+            Texture bgTex = ResolveUvPreviewBackgroundTexture(ctx, draws, lightmaps);
             // A tool entry's preview texture is the surface the 3D view already shows;
             // laying it over the model again would only dim it.
             if (entry != null && entry.renderer == null && bgTex == entry.previewTexture && !CheckerEnabled) bgTex = null;
@@ -1413,7 +1416,7 @@ namespace SashaRX.UnityMeshLab
         //  Background Texture
         // ════════════════════════════════════════════════════════════
 
-        Texture ResolveUvPreviewBackgroundTexture(UvToolContext ctx, List<ValueTuple<Mesh, MeshEntry, int>> draws)
+        Texture ResolveUvPreviewBackgroundTexture(UvToolContext ctx, List<ValueTuple<Mesh, MeshEntry, int>> draws, LightmapData[] lightmaps = null)
         {
             if (CheckerEnabled) return CheckerColorMode ? null : CheckerTexturePreview.GetCheckerTexture();
             if (CurrentPreviewMode == PreviewMode.Shells3D) return null;
@@ -1422,15 +1425,16 @@ namespace SashaRX.UnityMeshLab
                 if (item.Item2.renderer == null && item.Item2.previewTexture != null) return item.Item2.previewTexture;
             if (CurrentPreviewMode == PreviewMode.Lightmap)
             {
+                var sceneLightmaps = lightmaps ?? LightmapSettings.lightmaps;
                 foreach (var item in draws)
                 {
                     var renderer = item.Item2.renderer;
                     if (renderer == null) continue;
                     int lmIdx = renderer.lightmapIndex;
-                    if (lmIdx >= 0 && lmIdx < LightmapSettings.lightmaps.Length)
+                    if (lmIdx >= 0 && lmIdx < sceneLightmaps.Length)
                     {
-                        var lm = LightmapSettings.lightmaps[lmIdx];
-                        if (lm.lightmapColor != null) return lm.lightmapColor;
+                        var lm = sceneLightmaps[lmIdx];
+                        if (lm?.lightmapColor != null) return lm.lightmapColor;
                     }
                 }
                 return null;

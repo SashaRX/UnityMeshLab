@@ -20,7 +20,7 @@ namespace SashaRX.UnityMeshLab
         static readonly Color HoverColor = new Color(.25f, 1f, .95f, .35f);
         static readonly Color SelectedColor = new Color(1f, .95f, .2f, .4f);
 
-        readonly Dictionary<int, Layer> layers = new Dictionary<int, Layer>();
+        readonly Dictionary<(int meshId, MeshEntry entry), Layer> layers = new Dictionary<(int meshId, MeshEntry entry), Layer>();
         readonly Dictionary<long, Mesh> shellMeshes = new Dictionary<long, Mesh>();
         readonly Dictionary<long, Mesh> boundaryMeshes = new Dictionary<long, Mesh>();
         Material overlay;
@@ -68,15 +68,18 @@ namespace SashaRX.UnityMeshLab
                 if (entry == null) continue;
                 if (layerVisible && UvTopology.HasUv(item.mesh, ctx.PreviewUvChannel) && MeshInspection.HasOnlyTriangles(item.mesh))
                 {
-                    int id = item.mesh.GetInstanceID();
+                    var id = (item.mesh.GetInstanceID(), entry);
                     string key = LayerKey(canvas, ctx, item.mesh, entry);
                     if (!layers.TryGetValue(id, out var layer)) layers[id] = layer = new Layer();
                     if (layer.key != key || layer.texture == null)
                     {
-                        layer.texture = canvas.RenderUvLayer(ctx, item.mesh, entry, layer.texture, size, drawBorders: false);
+                        layer.texture = canvas.RenderUvLayer(ctx, item.mesh, entry, layer.texture, size, false, view.SceneLightmaps);
                         layer.key = key;
                     }
-                    if (layer.texture) view.DrawTextured(item.mesh, item.matrix, overlay, layer.texture, Color.white, ctx.PreviewUvChannel);
+                    var uvScaleOffset = canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Lightmap &&
+                                        ctx.PreviewUvChannel == 1 && entry.renderer
+                        ? entry.renderer.lightmapScaleOffset : new Vector4(1, 1, 0, 0);
+                    if (layer.texture) view.DrawTextured(item.mesh, item.matrix, overlay, layer.texture, Color.white, ctx.PreviewUvChannel, uvScaleOffset);
                 }
                 if (canvas.ShowBorder) {
                     long boundaryKey = ((long)item.mesh.GetInstanceID() << 8) ^ (uint)ctx.PreviewUvChannel;

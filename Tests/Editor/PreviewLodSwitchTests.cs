@@ -526,6 +526,375 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(ShowsChecker(lod1), Is.False);
         }
 
+        [Test]
+        public void PreviewFollowsCompletedAndRepeatedTransfer(
+            [Values(UvCanvasView.PreviewMode.Checker, UvCanvasView.PreviewMode.Shells3D, UvCanvasView.PreviewMode.Lightmap)] UvCanvasView.PreviewMode mode,
+            [Values(false, true)] bool threeD)
+        {
+            var ctx = Open(Group(true, out var sourceRenderer, out var targetRenderer));
+            var source = ctx.MeshEntries.Find(e => e.renderer == sourceRenderer);
+            var target = ctx.MeshEntries.Find(e => e.renderer == targetRenderer);
+            var originalMaterial = targetRenderer.sharedMaterial;
+            var originalMesh = target.fbxMesh;
+            var previousLightmaps = LightmapSettings.lightmaps;
+            try {
+                if (mode == UvCanvasView.PreviewMode.Lightmap) AssignLightmap(targetRenderer);
+                SwitchLod(1); Call(hub, "SetCanvas3D", threeD);
+                SetPreviewFrame(); Call(hub, "ApplyPreviewMode", mode);
+                for (int pass = 0; pass < 2; ++pass) {
+                    var previousOutput = target.transferredMesh;
+                    var packed = Object.Instantiate(source.fbxMesh); owned.Add(packed);
+                    packed.uv2 = ShiftedUvs(.1f + pass * .2f); source.repackedMesh = packed;
+                    source.repackedAtlasWidth = source.repackedAtlasHeight = 512;
+                    UvProgress.Begin("Preview transfer regression", cancelable: true);
+                    try { ((System.Threading.Tasks.Task)CallWorkflow("ExecTransferLodImpl", 1, false)).GetAwaiter().GetResult(); }
+                    finally { UvProgress.End(); }
+                    Assert.NotNull(target.transferredMesh);
+                    Assert.IsTrue(previousOutput == null, "Repeated transfer releases its previous output.");
+                    Call(hub, "CollectCanvasEntries");
+                    AssertFreshPreview(ctx, target, mode);
+                    AssertPreviewFrame();
+                }
+                Call(hub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Off);
+                Assert.AreSame(originalMaterial, targetRenderer.sharedMaterial);
+                Assert.AreSame(originalMesh, targetRenderer.GetComponent<MeshFilter>().sharedMesh);
+            }
+            finally { LightmapSettings.lightmaps = previousLightmaps; }
+        }
+
+        [Test]
+        public void PreviewFollowsMeshReplacementAndInPlaceUvChanges(
+            [Values(UvCanvasView.PreviewMode.Checker, UvCanvasView.PreviewMode.Shells3D, UvCanvasView.PreviewMode.Lightmap)] UvCanvasView.PreviewMode mode,
+            [Values("original", "repack", "transfer")] string stage,
+            [Values(false, true)] bool inPlace)
+        {
+            var ctx = Open(Group(true, out var source, out var target));
+            SwitchLod(stage == "transfer" ? 1 : 0);
+            var entry = ctx.MeshEntries.Find(e => e.renderer == (stage == "transfer" ? target : source));
+            var mesh = Object.Instantiate(entry.fbxMesh); owned.Add(mesh);
+            SetStageMesh(entry, stage, mesh);
+            var previousLightmaps = LightmapSettings.lightmaps;
+            try {
+                if (mode == UvCanvasView.PreviewMode.Lightmap) AssignLightmap(entry.renderer as MeshRenderer);
+                Call(hub, "CollectCanvasEntries"); SetPreviewFrame();
+                Call(hub, "ApplyPreviewMode", mode); Call(hub, "CollectCanvasEntries");
+                var oldPreview = entry.meshFilter.sharedMesh;
+                if (inPlace) VertexChannels.SetUvs(mesh, 1, ShiftedUvs(.3f));
+                else {
+                    mesh = Object.Instantiate(entry.fbxMesh); owned.Add(mesh); mesh.uv2 = ShiftedUvs(.3f);
+                    SetStageMesh(entry, stage, mesh);
+                }
+                var canvas = Get<UvCanvasView>(hub, "canvas");
+                canvas.HasHoveredShell = true; canvas.HoveredShellId = 777;
+                Call(hub, "CollectCanvasEntries");
+                AssertFreshPreview(ctx, entry, mode); AssertPreviewFrame();
+                Assert.IsFalse(canvas.HasHoveredShell, "Spot cannot retain a hit on obsolete UV data.");
+                if (mode != UvCanvasView.PreviewMode.Checker) Assert.IsTrue(oldPreview == null, "Old preview clones are released.");
+                var currentPreview = entry.meshFilter.sharedMesh;
+                Call(hub, "CollectCanvasEntries");
+                Assert.AreSame(currentPreview, entry.meshFilter.sharedMesh, "Repainting unchanged data must not recreate preview clones.");
+            }
+            finally { LightmapSettings.lightmaps = previousLightmaps; }
+        }
+
+        [Test]
+        public void PreviewRestoresPreferredChannelWhenTransferCreatesUv2()
+        {
+            var ctx = Open(Group(false, out var sourceRenderer, out var targetRenderer));
+            var source = ctx.MeshEntries.Find(e => e.renderer == sourceRenderer);
+            var target = ctx.MeshEntries.Find(e => e.renderer == targetRenderer);
+            SwitchLod(1); Assert.AreEqual(0, ctx.PreviewUvChannel);
+            Call(hub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Checker);
+            source.repackedMesh = Object.Instantiate(source.fbxMesh); owned.Add(source.repackedMesh);
+            source.repackedMesh.uv2 = ShiftedUvs(.2f);
+            UvProgress.Begin("Preview transfer channel regression", cancelable: true);
+            try { ((System.Threading.Tasks.Task)CallWorkflow("ExecTransferLodImpl", 1, false)).GetAwaiter().GetResult(); }
+            finally { UvProgress.End(); }
+            Call(hub, "CollectCanvasEntries");
+            Assert.AreEqual(1, ctx.PreviewUvChannel);
+            AssertFreshPreview(ctx, target, UvCanvasView.PreviewMode.Checker);
+        }
+
+        [Test]
+        public void PreviewSurvivesResetUndoAndContextRefresh(
+            [Values(UvCanvasView.PreviewMode.Checker, UvCanvasView.PreviewMode.Shells3D, UvCanvasView.PreviewMode.Lightmap)] UvCanvasView.PreviewMode mode,
+            [Values("reset", "working-reset", "undo", "refresh")] string change)
+        {
+            var group = Group(true, out var renderer, out _); var ctx = Open(group);
+            var entry = ctx.MeshEntries.Find(e => e.renderer == renderer); var baseline = entry.fbxMesh;
+            entry.repackedMesh = Object.Instantiate(baseline); owned.Add(entry.repackedMesh);
+            entry.repackedMesh.uv2 = ShiftedUvs(.3f);
+            var previousLightmaps = LightmapSettings.lightmaps;
+            try {
+                if (mode == UvCanvasView.PreviewMode.Lightmap) AssignLightmap(renderer);
+                Call(hub, "CollectCanvasEntries"); SetPreviewFrame(); Call(hub, "ApplyPreviewMode", mode);
+                if (change == "reset") CallWorkflow("ResetWorkingMeshesToFbx");
+                else if (change == "working-reset") CallWorkflow("ResetWorkingCopies");
+                else if (change == "undo") Call(hub, "OnUndoRedo");
+                else ctx.Refresh(group);
+                Call(hub, "CollectCanvasEntries");
+                entry = ctx.MeshEntries.Find(e => e.renderer == renderer);
+                Assert.AreSame(baseline, entry.fbxMesh, "Refresh must never capture a temporary preview as the imported baseline.");
+                AssertFreshPreview(ctx, entry, mode); AssertPreviewFrame();
+            }
+            finally { LightmapSettings.lightmaps = previousLightmaps; }
+        }
+
+        [Test]
+        public void PreviewSurvivesFailedAssetPreparation(
+            [Values(UvCanvasView.PreviewMode.Checker, UvCanvasView.PreviewMode.Shells3D, UvCanvasView.PreviewMode.Lightmap)] UvCanvasView.PreviewMode mode,
+            [Values(false, true)] bool throwDuringPreparation)
+        {
+            var ctx = Open(Group(true, out var renderer, out _));
+            var previousLightmaps = LightmapSettings.lightmaps;
+            try {
+                if (mode == UvCanvasView.PreviewMode.Lightmap) AssignLightmap(renderer);
+                SetPreviewFrame(); Call(hub, "ApplyPreviewMode", mode);
+                if (throwDuringPreparation) {
+                    ctx.Assets.BeforeWrite += () => { throw new System.InvalidOperationException("Preparation regression"); };
+                    Assert.Throws<System.InvalidOperationException>(() => ctx.Assets.ApplyUv2Public());
+                } else ctx.Assets.ApplyUv2Public(); // no FBX path: exits before any file write
+                Call(hub, "CollectCanvasEntries");
+                AssertFreshPreview(ctx, ctx.MeshEntries.Find(e => e.renderer == renderer), mode); AssertPreviewFrame();
+            }
+            finally { LightmapSettings.lightmaps = previousLightmaps; }
+        }
+
+        [Test]
+        public void PreviewFollowsEveryUvChannelChange(
+            [Values(UvCanvasView.PreviewMode.Checker, UvCanvasView.PreviewMode.Shells3D, UvCanvasView.PreviewMode.Lightmap)] UvCanvasView.PreviewMode mode,
+            [Values(0, 1, 2)] int channel)
+        {
+            var ctx = Open(Group(true, out var renderer, out _));
+            var entry = ctx.MeshEntries.Find(e => e.renderer == renderer);
+            entry.repackedMesh = Object.Instantiate(entry.fbxMesh); owned.Add(entry.repackedMesh);
+            entry.repackedMesh.uv2 = ShiftedUvs(.3f);
+            var previousLightmaps = LightmapSettings.lightmaps;
+            try {
+                if (mode == UvCanvasView.PreviewMode.Lightmap) AssignLightmap(renderer);
+                Call(hub, "CollectCanvasEntries"); SetPreviewFrame(); Call(hub, "ApplyPreviewMode", mode);
+                Call(hub, "OnPreviewChannelChanged", channel); Call(hub, "CollectCanvasEntries");
+                Assert.AreEqual(channel == 2 ? 0 : channel, ctx.PreviewUvChannel, "A missing channel uses the available fallback.");
+                AssertFreshPreview(ctx, entry, mode); AssertPreviewFrame();
+            }
+            finally { LightmapSettings.lightmaps = previousLightmaps; }
+        }
+
+        [TestCase("texture")]
+        [TestCase("index")]
+        [TestCase("scale-offset")]
+        [TestCase("pixels")]
+        [TestCase("added")]
+        public void PreviewFollowsLightmapMetadataAndTextureUpdates(string change)
+        {
+            var ctx = Open(Group(true, out var renderer, out _)); var entry = ctx.MeshEntries.Find(e => e.renderer == renderer);
+            var previousLightmaps = LightmapSettings.lightmaps;
+            try {
+                if (change == "added") { renderer.lightmapIndex = -1; LightmapSettings.lightmaps = new LightmapData[0]; }
+                else AssignLightmap(renderer);
+                SetPreviewFrame(); Call(hub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Lightmap); Call(hub, "CollectCanvasEntries");
+                var oldPreview = entry.meshFilter.sharedMesh;
+                if (change == "added") AssignLightmap(renderer);
+                else if (change == "scale-offset") renderer.lightmapScaleOffset = new Vector4(.25f, .5f, .6f, .1f);
+                else if (change == "pixels") {
+                    var texture = LightmapSettings.lightmaps[0].lightmapColor; texture.SetPixel(0, 0, Color.green); texture.Apply();
+                } else {
+                    var texture = new Texture2D(8, 8); owned.Add(texture);
+                    if (change == "texture") LightmapSettings.lightmaps = new[] { new LightmapData { lightmapColor = texture } };
+                    else {
+                        LightmapSettings.lightmaps = new[] { LightmapSettings.lightmaps[0], new LightmapData { lightmapColor = texture } };
+                        renderer.lightmapIndex = 1;
+                    }
+                }
+                Call(hub, "CollectCanvasEntries");
+                AssertFreshPreview(ctx, entry, UvCanvasView.PreviewMode.Lightmap); AssertPreviewFrame();
+                Assert.AreSame(LightmapSettings.lightmaps[renderer.lightmapIndex].lightmapColor, renderer.sharedMaterial.mainTexture);
+                if (change != "added") Assert.IsTrue(oldPreview == null, "The old lightmap clone is released after metadata changes.");
+            }
+            finally { LightmapSettings.lightmaps = previousLightmaps; }
+        }
+
+        [Test]
+        public void PreviewDetectsLodRendererChangesWithUnchangedCounts(
+            [Values(UvCanvasView.PreviewMode.Checker, UvCanvasView.PreviewMode.Shells3D, UvCanvasView.PreviewMode.Lightmap)] UvCanvasView.PreviewMode mode,
+            [Values(false, true)] bool reorder)
+        {
+            var group = Group(true, out var first, out var second); var ctx = Open(group);
+            var oldMaterial = first.sharedMaterial; var oldMesh = first.GetComponent<MeshFilter>().sharedMesh;
+            var replacement = reorder ? second : Standalone("Replacement_LOD0");
+            var previousLightmaps = LightmapSettings.lightmaps;
+            try {
+                if (mode == UvCanvasView.PreviewMode.Lightmap) AssignLightmap(first, second, replacement);
+                SetPreviewFrame(); Call(hub, "ApplyPreviewMode", mode);
+                group.SetLODs(new[] { new LOD(.5f, new Renderer[] { replacement }), new LOD(.1f, new Renderer[] { reorder ? first : second }) });
+                Call(hub, "RefreshLodStructure"); Call(hub, "CollectCanvasEntries");
+                var entry = ctx.MeshEntries.Find(e => e.renderer == replacement);
+                Assert.NotNull(entry); Assert.AreEqual(0, entry.lodIndex);
+                AssertFreshPreview(ctx, entry, mode); AssertPreviewFrame();
+                Assert.AreSame(oldMaterial, first.sharedMaterial); Assert.AreSame(oldMesh, first.GetComponent<MeshFilter>().sharedMesh);
+            }
+            finally { LightmapSettings.lightmaps = previousLightmaps; }
+        }
+
+        [Test]
+        public void PreviewStaysSuspendedUntilNestedAssetWritesFinish(
+            [Values(UvCanvasView.PreviewMode.Checker, UvCanvasView.PreviewMode.Shells3D, UvCanvasView.PreviewMode.Lightmap)] UvCanvasView.PreviewMode mode)
+        {
+            var ctx = Open(Group(true, out var renderer, out _)); var material = renderer.sharedMaterial;
+            var previousLightmaps = LightmapSettings.lightmaps;
+            try {
+                if (mode == UvCanvasView.PreviewMode.Lightmap) AssignLightmap(renderer);
+                Call(hub, "ApplyPreviewMode", mode);
+                using (ctx.Assets.PreservePreviewDuringWrite()) {
+                    ctx.Assets.BeforeWrite.Invoke();
+                    using (ctx.Assets.PreservePreviewDuringWrite()) { ctx.Assets.BeforeWrite.Invoke(); Call(hub, "CollectCanvasEntries"); }
+                    Call(hub, "CollectCanvasEntries");
+                    Assert.AreSame(material, renderer.sharedMaterial, "Export must read authored materials even when the window repaints.");
+                }
+                Call(hub, "CollectCanvasEntries"); AssertFreshPreview(ctx, ctx.MeshEntries.Find(e => e.renderer == renderer), mode);
+            }
+            finally { LightmapSettings.lightmaps = previousLightmaps; }
+        }
+
+        [Test]
+        public void PreviewSurvivesSavingMeshAssets(
+            [Values(UvCanvasView.PreviewMode.Checker, UvCanvasView.PreviewMode.Shells3D, UvCanvasView.PreviewMode.Lightmap)] UvCanvasView.PreviewMode mode)
+        {
+            var ctx = Open(Group(true, out var renderer, out _));
+            var previousLightmaps = LightmapSettings.lightmaps;
+            string folder = "Assets/PreviewWriteRegression_" + System.Guid.NewGuid().ToString("N");
+            try {
+                if (mode == UvCanvasView.PreviewMode.Lightmap) AssignLightmap(renderer);
+                ctx.PipeSettings.savePath = folder; SetPreviewFrame(); Call(hub, "ApplyPreviewMode", mode);
+                ctx.Assets.SaveAllPublic();
+                Assert.AreEqual(2, UnityEditor.AssetDatabase.FindAssets("t:Mesh", new[] { folder }).Length);
+                Call(hub, "CollectCanvasEntries"); AssertFreshPreview(ctx, ctx.MeshEntries.Find(e => e.renderer == renderer), mode); AssertPreviewFrame();
+            }
+            finally { UnityEditor.AssetDatabase.DeleteAsset(folder); LightmapSettings.lightmaps = previousLightmaps; }
+        }
+
+        [Test]
+        public void SurfaceAreaDisplayUpdatesWhenGeometryChangesInPlace()
+        {
+            var ctx = Open(Group(true, out var renderer, out _));
+            var mesh = ctx.MeshEntries.Find(e => e.renderer == renderer).originalMesh;
+            double before = (double)CallWorkflow("GetSourceAreaPreview");
+            var positions = mesh.vertices;
+            for (int i = 0; i < positions.Length; ++i) positions[i] *= 2;
+            mesh.vertices = positions; VertexChannels.RaiseChanged(mesh);
+            Assert.AreEqual(before * 4, (double)CallWorkflow("GetSourceAreaPreview"), .00001);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void LightmapOverlaySamplesTheRenderersAtlasRegion(bool rightHalf)
+        {
+            var texture = new Texture2D(8, 8, TextureFormat.RGBA32, false, true) { filterMode = FilterMode.Point };
+            owned.Add(texture);
+            var pixels = new Color[64];
+            for (int i = 0; i < pixels.Length; ++i) pixels[i] = i % 8 < 4 ? Color.red : Color.green;
+            texture.SetPixels(pixels); texture.Apply();
+            var material = new Material(Shader.Find("Hidden/MeshLab/UvOverlay")); owned.Add(material);
+            material.SetVector("_UvScaleOffset", new Vector4(.5f, 1, rightHalf ? .5f : 0, 0));
+            var copy = GpuReadback.Read(texture, 16, 16, hdr: false, material: material);
+            Assert.NotNull(copy); owned.Add(copy);
+            foreach (var color in copy.GetPixels()) {
+                Assert.Greater(rightHalf ? color.g : color.r, .8f);
+                Assert.Less(rightHalf ? color.r : color.g, .1f);
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator SharedMeshInstancesRenderTheirOwnLightmapLayers()
+        {
+            var first = Standalone("First"); var second = Standalone("Second");
+            var mesh = first.GetComponent<MeshFilter>().sharedMesh; second.GetComponent<MeshFilter>().sharedMesh = mesh;
+            mesh.vertices = new[] { Vector3.zero, Vector3.right, new Vector3(1, 1, 0), Vector3.up };
+            mesh.RecalculateNormals();
+            var red = new Texture2D(8, 8); var green = new Texture2D(8, 8); owned.Add(red); owned.Add(green);
+            var reds = new Color[64]; var greens = new Color[64];
+            for (int i = 0; i < 64; ++i) { reds[i] = Color.red; greens[i] = Color.green; }
+            red.SetPixels(reds); red.Apply(); green.SetPixels(greens); green.Apply();
+            var previousLightmaps = LightmapSettings.lightmaps;
+            var context = new UvToolContext();
+            var entries = new List<MeshEntry> { new MeshEntry { originalMesh = mesh, renderer = first }, new MeshEntry { originalMesh = mesh, renderer = second } };
+            var items = new List<MeshViewport3D.Item> { new MeshViewport3D.Item(mesh, Matrix4x4.Translate(Vector3.left * 1.5f)),
+                new MeshViewport3D.Item(mesh, Matrix4x4.Translate(Vector3.right * .5f)) };
+            var canvas = new UvCanvasView { CurrentPreviewMode = UvCanvasView.PreviewMode.Lightmap, FillHidden = true, ShowBorder = false, ShowWireframe = false };
+            canvas.Init();
+            using var layer = new UvLayer3D(); using var view = new MeshViewport3D { ViewProjection = MeshViewport3D.Projection.XY, ShowGrid = false, ShowAxes = false };
+            var window = OpenSpotInputWindow();
+            int redPixels = 0, greenPixels = 0;
+            try {
+                LightmapSettings.lightmaps = new[] { new LightmapData { lightmapColor = red }, new LightmapData { lightmapColor = green } };
+                first.lightmapIndex = 0; second.lightmapIndex = 1;
+                first.lightmapScaleOffset = second.lightmapScaleOffset = new Vector4(1, 1, 0, 0);
+                view.Frame(new Bounds(new Vector3(0, .5f, 0), new Vector3(3, 1, .1f)));
+                window.Input = current => {
+                    if (current.type != EventType.Repaint) return;
+                    view.Draw(new Rect(0, 0, 256, 128), items, overlay: viewport => layer.Draw(viewport, canvas, context, items, entries));
+                    var frame = Get<RenderTexture>(view, "offscreen");
+                    var copy = GpuReadback.Read(frame, 256, 128, hdr: false);
+                    if (!copy) return;
+                    try {
+                        redPixels = greenPixels = 0;
+                        foreach (var pixel in copy.GetPixels()) {
+                            if (pixel.r > .5f && pixel.g < .2f && pixel.b < .2f) ++redPixels;
+                            if (pixel.g > .5f && pixel.r < .2f && pixel.b < .2f) ++greenPixels;
+                        }
+                    }
+                    finally { Object.DestroyImmediate(copy); }
+                };
+                for (int i = 0; i < 60 && (redPixels < 30 || greenPixels < 30); ++i) { window.Repaint(); yield return null; }
+                Assert.Greater(redPixels, 30);
+                Assert.Greater(greenPixels, 30, "The second instance must not reuse the first instance's UV-layer texture.");
+            }
+            finally { window.Input = null; window.Close(); Object.DestroyImmediate(window); canvas.Cleanup(); LightmapSettings.lightmaps = previousLightmaps; }
+        }
+
+        object CallWorkflow(string method, params object[] args) => typeof(UvTransferWorkflow).GetMethod(method, Private).Invoke(hub.DiagnosticWorkflow, args);
+
+        static Vector2[] ShiftedUvs(float offset) => new[] { new Vector2(offset, .1f), new Vector2(offset + .1f, .1f),
+            new Vector2(offset + .1f, .2f), new Vector2(offset, .2f) };
+
+        static void SetStageMesh(MeshEntry entry, string stage, Mesh mesh)
+        {
+            if (stage == "repack") entry.repackedMesh = mesh;
+            else if (stage == "transfer") entry.transferredMesh = mesh;
+            else entry.originalMesh = mesh;
+        }
+
+        void SetPreviewFrame()
+        {
+            var viewport = Get<MeshViewport3D>(hub, "viewport"); viewport.Frame(new Bounds(Vector3.zero, Vector3.one));
+            ChooseCameraFrame(viewport);
+            var canvas = Get<UvCanvasView>(hub, "canvas"); canvas.Zoom = 3; canvas.Pan = new Vector2(87, -31);
+        }
+
+        void AssertPreviewFrame()
+        {
+            AssertCameraFrame(Get<MeshViewport3D>(hub, "viewport"));
+            var canvas = Get<UvCanvasView>(hub, "canvas"); Assert.AreEqual(3, canvas.Zoom); Assert.AreEqual(new Vector2(87, -31), canvas.Pan);
+        }
+
+        void AssertFreshPreview(UvToolContext ctx, MeshEntry entry, UvCanvasView.PreviewMode mode)
+        {
+            Assert.AreEqual(mode, Get<UvCanvasView>(hub, "canvas").CurrentPreviewMode);
+            var mesh = ctx.DMesh(entry); var shown = entry.meshFilter.sharedMesh;
+            CollectionAssert.AreEqual(mesh.uv2, shown.uv2, "The scene preview must use the current atlas.");
+            if (mode == UvCanvasView.PreviewMode.Checker) Assert.AreSame(mesh, shown);
+            if (mode == UvCanvasView.PreviewMode.Lightmap) {
+                var so = entry.renderer.lightmapScaleOffset; var expected = mesh.uv2;
+                for (int i = 0; i < expected.Length; ++i) expected[i] = new Vector2(expected[i].x * so.x + so.z, expected[i].y * so.y + so.w);
+                CollectionAssert.AreEqual(expected, shown.uv);
+            }
+            var items = Get<List<MeshViewport3D.Item>>(hub, "viewportItems");
+            var item = items.Find(value => value.mesh == mesh);
+            Assert.AreSame(mesh, item.mesh, "The window preview and scene preview must use the same canonical data.");
+            Assert.AreSame(entry.renderer.sharedMaterial, item.materials[0], "The same frame must not retain a destroyed preview material.");
+            Assert.IsTrue(item.materials[0]);
+        }
+
         [UnityTest]
         public IEnumerator ThreeDSpotUsesTheCurrentInputRect()
         {
