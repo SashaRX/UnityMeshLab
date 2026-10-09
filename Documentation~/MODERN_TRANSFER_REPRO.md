@@ -197,3 +197,86 @@ completed `baseline-reports/transfer_compare_20261009_015612_237_0085d91c/` and
 `fixed-frozen/transfer_compare_20261009_021210_307_24d37217/`. Replay uses the
 baseline `manifest.json` via the benchmark's `captures` array. The source FBX,
 copies and diagnostic outputs are not committed.
+
+### TrainCarriage: pack budget and instance source selection
+
+The supplied stack traces identify the old `59d634d` package. Current baseline
+`ca2daf0` still reproduces its pack refusal on an isolated copy of the actual
+TrainCarriage FBX/importer. The body has 1428 source UV0 shells: requested 4096
+with internal oversample 4 estimates 383B operations; 2048 with factor 4 estimates
+95B. Both exceed the existing 20B safety budget. Factor 1 at requested 2048 packs
+in approximately 0.4 seconds on this machine. These are local observations, not
+timing guarantees. The budget and native source/binaries remain unchanged.
+
+Optional internal oversampling now adapts to the highest factor within that
+budget, in both single and shared packing. Requested resolution and proportional
+pixel padding are retained; the selected factor is logged. Even factor 1 at 4096
+exceeds the body budget, so that request still refuses explicitly. A budget
+refusal is distinct from cancellation. If any included source fails required
+Repack, Full Pipeline stops before Transfer and auto-tune rather than treating a
+partial atlas as success. Successful source outputs remain available; the run
+does not produce a successful capture/benchmark or a misleading Complete message.
+
+The imported seat instances use names such as `ElectricWagon_Seat_LOD0.001` and
+`ElectricWagon_Seat_LOD1.001`. Their group keys previously retained the LOD token,
+which made transfer fall back to the first source renderer rather than the seat.
+Group keys now remove LOD/collision suffixes while preserving numeric instance
+suffixes, so `.001` and `.002` match their own source and stay distinct. Original
+node names, FBX data and scene transforms remain unchanged. Capture from the
+LODGroup includes these instances without depending on the imported-asset
+benchmark's strict terminal LOD-name parser.
+
+The original body weld preserves every triangle corner's tangent handedness:
+LOD0 18158 → 17180 vertices, LOD1 14828 → 13891, LOD2 6948 → 6315; zero changed
+signs and no zero tangent.w values. TBN warnings are not reproduced on the current
+import. Original FBX SHA-256:
+`6C631D85D48C8C7FE2537C0BD5DCBC6D45646E30FD8112E7B57A4DC6F8DCBA4D`.
+
+Five pack/pipeline fixtures reproduced failures before the corrections. Three
+numeric-key cases and two actual source-atlas transfer fixtures also failed
+before the naming fix. The affected subset passes **273/273 EditMode tests**,
+with zero failures/skips, on Unity 6000.2.6f2 / DX11. It includes single/shared
+native packing, positive-area output scans, UV0/UV2 preservation, session release,
+int.MaxValue oversample, partial/all failed pipeline paths, naming and previews.
+Both reference C# variants and the identifier/dependency checks pass.
+
+Two isolated asynchronous Full Pipeline runs at manual resolution 2048, per-mesh
+packing and active Checker complete on LOD1 and LOD2 with zero missing render
+meshes. The pipeline's rejected-shell total falls from 85 to 2 after matching the
+seat instances correctly. Its narrow overlaps=5 summary does **not** certify a
+valid atlas. All three seat variants on LOD1 now have zero degenerate faces and
+zero overlap pairs, with area-weighted anisotropy approximately 1.074. LOD2 seats
+still have two degenerate faces and 20–22 pairs each.
+
+The body is already invalid **before transfer**: the captured prepared source UV2
+has 32 degenerate faces, 13964 positive-area overlap pairs and area-weighted
+anisotropy 15.094. A probe finds zero shared UV0-chart vertices and zero native
+UV2 assignment conflicts, so this case does not establish a point-contact/native
+corner-assignment fault. Source parameterization needs further investigation.
+The corrected grouped targets retain the following defects:
+
+| Body target | Degenerate faces | Overlap pairs | Area-weighted anisotropy |
+|---|---:|---:|---:|
+| LOD1 | 124 | 11830 | 8.508 |
+| LOD2 | 19 | 4955 | 145592.152 |
+
+The captured final inputs include the body and all three seat variants at both
+target LODs. A filtered manifest retains those eight pairs and the original
+checksummed mesh/detail files. Replaying all six methods, two measured
+repetitions and no warmup gives **48 rows**: deterministic outputs, unchanged
+inputs and matching grouped references. None gives a clean body. `shell-similarity`
+reduces LOD1 average anisotropy to 2.060 but increases overlap pairs to 19110;
+global nearest alternatives are worse. Five nearest-method rows exhaust their
+overlap scan limits, so their counts are lower bounds. Grouped scans complete.
+Reference agreement is reproducibility, not independent correspondence truth.
+
+Local evidence: `_results~/train-transfer-20261009/` contains `affected.xml`,
+`baseline-pipeline.xml`, `baseline-naming.xml`, `baseline-pack.log`,
+`full-pipeline-fixed.log`, `captured-quality.json`, `source-probe.log`,
+`frozen-config.json` and
+`frozen-comparison/transfer_compare_20261009_025305_688_235b6a15/`.
+The complete 32-pair capture is in the isolated project's
+`BenchmarkReports/transfer_20261009_024949_746_e986b018/`; `train-subset.json`
+selects the eight comparison pairs. Source FBX/copies and generated reports are
+not committed. Authored material/texture dependencies were not copied; these are
+controlled runs, not an exact replay of the supplied historical scene settings.

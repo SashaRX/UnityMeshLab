@@ -1096,6 +1096,7 @@ namespace SashaRX.UnityMeshLab
                 new GUIContent("Internal oversample",
                     "Internal atlas = user resolution × this factor. Mitigates xatlas's per-chart "
                     + "ceil(extents) stretch that breaks uniform density for sub-pixel shells. "
+                    + "The pack budget may reduce this factor while retaining the requested resolution. "
                     + "4× cuts density spread from ~14× down to ~2×. 2×+ forces heuristic packer."),
                 osIdx, osLabels);
             ctx.InternalOversample = osValues[Mathf.Clamp(newOsIdx, 0, osValues.Length - 1)];
@@ -1658,7 +1659,7 @@ namespace SashaRX.UnityMeshLab
         /// Run the auto-tune full pipeline. Returns <c>true</c> when the
         /// pipeline ran end-to-end and the in-memory per-mesh state reflects
         /// the just-completed run; returns <c>false</c> when the user
-        /// cancelled mid-flight so the caller can skip artefact recording
+        /// cancelled or a required repack failed so the caller can skip artefact recording
         /// (stale state from a prior run would otherwise be written).
         /// </summary>
         async Task<bool> ExecFullPipelineCoreImpl(bool useAsync)
@@ -1697,21 +1698,21 @@ namespace SashaRX.UnityMeshLab
 
             using var best = new AutoTuneChoice();
 
-            bool cancelled = false;
+            bool aborted = false;
             UvProgress.Begin("Auto-tune Pipeline", cancelable: true);
             try
             {
-                cancelled = await RunAutoTuneAttempts(separationConfigs, savedMeshes, best, hasTransferTargets, useAsync);
-                if (best.Meshes.Count > 0 && !cancelled) RestoreAutoTuneChoice(best);
+                aborted = await RunAutoTuneAttempts(separationConfigs, savedMeshes, best, hasTransferTargets, useAsync);
+                if (best.Meshes.Count > 0 && !aborted) RestoreAutoTuneChoice(best);
                 ctx.DiagnosticCapture?.StageSafe(this, "selected-final");
             }
             finally
             {
-                if (cancelled) UvProgress.Cancel(); else UvProgress.End();
+                if (UvProgress.CancelRequested) UvProgress.Cancel(); else UvProgress.End();
                 foreach (var m in savedMeshes.Values) UnityEngine.Object.DestroyImmediate(m);
             }
 
-            if (cancelled)
+            if (aborted)
             {
                 RequestRepaint?.Invoke();
                 return false;
@@ -1783,7 +1784,8 @@ namespace SashaRX.UnityMeshLab
                     var src = ctx.ForLod(ctx.SourceLodIndex);
                     if (ctx.RepackPerMesh) await ExecRepackPerMeshImpl(src, useAsync);
                     else                   await ExecRepackImpl(src, useAsync);
-                    stageOutcome[4] = ctx.HasRepack ? StageStatus.Success : StageStatus.Failed;
+                    stageOutcome[4] = src.Count > 0 && src.All(e => e.repackedMesh != null)
+                        ? StageStatus.Success : StageStatus.Failed;
                 }
                 catch { stageOutcome[4] = StageStatus.Failed; throw; }
             }
@@ -1893,6 +1895,13 @@ namespace SashaRX.UnityMeshLab
                 ctx.DiagnosticCapture?.StageSafe(this, $"attempt-{ci}-symmetry-separation-{sepThresh:R}");
                 await RunRepackStage(useAsync);
                 ctx.DiagnosticCapture?.StageSafe(this, $"attempt-{ci}-repack");
+                if (UvProgress.CancelRequested) return true;
+                if (stageOutcome[4] == StageStatus.Failed)
+                {
+                    stageOutcome[5] = StageStatus.Skipped;
+                    UvtLog.Error("[Pipeline] Repack failed for one or more included source meshes; transfer and auto-tune stopped.");
+                    return true;
+                }
                 await RunTransferStage(useAsync, hasTransferTargets);
                 ctx.DiagnosticCapture?.StageSafe(this, $"attempt-{ci}-transfer");
 

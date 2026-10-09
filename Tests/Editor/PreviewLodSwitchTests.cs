@@ -671,6 +671,54 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsNotNull(source.repackedMesh); Assert.IsNotNull(target.transferredMesh);
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void FullPipelineCannotTransferOrCompleteAfterFailedSourceRepack(bool partialSuccess)
+        {
+            var group = Group(true, out var sourceRenderer, out var targetRenderer);
+            sourceRenderer.GetComponent<MeshFilter>().sharedMesh.uv = System.Array.Empty<Vector2>();
+            if (partialSuccess) {
+                var valid = Lod(group.transform, "Other_LOD0", Quad("Other_LOD0", true));
+                group.SetLODs(new[] { new LOD(.5f, new Renderer[] { sourceRenderer, valid }),
+                    new LOD(.1f, new Renderer[] { targetRenderer }) });
+            }
+            var ctx = Open(group); ctx.AtlasResolution = 64; ctx.InternalOversample = 1;
+            ctx.RepackResolutionMode = ResolutionMode.Manual; ctx.RepackPerMesh = true;
+            typeof(UvTransferWorkflow).GetField("stageRunAnalyzeUv0", Private).SetValue(hub.DiagnosticWorkflow, false);
+            typeof(UvTransferWorkflow).GetField("stageRunWeldUv0", Private).SetValue(hub.DiagnosticWorkflow, false);
+            typeof(UvTransferWorkflow).GetField("skipSymmetrySplitStep", Private).SetValue(hub.DiagnosticWorkflow, true);
+            LogAssert.Expect(LogType.Error, new System.Text.RegularExpressions.Regex("\\[Pipeline\\] Repack failed"));
+            var completed = ((System.Threading.Tasks.Task<bool>)CallWorkflow("ExecFullPipelineCoreImpl", false)).GetAwaiter().GetResult();
+            Assert.IsFalse(completed, "A partial/all failed repack is not a completed pipeline.");
+            Assert.IsFalse(ctx.HasTransfer);
+            Assert.IsNull(ctx.MeshEntries.Find(e => e.renderer == targetRenderer).transferredMesh);
+            var stages = (System.Array)typeof(UvTransferWorkflow).GetField("stageOutcome", Private).GetValue(hub.DiagnosticWorkflow);
+            Assert.AreEqual("Failed", stages.GetValue(4).ToString());
+            Assert.AreEqual("Skipped", stages.GetValue(5).ToString());
+            Assert.AreEqual(partialSuccess, ctx.HasRepack, "Successful source outputs remain available after a partial failure.");
+        }
+
+        [TestCase(".001")]
+        [TestCase(".002")]
+        public void NumericInstanceLodTransfersFromItsOwnSourceInsteadOfTheFirstRenderer(string instance)
+        {
+            var root = new GameObject("Train"); owned.Add(root);
+            var door = Lod(root.transform, "Door_LOD0", Quad("Door_LOD0", true));
+            var source = Lod(root.transform, "Seat_LOD0" + instance, Quad("Seat_LOD0" + instance, true));
+            var target = Lod(root.transform, "Seat_LOD1" + instance, Quad("Seat_LOD1" + instance, false));
+            var expected = ShiftedUvs(.5f); source.GetComponent<MeshFilter>().sharedMesh.uv2 = expected;
+            var group = root.AddComponent<LODGroup>();
+            group.SetLODs(new[] { new LOD(.5f, new Renderer[] { door, source }), new LOD(.1f, new Renderer[] { target }) });
+            var ctx = Open(group); ctx.SourceLodIndex = 0;
+            UvProgress.Begin("Instance source regression", cancelable: true);
+            try { ((System.Threading.Tasks.Task)CallWorkflow("ExecTransferLodImpl", 1, false)).GetAwaiter().GetResult(); }
+            finally { UvProgress.End(); }
+            var output = ctx.MeshEntries.Find(e => e.renderer == target).transferredMesh;
+            Assert.IsNotNull(output);
+            for (int i = 0; i < expected.Length; ++i)
+                Assert.That(Vector2.Distance(expected[i], output.uv2[i]), Is.LessThan(1e-5), "LOD instance must retain its matching source atlas.");
+        }
+
         static Mesh SavedAutoTuneMesh(object best, string field, MeshEntry entry)
         {
             var dictionary = (System.Collections.IDictionary)best.GetType().GetField(field, Private).GetValue(best);

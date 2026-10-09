@@ -3,6 +3,43 @@
 > **Обновлять этот документ при каждом эксперименте с transfer pipeline.**
 > Последнее обновление: v1.1.34 (2026-10-09)
 
+## TrainCarriage: pack budget и выбор source для instance — 2026-10-09
+
+- Продолжение PR #225, baseline `ca2daf0`. Присланные stack traces относятся
+  к `59d634d`, но pack refusal воспроизведён на текущей копии модели: 1428
+  source shells, 4096 × oversample 4 → 383B cost, 2048 × 4 → 95B, оба отклонены
+  бюджетом 20B. На 2048 × 1 pack проходит примерно за 0.4 s. Native binaries
+  и бюджет не менялись. Сварка всех импортированных мешей сохраняет corner
+  tangent.w; для корпуса LOD0/1/2 изменённых signs — 0.
+- RepackSingle/Multi выбирают максимальный внутренний oversample, помещающийся
+  в бюджет; requested resolution и пропорциональный padding сохраняются.
+  Если даже factor 1 не помещается (корпус на 4096), возвращается причина
+  budget refusal вместо `cancelled`. Full Pipeline проверяет все included
+  source outputs: partial/all failed Repack останавливает transfer/auto-tune,
+  не пишет успешный capture/benchmark и не сообщает Complete. Успешные source
+  outputs остаются доступными. User cancellation сохраняет свой отдельный путь.
+- `ElectricWagon_Seat_LOD1.001/.002` не имели одинакового group key со своим
+  LOD0, поэтому transfer выбирал первый source renderer (дверь). Group key
+  удаляет LOD/collision suffix, сохраняя numeric instance. Настоящие .001 и
+  .002 остаются разными группами; имена сцены и FBX не переименовываются.
+- 5 pack/pipeline regressions и ещё 5 naming/source-selection cases сначала
+  воспроизвели ошибки. Итоговый subset: **273/273 EditMode tests**, без skips,
+  Unity 6000.2.6f2 / DX11. Проверены native single/shared packs, input UV0/UV2,
+  positive-area overlaps и session release, максимальный int oversample,
+  partial/all failed pipeline и фактический source atlas. Обе reference C#
+  сборки и identifier check проходят.
+- Два полных async запуска с Checker на LOD1/2, manual 2048, per-mesh packing:
+  missing meshes = 0. Pipeline rejected shells 85 → 2 после исправления names.
+  Узкая pipeline сводка overlaps=5 **не является полным UV scan**.
+  Capture подтверждает чистые три Seat LOD1; у LOD2 Seat остаются по 2 degenerate
+  faces и 20–22 overlap pairs. Сам source UV2 корпуса уже содержит 32 degenerate
+  faces / 13964 overlap pairs. Grouped targets LOD1: 124 / 11830, LOD2: 19 / 4955.
+  Это не исправлено сменой transfer method или уменьшением oversample.
+- Frozen Capture: 8 пар корпуса/сидений × 6 методов = **48 rows**, по 2
+  повторения; deterministic, inputs unchanged, grouped reference matches.
+  Ни один метод не даёт чистый корпус. У 5 nearest-method rows overlap scan
+  неполный, их counts — lower bounds. [Корпус и данные](MODERN_TRANSFER_REPRO.md#traincarriage-pack-budget-and-instance-source-selection).
+
 ## Shelf_C: shared-source overlap и collapse diagnostics — 2026-10-09
 
 - Продолжение PR #225, baseline `f3cbb88`. Исходный `Shelf_C.fbx` и importer meta
