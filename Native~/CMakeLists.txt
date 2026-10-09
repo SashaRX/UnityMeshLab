@@ -47,7 +47,6 @@ add_library(xatlas-unity SHARED
     xatlas-unity-bridge.cpp
     src/collision.cpp
     src/remesh.cpp
-    ${XATLAS_SOURCE_DIR}/xatlas.cpp
 )
 
 target_include_directories(xatlas-unity PRIVATE
@@ -89,10 +88,13 @@ add_custom_command(TARGET xatlas-unity POST_BUILD
 )
 
 # Opt-in headless tests; no Unity license needed.
-option(MESHLAB_BUILD_TESTS "Build native remesh tests" OFF)
+option(MESHLAB_BUILD_TESTS "Build native regression tests" OFF)
 if(MESHLAB_BUILD_TESTS)
     enable_testing()
     add_executable(meshlab-remesh-test tests/remesh_test.cpp)
     target_link_libraries(meshlab-remesh-test PRIVATE xatlas-unity)
     add_test(NAME remesh COMMAND meshlab-remesh-test)
+    add_executable(meshlab-uv-input-test tests/uv_input_test.cpp)
+    target_link_libraries(meshlab-uv-input-test PRIVATE xatlas-unity)
+    add_test(NAME uv-input COMMAND meshlab-uv-input-test)
 endif()

@@ -3,6 +3,16 @@
 > **Обновлять этот документ при каждом эксперименте с transfer pipeline.**
 > Последнее обновление: v1.1.34 (2026-10-09)
 
+## Source UV packing: relative face degeneracy — 2026-10-09
+
+- Продолжение PR #225, baseline `24266da`. Изолированный Unity 6000.2.6f2 / DX11 проект, оригинальные FBX и meta; изменения геометрии и UV0 запрещены. Проверяется подготовка source до transfer, включая reverse LOD1→0.
+- Stage probe TrainСarriage_Base_LOD0 и Modern_DressingTable_A_Frame_LOD0: после ARAP и density normalization у Frame 0 вырожденных UV-граней, но xatlas оставляет 50/51 orphan vertices (weld off/on). После orphan repair появляются 11/10 вырожденных граней. Train имеет 8 исходных вырожденных 3D-граней; дополнительно xatlas игнорирует 248/280 корректных маленьких UV-граней.
+- Причина: `AddUvMesh` сравнивает float UV area с абсолютным `FLT_EPSILON`. Порог зависит от единиц UV, поэтому normalization уменьшает корректные triangles ниже cutoff. Это source packing defect, а не ошибка BVH traversal или source assignment.
+- Отклонён общий ×16/×32 scale входа: он убирает orphan collapse, но меняет автоматический расчёт texels-per-unit (`max(1, meshArea / .75)`) и round-up размеров chart. На 174 prepared rows (87 inputs × grouped/grouped-no-hints) 32 строки ухудшили хотя бы одну quality metric, в том числе Kitchen. В production масштабирование не переносится.
+- Native bridge компилирует pinned xatlas implementation в своей translation unit, затем после успешного `AddUvMesh` пересчитывает `faceIgnore` до chart construction: finite float coordinates, double determinant, relative cutoff `4 * DBL_EPSILON * max(edgeLengthSquared)`. Unmodified vendor snapshot и C ABI сохранены. Координаты, packing options и texels-per-unit не масштабируются. Коллинеарные и non-finite faces остаются ignored.
+- Добавлены native CTest fixtures для маленьких, mirrored, translated, collinear и non-finite UV, плюс EditMode проверки automatic/explicit density и mixed-scale shared atlas. Native binaries обновляет только build-native CI.
+- Final validation и prepared-corpus comparison будут записаны после CI rebuild. Остаточные folds после ARAP и истинные degenerates импортированной геометрии этот фикс не исправляет.
+
 ## Projection candidate quality and source-atlas gate — 2026-10-09
 
 - Продолжение PR #225, baseline `269bba6`. Сначала разделены два механизма
