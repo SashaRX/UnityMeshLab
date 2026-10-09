@@ -9,7 +9,7 @@ namespace SashaRX.UnityMeshLab
     /// allowed only when the entire triangle contact lies on that shared simplex.</summary>
     internal static class RemeshCapIntersection
     {
-        internal readonly struct Q : IComparable<Q>
+        internal readonly struct Q
         {
             readonly BigInteger n, d;
             internal Q(BigInteger numerator) { n = numerator; d = BigInteger.One; }
@@ -21,7 +21,7 @@ namespace SashaRX.UnityMeshLab
                 n = numerator / gcd; d = denominator / gcd;
             }
             internal int Sign => n.Sign;
-            public int CompareTo(Q other) => (n * other.d - other.n * d).Sign;
+            internal int CompareTo(Q other) => (n * other.d - other.n * d).Sign;
             public static Q operator +(Q a, Q b) => new Q(a.n * b.d + b.n * a.d, a.d * b.d);
             public static Q operator -(Q a, Q b) => new Q(a.n * b.d - b.n * a.d, a.d * b.d);
             public static Q operator *(Q a, Q b) => new Q(a.n * b.n, a.d * b.d);
@@ -47,10 +47,16 @@ namespace SashaRX.UnityMeshLab
         static Q[] At(Q[] a, Q[] b, Q t) => new[] {
             a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t };
         static bool Same(Q[] a, Q[] b) => a[0].CompareTo(b[0]) == 0 && a[1].CompareTo(b[1]) == 0 && a[2].CompareTo(b[2]) == 0;
-        internal static Q Orient(Q[] a, Q[] b, Q[] c, int x, int y) =>
-            (b[x] - a[x]) * (c[y] - a[y]) - (b[y] - a[y]) * (c[x] - a[x]);
+        internal static Q Orient(Q[] edgeStart, Q[] edgeEnd, Q[] point, int x, int y) =>
+            (edgeEnd[x] - edgeStart[x]) * (point[y] - edgeStart[y]) - (edgeEnd[y] - edgeStart[y]) * (point[x] - edgeStart[x]);
         static bool OneSide(Q[] d) => d[0].Sign * d[1].Sign > 0 && d[0].Sign * d[2].Sign > 0;
-        static int NonzeroAxis(Q[] p) { for (int i = 0; i < 3; ++i) if (p[i].Sign != 0) return i; return -1; }
+        static int NonzeroAxis(Q[] p)
+        {
+            for (int i = 0; i < 3; ++i) {
+                if (p[i].Sign != 0) return i;
+            }
+            return -1;
+        }
 
         static List<Q[]> Section(Q[][] triangle, Q[] distances)
         {
@@ -67,7 +73,12 @@ namespace SashaRX.UnityMeshLab
         static bool Allowed(List<Q[]> contact, List<Q[]> shared)
         {
             if (contact.Count == 0) return true;
-            if (shared.Count == 1) { foreach (var p in contact) if (!Same(p, shared[0])) return false; return true; }
+            if (shared.Count == 1) {
+                foreach (var p in contact) {
+                    if (!Same(p, shared[0])) return false;
+                }
+                return true;
+            }
             if (shared.Count != 2) return false;
             var direction = Sub(shared[1], shared[0]); int axis = NonzeroAxis(direction);
             foreach (var p in contact) {

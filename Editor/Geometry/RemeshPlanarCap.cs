@@ -31,8 +31,10 @@ namespace SashaRX.UnityMeshLab
                 throw new ArgumentException("Cap requires indexed triangle geometry.");
             if (positions.Length > MaxVertices || indices.Length > MaxIndices)
                 throw Refuse("source geometry exceeds the preparation budget");
-            foreach (var p in positions) if (!float.IsFinite(p.x) || !float.IsFinite(p.y) || !float.IsFinite(p.z))
-                throw Refuse("source positions are not finite");
+            foreach (var p in positions) {
+                if (!float.IsFinite(p.x) || !float.IsFinite(p.y) || !float.IsFinite(p.z))
+                    throw Refuse("source positions are not finite");
+            }
             foreach (int v in indices) if (v < 0 || v >= positions.Length) throw Refuse("source index is out of range");
 
             // This is the shared position-weld primitive used by mesh connectivity.

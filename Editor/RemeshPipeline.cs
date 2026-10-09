@@ -313,9 +313,10 @@ namespace SashaRX.UnityMeshLab
                             UvtLog.Info(LogPrefix + node.name + ": planar Cap " + node.support.Description);
                             RemeshGeometryDiagnostics.CaptureSupport(captured, node.support, options, node.name);
                             var closed = RemeshTopology.ClosedVolumeFaces(node.support.positions, node.support.indices, token);
-                            foreach (bool face in closed) if (!face)
-                                throw new InvalidOperationException("Planar Cap support still has an open or zero-volume component. " +
+                            foreach (bool face in closed) {
+                                if (!face) throw new InvalidOperationException("Planar Cap support still has an open or zero-volume component. " +
                                     "Select every required disk loop explicitly; Bridge and unsupported compound closures require separate intent.");
+                            }
                         }
                         catch (InvalidOperationException failure) {
                             RemeshGeometryDiagnostics.CaptureFailure(captured.positions, captured.indices, null, null, options,

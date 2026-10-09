@@ -59,6 +59,18 @@ The newly discovered request-budget fixture had retained a six-argument reflecti
 call after Cap added a seventh support parameter; supplying null support restores
 its existing per-pixel/per-stratum assertions. Both reference C# build variants
 pass, as do **115/115** offline cases, identifier and tool-dependency checks.
+After clarifying the exact-predicate comparison contract and conditional blocks
+reported by Sonar, **111/111** Cap and request-padding EditMode cases pass again;
+both reference build variants also pass. The predicate arithmetic is unchanged.
+
+The updated E-project package also passes the live probe: revision 2 adds four
+triangles in two local patches to the synthetic adjacent-face box, with two fresh
+plane checks. The real Sandbag FBX completes Remesh -> Simplify -> Unwrap -> GPU
+Bake with the local option enabled: 188 welded copies, 45 Cap faces, 6,012 voxel
+faces, 952 simplified faces and 37 charts. Its source file, meta, captured donor
+channels and scene dirty state remain unchanged. Bake retains the measured
+21,604 complete misses (19,235 Cap-associated) and 2,917 partial misses. No new
+surface donor is invented; all temporary pipeline objects are disposed.
 
 ## Geometry and donors
 
