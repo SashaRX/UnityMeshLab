@@ -62,29 +62,29 @@ namespace SashaRX.UnityMeshLab
                         var trial = new Trial { pair = pair.index, source = pair.source, target = pair.target, allowOverlap = overlap };
                         summary.trials.Add(trial);
                         Mesh coarse = null, fine = null;
-                        string stage = "snapshot";
+                        trial.failureStage = "snapshot";
                         try
                         {
                             // A forward capture's target is the coarse mesh. Prepare
                             // it from geometry rather than copying failed forward UV2.
                             coarse = TransferCaseReplay.Load(file.DirectoryName, pair.targetMesh);
                             fine = TransferCaseReplay.Load(file.DirectoryName, pair.sourceMesh);
-                            stage = "cleanup";
+                            trial.failureStage = "cleanup";
                             using var prepared = ReverseUvInputs.Prepare(new[] {
                                 new ReverseUvTransfer.Level { lod = 1, inputs = new[] { new ReverseUvTransfer.Input { mesh = coarse, key = pair.target, toWorld = pair.localToWorld } } },
                                 new ReverseUvTransfer.Level { lod = 0, inputs = new[] { new ReverseUvTransfer.Input { mesh = fine, key = pair.source, toWorld = pair.localToWorld } } }
                             });
-                            stage = "seed";
+                            trial.failureStage = "seed";
                             int seedSize = prepared.PrepareSeed(256, 2, 0, default);
                             var levels = prepared.levels;
-                            stage = "projection";
+                            trial.failureStage = "projection";
                             using var result = await ReverseUvTransfer.Build(levels, new ReverseUvTransfer.Options {
                                 seedResolution = seedSize, projectionReach = .05f, preserveProjectedOverlap = overlap }, true);
-                            stage = "audit";
+                            trial.failureStage = "audit";
                             trial.audit = ReverseUvAudit.Write(result, levels); trial.result = result.report;
-                            trial.accepted = true; ++summary.accepted;
+                            trial.accepted = true; trial.failureStage = null; ++summary.accepted;
                         }
-                        catch (Exception ex) { trial.error = ex.Message; trial.failureStage = stage; ++summary.refused; }
+                        catch (Exception ex) { trial.error = ex.Message; ++summary.refused; }
                         finally
                         {
                             if (coarse) UnityEngine.Object.DestroyImmediate(coarse);

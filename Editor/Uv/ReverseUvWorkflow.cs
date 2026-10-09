@@ -51,9 +51,9 @@ namespace SashaRX.UnityMeshLab
             try
             {
                 UvProgress.Report(0, "Clean detached working copies");
-                var sources = groups.Select((g, level) => new ReverseUvTransfer.Level {
+                var sources = groups.Select((List<MeshEntry> g, int level) => new ReverseUvTransfer.Level {
                     lod = g[0].lodIndex,
-                    inputs = g.Select(e => new ReverseUvTransfer.Input {
+                    inputs = g.Select((MeshEntry e) => new ReverseUvTransfer.Input {
                         mesh = level == 0 && !reversePrepareSeed ? e.repackedMesh ?? e.originalMesh : e.originalMesh,
                         toWorld = e.renderer ? e.renderer.localToWorldMatrix : Matrix4x4.identity,
                         key = e.fbxMesh ? e.fbxMesh.name : e.originalMesh.name
@@ -61,7 +61,7 @@ namespace SashaRX.UnityMeshLab
                 }).ToArray();
                 using var prepared = ReverseUvInputs.Prepare(sources, cancellation.Token);
                 var levels = prepared.levels;
-                int removed = levels.Sum(l => l.inputs.Sum(i => i.removedSourceFaces.Length));
+                int removed = levels.Sum((ReverseUvTransfer.Level l) => l.inputs.Sum((ReverseUvTransfer.Input i) => i.removedSourceFaces.Length));
                 int seedSize = groups[0].Max(e => (int)e.repackedAtlasWidth);
                 if (reversePrepareSeed)
                     seedSize = prepared.PrepareSeed(SanitizeAtlasResolution(ctx.AtlasResolution), SanitizePadding(ctx.ShellPaddingPx),
