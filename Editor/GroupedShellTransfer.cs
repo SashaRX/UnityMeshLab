@@ -640,8 +640,9 @@ namespace SashaRX.UnityMeshLab
                 var point = (positions[triangles[face]] + positions[triangles[face + 1]] + positions[triangles[face + 2]]) / 3f;
                 float distance = float.MaxValue;
                 if (bvh != null) distance = bvh.FindNearest(point).distSq;
-                else foreach (int sourceFace in sourceFaces)
+                else foreach (int sourceFace in sourceFaces) {
                     distance = Mathf.Min(distance, PointToTri3D(point, a[sourceFace], b[sourceFace], c[sourceFace], out _, out _, out _));
+                }
                 sum += distance; ++count;
             }
             return count > 0 ? (float)(sum / count) : 0;
@@ -657,8 +658,9 @@ namespace SashaRX.UnityMeshLab
                 var point = (uv[triangles[face]] + uv[triangles[face + 1]] + uv[triangles[face + 2]]) / 3f;
                 float distance = float.MaxValue;
                 if (bvh != null) distance = bvh.FindNearest(point).distSq;
-                else foreach (int sourceFace in sourceFaces)
+                else foreach (int sourceFace in sourceFaces) {
                     distance = Mathf.Min(distance, PointToTri2D(point, a[sourceFace], b[sourceFace], c[sourceFace], out _, out _, out _));
+                }
                 sum += distance; ++count;
             }
             return count > 0 ? (float)(sum / count) : 0;
