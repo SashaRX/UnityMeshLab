@@ -10,7 +10,7 @@ using UnityEditor;
 
 namespace SashaRX.UnityMeshLab
 {
-    public class UvTransferWorkflow : IBenchmarkHost
+    public partial class UvTransferWorkflow : IBenchmarkHost
     {
         const string CancelButton = "Cancel";
 
@@ -827,6 +827,7 @@ namespace SashaRX.UnityMeshLab
                         }
                     }
                 }
+                DrawReverseTransferActions();
             }
         }
 
@@ -1445,6 +1446,7 @@ namespace SashaRX.UnityMeshLab
         void ExecWeldUv0(bool runMeshoptFirst = true)
         {
             if (ctx.LodGroup == null) return;
+            ClearReverseProvenance();
             using var previewChange = PreservePreviewDuringMeshChange();
             PrepareTransferInputs();
 
@@ -1479,6 +1481,7 @@ namespace SashaRX.UnityMeshLab
 
         void ExecSymmetrySplit(bool includeTargets, float separationThreshold = 0.10f)
         {
+            ClearReverseProvenance();
             if (ctx.LodGroup == null) return;
             using var previewChange = PreservePreviewDuringMeshChange();
             PrepareTransferInputs();
@@ -1637,6 +1640,7 @@ namespace SashaRX.UnityMeshLab
         /// baseline so full-pipeline reruns cannot accumulate previous edits.</summary>
         void ResetWorkingMeshesToFbx()
         {
+            ClearReverseProvenance();
             if (ctx?.MeshEntries == null) return;
             foreach (var e in ctx.MeshEntries)
             {
@@ -2041,6 +2045,7 @@ namespace SashaRX.UnityMeshLab
         async Task ExecRepackImpl(List<MeshEntry> entries, bool useAsync)
         {
             if (entries.Count == 0) return;
+            ClearReverseProvenance();
             using var previewChange = PreservePreviewDuringMeshChange();
             PrepareTransferInputs();
             using var _bench = BenchmarkRecorder.NewRun(ctx, "Repack",
@@ -2306,6 +2311,7 @@ namespace SashaRX.UnityMeshLab
 
         async Task ExecTransferLodImpl(int tLod, bool useAsync)
         {
+            ClearReverseProvenance();
             using var previewChange = PreservePreviewDuringMeshChange();
             RequirePreparedTransferInputs();
             var targets = ctx.ForLod(tLod);

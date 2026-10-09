@@ -838,6 +838,59 @@ namespace SashaRX.UnityMeshLab.Tests
             AssertFreshPreview(ctx, target, UvCanvasView.PreviewMode.Checker);
         }
 
+        [TestCase(false)] [TestCase(true)]
+        public void ReverseTransferPublishesTheWholeChainAndKeepsCheckerAndCamera(bool prepareSeed)
+        {
+            var ctx = Open(Group(true, out var fineRenderer, out var coarseRenderer));
+            var workflow = hub.DiagnosticWorkflow;
+            typeof(UvTransferWorkflow).GetField("reversePrepareSeed",Private).SetValue(workflow,prepareSeed);
+            var oldSource = ctx.SourceLodIndex;
+            ctx.RepackResolutionMode = ResolutionMode.Manual; ctx.AtlasResolution = 128;
+            var coarse = ctx.MeshEntries.Find(e => e.renderer == coarseRenderer);
+            var fine = ctx.MeshEntries.Find(e => e.renderer == fineRenderer);
+            // This fixture's third corner has Z=1: make it planar to establish an isotropic seed.
+            coarse.originalMesh.vertices = fine.originalMesh.vertices = new[] {Vector3.zero, Vector3.right, new Vector3(1,1,0), Vector3.up};
+            var prior = fine.transferredMesh = Object.Instantiate(fine.originalMesh);
+            var previousDirectory = BenchmarkRecorder.OutputDirectoryOverride;
+            string directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(),"MeshLabReversePreview_"+System.Guid.NewGuid().ToString("N"));
+            try
+            {
+                BenchmarkRecorder.OutputDirectoryOverride = directory;
+                Call(hub,"CollectCanvasEntries"); SetPreviewFrame(); Call(hub,"ApplyPreviewMode",UvCanvasView.PreviewMode.Checker);
+                workflow.RunReverseTransfer(false).GetAwaiter().GetResult();
+                Assert.IsTrue(prior == null); Assert.AreEqual(1,ctx.SourceLodIndex);
+                Assert.IsTrue(ctx.HasRepack); Assert.IsTrue(ctx.HasTransfer);
+                Assert.IsNotNull(coarse.repackedMesh); Assert.IsNotNull(fine.transferredMesh);
+                Assert.AreEqual(coarse.repackedAtlasWidth,fine.repackedAtlasWidth);
+                Assert.IsNotEmpty(fine.reverseTransferJson);
+                Call(hub,"CollectCanvasEntries"); AssertFreshPreview(ctx,fine,UvCanvasView.PreviewMode.Checker); AssertPreviewFrame();
+                Assert.AreEqual(1,System.IO.Directory.GetFiles(directory,"*.json").Length);
+                var saved = SidecarStore.TryBuildEntry(fine,fine.transferredMesh,false,SidecarStore.AoUvTarget.None,out var sidecar);
+                Assert.IsTrue(saved); Assert.AreEqual(fine.reverseTransferJson,sidecar.reverseTransferJson);
+            }
+            finally
+            {
+                BenchmarkRecorder.OutputDirectoryOverride = previousDirectory;
+                if(System.IO.Directory.Exists(directory)) System.IO.Directory.Delete(directory,true);
+                ctx.SourceLodIndex = oldSource;
+            }
+        }
+
+        [Test] public void FailedReverseTransferKeepsThePreviousChainAndProvenance()
+        {
+            var ctx = Open(Group(true,out var fineRenderer,out var coarseRenderer));
+            var fine = ctx.MeshEntries.Find(e=>e.renderer==fineRenderer);
+            var coarse = ctx.MeshEntries.Find(e=>e.renderer==coarseRenderer);
+            fine.transferredMesh=Object.Instantiate(fine.originalMesh); coarse.repackedMesh=Object.Instantiate(coarse.originalMesh);
+            fine.reverseTransferJson="prior"; var previousFine=fine.transferredMesh; var previousCoarse=coarse.repackedMesh;
+            ctx.HasTransfer=ctx.HasRepack=true;
+            typeof(UvTransferWorkflow).GetField("reverseReach",Private).SetValue(hub.DiagnosticWorkflow,float.NaN);
+            ctx.RepackResolutionMode=ResolutionMode.Manual; ctx.AtlasResolution=128;
+            Assert.Catch(()=>hub.DiagnosticWorkflow.RunReverseTransfer(false).GetAwaiter().GetResult());
+            Assert.AreSame(previousFine,fine.transferredMesh); Assert.AreSame(previousCoarse,coarse.repackedMesh);
+            Assert.AreEqual("prior",fine.reverseTransferJson); Assert.IsTrue(ctx.HasTransfer); Assert.AreEqual(0,ctx.SourceLodIndex);
+        }
+
         [Test]
         public void PreviewSurvivesResetUndoAndContextRefresh(
             [Values(UvCanvasView.PreviewMode.Checker, UvCanvasView.PreviewMode.Shells3D, UvCanvasView.PreviewMode.Lightmap)] UvCanvasView.PreviewMode mode,

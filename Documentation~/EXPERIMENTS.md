@@ -1,5 +1,29 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Progressive reverse atlas — 2026-10-09
+
+Continuation of PR225 at user request, baseline `67ff4b1`. Isolated new mode;
+`GroupedShellTransfer`, `XatlasRepack` and `SymmetrySplitShells` solvers are unchanged.
+See [REVERSE_UV_TRANSFER.md](REVERSE_UV_TRANSFER.md).
+
+- Coarsest geometric seed, projection onto the preceding LOD, frozen pixel
+  placements, append-only new regions and common final normalization.
+- Optional inherited overlaps retain ordered face relationships for future baking;
+  no bake-order integration in this experiment. Complete footprint/overlap and
+  distortion checks reject ambiguous or unrepresentable results.
+- Local intrinsic rescue preserves triangle proportions when connected unwrap
+  fails, at the cost of more islands. Sidecars preserve result UV2 and ancestry.
+- Unity 6000.2.6f2 DX11: **215/215 EditMode checks passed**, including preview,
+  export and capture regressions. Compile check passes both FBX define variants.
+- Frozen saved variants from the Modern and Park_Bench captures: **86/112 trials
+  accepted**, **26 refused** (10 degenerate input/seed geometry, 8 seed distortion,
+  8 collapsed local rescue faces after placement). These are repeated saved
+  variants, not 112 distinct models; failures are not certified as successful.
+  Audits report no unexpected positive-area overlap in accepted outputs.
+- Current limits: incompatible donor seam crossings create new UV instead of
+  clipped inherited pieces; intrinsic rescue fragments islands; no global compact
+  packing, guaranteed uniform per-face density or production overlap bake queue.
+
 > **Обновлять этот документ при каждом эксперименте с transfer pipeline.**
 > Последнее обновление: v1.1.34 (2026-10-09)
 

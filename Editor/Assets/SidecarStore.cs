@@ -262,7 +262,8 @@ namespace SashaRX.UnityMeshLab
                 if (entry.originalMesh != null && entry.originalMesh != entry.fbxMesh)
                 {
                     FbxExport.PreserveUvChannels(sidecarMesh, entry.originalMesh);
-                    FbxExport.OverwriteUvChannel(sidecarMesh, entry.originalMesh, 1);
+                    if (entry.repackedMesh == null && entry.transferredMesh == null)
+                        FbxExport.OverwriteUvChannel(sidecarMesh, entry.originalMesh, 1);
                 }
 
                 // TBN: keep tangent presence in sync with the source FBX. If the FBX
@@ -304,7 +305,7 @@ namespace SashaRX.UnityMeshLab
                 var positions = sidecarMesh.vertices;
                 var colors = sidecarMesh.colors32;
                 var uv0List = new List<Vector2>();
-                (entry.originalMesh ?? resultMesh).GetUVs(0, uv0List);
+                (string.IsNullOrEmpty(entry.reverseTransferJson) ? entry.originalMesh ?? resultMesh : sidecarMesh).GetUVs(0, uv0List);
 
                 string meshName = entry.fbxMesh != null
                     ? entry.fbxMesh.name
@@ -314,6 +315,7 @@ namespace SashaRX.UnityMeshLab
                 sidecarEntry = new MeshUv2Entry
                 {
                     meshName = meshName,
+                    reverseTransferJson = entry.reverseTransferJson,
                     uv2 = primaryUv,
                     welded = entry.wasWelded,
                     edgeWelded = entry.wasEdgeWelded,
