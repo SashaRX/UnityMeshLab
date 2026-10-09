@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- Collision Coarse Parts preset analyzes disconnected elements using oriented bounds and closed-volume fill, fits boxes to dense elements, and tries per-element remesh plus geometry-only decimation for other shapes. Replacements pass topology and bidirectional sampled surface-fit checks, with source decimation or original geometry as fallbacks. Element Analysis reports preparation choices, fill, size and error. Nearby similarly oriented elements share a global convex hull budget between independent groups; volume error, part gap and part angle are adjustable. Detailed whole-mesh decomposition remains available; completion logs distinguish source meshes, collider meshes and triangles.
 - Universal mesh inspection shares the 2D/3D layout, projection and attribute shading. The Inspect panel is a model-level summary — vertex/triangle counts, size, present channels only (no skinning or blend-shape noise on static meshes) and per-channel UV ranges — with the shading dropdown offering only the modes the shown meshes carry data for; Ctrl+click a surface to inspect that mesh. Remesh source meshes are inspectable before baking; checker and UV island borders work in 3D.
 - Tools declare required libraries through `MeshLabTool`; project settings control module availability without resetting unrelated active tools. CI checks tool dependency boundaries.
 

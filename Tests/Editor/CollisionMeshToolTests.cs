@@ -208,6 +208,94 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsNotNull(parent.Find("Chair_COL/Chair_COL_Hull0"));
         }
 
+        Mesh StructuralBench(Quaternion rotation)
+        {
+            var cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            owned.Add(cube);
+            var unit = cube.GetComponent<MeshFilter>().sharedMesh;
+            var vertices = new List<Vector3>();
+            var triangles = new List<int>();
+            void Box(Vector3 center, Vector3 size)
+            {
+                int offset = vertices.Count;
+                foreach (var p in unit.vertices) vertices.Add(rotation * (center + Vector3.Scale(p, size)));
+                foreach (int t in unit.triangles) triangles.Add(offset + t);
+            }
+            for (int i = 0; i < 3; i++)
+            {
+                Box(new Vector3(0, .9f, i * .18f), new Vector3(2, .05f, .15f));
+                Box(new Vector3(0, 1.3f + i * .18f, -.25f), new Vector3(2, .15f, .05f));
+            }
+            Box(new Vector3(-1.03f, .55f, .15f), new Vector3(.04f, 1.1f, .7f));
+            Box(new Vector3(1.03f, .55f, .15f), new Vector3(.04f, 1.1f, .7f));
+            var mesh = new Mesh { name = "Bench_LOD0" };
+            owned.Add(mesh);
+            mesh.SetVertices(vertices);
+            mesh.SetTriangles(triangles, 0);
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void PartGroupingJoinsSlatsAcrossSeamsAndKeepsPerpendicularStructuresSeparate(bool rotated)
+        {
+            var mesh = StructuralBench(rotated ? Quaternion.Euler(23, 37, 11) : Quaternion.identity);
+            var settings = CollisionMeshBuilder.ConvexDecompSettings.CoarseParts;
+            var parts = CollisionPartGrouper.Group(mesh.vertices, mesh.triangles, settings.partMergeDistance, settings.partMergeAngle);
+            Assert.AreEqual(4, parts.Count, "seat, back and two sides should be independent groups regardless of authored axes or cube hard-normal seams");
+            int triangles = 0;
+            foreach (var part in parts) triangles += part.indices.Count;
+            Assert.AreEqual(mesh.triangles.Length, triangles, "no source faces may be lost or duplicated");
+        }
+
+        [Test]
+        public void GroupedDecompositionSharesTheHullBudgetAndProducesCookableGeometry()
+        {
+            var mesh = StructuralBench(Quaternion.Euler(23, 37, 11));
+            var settings = CollisionMeshBuilder.ConvexDecompSettings.CoarseParts;
+            settings.resolution = 10000;
+            var result = CollisionMeshBuilder.BuildConvexDecomposition(mesh, settings);
+            owned.AddRange(result.hulls);
+            Assert.IsTrue(result.ok, result.error);
+            Assert.AreEqual(4, result.partGroupCount);
+            Assert.GreaterOrEqual(result.hulls.Count, 4);
+            Assert.LessOrEqual(result.hulls.Count, settings.maxHulls);
+            foreach (var hull in result.hulls)
+            {
+                Assert.LessOrEqual(hull.vertexCount, settings.maxVertsPerHull);
+                Assert.LessOrEqual(hull.triangles.Length / 3, CollisionMeshBuilder.MaxConvexTriangles);
+                Assert.IsEmpty(hull.normals);
+                Assert.IsEmpty(hull.uv);
+                Physics.BakeMesh(hull.GetInstanceID(), true);
+            }
+        }
+
+        [Test]
+        public void PartGroupingRejectsAnInsufficientBudgetWithoutMergingIndependentStructures()
+        {
+            var settings = CollisionMeshBuilder.ConvexDecompSettings.CoarseParts;
+            settings.maxHulls = 3;
+            var result = CollisionMeshBuilder.BuildConvexDecomposition(StructuralBench(Quaternion.identity), settings);
+            Assert.IsFalse(result.ok);
+            StringAssert.Contains("4 part groups", result.error);
+            Assert.IsEmpty(result.hulls);
+        }
+
+        [TestCase(float.NaN, 50)]
+        [TestCase(float.PositiveInfinity, 50)]
+        [TestCase(.02f, float.NaN)]
+        [TestCase(.02f, 91)]
+        public void PartGroupingRejectsInvalidDistanceOrAngle(float gap, float angle)
+        {
+            var settings = CollisionMeshBuilder.ConvexDecompSettings.CoarseParts;
+            settings.partMergeDistance = gap;
+            settings.partMergeAngle = angle;
+            var result = CollisionMeshBuilder.BuildConvexDecomposition(Tetrahedron(), settings);
+            Assert.IsFalse(result.ok);
+            Assert.IsEmpty(result.hulls);
+        }
+
         [Test]
         public void ConvexGenerationHonorsUnityTriangleBudgetEvenWhenCallerRequests255Vertices()
         {
