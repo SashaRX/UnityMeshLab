@@ -11,10 +11,9 @@ using UnityEditor;
 namespace SashaRX.UnityMeshLab
 {
     [MeshLabTool("collision_mesh", MeshLabLibraries.Collision, MeshLabLibraries.Assets)]
-    public class CollisionMeshTool : IUvTool
+    public class CollisionMeshTool : IUvTool, IUvTool3D
     {
         UvToolContext ctx;
-        UvCanvasView canvas;
         Action requestRepaint;
 
         public string ToolName  => "Collision";
@@ -45,7 +44,10 @@ namespace SashaRX.UnityMeshLab
         CollisionMode generatedMode; // mode used during last Generate (for Apply)
         List<GeneratedCollisionInfo> lastResults = new List<GeneratedCollisionInfo>();
         List<Mesh> generatedMeshes = new List<Mesh>(); // kept alive for Apply and preview
-        List<Transform> sourceTransforms = new List<Transform>(); // per-result source transforms
+        readonly List<Mesh> previewMeshes = new List<Mesh>(); // normals for surface preview only
+        readonly List<Vector3[]> previewVertices = new List<Vector3[]>();
+        readonly List<int[]> previewEdges = new List<int[]>();
+        bool previewSource;
 
         struct GeneratedCollisionInfo
         {
@@ -62,13 +64,10 @@ namespace SashaRX.UnityMeshLab
         public void OnActivate(UvToolContext ctx, UvCanvasView canvas)
         {
             this.ctx = ctx;
-            this.canvas = canvas;
-            SceneView.duringSceneGui += OnSceneGUIInternal;
         }
 
         public void OnDeactivate()
         {
-            SceneView.duringSceneGui -= OnSceneGUIInternal;
             DestroyGeneratedMeshes();
         }
 
@@ -79,11 +78,24 @@ namespace SashaRX.UnityMeshLab
 
         void DestroyGeneratedMeshes()
         {
+            foreach (var m in previewMeshes)
+                DestroyCachedMesh(m);
+            previewMeshes.Clear();
+            previewVertices.Clear();
+            previewEdges.Clear();
             foreach (var m in generatedMeshes)
-                if (m != null) UnityEngine.Object.DestroyImmediate(m);
+                DestroyCachedMesh(m);
             generatedMeshes.Clear();
             lastResults.Clear();
-            sourceTransforms.Clear();
+        }
+
+        static void DestroyCachedMesh(Mesh mesh)
+        {
+            if (!mesh) return;
+            // Notify every live view while the instance ID is still accessible,
+            // releasing encoded copies, wires, ribbons and pending uploads.
+            VertexChannels.RaiseChanged(mesh);
+            UnityEngine.Object.DestroyImmediate(mesh);
         }
 
         // ── UI: Sidebar ──
@@ -129,7 +141,7 @@ namespace SashaRX.UnityMeshLab
 
                 foreach (var r in lastResults)
                 {
-                    if (mode == CollisionMode.Simplified)
+                    if (generatedMode == CollisionMode.Simplified)
                     {
                         float pct = r.sourceTriCount > 0 ? (r.resultTriCount * 100f / r.sourceTriCount) : 0;
                         EditorGUILayout.LabelField(
@@ -159,8 +171,9 @@ namespace SashaRX.UnityMeshLab
                 EditorGUILayout.LabelField("Scene", EditorStyles.boldLabel);
 
                 EditorGUILayout.BeginHorizontal();
-                if (GUILayout.Button("Apply to Scene", GUILayout.Height(24)))
-                    ApplyToScene();
+                using (new EditorGUI.DisabledScope(FindExistingCollisionObjects(ctx.LodGroup.transform).Count > 0))
+                    if (GUILayout.Button("Apply to Scene", GUILayout.Height(24)))
+                        ApplyToScene();
                 if (GUILayout.Button("Remove from Scene", GUILayout.Height(24)))
                     RemoveFromScene();
                 EditorGUILayout.EndHorizontal();
@@ -183,6 +196,7 @@ namespace SashaRX.UnityMeshLab
                 {
                     EditorGUILayout.Space(8);
                     EditorGUILayout.LabelField("Existing Collision Objects", EditorStyles.boldLabel);
+                    EditorGUILayout.HelpBox("Remove existing collision objects before applying a new result.", MessageType.Info);
                     foreach (var go in existing)
                     {
                         var mc = go.GetComponent<MeshCollider>();
@@ -219,11 +233,8 @@ namespace SashaRX.UnityMeshLab
                 convexResolution);
             convexResolution = Mathf.Clamp(convexResolution, 10000, 1000000);
             convexMaxVertsPerHull = EditorGUILayout.IntSlider(
-                new GUIContent("Max Verts/Hull", "Maximum vertices per convex hull. PhysX hard limit is 255. Lower = simpler hulls."),
-                convexMaxVertsPerHull, 8, 255);
-
-            if (convexMaxVertsPerHull > 128)
-                EditorGUILayout.HelpBox("Values above 128 may cause issues with some physics engines.", MessageType.Warning);
+                new GUIContent("Max Verts/Hull", "Unity limits convex colliders to 255 triangles. At most 128 vertices keeps a closed triangulated hull within that budget (2V - 4)."),
+                convexMaxVertsPerHull, 8, CollisionMeshBuilder.MaxConvexVertices);
 
             EditorGUILayout.Space(4);
             convexFillMode = EditorGUILayout.Popup(
@@ -292,7 +303,9 @@ namespace SashaRX.UnityMeshLab
             generatedMeshes.Add(result.mesh);
             lastResults.Add(new GeneratedCollisionInfo
             {
-                meshName        = sourceMesh.name,
+                // Working geometry may carry _wc; persistence must retain the
+                // imported source identity, including the selected LOD suffix.
+                meshName        = entry.fbxMesh != null ? entry.fbxMesh.name : sourceMesh.name,
                 sourceTriCount  = result.sourceTriCount,
                 resultTriCount  = result.resultTriCount,
                 hullCount       = 1,
@@ -333,7 +346,7 @@ namespace SashaRX.UnityMeshLab
 
             lastResults.Add(new GeneratedCollisionInfo
             {
-                meshName        = sourceMesh.name,
+                meshName        = entry.fbxMesh != null ? entry.fbxMesh.name : sourceMesh.name,
                 sourceTriCount  = result.sourceTriCount,
                 resultTriCount  = totalTris,
                 hullCount       = result.hulls.Count,
@@ -348,87 +361,85 @@ namespace SashaRX.UnityMeshLab
             if (ctx.LodGroup == null || generatedMeshes.Count == 0) return;
 
             Transform root = ctx.LodGroup.transform;
+            if (EditorUtility.IsPersistent(root.gameObject))
+            {
+                UvtLog.Warn("Open the prefab in Prefab Mode before applying collision meshes.");
+                return;
+            }
+            if (FindExistingCollisionObjects(root).Count > 0)
+            {
+                UvtLog.Warn("Remove existing collision objects before applying a new result.");
+                return;
+            }
+            Undo.IncrementCurrentGroup();
             int undoGroup = Undo.GetCurrentGroup();
-
-            if (generatedMode == CollisionMode.Simplified)
+            Undo.SetCurrentGroupName("Apply Collision Meshes");
+            EnsureAppliedMeshFolderExists();
+            try
             {
-                // One _COL child per generated mesh
                 int meshIdx = 0;
-                foreach (var r in lastResults)
+                using (new AssetDatabase.AssetEditingScope())
                 {
-                    if (meshIdx >= generatedMeshes.Count) break;
-
-                    string name = generatedMeshes[meshIdx].name.Replace("_collision", "_COL");
-                    var go = new GameObject(name);
-                    Undo.RegisterCreatedObjectUndo(go, "Create Collision Mesh");
-                    go.transform.SetParent(root, false);
-
-                    // Preserve source renderer transform offset
-                    if (r.sourceTransform != null && r.sourceTransform != root)
+                    foreach (var r in lastResults)
                     {
-                        go.transform.localPosition = root.InverseTransformPoint(r.sourceTransform.position);
-                        go.transform.localRotation = Quaternion.Inverse(root.rotation) * r.sourceTransform.rotation;
-                        go.transform.localScale = r.sourceTransform.localScale;
-                    }
-
-                    var mc = Undo.AddComponent<MeshCollider>(go);
-                    mc.sharedMesh = CreateAppliedMeshCopy(generatedMeshes[meshIdx], go.name + "_Mesh");
-                    mc.convex = false;
-                    meshIdx++;
-                }
-            }
-            else
-            {
-                // Convex: group hulls under a _COL parent
-                int meshIdx = 0;
-                foreach (var r in lastResults)
-                {
-                    string containerName = r.meshName + "_COL";
-                    var container = new GameObject(containerName);
-                    Undo.RegisterCreatedObjectUndo(container, "Create Collision Container");
-                    container.transform.SetParent(root, false);
-
-                    // Preserve source renderer transform offset
-                    if (r.sourceTransform != null && r.sourceTransform != root)
-                    {
-                        container.transform.localPosition = root.InverseTransformPoint(r.sourceTransform.position);
-                        container.transform.localRotation = Quaternion.Inverse(root.rotation) * r.sourceTransform.rotation;
-                        container.transform.localScale = r.sourceTransform.localScale;
-                    }
-
-                    for (int h = 0; h < r.hullCount && meshIdx < generatedMeshes.Count; h++, meshIdx++)
-                    {
-                        var hullGo = new GameObject($"{r.meshName}_COL_Hull{h}");
-                        Undo.RegisterCreatedObjectUndo(hullGo, "Create Convex Hull");
-                        hullGo.transform.SetParent(container.transform, false);
-
-                        var mc = Undo.AddComponent<MeshCollider>(hullGo);
-                        mc.sharedMesh = CreateAppliedMeshCopy(generatedMeshes[meshIdx], hullGo.name + "_Mesh");
-                        mc.convex = true;
+                        string baseName = UvToolContext.ExtractGroupKey(r.meshName);
+                        var container = CreateCollisionObject(baseName + "_COL", root);
+                        // A single TRS cannot represent nested non-uniform scale + rotation.
+                        // Bake the full relative matrix into the applied copy; sidecar and
+                        // generated meshes stay in source-local space.
+                        var toRoot = root.worldToLocalMatrix * SourceMatrix(r);
+                        for (int h = 0; h < r.hullCount && meshIdx < generatedMeshes.Count; h++, meshIdx++)
+                        {
+                            var go = generatedMode == CollisionMode.Simplified ? container :
+                                CreateCollisionObject($"{baseName}_COL_Hull{h}", container.transform);
+                            var mc = Undo.AddComponent<MeshCollider>(go);
+                            Undo.RecordObject(mc, "Configure Collision Mesh");
+                            mc.convex = generatedMode == CollisionMode.ConvexDecomposition;
+                            mc.sharedMesh = CreateAppliedMeshCopy(generatedMeshes[meshIdx], go.name, toRoot);
+                            PrefabUtility.RecordPrefabInstancePropertyModifications(mc);
+                        }
                     }
                 }
+                AssetDatabase.SaveAssets();
             }
-
-            Undo.CollapseUndoOperations(undoGroup);
-            AssetDatabase.SaveAssets();
+            finally { Undo.CollapseUndoOperations(undoGroup); }
             UvtLog.Info("Collision meshes applied to scene.");
+        }
+
+        static GameObject CreateCollisionObject(string name, Transform parent)
+        {
+            var go = new GameObject(name) { layer = parent.gameObject.layer };
+            Undo.RegisterCreatedObjectUndo(go, "Create Collision Object");
+            Undo.SetTransformParent(go.transform, parent, "Parent Collision Object");
+            Undo.RecordObject(go.transform, "Reset Collision Transform");
+            go.transform.localPosition = Vector3.zero;
+            go.transform.localRotation = Quaternion.identity;
+            go.transform.localScale = Vector3.one;
+            PrefabUtility.RecordPrefabInstancePropertyModifications(go.transform);
+            return go;
         }
 
         const string AppliedMeshAssetFolder = "Assets/UnityMeshLab/GeneratedCollisionMeshes";
 
-        static Mesh CreateAppliedMeshCopy(Mesh source, string fallbackName)
+        static Mesh CreateAppliedMeshCopy(Mesh source, string meshName, Matrix4x4 toRoot)
         {
             if (source == null) return null;
 
-            string meshName = string.IsNullOrEmpty(source.name) ? fallbackName : source.name + "_Applied";
             var instance = UnityEngine.Object.Instantiate(source);
             instance.name = meshName;
+            MeshGeometry.TransformCollisionMesh(instance, toRoot);
 
-            EnsureAppliedMeshFolderExists();
             string assetPath = AssetDatabase.GenerateUniqueAssetPath(Path.Combine(AppliedMeshAssetFolder, meshName + ".asset"));
             AssetDatabase.CreateAsset(instance, assetPath.Replace('\\', '/'));
-            return AssetDatabase.LoadAssetAtPath<Mesh>(assetPath.Replace('\\', '/'));
+            // CreateAsset adopts the unique filename; keep the mesh's canonical
+            // collision identity even when an earlier applied asset still exists.
+            instance.name = meshName;
+            EditorUtility.SetDirty(instance);
+            return instance;
         }
+
+        Matrix4x4 SourceMatrix(GeneratedCollisionInfo result) => result.sourceTransform != null
+            ? result.sourceTransform.localToWorldMatrix : ctx.LodGroup.transform.localToWorldMatrix;
 
         static void EnsureAppliedMeshFolderExists()
         {
@@ -464,30 +475,10 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
 
-            // Save mesh assets to savePath (like LOD Gen does)
-            string savePath = !string.IsNullOrEmpty(ctx.PipeSettings.savePath)
-                ? ctx.PipeSettings.savePath
-                : "Assets/UnityMeshLab/Output";
-            if (!AssetDatabase.IsValidFolder(savePath))
-            {
-                var par = Path.GetDirectoryName(savePath);
-                var fld = Path.GetFileName(savePath);
-                if (!string.IsNullOrEmpty(par)) AssetDatabase.CreateFolder(par, fld);
-            }
-
-            var savedMeshAssets = new List<Mesh>();
-            foreach (var mesh in generatedMeshes)
-            {
-                string assetPath = AssetDatabase.GenerateUniqueAssetPath(savePath + "/" + mesh.name + ".asset");
-                var copy = UnityEngine.Object.Instantiate(mesh);
-                copy.name = mesh.name;
-                AssetDatabase.CreateAsset(copy, assetPath);
-                savedMeshAssets.Add(AssetDatabase.LoadAssetAtPath<Mesh>(assetPath));
-            }
-
             // Build CollisionMeshEntry and save to sidecar
             string sidecarPath = SidecarStore.PathFor(fbxPath);
             var data = SidecarStore.LoadOrCreate(fbxPath);
+            Undo.RecordObject(data, "Save Collision Sidecar");
 
             // Build flattened collision entry per source mesh
             int meshIdx = 0;
@@ -505,10 +496,13 @@ namespace SashaRX.UnityMeshLab
                 var posOffsets = new List<int>();
                 var allTri = new List<int>();
                 var triOffsets = new List<int>();
+                // Keep the sidecar in source-local space: the document save places
+                // collision next to that source. The rebuild converts to root space
+                // using source frames captured before hierarchy normalization.
 
-                for (int h = 0; h < r.hullCount && meshIdx < savedMeshAssets.Count; h++, meshIdx++)
+                for (int h = 0; h < r.hullCount && meshIdx < generatedMeshes.Count; h++, meshIdx++)
                 {
-                    var m = savedMeshAssets[meshIdx];
+                    var m = generatedMeshes[meshIdx];
                     int posOffset = allPos.Count;
                     posOffsets.Add(posOffset);
                     triOffsets.Add(allTri.Count);
@@ -557,6 +551,7 @@ namespace SashaRX.UnityMeshLab
         void RemoveFromScene()
         {
             if (ctx.LodGroup == null) return;
+            if (EditorUtility.IsPersistent(ctx.LodGroup.gameObject)) return;
 
             var existing = FindExistingCollisionObjects(ctx.LodGroup.transform);
             if (existing.Count == 0)
@@ -565,10 +560,15 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
 
+            Undo.IncrementCurrentGroup();
             int undoGroup = Undo.GetCurrentGroup();
-            foreach (var go in existing)
-                Undo.DestroyObjectImmediate(go);
-            Undo.CollapseUndoOperations(undoGroup);
+            Undo.SetCurrentGroupName("Remove Collision Meshes");
+            try
+            {
+                foreach (var go in existing)
+                    Undo.DestroyObjectImmediate(go);
+            }
+            finally { Undo.CollapseUndoOperations(undoGroup); }
 
             UvtLog.Info($"Removed {existing.Count} collision object(s).");
         }
@@ -576,18 +576,17 @@ namespace SashaRX.UnityMeshLab
         static List<GameObject> FindExistingCollisionObjects(Transform root)
         {
             var result = new List<GameObject>();
-            for (int i = 0; i < root.childCount; i++)
+            var pending = new Stack<Transform>();
+            pending.Push(root);
+            while (pending.Count > 0)
             {
-                var child = root.GetChild(i);
-                if (child.name.Contains("_COL"))
+                var parent = pending.Pop();
+                for (int i = 0; i < parent.childCount; i++)
                 {
-                    result.Add(child.gameObject);
-                    // Also add grandchildren (hull objects)
-                    for (int j = 0; j < child.childCount; j++)
-                    {
-                        if (child.GetChild(j).name.Contains("_COL"))
-                            result.Add(child.GetChild(j).gameObject);
-                    }
+                    var child = parent.GetChild(i);
+                    if (MeshNaming.IsCollision(child.name))
+                        result.Add(child.gameObject);
+                    else pending.Push(child);
                 }
             }
             return result;
@@ -595,41 +594,69 @@ namespace SashaRX.UnityMeshLab
 
         // ── Scene view: wireframe preview ──
 
-        void OnSceneGUIInternal(SceneView sv)
+        void EnsurePreviewMeshes()
         {
-            if (ctx?.LodGroup == null || generatedMeshes.Count == 0) return;
-
-            Transform t = ctx.LodGroup.transform;
-            Matrix4x4 matrix = t.localToWorldMatrix;
-
-            for (int i = 0; i < generatedMeshes.Count; i++)
+            if (previewMeshes.Count == generatedMeshes.Count) return;
+            foreach (var mesh in generatedMeshes)
             {
-                var mesh = generatedMeshes[i];
-                if (mesh == null) continue;
-
-                Color c = UvCanvasView.pal[i % UvCanvasView.pal.Length];
-                c.a = 0.6f;
-                Handles.color = c;
-
-                var verts = mesh.vertices;
-                var tris  = mesh.triangles;
-
-                for (int ti = 0; ti < tris.Length; ti += 3)
-                {
-                    Vector3 a = matrix.MultiplyPoint3x4(verts[tris[ti]]);
-                    Vector3 b = matrix.MultiplyPoint3x4(verts[tris[ti + 1]]);
-                    Vector3 c2 = matrix.MultiplyPoint3x4(verts[tris[ti + 2]]);
-
-                    Handles.DrawLine(a, b);
-                    Handles.DrawLine(b, c2);
-                    Handles.DrawLine(c2, a);
-                }
+                var copy = UnityEngine.Object.Instantiate(mesh);
+                copy.hideFlags = HideFlags.HideAndDontSave;
+                copy.RecalculateNormals();
+                previewMeshes.Add(copy);
+                previewVertices.Add(mesh.vertices);
+                previewEdges.Add(MeshViewport3D.EdgeIndices(mesh).ToArray());
             }
+        }
+
+        public bool Get3DContent(List<MeshViewport3D.Item> items)
+        {
+            if (ctx?.LodGroup == null || generatedMeshes.Count == 0) return false;
+            EnsurePreviewMeshes();
+            if (previewSource)
+            {
+                foreach (var entry in ctx.MeshEntries)
+                    if (entry.include && entry.lodIndex == ctx.SourceLodIndex)
+                        items.Add(new MeshViewport3D.Item(entry.originalMesh ?? entry.fbxMesh,
+                            entry.renderer != null ? entry.renderer.localToWorldMatrix : ctx.LodGroup.transform.localToWorldMatrix,
+                            entry.renderer != null ? entry.renderer.sharedMaterials : null));
+            }
+            else
+            {
+                int i = 0;
+                foreach (var result in lastResults)
+                    for (int h = 0; h < result.hullCount; ++h, ++i)
+                        items.Add(new MeshViewport3D.Item(previewMeshes[i], SourceMatrix(result)));
+            }
+            return true;
+        }
+
+        public void OnDraw3D(MeshViewport3D view)
+        {
+            if (ctx?.LodGroup == null) return;
+            int i = 0;
+            foreach (var result in lastResults)
+                for (int h = 0; h < result.hullCount; ++h, ++i)
+                    view.DrawWire(generatedMeshes[i], SourceMatrix(result), UvCanvasView.pal[i % UvCanvasView.pal.Length]);
+        }
+
+        public void OnSceneGUI(SceneView sv)
+        {
+            if (ctx?.LodGroup == null || generatedMeshes.Count == 0 || Event.current.type != EventType.Repaint) return;
+            EnsurePreviewMeshes();
+            int i = 0;
+            foreach (var result in lastResults)
+                for (int h = 0; h < result.hullCount; ++h, ++i)
+                    using (new Handles.DrawingScope(UvCanvasView.pal[i % UvCanvasView.pal.Length], SourceMatrix(result)))
+                        Handles.DrawLines(previewVertices[i], previewEdges[i]);
         }
 
         // ── Unused interface methods ──
 
-        public void OnDrawToolbarExtra() { }
+        public void OnDrawToolbarExtra()
+        {
+            previewSource = GUILayout.Toggle(previewSource, new GUIContent("Source + collision wire",
+                "Show the source surface with collision edges, or the generated collision surface and edges."), EditorStyles.toolbarButton);
+        }
         public void OnDrawStatusBar() { }
         public void OnDrawCanvasOverlay(UvCanvasView canvas, float cx, float cy, float sz) { }
 
@@ -638,6 +665,5 @@ namespace SashaRX.UnityMeshLab
             yield break;
         }
 
-        public void OnSceneGUI(SceneView sv) { }
     }
 }

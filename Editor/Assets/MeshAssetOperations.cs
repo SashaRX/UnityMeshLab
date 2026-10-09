@@ -975,6 +975,9 @@ namespace SashaRX.UnityMeshLab
             List<Mesh> tempMeshes, HierarchyExportBatch batch)
         {
             var lastLodRendererTemplate = FbxExport.FindLastLodRenderer(entries);
+            // Sidecar positions belong to their source mesh, not the normalized
+            // model root. Preserve the source frames before replacement and baking.
+            var collisionSourceFrames = FbxExport.CollisionSourceFrames(tempRoot);
 
             // export mesh name → export mesh / scene renderer whose settings it takes
             var meshReplacements = new Dictionary<string, Mesh>();
@@ -1014,7 +1017,7 @@ namespace SashaRX.UnityMeshLab
 
             // Collision from the sidecar replaces the clone's _COL children; every
             // _COL mesh is then stripped to geometry and given a real material.
-            int collisionMeshCount = FbxExport.InjectCollisionMeshes(tempRoot, SidecarStore.CollisionMeshes(sourceFbxPath), tempMeshes);
+            int collisionMeshCount = FbxExport.InjectCollisionMeshes(tempRoot, SidecarStore.CollisionMeshes(sourceFbxPath), tempMeshes, collisionSourceFrames);
             FbxExport.StripCollisionMeshes(tempRoot, FbxExport.FirstRealMaterial(entries.Select(p => p.entry)), tempMeshes);
             FbxExport.TrimMaterialArrays(tempRoot);
 

@@ -142,6 +142,20 @@ namespace SashaRX.UnityMeshLab
             return slots;
         }
 
+        /// <summary>Transform an owned collision mesh, preserving outward winding under reflection.</summary>
+        internal static void TransformCollisionMesh(Mesh mesh, Matrix4x4 matrix)
+        {
+            var vertices = mesh.vertices;
+            for (int i = 0; i < vertices.Length; ++i) vertices[i] = matrix.MultiplyPoint3x4(vertices[i]);
+            var triangles = mesh.triangles;
+            if (matrix.determinant < 0)
+                for (int i = 0; i < triangles.Length; i += 3)
+                    (triangles[i + 1], triangles[i + 2]) = (triangles[i + 2], triangles[i + 1]);
+            mesh.vertices = vertices;
+            mesh.triangles = triangles;
+            mesh.RecalculateBounds();
+        }
+
         /// <summary>
         /// count unit directions evenly spread over the sphere (Fibonacci / golden
         /// spiral), deterministic. Hemisphere sampling filters by dot(dir, normal).

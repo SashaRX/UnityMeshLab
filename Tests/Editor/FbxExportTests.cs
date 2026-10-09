@@ -374,6 +374,24 @@ namespace SashaRX.UnityMeshLab.Tests
 #endif
 
         [Test]
+        public void CollisionPlacementRefusesAmbiguousSourcesAndTracksAllTemporaryMeshes()
+        {
+            var root = Node("Root", null);
+            Node("First_LOD0", root.transform, Quad("Twin_LOD0"));
+            var second = Node("Second_LOD0", root.transform, Quad("Twin_LOD0"));
+            second.transform.localPosition = Vector3.right;
+            var frames = FbxExport.CollisionSourceFrames(root);
+            Assert.IsFalse(frames.ContainsKey("Twin_LOD0"));
+            var data = new List<(string, List<Mesh>, bool)> {
+                ("Twin_LOD0", new List<Mesh> { Quad("Twin_COL_Hull0"), Quad("Twin_COL_Hull1") }, true),
+                ("Other", new List<Mesh> { Quad("Other_COL") }, false)
+            };
+            var sink = new List<Mesh>();
+            Assert.Throws<System.InvalidOperationException>(() => FbxExport.InjectCollisionMeshes(root, data, sink, frames));
+            Assert.AreEqual(3, sink.Count, "the caller owns all sidecar meshes even when the first placement fails");
+        }
+
+        [Test]
         public void InjectCollisionMeshesReplacesExistingColChildren()
         {
             var root = Node("Root", null);

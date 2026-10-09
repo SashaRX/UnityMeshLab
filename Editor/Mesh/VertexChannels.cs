@@ -14,12 +14,13 @@ namespace SashaRX.UnityMeshLab
     {
         /// <summary>Raised after a mesh's vertex data is rewritten in place — this
         /// class's colour/UV writes or in-place rewrites elsewhere (CompactVertices,
-        /// MeshOptimizer) — so cached views of that mesh can drop it.</summary>
+        /// MeshOptimizer) — or before a transient mesh is destroyed, so cached views
+        /// of that mesh can drop it while its instance ID is still accessible.</summary>
         internal static event Action<Mesh> Changed;
         internal static AOTargetChannel? LastAppliedTargetChannel { get; set; }
 
-        /// <summary>Announces an in-place vertex-data rewrite of a live mesh; cached
-        /// views (inspection reports, viewport encodings) drop their stale copies.</summary>
+        /// <summary>Announces a vertex-data rewrite or impending destruction of a live
+        /// mesh; cached views drop their copies before the mesh becomes inaccessible.</summary>
         internal static void RaiseChanged(Mesh mesh) => Changed?.Invoke(mesh);
 
         // ── channel decoding ──
