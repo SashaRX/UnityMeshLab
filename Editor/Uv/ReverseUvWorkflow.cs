@@ -61,7 +61,9 @@ namespace SashaRX.UnityMeshLab
                 }).ToArray();
                 using var prepared = ReverseUvInputs.Prepare(sources, cancellation.Token);
                 var levels = prepared.levels;
-                int removed = levels.Sum((ReverseUvTransfer.Level l) => l.inputs.Sum((ReverseUvTransfer.Input i) => i.removedSourceFaces.Length));
+                int removed = 0;
+                foreach (var level in levels)
+                    foreach (var input in level.inputs) removed += input.removedSourceFaces.Length;
                 int seedSize = groups[0].Max(e => (int)e.repackedAtlasWidth);
                 if (reversePrepareSeed)
                     seedSize = prepared.PrepareSeed(SanitizeAtlasResolution(ctx.AtlasResolution), SanitizePadding(ctx.ShellPaddingPx),
