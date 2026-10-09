@@ -419,8 +419,11 @@ namespace SashaRX.UnityMeshLab
                 if (GUILayout.Button("Select closure regions by area")) {
                     Array.Clear(node.selectedSyntheticFaces,0,node.selectedSyntheticFaces.Length);
                     var regions = node.syntheticRegions;
-                    for (int r = 0; r < regions.faces.Count; ++r) if (regions.labels[r] > 0 && regions.areas[r] <= maximumClosureArea)
-                        foreach (int f in regions.faces[r]) node.selectedSyntheticFaces[f] = true;
+                    for (int r = 0; r < regions.faces.Count; ++r) {
+                        if (regions.labels[r] > 0 && regions.areas[r] <= maximumClosureArea) {
+                            foreach (int f in regions.faces[r]) node.selectedSyntheticFaces[f] = true;
+                        }
+                    }
                     pipeline.RebuildSyntheticPreview();
                 }
                 if (GUILayout.Button("Select closure faces")) {
@@ -446,7 +449,10 @@ namespace SashaRX.UnityMeshLab
             if (node.syntheticPickBvh != null || ReferenceEquals(syntheticPickInput, node.simplified)) return;
             var input = node.simplified; syntheticPickInput = input;
             syntheticPickWork.Enqueue(() => token => { token.ThrowIfCancellationRequested(); return new TriangleBvh(input.positions, input.indices); },
-                bvh => { if (ReferenceEquals(node.simplified, input)) node.syntheticPickBvh = bvh; RequestRepaint?.Invoke(); });
+                bvh => {
+                    if (ReferenceEquals(node.simplified, input)) node.syntheticPickBvh = bvh;
+                    RequestRepaint?.Invoke();
+                });
         }
 
         void IUvTool3DInput.On3DInput(MeshViewport3D view, Event input)

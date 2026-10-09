@@ -71,12 +71,16 @@ namespace SashaRX.UnityMeshLab
 
         static List<int> Arc(List<int> loop,int start,int length)
         {
-            var result=new List<int>(); for(int i=0;i<=length;++i) result.Add(loop[(start+i)%loop.Count]); return result;
+            var result=new List<int>();
+            for(int i=0;i<=length;++i) result.Add(loop[(start+i)%loop.Count]);
+            return result;
         }
         static (int,int) Key(int a,int b)=>a<b?(a,b):(b,a);
         static HashSet<(int,int)> Edges(RemeshTopology.Snapshot topology)
         {
-            var result=new HashSet<(int,int)>(); foreach(var edge in topology.edges) if(edge.Value.count==1) result.Add(edge.Key); return result;
+            var result=new HashSet<(int,int)>();
+            foreach(var edge in topology.edges) if(edge.Value.count==1) result.Add(edge.Key);
+            return result;
         }
 
         static bool Intersection(Vector3[] p,List<int>[] arcs,RemeshCapPlanes.Plane[] planes,out Vector3 corner)

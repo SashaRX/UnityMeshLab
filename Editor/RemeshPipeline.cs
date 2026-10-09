@@ -528,9 +528,12 @@ namespace SashaRX.UnityMeshLab
             // Validate every node before replacing any stage output.
             var replacements = new List<RemeshNative.IndexedMesh>();
             foreach (var node in nodes) {
-                if (node.selectedSyntheticFaces != null) for (int f = 0; f < node.selectedSyntheticFaces.Length; ++f)
-                    if (node.selectedSyntheticFaces[f] && node.syntheticFaces[f] == 0)
-                        throw new InvalidOperationException("Original faces cannot be removed with the Cap selection.");
+                if (node.selectedSyntheticFaces != null) {
+                    for (int f = 0; f < node.selectedSyntheticFaces.Length; ++f) {
+                        if (node.selectedSyntheticFaces[f] && node.syntheticFaces[f] == 0)
+                            throw new InvalidOperationException("Original faces cannot be removed with the Cap selection.");
+                    }
+                }
                 replacements.Add(node.selectedSyntheticFaces != null && Array.Exists(node.selectedSyntheticFaces, value => value)
                     ? RemeshSyntheticFaces.Remove(node.simplified, node.selectedSyntheticFaces) : node.simplified);
             }

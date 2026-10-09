@@ -136,7 +136,7 @@ namespace SashaRX.UnityMeshLab
             if (!topology.Valid || topology.boundary.Count != 0) return result;
             foreach (bool closed in RemeshTopology.ClosedVolumeFaces(candidate.positions,candidate.indices,token)) if (!closed) return result;
             UvtLog.Info(UvtLog.Category.RemeshDiag,$"Solid voxel cleanup removed {removed} coincident opposing fin faces; retained {candidate.TriangleCount} faces, closed topology verified.");
-            return candidate.PrepareChannels();
+            return candidate.PrepareChannels(token);
         }
 
         static IndexedMesh VoxelizeRaw(Vector3[] positions, int[] indices, int resolution, uint flags, CancellationToken token)

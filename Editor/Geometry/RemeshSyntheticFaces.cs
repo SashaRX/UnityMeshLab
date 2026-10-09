@@ -72,7 +72,12 @@ namespace SashaRX.UnityMeshLab
             }
             var groups=new SortedDictionary<int,List<int>>();
             for(int f=0;f<mesh.TriangleCount;++f) if(labels[f]!=0) {
-                int root=sets.Find(f); if(!groups.TryGetValue(root,out var list)) groups.Add(root,list=new List<int>()); list.Add(f);
+                int root=sets.Find(f);
+                if(!groups.TryGetValue(root,out var list)) {
+                    list=new List<int>();
+                    groups.Add(root,list);
+                }
+                list.Add(f);
             }
             foreach(var group in groups.Values) {
                 int region=result.faces.Count; double area=0;
