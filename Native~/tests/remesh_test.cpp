@@ -175,12 +175,20 @@ static void checkSimplifySlivers(float scale) {
     }
     for (const auto& edge : edges)
         check(edge.second.first == 2 && edge.second.second == 0, "simplify slivers: closed oriented surface");
-    // This apex is below xatlas's numerical face-area limit. Report failure;
-    // silently deleting its two side faces and returning an open UV mesh is
-    // not an acceptable way to make chart generation succeed.
+    // Atlas-only conditioning preserves every positive-area face, including
+    // this apex below xatlas's default absolute area limit.
     handle = nullptr;
-    check(meshLabUnwrap(p, 4, ix, 12, 3.1415926f, 0, nullptr, 0, &handle, &vertices, &count, nullptr) != 0 &&
-        !handle && vertices == 0 && count == 0, "unwrap slivers: reject instead of deleting surface faces");
+    check(meshLabUnwrap(p, 4, ix, 12, 3.1415926f, 0, nullptr, 0, &handle, &vertices, &count, nullptr) == 0 &&
+        handle && count == 12, "unwrap slivers: preserve all surface faces");
+    std::vector<float> output(size_t(vertices)*16); std::vector<uint32_t> outputIndices(count); std::vector<int32_t> charts(vertices);
+    check(meshLabUnwrapCopy(handle,output.data(),vertices,outputIndices.data(),count,charts.data()) == 0,"unwrap slivers: copy");
+    meshLabRemeshDestroy(handle);
+    for (size_t i=0;i<count;++i) for (int k=0;k<3;++k)
+        check(output[size_t(outputIndices[i])*16+k] == p[size_t(ix[i])*3+k],"unwrap slivers: original corners retained");
+    for (uint32_t i=0;i<vertices;++i) {
+        check(charts[i]>=0,"unwrap slivers: every vertex has an atlas chart");
+        for (int k=0;k<16;++k) check(std::isfinite(output[size_t(i)*16+k]),"unwrap slivers: finite channels");
+    }
 }
 
 int main(int argc, char** argv) {

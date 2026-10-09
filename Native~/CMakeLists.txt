@@ -79,6 +79,8 @@ else()
     set(UNITY_PLUGINS_DIR "${CMAKE_SOURCE_DIR}/../Plugins/x86_64")
 endif()
 
+option(MESHLAB_COPY_PLUGINS "Copy built libraries into package Plugins (CI publication)" ON)
+if(MESHLAB_COPY_PLUGINS)
 add_custom_command(TARGET xatlas-unity POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${UNITY_PLUGINS_DIR}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -86,6 +88,7 @@ add_custom_command(TARGET xatlas-unity POST_BUILD
         "${UNITY_PLUGINS_DIR}/$<TARGET_FILE_NAME:xatlas-unity>"
     COMMENT "Copying library to ${UNITY_PLUGINS_DIR}"
 )
+endif()
 
 # Opt-in headless tests; no Unity license needed.
 option(MESHLAB_BUILD_TESTS "Build native regression tests" OFF)

@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <limits>
 #include <vector>
 
 #ifdef _WIN32
@@ -237,11 +238,29 @@ int Unwrap(const PosMesh& m, float crease, float smoothing, const UnwrapOptions&
     for (Vertex& v : atlasVerts)
         for (int k = 0; k < 3; ++k)
             v.p[k] = (v.p[k] - center[k]) / extent;
+    // A valid collapsed sliver may still fall below xatlas's absolute area
+    // cutoff in this unit-sized domain. Expand the entire atlas-only domain,
+    // preserving proportions and every source corner. Do not delete surface
+    // faces to work around ignored xrefs (which would open a closed mesh).
+    double minimumArea = std::numeric_limits<double>::infinity();
+    for (size_t f = 0; f < idx.size(); f += 3) {
+        const auto& a = atlasVerts[idx[f]]; const auto& b = atlasVerts[idx[f+1]]; const auto& c = atlasVerts[idx[f+2]];
+        double u[3], v[3];
+        for (int k = 0; k < 3; ++k) { u[k] = double(b.p[k])-a.p[k]; v[k] = double(c.p[k])-a.p[k]; }
+        const double x = u[1]*v[2]-u[2]*v[1], y = u[2]*v[0]-u[0]*v[2], z = u[0]*v[1]-u[1]*v[0];
+        const double area = .5*std::sqrt(x*x+y*y+z*z);
+        if (!(area > 0) || !std::isfinite(area)) return BadMapping;
+        minimumArea = std::min(minimumArea, area);
+    }
+    const double gain = std::max(1.0, std::sqrt(1e-4 / minimumArea));
+    if (!std::isfinite(gain) || gain > 65536) return BadMapping;
+    for (Vertex& v : atlasVerts) for (float& coordinate : v.p) coordinate *= float(gain);
+    const float atlasUnit = extent / float(gain);
     UnwrapOptions scaled = o;
     // Chart limits are given in source units; the atlas input is normalized by extent.
-    scaled.charts.maxChartArea = o.charts.maxChartArea / (extent * extent);
-    scaled.charts.maxBoundaryLength = o.charts.maxBoundaryLength / extent;
-    scaled.pack.texelsPerUnit = o.pack.texelsPerUnit * extent;
+    scaled.charts.maxChartArea = o.charts.maxChartArea / (atlasUnit * atlasUnit);
+    scaled.charts.maxBoundaryLength = o.charts.maxBoundaryLength / atlasUnit;
+    scaled.pack.texelsPerUnit = o.pack.texelsPerUnit * atlasUnit;
 
     xatlas::MeshDecl decl;
     decl.vertexPositionData = atlasVerts.data(); decl.vertexPositionStride = sizeof(Vertex);
