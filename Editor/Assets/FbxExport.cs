@@ -1223,16 +1223,41 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
-        /// Adds the sidecar's collision meshes as `_COL` children (one node for a
-        /// simplified collider, a container with `_COL_Hull{N}` children for a convex
-        /// decomposition), removing the clone's existing `_COL` children first when there
-        /// is anything to add. The meshes go to <paramref name="tempSink"/>. Returns the
-        /// number of collision meshes placed.
+        /// Captures source-local to normalized-export frames before transforms are
+        /// baked, using the same recentering as BakeNormalizedStaticHierarchy.
         /// </summary>
-        internal static int InjectCollisionMeshes(GameObject tempRoot, List<(string meshName, List<Mesh> meshes, bool isConvex)> collisionData, List<Mesh> tempSink)
+        internal static Dictionary<string, Matrix4x4> CollisionSourceFrames(GameObject root)
+        {
+            var frames = new Dictionary<string, Matrix4x4>(StringComparer.Ordinal);
+            var ambiguous = new HashSet<string>(StringComparer.Ordinal);
+            var recenter = Matrix4x4.Translate(-root.transform.position);
+            foreach (var filter in root.GetComponentsInChildren<MeshFilter>(true))
+            {
+                var mesh = filter.sharedMesh;
+                if (!mesh || MeshNaming.IsCollision(filter.name)) continue;
+                string key = mesh.name;
+                if (ambiguous.Contains(key)) continue;
+                var frame = recenter * filter.transform.localToWorldMatrix;
+                if (frames.TryGetValue(key, out var previous) && previous != frame)
+                {
+                    frames.Remove(key);
+                    ambiguous.Add(key);
+                }
+                else frames[key] = frame;
+            }
+            return frames;
+        }
+
+        /// <summary>Adds owned sidecar meshes as collision children, optionally converting
+        /// source-local geometry with frames captured before normalization.</summary>
+        internal static int InjectCollisionMeshes(GameObject tempRoot, List<(string meshName, List<Mesh> meshes, bool isConvex)> collisionData,
+            List<Mesh> tempSink, Dictionary<string, Matrix4x4> sourceFrames = null)
         {
             if (tempSink == null) throw new ArgumentNullException(nameof(tempSink));
             if (collisionData == null || collisionData.Count == 0) return 0;
+            // The caller must release every sidecar mesh even if placement of one
+            // entry fails before the remaining entries are visited.
+            foreach (var collision in collisionData) tempSink.AddRange(collision.meshes);
 
             for (int ci = tempRoot.transform.childCount - 1; ci >= 0; ci--)
             {
@@ -1243,7 +1268,19 @@ namespace SashaRX.UnityMeshLab
             int count = 0;
             foreach (var (colMeshName, colMeshes, isConvex) in collisionData)
             {
-                tempSink.AddRange(colMeshes);
+                if (sourceFrames != null)
+                {
+                    if (!sourceFrames.TryGetValue(colMeshName, out var frame))
+                    {
+                        int matches = 0;
+                        foreach (var pair in sourceFrames)
+                            if (MeshNaming.GroupKey(pair.Key) == colMeshName && MeshNaming.LodIndex(pair.Key) <= 0)
+                            { frame = pair.Value; ++matches; }
+                        if (matches != 1)
+                            throw new InvalidOperationException($"Cannot place collision '{colMeshName}': no unique source mesh frame in the FBX hierarchy");
+                    }
+                    foreach (var mesh in colMeshes) MeshGeometry.TransformCollisionMesh(mesh, frame);
+                }
                 if (colMeshes.Count == 1 && !isConvex)
                 {
                     // No MeshRenderer: avoids a stale material on the node.
