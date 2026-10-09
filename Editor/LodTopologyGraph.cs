@@ -79,10 +79,10 @@ namespace SashaRX.UnityMeshLab
         }
 
         static bool Fail(string message, out string error) { error = message; return false; }
-        static void AddNeighbor(Dictionary<int, HashSet<int>> map, int a, int b)
+        static void AddNeighbor(Dictionary<int, HashSet<int>> map, int vertex, int neighbor)
         {
-            if (!map.TryGetValue(a, out var neighbors)) map[a] = neighbors = new HashSet<int>();
-            neighbors.Add(b);
+            if (!map.TryGetValue(vertex, out var neighbors)) map[vertex] = neighbors = new HashSet<int>();
+            neighbors.Add(neighbor);
         }
         static int Components(Dictionary<int, HashSet<int>> map)
         {

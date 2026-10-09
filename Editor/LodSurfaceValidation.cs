@@ -122,7 +122,6 @@ namespace SashaRX.UnityMeshLab
                 }
                 foreach (var bary in Samples)
                 {
-                    var position = Interpolate(from.positions, fromTriangles, i, bary);
                     var nearest = CorrespondingHit(from,fromTriangles,i,bary,to,toTriangles,bvh,normals,faceNormal,sameConnectivity);
                     if (nearest.triangleIndex < 0) { metrics.weightedError = float.PositiveInfinity; return; }
                     int j = nearest.triangleIndex * 3;

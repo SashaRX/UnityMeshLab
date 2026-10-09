@@ -74,7 +74,10 @@ namespace SashaRX.UnityMeshLab
             protectedTriangles = frozen.Sum(slot => slot.Count(value => value));
         }
         int Point(Vector3 p)
-        { if (!points.TryGetValue(p,out int id)) points[p] = id = points.Count; return id; }
+        {
+            if (!points.TryGetValue(p,out int id)) points[p] = id = points.Count;
+            return id;
+        }
         int Endpoint(Side side,int vertex) => source.positions[side.a].Equals(source.positions[vertex]) ? side.a : side.b;
         bool SameNormal(int a,int b) => NormalEqual(source.normals[a],source.normals[b]);
         static bool NormalEqual(Vector3 a,Vector3 b) => a.sqrMagnitude > .5f && b.sqrMagnitude > .5f

@@ -7,6 +7,7 @@ namespace SashaRX.UnityMeshLab
 {
     internal static class LodLoopSimplifier
     {
+        const string CancellationMessage = "LOD generation cancelled.";
         internal struct Settings
         {
             internal MeshSimplifier.SimplifySettings simplify;
@@ -52,10 +53,14 @@ namespace SashaRX.UnityMeshLab
                     if (cancelled?.Invoke() == true)
                     {
                         if (best?.mesh != null) UnityEngine.Object.DestroyImmediate(best.mesh);
-                        return new Result { cancelled = true, error = "LOD generation cancelled." };
+                        return new Result { cancelled = true, error = CancellationMessage };
                     }
                     var candidate = SimplifyOne(source, settings, variant + settings.strategyOffset, cancelled);
-                    if (!candidate.ok) { if (best?.mesh != null) UnityEngine.Object.DestroyImmediate(best.mesh); return candidate; }
+                    if (!candidate.ok)
+                    {
+                        if (best?.mesh != null) UnityEngine.Object.DestroyImmediate(best.mesh);
+                        return candidate;
+                    }
                     candidate.selectedCandidate = variant + settings.strategyOffset + 1;
                     if (best == null || BetterResult(candidate, best, target))
                     {
@@ -70,9 +75,13 @@ namespace SashaRX.UnityMeshLab
             catch (OperationCanceledException)
             {
                 if (best?.mesh != null) UnityEngine.Object.DestroyImmediate(best.mesh);
-                return new Result { cancelled = true, error = "LOD generation cancelled." };
+                return new Result { cancelled = true, error = CancellationMessage };
             }
-            catch { if (best?.mesh != null) UnityEngine.Object.DestroyImmediate(best.mesh); throw; }
+            catch
+            {
+                if (best?.mesh != null) UnityEngine.Object.DestroyImmediate(best.mesh);
+                throw;
+            }
         }
 
         internal static bool BetterResult(Result candidate, Result best, int target)
@@ -98,14 +107,14 @@ namespace SashaRX.UnityMeshLab
             var data = source.data;
             while (faces.Sum(f => f.triangles.Length / 3) > target)
             {
-                if (cancelled?.Invoke() == true) { result.cancelled = true; result.error = "LOD generation cancelled."; return result; }
+                if (cancelled?.Invoke() == true) { result.cancelled = true; result.error = CancellationMessage; return result; }
                 var seen = new HashSet<long>();
                 Candidate best = null;
                 var intersection = new LodTriangleIntersections(faces, data.positions);
                 var orderedEdges = graph.edges.Keys.OrderBy(k => variant == 4 ? -k : k);
                 foreach (long edgeKey in orderedEdges)
                 {
-                    if (cancelled?.Invoke() == true) { result.cancelled = true; result.error = "LOD generation cancelled."; return result; }
+                    if (cancelled?.Invoke() == true) { result.cancelled = true; result.error = CancellationMessage; return result; }
                     if (seen.Contains(edgeKey)) continue;
                     var edge = graph.edges[edgeKey][0];
                     var loop = TraceLoop(edge.a, edge.b, graph, faces);

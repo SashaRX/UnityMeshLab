@@ -13,7 +13,7 @@ This iteration is ready to integrate as an incremental implementation. The compl
 
 ## Verified snapshot and limitations
 
-The full eight-model follow-up passed 112 targeted EditMode tests. The final density correction then passed 113 targeted tests, including a new tent GPU capture. The other seven final captures retain their full-follow-up lineage, as documented in [the evaluation](LOD_PROJECT_VISUAL_EVALUATION.md). Both FBX compilation configurations passed. These results do not claim a complete package test run.
+The full eight-model follow-up passed 112 targeted EditMode tests. The final density correction then passed 113 targeted tests, including a new tent GPU capture. The other seven final captures retain their full-follow-up lineage, as documented in [the evaluation](LOD_PROJECT_VISUAL_EVALUATION.md). After rebasing onto current main, 155 selected LOD and collision EditMode tests passed without failures or skips, including another tent GPU capture. Both FBX compilation configurations and package checks passed. These results do not claim a complete package test run.
 
 All 3019 authored hard-edge segments are retained at both generated levels, with zero missing protected face occurrences or patch interfaces. All 1660 measured regional correction checks pass. Nevertheless, strict protection currently reaches only 5 of 16 triangle budgets and only 2 of 8 LOD2 budgets. Equal adjacent counts can be a genuine protected-geometry limit.
 
@@ -31,6 +31,12 @@ All 3019 authored hard-edge segments are retained at both generated levels, with
 Preserving each original crease segment is too conservative for useful reduction on several meshes. Bench B's worst silhouette mismatch worsens from 2.372% to 7.456%, despite retaining more triangles. Vertex-color RMS can improve while categorical paint boundaries still visibly interpolate incorrectly. Budget mode reports exceeded quality guides rather than treating them as certified acceptance limits. Full-loop reduction has not produced a practical gain on this project dataset.
 
 Detailed implementation: [LOD controls and operators](LOD_FULL_LOOPS.md). Research: [topology and libraries](LOD_TOPOLOGY_RESEARCH.md). Test evidence, reproduction commands and capture lineage: [real project evaluation](LOD_PROJECT_VISUAL_EVALUATION.md). Workstation-only artifacts are under `_results~/lod-hard-edges-final-20261010/`; copied project models and experimental Python dependencies are intentionally outside the package.
+
+![Actual project models: source, unprotected LOD2 and protected LOD2](LOD_PROJECT_OVERVIEW.png)
+
+![Measured triangle counts, retained hard segments and normal errors](LOD_HARD_EDGE_ERRORS.png)
+
+These two figures retain the final eight-model capture lineage described above. The post-rebase check is stored separately under `_results~/lod-iteration-closure-20261010/closure.xml`. Integration PR: [#229](https://github.com/SashaRX/UnityMeshLab/pull/229).
 
 ## Next iteration, in order
 

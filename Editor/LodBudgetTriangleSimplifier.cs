@@ -125,12 +125,13 @@ namespace SashaRX.UnityMeshLab
         {
             if ((triangles <= densityLimit) != (bestTriangles <= densityLimit)) return triangles <= densityLimit;
             if ((triangles <= target) != (bestTriangles <= target)) return triangles <= target;
+            int scoreOrder = score.CompareTo(bestScore);
             if (triangles > target)
-                return protectedFloorExceedsBudget ? score < bestScore || (score == bestScore && triangles < bestTriangles) :
-                    triangles < bestTriangles || (triangles == bestTriangles && score < bestScore);
+                return protectedFloorExceedsBudget ? scoreOrder < 0 || (scoreOrder == 0 && triangles < bestTriangles) :
+                    triangles < bestTriangles || (triangles == bestTriangles && scoreOrder < 0);
             int minimum = Mathf.Max(1,target-Mathf.Max(2,Mathf.CeilToInt(target*.05f)));
             if ((triangles >= minimum) != (bestTriangles >= minimum)) return triangles >= minimum;
-            if (score != bestScore) return score < bestScore;
+            if (scoreOrder != 0) return scoreOrder < 0;
             return triangles > bestTriangles;
         }
 

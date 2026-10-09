@@ -11,6 +11,7 @@ namespace SashaRX.UnityMeshLab
 {
     internal static class LodPipelineOps
     {
+        const string CancellationMessage = "LOD generation cancelled.";
         internal struct Options
         {
             public int count;
@@ -297,7 +298,7 @@ namespace SashaRX.UnityMeshLab
                                 reductionNote += " "+r.hardEdges.Note;
                             }
                         }
-                        catch (System.OperationCanceledException) { r = new MeshSimplifier.SimplifyResult { error = "LOD generation cancelled." }; loop = null; reductionNote = null; }
+                        catch (System.OperationCanceledException) { r = new MeshSimplifier.SimplifyResult { error = CancellationMessage }; loop = null; reductionNote = null; }
                         finally { if (retained != null) Object.DestroyImmediate(retained.data.source); }
                         if (partPlan.removed.Count > 0)
                             reductionNote = $"Removed {partPlan.removed.Count} disconnected parts ({partPlan.triangles} source tris, " +
@@ -458,7 +459,7 @@ namespace SashaRX.UnityMeshLab
             if (options.reductionMode != LodReductionMode.LoopsThenTriangles)
             {
                 try { return ReduceOne(mesh, settings, options, sources, 0, out loop, out note,previousValidated); }
-                catch (System.OperationCanceledException) { return new MeshSimplifier.SimplifyResult { error = "LOD generation cancelled." }; }
+                catch (System.OperationCanceledException) { return new MeshSimplifier.SimplifyResult { error = CancellationMessage }; }
             }
             var best = new MeshSimplifier.SimplifyResult();
             int target = Mathf.Max(1, Mathf.CeilToInt(LodMeshData.TriangleCount(mesh) * settings.targetRatio));
@@ -469,7 +470,7 @@ namespace SashaRX.UnityMeshLab
                 for (int variant = 0; variant < count; variant++)
                 {
                     UvProgress.Report(UvProgress.Current.fraction, $"{mesh.name}: variant {variant + 1}/{count}");
-                    if (UvProgress.CancelRequested) return new MeshSimplifier.SimplifyResult { error = "LOD generation cancelled." };
+                    if (UvProgress.CancelRequested) return new MeshSimplifier.SimplifyResult { error = CancellationMessage };
                     var candidate = ReduceOne(mesh, settings, single, sources, variant, out var candidateLoop, out var candidateNote);
                     if (!candidate.ok) return candidate;
                     // Compare complete hybrid results, not only the intermediate loop meshes.
@@ -487,7 +488,7 @@ namespace SashaRX.UnityMeshLab
                 best.simplifiedMesh = null; // Transfer ownership to Generate.
                 return chosen;
             }
-            catch (System.OperationCanceledException) { return new MeshSimplifier.SimplifyResult { error = "LOD generation cancelled." }; }
+            catch (System.OperationCanceledException) { return new MeshSimplifier.SimplifyResult { error = CancellationMessage }; }
             finally { if (best.simplifiedMesh != null) UnityEngine.Object.DestroyImmediate(best.simplifiedMesh); }
         }
 

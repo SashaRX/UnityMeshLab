@@ -189,14 +189,21 @@ namespace SashaRX.UnityMeshLab
                 bool normalSeam = normals != null && group.Any(i => normalOwners[group[0]] != normalOwners[i] &&
                     Vector3.Dot(mesh.normals[group[0]].normalized,mesh.normals[i].normalized) < .9999f);
                 bool colorSeam = colors != null && group.Any(i => ((Vector4)mesh.colors[group[0]]-(Vector4)mesh.colors[i]).sqrMagnitude > 1e-8f);
-                foreach (int i in group) { if (normalSeam) normals.pinned[i] = true; if (colorSeam) colors.pinned[i] = true; }
+                foreach (int i in group)
+                {
+                    if (normalSeam) normals.pinned[i] = true;
+                    if (colorSeam) colors.pinned[i] = true;
+                }
             }
             // A render vertex shared by material slots cannot fit two fields independently.
             var slots = new int[mesh.positions.Length]; for (int i = 0; i < slots.Length; i++) slots[i] = -1;
             for (int s = 0; s < mesh.source.subMeshCount; s++) foreach (int v in mesh.source.GetIndices(s))
             {
                 if (slots[v] >= 0 && slots[v] != s)
-                { if (normals != null) normals.pinned[v] = true; if (colors != null) colors.pinned[v] = true; }
+                {
+                    if (normals != null) normals.pinned[v] = true;
+                    if (colors != null) colors.pinned[v] = true;
+                }
                 slots[v] = s;
             }
         }
@@ -324,7 +331,11 @@ namespace SashaRX.UnityMeshLab
                         if (denom <= 0) break;
                         double alpha = rz/denom, next = 0;
                         for (int i = 0; i < count; i++)
-                        { x[i] += alpha*p[i]; r[i] -= alpha*ap[i]; if (fixedVariables[i]) r[i] = 0; next += r[i]*r[i]/diagonal[i]; }
+                        {
+                            x[i] += alpha*p[i]; r[i] -= alpha*ap[i];
+                            if (fixedVariables[i]) r[i] = 0;
+                            next += r[i]*r[i]/diagonal[i];
+                        }
                         double beta = next/rz;
                         for (int i = 0; i < count; i++) p[i] = r[i]/diagonal[i]+beta*p[i];
                         rz = next;

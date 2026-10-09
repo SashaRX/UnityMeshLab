@@ -216,7 +216,7 @@ namespace SashaRX.UnityMeshLab
                             attrArray[baseIdx + off++] = color.r;
                             attrArray[baseIdx + off++] = color.g;
                             attrArray[baseIdx + off++] = color.b;
-                            attrArray[baseIdx + off++] = color.a;
+                            attrArray[baseIdx + off] = color.a;
                         }
                     }
                 }

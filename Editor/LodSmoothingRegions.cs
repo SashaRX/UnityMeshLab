@@ -195,7 +195,12 @@ namespace SashaRX.UnityMeshLab
         static IEnumerable<Edge[]> EdgePairs(LodMeshData mesh,int[] faces)
         {
             var points = new Dictionary<Vector3,int>();
-            int Point(int v) { var p = mesh.positions[v]; if (!points.TryGetValue(p,out int id)) points[p] = id = points.Count; return id; }
+            int Point(int v)
+            {
+                var p = mesh.positions[v];
+                if (!points.TryGetValue(p,out int id)) points[p] = id = points.Count;
+                return id;
+            }
             var edges = new Dictionary<(int,int),List<Edge>>();
             for (int i = 0; i < faces.Length; i += 3) for (int corner = 0; corner < 3; corner++)
             {
@@ -250,7 +255,11 @@ namespace SashaRX.UnityMeshLab
             return parent.Select((_,i) => Root(parent,i)).ToArray();
         }
         static int Root(int[] parent,int i) { while (parent[i] != i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; }
-        static void Union(int[] parent,int a,int b) { a = Root(parent,a); b = Root(parent,b); parent[Math.Max(a,b)] = Math.Min(a,b); }
+        static void Union(int[] parent,int first,int second)
+        {
+            first = Root(parent,first); second = Root(parent,second);
+            parent[Math.Max(first,second)] = Math.Min(first,second);
+        }
         static void Cancel(Func<bool> cancelled) { if (cancelled?.Invoke() == true) throw new OperationCanceledException("LOD smoothing analysis cancelled."); }
     }
 }
