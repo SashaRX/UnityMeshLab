@@ -90,6 +90,7 @@ namespace SashaRX.UnityMeshLab
         // rerun preparation after changing the source. No automatic Bridge inference.
         public bool planarCap;
         public string planarCapLoops = "0";
+        public bool planarCapLocalPlanes;
         // After the voxel remesh, drop the faces the source has no surface for: the
         // voxelizer closes an open sheet into a slab, and its back side and rims have no
         // source face nearby with an aligned normal. Closed sources are left whole.

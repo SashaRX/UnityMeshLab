@@ -156,7 +156,7 @@ namespace SashaRX.UnityMeshLab
             switch (stage) {
                 case Stage.Remesh: return $"{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}|{s.lod0Only}|{s.keepHierarchy}|" +
                     $"{s.sourceShape}|{s.hullResolution}|{s.hullTriangles}|{s.minPartSize:F4}|{s.minRodVoxels:F3}|{s.voxelResolution}|{s.trimToSource}|{s.sourceBackfaces}|" +
-                    $"cap{RemeshPlanarCap.Revision}|{s.planarCap}|{s.planarCapLoops}";
+                    $"cap{RemeshPlanarCap.Revision}|{s.planarCap}|{s.planarCapLoops}|{s.planarCapLocalPlanes}";
                 case Stage.Simplify: return $"{s.simplify}|{s.targetTriangles}|{s.maximumError}|{s.regularize}|{s.preserveFolds}|{s.pruneSmallParts}";
                 case Stage.Unwrap: return $"{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.normalWeighting}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
                     $"{s.chartNormalDeviation}|{s.chartNormalSeam}|{s.chartStraightness}|{s.chartRoundness}|{s.chartIterations}|" +
@@ -309,13 +309,13 @@ namespace SashaRX.UnityMeshLab
                     if (shape == RemeshShape.BoundingBox) return captured.OrientedBoxes();
                     if (options.planarCap && (shape == RemeshShape.Hull || !options.shell)) {
                         try {
-                            node.support = RemeshPlanarCap.Prepare(captured.positions, captured.indices, options.planarCapLoops, token);
+                            node.support = RemeshPlanarCap.Prepare(captured.positions, captured.indices, options.planarCapLoops, token, options.planarCapLocalPlanes);
                             UvtLog.Info(LogPrefix + node.name + ": planar Cap " + node.support.Description);
                             RemeshGeometryDiagnostics.CaptureSupport(captured, node.support, options, node.name);
                             var closed = RemeshTopology.ClosedVolumeFaces(node.support.positions, node.support.indices, token);
                             foreach (bool face in closed) if (!face)
                                 throw new InvalidOperationException("Planar Cap support still has an open or zero-volume component. " +
-                                    "Select every required disk loop explicitly; Bridge and compound closure are not inferred.");
+                                    "Select every required disk loop explicitly; Bridge and unsupported compound closures require separate intent.");
                         }
                         catch (InvalidOperationException failure) {
                             RemeshGeometryDiagnostics.CaptureFailure(captured.positions, captured.indices, null, null, options,

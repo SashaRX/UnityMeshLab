@@ -396,9 +396,14 @@ namespace SashaRX.UnityMeshLab
                             "Weld coincident positions in geometry-only support, then close selected continuous planar loops. " +
                             "This explicitly requests disks, not Bridge. Original material/UV donors are preserved. " +
                             "Synthetic surfaces project from the original donor; missing projections remain visible as magenta."), settings.planarCap);
-                        if (settings.planarCap) settings.planarCapLoops = EditorGUILayout.TextField(new GUIContent("Cap loop numbers",
+                        if (settings.planarCap) {
+                            settings.planarCapLocalPlanes = EditorGUILayout.Toggle(new GUIContent("Local two-plane caps",
+                                "Allow a uniquely supported split into two continuous planar arcs. Close the first arc, recheck the new boundary, " +
+                                "then close the remaining planar disk. Ambiguous splits and Bridge are refused; source rim vertices remain fixed."), settings.planarCapLocalPlanes);
+                            settings.planarCapLoops = EditorGUILayout.TextField(new GUIContent("Cap loop numbers",
                             "Comma-separated loop numbers, starting at 0 in welded vertex order (e.g. 0,1). " +
-                            "The first prototype requires all openings closed for solid remesh. Nonplanar/ambiguous loops refuse the run."), settings.planarCapLoops);
+                            "All openings must be closed for solid remesh. Unsupported/ambiguous loops refuse the run."), settings.planarCapLoops);
+                        }
                     }
                     settings.sourceBackfaces = (RemeshBackfaces)EditorGUILayout.EnumPopup(new GUIContent("Source backfaces",
                         "Whether the source's back faces count as surface. From materials: two-sided when a material's cull mode is Off or its double-sided " +

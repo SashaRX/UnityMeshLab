@@ -1,11 +1,64 @@
 # Planar Cap in the Unity Remesh pipeline
 
-The first managed integration is an opt-in **disk** operation. In Remesh & Bake,
+Managed integration is an opt-in **disk** operation. In Remesh & Bake,
 enable **Cap planar holes (disks)** and enter comma-separated **Cap loop numbers**
 (`0` for the single SandbagRoundedcorner floor opening). Numbers start at zero,
 ordered by the lowest welded vertex in each oriented boundary cycle. They belong
 to the current filtered capture; inspect the log again after changing the source.
 This prototype has no interactive rim selector and does not infer closure intent.
+
+Enable **Local two-plane caps** to also allow a selected nonplanar cycle with one
+supported decomposition into two continuous planar arcs. The option is off in
+existing settings. It does not interpret two separate loops as a Bridge request.
+
+## Local two-plane closure (revision 2)
+
+Every boundary sample is tested against its support plane. Noncollinear evidence
+must exceed a relative cross-product conditioning threshold of 1e-12; maximum
+plane residual is bounded by the rim bounding-box diagonal times 1e-5. Only rim
+turns of at least 20 degrees may be arc endpoints, avoiding subdivision-generated
+fake junctions. Each arc must contain at least two edges, and its plane must
+differ from its neighbor by at least 20 degrees. The analyzer enumerates all
+endpoint pairs within 32,768 fits and two million support samples. Exhaustion
+refuses the run; a first found hypothesis is never accepted from an incomplete
+search. This is geometric evidence under explicit disk intent, not a certificate
+of the missing surface's intended shape.
+
+A unique two-plane decomposition closes the first ordered arc with the existing
+constrained triangulator, using a new endpoint chord. Its exact boundary edge set
+must equal the old set minus that arc plus the chord. All new/source and new/new
+contacts and vertex fans are checked before accepting the patch internally.
+The algorithm then extracts the actual updated contours, finds the directed new
+chord, and requires the remaining contour to be wholly planar. The second patch
+is audited against the original surface and the first patch. Contact-pair budgets
+are cumulative across all local patches. Failure returns no prepared support and
+never modifies the donor. Three-plane reconstruction, feature intersections,
+automatic Bridge choice and freeform hole filling are outside this option.
+
+Unity 6000.2.6f2: the first focused run passes **52/52** Cap cases, comprising the
+existing 23 and 29 local controls. All 12 adjacent pairs of missing box faces close
+with four triangles on the two known reference planes. Rotation, translation,
+scale, reversed winding, uneven rim subdivision, seam-split vertices, unselected
+components, obstacles on either patch, ambiguous support and cancellation/budgets
+are exercised. Native Voxelize -> Trim -> Simplify -> Unwrap passes with Solve off
+and on: 10,092 voxel faces -> 12 simplified faces -> six charts. The optional real
+Sandbag replay confirms identical prepared geometry in disk and local modes.
+
+The separate offline Bridge benchmark also passes equal and unequal torus rims,
+and refuses disk-shaped box openings and an occupied torus gap. It tests explicit
+annular intent and genus preservation; it is not a production Unity Bridge stage.
+Eight known-reference sequential Cap replays (two orders for two faces, six for
+three faces) also pass. Three-face replays use supplied reference patches; they
+do not imply automatic three-plane generation. Current local evidence is under
+`_results~/local-cap-20261009/` (ignored).
+
+The broader `Remesh` EditMode filter runs **396 cases: 393 passed, one failed,
+two skipped**. The failure is the pre-existing DiagonalBox native unwrap described
+below. Skips require the Android DXT5nm harness and both Standard/URP shaders.
+The newly discovered request-budget fixture had retained a six-argument reflection
+call after Cap added a seventh support parameter; supplying null support restores
+its existing per-pixel/per-stratum assertions. Both reference C# build variants
+pass, as do **115/115** offline cases, identifier and tool-dependency checks.
 
 ## Geometry and donors
 
@@ -35,8 +88,8 @@ The solid pipeline additionally requires closed oriented nonzero-volume componen
 Partial selection may be analyzed by the managed generator, but cannot feed this
 solid Remesh integration. BoundingBox skips preparation. LOD0 Two-sided shell
 skips it as well; Hull is a solid operation and can use it. Multiple disks require
-explicit loop numbers; torus band gaps needing Bridge and nonplanar compound holes
-are not inferred or silently sealed.
+explicit loop numbers; torus band gaps needing Bridge and unsupported compound
+holes are not inferred or silently sealed.
 
 Voxelize, Trim and source-fitted Simplify all use prepared support. Bake and cage
 queries continue to use the original donor. Missing Cap texture projections follow
