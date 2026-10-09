@@ -553,6 +553,7 @@ namespace SashaRX.UnityMeshLab
             if (!AssetDatabase.IsValidFolder(TempFolder)) AssetDatabase.CreateFolder("Assets", TempFolder.Substring("Assets/".Length));
             string tempPath = $"{TempFolder}/corner_tags_{Guid.NewGuid():N}.fbx";
             var tagChannels = new Dictionary<int, int>();
+            var cornerCounts = new Dictionary<int, int>();
             // A mesh with all eight UV sets gives its last one to the tag; that set's values come
             // from the file instead, per corner, so the corner matching still sees them.
             var takenSets = new Dictionary<int, double[]>();
@@ -568,6 +569,7 @@ namespace SashaRX.UnityMeshLab
                         if (sets.Count >= FbxLayerChannels.MaxUnityUvChannels)
                             takenSets[i] = FbxLayerChannels.ReadUv(sets[FbxLayerChannels.MaxUnityUvChannels - 1], new FbxLayerChannels.Topology(mesh));
                         tagChannels[i] = FbxUvSet(FbxLayerChannels.AddCornerTag(mesh, i), swapUv);
+                        cornerCounts[i] = new FbxLayerChannels.Topology(mesh).CornerCount;
                     }
                     tagDocument.Save(Path.GetFullPath(tempPath));
                 }
@@ -590,7 +592,7 @@ namespace SashaRX.UnityMeshLab
                 foreach (var mesh in AssetDatabase.LoadAllAssetsAtPath(tempPath).OfType<Mesh>())
                 {
                     importedNames.Add(mesh.name);
-                    var tag = ReadTags(mesh, tagChannels);
+                    var tag = ReadTags(mesh, tagChannels, cornerCounts);
                     if (tag == null) continue;
                     if (tagged.TryGetValue(mesh.name, out var first)) { first.ambiguous = true; continue; }
                     if (takenSets.TryGetValue(tag.ordinal, out var values)) tag.uvs[tagChannels[tag.ordinal]] = PerCornerUvs(values, tag.cornerPositions.Length / 3);
@@ -612,7 +614,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static Tagged ReadTags(Mesh mesh, Dictionary<int, int> tagChannels)
+        static Tagged ReadTags(Mesh mesh, Dictionary<int, int> tagChannels, Dictionary<int, int> cornerCounts)
         {
             var list = new List<Vector2>();
             for (int ch = 0; ch < 8; ch++)
@@ -621,7 +623,9 @@ namespace SashaRX.UnityMeshLab
                 if (list.Count == 0 || list.Count != mesh.vertexCount) continue;
                 int ordinal = TagOrdinal(list);
                 if (ordinal < 0 || !tagChannels.TryGetValue(ordinal, out int expected) || expected != ch) continue;
-                return BuildTagged(mesh, ch, ordinal, list);
+                int count = cornerCounts[ordinal];
+                if (list.Any(t => TagCorner(t) >= count)) continue;
+                return BuildTagged(mesh, ch, ordinal, list, count);
             }
             return null;
         }
@@ -629,22 +633,39 @@ namespace SashaRX.UnityMeshLab
         // The ordinal every vertex of the channel agrees on, or -1 when it is not a tag channel.
         internal static int TagOrdinal(List<Vector2> tags)
         {
-            float v = tags[0].y;
-            if (v >= 0 || !IsWhole(v, out int tagValue)) return -1;
+            if (tags == null || tags.Count == 0 || !DecodeTag(tags[0], out _, out int ordinal)) return -1;
             foreach (var t in tags)
-                // Mesh Compression can import the zero corner as a tiny negative value.
-                // Validate the decoded integer after the precision check, not its noisy sign.
-                if (!IsWhole(t.y, out int y) || y != tagValue || !IsWhole(t.x, out int corner) || corner < 0) return -1;
-            return -tagValue - 1;
+                if (!DecodeTag(t, out _, out int candidate) || candidate != ordinal) return -1;
+            return ordinal;
         }
 
-        // Tags are integral below 2^24. Allow tiny import/compression noise, including
-        // the ~0.00101 error measured at corner 131 with High Compression, while keeping
-        // the tolerance far below the distance to another integer ID.
+        internal static bool DecodeTag(Vector2 tag, out int corner, out int ordinal)
+        {
+            corner = ordinal = -1;
+            int radix = FbxLayerChannels.CornerTagRadix;
+            if (!IsWhole(tag.x, out int low) || low < 0 || low >= radix
+                || !IsWhole(tag.y, out int packed) || packed >= 0 || packed < -(1 << 24)) return false;
+            int value = -packed - 1;
+            ordinal = value / radix;
+            corner = (value % radix) * radix + low;
+            return true;
+        }
+
+        static int TagCorner(Vector2 tag)
+        {
+            DecodeTag(tag, out int corner, out _);
+            return corner;
+        }
+
+        // Each varying component spans at most 4095. Real compressed imports can exceed
+        // 0.002 even on small meshes; retain a strict margin to the half-integer boundary.
+        // Non-finite, out-of-range and mixed-ordinal IDs still fail before any file write.
         static bool IsWhole(float f, out int whole)
         {
+            whole = 0;
+            if (float.IsNaN(f) || float.IsInfinity(f) || f < -(1 << 24) || f >= 1 << 24) return false;
             whole = Mathf.RoundToInt(f);
-            return Mathf.Abs(f - whole) < 2e-3f;
+            return Mathf.Abs(f - whole) < .125f;
         }
 
         // The file's per-corner UV values as Unity imports them (single precision).
@@ -655,10 +676,8 @@ namespace SashaRX.UnityMeshLab
             return uvs;
         }
 
-        static Tagged BuildTagged(Mesh mesh, int tagChannel, int ordinal, List<Vector2> tags)
+        static Tagged BuildTagged(Mesh mesh, int tagChannel, int ordinal, List<Vector2> tags, int corners)
         {
-            int corners = 0;
-            foreach (var t in tags) corners = Math.Max(corners, Mathf.RoundToInt(t.x) + 1);
             var tag = new Tagged { ordinal = ordinal, cornerPositions = new float[corners * 3] };
             for (int i = 0; i < tag.cornerPositions.Length; i++) tag.cornerPositions[i] = float.NaN;
 
@@ -666,7 +685,7 @@ namespace SashaRX.UnityMeshLab
             var cornerOf = new int[vertices.Length];
             for (int v = 0; v < vertices.Length; v++)
             {
-                int c = cornerOf[v] = Mathf.RoundToInt(tags[v].x);
+                int c = cornerOf[v] = TagCorner(tags[v]);
                 tag.cornerPositions[c * 3] = vertices[v].x; tag.cornerPositions[c * 3 + 1] = vertices[v].y; tag.cornerPositions[c * 3 + 2] = vertices[v].z;
             }
             tag.submeshCorners = new int[mesh.subMeshCount][];
