@@ -2,7 +2,8 @@
 
 2026-10-09. Baseline `292c47a`, branch `codex/remesh-and-bake`, PR #225.
 This follows [the research](REMESH_LOCAL_CAP_RESEARCH.md). Production Cap is not
-implemented. The current work adds an analytic structure probe and a staged plan.
+implemented. The offline benchmark now covers boundary extraction and plane
+hypotheses; the remaining stages are defined below.
 
 ## Working model
 
@@ -133,8 +134,9 @@ python 'Tools~/RemeshCapBenchmark/box_structure_probe.py' --output '_results~/ca
 python -m unittest discover -s 'Tools~/RemeshCapBenchmark' -v
 ```
 
-The box probe now consumes the source-fan-aware extractor described below;
-its restored faces still come from the known box reference, not a Cap solver.
+The box probe now consumes the source-fan-aware extractor and reports P2 plane
+hypotheses. Its restored faces still come from the known box reference, not a
+Cap solver. Current plane results are recorded in [P2 results](REMESH_CAP_PLANES.md).
 
 ## Milestones and exit criteria
 
@@ -153,8 +155,14 @@ P1 is implemented in the offline benchmark; results and limits are recorded in
 the private source as seven fan-consistent cycles, including a pinched cycle
 requiring further domain resolution. Loop IDs are snapshot-bound; geometric
 boundary coverage survives seam/winding/order changes, while IDs appropriately
-change with the snapshot. P2 is the next implementation step. Starting at the
-triangulator would still skip unresolved patch structure.
+change with the snapshot.
+
+P2 is also implemented offline; [plane results](REMESH_CAP_PLANES.md) record a
+unique two-plane hypothesis for two adjacent missing box faces and two competing
+three-plane hypotheses for the missing-corner case. The suite now passes 67/67
+tests. P3 feature reconstruction is next: plane fits alone do not select a valid
+missing surface. Starting at the triangulator would still skip unresolved patch
+structure.
 
 ## Integration and regression controls
 

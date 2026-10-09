@@ -8,6 +8,7 @@ import numpy as np
 from topology import inspect
 from analyze import scan
 from boundaries import extract
+from planes import analyze
 
 POINTS = np.array([[-1,-1,-1], [1,-1,-1], [1,1,-1], [-1,1,-1],
                    [-1,-1,1], [1,-1,1], [1,1,1], [-1,1,1]], dtype='f4')
@@ -57,6 +58,7 @@ def probe(name, missing, points=POINTS):
     if not topology['closedManifold'] or not geometry['capGeometryAccepted']:
         raise RuntimeError('Known box reference failed the independent geometry/topology audit')
     return {'name': name, 'sourceTopology': inspect(source_points, source_indices),
+            'planeAnalysis': analyze(source_points, source_indices),
             'loops': [{'edges': len(loop), 'wholePlane': fit(source_points[loop])} for loop in loops],
             'groundTruthPlanes': len(missing), 'groundTruthCapTriangles': len(reference_caps),
             'groundTruthNewVertices': len(candidate_points)-len(source_points),
@@ -86,7 +88,8 @@ def main():
         print(case['name'], 'loops', [v['edges'] for v in case['loops']],
               'max plane distances', [round(v['wholePlane']['maxDistance'],6) for v in case['loops']],
               'reference cap triangles', case['groundTruthCapTriangles'],
-              'reference new vertices', case['groundTruthNewVertices'])
+              'reference new vertices', case['groundTruthNewVertices'],
+              'plane statuses', [loop['status'] for loop in case['planeAnalysis']['loops']])
 
 
 if __name__ == '__main__':

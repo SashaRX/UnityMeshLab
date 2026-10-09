@@ -111,6 +111,7 @@ and scale, selected/unselected coverage, stale selections, invalid source
 geometry, budgets and cancellation.
 
 These are Python benchmark tests, not Unity EditMode tests, attribute-channel
-preservation validation or production Cap certification. The next milestone is
-P2: whole-contour and contiguous partial-plane hypotheses, retaining the fan
-occurrences and junction flags rather than flattening them into simple loops.
+preservation validation or production Cap certification. The implemented
+[P2 follow-up](REMESH_CAP_PLANES.md) analyzes whole contours and contiguous
+partial-plane hypotheses, retaining the fan occurrences and junction flags
+rather than flattening them into simple loops.
