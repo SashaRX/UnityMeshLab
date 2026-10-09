@@ -14,6 +14,10 @@ namespace SashaRX.UnityMeshLab
         // its merge phase allocates O(n²) work. Keep the historical V-HACD default as
         // a hard work-budget boundary; the native bridge enforces the same limit.
         public const int MaxConvexRecursionDepth = 10;
+        // A closed triangulated convex polyhedron has 2V - 4 faces. Unity allows
+        // 255 triangles per convex collider, so 128 vertices gives at most 252.
+        public const int MaxConvexVertices = 128;
+        public const int MaxConvexTriangles = 255;
 
         // ── Simplified mode ──
 
@@ -33,11 +37,33 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public static SimplifiedResult BuildSimplified(Mesh sourceMesh, float targetRatio, float targetError)
         {
+            Mesh readable = null;
+            bool isCopy = false;
+            try
+            {
+                readable = MeshAccess.Readable(sourceMesh, out isCopy);
+                return BuildSimplifiedReadable(readable, targetRatio, targetError);
+            }
+            catch (Exception e) when (IsNativeLoadFailure(e))
+            {
+                return new SimplifiedResult { error = "Collision native plugin unavailable: " + e.Message };
+            }
+            finally { if (isCopy && readable != null) UnityEngine.Object.DestroyImmediate(readable); }
+        }
+
+        static SimplifiedResult BuildSimplifiedReadable(Mesh sourceMesh, float targetRatio, float targetError)
+        {
             var result = new SimplifiedResult();
 
             if (sourceMesh == null)
             {
                 result.error = "Source mesh is null";
+                return result;
+            }
+
+            if (!ValidateSource(sourceMesh, out string error))
+            {
+                result.error = error;
                 return result;
             }
 
@@ -51,13 +77,25 @@ namespace SashaRX.UnityMeshLab
                 uvChannel    = 0
             };
 
-            var sr = MeshSimplifier.Simplify(sourceMesh, settings);
+            MeshSimplifier.SimplifyResult sr;
+            var geometry = BuildSimplificationGeometry(sourceMesh);
+            try { sr = MeshSimplifier.Simplify(geometry, settings); }
+            finally { UnityEngine.Object.DestroyImmediate(geometry); }
             result.ok              = sr.ok;
             result.error           = sr.error;
             result.mesh            = sr.simplifiedMesh;
             result.sourceTriCount  = sr.originalTriCount;
             result.resultTriCount  = sr.simplifiedTriCount;
             result.resultError     = sr.resultError;
+
+            if (result.ok && (result.mesh == null || result.mesh.vertexCount == 0 || result.resultTriCount == 0))
+            {
+                if (result.mesh != null) UnityEngine.Object.DestroyImmediate(result.mesh);
+                result.mesh = null;
+                result.ok = false;
+                result.error = "Simplification removed all triangles; increase Target Ratio or lower Target Error";
+                return result;
+            }
 
             if (result.mesh != null)
             {
@@ -66,6 +104,28 @@ namespace SashaRX.UnityMeshLab
             }
 
             return result;
+        }
+
+        // Collision has no material, UV, colour or shading boundaries. Merely setting
+        // attribute weights to zero still leaves the source's split-vertex topology
+        // and per-material submesh borders in the general-purpose simplifier.
+        static Mesh BuildSimplificationGeometry(Mesh source)
+        {
+            ExtractMeshData(source, out var positions, out var triangles);
+            var slots = MeshGeometry.WeldPositions(positions, out int count);
+            var welded = new Vector3[count];
+            for (int v = 0; v < positions.Length; ++v) welded[slots[v]] = positions[v];
+            for (int i = 0; i < triangles.Length; ++i) triangles[i] = slots[triangles[i]];
+            var geometry = new Mesh { name = source.name, hideFlags = HideFlags.HideAndDontSave,
+                indexFormat = count > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16 };
+            try
+            {
+                geometry.SetVertices(welded);
+                geometry.SetTriangles(triangles, 0);
+                geometry.RecalculateBounds();
+                return geometry;
+            }
+            catch { UnityEngine.Object.DestroyImmediate(geometry); throw; }
         }
 
         // ── Convex Decomposition mode ──
@@ -110,11 +170,67 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public static ConvexDecompResult BuildConvexDecomposition(Mesh sourceMesh, ConvexDecompSettings settings)
         {
+            Mesh readable = null;
+            bool isCopy = false;
+            try
+            {
+                readable = MeshAccess.Readable(sourceMesh, out isCopy);
+                return BuildConvexDecompositionReadable(readable, settings);
+            }
+            catch (Exception e) when (IsNativeLoadFailure(e))
+            {
+                return new ConvexDecompResult { hulls = new List<Mesh>(), error = "Collision native plugin unavailable: " + e.Message };
+            }
+            finally { if (isCopy && readable != null) UnityEngine.Object.DestroyImmediate(readable); }
+        }
+
+        static bool IsNativeLoadFailure(Exception e) => e is DllNotFoundException ||
+            e is EntryPointNotFoundException || e is BadImageFormatException;
+
+        static bool ValidateSource(Mesh mesh, out string error)
+        {
+            error = null;
+            var vertices = mesh.vertices;
+            if (vertices.Length == 0) { error = "Mesh has no vertices"; return false; }
+            foreach (var v in vertices)
+                if (float.IsNaN(v.x) || float.IsNaN(v.y) || float.IsNaN(v.z) ||
+                    float.IsInfinity(v.x) || float.IsInfinity(v.y) || float.IsInfinity(v.z))
+                { error = "Mesh contains non-finite positions"; return false; }
+            int count = 0;
+            for (int s = 0; s < mesh.subMeshCount; ++s)
+            {
+                if (mesh.GetTopology(s) != MeshTopology.Triangles)
+                { error = "Collision generation requires triangle submeshes"; return false; }
+                var indices = mesh.GetTriangles(s);
+                if (indices.Length % 3 != 0) { error = "Invalid triangle count"; return false; }
+                foreach (int index in indices)
+                    if (index < 0 || index >= vertices.Length)
+                    { error = "Triangle index out of bounds"; return false; }
+                count += indices.Length;
+            }
+            if (count < 3) { error = "Mesh has no triangles"; return false; }
+            return true;
+        }
+
+        static ConvexDecompResult BuildConvexDecompositionReadable(Mesh sourceMesh, ConvexDecompSettings settings)
+        {
             var result = new ConvexDecompResult { hulls = new List<Mesh>() };
 
             if (sourceMesh == null)
             {
                 result.error = "Source mesh is null";
+                return result;
+            }
+
+            if (!ValidateSource(sourceMesh, out string error))
+            {
+                result.error = error;
+                return result;
+            }
+
+            if (float.IsNaN(settings.minVolumePerHull) || float.IsInfinity(settings.minVolumePerHull) || settings.minVolumePerHull < 0)
+            {
+                result.error = "Volume error threshold must be finite and non-negative";
                 return result;
             }
 
@@ -152,8 +268,8 @@ namespace SashaRX.UnityMeshLab
                 return result;
             }
 
-            // Clamp maxVertsPerHull to PhysX limit
-            int maxVPH = Mathf.Clamp(settings.maxVertsPerHull, 8, 255);
+            // Bound vertices by the triangle budget, not PhysX's vertex limit.
+            int maxVPH = Mathf.Clamp(settings.maxVertsPerHull, 8, MaxConvexVertices);
             int maxRecursionDepth = Mathf.Clamp(settings.maxRecursionDepth, 1, MaxConvexRecursionDepth);
 
             IntPtr ctx = IntPtr.Zero;
@@ -162,14 +278,14 @@ namespace SashaRX.UnityMeshLab
                 ctx = ConvexDecompNative.ConvexDecomp_Compute(
                     flatVerts, vertexCount,
                     indices, indices.Length,
-                    settings.maxHulls,
-                    settings.resolution,
+                    Mathf.Clamp(settings.maxHulls, 1, 64),
+                    Mathf.Clamp(settings.resolution, 10000, 1000000),
                     maxVPH,
                     settings.minVolumePerHull,
                     maxRecursionDepth,
                     settings.shrinkWrap ? 1 : 0,
-                    settings.fillMode,
-                    settings.minEdgeLength,
+                    Mathf.Clamp(settings.fillMode, 0, 2),
+                    Mathf.Clamp(settings.minEdgeLength, 1, 8),
                     settings.findBestPlane ? 1 : 0);
 
                 if (ctx == IntPtr.Zero)
@@ -189,6 +305,12 @@ namespace SashaRX.UnityMeshLab
                 {
                     int vCount = ConvexDecompNative.ConvexDecomp_GetHullVertexCount(ctx, h);
                     int iCount = ConvexDecompNative.ConvexDecomp_GetHullIndexCount(ctx, h);
+                    if (vCount < 4 || vCount > MaxConvexVertices || iCount < 12 ||
+                        iCount % 3 != 0 || iCount / 3 > MaxConvexTriangles)
+                    {
+                        result.error = $"Hull {h} exceeds Unity's convex budget or has no closed volume ({vCount} vertices, {iCount / 3} triangles)";
+                        return result;
+                    }
 
                     float[] hullVerts = new float[vCount * 3];
                     int[]   hullIdx   = new int[iCount];
@@ -223,6 +345,11 @@ namespace SashaRX.UnityMeshLab
             {
                 if (ctx != IntPtr.Zero)
                     ConvexDecompNative.ConvexDecomp_Destroy(ctx);
+                if (!result.ok)
+                {
+                    foreach (var mesh in result.hulls) UnityEngine.Object.DestroyImmediate(mesh);
+                    result.hulls.Clear();
+                }
             }
 
             return result;

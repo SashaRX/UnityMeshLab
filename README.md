@@ -82,6 +82,7 @@ Two modes for generating physics collision meshes from any LOD:
 
 ### Simplified (non-convex)
 * Aggressively simplifies the source mesh via meshoptimizer
+* Uses only positions and triangles: ignores normals, tangents, vertex colours and all UV channels, merges material submeshes, and welds exactly coincident vertices before simplification. The source mesh stays unchanged.
 * Creates a single `MeshCollider(convex=false)` — for static objects, terrain, walls
 * Configurable target ratio and error tolerance
 
@@ -89,11 +90,12 @@ Two modes for generating physics collision meshes from any LOD:
 * Decomposes the mesh into multiple convex hulls with V-HACD 4.1
 * Creates compound `MeshCollider(convex=true)` — for dynamic / kinematic objects
 * Full V-HACD parameter control: max hulls, resolution, verts per hull, fill mode, recursion depth, shrink wrap, best plane search
-* Scene wireframe preview of the generated hulls
+* Generated surfaces and per-hull wireframe in the shared **3D** preview; **Source + collision wire** compares against the original. Scene View also shows the generated edges.
+* Hulls are capped at 128 vertices and checked against Unity's 255-triangle convex limit.
 
 ### Collision persistence
-* **Apply to Scene** — creates `_COL` GameObjects with MeshCollider components
-* **Save to Sidecar** — persists the hulls in `_uv2data.asset` for FBX reimport
+* **Apply to Scene** — creates `_COL` GameObjects with MeshCollider components, preserves nested source transforms and the root's layer, and supports Undo/Redo. Remove existing collision objects before applying a replacement.
+* **Save to Sidecar** — persists source-local hulls in `_uv2data.asset` for FBX reimport. Direct document saves preserve the source node's placement; rebuilt exports convert hulls using the source frame captured before hierarchy normalization.
 * **FBX Export** — collision meshes are included automatically when exporting FBX
 
 ## UV1 Hierarchy

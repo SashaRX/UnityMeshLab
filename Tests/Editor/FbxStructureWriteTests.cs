@@ -354,6 +354,44 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Structure_CollisionUsesSourceLocalGeometryAndKeepsSourceNodePlacement()
+        {
+            string source = WriteSource(), edited = Path.Combine(folder, "collision.fbx");
+            string[] expected;
+            using (var document = FbxSourceDocument.Load(source))
+            {
+                var (positions, triangles) = SimulatedImport(document.Meshes[0]);
+                var mesh = new UnityEngine.Mesh { name = "Rock_LOD0_COL" };
+                using var plan = new FbxStructurePlan();
+                plan.collisions.Add(("Rock_LOD0", new List<UnityEngine.Mesh> { mesh }, false));
+                var vertices = new UnityEngine.Vector3[positions.Length / 3];
+                for (int i = 0; i < vertices.Length; ++i)
+                    vertices[i] = new UnityEngine.Vector3(positions[i * 3], positions[i * 3 + 1], positions[i * 3 + 2]);
+                mesh.vertices = vertices;
+                mesh.triangles = triangles.Take(3).ToArray();
+                expected = TriangleKeys(positions, mesh.triangles);
+                var tagged = new Dictionary<string, FbxChannelWrite.Tagged> {
+                    ["Rock_LOD0"] = new FbxChannelWrite.Tagged {
+                        ordinal = 0, cornerPositions = positions,
+                        submeshCorners = new[] { triangles }, submeshFaceSizes = new[] { 3 }
+                    }
+                };
+                Assert.AreEqual(1, FbxStructureWrite.Apply(document, tagged, plan,
+                    new FbxStructureWrite.Options { preserveHierarchy = true }, new List<string>()));
+                document.Save(edited);
+            }
+            using (var document = FbxSourceDocument.Load(edited))
+            {
+                var lod0 = FbxStructureEdit.FindNodes(document.Scene, "Rock_LOD0").Single();
+                var collision = FbxStructureEdit.FindNodes(document.Scene, "Rock_LOD0_COL").Single();
+                Assert.IsTrue(FbxStructureEdit.SamePlacement(lod0, collision, true));
+                var (positions, triangles) = SimulatedImport(collision.GetMesh());
+                CollectionAssert.AreEqual(expected, TriangleKeys(positions, triangles));
+                Assert.AreEqual(4, lod0.GetMesh().GetPolygonSize(0));
+            }
+        }
+
+        [Test]
         public void Structure_ANewLodReimportsAsTheUnityMeshItWasMadeFrom()
         {
             string source = WriteSource(), edited = Path.Combine(folder, "edited.fbx");
