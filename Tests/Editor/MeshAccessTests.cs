@@ -89,6 +89,35 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { Object.DestroyImmediate(src); Object.DestroyImmediate(copy); }
         }
 
+#if UNITY_6000_2_OR_NEWER
+        [TestCase(UnityEngine.Rendering.IndexFormat.UInt16)]
+        [TestCase(UnityEngine.Rendering.IndexFormat.UInt32)]
+        public void UnreadableMeshLodCopiesOnlyTheActiveIndexRange(UnityEngine.Rendering.IndexFormat format)
+        {
+            var source = QuadTopology();
+            Mesh copy = null;
+            try {
+                source.indexFormat = format;
+                source.SetIndices(new[] { 0, 1, 2, 0, 2, 3, 0, 1, 3 }, MeshTopology.Triangles, 0);
+                source.lodCount = 2;
+                source.SetLods(new[] {
+                    new MeshLodRange { indexStart = 0, indexCount = 6 },
+                    new MeshLodRange { indexStart = 6, indexCount = 3 }
+                }, 0);
+                source.UploadMeshData(true);
+                Assert.AreEqual(6, source.GetIndexCount(0));
+                using (var data = Mesh.AcquireReadOnlyMeshData(source))
+                    Assert.AreEqual(9, data[0].GetSubMesh(0).indexCount,
+                        "MeshData includes the backing ranges of all mesh LODs.");
+                copy = MeshAccess.ReadableCopy(source);
+                CollectionAssert.AreEqual(new[] { 0, 1, 2, 0, 2, 3 }, copy.triangles);
+                Assert.AreEqual(4, copy.vertexCount);
+                CollectionAssert.AreEqual(new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up }, copy.uv);
+            }
+            finally { Object.DestroyImmediate(source); if (copy) Object.DestroyImmediate(copy); }
+        }
+#endif
+
         [Test]
         public void MirroredBakeRewindsQuadsAsQuads()
         {

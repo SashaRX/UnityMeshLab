@@ -92,7 +92,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 dst.subMeshCount = meshData.subMeshCount;
                 for (int sub = 0; sub < meshData.subMeshCount; ++sub)
-                    dst.SetIndices(ReadIndices(meshData, sub), meshData.GetSubMesh(sub).topology, sub, calculateBounds: false);
+                    dst.SetIndices(ReadIndices(src, meshData, sub), meshData.GetSubMesh(sub).topology, sub, calculateBounds: false);
             }
             if (src.isReadable) dst.bindposes = src.bindposes;
             dst.bounds = src.bounds;
@@ -278,7 +278,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 dst.subMeshCount = md.subMeshCount;
                 for (int s = 0; s < md.subMeshCount; s++)
-                    dst.SetIndices(ReadIndices(md, s), md.GetSubMesh(s).topology, s, calculateBounds: false);
+                    dst.SetIndices(ReadIndices(src, md, s), md.GetSubMesh(s).topology, s, calculateBounds: false);
             }
             dst.bounds = src.bounds;
             return dst;
@@ -351,10 +351,13 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static int[] ReadIndices(Mesh.MeshData md, int submesh)
+        static int[] ReadIndices(Mesh mesh, Mesh.MeshData md, int submesh)
         {
-            var sub = md.GetSubMesh(submesh);
-            using (var buffer = new NativeArray<int>(sub.indexCount, Allocator.Temp, NativeArrayOptions.UninitializedMemory))
+            // MeshData's descriptor includes backing ranges of every internal Mesh LOD
+            // in Unity 6000.2. GetIndices fills only the active range reported by Mesh;
+            // copying the descriptor-sized tail would emit uninitialized indices.
+            int count = checked((int)mesh.GetIndexCount(submesh));
+            using (var buffer = new NativeArray<int>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory))
             {
                 md.GetIndices(buffer, submesh, true);
                 return buffer.ToArray();

@@ -3,6 +3,48 @@
 > **Обновлять этот документ при каждом эксперименте с transfer pipeline.**
 > Последнее обновление: v1.1.34 (2026-10-09)
 
+## Park_Bench_A: internal Mesh LOD indices и отклонённые matching variants — 2026-10-09
+
+- Продолжение PR #225, baseline `2c40343`. Проверены две разные FBX версии:
+  actual prefab использует Packed (LOD0/1/2: 3832/1498/230 faces), Separate
+  содержит 9110/2306/1498 faces и внутренние Mesh LOD ranges. Их albedo textures
+  квадратные: 4096×4096 и 2048×2048. Original FBX/importer meta не менялись.
+- Separate падал при native UV packing после создания working copy. Для LOD0
+  MeshData descriptor сообщает 36561 indices, но Mesh.GetIndexCount — 27330.
+  MeshData.GetIndices заполняет только 27330: sentinel probe подтвердил 9231
+  нетронутый элемент в хвосте. У LOD1/2 хвост содержит 2553/1533 элемента.
+  Uninitialized tail попадал в SetIndices. ReadIndices теперь выделяет массив
+  по active Mesh.GetIndexCount; обычный и raw-UV copy используют один helper.
+  Native binaries, импорт и исходные UV не меняются.
+- Два UInt16/UInt32 regression fixtures воспроизвели пустую/невалидную topology
+  до исправления. Итоговый subset: **125/125 EditMode tests**, без skips,
+  Unity 6000.2.6f2 / DX11. Обе reference C# сборки, identifier/dependency checks
+  проходят. По два async Full Pipeline для Packed/Separate с Checker на
+  LOD1/2 завершились; missing render meshes = 0 во время updates и после
+  смены preview mode.
+- Controlled preparation: weld on, pre-optimize off, manual 512, square metric,
+  symmetry off/adaptive, ARAP off/on. Separate targets чистые в восьми случаях
+  (zero degenerate faces / positive-area overlaps). Это не утверждение о
+  неизвестных UI auto-tune settings. Packed остаётся дефектным: с ARAP source
+  имеет 0 degenerates / overlaps, но grouped LOD1 — 0 / 4, LOD2 — 5 / 52.
+- Проверены и отклонены matching variants: nearest-face normal вместо average
+  normal для curved fragment, ограничение merged rescore по 3D distance и
+  дополнительный UV0 coverage gate. Analytic curved fixture подтверждает
+  ошибочный source override, но на реальном Packed эти изменения увеличивают
+  summed overlap area с ≈0.00535 до ≈0.0255; rescore variant также увеличивает
+  degenerate faces с 5 до 9. Они **не включены** в итоговый patch. Ни один из
+  шести benchmark methods не даёт чистый Packed LOD2. Требуется согласованное
+  исправление matching и проекции, а не смена метода по одному счётчику.
+- Старые CollapseDiag строки `uv2 aspect vs 3D bbox` не доказывают sliver:
+  bbox-проверка уже заменена triangle anisotropy в текущей ветке. Реальные
+  overlaps/degenerates подтверждены полным независимым scan. [Данные и
+  ограничения](MODERN_TRANSFER_REPRO.md#park_bench_a-internal-mesh-lods-and-packed-quality-limits).
+- Итоговый frozen regression corpus: Park 4, Modern 16, Shelf 12, Train 8
+  пар × 6 методов = **240 rows**, по два повторения. Все outputs deterministic,
+  inputs unchanged; 40 grouped references совпадают. Park hashes/mappings
+  совпадают с baseline во всех 24 rows. У пяти Train nearest rows overlap scan
+  неполный (lower bounds); ни один Park scan не исчерпал budget.
+
 ## TrainCarriage: pack budget и выбор source для instance — 2026-10-09
 
 - Продолжение PR #225, baseline `ca2daf0`. Присланные stack traces относятся

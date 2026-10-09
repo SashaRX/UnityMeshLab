@@ -280,3 +280,78 @@ The complete 32-pair capture is in the isolated project's
 selects the eight comparison pairs. Source FBX/copies and generated reports are
 not committed. Authored material/texture dependencies were not copied; these are
 controlled runs, not an exact replay of the supplied historical scene settings.
+## Park_Bench_A: internal Mesh LODs and Packed quality limits
+
+Baseline: `2c40343`, PR #225. Two original FBX/importer pairs from the E: project
+were copied byte-for-byte into the owned Unity 6000.2.6f2 / DX11 project:
+
+| Variant | Original asset folder | LOD0 / LOD1 / LOD2 faces | Albedo size |
+|---|---|---:|---:|
+| Packed | `TestLevel_Packed` | 3832 / 1498 / 230 | 4096×4096 |
+| Separate | `TestLevel_Separate/Park_Bench` | 9110 / 2306 / 1498 | 2048×2048 |
+
+The actual `Park_Bench_A.prefab` references Packed GUID
+`666fbd7714e8b9145ae40e890e5d113a`. The variants are distinct inputs; a clean
+Separate result does not certify the user's Packed model. Their original SHA-256
+values are `CCCDA3A61BDE738CB37E9B6B4573E692D90AF4FE2A42C14D4F6DFB19ECD82501`
+(Packed) and `86017128553EF770C6A104932E70FF63D74E0D300E91286D21DC5B77374F1E6C`
+(Separate).
+
+Separate exposed a mesh-copy bug before transfer: `MeshData.GetSubMesh` includes
+the backing index ranges of internal Mesh LODs, but `MeshData.GetIndices` writes
+only the active range. Allocating with descriptor.indexCount copied uninitialized
+tail entries into working meshes, emitted SetIndices errors and crashed native
+UV packing. For its three render meshes the untouched sentinel tails contain
+9231, 2553 and 1533 indices respectively. Allocating with `Mesh.GetIndexCount`
+fixes both ordinary and raw-UV copies. Two unreadable UInt16/UInt32 fixtures fail
+before this change and pass afterward; no native binaries or importer settings
+are edited.
+
+The affected subset passes **125/125 EditMode tests**, without failures/skips;
+both reference C# variants and identifier/dependency guards pass. Two asynchronous
+Full Pipeline runs per variant at manual 512, per-mesh packing and active Checker
+cover LOD1/2 and repeated repack/transfer. Missing renderer meshes remain zero
+through Editor updates and preview mode changes. These probes also capture the
+actual pipeline inputs independently of the controlled preparation below.
+
+Controlled imported preparation uses weld on, vertex pre-optimization off,
+manual 512 and square texture metric, with symmetry off/adaptive and ARAP off/on:
+eight settings pairs / sixteen target cases. Separate's eight target cases have
+zero degenerate faces and zero positive-area overlaps. Packed remains invalid:
+
+| Packed with ARAP | Degenerate faces | Overlap pairs | Area-weighted anisotropy |
+|---|---:|---:|---:|
+| Prepared source | 0 | 0 | 1.098 |
+| Grouped LOD1 | 0 | 4 | 1.104 |
+| Grouped LOD2 | 5 | 52 | 3238.508 |
+
+ARAP repairs the source's two collapsed triangles, but target correspondence and
+projection still fail. Frozen replay of four Packed inputs with all six methods
+is complete (24 rows, two repeats); none yields a clean LOD2. Global UV0/surface
+nearest methods introduce thousands of intersections. Old bbox-based CollapseDiag
+messages are not the quality measurement: independent triangle anisotropy and
+positive-area overlap scans establish these remaining defects.
+
+Three matching experiments were rejected before publication. A nearest-face
+normal gate fixes an analytic curved-fragment source override, but changes Packed
+LOD2 from 5 degenerates / 52 pairs to 4 / 55 and increases summed pair area from
+0.005352 to 0.025476. Adding UV0 coverage does not prevent the regression.
+Restricting merged rescore by source surface distance produces 9 degenerates /
+45 pairs, still with area 0.025293. Those source/test changes were removed; no
+known-worse matching variant is included in this patch.
+
+Local evidence lives in `_results~/park-bench-20261009/`: `project-before.json`,
+the sentinel and actual-count mesh probes, baseline/final EditMode XML, prepared
+and frozen benchmark configs/reports, `full-pipeline.log`, and rejected patches.
+Final preparation is `prepared-publish/transfer_compare_20261009_034610_326_3b71afba`;
+all eight Packed UV2/mapping hashes match baseline. Final frozen replay is
+`frozen-publish/transfer_compare_20261009_034732_618_e1bf775e`: 40 Park/Modern/Shelf/
+Train pairs × six methods = **240 rows**, two repeats, deterministic outputs,
+unchanged inputs, no row errors, and all 40 grouped references matching. All
+24 Park outputs/mappings match baseline. Five Train nearest-method overlap scans
+are incomplete; their counts are lower bounds. Every Park scan is complete.
+The owned project's `BenchmarkReports/transfer_20261009_034547_988_a47f1f2d` and
+`transfer_20261009_034549_921_0b8b001b` contain the full-pipeline Packed/Separate
+captures. Frozen results are regression baselines, not independent correspondence
+truth. Exact failing UI material/auto-tune settings remain outside the controlled
+preparation; the working scene, original FBX and importer metadata are preserved.
