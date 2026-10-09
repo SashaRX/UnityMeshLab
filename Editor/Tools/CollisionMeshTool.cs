@@ -39,6 +39,16 @@ namespace SashaRX.UnityMeshLab
         int   convexFillMode        = 0; // 0=FloodFill, 1=SurfaceOnly, 2=RaycastFill
         int   convexMinEdgeLength   = 2;
         bool  convexFindBestPlane   = false;
+        float convexVolumeError     = 1f;
+        bool  convexGroupParts;
+        float convexPartGap         = .02f;
+        float convexPartAngle       = 50f;
+        bool convexPrepareElements;
+        float convexBoxFill = .9f;
+        float convexElementFit = .02f;
+        int convexElementResolution = 32;
+        int convexElementTriangles = 64;
+        bool showElementSettings, showElementDetails;
 
         // ── Results ──
         CollisionMode generatedMode; // mode used during last Generate (for Apply)
@@ -55,6 +65,8 @@ namespace SashaRX.UnityMeshLab
             public int sourceTriCount;
             public int resultTriCount;
             public int hullCount;
+            public int partGroupCount;
+            public List<CollisionMeshBuilder.ElementReport> elementReports;
             public float resultError;
             public Transform sourceTransform; // renderer transform for correct placement
         }
@@ -151,9 +163,25 @@ namespace SashaRX.UnityMeshLab
                     else
                     {
                         EditorGUILayout.LabelField(
-                            $"  {r.meshName}: {r.hullCount} hulls, {r.resultTriCount:N0} total tris",
+                            $"  {r.meshName}: {r.partGroupCount} groups, {r.hullCount} hulls, {r.resultTriCount:N0} tris",
                             EditorStyles.miniLabel);
+                        if (r.elementReports != null && r.elementReports.Count > 0)
+                            EditorGUILayout.LabelField("  " + ElementSummary(r.elementReports), EditorStyles.miniLabel);
                     }
+                }
+                if (lastResults.Any(r => r.elementReports != null && r.elementReports.Count > 0))
+                {
+                    showElementDetails = EditorGUILayout.Foldout(showElementDetails, "Element Analysis", true);
+                    if (showElementDetails)
+                        foreach (var r in lastResults)
+                            if (r.elementReports != null)
+                                foreach (var element in r.elementReports)
+                                {
+                                    string fill = element.boxFill >= 0 ? $"{element.boxFill:P0}" : "open/invalid";
+                                    EditorGUILayout.LabelField(new GUIContent(
+                                        $"  G{element.groupIndex} E{element.elementIndex}: fill {fill}, {element.preparation}, {element.sourceTriangles} -> {element.preparedTriangles} tris",
+                                        $"Principal size: {element.principalSize}. Sampled fit error: {element.sampledError:P2}. {element.detail}"), EditorStyles.miniLabel);
+                                }
                 }
 
                 EditorGUILayout.Space(4);
@@ -225,6 +253,38 @@ namespace SashaRX.UnityMeshLab
         void DrawConvexSettings()
         {
             EditorGUILayout.HelpBox("For dynamic/kinematic objects. Creates compound convex MeshColliders.", MessageType.None);
+            EditorGUILayout.BeginHorizontal();
+            if (GUILayout.Button(new GUIContent("Detailed", "Restore the original whole-mesh decomposition settings.")))
+                ApplyConvexPreset(CollisionMeshBuilder.ConvexDecompSettings.Default);
+            if (GUILayout.Button(new GUIContent("Coarse Parts", "Group nearby similarly oriented pieces, close small gaps, and preserve independent structures. Start with 8 hulls and 16 vertices per hull.")))
+                ApplyConvexPreset(CollisionMeshBuilder.ConvexDecompSettings.CoarseParts);
+            EditorGUILayout.EndHorizontal();
+            convexGroupParts = EditorGUILayout.Toggle(
+                new GUIContent("Group Nearby Parts", "Decompose groups independently. Principal planes keep differently oriented structures separate; the hull budget is shared between all groups."), convexGroupParts);
+            if (convexGroupParts)
+            {
+                convexPartGap = EditorGUILayout.Slider(new GUIContent("Part Gap (%)", "Join nearby disconnected pieces within this percentage of the source bounds diagonal. 0 keeps each disconnected piece separate."), convexPartGap * 100f, 0f, 10f) / 100f;
+                convexPartAngle = EditorGUILayout.Slider(new GUIContent("Part Angle", "Maximum angle between the principal planes of neighboring pieces. Higher values can join structures across corners."), convexPartAngle, 0f, 90f);
+            }
+            bool preparationAvailable = ElementPreparationAvailable();
+            if (!preparationAvailable) convexPrepareElements = false;
+            using (new EditorGUI.DisabledScope(!preparationAvailable))
+                convexPrepareElements = EditorGUILayout.Toggle(new GUIContent("Prepare Elements", "Analyze oriented bounds and closed-volume fill. Fit boxes to dense parts; remesh and decimate other elements. Open surfaces may be closed; reject invalid topology or excessive sampled surface distance."), convexPrepareElements);
+            if (!preparationAvailable)
+                EditorGUILayout.HelpBox("Enable Remesh and Simplification modules in Project Settings to prepare elements.", MessageType.Info);
+            if (convexPrepareElements)
+            {
+                showElementSettings = EditorGUILayout.Foldout(showElementSettings, "Preparation Settings", true);
+                if (showElementSettings)
+                {
+                    convexBoxFill = EditorGUILayout.Slider(new GUIContent("Box Fill (%)", "Minimum occupied volume / oriented bbox volume for a box candidate. Open or invalid source volumes cannot use a box."), convexBoxFill * 100, 50, 100) / 100;
+                    convexElementFit = EditorGUILayout.Slider(new GUIContent("Element Fit (%)", "Maximum sampled distance in both directions, relative to each element's bounds diagonal. Independent of the final V-HACD volume error."), convexElementFit * 100, .01f, 10) / 100;
+                    convexElementResolution = EditorGUILayout.IntSlider("Element Voxels", convexElementResolution, 16, 256);
+                    convexElementTriangles = EditorGUILayout.IntSlider(new GUIContent("Element Tris", "Triangle target before convex decomposition, per element. Geometry-only decimation preserves topology; this is not the final convex budget."), convexElementTriangles, 12, 4096);
+                }
+            }
+            convexVolumeError = EditorGUILayout.Slider(
+                new GUIContent("Volume Error (%)", "Allowed difference between hull and occupied voxel volume, relative to occupied volume. Higher values stop splitting earlier and close more detail; this is not a minimum hull size."), convexVolumeError, .1f, 100f);
             convexMaxHulls = EditorGUILayout.IntSlider(
                 new GUIContent("Max Hulls", "Maximum number of convex hulls to produce. More hulls = better shape approximation, higher cost."),
                 convexMaxHulls, 1, 64);
@@ -256,6 +316,27 @@ namespace SashaRX.UnityMeshLab
 
         // ── Generate ──
 
+        void ApplyConvexPreset(CollisionMeshBuilder.ConvexDecompSettings settings)
+        {
+            convexMaxHulls = settings.maxHulls;
+            convexResolution = settings.resolution;
+            convexMaxVertsPerHull = settings.maxVertsPerHull;
+            convexVolumeError = settings.minVolumePerHull;
+            convexMaxRecursionDepth = settings.maxRecursionDepth;
+            convexShrinkWrap = settings.shrinkWrap;
+            convexFillMode = settings.fillMode;
+            convexMinEdgeLength = settings.minEdgeLength;
+            convexFindBestPlane = settings.findBestPlane;
+            convexGroupParts = settings.groupNearbyParts;
+            convexPartGap = settings.partMergeDistance;
+            convexPartAngle = settings.partMergeAngle;
+            convexPrepareElements = settings.prepareElements && ElementPreparationAvailable();
+            convexBoxFill = settings.boxFillThreshold;
+            convexElementFit = settings.elementFitError;
+            convexElementResolution = settings.elementRemeshResolution;
+            convexElementTriangles = settings.elementTargetTriangles;
+        }
+
         void ExecuteGenerate()
         {
             DestroyGeneratedMeshes();
@@ -283,7 +364,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             if (lastResults.Count > 0)
-                UvtLog.Info($"Collision generation complete: {lastResults.Count} mesh(es) processed.");
+                UvtLog.Info($"Collision generation complete: {lastResults.Count} source mesh(es), {generatedMeshes.Count} collider mesh(es), {lastResults.Sum(r => r.resultTriCount):N0} triangles.");
 
             requestRepaint?.Invoke();
             SceneView.RepaintAll();
@@ -321,12 +402,20 @@ namespace SashaRX.UnityMeshLab
                 maxHulls          = convexMaxHulls,
                 resolution        = convexResolution,
                 maxVertsPerHull   = convexMaxVertsPerHull,
-                minVolumePerHull  = 1f,
+                minVolumePerHull  = convexVolumeError,
                 maxRecursionDepth = convexMaxRecursionDepth,
                 shrinkWrap        = convexShrinkWrap,
                 fillMode          = convexFillMode,
                 minEdgeLength     = convexMinEdgeLength,
-                findBestPlane     = convexFindBestPlane
+                findBestPlane     = convexFindBestPlane,
+                groupNearbyParts  = convexGroupParts,
+                partMergeDistance = convexPartGap,
+                partMergeAngle    = convexPartAngle,
+                prepareElements   = convexPrepareElements && ElementPreparationAvailable(),
+                boxFillThreshold  = convexBoxFill,
+                elementFitError   = convexElementFit,
+                elementRemeshResolution = convexElementResolution,
+                elementTargetTriangles = convexElementTriangles
             };
 
             var result = CollisionMeshBuilder.BuildConvexDecomposition(sourceMesh, settings);
@@ -337,6 +426,8 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
 
+            if (result.elementReports != null && result.elementReports.Count > 0)
+                UvtLog.Info($"Collision elements for {sourceMesh.name}: {ElementSummary(result.elementReports)}");
             int totalTris = 0;
             foreach (var hull in result.hulls)
             {
@@ -350,9 +441,26 @@ namespace SashaRX.UnityMeshLab
                 sourceTriCount  = result.sourceTriCount,
                 resultTriCount  = totalTris,
                 hullCount       = result.hulls.Count,
+                partGroupCount  = result.partGroupCount,
+                elementReports  = result.elementReports,
                 sourceTransform = entry.renderer != null ? entry.renderer.transform : null
             });
         }
+
+        static bool ElementPreparationAvailable()
+        {
+            // Preparation is an optional remesh capability; disabling it must not
+            // remove the basic Collision tab or bypass the project's module choices.
+            var disabled = MeshLabProjectSettings.Instance.disabledLibraryIds;
+            return !disabled.Contains(MeshLabLibraries.Remesh) && !disabled.Contains(MeshLabLibraries.Simplification);
+        }
+
+        static string ElementSummary(List<CollisionMeshBuilder.ElementReport> reports) =>
+            $"{reports.Count} elements: {reports.Count(e => e.preparation == CollisionMeshBuilder.ElementPreparation.Box)} box, " +
+            $"{reports.Count(e => e.preparation == CollisionMeshBuilder.ElementPreparation.RemeshDecimate)} remesh, " +
+            $"{reports.Count(e => e.preparation == CollisionMeshBuilder.ElementPreparation.Decimate)} decimate, " +
+            $"{reports.Count(e => e.preparation == CollisionMeshBuilder.ElementPreparation.Source)} original; " +
+            $"{reports.Sum(e => e.sourceTriangles):N0} -> {reports.Sum(e => e.preparedTriangles):N0} input tris";
 
         // ── Apply / Remove ──
 
