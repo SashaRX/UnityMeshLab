@@ -42,32 +42,14 @@ namespace SashaRX.UnityMeshLab
         internal static SourceTextureUvMetric Resolve(Renderer renderer, Texture previewTexture = null, Mesh mesh = null)
         {
             var metric = new SourceTextureUvMetric();
-            if (renderer != null) {
-                if (mesh == null) {
-                    if (renderer is SkinnedMeshRenderer skinned) mesh = skinned.sharedMesh;
-                    else {
-                        var filter = renderer.GetComponent<MeshFilter>();
-                        if (filter) mesh = filter.sharedMesh;
-                    }
-                }
-                var materials = UvToolHub.OriginalPreviewMaterials(renderer);
-                int slots = mesh != null ? Math.Max(mesh.subMeshCount, materials.Length) : materials.Length;
-                for (int slot = 0; slot < slots; ++slot) {
-                    // Extra renderer materials render the last submesh. Empty submeshes contribute no UVs.
-                    if (mesh != null && (mesh.subMeshCount == 0 || mesh.GetIndexCount(Math.Min(slot, mesh.subMeshCount - 1)) == 0)) continue;
-                    var material = slot < materials.Length ? materials[slot] : null;
-                    if (material == null || !metric.Add(material.mainTexture, material.mainTextureScale, material.name))
-                        metric.unresolvedMaterials.Add(material ? material.name : "Missing material at slot " + slot);
-                }
-            }
+            if (renderer != null) metric.CollectTextures(renderer, mesh);
             if (metric.textures.Count == 0 && metric.unresolvedMaterials.Count == 0 && previewTexture != null)
                 metric.Add(previewTexture, Vector2.one, "Preview texture");
             if (metric.textures.Count == 0) return metric;
 
             float aspect = metric.textures[0].aspect;
             metric.conflictingAspects = metric.unresolvedMaterials.Count > 0;
-            foreach (var texture in metric.textures)
-                if (Math.Abs(Math.Log(texture.aspect / aspect)) > 1e-5) metric.conflictingAspects = true;
+            metric.conflictingAspects |= metric.textures.Exists(texture => Math.Abs(Math.Log(texture.aspect / aspect)) > 1e-5);
             if (metric.conflictingAspects) {
                 metric.reason = "Used materials have different or unresolved texture proportions; no single mesh-wide correction is valid.";
                 return metric;
@@ -76,6 +58,26 @@ namespace SashaRX.UnityMeshLab
             metric.uvScale = new Vector2(u, 1f / u);
             metric.reason = "Texture width/height and material tiling define the UV metric before ARAP and packing.";
             return metric;
+        }
+
+        void CollectTextures(Renderer renderer, Mesh mesh)
+        {
+            if (mesh == null) {
+                if (renderer is SkinnedMeshRenderer skinned) mesh = skinned.sharedMesh;
+                else {
+                    var filter = renderer.GetComponent<MeshFilter>();
+                    if (filter) mesh = filter.sharedMesh;
+                }
+            }
+            var materials = UvToolHub.OriginalPreviewMaterials(renderer);
+            int slots = mesh != null ? Math.Max(mesh.subMeshCount, materials.Length) : materials.Length;
+            for (int slot = 0; slot < slots; ++slot) {
+                // Extra renderer materials render the last submesh. Empty submeshes contribute no UVs.
+                if (mesh != null && (mesh.subMeshCount == 0 || mesh.GetIndexCount(Math.Min(slot, mesh.subMeshCount - 1)) == 0)) continue;
+                var material = slot < materials.Length ? materials[slot] : null;
+                if (material == null || !Add(material.mainTexture, material.mainTextureScale, material.name))
+                    unresolvedMaterials.Add(material ? material.name : "Missing material at slot " + slot);
+            }
         }
 
         bool Add(Texture texture, Vector2 tiling, string material)

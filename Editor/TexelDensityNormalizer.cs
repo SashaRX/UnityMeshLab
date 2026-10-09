@@ -241,24 +241,28 @@ namespace SashaRX.UnityMeshLab
                 var shell = shells[si];
                 if (shell.faceIndices == null) continue;
                 foreach (int f in shell.faceIndices)
-                {
-                    int t = f * 3;
-                    if ((uint)(t + 2) >= (uint)tris.Length) continue;
-                    int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
-                    if ((uint)i0 >= (uint)positions.Length || (uint)i1 >= (uint)positions.Length ||
-                        (uint)i2 >= (uint)positions.Length) continue;
-                    area3D[si] += Vector3.Cross(positions[i1] - positions[i0], positions[i2] - positions[i0]).magnitude * 0.5;
-                    int u0 = i0 * 2, u1 = i1 * 2, u2 = i2 * 2;
-                    if ((uint)(u0 + 1) >= (uint)uvFlat.Length || (uint)(u1 + 1) >= (uint)uvFlat.Length ||
-                        (uint)(u2 + 1) >= (uint)uvFlat.Length) continue;
-                    double ax = uvFlat[u0], ay = uvFlat[u0 + 1];
-                    double bx = uvFlat[u1], by = uvFlat[u1 + 1];
-                    double cx = uvFlat[u2], cy = uvFlat[u2 + 1];
-                    areaUV[si] += Math.Abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) * 0.5;
-                }
+                    MeasureFaceAreas(f, uvFlat, tris, positions, ref area3D[si], ref areaUV[si]);
                 sum3D += area3D[si];
                 sumUV += areaUV[si];
             }
+        }
+
+        static void MeasureFaceAreas(int f, float[] uvFlat, int[] tris, Vector3[] positions,
+            ref double area3D, ref double areaUV)
+        {
+            int t = f * 3;
+            if ((uint)(t + 2) >= (uint)tris.Length) return;
+            int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
+            if ((uint)i0 >= (uint)positions.Length || (uint)i1 >= (uint)positions.Length ||
+                (uint)i2 >= (uint)positions.Length) return;
+            area3D += Vector3.Cross(positions[i1] - positions[i0], positions[i2] - positions[i0]).magnitude * 0.5;
+            int u0 = i0 * 2, u1 = i1 * 2, u2 = i2 * 2;
+            if ((uint)(u0 + 1) >= (uint)uvFlat.Length || (uint)(u1 + 1) >= (uint)uvFlat.Length ||
+                (uint)(u2 + 1) >= (uint)uvFlat.Length) return;
+            double ax = uvFlat[u0], ay = uvFlat[u0 + 1];
+            double bx = uvFlat[u1], by = uvFlat[u1 + 1];
+            double cx = uvFlat[u2], cy = uvFlat[u2 + 1];
+            areaUV += Math.Abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) * 0.5;
         }
     }
 }

@@ -59,36 +59,46 @@ namespace SashaRX.UnityMeshLab
                 var colors = new Color[count];
                 for (int i = 0; i < count; ++i) { var value = ReadVector4(reader); colors[i] = new Color(value.x, value.y, value.z, value.w); }
                 if (count > 0) mesh.colors = colors;
-                var scalarChannels = new Dictionary<int, List<Vector4>>();
-                for (int channel = 0; channel < 8; ++channel) {
-                    int dimension = Count(reader, 4); count = Count(reader, MaxVertices);
-                    if (count == 0 && dimension == 0) continue;
-                    if (count != mesh.vertexCount || dimension < 1) throw new InvalidDataException("Invalid UV channel size.");
-                    var values = new List<Vector4>(count);
-                    for (int i = 0; i < count; ++i) values.Add(ReadVector4(reader));
-                    if (dimension == 1) scalarChannels.Add(channel, values);
-                    else if (dimension == 2) mesh.SetUVs(channel, values.ConvertAll(value => new Vector2(value.x, value.y)));
-                    else if (dimension == 3) mesh.SetUVs(channel, values.ConvertAll(value => new Vector3(value.x, value.y, value.z)));
-                    else mesh.SetUVs(channel, values);
-                }
-                if (scalarChannels.Count > 0) RestoreScalarChannels(mesh, scalarChannels);
+                ReadUvChannels(reader, mesh);
                 mesh.subMeshCount = Count(reader, 65536);
-                for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
-                    var topology = (MeshTopology)reader.ReadInt32();
-                    if (!Enum.IsDefined(typeof(MeshTopology), topology)) throw new InvalidDataException("Invalid mesh topology.");
-                    count = Count(reader, MaxIndices); var indices = new int[count];
-                    for (int i = 0; i < count; ++i) {
-                        int index = reader.ReadInt32();
-                        if (index < 0 || index >= mesh.vertexCount) throw new InvalidDataException("Mesh index is outside the vertex buffer.");
-                        indices[i] = index;
-                    }
-                    mesh.SetIndices(indices, topology, sub);
-                }
+                ReadSubMeshes(reader, mesh);
                 if (stream.Position != stream.Length) throw new InvalidDataException("Unexpected snapshot trailing data.");
                 mesh.RecalculateBounds();
                 return mesh;
             }
             catch { UnityEngine.Object.DestroyImmediate(mesh); throw; }
+        }
+
+        static void ReadUvChannels(BinaryReader reader, Mesh mesh)
+        {
+            var scalarChannels = new Dictionary<int, List<Vector4>>();
+            for (int channel = 0; channel < 8; ++channel) {
+                int dimension = Count(reader, 4), count = Count(reader, MaxVertices);
+                if (count == 0 && dimension == 0) continue;
+                if (count != mesh.vertexCount || dimension < 1) throw new InvalidDataException("Invalid UV channel size.");
+                var values = new List<Vector4>(count);
+                for (int i = 0; i < count; ++i) values.Add(ReadVector4(reader));
+                if (dimension == 1) scalarChannels.Add(channel, values);
+                else if (dimension == 2) mesh.SetUVs(channel, values.ConvertAll(value => new Vector2(value.x, value.y)));
+                else if (dimension == 3) mesh.SetUVs(channel, values.ConvertAll(value => new Vector3(value.x, value.y, value.z)));
+                else mesh.SetUVs(channel, values);
+            }
+            if (scalarChannels.Count > 0) RestoreScalarChannels(mesh, scalarChannels);
+        }
+
+        static void ReadSubMeshes(BinaryReader reader, Mesh mesh)
+        {
+            for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
+                var topology = (MeshTopology)reader.ReadInt32();
+                if (!Enum.IsDefined(typeof(MeshTopology), topology)) throw new InvalidDataException("Invalid mesh topology.");
+                int count = Count(reader, MaxIndices); var indices = new int[count];
+                for (int i = 0; i < count; ++i) {
+                    int index = reader.ReadInt32();
+                    if (index < 0 || index >= mesh.vertexCount) throw new InvalidDataException("Mesh index is outside the vertex buffer.");
+                    indices[i] = index;
+                }
+                mesh.SetIndices(indices, topology, sub);
+            }
         }
 
         // Snapshot attributes are float vectors. A single interleaved float buffer

@@ -115,28 +115,33 @@ namespace SashaRX.UnityMeshLab
                 stage.settings.Add(new Setting { owner = "context", name = "PipeSettings", value = JsonUtility.ToJson(context.PipeSettings) });
                 foreach (var entry in context.MeshEntries) {
                     if (!entry.include || !entry.originalMesh) continue;
-                    var metric = SourceTextureUvMetric.Resolve(entry.renderer, entry.previewTexture, entry.originalMesh);
-                    var matrix = entry.renderer ? entry.renderer.localToWorldMatrix : Matrix4x4.identity;
-                    var state = new MeshState { renderer = entry.renderer ? entry.renderer.name : entry.originalMesh.name,
-                        group = entry.meshGroupKey, lod = entry.lodIndex, importedAsset = AssetDatabase.GetAssetPath(entry.fbxMesh),
-                        working = StoreMesh(entry.originalMesh), repacked = StoreMesh(entry.repackedMesh), transferred = StoreMesh(entry.transferredMesh),
-                        welded = entry.wasWelded, edgeWelded = entry.wasEdgeWelded, symmetrySplit = entry.wasSymmetrySplit,
-                        atlasWidth = entry.repackedAtlasWidth, atlasHeight = entry.repackedAtlasHeight,
-                        nativePackedWidth = entry.repackedMesh ? entry.diagnosticPackedAtlasWidth : 0,
-                        nativePackedHeight = entry.repackedMesh ? entry.diagnosticPackedAtlasHeight : 0,
-                        localToWorld = matrix, textureMetric = metric };
-                    Mesh readable = MeshAccess.ReadableCopy(entry.originalMesh);
-                    try {
-                        state.uv0 = TransferUvQuality.Measure(readable, readable.uv, Vector2.one, matrix);
-                        state.textureUv0 = TransferUvQuality.Measure(readable, readable.uv, metric.uvScale, matrix);
-                    }
-                    finally { UnityEngine.Object.DestroyImmediate(readable); }
-                    var output = entry.transferredMesh ? entry.transferredMesh : entry.repackedMesh;
-                    if (output) state.uv2 = TransferUvQuality.Measure(output, output.uv2, Vector2.one, matrix);
-                    stage.meshes.Add(state);
+                    stage.meshes.Add(CaptureMeshState(entry));
                 }
                 RecordStage(stage);
             });
+        }
+
+        MeshState CaptureMeshState(MeshEntry entry)
+        {
+            var metric = SourceTextureUvMetric.Resolve(entry.renderer, entry.previewTexture, entry.originalMesh);
+            var matrix = entry.renderer ? entry.renderer.localToWorldMatrix : Matrix4x4.identity;
+            var state = new MeshState { renderer = entry.renderer ? entry.renderer.name : entry.originalMesh.name,
+                group = entry.meshGroupKey, lod = entry.lodIndex, importedAsset = AssetDatabase.GetAssetPath(entry.fbxMesh),
+                working = StoreMesh(entry.originalMesh), repacked = StoreMesh(entry.repackedMesh), transferred = StoreMesh(entry.transferredMesh),
+                welded = entry.wasWelded, edgeWelded = entry.wasEdgeWelded, symmetrySplit = entry.wasSymmetrySplit,
+                atlasWidth = entry.repackedAtlasWidth, atlasHeight = entry.repackedAtlasHeight,
+                nativePackedWidth = entry.repackedMesh ? entry.diagnosticPackedAtlasWidth : 0,
+                nativePackedHeight = entry.repackedMesh ? entry.diagnosticPackedAtlasHeight : 0,
+                localToWorld = matrix, textureMetric = metric };
+            Mesh readable = MeshAccess.ReadableCopy(entry.originalMesh);
+            try {
+                state.uv0 = TransferUvQuality.Measure(readable, readable.uv, Vector2.one, matrix);
+                state.textureUv0 = TransferUvQuality.Measure(readable, readable.uv, metric.uvScale, matrix);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(readable); }
+            var output = entry.transferredMesh ? entry.transferredMesh : entry.repackedMesh;
+            if (output) state.uv2 = TransferUvQuality.Measure(output, output.uv2, Vector2.one, matrix);
+            return state;
         }
 
         internal void RecordStage(Stage stage)
@@ -189,7 +194,9 @@ namespace SashaRX.UnityMeshLab
 
         internal void Finish(bool complete)
         {
-            Data.status = failed ? "capture-failed" : complete ? "complete" : "aborted";
+            if (failed) Data.status = "capture-failed";
+            else if (complete) Data.status = "complete";
+            else Data.status = "aborted";
             try { Save(); }
             catch (Exception error) {
                 failed = true; Data.status = "capture-failed"; Data.error = error.ToString();

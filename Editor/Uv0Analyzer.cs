@@ -1157,15 +1157,7 @@ namespace SashaRX.UnityMeshLab
                 if (w == 0f || float.IsNaN(w)) continue;
                 int sign = w > 0f ? 1 : -1;
 
-                if (!rootSign.TryGetValue(root, out int existing))
-                {
-                    float rootW = srcTan[root].w;
-                    if (rootW != 0f && !float.IsNaN(rootW))
-                        rootSign[root] = rootW > 0f ? 1 : -1;
-                    else
-                        rootSign[root] = sign;
-                    existing = rootSign[root];
-                }
+                int existing = RootTangentSign(root, sign, srcTan, rootSign);
 
                 if (existing != sign)
                 {
@@ -1177,6 +1169,20 @@ namespace SashaRX.UnityMeshLab
             if (conflictVerts > 0)
                 UvtLog.Warn($"[TBN] {operation} '{sourceMesh.name}': merged {conflictVerts} vertices with opposing tangent.w handedness " +
                             $"(first conflict at root vertex {firstConflictRoot}) — normal map shading may flip across the merged seam");
+        }
+
+        static int RootTangentSign(int root, int sign, Vector4[] tangents, Dictionary<int, int> rootSign)
+        {
+            if (!rootSign.TryGetValue(root, out int existing))
+            {
+                float rootW = tangents[root].w;
+                if (rootW != 0f && !float.IsNaN(rootW))
+                    rootSign[root] = rootW > 0f ? 1 : -1;
+                else
+                    rootSign[root] = sign;
+                existing = rootSign[root];
+            }
+            return existing;
         }
 
         static void AddEdge(Dictionary<long, List<(int vA, int vB)>> edgeMap,

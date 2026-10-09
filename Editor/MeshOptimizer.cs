@@ -324,42 +324,8 @@ namespace SashaRX.UnityMeshLab
             var triangles = new List<int[]>();
             for (int submesh = 0; submesh < mesh.subMeshCount; ++submesh) {
                 var indices = mesh.GetTriangles(submesh);
-                if (indices.Length == 0) { triangles.Add(indices); continue; }
-                var localVertices = new Dictionary<int, int>();
-                foreach (int index in indices)
-                    if (!localVertices.ContainsKey(index)) localVertices.Add(index, localVertices.Count);
-                if (!TryGetPackedByteCount(localVertices.Count, stride, out int byteCount)) {
-                    result.error = "Submesh exceeds UV pre-optimization vertex budget";
-                    return result;
-                }
-                var packed = new byte[byteCount];
-                PackVertexIdentities(packed, positions, localVertices);
-                var localIndices = new uint[indices.Length];
-                for (int i = 0; i < indices.Length; ++i) localIndices[i] = (uint)localVertices[indices[i]];
-                var output = new byte[byteCount]; var outputIndices = new uint[indices.Length];
-                int error = MeshoptNative.meshoptOptimize(packed, (uint)localVertices.Count, stride, stride,
-                    localIndices, (uint)localIndices.Length, 1.05f, output, outputIndices, out uint count);
-                if (error != 0 || count != (uint)localVertices.Count) {
-                    result.error = $"UV triangle ordering failed on submesh {submesh} (error {error}, vertices {count})";
-                    return result;
-                }
-                var originalIndices = new int[count];
-                for (int i = 0; i < originalIndices.Length; ++i) {
-                    uint original = System.BitConverter.ToUInt32(output, i * stride + 12);
-                    if (original >= positions.Length || !localVertices.ContainsKey((int)original)) {
-                        result.error = "UV triangle ordering returned an invalid vertex identity";
-                        return result;
-                    }
-                    originalIndices[i] = (int)original;
-                }
-                var ordered = new int[indices.Length];
-                for (int i = 0; i < ordered.Length; ++i) {
-                    if (outputIndices[i] >= count) {
-                        result.error = "UV triangle ordering returned an invalid triangle index";
-                        return result;
-                    }
-                    ordered[i] = originalIndices[outputIndices[i]];
-                }
+                var ordered = OptimizeUvSubmesh(indices, positions, submesh, result);
+                if (ordered == null) return result;
                 triangles.Add(ordered);
             }
             // Commit only after every submesh succeeds. Keep all vertex buffers,
@@ -368,6 +334,60 @@ namespace SashaRX.UnityMeshLab
             VertexChannels.RaiseChanged(mesh);
             result.ok = true;
             return result;
+        }
+
+        static int[] OptimizeUvSubmesh(int[] indices, Vector3[] positions, int submesh, OptimizeResult result)
+        {
+            if (indices.Length == 0) return indices;
+            const int stride = 16;
+            var localVertices = new Dictionary<int, int>();
+            foreach (int index in indices)
+                if (!localVertices.ContainsKey(index)) localVertices.Add(index, localVertices.Count);
+            if (!TryGetPackedByteCount(localVertices.Count, stride, out int byteCount)) {
+                result.error = "Submesh exceeds UV pre-optimization vertex budget";
+                return null;
+            }
+            var packed = new byte[byteCount];
+            PackVertexIdentities(packed, positions, localVertices);
+            var localIndices = new uint[indices.Length];
+            for (int i = 0; i < indices.Length; ++i) localIndices[i] = (uint)localVertices[indices[i]];
+            var output = new byte[byteCount]; var outputIndices = new uint[indices.Length];
+            int error = MeshoptNative.meshoptOptimize(packed, (uint)localVertices.Count, stride, stride,
+                localIndices, (uint)localIndices.Length, 1.05f, output, outputIndices, out uint count);
+            if (error != 0 || count != (uint)localVertices.Count) {
+                result.error = $"UV triangle ordering failed on submesh {submesh} (error {error}, vertices {count})";
+                return null;
+            }
+            var originalIndices = DecodeOriginalIndices(output, count, stride, positions.Length, localVertices, result);
+            return originalIndices == null ? null : DecodeOrderedTriangles(outputIndices, count, originalIndices, result);
+        }
+
+        static int[] DecodeOriginalIndices(byte[] output, uint count, int stride, int vertexCount,
+            Dictionary<int, int> localVertices, OptimizeResult result)
+        {
+            var originalIndices = new int[count];
+            for (int i = 0; i < originalIndices.Length; ++i) {
+                uint original = System.BitConverter.ToUInt32(output, i * stride + 12);
+                if (original >= vertexCount || !localVertices.ContainsKey((int)original)) {
+                    result.error = "UV triangle ordering returned an invalid vertex identity";
+                    return null;
+                }
+                originalIndices[i] = (int)original;
+            }
+            return originalIndices;
+        }
+
+        static int[] DecodeOrderedTriangles(uint[] outputIndices, uint count, int[] originalIndices, OptimizeResult result)
+        {
+            var ordered = new int[outputIndices.Length];
+            for (int i = 0; i < ordered.Length; ++i) {
+                if (outputIndices[i] >= count) {
+                    result.error = "UV triangle ordering returned an invalid triangle index";
+                    return null;
+                }
+                ordered[i] = originalIndices[outputIndices[i]];
+            }
+            return ordered;
         }
 
         static void PackVertexIdentities(byte[] packed, Vector3[] positions, Dictionary<int, int> localVertices)

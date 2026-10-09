@@ -519,15 +519,20 @@ namespace SashaRX.UnityMeshLab
             if (items == null) return bounds;
             foreach (var item in items) {
                 if (!item.mesh) continue;
-                var local = item.mesh.bounds;
-                // Transform the eight corners so a rotated item still fits.
-                for (int c = 0; c < 8; ++c) {
-                    var corner = new Vector3((c & 1) == 0 ? local.min.x : local.max.x, (c & 2) == 0 ? local.min.y : local.max.y, (c & 4) == 0 ? local.min.z : local.max.z);
-                    var world = item.matrix.MultiplyPoint3x4(corner);
-                    if (!any) { bounds = new Bounds(world, Vector3.zero); any = true; } else bounds.Encapsulate(world);
-                }
+                AddItemBounds(item, ref bounds, ref any);
             }
             return bounds;
+        }
+
+        static void AddItemBounds(Item item, ref Bounds bounds, ref bool any)
+        {
+            var local = item.mesh.bounds;
+            // Transform the eight corners so a rotated item still fits.
+            for (int c = 0; c < 8; ++c) {
+                var corner = new Vector3((c & 1) == 0 ? local.min.x : local.max.x, (c & 2) == 0 ? local.min.y : local.max.y, (c & 4) == 0 ? local.min.z : local.max.z);
+                var world = item.matrix.MultiplyPoint3x4(corner);
+                if (!any) { bounds = new Bounds(world, Vector3.zero); any = true; } else bounds.Encapsulate(world);
+            }
         }
 
         // ═══════════════════════════════════════════════════════════

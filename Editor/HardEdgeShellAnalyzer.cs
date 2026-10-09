@@ -150,9 +150,7 @@ namespace SashaRX.UnityMeshLab
                 var compSize = new int[componentCount];
                 foreach (int component in perFace) compSize[component]++;
 
-                int eligible = 0;
-                foreach (int c in compSize)
-                    if (c >= minSubshellFaces) eligible++;
+                int eligible = System.Linq.Enumerable.Count(compSize, c => c >= minSubshellFaces);
 
                 if (eligible >= 2)
                 {

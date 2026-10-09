@@ -1424,22 +1424,29 @@ namespace SashaRX.UnityMeshLab
             foreach (var item in draws)
                 if (item.Item2.renderer == null && item.Item2.previewTexture != null) return item.Item2.previewTexture;
             if (CurrentPreviewMode == PreviewMode.Lightmap)
-            {
-                var sceneLightmaps = lightmaps ?? LightmapSettings.lightmaps;
-                foreach (var item in draws)
-                {
-                    var renderer = item.Item2.renderer;
-                    if (renderer == null) continue;
-                    int lmIdx = renderer.lightmapIndex;
-                    if (lmIdx >= 0 && lmIdx < sceneLightmaps.Length)
-                    {
-                        var lm = sceneLightmaps[lmIdx];
-                        if (lm?.lightmapColor != null) return lm.lightmapColor;
-                    }
-                }
-                return null;
-            }
+                return LightmapBackground(draws, lightmaps ?? LightmapSettings.lightmaps);
             if (ctx.PreviewUvChannel == 1) return null;
+            return MaterialBackground(draws);
+        }
+
+        static Texture LightmapBackground(List<ValueTuple<Mesh, MeshEntry, int>> draws, LightmapData[] sceneLightmaps)
+        {
+            foreach (var item in draws)
+            {
+                var renderer = item.Item2.renderer;
+                if (renderer == null) continue;
+                int lmIdx = renderer.lightmapIndex;
+                if (lmIdx >= 0 && lmIdx < sceneLightmaps.Length)
+                {
+                    var lm = sceneLightmaps[lmIdx];
+                    if (lm?.lightmapColor != null) return lm.lightmapColor;
+                }
+            }
+            return null;
+        }
+
+        static Texture MaterialBackground(List<ValueTuple<Mesh, MeshEntry, int>> draws)
+        {
             foreach (var item in draws)
             {
                 var renderer = item.Item2.renderer;

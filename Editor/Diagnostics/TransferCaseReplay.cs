@@ -40,13 +40,7 @@ namespace SashaRX.UnityMeshLab
             if (manifest == null || (manifest.schema != 1 && manifest.schema != 2) || manifest.pairs == null || manifest.pairs.Count > TransferCaseCapture.MaxPairs)
                 throw new InvalidDataException("Unsupported transfer manifest.");
             string root = file.DirectoryName;
-            int ready = 0;
-            foreach (var pair in manifest.pairs) {
-                if (pair.status != "complete") continue;
-                Verify(root, pair.sourceMesh); Verify(root, pair.targetMesh); Verify(root, pair.outputMesh);
-                if (manifest.schema == 2) Verify(root, pair.details, "details", ".json");
-                ++ready;
-            }
+            int ready = VerifyPairs(root, manifest);
             if (ready == 0) throw new InvalidDataException("This capture has no completed transfer pairs. Arm Capture next run, then run Transfer or Full Pipeline.");
             var report = new Report { capture = file.FullName, capturedStatus = manifest.status, unityVersion = Application.unityVersion,
                 folder = Path.Combine(root, "replay_" + DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture)
@@ -54,17 +48,7 @@ namespace SashaRX.UnityMeshLab
             Directory.CreateDirectory(report.folder);
             UvProgress.Begin("Replay transfer capture", cancelable: true);
             try {
-                foreach (var pair in manifest.pairs) {
-                    if (pair.status != "complete") continue;
-                    if (UvProgress.CancelRequested) break;
-                    UvProgress.Report((float)report.pairs.Count / ready, pair.target);
-                    if (manifest.schema == 2) TransferCaseCapture.RestorePairDetails(root, pair);
-                    var item = await ReplayPair(root, pair, report.folder);
-                    report.pairs.Add(item);
-                    // The next pair does not need the previous capture's large diagnostic arrays.
-                    pair.result = null; pair.trace = null; pair.quality = null; pair.validation = null;
-                    pair.overlapHints = null; pair.matchHints = null;
-                }
+                await ReplayPairs(root, manifest, report, ready);
                 report.complete = report.pairs.Count == ready && !UvProgress.CancelRequested && report.pairs.TrueForAll(pair => string.IsNullOrEmpty(pair.error));
             }
             catch (Exception error) { report.error = error.ToString(); throw; }
@@ -74,6 +58,33 @@ namespace SashaRX.UnityMeshLab
             }
             UvtLog.Info(UvtLog.Category.Benchmark, "[TransferReplay] " + Path.Combine(report.folder, "replay.json"));
             return report;
+        }
+
+        static int VerifyPairs(string root, TransferCaseCapture.Manifest manifest)
+        {
+            int ready = 0;
+            foreach (var pair in manifest.pairs) {
+                if (pair.status != "complete") continue;
+                Verify(root, pair.sourceMesh); Verify(root, pair.targetMesh); Verify(root, pair.outputMesh);
+                if (manifest.schema == 2) Verify(root, pair.details, "details", ".json");
+                ++ready;
+            }
+            return ready;
+        }
+
+        static async Task ReplayPairs(string root, TransferCaseCapture.Manifest manifest, Report report, int ready)
+        {
+            foreach (var pair in manifest.pairs) {
+                if (pair.status != "complete") continue;
+                if (UvProgress.CancelRequested) break;
+                UvProgress.Report((float)report.pairs.Count / ready, pair.target);
+                if (manifest.schema == 2) TransferCaseCapture.RestorePairDetails(root, pair);
+                var item = await ReplayPair(root, pair, report.folder);
+                report.pairs.Add(item);
+                // The next pair does not need the previous capture's large diagnostic arrays.
+                pair.result = null; pair.trace = null; pair.quality = null; pair.validation = null;
+                pair.overlapHints = null; pair.matchHints = null;
+            }
         }
 
         internal static async Task SaveReport(Report report)
@@ -165,8 +176,8 @@ namespace SashaRX.UnityMeshLab
 
         static void ValidateInput(Mesh mesh, bool source)
         {
-            foreach (var vertex in mesh.vertices)
-                if (!Finite(vertex.x) || !Finite(vertex.y) || !Finite(vertex.z)) throw new InvalidDataException("Non-finite mesh position.");
+            if (Array.Exists(mesh.vertices, vertex => !Finite(vertex.x) || !Finite(vertex.y) || !Finite(vertex.z)))
+                throw new InvalidDataException("Non-finite mesh position.");
             var uv = mesh.uv;
             if (uv.Length != mesh.vertexCount) throw new InvalidDataException("Transfer requires full UV0.");
             CheckUv(uv);
@@ -177,7 +188,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
         static void CheckUv(Vector2[] uv)
-        { foreach (var value in uv) if (!Finite(value.x) || !Finite(value.y)) throw new InvalidDataException("Non-finite UV."); }
+        { if (Array.Exists(uv, value => !Finite(value.x) || !Finite(value.y))) throw new InvalidDataException("Non-finite UV."); }
         static bool Finite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
 
         internal static bool SameUvBits(Vector2 a, Vector2 b)

@@ -4289,30 +4289,44 @@ namespace SashaRX.UnityMeshLab
             foreach (int vertex in target.vertexIndices) {
                 Vector3 normal = normals != null && vertex < normals.Length ? normals[vertex] : Vector3.zero;
                 int face = -1; float u = 0, v = 0, w = 0;
-                if (bvh != null) {
-                    var hit = normal.sqrMagnitude > .5f
-                        ? bvh.FindNearestNormalFiltered(positions[vertex], normal, bvhNormals, 0)
-                        : bvh.FindNearest(positions[vertex]);
-                    if (hit.triangleIndex < 0) hit = bvh.FindNearest(positions[vertex]);
-                    if (hit.triangleIndex >= 0) {
-                        face = faceMap[hit.triangleIndex]; u = hit.barycentric.x; v = hit.barycentric.y; w = hit.barycentric.z;
-                    }
-                }
-                else {
-                    float best = float.MaxValue, bestCompatible = float.MaxValue;
-                    int compatible = -1; float cu = 0, cv = 0, cw = 0;
-                    foreach (int f in faces) {
-                        float distance = PointToTri3D(positions[vertex], a[f], b[f], c[f], out float fu, out float fv, out float fw);
-                        if (distance < best) { best = distance; face = f; u = fu; v = fv; w = fw; }
-                        if (Vector3.Dot(normal, faceNormals[f]) >= 0 && distance < bestCompatible) {
-                            bestCompatible = distance; compatible = f; cu = fu; cv = fv; cw = fw;
-                        }
-                    }
-                    if (compatible >= 0) { face = compatible; u = cu; v = cv; w = cw; }
-                }
+                if (bvh != null)
+                    face = FindNearest3DSourceFaceBvh(positions[vertex], normal, bvh, faceMap, bvhNormals, out u, out v, out w);
+                else
+                    face = FindNearest3DSourceFace(positions[vertex], normal, faces, a, b, c, faceNormals, out u, out v, out w);
                 if (face >= 0) result[vertex] = a2[face] * u + b2[face] * v + c2[face] * w;
             }
             return result;
+        }
+
+        static int FindNearest3DSourceFaceBvh(Vector3 position, Vector3 normal, TriangleBvh bvh,
+            int[] faceMap, Vector3[] bvhNormals, out float u, out float v, out float w)
+        {
+            var hit = normal.sqrMagnitude > .5f
+                ? bvh.FindNearestNormalFiltered(position, normal, bvhNormals, 0)
+                : bvh.FindNearest(position);
+            if (hit.triangleIndex < 0) hit = bvh.FindNearest(position);
+            u = v = w = 0;
+            if (hit.triangleIndex < 0) return -1;
+            u = hit.barycentric.x; v = hit.barycentric.y; w = hit.barycentric.z;
+            return faceMap[hit.triangleIndex];
+        }
+
+        static int FindNearest3DSourceFace(Vector3 position, Vector3 normal, List<int> faces,
+            Vector3[] a, Vector3[] b, Vector3[] c, Vector3[] faceNormals, out float u, out float v, out float w)
+        {
+            int face = -1, compatible = -1;
+            float best = float.MaxValue, bestCompatible = float.MaxValue;
+            float cu = 0, cv = 0, cw = 0;
+            u = v = w = 0;
+            foreach (int f in faces) {
+                float distance = PointToTri3D(position, a[f], b[f], c[f], out float fu, out float fv, out float fw);
+                if (distance < best) { best = distance; face = f; u = fu; v = fv; w = fw; }
+                if (Vector3.Dot(normal, faceNormals[f]) >= 0 && distance < bestCompatible) {
+                    bestCompatible = distance; compatible = f; cu = fu; cv = fv; cw = fw;
+                }
+            }
+            if (compatible >= 0) { face = compatible; u = cu; v = cv; w = cw; }
+            return face;
         }
 
         static bool TryAlignDisplacedUv0(UvShell target, UvShell source, Vector2[] uv0, Vector3[] normals,
@@ -4334,21 +4348,35 @@ namespace SashaRX.UnityMeshLab
                 q = source.boundsMin + new Vector2(q.x * sourceSize.x / targetSize.x, q.y * sourceSize.y / targetSize.y);
                 Vector3 normal = normals != null && vertex < normals.Length ? normals[vertex] : Vector3.zero;
                 int face = -1; float u = 0, v = 0, w = 0;
-                if (bvh != null) {
-                    var hit = normal.sqrMagnitude > .5f ? bvh.FindNearestNormalFiltered(q, normal, faceNormals, 0) : bvh.FindNearest(q);
-                    face = hit.faceIndex; u = hit.u; v = hit.v; w = hit.w;
-                }
-                else {
-                    float best = float.MaxValue;
-                    foreach (int f in sourceFaces) {
-                        if (normal.sqrMagnitude > .5f && Vector3.Dot(normal, faceNormals[f]) < 0) continue;
-                        float distance = PointToTri2D(q, a0[f], b0[f], c0[f], out float cu, out float cv, out float cw);
-                        if (distance < best) { best = distance; face = f; u = cu; v = cv; w = cw; }
-                    }
-                }
+                if (bvh != null)
+                    face = FindNearest2DSourceFaceBvh(q, normal, bvh, faceNormals, out u, out v, out w);
+                else
+                    face = FindNearest2DSourceFace(q, normal, sourceFaces, faceNormals, a0, b0, c0, out u, out v, out w);
                 if (face >= 0) candidate[vertex] = a2[face] * u + b2[face] * v + c2[face] * w;
             }
             return candidate.Count == target.vertexIndices.Count;
+        }
+
+        static int FindNearest2DSourceFaceBvh(Vector2 point, Vector3 normal, TriangleBvh2D bvh,
+            Vector3[] faceNormals, out float u, out float v, out float w)
+        {
+            var hit = normal.sqrMagnitude > .5f ? bvh.FindNearestNormalFiltered(point, normal, faceNormals, 0) : bvh.FindNearest(point);
+            u = hit.u; v = hit.v; w = hit.w;
+            return hit.faceIndex;
+        }
+
+        static int FindNearest2DSourceFace(Vector2 point, Vector3 normal, List<int> sourceFaces,
+            Vector3[] faceNormals, Vector2[] a, Vector2[] b, Vector2[] c, out float u, out float v, out float w)
+        {
+            int face = -1;
+            float best = float.MaxValue;
+            u = v = w = 0;
+            foreach (int f in sourceFaces) {
+                if (normal.sqrMagnitude > .5f && Vector3.Dot(normal, faceNormals[f]) < 0) continue;
+                float distance = PointToTri2D(point, a[f], b[f], c[f], out float cu, out float cv, out float cw);
+                if (distance < best) { best = distance; face = f; u = cu; v = cv; w = cw; }
+            }
+            return face;
         }
 
         static bool CandidateHasOverlap(UvShell shell, int[] triangles, Vector3[] positions, Dictionary<int, Vector2> candidate)

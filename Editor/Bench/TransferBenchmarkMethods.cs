@@ -95,11 +95,7 @@ namespace SashaRX.UnityMeshLab
             }
             foreach (var shell in shells) {
                 CheckCancel(0);
-                int nearest = -1; float distance = float.MaxValue;
-                for (int s = 0; s < source.Length; ++s) {
-                    float candidate = (source[s].worldCentroid - centers[shell.shellId]).sqrMagnitude;
-                    if (candidate < distance) { distance = candidate; nearest = s; }
-                }
+                int nearest = NearestShell(source, centers[shell.shellId]);
                 if (nearest < 0) { output.misses += shell.vertexIndices.Count; continue; }
                 var indices = source[nearest].vertexIndices;
                 var direct = GroupedShellTransfer.ComputeSimilarityTransform(uv0, uv2, indices, false);
@@ -109,6 +105,16 @@ namespace SashaRX.UnityMeshLab
                 foreach (int vertex in shell.vertexIndices) output.uv[vertex] = transform.Apply(targetUv[vertex]);
             }
             return output;
+        }
+
+        static int NearestShell(GroupedShellTransfer.SourceShellInfo[] source, Vector3 center)
+        {
+            int nearest = -1; float distance = float.MaxValue;
+            for (int s = 0; s < source.Length; ++s) {
+                float candidate = (source[s].worldCentroid - center).sqrMagnitude;
+                if (candidate < distance) { distance = candidate; nearest = s; }
+            }
+            return nearest;
         }
 
         static Vector2 Interpolate(Vector2[] uv, int[] triangles, int face, Vector3 weights)

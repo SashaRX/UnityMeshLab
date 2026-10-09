@@ -561,50 +561,7 @@ namespace SashaRX.UnityMeshLab
             double appliedScaleMin = 1.0, appliedScaleMax = 1.0;
             foreach (int si in validShells)
             {
-                double density = densArr[si];
-                if (density <= targetDensity * 1.05) continue; // within 5% of target — leave alone
-
-                // Bring density down to target. au2 scales with scale²;
-                // density_new = (au2 * scale²) / a3 = density * scale² = target
-                // → scale = sqrt(target / density). Shrink only.
-                double scaleD = Math.Sqrt(targetDensity / density);
-                if (!IsFiniteD(scaleD) || scaleD <= 0.0) continue;
-                if (scaleD >= 0.999) continue; // basically no-op
-                float scale = (float)scaleD;
-                var shell = shells[si];
-                if (shell.vertexIndices == null || shell.vertexIndices.Count == 0) continue;
-
-                // A shell may contain several separately packed xatlas charts.
-                // Contract each chart independently; a shell-wide centroid
-                // could translate separated charts through occupied space.
-                var chartVertices = new Dictionary<uint, List<int>>();
-                bool hasOrphan = false;
-                foreach (int v in shell.vertexIndices)
-                {
-                    int idx = v;
-                    if ((uint)idx >= (uint)uvLen) continue;
-                    uint chartId = vertexChartIds[idx];
-                    if (chartId == ORPHAN_CHART) { hasOrphan = true; break; }
-                    if (!chartVertices.TryGetValue(chartId, out var vertices))
-                    {
-                        vertices = new List<int>();
-                        chartVertices.Add(chartId, vertices);
-                    }
-                    vertices.Add(idx);
-                }
-                // Without a chart ID there is no packed region whose bounds we
-                // can preserve, so leave the complete shell unchanged.
-                if (hasOrphan || chartVertices.Count == 0) continue;
-
-                foreach (var pair in chartVertices)
-                {
-                    var vertices = pair.Value;
-                    Vector2 c = Vector2.zero;
-                    foreach (int idx in vertices) c += uv2[idx];
-                    c /= vertices.Count;
-                    foreach (int idx in vertices)
-                        uv2[idx] = c + (uv2[idx] - c) * scale;
-                }
+                if (!TryShrinkPostPackShell(uv2, uvLen, shells[si], vertexChartIds, densArr[si], targetDensity, out float scale)) continue;
                 if (scale < appliedScaleMin) appliedScaleMin = scale;
                 if (scale > appliedScaleMax) appliedScaleMax = scale;
                 modified++;
@@ -613,6 +570,63 @@ namespace SashaRX.UnityMeshLab
             UvtLog.Info(UvtLog.Category.Repack,
                 $"[Density:correction] '{meshLabel}' shrunk {modified}/{validShells.Count} over-dense shells toward median={targetDensity:G3} | applied scale: min={appliedScaleMin:F3} max={appliedScaleMax:F3}");
             return modified;
+        }
+
+        static bool TryShrinkPostPackShell(Vector2[] uv2, int uvLen, UvShell shell, uint[] vertexChartIds,
+            double density, double targetDensity, out float scale)
+        {
+            scale = 0;
+            if (density <= targetDensity * 1.05) return false; // within 5% of target — leave alone
+
+            // Bring density down to target. au2 scales with scale²;
+            // density_new = (au2 * scale²) / a3 = density * scale² = target
+            // → scale = sqrt(target / density). Shrink only.
+            double scaleD = Math.Sqrt(targetDensity / density);
+            if (!IsFiniteD(scaleD) || scaleD <= 0.0) return false;
+            if (scaleD >= 0.999) return false; // basically no-op
+            scale = (float)scaleD;
+            if (shell.vertexIndices == null || shell.vertexIndices.Count == 0) return false;
+            var chartVertices = GroupPostPackCharts(shell, vertexChartIds, uvLen);
+            if (chartVertices == null) return false;
+            ShrinkPostPackCharts(uv2, chartVertices, scale);
+            return true;
+        }
+
+        static Dictionary<uint, List<int>> GroupPostPackCharts(UvShell shell, uint[] vertexChartIds, int uvLen)
+        {
+            // A shell may contain several separately packed xatlas charts.
+            // Contract each chart independently; a shell-wide centroid
+            // could translate separated charts through occupied space.
+            var chartVertices = new Dictionary<uint, List<int>>();
+            foreach (int v in shell.vertexIndices)
+            {
+                int idx = v;
+                if ((uint)idx >= (uint)uvLen) continue;
+                uint chartId = vertexChartIds[idx];
+                if (chartId == ORPHAN_CHART) return null;
+                if (!chartVertices.TryGetValue(chartId, out var vertices))
+                {
+                    vertices = new List<int>();
+                    chartVertices.Add(chartId, vertices);
+                }
+                vertices.Add(idx);
+            }
+            // Without a chart ID there is no packed region whose bounds we
+            // can preserve, so leave the complete shell unchanged.
+            return chartVertices.Count == 0 ? null : chartVertices;
+        }
+
+        static void ShrinkPostPackCharts(Vector2[] uv2, Dictionary<uint, List<int>> chartVertices, float scale)
+        {
+            foreach (var pair in chartVertices)
+            {
+                var vertices = pair.Value;
+                Vector2 c = Vector2.zero;
+                foreach (int idx in vertices) c += uv2[idx];
+                c /= vertices.Count;
+                foreach (int idx in vertices)
+                    uv2[idx] = c + (uv2[idx] - c) * scale;
+            }
         }
 
         static bool IsFiniteD(double x) => !(double.IsNaN(x) || double.IsInfinity(x));

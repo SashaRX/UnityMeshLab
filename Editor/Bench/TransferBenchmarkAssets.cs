@@ -36,17 +36,7 @@ namespace SashaRX.UnityMeshLab
                 throw new InvalidDataException("Invalid imported-asset benchmark case.");
             var sources = new Dictionary<string, Mesh>(StringComparer.Ordinal);
             var targets = new List<Mesh>();
-            foreach (var obj in AssetDatabase.LoadAllAssetsAtPath(settings.asset)) {
-                if (!(obj is Mesh mesh)) continue;
-                int lod = MeshNaming.LodIndex(mesh.name);
-                if (lod < 0) continue;
-                if (lod == settings.sourceLod) {
-                    string key = UvToolContext.ExtractGroupKey(mesh.name);
-                    if (sources.ContainsKey(key)) throw new InvalidDataException("Ambiguous source group: " + key);
-                    sources.Add(key, mesh);
-                }
-                else if (lod > settings.sourceLod || settings.includeHigherDetailTargets) targets.Add(mesh);
-            }
+            CollectMeshes(settings, sources, targets);
             targets.Sort((a, b) => string.CompareOrdinal(a.name, b.name));
             var pairs = new List<Pair>();
             var groups = new HashSet<string>(settings.groups, StringComparer.Ordinal);
@@ -63,6 +53,21 @@ namespace SashaRX.UnityMeshLab
             if (groups.Count > 0 && !groups.SetEquals(foundGroups)) throw new InvalidDataException("Some requested mesh groups have no LOD pairs.");
             if (pairs.Count == 0) throw new InvalidDataException("Asset has no matched Name_LOD{N} mesh pairs: " + settings.asset);
             return pairs;
+        }
+
+        static void CollectMeshes(Case settings, Dictionary<string, Mesh> sources, List<Mesh> targets)
+        {
+            foreach (var obj in AssetDatabase.LoadAllAssetsAtPath(settings.asset)) {
+                if (!(obj is Mesh mesh)) continue;
+                int lod = MeshNaming.LodIndex(mesh.name);
+                if (lod < 0) continue;
+                if (lod == settings.sourceLod) {
+                    string key = UvToolContext.ExtractGroupKey(mesh.name);
+                    if (sources.ContainsKey(key)) throw new InvalidDataException("Ambiguous source group: " + key);
+                    sources.Add(key, mesh);
+                }
+                else if (lod > settings.sourceLod || settings.includeHigherDetailTargets) targets.Add(mesh);
+            }
         }
 
         internal static TransferBenchmark.Input Prepare(Pair pair)

@@ -133,7 +133,9 @@ namespace SashaRX.UnityMeshLab
             catch (Exception error) { report.error = error.ToString(); }
             finally {
                 GroupedShellTransfer.LastTopologyIterations = iterations; GroupedShellTransfer.LastTopologyFixed = fixedCount; GroupedShellTransfer.LastTopologyCapHit = cap;
-                report.corpus.status = report.complete ? "complete" : report.cancelled ? "aborted" : "partial";
+                if (report.complete) report.corpus.status = "complete";
+                else if (report.cancelled) report.corpus.status = "aborted";
+                else report.corpus.status = "partial";
                 try { await Save(report); }
                 finally { if (report.cancelled) UvProgress.Cancel(); else UvProgress.End(); }
             }
@@ -158,6 +160,14 @@ namespace SashaRX.UnityMeshLab
             if (config.includeSynthetic)
                 foreach (string fixture in TransferBenchmarkFixtures.Names)
                     jobs.Add(new Job { name = fixture, load = () => TransferBenchmarkFixtures.Create(fixture) });
+            AddCaptureJobs(config, jobs);
+            AddAssetJobs(config, jobs);
+            if (jobs.Count == 0 || jobs.Count > config.maxPairs) throw new InvalidDataException("Invalid benchmark case count.");
+            return jobs;
+        }
+
+        static void AddCaptureJobs(Config config, List<Job> jobs)
+        {
             foreach (string path in config.captures) {
                 var file = new FileInfo(path);
                 if (!file.Exists || file.Length > TransferCaseCapture.MaxManifestBytes) throw new InvalidDataException("Missing or oversized capture: " + path);
@@ -175,14 +185,16 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (added == 0) throw new InvalidDataException("Capture has no completed transfer pairs. Use Capture next run, then Transfer or Full Pipeline: " + path);
             }
+        }
+
+        static void AddAssetJobs(Config config, List<Job> jobs)
+        {
             foreach (var assetCase in config.assetCases)
                 foreach (var pair in TransferBenchmarkAssets.Pairs(assetCase)) {
                     if (jobs.Count >= config.maxPairs) throw new InvalidDataException("Imported assets exceed maxPairs.");
                     var assetPair = pair;
                     jobs.Add(new Job { name = pair.name, load = () => TransferBenchmarkAssets.Prepare(assetPair) });
                 }
-            if (jobs.Count == 0 || jobs.Count > config.maxPairs) throw new InvalidDataException("Invalid benchmark case count.");
-            return jobs;
         }
 
         static Input LoadCapture(FileInfo file, int schema, TransferCaseCapture.Pair pair)
@@ -324,7 +336,8 @@ namespace SashaRX.UnityMeshLab
             for (int sub = 0; sub < mesh.subMeshCount; ++sub)
                 if (mesh.GetTopology(sub) != MeshTopology.Triangles) throw new InvalidDataException("Transfer benchmark requires triangle topology.");
             if (mesh.triangles.Length == 0) throw new InvalidDataException("Input has no triangles.");
-            foreach (var vertex in mesh.vertices) if (!Finite(vertex.x) || !Finite(vertex.y) || !Finite(vertex.z)) throw new InvalidDataException("Non-finite position.");
+            if (Array.Exists(mesh.vertices, vertex => !Finite(vertex.x) || !Finite(vertex.y) || !Finite(vertex.z)))
+                throw new InvalidDataException("Non-finite position.");
             if (mesh.uv.Length != mesh.vertexCount || (source && mesh.uv2.Length != mesh.vertexCount)) throw new InvalidDataException("Transfer requires complete UV0 and source UV2.");
             CheckUv(mesh.uv); if (source) CheckUv(mesh.uv2);
         }
@@ -334,7 +347,7 @@ namespace SashaRX.UnityMeshLab
             CheckUv(output.uv);
         }
         static void CheckUv(Vector2[] uv)
-        { foreach (var value in uv) if (!Finite(value.x) || !Finite(value.y)) throw new InvalidDataException("Non-finite UV."); }
+        { if (Array.Exists(uv, value => !Finite(value.x) || !Finite(value.y))) throw new InvalidDataException("Non-finite UV."); }
         static bool Finite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
 
         static async Task StoreMesh(string folder, string hash, byte[] bytes)

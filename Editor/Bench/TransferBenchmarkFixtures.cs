@@ -86,24 +86,29 @@ namespace SashaRX.UnityMeshLab
         static Mesh Stacked(bool target, bool close)
         {
             var positions = new List<Vector3>(); var uv0 = new List<Vector2>(); var uv2 = new List<Vector2>(); var triangles = new List<int>();
-            for (int side = 0; side < 2; ++side) {
-                float z = close ? (side == 0 ? 0 : .02f) : side * 2;
-                if (target && close) z += side == 0 ? .015f : -.015f;
-                int start = positions.Count;
-                positions.AddRange(new[] { new Vector3(0, 0, z), new Vector3(1, 0, z), new Vector3(1, 1, z), new Vector3(0, 1, z) });
-                uv0.AddRange(side == 0 ? new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up }
-                    : new[] { Vector2.right, Vector2.zero, Vector2.up, Vector2.one });
-                uv2.AddRange(new[] { new Vector2(.1f + side * .5f, .1f), new Vector2(.4f + side * .5f, .1f),
-                    new Vector2(.4f + side * .5f, .4f), new Vector2(.1f + side * .5f, .4f) });
-                bool reverse = close && side == 1;
-                int[] local = target ? new[] { 0, 1, 3, 1, 2, 3 } : new[] { 0, 1, 2, 0, 2, 3 };
-                for (int i = 0; i < local.Length; i += 3) {
-                    triangles.Add(start + local[i]); triangles.Add(start + local[i + (reverse ? 2 : 1)]); triangles.Add(start + local[i + (reverse ? 1 : 2)]);
-                }
-            }
+            for (int side = 0; side < 2; ++side) AddStackedSide(target, close, side, positions, uv0, uv2, triangles);
             var mesh = new Mesh { name = "Stacked mirror fixture" };
             mesh.SetVertices(positions); mesh.SetUVs(0, uv0); mesh.SetUVs(1, uv2); mesh.SetTriangles(triangles, 0); mesh.RecalculateNormals();
             return mesh;
+        }
+
+        static void AddStackedSide(bool target, bool close, int side, List<Vector3> positions, List<Vector2> uv0,
+            List<Vector2> uv2, List<int> triangles)
+        {
+            float z = side * 2;
+            if (close) z = side == 0 ? 0 : .02f;
+            if (target && close) z += side == 0 ? .015f : -.015f;
+            int start = positions.Count;
+            positions.AddRange(new[] { new Vector3(0, 0, z), new Vector3(1, 0, z), new Vector3(1, 1, z), new Vector3(0, 1, z) });
+            uv0.AddRange(side == 0 ? new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up }
+                : new[] { Vector2.right, Vector2.zero, Vector2.up, Vector2.one });
+            uv2.AddRange(new[] { new Vector2(.1f + side * .5f, .1f), new Vector2(.4f + side * .5f, .1f),
+                new Vector2(.4f + side * .5f, .4f), new Vector2(.1f + side * .5f, .4f) });
+            bool reverse = close && side == 1;
+            int[] local = target ? new[] { 0, 1, 3, 1, 2, 3 } : new[] { 0, 1, 2, 0, 2, 3 };
+            for (int i = 0; i < local.Length; i += 3) {
+                triangles.Add(start + local[i]); triangles.Add(start + local[i + (reverse ? 2 : 1)]); triangles.Add(start + local[i + (reverse ? 1 : 2)]);
+            }
         }
 
         static Vector2[] Reference(TransferBenchmark.Input input)

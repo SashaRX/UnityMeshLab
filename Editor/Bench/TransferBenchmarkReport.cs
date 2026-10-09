@@ -40,22 +40,29 @@ namespace SashaRX.UnityMeshLab
             text.Append("<p>Timing includes transfer and its BVH build, excludes warmup, diagnostics, quality scans and file IO. Source quality uses local geometry; target quality uses the captured world transform. Anisotropy 1 is isotropic. Reference error is in atlas texels; recorded captures are a baseline, not ground truth. Negative controls deliberately contain defects. An incomplete overlap scan is a lower bound. No overall winner is computed.</p>");
             if (!string.IsNullOrEmpty(report.error)) text.Append("<pre>").Append(Escape(report.error)).Append("</pre>");
             text.Append("<table><thead><tr><th>Case / method</th><th>UV2</th><th>Median ms</th><th>Anisotropy mean / worst</th><th>Stretched / degenerate / invalid</th><th>Overlaps / OOB</th><th>Reference max texels</th><th>Repeat / input / misses</th></tr></thead><tbody>");
-            foreach (var row in report.rows) {
-                bool bad = !string.IsNullOrEmpty(row.error) || !row.deterministic || !row.inputUnchanged;
-                text.Append("<tr class=\"").Append(bad ? "bad" : row.negativeControl ? "control" : "").Append("\"><td>")
-                    .Append(Escape(row.name)).Append("<br><strong>").Append(Escape(row.method)).Append("</strong><br>").Append(Escape(row.description));
-                if (bad) text.Append("<pre>").Append(Escape(row.error)).Append("</pre>");
-                text.Append(TableCellSeparator);
-                if (!string.IsNullOrEmpty(row.view)) text.Append("<a href=\"").Append(Escape(row.view)).Append("\"><img loading=\"lazy\" alt=\"UV2 triangles\" src=\"").Append(Escape(row.view)).Append("\"></a>");
-                text.Append(TableCellSeparator).Append(Number(row.medianMilliseconds)).Append(TableCellSeparator);
-                var q = row.quality;
-                if (q != null) text.Append(Number(q.areaWeightedAnisotropy)).Append(" / ").Append(Number(q.worstAnisotropy));
-                text.Append(TableCellSeparator).Append(q == null ? "unavailable" : q.stretchedFaces + " / " + q.degenerateFaces + " / " + q.invalidFaces)
-                    .Append(TableCellSeparator).Append(q == null ? "unavailable" : q.overlapPairs + (q.overlapScanComplete ? "" : "+ (incomplete)") + " / " + q.outOfBoundsVertices)
-                    .Append(TableCellSeparator).Append(Number(row.maximumReferenceTexels)).Append(row.referenceIsGroundTruth ? " (truth)" : " (baseline)")
-                    .Append(TableCellSeparator).Append(row.deterministic).Append(" / ").Append(row.inputUnchanged).Append(" / ").Append(row.misses).Append("</td></tr>");
-            }
+            foreach (var row in report.rows) AppendHtmlRow(text, row);
             return text.Append("</tbody></table></html>").ToString();
+        }
+
+        static void AppendHtmlRow(StringBuilder text, TransferBenchmark.Row row)
+        {
+            bool bad = !string.IsNullOrEmpty(row.error) || !row.deterministic || !row.inputUnchanged;
+            string rowClass = bad ? "bad" : "";
+            if (!bad && row.negativeControl) rowClass = "control";
+            text.Append("<tr class=\"").Append(rowClass).Append("\"><td>")
+                .Append(Escape(row.name)).Append("<br><strong>").Append(Escape(row.method)).Append("</strong><br>").Append(Escape(row.description));
+            if (bad) text.Append("<pre>").Append(Escape(row.error)).Append("</pre>");
+            text.Append(TableCellSeparator);
+            if (!string.IsNullOrEmpty(row.view)) text.Append("<a href=\"").Append(Escape(row.view)).Append("\"><img loading=\"lazy\" alt=\"UV2 triangles\" src=\"").Append(Escape(row.view)).Append("\"></a>");
+            text.Append(TableCellSeparator).Append(Number(row.medianMilliseconds)).Append(TableCellSeparator);
+            var q = row.quality;
+            if (q != null) text.Append(Number(q.areaWeightedAnisotropy)).Append(" / ").Append(Number(q.worstAnisotropy));
+            string overlap = "unavailable";
+            if (q != null) overlap = q.overlapPairs + (q.overlapScanComplete ? "" : "+ (incomplete)") + " / " + q.outOfBoundsVertices;
+            text.Append(TableCellSeparator).Append(q == null ? "unavailable" : q.stretchedFaces + " / " + q.degenerateFaces + " / " + q.invalidFaces)
+                .Append(TableCellSeparator).Append(overlap)
+                .Append(TableCellSeparator).Append(Number(row.maximumReferenceTexels)).Append(row.referenceIsGroundTruth ? " (truth)" : " (baseline)")
+                .Append(TableCellSeparator).Append(row.deterministic).Append(" / ").Append(row.inputUnchanged).Append(" / ").Append(row.misses).Append("</td></tr>");
         }
 
         internal static string View(TransferBenchmark.Input input, TransferBenchmark.Row row, Vector2[] uv)
