@@ -1,5 +1,62 @@
 # Modern furniture transfer corpus
 
+## Projection candidate quality and source-atlas gate
+
+2026-10-09, baseline `269bba6`, Unity 6000.2.6f2 / DX11. Same 74 frozen
+prepared pairs and seven analytic controls, six methods, two repetitions,
+zero warmups. No repack is timed or rerun. Final local report:
+`_results~/candidate-quality-20261009/source-gated-final/transfer_compare_20261009_081713_189_388e3d82/comparison.json`.
+
+| Grouped target | Degenerates before → after | Overlap pairs before → after | Area-weighted anisotropy before → after | Worst before → after |
+|---|---:|---:|---:|---:|
+| Full Bench_Metal_A LOD2 | 0 → 0 | 13 → 0 | 477.6345 → 1.9044 | 6,418,951.6 → 148.45 |
+| Controlled Bench LOD2, symmetry off/ARAP off | 0 → 0 | 6 → 0 | 5.0264 → 1.8891 | 4,369.52 → 108.98 |
+| Packed Tire LOD2, symmetry off/ARAP off | 0 → 0 | 14 → 7 | 2.4847 → 1.9669 | 340.40 → 327.38 |
+| Shelf reverse, square | 0 → 0 | 0 → 0 | 2.2202 → 2.2196 | 14.19 → 7.36 |
+| Shelf reverse, 1:2 texture metric | 0 → 0 | 0 → 0 | 1.6315 → 1.6311 | 9.11 → 4.22 |
+| Speaker_2, weld on | 0 → 0 | 0 → 0 | 1.0463 → 1.0439 | 31.75 → 4.54 |
+
+All 486 rows complete without errors; repeated hashes are deterministic and
+prepared inputs unchanged. 58 output UV hashes differ (29 cases in both grouped
+modes). The other four methods retain their UV bytes. No measured degeneration,
+overlap count/area, bounds, or mean/worst anisotropy regresses on the corpus;
+the comparison uses 1e-12 area and 1e-6 stretch epsilon, without a percentage
+allowance. All grouped ground-truth controls pass. Real captures remain
+comparison baselines, not correspondence ground truth. Five Train nearest-method
+overlap scans are incomplete in both runs and remain lower bounds.
+
+140 affected EditMode tests pass without skips, including smoothed-normal
+projection, thin-sheet disambiguation, displaced UV0 features, final stretch
+status and rejection of floating-point slivers. Both reference builds (with and
+without FBX exporter), identifier/dependency guards and meta/GUID checks pass.
+
+Recovery compares the legacy selected shell with unfiltered UV0 interpolation
+and 3D projection, retaining source-triangle interpolation and normal filtering
+as the default. A replacement must improve the complete shell without increasing
+collapse, invalid UV, folds or bounds violations. Effectively collapsed floating
+slivers cannot win just because their area becomes nonzero. The same score is
+used in merged candidate recovery; extrapolating transforms retain their old gate.
+
+The whole source atlas must pass a bounded UV2 validity/overlap scan before this
+new recovery is permitted. A chart-only experimental gate reduced local stretch
+but increased Train LOD2 pairs from 4953 to 4966 and DressingTable Frame pair area
+by 0.51%. That variant was rejected. The final gate preserves Train and
+DressingTable Frame UV2 byte-for-byte and reports whether recovery was allowed.
+
+Final shell status is measured after topology correction, including stretch >4
+and internal overlaps. Optional traces retain pre/final quality, rescore/dedup
+assignments, normal-filter fallback counts, selected projection method and bounded
+raw recovery candidates. Density and variation are measured, but are not a claim
+of uniform source texel density or a new density normalization pass.
+
+Remaining: Full Bench LOD1 stays at one degenerate/eight overlaps; Bench LOD2
+still has a worst anisotropy of 148.45 on a small chart. Source defects in Train
+need source preparation work. DressingTable Handle still clamps a target chart
+that extends beyond the source surface. [Joint-layout review](LOD_UV_ALGORITHM_REVIEW.md)
+explains a separate approach to that footprint problem. Two-repetition timing
+has a grouped median ratio of about 1.001 against baseline, but this is not a
+dedicated performance study.
+
 ## Inputs and isolation
 
 The corpus uses `Modern_DressingTable_A.fbx`, `Modern_Kitchen_A.fbx` and

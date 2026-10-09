@@ -3,6 +3,51 @@
 > **Обновлять этот документ при каждом эксперименте с transfer pipeline.**
 > Последнее обновление: v1.1.34 (2026-10-09)
 
+## Projection candidate quality and source-atlas gate — 2026-10-09
+
+- Продолжение PR #225, baseline `269bba6`. Сначала разделены два механизма
+  Bench LOD2: inherited hint выбирает opposed distant surface вне UV0 interior;
+  normal-filtered UV0 queries чистого chart выбрасывают близкие triangles и
+  складывают целый target chart на удалённую границу. Brute-force double queries
+  независимо воспроизводят исходный результат, поэтому BVH traversal не причина.
+- Shared `TransferCandidateQuality` измеряет geometry anisotropy (worst и
+  area-weighted), collapse/missing UV, internal overlap, bounds, density/CV.
+  Recovery UV0 без normal filter и 3D projection допускаются только для clean
+  source atlas, unshared/unrestricted chart без UV0 stacking. Они не меняют source
+  assignment и не экстраполируют за source triangles. Candidate comparison
+  не допускает больше issues/overlap и требует улучшения stretch. Line → floating
+  sliver при прежнем числе collapse issues не считается исправлением.
+- Hint guard дополнительно отвергает opposed hint только при >2× distance
+  до 3D interiors и отсутствии UV0 interior coverage hint. Correct displaced
+  UV0 feature и thin-sheet tests сохранены. Classification происходит после
+  topology correction и учитывает stretch >4 и internal folds; trace содержит
+  before/final quality, source-atlas gate, rescore/dedup stages и ограниченный
+  объём raw recovery candidates (4096 vertices/candidate, 65536/case).
+- Отклонён вариант с проверкой лишь отдельного source chart: на bad source
+  Train LOD2 pairs 4953→4966, DressingTable Frame overlap area +0.51%, несмотря
+  на улучшение локальной candidate quality. В окончательном варианте bounded
+  scan всего source UV2 обязан завершиться с 0 overlap/degenerate/invalid/OOB.
+  Train и DressingTable Frame сохраняют исходные UV2 bytes. Это консервативный
+  guard, а не исправление дефектов source.
+- Final frozen corpus: 74 captured pairs + 7 analytic controls × 6 methods =
+  **486 rows**, two repeats, row errors=0, deterministic, inputs unchanged.
+  **58 UV2 results изменены**, все grouped/grouped-no-hints. При сравнении
+  degenerate/invalid/OOB, pairs/area и worst/area-weighted anisotropy ни одной
+  регрессии (epsilon 1e-12 для area и 1e-6 для numeric stretch). Пять Train
+  nearest-method scans остаются incomplete как и в baseline; grouped scans полные.
+- **140/140 affected EditMode tests**, zero failures/skips; обе FBX define
+  reference-сборки, identifier/dependency guards и meta/GUID checks проходят.
+- Full Bench LOD2: **0/13 → 0/0**, mean anisotropy **477.6345→1.9044**,
+  worst **6,418,951.6→148.45**. Controlled Bench LOD2: **0/6→0/0**;
+  Packed Tire LOD2: **0/14→0/7**. Shelf reverse square worst **14.19→7.36**,
+  1:2 **9.11→4.22**, both still 0/0. Bench LOD1 remains 1/8, and target
+  distortion is not fully repaired. DressingTable Handle clamp remains.
+- [Подробные измерения](MODERN_TRANSFER_REPRO.md#projection-candidate-quality-and-source-atlas-gate).
+  [Присланный joint-layout алгоритм](LOD_UV_ALGORITHM_REVIEW.md) рассмотрен
+  отдельно: uniform packing сохраняет aspect distortion, greedy assignment
+  проигрывает альтернативе на воспроизводимом fixture, UV0 overlap не доказывает
+  cross-LOD correspondence. В production совместная перестройка атласа не перенесена.
+
 ## Bench_Metal_A: shared boundaries and inherited chart hints — 2026-10-09
 
 - Продолжение PR #225, baseline `927eff1`. Actual prefab использует FBX GUID

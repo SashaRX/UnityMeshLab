@@ -26,12 +26,44 @@ namespace SashaRX.UnityMeshLab
             public bool dedupReassigned, force3D, fragmentMerged, hintMatched;
             public float finalSurfaceDistanceSquared;
             public List<Candidate> candidates = new List<Candidate>();
+            public int afterRescoreSource = -1, afterDedupSource = -1, normalFallbackVertices;
+            public string projectionMethod;
+            public List<Projection> projections = new List<Projection>();
+            public TransferCandidateQuality beforeTopologyQuality, finalQuality;
+        }
+
+        [Serializable]
+        internal sealed class Projection
+        {
+            public string method;
+            public int sourceShell;
+            public TransferCandidateQuality quality;
+            public int[] vertices;
+            public UnityEngine.Vector2[] uv;
         }
 
         public List<Shell> shells = new List<Shell>();
         public float[] sourceTransformResiduals;
         public bool[] sourceMirrored;
         public bool truncated;
+        public bool sourceAtlasRecoveryAllowed;
+        int recordedVertices;
+
+        internal void RecordProjection(Shell shell, string method, int source,
+            Dictionary<int, UnityEngine.Vector2> uv, TransferCandidateQuality quality)
+        {
+            if (shell == null || uv == null) return;
+            var projection = new Projection { method = method, sourceShell = source, quality = quality };
+            // Optional raw candidates are bounded per case; scores are always retained.
+            if (uv.Count <= 4096 && recordedVertices + uv.Count <= 65536) {
+                var keys = new List<int>(uv.Keys); keys.Sort();
+                projection.vertices = keys.ToArray(); projection.uv = new UnityEngine.Vector2[keys.Count];
+                for (int i = 0; i < keys.Count; ++i) projection.uv[i] = uv[keys[i]];
+                recordedVertices += keys.Count;
+            }
+            else truncated = true;
+            shell.projections.Add(projection);
+        }
         internal Shell ForShell(int index)
         {
             if (index >= 10000) { truncated = true; return null; }

@@ -223,6 +223,86 @@ namespace SashaRX.UnityMeshLab.Tests
                 a0, b0, c0, a1, b1, c1);
 
         [Test]
+        public void SmoothedLodNormalsDoNotFoldACleanBentChart()
+        {
+            var source = new Mesh { name = "Bent clean chart" }; Mesh target = null;
+            try {
+                source.vertices = new[] { new Vector3(-1, 0, 0), Vector3.forward, Vector3.right,
+                    new Vector3(-1, 1, 0), new Vector3(0, 1, 1), new Vector3(1, 1, 0) };
+                var uv = new[] { new Vector2(-1, 0), Vector2.zero, Vector2.right,
+                    new Vector2(-1, 1), Vector2.up, Vector2.one };
+                source.uv = uv;
+                var packed = new Vector2[uv.Length];
+                for (int i = 0; i < uv.Length; ++i) packed[i] = uv[i] * .25f + Vector2.one * .4f;
+                source.uv2 = packed;
+                source.triangles = new[] { 0, 1, 4, 0, 4, 3, 1, 2, 5, 1, 5, 4 }; source.RecalculateNormals();
+                target = Object.Instantiate(source);
+                var positions = target.vertices;
+                for (int i = 0; i < positions.Length; ++i) positions[i].z += .001f;
+                target.vertices = positions;
+                uv[1].x = .001f; uv[4].x = -.001f; target.uv = uv;
+                target.normals = new[] { Vector3.left, Vector3.right, Vector3.left, Vector3.right, Vector3.left, Vector3.right };
+                var trace = new TransferMatchTrace();
+                var result = GroupedShellTransfer.TransferWithDiagnostics(target, source, null, null, 512, 512, trace);
+                var quality = TransferUvQuality.Measure(target, result.uv2, Vector2.one, Matrix4x4.identity);
+                Assert.AreEqual(0, quality.degenerateFaces); Assert.AreEqual(0, quality.overlapPairs);
+                Assert.Less(quality.worstAnisotropy, 1.5);
+                Assert.Greater(trace.shells[0].normalFallbackVertices, 0);
+                Assert.IsNotNull(trace.shells[0].beforeTopologyQuality); Assert.IsNotNull(trace.shells[0].finalQuality);
+            }
+            finally { if (target) Object.DestroyImmediate(target); Object.DestroyImmediate(source); }
+        }
+
+        [Test]
+        public void CandidateComparisonDoesNotTreatARoundoffSliverAsARepairedLine()
+        {
+            var triangles = new[] { 0, 1, 2 };
+            var positions = new[] { Vector3.zero, Vector3.right, Vector3.up };
+            var shell = UvShellExtractor.Extract(new[] { Vector2.zero, Vector2.right, Vector2.up }, triangles)[0];
+            var uv = new Dictionary<int, Vector2> { [0] = Vector2.zero, [1] = Vector2.right, [2] = new Vector2(.5f, 0) };
+            var line = TransferCandidateQuality.Measure(shell, triangles, positions, uv);
+            uv[2] = new Vector2(.5f, 1e-8f);
+            var sliver = TransferCandidateQuality.Measure(shell, triangles, positions, uv);
+            Assert.AreEqual(1, line.issues); Assert.AreEqual(1, sliver.issues);
+            Assert.IsFalse(sliver.Improves(line));
+        }
+
+        [Test]
+        public void InheritedSourceStretchIsReportedInTheFinalShellStatus()
+        {
+            var source = new Mesh { name = "Stretched source atlas" }; Mesh target = null;
+            try {
+                source.vertices = new[] { Vector3.zero, Vector3.right, new Vector3(1, 1, 0), Vector3.up };
+                source.uv = new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up };
+                source.uv2 = new[] { new Vector2(.1f, .1f), new Vector2(.9f, .1f),
+                    new Vector2(.9f, .2f), new Vector2(.1f, .2f) };
+                source.triangles = new[] { 0, 1, 2, 0, 2, 3 }; source.RecalculateNormals();
+                target = Object.Instantiate(source);
+                var result = GroupedShellTransfer.Transfer(target, source);
+                CollectionAssert.AreEqual(source.uv2, result.uv2);
+                Assert.AreEqual(GroupedShellTransfer.ShellStatus.Poor, result.targetShellStatus[0],
+                    "An inherited non-degenerate but stretched atlas must not be labelled Accepted.");
+            }
+            finally { if (target) Object.DestroyImmediate(target); Object.DestroyImmediate(source); }
+        }
+
+        [Test]
+        public void CandidateComparisonDoesNotTradeFoldsForLowerStretch()
+        {
+            var positions = new[] { Vector3.zero, Vector3.right, Vector3.one, Vector3.up };
+            var triangles = new[] { 0, 1, 2, 0, 2, 3 };
+            var shell = UvShellExtractor.Extract(new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up }, triangles)[0];
+            var clean = new Dictionary<int, Vector2> { [0] = Vector2.zero, [1] = Vector2.right,
+                [2] = Vector2.one, [3] = Vector2.up };
+            var folded = new Dictionary<int, Vector2>(clean) { [3] = Vector2.right };
+            var cleanQuality = TransferCandidateQuality.Measure(shell, triangles, positions, clean);
+            var foldedQuality = TransferCandidateQuality.Measure(shell, triangles, positions, folded);
+            Assert.Greater(foldedQuality.overlapPairs, 0);
+            Assert.IsFalse(foldedQuality.Improves(cleanQuality));
+            Assert.IsTrue(cleanQuality.Improves(foldedQuality));
+        }
+
+        [Test]
         public void CandidateScoringDetectsRoundoffWidthButAcceptsIsometricSlivers()
         {
             var triangle = new[] { 0, 1, 2 }; var faces = new List<int> { 0 };
