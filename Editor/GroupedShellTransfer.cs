@@ -503,7 +503,8 @@ namespace SashaRX.UnityMeshLab
             out int chosenSrc, out float chosenDistSq, out float chosenAvg3D,
             Vector3 tgtNormal = default, Vector3[] srcAvgNormal = null,
             TransferMatchTrace.Shell trace = null, string tracePhase = "match",
-            Vector3 targetAreaNormal = default, Vector3[] sourceAreaNormals = null, float exactSurfaceToleranceSq = 0)
+            Vector3 targetAreaNormal = default, Vector3[] sourceAreaNormals = null, float exactSurfaceToleranceSq = 0,
+            int[] targetTriangles = null)
         {
             chosenSrc = -1;
             chosenDistSq = float.MaxValue;
@@ -571,7 +572,16 @@ namespace SashaRX.UnityMeshLab
                 // Multiplicative factor disambiguates equidistant surfaces
                 // (thin belts/straps) without overwhelming clearly-closer matches
                 // (small detail shells on kiosks etc.).
+                float interiorDistance = -1;
                 float score = avgDist;
+                // Neighbouring coplanar charts may share every target boundary
+                // vertex. Their face interiors distinguish a filled surface
+                // from a frame or hole without weakening the vertex evidence.
+                if (targetTriangles != null) {
+                    interiorDistance = SampleInteriorSurfaceDistance(tShell, targetTriangles, tVerts, srcFaces,
+                        hasBvh ? shellBvh3D[si] : null, triPosA, triPosB, triPosC);
+                    score = Mathf.Max(score, interiorDistance);
+                }
                 float candidateDot = 1f;
                 if (useNormal && si < srcAvgNormal.Length)
                 {
@@ -580,7 +590,8 @@ namespace SashaRX.UnityMeshLab
                     score *= 1f + (1f - candidateDot);
                 }
 
-                TransferMatchTrace.RecordCandidate(trace, tracePhase, si, ranked[attempt].distSq, avgDist, candidateDot, score);
+                TransferMatchTrace.RecordCandidate(trace, tracePhase, si, ranked[attempt].distSq, avgDist, candidateDot, score,
+                    interiorDistance);
                 if (score < bestScore)
                 {
                     bestScore = score;
@@ -616,6 +627,41 @@ namespace SashaRX.UnityMeshLab
                 chosenAvg3D = compatibleSurfaceDistance;
             }
             return compatibleSource >= 0 && bestDot < 0f && exactAreaMatch;
+        }
+
+        static float SampleInteriorSurfaceDistance(UvShell shell, int[] triangles, Vector3[] positions,
+            List<int> sourceFaces, TriangleBvh bvh, Vector3[] a, Vector3[] b, Vector3[] c)
+        {
+            // Bound the extra queries independently of target tessellation size.
+            int step = Mathf.Max(1, (shell.faceIndices.Count + kMaxSampleVerts - 1) / kMaxSampleVerts);
+            double sum = 0; int count = 0;
+            for (int i = 0; i < shell.faceIndices.Count; i += step) {
+                int face = shell.faceIndices[i] * 3;
+                var point = (positions[triangles[face]] + positions[triangles[face + 1]] + positions[triangles[face + 2]]) / 3f;
+                float distance = float.MaxValue;
+                if (bvh != null) distance = bvh.FindNearest(point).distSq;
+                else foreach (int sourceFace in sourceFaces)
+                    distance = Mathf.Min(distance, PointToTri3D(point, a[sourceFace], b[sourceFace], c[sourceFace], out _, out _, out _));
+                sum += distance; ++count;
+            }
+            return count > 0 ? (float)(sum / count) : 0;
+        }
+
+        static float SampleInteriorUv0Distance(UvShell shell, int[] triangles, Vector2[] uv,
+            List<int> sourceFaces, TriangleBvh2D bvh, Vector2[] a, Vector2[] b, Vector2[] c)
+        {
+            int step = Mathf.Max(1, (shell.faceIndices.Count + kMaxSampleVerts - 1) / kMaxSampleVerts);
+            double sum = 0; int count = 0;
+            for (int i = 0; i < shell.faceIndices.Count; i += step) {
+                int face = shell.faceIndices[i] * 3;
+                var point = (uv[triangles[face]] + uv[triangles[face + 1]] + uv[triangles[face + 2]]) / 3f;
+                float distance = float.MaxValue;
+                if (bvh != null) distance = bvh.FindNearest(point).distSq;
+                else foreach (int sourceFace in sourceFaces)
+                    distance = Mathf.Min(distance, PointToTri2D(point, a[sourceFace], b[sourceFace], c[sourceFace], out _, out _, out _));
+                sum += distance; ++count;
+            }
+            return count > 0 ? (float)(sum / count) : 0;
         }
 
         // ═══════════════════════════════════════════════════════════
@@ -1428,28 +1474,47 @@ namespace SashaRX.UnityMeshLab
                             out hintedDistSq, out hintedAvg3D);
                     }
 
+                    // Hints identify simplified features, but a previous LOD's
+                    // bounding box is not evidence that its source covers this
+                    // target. A decimated detail can move onto another surface
+                    // while retaining its original UV0 feature. Reject a hint
+                    // only when both 3D and UV0 interiors support the alternative.
+                    tgtExactAreaProtected[tsi] = FindBestSourceShell(tShell, tVerts, srcShells, srcCentroid3D,
+                        triPosA, triPosB, triPosC,
+                        shellBvh3D, shellBvh3DFaceMap,
+                        tCentroid, kMaxRetries, null,
+                        out chosenSrc, out chosenDistSq, out chosenAvg3D,
+                        tgtAvgNormal[tsi], srcAvgNormal, shellTrace,
+                        targetAreaNormal: tgtAreaNormal[tsi], sourceAreaNormals: srcAreaNormal,
+                        exactSurfaceToleranceSq: meshDiagonal * meshDiagonal * 1e-10f, targetTriangles: tgtTris);
+                    if (hintedSrc >= 0 && chosenSrc >= 0 && hintedSrc != chosenSrc) {
+                        float hintInterior = SampleInteriorSurfaceDistance(tShell, tgtTris, tVerts,
+                            srcShells[hintedSrc].faceIndices, shellBvh3D[hintedSrc], triPosA, triPosB, triPosC);
+                        float chosenInterior = SampleInteriorSurfaceDistance(tShell, tgtTris, tVerts,
+                            srcShells[chosenSrc].faceIndices, shellBvh3D[chosenSrc], triPosA, triPosB, triPosC);
+                        float hintUvInterior = SampleInteriorUv0Distance(tShell, tgtTris, tUv0,
+                            srcShells[hintedSrc].faceIndices, shellUv0Bvh[hintedSrc], triUv0A, triUv0B, triUv0C);
+                        float chosenUvInterior = SampleInteriorUv0Distance(tShell, tgtTris, tUv0,
+                            srcShells[chosenSrc].faceIndices, shellUv0Bvh[chosenSrc], triUv0A, triUv0B, triUv0C);
+                        TransferMatchTrace.RecordCandidate(shellTrace, "hint", hintedSrc, hintedDistSq, -1,
+                            Vector3.Dot(tgtAvgNormal[tsi], srcAvgNormal[hintedSrc]), hintInterior, hintInterior, hintUvInterior);
+                        if (hintInterior > Mathf.Max(chosenInterior * 4f, meshDiagonal * meshDiagonal * 1e-10f)
+                            && chosenUvInterior <= 1e-8f && hintUvInterior > 1e-8f) {
+                            hintedSrc = -1;
+                            if (shellTrace != null) shellTrace.initialReason = "Cross-LOD hint rejected by 3D and UV0 face-interior distance";
+                        }
+                    }
                     if (hintedSrc >= 0)
                     {
                         chosenSrc = hintedSrc;
                         chosenDistSq = hintedDistSq;
                         chosenAvg3D = hintedAvg3D;
+                        tgtExactAreaProtected[tsi] = false;
                         tgtHintMatched[tsi] = true;
                         hintClaimedSources.Add(hintedSrc);
                         UvtLog.Verbose($"[GroupedTransfer] t{tsi} hint-matched to src{chosenSrc} " +
                             $"(uv0=[{tUv0Min.x:F3},{tUv0Min.y:F3}]-[{tUv0Max.x:F3},{tUv0Max.y:F3}], " +
                             $"dist3D={hintedAvg3D:F4})");
-                    }
-                    else
-                    {
-                        // Find best source shell (with BVH acceleration + subsampling)
-                        tgtExactAreaProtected[tsi] = FindBestSourceShell(tShell, tVerts, srcShells, srcCentroid3D,
-                            triPosA, triPosB, triPosC,
-                            shellBvh3D, shellBvh3DFaceMap,
-                            tCentroid, kMaxRetries, null,
-                            out chosenSrc, out chosenDistSq, out chosenAvg3D,
-                            tgtAvgNormal[tsi], srcAvgNormal, shellTrace,
-                            targetAreaNormal: tgtAreaNormal[tsi], sourceAreaNormals: srcAreaNormal,
-                            exactSurfaceToleranceSq: meshDiagonal * meshDiagonal * 1e-10f);
                     }
                 }
 
@@ -1686,7 +1751,7 @@ namespace SashaRX.UnityMeshLab
                                 out int newSrc, out float newDistSq, out float newAvg3D,
                                 tgtAvgNormal[tsi], srcAvgNormal, trace?.ForShell(tsi), "dedup",
                                 targetAreaNormal: tgtAreaNormal[tsi], sourceAreaNormals: srcAreaNormal,
-                                exactSurfaceToleranceSq: meshDiagonal * meshDiagonal * 1e-10f);
+                                exactSurfaceToleranceSq: meshDiagonal * meshDiagonal * 1e-10f, targetTriangles: tgtTris);
 
                             if (newSrc >= 0)
                             {

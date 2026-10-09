@@ -3,6 +3,50 @@
 > **Обновлять этот документ при каждом эксперименте с transfer pipeline.**
 > Последнее обновление: v1.1.34 (2026-10-09)
 
+## Bench_Metal_A: shared boundaries and inherited chart hints — 2026-10-09
+
+- Продолжение PR #225, baseline `927eff1`. Actual prefab использует FBX GUID
+  `7896c81e71a3ef74f804c0e590cb339e`, 1668/1268/272 faces на LOD0/1/2.
+  Original FBX/meta скопированы в изолированный Unity 6000.2.6f2 / DX11 проект.
+  Controlled preparation: manual 512, square metric, weld on, pre-optimize off,
+  symmetry off/legacy/adaptive × ARAP off/on — 12 target cases; source UV2 0/0.
+- LOD1: target boundary vertices точно лежат на неправильном coplanar frame,
+  но face interiors находятся в его отверстии. Vertex-only average distance
+  ≈1e-12 не отличает рамку от заполненной поверхности. Для t47/t150/t161
+  UV2 interior coverage неправильного source равен 0%; source bbox скрывает
+  проблему. Bounded sampling до 32 face centroids добавлен к каждой candidate
+  оценке и dedup retry: score использует max(vertex distance, interior distance).
+  Candidate set, normal penalty и merged rescore сохранены.
+- Cross-LOD hint path раньше обходил surface matching. Full-pipeline frozen
+  LOD2 с hints имел 30 degenerate faces / 111 overlaps; без hints — 0 / 6.
+  Geometric-only rejection hints отклонён: Train LOD2 ухудшался 19 → 47
+  degenerates. Relative UV0 rejection тоже отклонён (19 → 25). Итоговый guard
+  отклоняет hint только при >2× distance до 3D interiors, когда alternative
+  покрывает sampled UV0 interiors в пределах squared tolerance 1e-8, а hint
+  не покрывает. Это сохраняет UV0 feature для деталей, смещённых decimation.
+  Trace сохраняет отдельные optional 3D/UV0 interior distances и причину rejection.
+- Controlled Bench LOD1: **8/418 → 2/7**, LOD2: **0/119 → 0/6**, одинаково
+  во всех шести settings. Остаточные LOD2 pairs — folds внутри двух charts;
+  sampling не является сертификатом полного triangle coverage.
+- Frozen Full Pipeline inputs после interior scoring: LOD1 1/8; LOD2 после
+  окончательного hint guard **30/111 → 0/13**. Полное отключение hints даёт
+  меньше pairs, но отбрасывает полезные feature matches; оно не принято.
+- Семь analytic cases: три масштаба общей границы, те же три с неверным hint,
+  и сохранение правильного UV0 hint после displacement. Первые три падали
+  до correction. **136/136 affected EditMode tests**, zero skips; обе reference
+  C# сборки и identifier/dependency guards проходят.
+- Corpus tradeoff: Train LOD1 66/11797 → 62/11800; summed pair area растёт
+  на ≈0.0115%, source уже имеет 32 degenerates / 13964 pairs. Train grouped
+  LOD2 19/4955 → 19/4953. Shelf reverse cases становятся 0/0; Countertop
+  degenerates уменьшаются 14→3 без weld и 15→4 с weld. POST-DEDUP warnings
+  сохранены; ни Bench, ни Train ещё не имеют полностью чистого target atlas.
+  [Измерения и local evidence](MODERN_TRANSFER_REPRO.md#bench_metal_a-shared-boundaries-and-cross-lod-hints).
+- Final frozen corpus: 74 captured pairs + 7 analytic controls × 6 methods =
+  **486 rows**, two repeats, row errors=0, deterministic, inputs unchanged.
+  Пять Train nearest overlap scans остаются lower bounds; Bench scans полные.
+  Final async Full Pipeline с Checker: 9839 updates, missing meshes=0,
+  repeat TransferAll capture подтверждает LOD1 1/8 и LOD2 0/13.
+
 ## Tire_C: tessellation-dependent normal override — 2026-10-09
 
 - Продолжение PR #225, baseline `ebe5fcd`. Actual Tire_C prefab использует

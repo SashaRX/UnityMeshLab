@@ -431,3 +431,92 @@ Final full-pipeline captures in the owned project's BenchmarkReports are
 `transfer_20261009_042932_982_f0127e7c` (Packed) and
 `transfer_20261009_042933_717_3d1b742e` (Separate). Originals and importer settings
 are preserved; captured outputs are regression baselines, not correspondence truth.
+
+## Bench_Metal_A: shared boundaries and cross-LOD hints
+
+Baseline `927eff1`, PR #225. The actual prefab references FBX GUID
+`7896c81e71a3ef74f804c0e590cb339e`, with 1668/1268/272 faces at LOD0/1/2.
+The original FBX and importer metadata were copied into the isolated Unity
+6000.2.6f2 / DX11 project. Controlled preparation uses manual 512, a square
+source metric, weld on and pre-optimization off: symmetry off/legacy/adaptive
+times ARAP off/on, twelve target cases. Every prepared source UV2 has zero
+degenerate faces and zero positive-area overlap pairs.
+
+Vertex-only chart matching cannot distinguish a filled surface from a coplanar
+frame sharing its boundary. Three large LOD1 charts matched the wrong frames
+at squared vertex distance approximately 1e-12, while all their UV2 triangle
+area lay outside the selected source's triangles. Source bounds hid this hole.
+The matcher and dedup retries now sample at most 32 target face centroids per
+candidate and use the maximum of vertex and interior distances before the
+existing normal penalty. This retains the bounded candidate set and merged
+rescore rules. Captures record `faceInteriorDistanceSquared` separately from
+vertex distance; the new optional field does not rename earlier diagnostics.
+
+Cross-LOD hints previously bypassed geometric matching. On frozen Full Pipeline
+inputs, LOD2 with hints had 30 degenerates / 111 overlaps; disabling hints gave
+0 / 6. Rejecting hints on 3D distance alone improved Bench but increased Train
+LOD2 degenerates from 19 to 47. Adding a relative UV0 comparison still left 25.
+Both variants were rejected. The final guard requires a geometric alternative
+with sampled UV0 interiors within squared distance 1e-8, a hint outside that
+UV0 tolerance, and more than twice the geometric interior distance. A feature
+whose geometry moved during decimation can therefore retain its surviving UV0
+hint. Hint candidates record `uv0InteriorDistanceSquared` and the trace names
+the rejection reason. These samples are evidence, not full triangle coverage.
+
+| Bench grouped target | Degenerate faces before → after | Positive-area overlap pairs before → after |
+|---|---:|---:|
+| Controlled LOD1, all six settings | 8 → 2 | 418 → 7 |
+| Controlled LOD2, all six settings | 0 → 0 | 119 → 6 |
+| Frozen Full Pipeline LOD1, after interior correction | 1 → 1 | 8 → 8 |
+| Frozen Full Pipeline LOD2, hint guard | 30 → 0 | 111 → 13 |
+
+The remaining six controlled LOD2 intersections are folds within two charts.
+The final production hint path has thirteen pairs, summed area 2.7451e-6 in
+normalized UV space; disabling hints reduces pairs but loses feature evidence.
+LOD1 still has a degenerate face in Full Pipeline. `POST-DEDUP DUPLICATE`
+messages remain active and were reproduced in the full probe: they report
+source claims, not a count of intersecting UV2 triangle pairs. This correction
+does not certify Bench as a clean lightmap atlas.
+
+Three analytic shared-boundary fixtures at scales 0.001/1/1000 failed before
+the correction. The same three fixtures with a misleading previous-LOD hint
+and a displaced-feature fixture cover rejection and preservation respectively.
+The final affected suite passes **136/136 EditMode tests**, no skips; both
+reference C# define variants and identifier/dependency checks pass.
+
+Two asynchronous Full Pipeline runs with Checker at LOD1/2 completed in
+712/595 ms in the owned project. The probe checked 9839 Editor updates and
+Off/Checker transitions, with zero missing renderer meshes. A repeated
+TransferAll capture confirms LOD1 1/8 and LOD2 0/13. Other workflow defaults
+were retained, with target symmetry splitting enabled and manual atlas 512;
+this is not the original scene's exact material/auto-tune capture.
+
+Existing corpus changes include Countertop degenerates 14→3 without weld and
+15→4 with weld, and clean Shelf reverse cases. Train LOD1 trades four fewer
+degenerates for three more overlap pairs: 66/11797 → 62/11800, pair area
+0.0030578235 → 0.0030581745 (about +0.0115%). Its source was already invalid
+with 32 degenerates / 13964 pairs. Train grouped LOD2 retains 19 degenerates
+and improves 4955→4953 pairs. Source defects, local stretch and remaining
+target folds still require work.
+
+Final frozen comparison: 74 captured pairs and seven analytic controls across
+six methods, two repetitions, **486 rows**, zero row errors, deterministic
+outputs and unchanged inputs. Five Train nearest-method overlap scans remain
+incomplete lower bounds; every Bench scan completes. All five positive analytic
+grouped controls match independent truth. Both negative controls still fail it.
+Compared with the interior-only run, the final hint guard changes only Train
+grouped LOD2 and Bench Full Pipeline LOD2; source/target hashes are identical.
+Timing includes the asynchronous benchmark/Editor schedule: final Full Bench
+LOD1/2 medians are 149/74 ms, Train grouped LOD2 approximately 1102 ms versus
+902 ms before hint validation. Added queries have a cost; this is a quality fix.
+
+Local evidence under `_results~/bench-metal-20261009/`: `project-before.json`,
+`interior-baseline.xml`, `final-tests.xml`, `compile-publish/`,
+`prepared-baseline/transfer_compare_20261009_043926_595_119364b8`,
+`corpus-interior-all/`, rejected `corpus-hint-guard/` and `corpus-hint-uv0/`,
+accepted `corpus-hint-contained/`, and `full-publish.log` / `full-publish-summary.json`.
+Final comparison and counters are in `frozen-publish/`, `final-summary.json`
+and `final-revalidation.json`.
+The final owned-project capture is
+`BenchmarkReports/transfer_20261009_052514_533_96307819/manifest.json`.
+FBX, importer metadata, prefab and authored material are preserved.

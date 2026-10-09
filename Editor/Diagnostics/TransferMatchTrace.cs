@@ -12,6 +12,8 @@ namespace SashaRX.UnityMeshLab
             public string phase;
             public int sourceShell;
             public float centroidDistanceSquared, surfaceDistanceSquared, normalDot, score;
+            public float faceInteriorDistanceSquared = -1;
+            public float uv0InteriorDistanceSquared = -1;
             public bool finite;
         }
 
@@ -37,12 +39,15 @@ namespace SashaRX.UnityMeshLab
             return shells[index];
         }
 
-        internal static void RecordCandidate(Shell shell, string phase, int source, float centroid, float surface, float dot, float score)
+        internal static void RecordCandidate(Shell shell, string phase, int source, float centroid, float surface, float dot, float score,
+            float faceInterior = -1, float uv0Interior = -1)
         {
             if (shell == null) return;
             bool finite = !float.IsNaN(score) && !float.IsInfinity(score);
             shell.candidates.Add(new Candidate { phase = phase, sourceShell = source,
                 centroidDistanceSquared = FiniteValue(centroid), surfaceDistanceSquared = FiniteValue(surface), normalDot = FiniteValue(dot),
+                faceInteriorDistanceSquared = FiniteValue(faceInterior),
+                uv0InteriorDistanceSquared = FiniteValue(uv0Interior),
                 score = finite ? score : float.MaxValue, finite = finite });
             // Keep the best eight evaluated candidates of each search, never rescore or change matching.
             int count = 0, worst = -1;

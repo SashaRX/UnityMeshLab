@@ -413,6 +413,96 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
         }
 
+        [TestCase(.001f, false)]
+        [TestCase(1f, false)]
+        [TestCase(1000f, false)]
+        [TestCase(.001f, true)]
+        [TestCase(1f, true)]
+        [TestCase(1000f, true)]
+        public void FilledChartDoesNotMatchCoplanarFrameSharingItsBoundary(float scale, bool wrongPreviousLodHint)
+        {
+            var source = new Mesh { name = "Frame and filled chart with a shared geometric boundary" };
+            var target = new Mesh { name = "Filled target chart" };
+            try {
+                var outline = new[] { new Vector2(-1, -1), new Vector2(2, -1), new Vector2(2, 2), new Vector2(-1, 2),
+                    Vector2.zero, Vector2.right, Vector2.one, Vector2.up,
+                    Vector2.zero, Vector2.right, Vector2.one, Vector2.up };
+                var positions = new Vector3[outline.Length]; var atlas = new Vector2[outline.Length];
+                for (int i = 0; i < outline.Length; ++i) {
+                    positions[i] = new Vector3(outline[i].x, outline[i].y, 0) * scale;
+                    atlas[i] = i < 8 ? (outline[i] + Vector2.one) * .1f + Vector2.one * .05f
+                        : outline[i] * .25f + Vector2.one * .65f;
+                }
+                var indices = new List<int>();
+                for (int i = 0; i < 4; ++i) {
+                    int next = (i + 1) % 4;
+                    indices.AddRange(new[] { i, next, next + 4, i, next + 4, i + 4 });
+                }
+                indices.AddRange(new[] { 8, 9, 10, 8, 10, 11 });
+                source.vertices = positions; source.uv = outline; source.uv2 = atlas;
+                source.SetTriangles(indices, 0); source.RecalculateNormals();
+                target.vertices = new[] { positions[8], positions[9], positions[10], positions[11] };
+                target.uv = new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up };
+                target.triangles = new[] { 0, 1, 2, 0, 2, 3 }; target.RecalculateNormals();
+                var trace = new TransferMatchTrace();
+                var hints = wrongPreviousLodHint ? new List<GroupedShellTransfer.CrossLodMatchHint> {
+                    new GroupedShellTransfer.CrossLodMatchHint {
+                        sourceShellIndex = 0, centroid3D = new Vector3(.5f, .5f, 0) * scale,
+                        uv0Centroid = Vector2.one * .5f, uv0BoundsMin = Vector2.zero, uv0BoundsMax = Vector2.one,
+                        quality = GroupedShellTransfer.ShellStatus.Accepted
+                    }
+                } : null;
+                var result = GroupedShellTransfer.TransferWithDiagnostics(target, source, null, hints, 512, 512, trace);
+                Assert.AreEqual(1, result.targetShellToSourceShell[0],
+                    "Coincident boundary vertices do not mean the frame covers the target face interiors.");
+                var frame = trace.shells[0].candidates.Find(candidate => candidate.sourceShell == 0 && candidate.phase == "match");
+                var filled = trace.shells[0].candidates.Find(candidate => candidate.sourceShell == 1 && candidate.phase == "match");
+                Assert.That(frame.faceInteriorDistanceSquared, Is.GreaterThan(scale * scale * .01f));
+                Assert.That(filled.faceInteriorDistanceSquared, Is.LessThan(scale * scale * 1e-8f));
+                if (wrongPreviousLodHint) {
+                    Assert.IsFalse(trace.shells[0].hintMatched);
+                    StringAssert.Contains("hint rejected", trace.shells[0].initialReason);
+                }
+                for (int i = 0; i < 4; ++i)
+                    Assert.That(Vector2.Distance(atlas[8 + i], result.uv2[i]), Is.LessThan(1e-5f));
+            }
+            finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
+        [Test]
+        public void CrossLodHintRetainsUv0FeatureWhenDecimationMovesSurface()
+        {
+            var source = new Mesh { name = "Parallel surfaces with different UV0 features" };
+            var target = new Mesh { name = "Detail decimated onto nearby surface" };
+            try {
+                var corners = new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up };
+                var vertices = new Vector3[8]; var uv0 = new Vector2[8]; var atlas = new Vector2[8];
+                for (int i = 0; i < 8; ++i) {
+                    vertices[i] = new Vector3(corners[i % 4].x, corners[i % 4].y, i < 4 ? 0 : .01f);
+                    uv0[i] = corners[i % 4] + (i < 4 ? Vector2.zero : Vector2.right * 2);
+                    atlas[i] = corners[i % 4] * .25f + Vector2.one * (i < 4 ? .05f : .65f);
+                }
+                source.vertices = vertices; source.uv = uv0; source.uv2 = atlas;
+                source.triangles = new[] { 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 }; source.RecalculateNormals();
+                target.vertices = new[] { vertices[4], vertices[5], vertices[6], vertices[7] };
+                target.uv = corners; target.triangles = new[] { 0, 1, 2, 0, 2, 3 }; target.RecalculateNormals();
+                var hints = new List<GroupedShellTransfer.CrossLodMatchHint> {
+                    new GroupedShellTransfer.CrossLodMatchHint {
+                        sourceShellIndex = 0, centroid3D = new Vector3(.5f, .5f, 0),
+                        uv0Centroid = Vector2.one * .5f, uv0BoundsMin = Vector2.zero, uv0BoundsMax = Vector2.one,
+                        quality = GroupedShellTransfer.ShellStatus.Accepted
+                    }
+                };
+                var trace = new TransferMatchTrace();
+                var result = GroupedShellTransfer.TransferWithDiagnostics(target, source, null, hints, 512, 512, trace);
+                Assert.AreEqual(0, result.targetShellToSourceShell[0]);
+                Assert.IsTrue(trace.shells[0].hintMatched, "Geometric proximity cannot discard a surviving UV0 feature.");
+                for (int i = 0; i < 4; ++i)
+                    Assert.That(Vector2.Distance(atlas[i], result.uv2[i]), Is.LessThan(1e-5f));
+            }
+            finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
         [TestCase(8, false)]
         [TestCase(40, false)]
         [TestCase(8, true)]
