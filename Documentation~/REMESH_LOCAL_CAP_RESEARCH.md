@@ -95,6 +95,7 @@ remaining native defects.
 | Opening | Proposed local construction | Acceptance concern |
 | --- | --- | --- |
 | Simple, nearly planar rim | Fit a local plane; verify its projected polygon is simple; constrained Delaunay inside that domain. Keep original 3D boundary coordinates. | A small plane residual does not rule out projected crossings, folds or collisions. |
+| One rim crossing several planar faces | Segment contiguous boundary chains by plane support; reconstruct compatible plane-intersection feature edges; triangulate each resulting planar patch separately. | A single plane or smooth patch can remove the original corner; plane fitting alone does not establish missing-edge connectivity. |
 | Warped rim | Boundary-aware 3D triangulation using angle/area costs; adjacent source triangles inform continuity. Refine inside the patch if needed. | Individually admissible triangles may collide with each other; complete candidate checks and bounded alternative search are required. |
 | Narrow crack or two compatible borders | Stitch the appropriate sides, preserving ordering and orientation. Identical duplicate seams can be joined without inventing a lid. | Similar distance alone is insufficient to identify matching surfaces. Boundary resampling requires coordinated source-edge edits. |
 | Outer rim with interior boundaries | One compound patch retaining those boundaries; planar constrained triangulation when justified, multiple-3D-polygon method otherwise. | Filling each rim independently overlaps islands; domain membership and vertex links must remain valid in 3D. |
@@ -112,6 +113,61 @@ There is no original triangle surface inside a genuine hole. Therefore distance
 to the original mesh cannot certify the restored interior shape: it can instead
 pull a valid lid towards the rim. Use a declared plane/continuation/user hint,
 report patch excursion against that prior, and expose ambiguous cases.
+
+## Whole-contour and partial-contour plane detection
+
+The user's adjacent-missing-box-faces example requires a piecewise-planar
+hypothesis. One closed six-edge boundary contains two consecutive three-edge
+chains in different planes. Their missing common edge must be reconstructed
+before independently triangulating the two faces. A single arbitrary
+triangulation followed by fairing need not preserve that corner.
+
+Proposed bounded classifier, after source-fan-aware boundary extraction:
+
+1. Fit a plane to the entire cyclic contour. Account for boundary arc length so
+   subdivision density does not dominate the fit. Require non-collinear support
+   and check maximum endpoint distance, not only average/RMS residual. Collinear
+   chains do not determine a unique plane. For straight mesh edges, endpoint
+   distances suffice to bound distance along the segment.
+2. If the whole contour passes the geometric tolerance and simple-projection
+   checks, retain the single-plane candidate. Report the tolerance and residual;
+   do not force original boundary positions onto the fitted plane.
+3. Otherwise generate plane candidates from contiguous non-collinear chains and
+   grow their support along the cyclic boundary, including across its start/end
+   seam. Refit and verify the entire proposed chain at each extension; a series
+   of locally small turns must not accumulate into an accepted curved chain.
+4. Compare bounded alternative segmentations. Favor adequate support and fewer
+   planes subject to residual limits; merge adjacent compatible candidates.
+   Individual edges or arbitrary three-point fits are insufficient evidence of
+   a separate face. Inspect source feature directions and collar geometry, but
+   do not require adjacent source-face normals to equal the missing-face normal:
+   a box's surviving side faces meet the missing face at a sharp angle.
+5. Construct intersection-line candidates for compatible neighboring planes.
+   An infinite line is not yet a valid missing edge: verify its finite endpoints,
+   correspondence to chain junctions, face closure, winding and consistency with
+   the surrounding mesh. Reject ill-conditioned near-parallel intersections or
+   ambiguous connectivity. Do not infer right angles for arbitrary models.
+6. Triangulate the resulting domains independently with shared reconstructed
+   edges as fixed constraints. Preserve those features during refinement and
+   fairing; apply the complete topology/intersection contract to their union.
+   Failed piecewise-planar candidates may enter the bounded 3D-patch search or
+   be refused with the reason recorded.
+
+Plane-fit tolerance is a geometric classification parameter, not a welding
+tolerance. Report it in mesh units and relative to local edge lengths, opening
+diameter and native cell size. Account for coordinate precision and nearby-sheet
+separation; do not use a voxel-scale threshold that silently merges thin layers.
+Numerical equality predicates and permitted shape approximation stay separate.
+
+Required analytic case: a box with two adjacent faces removed. The expected
+candidate restores two planar quads, four triangles and their shared sharp
+edge, without moving or adding boundary vertices. Test rotations, scales,
+uneven edge subdivisions and contour start offsets. A box with opposite faces
+removed instead has two separate planar boundary loops. Include a three-face
+opening and a curved rim as controls for over-segmentation and ambiguity.
+
+This is a proposed classifier and fixture contract, not a measured implementation
+result. Geometry alone does not uniquely determine every missing surface.
 
 ## Acceptance contract
 
@@ -171,8 +227,10 @@ native failure, not a guarantee that voxelization/Solve preserves manifoldness.
 
 Start offline with **source-fan-aware boundary extraction and simple planar local
 Caps**, reusing the existing exact intersection and topology auditors. Keep the
-boundary fixed, refuse ambiguous domains, and record each failure class. Leave
-3D compound filling and local source-collar edits as subsequent experiments.
+boundary fixed, refuse ambiguous domains, and record each failure class. Next
+add contiguous partial-plane detection and the adjacent-missing-box-faces case
+above. Leave 3D compound filling and local source-collar edits as subsequent
+experiments.
 
 Analytic fixtures should include a concave planar rim, a warped rim, annular and
 nested domains, a narrow crack, touching loops, a bow-tie vertex, thin nearby
