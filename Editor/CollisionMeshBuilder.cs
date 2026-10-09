@@ -135,12 +135,21 @@ namespace SashaRX.UnityMeshLab
             public int   maxHulls;
             public int   resolution;
             public int   maxVertsPerHull;
+            /// <summary>Allowed volume error (%) relative to occupied voxels, not a minimum hull volume.</summary>
             public float minVolumePerHull;
             public int   maxRecursionDepth;
             public bool  shrinkWrap;
             public int   fillMode;        // 0=FloodFill, 1=SurfaceOnly, 2=RaycastFill
             public int   minEdgeLength;
             public bool  findBestPlane;
+            public bool  groupNearbyParts;
+            public float partMergeDistance; // fraction of source bounds diagonal; 0 = disconnected pieces only
+            public float partMergeAngle;    // principal-plane angle in degrees
+            public bool prepareElements;
+            public float boxFillThreshold;  // closed volume / oriented bounding box volume
+            public float elementFitError;   // sampled distance / element bounds diagonal
+            public int elementRemeshResolution;
+            public int elementTargetTriangles;
 
             public static ConvexDecompSettings Default => new ConvexDecompSettings
             {
@@ -152,8 +161,41 @@ namespace SashaRX.UnityMeshLab
                 shrinkWrap        = true,
                 fillMode          = 0,
                 minEdgeLength     = 2,
-                findBestPlane     = false
+                findBestPlane     = false,
+                partMergeDistance = .02f,
+                partMergeAngle    = 50f,
+                boxFillThreshold  = .9f,
+                elementFitError   = .02f,
+                elementRemeshResolution = 32,
+                elementTargetTriangles = 64
             };
+
+            /// <summary>Coarse prop colliders: close small detail within similarly oriented parts.</summary>
+            public static ConvexDecompSettings CoarseParts
+            {
+                get
+                {
+                    var settings = Default;
+                    settings.maxHulls = 8;
+                    settings.maxVertsPerHull = 16;
+                    settings.minVolumePerHull = 85f;
+                    settings.groupNearbyParts = true;
+                    settings.prepareElements = true;
+                    return settings;
+                }
+            }
+        }
+
+        public enum ElementPreparation { Source, Box, RemeshDecimate, Decimate }
+
+        public struct ElementReport
+        {
+            public int groupIndex, elementIndex, sourceTriangles, preparedTriangles;
+            public Vector3 principalSize;
+            public float boxFill; // -1 when the source has no valid closed volume
+            public float sampledError; // relative to the element bounds diagonal
+            public ElementPreparation preparation;
+            public string detail;
         }
 
         public struct ConvexDecompResult
@@ -162,6 +204,8 @@ namespace SashaRX.UnityMeshLab
             public string error;
             public List<Mesh> hulls;
             public int sourceTriCount;
+            public int partGroupCount;
+            public List<ElementReport> elementReports;
         }
 
         /// <summary>
@@ -214,7 +258,7 @@ namespace SashaRX.UnityMeshLab
 
         static ConvexDecompResult BuildConvexDecompositionReadable(Mesh sourceMesh, ConvexDecompSettings settings)
         {
-            var result = new ConvexDecompResult { hulls = new List<Mesh>() };
+            var result = new ConvexDecompResult { hulls = new List<Mesh>(), partGroupCount = 1 };
 
             if (sourceMesh == null)
             {
@@ -232,6 +276,21 @@ namespace SashaRX.UnityMeshLab
             {
                 result.error = "Volume error threshold must be finite and non-negative";
                 return result;
+            }
+
+            if (settings.groupNearbyParts || settings.prepareElements)
+            {
+                if (!ValidPartSettings(settings))
+                {
+                    result.error = "Part gap must be 0 or 0.0001-10% of bounds diagonal; part angle must be 0-90 degrees";
+                    return result;
+                }
+                if (settings.prepareElements && !CollisionElementPreprocessor.ValidSettings(settings))
+                {
+                    result.error = "Invalid element preparation settings: fill 50-100%, fit error 0.01-10%, voxel resolution 16-256, triangle budget 12-4096";
+                    return result;
+                }
+                return BuildGroupedDecomposition(sourceMesh, settings);
             }
 
             // Extract positions and merge all submesh triangles
@@ -353,6 +412,136 @@ namespace SashaRX.UnityMeshLab
             }
 
             return result;
+        }
+
+        static bool ValidPartSettings(ConvexDecompSettings settings) =>
+            !float.IsNaN(settings.partMergeDistance) && !float.IsInfinity(settings.partMergeDistance) &&
+            (settings.partMergeDistance == 0 || settings.partMergeDistance >= .000001f && settings.partMergeDistance <= .1f) &&
+            !float.IsNaN(settings.partMergeAngle) && !float.IsInfinity(settings.partMergeAngle) &&
+            settings.partMergeAngle >= 0 && settings.partMergeAngle <= 90;
+
+        static ConvexDecompResult BuildGroupedDecomposition(Mesh source, ConvexDecompSettings settings)
+        {
+            ExtractMeshData(source, out var positions, out var indices);
+            var parts = CollisionPartGrouper.Group(positions, indices, settings.groupNearbyParts ? settings.partMergeDistance : 0, settings.partMergeAngle);
+            var result = new ConvexDecompResult {
+                hulls = new List<Mesh>(), sourceTriCount = indices.Length / 3, partGroupCount = parts.Count, elementReports = new List<ElementReport>()
+            };
+            int budget = Mathf.Clamp(settings.maxHulls, 1, 64);
+            if (parts.Count > budget)
+            {
+                result.error = $"Found {parts.Count} part groups, but Max Hulls is {budget}. Increase Max Hulls or group more nearby parts. Whole-mesh decomposition requires Group Nearby Parts and Prepare Elements off.";
+                return result;
+            }
+            var meshes = new List<Mesh>();
+            var outputs = new List<ConvexDecompResult>();
+            var limits = new int[parts.Count];
+            bool prepareElements = settings.prepareElements;
+            settings.groupNearbyParts = false;
+            settings.prepareElements = false;
+            try
+            {
+                for (int i = 0; i < parts.Count; i++)
+                {
+                    var mesh = prepareElements
+                        ? BuildPreparedPartMesh(source.name, positions, parts[i], settings, i, result.elementReports)
+                        : BuildPartMesh(source.name, positions, parts[i].indices);
+                    meshes.Add(mesh);
+                    limits[i] = budget / parts.Count + (i < budget % parts.Count ? 1 : 0);
+                    settings.maxHulls = limits[i];
+                    var output = BuildConvexDecompositionReadable(mesh, settings);
+                    outputs.Add(output);
+                    if (!output.ok) { result.error = $"Part group {i}: {output.error}"; return result; }
+                }
+                // Simple parts may use fewer hulls than their share. Give that unused
+                // budget only to groups that still hit their limit, never across groups.
+                while (true)
+                {
+                    int used = 0;
+                    var capped = new List<int>();
+                    for (int i = 0; i < outputs.Count; i++)
+                    {
+                        used += outputs[i].hulls.Count;
+                        if (outputs[i].hulls.Count == limits[i]) capped.Add(i);
+                    }
+                    int spare = budget - used;
+                    if (spare <= 0 || capped.Count == 0) break;
+                    for (int n = 0; n < capped.Count && n < spare; n++)
+                    {
+                        int i = capped[n];
+                        limits[i] += spare / capped.Count + (n < spare % capped.Count ? 1 : 0);
+                        settings.maxHulls = limits[i];
+                        var output = BuildConvexDecompositionReadable(meshes[i], settings);
+                        DestroyHulls(outputs[i].hulls);
+                        outputs[i] = output;
+                        if (!output.ok) { result.error = $"Part group {i}: {output.error}"; return result; }
+                    }
+                }
+                foreach (var output in outputs)
+                    foreach (var hull in output.hulls)
+                    {
+                        hull.name = source.name + "_hull" + result.hulls.Count;
+                        result.hulls.Add(hull);
+                    }
+                result.ok = true;
+                return result;
+            }
+            finally
+            {
+                foreach (var mesh in meshes) UnityEngine.Object.DestroyImmediate(mesh);
+                if (!result.ok)
+                    foreach (var output in outputs) DestroyHulls(output.hulls);
+            }
+        }
+
+        static Mesh BuildPreparedPartMesh(string name, Vector3[] positions, CollisionPartGrouper.Part part,
+            ConvexDecompSettings settings, int group, List<ElementReport> reports)
+        {
+            var vertices = new List<Vector3>();
+            var triangles = new List<int>();
+            foreach (var element in part.Elements)
+            {
+                var prepared = CollisionElementPreprocessor.Prepare(positions, element.indices, settings, out var report);
+                report.groupIndex = group;
+                report.elementIndex = reports.Count;
+                reports.Add(report);
+                int offset = vertices.Count;
+                vertices.AddRange(prepared.positions);
+                foreach (int index in prepared.indices) triangles.Add(offset + index);
+            }
+            var mesh = new Mesh { name = name, indexFormat = vertices.Count > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16 };
+            mesh.SetVertices(vertices);
+            mesh.SetTriangles(triangles, 0);
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        static Mesh BuildPartMesh(string name, Vector3[] positions, List<int> indices)
+        {
+            var remap = new Dictionary<int, int>();
+            var vertices = new List<Vector3>();
+            var triangles = new int[indices.Count];
+            for (int i = 0; i < indices.Count; i++)
+            {
+                int source = indices[i];
+                if (!remap.TryGetValue(source, out int index))
+                {
+                    index = vertices.Count;
+                    remap.Add(source, index);
+                    vertices.Add(positions[source]);
+                }
+                triangles[i] = index;
+            }
+            var mesh = new Mesh { name = name, indexFormat = vertices.Count > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16 };
+            mesh.SetVertices(vertices);
+            mesh.SetTriangles(triangles, 0);
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        static void DestroyHulls(List<Mesh> hulls)
+        {
+            foreach (var hull in hulls) UnityEngine.Object.DestroyImmediate(hull);
         }
 
         /// <summary>

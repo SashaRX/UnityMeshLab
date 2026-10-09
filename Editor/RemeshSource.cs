@@ -488,59 +488,8 @@ namespace SashaRX.UnityMeshLab
         /// eigenvectors), largest first — a pipe lying diagonally reads as long × thin ×
         /// thin here where its axis-aligned bounds would read as fat.
         /// </summary>
-        internal static Vector3 PrincipalExtents(List<Vector3> points)
-        {
-            int n = points.Count;
-            if (n == 0) return Vector3.zero;
-            Vector3 mean = Vector3.zero;
-            foreach (var p in points) mean += p;
-            mean /= n;
-            // Covariance (symmetric 3×3), then Jacobi rotations to diagonalize it.
-            double xx = 0, yy = 0, zz = 0, xy = 0, xz = 0, yz = 0;
-            foreach (var p in points) {
-                double dx = p.x - mean.x, dy = p.y - mean.y, dz = p.z - mean.z;
-                xx += dx * dx; yy += dy * dy; zz += dz * dz; xy += dx * dy; xz += dx * dz; yz += dy * dz;
-            }
-            var a = new double[3, 3] { { xx, xy, xz }, { xy, yy, yz }, { xz, yz, zz } };
-            var v = new double[3, 3] { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
-            for (int sweep = 0; sweep < 32; ++sweep) {
-                double off = a[0, 1] * a[0, 1] + a[0, 2] * a[0, 2] + a[1, 2] * a[1, 2];
-                if (off < 1e-24) break;
-                for (int p = 0; p < 2; ++p)
-                    for (int q = p + 1; q < 3; ++q) {
-                        if (Math.Abs(a[p, q]) < 1e-30) continue;
-                        double theta = (a[q, q] - a[p, p]) / (2 * a[p, q]);
-                        double t = Math.Sign(theta) / (Math.Abs(theta) + Math.Sqrt(theta * theta + 1));
-                        if (theta == 0) t = 1;
-                        double c = 1 / Math.Sqrt(t * t + 1), sn = t * c;
-                        for (int k = 0; k < 3; ++k) {
-                            double akp = a[k, p], akq = a[k, q];
-                            a[k, p] = c * akp - sn * akq; a[k, q] = sn * akp + c * akq;
-                        }
-                        for (int k = 0; k < 3; ++k) {
-                            double apk = a[p, k], aqk = a[q, k];
-                            a[p, k] = c * apk - sn * aqk; a[q, k] = sn * apk + c * aqk;
-                        }
-                        for (int k = 0; k < 3; ++k) {
-                            double vkp = v[k, p], vkq = v[k, q];
-                            v[k, p] = c * vkp - sn * vkq; v[k, q] = sn * vkp + c * vkq;
-                        }
-                    }
-            }
-            var extents = new float[3];
-            for (int axis = 0; axis < 3; ++axis) {
-                var dir = new Vector3((float)v[0, axis], (float)v[1, axis], (float)v[2, axis]);
-                float lo = float.MaxValue, hi = float.MinValue;
-                foreach (var p in points) {
-                    float d = Vector3.Dot(p - mean, dir);
-                    if (d < lo) lo = d;
-                    if (d > hi) hi = d;
-                }
-                extents[axis] = hi - lo;
-            }
-            Array.Sort(extents);
-            return new Vector3(extents[2], extents[1], extents[0]);
-        }
+        internal static Vector3 PrincipalExtents(List<Vector3> points) =>
+            MeshGeometry.PrincipalExtents(points, out _);
 
         /// <summary>
         /// One box per captured renderer, measured over that renderer's (filtered)
