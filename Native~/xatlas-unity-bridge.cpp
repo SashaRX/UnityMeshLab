@@ -11,7 +11,7 @@
 #include <algorithm>
 #include <cmath>
 
-// Compile the pinned, unmodified implementation in this translation unit so
+// Compile the pinned implementation (reviewed shape-preservation extension) so
 // the bridge can repair its UV face mask before chart construction. No internal
 // xatlas types cross the exported C ABI. Do not compile xatlas.cpp separately.
 #include "xatlas.cpp"
@@ -143,7 +143,7 @@ EXPORT void xatlasComputeCharts()
     xatlas::ComputeCharts(s_atlas, opts);
 }
 
-EXPORT void xatlasPackCharts(
+static void packCharts(
     int      maxChartSize,
     uint32_t padding,
     float    texelsPerUnit,
@@ -152,11 +152,13 @@ EXPORT void xatlasPackCharts(
     int      blockAlign,
     int      bruteForce,
     int      rotateCharts,
-    int      rotateChartsToAxis)
+    int      rotateChartsToAxis,
+    bool     preserveShape)
 {
     if (!s_atlas) return;
 
     xatlas::PackOptions opts;
+    opts.preserveChartShape = preserveShape;
     opts.maxChartSize        = maxChartSize;
     opts.padding             = padding;
     opts.texelsPerUnit       = texelsPerUnit;
@@ -168,6 +170,18 @@ EXPORT void xatlasPackCharts(
     opts.rotateChartsToAxis  = (rotateChartsToAxis != 0);
 
     xatlas::PackCharts(s_atlas, opts);
+}
+
+EXPORT void xatlasPackCharts(int size, uint32_t padding, float density, uint32_t resolution,
+    int bilinear, int blocks, int bruteForce, int rotate, int axis)
+{
+    packCharts(size,padding,density,resolution,bilinear,blocks,bruteForce,rotate,axis,false);
+}
+
+EXPORT void xatlasPackChartsPreserveShape(int size, uint32_t padding, float density, uint32_t resolution,
+    int bilinear, int blocks, int bruteForce, int rotate, int axis)
+{
+    packCharts(size,padding,density,resolution,bilinear,blocks,bruteForce,rotate,axis,true);
 }
 
 // ── Queries ──

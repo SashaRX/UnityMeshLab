@@ -15,8 +15,8 @@
 // colocalization and chart UV area. Merged charts are re-packed
 // through the xatlas UvMesh bridge and their tangent frames are rebuilt from the
 // final atlas layout — that covers the fit rotation, the seam snap's per-vertex
-// displacement and the packer's per-axis ceil stretch alike, none of which a
-// rotated stale tangent can represent. Any ambiguity rolls the geometry back to
+// displacement and packing rotations, which a stale tangent cannot track
+// through changed seam connectivity. Any ambiguity rolls the geometry back to
 // the pre-merge snapshot.
 //
 // Author: SashaRX.UnityMeshLab
@@ -853,7 +853,7 @@ namespace SashaRX.UnityMeshLab
         {
             // Usually pack at 4× the user-facing resolution, like XatlasRepack;
             // overlap repair can retry at higher precision. xatlas
-            // ceil-rounds each chart's extents to texel dimensions, so a layout whose
+            // rounds each chart's raster extents to texel dimensions, so a layout whose
             // charts sum near the full atlas size cannot fit — the packer then places
             // charts at negative coordinates and its texcoord assert aborts the editor
             // (xatlas.cpp:8598). The oversample turns the rounding into a fraction of
@@ -890,7 +890,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 token.ThrowIfCancellationRequested();
                 XatlasNative.xatlasComputeCharts();
-                XatlasNative.xatlasPackCharts(0, internalPad, 0f, internalRes, 1,
+                XatlasNative.xatlasPackChartsPreserveShape(0, internalPad, 0f, internalRes, 1,
                     settings.packBlockAlign ? 1 : 0, settings.packBruteForce ? 1 : 0, rotateCharts, rotateToAxis);
                 return ReadPackedUv(geometry, token);
             }
@@ -1006,8 +1006,8 @@ namespace SashaRX.UnityMeshLab
         /// orthonormal frame per vertex with handedness from the accumulated bitangent.
         /// Deriving from the final UVs is the only thing that stays correct through
         /// everything the merge did — the fit rotation, the seam snap's per-vertex
-        /// displacement, and the packer's per-chart per-axis ceil stretch, which is not
-        /// a similarity a rotated stale tangent could track. Degenerate faces leave the
+        /// displacement. Remesh packing now preserves chart shape, but still rotates
+        /// charts and can split corners. Degenerate faces leave the
         /// old tangent. Repack callers rebuild every output chart.</summary>
         internal static void RebuildChartTangents(RemeshNative.Geometry g, HashSet<int> chartIds, CancellationToken token)
         {

@@ -257,6 +257,7 @@ int Unwrap(const PosMesh& m, float crease, float smoothing, const UnwrapOptions&
     for (Vertex& v : atlasVerts) for (float& coordinate : v.p) coordinate *= float(gain);
     const float atlasUnit = extent / float(gain);
     UnwrapOptions scaled = o;
+    scaled.pack.preserveChartShape = true;
     // Chart limits are given in source units; the atlas input is normalized by extent.
     scaled.charts.maxChartArea = o.charts.maxChartArea / (atlasUnit * atlasUnit);
     scaled.charts.maxBoundaryLength = o.charts.maxBoundaryLength / atlasUnit;
@@ -273,14 +274,15 @@ int Unwrap(const PosMesh& m, float crease, float smoothing, const UnwrapOptions&
     if (!atlas->meshCount || !atlas->width || !atlas->height || !atlas->atlasCount) return NoAtlas;
     if (atlas->atlasCount != 1) return MultipleAtlases;
     const xatlas::Mesh& mesh = atlas->meshes[0];
+    const float atlasExtent = float(std::max(atlas->width,atlas->height));
     out.vertices.resize(mesh.vertexCount);
     out.charts.resize(mesh.vertexCount);
     for (uint32_t i = 0; i < mesh.vertexCount; ++i) {
         const auto& v = mesh.vertexArray[i];
         if (v.atlasIndex != 0 || v.xref >= verts.size()) return BadMapping;
         out.vertices[i] = verts[v.xref];
-        out.vertices[i].uv[0] = v.uv[0] / atlas->width;
-        out.vertices[i].uv[1] = v.uv[1] / atlas->height;
+        out.vertices[i].uv[0] = v.uv[0] / atlasExtent;
+        out.vertices[i].uv[1] = v.uv[1] / atlasExtent;
         out.charts[i] = v.chartIndex;
     }
     out.indices.assign(mesh.indexArray, mesh.indexArray + mesh.indexCount);

@@ -191,7 +191,22 @@ static void checkSimplifySlivers(float scale) {
     }
 }
 
+static void checkSkinnySquareAtlas(float scale) {
+    const float p[]={0,0,0,scale,0,0,scale,scale*1e-4f,0,0,scale*1e-4f,0};
+    const uint32_t ix[]={0,1,2,0,2,3};
+    void* handle=nullptr; uint32_t vertices=0,count=0;
+    check(meshLabUnwrap(p,4,ix,6,1,0,nullptr,0,&handle,&vertices,&count,nullptr)==0 && handle,"skinny square: unwrap");
+    std::vector<float> out(size_t(vertices)*16); std::vector<uint32_t> indices(count); std::vector<int32_t> charts(vertices);
+    check(meshLabUnwrapCopy(handle,out.data(),vertices,indices.data(),count,charts.data())==0,"skinny square: copy");
+    meshLabRemeshDestroy(handle);
+    const size_t a=size_t(indices[0])*16,b=size_t(indices[1])*16,c=size_t(indices[5])*16;
+    const double longEdge=std::hypot(double(out[b+6])-out[a+6],double(out[b+7])-out[a+7]);
+    const double shortEdge=std::hypot(double(out[c+6])-out[a+6],double(out[c+7])-out[a+7]);
+    check(shortEdge>0 && std::abs((longEdge/shortEdge)/10000-1)<.002,"skinny square: physical aspect in square UV units");
+}
+
 int main(int argc, char** argv) {
+    for(float scale:{1.f,.001f,1000.f}) checkSkinnySquareAtlas(scale);
     for (float scale : {1.f, .001f}) checkSimplifySlivers(scale);
     for (int resolution : {48, 512})
         for (uint32_t flags : {0u, 1u})

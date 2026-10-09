@@ -38,7 +38,8 @@ set_property(TARGET meshoptimizer PROPERTY SOURCES "${MESHOPT_FILTERED_SOURCES}"
 target_sources(meshoptimizer PRIVATE third_party/meshoptimizer/remesher.cpp)
 target_include_directories(meshoptimizer PRIVATE "${meshoptimizer_SOURCE_DIR}/src")
 
-# Keep xatlas vendored so native builds never execute or compile code from a
+# Keep xatlas vendored (reviewed extension: third_party/xatlas/MESHLAB_PATCHES.md)
+# so native builds never execute or compile code from a
 # moving upstream branch. Update this reviewed snapshot explicitly when needed.
 set(XATLAS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xatlas")
 
