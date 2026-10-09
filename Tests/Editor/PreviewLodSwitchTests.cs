@@ -678,6 +678,75 @@ namespace SashaRX.UnityMeshLab.Tests
             return (Mesh)snapshot.GetType().GetField("Item1").GetValue(snapshot);
         }
 
+        [TestCase("replacement")]
+        [TestCase("winner")]
+        [TestCase("in-place")]
+        public void TransferAfterSourceReplacementUsesTheCurrentChartIndices(string change)
+        {
+            var ctx = Open(Group(true, out var sourceRenderer, out var targetRenderer));
+            var source = ctx.MeshEntries.Find(e => e.renderer == sourceRenderer);
+            var target = ctx.MeshEntries.Find(e => e.renderer == targetRenderer);
+            var bestType = typeof(UvTransferWorkflow).GetNestedType("AutoTuneChoice", BindingFlags.NonPublic);
+            var best = System.Activator.CreateInstance(bestType, true);
+            source.repackedMesh = NearbyChartAtlas(false);
+            source.repackedAtlasWidth = source.repackedAtlasHeight = 512;
+            try {
+                ((System.Threading.Tasks.Task)CallWorkflow("ExecTransferAllImpl", false)).GetAwaiter().GetResult();
+                Assert.AreEqual(0, target.shellTransferResult.targetShellToSourceShell[0]);
+                var expected = target.transferredMesh.uv2;
+                CallWorkflow("CaptureAutoTuneChoice", best);
+
+                Object.DestroyImmediate(source.repackedMesh);
+                source.repackedMesh = NearbyChartAtlas(true);
+                ((System.Threading.Tasks.Task)CallWorkflow("ExecTransferAllImpl", false)).GetAwaiter().GetResult();
+                Assert.AreEqual(1, target.shellTransferResult.targetShellToSourceShell[0],
+                    "The discarded atlas stores the same physical chart at a different index.");
+
+                if (change == "winner") CallWorkflow("RestoreAutoTuneChoice", best);
+                else if (change == "in-place") {
+                    var replacement = NearbyChartAtlas(false);
+                    source.repackedMesh.vertices = replacement.vertices;
+                    source.repackedMesh.uv = replacement.uv;
+                    source.repackedMesh.uv2 = replacement.uv2;
+                    source.repackedMesh.triangles = replacement.triangles;
+                    source.repackedMesh.RecalculateNormals();
+                    VertexChannels.RaiseChanged(source.repackedMesh);
+                }
+                else {
+                    Object.DestroyImmediate(source.repackedMesh);
+                    source.repackedMesh = NearbyChartAtlas(false);
+                }
+                UvProgress.Begin("Source chart index regression", cancelable: true);
+                try { ((System.Threading.Tasks.Task)CallWorkflow("ExecTransferLodImpl", 1, false)).GetAwaiter().GetResult(); }
+                finally { UvProgress.End(); }
+                Assert.AreEqual(0, target.shellTransferResult.targetShellToSourceShell[0],
+                    "Hints from the discarded atlas must not select the nearby physical chart.");
+                for (int i = 0; i < expected.Length; ++i)
+                    Assert.That(Vector2.Distance(expected[i], target.transferredMesh.uv2[i]), Is.LessThan(.00001f));
+            }
+            finally { ((System.IDisposable)best).Dispose(); }
+        }
+
+        Mesh NearbyChartAtlas(bool reverseOrder)
+        {
+            var mesh = new Mesh { name = "Nearby charts with different atlas locations" };
+            var positions = new Vector3[8]; var uv0 = new Vector2[8]; var uv2 = new Vector2[8];
+            var quad = new[] { Vector3.zero, Vector3.right, Vector3.one, Vector3.up };
+            var authored = new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up };
+            for (int chart = 0; chart < 2; ++chart) {
+                bool nearby = (chart == 1) != reverseOrder;
+                var packed = ShiftedUvs(nearby ? .7f : .1f);
+                for (int corner = 0; corner < 4; ++corner) {
+                    int vertex = chart * 4 + corner;
+                    positions[vertex] = quad[corner] + (nearby ? Vector3.forward * .01f : Vector3.zero);
+                    uv0[vertex] = authored[corner]; uv2[vertex] = packed[corner];
+                }
+            }
+            mesh.vertices = positions; mesh.uv = uv0; mesh.uv2 = uv2;
+            mesh.triangles = new[] { 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 };
+            mesh.RecalculateNormals(); owned.Add(mesh); return mesh;
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void TransferReleasesSceneBindingsToItsPreviousWorkingOutput(bool checker)

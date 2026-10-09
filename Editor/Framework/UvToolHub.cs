@@ -133,7 +133,10 @@ namespace SashaRX.UnityMeshLab
             inspection = new MeshInspection();
             // The context's per-mesh caches are keyed by instance ID and would outlive
             // an in-place rewrite; drop them on the same notification the views use.
-            meshInvalidated = _ => ctx.ClearAllCaches();
+            meshInvalidated = mesh => {
+                ctx.ClearAllCaches();
+                DiagnosticWorkflow?.InvalidateTransferSource(mesh);
+            };
             VertexChannels.Changed += meshInvalidated;
             canvas3D = EditorPrefs.GetBool(Canvas3DPref, false);
 

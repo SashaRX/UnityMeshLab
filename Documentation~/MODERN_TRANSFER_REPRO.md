@@ -62,6 +62,9 @@ The six-method frozen-input comparison completed 96 rows, with two repetitions
 per row, unchanged inputs and deterministic outputs. Global nearest UV/3D
 methods removed some collapses but created thousands of overlaps on the Frame
 and Countertop. They cannot replace chart-aware transfer on this corpus.
+Repeating all 96 frozen rows after the Sonar helper extraction and source-hint
+invalidation preserved every quality/reference counter; timing is compared
+separately. The affected EditMode subset passes 353/353 tests without skips.
 
 ### Rejected dedup experiment
 
@@ -86,6 +89,13 @@ Auto-tune snapshots now own source working meshes, packed source atlases and
 dimensions, target transfers, validation reports and symmetry flags together.
 Replacing an attempt, selecting a winner, cancellation and exceptions release
 the appropriate temporary meshes. Repainting cannot bind a discarded attempt.
+
+Cross-LOD source indices belong to the concrete source mesh, not just its entry
+and group name. Replacing that mesh, restoring the winning attempt, refreshing
+the context or receiving its in-place `VertexChannels.Changed` event invalidates
+the corresponding hints and source transforms. A two-chart fixture with nearby
+surfaces and swapped chart indices reproduced a wrong atlas selection in all
+three mutation paths before the correction.
 
 An isolated async full-pipeline probe on the fixed code exercised preview
 collection on editor updates throughout two runs per model. No renderer had a

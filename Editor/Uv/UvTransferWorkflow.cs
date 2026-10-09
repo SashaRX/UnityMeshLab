@@ -240,10 +240,13 @@ namespace SashaRX.UnityMeshLab
             new Dictionary<int, GroupedShellTransfer.SourceShellInfo[]>();
         sealed class CrossLodHintState
         {
+            public readonly Mesh sourceMesh;
             public readonly List<GroupedShellTransfer.OverlapSourceHint> overlapHints =
                 new List<GroupedShellTransfer.OverlapSourceHint>();
             public readonly List<GroupedShellTransfer.CrossLodMatchHint> matchHints =
                 new List<GroupedShellTransfer.CrossLodMatchHint>();
+
+            public CrossLodHintState(Mesh sourceMesh) => this.sourceMesh = sourceMesh;
         }
 
         // Shell indices are local to a source mesh. Keep cross-LOD hints isolated
@@ -292,11 +295,20 @@ namespace SashaRX.UnityMeshLab
             RestoreAllPreviews();
         }
 
+        internal void InvalidateTransferSource(Mesh mesh)
+        {
+            if (!mesh) return;
+            shellTransformCache.Remove(mesh.GetInstanceID());
+            var keys = crossLodHints.Where(kv => kv.Value.sourceMesh == mesh).Select(kv => kv.Key).ToArray();
+            foreach (var key in keys) crossLodHints.Remove(key);
+        }
+
         public void OnRefresh()
         {
             uv0Reports.Clear();
             uv0Analyzed = uv0Welded = false;
             shellTransformCache.Clear();
+            crossLodHints.Clear();
             setupLodSelectionId = -1;
             setupRendererSelectionId = -1;
             setupSelectionHasRenderers = false;
@@ -1970,6 +1982,7 @@ namespace SashaRX.UnityMeshLab
             }
             ctx.ClearAllCaches();
             shellTransformCache.Clear();
+            crossLodHints.Clear();
             // Ownership has moved to the entries. Cancel/error paths instead
             // dispose the still-owned snapshot when the pipeline scope exits.
             best.Clear();
@@ -2282,10 +2295,12 @@ namespace SashaRX.UnityMeshLab
 
             string meshGroupKey = tgt.meshGroupKey ?? tgt.renderer.name;
             var hintKey = (source: srcEntry, meshGroupKey: meshGroupKey);
-            if (!crossLodHints.TryGetValue(hintKey, out var hintState))
+            if (!crossLodHints.TryGetValue(hintKey, out var hintState) || hintState.sourceMesh != srcMesh)
             {
-                hintState = new CrossLodHintState();
-                crossLodHints.Add(hintKey, hintState);
+                // Repack and auto-tune can reorder charts without changing the
+                // entry/group key. Indices from another atlas are not reusable.
+                hintState = new CrossLodHintState(srcMesh);
+                crossLodHints[hintKey] = hintState;
             }
 
             if (!HasSourceShellTransforms(srcMesh)) return;
