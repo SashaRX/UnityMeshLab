@@ -24,7 +24,8 @@ if ($ConfigPath) {
 # Windows PowerShell's Start-Process joins ArgumentList; quote paths with spaces explicitly.
 $benchQuotedArgs = $benchArgs | ForEach-Object {
     if ($_ -match '["\r\n]') { throw 'Arguments cannot contain quotes or line breaks.' }
-    '"' + $_ + '"'
+    # A trailing backslash escapes the closing quote in Windows argv parsing.
+    '"' + ([regex]::Replace($_, '(\\+)$', '$1$1')) + '"'
 }
 $benchProcess = Start-Process -FilePath $benchEditor -ArgumentList $benchQuotedArgs -WindowStyle Hidden -PassThru
 Write-Output "Benchmark PID $($benchProcess.Id); log: $benchLog"

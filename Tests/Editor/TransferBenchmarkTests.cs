@@ -58,6 +58,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(File.Exists(Path.Combine(report.folder, "index.html")));
             var details = TransferCaseCapture.ReadDetails<TransferBenchmark.Details>(report.folder, corrected.details);
             Assert.AreEqual(corrected.vertices, details.uv.Length); Assert.AreEqual(corrected.vertices, details.reference.Length);
+            Assert.AreEqual(corrected.uvHash, TransferMeshSnapshot.UvHash(details.uv));
             Assert.AreEqual(dirty, EditorSceneManager.GetActiveScene().isDirty);
             Assert.AreEqual(meshes, Resources.FindObjectsOfTypeAll<Mesh>().Length, "Temporary benchmark meshes leaked.");
             Assert.AreEqual(iterations, GroupedShellTransfer.LastTopologyIterations); Assert.AreEqual(fixes, GroupedShellTransfer.LastTopologyFixed);
@@ -76,6 +77,22 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(report.rows.All(row => !row.referenceIsGroundTruth && row.matchHints == 1 && row.overlapHints == 1));
             Assert.IsTrue(report.rows.All(row => row.referencePass));
             Assert.IsTrue(report.rows.All(row => row.quality.areaWeightedAnisotropy > 1.9), "Captured world scale must affect quality, not correspondence.");
+        }
+
+        [UnityTest]
+        public IEnumerator MissingAtlasDimensionsAreReportedAsUnavailable()
+        {
+            string capture = Capture(2);
+            var manifest = JsonUtility.FromJson<TransferCaseCapture.Manifest>(File.ReadAllText(capture));
+            manifest.pairs[0].atlasWidth = manifest.pairs[0].atlasHeight = 0;
+            File.WriteAllText(capture, JsonUtility.ToJson(manifest));
+            var task = TransferBenchmark.Run(new TransferBenchmark.Config { outputRoot = root, repetitions = 2,
+                warmup = 0, includeSynthetic = false, captures = new[] { capture }, methods = new[] { "surface-nearest" } });
+            while (!task.IsCompleted) yield return null;
+            var report = task.GetAwaiter().GetResult();
+            Assert.IsTrue(report.complete); Assert.IsFalse(report.rows[0].referenceAvailable);
+            Assert.IsFalse(report.rows[0].referencePass);
+            StringAssert.Contains("unavailable (atlas size missing)", File.ReadAllText(Path.Combine(report.folder, "index.html")));
         }
 
         [UnityTest]

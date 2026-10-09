@@ -31,6 +31,8 @@ namespace SashaRX.UnityMeshLab
             internal bool referenceIsGroundTruth, negativeControl, clamp;
             internal int atlasWidth, atlasHeight;
             internal Matrix4x4 localToWorld = Matrix4x4.identity;
+            internal bool hasSourceTransform = true;
+            internal Matrix4x4 sourceLocalToWorld = Matrix4x4.identity;
             internal List<GroupedShellTransfer.OverlapSourceHint> overlapHints;
             internal List<GroupedShellTransfer.CrossLodMatchHint> matchHints;
             public void Dispose()
@@ -55,7 +57,7 @@ namespace SashaRX.UnityMeshLab
         [Serializable] internal sealed class Row
         {
             public string name, method, capture, description, sourceHash, targetHash, uvHash, mappingHash, details, view, error;
-            public bool referenceIsGroundTruth, negativeControl, deterministic = true, inputUnchanged = true, referencePass;
+            public bool referenceIsGroundTruth, negativeControl, deterministic = true, inputUnchanged = true, referencePass, referenceAvailable;
             public int vertices, sourceFaces, targetFaces, misses, fallbackVertices, overlapHints, matchHints, clampedVertices;
             public double minimumMilliseconds, medianMilliseconds, maximumMilliseconds, qualityMilliseconds, rmsReferenceTexels, maximumReferenceTexels;
             public double[] milliseconds;
@@ -202,7 +204,8 @@ namespace SashaRX.UnityMeshLab
             var input = new Input { name = Path.GetFileName(file.DirectoryName) + "/" + pair.index + "/" + pair.target,
                 description = "Frozen capture; reference is the recorded output, not independent ground truth.", capture = file.FullName,
                 sourceHash = pair.sourceMesh, targetHash = pair.targetMesh, atlasWidth = pair.atlasWidth, atlasHeight = pair.atlasHeight,
-                localToWorld = pair.localToWorld, clamp = pair.clamp };
+                localToWorld = pair.localToWorld, hasSourceTransform = pair.hasSourceTransform,
+                sourceLocalToWorld = pair.sourceLocalToWorld, clamp = pair.clamp };
             try {
                 var details = schema == 2 ? TransferCaseCapture.ReadDetails<TransferCaseCapture.PairDetails>(file.DirectoryName, pair.details) : null;
                 input.overlapHints = schema == 2 ? details?.overlapHints : pair.overlapHints;
@@ -263,8 +266,9 @@ namespace SashaRX.UnityMeshLab
                 var output = await TransferBenchmarkMethods.Run(row.method, input);
                 watch.Stop(); times[run] = watch.Elapsed.TotalMilliseconds;
                 CheckOutput(output, input.target.vertexCount);
+                int clamped = input.clamp ? XatlasRepack.ClampUvsToUnit(output.uv) : 0;
                 string hash = TransferMeshSnapshot.UvHash(output.uv), mapping = MappingHash(output);
-                if (first == null) { first = output; row.uvHash = hash; row.mappingHash = mapping; }
+                if (first == null) { first = output; row.uvHash = hash; row.mappingHash = mapping; row.clampedVertices = clamped; }
                 else row.deterministic &= hash == row.uvHash && mapping == row.mappingHash;
             }
             row.milliseconds = times; var sorted = (double[])times.Clone(); Array.Sort(sorted);
@@ -272,7 +276,6 @@ namespace SashaRX.UnityMeshLab
             row.medianMilliseconds = (sorted[(sorted.Length - 1) / 2] + sorted[sorted.Length / 2]) * .5;
             row.misses = first.misses; row.fallbackVertices = first.fallbackVertices;
             var uv = (Vector2[])first.uv.Clone();
-            if (input.clamp) row.clampedVertices = XatlasRepack.ClampUvsToUnit(uv);
             var qualityWatch = Stopwatch.StartNew();
             var quality = TransferUvQuality.Measure(input.target, uv, Vector2.one, input.localToWorld);
             qualityWatch.Stop(); row.qualityMilliseconds = qualityWatch.Elapsed.TotalMilliseconds; row.quality = Quality.From(quality);
@@ -284,6 +287,8 @@ namespace SashaRX.UnityMeshLab
             // Capture diagnostics separately; tracing and quality scans do not inflate the timed runs.
             var trace = new TransferMatchTrace();
             var diagnostic = await TransferBenchmarkMethods.Run(row.method, input, trace);
+            CheckOutput(diagnostic, input.target.vertexCount);
+            if (input.clamp) XatlasRepack.ClampUvsToUnit(diagnostic.uv);
             row.deterministic &= TransferMeshSnapshot.UvHash(diagnostic.uv) == row.uvHash && MappingHash(diagnostic) == row.mappingHash;
             row.inputUnchanged = input.sourceHash == TransferMeshSnapshot.Hash(TransferMeshSnapshot.Capture(input.source))
                 && input.targetHash == TransferMeshSnapshot.Hash(TransferMeshSnapshot.Capture(input.target));
@@ -310,6 +315,8 @@ namespace SashaRX.UnityMeshLab
 
         static void ReferenceError(Input input, Vector2[] uv, Row row)
         {
+            row.referenceAvailable = input.atlasWidth > 0 && input.atlasHeight > 0;
+            if (!row.referenceAvailable) { row.referencePass = false; return; }
             double sum = 0, maximum = 0;
             for (int i = 0; i < uv.Length; ++i) {
                 var delta = input.reference[i] - uv[i];
@@ -371,7 +378,9 @@ namespace SashaRX.UnityMeshLab
                 overlapHints = input.overlapHints, matchHints = input.matchHints });
             report.corpus.pairs.Add(new TransferCaseCapture.Pair { index = report.corpus.pairs.Count, source = input.source.name, target = input.name,
                 sourceMesh = input.sourceHash, targetMesh = input.targetHash, outputMesh = baselineHash, baselineUvHash = TransferMeshSnapshot.UvHash(input.reference),
-                atlasWidth = input.atlasWidth, atlasHeight = input.atlasHeight, localToWorld = input.localToWorld, clamp = input.clamp, details = details, status = "complete" });
+                atlasWidth = input.atlasWidth, atlasHeight = input.atlasHeight, localToWorld = input.localToWorld,
+                hasSourceTransform = input.hasSourceTransform, sourceLocalToWorld = input.sourceLocalToWorld,
+                clamp = input.clamp, details = details, status = "complete" });
         }
 
         internal static async Task Save(Report report)

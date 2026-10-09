@@ -38,6 +38,8 @@ namespace SashaRX.UnityMeshLab
             public string details;
             public bool clamp;
             public Matrix4x4 localToWorld;
+            public bool hasSourceTransform;
+            public Matrix4x4 sourceLocalToWorld;
             public List<GroupedShellTransfer.OverlapSourceHint> overlapHints;
             public List<GroupedShellTransfer.CrossLodMatchHint> matchHints;
             public GroupedShellTransfer.TransferResult result;
@@ -161,6 +163,8 @@ namespace SashaRX.UnityMeshLab
                     sourceMesh = StoreMesh(sourceMesh), targetMesh = StoreMesh(targetMesh), clamp = context.ClampLightmapToUnit,
                     atlasWidth = (int)source.repackedAtlasWidth, atlasHeight = (int)source.repackedAtlasHeight,
                     localToWorld = target.renderer ? target.renderer.localToWorldMatrix : Matrix4x4.identity,
+                    hasSourceTransform = true,
+                    sourceLocalToWorld = source.renderer ? source.renderer.localToWorldMatrix : Matrix4x4.identity,
                     overlapHints = overlapHints == null || overlapHints.Count == 0 ? null : new List<GroupedShellTransfer.OverlapSourceHint>(overlapHints),
                     matchHints = matchHints == null || matchHints.Count == 0 ? null : new List<GroupedShellTransfer.CrossLodMatchHint>(matchHints) };
                 StorePairDetails(pair);
@@ -252,7 +256,8 @@ namespace SashaRX.UnityMeshLab
                 atlasWidth = pair.atlasWidth, atlasHeight = pair.atlasHeight, source = pair.source, target = pair.target,
                 group = pair.group, sourceMesh = pair.sourceMesh, targetMesh = pair.targetMesh, outputMesh = pair.outputMesh,
                 baselineUvHash = pair.baselineUvHash, status = pair.status, clamp = pair.clamp,
-                localToWorld = pair.localToWorld, details = pair.details, trace = null });
+                localToWorld = pair.localToWorld, hasSourceTransform = pair.hasSourceTransform,
+                sourceLocalToWorld = pair.sourceLocalToWorld, details = pair.details, trace = null });
             byte[] bytes = System.Text.Encoding.UTF8.GetBytes(JsonUtility.ToJson(compact, true));
             if (bytes.LongLength > MaxManifestBytes) throw new InvalidDataException("Transfer manifest exceeds the replay size limit.");
             File.WriteAllBytes(temp, bytes);

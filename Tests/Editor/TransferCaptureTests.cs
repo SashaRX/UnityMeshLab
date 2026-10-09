@@ -451,11 +451,16 @@ namespace SashaRX.UnityMeshLab.Tests
         public IEnumerator Capture_ReplaysExactInputsAndCrossLodHintsTwice()
         {
             var sourceMesh = Quad(); var targetMesh = Quad(); var context = new UvToolContext();
+            var sourceObject = new GameObject("Source child"); var targetObject = new GameObject("Target child");
+            sourceObject.transform.position = new Vector3(2, 3, 4);
+            targetObject.transform.position = new Vector3(-3, 5, 1);
             TransferCaseCapture capture = null; Mesh output = null;
             try {
                 sourceMesh.uv2 = new[] { new Vector2(.1f, .1f), new Vector2(.3f, .1f), new Vector2(.3f, .3f), new Vector2(.1f, .3f) };
                 var source = new MeshEntry { originalMesh = sourceMesh, fbxMesh = sourceMesh, repackedMesh = sourceMesh, repackedAtlasWidth = 128, repackedAtlasHeight = 128 };
                 var target = new MeshEntry { originalMesh = targetMesh, fbxMesh = targetMesh, lodIndex = 1 };
+                source.renderer = sourceObject.AddComponent<MeshRenderer>();
+                target.renderer = targetObject.AddComponent<MeshRenderer>();
                 context.MeshEntries.Add(source); context.MeshEntries.Add(target); context.CaptureNextTransfer = true;
                 capture = TransferCaseCapture.Begin(context, null, "Test exact capture");
                 Assert.IsNotNull(capture);
@@ -472,6 +477,9 @@ namespace SashaRX.UnityMeshLab.Tests
                 output.uv2 = second.uv2; capture.AfterPair(next, target, second); capture.Finish(true);
                 var manifest = JsonUtility.FromJson<TransferCaseCapture.Manifest>(File.ReadAllText(Path.Combine(capture.Folder, "manifest.json")));
                 Assert.AreEqual(2, manifest.schema);
+                Assert.IsTrue(manifest.pairs[0].hasSourceTransform);
+                Assert.AreEqual(source.renderer.localToWorldMatrix, manifest.pairs[0].sourceLocalToWorld);
+                Assert.AreEqual(target.renderer.localToWorldMatrix, manifest.pairs[0].localToWorld);
                 Assert.That(manifest.pairs[0].result?.uv2, Is.Null.Or.Empty);
                 var details = TransferCaseCapture.ReadDetails<TransferCaseCapture.PairDetails>(capture.Folder, manifest.pairs[1].details);
                 CollectionAssert.AreEqual(second.uv2, details.result.uv2);
@@ -506,6 +514,7 @@ namespace SashaRX.UnityMeshLab.Tests
             finally {
                 capture?.Finish(true);
                 if (output) UnityEngine.Object.DestroyImmediate(output);
+                UnityEngine.Object.DestroyImmediate(sourceObject); UnityEngine.Object.DestroyImmediate(targetObject);
                 UnityEngine.Object.DestroyImmediate(sourceMesh); UnityEngine.Object.DestroyImmediate(targetMesh);
                 if (capture != null && Directory.Exists(capture.Folder)) Directory.Delete(capture.Folder, true);
             }

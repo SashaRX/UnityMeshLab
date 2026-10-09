@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using UnityEditor;
 using UnityEngine;
@@ -52,6 +53,7 @@ namespace SashaRX.UnityMeshLab
                 throw new InvalidDataException("Capture has no supported transfer pairs.");
             Directory.CreateDirectory(outputDirectory);
             var summary = new Summary { manifest = file.FullName };
+            var sourceFrames = await ReadSourceFrames(manifest, file.DirectoryName);
             var previousOutput = BenchmarkRecorder.OutputDirectoryOverride;
             try
             {
@@ -72,7 +74,7 @@ namespace SashaRX.UnityMeshLab
                             trial.failureStage = "cleanup";
                             using var prepared = ReverseUvInputs.Prepare(new[] {
                                 new ReverseUvTransfer.Level { lod = 1, inputs = new[] { new ReverseUvTransfer.Input { mesh = coarse, key = pair.target, toWorld = pair.localToWorld } } },
-                                new ReverseUvTransfer.Level { lod = 0, inputs = new[] { new ReverseUvTransfer.Input { mesh = fine, key = pair.source, toWorld = pair.localToWorld } } }
+                                new ReverseUvTransfer.Level { lod = 0, inputs = new[] { new ReverseUvTransfer.Input { mesh = fine, key = pair.source, toWorld = SourceTransform(pair, sourceFrames) } } }
                             });
                             trial.failureStage = "seed";
                             int seedSize = prepared.PrepareSeed(256, 2, 0, default);
@@ -95,6 +97,34 @@ namespace SashaRX.UnityMeshLab
                 return summary;
             }
             finally { BenchmarkRecorder.OutputDirectoryOverride = previousOutput; }
+        }
+
+        static async Task<List<TransferCaseCapture.MeshState>> ReadSourceFrames(TransferCaseCapture.Manifest manifest, string root)
+        {
+            var frames = new List<TransferCaseCapture.MeshState>();
+            if (manifest.pairs.All(p => p.hasSourceTransform)) return frames;
+            foreach (var stage in manifest.stages)
+            {
+                var data = stage;
+                if (!string.IsNullOrEmpty(stage.details))
+                {
+                    var bytes = await Task.Run(() => TransferCaseReplay.Verify(root, stage.details, "details", ".json"));
+                    data = JsonUtility.FromJson<TransferCaseCapture.Stage>(System.Text.Encoding.UTF8.GetString(bytes));
+                }
+                if (data?.meshes != null) frames.AddRange(data.meshes);
+            }
+            return frames;
+        }
+
+        internal static Matrix4x4 SourceTransform(TransferCaseCapture.Pair pair, List<TransferCaseCapture.MeshState> frames)
+        {
+            if (pair.hasSourceTransform) return pair.sourceLocalToWorld;
+            var candidates = frames.Where(s => s.renderer == pair.source &&
+                (s.working == pair.sourceMesh || s.repacked == pair.sourceMesh || s.transferred == pair.sourceMesh))
+                .Select(s => s.localToWorld).Distinct().ToArray();
+            if (candidates.Length != 1)
+                throw new InvalidDataException("Old capture has no unique source renderer transform; reverse benchmark requires a fresh capture.");
+            return candidates[0];
         }
     }
 }

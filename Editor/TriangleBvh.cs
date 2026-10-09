@@ -130,6 +130,37 @@ namespace SashaRX.UnityMeshLab
 
         // ─── Raycast ───
 
+        /// <summary>Bounded tie scan. A shared edge need not be ambiguous: the caller
+        /// decides whether a qualifying face represents a different correspondence.</summary>
+        internal bool AnyNormalFilteredWithin(Vector3 point, Vector3 normal, Vector3[] faceNormals,
+            float normalDotMin, float distanceSq, Predicate<HitResult> predicate,
+            ref long comparisons, long budget, System.Threading.CancellationToken token)
+            => AnyNormalFilteredRecursive(0, point, normal, faceNormals, normalDotMin, distanceSq,
+                predicate, ref comparisons, budget, token);
+
+        bool AnyNormalFilteredRecursive(int index, Vector3 point, Vector3 normal, Vector3[] normals,
+            float dotMin, float distanceSq, Predicate<HitResult> predicate,
+            ref long comparisons, long budget, System.Threading.CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            ref Node node = ref nodes[index];
+            if (AabbDistSq(node.bMin, node.bMax, point) > distanceSq) return false;
+            if (node.left != -1)
+                return AnyNormalFilteredRecursive(node.left, point, normal, normals, dotMin, distanceSq, predicate, ref comparisons, budget, token)
+                    || AnyNormalFilteredRecursive(node.right, point, normal, normals, dotMin, distanceSq, predicate, ref comparisons, budget, token);
+            for (int i = node.triStart; i < node.triStart + node.triCount; ++i)
+            {
+                if (++comparisons > budget) throw new InvalidOperationException("Reverse UV donor tie comparison budget exceeded.");
+                int face = triIndices[i];
+                if (face < normals.Length && Vector3.Dot(normals[face], normal) < dotMin) continue;
+                int t = face * 3;
+                var closest = ClosestPointOnTriangle(point, verts[tris[t]], verts[tris[t + 1]], verts[tris[t + 2]], out var bary);
+                float d = (closest - point).sqrMagnitude;
+                if (d <= distanceSq && predicate(new HitResult { triangleIndex = face, distSq = d, point = closest, barycentric = bary })) return true;
+            }
+            return false;
+        }
+
         public struct RayHit
         {
             public int triangleIndex;

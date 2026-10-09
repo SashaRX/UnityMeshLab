@@ -104,7 +104,13 @@ namespace SashaRX.UnityMeshLab
             {
                 var entry = binding.entry;
                 entry.fbxMesh = entry.originalMesh = binding.mesh;
-                if (entry.meshFilter) entry.meshFilter.sharedMesh = binding.mesh;
+                if (entry.meshFilter && entry.meshFilter.sharedMesh != binding.mesh)
+                {
+                    Undo.RecordObject(entry.meshFilter, "Prepare UV transfer input");
+                    entry.meshFilter.sharedMesh = binding.mesh;
+                    if (PrefabUtility.IsPartOfPrefabInstance(entry.meshFilter))
+                        PrefabUtility.RecordPrefabInstancePropertyModifications(entry.meshFilter);
+                }
             }
         }
     }

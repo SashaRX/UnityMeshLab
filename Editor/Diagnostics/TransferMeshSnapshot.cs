@@ -16,6 +16,11 @@ namespace SashaRX.UnityMeshLab
         internal static byte[] Capture(Mesh mesh)
         {
             if (!mesh || !mesh.isReadable) throw new InvalidOperationException("Capture requires a readable working mesh.");
+            if (mesh.vertexCount > MaxVertices || mesh.subMeshCount > 65536)
+                throw new InvalidOperationException("Transfer snapshot exceeds the reader's mesh limits.");
+            for (int sub = 0; sub < mesh.subMeshCount; ++sub)
+                if (mesh.GetIndexCount(sub) > MaxIndices)
+                    throw new InvalidOperationException("Transfer snapshot exceeds the reader's index limit.");
             using var stream = new MemoryStream();
             using var writer = new BinaryWriter(stream);
             writer.Write(Magic); writer.Write(Version); writer.Write(mesh.name);

@@ -44,9 +44,11 @@ projection distance, so a closer detail cannot reorder its parent layer.
 Reports retain root chart, previous LOD/node/representative face, current layer and
 every positive-area under/over face relationship. Each node's face decisions, chain
 keys and overlap relationships are saved in the optional `reverseTransferJson`
-sidecar field. Existing sidecars remain compatible. Legacy pipeline mutations and
-sidecar replacement clear stale reverse metadata. The sidecar/export path retains
-the result's UV2 when the working mesh already has UV2.
+sidecar field where legacy topology replay remains safe. Changed topology or UV2
+seam splits require a mesh asset or new FBX export; see Current limits below.
+Legacy pipeline mutations and sidecar replacement clear stale reverse metadata.
+Supported sidecar/export paths retain the result's UV2 when the working mesh
+already has UV2.
 
 **Ordered lightmap baking is not connected yet.** Use unique UVs for current
 production lightmaps. The overlap option evaluates light reuse and its ancestry;
@@ -114,6 +116,22 @@ Exact Kitchen triangles also cover corner-order independence of the double
 metric and refusal of float placement collapse without source geometry changes.
 
 ## Current limits
+
+Legacy sidecar replay cannot recreate Reverse UV seam splits or deleted faces.
+Saving such a result through a sidecar is refused explicitly; use Save Mesh Assets
+or export a new FBX. Unchanged topology with an unambiguous position/UV0 mapping
+can still use a sidecar. Imported legacy entries with unreplayable split UVs are
+refused before modifying the mesh.
+
+Projection checks competing nearest donors inside a continuous chart as well as
+between charts. Coincident lobes with different UV correspondences become new UV;
+shared edges with the same interpolated UV remain eligible. The tie scan shares
+the projection comparison budget and supports cancellation. Density-driven seed
+atlases have a minimum side of 16 pixels.
+
+New captures record the source and target renderer frames independently. Older
+captures require a unique source frame in their stage snapshots; missing frames
+are reported as refused trials rather than silently replaced by the target frame.
 
 This is a conservative face projection prototype. A triangle crossing incompatible
 donor chart boundaries becomes new UV; it is not split along the seam. Intrinsic

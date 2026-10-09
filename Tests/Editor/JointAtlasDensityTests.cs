@@ -136,9 +136,11 @@ namespace SashaRX.UnityMeshLab.Tests
 
         static void RequireNative()
         {
+            if (!XatlasRepack.TryAcquireNativeSession()) Assert.Ignore("xatlas native session is busy.");
             try { XatlasNative.xatlasCreate(); XatlasNative.xatlasDestroy(); }
             catch (DllNotFoundException) { Assert.Ignore("xatlas native plugin unavailable."); }
             catch (EntryPointNotFoundException) { Assert.Ignore("xatlas native entry points unavailable."); }
+            finally { XatlasRepack.ReleaseNativeSession(); }
         }
 
         static void Pack(Mesh[] meshes, RepackOptions options)

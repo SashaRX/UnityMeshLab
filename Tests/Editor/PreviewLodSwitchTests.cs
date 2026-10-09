@@ -696,7 +696,8 @@ namespace SashaRX.UnityMeshLab.Tests
             var stages = (System.Array)typeof(UvTransferWorkflow).GetField("stageOutcome", Private).GetValue(hub.DiagnosticWorkflow);
             Assert.AreEqual("Failed", stages.GetValue(4).ToString());
             Assert.AreEqual("Skipped", stages.GetValue(5).ToString());
-            Assert.AreEqual(partialSuccess, ctx.HasRepack, "Successful source outputs remain available after a partial failure.");
+            Assert.IsFalse(ctx.HasRepack, "A failed auto-tune attempt rolls back every partial source output.");
+            Assert.IsTrue(ctx.MeshEntries.All(e => e.repackedMesh == null && e.transferredMesh == null));
         }
 
         [TestCase(".001")]
@@ -876,7 +877,8 @@ namespace SashaRX.UnityMeshLab.Tests
                 Call(hub,"CollectCanvasEntries"); AssertFreshPreview(ctx,fine,UvCanvasView.PreviewMode.Checker); AssertPreviewFrame();
                 Assert.AreEqual(1,System.IO.Directory.GetFiles(directory,"*.json").Length);
                 var saved = SidecarStore.TryBuildEntry(fine,fine.transferredMesh,false,SidecarStore.AoUvTarget.None,out var sidecar);
-                Assert.IsTrue(saved); Assert.AreEqual(fine.reverseTransferJson,sidecar.reverseTransferJson);
+                Assert.IsFalse(saved, "Legacy sidecars cannot replay the cleaned topology; refuse rather than silently losing it.");
+                Assert.IsNull(sidecar);
             }
             finally
             {

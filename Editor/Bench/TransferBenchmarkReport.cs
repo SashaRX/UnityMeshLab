@@ -21,8 +21,10 @@ namespace SashaRX.UnityMeshLab
                 object[] cells = { row.name, row.method, row.negativeControl, row.referenceIsGroundTruth, row.medianMilliseconds,
                     row.minimumMilliseconds, row.maximumMilliseconds, row.deterministic, row.inputUnchanged, row.misses, row.fallbackVertices,
                     row.clampedVertices, q?.faces, q?.invalidFaces, q?.degenerateFaces, q?.stretchedFaces, q?.areaWeightedAnisotropy,
-                    q?.worstAnisotropy, q?.overlapPairs, q?.overlapScanComplete, q?.outOfBoundsVertices, row.rmsReferenceTexels,
-                    row.maximumReferenceTexels, row.referencePass, row.sourceQuality?.areaWeightedAnisotropy, row.sourceQuality?.overlapPairs, row.error };
+                    q?.worstAnisotropy, q?.overlapPairs, q?.overlapScanComplete, q?.outOfBoundsVertices,
+                    row.referenceAvailable ? row.rmsReferenceTexels : (double?)null,
+                    row.referenceAvailable ? row.maximumReferenceTexels : (double?)null,
+                    row.referencePass, row.sourceQuality?.areaWeightedAnisotropy, row.sourceQuality?.overlapPairs, row.error };
                 for (int i = 0; i < cells.Length; ++i) {
                     if (i > 0) text.Append(',');
                     text.Append(CsvUtil.Escape(Convert.ToString(cells[i], CultureInfo.InvariantCulture)));
@@ -61,7 +63,7 @@ namespace SashaRX.UnityMeshLab
             if (q != null) overlap = q.overlapPairs + (q.overlapScanComplete ? "" : "+ (incomplete)") + " / " + q.outOfBoundsVertices;
             text.Append(TableCellSeparator).Append(q == null ? "unavailable" : q.stretchedFaces + " / " + q.degenerateFaces + " / " + q.invalidFaces)
                 .Append(TableCellSeparator).Append(overlap)
-                .Append(TableCellSeparator).Append(Number(row.maximumReferenceTexels)).Append(row.referenceIsGroundTruth ? " (truth)" : " (baseline)")
+                .Append(TableCellSeparator).Append(row.referenceAvailable ? Number(row.maximumReferenceTexels) + (row.referenceIsGroundTruth ? " (truth)" : " (baseline)") : "unavailable (atlas size missing)")
                 .Append(TableCellSeparator).Append(row.deterministic).Append(" / ").Append(row.inputUnchanged).Append(" / ").Append(row.misses).Append("</td></tr>");
         }
 

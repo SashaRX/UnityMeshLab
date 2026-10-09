@@ -317,6 +317,21 @@ namespace SashaRX.UnityMeshLab
         static readonly Vector3[] Interior = { new Vector3(.5f, .5f, 0), new Vector3(0, .5f, .5f),
             new Vector3(.5f, 0, .5f), Vector3.one / 3 };
 
+        static TriangleBvh.HitResult NearestDonor(Chart chart, Vector3 point, Vector3 normal, Options options,
+            ref long comparisons, CancellationToken token, out bool ambiguous)
+        {
+            var hit = chart.bvh.FindNearestNormalFiltered(point, normal, chart.normals, options.normalDot, options.projectionReach);
+            ambiguous = false;
+            if (hit.triangleIndex < 0) return hit;
+            var pixel = Pixel(chart, hit);
+            float tolerance = Math.Max(1e-12f, options.projectionReach * options.projectionReach * 1e-6f);
+            ambiguous = chart.bvh.AnyNormalFilteredWithin(point, normal, chart.normals, options.normalDot,
+                hit.distSq + tolerance, candidate => candidate.triangleIndex != hit.triangleIndex
+                    && (Pixel(chart, candidate) - pixel).sqrMagnitude > 1e-6f,
+                ref comparisons, options.comparisonBudget, token);
+            return hit;
+        }
+
         static void Project(Surface[] donor, Surface[] targets, Options options, CancellationToken token)
         {
             var charts = Charts(donor);
@@ -336,10 +351,10 @@ namespace SashaRX.UnityMeshLab
                     {
                         if (chart.bounds.SqrDistance(center) > options.projectionReach * options.projectionReach) continue;
                         if (++queries > options.comparisonBudget) throw new InvalidOperationException("Reverse UV projection query budget exceeded.");
-                        var hit = chart.bvh.FindNearestNormalFiltered(center, normal, chart.normals, options.normalDot, options.projectionReach);
+                        var hit = NearestDonor(chart, center, normal, options, ref queries, token, out bool chartAmbiguous);
                         if (hit.triangleIndex < 0) continue;
                         float tolerance = Math.Max(1e-12f, options.projectionReach * options.projectionReach * 1e-6f);
-                        if (hit.distSq < best.distSq - tolerance) { winner = chart; best = hit; ambiguous = false; }
+                        if (hit.distSq < best.distSq - tolerance) { winner = chart; best = hit; ambiguous = chartAmbiguous; }
                         else if (Math.Abs(hit.distSq - best.distSq) <= tolerance) ambiguous = true;
                     }
                     var record = target.faces[f];
@@ -350,9 +365,9 @@ namespace SashaRX.UnityMeshLab
                     for (int k = 0; k < 3; ++k)
                     {
                         if (++queries > options.comparisonBudget) throw new InvalidOperationException("Reverse UV projection query budget exceeded.");
-                        var hit = winner.bvh.FindNearestNormalFiltered(target.positions[target.indices[t + k]], normal,
-                            winner.normals, options.normalDot, options.projectionReach);
-                        if (hit.triangleIndex < 0) { valid = false; break; }
+                        var hit = NearestDonor(winner, target.positions[target.indices[t + k]], normal, options,
+                            ref queries, token, out bool cornerAmbiguous);
+                        if (hit.triangleIndex < 0 || cornerAmbiguous) { valid = false; break; }
                         target.pixels[t + k] = Pixel(winner, hit);
                         maxDistance = Math.Max(maxDistance, hit.distSq);
                     }
@@ -366,10 +381,10 @@ namespace SashaRX.UnityMeshLab
                     foreach (var bary in Interior)
                     {
                         if (++queries > options.comparisonBudget) throw new InvalidOperationException("Reverse UV projection query budget exceeded.");
-                        var hit = winner.bvh.FindNearestNormalFiltered(a * bary.x + b * bary.y + c * bary.z, normal,
-                            winner.normals, options.normalDot, options.projectionReach);
+                        var hit = NearestDonor(winner, a * bary.x + b * bary.y + c * bary.z, normal, options,
+                            ref queries, token, out bool probeAmbiguous);
                         var interpolated = target.pixels[t] * bary.x + target.pixels[t + 1] * bary.y + target.pixels[t + 2] * bary.z;
-                        if (hit.triangleIndex < 0 || (Pixel(winner, hit) - interpolated).magnitude > Math.Max(.25f, span * .02f))
+                        if (hit.triangleIndex < 0 || probeAmbiguous || (Pixel(winner, hit) - interpolated).magnitude > Math.Max(.25f, span * .02f))
                         { valid = false; break; }
                     }
                     if (!valid) { record.ambiguous = true; continue; }

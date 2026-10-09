@@ -77,7 +77,7 @@ namespace SashaRX.UnityMeshLab
                         layer.key = key;
                     }
                     var uvScaleOffset = canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Lightmap &&
-                                        ctx.PreviewUvChannel == 1 && entry.renderer
+                                        ctx.PreviewUvChannel == 1 && entry.renderer && entry.renderer.lightmapIndex >= 0
                         ? entry.renderer.lightmapScaleOffset : new Vector4(1, 1, 0, 0);
                     if (layer.texture) view.DrawTextured(item.mesh, item.matrix, overlay, layer.texture, Color.white, ctx.PreviewUvChannel, uvScaleOffset);
                 }

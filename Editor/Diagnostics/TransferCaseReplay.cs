@@ -49,7 +49,8 @@ namespace SashaRX.UnityMeshLab
             UvProgress.Begin("Replay transfer capture", cancelable: true);
             try {
                 await ReplayPairs(root, manifest, report, ready);
-                report.complete = report.pairs.Count == ready && !UvProgress.CancelRequested && report.pairs.TrueForAll(pair => string.IsNullOrEmpty(pair.error));
+                report.complete = report.pairs.Count == ready && !UvProgress.CancelRequested
+                    && report.pairs.TrueForAll(pair => string.IsNullOrEmpty(pair.error) && pair.baselineEqual && pair.repeatEqual);
             }
             catch (Exception error) { report.error = error.ToString(); throw; }
             finally {

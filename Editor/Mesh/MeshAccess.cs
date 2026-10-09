@@ -110,6 +110,8 @@ namespace SashaRX.UnityMeshLab
                     dst.SetIndices(ReadIndices(src, meshData, sub), meshData.GetSubMesh(sub).topology, sub, calculateBounds: false);
             }
             if (src.isReadable) dst.bindposes = src.bindposes;
+            else if (src.HasVertexAttribute(VertexAttribute.BlendWeight) || src.HasVertexAttribute(VertexAttribute.BlendIndices))
+                UvtLog.Warn($"'{src.name}': copied skin vertex data without readable bindposes; enable Read/Write before using this copy for skinning.");
             dst.bounds = src.bounds;
             return dst;
         }

@@ -55,7 +55,7 @@ namespace SashaRX.UnityMeshLab
                 var min=pixels[0]; var max=min;
                 foreach(var p in pixels) { min=Vector2.Min(min,p); max=Vector2.Max(max,p); }
                 float span=Math.Max(max.x-min.x,max.y-min.y);
-                atlasSize=texelsPerUnit>0?Mathf.NextPowerOfTwo(Mathf.CeilToInt(span+padding*2)):resolution;
+                atlasSize=texelsPerUnit>0?Math.Max(16,Mathf.NextPowerOfTwo(Mathf.CeilToInt(span+padding*2))):resolution;
                 if(atlasSize>8192) throw new InvalidOperationException("Reverse seed atlas exceeds 8192 pixels.");
                 float scale=texelsPerUnit>0?1:(resolution-padding*2)/span;
                 int offset=0;

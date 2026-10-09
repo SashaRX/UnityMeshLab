@@ -1931,6 +1931,7 @@ namespace SashaRX.UnityMeshLab
                 if (UvProgress.CancelRequested) return true;
                 if (stageOutcome[4] == StageStatus.Failed)
                 {
+                    RestoreAutoTuneStartingMeshes(savedMeshes);
                     stageOutcome[5] = StageStatus.Skipped;
                     UvtLog.Error("[Pipeline] Repack failed for one or more included source meshes; transfer and auto-tune stopped.");
                     return true;
@@ -2153,21 +2154,23 @@ namespace SashaRX.UnityMeshLab
             var originalUv0 = new List<SourceTextureUvMetric.OriginalUv0>();
             RepackResult[] results;
             try {
-                for (int i = 0; i < meshCopies.Count; ++i) {
-                    var metric = SourceTextureUvMetric.Resolve(validEntries[i].renderer, validEntries[i].previewTexture, meshCopies[i]);
-                    if (ctx.CorrectSourceTextureAspect && metric.conflictingAspects)
-                        UvtLog.Warn(UvtLog.Category.Repack, $"[TextureAspect] '{meshCopies[i].name}': {metric.reason}");
-                    originalUv0.Add(metric.PrepareTemporaryMesh(meshCopies[i], ctx.CorrectSourceTextureAspect));
+                try {
+                    for (int i = 0; i < meshCopies.Count; ++i) {
+                        var metric = SourceTextureUvMetric.Resolve(validEntries[i].renderer, validEntries[i].previewTexture, meshCopies[i]);
+                        if (ctx.CorrectSourceTextureAspect && metric.conflictingAspects)
+                            UvtLog.Warn(UvtLog.Category.Repack, $"[TextureAspect] '{meshCopies[i].name}': {metric.reason}");
+                        originalUv0.Add(metric.PrepareTemporaryMesh(meshCopies[i], ctx.CorrectSourceTextureAspect));
+                    }
+                    results = await RepackMeshes(meshCopies.ToArray(), opts, useAsync);
                 }
-                results = await RepackMeshes(meshCopies.ToArray(), opts, useAsync);
+                finally {
+                    for (int i = 0; i < originalUv0.Count; ++i)
+                        if (meshCopies[i] != null) originalUv0[i].Restore(meshCopies[i]);
+                }
             }
             catch {
                 foreach (var copy in meshCopies) if (copy) UnityEngine.Object.DestroyImmediate(copy);
                 throw;
-            }
-            finally {
-                for (int i = 0; i < originalUv0.Count; ++i)
-                    if (meshCopies[i] != null) originalUv0[i].Restore(meshCopies[i]);
             }
             for (int i = 0; i < validEntries.Count; i++)
             {

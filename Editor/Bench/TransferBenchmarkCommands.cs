@@ -16,7 +16,7 @@ namespace SashaRX.UnityMeshLab
         public static void Synthetic() => _ = Run(new TransferBenchmark.Config(), false);
 
         [MenuItem(Menu + "Benchmark Transfer - Last Capture")]
-        public static void LastCapture() => _ = Run(new TransferBenchmark.Config { captures = new[] { TransferCaseCapture.LastManifest } }, false);
+        public static void LastCapture() => _ = Run(new TransferBenchmark.Config { captures = new[] { TransferCaseCapture.LastManifest }, includeSynthetic = false }, false);
 
         [MenuItem(Menu + "Benchmark Transfer - Config File")]
         public static void ConfigFile()

@@ -302,6 +302,64 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(0, result.report.inheritedFaces); Assert.AreEqual(2, result.report.ambiguousFaces);
         }
 
+        [Test] public void CoincidentLobesOfOneContinuousParentChartAreAmbiguous()
+        {
+            var seed = new Mesh { name = "Closed ribbon with coincident ends" }; owned.Add(seed);
+            var path = new[] { Vector3.zero, Vector3.right, Vector3.right + Vector3.forward,
+                Vector3.forward, Vector3.zero, Vector3.right };
+            var positions = new List<Vector3>(); var uv = new List<Vector2>(); var indices = new List<int>();
+            for (int i = 0; i < path.Length; ++i)
+            {
+                positions.Add(path[i]); positions.Add(path[i] + Vector3.up);
+                uv.Add(new Vector2(.1f + i * .1f, .1f)); uv.Add(new Vector2(.1f + i * .1f, .2f));
+                if (i + 1 < path.Length) indices.AddRange(new[] { i * 2, i * 2 + 2, i * 2 + 3, i * 2, i * 2 + 3, i * 2 + 1 });
+            }
+            seed.SetVertices(positions); seed.triangles = indices.ToArray(); seed.uv2 = uv.ToArray();
+            using var result = Build(Options(), Level(1, seed), Level(0, Quad()));
+            Assert.AreEqual(0, result.report.inheritedFaces); Assert.AreEqual(2, result.report.ambiguousFaces);
+            Clean(result.meshes[1][0]);
+        }
+
+        [Test] public void TinyDensitySeedStillHasAValidMinimumAtlas()
+        {
+            var input = new ReverseUvTransfer.Input { mesh = Quad(size: .01f), key = "Tiny" };
+            var meshes = ReverseUvSeed.Prepare(new[] { input }, 128, 2, 1, default, out int side);
+            owned.AddRange(meshes); Assert.AreEqual(16, side);
+            using var result = Build(new ReverseUvTransfer.Options { seedResolution = side }, Level(1, meshes), Level(0, input.mesh));
+            Clean(result.meshes[0][0]);
+        }
+
+        [Test] public void DonorTieScanIncludesExactHitsAndHonoursBudgetAndCancellation()
+        {
+            var mesh = Quad(); var bvh = new TriangleBvh(mesh.vertices, mesh.triangles);
+            var normals = new[] { Vector3.forward, Vector3.forward }; long comparisons = 0;
+            Assert.IsTrue(bvh.AnyNormalFilteredWithin(Vector3.zero, Vector3.forward, normals,
+                .5f, 0, hit => hit.triangleIndex == 1, ref comparisons, 10, default));
+            comparisons = 0;
+            Assert.Throws<InvalidOperationException>(() => bvh.AnyNormalFilteredWithin(Vector3.zero, Vector3.forward,
+                normals, .5f, 0, hit => false, ref comparisons, 1, default));
+            using var cancellation = new CancellationTokenSource(); cancellation.Cancel();
+            Assert.Throws<OperationCanceledException>(() => bvh.AnyNormalFilteredWithin(Vector3.zero, Vector3.forward,
+                normals, .5f, 0, hit => false, ref comparisons, 10, cancellation.Token));
+        }
+
+        [Test] public void ReverseBenchmarkUsesSourceFrameAndRefusesMissingLegacyFrame()
+        {
+            var pair = new TransferCaseCapture.Pair { source = "Child", sourceMesh = "hash",
+                localToWorld = Matrix4x4.Translate(Vector3.right), hasSourceTransform = true,
+                sourceLocalToWorld = Matrix4x4.TRS(Vector3.up, Quaternion.Euler(0, 20, 0), Vector3.one * 2) };
+            var frames = new List<TransferCaseCapture.MeshState>();
+            Assert.AreEqual(pair.sourceLocalToWorld, ReverseUvBenchmark.SourceTransform(pair, frames));
+            pair.hasSourceTransform = false;
+            Assert.Throws<System.IO.InvalidDataException>(() => ReverseUvBenchmark.SourceTransform(pair, frames));
+            frames.Add(new TransferCaseCapture.MeshState { renderer = pair.source, repacked = pair.sourceMesh,
+                localToWorld = pair.sourceLocalToWorld });
+            Assert.AreEqual(pair.sourceLocalToWorld, ReverseUvBenchmark.SourceTransform(pair, frames));
+            frames.Add(new TransferCaseCapture.MeshState { renderer = pair.source, repacked = pair.sourceMesh,
+                localToWorld = pair.localToWorld });
+            Assert.Throws<System.IO.InvalidDataException>(() => ReverseUvBenchmark.SourceTransform(pair, frames));
+        }
+
         [Test] public void ParentHoleBetweenInteriorProbesCannotBeBorrowed()
         {
             var seed = new Mesh { name = "Perforated" }; owned.Add(seed);
@@ -637,6 +695,21 @@ namespace SashaRX.UnityMeshLab.Tests
                 asset.Set(original.name,original.uv2); Assert.IsNull(asset.Find(original.name).reverseTransferJson);
             }
             finally { Object.DestroyImmediate(asset); }
+        }
+
+        [Test] public void ReverseSidecarRefusesSplitSeamsAndRemovedFacesWithoutChangingSource()
+        {
+            var source = Quad(); var before = TransferMeshSnapshot.Capture(source);
+            var result = ReverseUvMesh.Copy(source, source.triangles,
+                new[] { Vector2.zero, Vector2.right * .2f, Vector2.one * .2f,
+                    Vector2.one * .6f, Vector2.one * .8f, Vector2.up * .8f });
+            owned.Add(result);
+            var entry = new MeshEntry { fbxMesh = source, originalMesh = source, reverseTransferJson = "ancestry" };
+            Assert.IsFalse(SidecarStore.TryBuildEntry(entry, result, false, SidecarStore.AoUvTarget.None, out var saved));
+            Assert.IsNull(saved);
+            var removed = Object.Instantiate(source); owned.Add(removed); removed.triangles = new[] { 0, 1, 2 };
+            Assert.IsFalse(SidecarStore.TryBuildEntry(entry, removed, false, SidecarStore.AoUvTarget.None, out saved));
+            Assert.IsNull(saved); CollectionAssert.AreEqual(before, TransferMeshSnapshot.Capture(source));
         }
 
         [Test] public void LocalRescueKeepsValidChartsAndUnwrapsNeedlesWithExactMetric()
