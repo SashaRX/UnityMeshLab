@@ -71,6 +71,20 @@ python 'Tools~/RemeshCapBenchmark/bridge_probe.py' --output PRIVATE_BRIDGE_REPOR
 
 It supplies the missing torus strip and disk triangles from an analytic fixture.
 It does not automatically pair rims, infer intended genus or generate a Bridge.
+That reference probe remains separate from the
+[generated-Bridge follow-up](../../Documentation~/REMESH_BRIDGE_GENERATION.md):
+
+```powershell
+python 'Tools~/RemeshCapBenchmark/bridge_generation_probe.py' --output PRIVATE_GENERATION_REPORT.json
+python 'Tools~/RemeshCapBenchmark/bridge.py' --source SOURCE.bin --source-hash SOURCE_HASH --loop LOOP_A --loop LOOP_B --output PRIVATE_BRIDGE_REPORT.json --mesh-output FRESH_CANDIDATE.npz
+```
+
+The generator uses explicit annular intent, cyclic seams and bounded monotone
+zipper paths, including unequal rim counts. It audits coverage, topology and
+exact new-face intersections and retains alternatives. Signed averaged co-normal
+growth records self/partner trajectory meetings as evidence. These approximate
+meetings do not certify a swept surface or choose disk versus Bridge. Refusal
+writes no new mesh; incomplete searches never publish a provisional winner.
 
 Failed production Remesh/Simplify attempts now save version 2 geometry captures
 in `%TEMP%/meshlab-uvmerge/failures/`, independently of Verbose logging. Decode

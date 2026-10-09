@@ -195,6 +195,14 @@ pass. It supplies known reference strips and does not implement automatic rim
 pairing or correspondence. P3/P4 must handle annular domains, cyclic matching
 and topology intent alongside missing planar edges/corners.
 
+[Generated Bridge and virtual growth](REMESH_BRIDGE_GENERATION.md) now provide
+a bounded monotone zipper for explicitly selected annular domains, unequal-rim
+coverage, independent annulus/assembled topology audits and exact geometry gates.
+Virtual signed averaged co-normal trajectories report self/partner convergence
+as evidence. The suite passes 105/105 offline tests; generated torus strips and
+the blocked-gap/box refusals are measured. This does not select closure type,
+certify shape or implement automatic planar feature-graph completion.
+
 ## Integration and regression controls
 
 - Geometry preparation runs after existing small-part filtering. Keep the

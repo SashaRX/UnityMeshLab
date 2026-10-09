@@ -5,6 +5,10 @@
 `Tools~/RemeshCapBenchmark/bridge_probe.py` compares known-reference closures
 of a torus with a removed circumferential band and a box missing opposite faces.
 It adds topology diagnostics and fixtures, not automatic Bridge reconstruction.
+The [generator follow-up](REMESH_BRIDGE_GENERATION.md) now constructs bounded
+strips for an explicitly selected pair, including unequal rim counts, and
+measures virtual averaged co-normal growth. This document retains the reference
+counterexample; automatic closure-type classification remains unimplemented.
 
 ## Measured counterexample
 
