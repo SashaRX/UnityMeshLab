@@ -294,7 +294,9 @@ namespace SashaRX.UnityMeshLab
             generatedMeshes.Add(result.mesh);
             lastResults.Add(new GeneratedCollisionInfo
             {
-                meshName        = sourceMesh.name,
+                // Working geometry may carry _wc; persistence must retain the
+                // imported source identity, including the selected LOD suffix.
+                meshName        = entry.fbxMesh != null ? entry.fbxMesh.name : sourceMesh.name,
                 sourceTriCount  = result.sourceTriCount,
                 resultTriCount  = result.resultTriCount,
                 hullCount       = 1,
@@ -335,7 +337,7 @@ namespace SashaRX.UnityMeshLab
 
             lastResults.Add(new GeneratedCollisionInfo
             {
-                meshName        = sourceMesh.name,
+                meshName        = entry.fbxMesh != null ? entry.fbxMesh.name : sourceMesh.name,
                 sourceTriCount  = result.sourceTriCount,
                 resultTriCount  = totalTris,
                 hullCount       = result.hulls.Count,

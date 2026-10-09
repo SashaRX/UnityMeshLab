@@ -262,11 +262,19 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-        [Test]
-        public void SidecarKeepsSourceLocalGeometryAndRebuiltExportUsesCapturedFrames()
+        [TestCase(false, 0, true)]
+        [TestCase(true, 0, false)]
+        [TestCase(true, 2, false)]
+        [TestCase(true, 2, true)]
+        public void SidecarKeepsSourceLocalGeometryAndRebuiltExportUsesCapturedFrames(bool workingCopy, int sourceLod, bool convex)
         {
             var source = Prepare(true, 2);
             var ctx = Field<UvToolContext>(tool, "ctx");
+            ctx.SourceLodIndex = sourceLod;
+            ctx.MeshEntries[0].lodIndex = sourceLod;
+            string sourceName = "Chair_LOD" + sourceLod;
+            source.name = sourceName;
+            ctx.MeshEntries[0].originalMesh.name = sourceName;
             source.gameObject.AddComponent<MeshFilter>().sharedMesh = ctx.MeshEntries[0].originalMesh;
             if (!AssetDatabase.IsValidFolder("Assets/UnityMeshLab")) AssetDatabase.CreateFolder("Assets", "UnityMeshLab");
             string fbxPath = "Assets/UnityMeshLab/CollisionTest-" + Guid.NewGuid().ToString("N") + ".fbx";
@@ -282,30 +290,47 @@ namespace SashaRX.UnityMeshLab.Tests
             foreach (var asset in AssetDatabase.LoadAllAssetsAtPath(fbxPath))
                 if (asset is Mesh imported) { ctx.MeshEntries[0].fbxMesh = imported; break; }
             Assert.IsNotNull(ctx.MeshEntries[0].fbxMesh);
+            Assert.AreEqual(sourceName, ctx.MeshEntries[0].fbxMesh.name);
+            if (workingCopy)
+            {
+                ctx.MeshEntries[0].originalMesh.name = sourceName + "_wc";
+                var selectedMode = typeof(CollisionMeshTool).GetField("mode", Private);
+                selectedMode.SetValue(tool, Enum.ToObject(selectedMode.FieldType, convex ? 1 : 0));
+                typeof(CollisionMeshTool).GetField("convexResolution", Private).SetValue(tool, 10000);
+                typeof(CollisionMeshTool).GetField("simplifyTargetRatio", Private).SetValue(tool, 1f);
+                Call(tool, "ExecuteGenerate");
+                Assert.IsNotEmpty(Field<List<Mesh>>(tool, "generatedMeshes"));
+            }
+            // The rebuilt FBX starts from the imported hierarchy, whose mesh names
+            // do not carry the working-copy suffix introduced by Optimize / weld.
+            source.GetComponent<MeshFilter>().sharedMesh = ctx.MeshEntries[0].fbxMesh;
             var generated = Field<List<Mesh>>(tool, "generatedMeshes");
             var originalVertices = generated[0].vertices;
             Call(tool, "SaveToSidecar");
             var saved = SidecarStore.Load(fbxPath);
-            Assert.AreEqual("Chair_LOD0", saved.collisionEntries[0].meshGroupKey);
+            Assert.AreEqual(sourceName, saved.collisionEntries[0].meshGroupKey);
+            Assert.IsNotNull(saved.collisionEntries[0].sourceFingerprint);
             var roundTrip = SidecarStore.CollisionMeshes(fbxPath);
             Assert.AreEqual(1, roundTrip.Count);
             owned.AddRange(roundTrip[0].meshes);
-            Assert.IsTrue(roundTrip[0].isConvex);
-            Assert.AreEqual(2, roundTrip[0].meshes.Count);
-            foreach (var mesh in roundTrip[0].meshes)
+            Assert.AreEqual(convex, roundTrip[0].isConvex);
+            Assert.AreEqual(generated.Count, roundTrip[0].meshes.Count);
+            for (int h = 0; h < generated.Count; ++h)
             {
-                CollectionAssert.AreEqual(originalVertices, mesh.vertices, "the document save needs source-local geometry");
-                CollectionAssert.AreEqual(generated[0].triangles, mesh.triangles);
+                CollectionAssert.AreEqual(generated[h].vertices, roundTrip[0].meshes[h].vertices, "the document save needs source-local geometry");
+                CollectionAssert.AreEqual(generated[h].triangles, roundTrip[0].meshes[h].triangles);
             }
             var frames = FbxExport.CollisionSourceFrames(root);
             var sink = new List<Mesh>();
-            Assert.AreEqual(2, FbxExport.InjectCollisionMeshes(exportRoot, roundTrip, sink, frames));
-            foreach (var mesh in roundTrip[0].meshes)
+            Assert.AreEqual(generated.Count, FbxExport.InjectCollisionMeshes(exportRoot, roundTrip, sink, frames));
+            for (int h = 0; h < generated.Count; ++h)
             {
+                var mesh = roundTrip[0].meshes[h];
                 var vertices = mesh.vertices;
+                var localVertices = generated[h].vertices;
                 for (int i = 0; i < vertices.Length; ++i)
-                    Assert.Less(Vector3.Distance(source.TransformPoint(originalVertices[i]) - root.transform.position, vertices[i]), .0001f);
-                Assert.AreEqual(generated[0].triangles[1], mesh.triangles[2], "normalized export reverses mirrored winding");
+                    Assert.Less(Vector3.Distance(source.TransformPoint(localVertices[i]) - root.transform.position, vertices[i]), .0001f);
+                Assert.AreEqual(generated[h].triangles[1], mesh.triangles[2], "normalized export reverses mirrored winding");
             }
             Assert.AreEqual(originalVertices, generated[0].vertices);
             Call(tool, "SaveToSidecar");
