@@ -32,6 +32,8 @@ namespace SashaRX.UnityMeshLab
         readonly RemeshPipeline pipeline = new RemeshPipeline();
         readonly RemeshCaptureHighlight highlight = new RemeshCaptureHighlight();
         bool highlightCapture;
+        internal bool highlightFilterPreview;
+        bool highlightQueued;
         readonly bool[] folds = { true, true, true, true };
         bool chartFold;
         readonly RemeshPreview previews = new RemeshPreview();
@@ -53,6 +55,7 @@ namespace SashaRX.UnityMeshLab
         {
             public bool[] folds = { true, true, true, true };
             public bool chartFold;
+            public bool highlightFilterPreview;
         }
 
         public RemeshBakeTool()
@@ -66,6 +69,7 @@ namespace SashaRX.UnityMeshLab
             if (window.folds != null)
                 Array.Copy(window.folds, folds, Math.Min(window.folds.Length, folds.Length));
             chartFold = window.chartFold;
+            highlightFilterPreview = window.highlightFilterPreview;
             previews.RestoreWindowSettings();
             pipeline.Changed = () => { saveStatus = null; RequestRepaint?.Invoke(); };
         }
@@ -75,7 +79,8 @@ namespace SashaRX.UnityMeshLab
         internal void SaveSettings()
         {
             EditorPrefs.SetString(SettingsKey, JsonUtility.ToJson(settings));
-            MeshLabWindowPreferences.Save("RemeshBake", new WindowSettings { folds = folds, chartFold = chartFold });
+            MeshLabWindowPreferences.Save("RemeshBake", new WindowSettings { folds = folds, chartFold = chartFold,
+                highlightFilterPreview = highlightFilterPreview });
             previews.SaveWindowSettings();
         }
 
@@ -113,6 +118,8 @@ namespace SashaRX.UnityMeshLab
             previews.Dispose();
             pipeline.Dispose();
             highlight.Dispose();
+            EditorApplication.delayCall -= RebuildHighlight;
+            highlightQueued = false;
             EditorApplication.hierarchyChanged -= InvalidateHighlight;
             EditorApplication.hierarchyChanged -= InvalidateSourcePreview;
             ClearSourcePreview();
@@ -142,7 +149,7 @@ namespace SashaRX.UnityMeshLab
             InvalidateSourcePreview();
         }
 
-        void InvalidateSourcePreview() { sourcePreviewDirty = true; RequestRepaint?.Invoke(); }
+        void InvalidateSourcePreview() { sourcePreviewDirty = true; InvalidateHighlight(); RequestRepaint?.Invoke(); }
 
         internal void ClearSourcePreview()
         {
@@ -258,7 +265,7 @@ namespace SashaRX.UnityMeshLab
         public void OnSceneGUI(SceneView sv)
         {
             if (!highlightCapture || !source) return;
-            if (highlight.Key != RemeshCaptureHighlight.KeyFor(source, settings)) { highlight.Build(source, settings); RequestRepaint?.Invoke(); }
+            EnsureHighlight();
             highlight.Draw();
         }
         public void OnDrawCanvasOverlay(UvCanvasView canvas, float cx, float cy, float sz) { }
@@ -274,7 +281,7 @@ namespace SashaRX.UnityMeshLab
             if (on != highlightCapture) {
                 highlightCapture = on;
                 if (on) { EditorApplication.hierarchyChanged -= InvalidateHighlight; EditorApplication.hierarchyChanged += InvalidateHighlight; }
-                else { EditorApplication.hierarchyChanged -= InvalidateHighlight; highlight.Clear(); }
+                else { EditorApplication.hierarchyChanged -= InvalidateHighlight; if (!highlightFilterPreview) highlight.Clear(); }
                 SceneView.RepaintAll();
             }
             if (!highlightCapture) return;
@@ -291,10 +298,39 @@ namespace SashaRX.UnityMeshLab
 
         void InvalidateHighlight() { highlight.Clear(); SceneView.RepaintAll(); }
 
+        void EnsureHighlight()
+        {
+            var root = source ? source : pipeline.CapturedSource;
+            if (!root || highlightQueued || highlight.Key == RemeshCaptureHighlight.KeyFor(root, settings)) return;
+            // Capture once after a selection/settings change, outside IMGUI drawing.
+            highlight.Clear();
+            highlightQueued = true;
+            EditorApplication.delayCall += RebuildHighlight;
+        }
+
+        void RebuildHighlight()
+        {
+            highlightQueued = false;
+            if (!highlightCapture && !highlightFilterPreview) return;
+            highlight.Build(source ? source : pipeline.CapturedSource, settings);
+            RequestRepaint?.Invoke(); SceneView.RepaintAll();
+        }
+
         public void OnDrawRightSidebar()
         {
             SyncPreviewData();
             previews.Draw(previewData);
+            using (new EditorGUI.DisabledScope(!previews.IsSource)) {
+                bool on = EditorGUILayout.ToggleLeft(new GUIContent("Part filter highlight",
+                    "Source preview: green kept, orange removed by size, red removed by thickness. Follows the Remesh filter settings, including fully removed hierarchy nodes."), highlightFilterPreview);
+                if (on != highlightFilterPreview) { highlightFilterPreview = on; RequestRepaint?.Invoke(); }
+            }
+            if (highlightFilterPreview && previews.IsSource) {
+                EnsureHighlight();
+                EditorGUILayout.LabelField("green kept · orange small · red thin", EditorStyles.wordWrappedMiniLabel);
+                if (highlight.Error != null) EditorGUILayout.HelpBox(highlight.Error, MessageType.Warning);
+                else EditorGUILayout.LabelField(highlightQueued ? "Preparing filter preview…" : highlight.Summary, EditorStyles.wordWrappedMiniLabel);
+            }
         }
 
         void SyncPreviewData()
@@ -314,7 +350,7 @@ namespace SashaRX.UnityMeshLab
             previewData.cageSmoothing = settings.cageSmoothing;
             previewData.cageFit = settings.cageFit && settings.sourceShape == RemeshShape.LOD0;
             previewData.sourceBackfaces = settings.sourceBackfaces;
-            previewData.source = pipeline.Source;
+            previewData.source = pipeline.Primary != null ? pipeline.ProjectionSource(pipeline.Primary, settings.bakeFilteredParts) : null;
             previewData.twoSided = pipeline.Primary?.twoSided ?? false;
             previewData.remeshReady = pipeline.Has(RemeshPipeline.Stage.Remesh);
             previewData.simplifyReady = pipeline.Has(RemeshPipeline.Stage.Simplify);
@@ -336,6 +372,10 @@ namespace SashaRX.UnityMeshLab
             SyncPreviewData();
             if (previews.IsSource) {
                 var worldToFrame = previewSourceRoot ? RemeshPipeline.PreviewRootFrameInverse(previewSourceRoot.transform) : Matrix4x4.identity;
+                if (highlightFilterPreview) {
+                    EnsureHighlight();
+                    if (highlight.FillPreview(items, worldToFrame)) return true;
+                }
                 for (int i = 0; i < sourceEntries.Count; ++i) {
                     var renderer = sourceRenderers[i];
                     if (renderer) items.Add(new MeshViewport3D.Item(sourceEntries[i].originalMesh,
@@ -483,6 +523,8 @@ namespace SashaRX.UnityMeshLab
                     StageButton(RemeshPipeline.Stage.Unwrap, "Unwrap");
                 }
                 if (StageHeader(RemeshPipeline.Stage.Bake)) {
+                    settings.bakeFilteredParts = EditorGUILayout.Toggle(new GUIContent("Bake filtered-out parts",
+                        "Project materials, lighting, AO and vertex colors from the full captured source, including small and thin parts removed before Remesh. In Keep hierarchy, also includes fully filtered renderers. Only Bake needs to rerun; projection distance and backface rules still apply."), settings.bakeFilteredParts);
                     settings.bakeMode = (RemeshBakeMode)EditorGUILayout.EnumPopup(new GUIContent("Bake mode",
                         "Materials transfers the source maps. Beauty bakes the object as the player sees it — realtime/mixed light with ray shadows, " +
                         "lightmaps, ambient and reflection probes folded into one lit BaseColor texture; the saved material becomes Unlit. " +

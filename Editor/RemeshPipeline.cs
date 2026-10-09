@@ -35,6 +35,7 @@ namespace SashaRX.UnityMeshLab
             public Vector3 localScale = Vector3.one;
             public Matrix4x4 spaceToWorld = Matrix4x4.identity; // captured at remesh time
             public RemeshSource source;
+            internal RemeshSource unfilteredSource;
             internal RemeshPlanarCap.Support support;
             public RemeshNative.IndexedMesh voxel, simplified;
             // Trim mask: the untrimmed remesh and the class of each of its faces
@@ -56,6 +57,8 @@ namespace SashaRX.UnityMeshLab
         CancellationTokenSource cancellation;
         int running;
         bool hierarchy;
+        RemeshSource unfilteredRoot;
+        Matrix4x4 capturedRootToWorld;
         bool disposeRequested;   // Dispose() during a run: clear once the run has observed cancellation
         /// <summary>The root the remesh stage captured; the save resolves its output folder from this,
         /// not from whatever is selected at save time. Null until the stage ran.</summary>
@@ -111,6 +114,18 @@ namespace SashaRX.UnityMeshLab
         public Texture2D BaseColorPreview => baseColorPreview;
         public float SourceDiagonal => Primary?.source != null ? Primary.source.diagonal : 0f;
         public RemeshSource Source => Primary?.source;
+        internal RemeshSource ProjectionSource(Node node, bool includeFiltered)
+        {
+            if (!includeFiltered) return node.source;
+            if (node.unfilteredSource == null && unfilteredRoot != null) {
+                var donor = unfilteredRoot.InSpace(node.spaceToWorld.inverse * capturedRootToWorld, node.source.diagonal);
+                // Only the primary preview retains a rebased full-root snapshot.
+                // Keeping one for every node would multiply memory by node count.
+                if (node == Primary) node.unfilteredSource = donor;
+                return donor;
+            }
+            return node.unfilteredSource ?? node.source;
+        }
         public bool SourceHasColors => nodes.Exists(n => n.source != null && n.source.hasColors);
 
         // True only when EVERY node carries the stage's output: a keep-hierarchy run
@@ -155,13 +170,13 @@ namespace SashaRX.UnityMeshLab
         {
             switch (stage) {
                 case Stage.Remesh: return $"{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}|{s.lod0Only}|{s.keepHierarchy}|" +
-                    $"{s.sourceShape}|{s.hullResolution}|{s.hullTriangles}|{s.minPartSize:F4}|{s.minRodVoxels:F3}|{s.voxelResolution}|{s.trimToSource}|{s.sourceBackfaces}|" +
+                    $"{s.sourceShape}|{s.hullResolution}|{s.hullTriangles}|{s.minPartSize:R}|{s.minRodVoxels:R}|{s.voxelResolution}|{s.trimToSource}|{s.sourceBackfaces}|" +
                     $"cap{RemeshPlanarCap.Revision}|{s.planarCap}|{s.planarCapLoops}|{s.planarCapLocalPlanes}";
                 case Stage.Simplify: return $"{s.simplify}|{s.targetTriangles}|{s.maximumError}|{s.regularize}|{s.preserveFolds}|{s.pruneSmallParts}";
                 case Stage.Unwrap: return $"{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.normalWeighting}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
                     $"{s.chartNormalDeviation}|{s.chartNormalSeam}|{s.chartStraightness}|{s.chartRoundness}|{s.chartIterations}|" +
                     $"{s.maxChartArea}|{s.maxChartBoundary}|{s.packRotate}|{s.packBlockAlign}|{s.packBruteForce}|{s.reduceUvFragmentation}|{s.mergeCharts}";
-                default: return $"{s.bakeMode}|{s.projectionDistance}|{s.cageSmoothing:F3}|{s.cageFit}|{s.bakeSamples}|{s.transferVertexColor}|{s.transferVertexAlpha}|{s.vertexColorTint}|{s.proxyDepth:F4}|{s.sourceBackfaces}|{s.bakeSourceAO}|{s.multiplySourceAO}|{s.sourceAO?.Key}|{s.dilationRadius}";
+                default: return $"{s.bakeMode}|{s.bakeFilteredParts}|{s.projectionDistance}|{s.cageSmoothing:F3}|{s.cageFit}|{s.bakeSamples}|{s.transferVertexColor}|{s.transferVertexAlpha}|{s.vertexColorTint}|{s.proxyDepth:F4}|{s.sourceBackfaces}|{s.bakeSourceAO}|{s.multiplySourceAO}|{s.sourceAO?.Key}|{s.dilationRadius}";
             }
         }
 
@@ -240,6 +255,7 @@ namespace SashaRX.UnityMeshLab
             RootRotation = root.transform.rotation;
             previewWorldToFrame = PreviewRootFrameInverse(root.transform);
             var rootToWorld = root.transform.localToWorldMatrix;
+            capturedRootToWorld = rootToWorld;
             var worldToRoot = root.transform.worldToLocalMatrix;
             var captures = new List<Node>();
             if (!hierarchy) {
@@ -270,12 +286,21 @@ namespace SashaRX.UnityMeshLab
             // The editor keeps ticking instead of blocking in Texture2D.ReadPixels.
             foreach (var node in captures) await node.source.TextureReadbacks;
             token.ThrowIfCancellationRequested();
+            if (hierarchy) {
+                // Retain fully removed renderers too, without reading textures twice.
+                var parts = captures.ConvertAll(node => (node.source, worldToRoot * node.spaceToWorld));
+                var groundNormal = worldToRoot.inverse.transpose.MultiplyVector(Vector3.up).normalized;
+                unfilteredRoot = await Task.Run(() => RemeshSource.Combine(parts, groundNormal), token);
+                token.ThrowIfCancellationRequested();
+            }
             var shape = options.sourceShape;
             // Part filter first, whatever the shape: small pieces and rods whose section
             // the voxel grid cannot carry (bolts, pipes, cables, railings) only add voxel
             // noise to a remesh and inflate a proxy's boxes or hull.
             for (int i = captures.Count - 1; i >= 0; --i) {
                 var node = captures[i];
+                if (!hierarchy) node.unfilteredSource = node.source;
+                node.source = node.source.CopyForFiltering();
                 int gridResolution = shape == RemeshShape.Hull ? options.hullResolution : options.voxelResolution;
                 Report($"Filtering parts of {node.name}…");
                 var filtered = await Task.Run(() => {
@@ -362,6 +387,14 @@ namespace SashaRX.UnityMeshLab
                 resultTriangles += node.voxel.TriangleCount;
             }
             token.ThrowIfCancellationRequested();
+            if (hierarchy) {
+                var previewNode = captures[0];
+                foreach (var node in captures)
+                    if (node.voxel.TriangleCount > previewNode.voxel.TriangleCount) previewNode = node;
+                var toPreview = previewNode.spaceToWorld.inverse * capturedRootToWorld;
+                previewNode.unfilteredSource = await Task.Run(() => unfilteredRoot.InSpace(toPreview, previewNode.source.diagonal), token);
+                token.ThrowIfCancellationRequested();
+            }
             nodes.AddRange(captures);
             CapturedSource = root;
             var primary = Primary;
@@ -505,7 +538,9 @@ namespace SashaRX.UnityMeshLab
                 Report(hierarchy ? $"Projecting {node.name} into its UV atlas ({i + 1}/{nodes.Count})…"
                     : beauty != null ? "Baking the lit view of the source into the atlas…" : "Projecting source materials into the new UV atlas…");
                 var nodeBeauty = beauty?.ForSpace(node.spaceToWorld, node.source.diagonal);
-                var source = node.source; var target = node.geometry; var frame = node.tangents;
+                var source = options.bakeFilteredParts
+                    ? await Task.Run(() => ProjectionSource(node, true), token) : node.source;
+                var target = node.geometry; var frame = node.tangents;
                 // The lightmap regions this node's faces use are read now, on the main
                 // thread, and dropped again after the bake — they are float readbacks
                 // and only Beauty needs them.
@@ -523,7 +558,7 @@ namespace SashaRX.UnityMeshLab
                 sourceTriangles += source.indices.Length / 3; targetTriangles += target.indices.Length / 3;
                 misses += node.maps.misses; covered += node.maps.covered; empty += node.maps.empty; warnings += source.warnings.Length;
                 partialMisses += node.maps.partialMisses;
-                LogDiagnostics(node, options.sourceShape);
+                LogDiagnostics(node, source, options.sourceShape);
                 if (node.support?.addedFaces > 0) UvtLog.Info(LogPrefix + node.name + $": Cap-associated bake texels {node.maps.capCovered}, " +
                     $"missed {node.maps.capMisses}, partially projected {node.maps.capPartialMisses}. Original donors only; nearest-support face classification.");
             }
@@ -531,6 +566,7 @@ namespace SashaRX.UnityMeshLab
             var primary = Primary;
             baseColorPreview = TextureAssets.FromPixels(primary.maps.color, primary.maps.size, primary.maps.size, linear: false);
             Status = (hierarchy ? $"{nodes.Count} node(s): " : "") + $"{sourceTriangles:N0} → {targetTriangles:N0} triangles. " +
+                (options.bakeFilteredParts ? "Full pre-filter source donors. " : "") +
                 (misses == 0 && partialMisses == 0 ? "All covered texels projected." :
                     $"{misses:N0} / {covered:N0} texels missed (magenta), {partialMisses:N0} partially projected. Check projection distance and rebake.") +
                 (empty > 0 ? $" {empty:N0} proxy texels see no geometry (alpha 0, filled from neighbours)." : "") +
@@ -541,9 +577,9 @@ namespace SashaRX.UnityMeshLab
 
         // Bake health (RemeshDiag log category): BakeHealth judges the counters the bake
         // collected and the source/target scale; the pipeline only hands it the node.
-        static void LogDiagnostics(Node node, RemeshShape shape)
+        static void LogDiagnostics(Node node, RemeshSource source, RemeshShape shape)
         {
-            BakeHealth.Log(BakeHealth.Build(node.name, node.maps, node.source.diagonal, node.source.indices.Length / 3,
+            BakeHealth.Log(BakeHealth.Build(node.name, node.maps, source.diagonal, source.indices.Length / 3,
                 node.geometry.positions, node.geometry.indices.Length / 3, shape));
         }
 
@@ -620,7 +656,7 @@ namespace SashaRX.UnityMeshLab
                 if (sourceMesh) Object.DestroyImmediate(sourceMesh);
                 if (trimMaskMesh) Object.DestroyImmediate(trimMaskMesh);
                 voxelMesh = null; sourceMesh = null; trimMaskMesh = null; keys[(int)Stage.Remesh] = null;
-                nodes.Clear(); hierarchy = false; CapturedSource = null;
+                nodes.Clear(); hierarchy = false; CapturedSource = null; unfilteredRoot = null;
             }
         }
 

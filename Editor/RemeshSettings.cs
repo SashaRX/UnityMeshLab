@@ -166,6 +166,9 @@ namespace SashaRX.UnityMeshLab
         // Materials transfers the source maps; Beauty additionally folds the scene's
         // lighting into one BaseColor texture and the saved material becomes Unlit.
         public RemeshBakeMode bakeMode = RemeshBakeMode.Materials;
+        // Project from the capture before the small-part/rod filter, including
+        // fully filtered hierarchy nodes. Shape generation still uses the filter.
+        public bool bakeFilteredParts;
         public float projectionDistance = 0.02f; // fraction of source bounds diagonal
         // Cage: Laplacian passes over the welded side directions (0 = raw averaged
         // normals), and whether each side's reach is fitted to where the source sits

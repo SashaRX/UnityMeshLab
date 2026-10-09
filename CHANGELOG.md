@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- Remesh Bake can project from the full pre-filter capture, including thin/small parts and completely filtered hierarchy nodes, without rebuilding the shape or atlas. Source 3D preview can highlight the same part filter live (green kept, orange small, red thin).
 - Local two-plane Cap option: find a unique pair of continuous planar arcs on a selected welded rim, close one arc with a shared chord, re-extract and recheck the remaining contour, and audit each patch against source and previously accepted faces. Ambiguous partitions, unsupported contours and implicit Bridge remain refused; the existing disk mode stays available.
 - Opt-in selected planar disk Cap before solid Remesh: weld coincident support vertices, preserve donor attributes, validate continuous rims and exact new-face contacts, improve constrained diagonals, and use prepared geometry through Trim/source-fitted Simplify. Bake reports Cap-associated misses from original donors; v3 captures retain original/prepared geometry separately. Bridge and unsupported compound closure are not inferred.
 - Failed solid Remesh and pipeline Simplify attempts automatically capture exact source/result geometry, effective stage settings and node context for offline reproduction. Captures retain rejected Solve and fallback attempts without weakening topology guards; a Python decoder exports geometry and topology reports.

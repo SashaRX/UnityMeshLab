@@ -416,6 +416,82 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
+        // FilterSmallParts replaces streams rather than editing their elements.
+        // A separate wrapper therefore preserves the pre-filter donor without
+        // duplicating texture pixels or the unchanged vertex streams.
+        internal RemeshSource CopyForFiltering()
+        {
+            var copy = (RemeshSource)MemberwiseClone();
+            copy.lightmaps = null;
+            return copy;
+        }
+
+        /// <summary>Rebase an immutable donor snapshot into a hierarchy node's space.
+        /// Keep that node's diagonal so projection distances retain their meaning.</summary>
+        internal RemeshSource InSpace(Matrix4x4 transform, float nodeDiagonal)
+        {
+            if (Mathf.Abs(transform.determinant) < 1e-12f)
+                throw new InvalidOperationException("Zero-scale donor transform.");
+            var copy = CopyForFiltering();
+            var normalTransform = transform.inverse.transpose;
+            float sign = transform.determinant < 0 ? -1 : 1;
+            copy.positions = new Vector3[positions.Length];
+            copy.normals = new Vector3[normals.Length];
+            copy.tangents = new Vector4[tangents.Length];
+            for (int i = 0; i < positions.Length; ++i) {
+                copy.positions[i] = transform.MultiplyPoint3x4(positions[i]);
+                var n = normalTransform.MultiplyVector(normals[i]).normalized;
+                copy.normals[i] = n;
+                var t = transform.MultiplyVector(new Vector3(tangents[i].x, tangents[i].y, tangents[i].z));
+                t = (t - n * Vector3.Dot(n, t)).normalized;
+                copy.tangents[i] = new Vector4(t.x, t.y, t.z, tangents[i].w * sign);
+            }
+            if (sign < 0) {
+                copy.indices = (int[])indices.Clone();
+                for (int i = 0; i < copy.indices.Length; i += 3) {
+                    copy.indices[i + 1] = indices[i + 2];
+                    copy.indices[i + 2] = indices[i + 1];
+                }
+            }
+            copy.rendererToSpace = Array.ConvertAll(rendererToSpace, matrix => transform * matrix);
+            copy.groundNormal = normalTransform.MultiplyVector(groundNormal).normalized;
+            copy.diagonal = nodeDiagonal;
+            return copy;
+        }
+
+        // Assemble the root donor from the already read hierarchy captures. Surface
+        // and lightmap references are shared; no second texture readback is needed.
+        internal static RemeshSource Combine(IReadOnlyList<(RemeshSource source, Matrix4x4 toRoot)> captures, Vector3 groundNormal)
+        {
+            var positions = new List<Vector3>(); var normals = new List<Vector3>(); var tangents = new List<Vector4>();
+            var uv = new List<Vector2>(); var uv2 = new List<Vector2>(); var colors = new List<Color>();
+            var indices = new List<int>(); var faceMaterials = new List<int>(); var faceLightmaps = new List<int>();
+            var materials = new List<Surface>(); var lightmaps = new List<LightmapRef>(); var warnings = new List<string>();
+            var vertexRenderer = new List<int>(); var rendererToSpace = new List<Matrix4x4>(); var rendererLayer = new List<int>();
+            bool hasColors = false;
+            foreach (var capture in captures) {
+                var part = capture.source.InSpace(capture.toRoot, capture.source.diagonal);
+                int vertexOffset = positions.Count, materialOffset = materials.Count, lightmapOffset = lightmaps.Count, rendererOffset = rendererToSpace.Count;
+                positions.AddRange(part.positions); normals.AddRange(part.normals); tangents.AddRange(part.tangents);
+                uv.AddRange(part.uv); uv2.AddRange(part.uv2); colors.AddRange(part.colors); hasColors |= part.hasColors;
+                foreach (int index in part.indices) indices.Add(vertexOffset + index);
+                foreach (int material in part.faceMaterials) faceMaterials.Add(materialOffset + material);
+                foreach (int lightmap in part.faceLightmaps) faceLightmaps.Add(lightmap < 0 ? -1 : lightmapOffset + lightmap);
+                foreach (int renderer in part.vertexRenderer) vertexRenderer.Add(rendererOffset + renderer);
+                materials.AddRange(part.materials); lightmaps.AddRange(part.lightmapRefs); warnings.AddRange(part.warnings);
+                rendererToSpace.AddRange(part.rendererToSpace); rendererLayer.AddRange(part.rendererLayer);
+            }
+            if (indices.Count == 0) throw new InvalidOperationException("No source triangles found.");
+            var bounds = new Bounds(positions[0], Vector3.zero);
+            foreach (var position in positions) bounds.Encapsulate(position);
+            return new RemeshSource { positions = positions.ToArray(), normals = normals.ToArray(), tangents = tangents.ToArray(),
+                uv = uv.ToArray(), uv2 = uv2.ToArray(), colors = colors.ToArray(), hasColors = hasColors, indices = indices.ToArray(),
+                faceMaterials = faceMaterials.ToArray(), faceLightmaps = faceLightmaps.ToArray(), materials = materials.ToArray(),
+                lightmapRefs = lightmaps.ToArray(), warnings = warnings.ToArray(), vertexRenderer = vertexRenderer.ToArray(),
+                rendererToSpace = rendererToSpace.ToArray(), rendererLayer = rendererLayer.ToArray(), diagonal = bounds.size.magnitude,
+                groundNormal = groundNormal };
+        }
+
         public const byte PartKept = 0, PartSmall = 1, PartRod = 2;
 
         /// <summary>

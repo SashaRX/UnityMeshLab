@@ -13,6 +13,93 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
     public sealed class RemeshHierarchyTests
     {
         [UnityTest]
+        public IEnumerator UnfilteredHierarchyBakeRetainsFullyRemovedNodesAndReusesGeometry()
+        {
+            var root = new GameObject("unfiltered hierarchy donor");
+            var body = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var rod = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var rodMesh = Object.Instantiate(rod.GetComponent<MeshFilter>().sharedMesh);
+            rodMesh.vertices = System.Array.ConvertAll(rodMesh.vertices, p => Vector3.Scale(p, new Vector3(.001f, .001f, 2)));
+            rodMesh.RecalculateBounds(); rod.GetComponent<MeshFilter>().sharedMesh = rodMesh;
+            using (var pipeline = new RemeshPipeline())
+            try {
+                body.transform.SetParent(root.transform, false); rod.transform.SetParent(root.transform, false);
+                rod.transform.localPosition = new Vector3(.2f, .2f, .2f);
+                root.transform.SetPositionAndRotation(new Vector3(10, 3, -7), Quaternion.Euler(0, 30, 0));
+                var settings = new RemeshSettings { keepHierarchy = true, sourceShape = RemeshShape.BoundingBox,
+                    simplify = false, textureResolution = 64, bakeSamples = 1, padding = 1, dilationRadius = 0,
+                    minPartSize = 0, minRodVoxels = 1, gpuProjection = false, reduceUvFragmentation = false };
+                var run = pipeline.Run(root, settings, RemeshPipeline.Stage.Remesh, RemeshPipeline.Stage.Bake);
+                while (!run.IsCompleted) yield return null;
+                Assert.IsTrue(run.Result, pipeline.Status); Assert.AreEqual(1, pipeline.Nodes.Count);
+                var node = pipeline.Primary;
+                Assert.AreEqual(12, node.source.indices.Length / 3);
+                var donor = pipeline.ProjectionSource(node, true);
+                Assert.AreEqual(24, donor.indices.Length / 3, "The fully filtered renderer remains in the full-root donor");
+                var geometry = node.geometry; var mesh = node.mesh;
+                settings.bakeFilteredParts = true;
+                Assert.AreEqual(RemeshPipeline.Stage.Bake, pipeline.FirstStale(RemeshPipeline.Stage.Bake, settings, root));
+                run = pipeline.Run(root, settings, RemeshPipeline.Stage.Bake, RemeshPipeline.Stage.Bake);
+                while (!run.IsCompleted) yield return null;
+                Assert.IsTrue(run.Result, pipeline.Status);
+                Assert.AreSame(geometry, node.geometry); Assert.AreSame(mesh, node.mesh);
+                Assert.AreSame(donor, pipeline.ProjectionSource(node, true), "Reuse the captured donor on rebake");
+                Assert.AreSame(node.source, pipeline.ProjectionSource(node, false));
+            }
+            finally { Object.DestroyImmediate(root); Object.DestroyImmediate(rodMesh); }
+        }
+
+        [UnityTest]
+        public IEnumerator FilterPreviewShowsRemovedRodsRefreshesThresholdsAndReleasesOldModel()
+        {
+            var root = new GameObject("filter preview root");
+            var body = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var rod = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var other = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var rodMesh = Object.Instantiate(rod.GetComponent<MeshFilter>().sharedMesh);
+            rodMesh.vertices = System.Array.ConvertAll(rodMesh.vertices, p => Vector3.Scale(p, new Vector3(.001f, .001f, 2)));
+            rodMesh.RecalculateBounds(); rod.GetComponent<MeshFilter>().sharedMesh = rodMesh;
+            var tool = new RemeshBakeTool { highlightFilterPreview = true };
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var settings = (RemeshSettings)typeof(RemeshBakeTool).GetField("settings", flags).GetValue(tool);
+            var highlight = (RemeshCaptureHighlight)typeof(RemeshBakeTool).GetField("highlight", flags).GetValue(tool);
+            try {
+                settings.keepHierarchy = true; settings.minPartSize = 0; settings.minRodVoxels = 1;
+                body.transform.SetParent(root.transform, false); rod.transform.SetParent(root.transform, false);
+                root.transform.position = new Vector3(12, -3, 5);
+                var original = rod.GetComponent<MeshFilter>().sharedMesh;
+                tool.SetSource(root);
+                var items = new List<MeshViewport3D.Item>();
+                Assert.IsTrue(tool.Get3DContent(items));
+                double deadline = EditorApplication.timeSinceStartup + 10;
+                while (!highlight.PreviewMesh && EditorApplication.timeSinceStartup < deadline) yield return null;
+                var first = highlight.PreviewMesh; Assert.IsTrue(first);
+                Assert.That(System.Array.FindAll(first.colors32, c => c.r > 200 && c.g < 100).Length, Is.GreaterThan(0));
+                items.Clear(); Assert.IsTrue(tool.Get3DContent(items));
+                Assert.AreSame(first, items[0].mesh);
+                Assert.That(Vector3.Distance(items[0].matrix.MultiplyPoint3x4(first.bounds.center),
+                    first.bounds.center - root.transform.position), Is.LessThan(1e-5f));
+                settings.minRodVoxels = 0;
+                items.Clear(); tool.Get3DContent(items);
+                Assert.IsFalse(first, "Threshold changes release the old paint");
+                deadline = EditorApplication.timeSinceStartup + 10;
+                while (!highlight.PreviewMesh && EditorApplication.timeSinceStartup < deadline) yield return null;
+                var second = highlight.PreviewMesh; Assert.IsTrue(second);
+                Assert.IsTrue(System.Array.TrueForAll(second.colors32, c => c.g > c.r), "Disabled filters keep every captured face");
+                tool.SetSource(other); Assert.IsFalse(second, "Changing the model releases the previous paint");
+                items.Clear(); tool.Get3DContent(items);
+                deadline = EditorApplication.timeSinceStartup + 10;
+                while (!highlight.PreviewMesh && EditorApplication.timeSinceStartup < deadline) yield return null;
+                Assert.IsTrue(highlight.PreviewMesh);
+                Assert.AreSame(original, rod.GetComponent<MeshFilter>().sharedMesh, "Highlight never replaces scene meshes");
+            }
+            finally {
+                highlight.Dispose(); tool.ClearSourcePreview();
+                Object.DestroyImmediate(root); Object.DestroyImmediate(other); Object.DestroyImmediate(rodMesh);
+            }
+        }
+
+        [UnityTest]
         public IEnumerator CagePreviewDefersWorkAndKeepsLatestDistance()
         {
             var mesh = TriangleMesh();
