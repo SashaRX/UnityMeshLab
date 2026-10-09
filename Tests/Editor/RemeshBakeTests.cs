@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Threading;
 using NUnit.Framework;
 using UnityEditor;
@@ -1951,6 +1953,71 @@ namespace SashaRX.UnityMeshLab.Tests
                 UnityEngine.Object.DestroyImmediate(normalWriter); UnityEngine.Object.DestroyImmediate(ao); UnityEngine.Object.DestroyImmediate(material);
                 AssetDatabase.DeleteAsset(normalPath);
             }
+        }
+
+        [Test]
+        public void CaptureTriangulatesQuadsKeepsMaterialSlotsAndSkipsOnlyLines()
+        {
+            var root = new GameObject("Mixed surface source");
+            var mesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, Vector3.right + Vector3.up, Vector3.up } };
+            var first = new Material(Shader.Find("Standard")); var second = new Material(Shader.Find("Standard"));
+            mesh.subMeshCount = 3;
+            mesh.SetIndices(new[] { 0, 1, 2, 3 }, MeshTopology.Quads, 0);
+            mesh.SetIndices(new[] { 0, 1, 3 }, MeshTopology.Triangles, 1);
+            mesh.SetIndices(new[] { 0, 1 }, MeshTopology.Lines, 2);
+            mesh.uv = new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up };
+            var before = TransferMeshSnapshot.Capture(mesh);
+            try {
+                root.transform.localScale = new Vector3(-2, 3, 1);
+                root.AddComponent<MeshFilter>().sharedMesh = mesh;
+                var renderer = root.AddComponent<MeshRenderer>(); renderer.sharedMaterials = new[] { first, second, first };
+                var source = RemeshSource.Capture(Matrix4x4.identity, new[] { renderer }, aoOnly: true);
+                Assert.AreEqual(9, source.indices.Length); CollectionAssert.AreEqual(new[] { 0, 0, 1 }, source.faceMaterials);
+                for (int f = 0; f < 3; ++f) {
+                    int t = f * 3; var a = source.positions[source.indices[t]];
+                    var b = source.positions[source.indices[t + 1]]; var c = source.positions[source.indices[t + 2]];
+                    Assert.Greater(Vector3.Dot(Vector3.Cross(b - a, c - a), Vector3.forward), 0);
+                }
+                CollectionAssert.AreEqual(mesh.uv, source.uv);
+                CollectionAssert.AreEqual(before, TransferMeshSnapshot.Capture(mesh));
+                Assert.IsTrue(source.warnings.Any(w => w.Contains("quad submesh(es) triangulated")));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(root); UnityEngine.Object.DestroyImmediate(mesh);
+                UnityEngine.Object.DestroyImmediate(first); UnityEngine.Object.DestroyImmediate(second); }
+        }
+
+        [Test]
+        public void RealCurtainWithKeepQuadsIsCapturedWithoutChangingItsFbx()
+        {
+            string file = Environment.GetEnvironmentVariable("MESH_LAB_REMESH_QUAD_FBX");
+            if (string.IsNullOrEmpty(file)) Assert.Ignore("Set MESH_LAB_REMESH_QUAD_FBX to the readonly curtain FBX.");
+            byte[] original = File.ReadAllBytes(file);
+            string folder = "Assets/MeshLabQuadCapture_" + Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", folder.Substring(7));
+            string path = folder + "/Curtain.fbx"; GameObject root = null;
+            try {
+                File.WriteAllBytes(path, original); AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.keepQuads = true; importer.isReadable = false; importer.SaveAndReimport();
+                var mesh = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().First();
+                Assert.IsFalse(mesh.isReadable);
+                int expectedFaces = 0, quadSubmeshes = 0;
+                for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
+                    if (mesh.GetTopology(sub) == MeshTopology.Quads) { ++quadSubmeshes; expectedFaces += (int)mesh.GetIndexCount(sub) / 2; }
+                    else if (mesh.GetTopology(sub) == MeshTopology.Triangles) expectedFaces += (int)mesh.GetIndexCount(sub) / 3;
+                }
+                Assert.Greater(quadSubmeshes, 0, "The real model must exercise the KeepQuads failure.");
+                root = new GameObject("Real curtain capture"); root.AddComponent<MeshFilter>().sharedMesh = mesh;
+                var renderer = root.AddComponent<MeshRenderer>();
+                var source = RemeshSource.Capture(Matrix4x4.identity, new[] { renderer }, aoOnly: true);
+                Assert.AreEqual(expectedFaces * 3, source.indices.Length); Assert.Greater(expectedFaces, 0);
+                Assert.IsFalse(importer.isReadable); Assert.IsTrue(importer.keepQuads);
+                CollectionAssert.AreEqual(original, File.ReadAllBytes(file));
+                CollectionAssert.AreEqual(original, File.ReadAllBytes(path));
+                Assert.AreEqual(MeshTopology.Quads, mesh.GetTopology(0));
+                TestContext.WriteLine($"Real curtain: {mesh.vertexCount} vertices, {quadSubmeshes} quad submeshes, {expectedFaces} captured faces.");
+            }
+            finally { if (root) UnityEngine.Object.DestroyImmediate(root); AssetDatabase.DeleteAsset(folder); }
         }
 
         [Test]

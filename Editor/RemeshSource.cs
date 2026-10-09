@@ -208,18 +208,26 @@ namespace SashaRX.UnityMeshLab
                             mesh = MeshAccess.ReadableCopy(filter.sharedMesh);
                         }
                         else continue;
-                        // Non-triangle submeshes (curtain lines, quad exports) drop out of the
-                        // capture; the renderer survives on its triangle submeshes alone and is
-                        // skipped with a warning when none remain.
+                        // KeepQuads FBX imports still contain surfaces. Convert only this
+                        // detached readable copy; imported meshes and settings stay intact.
+                        int quadSubmeshes = TriangulateCaptureQuads(mesh);
+                        if (quadSubmeshes > 0)
+                            reader.warnings.Add(renderer.name + ": " + quadSubmeshes + " quad submesh(es) triangulated on the capture copy.");
+                        // Lines/points carry no surface area and remain excluded.
                         int triangleSubmeshes = 0;
                         for (int sub = 0; sub < mesh.subMeshCount; ++sub)
                             if (mesh.GetTopology(sub) == MeshTopology.Triangles) ++triangleSubmeshes;
                         if (triangleSubmeshes == 0) {
-                            reader.warnings.Add(renderer.name + ": no triangle submeshes, skipped.");
+                            reader.warnings.Add(renderer.name + ": no triangle or quad surface submeshes, skipped.");
                             continue;
                         }
                         if (triangleSubmeshes < mesh.subMeshCount)
                             reader.warnings.Add(renderer.name + ": " + (mesh.subMeshCount - triangleSubmeshes) + " non-triangle submesh(es) skipped.");
+                        // Unity's normal/tangent recalculation tries every submesh,
+                        // including lines. Empty those slots on the capture copy first.
+                        for (int sub = 0; sub < mesh.subMeshCount; ++sub)
+                            if (mesh.GetTopology(sub) != MeshTopology.Triangles)
+                                mesh.SetIndices(Array.Empty<int>(), MeshTopology.Triangles, sub, false);
                         // A geometry-only capture (scene shadow casters, the Scene highlight)
                         // needs positions and triangles alone: a mesh without UV0 casts
                         // shadows in the game and keeps doing so here.
@@ -281,7 +289,7 @@ namespace SashaRX.UnityMeshLab
                         else for (int i = 0; i < p.Length; ++i) colors.Add(Color.white);
                         var shared = renderer.sharedMaterials;
                         for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
-                            if (mesh.GetTopology(sub) != MeshTopology.Triangles) continue;
+                            if (mesh.GetTopology(sub) != MeshTopology.Triangles || mesh.GetIndexCount(sub) == 0) continue;
                             int material = 0;
                             if (geometryOnly) {
                                 // Geometry-only captures (the Scene highlight) never read materials
@@ -349,6 +357,24 @@ namespace SashaRX.UnityMeshLab
                 diagonal = bounds.size.magnitude, groundNormal = worldToSpace.inverse.transpose.MultiplyVector(Vector3.up).normalized,
                 warnings = warnings, TextureReadbacks = textureReadbacks,
                 vertexRenderer = vertexRenderer.ToArray(), rendererToSpace = rendererToSpace.ToArray(), rendererLayer = rendererLayer.ToArray() };
+        }
+
+        static int TriangulateCaptureQuads(Mesh mesh)
+        {
+            int converted = 0;
+            for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
+                if (mesh.GetTopology(sub) != MeshTopology.Quads) continue;
+                var quads = mesh.GetIndices(sub);
+                if (quads.Length % 4 != 0) throw new InvalidOperationException("Quad submesh has incomplete faces.");
+                var triangles = new int[checked(quads.Length / 4 * 6)];
+                for (int q = 0, t = 0; q < quads.Length; q += 4, t += 6) {
+                    triangles[t] = quads[q]; triangles[t + 1] = quads[q + 1]; triangles[t + 2] = quads[q + 2];
+                    triangles[t + 3] = quads[q]; triangles[t + 4] = quads[q + 2]; triangles[t + 5] = quads[q + 3];
+                }
+                mesh.SetIndices(triangles, MeshTopology.Triangles, sub, false);
+                ++converted;
+            }
+            return converted;
         }
 
         /// <summary>

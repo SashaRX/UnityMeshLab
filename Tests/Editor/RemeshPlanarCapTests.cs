@@ -89,6 +89,27 @@ namespace SashaRX.UnityMeshLab.Tests
             else Assert.AreEqual(4,RemeshPlanarCap.Prepare(Box,adjacent,"all",default,true,planeTolerance:1e-5).addedFaces);
         }
 
+        [TestCase(false)] [TestCase(true)]
+        public void FrozenBushPlanarRimRefusesInteriorObstacleWithoutChangingDonor(bool local)
+        {
+            string path = Environment.GetEnvironmentVariable("MESH_LAB_CAP_OBSTACLE_SOURCE");
+            if (string.IsNullOrEmpty(path)) Assert.Ignore("Set MESH_LAB_CAP_OBSTACLE_SOURCE to the decoded Bush source.bin.");
+            using var reader = new BinaryReader(File.OpenRead(path));
+            int vertices = reader.ReadInt32(), count = reader.ReadInt32();
+            var positions = new Vector3[vertices]; var indices = new int[count];
+            for (int i = 0; i < vertices; ++i)
+                positions[i] = new Vector3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
+            for (int i = 0; i < count; ++i) indices[i] = reader.ReadInt32();
+            var saved = (Vector3[])positions.Clone(); var savedIndices = (int[])indices.Clone();
+            var topology = RemeshTopology.Inspect(positions, indices);
+            Assert.IsTrue(topology.Valid); Assert.AreEqual(4, topology.boundary.Count);
+            var error = Assert.Throws<InvalidOperationException>(() =>
+                RemeshPlanarCap.Prepare(positions, indices, "all", default, local, planeTolerance: 1e-5));
+            StringAssert.Contains("contacts face 26", error.Message);
+            CollectionAssert.AreEqual(saved, positions); CollectionAssert.AreEqual(savedIndices, indices);
+            TestContext.WriteLine(error.Message);
+        }
+
         [TestCase(0,false)] [TestCase(0,true)] [TestCase(1,false)] [TestCase(1,true)]
         public void UserFrozenCapFailuresPreserveDonorsAndRefuseIntersectingClosure(int model,bool local)
         {

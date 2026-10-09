@@ -8,6 +8,8 @@ namespace SashaRX.UnityMeshLab
     internal static class RemeshGeometryDiagnostics
     {
         static readonly object FailureWriteLock = new object();
+        internal const int MaxFailureCaptures = 32;
+        internal const long MaxFailureCaptureBytes = 512L * 1024 * 1024;
 
         [Serializable]
         internal sealed class FailureMetadata
@@ -71,13 +73,29 @@ namespace SashaRX.UnityMeshLab
                 finally {
                     if (File.Exists(partial)) File.Delete(partial);
                 }
-                // Equal timestamps must not prune the capture that was just returned.
-                var stale = Array.FindAll(Directory.GetFiles(directory, "remesh_failure_*.bin"),
-                    item => !string.Equals(item, path, StringComparison.Ordinal));
-                Array.Sort(stale, StringComparer.Ordinal);
-                for (int i = 0; i < stale.Length - 2; i++) File.Delete(stale[i]);
+                PruneFailureCaptures(directory, path);
                 return path;
             }
+        }
+
+        internal static void PruneFailureCaptures(string directory, string latest,
+            int maxFiles = MaxFailureCaptures, long maxBytes = MaxFailureCaptureBytes)
+        {
+            if (maxFiles < 1) throw new ArgumentOutOfRangeException(nameof(maxFiles));
+            if (maxBytes < 1) throw new ArgumentOutOfRangeException(nameof(maxBytes));
+            // Equal timestamps must not prune the capture that was just returned.
+            var stale = Array.FindAll(Directory.GetFiles(directory, "remesh_failure_*.bin"),
+                item => !string.Equals(item, latest, StringComparison.Ordinal));
+            Array.Sort(stale, StringComparer.Ordinal);
+            long bytes = new FileInfo(latest).Length;
+            foreach (string path in stale) bytes += new FileInfo(path).Length;
+            int count = stale.Length + 1;
+            foreach (string path in stale) {
+                if (count <= maxFiles && bytes <= maxBytes) break;
+                long length = new FileInfo(path).Length;
+                File.Delete(path); --count; bytes -= length;
+            }
+            // One oversized latest capture stays available for diagnosis.
         }
 
         static void WriteOptional(BinaryWriter writer, Vector3[] positions, int[] indices)

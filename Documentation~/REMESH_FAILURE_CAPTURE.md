@@ -27,11 +27,38 @@ The guards, retries and cancellation behavior are unchanged. Capture is not a
 repair and never authorizes invalid geometry downstream. Failed capture I/O is
 reported and does not replace the original topology exception.
 
+## 2026-10-10 curtain and Bush diagnosis
+
+`WindowsCurtain_15` uses a KeepQuads FBX import. Capture now triangulates its
+detached readable copy before normal/tangent generation; one quad contributes
+two donor faces. Lines and points are removed from the copy before recalculation.
+Material slots and authored UVs remain aligned, and neither the FBX nor its
+importer is changed. The optional `MESH_LAB_REMESH_QUAD_FBX` EditMode test imports
+a private copy to verify this path with Read/Write disabled.
+
+The retained `Bush_19` failure has 224 captured vertices, 214 faces and a valid
+four-edge planar rim at Y approximately 0.069419. The proposed disk crosses donor
+face 26. Exact offline intersection checks find 30 improper contacts for either
+diagonal of the rim. A different triangulation cannot repair this geometry;
+Cap still refuses atomically. The optional `MESH_LAB_CAP_OBSTACLE_SOURCE` test
+replays the decoded source with local planes both off and on, verifying the
+same refusal and unchanged donors. An obstacle-aware closure would need a
+separate shape/topology strategy and validation.
+
+The earlier large failure was already removed by the old three-file retention.
+Its log reports 58 degenerate faces, two duplicates, 26 non-manifold edges, ten
+inconsistent edges and 118 disconnected vertex fans after weld. These are source
+preflight defects, not a triangulation error. The exact geometry must be
+recaptured before deciding which repairs preserve its intended surfaces.
+
 ## Files and decoder
 
 Captures live under `%TEMP%/meshlab-uvmerge/failures/`. A completed capture is
 published by moving a temporary file after closing the writer. The writer keeps
-the last three failure captures, separate from the old successful-stage dumps.
+up to 32 failure captures within a 512 MiB archive, separate from the old
+successful-stage dumps. The latest capture remains available even when it alone
+exceeds the size limit. Older completed failure files are pruned first;
+unfinished temporary files and unrelated files are not removed.
 Concurrent writers are serialized within the editor domain. Private captures
 must not be committed.
 
@@ -54,7 +81,7 @@ filtered donor. `prepared` contains welded positions/indices and synthetic Cap
 faces; its original face prefix retains donor face order via the support remap.
 Metadata additionally records `capRevision`. Preparation-only captures have
 absent raw/input slots and live in `%TEMP%/meshlab-uvmerge/cap/`, with independent
-three-file retention. The decoder accepts both v2 and v3. See
+retention under the same 32-file/512 MiB limits. The decoder accepts both v2 and v3. See
 [managed integration](REMESH_PLANAR_CAP_UNITY.md) for closure intent and limitations.
 
 ```powershell

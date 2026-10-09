@@ -54,8 +54,11 @@ namespace SashaRX.UnityMeshLab.Tests
                     stage = "Simplify", node = "Synthetic tetra", reason = "invalid topology", resolution = 128,
                     initialFlags = 1, resultFlags = 0, settingsJson = JsonUtility.ToJson(new RemeshSettings { shell = true })
                 };
-                for (int i = 0; i < 4; i++) {
+                string first = null;
+                for (int i = 0; i < RemeshGeometryDiagnostics.MaxFailureCaptures + 2; i++) {
                     string path = RemeshGeometryDiagnostics.WriteFailure(directory, source, original, i == 3 ? null : raw, input, metadata);
+                    if (i == 0) first = path;
+                    if (i == 3) Assert.IsTrue(File.Exists(first), "Several retries must not erase the earlier model's diagnostic capture.");
                     using var reader = new BinaryReader(File.OpenRead(path));
                     Assert.AreEqual(0x524D4C42, reader.ReadInt32()); Assert.AreEqual(2, reader.ReadInt32());
                     var readMetadata = JsonUtility.FromJson<RemeshGeometryDiagnostics.FailureMetadata>(reader.ReadString());
@@ -68,11 +71,32 @@ namespace SashaRX.UnityMeshLab.Tests
                     AssertCaptureMesh(reader, input.positions, input.indices);
                     Assert.AreEqual(reader.BaseStream.Length, reader.BaseStream.Position);
                 }
-                Assert.AreEqual(3, Directory.GetFiles(directory, "remesh_failure_*.bin").Length);
+                Assert.AreEqual(RemeshGeometryDiagnostics.MaxFailureCaptures, Directory.GetFiles(directory, "remesh_failure_*.bin").Length);
                 Assert.AreEqual(0, Directory.GetFiles(directory, "*.tmp").Length);
                 Assert.IsTrue(File.Exists(unrelated));
                 CollectionAssert.AreEqual(Tetrahedron, original);
                 CollectionAssert.AreEqual(new[] { 0, 1, 3 }, input.indices);
+            }
+            finally { Directory.Delete(directory, true); }
+        }
+
+        [Test]
+        public void FailureCaptureArchivePrunesByBytesAndNeverDeletesTheLatestOrUnrelatedFiles()
+        {
+            string directory = Path.Combine(Path.GetTempPath(), "meshlab-failure-bytes-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try {
+                string unrelated = Path.Combine(directory, "unrelated.bin"); File.WriteAllBytes(unrelated, new byte[256]);
+                string partial = Path.Combine(directory, "remesh_failure_0004.bin.tmp"); File.WriteAllBytes(partial, new byte[256]);
+                string latest = Path.Combine(directory, "remesh_failure_0000.bin");
+                File.WriteAllBytes(latest, new byte[70]);
+                for (int i = 1; i <= 2; ++i) File.WriteAllBytes(Path.Combine(directory, $"remesh_failure_000{i}.bin"), new byte[70]);
+                RemeshGeometryDiagnostics.PruneFailureCaptures(directory, latest, 32, 100);
+                CollectionAssert.AreEqual(new[] { latest }, Directory.GetFiles(directory, "remesh_failure_*.bin"));
+                Assert.IsTrue(File.Exists(unrelated)); Assert.IsTrue(File.Exists(partial));
+                File.WriteAllBytes(latest, new byte[200]);
+                RemeshGeometryDiagnostics.PruneFailureCaptures(directory, latest, 32, 100);
+                Assert.IsTrue(File.Exists(latest), "Even an oversized newest capture must remain available.");
             }
             finally { Directory.Delete(directory, true); }
         }
