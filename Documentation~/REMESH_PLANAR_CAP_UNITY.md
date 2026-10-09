@@ -81,3 +81,26 @@ Run optional real-source replay by setting `MESH_LAB_CAP_SOURCE` to decoded
 `source.bin`, then running `RemeshPlanarCapTests` in the actual Unity EditMode runner.
 Without that variable the six private cases are skipped; public analytic controls
 still run. Local evidence is under `_results~/cap-integration-20261009/` (ignored).
+
+## Actual Unity/project verification
+
+Unity 6000.2.6f2: **23/23 new Cap EditMode cases pass**, including seam-split
+geometry preservation, concave constraints, obstacle/adjacent contacts, donor
+channels, missed synthetic projections, v3 capture and private native trials.
+The broader selected Remesh battery passes **211/212**; the sole failure is the
+pre-existing DiagonalBox UV failure reproduced on the untouched baseline above.
+Both reference C# build variants compile; **115/115** offline cases pass, including
+backward-compatible v2 and separate v3 prepared-slot decoding.
+
+The real SandbagRoundedcorner FBX in the E project completed all four stages with
+Cap at 64, Solve on, 512 atlas, nine bake samples and GPU projection. Result:
+6,012 voxel faces, 952 simplified faces, 37 charts; original FBX and `.meta` hashes,
+captured geometry/UV0/UV2/normals/tangents/colors/material IDs all remained unchanged.
+The probe disposed every preview/result object and did not save meshes or scenes.
+
+Bake is **not artifact-free**: 152,196 covered texels, 21,604 complete misses and
+2,917 partial misses. Nearest-support association reports 26,622 Cap-covered texels,
+19,235 Cap misses and 775 Cap partial misses. The new floor has no original textured
+surface across most of its area. Geometry preparation therefore resolves the
+original solid failure, while a deliberate synthetic-surface texturing policy
+remains the next work item. These misses are visible, not hidden by invented UVs.

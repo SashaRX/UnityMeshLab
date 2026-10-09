@@ -217,7 +217,8 @@ triangulates simple whole-rim candidates and checks them through the independent
 incremental audit. On a real SandbagRoundedcorner capture, 45 generated floor
 triangles preserve the source prefix and make all ten solid voxel trials at
 resolutions 32–128 valid. The suite now has 114 passing tests. Compound feature
-completion, closure-type selection and editor integration are still outstanding.
+completion and closure-type selection remain outstanding; the narrower managed
+disk integration is described above.
 
 - Geometry preparation runs after existing small-part filtering. Keep the
   filtered original as the bake reference; attach accepted support per captured
