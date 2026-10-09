@@ -79,14 +79,23 @@ namespace SashaRX.UnityMeshLab
         void DestroyGeneratedMeshes()
         {
             foreach (var m in previewMeshes)
-                if (m != null) UnityEngine.Object.DestroyImmediate(m);
+                DestroyCachedMesh(m);
             previewMeshes.Clear();
             previewVertices.Clear();
             previewEdges.Clear();
             foreach (var m in generatedMeshes)
-                if (m != null) UnityEngine.Object.DestroyImmediate(m);
+                DestroyCachedMesh(m);
             generatedMeshes.Clear();
             lastResults.Clear();
+        }
+
+        static void DestroyCachedMesh(Mesh mesh)
+        {
+            if (!mesh) return;
+            // Notify every live view while the instance ID is still accessible,
+            // releasing encoded copies, wires, ribbons and pending uploads.
+            VertexChannels.RaiseChanged(mesh);
+            UnityEngine.Object.DestroyImmediate(mesh);
         }
 
         // ── UI: Sidebar ──
@@ -422,6 +431,10 @@ namespace SashaRX.UnityMeshLab
 
             string assetPath = AssetDatabase.GenerateUniqueAssetPath(Path.Combine(AppliedMeshAssetFolder, meshName + ".asset"));
             AssetDatabase.CreateAsset(instance, assetPath.Replace('\\', '/'));
+            // CreateAsset adopts the unique filename; keep the mesh's canonical
+            // collision identity even when an earlier applied asset still exists.
+            instance.name = meshName;
+            EditorUtility.SetDirty(instance);
             return instance;
         }
 
@@ -563,11 +576,18 @@ namespace SashaRX.UnityMeshLab
         static List<GameObject> FindExistingCollisionObjects(Transform root)
         {
             var result = new List<GameObject>();
-            for (int i = 0; i < root.childCount; i++)
+            var pending = new Stack<Transform>();
+            pending.Push(root);
+            while (pending.Count > 0)
             {
-                var child = root.GetChild(i);
-                if (MeshNaming.IsCollision(child.name))
-                    result.Add(child.gameObject);
+                var parent = pending.Pop();
+                for (int i = 0; i < parent.childCount; i++)
+                {
+                    var child = parent.GetChild(i);
+                    if (MeshNaming.IsCollision(child.name))
+                        result.Add(child.gameObject);
+                    else pending.Push(child);
+                }
             }
             return result;
         }

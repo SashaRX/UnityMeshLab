@@ -5,6 +5,7 @@ using System.Reflection;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.TestTools;
 using Object = UnityEngine.Object;
 
 namespace SashaRX.UnityMeshLab.Tests
@@ -100,6 +101,40 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsFalse(tool.Get3DContent(items));
         }
 
+        [UnityTest]
+        public IEnumerator ClearingResultsReleasesViewportWiresAndRibbons()
+        {
+            Prepare(true);
+            var items = new List<MeshViewport3D.Item>();
+            Assert.IsTrue(tool.Get3DContent(items));
+            var generated = Field<List<Mesh>>(tool, "generatedMeshes")[0];
+            var preview = items[0].mesh;
+            using var viewport = new MeshViewport3D();
+            var ribbons = Field<PreviewLines>(viewport, "lineRibbons");
+            var sources = new[] { generated, preview };
+            var wires = new Mesh[sources.Length];
+            var lineMeshes = new Mesh[sources.Length];
+            double deadline = EditorApplication.timeSinceStartup + 10;
+            for (int i = 0; i < sources.Length; ++i)
+            {
+                while (!wires[i] && EditorApplication.timeSinceStartup < deadline)
+                { wires[i] = viewport.WireOf(sources[i]); yield return null; }
+                Assert.IsTrue(wires[i]);
+                while (!lineMeshes[i] && EditorApplication.timeSinceStartup < deadline)
+                { lineMeshes[i] = ribbons.Get(wires[i]); yield return null; }
+                Assert.IsTrue(lineMeshes[i]);
+            }
+            Call(tool, "DestroyGeneratedMeshes");
+            for (int i = 0; i < sources.Length; ++i)
+            {
+                Assert.IsFalse(sources[i]);
+                Assert.IsFalse(wires[i], "wire caches must be released before their collision source dies");
+                Assert.IsFalse(lineMeshes[i], "uploaded wire ribbons must be released too");
+            }
+            Assert.AreEqual(0, Field<IDictionary>(viewport, "wireCache").Count);
+            Assert.AreEqual(0, Field<IDictionary>(ribbons, "entries").Count);
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void AppliedColliderPreservesNestedMirroredGeometryLayerAndUndo(bool convex)
@@ -129,26 +164,48 @@ namespace SashaRX.UnityMeshLab.Tests
             collider = root.GetComponentInChildren<MeshCollider>();
             Assert.IsNotNull(collider);
             Assert.IsNotNull(collider.sharedMesh);
+            string previousAsset = AssetDatabase.GetAssetPath(collider.sharedMesh);
+            Call(tool, "RemoveFromScene");
+            Call(tool, "ApplyToScene");
+            collider = root.GetComponentInChildren<MeshCollider>();
+            string reappliedAsset = AssetDatabase.GetAssetPath(collider.sharedMesh);
+            assets.Add(reappliedAsset);
+            Assert.AreNotEqual(previousAsset, reappliedAsset, "the previous persistent asset must not be overwritten");
+            Assert.AreEqual(collider.name, collider.sharedMesh.name, "a unique asset filename must not change the canonical mesh name");
             tool.OnDeactivate();
             Assert.IsNotNull(collider.sharedMesh, "clearing preview must not destroy applied assets");
         }
 
-        [Test]
-        public void RemovalDeletesContainerOnceAndKeepsColorNamedObjects()
+        [TestCase(false)]
+        [TestCase(true)]
+        public void RemovalDeletesContainerOnceAndKeepsColorNamedObjects(bool nested)
         {
             Prepare(true);
             var color = new GameObject("Chair_COLOR");
             color.transform.SetParent(root.transform, false);
             var container = new GameObject("Chair_COL");
-            container.transform.SetParent(root.transform, false);
+            var parent = root.transform;
+            if (nested)
+            {
+                parent = new GameObject("Structure").transform;
+                parent.SetParent(root.transform, false);
+                var child = new GameObject("Deep").transform;
+                child.SetParent(parent, false);
+                parent = child;
+            }
+            container.transform.SetParent(parent, false);
             var hull = new GameObject("Chair_COL_Hull0");
             hull.transform.SetParent(container.transform, false);
+            Call(tool, "ApplyToScene");
+            foreach (var collider in root.GetComponentsInChildren<MeshCollider>())
+                assets.Add(AssetDatabase.GetAssetPath(collider.sharedMesh));
+            Assert.IsNull(root.GetComponentInChildren<MeshCollider>(), "an existing collision container must prevent a duplicate batch");
             Call(tool, "RemoveFromScene");
             Assert.IsTrue(container == null);
             Assert.IsTrue(hull == null);
             Assert.IsTrue(color != null);
             Undo.PerformUndo();
-            Assert.IsNotNull(root.transform.Find("Chair_COL/Chair_COL_Hull0"));
+            Assert.IsNotNull(parent.Find("Chair_COL/Chair_COL_Hull0"));
         }
 
         [Test]
