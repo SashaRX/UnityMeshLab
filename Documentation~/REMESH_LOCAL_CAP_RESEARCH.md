@@ -5,6 +5,9 @@ Research date: 2026-10-09. Repository baseline: `ba16d67`, PR #225,
 production Cap, a dependency, or a native change. Conclusions about our models
 below come from the recorded captures, not from running the cited libraries.
 
+The subsequent [architecture and implementation plan](REMESH_CAP_PLAN.md) maps
+these ideas onto the actual code and records the known-box structure probe.
+
 ## Decision
 
 Use a per-opening pipeline: **extract the actual source boundary, classify its

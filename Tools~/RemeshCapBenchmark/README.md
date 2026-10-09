@@ -9,6 +9,17 @@ boundary detection, planar/3D filling, compound patches and stitching, and defin
 the proposed acceptance contract and next offline experiment. It is a design
 proposal, not a production Cap implementation.
 
+[Architecture and milestone plan](../../Documentation~/REMESH_CAP_PLAN.md) maps
+the current code and defines boundary domains, partial-plane hypotheses and
+missing feature reconstruction. Its reproducible known-box structure probe is:
+
+```powershell
+python 'Tools~/RemeshCapBenchmark/box_structure_probe.py' --output '_results~/cap-structure/box.json'
+```
+
+The probe checks known reference closures and whole-boundary plane fits. It does
+not automatically infer missing faces or handle singular production boundaries.
+
 Failed production Remesh/Simplify attempts now save version 2 geometry captures
 in `%TEMP%/meshlab-uvmerge/failures/`, independently of Verbose logging. Decode
 one before selecting Cap or native experiments:
