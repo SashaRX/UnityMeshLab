@@ -2,6 +2,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using NUnit.Framework;
+using UnityEditor;
 using UnityEngine;
 
 namespace SashaRX.UnityMeshLab.Tests
@@ -9,6 +10,7 @@ namespace SashaRX.UnityMeshLab.Tests
     public class LodGenerationToolTests
     {
         GameObject root;
+        readonly List<Mesh> meshes = new List<Mesh>();
 
         [SetUp]
         public void SetUp()
@@ -20,6 +22,9 @@ namespace SashaRX.UnityMeshLab.Tests
         public void TearDown()
         {
             Object.DestroyImmediate(root);
+            foreach (var mesh in meshes)
+                if (mesh != null) Object.DestroyImmediate(mesh);
+            meshes.Clear();
         }
 
         [TestCase("Asset_LOD999999999999999999999")]
@@ -30,6 +35,41 @@ namespace SashaRX.UnityMeshLab.Tests
             var selected = CreateChild(name);
 
             Assert.That(FindLodSiblings(selected), Is.Null);
+        }
+
+        [Test]
+        public void GenerationOptions_DefaultFarProfileAndToggleReachThePipeline()
+        {
+            var tool = new LodGenerationTool();
+            var build = typeof(LodGenerationTool).GetMethod("BuildGenerationOptions",BindingFlags.NonPublic|BindingFlags.Instance);
+            var options = (LodPipelineOps.Options)build.Invoke(tool,new object[] {1});
+            var near = LodPipelineOps.ForLevel(options,0); var far = LodPipelineOps.ForLevel(options,1);
+            Assert.That(near.maxColorError,Is.EqualTo(.02f)); Assert.That(near.targetError,Is.EqualTo(.2f));
+            Assert.That(far.maxColorError,Is.EqualTo(.1f)); Assert.That(far.targetError,Is.EqualTo(.3f));
+            Assert.That(far.colorWeight,Is.EqualTo(.25f));
+            typeof(LodGenerationTool).GetField("generateRelaxFarLods",BindingFlags.NonPublic|BindingFlags.Instance).SetValue(tool,false);
+            options = (LodPipelineOps.Options)build.Invoke(tool,new object[] {1});
+            Assert.That(options.levelQuality,Is.Null);
+            Assert.That(LodPipelineOps.ForLevel(options,1).maxColorError,Is.EqualTo(.02f));
+        }
+
+        [Test]
+        public void GenerationOptions_DefaultBudgetAndThreefoldRatiosReachPipeline()
+        {
+            var tool = new LodGenerationTool();
+            var build = typeof(LodGenerationTool).GetMethod("BuildGenerationOptions",BindingFlags.NonPublic|BindingFlags.Instance);
+            var options = (LodPipelineOps.Options)build.Invoke(tool,new object[] {1});
+            Assert.That(options.prioritizeTriangleBudget,Is.True);
+            Assert.That(options.preserveHardEdges,Is.True);
+            SetField(tool,"generatePreserveHardEdges",false);
+            Assert.That(((LodPipelineOps.Options)build.Invoke(tool,new object[] {1})).preserveHardEdges,Is.False);
+            Assert.That(options.candidateCount,Is.EqualTo(3),"Budget mode defaults to Balanced quality selection.");
+            Assert.That(options.count,Is.EqualTo(2),"Default generation adds LOD1 and LOD2 to the source LOD0.");
+            CollectionAssert.AreEqual(new[] {1f/3,1f/9,1f/27,1f/81},options.ratios);
+            Assert.That(LodGenerationTool.SteppedRatios(.3f,3,2),Is.EqualTo(new[] {.1f,.03333333f}).Within(1e-7f));
+            SetField(tool,"generateBudgetPriority",false);
+            options = (LodPipelineOps.Options)build.Invoke(tool,new object[] {1});
+            Assert.That(options.prioritizeTriangleBudget,Is.False);
         }
 
         [Test]
@@ -75,6 +115,203 @@ namespace SashaRX.UnityMeshLab.Tests
             NormalizeSingleLodTransitionForGeneration(lods, 2);
 
             Assert.AreEqual(0.01f, lods[0].screenRelativeTransitionHeight);
+        }
+
+        [Test]
+        public void Generate_UsesEachLodRatioAndRegeneratesTheSameLevels()
+        {
+            var (tool, context) = CreateToolWithSource();
+            SetField(tool, "generateLodCount", 3);
+            SetField(tool, "generateLodRatios", new[] { 0.5f, 0.25f, 0.125f, 0.0625f });
+
+            Generate(tool, 1);
+            var first = GeneratedTriangleCounts(context);
+            Assert.That(first, Has.Length.EqualTo(4));
+            Assert.That(first[1], Is.InRange(390, 400));
+            Assert.That(first[2], Is.InRange(190, 200));
+            Assert.That(first[3], Is.InRange(90, 100));
+            var baseline = GetGenerationBaseline(tool);
+            Assert.That(baseline.sourceTris, Is.EqualTo(800));
+            Assert.That(baseline.startLod, Is.EqualTo(1), "generated levels are replaced by the next Generate");
+            Assert.That(baseline.lastRatio, Is.EqualTo(1f), "generated counts must not clamp the sliders");
+
+            SetField(tool, "generateLodCount", 2);
+            SetField(tool, "generateLodRatios", new[] { 0.4f, 0.15f, 0.125f, 0.0625f });
+            // The old UI counted the generated levels before clearing them.
+            Generate(tool, 4);
+            var second = GeneratedTriangleCounts(context);
+            Assert.That(second, Has.Length.EqualTo(3));
+            Assert.That(context.LodGroup.GetLODs()[1].renderers[0].name, Is.EqualTo("Grid_LOD1"));
+            Assert.That(context.LodGroup.GetLODs()[2].renderers[0].name, Is.EqualTo("Grid_LOD2"));
+            Assert.That(second[1], Is.InRange(310, 320));
+            Assert.That(second[2], Is.InRange(110, 120));
+        }
+
+        [Test]
+        public void GenerationBaseline_PreservesAuthoredLodsWhenGeneratedLevelsExist()
+        {
+            var source = CreateGrid();
+            var authored = Simplify(source, new MeshSimplifier.SimplifySettings
+            {
+                targetRatio = 0.5f, targetError = 0.2f, uvChannel = 1
+            }).simplifiedMesh;
+            var generated = Simplify(source, new MeshSimplifier.SimplifySettings
+            {
+                targetRatio = 0.25f, targetError = 0.2f, uvChannel = 1
+            }).simplifiedMesh;
+            var group = root.AddComponent<LODGroup>();
+            var renderers = new Renderer[3];
+            var lodMeshes = new[] { source, authored, generated };
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                var child = CreateChild($"Grid_LOD{i}");
+                child.AddComponent<MeshFilter>().sharedMesh = lodMeshes[i];
+                renderers[i] = child.AddComponent<MeshRenderer>();
+            }
+            group.SetLODs(new[]
+            {
+                new LOD(0.5f, new[] { renderers[0] }),
+                new LOD(0.25f, new[] { renderers[1] }),
+                new LOD(0.125f, new[] { renderers[2] })
+            });
+            var context = new UvToolContext();
+            context.Refresh(group);
+            var owned = (List<GameObject>)typeof(UvToolContext)
+                .GetProperty("GeneratedLodObjects", BindingFlags.Instance | BindingFlags.NonPublic)
+                .GetValue(context);
+            owned.Add(renderers[2].gameObject);
+            var tool = new LodGenerationTool();
+            tool.OnActivate(context, null);
+
+            var baseline = GetGenerationBaseline(tool);
+            Assert.That(baseline.sourceTris, Is.EqualTo(800));
+            Assert.That(baseline.startLod, Is.EqualTo(2));
+            Assert.That(baseline.lastRatio, Is.EqualTo((float)authored.triangles.Length / source.triangles.Length));
+        }
+
+        [Test]
+        public void Generate_ErrorLimitCanProduceEqualCountsAndRelaxingItUpdatesEveryLod()
+        {
+            var (tool, context) = CreateToolWithSource();
+            SetField(tool, "generateRelaxFarLods", false); // This regression exercises one shared strict error budget.
+            SetField(tool, "generateBudgetPriority", false);
+            SetField(tool, "generateLodCount", 2);
+            SetField(tool, "generateLodRatios", new[] { 0.25f, 0.125f, 0.0625f, 0.03125f });
+            SetField(tool, "generateTargetError", 0.001f);
+            SetField(tool, "generateUv2Weight", 500f);
+            Generate(tool, 1);
+            var constrained = GeneratedTriangleCounts(context);
+            Assert.That(constrained[1], Is.GreaterThan(200));
+            Assert.That(constrained[2], Is.EqualTo(constrained[1]));
+            AssertReportedTargets(tool, targetNotReached: true);
+
+            SetField(tool, "generateTargetError", 0.2f);
+            Generate(tool, 3);
+            var relaxed = GeneratedTriangleCounts(context);
+            Assert.That(relaxed[1], Is.InRange(190, 200));
+            Assert.That(relaxed[2], Is.InRange(90, 100),
+                "the later LOD's settings apply once the error budget allows it");
+            AssertReportedTargets(tool, targetNotReached: false);
+        }
+
+        (LodGenerationTool tool, UvToolContext context) CreateToolWithSource()
+        {
+            var child = CreateChild("Grid_LOD0");
+            child.AddComponent<MeshFilter>().sharedMesh = CreateGrid();
+            var renderer = child.AddComponent<MeshRenderer>();
+            var group = root.AddComponent<LODGroup>();
+            group.SetLODs(new[] { new LOD(0.5f, new[] { renderer }) });
+            var context = new UvToolContext();
+            context.Refresh(group);
+            var tool = new LodGenerationTool();
+            tool.OnActivate(context, null);
+            return (tool, context);
+        }
+
+        static void AssertReportedTargets(LodGenerationTool tool, bool targetNotReached)
+        {
+            var results = (IList)typeof(LodGenerationTool)
+                .GetField("lastResults", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(tool);
+            Assert.That(results, Has.Count.EqualTo(2));
+            for (int i = 0; i < results.Count; i++)
+            {
+                object result = results[i];
+                var type = result.GetType();
+                Assert.That(type.GetField("targetRatio").GetValue(result), Is.EqualTo(i == 0 ? 0.25f : 0.125f));
+                Assert.That(type.GetField("targetTris").GetValue(result), Is.EqualTo(i == 0 ? 200 : 100));
+                Assert.That(type.GetField("targetNotReached").GetValue(result), Is.EqualTo(targetNotReached));
+            }
+        }
+
+        MeshSimplifier.SimplifyResult Simplify(Mesh source, MeshSimplifier.SimplifySettings settings)
+        {
+            var result = MeshSimplifier.Simplify(source, settings);
+            Assert.That(result.ok, Is.True, result.error);
+            meshes.Add(result.simplifiedMesh);
+            return result;
+        }
+
+        Mesh CreateGrid()
+        {
+            const int size = 20;
+            var vertices = new Vector3[(size + 1) * (size + 1)];
+            var uv = new Vector2[vertices.Length];
+            var triangles = new int[size * size * 6];
+            for (int y = 0; y <= size; y++)
+                for (int x = 0; x <= size; x++)
+                {
+                    int index = y * (size + 1) + x;
+                    vertices[index] = new Vector3((float)x / size, 0f, (float)y / size);
+                    uv[index] = new Vector2((float)x / size, (float)y / size);
+                }
+            for (int y = 0; y < size; y++)
+                for (int x = 0; x < size; x++)
+                {
+                    int vertex = y * (size + 1) + x;
+                    int index = (y * size + x) * 6;
+                    triangles[index] = vertex;
+                    triangles[index + 1] = vertex + size + 1;
+                    triangles[index + 2] = vertex + 1;
+                    triangles[index + 3] = vertex + 1;
+                    triangles[index + 4] = vertex + size + 1;
+                    triangles[index + 5] = vertex + size + 2;
+                }
+            var mesh = new Mesh { name = "Grid", vertices = vertices, triangles = triangles, uv2 = uv };
+            meshes.Add(mesh);
+            return mesh;
+        }
+
+        int[] GeneratedTriangleCounts(UvToolContext context)
+        {
+            var lods = context.LodGroup.GetLODs();
+            var counts = new int[lods.Length];
+            for (int i = 0; i < lods.Length; i++)
+            {
+                Assert.That(lods[i].renderers, Has.Length.EqualTo(1));
+                var mesh = lods[i].renderers[0].GetComponent<MeshFilter>().sharedMesh;
+                if (!meshes.Contains(mesh)) meshes.Add(mesh);
+                counts[i] = mesh.triangles.Length / 3;
+            }
+            return counts;
+        }
+
+        static void SetField(LodGenerationTool tool, string name, object value)
+            => typeof(LodGenerationTool).GetField(name, BindingFlags.NonPublic | BindingFlags.Instance)
+                .SetValue(tool, value);
+
+        static (int sourceTris, int startLod, float lastRatio) GetGenerationBaseline(LodGenerationTool tool)
+        {
+            var args = new object[] { 0, 0, 0f };
+            typeof(LodGenerationTool).GetMethod("GetGenerationBaseline", BindingFlags.NonPublic | BindingFlags.Instance)
+                .Invoke(tool, args);
+            return ((int)args[0], (int)args[1], (float)args[2]);
+        }
+
+        static void Generate(LodGenerationTool tool, int startLod)
+        {
+            Undo.IncrementCurrentGroup();
+            typeof(LodGenerationTool).GetMethod("ExecGenerateLods", BindingFlags.NonPublic | BindingFlags.Instance)
+                .Invoke(tool, new object[] { startLod });
         }
 
         GameObject CreateChild(string name)

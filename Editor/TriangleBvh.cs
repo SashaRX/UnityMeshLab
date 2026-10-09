@@ -60,6 +60,23 @@ namespace SashaRX.UnityMeshLab
             else BuildRecursive(0, faceCount);
             faceMin = faceMax = faceCentroid = null;
         }
+        // Broad phase for proposed LOD faces. Returns local triangle IDs.
+        internal void CollectOverlapping(Bounds bounds, System.Collections.Generic.List<int> output)
+            => CollectOverlapping(0, bounds.min, bounds.max, output);
+
+        void CollectOverlapping(int nodeIndex, Vector3 min, Vector3 max, System.Collections.Generic.List<int> output)
+        {
+            var node = nodes[nodeIndex];
+            if (node.bMax.x < min.x || node.bMin.x > max.x || node.bMax.y < min.y || node.bMin.y > max.y || node.bMax.z < min.z || node.bMin.z > max.z) return;
+            if (node.left < 0)
+            {
+                for (int i = 0; i < node.triCount; i++) output.Add(triIndices[node.triStart + i]);
+                return;
+            }
+            CollectOverlapping(node.left, min, max, output);
+            CollectOverlapping(node.right, min, max, output);
+        }
+
         // ─── Nearest point on any triangle ───
         /// <summary>Whether any surface lies within reach of a triangle, including
         /// edge-to-edge approaches and intersecting triangles. Bounds prune traversal.</summary>
