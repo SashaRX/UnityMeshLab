@@ -20,6 +20,18 @@ python 'Tools~/RemeshCapBenchmark/box_structure_probe.py' --output '_results~/ca
 The probe checks known reference closures and whole-boundary plane fits. It does
 not automatically infer missing faces or handle singular production boundaries.
 
+P1 now provides [source-fan-aware boundary extraction](../../Documentation~/REMESH_BOUNDARY_EXTRACTION.md),
+including selected-opening coverage and explicit singular-junction diagnostics:
+
+```powershell
+python 'Tools~/RemeshCapBenchmark/boundaries.py' --source SOURCE.bin --output PRIVATE_BOUNDARY_REPORT.json
+```
+
+The report preserves original corner references. Extraction success does not
+certify a solid; singular cycles require further domain/feature analysis before
+triangulation. The existing compound experiment's frozen simple cycles remain
+separate comparison inputs.
+
 Failed production Remesh/Simplify attempts now save version 2 geometry captures
 in `%TEMP%/meshlab-uvmerge/failures/`, independently of Verbose logging. Decode
 one before selecting Cap or native experiments:

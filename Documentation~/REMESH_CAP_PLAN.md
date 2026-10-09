@@ -133,8 +133,8 @@ python 'Tools~/RemeshCapBenchmark/box_structure_probe.py' --output '_results~/ca
 python -m unittest discover -s 'Tools~/RemeshCapBenchmark' -v
 ```
 
-The probe intentionally traverses only ordinary manifold fixture loops; it must
-not be reused as a production singular-boundary extractor.
+The box probe now consumes the source-fan-aware extractor described below;
+its restored faces still come from the known box reference, not a Cap solver.
 
 ## Milestones and exit criteria
 
@@ -148,8 +148,13 @@ not be reused as a production singular-boundary extractor.
 | P5 — private replay | Decode current failures; test hypotheses on the same source, opening intent and budgets. | Separate local Cap acceptance from global source readiness; capture every refusal and preexisting defect. Compare planar/3D/stitching methods without replacing reference data. |
 | P6 — Unity integration | Separate support/donors, extend diagnostics, lifecycle and invalidation; keep Cap opt-in initially. | Actual EditMode tests for attributes, cancellation and cleanup; isolated native 64/128/256 Solve off/on, Trim and Simplify checks; bake miss/quality checks. |
 
-P1 is the next implementation step. Starting at the triangulator would continue
-to depend on externally chosen loops and guessed patch structure.
+P1 is implemented in the offline benchmark; results and limits are recorded in
+[source-fan-aware boundary extraction](REMESH_BOUNDARY_EXTRACTION.md). It replays
+the private source as seven fan-consistent cycles, including a pinched cycle
+requiring further domain resolution. Loop IDs are snapshot-bound; geometric
+boundary coverage survives seam/winding/order changes, while IDs appropriately
+change with the snapshot. P2 is the next implementation step. Starting at the
+triangulator would still skip unresolved patch structure.
 
 ## Integration and regression controls
 
