@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Collections;
+using System.Linq;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
@@ -12,6 +13,74 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
     /// Native~ ctest battery and the DllNotFoundException-skipping stage tests.</summary>
     public sealed class RemeshHierarchyTests
     {
+        [Test]
+        public void SourcePreviewRejectsPositionlessGeometryAtomicallyAndCanRetry()
+        {
+            var root=new GameObject("preview source");
+            var valid=GameObject.CreatePrimitive(PrimitiveType.Cube);valid.transform.SetParent(root.transform);
+            var invalid=new GameObject("positionless child");invalid.transform.SetParent(root.transform);
+            var mesh=new Mesh {name="missing Position"};
+            mesh.SetVertexBufferParams(3,new UnityEngine.Rendering.VertexAttributeDescriptor(UnityEngine.Rendering.VertexAttribute.Normal));
+            var filter=invalid.AddComponent<MeshFilter>();filter.sharedMesh=mesh;invalid.AddComponent<MeshRenderer>();
+            var tool=new RemeshBakeTool();
+            var flags=System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic;
+            var error=typeof(RemeshBakeTool).GetField("sourcePreviewError",flags);
+            try {
+                tool.SetSource(root);var entries=new List<MeshEntry>();
+                Assert.DoesNotThrow(()=>tool.GetUvContent(entries));Assert.IsEmpty(entries);
+                StringAssert.Contains("Position",(string)error.GetValue(tool));
+                var items=new List<MeshViewport3D.Item>();Assert.DoesNotThrow(()=>tool.Get3DContent(items));Assert.IsEmpty(items);
+                filter.sharedMesh=valid.GetComponent<MeshFilter>().sharedMesh;
+                tool.OnRefresh();entries.Clear();Assert.IsTrue(tool.GetUvContent(entries));
+                Assert.AreEqual(2,entries.Count);Assert.IsNull(error.GetValue(tool));
+                Assert.IsTrue(mesh);Assert.AreEqual(3,mesh.vertexCount);
+            }
+            finally {tool.ClearSourcePreview();Object.DestroyImmediate(root);Object.DestroyImmediate(mesh);}
+        }
+
+        [UnityTest]
+        public IEnumerator SourcePreviewDefersMeshReadsDuringGuiAndCancelsQueuedWorkOnClear()
+        {
+            var root=GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var mesh=root.GetComponent<MeshFilter>().sharedMesh;
+            var tool=new RemeshBakeTool(); tool.SetSource(root);
+            var window=ScriptableObject.CreateInstance<SashaRX.UnityMeshLab.Tests.ViewportSpotInputWindow>();
+            var entries=new List<MeshEntry>();
+            int guiReads=0;
+            try {
+                window.Input=evt=> {
+                    if(evt.type!=EventType.Layout && evt.type!=EventType.Repaint)return;
+                    using(new GUILayout.VerticalScope()) {
+                        tool.GetUvContent(entries);guiReads++;
+                        GUILayout.Label("Toolbar after source preview");
+                    }
+                };
+                window.Show();window.SendEvent(new Event {type=EventType.Layout});
+                Assert.Greater(guiReads,0);Assert.IsEmpty(entries,"GUI must only queue source reads.");
+                Assert.AreEqual(1,EditorApplication.delayCall.GetInvocationList().Count(callback=>callback.Target==tool));
+                tool.ClearSourcePreview();
+                Assert.IsFalse(EditorApplication.delayCall?.GetInvocationList().Any(callback=>callback.Target==tool) ?? false);
+                window.Input=null;
+                for(int i=0;i<3;++i)yield return null;
+                var flags=System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic;
+                Assert.IsEmpty((List<MeshEntry>)typeof(RemeshBakeTool).GetField("sourceEntries",flags).GetValue(tool));
+                Assert.AreSame(mesh,root.GetComponent<MeshFilter>().sharedMesh);
+                window.Input=evt=> {
+                    if(evt.type==EventType.Layout) tool.GetUvContent(entries);
+                };
+                window.SendEvent(new Event {type=EventType.Layout});
+                Assert.IsEmpty(entries);
+                window.Input=null;
+                // Batch-mode test pumping does not guarantee inspector delayCall
+                // dispatch. Run only this registered callback, outside OnGUI.
+                var deferred=(EditorApplication.CallbackFunction)EditorApplication.delayCall.GetInvocationList().Single(callback=>callback.Target==tool);
+                deferred();
+                Assert.AreEqual(1,((List<MeshEntry>)typeof(RemeshBakeTool).GetField("sourceEntries",flags).GetValue(tool)).Count);
+                tool.GetUvContent(entries);Assert.AreEqual(1,entries.Count);
+            }
+            finally {window.Close();tool.ClearSourcePreview();Object.DestroyImmediate(root);}
+        }
+
         [UnityTest]
         public IEnumerator UnfilteredHierarchyBakeRetainsFullyRemovedNodesAndReusesGeometry()
         {

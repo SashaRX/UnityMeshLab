@@ -46,13 +46,27 @@ namespace SashaRX.UnityMeshLab
 
         static Mesh ReadableCopyCore(Mesh src, Mesh dst)
         {
+            if (src.vertexCount > 0 && !src.HasVertexAttribute(VertexAttribute.Position))
+                throw new InvalidOperationException($"Mesh '{src.name}' has vertices but no Position vertex component.");
             dst.indexFormat = src.indexFormat;
             MeshUvState.SetDraft(dst, MeshUvState.IsDraft(src));
+            if (src.vertexCount == 0) {
+                var layout = src.GetVertexAttributes();
+                if (layout.Length > 0) dst.SetVertexBufferParams(0, layout);
+                dst.subMeshCount = src.subMeshCount;
+                for (int sub = 0; sub < src.subMeshCount; ++sub) {
+                    if (src.GetIndexCount(sub) != 0)
+                        throw new InvalidOperationException($"Mesh '{src.name}' has indices but no vertices.");
+                    dst.SetIndices(Array.Empty<int>(), src.GetTopology(sub), sub, calculateBounds: false);
+                }
+                dst.bounds = src.bounds;
+                return dst;
+            }
             if (!src.isReadable) {
                 try {
                     return MakeReadableCopyFromMeshData(src, dst);
                 }
-                catch (Exception e) when (e.Message != null && e.Message.IndexOf("isReadable", StringComparison.OrdinalIgnoreCase) >= 0) {
+                catch (Exception e) when (e is MeshDataUnavailableException || (e.Message != null && e.Message.IndexOf("isReadable", StringComparison.OrdinalIgnoreCase) >= 0)) {
                     // Unity 6000.2's read-only MeshData still refuses some Read/Write-disabled
                     // imports. The only sanctioned read left is through the importer itself:
                     // flip THIS file's Read/Write for the read and put it back afterwards —
@@ -85,6 +99,7 @@ namespace SashaRX.UnityMeshLab
         {
             using (var data = Mesh.AcquireReadOnlyMeshData(src)) {
                 var meshData = data[0];
+                ValidateMeshData(src, meshData);
                 dst.SetVertexBufferParams(meshData.vertexCount, src.GetVertexAttributes());
                 for (int stream = 0; stream < src.vertexBufferCount; ++stream) {
                     var bytes = meshData.GetVertexData<byte>(stream);
@@ -248,6 +263,7 @@ namespace SashaRX.UnityMeshLab
             using (var dataArray = Mesh.AcquireReadOnlyMeshData(src))
             {
                 var md = dataArray[0];
+                ValidateMeshData(src, md);
                 int count = md.vertexCount;
                 if (md.HasVertexAttribute(VertexAttribute.BlendWeight) || md.HasVertexAttribute(VertexAttribute.BlendIndices))
                     UvtLog.Warn($"[MeshAccess] '{src.name}' is skinned and Read/Write-disabled: the readable copy carries no bone weights or bind poses. Enable Read/Write on its importer if the copy must stay skinned.");
@@ -289,11 +305,25 @@ namespace SashaRX.UnityMeshLab
         // submesh's base vertex back into the indices, as the classic getters do.
         static Vector3[] ReadVertices(Mesh.MeshData md, int count)
         {
+            // Empty meshes have no Position layout. GetVertices still requires
+            // that attribute, even when the requested buffer has zero elements.
+            if (count == 0) return Array.Empty<Vector3>();
             using (var buffer = new NativeArray<Vector3>(count, Allocator.Temp, NativeArrayOptions.UninitializedMemory))
             {
                 md.GetVertices(buffer);
                 return buffer.ToArray();
             }
+        }
+
+        sealed class MeshDataUnavailableException : InvalidOperationException
+        {
+            internal MeshDataUnavailableException(string message) : base(message) { }
+        }
+
+        static void ValidateMeshData(Mesh source, Mesh.MeshData data)
+        {
+            if (data.vertexCount != source.vertexCount || (source.vertexCount > 0 && !data.HasVertexAttribute(VertexAttribute.Position)))
+                throw new MeshDataUnavailableException($"MeshData for '{source.name}' does not expose its source vertex buffer (isReadable={source.isReadable}).");
         }
 
         static Vector3[] ReadVectors3(Mesh.MeshData md, int count)

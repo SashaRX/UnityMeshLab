@@ -29,6 +29,36 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(count, Resources.FindObjectsOfTypeAll<Mesh>().Length);
         }
 
+        [TestCase(false)] [TestCase(true)]
+        public void EmptyMeshCopiesWithoutRequestingAMissingPositionChannel(bool upload)
+        {
+            var source=new Mesh {name="empty source"}; Mesh copy=null;
+            try {
+                if(upload) source.UploadMeshData(true);
+                Assert.AreEqual(0,source.vertexCount);
+                Assert.IsFalse(source.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Position));
+                copy=MeshAccess.ReadableCopy(source);
+                Assert.IsTrue(copy.isReadable); Assert.AreEqual(0,copy.vertexCount);
+                Assert.AreEqual(source.subMeshCount,copy.subMeshCount);
+            }
+            finally { Object.DestroyImmediate(source); if(copy) Object.DestroyImmediate(copy); }
+        }
+
+        [Test]
+        public void PositionlessNonemptyMeshRefusesWithoutLeakingACopy()
+        {
+            var source=new Mesh {name="positionless source"};
+            try {
+                source.SetVertexBufferParams(3,new UnityEngine.Rendering.VertexAttributeDescriptor(UnityEngine.Rendering.VertexAttribute.Normal));
+                int count=Resources.FindObjectsOfTypeAll<Mesh>().Length;
+                var error=Assert.Throws<System.InvalidOperationException>(()=>MeshAccess.ReadableCopy(source));
+                StringAssert.Contains("Position",error.Message);
+                Assert.AreEqual(count,Resources.FindObjectsOfTypeAll<Mesh>().Length);
+                Assert.AreEqual(3,source.vertexCount);
+            }
+            finally { Object.DestroyImmediate(source); }
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void CpuAoFailureReleasesUnreadableCopies(bool correction)

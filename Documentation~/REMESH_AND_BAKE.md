@@ -4,6 +4,17 @@ Build a new static low-poly mesh, new UV0 atlas, and reproject source materials 
 the **Remesh & Bake** tab of **Tools → Mesh Lab → Open Mesh Lab**. The original
 meshes, materials, importers, scene objects and LODGroups are not replaced.
 
+Source-preview mesh reads and skinned posing are scheduled after IMGUI drawing.
+The sidebar shows `Preparing source preview…` while queued. Empty meshes are
+omitted from the preview. If a nonempty mesh has no Position channel or its data
+cannot be read, the partial preview is discarded and the sidebar shows the error
+with **Retry source preview**. Selecting another source or refreshing also retries.
+Queued work is cancelled when the preview/tool is cleared. MeshData availability
+is checked against the source layout/count; unavailable imported buffers use the
+existing temporary Read/Write fallback outside IMGUI, while truly empty copies do
+not acquire vertex data or reimport anything. These checks affect preview handling,
+not the strict geometry validation of Remesh/Reverse UV stages.
+
 ## Workflow
 
 The tab runs four stages. Each stage has its own settings and button; running a

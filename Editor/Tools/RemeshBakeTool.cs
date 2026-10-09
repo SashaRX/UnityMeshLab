@@ -48,6 +48,8 @@ namespace SashaRX.UnityMeshLab
         readonly List<Mesh> ownedSourceMeshes = new List<Mesh>();
         GameObject previewSourceRoot;
         bool sourcePreviewDirty = true, previewLod0Only;
+        bool sourcePreviewQueued;
+        string sourcePreviewError;
         internal GameObject Source => source;
         readonly PreviewWork<TriangleBvh> syntheticPickWork = new PreviewWork<TriangleBvh>("[Remesh] Cap picking");
         RemeshNative.IndexedMesh syntheticPickInput;
@@ -159,27 +161,64 @@ namespace SashaRX.UnityMeshLab
 
         internal void ClearSourcePreview()
         {
+            QueueSourcePreview(RebuildSourcePreview, false);
+            sourcePreviewQueued = false;
             foreach (var mesh in ownedSourceMeshes) if (mesh) UnityEngine.Object.DestroyImmediate(mesh);
             ownedSourceMeshes.Clear(); sourceEntries.Clear(); sourceRenderers.Clear();
             previewData.sourceVertices = previewData.sourceTriangles = 0;
             previewSourceRoot = null; sourcePreviewDirty = true;
+            sourcePreviewError = null;
         }
 
         void EnsureSourcePreview()
         {
             var root = source ? source : pipeline.CapturedSource;
             if (!sourcePreviewDirty && root == previewSourceRoot && settings.lod0Only == previewLod0Only) return;
+            if (Event.current != null) {
+                // MeshAccess may need an importer round trip. Never reimport or
+                // bake a skin during Layout/Repaint, where failure breaks GUI state.
+                if (root != previewSourceRoot || settings.lod0Only != previewLod0Only) ClearSourcePreview();
+                if (!sourcePreviewQueued) {
+                    sourcePreviewQueued = true;
+                    QueueSourcePreview(RebuildSourcePreview, true);
+                }
+                return;
+            }
+            RebuildSourcePreview();
+        }
+
+        static void QueueSourcePreview(EditorApplication.CallbackFunction rebuild, bool queued)
+        {
+            EditorApplication.delayCall -= rebuild;
+            if (queued) EditorApplication.delayCall += rebuild;
+        }
+
+        void RebuildSourcePreview()
+        {
+            var root = source ? source : pipeline.CapturedSource;
             ClearSourcePreview();
             previewSourceRoot = root; previewLod0Only = settings.lod0Only; sourcePreviewDirty = false;
             if (!root) return;
-            foreach (var renderer in RemeshSource.CollectRenderers(root, settings.lod0Only)) {
-                Mesh mesh = ReadSourcePreviewMesh(renderer);
-                // Preview copies never substitute meshes in the scene's renderers.
-                sourceEntries.Add(new MeshEntry { originalMesh = mesh, fbxMesh = mesh, previewTexture = SourcePreviewTexture(renderer) });
-                sourceRenderers.Add(renderer);
-                previewData.sourceVertices += mesh.vertexCount;
-                previewData.sourceTriangles += TriangleCount(mesh);
+            try {
+                foreach (var renderer in RemeshSource.CollectRenderers(root, settings.lod0Only)) {
+                    Mesh mesh = ReadSourcePreviewMesh(renderer);
+                    if (!mesh || mesh.vertexCount == 0) continue;
+                    if (!mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Position))
+                        throw new InvalidOperationException($"Mesh '{mesh.name}' has no Position vertex component.");
+                    // Preview copies never substitute meshes in the scene's renderers.
+                    sourceEntries.Add(new MeshEntry { originalMesh = mesh, fbxMesh = mesh, previewTexture = SourcePreviewTexture(renderer) });
+                    sourceRenderers.Add(renderer);
+                    previewData.sourceVertices += mesh.vertexCount;
+                    previewData.sourceTriangles += TriangleCount(mesh);
+                }
             }
+            catch (Exception ex) when (ex is InvalidOperationException || ex is ArgumentException) {
+                // Do not retain a partial preview or retry this failure every repaint.
+                ClearSourcePreview();
+                previewSourceRoot = root; previewLod0Only = settings.lod0Only; sourcePreviewDirty = false;
+                sourcePreviewError = ex.Message;
+            }
+            finally { RequestRepaint?.Invoke(); }
         }
 
         Mesh ReadSourcePreviewMesh(Renderer renderer)
@@ -331,6 +370,11 @@ namespace SashaRX.UnityMeshLab
         public void OnDrawRightSidebar()
         {
             SyncPreviewData();
+            if (sourcePreviewQueued) EditorGUILayout.LabelField("Preparing source preview…", EditorStyles.wordWrappedMiniLabel);
+            if (sourcePreviewError != null) {
+                EditorGUILayout.HelpBox(sourcePreviewError, MessageType.Warning);
+                if (GUILayout.Button("Retry source preview")) InvalidateSourcePreview();
+            }
             previews.Draw(previewData);
             DrawSyntheticFaceSelection();
             using (new EditorGUI.DisabledScope(!previews.IsSource)) {
