@@ -250,6 +250,72 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void EmptyPartInputReturnsNoGroups()
+        {
+            Assert.IsEmpty(CollisionPartGrouper.Group(new Vector3[0], new int[0], .02f, 50));
+        }
+
+        [Test]
+        public void ShellsTouchingAtOnePointRemainIndependentElements()
+        {
+            var p = new[] { Vector3.zero, Vector3.right, Vector3.up, Vector3.forward,
+                Vector3.zero, Vector3.left, Vector3.down, Vector3.back };
+            var t = new[] { 0,2,1, 0,1,3, 0,3,2, 1,2,3, 4,6,5, 4,5,7, 4,7,6, 5,6,7 };
+            var parts = CollisionPartGrouper.Group(p, t, 0, 50);
+            Assert.AreEqual(2, parts.Count);
+            foreach (var part in parts)
+            {
+                Assert.AreEqual(12, part.indices.Count);
+                Assert.AreEqual(4, part.points.Count, "the common position belongs to both independent shells");
+            }
+            // Proximity may group them, but preparation must still see two elements.
+            var grouped = CollisionPartGrouper.Group(p, t, .02f, 90);
+            Assert.AreEqual(1, grouped.Count);
+            Assert.AreEqual(2, grouped[0].elements.Count);
+        }
+
+        [TestCase(.001f)]
+        [TestCase(1f)]
+        [TestCase(100f)]
+        public void PartGapUsesVertexToFaceDistanceRatherThanVertexSpacing(float scale)
+        {
+            Vector3[] Points(float height) => new[] { new Vector3(-2,-2,0), new Vector3(2,-2,0), new Vector3(0,2,0),
+                new Vector3(-.1f,0,height), new Vector3(.1f,0,height), new Vector3(0,.2f,height) };
+            var t = new[] { 0,1,2, 3,4,5 };
+            var near = Points(.02f); var far = Points(.2f);
+            for (int i = 0; i < near.Length; i++) { near[i] *= scale; far[i] *= scale; }
+            Assert.AreEqual(1, CollisionPartGrouper.Group(near, t, .01f, 5).Count);
+            Assert.AreEqual(2, CollisionPartGrouper.Group(far, t, .01f, 5).Count);
+        }
+
+        [TestCase(.001f)]
+        [TestCase(1f)]
+        [TestCase(100f)]
+        public void PartGapFindsEdgeToEdgeProximityWithoutNearbyVertices(float scale)
+        {
+            var a = new[] { new Vector3(-2,-1,0), new Vector3(2,-1,0), new Vector3(0,2,0) };
+            var b = new[] { new Vector3(-2,1,.02f), new Vector3(2,1,.02f), new Vector3(0,-2,.02f) };
+            for (int i = 0; i < 3; i++) { a[i] *= scale; b[i] *= scale; }
+            foreach (var point in a)
+                Assert.Greater((point - TriangleBvh.ClosestPointOnTriangle(point, b[0], b[1], b[2], out _)).magnitude, .1f * scale);
+            foreach (var point in b)
+                Assert.Greater((point - TriangleBvh.ClosestPointOnTriangle(point, a[0], a[1], a[2], out _)).magnitude, .1f * scale);
+            var positions = new[] { a[0], a[1], a[2], b[0], b[1], b[2] };
+            Assert.AreEqual(1, CollisionPartGrouper.Group(positions, new[] { 0,1,2, 3,4,5 }, .01f, 5).Count);
+            var bvh = new TriangleBvh(b, new[] { 0,1,2 });
+            Assert.IsTrue(bvh.HasTriangleWithin(a[0], a[1], a[2], .021f * scale));
+            Assert.IsFalse(bvh.HasTriangleWithin(a[0], a[1], a[2], .019f * scale));
+        }
+
+        [Test]
+        public void SurfaceProximityDetectsAnEdgePiercingATriangleInterior()
+        {
+            var bvh = new TriangleBvh(new[] { new Vector3(-2,-2,0), new Vector3(2,-2,0), new Vector3(0,2,0) }, new[] { 0,1,2 });
+            Assert.IsTrue(bvh.HasTriangleWithin(new Vector3(0,0,-1), new Vector3(0,0,1), new Vector3(3,0,1), 0));
+            Assert.IsFalse(new TriangleBvh(new Vector3[0], new int[0]).HasTriangleWithin(Vector3.zero, Vector3.right, Vector3.up, 1));
+        }
+
+        [Test]
         public void GroupedDecompositionSharesTheHullBudgetAndProducesCookableGeometry()
         {
             var mesh = StructuralBench(Quaternion.Euler(23, 37, 11));

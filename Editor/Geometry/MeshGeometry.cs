@@ -96,6 +96,54 @@ namespace SashaRX.UnityMeshLab
             return bounds;
         }
 
+        /// <summary>Triangle-surface proximity from vertex/face, edge/edge and
+        /// edge/face intersection tests; independent of tessellation density.</summary>
+        internal static bool TrianglesWithin(Vector3 a, Vector3 b, Vector3 c, Vector3 d, Vector3 e, Vector3 f, float reachSq)
+        {
+            if ((a - TriangleBvh.ClosestPointOnTriangle(a, d, e, f, out _)).sqrMagnitude <= reachSq ||
+                (b - TriangleBvh.ClosestPointOnTriangle(b, d, e, f, out _)).sqrMagnitude <= reachSq ||
+                (c - TriangleBvh.ClosestPointOnTriangle(c, d, e, f, out _)).sqrMagnitude <= reachSq ||
+                (d - TriangleBvh.ClosestPointOnTriangle(d, a, b, c, out _)).sqrMagnitude <= reachSq ||
+                (e - TriangleBvh.ClosestPointOnTriangle(e, a, b, c, out _)).sqrMagnitude <= reachSq ||
+                (f - TriangleBvh.ClosestPointOnTriangle(f, a, b, c, out _)).sqrMagnitude <= reachSq) return true;
+            if (SegmentHitsTriangle(a, b, d, e, f) || SegmentHitsTriangle(b, c, d, e, f) || SegmentHitsTriangle(c, a, d, e, f) ||
+                SegmentHitsTriangle(d, e, a, b, c) || SegmentHitsTriangle(e, f, a, b, c) || SegmentHitsTriangle(f, d, a, b, c)) return true;
+            return SegmentDistanceSquared(a, b, d, e) <= reachSq || SegmentDistanceSquared(a, b, e, f) <= reachSq || SegmentDistanceSquared(a, b, f, d) <= reachSq ||
+                SegmentDistanceSquared(b, c, d, e) <= reachSq || SegmentDistanceSquared(b, c, e, f) <= reachSq || SegmentDistanceSquared(b, c, f, d) <= reachSq ||
+                SegmentDistanceSquared(c, a, d, e) <= reachSq || SegmentDistanceSquared(c, a, e, f) <= reachSq || SegmentDistanceSquared(c, a, f, d) <= reachSq;
+        }
+
+        static bool SegmentHitsTriangle(Vector3 a, Vector3 b, Vector3 p, Vector3 q, Vector3 r)
+        {
+            var direction = b - a;
+            if (direction.sqrMagnitude == 0) return false;
+            var frame = new TriangleBvh.RayFrame(direction);
+            return TriangleBvh.Watertight(in frame, a, p, q, r, 1f, out _, out _);
+        }
+
+        static double Dot(Vector3 a, Vector3 b) => (double)a.x * b.x + (double)a.y * b.y + (double)a.z * b.z;
+
+        // Clamped segment/segment closest points; double intermediates avoid an
+        // absolute parallelism threshold that would change with mesh scale.
+        static double SegmentDistanceSquared(Vector3 p, Vector3 q, Vector3 r, Vector3 t)
+        {
+            var u = q - p; var v = t - r; var w = p - r;
+            double a = Dot(u, u), b = Dot(u, v), c = Dot(v, v), d = Dot(u, w), e = Dot(v, w);
+            double s, k;
+            if (a == 0) { s = 0; k = c > 0 ? Math.Clamp(e / c, 0, 1) : 0; }
+            else if (c == 0) { k = 0; s = Math.Clamp(-d / a, 0, 1); }
+            else
+            {
+                double denominator = a * c - b * b;
+                s = denominator > 0 ? Math.Clamp((b * e - c * d) / denominator, 0, 1) : 0;
+                k = (b * s + e) / c;
+                if (k < 0) { k = 0; s = Math.Clamp(-d / a, 0, 1); }
+                else if (k > 1) { k = 1; s = Math.Clamp((b - d) / a, 0, 1); }
+            }
+            double x = w.x + u.x * s - v.x * k, y = w.y + u.y * s - v.y * k, z = w.z + u.z * s - v.z * k;
+            return x * x + y * y + z * z;
+        }
+
         // Unity's Vector3.Normalize applies an absolute 1e-5 length cutoff. Area
         // vectors of valid millimetre-scale triangles are much smaller than that.
         // Callers decide degeneracy before normalizing; preserve every nonzero direction.

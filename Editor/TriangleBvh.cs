@@ -61,6 +61,32 @@ namespace SashaRX.UnityMeshLab
             faceMin = faceMax = faceCentroid = null;
         }
         // ─── Nearest point on any triangle ───
+        /// <summary>Whether any surface lies within reach of a triangle, including
+        /// edge-to-edge approaches and intersecting triangles. Bounds prune traversal.</summary>
+        internal bool HasTriangleWithin(Vector3 a, Vector3 b, Vector3 c, float reach)
+        {
+            var min = Vector3.Min(a, Vector3.Min(b, c)) - Vector3.one * reach;
+            var max = Vector3.Max(a, Vector3.Max(b, c)) + Vector3.one * reach;
+            return TriangleWithinRecursive(0, a, b, c, min, max, reach * reach);
+        }
+
+        bool TriangleWithinRecursive(int nodeIndex, Vector3 a, Vector3 b, Vector3 c, Vector3 min, Vector3 max, float reachSq)
+        {
+            ref Node node = ref nodes[nodeIndex];
+            if (node.bMin.x > max.x || node.bMax.x < min.x ||
+                node.bMin.y > max.y || node.bMax.y < min.y ||
+                node.bMin.z > max.z || node.bMax.z < min.z) return false;
+            if (node.left != -1)
+                return TriangleWithinRecursive(node.left, a, b, c, min, max, reachSq) ||
+                    TriangleWithinRecursive(node.right, a, b, c, min, max, reachSq);
+            for (int i = node.triStart; i < node.triStart + node.triCount; i++)
+            {
+                int f = triIndices[i] * 3;
+                if (MeshGeometry.TrianglesWithin(a, b, c, verts[tris[f]], verts[tris[f + 1]], verts[tris[f + 2]], reachSq)) return true;
+            }
+            return false;
+        }
+
         public struct HitResult
         {
             public int triangleIndex;
