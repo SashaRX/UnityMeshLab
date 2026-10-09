@@ -57,9 +57,9 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
                 };
                 window.Show();window.SendEvent(new Event {type=EventType.Layout});
                 Assert.Greater(guiReads,0);Assert.IsEmpty(entries,"GUI must only queue source reads.");
-                Assert.AreEqual(1,EditorApplication.delayCall.GetInvocationList().Count(callback=>callback.Target==tool));
+                Assert.AreEqual(1,EditorApplication.update.GetInvocationList().Count(callback=>callback.Target==tool));
                 tool.ClearSourcePreview();
-                Assert.IsFalse(EditorApplication.delayCall?.GetInvocationList().Any(callback=>callback.Target==tool) ?? false);
+                Assert.IsFalse(EditorApplication.update?.GetInvocationList().Any(callback=>callback.Target==tool) ?? false);
                 window.Input=null;
                 for(int i=0;i<3;++i)yield return null;
                 var flags=System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic;
@@ -71,10 +71,7 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
                 window.SendEvent(new Event {type=EventType.Layout});
                 Assert.IsEmpty(entries);
                 window.Input=null;
-                // Batch-mode test pumping does not guarantee inspector delayCall
-                // dispatch. Run only this registered callback, outside OnGUI.
-                var deferred=(EditorApplication.CallbackFunction)EditorApplication.delayCall.GetInvocationList().Single(callback=>callback.Target==tool);
-                deferred();
+                for(int i=0;i<3;++i)yield return null;
                 Assert.AreEqual(1,((List<MeshEntry>)typeof(RemeshBakeTool).GetField("sourceEntries",flags).GetValue(tool)).Count);
                 tool.GetUvContent(entries);Assert.AreEqual(1,entries.Count);
             }

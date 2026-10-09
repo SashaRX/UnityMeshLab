@@ -189,12 +189,13 @@ namespace SashaRX.UnityMeshLab
 
         static void QueueSourcePreview(EditorApplication.CallbackFunction rebuild, bool queued)
         {
-            EditorApplication.delayCall -= rebuild;
-            if (queued) EditorApplication.delayCall += rebuild;
+            EditorApplication.update -= rebuild;
+            if (queued) EditorApplication.update += rebuild;
         }
 
         void RebuildSourcePreview()
         {
+            if (EditorApplication.isCompiling || EditorApplication.isUpdating) return;
             var root = source ? source : pipeline.CapturedSource;
             ClearSourcePreview();
             previewSourceRoot = root; previewLod0Only = settings.lod0Only; sourcePreviewDirty = false;
