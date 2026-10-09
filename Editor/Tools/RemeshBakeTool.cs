@@ -118,7 +118,7 @@ namespace SashaRX.UnityMeshLab
             previews.Dispose();
             pipeline.Dispose();
             highlight.Dispose();
-            EditorApplication.delayCall -= RebuildHighlight;
+            QueueHighlight(RebuildHighlight, false);
             highlightQueued = false;
             EditorApplication.hierarchyChanged -= InvalidateHighlight;
             EditorApplication.hierarchyChanged -= InvalidateSourcePreview;
@@ -305,7 +305,13 @@ namespace SashaRX.UnityMeshLab
             // Capture once after a selection/settings change, outside IMGUI drawing.
             highlight.Clear();
             highlightQueued = true;
-            EditorApplication.delayCall += RebuildHighlight;
+            QueueHighlight(RebuildHighlight, true);
+        }
+
+        static void QueueHighlight(EditorApplication.CallbackFunction rebuild, bool queued)
+        {
+            EditorApplication.delayCall -= rebuild;
+            if (queued) EditorApplication.delayCall += rebuild;
         }
 
         void RebuildHighlight()
