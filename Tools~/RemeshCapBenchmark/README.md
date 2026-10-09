@@ -4,6 +4,11 @@ Offline diagnostics for a proposed source Cap. These tools do not change Unity
 meshes, settings, native binaries, or the production Remesh pipeline. Private
 model captures and generated reports belong in ignored scratch directories.
 
+[Local Cap research](../../Documentation~/REMESH_LOCAL_CAP_RESEARCH.md) compares
+boundary detection, planar/3D filling, compound patches and stitching, and defines
+the proposed acceptance contract and next offline experiment. It is a design
+proposal, not a production Cap implementation.
+
 Failed production Remesh/Simplify attempts now save version 2 geometry captures
 in `%TEMP%/meshlab-uvmerge/failures/`, independently of Verbose logging. Decode
 one before selecting Cap or native experiments:
