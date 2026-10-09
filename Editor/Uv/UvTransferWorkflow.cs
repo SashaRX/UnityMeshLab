@@ -1388,10 +1388,12 @@ namespace SashaRX.UnityMeshLab
         void ExecAnalyzeUv0()
         {
             if (ctx.LodGroup == null) return;
+            PrepareTransferInputs();
             uv0Reports.Clear();
             foreach (var e in ctx.MeshEntries)
             {
                 if (!e.include || e.originalMesh == null) continue;
+                EnsureTransferWorkingMesh(e);
                 var report = Uv0Analyzer.Analyze(e.originalMesh);
                 uv0Reports[e.originalMesh.GetInstanceID()] = report;
             }
@@ -1408,6 +1410,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (ctx.LodGroup == null) return;
             using var previewChange = PreservePreviewDuringMeshChange();
+            PrepareTransferInputs();
             foreach (var e in ctx.MeshEntries)
             {
                 if (!e.include || e.originalMesh == null) continue;
@@ -1443,6 +1446,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (ctx.LodGroup == null) return;
             using var previewChange = PreservePreviewDuringMeshChange();
+            PrepareTransferInputs();
 
             if (runMeshoptFirst)
                 ExecMeshOptimize();
@@ -1477,6 +1481,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (ctx.LodGroup == null) return;
             using var previewChange = PreservePreviewDuringMeshChange();
+            PrepareTransferInputs();
             SymmetrySplitShells.CurrentThresholdMode = SymmetrySplitMode;
             lastSymmetrySplitLods.Clear();
 
@@ -1563,6 +1568,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (ctx.LodGroup == null) return;
             using var previewChange = PreservePreviewDuringMeshChange();
+            PrepareTransferInputs();
             var capture = TransferCaseCapture.Begin(ctx, this, runLabel);
             using var _bench = BenchmarkRecorder.NewRun(ctx, runLabel,
                 splitTargetsInSymmetryStep, SymmetrySplitMode);
@@ -1596,17 +1602,39 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
-        /// Rewind every entry's working mesh to a pristine state before a
-        /// full-pipeline run so the run is idempotent. Working copies are
-        /// materialised lazily by the individual stages (each does
-        /// <c>if (e.originalMesh == e.fbxMesh) … MakeReadableCopy</c>), so it
-        /// is enough to point <see cref="MeshEntry.originalMesh"/> back at
-        /// <see cref="MeshEntry.fbxMesh"/>, destroy the stale clone, drop the
-        /// derived (repacked / transferred) meshes, and clear the per-step
-        /// flags. Mirrors the per-step reset done between auto-tune configs,
-        /// but covers the whole entry set including non-included entries so
-        /// nothing from a prior run leaks into this one.
+        /// Reimport selected model inputs without precision-losing importer
+        /// operations. A changed import invalidates all dependent working meshes;
+        /// an already prepared import leaves completed stages intact.
         /// </summary>
+        internal bool PrepareTransferInputs()
+        {
+            var paths = UvTransferInputPreparation.FindPaths(ctx.MeshEntries);
+            if (paths.Count == 0) return false;
+            using var previewChange = PreservePreviewDuringMeshChange();
+            // Renderers release owned meshes before the reset destroys them. Keep
+            // MeshEntry identity, inclusion and viewport state across the reimport.
+            ResetWorkingMeshesToFbx();
+            uv0Reports.Clear();
+            uv0Analyzed = false;
+            lastSymmetrySplitLods.Clear();
+            try { UvTransferInputPreparation.Reimport(ctx.MeshEntries, paths); }
+            finally
+            {
+                ctx.ClearAllCaches();
+                RequestRepaint?.Invoke();
+            }
+            return true;
+        }
+
+        void RequirePreparedTransferInputs()
+        {
+            if (PrepareTransferInputs())
+                throw new InvalidOperationException("UV inputs were reimported without mesh compression, optimization or importer welding. "
+                    + "Previous working meshes and atlases were invalidated. Run Full Pipeline (or repeat Weld/Symmetry and Repack) before Transfer.");
+        }
+
+        /// <summary>Rewind all owned working/derived meshes to their imported
+        /// baseline so full-pipeline reruns cannot accumulate previous edits.</summary>
         void ResetWorkingMeshesToFbx()
         {
             if (ctx?.MeshEntries == null) return;
@@ -1664,6 +1692,7 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         async Task<bool> ExecFullPipelineCoreImpl(bool useAsync)
         {
+            PrepareTransferInputs();
             string version = UnityEditor.PackageManager.PackageInfo
                 .FindForAssembly(typeof(UvTransferWorkflow).Assembly)?.version ?? "0.0.0";
             UvtLog.Info($"[Pipeline] Starting full pipeline... (v{version})");
@@ -2013,6 +2042,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (entries.Count == 0) return;
             using var previewChange = PreservePreviewDuringMeshChange();
+            PrepareTransferInputs();
             using var _bench = BenchmarkRecorder.NewRun(ctx, "Repack",
                 splitTargetsInSymmetryStep, SymmetrySplitMode);
             bool ownsSession = _bench is BenchmarkRecorder;
@@ -2168,6 +2198,7 @@ namespace SashaRX.UnityMeshLab
 
         async Task ExecRepackPerMeshImpl(List<MeshEntry> entries, bool useAsync)
         {
+            PrepareTransferInputs();
             var groups = new Dictionary<string, List<MeshEntry>>();
             foreach (var e in entries)
             {
@@ -2184,6 +2215,7 @@ namespace SashaRX.UnityMeshLab
         async Task ExecTransferAllImpl(bool useAsync)
         {
             using var previewChange = PreservePreviewDuringMeshChange();
+            RequirePreparedTransferInputs();
             var capture = TransferCaseCapture.Begin(ctx, this, "TransferAll");
             using var _bench = BenchmarkRecorder.NewRun(ctx, "TransferAll",
                 splitTargetsInSymmetryStep, SymmetrySplitMode);
@@ -2275,6 +2307,7 @@ namespace SashaRX.UnityMeshLab
         async Task ExecTransferLodImpl(int tLod, bool useAsync)
         {
             using var previewChange = PreservePreviewDuringMeshChange();
+            RequirePreparedTransferInputs();
             var targets = ctx.ForLod(tLod);
             if (targets.Count == 0) return;
             var sources = ctx.ForLod(ctx.SourceLodIndex);
