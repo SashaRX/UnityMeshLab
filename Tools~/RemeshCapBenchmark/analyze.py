@@ -208,6 +208,7 @@ def main():
     report = {'schemaVersion':1,'faceIds':'zero-based','source':str(args.source.resolve()),'capped':str(args.capped.resolve()),
               'summary':result['summary'],'pairs':result['pairs'],
               'topology':topology,'capAccepted':bool(topology['closedManifold'] and result['summary']['capGeometryAccepted']),
+              'solidCandidateAccepted':bool(topology['closedManifold'] and not result['pairs']),
               'voxels':[associate(result,path,args.resolution) for path in args.voxel]}
     args.output.parent.mkdir(parents=True,exist_ok=True)
     args.output.write_text(json.dumps(report,indent=2),encoding='utf-8')

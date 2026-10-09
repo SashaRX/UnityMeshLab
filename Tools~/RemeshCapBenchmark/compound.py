@@ -14,6 +14,7 @@ import numpy as np
 from analyze import read_mesh, scan
 from intersections import exact_positions, orient
 from topology import inspect
+from branch import reconnect
 
 
 def validate_boundaries(indices, loops):
@@ -78,7 +79,7 @@ def triangulate(vertices, segments, holes):
     return result['triangles']
 
 
-def generate(raw_points, raw_indices, loops, shear, floor_margin, max_rounds=8):
+def generate(raw_points, raw_indices, loops, shear, floor_margin, max_rounds=8, bridge_branches=False):
     if not np.isfinite(shear).all() or not np.isfinite(floor_margin) or floor_margin < 0 or max_rounds < 0:
         raise ValueError('Invalid projection, floor margin or refinement budget')
     points, remap = np.unique(raw_points, axis=0, return_inverse=True)
@@ -134,12 +135,20 @@ def generate(raw_points, raw_indices, loops, shear, floor_margin, max_rounds=8):
         extra = np.unique(np.concatenate((extra, actual[indices[bad]].mean(axis=1))), axis=0)
     if not np.array_equal(raw_points[raw_indices], candidate[indices[:len(source)]]):
         raise ValueError('Experiment changed original face geometry')
+    bridge_report = None
+    if bridge_branches and audit['summary']['capGeometryAccepted']:
+        indices, bridge_report = reconnect(candidate, indices, len(source))
+        if bridge_report['changed']:
+            audit = scan(candidate, indices, len(source))
     topology = inspect(candidate, indices)
     report = {'schemaVersion': 1, 'experimental': True, 'projectionShear': shear.tolist(),
               'floorMargin': floor_margin, 'floorHeight': floor, 'addedInteriorVertices': len(interior),
               'sourceFaces': len(source), 'sourceTopology': inspect(points, source), 'topology': topology,
               'geometry': audit['summary'], 'refinementHistory': history,
-              'capAccepted': bool(topology['closedManifold'] and audit['summary']['capGeometryAccepted'])}
+              'capAccepted': bool(topology['closedManifold'] and audit['summary']['capGeometryAccepted']),
+              'solidCandidateAccepted': bool(topology['closedManifold'] and not audit['pairs'])}
+    if bridge_report is not None:
+        report['branchConnection'] = bridge_report
     return candidate, indices, report
 
 
@@ -150,11 +159,12 @@ def main():
     parser.add_argument('--shear', required=True, nargs=2, type=float)
     parser.add_argument('--floor-margin', required=True, type=float)
     parser.add_argument('--max-rounds', type=int, default=8)
+    parser.add_argument('--bridge-branches', action='store_true')
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
     points, indices = read_mesh(args.source)
     loops = json.loads(args.boundaries.read_text(encoding='utf-8'))
-    candidate, triangles, report = generate(points, indices, loops, args.shear, args.floor_margin, args.max_rounds)
+    candidate, triangles, report = generate(points, indices, loops, args.shear, args.floor_margin, args.max_rounds, args.bridge_branches)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open('wb') as stream:
         np.array((len(candidate), triangles.size), '<u4').tofile(stream)
@@ -164,7 +174,7 @@ def main():
     report_path.write_text(json.dumps(report, indent=2), encoding='utf-8')
     print(json.dumps(report, indent=2), flush=True)
     print('Diagnostic candidate:', args.output.resolve(), flush=True)
-    return 0 if report['capAccepted'] else 2
+    return 0 if report['solidCandidateAccepted'] else 2
 
 
 if __name__ == '__main__':

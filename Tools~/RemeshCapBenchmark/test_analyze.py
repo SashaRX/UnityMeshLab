@@ -1,4 +1,9 @@
 import collections
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import unittest
 import numpy as np
 
@@ -6,6 +11,27 @@ from analyze import NearestTriangles, cap_groups, scan, voxel_samples
 
 
 class CapAuditTests(unittest.TestCase):
+    def test_existing_source_crossings_fail_solid_gate_despite_clean_cap(self):
+        tetra = np.array([[0,0,0],[2,0,0],[0,2,0],[0,0,2]], dtype='f4')
+        p = np.concatenate((tetra, tetra+.5, tetra+10)).astype('f4')
+        faces = np.array([[0,2,1],[0,1,3],[1,2,3],[2,0,3]], dtype='u4')
+        ix = np.concatenate((faces, faces+4, faces+8)).astype('u4')
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            for name, positions, indices in (('source',p[:8],ix[:8]), ('capped',p,ix)):
+                with (root/(name+'.bin')).open('wb') as stream:
+                    np.array([len(positions),indices.size],dtype='<u4').tofile(stream)
+                    positions.astype('<f4').tofile(stream)
+                    indices.astype('<u4').tofile(stream)
+            subprocess.run([sys.executable,str(Path(__file__).with_name('analyze.py')),
+                            '--source',str(root/'source.bin'),'--capped',str(root/'capped.bin'),
+                            '--output',str(root/'report.json')],check=True,capture_output=True)
+            report = json.loads((root/'report.json').read_text())
+        self.assertTrue(report['topology']['closedManifold'])
+        self.assertTrue(report['capAccepted'])
+        self.assertGreater(report['summary']['pairCounts']['source-source']['crossing'],0)
+        self.assertFalse(report['solidCandidateAccepted'])
+
     def test_closed_cube_cap_has_no_geometric_intersections(self):
         p=np.array([[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],[-1,-1,1],[1,-1,1],[1,1,1],[-1,1,1]],dtype='f4')
         ix=np.array([[0,2,1],[0,3,2],[4,5,6],[4,6,7],[0,1,5],[0,5,4],

@@ -44,8 +44,10 @@ or silently remove any offending face.
 `topology` also records closed edges, duplicates, winding, degenerate faces and
 disconnected geometric vertex fans, independently of UV/normal vertex splits.
 `capAccepted` requires both the geometric gate and closed manifold topology.
-This is not a full solid/bake-quality certificate: existing source intersections,
-volume, shape deviation and the actual voxel output still need verification.
+`solidCandidateAccepted` additionally requires zero reported intersections or
+nonadjacent contacts anywhere, including the original source. Neither flag is
+a full solid/bake-quality certificate: component orientation/volume, shape
+deviation and the actual voxel output still need verification.
 
 Each report preserves zero-based face IDs, cap component IDs, and 3D intersection
 witnesses. Cap components join over shared edges, not over a lone contact vertex.
@@ -83,7 +85,21 @@ refinement rounds at remaining source/Cap crossings. This changes the closure
 surface, so shape and bake behavior must be measured before production use.
 It never moves/splits an original source edge or face and checks the face prefix.
 It writes a diagnostic candidate and JSON even when rejected; exit code **2**
-means `capAccepted=false`. Do not apply that candidate to a Unity asset.
+means `solidCandidateAccepted=false`, including pre-existing source defects
+even when `capAccepted=true`. Do not apply a rejected candidate to a Unity asset.
+
+Optional `--bridge-branches` attempts to reconnect exactly two disconnected
+geometric vertex fans through Cap triangles. For oriented faces `(v,a,b)` and
+`(v,c,d)`, it tries `(v,a,d)`, `(v,c,b)`, `(a,b,d)`, `(c,d,b)`. All source faces
+and positions remain unchanged. Each candidate must improve fan topology,
+preserve closed oriented edges and pass exact 3D patch/unchanged and patch/patch
+intersection tests. The search uses stable face order and a 256-pair budget;
+it does not rank candidates for shape quality. Refusals remain in the JSON.
+Whole-mesh geometry and topology are audited again after a successful change.
+This operation is specific to a closed edge manifold with a two-fan branch,
+not an arbitrary non-manifold repair.
 
 Measured results, remaining branch/voxel failures and limitations:
 `Documentation~/REMESH_COMPOUND_CAP.md`.
+The branch follow-up and remaining source defects are recorded in
+`Documentation~/REMESH_CAP_BRANCH.md`.

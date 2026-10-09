@@ -1,5 +1,9 @@
 # PileOfBricks: compound Cap experiment
 
+This records the pre-connection baseline. The subsequent
+[Cap branch reconnection](REMESH_CAP_BRANCH.md) removes the remaining input fan
+without new intersections; original source crossings and voxel defects remain.
+
 Measured 2026-10-09 on the same private source capture and native af94e5860826
 as [the intersection audit](REMESH_CAP_INTERSECTIONS.md). The implementation
 is an offline experiment in `Tools~/RemeshCapBenchmark/compound.py`. Production
