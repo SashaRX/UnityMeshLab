@@ -80,6 +80,11 @@ must be explicit. Keep original bake/material donors separate from changing
 working support geometry. Caps constrain adjacent geometric completion without
 becoming implicit original UV/material donors.
 
+The [paired-rim counterexample](REMESH_CAP_BRIDGE.md) demonstrates a stronger
+limit: both separate disks on a cut torus pass this local gate, but destroy its
+intended handle. Decide disk/Bridge topology hypotheses before per-rim steps;
+neighbor re-analysis alone does not resolve this choice.
+
 ## Reproduction and tests
 
 ```powershell

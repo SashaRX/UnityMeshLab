@@ -15,7 +15,8 @@ one plane. Reconstruct its surface structure before choosing its triangulation.
 flowchart TD
     A[Captured source geometry and attributes] --> B[Geometry connectivity and source fans]
     B --> C[Directed boundary domains]
-    C --> D[Whole-plane and partial-plane hypotheses]
+    C --> T[Disk, annular Bridge and compound topology hypotheses]
+    T --> D[Whole-plane and partial-plane hypotheses]
     D --> E[Missing feature edges and patch domains]
     E --> F[Constrained triangulation and interior refinement]
     F --> G[Full topology and intersection audit]
@@ -58,6 +59,7 @@ Names below describe responsibilities, not types already shipped in the package.
 | `SourceSnapshot` | Original positions/indices and attribute references, capture-space transform, node identity and content identity. Freeze after the existing source-filter stage. |
 | `ConnectivityView` | Virtual geometric slots, mapping back to original corners, edge incidents and oriented fan adjacency. Never rewrite the original snapshot merely to weld the analysis view. |
 | `BoundaryDomain` | Ordered directed halfedge occurrences `(face, corner, fan)`, loop membership, selected-opening intent, collar and preexisting defect references. Stable identity is tied to a specific snapshot. |
+| `ClosureHypothesis` | Grouped boundary rims, disk/annulus/compound operation, source collar evidence, patch topology and expected assembled components/genus when intent is known. Planarity alone cannot select this operation. |
 | `PlaneHypothesis` | Local origin/normal, support edge intervals, rank, maximum/RMS residuals, scale, tolerance and evidence. Partial support respects cyclic ordering. |
 | `FeatureGraph` | Existing junctions, proposed finite missing edges, proposed two-/three-plane intersection vertices, patch adjacency and explicit constraints. Every proposed feature has provenance. |
 | `PatchPlan` | Closed domains/inner boundaries, fixed border and shared feature edges, winding, chosen construction method and refinement/search budgets. |
@@ -76,6 +78,14 @@ Keep existing auditors independent. The eventual managed counterparts belong in
 `Editor/Geometry/` and operate on snapshots, without direct scene/asset mutation.
 
 ## Structure recognition
+
+First classify possible closure topology across boundary domains. Two rims may
+need one annular Bridge rather than two independent disks. The [torus-band
+counterexample](REMESH_CAP_BRIDGE.md) passes all local gates with either closure,
+but only the Bridge preserves its intended handle. The open source signature
+alone cannot choose: a box missing opposite faces has the same open signature
+and needs disks. Keep operation alternatives and explicit intent ahead of local
+plane fitting and sequential acceptance.
 
 First test the complete contour. A plane requires non-collinear support;
 maximum distance limits matter in addition to RMS. Weight by arc length so
@@ -178,6 +188,12 @@ reference boxes close consistently in both two-face orders and all six
 three-face orders; the full offline suite passes 79/79 tests. This establishes
 the local gate and re-analysis contract, not the missing-feature solver or an
 automatic branch/backtracking implementation. P3/P4 completion remains next.
+
+The [Bridge reference probe](REMESH_CAP_BRIDGE.md) adds a topological
+counterexample and component/Euler/genus diagnostics; 86/86 offline tests now
+pass. It supplies known reference strips and does not implement automatic rim
+pairing or correspondence. P3/P4 must handle annular domains, cyclic matching
+and topology intent alongside missing planar edges/corners.
 
 ## Integration and regression controls
 

@@ -61,6 +61,17 @@ This is a local candidate gate and reference replay, not an automatic
 missing-feature, triangulation or backtracking solver. Step acceptance does not
 certify intended shape or global solid readiness.
 
+[Paired-rim Bridge versus disks](../../Documentation~/REMESH_CAP_BRIDGE.md)
+demonstrates handle loss despite locally clean independent Caps. The probe
+counts component topology and checks explicit known-reference intent:
+
+```powershell
+python 'Tools~/RemeshCapBenchmark/bridge_probe.py' --output PRIVATE_BRIDGE_REPORT.json
+```
+
+It supplies the missing torus strip and disk triangles from an analytic fixture.
+It does not automatically pair rims, infer intended genus or generate a Bridge.
+
 Failed production Remesh/Simplify attempts now save version 2 geometry captures
 in `%TEMP%/meshlab-uvmerge/failures/`, independently of Verbose logging. Decode
 one before selecting Cap or native experiments:
