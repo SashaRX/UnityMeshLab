@@ -2,6 +2,7 @@
 // canvas toolbar: the checker moves to the renderers now shown, the previous LOD gets
 // its materials back, and the UV channel the user picked returns when the LOD has it.
 using System.Collections;
+using System.Linq;
 using System.Collections.Generic;
 using System.Reflection;
 using NUnit.Framework;
@@ -850,6 +851,10 @@ namespace SashaRX.UnityMeshLab.Tests
             var fine = ctx.MeshEntries.Find(e => e.renderer == fineRenderer);
             // This fixture's third corner has Z=1: make it planar to establish an isotropic seed.
             coarse.originalMesh.vertices = fine.originalMesh.vertices = new[] {Vector3.zero, Vector3.right, new Vector3(1,1,0), Vector3.up};
+            var originalCoarseIndices = coarse.originalMesh.triangles.Concat(new[] { 0, 0, 0 }).ToArray();
+            var originalFineIndices = fine.originalMesh.triangles.Concat(new[] { 0, 0, 0 }).ToArray();
+            coarse.originalMesh.triangles = originalCoarseIndices;
+            fine.originalMesh.triangles = originalFineIndices;
             var prior = fine.transferredMesh = Object.Instantiate(fine.originalMesh);
             var previousDirectory = BenchmarkRecorder.OutputDirectoryOverride;
             string directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(),"MeshLabReversePreview_"+System.Guid.NewGuid().ToString("N"));
@@ -863,6 +868,11 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsNotNull(coarse.repackedMesh); Assert.IsNotNull(fine.transferredMesh);
                 Assert.AreEqual(coarse.repackedAtlasWidth,fine.repackedAtlasWidth);
                 Assert.IsNotEmpty(fine.reverseTransferJson);
+                CollectionAssert.AreEqual(originalCoarseIndices, coarse.originalMesh.triangles);
+                CollectionAssert.AreEqual(originalFineIndices, fine.originalMesh.triangles);
+                Assert.AreEqual(originalCoarseIndices.Length - 3, coarse.repackedMesh.triangles.Length);
+                Assert.AreEqual(originalFineIndices.Length - 3, fine.transferredMesh.triangles.Length);
+                Assert.AreEqual(1, JsonUtility.FromJson<ReverseUvAudit.ProvenanceEntry>(fine.reverseTransferJson).surface.removedSourceFaces.Length);
                 Call(hub,"CollectCanvasEntries"); AssertFreshPreview(ctx,fine,UvCanvasView.PreviewMode.Checker); AssertPreviewFrame();
                 Assert.AreEqual(1,System.IO.Directory.GetFiles(directory,"*.json").Length);
                 var saved = SidecarStore.TryBuildEntry(fine,fine.transferredMesh,false,SidecarStore.AoUvTarget.None,out var sidecar);

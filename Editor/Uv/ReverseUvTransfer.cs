@@ -25,6 +25,7 @@ namespace SashaRX.UnityMeshLab
             internal Mesh mesh;
             internal Matrix4x4 toWorld = Matrix4x4.identity;
             internal string key;
+            internal int[] sourceFaces, removedSourceFaces;
         }
 
         internal sealed class Level
@@ -48,6 +49,9 @@ namespace SashaRX.UnityMeshLab
             public bool seed;
             public int inheritedFaces, newFaces, overlapFaces, ambiguousFaces, localFallbackFaces;
             public Face[] faces;
+            // Output face -> pre-cleanup source face; ancestry face indices remain
+            // in output order and can be resolved through the parent's map.
+            public int[] sourceFaces, removedSourceFaces;
         }
 
         [Serializable] internal sealed class Report
@@ -143,6 +147,7 @@ namespace SashaRX.UnityMeshLab
                         var normalized = surface.pixels.Select(p => p / side).ToArray();
                         outputs[surface.node] = ReverseUvMesh.Copy(surface.input.mesh, surface.indices, normalized);
                         var node = new NodeReport { lod = surface.lod, key = surface.input.key, faces = surface.faces,
+                            sourceFaces = surface.input.sourceFaces, removedSourceFaces = surface.input.removedSourceFaces,
                             seed = surface.lod == levels[0].lod };
                         foreach (var face in surface.faces)
                         {

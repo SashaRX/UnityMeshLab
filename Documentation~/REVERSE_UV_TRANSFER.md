@@ -24,10 +24,16 @@ LOD number and advances toward LOD0. The existing forward solver is unchanged.
   intrinsic triangle charts. New blocks append to the occupied canvas; inherited
   coordinates remain fixed in pixels. One final square normalization applies to
   **every LOD**, including the seed.
+- Before seed preparation and projection, all inputs are cloned and exactly
+  zero-area source-local triangles are removed from those detached copies.
+  Double area arithmetic has no epsilon: nonzero thin faces remain. Nonfinite
+  positions and meshes with no remaining faces are refused. Material slots
+  (including empty slots), vertex streams, skin weights and blend shapes survive.
+  Reverse UV does not change FBX files or importer settings; importer precision
+  preparation remains a separate forward-pipeline operation.
 - Outputs are staged before replacing the visible chain. Failed validation,
-  cancellation or failed audit writes publish no new chain. Import precision
-  preparation can independently invalidate old working data when Unity importer
-  settings need correction, as in the existing pipeline.
+  cancellation or failed audit writes publish no new chain. Temporary cleaned
+  inputs and prepared seed meshes are destroyed on success, failure or cancellation.
 
 ## Intentional overlap
 
@@ -52,6 +58,10 @@ Successful runs write JSON under `BenchmarkReports/ReverseUV/` or the benchmark
 output override. Reports contain face decisions, per-mesh quality, complete per-LOD
 overlap classification, density extrema, atlas size and local fallback counts.
 Incomplete bounded overlap scans are refused.
+Each node also records `sourceFaces` (output face to pre-cleanup input face) and
+`removedSourceFaces`. Parent/overlay face indices continue to use output order;
+resolve the parent's `sourceFaces` map to find its pre-cleanup face. These refer
+to the input working mesh, whose face order may differ from the imported FBX.
 
 **Tools → Mesh Lab → Diagnostics → Reverse UV — benchmark last capture** replays
 the last frozen transfer capture in both overlap modes. A forward capture's target
@@ -67,16 +77,25 @@ input. Matrix products and translation subtraction are computed in double before
 rounding positions for the float BVH. This preserves world-unit reach, scale,
 relative renderer positions and reflection winding while avoiding precision loss
 from a model's world position. Output vertex positions stay source-local.
-Source-local zero-area triangles are rejected before transformation, so rounding
-cannot turn a collinear source face into an apparently valid triangle. Errors
-distinguish source defects from projection-frame collapse and include vertex IDs.
+The low-level projection solver still rejects source-local zero-area triangles
+before transformation; the workflow and benchmark clean detached inputs first.
+Rounding cannot turn a collinear source face into an apparently valid triangle.
+Errors distinguish source defects from projection-frame collapse and include vertex IDs.
 
 The Kamaz_Typhoon capture on 2026-10-09 contains a valid 0.24-micrometre-wide
 LOD1 face that collapses at a roughly 100-metre world position, and a separate
-exactly collinear source face. Relative coordinates fix the former; the latter
-still refuses transfer. The earlier reported working face 6768 cannot be equated
+exactly collinear source face. Cleanup removes the latter on its working copy.
+The earlier reported working face 6768 cannot be equated
 with imported FBX face order after weld/processing. Exact captured triangles are
 regression fixtures; this does not certify the whole Kamaz chain as successful.
+Set `MESHLAB_REVERSE_KAMAZ` to the frozen probe directory and run
+`ReverseUvTransferTests.FrozenKamazFullLodChainAfterCleanup` with
+`MESHLAB_REVERSE_OUTPUT`. It exercises all five renderer meshes in LOD2 → LOD1 →
+LOD0, three scene transforms and the imported identity frame, in both overlap
+modes. `kamaz-trials.json` reports refusals rather than disguising them as accepted
+transfers. The 2026-10-10 run removes one LOD1 face in each trial and prepares the
+seed, but all eight trials still refuse projection: one scene frame collapses a
+different thin face, and the other frames fail the strict UV stretch gate.
 
 For isolated EditMode runs, set `MESHLAB_REVERSE_MANIFESTS` to semicolon-separated
 manifest paths, `MESHLAB_REVERSE_OUTPUT` to the output directory, and run

@@ -61,7 +61,7 @@ namespace SashaRX.UnityMeshLab
                     {
                         var trial = new Trial { pair = pair.index, source = pair.source, target = pair.target, allowOverlap = overlap };
                         summary.trials.Add(trial);
-                        Mesh coarse = null, fine = null, seed = null;
+                        Mesh coarse = null, fine = null;
                         string stage = "snapshot";
                         try
                         {
@@ -69,14 +69,14 @@ namespace SashaRX.UnityMeshLab
                             // it from geometry rather than copying failed forward UV2.
                             coarse = TransferCaseReplay.Load(file.DirectoryName, pair.targetMesh);
                             fine = TransferCaseReplay.Load(file.DirectoryName, pair.sourceMesh);
-                            stage = "seed";
-                            if (coarse.triangles.Length > 150000) throw new InvalidOperationException("Benchmark seed exceeds the 50000-face unwrap limit.");
-                            seed = ReverseUvSeed.Prepare(new[] {new ReverseUvTransfer.Input {mesh=coarse,toWorld=pair.localToWorld}},
-                                256,2,0,default,out int seedSize)[0];
-                            var levels = new[] {
-                                new ReverseUvTransfer.Level { lod = 1, inputs = new[] { new ReverseUvTransfer.Input { mesh = seed, key = pair.target, toWorld = pair.localToWorld } } },
+                            stage = "cleanup";
+                            using var prepared = ReverseUvInputs.Prepare(new[] {
+                                new ReverseUvTransfer.Level { lod = 1, inputs = new[] { new ReverseUvTransfer.Input { mesh = coarse, key = pair.target, toWorld = pair.localToWorld } } },
                                 new ReverseUvTransfer.Level { lod = 0, inputs = new[] { new ReverseUvTransfer.Input { mesh = fine, key = pair.source, toWorld = pair.localToWorld } } }
-                            };
+                            });
+                            stage = "seed";
+                            int seedSize = prepared.PrepareSeed(256, 2, 0, default);
+                            var levels = prepared.levels;
                             stage = "projection";
                             using var result = await ReverseUvTransfer.Build(levels, new ReverseUvTransfer.Options {
                                 seedResolution = seedSize, projectionReach = .05f, preserveProjectedOverlap = overlap }, true);
@@ -89,7 +89,6 @@ namespace SashaRX.UnityMeshLab
                         {
                             if (coarse) UnityEngine.Object.DestroyImmediate(coarse);
                             if (fine) UnityEngine.Object.DestroyImmediate(fine);
-                            if (seed) UnityEngine.Object.DestroyImmediate(seed);
                         }
                     }
                 await File.WriteAllTextAsync(Path.Combine(outputDirectory,"summary.json"),JsonUtility.ToJson(summary,true));

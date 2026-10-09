@@ -40,41 +40,33 @@ namespace SashaRX.UnityMeshLab
         internal async Task RunReverseTransfer(bool useAsync)
         {
             using var previewChange = PreservePreviewDuringMeshChange();
-            PrepareTransferInputs();
             var groups = ctx.MeshEntries.Where(e => e.include && e.originalMesh)
                 .GroupBy(e => e.lodIndex).OrderByDescending(g => g.Key).Select(g => g.ToList()).ToList();
             if (groups.Count < 2) throw new InvalidOperationException("Reverse UV requires at least two included LODs.");
             using var cancellation = new CancellationTokenSource();
-            var seedEntries = reversePrepareSeed ? groups[0].Select(e => e.PreviewCopy(e.originalMesh)).ToList() : groups[0];
             void PollCancel() { if (UvProgress.CancelRequested) cancellation.Cancel(); }
             bool ownsProgress = !UvProgress.IsActive;
             if (ownsProgress) UvProgress.Begin("Reverse UV: coarse → fine", cancelable: true);
             SubscribeReverseCancellation(PollCancel);
             try
             {
-                UvProgress.Report(0, "Prepare coarsest LOD");
-                // Prepare detached entries. The visible chain remains intact
-                // until every projection, expansion and audit has succeeded.
-                if (reversePrepareSeed)
-                {
-                    var sources = seedEntries.Select(e => new ReverseUvTransfer.Input { mesh = e.originalMesh,
-                        toWorld = e.renderer ? e.renderer.localToWorldMatrix : Matrix4x4.identity }).ToArray();
-                    var seedMeshes = ReverseUvSeed.Prepare(sources, SanitizeAtlasResolution(ctx.AtlasResolution), SanitizePadding(ctx.ShellPaddingPx),
-                        ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity ? ctx.LightmapDensity : 0, cancellation.Token, out int size);
-                    for(int i=0;i<seedMeshes.Length;++i) { seedEntries[i].repackedMesh=seedMeshes[i]; seedEntries[i].repackedAtlasWidth=(uint)size; }
-                }
-                PollCancel(); cancellation.Token.ThrowIfCancellationRequested();
-                var levels = groups.Select((g, level) => new ReverseUvTransfer.Level {
+                UvProgress.Report(0, "Clean detached working copies");
+                var sources = groups.Select((g, level) => new ReverseUvTransfer.Level {
                     lod = g[0].lodIndex,
-                    inputs = g.Select((e, node) => new ReverseUvTransfer.Input {
-                        mesh = level == 0 ? seedEntries[node].repackedMesh ?? e.originalMesh : e.originalMesh,
+                    inputs = g.Select(e => new ReverseUvTransfer.Input {
+                        mesh = level == 0 && !reversePrepareSeed ? e.repackedMesh ?? e.originalMesh : e.originalMesh,
                         toWorld = e.renderer ? e.renderer.localToWorldMatrix : Matrix4x4.identity,
                         key = e.fbxMesh ? e.fbxMesh.name : e.originalMesh.name
                     }).ToArray()
                 }).ToArray();
-                if (reversePrepareSeed && seedEntries.Any(e => !e.repackedMesh))
-                    throw new InvalidOperationException("Coarsest LOD repack failed; reverse transfer was not published.");
-                int seedSize = seedEntries.Max(e => (int)e.repackedAtlasWidth);
+                using var prepared = ReverseUvInputs.Prepare(sources, cancellation.Token);
+                var levels = prepared.levels;
+                int removed = levels.Sum(l => l.inputs.Sum(i => i.removedSourceFaces.Length));
+                int seedSize = groups[0].Max(e => (int)e.repackedAtlasWidth);
+                if (reversePrepareSeed)
+                    seedSize = prepared.PrepareSeed(SanitizeAtlasResolution(ctx.AtlasResolution), SanitizePadding(ctx.ShellPaddingPx),
+                        ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity ? ctx.LightmapDensity : 0, cancellation.Token);
+                PollCancel(); cancellation.Token.ThrowIfCancellationRequested();
                 var options = new ReverseUvTransfer.Options {
                     seedResolution = seedSize > 0 ? seedSize : SanitizeAtlasResolution(ctx.AtlasResolution),
                     padding = SanitizePadding(ctx.ShellPaddingPx), projectionReach = reverseReach,
@@ -107,7 +99,7 @@ namespace SashaRX.UnityMeshLab
                 ctx.HasRepack = ctx.HasTransfer = true;
                 ctx.ClearAllCaches();
                 reverseSummary = $"Atlas {result.report.atlasSize}² · inherited {result.report.inheritedFaces} · new {result.report.newFaces}"
-                    + $" · overlap {result.report.overlapFaces} · ambiguous {result.report.ambiguousFaces}";
+                    + $" · overlap {result.report.overlapFaces} · ambiguous {result.report.ambiguousFaces} · removed zero-area {removed}";
                 UvtLog.Info($"[ReverseUV] {reverseSummary}. Audit: {auditPath}");
                 if (ownsProgress) UvProgress.End();
             }
@@ -123,8 +115,6 @@ namespace SashaRX.UnityMeshLab
             }
             finally
             {
-                if (reversePrepareSeed)
-                    foreach (var entry in seedEntries) if (entry.repackedMesh) UnityEngine.Object.DestroyImmediate(entry.repackedMesh);
                 UnsubscribeReverseCancellation(PollCancel);
                 RequestRepaint?.Invoke();
             }

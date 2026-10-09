@@ -40,6 +40,157 @@ namespace SashaRX.UnityMeshLab.Tests
         static ReverseUvTransfer.Result Build(ReverseUvTransfer.Options options, params ReverseUvTransfer.Level[] levels)
             => ReverseUvTransfer.Build(levels, options).GetAwaiter().GetResult();
 
+        [Test]
+        public void CleanupPreservesSourceAttributesAndMaterialSlotsAndTracksFaceIdentity()
+        {
+            var source = Quad();
+            source.subMeshCount = 3;
+            source.SetTriangles(new[] { 0, 0, 1, 0, 1, 2 }, 0);
+            source.SetTriangles(new[] { 1, 1, 2 }, 1);
+            source.SetTriangles(new[] { 0, 2, 3 }, 2);
+            var delta = Enumerable.Repeat(Vector3.up, 4).ToArray();
+            source.AddBlendShapeFrame("move", 100, delta, delta, delta);
+            source.bindposes = new[] { Matrix4x4.identity };
+            source.boneWeights = Enumerable.Repeat(new BoneWeight { boneIndex0 = 0, weight0 = 1 }, 4).ToArray();
+            var before = source.triangles;
+            var prepared = ReverseUvInputs.Prepare(new[] { Level(1, source), Level(0, source) });
+            var input = prepared.levels[0].inputs[0]; var copy = input.mesh;
+            Assert.AreNotSame(source, copy);
+            CollectionAssert.AreEqual(before, source.triangles);
+            CollectionAssert.AreEqual(new[] { 1, 3 }, input.sourceFaces);
+            CollectionAssert.AreEqual(new[] { 0, 2 }, input.removedSourceFaces);
+            Assert.AreEqual(3, copy.subMeshCount); Assert.IsEmpty(copy.GetTriangles(1));
+            CollectionAssert.AreEqual(source.vertices, copy.vertices);
+            CollectionAssert.AreEqual(source.uv, copy.uv); CollectionAssert.AreEqual(source.uv2, copy.uv2);
+            CollectionAssert.AreEqual(source.normals, copy.normals);
+            CollectionAssert.AreEqual(source.boneWeights, copy.boneWeights);
+            CollectionAssert.AreEqual(source.bindposes, copy.bindposes);
+            Assert.AreEqual(1, copy.blendShapeCount);
+            var actual = new Vector3[4]; copy.GetBlendShapeFrameVertices(0, 0, actual, null, null);
+            CollectionAssert.AreEqual(delta, actual);
+            using (prepared)
+            using (var result = Build(Options(), prepared.levels))
+            {
+                CollectionAssert.AreEqual(input.sourceFaces, result.report.nodes[0].sourceFaces);
+                CollectionAssert.AreEqual(input.removedSourceFaces, result.report.nodes[0].removedSourceFaces);
+                Assert.AreEqual(2, result.meshes[0][0].triangles.Length / 3);
+            }
+            Assert.IsTrue(copy == null); Assert.IsTrue(source);
+        }
+
+        [Test]
+        public void CleanupKeepsKamazThinFaceAndRemovesOnlyItsCollinearControl()
+        {
+            var mesh = Quad();
+            mesh.vertices = new[] {
+                new Vector3(-.7542471289634705f,2.827155113220215f,-1.8186256885528564f),
+                new Vector3(-.7542471289634705f,2.854128122329712f,-1.8186254501342773f),
+                new Vector3(-.7542471289634705f,2.827155351638794f,-1.8186254501342773f),
+                new Vector3(-.7542471289634705f,2.827155351638794f,-1.723873257637024f),
+                new Vector3(-.7542471289634705f,2.827155113220215f,-1.723873257637024f),
+                new Vector3(-.7542471289634705f,2.854128122329712f,-1.723873257637024f) };
+            mesh.triangles = new[] { 0, 1, 2, 3, 4, 5 };
+            using var prepared = ReverseUvInputs.Prepare(new[] { Level(1, mesh) });
+            CollectionAssert.AreEqual(new[] { 0 }, prepared.levels[0].inputs[0].sourceFaces);
+            CollectionAssert.AreEqual(new[] { 1 }, prepared.levels[0].inputs[0].removedSourceFaces);
+            Assert.AreEqual(6, mesh.triangles.Length);
+        }
+
+        [Test]
+        public void CleanupRejectsNonfiniteAndEmptyGeometryAndHonoursCancellation()
+        {
+            var mesh = Quad(); var before = mesh.triangles;
+            using var canceled = new CancellationTokenSource(); canceled.Cancel();
+            Assert.Throws<OperationCanceledException>(() => ReverseUvInputs.Prepare(new[] { Level(1, mesh) }, canceled.Token));
+            CollectionAssert.AreEqual(before, mesh.triangles);
+            mesh.triangles = new[] { 0, 0, 0 };
+            Assert.Throws<InvalidOperationException>(() => ReverseUvInputs.Prepare(new[] { Level(1, mesh) }));
+            mesh.vertices = new[] { Vector3.zero, new Vector3(float.NaN, 0, 0), Vector3.up };
+            mesh.SetTriangles(new[] { 0, 1, 2 }, 0, false);
+            Assert.Throws<InvalidOperationException>(() => ReverseUvInputs.Prepare(new[] { Level(1, mesh) }));
+        }
+
+        [Serializable] sealed class KamazCapture
+        {
+            public string kind, key;
+            public Vector3[] positions;
+            public int[] indices;
+            public Matrix4x4 toWorld;
+        }
+        [Serializable] sealed class KamazTrial
+        {
+            public int frame, removedFaces;
+            public bool overlap, accepted;
+            public string stage, error, audit;
+            public int[] removedByLod;
+        }
+        [Serializable] sealed class KamazTrials { public List<KamazTrial> trials = new List<KamazTrial>(); }
+
+        [UnityTest]
+        public IEnumerator FrozenKamazFullLodChainAfterCleanup()
+        {
+            string directory = Environment.GetEnvironmentVariable("MESHLAB_REVERSE_KAMAZ");
+            if (string.IsNullOrEmpty(directory)) Assert.Ignore("Set MESHLAB_REVERSE_KAMAZ to the readonly Kamaz captures.");
+            string output = Environment.GetEnvironmentVariable("MESHLAB_REVERSE_OUTPUT");
+            Assert.IsNotEmpty(output); System.IO.Directory.CreateDirectory(output);
+            var trials = new KamazTrials();
+            var previousOutput = BenchmarkRecorder.OutputDirectoryOverride;
+            BenchmarkRecorder.OutputDirectoryOverride = output;
+            try
+            {
+                for (int frame = 0; frame < 4; ++frame)
+                {
+                    var captures = new List<KamazCapture>();
+                    for (int file = frame * 15; file < (frame == 3 ? 61 : (frame + 1) * 15); ++file)
+                    {
+                        var capture = JsonUtility.FromJson<KamazCapture>(System.IO.File.ReadAllText(System.IO.Path.Combine(directory, file + ".json")));
+                        if (capture.key.Contains("_LOD")) captures.Add(capture);
+                    }
+                    var levels = captures.GroupBy(c => int.Parse(c.key.Substring(c.key.LastIndexOf("_LOD", StringComparison.Ordinal) + 4)))
+                        .OrderByDescending(g => g.Key).Select(g => new ReverseUvTransfer.Level { lod = g.Key,
+                            inputs = g.OrderBy(c => c.key).Select(c => {
+                                var mesh = new Mesh { name = c.key, indexFormat = IndexFormat.UInt32 };
+                                mesh.vertices = c.positions; mesh.triangles = c.indices; owned.Add(mesh);
+                                return new ReverseUvTransfer.Input { mesh = mesh, key = c.key, toWorld = c.toWorld };
+                            }).ToArray() }).ToArray();
+                    Assert.AreEqual(3, levels.Length); Assert.IsTrue(levels.All(l => l.inputs.Length == 5));
+                    foreach (bool overlap in new[] { false, true })
+                    {
+                        var trial = new KamazTrial { frame = frame, overlap = overlap, stage = "cleanup" };
+                        trials.trials.Add(trial);
+                        using var prepared = ReverseUvInputs.Prepare(levels);
+                        trial.removedByLod = prepared.levels.Select(l => l.inputs.Sum(i => i.removedSourceFaces.Length)).ToArray();
+                        trial.removedFaces = trial.removedByLod.Sum();
+                        Assert.Greater(trial.removedFaces, 0);
+                        for (int l = 0; l < levels.Length; ++l)
+                            for (int n = 0; n < levels[l].inputs.Length; ++n)
+                            {
+                                var input = prepared.levels[l].inputs[n];
+                                Assert.AreEqual(levels[l].inputs[n].mesh.triangles.Length / 3,
+                                    input.sourceFaces.Length + input.removedSourceFaces.Length);
+                            }
+                        trial.stage = "seed";
+                        int size = 0;
+                        try { size = prepared.PrepareSeed(256, 2, 0, default); }
+                        catch (Exception ex) { trial.error = ex.Message; }
+                        if (trial.error != null) continue;
+                        trial.stage = "projection";
+                        var task = ReverseUvTransfer.Build(prepared.levels, new ReverseUvTransfer.Options {
+                            seedResolution = size, preserveProjectedOverlap = overlap, projectionReach = .05f }, true);
+                        while (!task.IsCompleted) yield return null;
+                        if (task.IsFaulted) { trial.error = task.Exception.GetBaseException().Message; continue; }
+                        using var result = task.Result;
+                        trial.stage = "audit";
+                        try { trial.audit = ReverseUvAudit.Write(result, prepared.levels); trial.accepted = true; }
+                        catch (Exception ex) { trial.error = ex.Message; }
+                    }
+                }
+                System.IO.File.WriteAllText(System.IO.Path.Combine(output, "kamaz-trials.json"), JsonUtility.ToJson(trials, true));
+            }
+            finally { BenchmarkRecorder.OutputDirectoryOverride = previousOutput; }
+            Assert.AreEqual(8, trials.trials.Count);
+        }
+
         static void Clean(Mesh mesh, bool overlaps = false)
         {
             var q = TransferUvQuality.Measure(mesh, mesh.uv2, Vector2.one, Matrix4x4.identity);
@@ -455,8 +606,12 @@ namespace SashaRX.UnityMeshLab.Tests
                     Buffer.BlockCopy(value,0,bytes,v*stride+offset+c*componentSize,componentSize);
                 }
             }
-            source.SetVertexBufferData(bytes,0,0,bytes.Length,1); source.triangles=new[] {0,1,2,0,2,3};
-            var output=ReverseUvMesh.Copy(source,source.triangles,new[] {Vector2.zero,Vector2.right,Vector2.one,Vector2.one*.1f,Vector2.one*.2f,Vector2.up}); owned.Add(output);
+            source.SetVertexBufferData(bytes,0,0,bytes.Length,1); source.triangles=new[] {0,1,2,0,2,3,0,0,0};
+            using var prepared=ReverseUvInputs.Prepare(new[] {Level(1,source)});
+            var cleaned=prepared.levels[0].inputs[0].mesh;
+            using (var cleanData=Mesh.AcquireReadOnlyMeshData(cleaned))
+                CollectionAssert.AreEqual(bytes,cleanData[0].GetVertexData<byte>(1).ToArray());
+            var output=ReverseUvMesh.Copy(cleaned,cleaned.triangles,new[] {Vector2.zero,Vector2.right,Vector2.one,Vector2.one*.1f,Vector2.one*.2f,Vector2.up}); owned.Add(output);
             Assert.AreEqual(format,output.GetVertexAttributeFormat(VertexAttribute.TexCoord0)); Assert.AreEqual(dimension,output.GetVertexAttributeDimension(VertexAttribute.TexCoord0));
             using var data=Mesh.AcquireReadOnlyMeshData(output);
             int stream=output.GetVertexAttributeStream(VertexAttribute.TexCoord0),newStride=output.GetVertexBufferStride(stream),newOffset=output.GetVertexAttributeOffset(VertexAttribute.TexCoord0);
