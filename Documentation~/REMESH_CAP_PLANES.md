@@ -114,3 +114,8 @@ These are Python tests, not Unity EditMode or attribute-channel validation.
 Production Cap remains unimplemented. The next milestone is P3 feature
 completion with source-occupation, conditioning and winding checks, followed
 by patch triangulation and independent geometric/topology audits.
+
+The [incremental follow-up](REMESH_CAP_INCREMENTAL.md) now audits supplied
+planar proposals and re-evaluates neighboring hypotheses after each accepted
+step. It tests continuity, local coverage, exact intersections and rollback;
+it does not infer the missing feature geometry.

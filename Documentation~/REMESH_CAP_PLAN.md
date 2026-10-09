@@ -101,6 +101,14 @@ accepting either. Near-parallel planes or several plausible graph completions
 produce alternatives or an explicit refusal. Right-angle assumptions are a
 box-specific prior, not a global rule.
 
+Complete one planar patch tentatively inside a hypothesis branch, then audit its
+continuous source-fan support, selected/unselected edge coverage and exact
+new/source and new/Cap intersections. Re-extract the changed boundaries and
+plane hypotheses: the added common edge may disambiguate the neighboring patch.
+Never reuse old snapshot-bound loop selections. Roll back the branch if later
+completion fails, rather than treating an earlier locally valid face as proof
+of the intended surface. Preserve the original donor geometry throughout.
+
 Compare candidates using geometric residual, evidence, shape consistency and
 model complexity under fixed budgets. Report the terms; do not publish an
 unvalidated numeric confidence threshold. A best-scoring rejected candidate
@@ -163,6 +171,13 @@ three-plane hypotheses for the missing-corner case. The suite now passes 67/67
 tests. P3 feature reconstruction is next: plane fits alone do not select a valid
 missing surface. Starting at the triangulator would still skip unresolved patch
 structure.
+
+An [incremental transaction probe](REMESH_CAP_INCREMENTAL.md) now validates
+supplied planar candidates and re-analyzes their remaining boundaries. Known
+reference boxes close consistently in both two-face orders and all six
+three-face orders; the full offline suite passes 79/79 tests. This establishes
+the local gate and re-analysis contract, not the missing-feature solver or an
+automatic branch/backtracking implementation. P3/P4 completion remains next.
 
 ## Integration and regression controls
 
