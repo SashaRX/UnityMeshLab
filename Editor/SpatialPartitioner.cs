@@ -218,7 +218,7 @@ namespace SashaRX.UnityMeshLab
 
         // Exact positive-area intersections, including folded neighbours.
         // A shared grid cell is only a broad-phase candidate, not overlap proof.
-        static HashSet<int> DetectOverlap(UvShell shell, Vector2[] uv0, int[] triangles)
+        internal static HashSet<int> DetectOverlap(UvShell shell, Vector2[] uv0, int[] triangles, int comparisonBudget = 2000000)
         {
             var indices = new int[shell.faceIndices.Count * 3];
             int offset = 0;
@@ -226,13 +226,14 @@ namespace SashaRX.UnityMeshLab
                 for (int corner = 0; corner < 3; ++corner) indices[offset++] = triangles[face * 3 + corner];
             var report = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {
                 uv = uv0, indices = indices, charts = new int[uv0.Length]
-            }, System.Threading.CancellationToken.None, comparisonBudget: 2000000, collectConflicts: true);
+            }, System.Threading.CancellationToken.None, comparisonBudget: comparisonBudget, collectConflicts: true);
+            if (!report.complete)
+                throw new System.InvalidOperationException($"Source shell {shell.shellId}: UV overlap scan incomplete (comparison budget {comparisonBudget}). " +
+                    "Partitioning cannot certify this source shell; transfer was stopped before assigning UV2.");
             var overlapping = new HashSet<int>();
             foreach (var pair in report.conflicts) {
                 overlapping.Add(shell.faceIndices[pair.a]); overlapping.Add(shell.faceIndices[pair.b]);
             }
-            if (!report.complete)
-                UvtLog.Warn($"[SpatialPartitioner] Shell {shell.shellId}: UV overlap scan incomplete; using witnessed intersections only.");
             return overlapping;
         }
 

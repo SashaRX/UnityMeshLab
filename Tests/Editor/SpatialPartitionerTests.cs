@@ -6,6 +6,18 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class SpatialPartitionerTests
     {
+        [TestCase(0)] [TestCase(1)]
+        public void IncompleteOverlapScanCannotCertifySourceShell(int budget)
+        {
+            var uv=new[] {Vector2.zero,Vector2.right,Vector2.up};
+            var triangles=new[] {0,1,2,0,1,2,0,1,2,0,1,2};
+            var shell=new UvShell {shellId=9,faceIndices=new List<int> {0,1,2,3}};
+            var saved=(Vector2[])uv.Clone(); var savedIndices=(int[])triangles.Clone();
+            StringAssert.Contains("scan incomplete",Assert.Throws<System.InvalidOperationException>(()=>
+                SpatialPartitioner.DetectOverlap(shell,uv,triangles,budget)).Message);
+            CollectionAssert.AreEqual(saved,uv); CollectionAssert.AreEqual(savedIndices,triangles);
+        }
+
         [Test]
         public void PartitionShells_FoldedFacesSharingVertex_DetectsOverlap()
         {
