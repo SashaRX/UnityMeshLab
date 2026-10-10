@@ -94,6 +94,8 @@ sheets, cancellation, invalid topology and UV strategy quality/packing.
 
 ## Avoiding provably losing packing retries
 
+The counts in this subsection are the historical voxel-1 CafeChair replay.
+
 The saved CafeChair_12 settings use brute-force packing. A narrow result has 754
 charts; the broad 588-chart candidate fails its stricter post-pack stretch bound
 (9.62185 versus 9.3071). The old retry then halves the merge budget to 1079 from
@@ -110,3 +112,28 @@ Existing accepted checkpoints, quality bounds and final strategy choice remain
 unchanged; there is no timing-based cutoff or automatic packing-setting change.
 The public policy control includes the measured CafeChair counts, equal-count
 small-chart improvement and the initial unlimited-budget boundary.
+
+## Roundoff face normals after corrected voxel recovery
+
+Voxel revision 2 exposes three almost-collinear CafeChair triangles after
+Simplify. All three native charting variants give those faces zero UV area.
+The complete atlas scan reports three degenerate faces and thirteen overlapping
+pairs; preserving the certification guard correctly rejects that output.
+
+Surface-fit revision 2 only changes final fitted regularization. When exactly
+one side of a diagonal has triangle quality at most `32 * FLT_EPSILON`, use the
+healthy adjoining face's normal for the existing flip proposal. Source feature
+protection, new-face area/orientation, topology, component and bidirectional
+surface-distance checks still apply. Vertices and triangle count stay fixed.
+Six scale/protected-source controls and thirty existing surface-fit controls
+pass. A protected source edge still prevents the flip; genuine folds retain
+their prior behavior. Simplify and UV cache keys include the surface revision.
+
+On CafeChair this enables four additional audited flips and removes all three
+zero-area UV faces. Existing seam-cut repair then removes twelve overlapping
+pairs, yielding a complete clean 30,128-face / 3,641-island atlas before optional
+chart merging. Mean/worst stretch is 1.03076/12,219.9: finite certification is
+not acceptable unwrap quality for these thin triangles. Full saved-setting
+chart merging remains a separate expensive step; this intermediate atlas is
+not a successful final pipeline assertion. The private replay now saves exact
+Simplify geometry before Unwrap, and refusal messages include scan counters.

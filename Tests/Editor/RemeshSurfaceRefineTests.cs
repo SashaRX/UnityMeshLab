@@ -7,6 +7,33 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public sealed class RemeshSurfaceRefineTests
     {
+        [TestCase(.001f, false)]
+        [TestCase(1f, false)]
+        [TestCase(1000f, false)]
+        [TestCase(.001f, true)]
+        [TestCase(1f, true)]
+        [TestCase(1000f, true)]
+        public void FinalRegularizationRepairsRoundoffNormalWhilePreservingSourceFeatures(float scale, bool protectedSourceEdge)
+        {
+            var p = new[] { Vector3.zero, Vector3.right * scale, new Vector3(.5f, 1e-7f, 0) * scale, Vector3.up * scale };
+            var ix = new[] { 0, 1, 2, 1, 0, 3 };
+            var input = new RemeshNative.IndexedMesh { positions = p, indices = ix };
+            var source = protectedSourceEdge ? new[] { Vector3.zero, Vector3.right * scale, Vector3.up * scale } :
+                new[] { new Vector3(-1,-1,0)*scale, new Vector3(2,-1,0)*scale, new Vector3(2,2,0)*scale, new Vector3(-1,2,0)*scale };
+            var sourceIx = protectedSourceEdge ? new[] { 1, 0, 2 } : new[] { 0, 2, 1, 0, 3, 2 };
+            var result = RemeshSurfaceRefine.RegularizeFitted(input, source, sourceIx, scale * .1f, CancellationToken.None, out var report);
+            if (protectedSourceEdge) {
+                Assert.AreEqual(0, report.flips); Assert.AreSame(input, result);
+                CollectionAssert.AreEqual(p, input.positions); CollectionAssert.AreEqual(ix, input.indices);
+                return;
+            }
+            Assert.Greater(report.flips, 0); Assert.IsFalse(report.reverted);
+            CollectionAssert.AreEqual(p, result.positions); CollectionAssert.AreEqual(new[] { 0, 1, 2, 1, 0, 3 }, input.indices);
+            Assert.AreEqual(ix.Length, result.indices.Length);
+            for (int f = 0; f < result.indices.Length; f += 3)
+                Assert.Greater(RemeshSurfaceRefine.Quality(p[result.indices[f]], p[result.indices[f+1]], p[result.indices[f+2]]), .1f);
+        }
+
         [TestCase(false, 1f)]
         [TestCase(true, 1f)]
         [TestCase(false, .001f)]

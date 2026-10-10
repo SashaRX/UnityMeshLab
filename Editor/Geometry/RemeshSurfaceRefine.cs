@@ -10,7 +10,7 @@ namespace SashaRX.UnityMeshLab
     /// <summary>Fits voxel vertices and chooses source-aligned diagonals before and after decimation.</summary>
     internal static class RemeshSurfaceRefine
     {
-        internal const int Revision = 1;
+        internal const int Revision = 2;
         internal struct Report
         {
             internal int moves, flips, features;
@@ -573,6 +573,15 @@ namespace SashaRX.UnityMeshLab
                 for (int k = 0; k < 3; k++) if (ix[g * 3 + k] != a && ix[g * 3 + k] != b) d = ix[g * 3 + k];
                 if (d < 0 || data.edges.ContainsKey(Key(data.slots[c], data.slots[d]))) continue;
                 var n0 = MeshGeometry.UnitDirection(Cross(p, ix, f)); var n1 = MeshGeometry.UnitDirection(Cross(p, ix, g));
+                // Float32-roundoff faces from native collapse have unreliable normals.
+                // Final regularization can use the healthy adjoining direction;
+                // source feature, new-face, topology and surface audits still apply.
+                if (regularize) {
+                    float q0 = Quality(p[a], p[b], p[c]), q1 = Quality(p[b], p[a], p[d]);
+                    const float roundoffQuality = 3.814697265625e-6f; // 32 * FLT_EPSILON
+                    if (q0 <= roundoffQuality && q1 > roundoffQuality) n0 = n1;
+                    else if (q1 <= roundoffQuality && q0 > roundoffQuality) n1 = n0;
+                }
                 // A decimated organic surface need not be almost planar. Keep
                 // sharp folds, but let the source choose a diagonal on a bend.
                 float normalLimit = sourceAligned ? .75f : .9f;

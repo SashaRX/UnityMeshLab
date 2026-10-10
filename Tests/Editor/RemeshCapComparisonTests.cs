@@ -274,6 +274,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 var trimmed = settings.trimToSource ? RemeshTrim.Trim(voxel, support.positions, support.indices, span / settings.voxelResolution * 2, default).mesh : voxel;
                 var simplified = settings.solve ? RemeshSurfaceRefine.Simplify(trimmed, support.positions, support.indices, settings, default, out _) :
                     RemeshNative.Simplify(trimmed, settings, default, out _);
+                WriteMesh(Path.Combine(manifest.output, capture.name + "__simplified.bin"), simplified.positions, simplified.indices);
                 var uv = RemeshNative.Unwrap(simplified, settings, default);
                 var atlas = UvAtlasDiagnostics.Measure(uv, default); var quality = UvChartQuality.Measure(uv, default);
                 Assert.IsTrue(quality.valid); Assert.IsTrue(atlas.complete);

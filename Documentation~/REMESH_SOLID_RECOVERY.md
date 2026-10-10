@@ -80,7 +80,27 @@ The eighteen disconnected box/thin-plate controls additionally compare every
 component's bounds and center with authored geometry. Centers may deviate by
 at most half a voxel (plus rounding allowance); bounds by one voxel. This
 position check fails on the prior formula, independently of topology validity.
-Native binaries must be rebuilt by CI and loaded after restarting the Editor.
+Native binaries must be rebuilt by CI. Restart if the Editor still binds the
+previous DLL; checking the loaded midpoint coordinates distinguishes it from
+the corrected binary. Both live E/C editors load the CI binary with SHA-256
+`C72835487AD639C2A05624618E9D69C7549DFA11FE696CEB163504C55BF5EB59` and pass
+the centered-cube probe after package/domain reload, without saving their scenes.
+
+Fresh voxel-2/surface-fit-2 Unity controls pass Park/Garbage with Solve off/on:
+
+| Capture | Solve | Simplified faces | UV islands | Mean/worst stretch | Target/source RMS |
+|---|---|---:|---:|---:|---:|
+| Park_Bench_A | Off | 2,926 | 348 | 1.043 / 3.380 | 0.020595 / 0.016042 |
+| Park_Bench_A | On | 2,926 | 79 | 1.099 / 6.071 | 0.011839 / 0.008501 |
+| Garbage_Chute | Off | 68 | 4 | 1.031 / 1.292 | 0.019061 / 0.063717 |
+| Garbage_Chute | On | 68 | 5 | 1.024 / 1.355 | 0.016433 / 0.058543 |
+
+All four UV scans are complete with zero overlaps, degenerates and out-of-bounds
+vertices. Park's Solve-on target RMS improves from 0.040565 to 0.011839, but
+worst UV stretch increases from 3.121 to 6.071. These measure different properties;
+closer geometry does not certify better UV quality. Garbage is unchanged.
+The final regression selection passes 322 tests, zero failures, 16 optional
+private-input skips. Evidence: `_results~/cafe-chair-20261010/revision2-regression/`.
 
 The measurements below are historical revision-1 results; corrected geometry
 can change later Trim, source fitting, Simplify and UV results, so those numbers

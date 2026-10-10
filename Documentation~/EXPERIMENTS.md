@@ -2,6 +2,14 @@
 
 ## Remesh chart merge continuation: fitted thin parts — 2026-10-10
 
+- Continuation after native voxel-2 position correction: three CafeChair
+  roundoff faces produce zero-area UVs under all three charting variants.
+  Surface-fit revision 2 uses the healthy adjoining normal only for final
+  regularization of float-roundoff faces, under existing feature/topology/
+  surface audits. Six scale/protected-edge controls pass. Exact Simplify inputs
+  and rejection counters are retained; clean UV certification still does not
+  imply acceptable stretch (12,219.9 on the intermediate CafeChair repair).
+
 - Same Remesh UV0 chart-merge experiment; baseline `fc62cc8`. Legacy transfer,
   `GroupedShellTransfer`, `XatlasRepack` and `SymmetrySplitShells` are unchanged.
 - Coarse fitting includes long patches next to short cross-section edges and

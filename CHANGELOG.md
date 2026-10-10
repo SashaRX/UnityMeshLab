@@ -38,6 +38,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- Final Remesh regularization can retriangulate float-roundoff faces using a healthy adjoining normal while preserving source features and topology/surface audits; UV refusal reports include exact scan counters and private replays retain the Simplify input.
+
 - Correct the one-voxel offset along each axis in solid occupancy Remesh recovery; authored component center/bounds tests catch misplaced but topologically valid output, and the Remesh revision invalidates cached results.
 - Source-shell UV overlap scans now stop transfer when the comparison budget is exhausted instead of treating a partial conflict set as a certified non-overlapping shell. Covered with zero/one-comparison budget regressions.
 - Partial UV Repack/Transfer retains reverse ancestry and legacy-sidecar export guards on untouched results. Replaced reverse results discard their old derived meshes before clearing provenance; empty or failed Transfer leaves the prior guard intact.
