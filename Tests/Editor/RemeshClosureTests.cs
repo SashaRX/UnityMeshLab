@@ -14,6 +14,80 @@ namespace SashaRX.UnityMeshLab.Tests
         static readonly int[] Faces = {0,2,1,0,3,2,4,5,6,4,6,7,0,1,5,0,5,4,3,7,6,3,6,2,0,4,7,0,7,3,1,2,6,1,6,5};
         static int[] Missing(params int[] missing)=>Faces.Where((v,i)=>!missing.Contains(i/6)).ToArray();
 
+        static (Vector3[],int[]) CurvedPrism(int count = 20)
+        {
+            var p = new Vector3[count * 2 + 1]; var ix = new List<int>();
+            for (int i = 0; i < count; ++i) {
+                float angle = i * 2 * Mathf.PI / count;
+                p[i] = new Vector3(Mathf.Cos(angle),Mathf.Sin(angle),0);
+                p[i+count] = p[i] + Vector3.forward * (1 + .12f * Mathf.Sin(angle * 3));
+                int j = (i+1) % count;
+                ix.AddRange(new[] {i,j,j+count,i,j+count,i+count,count*2,j,i});
+            }
+            return (p,ix.ToArray());
+        }
+
+        [TestCase(false,.125f)] [TestCase(false,1f)] [TestCase(true,8f)]
+        public void SurfaceCapClosesCurvedRimAndPreservesSourceAndSyntheticMask(bool reverse, float scale)
+        {
+            var (p,ix) = CurvedPrism();
+            p = p.Select(v => Quaternion.Euler(23,39,17) * v * scale + new Vector3(3,-2,1)).ToArray();
+            if (reverse) for (int i=0;i<ix.Length;i+=3) (ix[i],ix[i+2]) = (ix[i+2],ix[i]);
+            var points = (Vector3[])p.Clone(); var indices = (int[])ix.Clone();
+            var cap = RemeshPlanarCap.Prepare(p,ix,"all",default,mode:RemeshClosureMode.SurfaceCaps);
+            var repeat = RemeshPlanarCap.Prepare(p,ix,"all",default,mode:RemeshClosureMode.SurfaceCaps);
+            Assert.AreEqual(18,cap.addedFaces); Assert.AreEqual(1,cap.patchEnds.Count);
+            Assert.AreEqual(0,cap.remainingBoundaryEdges);
+            var topology = RemeshTopology.Inspect(cap.positions,cap.indices);
+            Assert.IsTrue(topology.Valid,topology.Description); CollectionAssert.AreEqual(new[] {2},topology.euler);
+            CollectionAssert.AreEqual(points,p); CollectionAssert.AreEqual(indices,ix);
+            CollectionAssert.AreEqual(p,cap.positions); CollectionAssert.AreEqual(ix,cap.indices.Take(ix.Length));
+            CollectionAssert.AreEqual(cap.indices,repeat.indices);
+            Assert.IsTrue(cap.facePatches.Take(ix.Length/3).All(id => id == 0));
+            Assert.IsTrue(cap.facePatches.Skip(ix.Length/3).All(id => id == 1));
+        }
+
+        [Test]
+        public void SurfaceCapBudgetAndCancellationNeverPublishPartialEars()
+        {
+            var (p,ix) = CurvedPrism(); var points = (Vector3[])p.Clone(); var indices = (int[])ix.Clone();
+            var loop = Enumerable.Range(20,20).Reverse().ToList(); int trials = 0;
+            StringAssert.Contains("budget",Assert.Throws<InvalidOperationException>(() =>
+                RemeshSurfaceCap.Generate(p,ix,loop,default,ref trials,out _,maxCandidates:1)).Message);
+            Assert.Throws<OperationCanceledException>(() => RemeshSurfaceCap.Generate(p,ix,loop,
+                new System.Threading.CancellationToken(true),ref trials,out _));
+            CollectionAssert.AreEqual(points,p); CollectionAssert.AreEqual(indices,ix);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void SurfaceCapAuditsObstacleAndCanExcludeAnotherElement(bool elementScoped)
+        {
+            var (p,ix) = CurvedPrism();
+            p = p.Concat(new[] {new Vector3(0,0,.5f),new Vector3(0,0,1.5f),new Vector3(.5f,0,1)}).ToArray();
+            ix = ix.Concat(new[] {41,42,43}).ToArray();
+            var cap = RemeshPlanarCap.Prepare(p,ix,"0",default,mode:RemeshClosureMode.SurfaceCaps,
+                continueOnRefusal:true,elementScopedContacts:elementScoped);
+            Assert.AreEqual(elementScoped ? 18 : 0,cap.addedFaces);
+            Assert.AreEqual(elementScoped ? 0 : 1,cap.loopFailures.Count);
+            Assert.AreEqual(elementScoped ? 3 : 23,cap.remainingBoundaryEdges);
+            CollectionAssert.AreEqual(p,cap.positions); CollectionAssert.AreEqual(ix,cap.indices.Take(ix.Length));
+        }
+
+        [Test]
+        public void SurfaceCapKeepsAnIndependentClosureWhenAnotherRimExceedsItsBudget()
+        {
+            var (large,largeIndices) = CurvedPrism(65); var (small,smallIndices) = CurvedPrism();
+            var p = large.Concat(small.Select(v => v + Vector3.right*4)).ToArray();
+            var ix = largeIndices.Concat(smallIndices.Select(v => v+large.Length)).ToArray();
+            var cap = RemeshPlanarCap.Prepare(p,ix,"all",default,mode:RemeshClosureMode.SurfaceCaps,
+                continueOnRefusal:true,elementScopedContacts:true);
+            Assert.AreEqual(18,cap.addedFaces); Assert.AreEqual(1,cap.patchEnds.Count);
+            Assert.AreEqual(1,cap.loopFailures.Count); Assert.AreEqual(65,cap.remainingBoundaryEdges);
+            StringAssert.Contains("64 edges",cap.loopFailures.Single().Value);
+            Assert.IsTrue(RemeshTopology.Inspect(cap.positions,cap.indices).Valid);
+            CollectionAssert.AreEqual(p,cap.positions); CollectionAssert.AreEqual(ix,cap.indices.Take(ix.Length));
+        }
+
         [TestCase(0,2,4)] [TestCase(0,2,5)] [TestCase(0,3,4)] [TestCase(0,3,5)]
         [TestCase(1,2,4)] [TestCase(1,2,5)] [TestCase(1,3,4)] [TestCase(1,3,5)]
         public void ThreePlaneCornersCloseEachBoxCornerWithoutMovingDonors(int a,int b,int c)

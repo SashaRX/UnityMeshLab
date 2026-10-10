@@ -10,7 +10,7 @@ namespace SashaRX.UnityMeshLab
     /// donor arrays are never mutated. Each closure candidate is accepted atomically.</summary>
     internal static class RemeshPlanarCap
     {
-        internal const int Revision = 10;
+        internal const int Revision = 11;
         const int MaxVertices = 200000, MaxIndices = 1200000, MaxLoopEdges = 512;
         const int MaxPairTrials = 2000000;
 
@@ -175,6 +175,11 @@ namespace SashaRX.UnityMeshLab
                     var candidate = new List<int>(assembled); var stats = new Support { originalFaces = result.originalFaces };
                     if (partner >= 0) {
                         var patch = RemeshBridge.Generate(candidatePositions,candidate.ToArray(),loops[loop],loops[partner],token,ref contactTrials,out int tested, external);
+                        stats.contactTests += tested; candidate.AddRange(patch); stats.patchEnds.Add(candidate.Count / 3);
+                    }
+                    else if (mode == RemeshClosureMode.SurfaceCaps) {
+                        var patch = RemeshSurfaceCap.Generate(candidatePositions, candidate.ToArray(), loops[loop], token,
+                            ref contactTrials, out int tested, external);
                         stats.contactTests += tested; candidate.AddRange(patch); stats.patchEnds.Add(candidate.Count / 3);
                     }
                     else if (localPlanes || mode == RemeshClosureMode.Automatic)

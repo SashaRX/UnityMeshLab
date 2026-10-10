@@ -16,6 +16,59 @@ namespace SashaRX.UnityMeshLab.Tests
         static readonly int[] Faces = { 0,2,1,0,3,2, 4,5,6,4,6,7, 0,1,5,0,5,4, 3,7,6,3,6,2, 0,4,7,0,7,3, 1,2,6,1,6,5 };
         static int[] Missing(params int[] missing) => Faces.Where((v,k) => !missing.Contains(k / 6)).ToArray();
 
+        [TestCase(.01f, RemeshClosureMode.Caps, 7, false)] [TestCase(.1f, RemeshClosureMode.Caps, 4, false)]
+        [TestCase(.01f, RemeshClosureMode.SurfaceCaps, 0, false)] [TestCase(.01f, RemeshClosureMode.SurfaceCaps, 0, true)]
+        public void FrozenUniverColumnReplaysClosureTolerance(float tolerance, RemeshClosureMode mode, int refused, bool solve)
+        {
+            string path = Environment.GetEnvironmentVariable("MESH_LAB_CAP_COLUMN_SOURCE");
+            if (string.IsNullOrEmpty(path)) Assert.Ignore("Set MESH_LAB_CAP_COLUMN_SOURCE to the decoded Univer_Column_C source.bin.");
+            using var reader = new BinaryReader(File.OpenRead(path));
+            int vertices = reader.ReadInt32(), count = reader.ReadInt32();
+            var p = new Vector3[vertices]; var ix = new int[count];
+            for (int i = 0; i < vertices; ++i) p[i] = new Vector3(reader.ReadSingle(),reader.ReadSingle(),reader.ReadSingle());
+            for (int i = 0; i < count; ++i) ix[i] = reader.ReadInt32();
+            var saved = (int[])ix.Clone(); var points = (Vector3[])p.Clone();
+            var cap = RemeshPlanarCap.Prepare(p, ix, "all", default, true, mode, planeTolerance: tolerance,
+                continueOnRefusal: true, elementScopedContacts: true);
+            TestContext.WriteLine($"Univer_Column_C tolerance={tolerance}: " + cap.Description);
+            foreach (var failure in cap.loopFailures) TestContext.WriteLine($"Loop {failure.Key}: {failure.Value}");
+            CollectionAssert.AreEqual(saved,ix); CollectionAssert.AreEqual(points,p);
+            for (int i = 0; i < ix.Length; ++i) Assert.AreEqual(p[ix[i]],cap.positions[cap.indices[i]]);
+            var topology = RemeshTopology.Inspect(cap.positions,cap.indices);
+            Assert.IsTrue(topology.Valid,topology.Description);
+            Assert.AreEqual(refused,cap.loopFailures.Count,cap.Description);
+            if (refused != 0) return;
+            Assert.AreEqual(0,cap.remainingBoundaryEdges); Assert.AreEqual(180,cap.addedFaces);
+            Assert.AreEqual(10,cap.patchEnds.Count);
+            Assert.IsTrue(cap.facePatches.Take(ix.Length/3).All(id => id == 0));
+            Assert.IsTrue(cap.facePatches.Skip(ix.Length/3).All(id => id > 0));
+            var settings = new RemeshSettings {voxelResolution = 64, solve = solve, maximumError = .02f,
+                pruneSmallParts = true, normalCrease = 133, normalSmoothing = 3,
+                normalWeighting = RemeshNormalWeighting.FaceAreaAndCornerAngle,
+                textureResolution = 512, padding = 3, mergeCharts = true};
+            var voxel = RemeshNative.VoxelizeCaptured(cap.positions,cap.indices,settings,default,
+                "Univer_Column_C replay",p,ix,cap);
+            var raw = RemeshTopology.Inspect(voxel.positions,voxel.indices);
+            Assert.IsTrue(raw.Valid,raw.Description); Assert.AreEqual(0,raw.boundary.Count);
+            var low = p[0]; var high = p[0];
+            foreach (var point in p) {low = Vector3.Min(low,point);high = Vector3.Max(high,point);}
+            var extent = high-low;
+            float cell = Mathf.Max(extent.x,Mathf.Max(extent.y,extent.z))/settings.voxelResolution;
+            var trimmed = RemeshTrim.Trim(voxel,cap.positions,cap.indices,cell*2f,default);
+            Assert.AreEqual(0,trimmed.removed);
+            var simplified = solve ? RemeshSurfaceRefine.Simplify(trimmed.mesh,cap.positions,cap.indices,settings,default,out _)
+                : RemeshNative.Simplify(trimmed.mesh,settings,default,out _);
+            var after = RemeshTopology.Inspect(simplified.positions,simplified.indices);
+            Assert.IsTrue(after.Valid,after.Description); Assert.AreEqual(0,after.boundary.Count);
+            var uv = RemeshNative.Unwrap(simplified,settings,default);
+            var quality = UvChartQuality.Measure(uv,default); var atlas = UvAtlasDiagnostics.Measure(uv,default);
+            Assert.IsTrue(quality.valid); Assert.IsTrue(atlas.complete);
+            Assert.AreEqual(0,atlas.pairs); Assert.AreEqual(0,atlas.degenerateFaces);
+            CollectionAssert.AreEqual(saved,ix); CollectionAssert.AreEqual(points,p);
+            TestContext.WriteLine($"Univer_Column_C solve={solve}: raw {voxel.TriangleCount}, simplified {simplified.TriangleCount}, " +
+                $"charts {uv.chartCount}; UV stretch mean {quality.meanStretch:G6}, max {quality.maxStretch:G6}");
+        }
+
         [TestCase(false, 1f)] [TestCase(true, 1f)] [TestCase(false, .125f)] [TestCase(false, 8f)]
         public void BowedFrontRimClosesAfterAPlanarUndersideWithoutMovingSource(bool reverse, float scale)
         {

@@ -2,7 +2,7 @@ using System;
 
 namespace SashaRX.UnityMeshLab
 {
-    public enum RemeshClosureMode { Caps, Bridge, Automatic }
+    public enum RemeshClosureMode { Caps, Bridge, Automatic, SurfaceCaps }
     /// <summary>Where the result mesh gets hard (split) normals.</summary>
     public enum RemeshHardEdges
     {

@@ -399,3 +399,50 @@ Local validation: 337 EditMode tests passed, no failures; 18 tests requiring
 other private inputs or external prerequisites were ignored. Both C# compile
 variants (FBX exporter defined/undefined) passed. The independent Python Cap
 geometry benchmark passed all 115 tests.
+
+## Curved source rims: explicit Surface Caps (2026-10-10)
+
+The private `Univer_Column_C` capture has 2943 source vertices and 2142 faces.
+Exact position welding leaves 1181 vertices and ten boundary loops with 13 to
+24 edges. Four ornamental contours depart from their best-fit plane by about
+0.10 source-local units. These are curved rims, rather than nearly planar box
+faces. Replaying the captured `0.1` tolerance reproduces four refused loops;
+the requested `0.01` minimum leaves seven refused loops. Increasing the planar
+tolerance does not establish a unique missing feature surface.
+
+Cap revision 11 adds an explicit `Surface Caps` closure mode. It appends to the
+serialized enum without renumbering the existing Caps, Bridge or Automatic
+values. Planar/local Cap and automatic collar pairing retain their behavior.
+Surface Caps fills each selected rim as a disk by searching 3D ears, with fixed
+rim vertices and source winding. Triangle shape and continuity with adjacent
+donor/accepted Cap normals rank candidates. They cannot bypass acceptance:
+every ear and the complete patch pass welded topology, remaining-boundary
+conservation and exact contact audits within the affected element. Contacts
+with other elements remain non-blocking. A curved disk is an explicit closure
+choice; it does not infer that two torus rims should be independently capped.
+
+The search accepts rims of 3 to 64 edges and has a 4096-candidate limit plus
+the existing exact-contact work limit and cancellation. Backtracking keeps
+candidate faces and contact statistics private. Refusal exports no partial
+ears, preserves source donors and retains independent successful closures.
+Accepted disks keep separate synthetic patch IDs for the existing Cap/Bridge
+preview and projected removal masks. Prepared snapshots include revision 11.
+
+The column closes all ten contours with 180 added triangles, zero refusals and
+zero remaining boundary edges. Original source arrays and every source corner
+are preserved. Native Remesh at 64 produces 5344 triangles. Trim removes zero
+faces; Simplify produces 86 triangles with Solve off and 88 with Solve on.
+Both results are closed and topologically valid. Final UV has three/four charts
+respectively, no overlap pairs, no degenerate faces and no out-of-bounds UVs.
+Mean/max UV stretch is 1.05538/1.66253 off and 1.01886/1.22499 on. This verifies
+closure through native UV, not material baking.
+
+Public regression fixtures cover a warped 20-edge prism under transforms,
+scale and reversed winding; deterministic output; unchanged source prefix and
+synthetic masks; cancellation and candidate limits; contacts with another
+element; and preserving a valid closure beside a refused oversized rim. The
+private column replay also freezes the two planar-tolerance refusal baselines.
+
+Local validation: 350 EditMode tests passed, zero failures; 18 unrelated private
+input/external prerequisite tests were ignored. Both C# compile variants passed;
+the independent Python Cap benchmark passed all 115 tests.
