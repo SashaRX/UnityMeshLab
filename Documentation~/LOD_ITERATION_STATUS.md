@@ -8,6 +8,26 @@ Native-constraint experiment verification: **183 selected EditMode tests passed*
 
 ## Implemented
 
+### New model validation: university and apartment benches
+
+[The vertex-color generalization check](LOD_VERTEX_COLOR_BENCHES.md) runs the
+current generator on the actual university bench Pot and an additional
+SmallBench with varying RGB/alpha and two material slots. LOD2 reaches
+**74/673 and 77/708 triangles**, with 71/125 render vertices. Fifty-seven selected
+EditMode tests pass and both FBX compile configurations pass, with fresh source,
+author and generated GPU controls across fourteen color views per model.
+This is test/reporting work; production algorithms are unchanged.
+
+The isolated-pair diagonal correction makes no changes on these shared-corner
+meshes. University mean GPU RGBA and coverage improve against its 114-triangle
+author LOD2, but its weakest top-view color is worse. SmallBench loses thin
+frame parts and has large RGB/alpha drift against its 144-triangle author LOD2
+(worst RGBA 0.02870 -> 0.15575; worst alpha 0.03021 -> 0.18464).
+Both CPU paint guides fail, and both protected LOD1 budgets are missed. Shared
+vertex/material support, weak-view GPU validation and SmallBench frame retention
+now take priority over additional tent-only tuning. Source hashes, limitations,
+actual model images and graphs are retained in the linked check.
+
 ### Current: far paint diagonals and shared UV2 (2026-10-10)
 
 The far Screen Budget path now tries local diagonal changes on isolated,
@@ -342,7 +362,14 @@ The overview/chart retain the final capture lineage above; their LOD2 fields/cou
 
 ## Next iteration, in order
 
-Priority after the partial paint-diagonal correction: allocate coarse tent
+Priority after the real-bench generalization check: preserve SmallBench's thin
+frame and source RGB/alpha at approximately 1/9, and support patch correction
+with shared render corners/material-separated meshes. Validate the weak
+fourteen-view GPU cases before accepting improvements from the CPU guide.
+Retain the university/top-view and author LOD2 controls; diagnose the new
+protected LOD1 budget failures separately.
+
+Then, after the partial paint-diagonal correction, allocate coarse tent
 patches along the remaining violet/blue paint regions at the same 1/9
 budget, retained render-vertex limit and 64px footprint. A single moved roof
 control point has already failed the silhouette check; compare coordinated patch

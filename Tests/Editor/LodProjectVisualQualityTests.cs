@@ -18,7 +18,7 @@ namespace SashaRX.UnityMeshLab.Tests
     {
         [Serializable] public sealed class Case
         {
-            public string name, asset, sourcePath, sourceSha256, albedo;
+            public string name, asset, sourcePath, sourceSha256, albedo, meshName;
             public Vector3 rotation;
         }
         [Serializable] public sealed class Dataset { public Case[] cases; }
@@ -71,8 +71,11 @@ namespace SashaRX.UnityMeshLab.Tests
             var importer = AssetImporter.GetAtPath(model.asset) as ModelImporter;
             Assert.That(importer, Is.Not.Null, model.asset);
             if (!importer.isReadable) { importer.isReadable = true; importer.SaveAndReimport(); }
-            var source = AssetDatabase.LoadAllAssetsAtPath(model.asset).OfType<Mesh>()
-                .Where(m => !m.name.Contains("_COL") && !System.Text.RegularExpressions.Regex.IsMatch(m.name, @"_LOD[1-9]"))
+            var importedMeshes = AssetDatabase.LoadAllAssetsAtPath(model.asset).OfType<Mesh>().ToArray();
+            var source = importedMeshes
+                .Where(m => string.IsNullOrEmpty(model.meshName)
+                    ? !m.name.Contains("_COL") && !System.Text.RegularExpressions.Regex.IsMatch(m.name, @"_LOD[1-9]")
+                    : m.name == model.meshName)
                 .OrderByDescending(LodMeshData.TriangleCount).FirstOrDefault();
             Assert.That(source, Is.Not.Null, model.asset);
             var report = new Report { fixture = model.name, sourcePath = model.sourcePath, sourceSha256 = actualHash, importedAsset = model.asset,
@@ -144,6 +147,15 @@ namespace SashaRX.UnityMeshLab.Tests
             var generated = new List<Mesh>();
             var variants = new List<(string name, Mesh mesh, LodPipelineOps.LodInfo info, double ms)>
                 { ("source",source,default,0) };
+            if (argsHave("-meshlabLodAuthored"))
+            {
+                string key=UvToolContext.ExtractGroupKey(source.name);
+                foreach (int level in new[] { 1,2 })
+                {
+                    var authored=importedMeshes.SingleOrDefault(m => m.name==key+"_LOD"+level);
+                    if (authored) variants.Add(("authored-lod"+level,authored,default,0));
+                }
+            }
             try
             {
                 bool partsOnly = Environment.GetCommandLineArgs().Contains("-meshlabLodSmallParts");
@@ -259,6 +271,8 @@ namespace SashaRX.UnityMeshLab.Tests
                         capture.triangles = LodMeshData.TriangleCount(variant.mesh);
                         capture.targetRatio = variant.name == "source" ? 1 : variant.info.targetRatio;
                         capture.targetTriangles = variant.name == "source" ? report.sourceTriangles : variant.info.targetTris;
+                        if (variant.name.StartsWith("authored-"))
+                            capture.targetTriangles = (int)Math.Ceiling(report.sourceTriangles/(variant.name.EndsWith("1") ? 3.0 : 9.0));
                         capture.budgetReached = capture.triangles <= capture.targetTriangles;
                         capture.selectedCandidate = variant.info.selectedCandidate; capture.candidateCount = variant.info.evaluatedCandidates;
                         capture.removedLoops = variant.info.removedLoops; capture.simplifyMs = variant.ms;
@@ -347,6 +361,28 @@ namespace SashaRX.UnityMeshLab.Tests
                     foreach (var variant in variants.Where(v => v.name == "source" || v.name == "far-lod2"))
                         foreach (var mode in new[] { RenderMode.Colors,RenderMode.Coverage })
                             LodVisualQualityTests.Save(model.name,variant.name,"paint-surface",mode == RenderMode.Colors ? "color" : "coverage",renderer.Draw(variant.mesh,mode,opposite));
+                }
+                if (argsHave("-meshlabLodAllColorViews"))
+                {
+                    renderer.SetView("front");
+                    var directions=new[] { Vector3.right,Vector3.up,Vector3.forward,
+                        new Vector3(1,1,1),new Vector3(1,2,-1),new Vector3(-2,1,1) };
+                    int viewIndex=0;
+                    foreach (var direction in directions.Concat(directions.Select(d => -d)))
+                    {
+                        var normal=direction.normalized;
+                        var horizontal=Vector3.Cross(normal,Mathf.Abs(normal.y)>.9f ? Vector3.forward : Vector3.up).normalized;
+                        var vertical=Vector3.Cross(horizontal,normal).normalized;
+                        var rotation=Matrix4x4.identity;
+                        rotation.SetRow(0,horizontal); rotation.SetRow(1,vertical); rotation.SetRow(2,-normal);
+                        var fieldMatrix=rotation*Matrix4x4.Scale(Vector3.one*scale)*Matrix4x4.Translate(-source.bounds.center);
+                        foreach (var variant in variants.Where(v => v.name=="source" || v.name=="authored-lod2" || v.name=="far-lod2"))
+                            foreach (var mode in new[] { RenderMode.Colors,RenderMode.Coverage,RenderMode.Wire })
+                                LodVisualQualityTests.Save(model.name,variant.name,"field"+viewIndex,
+                                    mode==RenderMode.Colors ? "color" : mode==RenderMode.Coverage ? "coverage" : "wire",
+                                    renderer.Draw(variant.mesh,mode,fieldMatrix));
+                        viewIndex++;
+                    }
                 }
                 LodSharedLightmapChecks.Evaluate(model.asset,source,variants,matrix);
                 if (argsHave("-meshlabLodPaintDiagnostics"))
