@@ -10,6 +10,7 @@ using System.Collections.Generic;
 using Autodesk.Fbx;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.Rendering;
 #endif
 
 namespace SashaRX.UnityMeshLab.Tests
@@ -86,6 +87,22 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(result.cornerToVertex.All(v => v == -1));
         }
 
+        [Test]
+        public void PolygonSplit_UsesAuditedImportTrianglesAndKeepsNeighbour()
+        {
+            var plan = FbxPolygonSplit.Plan(new[] { 4, 5 }, new[] { true, false, true, false, false, false, false, false, false },
+                new[] { 0, 2, 1, 0, 3, 2, 4, 6, 5, 4, 7, 6, 4, 8, 7 });
+            CollectionAssert.AreEqual(new[] { 3, 3, 5 }, plan.sizes);
+            CollectionAssert.AreEqual(new[] { 0, 1, 2, 0, 2, 3, 4, 5, 6, 7, 8 }, plan.corners);
+            CollectionAssert.AreEqual(new[] { 0, 0, 1 }, plan.polygons);
+            Assert.AreEqual(1, plan.splitCount);
+        }
+
+        [TestCase(new[] { 0, 2, 1 })]
+        [TestCase(new[] { 0, 2, 1, 0, 2, 1 })]
+        public void PolygonSplit_RefusesIncompleteOrDuplicateTriangulation(int[] triangles)
+            => Assert.Throws<InvalidOperationException>(() => FbxPolygonSplit.Plan(new[] { 4 }, new[] { true, false, true, false }, triangles));
+
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
         string folder;
 
@@ -96,7 +113,7 @@ namespace SashaRX.UnityMeshLab.Tests
         public void TearDown() { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
 
         // A quad and a pentagon sharing an edge, UV0 per corner with a seam, colours per corner at full precision.
-        string WriteSource(bool binary)
+        string WriteSource(bool binary, string version = "FBX201400")
         {
             string path = Path.Combine(folder, "source.fbx");
             using var manager = FbxManager.Create();
@@ -133,8 +150,227 @@ namespace SashaRX.UnityMeshLab.Tests
             mesh.GetLayer(0).SetVertexColors(colors);
             using var exporter = FbxExporter.Create(manager, "Write");
             int format = manager.GetIOPluginRegistry().FindWriterIDByDescription(binary ? "FBX binary (*.fbx)" : "FBX ascii (*.fbx)");
-            Assert.IsTrue(exporter.Initialize(path, format, io) && exporter.SetFileExportVersion("FBX201400") && exporter.Export(scene));
+            Assert.IsTrue(exporter.Initialize(path, format, io) && exporter.SetFileExportVersion(version) && exporter.Export(scene));
             return path;
+        }
+
+        [TestCase(true, FbxExportIntent.UV1)]
+        [TestCase(false, FbxExportIntent.UV1)]
+        [TestCase(true, FbxExportIntent.VertexColors)]
+        [TestCase(true, FbxExportIntent.Normals)]
+        [TestCase(true, FbxExportIntent.UV1 | FbxExportIntent.VertexColors | FbxExportIntent.Normals)]
+        public void ChannelWrite_SplitsOnlyThePolygonWithANewInternalSeam(bool binary, FbxExportIntent intent)
+        {
+            string assetFolder = "Assets/MeshLabPolygonSeam_" + Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", assetFolder.Substring("Assets/".Length));
+            string sourcePath = assetFolder + "/source.fbx";
+            Mesh working = null;
+            try
+            {
+                File.WriteAllBytes(sourcePath, File.ReadAllBytes(WriteSource(binary)));
+                AssetDatabase.ImportAsset(sourcePath, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(sourcePath);
+                importer.isReadable = true;
+                importer.keepQuads = false;
+                importer.generateSecondaryUV = false;
+                importer.meshCompression = ModelImporterMeshCompression.Off;
+                importer.SaveAndReimport();
+                var imported = AssetDatabase.LoadAllAssetsAtPath(sourcePath).OfType<Mesh>().Single();
+                working = MakeTriangleSeams(imported, intent, onlyQuad: true);
+                byte[] before = File.ReadAllBytes(sourcePath), metadata = File.ReadAllBytes(sourcePath + ".meta");
+                string output = Path.Combine(folder, "seam.fbx");
+                Assert.IsTrue(FbxChannelWrite.Write(sourcePath,
+                    new[] { new MeshEntry { fbxMesh = imported, originalMesh = working } }, intent, output, null));
+                CollectionAssert.AreEqual(before, File.ReadAllBytes(sourcePath));
+                CollectionAssert.AreEqual(metadata, File.ReadAllBytes(sourcePath + ".meta"));
+                using var source = FbxSourceDocument.Load(Path.GetFullPath(sourcePath));
+                using var result = FbxSourceDocument.Load(output);
+                Assert.AreEqual((source.Binary, source.Major, source.Minor), (result.Binary, result.Major, result.Minor));
+                var a = source.Meshes.Single(); var b = result.Meshes.Single();
+                CollectionAssert.AreEqual(FbxStructureEdit.ControlPoints(a), FbxStructureEdit.ControlPoints(b));
+                var original = new FbxLayerChannels.Topology(a); var split = new FbxLayerChannels.Topology(b);
+                CollectionAssert.AreEqual(new[] { 3, 3, 5 }, split.polygonSizes);
+                CollectionAssert.AreEqual(original.cornerControlPoint.Skip(4), split.cornerControlPoint.Skip(6));
+                var oldUv = FbxLayerChannels.ReadUv(FbxLayerChannels.UvElements(a)[0], original);
+                var newUv = FbxLayerChannels.ReadUv(FbxLayerChannels.UvElements(b)[0], split);
+                var oldColor = FbxLayerChannels.ReadColor(FbxLayerChannels.ColorElement(a), original);
+                var newColor = FbxLayerChannels.ReadColor(FbxLayerChannels.ColorElement(b), split);
+                for (int c = 0; c < split.CornerCount; c++)
+                {
+                    int oldCorner = c < 6 ? Array.IndexOf(original.cornerControlPoint, split.cornerControlPoint[c], 0, 4) : c - 2;
+                    Assert.AreEqual(oldUv[oldCorner * 2], newUv[c * 2]);
+                    Assert.AreEqual(oldUv[oldCorner * 2 + 1], newUv[c * 2 + 1]);
+                    if ((intent & FbxExportIntent.VertexColors) == 0)
+                        for (int k = 0; k < 4; k++) Assert.AreEqual(oldColor[oldCorner * 4 + k], newColor[c * 4 + k]);
+                }
+                AssertWrittenSeams(b, split, working, intent);
+            }
+            finally
+            {
+                if (working != null) UnityEngine.Object.DestroyImmediate(working);
+                AssetDatabase.DeleteAsset(assetFolder);
+            }
+        }
+
+        static Mesh MakeTriangleSeams(Mesh imported, FbxExportIntent intent, bool onlyQuad)
+        {
+            int[] vertices = Enumerable.Range(0, imported.subMeshCount).SelectMany(imported.GetTriangles).ToArray();
+            var originalPositions = imported.vertices; var originalNormals = imported.normals;
+            var originalTangents = imported.tangents; var originalColors = imported.colors; var originalUvs = imported.uv;
+            var working = new Mesh { name = imported.name, indexFormat = IndexFormat.UInt32 };
+            working.vertices = vertices.Select(v => originalPositions[v]).ToArray();
+            for (int channel = 0; channel < 8; channel++)
+            {
+                var uv = new List<Vector4>(); imported.GetUVs(channel, uv);
+                if (uv.Count > 0) working.SetUVs(channel, vertices.Select(v => uv[v]).ToList());
+            }
+            if (originalNormals.Length > 0) working.normals = vertices.Select(v => originalNormals[v]).ToArray();
+            if (originalTangents.Length > 0) working.tangents = vertices.Select(v => originalTangents[v]).ToArray();
+            if (originalColors.Length > 0) working.colors = vertices.Select(v => originalColors[v]).ToArray();
+            var uvs = vertices.Select(v => originalUvs[v] * .4f).ToArray();
+            var colors = working.colors;
+            var normals = working.normals;
+            int quad = 0;
+            for (int t = 0; t < vertices.Length; t += 3)
+            {
+                bool selected = !onlyQuad || Enumerable.Range(t, 3).All(c => originalUvs[vertices[c]].x < .35f);
+                if (!selected) continue;
+                float delta = .13f * ++quad;
+                for (int k = 0; k < 3; k++)
+                {
+                    uvs[t + k] += new Vector2(delta, delta);
+                    if (colors.Length > 0 && (intent & FbxExportIntent.VertexColors) != 0) colors[t + k] = new Color(delta, .2f, .3f, 1f);
+                    if (normals.Length > 0 && (intent & FbxExportIntent.Normals) != 0) normals[t + k] = new Vector3(delta, .2f, -1f).normalized;
+                }
+            }
+            if (intent.IncludesUv(1)) working.uv2 = uvs;
+            if ((intent & FbxExportIntent.VertexColors) != 0) working.colors = colors;
+            if ((intent & FbxExportIntent.Normals) != 0) working.normals = normals;
+            working.subMeshCount = imported.subMeshCount;
+            for (int s = 0, offset = 0; s < imported.subMeshCount; s++)
+            {
+                int count = imported.GetTriangles(s).Length;
+                working.SetTriangles(Enumerable.Range(offset, count).ToArray(), s); offset += count;
+            }
+            return working;
+        }
+
+        [Test]
+        public void ChannelWrite_RealKamazRoundTripPreservesTriangleUvSeamsAndSource()
+        {
+            string fixture = Environment.GetEnvironmentVariable("MESHLAB_FBX_KAMAZ");
+            if (string.IsNullOrEmpty(fixture)) Assert.Ignore("Set MESHLAB_FBX_KAMAZ to the original FBX for the real-model regression.");
+            byte[] original = File.ReadAllBytes(fixture);
+            byte[] metadata = File.Exists(fixture + ".meta") ? File.ReadAllBytes(fixture + ".meta") : null;
+            string assetFolder = "Assets/MeshLabKamazSeams_" + Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", assetFolder.Substring("Assets/".Length));
+            string sourcePath = assetFolder + "/source.fbx", outputPath = assetFolder + "/result.fbx";
+            Mesh working = null;
+            try
+            {
+                File.WriteAllBytes(sourcePath, original);
+                AssetDatabase.ImportAsset(sourcePath, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(sourcePath);
+                importer.isReadable = true; importer.keepQuads = false;
+                importer.generateSecondaryUV = false; importer.meshCompression = ModelImporterMeshCompression.Off;
+                importer.SaveAndReimport();
+                var imported = AssetDatabase.LoadAllAssetsAtPath(sourcePath).OfType<Mesh>().Single(m => m.name == "Kamaz_Typhoon_LOD0");
+                working = MakeTriangleSeams(imported, FbxExportIntent.UV1, onlyQuad: false);
+                var tags = FbxChannelWrite.ImportTagged(sourcePath, false, out _);
+                Assert.IsTrue(FbxChannelWrite.Write(sourcePath,
+                    new[] { new MeshEntry { fbxMesh = imported, originalMesh = working } }, FbxExportIntent.UV1, outputPath, null));
+                using var source = FbxSourceDocument.Load(Path.GetFullPath(sourcePath));
+                using var result = FbxSourceDocument.Load(Path.GetFullPath(outputPath));
+                Assert.AreEqual(source.Meshes.Count, result.Meshes.Count);
+                for (int m = 0; m < source.Meshes.Count; m++)
+                {
+                    var a = source.Meshes[m]; var b = result.Meshes[m];
+                    Assert.AreEqual(a.GetName(), b.GetName());
+                    CollectionAssert.AreEqual(FbxStructureEdit.ControlPoints(a), FbxStructureEdit.ControlPoints(b));
+                    var ta = new FbxLayerChannels.Topology(a); var tb = new FbxLayerChannels.Topology(b);
+                    FbxPolygonSplit plan = a.GetName() == "Kamaz_Typhoon_LOD0"
+                        ? FbxPolygonSplit.Plan(ta.polygonSizes, Enumerable.Repeat(true, ta.CornerCount).ToArray(), tags[imported.name].TriangleCorners()) : null;
+                    AssertUntouchedLayers(a, ta, b, tb, plan);
+                    if (a.GetName() != "Kamaz_Typhoon_LOD0")
+                    {
+                        CollectionAssert.AreEqual(ta.polygonSizes, tb.polygonSizes);
+                        CollectionAssert.AreEqual(ta.cornerControlPoint, tb.cornerControlPoint);
+                    }
+                }
+                var restored = AssetDatabase.LoadAllAssetsAtPath(outputPath).OfType<Mesh>().Single(m => m.name == imported.name);
+                CollectionAssert.AreEqual(TriangleUvRecords(working), TriangleUvRecords(restored));
+                TestContext.WriteLine($"Kamaz LOD0: {working.vertexCount / 3} triangles round-tripped with independent UV1 per triangle.");
+                CollectionAssert.AreEqual(original, File.ReadAllBytes(sourcePath));
+                CollectionAssert.AreEqual(original, File.ReadAllBytes(fixture));
+                if (metadata != null) CollectionAssert.AreEqual(metadata, File.ReadAllBytes(fixture + ".meta"));
+            }
+            finally
+            {
+                if (working != null) UnityEngine.Object.DestroyImmediate(working);
+                AssetDatabase.DeleteAsset(assetFolder);
+            }
+        }
+
+        static string[] TriangleUvRecords(Mesh mesh)
+        {
+            var positions = mesh.vertices; var uv0 = mesh.uv; var uv1 = mesh.uv2;
+            return Enumerable.Range(0, mesh.subMeshCount).SelectMany(mesh.GetTriangles).Select(v =>
+                string.Join("/", new[] { positions[v].x, positions[v].y, positions[v].z, uv0[v].x, uv0[v].y, uv1[v].x, uv1[v].y }
+                    .Select(value => BitConverter.SingleToInt32Bits(value).ToString("X8")))).OrderBy(record => record, StringComparer.Ordinal).ToArray();
+        }
+
+        static void AssertUntouchedLayers(FbxMesh source, FbxLayerChannels.Topology original, FbxMesh written,
+            FbxLayerChannels.Topology result, FbxPolygonSplit plan)
+        {
+            void Same(double[] before, double[] after, int stride)
+                => CollectionAssert.AreEqual(plan == null ? before : plan.Expand(before, stride), after);
+            double[] Vectors(FbxLayerElementTemplateFbxVector4 element, FbxLayerChannels.Topology topology)
+                => element == null ? null : FbxLayerChannels.ReadVectors(element, topology);
+            var oldUv = FbxLayerChannels.UvElements(source); var newUv = FbxLayerChannels.UvElements(written);
+            for (int ch = 0; ch < oldUv.Count; ch++)
+                if (plan == null || ch != 1) Same(FbxLayerChannels.ReadUv(oldUv[ch], original), FbxLayerChannels.ReadUv(newUv[ch], result), 2);
+            Same(FbxLayerChannels.ReadColor(FbxLayerChannels.ColorElement(source), original), FbxLayerChannels.ReadColor(FbxLayerChannels.ColorElement(written), result), 4);
+            Same(Vectors(FbxLayerChannels.NormalElement(source), original), Vectors(FbxLayerChannels.NormalElement(written), result), 3);
+            Same(Vectors(FbxLayerChannels.TangentElement(source), original), Vectors(FbxLayerChannels.TangentElement(written), result), 3);
+            Same(Vectors(FbxLayerChannels.BinormalElement(source), original), Vectors(FbxLayerChannels.BinormalElement(written), result), 3);
+            var materials = FbxStructureEdit.PolygonMaterials(source);
+            CollectionAssert.AreEqual(plan == null ? materials : plan.polygons.Select(p => materials[p]), FbxStructureEdit.PolygonMaterials(written));
+        }
+
+        [Test]
+        public void PolygonSplit_Binary75KeepsUnchangedChannelsAndControlPoints()
+        {
+            using var source = FbxSourceDocument.Load(WriteSource(true, "FBX201800"));
+            using var result = FbxSourceDocument.Load(WriteSource(true, "FBX201800"));
+            var original = new FbxLayerChannels.Topology(source.Meshes.Single());
+            var plan = FbxPolygonSplit.Plan(original.polygonSizes,
+                new[] { true, false, true, false, false, false, false, false, false }, new[] { 0, 2, 1, 0, 3, 2 });
+            result.SplitPolygons(new Dictionary<string, FbxPolygonSplit> { { result.Meshes.Single().GetName(), plan } });
+            string path = Path.Combine(folder, "split75.fbx"); result.Save(path);
+            using var reloaded = FbxSourceDocument.Load(path);
+            Assert.AreEqual((7, 5), (reloaded.Major, reloaded.Minor));
+            var mesh = reloaded.Meshes.Single(); var topology = new FbxLayerChannels.Topology(mesh);
+            CollectionAssert.AreEqual(new[] { 3, 3, 5 }, topology.polygonSizes);
+            CollectionAssert.AreEqual(FbxStructureEdit.ControlPoints(source.Meshes.Single()), FbxStructureEdit.ControlPoints(mesh));
+            AssertUntouchedLayers(source.Meshes.Single(), original, mesh, topology, plan);
+        }
+
+        static void AssertWrittenSeams(FbxMesh mesh, FbxLayerChannels.Topology topology, Mesh working, FbxExportIntent intent)
+        {
+            double[] values = intent.IncludesUv(1)
+                ? FbxLayerChannels.ReadUv(FbxLayerChannels.UvElements(mesh)[1], topology)
+                : intent == FbxExportIntent.VertexColors
+                    ? FbxLayerChannels.ReadColor(FbxLayerChannels.ColorElement(mesh), topology)
+                    : FbxLayerChannels.ReadVectors(FbxLayerChannels.NormalElement(mesh), topology);
+            int stride = intent.IncludesUv(1) ? 2 : intent == FbxExportIntent.VertexColors ? 4 : 3;
+            // Both triangles must retain distinct values at the two shared control points.
+            foreach (int point in topology.cornerControlPoint.Take(3).Intersect(topology.cornerControlPoint.Skip(3).Take(3)))
+            {
+                int a = Array.IndexOf(topology.cornerControlPoint, point, 0, 3);
+                int b = Array.IndexOf(topology.cornerControlPoint, point, 3, 3);
+                Assert.AreNotEqual(values[a * stride], values[b * stride], $"seam at control point {point}");
+            }
+            Assert.Greater(working.vertexCount, mesh.GetControlPointsCount());
         }
 
         [TestCase(ModelImporterMeshCompression.Off)]

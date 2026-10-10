@@ -1,8 +1,8 @@
 // FbxDocumentEdit.cs — edits an FBX file in place through the FBX SDK: load the
 // document, change one layer element of one mesh, save it back in the container
-// format and version it came in. Polygons, control points, smoothing, materials,
-// the other layer elements, nodes and properties are never rebuilt, so they come
-// through as the source file has them (n-gons stay n-gons, no vertex splitting).
+// format and version it came in. Only polygons with new internal value seams are
+// split; their layers are remapped through a binary scratch document. Control points,
+// materials, nodes, properties and unaffected polygons are preserved.
 //
 // No UnityEngine types: the Unity side (which corner gets which value) is
 // FbxCornerMatch and FbxExport.WriteChannels.
@@ -28,7 +28,7 @@ namespace SashaRX.UnityMeshLab
 
         readonly string scratch;
         public readonly FbxManager Manager;
-        public readonly FbxScene Scene;
+        public FbxScene Scene { get; private set; }
         public readonly bool Binary;
         public readonly int Major, Minor;
         public readonly bool EmbedsMedia;
@@ -103,10 +103,13 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>Writes the document to <paramref name="path"/> in the source's container format and version.</summary>
         public void Save(string path)
+            => Save(path, Binary);
+
+        void Save(string path, bool binary)
         {
             var io = Manager.GetIOSettings();
             io.SetBoolProp(Globals.EXP_FBX_EMBEDDED, EmbedsMedia);
-            int format = Manager.GetIOPluginRegistry().FindWriterIDByDescription(Binary ? "FBX binary (*.fbx)" : "FBX ascii (*.fbx)");
+            int format = Manager.GetIOPluginRegistry().FindWriterIDByDescription(binary ? "FBX binary (*.fbx)" : "FBX ascii (*.fbx)");
             if (format < 0) throw new IOException("FBX SDK has no writer for the source format.");
             using var exporter = FbxExporter.Create(Manager, "MeshLabExport");
             if (!exporter.Initialize(path, format, io))
@@ -115,6 +118,26 @@ namespace SashaRX.UnityMeshLab
                 throw new IOException($"FBX SDK cannot write version {Major}.{Minor}.");
             if (!exporter.Export(Scene))
                 throw new IOException($"FBX SDK failed to write '{path}'.");
+        }
+
+        /// <summary>Splits only polygons with new internal seams, retaining the entire source document.</summary>
+        public void SplitPolygons(IReadOnlyDictionary<string, FbxPolygonSplit> plans)
+        {
+            string path = Path.Combine(scratch, "split.fbx");
+            Save(path, true);
+            FbxPolygonSplitFile.Apply(path, plans);
+            var replacement = FbxScene.Create(Manager, "MeshLabSplitDocument");
+            try
+            {
+                using var importer = FbxImporter.Create(Manager, "MeshLabSplitImport");
+                if (!importer.Initialize(path, -1, Manager.GetIOSettings()) || !importer.Import(replacement))
+                    throw new IOException("FBX SDK cannot read the local seam split.");
+            }
+            catch { replacement.Destroy(); throw; }
+            Scene.Destroy();
+            Scene = replacement;
+            Meshes.Clear();
+            CollectMeshes(Scene.GetRootNode(), Meshes);
         }
 
         /// <summary>The writer for the file version, or the oldest one newer than it.</summary>

@@ -268,9 +268,9 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   container format (binary/ASCII) and file version, with embedded media
   re-embedded. Two exceptions: a file older than FBX 7.1 is saved as 7.1
   (the oldest version the SDK writes), and the SDK rewrites the header's
-  creator string and timestamps. Polygons (quads, n-gons), control points, smoothing,
-  materials, nodes, properties and every other layer element are never
-  rebuilt.
+  creator string and timestamps. Control points, materials, nodes and properties
+  are retained. Quads and n-gons remain intact unless a new value seam runs
+  inside them; only those polygons are split as described below.
 * Inside a written channel only the corners whose value changed are
   written; unchanged corners keep their stored doubles bit for bit. A
   by-control-point set stays by-control-point when the change allows it;
@@ -295,8 +295,17 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   and bounds every decoded corner against the source document's corner count.
   The tag format supports up to 4096 meshes and fewer than 2^24 corners per mesh;
   larger documents refuse before saving. See `REPRO_FBX_CORNER_COMPRESSION.md`.
-* Refused, nothing written: a value seam inside one polygon (the polygon
-  cannot hold it without being split), a UV set that would skip a channel
+* A new UV seam, colour discontinuity or hard edge inside a quad/n-gon triggers
+  a local split using the tagged import's exact triangles. Its boundary and
+  paired internal edges are audited; adjacent polygons stay intact. Existing
+  per-corner/per-polygon layers and material assignments are remapped without
+  changing stored values. Existing edge data stays; new diagonals are smooth,
+  invisible and have zero crease where those layers exist. The split passes
+  through a binary scratch document to retain SDK data that its C# wrapper
+  does not expose, then corner matching is repeated before the atomic save.
+* Refused, nothing written: unresolved ambiguity after a local split, an
+  incomplete source triangulation, unsupported diagonal layer values or mapping,
+  a UV set that would skip a channel
   (UV3 on a mesh with one set), corner tags lost on import (Mesh
   Compression), an instanced FBX mesh edited from more than one Unity mesh.
 * The source importer is left alone, except `generateSecondaryUV` is
@@ -327,8 +336,8 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   where the importer reads them from the file (`Normals: Import`, and for
   tangents also `Tangents: Import`): under Calculate Unity recomputes them on
   every import, so a changed set is reported in the log and left out. A hard
-  edge inside one polygon (two normals for one corner) is refused like a UV
-  seam. Smoothing groups are left as they are.
+  edge inside one polygon (two normals for one corner) uses the same local
+  split as a UV seam. Existing smoothing values are retained.
 * "Save channels only" writes UV sets and vertex colours only.
 * The hub's Overwrite / Export New FBX (`All`) takes this path, together with
   the structure edit below, in one load and one save of the document.
@@ -480,9 +489,9 @@ their index buffer, and the FBX exporter writes whatever topology the
 serialized mesh has — so the clone that reaches `ModelExporter` must be
 imported with `keepQuads = true`:
 
-* **Channel re-save (UV / vertex colours)** — not affected: the FBX
-  document's polygons are never rewritten, so quads and n-gons stay as
-  authored whatever `keepQuads` is set to, and `keepQuads` is not touched
+* **Channel re-save (UV / vertex colours)** — quads and n-gons stay as
+  authored except polygons with new internal seams. Those are split locally;
+  `keepQuads` is not touched
   (a save that writes UV1 does switch `generateSecondaryUV` off, see above).
 * **Isolated core (normals / tangents / hierarchy / materials intents)** —
   Phase 1 enables `keepQuads` on the source importer

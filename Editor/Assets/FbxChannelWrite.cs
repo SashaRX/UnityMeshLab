@@ -1,10 +1,11 @@
 // FbxChannelWrite.cs — the strict FBX re-save for per-vertex channels (UV sets, vertex
 // colours, and for the hub's save normals and tangents). The FBX document is edited
 // through the FBX SDK: only the layer elements of the channels the tool changed are
-// touched, and within them only the corners whose value changed. Polygons (quads,
-// n-gons), control points, smoothing, the other channels, materials, nodes, the file
+// touched, and within them only the corners whose value changed. A polygon with a new
+// internal seam is split using the import's triangles. Other polygons, control points,
+// smoothing, the other channels, materials, nodes, the file
 // format and version come through as the source file has them. Unity's FBX Exporter is
-// not involved, so nothing is triangulated, welded, re-packed or quantised. Normals and
+// not involved, so nothing is welded, re-packed or quantised. Normals and
 // tangents are directions in the mesh's space, so they go back through the map fitted
 // to the mesh's import (FbxSpaceFit).
 //
@@ -154,6 +155,7 @@ namespace SashaRX.UnityMeshLab
 
             using var document = FbxSourceDocument.Load(Path.GetFullPath(sourceFbxPath));
             var tagged = ImportTagged(sourceFbxPath, swapUv, out var importedNames);
+            int splitPolygons = PrepareSeamSplits(document, donors, tagged);
 
             int meshesWritten = 0, cornersWritten = 0;
             var written = new HashSet<int>();
@@ -215,7 +217,7 @@ namespace SashaRX.UnityMeshLab
             string format = $"FBX {document.Major}.{document.Minor}, {(document.Binary ? "binary" : "ASCII")}";
             if (meshesWritten > 0)
                 UvtLog.Info($"[FBX Export] {meshesWritten} mesh(es), {cornersWritten} corner value(s) of {string.Join(", ", channelsWritten.OrderBy(c => c))} -> {targetFbxPath} " +
-                    $"({format}; polygons and other channels untouched)");
+                    $"({format}; {splitPolygons} polygon(s) split at new internal seams; other channels retained)");
             foreach (string line in structureLog) UvtLog.Info($"[FBX Export] {line} -> {targetFbxPath} ({format})");
 
             // A save-as outside the project is a plain file; nothing to import.
@@ -882,12 +884,57 @@ namespace SashaRX.UnityMeshLab
             return written;
         }
 
-        // Every FBX corner's vertex in the working mesh; refuses what the file cannot hold.
-        static int[] PairCorners(Donor donor, Tagged tag, in FbxLayerChannels.Topology topology)
+        static int PrepareSeamSplits(FbxSourceDocument document, List<Donor> donors, Dictionary<string, Tagged> tagged)
         {
-            var match = FbxCornerMatch.Match(topology.polygonSizes, CornerPositions(donor, tag, topology), donor.positions, donor.faces, donor.faceSizes,
+            var plans = new Dictionary<string, FbxPolygonSplit>(StringComparer.Ordinal);
+            var expanded = new List<(Tagged tag, FbxPolygonSplit plan, int cornerCount)>();
+            foreach (var donor in donors)
+            {
+                if (!donor.HasValues || !tagged.TryGetValue(donor.name, out var tag) || tag.ambiguous) continue;
+                var mesh = document.Meshes[tag.ordinal];
+                var topology = new FbxLayerChannels.Topology(mesh);
+                var match = MatchCorners(donor, tag, topology);
+                if (match.conflicts == 0 || match.unresolved > 0) continue;
+                var plan = FbxPolygonSplit.Plan(topology.polygonSizes, match.conflictingCorners, tag.TriangleCorners());
+                if (plan.splitCount == 0) continue;
+                if (!plans.TryAdd(mesh.GetName(), plan))
+                    throw new InvalidOperationException($"FBX mesh '{mesh.GetName()}' has several conflicting donors.");
+                expanded.Add((tag, plan, topology.CornerCount));
+            }
+            if (plans.Count == 0) return 0;
+            var names = document.Meshes.Select(m => m.GetName()).ToArray();
+            document.SplitPolygons(plans);
+            if (!names.SequenceEqual(document.Meshes.Select(m => m.GetName())))
+                throw new InvalidOperationException("FBX mesh order changed during the seam split; nothing was written.");
+            foreach (var item in expanded) ExpandTag(item.tag, item.plan, item.cornerCount);
+            return plans.Values.Sum(p => p.splitCount);
+        }
+
+        static void ExpandTag(Tagged tag, FbxPolygonSplit plan, int cornerCount)
+        {
+            var positions = Enumerable.Repeat(float.NaN, cornerCount * 3).ToArray();
+            Array.Copy(tag.cornerPositions, positions, tag.cornerPositions.Length);
+            tag.cornerPositions = plan.Expand(positions, 3);
+            for (int channel = 0; channel < tag.uvs.Length; channel++) tag.uvs[channel] = plan.Expand(tag.uvs[channel]);
+            tag.colors = plan.Expand(tag.colors); tag.colors32 = plan.Expand(tag.colors32);
+            tag.normals = plan.Expand(tag.normals); tag.tangents = plan.Expand(tag.tangents);
+            var firstCopy = new int[cornerCount];
+            Array.Fill(firstCopy, -1);
+            for (int c = 0; c < plan.corners.Length; c++)
+                if (firstCopy[plan.corners[c]] < 0) firstCopy[plan.corners[c]] = c;
+            for (int s = 0; s < tag.submeshCorners.Length; s++)
+                tag.submeshCorners[s] = tag.submeshCorners[s].Select(c => c < 0 ? c : firstCopy[c]).ToArray();
+        }
+
+        static FbxCornerMatch.Result MatchCorners(Donor donor, Tagged tag, in FbxLayerChannels.Topology topology)
+            => FbxCornerMatch.Match(topology.polygonSizes, CornerPositions(donor, tag, topology), donor.positions, donor.faces, donor.faceSizes,
                 (c, v) => SignatureMatches(donor, tag, c, v),
                 (a, b) => SameWrittenValues(donor, a, b));
+
+        // Every FBX corner's vertex in the working mesh; refuses ambiguity that a local split cannot resolve.
+        static int[] PairCorners(Donor donor, Tagged tag, in FbxLayerChannels.Topology topology)
+        {
+            var match = MatchCorners(donor, tag, topology);
             if (match.conflicts > 0)
                 throw new InvalidOperationException(
                     $"'{donor.name}': {match.conflicts} FBX corner(s) get different values from different triangles of the same polygon " +

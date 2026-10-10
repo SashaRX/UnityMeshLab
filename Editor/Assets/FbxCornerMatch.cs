@@ -22,6 +22,7 @@ namespace SashaRX.UnityMeshLab
             public int unresolved;
             /// <summary>Corners whose candidate vertices disagree on a channel being written.</summary>
             public int conflicts;
+            public bool[] conflictingCorners;
             /// <summary>Corners the tagged import has no vertex for (degenerate polygons).</summary>
             public int missing;
         }
@@ -148,7 +149,7 @@ namespace SashaRX.UnityMeshLab
                 int relation = orientationVotes != 0 ? Math.Sign(orientationVotes) : -1;
 
                 // Pass 2: drop back-facing duplicates, then settle each corner.
-                var result = new Result { cornerToVertex = new int[candidates.Length] };
+                var result = new Result { cornerToVertex = new int[candidates.Length], conflictingCorners = new bool[candidates.Length] };
                 for (int c = 0; c < candidates.Length; c++)
                     result.cornerToVertex[c] = Settle(c, relation, signatureMatches, sameWrittenValues, result);
                 return result;
@@ -241,7 +242,7 @@ namespace SashaRX.UnityMeshLab
 
                 int chosen = distinct[0];
                 for (int i = 1; i < distinct.Count; i++)
-                    if (!sameWrittenValues(chosen, distinct[i])) { result.conflicts++; return -1; }
+                    if (!sameWrittenValues(chosen, distinct[i])) { result.conflicts++; result.conflictingCorners[c] = true; return -1; }
                 return chosen;
             }
 
