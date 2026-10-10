@@ -235,6 +235,34 @@ namespace SashaRX.UnityMeshLab.Tests
 
         [TestCase(false,false)]
         [TestCase(true,false)]
+        [TestCase(true,true)]
+        public void PreparationFailureOrCancellation_RecordsItsActualProgressStatus(bool cancel,bool parts)
+        {
+            var (_, context) = CreateToolWithSource();
+            string title = parts ? "Analyze small LOD parts" : "Read original LOD polygons";
+            void CancelPreparation()
+            {
+                if (cancel && UvProgress.Current.active && UvProgress.Current.title == title && !UvProgress.CancelRequested)
+                    UvProgress.RequestCancel();
+            }
+            UvProgress.OnChanged += CancelPreparation;
+            try
+            {
+                string error;
+                bool ok = parts
+                    ? LodPipelineOps.TryPrepareParts(context,new LodSmallParts.Settings {
+                        enabled = true,firstLod = 1,screenHeight = 1080,maxPixels = 2 },out _,out error)
+                    : LodPipelineOps.TryPrepareSources(context,LodReductionMode.FullLoops,out _,out error);
+                Assert.That(ok,Is.False);
+                Assert.That(error,Is.Not.Empty);
+                Assert.That(UvProgress.Last.status,Is.EqualTo(cancel ? Progress.Status.Canceled : Progress.Status.Failed));
+                Assert.That(UvProgress.IsActive,Is.False);
+            }
+            finally { UvProgress.OnChanged -= CancelPreparation; }
+        }
+
+        [TestCase(false,false)]
+        [TestCase(true,false)]
         [TestCase(false,true)]
         public void AbortRegenerationAfterClearing_RestoresGeneratedObjectsMeshesAndBindings(bool fail,bool reducerFailure)
         {

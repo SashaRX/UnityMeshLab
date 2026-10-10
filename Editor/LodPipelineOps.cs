@@ -12,6 +12,7 @@ namespace SashaRX.UnityMeshLab
     internal static class LodPipelineOps
     {
         const string CancellationMessage = "LOD generation cancelled.";
+        const string SourcePreparationCancellationMessage = "Source topology extraction cancelled.";
         internal struct Options
         {
             public int count;
@@ -111,6 +112,7 @@ namespace SashaRX.UnityMeshLab
             error = null;
             if (mode == LodReductionMode.Triangles) return true;
             var imports = new Dictionary<string, object>();
+            bool succeeded = false;
             UvProgress.Begin("Read original LOD polygons", cancelable: true);
             try
             {
@@ -119,16 +121,18 @@ namespace SashaRX.UnityMeshLab
                     if (!entry.include || entry.lodIndex != ctx.SourceLodIndex) continue;
                     var mesh = entry.repackedMesh ?? entry.originalMesh;
                     if (mesh == null || sources.ContainsKey(mesh)) continue;
-                    if (UvProgress.CancelRequested) { error = "Source topology extraction cancelled."; return false; }
+                    if (UvProgress.CancelRequested) { error = SourcePreparationCancellationMessage; return false; }
                     UvProgress.Report(0, mesh.name);
                     if (!LodSourceTopology.TryLoad(entry, mesh, imports, out var source, out var reason))
                     { error = $"{mesh.name}: {reason}"; return false; }
                     sources.Add(mesh, source);
                 }
+                if (UvProgress.CancelRequested) { error = SourcePreparationCancellationMessage; return false; }
                 if (sources.Count == 0) { error = "No source meshes found."; return false; }
+                succeeded = true;
                 return true;
             }
-            finally { UvProgress.End(); }
+            finally { FinishPreparation(succeeded,error); }
         }
 
         internal static bool TryPrepareParts(UvToolContext ctx,LodSmallParts.Settings settings,
@@ -138,6 +142,7 @@ namespace SashaRX.UnityMeshLab
             if (!settings.enabled) return true;
             if (!settings.IsValid) { error = "Invalid small-part settings"; return false; }
             var imports = new Dictionary<string,object>();
+            bool succeeded = false;
             UvProgress.Begin("Analyze small LOD parts",cancelable:true);
             try
             {
@@ -148,10 +153,19 @@ namespace SashaRX.UnityMeshLab
                     UvProgress.Report(0,mesh.name);
                     analyses.Add(mesh,LodSmallParts.Analyze(entry,mesh,imports,() => UvProgress.CancelRequested));
                 }
+                if (UvProgress.CancelRequested) { error = "Small-part analysis cancelled."; analyses.Clear(); return false; }
+                succeeded = true;
                 return true;
             }
             catch (System.Exception ex) { error = ex.Message; analyses.Clear(); return false; }
-            finally { UvProgress.End(); }
+            finally { FinishPreparation(succeeded,error); }
+        }
+
+        static void FinishPreparation(bool succeeded,string error)
+        {
+            if (UvProgress.CancelRequested) UvProgress.Cancel();
+            else if (succeeded) UvProgress.End();
+            else UvProgress.Fail(error ?? "LOD preparation failed.");
         }
 
         internal static Result Generate(UvToolContext ctx, int startLod, Options opts, Dictionary<Mesh, LodSourceTopology> prepared = null,
