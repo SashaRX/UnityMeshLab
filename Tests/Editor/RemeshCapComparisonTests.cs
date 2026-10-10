@@ -281,8 +281,14 @@ namespace SashaRX.UnityMeshLab.Tests
                 CollectionAssert.AreEqual(original, p); CollectionAssert.AreEqual(originalIndices, ix);
                 for (int corner = 0; corner < ix.Length; corner++) Assert.AreEqual(p[ix[corner]], support.positions[support.indices[corner]]);
                 report.results.Add(new Outcome { caseName = capture.name, path = path, status = "passed",
-                    loops = support.loops, addedFaces = support.addedFaces, refusedLoops = support.loopFailures.Count,
-                    voxelFaces = voxel.TriangleCount, simplifiedFaces = simplified.TriangleCount, charts = quality.charts,
+                    sourceFaces = ix.Length / 3, loops = support.loops, addedFaces = support.addedFaces,
+                    addedVertices = support.positions.Length - (p.Length - support.weldedVertices),
+                    refusedLoops = support.loopFailures.Count, boundaryEdges = support.remainingBoundaryEdges,
+                    voxelResolution = settings.voxelResolution, solve = settings.solve, uvValid = quality.valid,
+                    voxelFaces = voxel.TriangleCount, trimRemoved = voxel.TriangleCount - trimmed.TriangleCount,
+                    simplifiedFaces = simplified.TriangleCount, charts = quality.charts,
+                    originalCharts = uv.originalChartCount, originalSmallCharts = uv.originalSmallChartCount,
+                    overlaps = atlas.pairs, degenerateUv = atlas.degenerateFaces, outsideUv = atlas.outOfBoundsVertices,
                     meanStretch = quality.meanStretch, maxStretch = quality.maxStretch, seconds = timer.Elapsed.TotalSeconds });
                 File.WriteAllText(Path.Combine(manifest.output, "closure-native.json"), JsonUtility.ToJson(report, true));
             }
