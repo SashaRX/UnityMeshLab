@@ -39,6 +39,7 @@ def matched_audit(directory, tests):
                         assert c["surfaceColorRms"][k] <= c["colorRmsBefore"][k] + 1e-6 and c["surfaceColorMax"][k] <= c["colorMaxBefore"][k] + 1e-6
                 row[mode] = dict(triangles=c["triangles"], normalRms=c["normalRms"], colorRms=max(c["surfaceColorRms"].values()),
                     geometryRms=c["sourceDistanceRms"], uvRms=c["uvRms"],
+                    generationMs=c["simplifyMs"],
                     silhouette=max(lookup[(c["variant"], view)]["silhouetteMismatch"] for view in ("front", "oblique")),
                     beltFallback=c["nativeBeltFallback"], note=c["reductionNote"])
             row["target"] = row["chains"]["triangles"]
@@ -48,6 +49,7 @@ def matched_audit(directory, tests):
     audit = dict(tests=result, modelCount=8, allCapturesFresh=True, regionChecks=regions,
         matchedPairs=sum(r["matchedWithinFivePercent"] for r in rows),
         comparison="Native targets equal the freshly generated coarsened-belt counts; LOD1/2 refer to the same quality profiles. Count band is 5% or two triangles, whichever is greater.",
+        timingScope="generationMs covers both levels of one Generate call and is repeated on both rows; do not sum across levels.",
         sources=[{k: r[k] for k in ("fixture", "sourceSha256", "meshName", "sourceTriangles", "unity", "gpu", "graphicsApi", "resolution")} for r in reports], rows=rows)
     (directory / "native-matched-audit.json").write_text(json.dumps(audit, indent=2), encoding="utf-8")
     return reports, rows, audit
@@ -79,6 +81,7 @@ def native_audit(directory, tests):
                 geometryRms=capture["sourceDistanceRms"], uvRms=capture["uvRms"],
                 silhouette=max(lookup[(capture["variant"], view)]["silhouetteMismatch"] for view in ("front", "oblique")),
                 shadingRms=max(lookup[(capture["variant"], view)]["rmsShadingError"] for view in ("front", "oblique")),
+                generationMs=capture["simplifyMs"],
                 lockedChainRetry=capture["lockedChainRetry"], protectedTriangles=capture["protectedTriangles"],
                 beltFallback=capture["nativeBeltFallback"],
                 nativeProbes=capture["nativeProbes"], note=capture["reductionNote"])
@@ -87,6 +90,7 @@ def native_audit(directory, tests):
     audit["nativeBeltFallbacks"] = sum(r["native"]["beltFallback"] for r in rows)
     audit["regionChecks"] += region_checks
     audit["comparison"] = "Fresh source/strict belt/coarsened belt/direct native constraints; original URP materials and transitions are outside this diagnostic. Counts differ."
+    audit["timingScope"] = "generationMs covers both levels of one Generate call and is repeated on both rows; do not sum across levels."
     root = Path(__file__).resolve().parent.parent
     audit["nativePlugins"] = {str(p.relative_to(root)): digest(p) for p in sorted((root / "Plugins").rglob("*")) if p.suffix in (".dll", ".so", ".dylib")}
     (directory / "native-constraints-audit.json").write_text(json.dumps(audit, indent=2), encoding="utf-8")
@@ -106,6 +110,7 @@ def plots(directory, reports, rows, matched=False):
             axis = axes[i, j]; capture = lookup[(variant, "oblique")]
             axis.imshow(Image.open(directory / f"{report['fixture']}-{variant}-oblique-shaded.png")); axis.axis("off")
             target = "" if variant == "source" else f" / target {capture['targetTriangles']:,}"
+            if capture.get("nativeBeltFallback"): label += " (belt fallback)"
             axis.set_title(f"{report['fixture']} · {label}\n{capture['triangles']:,} tris{target}", fontsize=10)
     subtitle = "Native triangle targets equal the coarsened belt outputs" if matched else "LOD2 requested at 1/9 of source"
     fig.suptitle("Actual project models · direct native crease constraints\nFresh Unity GPU captures · "+subtitle, fontsize=16, y=.995)
@@ -117,6 +122,7 @@ def plots(directory, reports, rows, matched=False):
               ("silhouette", "Worst two-view GPU silhouette error, %", 100), ("colorRms", "Surface RGBA RMS, worst channel", 1))
     for axis, (field, title, scale) in zip(axes, fields):
         for i, (mode, label, color) in enumerate(modes):
+            if mode == "native" and any(r["native"]["beltFallback"] for r in rows): label += " / fallback"
             key = "strict" if mode == "hard" else mode
             axis.barh(y+(i-(len(modes)-1)/2)*.25, [r[key][field]*scale for r in rows], height=.23, label=label, color=color)
         if field == "triangles": axis.scatter([r["target"] for r in rows], y, marker="|", c="#c0392b", s=130, label="Target")
@@ -138,7 +144,8 @@ def plots(directory, reports, rows, matched=False):
                     axis = axes[i*2+k, j]; capture = lookup[(variant, view)]
                     axis.imshow(Image.open(directory / f"{report['fixture']}-{variant}-{view}-color.png").convert("RGB")); axis.axis("off")
                     axis.set_title(f"{report['fixture']} · {view} · {label}\n{capture['triangles']:,} tris · RGBA RMS {max(capture['surfaceColorRms'].values()):.4f}", fontsize=9)
-        fig.suptitle("Actual authored vertex-color fields · RGB displayed, RMS includes alpha\nFresh source and both methods; triangle counts differ", fontsize=16)
+        comparison = "Matched-count targets; inspect the recorded count differences" if matched else "Fresh source and both methods; triangle counts differ"
+        fig.suptitle("Actual authored vertex-color fields · RGB displayed, RMS includes alpha\n"+comparison, fontsize=16)
         fig.tight_layout(rect=(0, 0, 1, .94)); fig.savefig(directory / (prefix+"-colors.png"), dpi=140); plt.close(fig)
 
 

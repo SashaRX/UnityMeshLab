@@ -1,6 +1,6 @@
 # LOD feature-chain experiment
 
-**Coarsen Crease Chains** optionally reduces authored creases before meshoptimizer simplifies the remaining patches. It is disabled by default and available with **Triangles**, **Prioritize Triangle Budget**, and **Preserve Hard Edges**. Each level starts from working LOD0. Source FBX/working meshes and native ABI/binaries remain unchanged.
+**Coarsen Crease Chains** optionally reduces authored creases before meshoptimizer simplifies the remaining patches. It is disabled by default and available with **Triangles**, **Prioritize Triangle Budget**, and **Preserve Hard Edges**. Each level starts from working LOD0. This managed prepass itself leaves source FBX/working meshes and native ABI/binaries unchanged; the separate [native-constraint follow-up](LOD_NATIVE_CONSTRAINTS.md) adds an optional native backend.
 
 ## Controls and checks
 
@@ -57,6 +57,6 @@ The audit checks original/copied FBX hashes, feature coverage, protected faces/i
 
 ## Remaining work
 
-This prepass still feeds a frozen incident-triangle belt. It does not complete replacement with direct native crease constraints or solve every budget. UVs, nonlinear paint, tangents and intersections can block reduction; categorical paint needs independent acceptance. Compare quality at matched counts before changing defaults.
+The prepass alone still feeds a frozen incident-triangle belt. The separate [native-constraint experiment](LOD_NATIVE_CONSTRAINTS.md) now permits patch retriangulation and includes fresh matched-count comparisons: 183 selected tests pass, with 6/16 source budgets reached. Both options remain experimental. UVs, nonlinear paint, tangents and intersections can block reduction; categorical paint needs independent acceptance.
 
-Next: native crease/junction constraints to simplify patches without frozen neighboring triangles. Rebuild native ABI/binary changes through `build-native.yml`. Keep this managed prepass and strict baseline as controls, add thin-component/categorical-color acceptance, then test original materials/assemblies. Full-loop and QSlim experiments retain their separate scope.
+Next: keep this managed prepass and strict baseline as controls, add thin-component/categorical-color acceptance, then test original materials/assemblies. Native ABI/binary changes continue through `build-native.yml`. Full-loop and QSlim experiments retain their separate scope.

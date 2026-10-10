@@ -2,9 +2,9 @@
 
 Iteration [#229](https://github.com/SashaRX/UnityMeshLab/pull/229) was merged into main and released as 1.1.37. The complete LOD quality roadmap is not finished. The intended hierarchy remains LOD0, LOD1 and LOD2, with independent source reduction to approximately 1/3 and 1/9 of LOD0.
 
-The subsequent [feature-chain experiment](LOD_FEATURE_CHAINS.md) adds an optional managed prepass with original-polyline/shading checks, contact/component isolation and quality-ranked native retries. It remains disabled by default; the native incident-triangle belt is still present. The snapshot below describes the preceding merged iteration.
+The subsequent [feature-chain experiment](LOD_FEATURE_CHAINS.md) adds an optional managed prepass with original-polyline/shading checks, contact/component isolation and quality-ranked native retries. The [native-constraint follow-up](LOD_NATIVE_CONSTRAINTS.md) now allows neighboring patches to retriangulate while preserving validated creases, junctions, material borders and ambiguous faces. Both options remain disabled by default. The snapshot below describes the preceding merged iteration, rather than these unmerged follow-ups.
 
-Follow-up verification: 177 selected EditMode tests passed, all eight meshes freshly captured at a fixed 384×384 GPU target. Tent surface RGBA RMS improves about 62%/40% at LOD1/LOD2; its LOD1 is denser (306 versus 284 triangles), while LOD2 uses accepted area-resampled colors at 280 versus 284. Five of sixteen budgets still pass. Detailed gains, regressions, portable plots/data and the remaining native-constraint work are recorded in the experiment above.
+Latest follow-up verification: **183 selected EditMode tests passed**, with all eight meshes and 176 variant/view GPU captures freshly evaluated at a physical 384×384 target. Native builds and CTests passed on Windows/Linux/macOS through CI. Native constraints reach 6/16 source budgets; only 2/8 LOD2 budgets pass, and Bench B LOD2 selects a reported strict-belt fallback. At matched counts, Wrench/First Aid Kit/Fire Shield LOD2 normal RMS improves 67.8%/48.6%/54.7%; tent LOD2 RGBA RMS improves 30.5% at exactly 280 triangles. Other color/normal/silhouette regressions and slow native retries keep this experimental. Details, portable graphs/data and the next checks are in the native experiment. The 177-test managed-prepass comparison remains its historical control.
 
 ## Implemented
 
@@ -51,8 +51,8 @@ The overview/chart retain the final capture lineage above; their LOD2 fields/cou
 
 ## Next iteration, in order
 
-1. Continue replacing the frozen incident-triangle belt: the optional managed feature-chain prepass now has real-model evidence, but direct native crease/junction constraints are still needed to simplify patches without frozen neighboring faces. Keep the strict and coarsened eight-model controls, source-polyline/shading checks and LOD1/LOD2 budgets; rebuild any native ABI/binary change through CI.
-2. Add acceptance checks for disappearing thin/soft components and categorical vertex-color boundaries. Evaluate visual error at matched triangle counts and real screen sizes; keep the documented Bench B and tent regressions as explicit controls.
+1. Native crease/junction constraints and the matched-count comparison are implemented and verified as an optional experiment. Remaining work in this stage: diagnose low-budget coverage failures, quality regressions and expensive retries; keep the strict/coarsened controls and rebuild native changes through CI.
+2. Next implementation: add acceptance checks for disappearing thin/soft components and categorical vertex-color boundaries. Keep matched-count comparisons and evaluate real screen sizes, including Bench B LOD1 color, Wrench silhouette and aggressive grenade reduction as controls.
 3. Exercise original materials, normal maps, complete assemblies and LOD transitions in the project's render pipeline. Separate geometric silhouette, shading and color errors in the report.
 4. Revisit full-loop removal on irregular project topology. Keep source provenance and topology/winding/intersection validation; require a measured reduction benefit before changing defaults.
 5. Reconsider QSlim as an additional candidate only after equivalent attribute, topology, crease and quality checks. Any necessary native plugin change must be rebuilt through `build-native.yml`.
