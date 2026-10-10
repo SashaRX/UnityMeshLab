@@ -82,8 +82,14 @@ namespace SashaRX.UnityMeshLab
             // Equal-color copies on independent sheets remain independent fit
             // variables; they need not be frozen merely because their positions coincide.
             PinSeams(data,null,fit,null,null);
+            // Keep the corners supporting source sharp pairs fixed while fitting
+            // the continuous field elsewhere. Shared color owners propagate pins.
+            report.samples=allSides.AddVisibleBoundaryColorSamples(reduced,(faces,at,bary,value,weight) => {
+                fit.Add(faces,at,bary,value,.25);
+                if (weight<=.25) return;
+                for (int k=0; k<3; k++) fit.pinned[faces[at+k]]=true;
+            },2,cancelled);
             report.pinnedCorners=fit.pinned.Count(v => v);
-            report.samples=allSides.AddVisibleColorSamples(reduced,fit.Add,cancelled);
             if (report.samples==0) return null;
             Mesh trial=null,accepted=null; var best=before; var bestAll=report.before;
             try
@@ -98,6 +104,7 @@ namespace SashaRX.UnityMeshLab
                     }
                     float prior=method==0 ? .02f : .002f;
                     var fitted=fit.Solve(prior,cancelled);
+                    report.pinnedCorners=fit.pinned.Count(v => v);
                     foreach (float blend in new[] { 1f,.5f,.25f,.125f,.0625f,.03125f })
                     {
                         CheckCancellation(cancelled);
@@ -110,6 +117,7 @@ namespace SashaRX.UnityMeshLab
                         { probe.refusal="primary fields/paint"; continue; }
                         var all=allSides.Measure(trial,cancelled);
                         if (!all.PaintViewsDoNotWorsen(bestAll) || !all.ColorViewsWithin(bestAll,1f/255) ||
+                            !all.PaintViewsDoNotWorsen(report.before) ||
                             !all.ColorViewsWithin(report.before,1f/255) ||
                             all.rgbaRms>bestAll.rgbaRms+1e-6f) { probe.refusal="reverse fields/paint"; continue; }
                         if (accepted) UnityEngine.Object.DestroyImmediate(accepted);

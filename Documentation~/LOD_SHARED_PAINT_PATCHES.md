@@ -1,5 +1,8 @@
 # Shared-corner LOD paint refinement — 2026-10-10
 
+The following source gradient / sharp-boundary iteration is recorded in
+[LOD_GRADIENT_BOUNDARIES.md](LOD_GRADIENT_BOUNDARIES.md).
+
 This iteration uses the university bench's actual authored LOD1/LOD2 as topology
 and color references. It extends the generator to shared render corners; it does
 not substitute the authored LOD or raise the generated LOD2 budget.

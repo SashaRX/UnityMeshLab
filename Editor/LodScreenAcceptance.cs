@@ -14,8 +14,12 @@ namespace SashaRX.UnityMeshLab
             public int thinPixels, thinRegions, lostThinPixels, vanishedThinRegions;
             public int visibleComponents, lostComponents;
             public int sharpColorPairs, colorRegions, lostColorPairs;
+            public int gradientPairs,gradientRegions,lostGradientPairs;
             public float thinLoss, worstThinRegionLoss, worstComponentLoss;
             public float colorBoundaryLoss, worstColorRegionLoss;
+            public float gradientRms,worstGradientRegionRms;
+            public float[] gradientRegionRms;
+            public bool gradientEvaluated,gradientAccepted;
             public bool detailEvaluated, colorEvaluated, detailAccepted, colorAccepted;
         }
         internal struct Settings
@@ -40,10 +44,13 @@ namespace SashaRX.UnityMeshLab
         readonly int inputWidth, inputHeight;
         readonly int[] thinLabels, componentLabels, colorLabels;
         readonly int[] thinCounts, componentCounts, colorCounts;
+        readonly int[] gradientCounts;
         readonly List<Pair> pairs = new List<Pair>();
+        readonly List<Pair> gradients = new List<Pair>();
+        readonly Func<int,int,bool> sharpColorPair;
 
         internal LodScreenAcceptance(Color[] colors,Color[] coverage,int width,int height,
-            Settings settings,Func<bool> cancelled = null)
+            Settings settings,Func<bool> cancelled = null,Func<int,int,bool> sharpColorPair = null)
         {
             if (settings.divisor < 1 || settings.radius < 1 || settings.radius > 8 ||
                 settings.tolerance < 0 || settings.tolerance > 4 || settings.minimumPixels < 1 ||
@@ -52,6 +59,7 @@ namespace SashaRX.UnityMeshLab
                 !Finite(settings.maximumLoss) || settings.maximumLoss < 0 || settings.maximumLoss > 1)
                 throw new ArgumentException("Invalid LOD screen-acceptance settings.");
             this.settings = settings; inputWidth = width; inputHeight = height;
+            this.sharpColorPair=sharpColorPair;
             source = Read(colors,coverage,width,height,settings.divisor,cancelled);
             var core = Morph(source.covered,source.width,source.height,settings.radius,true,cancelled);
             var opened = Morph(core,source.width,source.height,settings.radius,false,cancelled);
@@ -61,13 +69,14 @@ namespace SashaRX.UnityMeshLab
             componentLabels = Label(source.covered,source.width,source.height,out componentCounts,cancelled);
             colorInterior = Morph(source.full,source.width,source.height,1,true,cancelled);
             var boundaries = new bool[thin.Length];
+            var gradientPixels=new bool[thin.Length];
             for (int y = 0; y < source.height; y++) for (int x = 0; x < source.width; x++)
             {
                 Check(cancelled,y*source.width+x);
                 int a = y*source.width+x;
                 if (!settings.checkColorBoundaries || !colorInterior[a]) continue;
-                if (x+1 < source.width) AddPair(a,a+1,boundaries);
-                if (y+1 < source.height) AddPair(a,a+source.width,boundaries);
+                if (x+1 < source.width) AddPair(a,a+1,boundaries,gradientPixels);
+                if (y+1 < source.height) AddPair(a,a+source.width,boundaries,gradientPixels);
             }
             colorLabels = Label(boundaries,source.width,source.height,out var unused,cancelled);
             colorBoundary = boundaries;
@@ -76,6 +85,12 @@ namespace SashaRX.UnityMeshLab
             {
                 var pair = pairs[i]; pair.region = colorLabels[pair.a]; pairs[i] = pair;
                 colorCounts[pair.region]++;
+            }
+            var gradientLabels=Label(gradientPixels,source.width,source.height,out var gradientSizes,cancelled);
+            gradientCounts=new int[gradientSizes.Length];
+            for (int i=0; i<gradients.Count; i++)
+            {
+                var pair=gradients[i]; pair.region=gradientLabels[pair.a]; gradients[i]=pair; gradientCounts[pair.region]++;
             }
         }
 
@@ -90,10 +105,38 @@ namespace SashaRX.UnityMeshLab
                     visit(pair.a,pair.b,source.colors[pair.a],source.colors[pair.b],pair.region);
         }
 
-        void AddPair(int a,int b,bool[] boundary)
+        internal void VisitLostGradientPairs(Color[] colors,Color[] coverage,Action<int,int,Color,Color,int> visit,Func<bool> cancelled = null)
+        {
+            var target=Read(colors,coverage,inputWidth,inputHeight,settings.divisor,cancelled);
+            for (int i=0; i<gradients.Count; i++)
+            {
+                Check(cancelled,i); var pair=gradients[i];
+                if (Mathf.Sqrt(MaxChannel(GradientPairError(pair,target))*.5f)>settings.colorTolerance)
+                    visit(pair.a,pair.b,source.colors[pair.a],source.colors[pair.b],pair.region);
+            }
+        }
+
+        void AddPair(int a,int b,bool[] boundary,bool[] gradient)
         {
             if (!colorInterior[b] || Difference(source.colors[a],source.colors[b]) < settings.contrast) return;
+            bool sharp=sharpColorPair!=null ? sharpColorPair(a,b) : !LinearNeighborhood(a,b);
+            if (!sharp)
+            { gradients.Add(new Pair { a=a,b=b }); gradient[a]=gradient[b]=true; return; }
             pairs.Add(new Pair { a = a,b = b }); boundary[a] = boundary[b] = true;
+        }
+
+        bool LinearNeighborhood(int a,int b)
+            => HasLinearColorProfile(source.colors,source.width,a,b,i => source.full[i]);
+
+        internal static bool HasLinearColorProfile(Color[] colors,int width,int a,int b,Func<int,bool> covered)
+        {
+            int stride=b-a,left=a-stride,right=b+stride;
+            if (left<0 || right>=colors.Length || stride==1 && (left/width!=a/width || right/width!=b/width) ||
+                !covered(left) || !covered(right)) return false;
+            var delta=colors[b]-colors[a];
+            float tolerance=Mathf.Max(1f/255,Difference(delta,default)*.25f);
+            return Difference(colors[a]-colors[left],delta)<=tolerance &&
+                Difference(colors[right]-colors[b],delta)<=tolerance;
         }
 
         internal Report Measure(Color[] colors,Color[] coverage,Func<bool> cancelled = null)
@@ -149,8 +192,45 @@ namespace SashaRX.UnityMeshLab
             }
             report.colorEvaluated = report.colorRegions > 0;
             report.colorAccepted = report.colorEvaluated && report.worstColorRegionLoss <= settings.maximumLoss;
+            var gradientErrors=new Vector4[gradientCounts.Length]; var totalGradientError=Vector4.zero;
+            for (int i=0; i<gradients.Count; i++)
+            {
+                Check(cancelled,i); var pair=gradients[i]; report.gradientPairs++;
+                var error=GradientPairError(pair,target); gradientErrors[pair.region]+=error; totalGradientError+=error;
+                if (Mathf.Sqrt(MaxChannel(error)*.5f)>settings.colorTolerance) report.lostGradientPairs++;
+            }
+            report.gradientRms=report.gradientPairs>0 ? Mathf.Sqrt(MaxChannel(totalGradientError)/(2*report.gradientPairs)) : 0;
+            report.gradientRegionRms=new float[gradientCounts.Length];
+            for (int i=0; i<gradientCounts.Length; i++) if (gradientCounts[i]>=settings.minimumPairs)
+            {
+                float rms=Mathf.Sqrt(MaxChannel(gradientErrors[i])/(2*gradientCounts[i]));
+                report.gradientRegionRms[i]=rms; report.gradientRegions++;
+                report.worstGradientRegionRms=Mathf.Max(report.worstGradientRegionRms,rms);
+            }
+            report.gradientEvaluated=report.gradientRegions>0;
+            report.gradientAccepted=report.gradientEvaluated && report.worstGradientRegionRms<=settings.colorTolerance;
             return report;
         }
+
+        Vector4 GradientPairError(Pair pair,Frame target)
+        {
+            int ax=pair.a%source.width,ay=pair.a/source.width,bx=pair.b%source.width,by=pair.b/source.width;
+            var best=Vector4.zero; float score=float.PositiveInfinity;
+            for (int dy=-settings.tolerance; dy<=settings.tolerance; dy++) for (int dx=-settings.tolerance; dx<=settings.tolerance; dx++)
+            {
+                int x0=ax+dx,y0=ay+dy,x1=bx+dx,y1=by+dy;
+                if (x0<0 || y0<0 || x1<0 || y1<0 || x0>=source.width || x1>=source.width || y0>=source.height || y1>=source.height) continue;
+                int a=y0*source.width+x0,b=y1*source.width+x1; if (!target.full[a] || !target.full[b]) continue;
+                var error=Square((Vector4)(target.colors[a]-source.colors[pair.a]))+Square((Vector4)(target.colors[b]-source.colors[pair.b]));
+                float next=MaxChannel(error); if (next>=score) continue; score=next; best=error;
+            }
+            // Missing local support cannot look like a perfect gradient match.
+            if (float.IsPositiveInfinity(score)) best=Vector4.Max(Square(source.colors[pair.a])+Square(source.colors[pair.b]),
+                Vector4.one*(2*settings.contrast*settings.contrast));
+            return best;
+        }
+        static Vector4 Square(Vector4 v) => new Vector4(v.x*v.x,v.y*v.y,v.z*v.z,v.w*v.w);
+        static float MaxChannel(Vector4 v) => Mathf.Max(v.x,Mathf.Max(v.y,Mathf.Max(v.z,v.w)));
 
         bool PairRetained(Pair pair,Frame target)
         {

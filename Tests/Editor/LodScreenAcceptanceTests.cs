@@ -70,6 +70,32 @@ namespace SashaRX.UnityMeshLab.Tests
             var report = Check(source,Field(Color.white)).Measure(source,Field(Color.white));
             Assert.That(report.sharpColorPairs,Is.Zero); Assert.That(report.colorEvaluated,Is.False);
         }
+        [TestCase(false)] [TestCase(true)]
+        public void SteepLinearRgbAndAlphaAreGradientsButFlatteningStillFails(bool alpha)
+        {
+            var source=Field(Color.white); var flattened=Field(new Color(.5f,.5f,.5f,.5f));
+            for (int i=0; i<source.Length; i++)
+            {
+                float slope=.2f*(i%Size);
+                source[i]=alpha ? new Color(0,0,0,slope) : new Color(slope,slope,slope,1);
+            }
+            var guide=Check(source,Field(Color.white)); var exact=guide.Measure(source,Field(Color.white));
+            Assert.That(exact.sharpColorPairs,Is.Zero); Assert.That(exact.gradientPairs,Is.GreaterThan(100));
+            Assert.That(exact.gradientAccepted,Is.True); Assert.That(exact.colorEvaluated,Is.False);
+            var lost=guide.Measure(flattened,Field(Color.white));
+            Assert.That(lost.gradientAccepted,Is.False); Assert.That(lost.worstGradientRegionRms,Is.GreaterThan(.5f));
+        }
+
+        [Test] public void SmallHighContrastMarkCannotBeHiddenInsideAFieldClassifiedAsContinuous()
+        {
+            var source=Field(Color.black); var flat=Field(Color.black);
+            for (int y=20; y<44; y++) for (int x=30; x<34; x++) source[y*Size+x]=Color.red;
+            var guide=new LodScreenAcceptance(source,Field(Color.white),Size,Size,LodScreenAcceptance.Settings.Default,null,(a,b) => false);
+            var report=guide.Measure(flat,Field(Color.white));
+            Assert.That(report.sharpColorPairs,Is.Zero); Assert.That(report.gradientEvaluated,Is.True);
+            Assert.That(report.gradientAccepted,Is.False); Assert.That(report.worstGradientRegionRms,Is.GreaterThan(.5f));
+        }
+
         [Test] public void ModelsWithoutAuthoredVaryingColorsDoNotClaimPaintAcceptance()
         {
             var colors = Field(Color.white); for (int i = 0; i < Size; i++) colors[i] = Color.black;

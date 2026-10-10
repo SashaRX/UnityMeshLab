@@ -34,6 +34,7 @@ namespace SashaRX.UnityMeshLab.Tests
             public string featureChainProbe;
             public List<PartReport> parts = new List<PartReport>();
             public float partPixelLimit;
+            [SerializeField] internal LodScreenValidation.Report baselineFarGuide,baselineFarAllSidesGuide,farAllSidesGuide;
             public int screenPartProposed, screenPartTris;
             public bool screenPartAccepted;
         }
@@ -104,6 +105,17 @@ namespace SashaRX.UnityMeshLab.Tests
                 SaveReport(report); return;
             }
             var topologyImports = new Dictionary<string, object>();
+            var arguments=Environment.GetCommandLineArgs(); int baselineFlag=Array.IndexOf(arguments,"-meshlabLodGuideBaseline");
+            if (baselineFlag>=0 && baselineFlag+1<arguments.Length)
+            {
+                var previous=LodColorBoundaryProjectTests.ReadPaintMesh(Path.Combine(arguments[baselineFlag+1],model.name+"-far-lod2-mesh.json"));
+                try
+                {
+                    var guide=new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+                    report.baselineFarGuide=guide.Measure(previous); report.baselineFarAllSidesGuide=guide.WithAllSides(source).Measure(previous);
+                }
+                finally { Object.DestroyImmediate(previous); }
+            }
             bool loops = LodSourceTopology.TryLoad(new MeshEntry { fbxMesh = source },source,
                 topologyImports,out var topology,out string reason);
             report.loopStatus = loops ? "Original FBX polygons loaded" : reason;
@@ -255,6 +267,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 {
                     var comparison = new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
                     foreach (var variant in variants) farComparisons[variant.name] = comparison.Measure(variant.mesh);
+                    report.farAllSidesGuide = comparison.WithAllSides(source).Measure(variants.Single(v => v.name == "far-lod2").mesh);
                 }
                 using var renderer = new LodVisualQualityTests.Renderer();
                 foreach (string view in new[] { "front", "oblique" })

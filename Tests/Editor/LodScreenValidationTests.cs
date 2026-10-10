@@ -25,6 +25,64 @@ namespace SashaRX.UnityMeshLab.Tests
             mesh.RecalculateNormals(); mesh.RecalculateBounds(); return mesh;
         }
         [Test]
+        public void SourceTopologySeparatesContinuousRgbaFromPaintAndMaterialInterfaces()
+        {
+            var continuous=Panels(false);
+            continuous.colors=continuous.vertices.Select(p => new Color(20*p.x,0,0,1)).ToArray();
+            var colors=continuous.colors; var indices=continuous.triangles;
+            // Normal splits do not turn a continuous vertex-color field into paint.
+            continuous.normals=continuous.vertices.Select((p,i) => i<4 ? Vector3.forward : Vector3.up).ToArray();
+            var screen=new LodScreenValidation(continuous,true,resolution:72,objectPixels:64,measureFields:true);
+            var exact=screen.Measure(continuous);
+            Assert.That(exact.sharpColorPairs,Is.Zero); Assert.That(exact.gradientPairs,Is.GreaterThan(100));
+            Assert.That(exact.gradientWorstRegionRms,Is.Zero); CollectionAssert.AreEqual(colors,continuous.colors);
+            CollectionAssert.AreEqual(indices,continuous.triangles);
+            continuous.subMeshCount=2; continuous.SetTriangles(indices.Take(6).ToArray(),0); continuous.SetTriangles(indices.Skip(6).ToArray(),1);
+            screen=new LodScreenValidation(continuous,true,resolution:72,objectPixels:64,measureFields:true);
+            Assert.That(screen.Measure(continuous).sharpColorPairs,Is.GreaterThan(0),"Material boundaries remain conservative.");
+            var painted=Panels(false);
+            screen=new LodScreenValidation(painted,true,resolution:72,objectPixels:64,measureFields:true);
+            Assert.That(screen.Measure(painted).sharpColorPairs,Is.GreaterThan(0));
+            Assert.That(screen.Measure(painted).gradientPairs,Is.Zero);
+        }
+
+        [Test]
+        public void GradientRegionLossCannotHideBehindBetterGlobalRgba()
+        {
+            var before=new LodScreenValidation.Report { rgbaRms=.2f,gradientWorstRegionRms=.1f,gradientMeanRms=.05f,gradientViewRms=new[] { .05f } };
+            var after=new LodScreenValidation.Report { rgbaRms=.1f,gradientWorstRegionRms=.3f,gradientMeanRms=.1f,gradientViewRms=new[] { .1f } };
+            Assert.That(after.DoesNotWorsen(before),Is.False); Assert.That(after.PaintViewsDoNotWorsen(before),Is.False);
+            Assert.That(after.ColorsDoNotWorsen(before),Is.False);
+            before.gradientWorstRegionRms=after.gradientWorstRegionRms=.3f;
+            before.gradientMeanRms=after.gradientMeanRms=.05f;
+            before.gradientViewRms=after.gradientViewRms=new[] { .05f };
+            before.gradientRegionRms=new[] { .3f,.01f }; after.gradientRegionRms=new[] { .2f,.1f };
+            Assert.That(after.PaintViewsDoNotWorsen(before),Is.False,"A small region cannot hide behind a better worst/mean error.");
+        }
+
+        [Test]
+        public void LostGradientFacesStillParticipateInDiagonalCorrections()
+        {
+            var source=Panels(false); source.colors=source.vertices.Select(p => new Color(20*p.x,0,0,1)).ToArray();
+            var reduced=Track(Object.Instantiate(source)); reduced.colors=Enumerable.Repeat(Color.black,reduced.vertexCount).ToArray();
+            var screen=new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            Assert.That(screen.Measure(reduced).sharpColorPairs,Is.Zero);
+            Assert.That(screen.LostPaintFaces(reduced),Is.Not.Empty);
+        }
+
+        [Test]
+        public void ConnectedColorFieldStillProtectsAbruptProfileTransitions()
+        {
+            var source=Panels(false);
+            source.colors=source.vertices.Select(p => new Color(20*(1-Mathf.Abs(p.x)),0,0,1)).ToArray();
+            var screen=new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            var exact=screen.Measure(source);
+            Assert.That(exact.sharpColorPairs,Is.GreaterThan(0),"Connected faces do not authorize flattening a narrow color peak.");
+            Assert.That(exact.gradientPairs,Is.GreaterThan(100));
+            Assert.That(exact.gradientWorstRegionRms,Is.Zero);
+        }
+
+        [Test]
         public void BoundaryTrainingWeightsAlphaEdgesWithoutBorrowingAcrossMaterials()
         {
             var source = Panels(false); var target = Panels(false); var colors = source.colors;

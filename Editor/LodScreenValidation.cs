@@ -15,6 +15,11 @@ namespace SashaRX.UnityMeshLab
         [Serializable] internal sealed class Report
         {
             public int views, detailViews, colorViews;
+            public int gradientViews,sharpColorPairs,gradientPairs;
+            public float gradientWorstRegionRms,gradientMeanRms;
+            public float[] gradientViewRms;
+            public float[] gradientRegionRms;
+            public string colorGuide;
             public int objectPixels, resolution;
             public float detailLoss, colorLoss;
             public bool detailAccepted, colorAccepted;
@@ -31,10 +36,11 @@ namespace SashaRX.UnityMeshLab
             internal float ScreenScore(float normalWeight,float colorWeight) => silhouetteMean/.05f+silhouetteMax/.2f+
                 normalRms/30*Mathf.Max(0,normalWeight)+rgbaRms/.1f*Mathf.Max(0,colorWeight)+Penalty(colorWeight);
             internal bool DoesNotWorsen(Report before,bool fields = false) => detailLoss <= before.detailLoss+1e-6f && colorLoss <= before.colorLoss+1e-6f &&
+                GradientsDoNotWorsen(before) &&
                 (!fields || silhouetteMean <= before.silhouetteMean+1e-6f && silhouetteMax <= before.silhouetteMax+1e-6f &&
                     normalRms <= before.normalRms+1e-6f && ColorsDoNotWorsen(before));
-            internal bool ColorsDoNotWorsen(Report before) => colorLoss <= before.colorLoss+1e-6f && rgbaRms <= before.rgbaRms+1e-6f && ChannelsDoNotWorsen(before) && BoundariesDoNotWorsen(before);
-            internal bool PaintViewsDoNotWorsen(Report before) => colorLoss <= before.colorLoss+1e-6f && BoundariesDoNotWorsen(before);
+            internal bool ColorsDoNotWorsen(Report before) => colorLoss <= before.colorLoss+1e-6f && rgbaRms <= before.rgbaRms+1e-6f && ChannelsDoNotWorsen(before) && BoundariesDoNotWorsen(before) && GradientsDoNotWorsen(before);
+            internal bool PaintViewsDoNotWorsen(Report before) => colorLoss <= before.colorLoss+1e-6f && BoundariesDoNotWorsen(before) && GradientsDoNotWorsen(before);
             internal bool ColorViewsDoNotWorsen(Report before)
                 => ColorViewsWithin(before,0) && ColorsDoNotWorsen(before);
             internal bool ColorViewsWithin(Report before,float tolerance)
@@ -55,7 +61,18 @@ namespace SashaRX.UnityMeshLab
                 if (colorBoundaryViewLoss.Length != before.colorBoundaryViewLoss.Length) return false;
                 for (int i = 0; i < colorBoundaryViewLoss.Length; i++)
                     if (colorBoundaryViewLoss[i] > before.colorBoundaryViewLoss[i]+1e-6f) return false;
-                return colorBoundaryMean <= before.colorBoundaryMean+1e-6f;
+                return colorBoundaryMean <= before.colorBoundaryMean+1e-6f && GradientsDoNotWorsen(before);
+            }
+            internal bool GradientsDoNotWorsen(Report before)
+            {
+                const float tolerance=1f/255+1e-6f;
+                if (gradientWorstRegionRms>before.gradientWorstRegionRms+tolerance || gradientMeanRms>before.gradientMeanRms+tolerance) return false;
+                if (gradientRegionRms!=null && before.gradientRegionRms!=null &&
+                    (gradientRegionRms.Length!=before.gradientRegionRms.Length ||
+                    gradientRegionRms.Where((rms,r) => rms>before.gradientRegionRms[r]+tolerance).Any())) return false;
+                if (gradientViewRms==null || before.gradientViewRms==null) return true;
+                return gradientViewRms.Length==before.gradientViewRms.Length &&
+                    gradientViewRms.Where((loss,v) => loss>before.gradientViewRms[v]+tolerance).Count()==0;
             }
             bool ChannelsDoNotWorsen(Report before)
             {
@@ -113,6 +130,7 @@ namespace SashaRX.UnityMeshLab
             sourceSlots = FaceSlots(source); sourceFaceNormals = FaceNormals(positions,triangles);
             var sourceNormals = Normals(source);
             bool varying = colors && HasVariation(rgba);
+            var colorRegions=measureFields && varying ? ContinuousColorRegions(source,cancelled) : null;
             foreach (var direction in allSides ? Directions.Concat(Directions.Select(d => -d)) : Directions)
             {
                 Check(cancelled);
@@ -132,7 +150,20 @@ namespace SashaRX.UnityMeshLab
                 var frame = Rasterize(positions,triangles,rgba,sourceNormals,view,resolution,cancelled,measureFields);
                 if (measureFields) view.source = frame;
                 var settings = LodScreenAcceptance.Settings.Default; settings.checkColorBoundaries = varying;
-                view.acceptance = new LodScreenAcceptance(frame.colors,frame.coverage,resolution,resolution,settings,cancelled);
+                bool SharpPair(int a,int b)
+                {
+                    int region=-1;
+                    foreach (int pixel in new[] { a,b }) for (int sample=0; sample<4; sample++)
+                    {
+                        int face=frame.triangleAt[pixel*4+sample]; if (face<0) return true;
+                        int next=colorRegions[face]; if (region>=0 && region!=next) return true; region=next;
+                    }
+                    // Connected vertex paint can still contain a narrow stripe
+                    // or abrupt slope change. Only a locally regular ramp is smooth.
+                    return !LodScreenAcceptance.HasLinearColorProfile(frame.colors,resolution,a,b,i => frame.coverage[i].r>=.99999f);
+                }
+                view.acceptance = new LodScreenAcceptance(frame.colors,frame.coverage,resolution,resolution,settings,cancelled,
+                    colorRegions!=null ? SharpPair : (Func<int,int,bool>)null);
                 views.Add(view);
             }
         }
@@ -142,16 +173,26 @@ namespace SashaRX.UnityMeshLab
             var positions = Positions(mesh); var triangles = Triangles(mesh); var colors = Colors(mesh);
             var normals = Normals(mesh);
             var result = new Report { views = views.Count,detailAccepted = true,objectPixels = objectPixels,resolution = resolution,
+                colorGuide=measureFields && checkColors ? "source topology and profile: sharp pairs / local gradient RGBA RMS" : "image profile: sharp pairs / local gradient RGBA RMS",
                 normalsEvaluated = measureFields && hasNormals,rgbaEvaluated = measureFields && checkColors,colorBoundaryViewLoss = new float[views.Count],
+                gradientViewRms=new float[views.Count],
                 normalViewRms = measureFields ? new float[views.Count] : null,headlightViewRms = measureFields ? new float[views.Count] : null,
                 rgbaViewRms = measureFields && checkColors ? new float[views.Count] : null,
                 rgbaChannelViewRms = measureFields && checkColors ? new Vector4[views.Count] : null };
             int viewIndex = 0;
+            var gradientRegions=new List<float>();
             foreach (var view in views)
             {
                 var frame = Rasterize(positions,triangles,colors,normals,view,resolution,cancelled,measureFields);
                 if (measureFields) MeasureFields(view.source,frame,result,viewIndex,cancelled);
                 var report = view.acceptance.Measure(frame.colors,frame.coverage,cancelled);
+                result.sharpColorPairs+=report.sharpColorPairs; result.gradientPairs+=report.gradientPairs;
+                if (report.gradientEvaluated)
+                {
+                    result.gradientViews++; result.gradientViewRms[viewIndex]=report.gradientRms;
+                    result.gradientMeanRms+=report.gradientRms; result.gradientWorstRegionRms=Mathf.Max(result.gradientWorstRegionRms,report.worstGradientRegionRms);
+                }
+                gradientRegions.AddRange(report.gradientRegionRms);
                 if (report.detailEvaluated) result.detailViews++;
                 if (report.colorEvaluated)
                 {
@@ -165,12 +206,39 @@ namespace SashaRX.UnityMeshLab
             }
             result.colorAccepted = result.colorViews > 0 && result.colorLoss <= .25f;
             if (result.colorViews > 0) result.colorBoundaryMean /= result.colorViews;
+            if (result.gradientViews>0) result.gradientMeanRms/=result.gradientViews;
+            result.gradientRegionRms=gradientRegions.ToArray();
             result.detailAccepted &= result.detailViews > 0;
             return result;
         }
 
         internal LodScreenValidation WithAllSides(Mesh source,Func<bool> cancelled = null)
             => new LodScreenValidation(source,checkColors,cancelled,transform,requestedPixelsPerUnit,resolution,objectPixels,measureFields,allSides:true);
+
+        static int[] ContinuousColorRegions(Mesh source,Func<bool> cancelled)
+        {
+            Check(cancelled);
+            var data=new LodMeshData(source); var indices=Triangles(source);
+            var regions=Enumerable.Range(0,indices.Length/3).ToArray();
+            int Root(int f) { while (regions[f]!=f) { regions[f]=regions[regions[f]]; f=regions[f]; } return f; }
+            int offset=0;
+            for (int slot=0; slot<source.subMeshCount; slot++)
+            {
+                var faces=LodMeshData.Triangles(source,slot);
+                foreach (var pair in LodSmoothingRegions.EdgePairs(data,faces))
+                {
+                    Check(cancelled);
+                    bool Same(int a,int b) => MaxChannel((Vector4)data.colors[a]-(Vector4)data.colors[b])<=1f/255+1e-6f;
+                    if (!Same(pair[0].a,pair[1].b) || !Same(pair[0].b,pair[1].a)) continue;
+                    int a=Root(offset+pair[0].face),b=Root(offset+pair[1].face);
+                    regions[Mathf.Max(a,b)]=Mathf.Min(a,b);
+                }
+                offset+=faces.Length/3;
+            }
+            for (int f=0; f<regions.Length; f++) regions[f]=Root(f);
+            return regions;
+        }
+        static float MaxChannel(Vector4 v) => Mathf.Max(Mathf.Abs(v.x),Mathf.Max(Mathf.Abs(v.y),Mathf.Max(Mathf.Abs(v.z),Mathf.Abs(v.w))));
 
         internal void CaptureDiagnostic(Mesh mesh,Action<int,Color[],Color[],Color[],Color[]> capture,Func<bool> cancelled = null)
         {
@@ -199,7 +267,8 @@ namespace SashaRX.UnityMeshLab
             foreach (var view in views)
             {
                 var target = Rasterize(positions,indices,colors,normals,view,resolution,cancelled,true);
-                view.acceptance.VisitLostColorPairs(target.colors,target.coverage,(a,b,ca,cb,region) => {
+                void Add(int a,int b,Color ca,Color cb,int region)
+                {
                     int radius = view.acceptance.CorrespondenceRadius;
                     foreach (int pixel in new[] { a,b }) for (int dy = -radius; dy <= radius; dy++) for (int dx = -radius; dx <= radius; dx++)
                     {
@@ -210,7 +279,11 @@ namespace SashaRX.UnityMeshLab
                             int face = target.triangleAt[(y*resolution+x)*4+sample]; if (face >= 0) faces.Add(face);
                         }
                     }
-                },cancelled,includeSmallRegions:true);
+                }
+                view.acceptance.VisitLostColorPairs(target.colors,target.coverage,Add,cancelled,includeSmallRegions:true);
+                // Continuous paint needs diagonal corrections too, without being
+                // fed to the categorical per-polygon color stage.
+                view.acceptance.VisitLostGradientPairs(target.colors,target.coverage,Add,cancelled);
             }
             return faces.ToArray();
         }

@@ -47,6 +47,8 @@ def main():
         assert old['sourceSha256'] == new['sourceSha256'] == case['sourceSha256']
         assert hashlib.sha256(Path(case['sourcePath']).read_bytes()).hexdigest() == case['sourceSha256']
         rows = [{r['variant']: r for r in data['captures'] if r['view'] == 'front'} for data in (old, new)]
+        authored='authored-lod2' in rows[1]
+        assert authored==('authored-lod2' in rows[0])
         assert rows[1]['far-lod2']['budgetReached']
         assert rows[1]['far-lod2']['triangles'] <= np.ceil(new['sourceTriangles']/9)
         views = ['front', 'oblique']+[f'field{i}' for i in range(12)]
@@ -54,15 +56,15 @@ def main():
         for view in views:
             # Controls must be byte-identical, so comparison changes cannot come
             # from a different source import, camera, material or GPU readback.
-            for control in ('source', 'authored-lod2'):
+            for control in (('source', 'authored-lod2') if authored else ('source',)):
                 for mode in ('color', 'coverage'):
                     filename = f'{name}-{control}-{view}-{mode}.rgba'
                     assert (args.before/filename).read_bytes() == (args.after/filename).read_bytes(), filename
             sm = coverage(args.after, name, 'source', view)
             source, a = fields(args.after, name, 'source', view, sm)
-            for label, directory, variant in (
-                ('authored', args.after, 'authored-lod2'),
-                ('before', args.before, 'far-lod2'), ('after', args.after, 'far-lod2')):
+            variants=[('before', args.before, 'far-lod2'), ('after', args.after, 'far-lod2')]
+            if authored: variants.insert(0,('authored', args.after, 'authored-lod2'))
+            for label, directory, variant in variants:
                 target, b = fields(directory, name, variant, view, sm)
                 gpu.append({'view': view, 'variant': label, **errors(source, target, a, b)})
         meshes = [load(d/f'{name}-far-lod2-mesh.json') for d in (args.before, args.after)]
@@ -73,6 +75,7 @@ def main():
         summary = {}
         for variant in ('authored', 'before', 'after'):
             samples = [r for r in gpu if r['variant'] == variant]
+            if not samples: continue
             summary[variant] = {
                 'meanRgba': float(np.mean([r['rgbaRms'] for r in samples])),
                 'worstRgba': max(r['rgbaRms'] for r in samples),
@@ -80,11 +83,16 @@ def main():
                 'worstAlpha': max(r['rgbaChannelRms'][3] for r in samples)}
         models.append({'fixture': name, 'sourceSha256': new['sourceSha256'],
                        'sourceTriangles': new['sourceTriangles'],
-                       'triangles': {'authored': rows[1]['authored-lod2']['triangles'],
+                       'triangles': {'authored': rows[1]['authored-lod2']['triangles'] if authored else None,
                                      'before': rows[0]['far-lod2']['triangles'],
                                      'after': rows[1]['far-lod2']['triangles']},
                        'vertices': [len(m['positions']) for m in meshes],
+                       'farGenerateMs': [r['far-lod2']['simplifyMs'] for r in rows],
+                       'nearTriangles': [r['far-lod1']['triangles'] for r in rows],
                        'cpu64': [r['far-lod2']['farComparison'] for r in rows],
+                       'beforeUnderCurrentGuide': new.get('baselineFarGuide'),
+                       'beforeAllSidesUnderCurrentGuide': new.get('baselineFarAllSidesGuide'),
+                       'afterAllSidesUnderCurrentGuide': new.get('farAllSidesGuide'),
                        'attributeFit': rows[1]['far-lod2']['attributeFit'],
                        'ownership': [ownership(m) for m in meshes],
                        'summary': summary, 'gpu64': gpu})
@@ -98,13 +106,15 @@ def main():
                         ('Before', args.before, 'far-lod2', model['triangles']['before']),
                         ('After', args.after, 'far-lod2', model['triangles']['after'])]
             for col, (label, directory, variant, triangles) in enumerate(variants):
-                color, cov = fields(directory, model['fixture'], variant, view, sm)
                 axis = axes[i*3+j, col]
+                if variant=='authored-lod2' and triangles is None:
+                    axis.text(.5,.5,'No authored LOD2 in this FBX',ha='center',va='center'); axis.axis('off'); continue
+                color, cov = fields(directory, model['fixture'], variant, view, sm)
                 axis.imshow(display(color, cov), interpolation='nearest')
                 axis.set_xticks([]); axis.set_yticks([])
                 axis.set_title(f'{label}: {triangles} triangles')
                 if col == 0: axis.set_ylabel(f"{model['fixture']}\n{view}")
-    fig.suptitle('Real bench vertex RGB at 64px · source, authored LOD2, previous and current Generate', y=.995)
+    fig.suptitle('Real project vertex RGB at 64px · source, authored LOD2, previous and current Generate', y=.995)
     fig.tight_layout(rect=(0, .02, 1, .975))
     fig.text(.5, .008, 'Diagnostic fields; original materials and baked lightmaps not evaluated. Authored budget differs.', ha='center')
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -116,6 +126,8 @@ def main():
         for col, (label, directory, variant) in enumerate((
                 ('LOD0', args.after, 'source'), ('Authored LOD2', args.after, 'authored-lod2'),
                 ('Before', args.before, 'far-lod2'), ('After', args.after, 'far-lod2'))):
+            if variant=='authored-lod2' and model['triangles']['authored'] is None:
+                axes[i,col].text(.5,.5,'No authored LOD2 in this FBX',ha='center',va='center'); axes[i,col].axis('off'); continue
             color, cov=fields(directory, model['fixture'], variant, view, sm, mode='wire')
             axis=axes[i, col]; axis.imshow(display(color, cov), interpolation='nearest')
             axis.set_xticks([]); axis.set_yticks([]); axis.set_title(label)
@@ -126,16 +138,46 @@ def main():
     for axis, metric, title in zip(axes, ('meanRgba', 'worstRgba', 'worstCoverage', 'worstAlpha'),
                                   ('Mean RGBA RMS', 'Worst RGBA RMS', 'Worst coverage error', 'Worst alpha RMS')):
         for n, variant in enumerate(('authored', 'before', 'after')):
-            values = [m['summary'][variant][metric] for m in models]
+            values = [m['summary'].get(variant,{}).get(metric,np.nan) for m in models]
             bars = axis.bar(np.arange(len(models))+(n-1)*.25, values, .25, label=variant)
             for bar, value in zip(bars, values):
-                axis.text(bar.get_x()+bar.get_width()/2, value, f'{value:.4g}', ha='center', va='bottom', fontsize=8)
+                if not np.isfinite(value): continue
+                axis.text(bar.get_x()+bar.get_width()/2, value, f'{value:.4g}', ha='center', va='bottom', fontsize=8,rotation=90)
         axis.set_xticks(np.arange(len(models)), [m['fixture'] for m in models], rotation=15)
-        axis.set_title(title+' · 14 GPU views'); axis.grid(axis='y', alpha=.2)
+        axis.set_title(title+' · 14 GPU views'); axis.grid(axis='y', alpha=.2); axis.margins(y=.22)
     axes[0].legend(); fig.tight_layout(); fig.savefig(str(args.output)+'_ERRORS.png', dpi=130); plt.close(fig)
+    if all(m['beforeAllSidesUnderCurrentGuide'] and m['afterAllSidesUnderCurrentGuide'] for m in models):
+        fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+        labels=[m['fixture'] for m in models]; x=np.arange(len(models))
+        guides=[m['afterAllSidesUnderCurrentGuide'] for m in models]
+        axes[0].bar(x-.18,[g['sharpColorPairs'] for g in guides],.36,label='sharp pairs')
+        axes[0].bar(x+.18,[g['gradientPairs'] for g in guides],.36,label='continuous ramp pairs')
+        axes[0].set_title('Source high-contrast pairs · 12 CPU views'); axes[0].legend()
+        for axis,metric,title in zip(axes[1:],('colorBoundaryMean','gradientWorstRegionRms'),
+                                    ('Mean sharp-pair loss','Worst local gradient RGBA RMS')):
+            for n,key in enumerate(('beforeAllSidesUnderCurrentGuide','afterAllSidesUnderCurrentGuide')):
+                values=[m[key][metric] if metric!='gradientWorstRegionRms' or m[key]['gradientViews']>0 else np.nan for m in models]
+                bars=axis.bar(x+(n-.5)*.36,values,.36,label=('before','after')[n])
+                for bar,value in zip(bars,values):
+                    if not np.isfinite(value): continue
+                    axis.text(bar.get_x()+bar.get_width()/2,value,f'{value:.4g}',ha='center',va='bottom',fontsize=8)
+            if metric=='gradientWorstRegionRms':
+                if all(m['afterAllSidesUnderCurrentGuide']['gradientViews']==0 for m in models):
+                    axis.text(.5,.5,'Regional ramp RMS not evaluated\nNo high-contrast region has >=4 pairs',
+                              ha='center',transform=axis.transAxes,fontsize=10)
+                    axis.set_yticks([])
+                else:
+                    for i,m in enumerate(models):
+                        if m['afterAllSidesUnderCurrentGuide']['gradientViews']==0:
+                            axis.text(i,.4,'Not evaluated',ha='center',transform=axis.get_xaxis_transform(),fontsize=8)
+            axis.set_title(title+' · same source guide'); axis.legend()
+        for axis in axes:
+            axis.set_xticks(x,labels,rotation=15); axis.grid(axis='y',alpha=.2)
+        fig.tight_layout(); fig.savefig(str(args.output)+'_GUIDE.png',dpi=130); plt.close(fig)
     report = {'tests': test, 'supplementaryTests': supplement, 'distinctPassedTests': len(passed),
               'before': str(args.before), 'after': str(args.after), 'models': models,
-              'scope': 'Same FBX bytes, identical source/authored GPU controls, 14 views, source extent 64px.'}
+              'scope': 'Same FBX bytes, identical source/authored GPU controls, 14 views, source extent 64px.',
+              'gradientRegionScope': 'High-contrast pairs >=0.15; at least four pairs per region. No gradientViews means unmeasured regional ramps, not zero color error.'}
     Path(str(args.output)+'_RESULTS.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
     print(json.dumps([{k: m[k] for k in ('fixture', 'triangles', 'vertices', 'summary')} for m in models], indent=2))
 

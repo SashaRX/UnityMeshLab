@@ -2,6 +2,8 @@
 
 Baseline at `0ffa5d2`. The following shared-corner iteration and its before/after
 evidence are recorded in [LOD_SHARED_PAINT_PATCHES.md](LOD_SHARED_PAINT_PATCHES.md).
+The current gradient / sharp-boundary check is in
+[LOD_GRADIENT_BOUNDARIES.md](LOD_GRADIENT_BOUNDARIES.md).
 
 The source-driven attribute pipeline runs on other vertex-color models, but the
 recent paint-diagonal stage does **not** generalize to these shared-corner meshes.

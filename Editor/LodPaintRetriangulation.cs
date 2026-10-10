@@ -125,7 +125,7 @@ namespace SashaRX.UnityMeshLab
                                 local.rgbaRms>before.rgbaRms+1e-6f ||
                                 local.silhouetteMean>before.silhouetteMean+1e-6f || local.silhouetteMax>before.silhouetteMax+1e-6f) { probe.refusal="screen"; report.screenRejected++; continue; }
                             var all=verification.Measure(trial,cancelled);
-                            if (!all.ColorViewsWithin(allBefore,1f/255) || all.detailLoss>allBefore.detailLoss+1e-6f ||
+                            if (!all.ColorViewsWithin(allBefore,1f/255) || !all.GradientsDoNotWorsen(allBefore) || all.detailLoss>allBefore.detailLoss+1e-6f ||
                                 all.silhouetteMean>allBefore.silhouetteMean+1e-6f || all.silhouetteMax>allBefore.silhouetteMax+1e-6f) { probe.refusal="reverse views"; continue; }
                             var metrics=LodSurfaceValidation.MeasureMeshes(source,trial,settings,cancelled,ignoreDegenerateFaces:true);
                             probe.uv=metrics.UvRms; probe.distance=metrics.DistanceRms; probe.maximumDistance=metrics.distance;
