@@ -588,7 +588,7 @@ namespace SashaRX.UnityMeshLab
                             if (pipeline.Has(RemeshPipeline.Stage.Prepare) && !string.IsNullOrEmpty(pipeline.ClosureLoopRanges))
                                 EditorGUILayout.LabelField("Last prepared loops: " + pipeline.ClosureLoopRanges, EditorStyles.wordWrappedMiniLabel);
                             settings.capPlaneTolerance = Mathf.Max(0,EditorGUILayout.FloatField(new GUIContent("Cap plane tolerance",
-                                "Minimum plane-fit tolerance in source-local units (default 0.00001). Handles small import deviations without moving boundary vertices. The relative plane tolerance, topology and intersection checks still apply."),settings.capPlaneTolerance));
+                                "Minimum plane-fit tolerance in source-local units (default 0.01). The effective tolerance also allows 0.1% of the local contour span. Boundary vertices stay fixed; topology and intersection checks still apply."),settings.capPlaneTolerance));
                         }
                     }
                     settings.sourceBackfaces = (RemeshBackfaces)EditorGUILayout.EnumPopup(new GUIContent("Source backfaces",

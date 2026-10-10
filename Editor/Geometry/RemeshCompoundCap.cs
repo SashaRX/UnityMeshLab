@@ -24,7 +24,7 @@ namespace SashaRX.UnityMeshLab
             RemeshPlanarCap.ExternalContacts winnerContacts = null;
             var low=p[loop[0]]; var high=low;
             foreach(int v in loop) { low=Vector3.Min(low,p[v]); high=Vector3.Max(high,p[v]); }
-            double tolerance=Math.Max((high-low).magnitude*1e-5,planeTolerance);
+            double tolerance=Math.Max((high-low).magnitude*RemeshCapPlanes.RelativeTolerance,planeTolerance);
             for(int a=0;a<loop.Count;++a) for(int b=a+2;b<loop.Count;++b) for(int c=b+2;c<loop.Count;++c) {
                 token.ThrowIfCancellationRequested();
                 if(loop.Count-c+a<2) continue;

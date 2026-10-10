@@ -174,7 +174,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [TestCase(false)] [TestCase(true)]
-        public void CapturedParkBenchMicrometreRimUsesExplicitPlaneToleranceWithoutMovingVertices(bool local)
+        public void CapturedParkBenchMicrometreRimUsesRelativeToleranceWithoutMovingVertices(bool local)
         {
             var rim = new[] {
                 new Vector3(-1.018702507019043f,.054338473826646805f,-.24817068874835968f),
@@ -187,12 +187,13 @@ namespace SashaRX.UnityMeshLab.Tests
             for(int i=0;i<4;++i) {int j=(i+1)%4; ix.AddRange(new[] {i,j,j+4,i,j+4,i+4});}
             ix.AddRange(new[] {4,5,6,4,6,7}); var source=ix.ToArray();
             var saved=(Vector3[])p.Clone();
-            Assert.Throws<InvalidOperationException>(()=>RemeshPlanarCap.Prepare(p,source,"all",default,local));
+            var automatic=RemeshPlanarCap.Prepare(p,source,"all",default,local);
+            Assert.AreEqual(2,automatic.addedFaces);
             var cap=RemeshPlanarCap.Prepare(p,source,"all",default,local,planeTolerance:1e-5);
             Assert.AreEqual(2,cap.addedFaces); Assert.AreEqual(0,RemeshTopology.Inspect(cap.positions,cap.indices).boundary.Count);
             CollectionAssert.AreEqual(saved,p); CollectionAssert.AreEqual(p,cap.positions);
             CollectionAssert.AreEqual(source,cap.indices.Take(source.Length));
-            // Real warping remains outside the explicit micrometre allowance.
+            // Real warping remains outside the relaxed relative allowance.
             p[2]+=direction*.1f;
             Assert.Throws<InvalidOperationException>(()=>RemeshPlanarCap.Prepare(p,source,"all",default,local,planeTolerance:1e-5));
         }
@@ -203,16 +204,17 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.Throws<InvalidOperationException>(()=>RemeshPlanarCap.Prepare(Box,Faces,"all",default,planeTolerance:tolerance));
         }
 
-        [TestCase(false)] [TestCase(true)]
-        public void ExplicitToleranceDoesNotBypassIntersectionOrCompoundChecks(bool local)
+        [TestCase(false, 1e-5f)] [TestCase(true, 1e-5f)]
+        [TestCase(false, RemeshSettings.DefaultCapPlaneTolerance)] [TestCase(true, RemeshSettings.DefaultCapPlaneTolerance)]
+        public void ExplicitToleranceDoesNotBypassIntersectionOrCompoundChecks(bool local, float tolerance)
         {
             var p=Box.Concat(new[] {new Vector3(0,-2,0),new Vector3(0,0,0),new Vector3(.4f,-1,.4f)}).ToArray();
             var ix=Faces.Where((v,k)=>k/6!=2).Concat(new[] {8,9,10}).ToArray();
             StringAssert.Contains("contacts face",Assert.Throws<InvalidOperationException>(()=>
-                RemeshPlanarCap.Prepare(p,ix,"0",default,local,planeTolerance:1e-5)).Message);
+                RemeshPlanarCap.Prepare(p,ix,"0",default,local,planeTolerance:tolerance)).Message);
             var adjacent=Faces.Where((v,k)=>k/6!=0 && k/6!=2).ToArray();
-            if(!local) Assert.Throws<InvalidOperationException>(()=>RemeshPlanarCap.Prepare(Box,adjacent,"all",default,planeTolerance:1e-5));
-            else Assert.AreEqual(4,RemeshPlanarCap.Prepare(Box,adjacent,"all",default,true,planeTolerance:1e-5).addedFaces);
+            if(!local) Assert.Throws<InvalidOperationException>(()=>RemeshPlanarCap.Prepare(Box,adjacent,"all",default,planeTolerance:tolerance));
+            else Assert.AreEqual(4,RemeshPlanarCap.Prepare(Box,adjacent,"all",default,true,planeTolerance:tolerance).addedFaces);
         }
 
         [TestCase(false)] [TestCase(true)]

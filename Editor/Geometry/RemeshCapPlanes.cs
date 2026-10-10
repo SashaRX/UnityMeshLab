@@ -9,6 +9,9 @@ namespace SashaRX.UnityMeshLab
     /// choose disk versus Bridge intent or reconstruct missing feature vertices.</summary>
     internal static class RemeshCapPlanes
     {
+        // Source rims need not be numerically exact planes. Allow 0.1% of
+        // local support span; retain every original coordinate for triangulation.
+        internal const double RelativeTolerance = 1e-3;
         internal enum Kind { Planar, TwoPlanes, Ambiguous, Unsupported }
 
         internal sealed class Analysis
@@ -55,7 +58,7 @@ namespace SashaRX.UnityMeshLab
             if (!(best > longest * longest * (legacyRank ? 1e-20 : 1e-12))) return false;
             plane = new Plane(nx, ny, nz);
             double norm = Math.Sqrt(best);
-            if (tolerance < 0) tolerance = Math.Sqrt(longest) * 1e-5;
+            if (tolerance < 0) tolerance = Math.Sqrt(longest) * RelativeTolerance;
             tolerance = Math.Max(tolerance, minimumTolerance);
             foreach (int v in vertices) {
                 double residual = Math.Abs(nx * ((double)p[v].x - origin.x) +
@@ -75,7 +78,7 @@ namespace SashaRX.UnityMeshLab
             var low = p[loop[0]]; var high = low;
             foreach (int v in loop) { low = Vector3.Min(low, p[v]); high = Vector3.Max(high, p[v]); }
             double dx = (double)high.x - low.x, dy = (double)high.y - low.y, dz = (double)high.z - low.z;
-            double tolerance = Math.Max(Math.Sqrt(dx * dx + dy * dy + dz * dz) * 1e-5, minimumTolerance);
+            double tolerance = Math.Max(Math.Sqrt(dx * dx + dy * dy + dz * dz) * RelativeTolerance, minimumTolerance);
             int samples = 0;
             Plane Fit(List<int> support, out bool supported)
             {

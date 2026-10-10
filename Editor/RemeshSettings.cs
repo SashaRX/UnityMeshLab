@@ -84,6 +84,7 @@ namespace SashaRX.UnityMeshLab
     {
         // 1 · Voxel remesh
         internal const int MaxVoxelResolution = 1024;
+        internal const float DefaultCapPlaneTolerance = .01f;
         public int voxelResolution = 128;
         public bool solve = true;
         public bool shell;
@@ -93,7 +94,7 @@ namespace SashaRX.UnityMeshLab
         public string planarCapLoops = "all";
         // Minimum plane-fit tolerance in captured source units. Boundary positions
         // remain exact; only classification/triangulation projection uses this bound.
-        public float capPlaneTolerance = .00001f;
+        public float capPlaneTolerance = DefaultCapPlaneTolerance;
         public bool planarCapLocalPlanes;
         public RemeshClosureMode closureMode;
         // After the voxel remesh, drop the faces the source has no surface for: the
@@ -242,6 +243,13 @@ namespace SashaRX.UnityMeshLab
                 restored.dilationRadius = DefaultDilationRadius;
             if (restored != null && json.IndexOf("\"reduceUvFragmentation\"", StringComparison.Ordinal) < 0)
                 restored.reduceUvFragmentation = true;
+            if (restored != null && json.IndexOf("\"planarCapLoops\"", StringComparison.Ordinal) < 0)
+                restored.planarCapLoops = "all";
+            // Replace the former shipped default; keep other authored tolerances,
+            // including an explicit zero that selects only the relative allowance.
+            if (restored != null && (json.IndexOf("\"capPlaneTolerance\"", StringComparison.Ordinal) < 0 ||
+                restored.capPlaneTolerance == .00001f))
+                restored.capPlaneTolerance = DefaultCapPlaneTolerance;
             return restored;
         }
 

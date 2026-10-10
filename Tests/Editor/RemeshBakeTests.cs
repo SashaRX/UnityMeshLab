@@ -13,6 +13,27 @@ namespace SashaRX.UnityMeshLab.Tests
     {
         static RemeshSource.Map Map() => new RemeshSource.Map();
 
+        [Test]
+        public void CapToleranceMigratesMissingAndFormerDefaultWithoutChangingOtherSettings()
+        {
+            Assert.AreEqual(.01f, new RemeshSettings().capPlaneTolerance);
+            foreach (string json in new[] {"{\"voxelResolution\":64,\"planarCapLocalPlanes\":true}",
+                "{\"voxelResolution\":64,\"planarCapLocalPlanes\":true,\"capPlaneTolerance\":0.00001}"}) {
+                var restored = RemeshSettings.FromSavedJson(json);
+                Assert.AreEqual(.01f, restored.capPlaneTolerance);
+                Assert.AreEqual("all", restored.planarCapLoops);
+                Assert.AreEqual(64, restored.voxelResolution); Assert.IsTrue(restored.planarCapLocalPlanes);
+            }
+        }
+
+        [TestCase(0f)] [TestCase(.002f)] [TestCase(.01f)] [TestCase(.1f)]
+        public void CapTolerancePreservesExplicitCustomValues(float tolerance)
+        {
+            var settings = new RemeshSettings {capPlaneTolerance = tolerance, planarCapLoops = "3"};
+            var restored = RemeshSettings.FromSavedJson(JsonUtility.ToJson(settings));
+            Assert.AreEqual(tolerance, restored.capPlaneTolerance); Assert.AreEqual("3", restored.planarCapLoops);
+        }
+
         [TestCase(257)]
         [TestCase(512)]
         [TestCase(1024)]

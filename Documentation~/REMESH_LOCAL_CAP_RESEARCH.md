@@ -252,3 +252,150 @@ off/on, checking raw output, Trim and Simplify independently. Comparators should
 use the same source, opening selection and budgets. A refusal is an explicit
 outcome, not a reason to lower topology guards. No production automatic Cap
 default should follow from this research alone.
+
+## MeshLab Close Holes code audit — 2026-10-10
+
+This follow-up inspects upstream source against our `df08572` baseline. It does
+not run MeshLab on private captures or change our production Cap defaults.
+MeshLab `main` was pinned to
+[`71e7b0b`](https://github.com/cnr-isti-vclab/meshlab/tree/71e7b0b53cd98f520f84cb17b31bac6f1ef947cc);
+its `src/vcglib` gitlink points to
+[`c94ef4e`](https://github.com/cnr-isti-vclab/vcglib/tree/c94ef4e12e9ea3ae986d9af91005be8328d13719).
+The normal filter and the legacy interactive editor are different paths.
+
+### Normal Close Holes filter
+
+[Filter dispatch](https://github.com/cnr-isti-vclab/meshlab/blob/71e7b0b53cd98f520f84cb17b31bac6f1ef947cc/src/meshlabplugins/filter_meshing/meshfilter.cpp#L1483-L1514)
+requires edge manifoldness, then calls VCGlib ear filling. There is no automatic
+vertex weld in this dispatch. The
+[options](https://github.com/cnr-isti-vclab/meshlab/blob/71e7b0b53cd98f520f84cb17b31bac6f1ef947cc/src/meshlabplugins/filter_meshing/meshfilter.cpp#L514-L522)
+include a boundary-edge-count limit (default 30), selected-boundary faces,
+selection of new faces, intersection prevention (default on), and optional
+patch refinement (default off). Edge count is not a physical hole-size measure.
+
+[VCGlib ears](https://github.com/cnr-isti-vclab/vcglib/blob/c94ef4e12e9ea3ae986d9af91005be8328d13719/vcg/complex/algorithms/hole.h#L285-L603)
+operate directly on 3D rim vertices. A priority queue prefers convex ears, good
+triangle shape and smaller dihedral changes against adjacent faces. Accepted
+triangles update neighbouring candidates. Intersection checks cover the rim's
+incident face fans plus accepted triangles, rather than the whole connected
+element. If the queue stalls, accepted ears remain. The returned hole count is
+incremented before filling, so it counts attempts, not audited complete closures.
+
+The same header has a separate
+[dynamic-programming triangulation](https://github.com/cnr-isti-vclab/vcglib/blob/c94ef4e12e9ea3ae986d9af91005be8328d13719/vcg/complex/algorithms/hole.h#L655-L901)
+using angle and area costs. It is not invoked by this filter; it should not be
+described as the normal MeshLab Close Holes algorithm. Neither path explicitly
+reconstructs missing planar feature edges or chooses Cap versus Bridge.
+
+### Refinement is a separate construction stage
+
+[Refine Filled Hole](https://github.com/cnr-isti-vclab/meshlab/blob/71e7b0b53cd98f520f84cb17b31bac6f1ef947cc/src/meshlabplugins/filter_meshing/meshfilter.cpp#L1516-L1549)
+enables selected-face isotropic remeshing: split, collapse, flip and smooth.
+It runs three cycles of coarse (3L), fine (L/3), and target (L) sampling, with
+5/3/2 iterations respectively. Projection and source-distance checks are off;
+the default L comes from 3% of the whole mesh bounding-box diagonal.
+
+The
+[smoothing selection](https://github.com/cnr-isti-vclab/vcglib/blob/c94ef4e12e9ea3ae986d9af91005be8328d13719/vcg/complex/algorithms/isotropic_remeshing.h#L1320-L1356)
+keeps the selected patch interface fixed for Laplacian relaxation. However,
+[`cleanFlag` defaults to true](https://github.com/cnr-isti-vclab/vcglib/blob/c94ef4e12e9ea3ae986d9af91005be8328d13719/vcg/complex/algorithms/isotropic_remeshing.h#L88-L97),
+and the initial
+[cleanup](https://github.com/cnr-isti-vclab/vcglib/blob/c94ef4e12e9ea3ae986d9af91005be8328d13719/vcg/complex/algorithms/isotropic_remeshing.h#L251-L295)
+removes duplicate faces/unreferenced vertices and compacts the whole mesh.
+This is not our original-face-prefix preservation contract. Refinement ideas
+are reusable; the whole mutation path is not a drop-in Cap-only operation.
+
+### Legacy Bridge editor
+
+Under `unsupported/plugins_unsupported/edit_hole`,
+[`FgtBridge`](https://github.com/cnr-isti-vclab/meshlab/blob/71e7b0b53cd98f520f84cb17b31bac6f1ef947cc/unsupported/plugins_unsupported/edit_hole/fgtBridge.h#L100-L134)
+joins two boundary edges with two triangles. It can merge two loops into one
+remaining loop, or split one loop into two. This is a seed connection followed
+by filling, not an entire resampled strip generated in one operation.
+
+[Automatic multi-bridging](https://github.com/cnr-isti-vclab/meshlab/blob/71e7b0b53cd98f520f84cb17b31bac6f1ef947cc/unsupported/plugins_unsupported/edit_hole/fgtBridge.h#L478-L580)
+searches selected loop pairs and updates the hole list after each connection.
+The
+[two diagonal choices](https://github.com/cnr-isti-vclab/meshlab/blob/71e7b0b53cd98f520f84cb17b31bac6f1ef947cc/unsupported/plugins_unsupported/edit_hole/fgtBridge.h#L685-L754)
+are scored by triangle quality after mesh-contact tests. The
+[contact query](https://github.com/cnr-isti-vclab/meshlab/blob/71e7b0b53cd98f520f84cb17b31bac6f1ef947cc/unsupported/plugins_unsupported/edit_hole/fgtHole.h#L502-L521)
+uses a spatial grid and face bounding boxes. This legacy code is useful as a
+construction reference, but does not establish that two selected openings
+belong to one missing surface. It also has no equivalent of our element-owner
+exception for unrelated source geometry.
+
+### Consequences for our next experiments
+
+Our current planar path already has exact projected ear tests and constrained
+Delaunay diagonal improvement (`RemeshPlanarCap.Triangulate`). Replacing it with
+greedy 3D ears would not establish an improvement. The useful additions are:
+
+1. A bounded 3D candidate for genuinely warped, simple rims that have no accepted
+   planar-feature hypothesis. Preserve fixed rim positions and source winding;
+   use shape quality and donor-collar normals for ranking, not for acceptance.
+2. A seed-Bridge comparator after domain pairing has been accepted: insert a
+   small connection, re-extract the remaining boundary, then fill it. Keep the
+   complete-strip method as a separate candidate. Do not pair holes solely by
+   distance or triangle quality.
+3. Optional patch-only refinement, with a length policy based on the local rim
+   and voxel scale, fixed original/feature vertices, and persistent synthetic
+   face provenance. Audit after every geometry-changing stage.
+
+Every candidate must retain our atomic acceptance per opening/domain, complete
+position-welded topology checks, contact checks against the affected connected
+element and other candidate faces, cancellation and work budgets. Contacts with
+other elements remain non-blocking. Count actual remaining boundaries; a partial
+ear fill must not be reported as a closed hole. A refused opening must not undo
+independent accepted openings.
+
+| Comparison case | Required result |
+| --- | --- |
+| Concave planar rim | Fixed boundary; no overlap; compare triangle quality with current Delaunay output. |
+| Known warped smooth rim | Compare construction error and worst dihedral; prohibit collision and inversion. |
+| Box missing two/three adjacent faces | Retain expected planes and shared feature edges; smooth filling is not equivalent. |
+| Torus with a removed band | Compare complete-strip and seed-Bridge closure; preserve the intended tunnel. |
+| Two unrelated open components | No automatic pairing; contacts with the other element cannot refuse a valid local Cap. |
+| Valid and obstructed rims together | Keep the valid closure and preview the refused rim with its reason. |
+
+Record preservation, synthetic-face masks, residual boundaries, vertex links,
+new/preexisting contacts, triangle quality, patch excursion, work and refusal
+reasons. Only then replay private captures and native 64/128/256 with Solve
+off/on; local closure success alone is not native Remesh or bake validation.
+
+## Near-planar source rims: relaxed tolerance (2026-10-10)
+
+The private `Univer_SmallPorch_1` capture has 96 source vertices and 60 triangles.
+Exact position welding leaves 35 vertices and one eight-edge boundary. Its
+underside is planar, but the midpoint on the other missing face is offset by
+`0.0009227395` source-local units (about 0.02% of that arc's span). The exact box
+fixture did not exercise this authored bow: the old `1e-5` relative allowance
+rejected the real staircase's second patch.
+
+Cap revision 10 changes the relative plane-fit allowance to 0.1% of local
+support span and the default minimum tolerance to `0.01` source-local units,
+as requested. The effective bound is the larger of the two. Saved settings
+with the former shipped `0.00001` default migrate to `0.01`; a missing loop
+selection migrates to `all`. Other explicitly saved values, including zero,
+remain intact.
+
+This changes plane classification and the 2D triangulation projection only.
+Source positions, indices, donors and FBX files are preserved. Continuous arcs,
+unique decomposition, boundary conservation, vertex links, exact contacts
+within the affected element, cancellation and search budgets remain checked.
+Prepared snapshots include the Cap revision, so old refused preparations are
+invalidated after the package update.
+
+Regression coverage adds a bowed, subdivided box with two adjacent missing
+faces, rotation, translation, scale and reversed winding. The private porch
+replay checks both the new minimum and the relative allowance with a saved
+`1e-5` minimum, then runs native Remesh at 64, Trim, Simplify and Unwrap with
+Solve off/on. Both closures add six faces in two patches, leave no open edges,
+and preserve every original source corner. Explicit `0.01` intersection tests
+still refuse obstructed closures. `FairStall_Steps` also passes Cap and native
+Remesh with the new default; `Garbage_Chute_Long` additionally passes Trim,
+Simplify and Unwrap. These replays do not constitute a material-bake verification.
+
+Local validation: 337 EditMode tests passed, no failures; 18 tests requiring
+other private inputs or external prerequisites were ignored. Both C# compile
+variants (FBX exporter defined/undefined) passed. The independent Python Cap
+geometry benchmark passed all 115 tests.
