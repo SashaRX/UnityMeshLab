@@ -406,7 +406,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     {
                         Assert.That(info.budgetPriority,Is.True);
                         if (info.hardEdges?.sourceFallback != true)
-                            Assert.That(info.evaluatedCandidates,Is.EqualTo(candidates+(info.budgetCandidates?.Count(c => c.name == "previous protected source candidate" || c.name == "screen silhouette refit") ?? 0)));
+                            Assert.That(info.evaluatedCandidates,Is.EqualTo(candidates+(info.budgetCandidates?.Count(c => c.variant > candidates) ?? 0)));
                         Assert.That(float.IsNaN(info.selectionScore) || float.IsInfinity(info.selectionScore),Is.False,
                             "Visible real project models require a finite quality ranking: "+source.name);
                         if (!preserveHardEdges || farScreenBudget && info.lodLevel >= 2) Assert.That(info.simplifiedTris,Is.LessThanOrEqualTo(info.targetTris),$"{source.name}/LOD{info.lodLevel}: failed requested 3x budget");

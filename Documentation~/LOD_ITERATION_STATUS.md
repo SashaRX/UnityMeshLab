@@ -8,6 +8,53 @@ Latest follow-up verification: **183 selected EditMode tests passed**, with all 
 
 ## Implemented
 
+The latest **far geometry stage** adds one independent LOD0 candidate for static,
+non-varying-color meshes with at most 512 target triangles. It retains the
+configured normal cost while omitting UV/RGBA costs during that probe, then runs
+the existing attribute and shared-lightmap correction. Selection requires better
+source quality and no regression in six-view mean/worst silhouette, local detail
+or color guides. Authored channels, material slots and Lock Border are retained;
+cancellation releases both the new probe and the preceding candidate.
+
+**221 selected EditMode tests passed, zero failures/skips**, on Unity 6000.2.6f2;
+all eight actual models were regenerated and recaptured. Both FBX compilation
+configurations and the identifier/tool-dependency checks pass. All eight LOD2
+budgets remain at approximately 1/9. Fire shield changes 204→200/1850 triangles
+(9.25× reduction); six-view mean silhouette mismatch changes 14.21→12.56%, worst
+16.54→15.53%. First aid changes 318→316 triangles and mean mismatch 3.14→1.26%;
+Bench A changes 413→424 and 7.95→6.40%. The other five LOD2 outputs, including both
+varying-color meshes, retain identical raw coverage/color/shaded captures.
+Source/native/LOD1 controls are byte-identical throughout the eight-model run.
+The added probe has a generation cost: fire-shield far-profile time in this run
+is 36.86s versus the preceding 32.97s (both generated levels included). These
+single-run timings are diagnostics, not a stable performance benchmark.
+
+With the actual shared Level_Plan Bakery atlas and the same renderer binding,
+fire-shield overlapping baked RGB RMS improves **23.39–23.98%** for irradiance
+and **40.46–42.22%** with direction. The integrated UV2 transfer is accepted on
+26 faces, with 305 render vertices after chart splits. The authored FBX LOD2 has
+303 triangles and still preserves silhouette better: front/oblique mask mismatch
+8.68/9.92%, versus generated 16.74/18.56%. Thin-strip distortion remains visible.
+Diagnostic headlight RMS worsens 0.1442→0.3026; this is a shared-lightmap
+improvement, not a general dynamic-lighting improvement. Original PBR materials,
+normal maps, complete scene composition and filtered/packed atlases are still
+outside this verification.
+
+Portable evidence: [numeric report](LOD_FAR_GEOMETRY_RESULTS.json),
+[actual-model comparison](LOD_FAR_GEOMETRY_RESULTS_MODELS.png),
+[budget/error graphs](LOD_FAR_GEOMETRY_RESULTS_ERRORS.png).
+Fresh raw captures and `tests.xml` are under
+`_results~/lod-components-20261010/final/`; the original-FBX inspection control is
+under `_results~/lod-original-fire-20261010/`. Reproduce the portable artifacts:
+
+```powershell
+python -B Tools~/render_lod_far_geometry.py _results~/lod-components-20261010/final --previous _results~/lod-far-normals-20261010/final --previous-bake _results~/lod-far-normals-20261010/shared-bake --originals _results~/lod-original-fire-20261010 --output Documentation~/LOD_FAR_GEOMETRY_RESULTS
+```
+
+Whole-component allocation, position welding and stronger corner/regularization
+probes failed the measured non-regression checks and are not shipped. This stage
+does not introduce a native plugin/ABI change or a new public setting.
+
 The [far normal stage](LOD_FAR_NORMALS.md) retains all eight approximately 1/9
 budgets and silhouette/RGBA controls while improving the fire-shield normal field.
 The user confirmed shared LOD0 lightmaps and supplied the actual `Level_Plan /
@@ -70,10 +117,13 @@ The overview/chart retain the final capture lineage above; their LOD2 fields/cou
 
 ## Next iteration, in order
 
-Priority after the actual shared-atlas test: extend UV2/chart-boundary and filtered
-lightmap checks to more assigned project instances, improve the remaining visible
-thin components at 64px, then exercise complete materials/assemblies and LOD
-transitions. Shared bindings currently support only unmipped full-HDR atlases.
+Priority after this geometry stage: correct categorical paint boundaries on the
+tent and colored bench at the same 1/9 budget and 64px footprint; then extend
+UV2/chart-boundary and filtered lightmap checks to more assigned project instances.
+Thin-strip distortion on the fire shield remains a geometry follow-up, with the
+authored 303-triangle control kept visible. Exercise complete materials/assemblies
+and LOD transitions after those checks. Shared bindings currently support only
+unmipped full-HDR atlases.
 Keep lighting/color fidelity ahead of exact normal-region matching for LOD2.
 
 1. Native crease/junction constraints and the matched-count comparison are implemented and verified as an optional experiment. Remaining work in this stage: diagnose low-budget coverage failures, quality regressions and expensive retries; keep the strict/coarsened controls and rebuild native changes through CI.

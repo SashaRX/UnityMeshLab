@@ -91,8 +91,9 @@ namespace SashaRX.UnityMeshLab.Tests
                     var boundFar = bound.Single(v => v.name == "baked-lod2");
                     report.integratedTransfer = boundFar.info.attributeCorrection.sharedLightmapUv;
                     Assert.That(boundFar.info.attributeCorrection.sharedLightmapUv.accepted,Is.True);
-                    Assert.That(LodMeshData.TriangleCount(boundFar.mesh),Is.EqualTo(204));
                     var expected = variants.Single(v => v.name == "uv2-min16").mesh;
+                    Assert.That(LodMeshData.TriangleCount(boundFar.mesh),Is.EqualTo(LodMeshData.TriangleCount(expected)));
+                    Assert.That(LodMeshData.TriangleCount(boundFar.mesh),Is.LessThanOrEqualTo(Mathf.CeilToInt(LodMeshData.TriangleCount(source)/9f)));
                     CollectionAssert.AreEqual(expected.vertices,boundFar.mesh.vertices);
                     CollectionAssert.AreEqual(expected.uv2,boundFar.mesh.uv2);
                     foreach (var variant in bound) Object.DestroyImmediate(variant.mesh);

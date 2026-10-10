@@ -183,6 +183,59 @@ namespace SashaRX.UnityMeshLab
                     }
                     finally { if (fitted) UnityEngine.Object.DestroyImmediate(fitted); }
                 }
+                // UV chart costs can consume the complete low-density budget even
+                // when a moderate normal cost preserves the thin assembly better.
+                // Keep authored channels, but offer one independent source-based
+                // geometry probe before the final attribute/lightmap correction.
+                if (options.screenBudget && !varyingColors && target <= 512 && settings.normalWeight > 0 &&
+                    source.normals.Length == source.vertexCount && source.blendShapeCount == 0 &&
+                    !source.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.BlendWeight))
+                {
+                    if (cancelled?.Invoke() == true) throw new OperationCanceledException("LOD geometry probe cancelled.");
+                    var attempt = settings; attempt.uv2Weight = attempt.colorWeight = 0;
+                    attempt.targetError = Mathf.Max(1,settings.targetError); attempt.allowAttributeSeamCollapse = true;
+                    var candidate = MeshSimplifier.Simplify(source,attempt); probes += 1+candidate.nativeRetries;
+                    try
+                    {
+                        UvProgress.Report(UvProgress.Current.fraction,$"{source.name}: normal-cost geometry verification");
+                        if (cancelled?.Invoke() == true) throw new OperationCanceledException("LOD geometry verification cancelled.");
+                        if (candidate.ok && candidate.simplifiedTriCount > 0 && candidate.simplifiedTriCount <= target)
+                        {
+                            var measured = LodSurfaceValidation.MeasureMeshes(source,candidate.simplifiedMesh,settings,cancelled,ignoreDegenerateFaces:true);
+                            var local = screen.Measure(candidate.simplifiedMesh,cancelled);
+                            float score = CandidateScore(measured,Outline(null,candidate.simplifiedMesh,local,cancelled),local,settings,options);
+                            int moves = 0,trials = 0;
+                            var fitted = settings.lockBorder ? null : screen.RefineSilhouette(candidate.simplifiedMesh,out moves,out trials,cancelled);
+                            try
+                            {
+                                if (fitted)
+                                {
+                                    var fitMetrics = LodSurfaceValidation.MeasureMeshes(source,fitted,settings,cancelled,ignoreDegenerateFaces:true);
+                                    var fitLocal = screen.Measure(fitted,cancelled);
+                                    float fitScore = CandidateScore(fitMetrics,Outline(null,fitted,fitLocal,cancelled),fitLocal,settings,options);
+                                    if (GeometryDoesNotWorsen(fitLocal,local) && fitScore < score)
+                                    {
+                                        UnityEngine.Object.DestroyImmediate(candidate.simplifiedMesh); candidate.simplifiedMesh = fitted; fitted = null;
+                                        measured = fitMetrics; local = fitLocal; score = fitScore;
+                                    }
+                                }
+                            }
+                            finally { if (fitted) UnityEngine.Object.DestroyImmediate(fitted); }
+                            int id = count+2;
+                            reports.Add(new CandidateReport { variant=id,name="normal-cost source geometry",triangles=candidate.simplifiedTriCount,
+                                nativeProbes=1+candidate.nativeRetries,score=score,distanceRms=measured.DistanceRms,normalRms=measured.NormalRms,
+                                colorRms=Maximum(measured.ColorRms),uvRms=measured.UvRms,silhouetteMean=local.silhouetteMean,silhouetteMax=local.silhouetteMax,screenQuality=local });
+                            if (GeometryDoesNotWorsen(local,bestScreen) && Better(candidate.simplifiedTriCount,score,best.simplifiedTriCount,bestScore,target,true))
+                            {
+                                UnityEngine.Object.DestroyImmediate(best.simplifiedMesh); best = candidate; candidate.simplifiedMesh = null;
+                                bestMetrics = measured; bestScreen = local; bestSilhouette = Outline(null,best.simplifiedMesh,local,cancelled); bestScore = score;
+                                best.resultError = measured.weightedError; selected = id; selectedSettings = attempt; selectedCorrection = null;
+                                shapeNote = $" Independent normal-cost geometry probe selected ({moves} refit moves, {trials} local trials). UV/RGBA costs omitted only for this static, non-varying-color far candidate; authored channels/material slots and Lock Border retained. Reported error is sampled against LOD0 after any position correction.";
+                            }
+                        }
+                    }
+                    finally { if (candidate.simplifiedMesh) UnityEngine.Object.DestroyImmediate(candidate.simplifiedMesh); }
+                }
                 LodAttributeCorrection.Report correction = selectedCorrection;
                 if (options.correctSurfaceAttributes && correction == null)
                 {
@@ -301,6 +354,10 @@ namespace SashaRX.UnityMeshLab
             }
             finally { if (best.simplifiedMesh) UnityEngine.Object.DestroyImmediate(best.simplifiedMesh); }
         }
+
+        internal static bool GeometryDoesNotWorsen(LodScreenValidation.Report after,LodScreenValidation.Report before)
+            => after.silhouetteMean <= before.silhouetteMean+1e-6f && after.silhouetteMax <= before.silhouetteMax+1e-6f &&
+                after.detailLoss <= before.detailLoss+1e-6f && after.ColorsDoNotWorsen(before);
 
         // A reached budget wins; protected sequences also cap increasing density.
         // Known unreachable floors rank quality within that preceding density cap.
