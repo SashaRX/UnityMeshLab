@@ -19,6 +19,8 @@ namespace SashaRX.UnityMeshLab
             public int capRevision;
             public int[] sourceFaceOwners;
             public int externalContactCount;
+            public int[] refusedLoops;
+            public string[] refusedLoopReasons;
             public int firstContactAddedFace = -1, firstContactSourceFace = -1;
             public uint initialFlags, resultFlags;
         }
@@ -68,6 +70,14 @@ namespace SashaRX.UnityMeshLab
                     "_" + Guid.NewGuid().ToString("N") + ".bin");
                 string partial = path + ".tmp";
                 try {
+                    if (support != null) {
+                        metadata.refusedLoops = new int[support.loopFailures.Count];
+                        metadata.refusedLoopReasons = new string[support.loopFailures.Count];
+                        int entry = 0;
+                        foreach (var failure in support.loopFailures) {
+                            metadata.refusedLoops[entry] = failure.Key; metadata.refusedLoopReasons[entry++] = failure.Value;
+                        }
+                    }
                     using (var writer = new BinaryWriter(File.Create(partial))) {
                         writer.Write(0x524D4C42); writer.Write(support == null ? 2 : 3);
                         writer.Write(JsonUtility.ToJson(metadata));

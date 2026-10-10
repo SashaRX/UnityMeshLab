@@ -21,7 +21,9 @@ The tab prepares the source and then runs four native/bake stages. **Prepare / i
 in the Remesh section captures and filters the source, welds the geometry-only
 support and prepares the selected closures without invoking native Remesh. The
 **Cap / Bridge** preview shows all retained hierarchy nodes: grey original faces,
-orange/purple closure patches and cyan original hole rims. Its summary reports
+orange/purple closure patches, cyan original hole rims and red refused contours.
+Each refused contour has a selectable reason; its refusal does not cancel closures
+on other contours. A failed compound Cap or Bridge is rolled back in full. Its summary reports
 initial loops, generated patches/faces and remaining boundary edges. A partial
 loop selection can be inspected even with other holes still open. Remesh consumes
 the same snapshot; a subsequent solid-input or native-output refusal retains it.

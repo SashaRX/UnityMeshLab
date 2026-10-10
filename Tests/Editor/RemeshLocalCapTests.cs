@@ -116,6 +116,36 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(saved,ix); CollectionAssert.AreEqual(savedPoints,p);
         }
 
+        [TestCase(0, false)] [TestCase(1, false)] [TestCase(0, true)] [TestCase(1, true)]
+        public void PartialPreparationRollsBackTheWholeFailedCompoundAndKeepsOtherCaps(int obstacle, bool goodFirst)
+        {
+            var extra = obstacle == 0 ? new[] {new Vector3(0,-.5f,-2),new Vector3(0,-.5f,0),new Vector3(.5f,.5f,-1)} :
+                new[] {new Vector3(0,-2,-.5f),new Vector3(0,0,-.5f),new Vector3(.5f,-1,.5f)};
+            var p = goodFirst ? Box.Concat(Box.Concat(extra).Select(v => v + Vector3.right * 4)).ToArray() :
+                Box.Concat(extra).Concat(Box.Select(v => v + Vector3.right * 4)).ToArray();
+            var ix = goodFirst ? Missing(0).Concat(Missing(0,2).Select(v => v + 8)).Concat(new[] {16,17,18}).ToArray() :
+                Missing(0,2).Concat(new[] {8,9,10}).Concat(Missing(0).Select(v => v + 11)).ToArray();
+            var saved = (int[])ix.Clone(); var savedPoints = (Vector3[])p.Clone();
+            var progress = new List<int>();
+            var result = RemeshPlanarCap.Prepare(p, ix, goodFirst ? "0,1" : "0,2", default, true,
+                loopCompleted: (_, done, _) => progress.Add(done), continueOnRefusal: true);
+            Assert.AreEqual(2, result.addedFaces); Assert.AreEqual(1, result.patchEnds.Count);
+            Assert.AreEqual(1, result.localPatches); Assert.AreEqual(1, result.planeRechecks);
+            Assert.AreEqual(1, result.loopFailures.Count);
+            StringAssert.Contains("contacts face", result.loopFailures[goodFirst ? 1 : 0]);
+            CollectionAssert.AreEqual(new[] {1,2}, progress);
+            var topology = RemeshTopology.Inspect(result.positions, result.indices);
+            Assert.IsTrue(topology.Valid, topology.Description); Assert.AreEqual(9, topology.boundary.Count);
+            int goodOffset = goodFirst ? 0 : 11;
+            Assert.IsTrue(result.indices.Skip(ix.Length).All(v => v >= goodOffset && v < goodOffset + 8));
+            Assert.AreEqual(ix.Length / 3 + 2, result.patchEnds[0]);
+            Assert.IsTrue(result.facePatches.Take(ix.Length / 3).All(id => id == 0));
+            Assert.IsTrue(result.facePatches.Skip(ix.Length / 3).All(id => id == 1));
+            CollectionAssert.AreEqual(saved, ix); CollectionAssert.AreEqual(savedPoints, p);
+            CollectionAssert.AreEqual(savedPoints, result.positions);
+            CollectionAssert.AreEqual(saved, result.indices.Take(ix.Length));
+        }
+
         [Test]
         public void ThreeMissingFacesUseThreePlanesAndSmoothWarpedRimsRemainUnsupported()
         {

@@ -116,6 +116,8 @@ namespace SashaRX.UnityMeshLab
         internal Mesh ClosureRims => closureRims;
         internal string[] ClosureContourNames { get; private set; }
         internal Vector3[][] ClosureContourEdges { get; private set; }
+        internal Color[] ClosureContourColors { get; private set; }
+        internal string[] ClosureContourReasons { get; private set; }
         internal string ClosureSummary { get; private set; }
         public Mesh VoxelMesh => voxelMesh;
         /// <summary>The untrimmed remesh of the primary node with one colour per trim
@@ -357,8 +359,11 @@ namespace SashaRX.UnityMeshLab
                     if (options.planarCap && shape != RemeshShape.BoundingBox && (shape == RemeshShape.Hull || !options.shell)) {
                         var capOwners = captured.FaceOwners();
                         try {
-                            node.support = RemeshPlanarCap.Prepare(captured.positions, captured.indices, options.planarCapLoops, token, options.planarCapLocalPlanes, options.closureMode, options.capPlaneTolerance, capOwners, (loop, done, total) => progress.Report($"{node.name}: closed loop {loop} ({done}/{total})"));
+                            node.support = RemeshPlanarCap.Prepare(captured.positions, captured.indices, options.planarCapLoops, token, options.planarCapLocalPlanes, options.closureMode, options.capPlaneTolerance, capOwners,
+                                (loop, done, total) => progress.Report($"{node.name}: processed loop {loop} ({done}/{total})"), continueOnRefusal: true);
                             UvtLog.Info(LogPrefix + node.name + ": planar Cap " + node.support.Description);
+                            foreach (var failure in node.support.loopFailures)
+                                UvtLog.Warn(LogPrefix + node.name + $": closure loop {failure.Key} left open: {failure.Value}");
                             var contacts = node.support.externalContacts;
                             if (contacts != null && contacts.count > 0)
                                 UvtLog.Warn(LogPrefix + node.name + $": Cap/Bridge has {contacts.count} contacts with other source meshes " +
@@ -416,7 +421,9 @@ namespace SashaRX.UnityMeshLab
                                     if (remaining.boundary.Count == 0)
                                         throw new InvalidOperationException("Cap support has no boundary edges but includes a zero-volume component. Inspect its geometry before solid Remesh.");
                                     throw new InvalidOperationException($"Cap support still has {remaining.boundary.Count} boundary edges " +
-                                        $"after selection '{options.planarCapLoops}' from {node.support.loops} loops. Choose All boundaries to close the remaining openings, or an explicit Bridge selection.");
+                                        $"after selection '{options.planarCapLoops}' from {node.support.loops} loops. " +
+                                        (node.support.loopFailures.Count > 0 ? "Inspect red refused contours and their reasons in Cap / Bridge; accepted closures are retained." :
+                                            "Choose All boundaries to close the remaining openings, or an explicit Bridge selection."));
                                 }
                             }
                         }
@@ -500,14 +507,15 @@ namespace SashaRX.UnityMeshLab
 
         string ClosureCounts()
         {
-            int loops = 0, patches = 0, added = 0, remaining = 0;
+            int loops = 0, patches = 0, added = 0, remaining = 0, refused = 0;
             foreach (var node in nodes) {
                 var support = node.support;
                 if (support == null) continue;
                 loops += support.loops; patches += support.patchEnds.Count; added += support.addedFaces;
                 remaining += support.remainingBoundaryEdges;
+                refused += support.loopFailures.Count;
             }
-            return $"{loops} initial loops; {patches} patches; {added} added faces; {remaining} open edges remain";
+            return $"{loops} initial loops; {patches} patches; {added} added faces; {refused} refused loops; {remaining} open edges remain";
         }
 
         void BuildClosurePreview()
@@ -516,8 +524,10 @@ namespace SashaRX.UnityMeshLab
             if (closureRims) Object.DestroyImmediate(closureRims);
             var positions = new List<Vector3>(); var colors = new List<Color>(); var indices = new List<int>();
             var rims = new List<Vector3>(); var rimIndices = new List<int>();
+            var rimColors = new List<Color>();
             var contourNames = new List<string> { "All original rims" };
             var contourEdges = new List<Vector3[]>();
+            var contourColors = new List<Color>(); var contourReasons = new List<string>();
             var toPrimary = Primary.spaceToWorld.inverse;
             foreach (var node in nodes) {
                 var support = node.support;
@@ -535,20 +545,26 @@ namespace SashaRX.UnityMeshLab
                 if (support?.boundaryLoops == null) continue;
                 for (int loopId = 0; loopId < support.boundaryLoops.Length; ++loopId) {
                     var loop = support.boundaryLoops[loopId]; var pairs = new Vector3[loop.Length * 2];
+                    bool refused = support.loopFailures.TryGetValue(loopId, out string reason);
+                    var rimColor = refused ? new Color(1f, .12f, .15f, 1f) : new Color(.2f, .85f, 1f, .95f);
                     for (int k = 0; k < loop.Length; ++k) {
                         pairs[k * 2] = matrix.MultiplyPoint3x4(p[loop[k]]);
                         pairs[k * 2 + 1] = matrix.MultiplyPoint3x4(p[loop[(k + 1) % loop.Length]]);
                         rimIndices.Add(rims.Count); rims.Add(pairs[k * 2]);
                         rimIndices.Add(rims.Count); rims.Add(pairs[k * 2 + 1]);
+                        rimColors.Add(rimColor); rimColors.Add(rimColor);
                     }
-                    contourNames.Add($"{node.name} / loop {loopId} ({loop.Length} edges)"); contourEdges.Add(pairs);
+                    contourNames.Add($"{node.name} / loop {loopId} ({loop.Length} edges){(refused ? " — REFUSED" : "")}"); contourEdges.Add(pairs);
+                    contourColors.Add(rimColor); contourReasons.Add(reason);
                 }
             }
             closureMesh = BuildMesh(ResultName + "_Closure", positions.ToArray(), indices.ToArray(), null, colors.ToArray());
             closureRims = new Mesh { name = ResultName + "_ClosureRims", hideFlags = HideFlags.HideAndDontSave,
                 indexFormat = rims.Count > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16 };
             closureRims.SetVertices(rims); closureRims.SetIndices(rimIndices, MeshTopology.Lines, 0); closureRims.RecalculateBounds();
+            closureRims.SetColors(rimColors);
             ClosureContourNames = contourNames.ToArray(); ClosureContourEdges = contourEdges.ToArray();
+            ClosureContourColors = contourColors.ToArray(); ClosureContourReasons = contourReasons.ToArray();
         }
 
         static int CountTrue(bool[] mask)
@@ -876,6 +892,7 @@ namespace SashaRX.UnityMeshLab
                 if (closureRims) Object.DestroyImmediate(closureRims);
                 sourceMesh = closureMesh = closureRims = null; preparationKey = null; ClosureSummary = null;
                 ClosureContourNames = null; ClosureContourEdges = null;
+                ClosureContourColors = null; ClosureContourReasons = null;
                 nodes.Clear(); previewNode = null; hierarchy = false; CapturedSource = null; unfilteredRoot = null;
             }
         }

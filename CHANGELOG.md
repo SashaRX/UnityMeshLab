@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- Remesh closure preparation keeps valid Cap/Bridge candidates when another contour is refused. Failed compound closures roll back in full; red hole rims, per-contour refusal reasons and geometry-capture metadata identify remaining openings without changing source meshes.
 - Separate Remesh closure preparation and 3D Cap / Bridge preview: original surfaces are grey, added patches orange/purple and original hole rims cyan. Selected partial closures can be inspected before solid validation; a later Remesh refusal retains the prepared snapshot. All hierarchy nodes are shown, with per-loop completion and remaining-edge counts.
 - Experimental progressive reverse UV mode: prepare the coarsest LOD from geometry, project toward LOD0 with frozen inherited placements, append unmatched regions and normalize every LOD into one atlas. Optional projected detail overlaps retain ordered ancestry in sidecars; frozen-capture benchmarks and complete per-LOD audits report accepted and refused results. Ordered overlap baking is not connected yet.
 - Remesh Bake can project from the full pre-filter capture, including thin/small parts and completely filtered hierarchy nodes, without rebuilding the shape or atlas. Source 3D preview can highlight the same part filter live (green kept, orange small, red thin).

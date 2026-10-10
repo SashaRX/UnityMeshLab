@@ -99,6 +99,11 @@ namespace SashaRX.UnityMeshLab.Tests
             int n=points.Length; ix.AddRange(new[] {n,n+1,n+2,n,n+2,n+3});
             var saved=ix.ToArray();
             Assert.Throws<InvalidOperationException>(()=>RemeshPlanarCap.Prepare(p.ToArray(),saved,"0,1",default,false,RemeshClosureMode.Bridge));
+            var refused = RemeshPlanarCap.Prepare(p.ToArray(), saved, "0,1", default, false, RemeshClosureMode.Bridge, continueOnRefusal: true);
+            Assert.AreEqual(2, refused.loopFailures.Count); Assert.AreEqual(refused.loopFailures[0], refused.loopFailures[1]);
+            Assert.AreEqual(0, refused.addedFaces); Assert.IsEmpty(refused.patchEnds);
+            Assert.IsTrue(refused.facePatches.All(id => id == 0));
+            CollectionAssert.AreEqual(saved, refused.indices); CollectionAssert.AreEqual(p, refused.positions);
             var owners = Enumerable.Repeat(0, source.Length / 3).Concat(new[] { 1, 1 }).ToArray();
             var accepted = RemeshPlanarCap.Prepare(p.ToArray(), saved, "0,1", default, false, RemeshClosureMode.Bridge, sourceFaceOwners: owners);
             Assert.Greater(accepted.externalContacts.count, 0);

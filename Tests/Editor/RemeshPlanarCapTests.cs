@@ -37,8 +37,8 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(before, ix);
         }
 
-        [Test]
-        public void CancellationBetweenHolesLeavesDonorUntouchedAndPublishesNoSupport()
+        [TestCase(false)] [TestCase(true)]
+        public void CancellationBetweenHolesLeavesDonorUntouchedAndPublishesNoSupport(bool partial)
         {
             var p = Box.Concat(Box.Select(v => v + Vector3.right * 4)).ToArray();
             var ix = Faces.Skip(6).Concat(Faces.Skip(6).Select(v => v + 8)).ToArray();
@@ -46,7 +46,7 @@ namespace SashaRX.UnityMeshLab.Tests
             using var cancel = new CancellationTokenSource();
             int completed = 0;
             Assert.Throws<OperationCanceledException>(() => RemeshPlanarCap.Prepare(p, ix, "all", cancel.Token,
-                loopCompleted: (_, _, _) => { ++completed; cancel.Cancel(); }));
+                loopCompleted: (_, _, _) => { ++completed; cancel.Cancel(); }, continueOnRefusal: partial));
             Assert.AreEqual(1, completed); CollectionAssert.AreEqual(saved, ix);
         }
 
@@ -67,6 +67,54 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(a.positions, b.positions); CollectionAssert.AreEqual(a.indices, b.indices);
             // Geometry of every donor face is preserved after the support remap.
             for (int i = 0; i < indices.Length; ++i) Assert.AreEqual(source[indices[i]], a.positions[a.indices[i]]);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void OversizedRimDoesNotBlockAnIndependentSmallCap(bool local)
+        {
+            const int count = 513;
+            var p = Enumerable.Range(0, count).Select(i => {
+                float a = i * 2 * Mathf.PI / count;
+                return new Vector3(Mathf.Cos(a), Mathf.Sin(a), 0);
+            }).Concat(new[] {Vector3.forward}).Concat(Box.Select(v => v + Vector3.right * 5)).ToArray();
+            var ix = Enumerable.Range(0, count).SelectMany(i => new[] {i, (i + 1) % count, count})
+                .Concat(Faces.Skip(6).Select(v => v + count + 1)).ToArray();
+            var cap = RemeshPlanarCap.Prepare(p, ix, "all", default, local, continueOnRefusal: true);
+            Assert.AreEqual(2, cap.addedFaces); Assert.AreEqual(1, cap.loopFailures.Count);
+            StringAssert.Contains("512 edges", cap.loopFailures[0]);
+            Assert.AreEqual(count, cap.remainingBoundaryEdges);
+            Assert.IsTrue(RemeshTopology.Inspect(cap.positions, cap.indices).Valid);
+            CollectionAssert.AreEqual(ix, cap.indices.Take(ix.Length));
+        }
+
+        [Test]
+        public void AutomaticBudgetRefusalsRemainInspectableWithoutInventingClosures()
+        {
+            var p = Enumerable.Range(0,17).SelectMany(n => Box.Select(v => v + Vector3.right * n * 4)).ToArray();
+            var ix = Enumerable.Range(0,17).SelectMany(n => Faces.Skip(6).Select(v => v + n * 8)).ToArray();
+            var cap = RemeshPlanarCap.Prepare(p, ix, "all", default, mode: RemeshClosureMode.Automatic, continueOnRefusal: true);
+            Assert.AreEqual(17, cap.loopFailures.Count); Assert.AreEqual(0, cap.addedFaces);
+            Assert.AreEqual(68, cap.remainingBoundaryEdges); Assert.IsEmpty(cap.patchEnds);
+            Assert.IsTrue(cap.loopFailures.Values.All(reason => reason.Contains("16 selected loops")));
+            CollectionAssert.AreEqual(ix, cap.indices); CollectionAssert.AreEqual(p, cap.positions);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void FrozenBushPartialPreparationKeepsTheRefusedRimAndReason(bool local)
+        {
+            string path = Environment.GetEnvironmentVariable("MESH_LAB_CAP_OBSTACLE_SOURCE");
+            if (string.IsNullOrEmpty(path)) Assert.Ignore("Set MESH_LAB_CAP_OBSTACLE_SOURCE to the decoded Bush source.bin.");
+            using var reader = new BinaryReader(File.OpenRead(path));
+            int vertices = reader.ReadInt32(), count = reader.ReadInt32();
+            var p = new Vector3[vertices]; var ix = new int[count];
+            for (int i = 0; i < vertices; ++i) p[i] = new Vector3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
+            for (int i = 0; i < count; ++i) ix[i] = reader.ReadInt32();
+            var cap = RemeshPlanarCap.Prepare(p, ix, "all", default, local, planeTolerance: 1e-5, continueOnRefusal: true);
+            Assert.AreEqual(0, cap.addedFaces); Assert.AreEqual(4, cap.remainingBoundaryEdges);
+            Assert.AreEqual(1, cap.loopFailures.Count); Assert.AreEqual(4, cap.boundaryLoops[0].Length);
+            StringAssert.Contains("contacts face 26", cap.loopFailures[0]); Assert.IsEmpty(cap.patchEnds);
+            Assert.IsTrue(cap.facePatches.All(id => id == 0));
+            for (int i = 0; i < ix.Length; ++i) Assert.AreEqual(p[ix[i]], cap.positions[cap.indices[i]]);
         }
 
         [Test]
@@ -379,6 +427,32 @@ namespace SashaRX.UnityMeshLab.Tests
                 string expected = Path.Combine(Path.GetFullPath(Path.GetTempPath()),"meshlab-cap-test-");
                 if (!Path.GetFullPath(folder).StartsWith(expected,StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Unsafe test cleanup path.");
                 Directory.Delete(folder,true);
+            }
+        }
+
+        [Test]
+        public void PartialSupportCaptureStoresRefusedLoopReasonsBesidePreservedSource()
+        {
+            var p = Box.Concat(new[] {new Vector3(0,-2,0),new Vector3(0,0,0),new Vector3(.4f,-1,.4f)}).ToArray();
+            var ix = Faces.Where((v,k) => k / 6 != 2).Concat(new[] {8,9,10}).ToArray();
+            var support = RemeshPlanarCap.Prepare(p, ix, "0", default, continueOnRefusal: true);
+            string folder = Path.Combine(Path.GetTempPath(), "meshlab-cap-test-" + Guid.NewGuid().ToString("N"));
+            try {
+                string path = RemeshGeometryDiagnostics.WriteFailure(folder, p, ix, null, null,
+                    new RemeshGeometryDiagnostics.FailureMetadata {stage = "Partial support"}, support);
+                using var reader = new BinaryReader(File.OpenRead(path));
+                Assert.AreEqual(0x524D4C42, reader.ReadInt32()); Assert.AreEqual(3, reader.ReadInt32());
+                var metadata = JsonUtility.FromJson<RemeshGeometryDiagnostics.FailureMetadata>(reader.ReadString());
+                CollectionAssert.AreEqual(new[] {0}, metadata.refusedLoops);
+                CollectionAssert.AreEqual(new[] {support.loopFailures[0]}, metadata.refusedLoopReasons);
+                Assert.IsTrue(reader.ReadBoolean()); Assert.AreEqual(p.Length, reader.ReadInt32()); Assert.AreEqual(ix.Length, reader.ReadInt32());
+                for (int i = 0; i < p.Length; ++i) Assert.AreEqual(p[i], new Vector3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle()));
+                for (int i = 0; i < ix.Length; ++i) Assert.AreEqual(ix[i], reader.ReadInt32());
+            }
+            finally {
+                string expected = Path.Combine(Path.GetFullPath(Path.GetTempPath()), "meshlab-cap-test-");
+                if (!Path.GetFullPath(folder).StartsWith(expected, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Unsafe test cleanup path.");
+                Directory.Delete(folder, true);
             }
         }
 

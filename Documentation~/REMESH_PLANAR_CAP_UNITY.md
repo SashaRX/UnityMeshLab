@@ -8,7 +8,7 @@ to the current filtered capture; inspect the log again after changing the source
 Loop selection is explicit. **Caps** retains the original disk intent; **Bridge**
 requires exactly two rims; **Automatic** chooses a Bridge only for a unique mutual
 collar partner. Other supported contours receive local Caps. Ambiguous partners,
-unsupported geometry and exhausted search budgets refuse the complete operation.
+unsupported geometry and exhausted search budgets leave the affected contours open.
 
 Enable **Local compound caps** to also allow a selected nonplanar cycle with one
 supported decomposition into two continuous planar arcs. The option is off in
@@ -18,7 +18,9 @@ existing settings. Automatic mode enables local compound analysis implicitly.
 
 Use **Prepare / inspect Cap & Bridge** before **Remesh**. The separate **Cap / Bridge**
 3D stage shows original faces grey, individual closure patches orange/purple and
-the original rims cyan.
+the original rims cyan. Refused contours are red; select their **Hole rim** entry
+to read the refusal reason. The summary counts refused contours, and the log and
+v3 geometry captures retain their original loop numbers and reasons.
 Use **Hole rim** to highlight all contours or one named node/loop at a time; these
 are the same loop numbers used by **Closure loop numbers**.
 Preparation does not run the native plugin and permits unselected openings to
@@ -33,14 +35,22 @@ after its first patch. Completion reports the original loop number and selected
 loops completed (a Bridge completes two). Initial loop numbers are local to each
 filtered node when Keep hierarchy is enabled.
 
-The complete preparation remains atomic: a refused contour cancels that preparation,
-and no unaudited partial support is published. To inspect a subset, enter its loop
-numbers and prepare it separately. Caps supports more than 16 loops; Automatic is
+Production preparation accepts each contour independently. A refused contour does
+not undo previous closures or prevent later independent contours from being tried.
+A two/three-plane Cap or Bridge remains atomic: if any part fails, its entire
+candidate is discarded, including generated vertices, patches and contact counts.
+Cancellation, invalid source topology and invalid loop-selection syntax still stop
+the preparation. Offline callers keep strict whole-operation refusal by default;
+`continueOnRefusal` opts into the same partial result used in the editor.
+To inspect a subset, enter its loop numbers and prepare it separately. Caps supports more than 16 loops; Automatic is
 limited to 16 selected loops to bound partner search. Other limits are 512 edges
 per rim, 4096 added triangles per preparation, 200000 source vertices, 1200000
 source indices and 2000000 contact trials. These are refusal limits, not silent
 truncation. Analytic controls close 1, 16 and 32 independent box openings and verify
-separate patches, per-loop completion order and unchanged donor geometry.
+separate patches, per-loop completion order and unchanged donor geometry. Mixed
+controls cover failures before/after successful caps, compound rollback, failed
+Bridge pairs and oversized rims beside small valid openings. The frozen Bush_19
+contact with face 26 remains refused and inspectable without changing its donor.
 
 ## Revision 5: contacts with other captured meshes
 

@@ -7,10 +7,10 @@ using UnityEngine;
 namespace SashaRX.UnityMeshLab
 {
     /// <summary>Opt-in planar disks on a welded, geometry-only support. Original
-    /// donor arrays are never mutated. Ambiguous/invalid candidates fail atomically.</summary>
+    /// donor arrays are never mutated. Each closure candidate is accepted atomically.</summary>
     internal static class RemeshPlanarCap
     {
-        internal const int Revision = 5;
+        internal const int Revision = 6;
         const int MaxVertices = 200000, MaxIndices = 1200000, MaxLoopEdges = 512;
         const int MaxPairTrials = 2000000;
 
@@ -45,15 +45,16 @@ namespace SashaRX.UnityMeshLab
             internal int[] facePatches;
             internal int[][] boundaryLoops;
             internal ExternalContacts externalContacts;
+            internal readonly Dictionary<int, string> loopFailures = new Dictionary<int, string>();
             internal readonly List<int> patchEnds = new List<int>();
             internal string Description => $"welded {weldedVertices} vertices; {loops} boundary loops; selection {selection}; added {addedFaces} faces; " +
                 $"{localPatches} local patches; {planeRechecks} fresh plane checks; {contactTests} exact contact tests; " +
-                $"{externalContacts?.count ?? 0} non-blocking contacts with other source meshes";
+                $"{externalContacts?.count ?? 0} non-blocking contacts with other source meshes; {loopFailures.Count} refused loops";
         }
 
         internal static Support Prepare(Vector3[] positions, int[] indices, string selection, CancellationToken token, bool localPlanes = false,
             RemeshClosureMode mode = RemeshClosureMode.Caps, double planeTolerance = 0, int[] sourceFaceOwners = null,
-            Action<int, int, int> loopCompleted = null)
+            Action<int, int, int> loopCompleted = null, bool continueOnRefusal = false)
         {
             token.ThrowIfCancellationRequested();
             if (!Enum.IsDefined(typeof(RemeshClosureMode),mode)) throw Refuse("unknown closure method");
@@ -79,7 +80,7 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < indices.Length; ++i) iWeld[i] = slots[indices[i]];
             var topology = RemeshTopology.Inspect(pWeld, iWeld, token);
             if (!topology.Valid) throw Refuse("source after weld: " + topology.Description);
-            var loops = Boundaries(topology, token);
+            var loops = Boundaries(topology, token, !continueOnRefusal);
             var result = new Support { positions = pWeld, indices = iWeld, originalFaces = iWeld.Length / 3,
                 weldedVertices = positions.Length - count, loops = loops.Count, selection = selection };
             result.boundaryLoops = loops.ConvertAll(loop => loop.ToArray()).ToArray();
@@ -90,46 +91,87 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < exact.Length; ++i) exact[i] = RemeshCapIntersection.Point(pWeld[i]);
             var assembled = new List<int>(iWeld); int contactTrials = 0;
             var finished = new HashSet<int>();
+            var closedLoops = new HashSet<int>();
             var partners = new Dictionary<int,int>();
+            var ambiguous = new HashSet<int>();
+            string selectionRefusal = null;
             if (mode == RemeshClosureMode.Automatic) {
-                if (chosen.Count > 16) throw Refuse("automatic closure is limited to 16 selected loops; split the operation or select explicit Caps");
-                var normals = MeshGeometry.FaceNormals(pWeld,iWeld);
-                foreach (int a in chosen) foreach (int b in chosen) {
-                    if (b <= a) continue;
-                    if (!RemeshBridge.ContinuesToward(pWeld,topology,normals,loops[a],loops[b]) ||
-                        !RemeshBridge.ContinuesToward(pWeld,topology,normals,loops[b],loops[a])) continue;
-                    if (partners.ContainsKey(a) || partners.ContainsKey(b)) throw Refuse("automatic closure has more than one collar partner; select Bridge intent explicitly");
-                    partners.Add(a,b); partners.Add(b,a);
+                if (chosen.Count > 16) selectionRefusal = "automatic closure is limited to 16 selected loops; split the operation or select explicit Caps";
+                if (selectionRefusal != null && !continueOnRefusal) throw Refuse(selectionRefusal);
+                if (selectionRefusal == null) {
+                    var normals = MeshGeometry.FaceNormals(pWeld,iWeld);
+                    foreach (int a in chosen) foreach (int b in chosen) {
+                        if (b <= a) continue;
+                        if (!RemeshBridge.ContinuesToward(pWeld,topology,normals,loops[a],loops[b]) ||
+                            !RemeshBridge.ContinuesToward(pWeld,topology,normals,loops[b],loops[a])) continue;
+                        if (partners.ContainsKey(a) || partners.ContainsKey(b)) {
+                            if (!continueOnRefusal) throw Refuse("automatic closure has more than one collar partner; select Bridge intent explicitly");
+                            ambiguous.Add(a); ambiguous.Add(b);
+                            if (partners.TryGetValue(a, out int oldA)) ambiguous.Add(oldA);
+                            if (partners.TryGetValue(b, out int oldB)) ambiguous.Add(oldB);
+                            continue;
+                        }
+                        partners.Add(a,b); partners.Add(b,a);
+                    }
                 }
             }
-            if (mode == RemeshClosureMode.Bridge && chosen.Count != 2) throw Refuse("Bridge requires exactly two selected loops");
+            if (mode == RemeshClosureMode.Bridge && chosen.Count != 2) {
+                selectionRefusal = "Bridge requires exactly two selected loops";
+                if (!continueOnRefusal) throw Refuse(selectionRefusal);
+            }
             foreach (int loop in chosen) {
                 token.ThrowIfCancellationRequested();
                 if (finished.Contains(loop)) continue;
                 int partner = -1;
-                if (mode == RemeshClosureMode.Bridge) { foreach (int other in chosen) if (other != loop) partner = other; }
+                if (mode == RemeshClosureMode.Bridge && chosen.Count == 2) { foreach (int other in chosen) if (other != loop) partner = other; }
                 else if (mode == RemeshClosureMode.Automatic && partners.TryGetValue(loop,out int paired)) partner = paired;
-                var owners = ClosingOwners(topology, loops[loop], partner >= 0 ? loops[partner] : null, sourceFaceOwners);
-                var external = owners == null ? null : result.externalContacts?.Fork(owners);
-                if (partner >= 0) {
-                    var patch = RemeshBridge.Generate(pWeld,assembled.ToArray(),loops[loop],loops[partner],token,ref contactTrials,out int tested, external);
-                    result.contactTests += tested; assembled.AddRange(patch); result.patchEnds.Add(assembled.Count/3); finished.Add(partner);
+                try {
+                    if (selectionRefusal != null) throw Refuse(selectionRefusal);
+                    if (ambiguous.Contains(loop) || partner >= 0 && ambiguous.Contains(partner))
+                        throw Refuse("automatic closure has more than one collar partner; select Bridge intent explicitly");
+                    if (loops[loop].Count > MaxLoopEdges || partner >= 0 && loops[partner].Count > MaxLoopEdges)
+                        throw Refuse("a selected boundary loop exceeds 512 edges");
+                    if (contactTrials > MaxPairTrials) throw Refuse("Cap contact audit exceeds the pair budget");
+                    var owners = ClosingOwners(topology, loops[loop], partner >= 0 ? loops[partner] : null, sourceFaceOwners);
+                    var external = owners == null ? null : result.externalContacts?.Fork(owners);
+                    // Local/compound closure may append one patch before discovering a
+                    // refusal on the next. Its geometry, patch IDs and contacts stay private.
+                    var candidatePositions = pWeld; var candidateExact = exact;
+                    var candidate = new List<int>(assembled); var stats = new Support { originalFaces = result.originalFaces };
+                    if (partner >= 0) {
+                        var patch = RemeshBridge.Generate(candidatePositions,candidate.ToArray(),loops[loop],loops[partner],token,ref contactTrials,out int tested, external);
+                        stats.contactTests += tested; candidate.AddRange(patch); stats.patchEnds.Add(candidate.Count / 3);
+                    }
+                    else if (localPlanes || mode == RemeshClosureMode.Automatic)
+                        CloseLocal(ref candidatePositions, ref candidateExact, candidate, loops[loop], token, stats, ref contactTrials, planeTolerance, external);
+                    else {
+                        candidate.AddRange(Triangulate(candidatePositions, candidateExact, loops[loop], token, planeTolerance));
+                        AuditContacts(candidatePositions, candidateExact, candidate.ToArray(), assembled.Count / 3, token, ref contactTrials, out int tested, external);
+                        stats.contactTests += tested; stats.patchEnds.Add(candidate.Count / 3);
+                    }
+                    if (candidate.Count - iWeld.Length > MaxLoopEdges * 3 * 8) throw Refuse("total Cap face budget exceeded");
+                    int removed = loops[loop].Count + (partner < 0 ? 0 : loops[partner].Count);
+                    foreach (int accepted in closedLoops) removed += loops[accepted].Count;
+                    var candidateTopology = RemeshTopology.Inspect(candidatePositions, candidate.ToArray(), token);
+                    if (!candidateTopology.Valid || candidateTopology.boundary.Count != topology.boundary.Count - removed)
+                        throw Refuse("closure candidate topology: " + candidateTopology.Description);
+                    pWeld = candidatePositions; exact = candidateExact; assembled = candidate;
+                    result.patchEnds.AddRange(stats.patchEnds); result.contactTests += stats.contactTests;
+                    result.localPatches += stats.localPatches; result.planeRechecks += stats.planeRechecks;
+                    result.externalContacts?.Merge(external);
+                    closedLoops.Add(loop); if (partner >= 0) closedLoops.Add(partner);
                 }
-                else if (localPlanes || mode == RemeshClosureMode.Automatic) CloseLocal(ref pWeld, ref exact, assembled, loops[loop], token, result, ref contactTrials, planeTolerance, external);
-                else {
-                    var candidate = new List<int>(assembled);
-                    candidate.AddRange(Triangulate(pWeld, exact, loops[loop], token, planeTolerance));
-                    AuditContacts(pWeld, exact, candidate.ToArray(), assembled.Count / 3, token, ref contactTrials, out int tested, external);
-                    result.contactTests += tested; assembled = candidate; result.patchEnds.Add(assembled.Count / 3);
+                catch (InvalidOperationException failure) when (continueOnRefusal) {
+                    result.loopFailures.Add(loop, failure.Message);
+                    if (partner >= 0) result.loopFailures.Add(partner, failure.Message);
                 }
-                result.externalContacts?.Merge(external);
                 finished.Add(loop);
-                if (assembled.Count - iWeld.Length > MaxLoopEdges * 3 * 8) throw Refuse("total Cap face budget exceeded");
+                if (partner >= 0) finished.Add(partner);
                 loopCompleted?.Invoke(loop, finished.Count, chosen.Count);
             }
             var allIndices = assembled.ToArray();
             var after = RemeshTopology.Inspect(pWeld, allIndices, token);
-            int removedEdges = 0; foreach (int loop in chosen) removedEdges += loops[loop].Count;
+            int removedEdges = 0; foreach (int loop in closedLoops) removedEdges += loops[loop].Count;
             if (!after.Valid || after.boundary.Count != topology.boundary.Count - removedEdges)
                 throw Refuse("assembled Cap topology: " + after.Description);
             result.remainingBoundaryEdges = after.boundary.Count;
@@ -178,7 +220,7 @@ namespace SashaRX.UnityMeshLab
             AppendPatch(p, exact, assembled, arc, false, token, result, ref contactTrials, planeTolerance, external);
             // Accepting the first patch changes the actual halfedge contour. Use
             // that new topology, not the stale second arc or guessed loop number.
-            var fresh = Boundaries(RemeshTopology.Inspect(p, assembled.ToArray(), token), token);
+            var fresh = Boundaries(RemeshTopology.Inspect(p, assembled.ToArray(), token), token, false);
             List<int> remaining = null; int a = arc[0], b = arc[arc.Count - 1];
             foreach (var candidate in fresh) for (int i = 0; i < candidate.Count; ++i) {
                 int x = candidate[i], y = candidate[(i + 1) % candidate.Count];
@@ -237,7 +279,7 @@ namespace SashaRX.UnityMeshLab
 
         // All vertices must have one fan (the preflight above). Each boundary
         // slot then has exactly one incoming/outgoing halfedge, no junction pairing.
-        static List<List<int>> Boundaries(RemeshTopology.Snapshot topology, CancellationToken token)
+        static List<List<int>> Boundaries(RemeshTopology.Snapshot topology, CancellationToken token, bool limitLoopEdges = true)
         {
             var next = new SortedDictionary<int, int>(); var incoming = new HashSet<int>();
             var ix = topology.indices;
@@ -258,7 +300,7 @@ namespace SashaRX.UnityMeshLab
                 do {
                     if (!visited.Add(current) || !next.TryGetValue(current, out int following)) throw Refuse("boundary is not a continuous cycle");
                     loop.Add(current); current = following;
-                    if (loop.Count > MaxLoopEdges) throw Refuse("a boundary loop exceeds 512 edges");
+                    if (limitLoopEdges && loop.Count > MaxLoopEdges) throw Refuse("a boundary loop exceeds 512 edges");
                 } while (current != start);
                 if (loop.Count < 3) throw Refuse("boundary cycle has fewer than three vertices");
                 loops.Add(loop);

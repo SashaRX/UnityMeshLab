@@ -25,6 +25,8 @@ namespace SashaRX.UnityMeshLab
             public Mesh closureRims;
             public string[] closureContourNames;
             public Vector3[][] closureContourEdges;
+            public Color[] closureContourColors;
+            public string[] closureContourReasons;
             public string closureSummary;
             public bool closureReady, closureStale;
             public int sourceVertices, sourceTriangles;
@@ -175,8 +177,23 @@ namespace SashaRX.UnityMeshLab
                 if (closureSelectionMesh != mesh) { closureSelectionMesh = mesh; closureContour = 0; }
                 if (data.closureContourNames != null && data.closureContourNames.Length > 1)
                     closureContour = EditorGUILayout.Popup("Hole rim", Mathf.Clamp(closureContour, 0, data.closureContourNames.Length - 1), data.closureContourNames);
-                EditorGUILayout.LabelField("Grey: original surface · orange / purple: separate closure patches · cyan: original hole rims.", EditorStyles.wordWrappedMiniLabel);
+                EditorGUILayout.LabelField("Grey: original surface · orange / purple: accepted patches · cyan: original rims · red: refused contours.", EditorStyles.wordWrappedMiniLabel);
                 EditorGUILayout.LabelField(data.closureSummary ?? "Prepare closure to inspect it before Remesh.", EditorStyles.wordWrappedMiniLabel);
+                if (data.closureContourReasons != null) {
+                    if (closureContour > 0 && closureContour <= data.closureContourReasons.Length) {
+                        string reason = data.closureContourReasons[closureContour - 1];
+                        if (!string.IsNullOrEmpty(reason)) EditorGUILayout.HelpBox(reason, MessageType.Warning);
+                    }
+                    else {
+                        int shown = 0, refused = 0;
+                        for (int i = 0; i < data.closureContourReasons.Length; ++i) {
+                            if (string.IsNullOrEmpty(data.closureContourReasons[i])) continue;
+                            ++refused;
+                            if (shown++ < 3) EditorGUILayout.LabelField(data.closureContourNames[i + 1] + ": " + data.closureContourReasons[i], EditorStyles.wordWrappedMiniLabel);
+                        }
+                        if (refused > 3) EditorGUILayout.LabelField($"{refused - 3} more refused contours. Select a Hole rim to inspect its reason.", EditorStyles.wordWrappedMiniLabel);
+                    }
+                }
             }
             if (result && data.maps != null && data.maps.beauty && textured)
                 EditorGUILayout.LabelField("Beauty contains baked scene lighting and renders unlit.", EditorStyles.wordWrappedMiniLabel);
@@ -323,9 +340,11 @@ namespace SashaRX.UnityMeshLab
             var mesh = DisplayMesh(data);
             if (!mesh || !EnsureResources()) return;
             if (stage == Stage.Closure && data.closureRims) {
-                var color = new Color(.2f, .85f, 1f, .95f);
+                var color = Color.white;
                 if (closureSelectionMesh == mesh && closureContour > 0 && data.closureContourEdges != null && closureContour <= data.closureContourEdges.Length)
-                    view.DrawLines(data.closureContourEdges[closureContour - 1], data.spaceToWorld, color);
+                    view.DrawLines(data.closureContourEdges[closureContour - 1], data.spaceToWorld,
+                        data.closureContourColors != null && closureContour <= data.closureContourColors.Length
+                            ? data.closureContourColors[closureContour - 1] : new Color(.2f, .85f, 1f, .95f));
                 else view.DrawLineMesh(data.closureRims, data.spaceToWorld, color);
             }
             if (cageView && stage == Stage.Result && data.geometry != null && data.cageDistance > 0)

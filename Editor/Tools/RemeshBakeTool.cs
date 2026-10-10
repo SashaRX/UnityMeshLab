@@ -403,6 +403,8 @@ namespace SashaRX.UnityMeshLab
             previewData.closureRims = pipeline.ClosureRims;
             previewData.closureContourNames = pipeline.ClosureContourNames;
             previewData.closureContourEdges = pipeline.ClosureContourEdges;
+            previewData.closureContourColors = pipeline.ClosureContourColors;
+            previewData.closureContourReasons = pipeline.ClosureContourReasons;
             previewData.closureSummary = pipeline.ClosureSummary;
             previewData.closureReady = pipeline.Has(RemeshPipeline.Stage.Prepare);
             previewData.closureStale = pipeline.IsStale(RemeshPipeline.Stage.Prepare, settings, source);
