@@ -30,6 +30,7 @@ namespace SashaRX.UnityMeshLab
 {
     internal static class UvChartMerge
     {
+        internal const int Revision = 1;
         // Gate constants (Experiment #1; protocol in Documentation~/EXPERIMENTS.md).
         // Seam fit error, relative to the acceptor's UV bbox diagonal.
         internal const float MaxSeamResidual = 0.02f;
@@ -60,14 +61,14 @@ namespace SashaRX.UnityMeshLab
             // curved patches that rigid matching excludes; relax must distribute the
             // temporary deformation before the unchanged final atlas gates accept it.
             var narrow = CloneCandidate(geometry);
-            ApplyStrategy(narrow, preMerge, settings, token, MaxSeamResidual, MaxWorstStretch);
-            var broad = CloneCandidate(geometry);
-            ApplyStrategy(broad, preMerge, settings, token, BroadSeamResidual, BroadLocalWorstStretch);
+            ApplyStrategy(narrow, preMerge, preMerge, settings, token, MaxSeamResidual, MaxWorstStretch);
             var narrowQuality = UvChartQuality.Measure(narrow, token);
+            var broad = CloneCandidate(geometry);
+            ApplyStrategy(broad, preMerge, narrowQuality, settings, token, BroadSeamResidual, BroadLocalWorstStretch);
             var broadQuality = UvChartQuality.Measure(broad, token);
             var narrowPacking = UvPackingQuality.Measure(narrow, token);
             var broadPacking = UvPackingQuality.Measure(broad, token);
-            bool useBroad = broadQuality.Improves(narrowQuality, preMerge) && broadPacking.Preserves(narrowPacking);
+            bool useBroad = PreferBroad(narrowQuality, broadQuality, narrowPacking, broadPacking);
             UvtLog.Info(UvtLog.Category.RemeshDiag, FormattableString.Invariant(
                 $"[UV] merge-strategy: narrow charts={narrow.chartCount} fill={narrowPacking.filledArea:G6}; broad charts={broad.chartCount} fill={broadPacking.filledArea:G6}; selected={(useBroad ? "broad" : "narrow")}."));
             token.ThrowIfCancellationRequested();
@@ -88,7 +89,10 @@ namespace SashaRX.UnityMeshLab
                 originalChartCount = g.originalChartCount, originalSmallChartCount = g.originalSmallChartCount
             };
 
-        static void ApplyStrategy(RemeshNative.Geometry geometry, UvChartQuality preMerge, RemeshSettings settings,
+        internal static bool PreferBroad(UvChartQuality narrow, UvChartQuality broad, UvPackingQuality narrowPacking, UvPackingQuality broadPacking)
+            => broad.Improves(narrow, narrow) && broadPacking.Preserves(narrowPacking);
+
+        static void ApplyStrategy(RemeshNative.Geometry geometry, UvChartQuality preMerge, UvChartQuality stretchReference, RemeshSettings settings,
             CancellationToken token, float seamResidual, float localWorstStretch)
         {
             if (geometry == null || settings == null || geometry.charts == null || geometry.uv == null ||
@@ -145,8 +149,8 @@ namespace SashaRX.UnityMeshLab
                         throw new InvalidOperationException("merged atlas is not overlap-free (pairs=" + atlasCheck.pairs + ", complete=" + atlasCheck.complete + ")");
                     var post = UvChartQuality.Measure(geometry, token);
                     UvtLog.Info(UvtLog.Category.RemeshDiag, FormattableString.Invariant(
-                        $"[UV] merge-quality-gate: baseline charts={preMerge.charts} small={preMerge.smallCharts} mean={preMerge.meanStretch:G6} worst={preMerge.maxStretch:G6} valid={preMerge.valid}; candidate charts={post.charts} small={post.smallCharts} mean={post.meanStretch:G6} worst={post.maxStretch:G6} valid={post.valid}; meanLimit={Math.Max(1.15, preMerge.meanStretch * 1.1):G6} worstLimit={Math.Max(4, preMerge.maxStretch * 1.1):G6}; result={post.ImprovementFailure(preMerge, preMerge)}"));
-                    bool preservesStretch = post.Improves(preMerge, preMerge);
+                        $"[UV] merge-quality-gate: baseline charts={preMerge.charts} small={preMerge.smallCharts} mean={preMerge.meanStretch:G6} worst={preMerge.maxStretch:G6} valid={preMerge.valid}; candidate charts={post.charts} small={post.smallCharts} mean={post.meanStretch:G6} worst={post.maxStretch:G6} valid={post.valid}; meanLimit={Math.Max(1.15, stretchReference.meanStretch * 1.1):G6} worstLimit={Math.Max(4, stretchReference.maxStretch * 1.1):G6}; result={post.ImprovementFailure(preMerge, stretchReference)}"));
+                    bool preservesStretch = post.Improves(preMerge, stretchReference);
                     var packing = UvPackingQuality.Measure(geometry, token);
                     bool preservesPacking = packing.Preserves(packingBaseline);
                     UvtLog.Info(UvtLog.Category.RemeshDiag, FormattableString.Invariant(

@@ -16,6 +16,8 @@ namespace SashaRX.UnityMeshLab.Tests
         [Serializable] public sealed class Manifest
         {
             public string output;
+            public bool measureSurface;
+            public int unwrapRepeats;
             public Case[] cases;
             public Candidate[] candidates;
         }
@@ -25,6 +27,8 @@ namespace SashaRX.UnityMeshLab.Tests
             public int sourceFaces, addedFaces, addedVertices, loops, refusedLoops, boundaryEdges;
             public int voxelResolution, voxelFaces, trimRemoved, simplifiedFaces, charts, overlaps, degenerateUv, outsideUv;
             public double seconds, meanStretch, maxStretch;
+            public double targetRms, targetMax, sourceRms, sourceMax;
+            public int originalCharts, originalSmallCharts;
             public bool solve, uvValid, mutualCollar;
         }
         [Serializable] public sealed class Report { public List<Outcome> results = new List<Outcome>(); }
@@ -173,9 +177,20 @@ namespace SashaRX.UnityMeshLab.Tests
                     var simplified = solve ? RemeshSurfaceRefine.Simplify(trimmed.mesh, p, ix, settings, default, out _) :
                         RemeshNative.Simplify(trimmed.mesh, settings, default, out _);
                     row.simplifiedFaces = simplified.TriangleCount;
+                    if (manifest.measureSurface) {
+                        string stem = candidate.caseName + "__" + candidate.method + "__solve_" + solve;
+                        row.path = Path.Combine(manifest.output, stem + "__simplified.bin");
+                        WriteMesh(row.path, simplified.positions, simplified.indices);
+                        WriteMesh(Path.Combine(manifest.output, stem + "__voxel.bin"), voxel.positions, voxel.indices);
+                        var forward = RemeshSurfaceRefine.SampleErrorCore(new TriangleBvh(p, ix), simplified.positions, simplified.indices, default);
+                        var reverse = RemeshSurfaceRefine.SampleErrorCore(new TriangleBvh(simplified.positions, simplified.indices), p, ix, default, true);
+                        row.targetRms = forward.rms; row.targetMax = forward.max;
+                        row.sourceRms = reverse.rms; row.sourceMax = reverse.max;
+                    }
                     var uv = RemeshNative.Unwrap(simplified, settings, default);
                     var quality = UvChartQuality.Measure(uv, default); var atlas = UvAtlasDiagnostics.Measure(uv, default);
                     row.charts = quality.charts; row.meanStretch = quality.meanStretch; row.maxStretch = quality.maxStretch;
+                    row.originalCharts = uv.originalChartCount; row.originalSmallCharts = uv.originalSmallChartCount;
                     row.uvValid = quality.valid && atlas.complete && atlas.invalidFaces == 0; row.overlaps = atlas.pairs;
                     row.degenerateUv = atlas.degenerateFaces; row.outsideUv = atlas.outOfBoundsVertices;
                     row.status = row.uvValid && row.overlaps == 0 && row.degenerateUv == 0 && row.outsideUv == 0 ? "passed" : "invalid_uv";
@@ -198,6 +213,59 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(manifest.candidates.Length*2,report.results.Count);
             foreach (var row in report.results)
                 Assert.AreEqual("passed",row.status,$"{row.caseName}/solve={row.solve}: {row.reason}");
+        }
+
+        [Test]
+        public void VerifyRepeatedUnwraps()
+        {
+            var manifest = ReadManifest();
+            if (manifest.unwrapRepeats == 0) Assert.Ignore("Set unwrapRepeats to opt into repeated private UV checks.");
+            Assert.That(manifest.unwrapRepeats, Is.InRange(2, 10));
+            RemeshNative.CheckAvailable();
+            var hashes = new List<string>();
+            foreach (var candidate in manifest.candidates) {
+                ReadMesh(candidate.path, out var p, out var ix);
+                string expected = null;
+                var timer = Stopwatch.StartNew();
+                for (int repeat = 0; repeat < manifest.unwrapRepeats; repeat++) {
+                    var input = new RemeshNative.IndexedMesh { positions = p, indices = ix }.PrepareChannels(default);
+                    var settings = new RemeshSettings { normalCrease = 133, normalSmoothing = 3,
+                        normalWeighting = RemeshNormalWeighting.FaceAreaAndCornerAngle,
+                        textureResolution = 512, padding = 3, mergeCharts = true };
+                    var uv = RemeshNative.Unwrap(input, settings, default);
+                    var atlas = UvAtlasDiagnostics.Measure(uv, default);
+                    Assert.IsTrue(UvChartQuality.Measure(uv, default).valid);
+                    Assert.IsTrue(atlas.complete); Assert.AreEqual(0, atlas.pairs);
+                    Assert.AreEqual(0, atlas.invalidFaces); Assert.AreEqual(0, atlas.degenerateFaces); Assert.AreEqual(0, atlas.outOfBoundsVertices);
+                    Assert.AreEqual(ix.Length, uv.indices.Length);
+                    for (int corner = 0; corner < ix.Length; corner++) Assert.AreEqual(p[ix[corner]], uv.positions[uv.indices[corner]]);
+                    string hash = GeometryHash(uv);
+                    expected ??= hash;
+                    Assert.AreEqual(expected, hash, $"{candidate.caseName}: repeat {repeat + 1} changed geometry/UV/normals/tangents/chart ids");
+                }
+                string summary = $"{candidate.caseName}: {manifest.unwrapRepeats} identical valid atlases, SHA256 {expected}, {timer.Elapsed.TotalSeconds:F3}s";
+                hashes.Add(summary); TestContext.WriteLine(summary);
+                File.WriteAllLines(Path.Combine(manifest.output, "unwrap-repeats.txt"), hashes);
+            }
+        }
+
+        static string GeometryHash(RemeshNative.Geometry geometry)
+        {
+            using var stream = new MemoryStream();
+            using (var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, true)) {
+                writer.Write(geometry.positions.Length); writer.Write(geometry.indices.Length); writer.Write(geometry.chartCount);
+                for (int v = 0; v < geometry.positions.Length; v++) {
+                    var p = geometry.positions[v]; var n = geometry.normals[v]; var uv = geometry.uv[v]; var tangent = geometry.tangents[v];
+                    writer.Write(p.x); writer.Write(p.y); writer.Write(p.z);
+                    writer.Write(n.x); writer.Write(n.y); writer.Write(n.z);
+                    writer.Write(uv.x); writer.Write(uv.y);
+                    writer.Write(tangent.x); writer.Write(tangent.y); writer.Write(tangent.z); writer.Write(tangent.w);
+                    writer.Write(geometry.charts[v]);
+                }
+                foreach (int index in geometry.indices) writer.Write(index);
+            }
+            using var sha = System.Security.Cryptography.SHA256.Create();
+            return BitConverter.ToString(sha.ComputeHash(stream.ToArray())).Replace("-", "");
         }
     }
 }

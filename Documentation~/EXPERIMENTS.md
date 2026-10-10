@@ -1,5 +1,22 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Remesh chart merge continuation: fitted thin parts — 2026-10-10
+
+- Same Remesh UV0 chart-merge experiment; baseline `fc62cc8`. Legacy transfer,
+  `GroupedShellTransfer`, `XatlasRepack` and `SymmetrySplitShells` are unchanged.
+- Coarse fitting includes long patches next to short cross-section edges and
+  retries reduced motion under the existing topology/distance gates. Broad UV
+  merging must preserve the quality already achieved by narrow merging, rather
+  than spend the original atlas's larger stretch allowance.
+- Park at 64 / Solve On: same 2,946 triangles, target RMS 0.0415130 → 0.0405652;
+  112 → 113 islands, worst stretch 2.85105 → 3.12150, zero overlaps/degenerates/OOB.
+  Reverse maximum rises within the unchanged surface gate. The 83-island variant
+  with worst stretch 5.38553 is rejected. This does not solve fragmentation or
+  coarse-voxel thickness. Garbage_Chute and Park Solve Off retain their metrics.
+- At 128, Solve Off fails native unwrap; Solve On improves distances but retains
+  worst stretch 14.2755. These research rows are not quality acceptance evidence.
+- Protocol and measurements: [surface fitting replay](REMESH_SURFACE_FIT_REPRO.md).
+
 ## Progressive reverse atlas — 2026-10-09
 
 Continuation of PR225 at user request, baseline `67ff4b1`. Isolated new mode;
