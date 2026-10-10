@@ -189,27 +189,27 @@ namespace SashaRX.UnityMeshLab
             CancellationToken token)
         {
             int first = CollarEvidence(p,topology,normals,a,b,token);
-            return first != 0 && (first & CollarEvidence(p,topology,normals,a:b,b:a,token:token)) != 0;
+            return first != 0 && (first & CollarEvidence(p,topology,normals,sourceRim:b,otherRim:a,token:token)) != 0;
         }
 
         // Thin skins need a side strip, although their missing edge direction lies
         // across the sheet normal rather than in the donor tangent plane. Require
         // close, oppositely wound edges and opposite face normals over the entire
         // rim in both directions. The annulus still receives the full exact audit.
-        static int CollarEvidence(Vector3[] p, RemeshTopology.Snapshot topology, Vector3[] normals, List<int> a, List<int> b,
+        static int CollarEvidence(Vector3[] p, RemeshTopology.Snapshot topology, Vector3[] normals, List<int> sourceRim, List<int> otherRim,
             CancellationToken token)
         {
-            var collar = Collar(topology,normals,a);
+            var collar = Collar(topology,normals,sourceRim);
             int good = 0; bool thinSheet = true;
-            for (int i = 0; i < a.Count; ++i) {
+            for (int i = 0; i < sourceRim.Count; ++i) {
                 token.ThrowIfCancellationRequested();
-                var ownEdge = p[a[(i+1)%a.Count]]-p[a[i]];
-                var middle = p[a[i]] + ownEdge*.5f;
+                var ownEdge = p[sourceRim[(i+1)%sourceRim.Count]]-p[sourceRim[i]];
+                var middle = p[sourceRim[i]] + ownEdge*.5f;
                 var growth = Vector3.Cross(ownEdge.normalized,collar[i]).normalized;
                 float nearest = float.PositiveInfinity; Vector3 destination = default, nearestEdge = default;
                 int nearestSlot = -1;
-                for (int j = 0; j < b.Count; ++j) {
-                    var start = p[b[j]]; var edge = p[b[(j+1)%b.Count]]-start;
+                for (int j = 0; j < otherRim.Count; ++j) {
+                    var start = p[otherRim[j]]; var edge = p[otherRim[(j+1)%otherRim.Count]]-start;
                     var point = start + edge*Mathf.Clamp01(Vector3.Dot(middle-start,edge)/edge.sqrMagnitude);
                     float distance = (point-middle).sqrMagnitude;
                     if (distance < nearest) { nearest=distance; destination=point; nearestEdge=edge; nearestSlot=j; }
@@ -217,7 +217,7 @@ namespace SashaRX.UnityMeshLab
                 var direction = (destination-middle).normalized;
                 if (nearest > 0 && Vector3.Dot(growth,direction) > .6f) ++good;
                 if (thinSheet && nearestSlot >= 0) {
-                    int first = topology.slots[b[nearestSlot]], second = topology.slots[b[(nearestSlot+1)%b.Count]];
+                    int first = topology.slots[otherRim[nearestSlot]], second = topology.slots[otherRim[(nearestSlot+1)%otherRim.Count]];
                     var otherNormal = normals[topology.edges[first<second ? (first,second) : (second,first)].firstFace];
                     thinSheet = nearest > 0 && nearest <= .0625f * Math.Min(ownEdge.sqrMagnitude,nearestEdge.sqrMagnitude) &&
                         Vector3.Dot(ownEdge.normalized,nearestEdge.normalized) < -.95f &&
@@ -225,7 +225,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 else thinSheet = false;
             }
-            return (good >= Math.Ceiling(a.Count*.8) ? 1 : 0) | (thinSheet ? 2 : 0);
+            return (good >= Math.Ceiling(sourceRim.Count*.8) ? 1 : 0) | (thinSheet ? 2 : 0);
         }
 
         static double Cost(Vector3[] p, int a, int b, int c, Vector3 collar)
