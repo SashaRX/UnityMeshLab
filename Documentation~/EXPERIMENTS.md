@@ -40,6 +40,56 @@
 
 ## Progressive reverse atlas — 2026-10-09
 
+### Narrow UV junction cuts — 2026-10-10
+
+Continuation of PR225 at the user's request, baseline `16462a0`. The legacy
+solvers are unchanged. An opt-in preparation pass cuts existing interior edges
+from reflex UV border corners across short junctions. Equal-length proposals
+prefer two reflex corners, preventing a T/H junction from acquiring an extra
+diagonal cut. Accept only partitions whose summed oriented bounding boxes use
+less than 85% of the original box. Convex charts, ambiguous winding and
+nonmanifold borders retain their existing topology; bounded optional searches
+never refuse the input mesh. Work copies duplicate seam vertices and preserve
+the source positions, material triangles and raw non-UV2 corner streams.
+
+- T/H/U/L and rectangular-frame fixtures yield 2/3/3/2/4 strips; straight strips,
+  squares and rectangles remain intact. Rotation, scale, reflection, cancellation,
+  corner attributes and actual xatlas packing are checked independently.
+- Frozen WindowsNA_R_1.5: 20 cut edges, 52 → 66 packed charts, native oversampled
+  square side 881 → 815; zero overlap/degenerate faces before and after.
+  Glass remains unchanged. The original imported mesh is byte-identical.
+- Cafe_Table authored UV0 is already fragmented and remains unchanged by Repack.
+  The geometry-derived reverse seed contains the junction pattern. An initial
+  asset-frame trial lost seven inherited faces after cutting this seed. This is
+  an actual regression from incompatible donor seams, not a packing success.
+- Reverse now builds both variants on detached inputs when the option is enabled.
+  Compare inheritance per face, intentional-overlap retention, per-face
+  anisotropy, density and atlas side. Reject a worsening candidate and publish
+  only the baseline, with a visible reason. It can cost two complete builds.
+- Replayed Cafe_Table scene transform `(33.65, .002, 51.18)`, Y=89.99995 degrees,
+  scale=.84974 reproduces the submitted exclusive-policy report exactly:
+  256², 438 inherited, 72 new, 44 ambiguous. Seed junction cuts are refused at
+  LOD1 face 83; the published result retains these baseline measurements.
+  Projected-overlap policy also retains its baseline: 462 inherited, 48 new,
+  20 ambiguous. Independent final audits certify both policies.
+- Unity 6000.2.6f2 isolated EditMode selection: 144 passed, zero failed,
+  two unrelated private Reverse fixture checks skipped. Includes both junction
+  policies, input precision, real xatlas packing, Reverse and FBX export guards.
+  Reference compilation passes both FBX define variants; identifier/dependency
+  checks pass.
+- Repack/private captures exclude collision meshes. No seam is synthesized
+  through a face interior. New-block packing still does not search vacant
+  inherited atlas space. Detailed-triangle clipping at donor seams remains the
+  prerequisite for applying the complete pattern to the reverse Cafe_Table.
+
+Private fixtures: set `MESHLAB_JUNCTION_FIXTURES=Assets/JunctionFixtures`, containing
+the original Cafe_Table_A_01 and WindowsNA_R_1.5 FBX/meta pairs, and set
+`MESHLAB_JUNCTION_OUTPUT` to an ignored report directory. Run `UvJunctionCutsTests`
+in an isolated Editor; Repack reports include both UV/index arrays for visual
+comparison and Reverse audits cover exclusive and projected-overlap policies.
+
+### Initial prototype — 2026-10-09
+
 Continuation of PR225 at user request, baseline `67ff4b1`. Isolated new mode;
 `GroupedShellTransfer`, `XatlasRepack` and `SymmetrySplitShells` solvers are unchanged.
 See [REVERSE_UV_TRANSFER.md](REVERSE_UV_TRANSFER.md).

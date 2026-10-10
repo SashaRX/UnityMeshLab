@@ -62,7 +62,7 @@ namespace SashaRX.UnityMeshLab
                 int t=rect.face*3; output[t]=offset; output[t+1]=rect.b+offset; output[t+2]=rect.c+offset;
                 x+=rect.width+options.padding; rowHeight=Math.Max(rowHeight,rect.height);
             }
-            return output;
+            return options.cutNarrowJunctions ? UvJunctionCuts.Pack(corners, output, options.padding, token) : output;
         }
         static double Cross(Vector2 a,Vector2 b)=>(double)a.x*b.y-(double)a.y*b.x;
     }

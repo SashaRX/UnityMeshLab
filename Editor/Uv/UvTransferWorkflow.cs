@@ -759,6 +759,7 @@ namespace SashaRX.UnityMeshLab
                 new GUIContent("Per-mesh repack (each group → [0,1])",
                     "Pack each mesh group into its own [0,1] atlas instead of sharing one."),
                 ctx.RepackPerMesh);
+            DrawJunctionCutOption();
 
             // Texel density preview — live summary of the resolved
             // atlas size so the user sees what xatlas will actually
@@ -1110,8 +1111,17 @@ namespace SashaRX.UnityMeshLab
             if (ctx.XatlasMaxChartSize < 0) ctx.XatlasMaxChartSize = 0;
         }
 
+        void DrawJunctionCutOption()
+        {
+            ctx.CutNarrowUvJunctions = EditorGUILayout.ToggleLeft(
+                new GUIContent("Cut narrow UV junctions (experimental)",
+                    "Separate T/H/U branches and frame corners along existing mesh edges before Repack or Reverse UV preparation. Source UV0 and geometry are preserved."),
+                ctx.CutNarrowUvJunctions);
+        }
+
         void DrawRepackDensityControls()
         {
+            DrawJunctionCutOption();
             ctx.CorrectSourceTextureAspect = EditorGUILayout.ToggleLeft(
                 new GUIContent("Correct source texture proportions",
                     "Use source texture width/height and material tiling before packing UV2 into a square lightmap. Source UV0 is preserved."),
@@ -2166,6 +2176,16 @@ namespace SashaRX.UnityMeshLab
                         var metric = SourceTextureUvMetric.Resolve(validEntries[i].renderer, validEntries[i].previewTexture, meshCopies[i]);
                         if (ctx.CorrectSourceTextureAspect && metric.conflictingAspects)
                             UvtLog.Warn(UvtLog.Category.Repack, $"[TextureAspect] '{meshCopies[i].name}': {metric.reason}");
+                        if (ctx.CutNarrowUvJunctions)
+                        {
+                            var scale = ctx.CorrectSourceTextureAspect && !metric.conflictingAspects ? metric.uvScale : Vector2.one;
+                            var cut = UvJunctionCuts.CopyForRepack(meshCopies[i], scale);
+                            if (cut)
+                            {
+                                UnityEngine.Object.DestroyImmediate(meshCopies[i]);
+                                meshCopies[i] = cut;
+                            }
+                        }
                         originalUv0.Add(metric.PrepareTemporaryMesh(meshCopies[i], ctx.CorrectSourceTextureAspect));
                     }
                     results = await RepackMeshes(meshCopies.ToArray(), opts, useAsync);

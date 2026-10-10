@@ -84,10 +84,10 @@ namespace SashaRX.UnityMeshLab
                 sourceFaces = retained.ToArray(), removedSourceFaces = removed.ToArray() };
         }
 
-        internal int PrepareSeed(int resolution, int padding, float density, CancellationToken token)
+        internal int PrepareSeed(int resolution, int padding, float density, CancellationToken token, bool cutNarrowJunctions = false)
         {
             var inputs = levels[0].inputs;
-            var meshes = ReverseUvSeed.Prepare(inputs, resolution, padding, density, token, out int size);
+            var meshes = ReverseUvSeed.Prepare(inputs, resolution, padding, density, token, out int size, cutNarrowJunctions);
             owned.AddRange(meshes);
             for (int i = 0; i < meshes.Length; ++i) inputs[i].mesh = meshes[i];
             return size;

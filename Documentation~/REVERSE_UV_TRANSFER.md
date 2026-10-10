@@ -123,6 +123,19 @@ metric and refusal of float placement collapse without source geometry changes.
 
 ## Current limits
 
+`Cut narrow UV junctions (experimental)` in the Repack controls proposes cuts
+across T/H/U/L junctions and frame corners along existing triangle edges. Repack
+splits an owned work copy before xatlas; the authored UV0 corners and surface
+geometry remain unchanged. It is disabled by default. Reverse trials compare
+the complete cut chain with an uncut chain before applying either: every already
+inherited face and intentional overlap must survive, per-face anisotropy must
+not worsen beyond float roundoff, density must not drop and the atlas cannot
+grow. A refused candidate keeps the baseline and displays the reason; an enabled
+trial may run the complete chain twice. In the frozen Cafe_Table case the new
+seed seams require target-triangle clipping, so the trial retains the baseline.
+This pattern does not yet create edges through triangle interiors or fill vacant
+space inside the inherited atlas.
+
 Legacy sidecar replay cannot recreate Reverse UV seam splits or deleted faces.
 Saving such a result through a sidecar is refused explicitly; use Save Mesh Assets
 or export a new FBX. Unchanged topology with an unambiguous position/UV0 mapping

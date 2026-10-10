@@ -12,7 +12,7 @@ namespace SashaRX.UnityMeshLab
         /// <summary>One seed atlas in world metric, independent of UV0 fragmentation
         /// and source texture aspect. Outputs remain detached until the chain commits.</summary>
         internal static Mesh[] Prepare(ReverseUvTransfer.Input[] inputs, int resolution, int padding,
-            float texelsPerUnit, CancellationToken token, out int atlasSize)
+            float texelsPerUnit, CancellationToken token, out int atlasSize, bool cutNarrowJunctions = false)
         {
             if (resolution < 16 || resolution > 8192 || padding < 0 || padding >= resolution / 2
                 || float.IsNaN(texelsPerUnit) || float.IsInfinity(texelsPerUnit) || texelsPerUnit < 0)
@@ -50,7 +50,7 @@ namespace SashaRX.UnityMeshLab
                 var uv=Unwrapping.GeneratePerTriangleUV(temporary,settings);
                 if(uv.Length!=corners.Count) throw new InvalidOperationException("Reverse seed unwrap failed.");
                 float density=texelsPerUnit>0?texelsPerUnit:(float)(resolution*Math.Sqrt(.6/area));
-                var options=new ReverseUvTransfer.Options {seedResolution=resolution,padding=padding};
+                var options=new ReverseUvTransfer.Options {seedResolution=resolution,padding=padding,cutNarrowJunctions=cutNarrowJunctions};
                 var pixels=ReverseUvNewCharts.Prepare(corners.ToArray(),uv,density,options,token,out _);
                 var min=pixels[0]; var max=min;
                 foreach(var p in pixels) { min=Vector2.Min(min,p); max=Vector2.Max(max,p); }

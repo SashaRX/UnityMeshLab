@@ -17,6 +17,7 @@ namespace SashaRX.UnityMeshLab
             public int seedResolution = 256, padding = 2, maxAtlasSize = 8192;
             public float projectionReach = .05f, normalDot = .5f, maxAnisotropy = 4;
             public bool preserveProjectedOverlap;
+            public bool cutNarrowJunctions;
             public long comparisonBudget = 2000000;
         }
 

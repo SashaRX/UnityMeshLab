@@ -125,6 +125,7 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public bool NormalizeTexelDensity = true;
         public bool CorrectSourceTextureAspect = true;
+        public bool CutNarrowUvJunctions;
 
         internal bool CaptureNextTransfer;
         internal TransferCaseCapture DiagnosticCapture;

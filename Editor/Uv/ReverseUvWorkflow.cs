@@ -56,23 +56,24 @@ namespace SashaRX.UnityMeshLab
                         key = e.fbxMesh ? e.fbxMesh.name : e.originalMesh.name
                     }).ToArray()
                 }).ToArray();
-                using var prepared = ReverseUvInputs.Prepare(sources, cancellation.Token);
-                var levels = prepared.levels;
-                int removed = 0;
-                foreach (var level in levels)
-                    foreach (var input in level.inputs) removed += input.removedSourceFaces.Length;
                 int seedSize = groups[0].Max(e => (int)e.repackedAtlasWidth);
                 if (reversePrepareSeed)
-                    seedSize = prepared.PrepareSeed(SanitizeAtlasResolution(ctx.AtlasResolution), SanitizePadding(ctx.ShellPaddingPx),
-                        ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity ? ctx.LightmapDensity : 0, cancellation.Token);
+                    seedSize = SanitizeAtlasResolution(ctx.AtlasResolution);
                 PollCancel(); cancellation.Token.ThrowIfCancellationRequested();
                 var options = new ReverseUvTransfer.Options {
                     seedResolution = seedSize > 0 ? seedSize : SanitizeAtlasResolution(ctx.AtlasResolution),
                     padding = SanitizePadding(ctx.ShellPaddingPx), projectionReach = reverseReach,
-                    preserveProjectedOverlap = reversePreserveOverlap
+                    preserveProjectedOverlap = reversePreserveOverlap, cutNarrowJunctions = ctx.CutNarrowUvJunctions
                 };
                 UvProgress.Report(.15f, "Project and expand atlas");
-                using var result = await ReverseUvTransfer.Build(levels, options, useAsync, cancellation.Token);
+                using var prepared = await ReverseUvJunctionTrial.Build(sources, options, reversePrepareSeed,
+                    ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity ? ctx.LightmapDensity : 0,
+                    useAsync, cancellation.Token);
+                var result = prepared.result;
+                var levels = prepared.inputs.levels;
+                int removed = 0;
+                foreach (var level in levels)
+                    foreach (var input in level.inputs) removed += input.removedSourceFaces.Length;
                 cancellation.Token.ThrowIfCancellationRequested();
                 // Serialize and write the audit before publishing any mesh. A failed
                 // write or validation cannot leave a partly updated LOD chain.
@@ -99,6 +100,7 @@ namespace SashaRX.UnityMeshLab
                 ctx.ClearAllCaches();
                 reverseSummary = $"Atlas {result.report.atlasSize}² · inherited {result.report.inheritedFaces} · new {result.report.newFaces}"
                     + $" · overlap {result.report.overlapFaces} · ambiguous {result.report.ambiguousFaces} · removed zero-area {removed}";
+                if (prepared.refusal != null) reverseSummary += " · junction cuts skipped: " + prepared.refusal;
                 UvtLog.Info($"[ReverseUV] {reverseSummary}. Audit: {auditPath}");
                 if (ownsProgress) UvProgress.End();
             }
