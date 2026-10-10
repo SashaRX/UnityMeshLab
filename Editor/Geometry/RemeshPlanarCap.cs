@@ -10,7 +10,7 @@ namespace SashaRX.UnityMeshLab
     /// donor arrays are never mutated. Each closure candidate is accepted atomically.</summary>
     internal static class RemeshPlanarCap
     {
-        internal const int Revision = 13;
+        internal const int Revision = 14;
         const int MaxVertices = 200000, MaxIndices = 1200000, MaxLoopEdges = 512;
         const int MaxPairTrials = 2000000;
 

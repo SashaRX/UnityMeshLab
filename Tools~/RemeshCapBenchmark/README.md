@@ -2,9 +2,9 @@
 
 ## Bridge comparison
 
-`compare_bridge.py --output PRIVATE_OUTPUT` creates nine explicit torus Bridge
-fixtures and a manifest: six transverse/unequal controls (including 8 versus 16
-edges) and three circumferential
+`compare_bridge.py --output PRIVATE_OUTPUT` creates twelve explicit torus Bridge
+fixtures and a manifest: nine transverse/unequal controls (including 8 versus 16,
+8 versus 32, 8 versus 256 and 64 versus 256 edges) and three circumferential
 bands (outer, top and inner) that leave the source connected. Run the opt-in Unity EditMode test
 `RemeshCapComparisonTests.GenerateBridgeCandidates` with
 `MESH_LAB_CAP_COMPARISON_MANIFEST` pointing to that manifest; then run
@@ -14,6 +14,13 @@ MeshLib complex/universal stitching with the production output, preserving all
 donors and unselected boundaries. Use `compare-requirements.txt` in an isolated
 environment. Geometric acceptance does not establish the intended closure type.
 See `Documentation~/REMESH_BRIDGE_GENERATION.md` for measured limits/results.
+
+Refused production pairs additionally export their first rejected candidate and
+contact reason as diagnostic geometry, never as accepted support. Run
+`plot_bridge_rejections.py --report PRIVATE_OUTPUT/production-bridge.json --output PRIVATE_OUTPUT/rejections`
+to audit those candidates and render the strip plus its first conflicting face
+pair. These images diagnose a bounded search refusal; they do not prove that
+Bridge is the intended closure for a captured pair.
 
 Offline diagnostics for a proposed source Cap. These tools do not change Unity
 meshes, settings, native binaries, or the production Remesh pipeline. Private

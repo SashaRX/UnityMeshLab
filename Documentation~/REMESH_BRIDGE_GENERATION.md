@@ -1,5 +1,10 @@
 # Generated annular Bridge and virtual averaged co-normal growth
 
+Current production (revision 14): the 128-edge Bridge guard is replaced by a
+pre-allocation complete-profile budget (600,000 states and a conservative 64 MiB
+retained-search estimate). General closure preparation still bounds individual
+contours to 512 edges. Historical results below retain their original limits.
+
 2026-10-09, following the [paired-rim topology counterexample](REMESH_CAP_BRIDGE.md).
 The offline `bridge.py` now generates candidate strips from two explicitly
 selected boundary loops, without supplied reference triangles. `collar_growth.py`
@@ -315,3 +320,55 @@ without errors. No production algorithm change was required.
 The opt-in Unity exporter and independent exact-contact/annulus audits also
 accept the production output and both MeshLib stitching variants on this same
 fixture (three accepted results in `comparison/comparison.json`).
+
+## Pre-allocation budget and real-pair diagnosis (revision 14)
+
+The complete phase profile is checked before topology/search storage allocation.
+The state estimate is `(m+1)*(n+1)*min(m,n,32)`, evaluated with saturating 64-bit
+arithmetic. The retained-storage estimate covers grid cells/lists/backing arrays,
+eight path nodes per cell and terminal ancestry across every phase. It has a
+64 MiB budget; this estimates search storage, not total process heap or transient
+GC allocations. The 600,000-state runtime guard and shared exact-contact budget
+remain. No partially searched winner is published. Revision 14 invalidates old
+prepared results. The outer closure pipeline retains its separate 512-edge
+contour limit.
+
+Unity accepts 8/32, 8/256 and 64/256 rims, including uneven subdivision and a
+shifted rim. The former 129/129 refusal now succeeds. The fallback controls use
+138/138, which exceed the complete-profile budget and still independently audit
+both opted-in planar disks. Separate tests cover memory refusal, integer-limit
+overflow saturation, cancellation, and immutable donors/contact diagnostics.
+All 82 closure controls pass. The combined closure/planar run has 143 passes,
+zero failures and 16 optional private-input skips. Both final FBX define builds
+and the 130-test offline suite pass.
+
+Two resolution-64, 8/256 controls with Solve off/on retain one closed genus-one
+component through Remesh, Simplify and Unwrap, with complete UV scans and zero
+overlaps/degenerates/out-of-bounds vertices. Projected masks retain original and
+Bridge faces. CPU Bake counts 824/1857 and 903/1941 missed/covered Bridge texels:
+original donors lack the synthetic strip, so this verifies mask/miss accounting,
+not complete texture coverage of invented geometry.
+
+The default comparison manifest now contains 12 controls. All 36 production and
+MeshLib complex/universal results pass independent annulus, preservation and
+exact-contact audits. The two captured explicit pairs remain refused. Production
+mutual-collar selection rejects Park_Bench_A loops 3/4 and Garbage_Chute loops
+0/2 as automatic Bridge pairs. Their first rejected strips intersect existing
+geometry; the bench strip spans its back, and the chute strip follows the existing
+tube wall. Independent audits find 1952 and 93 improper contacts respectively.
+First witnesses are new/donor faces 2344/1248 and 498/321. Opt-in exports and
+`plot_bridge_rejections.py` retain diagnostic geometry/images without applying it.
+
+Production planar/local Caps at .01 and Automatic close all rims on both captures:
+128 added faces on Park_Bench_A and 66 on Garbage_Chute. Increasing the chute's
+plane tolerance to .1 instead leaves one rim (10 edges), so a looser tolerance is
+not uniformly better. Native replay of Automatic supports at resolution 64 with
+Solve off/on passes Remesh/Trim/Simplify/UV for Garbage_Chute (68 simplified
+faces, zero UV overlaps/degenerates). Park_Bench_A fails before Trim in voxel
+remesh in both modes: 176 duplicate faces, 218 non-manifold edges and 204
+disconnected vertex fans. These are outcome rows, not successful pipeline runs;
+the test exporter itself passing does not certify those failed rows.
+
+Private evidence is under `_results~/bridge-budget-20261010/`: `closure-final.xml`,
+`export-final.xml`, `real-caps.xml`, `native-real.xml`, `comparison/production.json`,
+`comparison/native.json`, `comparison/comparison.json` and `rejections/`.

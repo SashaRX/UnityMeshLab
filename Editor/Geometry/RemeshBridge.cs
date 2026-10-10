@@ -8,25 +8,30 @@ namespace SashaRX.UnityMeshLab
     /// <summary>Bounded, audited annular zipper. Rim vertices are never moved or resampled.</summary>
     internal static class RemeshBridge
     {
-        const int MaxEdges = 128, MaxPhases = 32, PathsPerState = 8, MaxStates = 600000;
+        const int MaxPhases = 32, PathsPerState = 8, MaxStates = 600000;
+        const long MaxSearchBytes = 64L * 1024 * 1024;
         sealed class Path { internal double score; internal Path previous; internal char move; internal int order, length; }
         sealed class Candidate { internal Path path; internal List<int> b; }
         internal sealed class SearchReport
         {
+            internal SearchReport(bool captureRejected = false) { this.captureRejected=captureRejected; }
+            internal readonly bool captureRejected;
             internal int phases, states, candidates, audited, topologyRejected;
+            internal long plannedStates, plannedBytes;
             internal string firstContact;
-            internal string Description => $"{phases} seam phases; {states} search states; {candidates} candidates; {audited} audited; {topologyRejected} topology refusals";
+            internal int[] firstRejectedIndices;
+            internal string Description => $"{phases} seam phases; {states}/{plannedStates} search states; {plannedBytes} estimated retained bytes; {candidates} candidates; {audited} audited; {topologyRejected} topology refusals";
         }
 
         internal static int[] Generate(Vector3[] p, int[] source, List<int> a, List<int> forwardB,
             CancellationToken token, ref int trials, out int contacts, RemeshPlanarCap.ExternalContacts external = null,
-            SearchReport report = null, int maxStates = MaxStates)
+            SearchReport report = null, int maxStates = MaxStates, long maxSearchBytes = MaxSearchBytes)
         {
             token.ThrowIfCancellationRequested();
             contacts = 0;
-            if (a.Count > MaxEdges || forwardB.Count > MaxEdges)
-                throw new InvalidOperationException("Bridge refused: each rim is limited to 128 edges.");
             if (a.Count < 3 || forwardB.Count < 3) throw new InvalidOperationException("Bridge refused: each rim needs at least three edges.");
+            report ??= new SearchReport();
+            CheckBudget(a.Count,forwardB.Count,report,maxStates,maxSearchBytes);
             // Use the smaller rim for seam phases. This does not alter either
             // source winding: the second rim is reversed when constructing a strip.
             if (forwardB.Count > a.Count) (a,forwardB) = (forwardB,a);
@@ -52,7 +57,6 @@ namespace SashaRX.UnityMeshLab
             int componentCount = topology.euler.Count;
             if (Component(topology,a) != Component(topology,forwardB)) --componentCount;
             int states = 0, order = 0; var candidates = new List<Candidate>();
-            report ??= new SearchReport();
             // Complete the bounded search profile before auditing. Auditing in
             // score order lets us accept its best valid strip without spending
             // the contact budget on already dominated candidates.
@@ -83,13 +87,41 @@ namespace SashaRX.UnityMeshLab
                 var candidateContacts = external?.Fork();
                 ++report.audited;
                 try { RemeshPlanarCap.AuditContacts(p,exact,candidate,source.Length/3,token,ref trials,out int tested,candidateContacts); contacts += tested; }
-                catch (InvalidOperationException ex) when (ex.Message.Contains("contacts face")) { report.firstContact ??= ex.Message; continue; }
+                catch (InvalidOperationException ex) when (ex.Message.Contains("contacts face")) {
+                    if (report.firstContact==null) {
+                        report.firstContact=ex.Message;
+                        if (report.captureRejected) report.firstRejectedIndices=candidate;
+                    }
+                    continue;
+                }
                 external?.Merge(candidateContacts);
                 return patch;
             }
             throw new InvalidOperationException("Bridge refused: no non-intersecting annulus in the bounded zipper family (" + report.Description + ")." +
                 (report.firstContact == null ? "" : " First rejected contact: " + report.firstContact));
         }
+
+        internal static void CheckBudget(int first,int second,SearchReport report,
+            int maxStates = MaxStates,long maxSearchBytes = MaxSearchBytes)
+        {
+            if (first<3 || second<3) throw new InvalidOperationException("Bridge refused: each rim needs at least three edges.");
+            long cells=((long)first+1)*((long)second+1);
+            int phases=Math.Min(Math.Min(first,second),MaxPhases);
+            report.plannedStates=Multiply(cells,phases);
+            // Estimate retained storage, not the process heap: a grid cell/list/
+            // backing array plus eight path nodes, and all terminal ancestry.
+            // 64 bytes per path and 256 per cell conservatively cover supported
+            // managed layouts. Transient allocations and GC timing are separate.
+            long gridBytes=Multiply(cells,256+PathsPerState*64);
+            long ancestryBytes=Multiply((long)first+second+1,(long)phases*PathsPerState*64);
+            report.plannedBytes=gridBytes>long.MaxValue-ancestryBytes ? long.MaxValue : gridBytes+ancestryBytes;
+            if (report.plannedStates>maxStates)
+                throw new InvalidOperationException($"Bridge search budget exceeded before allocation: {first}x{second} rims need {report.plannedStates} states; budget {maxStates}. No partial winner was accepted.");
+            if (report.plannedBytes>maxSearchBytes)
+                throw new InvalidOperationException($"Bridge memory budget exceeded before allocation: {first}x{second} rims need an estimated {report.plannedBytes} retained bytes; budget {maxSearchBytes}. No partial winner was accepted.");
+        }
+
+        static long Multiply(long value,long count) => value>long.MaxValue/count ? long.MaxValue : value*count;
 
         static void AddBoundary(Vector3[] p,List<int> loop,HashSet<(Vector3,Vector3)> edges)
         {

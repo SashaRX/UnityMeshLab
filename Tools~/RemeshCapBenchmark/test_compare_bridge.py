@@ -65,17 +65,22 @@ class BridgeComparisonTests(unittest.TestCase):
             with self.subTest(strip=strip), self.assertRaises(ValueError):
                 longitudinal_gap(strip=strip)
 
-    def test_prepare_writes_nine_replayable_fixtures(self):
+    def test_prepare_writes_twelve_replayable_fixtures(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
             manifest = prepare(output, [])
-            self.assertEqual(len(manifest['cases']), 9)
+            self.assertEqual(len(manifest['cases']), 12)
             self.assertEqual(json.loads((output / 'manifest.json').read_text()), manifest)
             self.assertTrue(all(Path(case['source']).is_file() for case in manifest['cases']))
             unequal = next(case for case in manifest['cases'] if case['name'] == 'Unequal8x16')
             points, faces = read_mesh(unequal['source'])
             loops, _ = border(points, faces)
             self.assertEqual(sorted(len(loop['halfedges']) for loop in loops), [8, 16])
+            for name, expected in (('Unequal8x32', [8, 32]), ('Unequal8x256', [8, 256]), ('Unequal64x256', [64, 256])):
+                case = next(case for case in manifest['cases'] if case['name'] == name)
+                points, faces = read_mesh(case['source'])
+                loops, _ = border(points, faces)
+                self.assertEqual(sorted(len(loop['halfedges']) for loop in loops), expected)
 
 
 if __name__ == '__main__':

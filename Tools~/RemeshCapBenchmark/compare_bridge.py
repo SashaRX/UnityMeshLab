@@ -33,9 +33,11 @@ def longitudinal_gap(major=24, minor=16, strip=0):
     return p, source, np.concatenate((source, np.asarray(patch, dtype='i4')))
 
 
-def doubled_rim_gap(major=16, minor=8):
+def subdivided_rim_gap(major=16, minor=8, divisions=2, uneven=False, offset=False):
     """Split each donor edge on one rim without changing the torus surface."""
     p, source, *_ = torus_gap(major, minor)
+    if offset:
+        p[:minor] += np.array([.08, -.03, .02], dtype=p.dtype)
     points, faces = list(p), []
     for face in source:
         corners = [k for k in range(3) if face[k] < minor and face[(k + 1) % 3] < minor]
@@ -43,10 +45,21 @@ def doubled_rim_gap(major=16, minor=8):
             faces.append(face)
             continue
         a, b, c = map(int, np.roll(face, -corners[0]))
-        midpoint = len(points)
-        points.append((p[a] + p[b]) * .5)
-        faces.extend(((a, midpoint, c), (midpoint, b, c)))
+        previous = a
+        for j in range(1, divisions):
+            fraction = j / divisions
+            if uneven:
+                fraction *= fraction
+            vertex = len(points)
+            points.append(p[a] + (p[b] - p[a]) * fraction)
+            faces.append((previous, vertex, c))
+            previous = vertex
+        faces.append((previous, b, c))
     return np.asarray(points, dtype=p.dtype), np.asarray(faces, dtype=source.dtype)
+
+
+def doubled_rim_gap(major=16, minor=8):
+    return subdivided_rim_gap(major, minor)
 
 
 def prepare(output, captures):
@@ -66,6 +79,11 @@ def prepare(output, captures):
     path = output / 'Unequal8x16__source.bin'
     write_mesh(path, p, ix)
     cases.append(dict(name='Unequal8x16', source=str(path.resolve()), selection='0,1', intent='torus'))
+    for name, minor, divisions in (('Unequal8x32', 8, 4), ('Unequal8x256', 8, 32), ('Unequal64x256', 64, 4)):
+        p, ix = subdivided_rim_gap(minor=minor, divisions=divisions, uneven=True, offset=True)
+        path = output / (name + '__source.bin')
+        write_mesh(path, p, ix)
+        cases.append(dict(name=name, source=str(path.resolve()), selection='0,1', intent='torus'))
     for name, strip in (('LongitudinalOuter', 0), ('LongitudinalTop', 4), ('LongitudinalInner', 8)):
         p, ix, _ = longitudinal_gap(strip=strip)
         path = output / (name + '__source.bin')

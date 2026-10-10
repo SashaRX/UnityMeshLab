@@ -21,11 +21,11 @@ namespace SashaRX.UnityMeshLab.Tests
         }
         [Serializable] public sealed class Outcome
         {
-            public string caseName, method, path, status, reason;
+            public string caseName, method, path, status, reason, rejectedPath, rejectedReason;
             public int sourceFaces, addedFaces, addedVertices, loops, refusedLoops, boundaryEdges;
             public int voxelResolution, voxelFaces, trimRemoved, simplifiedFaces, charts, overlaps, degenerateUv, outsideUv;
             public double seconds, meanStretch, maxStretch;
-            public bool solve, uvValid;
+            public bool solve, uvValid, mutualCollar;
         }
         [Serializable] public sealed class Report { public List<Outcome> results = new List<Outcome>(); }
 
@@ -115,6 +115,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 row.path=Path.Combine(manifest.output,source.name+"__ours_bridge.bin");
                 WriteMesh(row.path,support.positions,support.indices);
                 row.status=support.addedFaces>0?"generated":"refused";
+                if (row.status=="refused") ExportRejectedBridge(source,support,row,manifest.output);
                 row.seconds=timer.Elapsed.TotalSeconds; report.results.Add(row);
                 CollectionAssert.AreEqual(originalP,p); CollectionAssert.AreEqual(originalI,ix);
                 for (int corner=0;corner<ix.Length;++corner)
@@ -122,6 +123,31 @@ namespace SashaRX.UnityMeshLab.Tests
                 TestContext.WriteLine($"{source.name}: {row.status}, +{row.addedFaces}, open={row.boundaryEdges}, {row.reason}");
             }
             File.WriteAllText(Path.Combine(manifest.output,"production-bridge.json"),JsonUtility.ToJson(report,true));
+        }
+
+        static void ExportRejectedBridge(Case source,RemeshPlanarCap.Support support,Outcome row,string output)
+        {
+            var chosen=(source.selection ?? "0,1").Split(',');
+            if (chosen.Length!=2 || !int.TryParse(chosen[0],out int a) || !int.TryParse(chosen[1],out int b) ||
+                a<0 || b<0 || a>=support.boundaryLoops.Length || b>=support.boundaryLoops.Length || a==b) return;
+            var first=support.boundaryLoops[a].ToList(); var second=support.boundaryLoops[b].ToList();
+            var topology=RemeshTopology.Inspect(support.positions,support.indices);
+            var normals=MeshGeometry.FaceNormals(support.positions,support.indices);
+            row.mutualCollar=RemeshBridge.ContinuesToward(support.positions,topology,normals,first,second) &&
+                RemeshBridge.ContinuesToward(support.positions,topology,normals,second,first);
+            int Owner(List<int> rim) {
+                int x=topology.slots[rim[0]],y=topology.slots[rim[1]];
+                return support.faceElements[topology.edges[x<y?(x,y):(y,x)].firstFace];
+            }
+            var external=new RemeshPlanarCap.ExternalContacts {faceElements=support.faceElements,
+                closingElements=new HashSet<int> {Owner(first),Owner(second)}};
+            var report=new RemeshBridge.SearchReport(captureRejected:true); int trials=0;
+            try { RemeshBridge.Generate(support.positions,support.indices,first,second,default,ref trials,out _,external,report); }
+            catch (InvalidOperationException ex) { row.rejectedReason=ex.Message; }
+            if (report.firstRejectedIndices==null) return;
+            row.rejectedPath=Path.Combine(output,source.name+"__rejected_bridge.bin");
+            row.rejectedReason=report.firstContact;
+            WriteMesh(row.rejectedPath,support.positions,report.firstRejectedIndices);
         }
 
         [Test]
