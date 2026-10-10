@@ -233,9 +233,10 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(UvProgress.Last.status, Is.EqualTo(Progress.Status.Canceled));
         }
 
-        [TestCase(false)]
-        [TestCase(true)]
-        public void AbortRegenerationAfterClearing_RestoresGeneratedObjectsMeshesAndBindings(bool fail)
+        [TestCase(false,false)]
+        [TestCase(true,false)]
+        [TestCase(false,true)]
+        public void AbortRegenerationAfterClearing_RestoresGeneratedObjectsMeshesAndBindings(bool fail,bool reducerFailure)
         {
             var (tool, context) = CreateToolWithSource();
             SetField(tool,"generateLodCount",1);
@@ -244,17 +245,25 @@ namespace SashaRX.UnityMeshLab.Tests
             var previousMesh = context.GeneratedLodMeshes[previous];
             meshes.Add(previousMesh);
             var previousEntries = context.MeshEntries.ToArray();
+            if (reducerFailure)
+            {
+                var invalid = new Mesh { name = "InvalidWorkingSource" };
+                meshes.Add(invalid);
+                context.MeshEntries[0].repackedMesh = invalid;
+                context.HasRepack = true;
+            }
             var options = new LodPipelineOps.Options { count = 1,ratios = new[] {.25f},targetError = 1 };
             if (fail) options.reductionMode = LodReductionMode.FullLoops;
 
             var result = LodPipelineOps.Generate(context,1,options,
                 prepared: fail ? new Dictionary<Mesh,LodSourceTopology>() : null,
-                cancelled: () => !fail && context.GeneratedLodObjects.Count == 0 && context.GeneratedLodMeshes.Count > 0,
+                cancelled: () => !fail && !reducerFailure && context.GeneratedLodObjects.Count == 0 && context.GeneratedLodMeshes.Count > 0,
                 replaceGenerated: true);
 
-            Assert.That(result.cancelled,Is.EqualTo(!fail));
+            Assert.That(result.cancelled,Is.EqualTo(!fail && !reducerFailure));
             Assert.That(result.ok,Is.False);
             Assert.That(result.error,Is.Not.Empty);
+            if (reducerFailure) Assert.That(result.error,Does.Contain("no vertices"));
             Assert.That(previous != null && previousMesh != null,Is.True);
             Assert.That(context.GeneratedLodObjects,Is.EqualTo(new[] {previous}));
             Assert.That(context.GeneratedLodMeshes,Has.Count.EqualTo(1));

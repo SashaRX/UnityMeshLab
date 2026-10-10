@@ -310,7 +310,8 @@ namespace SashaRX.UnityMeshLab
                             reductionNote = $"Removed {partPlan.removed.Count} disconnected parts ({partPlan.triangles} source tris, " +
                                 $"{partPlan.area/analysis.area:P2} area, estimated ≤{partPlan.maxPixels:F2} px). Surface errors use retained LOD0. "+reductionNote;
                         else if (partPlan.note != null) reductionNote = partPlan.note+" "+reductionNote;
-                        if (!r.ok) { UvtLog.Error($"[LodPipelineOps] Failed on {srcMesh.name}: {r.error}"); continue; }
+                        if (!r.ok)
+                            throw new System.InvalidOperationException($"Failed on {srcMesh.name}: {r.error}");
                         if (partPlan.removed.Count == 0 && opts.reductionMode == LodReductionMode.Triangles &&
                             ((opts.prioritizeTriangleBudget && opts.preserveHardEdges) ||
                              (!opts.prioritizeTriangleBudget && !opts.skipColorValidation && levelOptions.maxColorError > 0)))

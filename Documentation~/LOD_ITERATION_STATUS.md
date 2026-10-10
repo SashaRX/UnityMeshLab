@@ -20,7 +20,7 @@ The post-review baseline passed **162 selected LOD and collision EditMode tests*
 
 All 3019 authored hard-edge segments are retained at both generated levels, with zero missing protected face occurrences or patch interfaces. All 1660 measured regional correction checks pass. Nevertheless, strict protection currently reaches only 5 of 16 triangle budgets and only 2 of 8 LOD2 budgets. Equal adjacent counts can be a genuine protected-geometry limit.
 
-The full eight-model RGBA comparison also passed 162 selected tests. Final fallback-only verification passed 162 selected tests with a fresh tent GPU capture. Seven other captures retain the full comparison's lineage: their resampling trials all lost, and the final optimization only skips those trials. Their recorded timings/trial counts belong to that full experiment. Final artifacts: `_results~/lod-iteration-closure-20261010/final-color-fallback/`; test results: `final-color-fallback.xml` in its parent directory.
+The full eight-model RGBA comparison also passed 162 selected tests. Final verification passed **163 selected tests** with a fresh tent GPU capture, adding rollback coverage when the reducer returns a failure instead of throwing. Failed renderers now abort the transaction rather than committing missing surfaces. Seven other captures retain the full comparison's lineage: their resampling trials all lost, and the final optimization only skips those trials. Their recorded timings/trial counts belong to that full experiment. Final artifacts: `_results~/lod-iteration-closure-20261010/final-color-fallback/`; test results: `final-reducer-failure.xml` in its parent directory.
 
 | Project mesh | LOD0 | Protected LOD1 | Protected LOD2 | LOD2 target |
 | --- | ---: | ---: | ---: | ---: |
