@@ -89,7 +89,8 @@ namespace SashaRX.UnityMeshLab
                 double width=Math.Ceiling(((double)max.x-min.x)/texel)*texel;
                 double height=Math.Ceiling(((double)max.y-min.y)/texel)*texel;
                 if(reserveCollapsedFootprint) {width=Math.Max(texel,width);height=Math.Max(texel,height);}
-                if(TryPlaceTriangle(corners,t,density,maxAnisotropy,min,width,height,out var selected))
+                double spacing=Math.Pow(2,Math.Floor(Math.Log(Math.Max(1,Math.Max(Math.Abs(max.x),Math.Abs(max.y))),2))-23);
+                if(TryPlaceTriangle(corners,t,density,maxAnisotropy,min,width,height,out var selected,spacing))
                     Array.Copy(selected,0,pixels,t,3);
             }
         }
@@ -97,11 +98,11 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Test the metric after Float32 translation, before a vacancy is
         /// reserved. A rejected placement must remain available for other charts.</summary>
         internal static bool TryPlaceTriangle(Vector3[] corners,int t,float density,float maxAnisotropy,
-            Vector2 min,double width,double height,out Vector2[] selected)
+            Vector2 min,double width,double height,out Vector2[] selected,double spacing=0)
         {
             // Search less than one Float32 spacing at the largest coordinate.
             double coordinate=Math.Max(Math.Abs(min.x)+width,Math.Abs(min.y)+height);
-            double step=Math.Pow(2,Math.Floor(Math.Log(Math.Max(1,coordinate),2))-23);
+            double step=spacing>0?spacing:Math.Pow(2,Math.Floor(Math.Log(Math.Max(1,coordinate),2))-23);
             double best=maxAnisotropy; selected=null;
             for(int basis=0;basis<3;++basis)
             {

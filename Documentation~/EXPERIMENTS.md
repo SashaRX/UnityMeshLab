@@ -53,7 +53,10 @@ would publish invalid UVs.
 Independent intrinsic rescues now participate in vacancy selection with their
 source metric, rather than their already rounded UV bounds. Their longest-edge
 frame defines the reserved rectangle, with at least one texel per dimension.
-The thinnest rescues are placed first. Cyclic bases, quarter-turns and bounded
+The existing placement and stabilization are tried first: every already valid
+rescue layout is retained exactly, including its original Float32 phase spacing.
+The alternative is used only if that layout cannot fit or a rescue loses its
+metric. In that alternative the thinnest rescues are placed first. Cyclic bases, quarter-turns and bounded
 Float32 translation phases are tested before reserving a vacancy; a failed
 position is skipped, the transposed rectangle is tried, and the existing canvas
 growth/size limits still apply. Rounded coincident UV edges cannot weld separate
@@ -82,6 +85,20 @@ shared *3D* frame, before new chart creation. The UV fix does not repair that
 different defect. Low triangle-area atlas utilization and declined donor seam
 refinement remain limitations. Both FBX-define reference builds and the
 identifier/dependency checks pass.
+
+The retained-layout follow-up completes **121 Unity tests, zero failures, seven
+optional corpus skips** (521.3 seconds). The actual original/compact seed workflow
+accepts the imported Kamaz frame in both policies at 10 texels/unit. All 18 policy
+trials on nine FBX chains retain acceptance and atlas size against the current
+`8740d15` seed/junction baseline: 16 accepted, the same two Kitchen seed refusals,
+zero unexpected overlaps and no decrease in finest inherited area. Wooden's
+per-mesh quality measurements are identical to that baseline; its independent
+32-texels/unit standalone control passes both policies. The older `30fcd06`
+Wooden report predates the finer-inheritance protection and is not the baseline
+for this change. Original mesh snapshots remain identical. Both FBX-define
+reference builds and identifiers/dependencies pass. Large reports are retained
+in the E project's `BenchmarkReports/ReverseUV/codex-4c41a53-precision-20261011`
+after the C drive filled during an earlier, discarded corpus attempt.
 
 ### Coarsest normalization, compact packing and junction paths — 2026-10-10
 

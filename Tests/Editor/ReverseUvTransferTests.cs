@@ -948,6 +948,18 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(1,ReverseUvTransfer.TriangleAnisotropy(corners[0],corners[1],corners[2],output[0],output[1],output[2]));
         }
 
+        [Test]
+        public void MetricAwarePlacementKeepsAlreadyHealthyRescueLayoutsExactly()
+        {
+            var positions=new[] {Vector3.zero,Vector3.right,Vector3.up,new Vector3(3,0,0),new Vector3(6,0,0),new Vector3(3,2,0)};
+            var pixels=new[] {Vector2.zero,Vector2.right,Vector2.up,new Vector2(10,0),new Vector2(13,0),new Vector2(10,2)};
+            var previous=new List<ReverseUvTransfer.Surface[]>(); var current=Array.Empty<ReverseUvTransfer.Surface>();
+            var options=Options();
+            var baseline=ReverseUvAtlasPlacement.Place(positions,pixels,previous,current,options,128,128,default);
+            var guarded=ReverseUvAtlasPlacement.Place(positions,pixels,previous,current,options,128,128,default,new[] {true,true},1);
+            CollectionAssert.AreEqual(baseline,guarded);
+        }
+
         [TestCase(0)] [TestCase(32)]
         public void SeedPreparationIgnoresStretchedTextureUvAndUsesOneWorldMetric(int density)
         {

@@ -22,6 +22,31 @@ namespace SashaRX.UnityMeshLab
             ReverseUvTransfer.Surface[] current, ReverseUvTransfer.Options options, float width, float height, CancellationToken token,
             bool[] fallback = null, float density = 0)
         {
+            var baseline = TryPlace(positions, pixels, previous, current, options, width, height, token, null, 0);
+            if (baseline != null && fallback != null)
+            {
+                ReverseUvNewCharts.Stabilize(positions, baseline, fallback, density, options.maxAnisotropy, token: token);
+                // A different valid rescue placement can change the next LOD's
+                // correspondence. Preserve every already successful layout.
+                bool valid = true;
+                for (int f = 0; f < fallback.Length && valid; ++f)
+                {
+                    int t = f * 3;
+                    if (fallback[f]) valid = ReverseUvTransfer.TriangleAnisotropy(positions[t], positions[t+1], positions[t+2],
+                        baseline[t], baseline[t+1], baseline[t+2]) <= options.maxAnisotropy;
+                }
+                if (valid) return baseline;
+            }
+            else if (baseline != null) return baseline;
+            var repaired = fallback != null && fallback.Any(f => f)
+                ? TryPlace(positions, pixels, previous, current, options, width, height, token, fallback, density) : null;
+            return repaired ?? throw new InvalidOperationException("New reverse UV charts cannot fit within the configured atlas limit.");
+        }
+
+        static Vector2[] TryPlace(Vector3[] positions, Vector2[] pixels, List<ReverseUvTransfer.Surface[]> previous,
+            ReverseUvTransfer.Surface[] current, ReverseUvTransfer.Options options, float width, float height, CancellationToken token,
+            bool[] fallback, float density)
+        {
             var islands = Islands(positions, pixels, fallback, density);
             int side = Mathf.NextPowerOfTwo(Mathf.CeilToInt(Math.Max(width, height)));
             for (; side <= options.maxAtlasSize; side *= 2)
@@ -44,8 +69,9 @@ namespace SashaRX.UnityMeshLab
                         { complete = false; break; }
                         continue;
                     }
-                    int w = Math.Max(1, Mathf.CeilToInt(island.max.x - island.min.x)) + options.padding * 2;
-                    int h = Math.Max(1, Mathf.CeilToInt(island.max.y - island.min.y)) + options.padding * 2;
+                    int w = Mathf.CeilToInt(island.max.x - island.min.x), h = Mathf.CeilToInt(island.max.y - island.min.y);
+                    if (fallback != null) { w = Math.Max(1, w); h = Math.Max(1, h); }
+                    w += options.padding * 2; h += options.padding * 2;
                     if (!Find(rows, w, h, options.padding, token, ref work, out int x, out int y)) { complete = false; break; }
                     foreach (int corner in island.corners)
                         output[corner] = pixels[corner] - island.min + new Vector2(x + options.padding, y + options.padding);
@@ -53,7 +79,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (complete) return output;
             }
-            throw new InvalidOperationException("New reverse UV charts cannot fit within the configured atlas limit.");
+            return null;
         }
 
         static bool PlaceRescue(Island island, Vector3[] positions, Vector2[] output,

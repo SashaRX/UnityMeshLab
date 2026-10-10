@@ -256,6 +256,9 @@ unexpected overlaps. The overlap policy classifies three intended LOD1 pairs.
 Manual 256 seed mode also completes with vacancy packing in both policies.
 
 Independent rescue triangles are also checked *while choosing a vacancy*.
+An already valid placement is kept exactly; metric-aware allocation is a retry
+for lost precision or exhausted canvas capacity. Existing stabilization retains
+its original Float32 phase spacing.
 Their rectangle comes from the source triangle metric, with at least one texel
 per dimension, so a UV that has already collapsed to a line cannot request a
 zero-width box. The thinnest rescues are placed first and reoriented within that
