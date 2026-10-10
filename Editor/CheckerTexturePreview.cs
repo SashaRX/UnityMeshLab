@@ -119,6 +119,14 @@ namespace SashaRX.UnityMeshLab
 
         public static bool IsActive => isActive;
 
+        internal static bool TryGetOriginalMaterials(Renderer renderer, out Material[] materials)
+        {
+            foreach (var backup in backups)
+                if (backup.renderer == renderer) { materials = backup.origMaterials; return true; }
+            materials = null;
+            return false;
+        }
+
         /// <summary>
         /// Returns the procedural checker texture used in Scene preview.
         /// Ensures texture is generated before returning.

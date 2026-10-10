@@ -15,8 +15,8 @@
 // colocalization and chart UV area. Merged charts are re-packed
 // through the xatlas UvMesh bridge and their tangent frames are rebuilt from the
 // final atlas layout — that covers the fit rotation, the seam snap's per-vertex
-// displacement and the packer's per-axis ceil stretch alike, none of which a
-// rotated stale tangent can represent. Any ambiguity rolls the geometry back to
+// displacement and packing rotations, which a stale tangent cannot track
+// through changed seam connectivity. Any ambiguity rolls the geometry back to
 // the pre-merge snapshot.
 //
 // Author: SashaRX.UnityMeshLab
@@ -30,6 +30,7 @@ namespace SashaRX.UnityMeshLab
 {
     internal static class UvChartMerge
     {
+        internal const int Revision = 1;
         // Gate constants (Experiment #1; protocol in Documentation~/EXPERIMENTS.md).
         // Seam fit error, relative to the acceptor's UV bbox diagonal.
         internal const float MaxSeamResidual = 0.02f;
@@ -60,14 +61,14 @@ namespace SashaRX.UnityMeshLab
             // curved patches that rigid matching excludes; relax must distribute the
             // temporary deformation before the unchanged final atlas gates accept it.
             var narrow = CloneCandidate(geometry);
-            ApplyStrategy(narrow, preMerge, settings, token, MaxSeamResidual, MaxWorstStretch);
-            var broad = CloneCandidate(geometry);
-            ApplyStrategy(broad, preMerge, settings, token, BroadSeamResidual, BroadLocalWorstStretch);
+            ApplyStrategy(narrow, preMerge, preMerge, settings, token, MaxSeamResidual, MaxWorstStretch);
             var narrowQuality = UvChartQuality.Measure(narrow, token);
+            var broad = CloneCandidate(geometry);
+            ApplyStrategy(broad, preMerge, narrowQuality, settings, token, BroadSeamResidual, BroadLocalWorstStretch);
             var broadQuality = UvChartQuality.Measure(broad, token);
             var narrowPacking = UvPackingQuality.Measure(narrow, token);
             var broadPacking = UvPackingQuality.Measure(broad, token);
-            bool useBroad = broadQuality.Improves(narrowQuality, preMerge) && broadPacking.Preserves(narrowPacking);
+            bool useBroad = PreferBroad(narrowQuality, broadQuality, narrowPacking, broadPacking);
             UvtLog.Info(UvtLog.Category.RemeshDiag, FormattableString.Invariant(
                 $"[UV] merge-strategy: narrow charts={narrow.chartCount} fill={narrowPacking.filledArea:G6}; broad charts={broad.chartCount} fill={broadPacking.filledArea:G6}; selected={(useBroad ? "broad" : "narrow")}."));
             token.ThrowIfCancellationRequested();
@@ -88,7 +89,13 @@ namespace SashaRX.UnityMeshLab
                 originalChartCount = g.originalChartCount, originalSmallChartCount = g.originalSmallChartCount
             };
 
-        static void ApplyStrategy(RemeshNative.Geometry geometry, UvChartQuality preMerge, RemeshSettings settings,
+        internal static bool PreferBroad(UvChartQuality narrow, UvChartQuality broad, UvPackingQuality narrowPacking, UvPackingQuality broadPacking)
+            => broad.Improves(narrow, narrow) && broadPacking.Preserves(narrowPacking);
+
+        internal static bool CanReachChartCount(int originalCharts, int mergeLimit, int referenceCharts)
+            => (long)originalCharts - mergeLimit <= referenceCharts;
+
+        static void ApplyStrategy(RemeshNative.Geometry geometry, UvChartQuality preMerge, UvChartQuality stretchReference, RemeshSettings settings,
             CancellationToken token, float seamResidual, float localWorstStretch)
         {
             if (geometry == null || settings == null || geometry.charts == null || geometry.uv == null ||
@@ -123,6 +130,14 @@ namespace SashaRX.UnityMeshLab
                 int packingAttempts = refinePacking ? 6 : 32;
                 for (int attempt = 0; attempt < packingAttempts; ++attempt)
                 {
+                    // In the halving path every later budget is smaller. Even
+                    // perfect joins cannot beat the narrow atlas's chart count
+                    // once this lower bound exceeds it. Equal counts may still
+                    // improve small charts, so preserve that boundary case.
+                    if (!refinePacking && !CanReachChartCount(chartCountSnapshot, mergeLimit, stretchReference.charts)) {
+                        UvtLog.Info(UvtLog.Category.RemeshDiag, $"[UV] merge-probe-pruned: merge budget={mergeLimit} cannot reach reference charts={stretchReference.charts} from {chartCountSnapshot}; retained validated strategy results.");
+                        break;
+                    }
                     var mergedCharts = new HashSet<int>();
                     int merged = MergeChartsLimited(geometry, settings, token, mergedCharts, mergeLimit, seamResidual, localWorstStretch);
                     UvtLog.Info(UvtLog.Category.RemeshDiag,
@@ -145,8 +160,8 @@ namespace SashaRX.UnityMeshLab
                         throw new InvalidOperationException("merged atlas is not overlap-free (pairs=" + atlasCheck.pairs + ", complete=" + atlasCheck.complete + ")");
                     var post = UvChartQuality.Measure(geometry, token);
                     UvtLog.Info(UvtLog.Category.RemeshDiag, FormattableString.Invariant(
-                        $"[UV] merge-quality-gate: baseline charts={preMerge.charts} small={preMerge.smallCharts} mean={preMerge.meanStretch:G6} worst={preMerge.maxStretch:G6} valid={preMerge.valid}; candidate charts={post.charts} small={post.smallCharts} mean={post.meanStretch:G6} worst={post.maxStretch:G6} valid={post.valid}; meanLimit={Math.Max(1.15, preMerge.meanStretch * 1.1):G6} worstLimit={Math.Max(4, preMerge.maxStretch * 1.1):G6}; result={post.ImprovementFailure(preMerge, preMerge)}"));
-                    bool preservesStretch = post.Improves(preMerge, preMerge);
+                        $"[UV] merge-quality-gate: baseline charts={preMerge.charts} small={preMerge.smallCharts} mean={preMerge.meanStretch:G6} worst={preMerge.maxStretch:G6} valid={preMerge.valid}; candidate charts={post.charts} small={post.smallCharts} mean={post.meanStretch:G6} worst={post.maxStretch:G6} valid={post.valid}; meanLimit={Math.Max(1.15, stretchReference.meanStretch * 1.1):G6} worstLimit={Math.Max(4, stretchReference.maxStretch * 1.1):G6}; result={post.ImprovementFailure(preMerge, stretchReference)}"));
+                    bool preservesStretch = post.Improves(preMerge, stretchReference);
                     var packing = UvPackingQuality.Measure(geometry, token);
                     bool preservesPacking = packing.Preserves(packingBaseline);
                     UvtLog.Info(UvtLog.Category.RemeshDiag, FormattableString.Invariant(
@@ -853,7 +868,7 @@ namespace SashaRX.UnityMeshLab
         {
             // Usually pack at 4× the user-facing resolution, like XatlasRepack;
             // overlap repair can retry at higher precision. xatlas
-            // ceil-rounds each chart's extents to texel dimensions, so a layout whose
+            // rounds each chart's raster extents to texel dimensions, so a layout whose
             // charts sum near the full atlas size cannot fit — the packer then places
             // charts at negative coordinates and its texcoord assert aborts the editor
             // (xatlas.cpp:8598). The oversample turns the rounding into a fraction of
@@ -890,7 +905,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 token.ThrowIfCancellationRequested();
                 XatlasNative.xatlasComputeCharts();
-                XatlasNative.xatlasPackCharts(0, internalPad, 0f, internalRes, 1,
+                XatlasNative.xatlasPackChartsPreserveShape(0, internalPad, 0f, internalRes, 1,
                     settings.packBlockAlign ? 1 : 0, settings.packBruteForce ? 1 : 0, rotateCharts, rotateToAxis);
                 return ReadPackedUv(geometry, token);
             }
@@ -1006,8 +1021,8 @@ namespace SashaRX.UnityMeshLab
         /// orthonormal frame per vertex with handedness from the accumulated bitangent.
         /// Deriving from the final UVs is the only thing that stays correct through
         /// everything the merge did — the fit rotation, the seam snap's per-vertex
-        /// displacement, and the packer's per-chart per-axis ceil stretch, which is not
-        /// a similarity a rotated stale tangent could track. Degenerate faces leave the
+        /// displacement. Remesh packing now preserves chart shape, but still rotates
+        /// charts and can split corners. Degenerate faces leave the
         /// old tangent. Repack callers rebuild every output chart.</summary>
         internal static void RebuildChartTangents(RemeshNative.Geometry g, HashSet<int> chartIds, CancellationToken token)
         {

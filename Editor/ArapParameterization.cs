@@ -71,6 +71,10 @@ namespace SashaRX.UnityMeshLab
             int triCount = shellTriIndices.Length;
             int n = shellVertexIndices.Count;
 
+            // A single face has an exact isometric flattening and needs no solve.
+            if (n == 3 && triCount == 1)
+                return FlattenSingleTriangle(positions, globalTris, shellTriIndices[0], uvFlat, out initialFlipCount);
+
             // Early-exit on trivial shells. ARAP on a 2-tri / <4-vert patch is
             // numerically meaningless (single rotation, two-vertex pin) and on
             // ribbon-classified flat plates only burns cycles and risks UV
@@ -329,7 +333,7 @@ namespace SashaRX.UnityMeshLab
             }
             double bboxArea = Math.Max(0.0, maxU - minU) * Math.Max(0.0, maxV - minV);
 
-            int flipped = 0;
+            int flipped = 0, initialCollapsed = 0;
             for (int t = 0; t < triValidCount; t++)
             {
                 int l0 = triLocal[t * 3 + 0];
@@ -338,6 +342,7 @@ namespace SashaRX.UnityMeshLab
                 double a = (uLocal[l1] - uLocal[l0]) * (vLocal[l2] - vLocal[l0])
                          - (uLocal[l2] - uLocal[l0]) * (vLocal[l1] - vLocal[l0]);
                 if (a < 0) flipped++;
+                if (a == 0) initialCollapsed++;
             }
             initialFlipCount = flipped;
 
@@ -370,7 +375,8 @@ namespace SashaRX.UnityMeshLab
             // Fallback: collapsed or majority-flipped initial UV → Tutte embed
             // onto the boundary circle. Tutte requires a discoverable boundary
             // loop (open shell with a topological boundary).
-            bool needFallback = (flipped > triValidCount / 2) || (bboxArea < 1e-12);
+            bool needFallback = (flipped > triValidCount / 2) || (bboxArea < 1e-12)
+                || initialCollapsed == triValidCount;
             if (needFallback)
             {
                 if (!hasBoundary || boundaryLoop.Count < 3)
@@ -553,8 +559,8 @@ namespace SashaRX.UnityMeshLab
             }
             double newW = Math.Max(1e-20, newMaxU - newMinU);
             double newH = Math.Max(1e-20, newMaxV - newMinV);
-            double oldW = Math.Max(1e-20, maxU - minU);
-            double oldH = Math.Max(1e-20, maxV - minV);
+            double oldW = Math.Max(0, maxU - minU);
+            double oldH = Math.Max(0, maxV - minV);
 
             // ── Quality gate: only accept the new UV if it's actually better ──
             // ARAP can converge to a degenerate / heavily-flipped layout when
@@ -596,9 +602,7 @@ namespace SashaRX.UnityMeshLab
             // Uniform area-preserving scale so the new UV bbox has the same
             // area as the original (texel-density normalization later will
             // re-scale anyway, but we keep the order of magnitude sane).
-            double oldArea = oldW * oldH;
-            double newArea = newW * newH;
-            double scale = Math.Sqrt(oldArea / newArea);
+            double scale = RestoreInputScale(oldW, oldH, newW, newH);
             if (!IsFiniteD(scale) || scale <= 0.0) scale = 1.0;
 
             double targetCx = 0.5 * (minU + maxU) + cx; // back into global UV system
@@ -637,6 +641,52 @@ namespace SashaRX.UnityMeshLab
         // ────────────────────────────────────────────────────────────────────
         // Helpers
         // ────────────────────────────────────────────────────────────────────
+
+        static double RestoreInputScale(double oldW, double oldH, double newW, double newH)
+        {
+            if (oldW > 0 && oldH > 0) return Math.Sqrt(oldW * oldH / (newW * newH));
+            // A collapsed input has no area to preserve. Keep its surviving length,
+            // or the geometric solve's scale if every UV0 corner coincides. Density
+            // normalization follows this pass; scaling to zero would undo the repair.
+            double oldLength = Math.Max(oldW, oldH);
+            return oldLength > 0 ? oldLength / Math.Max(newW, newH) : 1;
+        }
+
+        static bool FlattenSingleTriangle(Vector3[] positions, int[] triangles, int face,
+            float[] uv, out int initialFlips)
+        {
+            initialFlips = 0;
+            int offset = face * 3;
+            if (offset < 0 || offset + 2 >= triangles.Length) return false;
+            int a = triangles[offset], b = triangles[offset + 1], c = triangles[offset + 2];
+            foreach (int i in new[] { a, b, c })
+                if ((uint)i >= positions.Length || (uint)(i * 2 + 1) >= uv.Length) return false;
+            Vector3 ab = positions[b] - positions[a], ac = positions[c] - positions[a];
+            double length = ab.magnitude, area = Vector3.Cross(ab, ac).magnitude;
+            if (!(length > 0 && area > 0)) return false;
+            double x = Vector3.Dot(ab, ac) / length, y = area / length;
+            double minX = Math.Min(0, x), maxX = Math.Max(length, x);
+            double oldMinU = Math.Min(uv[a * 2], Math.Min(uv[b * 2], uv[c * 2]));
+            double oldMaxU = Math.Max(uv[a * 2], Math.Max(uv[b * 2], uv[c * 2]));
+            double oldMinV = Math.Min(uv[a * 2 + 1], Math.Min(uv[b * 2 + 1], uv[c * 2 + 1]));
+            double oldMaxV = Math.Max(uv[a * 2 + 1], Math.Max(uv[b * 2 + 1], uv[c * 2 + 1]));
+            double signedArea = ((double)uv[b * 2] - uv[a * 2]) * ((double)uv[c * 2 + 1] - uv[a * 2 + 1])
+                - ((double)uv[b * 2 + 1] - uv[a * 2 + 1]) * ((double)uv[c * 2] - uv[a * 2]);
+            initialFlips = signedArea < 0 ? 1 : 0;
+            double scale = RestoreInputScale(oldMaxU - oldMinU, oldMaxV - oldMinV, maxX - minX, y);
+            double centerU = (oldMinU + oldMaxU) * .5, centerV = (oldMinV + oldMaxV) * .5;
+            var result = new[] { (0d, 0d), (length, 0d), (x, y) };
+            var output = new float[6];
+            for (int i = 0; i < 3; ++i) {
+                double u = (result[i].Item1 - (minX + maxX) * .5) * scale + centerU;
+                double v = (result[i].Item2 - y * .5) * scale + centerV;
+                if (!IsFiniteD(u) || !IsFiniteD(v) || Math.Abs(u) > float.MaxValue || Math.Abs(v) > float.MaxValue) return false;
+                output[i * 2] = (float)u; output[i * 2 + 1] = (float)v;
+            }
+            int[] vertices = { a, b, c };
+            for (int i = 0; i < 3; ++i) { uv[vertices[i] * 2] = output[i * 2]; uv[vertices[i] * 2 + 1] = output[i * 2 + 1]; }
+            return true;
+        }
 
         static void AccumulateLaplacian(
             Dictionary<int, double>[] rowMaps, double[] diag,

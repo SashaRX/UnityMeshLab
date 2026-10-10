@@ -23,7 +23,7 @@ namespace SashaRX.UnityMeshLab
         static readonly Regex LodSuffix = new Regex(@"^(.*?)([_\-\s]+LOD(\d+))$", Ci, MatchTimeout);
         static readonly Regex CollisionSuffix = new Regex(@"[_\-\s]+(?:COL(?:_\w+)?|Collider|Collision)$", Ci, MatchTimeout);
         static readonly Regex LodOrCollisionSuffix = new Regex(@"[_\-\s]+(LOD\d+|COL\w*|Collider|Collision)$", Ci, MatchTimeout);
-        static readonly Regex GroupSuffixes = new Regex(@"(?:[_\-\s]+(?:LOD\d+|COL(?:_Hull\d+)?|Collider|Collision))+$", Ci, MatchTimeout);
+        static readonly Regex GroupSuffixes = new Regex(@"(?:[_\-\s]+(?:LOD\d+|COL(?:_Hull\d+)?|Collider|Collision))+(?<instance>\.\d+)?$", Ci, MatchTimeout);
         static readonly Regex PipelineSuffixes = new Regex(@"(_wc|_repack|_uvTransfer|_optimized|_LOD\d+)+$", RegexOptions.Compiled, MatchTimeout);
 
         /// <summary>True when the name ends with a LOD suffix of any index (valid or not).</summary>
@@ -85,7 +85,7 @@ namespace SashaRX.UnityMeshLab
         /// The stable key that pairs the LOD levels and collision nodes of one asset:
         /// every trailing LOD / COL / COL_Hull / Collider / Collision suffix removed.
         /// </summary>
-        public static string GroupKey(string name) => string.IsNullOrEmpty(name) ? name : GroupSuffixes.Replace(name, "");
+        public static string GroupKey(string name) => string.IsNullOrEmpty(name) ? name : GroupSuffixes.Replace(name, "${instance}");
 
         /// <summary>
         /// The mesh name without the suffixes the transfer pipeline appends

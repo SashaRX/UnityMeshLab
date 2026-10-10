@@ -2,6 +2,7 @@ using System;
 
 namespace SashaRX.UnityMeshLab
 {
+    public enum RemeshClosureMode { Caps, Bridge, Automatic, SurfaceCaps }
     /// <summary>Where the result mesh gets hard (split) normals.</summary>
     public enum RemeshHardEdges
     {
@@ -83,9 +84,22 @@ namespace SashaRX.UnityMeshLab
     {
         // 1 · Voxel remesh
         internal const int MaxVoxelResolution = 1024;
+        internal const float DefaultCapPlaneTolerance = .01f;
         public int voxelResolution = 128;
         public bool solve = true;
         public bool shell;
+        // Opt-in support closure. Old serialized settings retain explicit Caps.
+        // Loop numbers follow welded vertex order; rerun after source changes.
+        public bool planarCap;
+        public string planarCapLoops = "all";
+        // Minimum plane-fit tolerance in captured source units. Boundary positions
+        // remain exact; only classification/triangulation projection uses this bound.
+        public float capPlaneTolerance = DefaultCapPlaneTolerance;
+        public bool planarCapLocalPlanes;
+        public RemeshClosureMode closureMode;
+        // Opt-in topology change: a refused Bridge may instead close each rim
+        // with a separate planar disk. Successful Bridges are retained.
+        public bool bridgeCapFallback;
         // After the voxel remesh, drop the faces the source has no surface for: the
         // voxelizer closes an open sheet into a slab, and its back side and rims have no
         // source face nearby with an aligned normal. Closed sources are left whole.
@@ -161,6 +175,9 @@ namespace SashaRX.UnityMeshLab
         // Materials transfers the source maps; Beauty additionally folds the scene's
         // lighting into one BaseColor texture and the saved material becomes Unlit.
         public RemeshBakeMode bakeMode = RemeshBakeMode.Materials;
+        // Project from the capture before the small-part/rod filter, including
+        // fully filtered hierarchy nodes. Shape generation still uses the filter.
+        public bool bakeFilteredParts;
         public float projectionDistance = 0.02f; // fraction of source bounds diagonal
         // Cage: Laplacian passes over the welded side directions (0 = raw averaged
         // normals), and whether each side's reach is fitted to where the source sits
@@ -229,6 +246,15 @@ namespace SashaRX.UnityMeshLab
                 restored.dilationRadius = DefaultDilationRadius;
             if (restored != null && json.IndexOf("\"reduceUvFragmentation\"", StringComparison.Ordinal) < 0)
                 restored.reduceUvFragmentation = true;
+            if (restored != null && json.IndexOf("\"planarCapLoops\"", StringComparison.Ordinal) < 0)
+                restored.planarCapLoops = "all";
+            // Replace the former shipped default; keep other authored tolerances,
+            // including an explicit zero that selects only the relative allowance.
+            // Match the stored default's representation, not a range that would
+            // also replace nearby manually selected values.
+            if (restored != null && (json.IndexOf("\"capPlaneTolerance\"", StringComparison.Ordinal) < 0 ||
+                BitConverter.SingleToInt32Bits(restored.capPlaneTolerance) == BitConverter.SingleToInt32Bits(.00001f)))
+                restored.capPlaneTolerance = DefaultCapPlaneTolerance;
             return restored;
         }
 

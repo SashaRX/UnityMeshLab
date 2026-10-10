@@ -12,12 +12,11 @@ namespace SashaRX.UnityMeshLab
     /// <see cref="RemeshPipeline"/>, the export in <see cref="RemeshExporter"/>.
     /// </summary>
     [MeshLabTool("remesh_bake", MeshLabLibraries.Remesh, MeshLabLibraries.Baking, MeshLabLibraries.Assets)]
-    public sealed class RemeshBakeTool : IUvTool, IUvToolRightSidebar, IUvTool3D, IUvToolUvContent, IUvTool3DFrameContext, IUvToolWindowPreferences
+    public sealed class RemeshBakeTool : IUvTool, IUvToolRightSidebar, IUvTool3D, IUvTool3DInput, IUvToolUvContent, IUvToolWindowPreferences
     {
         public string ToolName => "Remesh & Bake";
         public string ToolId => "remesh_bake";
         public int ToolOrder => 35;
-        object IUvTool3DFrameContext.FrameContext => source ? source : null;
         public Action RequestRepaint { private get; set; }
 
         // Settings survive domain reloads and tab switches so a tuned pipeline
@@ -33,6 +32,8 @@ namespace SashaRX.UnityMeshLab
         readonly RemeshPipeline pipeline = new RemeshPipeline();
         readonly RemeshCaptureHighlight highlight = new RemeshCaptureHighlight();
         bool highlightCapture;
+        internal bool highlightFilterPreview;
+        bool highlightQueued;
         readonly bool[] folds = { true, true, true, true };
         bool chartFold;
         readonly RemeshPreview previews = new RemeshPreview();
@@ -47,13 +48,20 @@ namespace SashaRX.UnityMeshLab
         readonly List<Mesh> ownedSourceMeshes = new List<Mesh>();
         GameObject previewSourceRoot;
         bool sourcePreviewDirty = true, previewLod0Only;
+        bool sourcePreviewQueued;
+        string sourcePreviewError;
         internal GameObject Source => source;
+        readonly PreviewWork<TriangleBvh> syntheticPickWork = new PreviewWork<TriangleBvh>("[Remesh] Cap picking");
+        RemeshNative.IndexedMesh syntheticPickInput;
+        float maximumClosureArea;
 
         [Serializable]
         sealed class WindowSettings
         {
             public bool[] folds = { true, true, true, true };
             public bool chartFold;
+            public bool highlightFilterPreview;
+            public float maximumClosureArea;
         }
 
         public RemeshBakeTool()
@@ -67,6 +75,8 @@ namespace SashaRX.UnityMeshLab
             if (window.folds != null)
                 Array.Copy(window.folds, folds, Math.Min(window.folds.Length, folds.Length));
             chartFold = window.chartFold;
+            highlightFilterPreview = window.highlightFilterPreview;
+            maximumClosureArea = Mathf.Max(0,window.maximumClosureArea);
             previews.RestoreWindowSettings();
             pipeline.Changed = () => { saveStatus = null; RequestRepaint?.Invoke(); };
         }
@@ -76,7 +86,8 @@ namespace SashaRX.UnityMeshLab
         internal void SaveSettings()
         {
             EditorPrefs.SetString(SettingsKey, JsonUtility.ToJson(settings));
-            MeshLabWindowPreferences.Save("RemeshBake", new WindowSettings { folds = folds, chartFold = chartFold });
+            MeshLabWindowPreferences.Save("RemeshBake", new WindowSettings { folds = folds, chartFold = chartFold,
+                highlightFilterPreview = highlightFilterPreview, maximumClosureArea = maximumClosureArea });
             previews.SaveWindowSettings();
         }
 
@@ -113,7 +124,10 @@ namespace SashaRX.UnityMeshLab
             SaveSettings();
             previews.Dispose();
             pipeline.Dispose();
+            syntheticPickWork.Dispose(); syntheticPickInput = null;
             highlight.Dispose();
+            QueueHighlight(RebuildHighlight, false);
+            highlightQueued = false;
             EditorApplication.hierarchyChanged -= InvalidateHighlight;
             EditorApplication.hierarchyChanged -= InvalidateSourcePreview;
             ClearSourcePreview();
@@ -143,31 +157,69 @@ namespace SashaRX.UnityMeshLab
             InvalidateSourcePreview();
         }
 
-        void InvalidateSourcePreview() { sourcePreviewDirty = true; RequestRepaint?.Invoke(); }
+        void InvalidateSourcePreview() { sourcePreviewDirty = true; InvalidateHighlight(); RequestRepaint?.Invoke(); }
 
         internal void ClearSourcePreview()
         {
+            QueueSourcePreview(RebuildSourcePreview, false);
+            sourcePreviewQueued = false;
             foreach (var mesh in ownedSourceMeshes) if (mesh) UnityEngine.Object.DestroyImmediate(mesh);
             ownedSourceMeshes.Clear(); sourceEntries.Clear(); sourceRenderers.Clear();
             previewData.sourceVertices = previewData.sourceTriangles = 0;
             previewSourceRoot = null; sourcePreviewDirty = true;
+            sourcePreviewError = null;
         }
 
         void EnsureSourcePreview()
         {
             var root = source ? source : pipeline.CapturedSource;
             if (!sourcePreviewDirty && root == previewSourceRoot && settings.lod0Only == previewLod0Only) return;
+            if (Event.current != null) {
+                // MeshAccess may need an importer round trip. Never reimport or
+                // bake a skin during Layout/Repaint, where failure breaks GUI state.
+                if (root != previewSourceRoot || settings.lod0Only != previewLod0Only) ClearSourcePreview();
+                if (!sourcePreviewQueued) {
+                    sourcePreviewQueued = true;
+                    QueueSourcePreview(RebuildSourcePreview, true);
+                }
+                return;
+            }
+            RebuildSourcePreview();
+        }
+
+        static void QueueSourcePreview(EditorApplication.CallbackFunction rebuild, bool queued)
+        {
+            EditorApplication.update -= rebuild;
+            if (queued) EditorApplication.update += rebuild;
+        }
+
+        void RebuildSourcePreview()
+        {
+            if (EditorApplication.isCompiling || EditorApplication.isUpdating) return;
+            var root = source ? source : pipeline.CapturedSource;
             ClearSourcePreview();
             previewSourceRoot = root; previewLod0Only = settings.lod0Only; sourcePreviewDirty = false;
             if (!root) return;
-            foreach (var renderer in RemeshSource.CollectRenderers(root, settings.lod0Only)) {
-                Mesh mesh = ReadSourcePreviewMesh(renderer);
-                // Preview copies never substitute meshes in the scene's renderers.
-                sourceEntries.Add(new MeshEntry { originalMesh = mesh, fbxMesh = mesh, previewTexture = SourcePreviewTexture(renderer) });
-                sourceRenderers.Add(renderer);
-                previewData.sourceVertices += mesh.vertexCount;
-                previewData.sourceTriangles += TriangleCount(mesh);
+            try {
+                foreach (var renderer in RemeshSource.CollectRenderers(root, settings.lod0Only)) {
+                    Mesh mesh = ReadSourcePreviewMesh(renderer);
+                    if (!mesh || mesh.vertexCount == 0) continue;
+                    if (!mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Position))
+                        throw new InvalidOperationException($"Mesh '{mesh.name}' has no Position vertex component.");
+                    // Preview copies never substitute meshes in the scene's renderers.
+                    sourceEntries.Add(new MeshEntry { originalMesh = mesh, fbxMesh = mesh, previewTexture = SourcePreviewTexture(renderer) });
+                    sourceRenderers.Add(renderer);
+                    previewData.sourceVertices += mesh.vertexCount;
+                    previewData.sourceTriangles += TriangleCount(mesh);
+                }
             }
+            catch (Exception ex) when (ex is InvalidOperationException || ex is ArgumentException) {
+                // Do not retain a partial preview or retry this failure every repaint.
+                ClearSourcePreview();
+                previewSourceRoot = root; previewLod0Only = settings.lod0Only; sourcePreviewDirty = false;
+                sourcePreviewError = ex.Message;
+            }
+            finally { RequestRepaint?.Invoke(); }
         }
 
         Mesh ReadSourcePreviewMesh(Renderer renderer)
@@ -259,7 +311,7 @@ namespace SashaRX.UnityMeshLab
         public void OnSceneGUI(SceneView sv)
         {
             if (!highlightCapture || !source) return;
-            if (highlight.Key != RemeshCaptureHighlight.KeyFor(source, settings)) { highlight.Build(source, settings); RequestRepaint?.Invoke(); }
+            EnsureHighlight();
             highlight.Draw();
         }
         public void OnDrawCanvasOverlay(UvCanvasView canvas, float cx, float cy, float sz) { }
@@ -275,7 +327,7 @@ namespace SashaRX.UnityMeshLab
             if (on != highlightCapture) {
                 highlightCapture = on;
                 if (on) { EditorApplication.hierarchyChanged -= InvalidateHighlight; EditorApplication.hierarchyChanged += InvalidateHighlight; }
-                else { EditorApplication.hierarchyChanged -= InvalidateHighlight; highlight.Clear(); }
+                else { EditorApplication.hierarchyChanged -= InvalidateHighlight; if (!highlightFilterPreview) highlight.Clear(); }
                 SceneView.RepaintAll();
             }
             if (!highlightCapture) return;
@@ -292,10 +344,51 @@ namespace SashaRX.UnityMeshLab
 
         void InvalidateHighlight() { highlight.Clear(); SceneView.RepaintAll(); }
 
+        void EnsureHighlight()
+        {
+            var root = source ? source : pipeline.CapturedSource;
+            if (!root || highlightQueued || highlight.Key == RemeshCaptureHighlight.KeyFor(root, settings)) return;
+            // Capture once after a selection/settings change, outside IMGUI drawing.
+            highlight.Clear();
+            highlightQueued = true;
+            QueueHighlight(RebuildHighlight, true);
+        }
+
+        static void QueueHighlight(EditorApplication.CallbackFunction rebuild, bool queued)
+        {
+            EditorApplication.delayCall -= rebuild;
+            if (queued) EditorApplication.delayCall += rebuild;
+        }
+
+        void RebuildHighlight()
+        {
+            highlightQueued = false;
+            if (!highlightCapture && !highlightFilterPreview) return;
+            highlight.Build(source ? source : pipeline.CapturedSource, settings);
+            RequestRepaint?.Invoke(); SceneView.RepaintAll();
+        }
+
         public void OnDrawRightSidebar()
         {
             SyncPreviewData();
+            if (sourcePreviewQueued) EditorGUILayout.LabelField("Preparing source preview…", EditorStyles.wordWrappedMiniLabel);
+            if (sourcePreviewError != null) {
+                EditorGUILayout.HelpBox(sourcePreviewError, MessageType.Warning);
+                if (GUILayout.Button("Retry source preview")) InvalidateSourcePreview();
+            }
             previews.Draw(previewData);
+            DrawSyntheticFaceSelection();
+            using (new EditorGUI.DisabledScope(!previews.IsSource)) {
+                bool on = EditorGUILayout.ToggleLeft(new GUIContent("Part filter highlight",
+                    "Source preview: green kept, orange removed by size, red removed by thickness. Follows the Remesh filter settings, including fully removed hierarchy nodes."), highlightFilterPreview);
+                if (on != highlightFilterPreview) { highlightFilterPreview = on; RequestRepaint?.Invoke(); }
+            }
+            if (highlightFilterPreview && previews.IsSource) {
+                EnsureHighlight();
+                EditorGUILayout.LabelField("green kept · orange small · red thin", EditorStyles.wordWrappedMiniLabel);
+                if (highlight.Error != null) EditorGUILayout.HelpBox(highlight.Error, MessageType.Warning);
+                else EditorGUILayout.LabelField(highlightQueued ? "Preparing filter preview…" : highlight.Summary, EditorStyles.wordWrappedMiniLabel);
+            }
         }
 
         void SyncPreviewData()
@@ -306,8 +399,23 @@ namespace SashaRX.UnityMeshLab
             previewData.meshes[(int)RemeshPreview.Stage.Remesh] = pipeline.VoxelMesh;
             previewData.meshes[(int)RemeshPreview.Stage.Simplified] = pipeline.SimplifiedMesh;
             previewData.meshes[(int)RemeshPreview.Stage.Result] = pipeline.ResultMesh;
+            previewData.meshes[(int)RemeshPreview.Stage.Closure] = pipeline.ClosureMesh;
+            previewData.closureRims = pipeline.ClosureRims;
+            previewData.closurePatchFaces = pipeline.ClosurePatchFaces;
+            previewData.closureContourNames = pipeline.ClosureContourNames;
+            previewData.closureContourEdges = pipeline.ClosureContourEdges;
+            previewData.closureContourColors = pipeline.ClosureContourColors;
+            previewData.closureContourReasons = pipeline.ClosureContourReasons;
+            previewData.closureContourInfo = pipeline.ClosureContourInfo;
+            previewData.closureSummary = pipeline.ClosureSummary;
+            previewData.closureSelectionWarning = pipeline.ClosureSelectionWarning;
+            previewData.closureLoopRanges = pipeline.ClosureLoopRanges;
+            previewData.closureReady = pipeline.Has(RemeshPipeline.Stage.Prepare);
+            previewData.closureStale = pipeline.IsStale(RemeshPipeline.Stage.Prepare, settings, source);
             previewData.geometry = pipeline.Geometry; previewData.maps = pipeline.Maps; previewData.baseColor = pipeline.BaseColorPreview;
             previewData.trimMask = pipeline.TrimMaskMesh;
+            previewData.syntheticMask = pipeline.SyntheticMaskMesh;
+            previewData.syntheticLabels = pipeline.Primary?.syntheticFaces;
             previewData.spaceToWorld = pipeline.PreviewSpaceToWorld;
             // Live from the current settings so the cage preview reflects projection
             // distance changes before a re-bake; zero until a source snapshot exists.
@@ -315,13 +423,13 @@ namespace SashaRX.UnityMeshLab
             previewData.cageSmoothing = settings.cageSmoothing;
             previewData.cageFit = settings.cageFit && settings.sourceShape == RemeshShape.LOD0;
             previewData.sourceBackfaces = settings.sourceBackfaces;
-            previewData.source = pipeline.Source;
+            previewData.source = pipeline.Primary != null ? pipeline.ProjectionSource(pipeline.Primary, settings.bakeFilteredParts) : null;
             previewData.twoSided = pipeline.Primary?.twoSided ?? false;
             previewData.remeshReady = pipeline.Has(RemeshPipeline.Stage.Remesh);
             previewData.simplifyReady = pipeline.Has(RemeshPipeline.Stage.Simplify);
             previewData.unwrapReady = pipeline.Has(RemeshPipeline.Stage.Unwrap);
             previewData.bakeReady = pipeline.Has(RemeshPipeline.Stage.Bake);
-            previewData.remeshStale = pipeline.IsStale(RemeshPipeline.Stage.Remesh, settings, source);
+            previewData.remeshStale = previewData.closureStale || pipeline.IsStale(RemeshPipeline.Stage.Remesh, settings, source);
             previewData.simplifyStale = previewData.remeshStale || pipeline.IsStale(RemeshPipeline.Stage.Simplify, settings, source);
             previewData.unwrapStale = previewData.simplifyStale || pipeline.IsStale(RemeshPipeline.Stage.Unwrap, settings, source);
             previewData.bakeStale = previewData.unwrapStale || pipeline.IsStale(RemeshPipeline.Stage.Bake, settings, source);
@@ -337,6 +445,10 @@ namespace SashaRX.UnityMeshLab
             SyncPreviewData();
             if (previews.IsSource) {
                 var worldToFrame = previewSourceRoot ? RemeshPipeline.PreviewRootFrameInverse(previewSourceRoot.transform) : Matrix4x4.identity;
+                if (highlightFilterPreview) {
+                    EnsureHighlight();
+                    if (highlight.FillPreview(items, worldToFrame)) return true;
+                }
                 for (int i = 0; i < sourceEntries.Count; ++i) {
                     var renderer = sourceRenderers[i];
                     if (renderer) items.Add(new MeshViewport3D.Item(sourceEntries[i].originalMesh,
@@ -348,6 +460,74 @@ namespace SashaRX.UnityMeshLab
         }
 
         public void OnDraw3D(MeshViewport3D view) => previews.Overlay3D(previewData, view);
+
+        void DrawSyntheticFaceSelection()
+        {
+            var node = pipeline.Primary;
+            if (!previews.ShowsSyntheticFaces || node?.syntheticFaces == null) return;
+            EnsureSyntheticPicking(node);
+            int selected = 0, synthetic = 0, mixed = 0;
+            for (int f = 0; f < node.syntheticFaces.Length; ++f) {
+                if (node.selectedSyntheticFaces[f]) ++selected;
+                if (node.syntheticFaces[f] > 0) ++synthetic;
+                else if (node.syntheticFaces[f] < 0) ++mixed;
+            }
+            EditorGUILayout.LabelField($"{synthetic} closure · {mixed} mixed · {selected} selected", EditorStyles.wordWrappedMiniLabel);
+            using (new EditorGUI.DisabledScope(pipeline.IsRunning)) {
+                maximumClosureArea = Mathf.Max(0,EditorGUILayout.FloatField(new GUIContent("Max region area (m²)","Select connected masked regions by their total world-space surface area, not by triangle count. Mixed regions require manual inspection."),maximumClosureArea));
+                if (GUILayout.Button("Select closure regions by area")) {
+                    Array.Clear(node.selectedSyntheticFaces,0,node.selectedSyntheticFaces.Length);
+                    var regions = node.syntheticRegions;
+                    for (int r = 0; r < regions.faces.Count; ++r) {
+                        if (regions.labels[r] > 0 && regions.areas[r] <= maximumClosureArea) {
+                            foreach (int f in regions.faces[r]) node.selectedSyntheticFaces[f] = true;
+                        }
+                    }
+                    pipeline.RebuildSyntheticPreview();
+                }
+                if (GUILayout.Button("Select closure faces")) {
+                    for (int f = 0; f < node.syntheticFaces.Length; ++f) node.selectedSyntheticFaces[f] = node.syntheticFaces[f] > 0;
+                    pipeline.RebuildSyntheticPreview();
+                }
+                if (GUILayout.Button("Clear face selection")) {
+                    Array.Clear(node.selectedSyntheticFaces, 0, node.selectedSyntheticFaces.Length);
+                    pipeline.RebuildSyntheticPreview();
+                }
+                using (new EditorGUI.DisabledScope(selected == 0)) if (GUILayout.Button("Remove selected closure faces")) {
+                    previews.Invalidate();
+                    try { pipeline.RemoveSelectedSyntheticFaces(); }
+                    catch (InvalidOperationException ex) { saveStatus = ex.Message; }
+                }
+                using (new EditorGUI.DisabledScope(ReferenceEquals(node.simplified, node.completeSimplified)))
+                    if (GUILayout.Button("Restore removed faces")) { previews.Invalidate(); pipeline.RestoreSyntheticFaces(); }
+            }
+        }
+
+        void EnsureSyntheticPicking(RemeshPipeline.Node node)
+        {
+            if (node.syntheticPickBvh != null || ReferenceEquals(syntheticPickInput, node.simplified)) return;
+            var input = node.simplified; syntheticPickInput = input;
+            syntheticPickWork.Enqueue(() => token => { token.ThrowIfCancellationRequested(); return new TriangleBvh(input.positions, input.indices); },
+                bvh => {
+                    if (ReferenceEquals(node.simplified, input)) node.syntheticPickBvh = bvh;
+                    RequestRepaint?.Invoke();
+                });
+        }
+
+        void IUvTool3DInput.On3DInput(MeshViewport3D view, Event input)
+        {
+            var node = pipeline.Primary;
+            if (pipeline.IsRunning || !previews.ShowsSyntheticFaces || node?.syntheticPickBvh == null ||
+                input.type != EventType.MouseDown || input.button != 0 || !input.shift || input.alt || input.control ||
+                !view.TryScreenRay(input.mousePosition, out var origin, out var direction)) return;
+            var inverse = pipeline.PreviewSpaceToWorld.inverse;
+            var hit = node.syntheticPickBvh.Raycast(inverse.MultiplyPoint3x4(origin), inverse.MultiplyVector(direction).normalized, float.PositiveInfinity);
+            if (hit.triangleIndex < 0 || node.syntheticFaces[hit.triangleIndex] == 0) return;
+            int region = node.syntheticRegions.faceRegion[hit.triangleIndex];
+            bool select = !node.selectedSyntheticFaces[hit.triangleIndex];
+            foreach (int face in node.syntheticRegions.faces[region]) node.selectedSyntheticFaces[face] = select;
+            pipeline.RebuildSyntheticPreview(); input.Use(); RequestRepaint?.Invoke();
+        }
 
         public void OnDrawSidebar()
         {
@@ -391,10 +571,46 @@ namespace SashaRX.UnityMeshLab
                             "plane, a curtain) into a thin slab; its back side and rims have no source face nearby with an aligned normal and go. " +
                             "Closed sources are left whole. Turn off to keep the slab, e.g. with Two-sided shell."), settings.trimToSource);
                     }
+                    using (new EditorGUI.DisabledScope(settings.sourceShape == RemeshShape.BoundingBox ||
+                        settings.sourceShape == RemeshShape.LOD0 && settings.shell)) {
+                        settings.planarCap = EditorGUILayout.Toggle(new GUIContent("Close holes before remesh",
+                            "Weld coincident positions in geometry-only support, then close selected loops using Caps, Bridge or Automatic. " +
+                            "Original material/UV donors are preserved. " +
+                            "Synthetic surfaces project from the original donor; missing projections remain visible as magenta."), settings.planarCap);
+                        if (settings.planarCap) {
+                            settings.closureMode = (RemeshClosureMode)EditorGUILayout.EnumPopup(new GUIContent("Closure method","Caps: planar disks and local plane patches. Surface Caps: curved disks with fixed rim vertices. Bridge: exactly two rims; unequal counts supported. Automatic: joins continuing edges or opposite thin skins; other contours try planar Caps, then a curved disk. All methods check topology and intersections within the affected element."),settings.closureMode);
+                            if (settings.closureMode == RemeshClosureMode.Bridge || settings.closureMode == RemeshClosureMode.Automatic) {
+                                settings.bridgeCapFallback = EditorGUILayout.Toggle(new GUIContent("Cap on Bridge refusal",
+                                    "If a paired Bridge fails, try a separate planar Cap on each rim. Each Cap is audited independently. " +
+                                    "This can leave separate closed pieces or remove a handle; successful Bridges are kept."), settings.bridgeCapFallback);
+                                if (settings.bridgeCapFallback) EditorGUILayout.HelpBox(
+                                    "A separate Cap closes each end instead of reconnecting them. Inspect Cap / Bridge before Remesh.", MessageType.Info);
+                            }
+                            settings.planarCapLocalPlanes = EditorGUILayout.Toggle(new GUIContent("Local compound caps",
+                                "Allow a uniquely supported split into two continuous planar arcs. Close the first arc, recheck the new boundary, " +
+                                "then recheck the remaining contour. Three-plane corner closures reconstruct their common corner. Ambiguous or intersecting closures are refused; source rim vertices remain fixed."), settings.planarCapLocalPlanes);
+                            bool allLoops = string.Equals(settings.planarCapLoops?.Trim(),"all",StringComparison.OrdinalIgnoreCase);
+                            bool chooseAll = EditorGUILayout.Toggle(new GUIContent("All boundaries",
+                                "Close every detected opening with the chosen method. Bridge requires exactly two loops; use loop numbers to select a pair."),allLoops);
+                            if (chooseAll != allLoops) settings.planarCapLoops = chooseAll ? "all" : "0";
+                            if (!chooseAll) settings.planarCapLoops = EditorGUILayout.TextField(new GUIContent("Closure loop numbers",
+                                "Contour IDs, not a hole count. Comma-separated numbers starting at 0 (e.g. 0,1). Prepare first to inspect available IDs. Solid remesh requires every opening to be closed."),settings.planarCapLoops);
+                            if (pipeline.Has(RemeshPipeline.Stage.Prepare) && !string.IsNullOrEmpty(pipeline.ClosureLoopRanges))
+                                EditorGUILayout.LabelField("Last prepared loops: " + pipeline.ClosureLoopRanges, EditorStyles.wordWrappedMiniLabel);
+                            settings.capPlaneTolerance = Mathf.Max(0,EditorGUILayout.FloatField(new GUIContent("Cap plane tolerance",
+                                "Minimum plane-fit tolerance in source-local units (default 0.01). The effective tolerance also allows 0.1% of the local contour span. Boundary vertices stay fixed; topology and intersection checks still apply."),settings.capPlaneTolerance));
+                        }
+                    }
                     settings.sourceBackfaces = (RemeshBackfaces)EditorGUILayout.EnumPopup(new GUIContent("Source backfaces",
                         "Whether the source's back faces count as surface. From materials: two-sided when a material's cull mode is Off or its double-sided " +
                         "switch is on (a Cull Off written into the shader itself is not detectable — use Always). The trim still keeps one sheet; the result " +
                         "material renders both sides instead, and the bake samples two-sided faces from either side. Never: only fronts count."), settings.sourceBackfaces);
+                    StageButton(RemeshPipeline.Stage.Prepare, "Prepare / inspect Cap & Bridge");
+                    if (pipeline.Has(RemeshPipeline.Stage.Prepare))
+                        EditorGUILayout.LabelField(pipeline.ClosureSummary, EditorStyles.wordWrappedMiniLabel);
+                    if (!string.IsNullOrEmpty(pipeline.ClosureSelectionWarning))
+                        EditorGUILayout.HelpBox(pipeline.ClosureSelectionWarning, MessageType.Warning);
+                    EditorGUILayout.LabelField("Closes one contour (or one Bridge pair) at a time. Preparation stops before native Remesh; inspect the Cap / Bridge preview first.", EditorStyles.wordWrappedMiniLabel);
                     StageButton(RemeshPipeline.Stage.Remesh, "Remesh");
                 }
                 if (StageHeader(RemeshPipeline.Stage.Simplify)) {
@@ -469,6 +685,8 @@ namespace SashaRX.UnityMeshLab
                     StageButton(RemeshPipeline.Stage.Unwrap, "Unwrap");
                 }
                 if (StageHeader(RemeshPipeline.Stage.Bake)) {
+                    settings.bakeFilteredParts = EditorGUILayout.Toggle(new GUIContent("Bake filtered-out parts",
+                        "Project materials, lighting, AO and vertex colors from the full captured source, including small and thin parts removed before Remesh. In Keep hierarchy, also includes fully filtered renderers. Only Bake needs to rerun; projection distance and backface rules still apply."), settings.bakeFilteredParts);
                     settings.bakeMode = (RemeshBakeMode)EditorGUILayout.EnumPopup(new GUIContent("Bake mode",
                         "Materials transfers the source maps. Beauty bakes the object as the player sees it — realtime/mixed light with ray shadows, " +
                         "lightmaps, ambient and reflection probes folded into one lit BaseColor texture; the saved material becomes Unlit. " +
@@ -568,7 +786,7 @@ namespace SashaRX.UnityMeshLab
 
         void StageButton(RemeshPipeline.Stage stage, string label)
         {
-            using (new EditorGUI.DisabledScope(!source && !pipeline.Has(RemeshPipeline.Stage.Remesh) || UvProgress.IsActive))
+            using (new EditorGUI.DisabledScope(!source && (!pipeline.Has(RemeshPipeline.Stage.Prepare) || stage == RemeshPipeline.Stage.Prepare) || UvProgress.IsActive))
                 if (GUILayout.Button(label)) Start(stage, false);
         }
 
@@ -576,7 +794,7 @@ namespace SashaRX.UnityMeshLab
         // output or changed settings). "Run all" re-runs everything.
         void Start(RemeshPipeline.Stage target, bool all)
         {
-            var from = all ? RemeshPipeline.Stage.Remesh : pipeline.FirstStale(target, settings, source);
+            var from = all ? RemeshPipeline.Stage.Prepare : pipeline.FirstStale(target, settings, source);
             // Preview caches key on mesh instances the run is about to destroy.
             previews.Invalidate();
             saveStatus = null;
@@ -596,8 +814,11 @@ namespace SashaRX.UnityMeshLab
             try { ok = await run; }
             catch (Exception e) { UvtLog.Error("[Remesh] Stage failed: " + e); saveStatus = e.Message; RequestRepaint?.Invoke(); return; }
             if (ok)
-                previews.Show(target == RemeshPipeline.Stage.Remesh ? RemeshPreview.Stage.Remesh :
+                previews.Show(target == RemeshPipeline.Stage.Prepare ? RemeshPreview.Stage.Closure : target == RemeshPipeline.Stage.Remesh ? RemeshPreview.Stage.Remesh :
                     target == RemeshPipeline.Stage.Simplify ? RemeshPreview.Stage.Simplified : RemeshPreview.Stage.Result);
+            else if (pipeline.Has(RemeshPipeline.Stage.Prepare) && !pipeline.Has(RemeshPipeline.Stage.Remesh))
+                previews.Show(RemeshPreview.Stage.Closure);
+            RequestRepaint?.Invoke();
         }
 
         void Save()

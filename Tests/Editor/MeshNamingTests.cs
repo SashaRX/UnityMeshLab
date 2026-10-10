@@ -82,6 +82,13 @@ namespace SashaRX.UnityMeshLab.Tests
         public void GroupKey_PairsLodAndCollisionNodesOfOneAsset(string name, string expected)
             => Assert.AreEqual(expected, MeshNaming.GroupKey(name));
 
+        [TestCase("Seat_LOD0.001", "Seat.001")]
+        [TestCase("Seat_LOD2.002", "Seat.002")]
+        [TestCase("Seat_COL_Hull2.001", "Seat.001")]
+        [TestCase("Seat_LOD1.abc", "Seat_LOD1.abc")]
+        public void GroupKey_PreservesNumericInstanceSuffixWhileRemovingLod(string name, string expected)
+            => Assert.AreEqual(expected, UvToolContext.ExtractGroupKey(name));
+
         [TestCase("Chair_wc_repack_LOD0", "Chair")]
         [TestCase("Chair_LOD1_optimized", "Chair")]
         [TestCase("Chair_uvTransfer", "Chair")]

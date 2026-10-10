@@ -1,12 +1,48 @@
 // MeshAccessTests.cs — the readable copy and the matrix bake on meshes the engine lets
 // us build in a test (readable); the Read/Write-disabled path needs an import.
 using NUnit.Framework;
+using UnityEditor;
 using UnityEngine;
 
 namespace SashaRX.UnityMeshLab.Tests
 {
     public class MeshAccessTests
     {
+        [Test]
+        public void ReadWriteDisabledModelSnapshotPreservesBuffersWithoutReimporting()
+        {
+            string folder = "Assets/__MeshLabReadOnly_" + System.Guid.NewGuid().ToString("N");
+            string path = folder + "/probe.obj";
+            Mesh copy = null;
+            try {
+                AssetDatabase.CreateFolder("Assets",System.IO.Path.GetFileName(folder));
+                System.IO.File.WriteAllText(path,"v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nvn 0 0 1\nf 1/1/1 2/2/1 3/3/1\n");
+                AssetDatabase.ImportAsset(path);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.isReadable = true; importer.SaveAndReimport();
+                var original = AssetDatabase.LoadAssetAtPath<GameObject>(path).GetComponentInChildren<MeshFilter>().sharedMesh;
+                var vertices = original.vertices; var normals = original.normals; var uv = original.uv; var indices = original.triangles;
+                importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.isReadable = false; importer.SaveAndReimport();
+                original = AssetDatabase.LoadAssetAtPath<GameObject>(path).GetComponentInChildren<MeshFilter>().sharedMesh;
+                Assert.IsFalse(original.isReadable);
+                var assetBytes = System.IO.File.ReadAllBytes(path); var metaBytes = System.IO.File.ReadAllBytes(path+".meta");
+                MeshAccessImportWatch.Path = path; MeshAccessImportWatch.Count = 0;
+                copy = MeshAccess.ReadableCopy(original);
+                Assert.AreEqual(0,MeshAccessImportWatch.Count,"Reading an imported mesh must not trigger Bakery or dependent prefab imports.");
+                Assert.IsFalse(original.isReadable); Assert.IsFalse(((ModelImporter)AssetImporter.GetAtPath(path)).isReadable);
+                CollectionAssert.AreEqual(vertices,copy.vertices); CollectionAssert.AreEqual(normals,copy.normals);
+                CollectionAssert.AreEqual(uv,copy.uv); CollectionAssert.AreEqual(indices,copy.triangles);
+                CollectionAssert.AreEqual(assetBytes,System.IO.File.ReadAllBytes(path));
+                CollectionAssert.AreEqual(metaBytes,System.IO.File.ReadAllBytes(path+".meta"));
+            }
+            finally {
+                MeshAccessImportWatch.Path = null;
+                if (copy) Object.DestroyImmediate(copy);
+                AssetDatabase.DeleteAsset(folder);
+            }
+        }
+
         static Mesh QuadTopology()
         {
             var m = new Mesh { name = "Q" };
@@ -27,6 +63,36 @@ namespace SashaRX.UnityMeshLab.Tests
             for (int attempt = 0; attempt < 5; ++attempt)
                 Assert.Throws<System.NullReferenceException>(() => MeshAccess.ReadableCopy(null));
             Assert.AreEqual(count, Resources.FindObjectsOfTypeAll<Mesh>().Length);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void EmptyMeshCopiesWithoutRequestingAMissingPositionChannel(bool upload)
+        {
+            var source=new Mesh {name="empty source"}; Mesh copy=null;
+            try {
+                if(upload) source.UploadMeshData(true);
+                Assert.AreEqual(0,source.vertexCount);
+                Assert.IsFalse(source.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Position));
+                copy=MeshAccess.ReadableCopy(source);
+                Assert.IsTrue(copy.isReadable); Assert.AreEqual(0,copy.vertexCount);
+                Assert.AreEqual(source.subMeshCount,copy.subMeshCount);
+            }
+            finally { Object.DestroyImmediate(source); if(copy) Object.DestroyImmediate(copy); }
+        }
+
+        [Test]
+        public void PositionlessNonemptyMeshRefusesWithoutLeakingACopy()
+        {
+            var source=new Mesh {name="positionless source"};
+            try {
+                source.SetVertexBufferParams(3,new UnityEngine.Rendering.VertexAttributeDescriptor(UnityEngine.Rendering.VertexAttribute.Normal));
+                int count=Resources.FindObjectsOfTypeAll<Mesh>().Length;
+                var error=Assert.Throws<System.InvalidOperationException>(()=>MeshAccess.ReadableCopy(source));
+                StringAssert.Contains("Position",error.Message);
+                Assert.AreEqual(count,Resources.FindObjectsOfTypeAll<Mesh>().Length);
+                Assert.AreEqual(3,source.vertexCount);
+            }
+            finally { Object.DestroyImmediate(source); }
         }
 
         [TestCase(false)]
@@ -89,6 +155,35 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { Object.DestroyImmediate(src); Object.DestroyImmediate(copy); }
         }
 
+#if UNITY_6000_2_OR_NEWER
+        [TestCase(UnityEngine.Rendering.IndexFormat.UInt16)]
+        [TestCase(UnityEngine.Rendering.IndexFormat.UInt32)]
+        public void UnreadableMeshLodCopiesOnlyTheActiveIndexRange(UnityEngine.Rendering.IndexFormat format)
+        {
+            var source = QuadTopology();
+            Mesh copy = null;
+            try {
+                source.indexFormat = format;
+                source.SetIndices(new[] { 0, 1, 2, 0, 2, 3, 0, 1, 3 }, MeshTopology.Triangles, 0);
+                source.lodCount = 2;
+                source.SetLods(new[] {
+                    new MeshLodRange { indexStart = 0, indexCount = 6 },
+                    new MeshLodRange { indexStart = 6, indexCount = 3 }
+                }, 0);
+                source.UploadMeshData(true);
+                Assert.AreEqual(6, source.GetIndexCount(0));
+                using (var data = Mesh.AcquireReadOnlyMeshData(source))
+                    Assert.AreEqual(9, data[0].GetSubMesh(0).indexCount,
+                        "MeshData includes the backing ranges of all mesh LODs.");
+                copy = MeshAccess.ReadableCopy(source);
+                CollectionAssert.AreEqual(new[] { 0, 1, 2, 0, 2, 3 }, copy.triangles);
+                Assert.AreEqual(4, copy.vertexCount);
+                CollectionAssert.AreEqual(new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up }, copy.uv);
+            }
+            finally { Object.DestroyImmediate(source); if (copy) Object.DestroyImmediate(copy); }
+        }
+#endif
+
         [Test]
         public void MirroredBakeRewindsQuadsAsQuads()
         {
@@ -103,5 +198,15 @@ namespace SashaRX.UnityMeshLab.Tests
             }
             finally { Object.DestroyImmediate(m); }
         }
+    }
+}
+
+namespace SashaRX.UnityMeshLab.Tests
+{
+    internal sealed class MeshAccessImportWatch : AssetPostprocessor
+    {
+        internal static string Path;
+        internal static int Count;
+        void OnPostprocessModel(GameObject root) { if (assetPath == Path) ++Count; }
     }
 }

@@ -5,6 +5,7 @@
 // five; every one of those goes through here now.
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -262,7 +263,8 @@ namespace SashaRX.UnityMeshLab
                 if (entry.originalMesh != null && entry.originalMesh != entry.fbxMesh)
                 {
                     FbxExport.PreserveUvChannels(sidecarMesh, entry.originalMesh);
-                    FbxExport.OverwriteUvChannel(sidecarMesh, entry.originalMesh, 1);
+                    if (entry.repackedMesh == null && entry.transferredMesh == null)
+                        FbxExport.OverwriteUvChannel(sidecarMesh, entry.originalMesh, 1);
                 }
 
                 // TBN: keep tangent presence in sync with the source FBX. If the FBX
@@ -304,7 +306,7 @@ namespace SashaRX.UnityMeshLab
                 var positions = sidecarMesh.vertices;
                 var colors = sidecarMesh.colors32;
                 var uv0List = new List<Vector2>();
-                (entry.originalMesh ?? resultMesh).GetUVs(0, uv0List);
+                (string.IsNullOrEmpty(entry.reverseTransferJson) ? entry.originalMesh ?? resultMesh : sidecarMesh).GetUVs(0, uv0List);
 
                 string meshName = entry.fbxMesh != null
                     ? entry.fbxMesh.name
@@ -314,6 +316,7 @@ namespace SashaRX.UnityMeshLab
                 sidecarEntry = new MeshUv2Entry
                 {
                     meshName = meshName,
+                    reverseTransferJson = entry.reverseTransferJson,
                     uv2 = primaryUv,
                     welded = entry.wasWelded,
                     edgeWelded = entry.wasEdgeWelded,
@@ -332,12 +335,36 @@ namespace SashaRX.UnityMeshLab
                     stepRepack = isSourceLod,
                     stepTransfer = !isSourceLod,
                 };
+                if (!string.IsNullOrEmpty(entry.reverseTransferJson)
+                    && (!ReverseLegacyTopologySafe(entry.fbxMesh, sidecarEntry)
+                        || entry.fbxMesh && (sidecarMesh.subMeshCount != entry.fbxMesh.subMeshCount
+                            || Enumerable.Range(0, sidecarMesh.subMeshCount).Any(s => sidecarMesh.GetIndexCount(s) != entry.fbxMesh.GetIndexCount(s)))))
+                {
+                    UvtLog.Warn("[ReverseUV] Sidecar cannot replay changed topology or UV2 seam splits. Save the result as a mesh asset or export a new FBX; sidecar application was refused.");
+                    sidecarEntry = null;
+                    return false;
+                }
                 return true;
             }
             finally
             {
                 UnityEngine.Object.DestroyImmediate(sidecarMesh);
             }
+        }
+
+        internal static bool ReverseLegacyTopologySafe(Mesh raw, MeshUv2Entry entry)
+        {
+            if (!raw || entry.uv2 == null || entry.uv2.Length != raw.vertexCount
+                || entry.vertPositions == null || entry.vertPositions.Length != raw.vertexCount
+                || entry.vertUv0 == null || entry.vertUv0.Length != raw.vertexCount) return false;
+            var values = new Dictionary<((int,int,int), Vector2), Vector2>();
+            for (int i = 0; i < entry.uv2.Length; ++i)
+            {
+                var key = (Uv2AssetPostprocessor.QuantizePos(entry.vertPositions[i]), entry.vertUv0[i]);
+                if (values.TryGetValue(key, out var prior) && prior != entry.uv2[i]) return false;
+                values[key] = entry.uv2[i];
+            }
+            return true;
         }
 
         // ── Collision entries ──

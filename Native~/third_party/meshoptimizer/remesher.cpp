@@ -19,6 +19,9 @@
 // Note: this is only exposed for development purposes; do *not* use
 enum
 {
+	// UnityMeshLab's opt-in solid rescue: interpolate occupancy on a conforming
+	// tetrahedral grid instead of joining occupied voxel centroids.
+	meshopt_RemeshInternalManifold = 1 << 29,
 	meshopt_RemeshInternalDebug = 1 << 30
 };
 
@@ -711,6 +714,83 @@ static size_t polygonize(float* destination, size_t max_triangle_count, const Gr
 
 } // namespace meshopt
 
+// Unlike the corner-based extractor, a 0.5 isosurface of binary occupancy cannot
+// collapse a one-cell solid into two coincident faces or join sheets at a grid
+// edge. Every cell uses the same body diagonal, so shared-face triangulations
+// agree. Positions are occupancy midpoints, without source fitting; the caller
+// keeps the original extractor for normal jobs and audits this rescue separately.
+template <typename Grid>
+static size_t polygonizeManifold(float* destination, size_t capacity, const Grid* grid,
+    int resolution, float scale, const float offset[3])
+{
+	static const int tetrahedra[6][4] = {{0,1,3,7}, {0,3,2,7}, {0,2,6,7},
+	    {0,6,4,7}, {0,4,5,7}, {0,5,1,7}};
+	size_t count = 0;
+	const float rscale = 1.f / scale;
+	const size_t slice = size_t(resolution) * resolution;
+	for (int z = 0; z < resolution - 1; ++z)
+		for (int y = 0; y < resolution - 1; ++y)
+			for (int x = 0; x < resolution - 1; ++x)
+			{
+				bool occupied[8]; int total = 0;
+				for (int c = 0; c < 8; ++c)
+				{
+					occupied[c] = grid[size_t(x + (c & 1)) + size_t(y + ((c >> 1) & 1)) * resolution + size_t(z + (c >> 2)) * slice] != 0;
+					total += occupied[c];
+				}
+				if (total == 0 || total == 8) continue;
+				for (const auto& tetrahedron : tetrahedra)
+				{
+					int inside[4], outside[4], ni = 0, no = 0;
+					for (int c : tetrahedron)
+						if (occupied[c]) inside[ni++] = c;
+						else outside[no++] = c;
+					if (ni == 0 || ni == 4) continue;
+					const int triangles = ni == 2 ? 2 : 1;
+					if (destination && count < capacity)
+					{
+						float points[4][3], direction[3] = {};
+						for (int k = 0; k < 3; ++k)
+						{
+							for (int i = 0; i < no; ++i) direction[k] += float((outside[i] >> k) & 1) / no;
+							for (int i = 0; i < ni; ++i) direction[k] -= float((inside[i] >> k) & 1) / ni;
+						}
+						int a[4], b[4];
+						if (ni == 2)
+						{
+							a[0] = a[1] = inside[0]; a[2] = a[3] = inside[1];
+							b[0] = b[2] = outside[0]; b[1] = b[3] = outside[1];
+						}
+						else for (int i = 0; i < 3; ++i)
+						{
+							a[i] = ni == 1 ? inside[0] : inside[i];
+							b[i] = ni == 1 ? outside[i] : outside[0];
+						}
+						const int origin[3] = {x,y,z};
+						// Rasterization stores source cell x at padded index x+1;
+						// grid index g therefore denotes the center g-0.5.
+						for (int i = 0; i < (ni == 2 ? 4 : 3); ++i)
+							for (int k = 0; k < 3; ++k)
+								points[i][k] = (origin[k] + .5f * (((a[i] >> k) & 1) + ((b[i] >> k) & 1) - 1)) * rscale + offset[k];
+						const int order[2][3] = {{0,1,2},{1,3,2}};
+						for (int i = 0; i < triangles && count + i < capacity; ++i)
+						{
+							int u = order[i][0], v = order[i][1], w = order[i][2];
+							double ab[3], ac[3];
+							for (int k = 0; k < 3; ++k) { ab[k] = double(points[v][k]) - points[u][k]; ac[k] = double(points[w][k]) - points[u][k]; }
+							double dot = (ab[1]*ac[2]-ab[2]*ac[1])*direction[0] + (ab[2]*ac[0]-ab[0]*ac[2])*direction[1] + (ab[0]*ac[1]-ab[1]*ac[0])*direction[2];
+							if (dot < 0) { int swap = v; v = w; w = swap; }
+							memcpy(destination + (count+i)*9, points[u], 3*sizeof(float));
+							memcpy(destination + (count+i)*9+3, points[v], 3*sizeof(float));
+							memcpy(destination + (count+i)*9+6, points[w], 3*sizeof(float));
+						}
+					}
+					count += triangles;
+				}
+			}
+	return count;
+}
+
 template <typename Grid>
 static size_t remesh(float* destination, size_t max_triangle_count, const unsigned int* indices, size_t index_count, const float* vertex_positions, size_t vertex_count, size_t vertex_positions_stride, int resolution, unsigned int options)
 {
@@ -746,7 +826,7 @@ static size_t remesh(float* destination, size_t max_triangle_count, const unsign
 	// note that we only do this if we need to compute output triangles; counting runs skip it for performance
 	Voxel* voxels = NULL;
 
-	if (destination)
+	if (destination && (options & meshopt_RemeshInternalManifold) == 0)
 	{
 		voxels = allocator.allocate<Voxel>(voxel_count);
 		memset(voxels, 0, voxel_count * sizeof(Voxel));
@@ -772,6 +852,9 @@ static size_t remesh(float* destination, size_t max_triangle_count, const unsign
 		printf("remesher: %zu voxels occupied, %zu voxels inside\n", occupied_count, inside_count);
 #endif
 	}
+
+	if (options & meshopt_RemeshInternalManifold)
+		return polygonizeManifold(destination, max_triangle_count, grid, resolution, scale, offset);
 
 	// accumulate voxel positions: in the second pass, this computes enough data in each voxel to calculate positions
 	if (voxels)

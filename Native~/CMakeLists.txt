@@ -38,7 +38,8 @@ set_property(TARGET meshoptimizer PROPERTY SOURCES "${MESHOPT_FILTERED_SOURCES}"
 target_sources(meshoptimizer PRIVATE third_party/meshoptimizer/remesher.cpp)
 target_include_directories(meshoptimizer PRIVATE "${meshoptimizer_SOURCE_DIR}/src")
 
-# Keep xatlas vendored so native builds never execute or compile code from a
+# Keep xatlas vendored (reviewed extension: third_party/xatlas/MESHLAB_PATCHES.md)
+# so native builds never execute or compile code from a
 # moving upstream branch. Update this reviewed snapshot explicitly when needed.
 set(XATLAS_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xatlas")
 
@@ -47,7 +48,6 @@ add_library(xatlas-unity SHARED
     xatlas-unity-bridge.cpp
     src/collision.cpp
     src/remesh.cpp
-    ${XATLAS_SOURCE_DIR}/xatlas.cpp
 )
 
 target_include_directories(xatlas-unity PRIVATE
@@ -80,6 +80,8 @@ else()
     set(UNITY_PLUGINS_DIR "${CMAKE_SOURCE_DIR}/../Plugins/x86_64")
 endif()
 
+option(MESHLAB_COPY_PLUGINS "Copy built libraries into package Plugins (CI publication)" ON)
+if(MESHLAB_COPY_PLUGINS)
 add_custom_command(TARGET xatlas-unity POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${UNITY_PLUGINS_DIR}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -87,12 +89,16 @@ add_custom_command(TARGET xatlas-unity POST_BUILD
         "${UNITY_PLUGINS_DIR}/$<TARGET_FILE_NAME:xatlas-unity>"
     COMMENT "Copying library to ${UNITY_PLUGINS_DIR}"
 )
+endif()
 
 # Opt-in headless tests; no Unity license needed.
-option(MESHLAB_BUILD_TESTS "Build native remesh tests" OFF)
+option(MESHLAB_BUILD_TESTS "Build native regression tests" OFF)
 if(MESHLAB_BUILD_TESTS)
     enable_testing()
     add_executable(meshlab-remesh-test tests/remesh_test.cpp)
     target_link_libraries(meshlab-remesh-test PRIVATE xatlas-unity)
     add_test(NAME remesh COMMAND meshlab-remesh-test)
+    add_executable(meshlab-uv-input-test tests/uv_input_test.cpp)
+    target_link_libraries(meshlab-uv-input-test PRIVATE xatlas-unity)
+    add_test(NAME uv-input COMMAND meshlab-uv-input-test)
 endif()

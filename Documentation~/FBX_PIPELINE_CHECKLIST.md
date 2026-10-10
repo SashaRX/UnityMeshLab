@@ -282,13 +282,19 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   colour layer Unity's importer reads (TS_UnityExport_SDK checklist I4).
   Written values are clamped to `[0, 1]` (§4); stored ones are left as they are.
 * Which Unity vertex a corner became is recovered from a throwaway import
-  of a tagged copy (corner index in an extra UV set, same importer settings,
+  of a tagged copy (corner index in two base-4096 digits of an extra UV set,
+  with the mesh ordinal as a constant offset, same importer settings,
   `Assets/__MeshLabTemp`, deleted afterwards, also when it fails). A mesh with
   all eight UV sets lends its last one to the tag; that set's values are read
   from the file per corner instead. `FbxCornerMatch` pairs corners with the
   working mesh by position (bit-identical: same file, same import), by the
   polygon's own corners, and by the untouched UVs and colours, so welding,
   vertex splits and triangle order do not matter.
+  Each varying tag component spans at most 4095; decoding accepts noise strictly
+  below 0.125, checks finite/integer/range validity and a common mesh ordinal,
+  and bounds every decoded corner against the source document's corner count.
+  The tag format supports up to 4096 meshes and fewer than 2^24 corners per mesh;
+  larger documents refuse before saving. See `REPRO_FBX_CORNER_COMPRESSION.md`.
 * Refused, nothing written: a value seam inside one polygon (the polygon
   cannot hold it without being split), a UV set that would skip a channel
   (UV3 on a mesh with one set), corner tags lost on import (Mesh

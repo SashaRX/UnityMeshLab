@@ -264,9 +264,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             // Union-Find: merge vertices at same position
-            int[] parent = new int[vertCount];
-            int[] rank   = new int[vertCount];
-            for (int i = 0; i < vertCount; i++) parent[i] = i;
+            var groups = new DisjointSet(vertCount);
 
             foreach (var kv in cells)
             {
@@ -276,7 +274,7 @@ namespace SashaRX.UnityMeshLab
                     for (int j = i + 1; j < list.Count; j++)
                     {
                         if (Vec3Close(verts[list[i]], verts[list[j]], POS_EPS))
-                            Union(parent, rank, list[i], list[j]);
+                            groups.Union(list[i], list[j]);
                     }
                 }
             }
@@ -284,7 +282,7 @@ namespace SashaRX.UnityMeshLab
             // Flatten: posGroup[i] = root representative
             int[] posGroup = new int[vertCount];
             for (int i = 0; i < vertCount; i++)
-                posGroup[i] = Find(parent, i);
+                posGroup[i] = groups.Find(i);
 
             return posGroup;
         }
@@ -380,23 +378,6 @@ namespace SashaRX.UnityMeshLab
             long y = (long)Mathf.FloorToInt(v.y / cellSize);
             long z = (long)Mathf.FloorToInt(v.z / cellSize);
             return x * 73856093L ^ y * 19349663L ^ z * 83492791L;
-        }
-
-        // ─── Union-Find ───
-
-        static int Find(int[] p, int x)
-        {
-            while (p[x] != x) { p[x] = p[p[x]]; x = p[x]; }
-            return x;
-        }
-
-        static void Union(int[] p, int[] r, int a, int b)
-        {
-            a = Find(p, a); b = Find(p, b);
-            if (a == b) return;
-            if (r[a] < r[b]) { int t = a; a = b; b = t; }
-            p[b] = a;
-            if (r[a] == r[b]) r[a]++;
         }
 
         // ─── Comparisons ───

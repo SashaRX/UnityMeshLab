@@ -68,12 +68,15 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public uint repackedAtlasWidth;
         public uint repackedAtlasHeight;
+        internal uint diagnosticPackedAtlasWidth, diagnosticPackedAtlasHeight;
 
         /// <summary>
         /// UV2-transferred mesh for target LODs. Null until the Transfer step runs.
         /// Destroyed on pipeline reset or window close.
         /// </summary>
         public Mesh transferredMesh;
+        /// <summary>Experimental reverse atlas ancestry, valid for the current result only.</summary>
+        internal string reverseTransferJson;
 
         /// <summary>Intermediate transfer solver state. Set during Transfer, cleared on reset.</summary>
         public TargetTransferState transferState;

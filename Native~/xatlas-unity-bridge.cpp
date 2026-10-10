@@ -1,13 +1,20 @@
 // xatlas-unity-bridge.cpp
 // Native bridge: wraps xatlas for Unity Editor tool.
-// Compile: cl /O2 /LD /EHsc xatlas-unity-bridge.cpp xatlas.cpp /Fe:xatlas-unity.dll
-// Place DLL in Assets/Plugins/x86_64/
+// Build with Native~/CMakeLists.txt; the pinned xatlas.cpp is included below.
+// Publish plugin binaries through the build-native CI workflow.
 
 #include "xatlas.h"
 #include "meshoptimizer.h"
 #include <cstring>
 #include <cstdint>
 #include <vector>
+#include <algorithm>
+#include <cmath>
+
+// Compile the pinned implementation (reviewed shape-preservation extension) so
+// the bridge can repair its UV face mask before chart construction. No internal
+// xatlas types cross the exported C ABI. Do not compile xatlas.cpp separately.
+#include "xatlas.cpp"
 
 #ifdef _WIN32
 #define EXPORT extern "C" __declspec(dllexport)
@@ -16,6 +23,33 @@
 #endif
 
 static xatlas::Atlas* s_atlas = nullptr;
+
+static void validateUvFaces(xatlas::internal::UvMesh& mesh)
+{
+    // Upstream uses an absolute FLT_EPSILON area cutoff. Density normalization
+    // legitimately produces smaller faces; leaving them ignored makes the
+    // managed orphan recovery collapse otherwise valid source UVs.
+    mesh.faceIgnore.zeroOutMemory();
+    for (uint32_t f = 0; f < mesh.indices.size() / 3; ++f) {
+        const auto& a = mesh.texcoords[mesh.indices[f * 3]];
+        const auto& b = mesh.texcoords[mesh.indices[f * 3 + 1]];
+        const auto& c = mesh.texcoords[mesh.indices[f * 3 + 2]];
+        if (!std::isfinite(a.x) || !std::isfinite(a.y) ||
+            !std::isfinite(b.x) || !std::isfinite(b.y) ||
+            !std::isfinite(c.x) || !std::isfinite(c.y)) {
+            mesh.faceIgnore.set(f);
+            continue;
+        }
+        const double ux = double(b.x) - a.x, uy = double(b.y) - a.y;
+        const double vx = double(c.x) - a.x, vy = double(c.y) - a.y;
+        const double wx = double(c.x) - b.x, wy = double(c.y) - b.y;
+        const double area = std::abs(ux * vy - vx * uy) * 0.5;
+        const double edgeScale = std::max({ux * ux + uy * uy,
+            vx * vx + vy * vy, wx * wx + wy * wy});
+        if (area <= edgeScale * (4.0 * DBL_EPSILON))
+            mesh.faceIgnore.set(f);
+    }
+}
 
 // ── Lifecycle ──
 
@@ -57,6 +91,10 @@ EXPORT int xatlasAddUvMesh(
     decl.faceMaterialData = faceMaterialData;
 
     xatlas::AddMeshError err = xatlas::AddUvMesh(s_atlas, decl);
+    if (err == xatlas::AddMeshError::Success) {
+        auto* context = reinterpret_cast<xatlas::Context*>(s_atlas);
+        validateUvFaces(*context->uvMeshInstances.back()->mesh);
+    }
     return (int)err;
 }
 
@@ -105,7 +143,7 @@ EXPORT void xatlasComputeCharts()
     xatlas::ComputeCharts(s_atlas, opts);
 }
 
-EXPORT void xatlasPackCharts(
+static void packCharts(
     int      maxChartSize,
     uint32_t padding,
     float    texelsPerUnit,
@@ -114,11 +152,13 @@ EXPORT void xatlasPackCharts(
     int      blockAlign,
     int      bruteForce,
     int      rotateCharts,
-    int      rotateChartsToAxis)
+    int      rotateChartsToAxis,
+    bool     preserveShape)
 {
     if (!s_atlas) return;
 
     xatlas::PackOptions opts;
+    opts.preserveChartShape = preserveShape;
     opts.maxChartSize        = maxChartSize;
     opts.padding             = padding;
     opts.texelsPerUnit       = texelsPerUnit;
@@ -130,6 +170,18 @@ EXPORT void xatlasPackCharts(
     opts.rotateChartsToAxis  = (rotateChartsToAxis != 0);
 
     xatlas::PackCharts(s_atlas, opts);
+}
+
+EXPORT void xatlasPackCharts(int size, uint32_t padding, float density, uint32_t resolution,
+    int bilinear, int blocks, int bruteForce, int rotate, int axis)
+{
+    packCharts(size,padding,density,resolution,bilinear,blocks,bruteForce,rotate,axis,false);
+}
+
+EXPORT void xatlasPackChartsPreserveShape(int size, uint32_t padding, float density, uint32_t resolution,
+    int bilinear, int blocks, int bruteForce, int rotate, int axis)
+{
+    packCharts(size,padding,density,resolution,bilinear,blocks,bruteForce,rotate,axis,true);
 }
 
 // ── Queries ──

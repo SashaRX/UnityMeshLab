@@ -158,7 +158,7 @@ The editor assembly `SashaRX.UnityMeshLab.Editor` (namespace `SashaRX.UnityMeshL
 | `Editor/Tools/` | The tabs, one `IUvTool` each |
 | `Editor/Mesh/` | `MeshNaming` (the one reader of LOD / collision naming rules), `MeshSplitMerge`, `MeshAccess` (reading Read/Write-disabled meshes), `MeshTransform`, `LodHierarchy`, `VertexChannels`, `RendererSettings` |
 | `Editor/Uv/` | `UvTopology` (boundary edges, shells, point-in-triangle, UDIM tiles) |
-| `Editor/Geometry/` | `MeshGeometry`, `GpuReadback`; the BVHs in `Editor/TriangleBvh*.cs` |
+| `Editor/Geometry/` | `MeshGeometry`, `DisjointSet`, `GpuReadback`; the BVHs in `Editor/TriangleBvh*.cs` |
 | `Editor/Assets/` | `FbxExport` (every FBX write), `SidecarStore` (the `_uv2data.asset` sidecar), `TextureAssets` |
 | `Editor/Bench/` | `SweepRunner`, `BenchmarkRunner`, recorder, sweep reports, test suite asset |
 | `Editor/Diagnostics/` | `DebugUi`, `BakeHealth`, `HierarchicalDiag`, `FbxMetricsExporter` |
@@ -255,6 +255,7 @@ Requirements: CMake 3.20+, C++17 compiler. xatlas and V-HACD are vendored in `Na
 ## Documentation
 
 * [Remesh & Bake](Documentation~/REMESH_AND_BAKE.md) — workflow, architecture, limits, validation checklist
+* [Solid voxel recovery](Documentation~/REMESH_SOLID_RECOVERY.md) — singular thin-feature output, occupancy fallback, native and capture tests
 * [Transfer pipeline experiments](Documentation~/EXPERIMENTS.md) and [benchmark protocol](Documentation~/TRANSFER_BENCHMARK.md)
 * [FBX pipeline checklist](Documentation~/FBX_PIPELINE_CHECKLIST.md)
 * [Vertex Color Baking architecture](Documentation~/VERTEX_COLOR_BAKING_ARCHITECTURE.md)

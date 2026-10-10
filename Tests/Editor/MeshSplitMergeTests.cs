@@ -74,7 +74,9 @@ namespace SashaRX.UnityMeshLab.Tests
             var attachment = new GameObject("Attachment"); created.Add(attachment);
             attachment.transform.SetParent(go.transform, false);
 
-            var ctx = new UvToolContext();
+            var hub = ScriptableObject.CreateInstance<UvToolHub>(); created.Add(hub);
+            var ctx = (UvToolContext)typeof(UvToolHub).GetField("ctx",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(hub);
             ctx.Refresh(lodGroup);
             var report = MeshSplitMerge.Scan(ctx);
             Assert.AreEqual(1, report.split.Count); Assert.AreEqual(0, report.merge.Count);
@@ -89,6 +91,8 @@ namespace SashaRX.UnityMeshLab.Tests
             ctx.Refresh(lodGroup);
             report = MeshSplitMerge.Scan(ctx);
             Assert.AreEqual(0, report.split.Count); Assert.AreEqual(1, report.merge.Count); Assert.AreEqual(2, report.merge[0].entries.Count);
+            UnityEditor.Undo.FlushUndoRecordObjects();
+            UnityEditor.Undo.IncrementCurrentGroup(); // Separate the two simulated user actions.
             Assert.AreEqual(1, MeshSplitMerge.MergeSameMaterial(ctx, report.merge, "test merge"));
             var renderers = lodGroup.GetLODs()[0].renderers;
             Assert.AreEqual(1, renderers.Length);
@@ -96,6 +100,13 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual("Asset_Surface_LOD0", renderers[0].name, "Merge preserves the first split renderer base and its material qualifier");
             Assert.AreEqual(6, merged.vertexCount); Assert.AreEqual(6, merged.triangles.Length);
             Assert.AreEqual(6, merged.tangents.Length); Assert.AreEqual(6, merged.colors.Length); Assert.AreEqual(6, merged.uv2.Length, "UV2 survives the merge");
+            ctx.Refresh(lodGroup);
+            Assert.AreSame(merged, renderers[0].GetComponent<MeshFilter>().sharedMesh,
+                "the hub's real restore callback preserves merged geometry on every refresh");
+            UnityEditor.Undo.FlushUndoRecordObjects();
+            UnityEditor.Undo.PerformUndo();
+            Assert.AreEqual(2, lodGroup.GetLODs()[0].renderers.Length);
+            Assert.IsTrue(merged == null, "Undo also removes the generated merge mesh");
         }
     }
 }

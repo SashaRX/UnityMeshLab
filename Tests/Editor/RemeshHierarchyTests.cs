@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Collections;
+using System.Linq;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
@@ -12,6 +13,342 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
     /// Native~ ctest battery and the DllNotFoundException-skipping stage tests.</summary>
     public sealed class RemeshHierarchyTests
     {
+        static Mesh TwoHoleBox()
+        {
+            var mesh = new Mesh { name = "TwoHoleBox" };
+            mesh.vertices = new[] { new Vector3(-1,-1,-1), new Vector3(1,-1,-1), new Vector3(1,1,-1), new Vector3(-1,1,-1),
+                new Vector3(-1,-1,1), new Vector3(1,-1,1), new Vector3(1,1,1), new Vector3(-1,1,1) };
+            mesh.triangles = new[] { 0,1,5,0,5,4, 3,7,6,3,6,2, 0,4,7,0,7,3, 1,2,6,1,6,5 };
+            mesh.uv = mesh.vertices.Select(p => new Vector2((p.x + 1) * .5f, (p.y + p.z + 2) * .25f)).ToArray();
+            mesh.RecalculateNormals(); return mesh;
+        }
+
+        [UnityTest]
+        public IEnumerator StandaloneClosureShowsAllHierarchyNodesAndKeepsOriginalMeshes()
+        {
+            var root = new GameObject("Closure preview root"); var mesh = TwoHoleBox();
+            var material = new Material(Shader.Find("Standard"));
+            root.transform.SetPositionAndRotation(new Vector3(5, 3, 2), Quaternion.Euler(20, 30, 40));
+            for (int i = 0; i < 2; ++i) {
+                var child = new GameObject("part " + i); child.transform.SetParent(root.transform, false);
+                child.transform.localPosition = new Vector3(i * 4, 0, 0);
+                child.AddComponent<MeshFilter>().sharedMesh = mesh; child.AddComponent<MeshRenderer>().sharedMaterial = material;
+            }
+            var settings = new RemeshSettings { planarCap = true, planarCapLoops = "0", shell = false,
+                keepHierarchy = true, minPartSize = 0, minRodVoxels = 0 };
+            using var pipeline = new RemeshPipeline();
+            try {
+                var run = pipeline.Run(root, settings, RemeshPipeline.Stage.Prepare, RemeshPipeline.Stage.Prepare);
+                while (!run.IsCompleted) yield return null;
+                Assert.IsTrue(run.Result, pipeline.Status);
+                Assert.IsTrue(pipeline.Has(RemeshPipeline.Stage.Prepare));
+                Assert.IsFalse(pipeline.Has(RemeshPipeline.Stage.Remesh)); Assert.IsNull(pipeline.VoxelMesh);
+                Assert.AreEqual(2, pipeline.Nodes.Count); Assert.AreEqual(20 * 3, pipeline.ClosureMesh.triangles.Length);
+                Assert.AreEqual(MeshTopology.Lines, pipeline.ClosureRims.GetTopology(0));
+                Assert.AreEqual(32, pipeline.ClosureRims.GetIndexCount(0));
+                Assert.AreEqual(5, pipeline.ClosureContourNames.Length);
+                Assert.AreEqual(4, pipeline.ClosureContourEdges.Length);
+                Assert.IsTrue(pipeline.ClosureContourEdges.All(pairs => pairs.Length == 8));
+                var bounds = pipeline.ClosureMesh.bounds;
+                Assert.That(bounds.size.x, Is.EqualTo(6).Within(1e-4));
+                foreach (var node in pipeline.Nodes) {
+                    Assert.AreEqual(2, node.support.addedFaces); Assert.AreEqual(4, RemeshTopology.Inspect(node.support.positions, node.support.indices).boundary.Count);
+                    Assert.AreEqual(8, node.source.indices.Length / 3);
+                }
+                Assert.AreEqual(12, pipeline.ClosureMesh.colors.Count(c => c.r > .9f), "Only added faces are orange");
+                Assert.AreEqual(8, mesh.triangles.Length / 3);
+                Assert.IsTrue(root.GetComponentsInChildren<MeshFilter>().All(f => f.sharedMesh == mesh));
+                var preview = pipeline.ClosureMesh; var rims = pipeline.ClosureRims;
+                var capture = pipeline.Source;
+                pipeline.ClearFrom(RemeshPipeline.Stage.Remesh);
+                Assert.AreSame(preview, pipeline.ClosureMesh); Assert.AreSame(capture, pipeline.Source);
+                Assert.IsTrue(pipeline.Has(RemeshPipeline.Stage.Prepare));
+                settings.trimToSource = !settings.trimToSource;
+                Assert.IsFalse(pipeline.IsStale(RemeshPipeline.Stage.Prepare, settings, root));
+                settings.minRodVoxels = 3;
+                Assert.AreEqual(RemeshPipeline.Stage.Prepare, pipeline.FirstStale(RemeshPipeline.Stage.Bake, settings, root));
+                pipeline.ClearFrom(RemeshPipeline.Stage.Prepare);
+                Assert.IsFalse(preview); Assert.IsFalse(rims); Assert.IsNull(pipeline.SourceMesh); Assert.AreEqual(0, pipeline.Nodes.Count);
+            }
+            finally { Object.DestroyImmediate(root); Object.DestroyImmediate(mesh); Object.DestroyImmediate(material); }
+        }
+
+        [UnityTest]
+        public IEnumerator RefusedContoursAreRedWithReasonsWhileOtherHierarchyCapsRemainPrepared()
+        {
+            var root = new GameObject("Mixed closure"); var good = TwoHoleBox(); var bad = TwoHoleBox();
+            var material = new Material(Shader.Find("Standard"));
+            bad.vertices = bad.vertices.Concat(new[] {new Vector3(0,-.5f,-2),new Vector3(0,-.5f,0),new Vector3(.5f,.5f,-1)}).ToArray();
+            bad.triangles = bad.triangles.Concat(new[] {8,9,10}).ToArray();
+            bad.uv = bad.vertices.Select(p => new Vector2((p.x + 1) * .5f, (p.y + p.z + 2) * .25f)).ToArray();
+            bad.RecalculateNormals();
+            var saved = bad.triangles;
+            for (int i = 0; i < 2; ++i) {
+                var child = new GameObject(i == 0 ? "refused part" : "good part"); child.transform.SetParent(root.transform, false);
+                child.transform.localPosition = Vector3.right * i * 4;
+                child.AddComponent<MeshFilter>().sharedMesh = i == 0 ? bad : good;
+                child.AddComponent<MeshRenderer>().sharedMaterial = material;
+            }
+            using var pipeline = new RemeshPipeline();
+            var settings = new RemeshSettings { planarCap = true, planarCapLoops = "all", shell = false,
+                keepHierarchy = true, minPartSize = 0, minRodVoxels = 0 };
+            try {
+                var run = pipeline.Run(root, settings, RemeshPipeline.Stage.Prepare, RemeshPipeline.Stage.Prepare);
+                while (!run.IsCompleted) yield return null;
+                Assert.IsTrue(run.Result, pipeline.Status); Assert.IsTrue(pipeline.Has(RemeshPipeline.Stage.Prepare));
+                Assert.AreEqual(8, pipeline.Nodes.Sum(node => node.support.addedFaces));
+                Assert.AreEqual(1, pipeline.Nodes.Sum(node => node.support.loopFailures.Count));
+                Assert.AreEqual(5, pipeline.ClosureContourReasons.Length);
+                Assert.AreEqual(1, pipeline.ClosureContourReasons.Count(reason => !string.IsNullOrEmpty(reason)));
+                for (int i = 0; i < pipeline.ClosureContourReasons.Length; ++i) {
+                    var c = pipeline.ClosureContourColors[i];
+                    if (!string.IsNullOrEmpty(pipeline.ClosureContourReasons[i])) {
+                        Assert.Greater(c.r, .9f); Assert.Less(c.g, .2f);
+                        StringAssert.Contains("REFUSED", pipeline.ClosureContourNames[i + 1]);
+                    }
+                    else { Assert.Less(c.r, .3f); Assert.Greater(c.b, .9f); }
+                }
+                Assert.IsTrue(pipeline.ClosureRims.colors.Any(c => c.r > .9f && c.g < .2f));
+                Assert.IsTrue(pipeline.ClosureRims.colors.Any(c => c.r < .3f && c.b > .9f));
+                Assert.AreEqual((17 + 8) * 3, pipeline.ClosureMesh.triangles.Length);
+                CollectionAssert.AreEqual(saved, bad.triangles);
+                Assert.AreSame(bad, root.transform.GetChild(0).GetComponent<MeshFilter>().sharedMesh);
+                Assert.AreSame(good, root.transform.GetChild(1).GetComponent<MeshFilter>().sharedMesh);
+            }
+            finally { Object.DestroyImmediate(root); Object.DestroyImmediate(good); Object.DestroyImmediate(bad); Object.DestroyImmediate(material); }
+        }
+
+        [UnityTest]
+        public IEnumerator IncompleteSolidRefusesRemeshButRetainsInspectableClosureAndCanPrepareAgain()
+        {
+            var root = new GameObject("Incomplete closure"); var mesh = TwoHoleBox();
+            var material = new Material(Shader.Find("Standard"));
+            root.AddComponent<MeshFilter>().sharedMesh = mesh; root.AddComponent<MeshRenderer>().sharedMaterial = material;
+            using var pipeline = new RemeshPipeline();
+            var settings = new RemeshSettings { planarCap = true, planarCapLoops = "0", shell = false, minPartSize = 0, minRodVoxels = 0 };
+            try {
+                var run = pipeline.Run(root, settings, RemeshPipeline.Stage.Prepare, RemeshPipeline.Stage.Prepare);
+                while (!run.IsCompleted) yield return null;
+                Assert.IsTrue(run.Result, pipeline.Status);
+                var preview = pipeline.ClosureMesh; var support = pipeline.Primary.support;
+                LogAssert.Expect(LogType.Error, new System.Text.RegularExpressions.Regex("Cap support still has 4 boundary edges"));
+                run = pipeline.Run(root, settings, RemeshPipeline.Stage.Remesh, RemeshPipeline.Stage.Remesh);
+                while (!run.IsCompleted) yield return null;
+                Assert.IsFalse(run.Result); Assert.IsTrue(pipeline.Has(RemeshPipeline.Stage.Prepare));
+                Assert.AreSame(preview, pipeline.ClosureMesh); Assert.AreSame(support, pipeline.Primary.support);
+                Assert.IsFalse(pipeline.Has(RemeshPipeline.Stage.Remesh));
+                settings.planarCapLoops = "all";
+                run = pipeline.Run(root, settings, RemeshPipeline.Stage.Prepare, RemeshPipeline.Stage.Prepare);
+                while (!run.IsCompleted) yield return null;
+                Assert.IsTrue(run.Result, pipeline.Status); Assert.IsFalse(preview);
+                Assert.AreEqual(4, pipeline.Primary.support.addedFaces);
+                Assert.AreEqual(0, RemeshTopology.Inspect(pipeline.Primary.support.positions, pipeline.Primary.support.indices).boundary.Count);
+                Assert.AreEqual(RemeshPipeline.Stage.Remesh, pipeline.FirstStale(RemeshPipeline.Stage.Remesh, settings, null));
+                Assert.AreEqual(8, mesh.triangles.Length / 3);
+            }
+            finally { Object.DestroyImmediate(root); Object.DestroyImmediate(mesh); Object.DestroyImmediate(material); }
+        }
+
+        [UnityTest]
+        public IEnumerator InvalidLoopNumberBuildsAnInspectablePreviewAndCanBeCorrected()
+        {
+            var root = new GameObject("Invalid closure selection"); var mesh = TwoHoleBox();
+            var material = new Material(Shader.Find("Standard"));
+            root.AddComponent<MeshFilter>().sharedMesh = mesh; root.AddComponent<MeshRenderer>().sharedMaterial = material;
+            using var pipeline = new RemeshPipeline();
+            var settings = new RemeshSettings { planarCap = true, planarCapLoops = "16", shell = false, minPartSize = 0, minRodVoxels = 0 };
+            try {
+                var run = pipeline.Run(root, settings, RemeshPipeline.Stage.Prepare, RemeshPipeline.Stage.Prepare);
+                while (!run.IsCompleted) yield return null;
+                Assert.IsTrue(run.Result, pipeline.Status); Assert.IsTrue(pipeline.Has(RemeshPipeline.Stage.Prepare));
+                Assert.AreEqual(0, pipeline.Primary.support.addedFaces);
+                Assert.AreEqual(8 * 3, pipeline.ClosureMesh.triangles.Length);
+                Assert.AreEqual(2, pipeline.ClosureContourEdges.Length);
+                StringAssert.Contains("'16'", pipeline.ClosureSelectionWarning);
+                StringAssert.Contains("0..1", pipeline.ClosureLoopRanges);
+                Assert.IsTrue(pipeline.ClosureContourReasons.All(reason => reason == null));
+                Assert.IsTrue(pipeline.ClosureRims.colors.All(c => c.r < .3f && c.b > .9f));
+                Assert.IsTrue(pipeline.ClosureMesh.colors.All(c => c.r < .9f));
+                Assert.AreSame(mesh, root.GetComponent<MeshFilter>().sharedMesh);
+                settings.planarCapLoops = "0,1";
+                run = pipeline.Run(root, settings, RemeshPipeline.Stage.Prepare, RemeshPipeline.Stage.Prepare);
+                while (!run.IsCompleted) yield return null;
+                Assert.IsTrue(run.Result, pipeline.Status);
+                Assert.AreEqual(4, pipeline.Primary.support.addedFaces); Assert.IsNull(pipeline.ClosureSelectionWarning);
+                Assert.AreEqual(0, pipeline.Primary.support.remainingBoundaryEdges);
+                Assert.AreSame(mesh, root.GetComponent<MeshFilter>().sharedMesh);
+                pipeline.ClearFrom(RemeshPipeline.Stage.Prepare);
+                Assert.IsNull(pipeline.ClosureLoopRanges); Assert.IsNull(pipeline.ClosureSelectionWarning);
+            }
+            finally { Object.DestroyImmediate(root); Object.DestroyImmediate(mesh); Object.DestroyImmediate(material); }
+        }
+
+        [UnityTest]
+        public IEnumerator DisposeDuringPreparationCancelsAndReleasesSnapshot()
+        {
+            var root = GameObject.CreatePrimitive(PrimitiveType.Cube); var pipeline = new RemeshPipeline();
+            try {
+                pipeline.Changed = () => { if (pipeline.RunningStage == RemeshPipeline.Stage.Prepare) pipeline.Dispose(); };
+                var run = pipeline.Run(root, new RemeshSettings(), RemeshPipeline.Stage.Prepare, RemeshPipeline.Stage.Prepare);
+                while (!run.IsCompleted) yield return null;
+                Assert.IsFalse(run.Result); Assert.IsFalse(pipeline.IsRunning);
+                Assert.AreEqual(0, pipeline.Nodes.Count); Assert.IsNull(pipeline.ClosureMesh); Assert.IsNull(pipeline.SourceMesh);
+            }
+            finally { pipeline.Dispose(); Object.DestroyImmediate(root); }
+        }
+
+        [Test]
+        public void SourcePreviewRejectsPositionlessGeometryAtomicallyAndCanRetry()
+        {
+            var root=new GameObject("preview source");
+            var valid=GameObject.CreatePrimitive(PrimitiveType.Cube);valid.transform.SetParent(root.transform);
+            var invalid=new GameObject("positionless child");invalid.transform.SetParent(root.transform);
+            var mesh=new Mesh {name="missing Position"};
+            mesh.SetVertexBufferParams(3,new UnityEngine.Rendering.VertexAttributeDescriptor(UnityEngine.Rendering.VertexAttribute.Normal));
+            var filter=invalid.AddComponent<MeshFilter>();filter.sharedMesh=mesh;invalid.AddComponent<MeshRenderer>();
+            var tool=new RemeshBakeTool();
+            var flags=System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic;
+            var error=typeof(RemeshBakeTool).GetField("sourcePreviewError",flags);
+            try {
+                tool.SetSource(root);var entries=new List<MeshEntry>();
+                Assert.DoesNotThrow(()=>tool.GetUvContent(entries));Assert.IsEmpty(entries);
+                StringAssert.Contains("Position",(string)error.GetValue(tool));
+                var items=new List<MeshViewport3D.Item>();Assert.DoesNotThrow(()=>tool.Get3DContent(items));Assert.IsEmpty(items);
+                filter.sharedMesh=valid.GetComponent<MeshFilter>().sharedMesh;
+                tool.OnRefresh();entries.Clear();Assert.IsTrue(tool.GetUvContent(entries));
+                Assert.AreEqual(2,entries.Count);Assert.IsNull(error.GetValue(tool));
+                Assert.IsTrue(mesh);Assert.AreEqual(3,mesh.vertexCount);
+            }
+            finally {tool.ClearSourcePreview();Object.DestroyImmediate(root);Object.DestroyImmediate(mesh);}
+        }
+
+        [UnityTest]
+        public IEnumerator SourcePreviewDefersMeshReadsDuringGuiAndCancelsQueuedWorkOnClear()
+        {
+            var root=GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var mesh=root.GetComponent<MeshFilter>().sharedMesh;
+            var tool=new RemeshBakeTool(); tool.SetSource(root);
+            var window=ScriptableObject.CreateInstance<SashaRX.UnityMeshLab.Tests.ViewportSpotInputWindow>();
+            var entries=new List<MeshEntry>();
+            int guiReads=0;
+            try {
+                window.Input=evt=> {
+                    if(evt.type!=EventType.Layout && evt.type!=EventType.Repaint)return;
+                    using(new GUILayout.VerticalScope()) {
+                        tool.GetUvContent(entries);guiReads++;
+                        GUILayout.Label("Toolbar after source preview");
+                    }
+                };
+                window.Show();window.SendEvent(new Event {type=EventType.Layout});
+                Assert.Greater(guiReads,0);Assert.IsEmpty(entries,"GUI must only queue source reads.");
+                Assert.AreEqual(1,EditorApplication.update.GetInvocationList().Count(callback=>callback.Target==tool));
+                tool.ClearSourcePreview();
+                Assert.IsFalse(EditorApplication.update?.GetInvocationList().Any(callback=>callback.Target==tool) ?? false);
+                window.Input=null;
+                for(int i=0;i<3;++i)yield return null;
+                var flags=System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic;
+                Assert.IsEmpty((List<MeshEntry>)typeof(RemeshBakeTool).GetField("sourceEntries",flags).GetValue(tool));
+                Assert.AreSame(mesh,root.GetComponent<MeshFilter>().sharedMesh);
+                window.Input=evt=> {
+                    if(evt.type==EventType.Layout) tool.GetUvContent(entries);
+                };
+                window.SendEvent(new Event {type=EventType.Layout});
+                Assert.IsEmpty(entries);
+                window.Input=null;
+                for(int i=0;i<3;++i)yield return null;
+                Assert.AreEqual(1,((List<MeshEntry>)typeof(RemeshBakeTool).GetField("sourceEntries",flags).GetValue(tool)).Count);
+                tool.GetUvContent(entries);Assert.AreEqual(1,entries.Count);
+            }
+            finally {window.Close();tool.ClearSourcePreview();Object.DestroyImmediate(root);}
+        }
+
+        [UnityTest]
+        public IEnumerator UnfilteredHierarchyBakeRetainsFullyRemovedNodesAndReusesGeometry()
+        {
+            var root = new GameObject("unfiltered hierarchy donor");
+            var body = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var rod = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var rodMesh = Object.Instantiate(rod.GetComponent<MeshFilter>().sharedMesh);
+            rodMesh.vertices = System.Array.ConvertAll(rodMesh.vertices, p => Vector3.Scale(p, new Vector3(.001f, .001f, 2)));
+            rodMesh.RecalculateBounds(); rod.GetComponent<MeshFilter>().sharedMesh = rodMesh;
+            using (var pipeline = new RemeshPipeline())
+            try {
+                body.transform.SetParent(root.transform, false); rod.transform.SetParent(root.transform, false);
+                rod.transform.localPosition = new Vector3(.2f, .2f, .2f);
+                root.transform.SetPositionAndRotation(new Vector3(10, 3, -7), Quaternion.Euler(0, 30, 0));
+                var settings = new RemeshSettings { keepHierarchy = true, sourceShape = RemeshShape.BoundingBox,
+                    simplify = false, textureResolution = 64, bakeSamples = 1, padding = 1, dilationRadius = 0,
+                    minPartSize = 0, minRodVoxels = 1, gpuProjection = false, reduceUvFragmentation = false };
+                var run = pipeline.Run(root, settings, RemeshPipeline.Stage.Remesh, RemeshPipeline.Stage.Bake);
+                while (!run.IsCompleted) yield return null;
+                Assert.IsTrue(run.Result, pipeline.Status); Assert.AreEqual(1, pipeline.Nodes.Count);
+                var node = pipeline.Primary;
+                Assert.AreEqual(12, node.source.indices.Length / 3);
+                var donor = pipeline.ProjectionSource(node, true);
+                Assert.AreEqual(24, donor.indices.Length / 3, "The fully filtered renderer remains in the full-root donor");
+                var geometry = node.geometry; var mesh = node.mesh;
+                settings.bakeFilteredParts = true;
+                Assert.AreEqual(RemeshPipeline.Stage.Bake, pipeline.FirstStale(RemeshPipeline.Stage.Bake, settings, root));
+                run = pipeline.Run(root, settings, RemeshPipeline.Stage.Bake, RemeshPipeline.Stage.Bake);
+                while (!run.IsCompleted) yield return null;
+                Assert.IsTrue(run.Result, pipeline.Status);
+                Assert.AreSame(geometry, node.geometry); Assert.AreSame(mesh, node.mesh);
+                Assert.AreSame(donor, pipeline.ProjectionSource(node, true), "Reuse the captured donor on rebake");
+                Assert.AreSame(node.source, pipeline.ProjectionSource(node, false));
+            }
+            finally { Object.DestroyImmediate(root); Object.DestroyImmediate(rodMesh); }
+        }
+
+        [UnityTest]
+        public IEnumerator FilterPreviewShowsRemovedRodsRefreshesThresholdsAndReleasesOldModel()
+        {
+            var root = new GameObject("filter preview root");
+            var body = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var rod = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var other = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var rodMesh = Object.Instantiate(rod.GetComponent<MeshFilter>().sharedMesh);
+            rodMesh.vertices = System.Array.ConvertAll(rodMesh.vertices, p => Vector3.Scale(p, new Vector3(.001f, .001f, 2)));
+            rodMesh.RecalculateBounds(); rod.GetComponent<MeshFilter>().sharedMesh = rodMesh;
+            var tool = new RemeshBakeTool { highlightFilterPreview = true };
+            var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var settings = (RemeshSettings)typeof(RemeshBakeTool).GetField("settings", flags).GetValue(tool);
+            var highlight = (RemeshCaptureHighlight)typeof(RemeshBakeTool).GetField("highlight", flags).GetValue(tool);
+            try {
+                settings.keepHierarchy = true; settings.minPartSize = 0; settings.minRodVoxels = 1;
+                body.transform.SetParent(root.transform, false); rod.transform.SetParent(root.transform, false);
+                root.transform.position = new Vector3(12, -3, 5);
+                var original = rod.GetComponent<MeshFilter>().sharedMesh;
+                tool.SetSource(root);
+                var items = new List<MeshViewport3D.Item>();
+                Assert.IsTrue(tool.Get3DContent(items));
+                double deadline = EditorApplication.timeSinceStartup + 10;
+                while (!highlight.PreviewMesh && EditorApplication.timeSinceStartup < deadline) yield return null;
+                var first = highlight.PreviewMesh; Assert.IsTrue(first);
+                Assert.That(System.Array.FindAll(first.colors32, c => c.r > 200 && c.g < 100).Length, Is.GreaterThan(0));
+                items.Clear(); Assert.IsTrue(tool.Get3DContent(items));
+                Assert.AreSame(first, items[0].mesh);
+                Assert.That(Vector3.Distance(items[0].matrix.MultiplyPoint3x4(first.bounds.center),
+                    first.bounds.center - root.transform.position), Is.LessThan(1e-5f));
+                settings.minRodVoxels = 0;
+                items.Clear(); tool.Get3DContent(items);
+                Assert.IsFalse(first, "Threshold changes release the old paint");
+                deadline = EditorApplication.timeSinceStartup + 10;
+                while (!highlight.PreviewMesh && EditorApplication.timeSinceStartup < deadline) yield return null;
+                var second = highlight.PreviewMesh; Assert.IsTrue(second);
+                Assert.IsTrue(System.Array.TrueForAll(second.colors32, c => c.g > c.r), "Disabled filters keep every captured face");
+                tool.SetSource(other); Assert.IsFalse(second, "Changing the model releases the previous paint");
+                items.Clear(); tool.Get3DContent(items);
+                deadline = EditorApplication.timeSinceStartup + 10;
+                while (!highlight.PreviewMesh && EditorApplication.timeSinceStartup < deadline) yield return null;
+                Assert.IsTrue(highlight.PreviewMesh);
+                Assert.AreSame(original, rod.GetComponent<MeshFilter>().sharedMesh, "Highlight never replaces scene meshes");
+            }
+            finally {
+                highlight.Dispose(); tool.ClearSourcePreview();
+                Object.DestroyImmediate(root); Object.DestroyImmediate(other); Object.DestroyImmediate(rodMesh);
+            }
+        }
+
         [UnityTest]
         public IEnumerator CagePreviewDefersWorkAndKeepsLatestDistance()
         {
@@ -168,7 +505,7 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
                     bool hasUv = canvas.HasPreviewChannel(context, 0);
                     Assert.IsTrue(hasUv, "Every stage supplies UV0, including temporary planar UVs");
                     Assert.AreEqual(items[0].mesh.vertexCount, items[0].mesh.normals.Length);
-                    Assert.AreEqual(stage == RemeshPreview.Stage.Remesh || stage == RemeshPreview.Stage.Simplified,
+                    Assert.AreEqual(stage == RemeshPreview.Stage.Remesh || stage == RemeshPreview.Stage.Simplified || stage == RemeshPreview.Stage.Closure,
                         entries[0].draftUv, "Draft UV provenance follows the displayed stage mesh");
                     if (hasUv) {
                         Assert.IsTrue(canvas.HasPreviewChannel(context, context.PreviewUvChannel));
@@ -254,6 +591,7 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
                         var data = new RemeshPreview.Data { spaceToWorld = pipeline.PreviewSpaceToWorld };
                         data.meshes[0] = pipeline.SourceMesh; data.meshes[1] = pipeline.VoxelMesh;
                         data.meshes[2] = pipeline.SimplifiedMesh; data.meshes[3] = pipeline.ResultMesh;
+                        data.meshes[(int)RemeshPreview.Stage.Closure] = pipeline.ClosureMesh;
                         foreach (RemeshPreview.Stage stage in System.Enum.GetValues(typeof(RemeshPreview.Stage))) {
                             preview.Show(stage);
                             var items = new List<MeshViewport3D.Item>();

@@ -10,7 +10,7 @@ using UnityEditor;
 
 namespace SashaRX.UnityMeshLab
 {
-    public class UvTransferWorkflow : IBenchmarkHost
+    public partial class UvTransferWorkflow : IBenchmarkHost
     {
         const string CancelButton = "Cancel";
 
@@ -24,6 +24,7 @@ namespace SashaRX.UnityMeshLab
         readonly List<Mesh> _areaPreviewMeshes = new List<Mesh>();
         double _areaPreview;
         bool _hasAreaPreview;
+        int areaPreviewVersion;
 
         public Action RequestRepaint { get; set; }
 
@@ -62,7 +63,8 @@ namespace SashaRX.UnityMeshLab
 
         bool TryGetAreaPreview(List<Mesh> meshes, out double area)
         {
-            bool sameMeshes = _hasAreaPreview && meshes.Count == _areaPreviewMeshes.Count;
+            bool sameMeshes = _hasAreaPreview && areaPreviewVersion == (ctx?.PreviewCacheVersion ?? 0)
+                && meshes.Count == _areaPreviewMeshes.Count;
             for (int i = 0; sameMeshes && i < meshes.Count; i++)
                 sameMeshes = ReferenceEquals(meshes[i], _areaPreviewMeshes[i]);
 
@@ -76,6 +78,7 @@ namespace SashaRX.UnityMeshLab
             _areaPreviewMeshes.Clear();
             _areaPreviewMeshes.AddRange(meshes);
             _hasAreaPreview = true;
+            areaPreviewVersion = ctx?.PreviewCacheVersion ?? 0;
             return _areaPreview;
         }
 
@@ -127,16 +130,24 @@ namespace SashaRX.UnityMeshLab
         bool stageRunRepack     = true;
         bool stageRunTransfer   = true;
 
-        // Weld stage sub-step: meshopt binary-equivalence dedup +
-        // GPU cache/overdraw/fetch reorder. This is NOT a UV weld — it
-        // removes vertices that are byte-identical in position + normal
-        // + uv0 (a GPU optimisation per meshoptimizer's
-        // generateVertexRemap, which the library docs explicitly warn
-        // is unsuitable for attribute-seam handling). The actual UV-aware
-        // seam weld is Uv0Analyzer.UvEdgeWeld. Kept ON by default to
-        // preserve prior behaviour, but now a separate, clearly-labelled
-        // toggle so the operator can run the pure UV weld alone.
+        // Optional cache/overdraw triangle ordering preserves vertex identity.
+        // The actual UV-aware seam weld is Uv0Analyzer.UvEdgeWeld.
         bool stageWeldRunMeshopt = true;
+
+        internal void AppendDiagnosticSettings(List<TransferCaseCapture.Setting> output)
+        {
+            void Add(string name, object value) => output.Add(new TransferCaseCapture.Setting {
+                owner = "workflow", name = name, value = Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture)
+            });
+            Add(nameof(SymmetrySplitMode), SymmetrySplitMode);
+            Add(nameof(splitTargetsInSymmetryStep), splitTargetsInSymmetryStep);
+            Add(nameof(skipSymmetrySplitStep), skipSymmetrySplitStep);
+            Add(nameof(stageRunAnalyzeUv0), stageRunAnalyzeUv0);
+            Add(nameof(stageRunWeldUv0), stageRunWeldUv0);
+            Add(nameof(stageRunRepack), stageRunRepack);
+            Add(nameof(stageRunTransfer), stageRunTransfer);
+            Add(nameof(stageWeldRunMeshopt), stageWeldRunMeshopt);
+        }
 
         // Per-stage outcome from the most recent ExecFullPipeline run.
         // Drawn as a small status icon at the right of each stage row.
@@ -156,6 +167,14 @@ namespace SashaRX.UnityMeshLab
         // FireAndForget helper short-circuits if it's already set, so even
         // a stale event reaching the click path can't double-trigger.
         bool _pipelineInFlight;
+
+        internal void RunCapturedPipeline()
+        {
+            if (_pipelineInFlight || UvProgress.IsActive) throw new InvalidOperationException("Wait for the active operation to finish.");
+            if (!ctx.LodGroup) throw new InvalidOperationException("Select a LODGroup first.");
+            ctx.CaptureNextTransfer = true;
+            FireAndForget(ExecFullPipelineAsync, "Captured Full Pipeline");
+        }
 
         /// <summary>
         /// Schedule a fire-and-forget async pipeline action with: (a) an
@@ -221,10 +240,13 @@ namespace SashaRX.UnityMeshLab
             new Dictionary<int, GroupedShellTransfer.SourceShellInfo[]>();
         sealed class CrossLodHintState
         {
+            public readonly Mesh sourceMesh;
             public readonly List<GroupedShellTransfer.OverlapSourceHint> overlapHints =
                 new List<GroupedShellTransfer.OverlapSourceHint>();
             public readonly List<GroupedShellTransfer.CrossLodMatchHint> matchHints =
                 new List<GroupedShellTransfer.CrossLodMatchHint>();
+
+            public CrossLodHintState(Mesh sourceMesh) => this.sourceMesh = sourceMesh;
         }
 
         // Shell indices are local to a source mesh. Keep cross-LOD hints isolated
@@ -240,6 +262,9 @@ namespace SashaRX.UnityMeshLab
         Material lightmapPreviewMat;
         bool lightmapPreviewActive;
         readonly Dictionary<Renderer, Material[]> lightmapBackups = new Dictionary<Renderer, Material[]>();
+
+        internal bool TryGetOriginalLightmapMaterials(Renderer renderer, out Material[] materials)
+            => lightmapBackups.TryGetValue(renderer, out materials);
 
         // ── Scene ──
         double sceneSpotLastRaycastTime;
@@ -270,11 +295,20 @@ namespace SashaRX.UnityMeshLab
             RestoreAllPreviews();
         }
 
+        internal void InvalidateTransferSource(Mesh mesh)
+        {
+            if (!mesh) return;
+            shellTransformCache.Remove(mesh.GetInstanceID());
+            var keys = crossLodHints.Where(kv => kv.Value.sourceMesh == mesh).Select(kv => kv.Key).ToArray();
+            foreach (var key in keys) crossLodHints.Remove(key);
+        }
+
         public void OnRefresh()
         {
             uv0Reports.Clear();
             uv0Analyzed = uv0Welded = false;
             shellTransformCache.Clear();
+            crossLodHints.Clear();
             setupLodSelectionId = -1;
             setupRendererSelectionId = -1;
             setupSelectionHasRenderers = false;
@@ -644,12 +678,10 @@ namespace SashaRX.UnityMeshLab
         void DrawWeldStageSettings()
         {
             stageWeldRunMeshopt = EditorGUILayout.ToggleLeft(
-                new GUIContent("Pre-optimize (meshopt dedup)",
-                    "Run meshoptimizer's binary-equivalence dedup + GPU cache/"
-                    + "overdraw/fetch reorder before the UV weld. This is a GPU "
-                    + "optimisation, NOT a UV weld — it only removes byte-identical "
-                    + "vertices (always safe). Turn OFF to run the pure UV-aware "
-                    + "seam weld in isolation."),
+                new GUIContent("Pre-optimize (triangle order)",
+                    "Order triangles for GPU cache/overdraw locality while preserving "
+                    + "vertex identity, UV streams and chart seams. The UV-aware "
+                    + "edge weld follows this step."),
                 stageWeldRunMeshopt);
         }
 
@@ -727,6 +759,7 @@ namespace SashaRX.UnityMeshLab
                 new GUIContent("Per-mesh repack (each group → [0,1])",
                     "Pack each mesh group into its own [0,1] atlas instead of sharing one."),
                 ctx.RepackPerMesh);
+            DrawJunctionCutOption();
 
             // Texel density preview — live summary of the resolved
             // atlas size so the user sees what xatlas will actually
@@ -795,6 +828,7 @@ namespace SashaRX.UnityMeshLab
                         }
                     }
                 }
+                DrawReverseTransferActions();
             }
         }
 
@@ -1048,8 +1082,9 @@ namespace SashaRX.UnityMeshLab
             {
                 EditorGUI.indentLevel++;
                 ctx.XatlasRotateChartsToAxis = EditorGUILayout.ToggleLeft(
-                    new GUIContent("Snap rotation to axis",
-                        "Constrain rotation to 0/90/180/270° (preserves texel alignment)."),
+                    new GUIContent("Align charts to axis",
+                        "Rotate each chart toward its compact bounding-box axes before packing. "
+                        + "With this off, Rotate charts still permits quarter-turn placement."),
                     ctx.XatlasRotateChartsToAxis);
                 EditorGUI.indentLevel--;
             }
@@ -1064,6 +1099,7 @@ namespace SashaRX.UnityMeshLab
                 new GUIContent("Internal oversample",
                     "Internal atlas = user resolution × this factor. Mitigates xatlas's per-chart "
                     + "ceil(extents) stretch that breaks uniform density for sub-pixel shells. "
+                    + "The pack budget may reduce this factor while retaining the requested resolution. "
                     + "4× cuts density spread from ~14× down to ~2×. 2×+ forces heuristic packer."),
                 osIdx, osLabels);
             ctx.InternalOversample = osValues[Mathf.Clamp(newOsIdx, 0, osValues.Length - 1)];
@@ -1076,8 +1112,21 @@ namespace SashaRX.UnityMeshLab
             if (ctx.XatlasMaxChartSize < 0) ctx.XatlasMaxChartSize = 0;
         }
 
+        void DrawJunctionCutOption()
+        {
+            ctx.CutNarrowUvJunctions = EditorGUILayout.ToggleLeft(
+                new GUIContent("Cut narrow UV junctions (experimental)",
+                    "Separate U/T/F/E/H/O/X/C branches and frame corners along paths of existing mesh edges before Repack or Reverse UV preparation. Requires a compactness improvement. Source UV0 and geometry are preserved."),
+                ctx.CutNarrowUvJunctions);
+        }
+
         void DrawRepackDensityControls()
         {
+            DrawJunctionCutOption();
+            ctx.CorrectSourceTextureAspect = EditorGUILayout.ToggleLeft(
+                new GUIContent("Correct source texture proportions",
+                    "Use source texture width/height and material tiling before packing UV2 into a square lightmap. Source UV0 is preserved."),
+                ctx.CorrectSourceTextureAspect);
             ctx.NormalizeTexelDensity = EditorGUILayout.ToggleLeft(
                 new GUIContent("Normalize texel density",
                     "Per-shell UV0 rescale so UV-area is proportional to 3D surface area. "
@@ -1351,10 +1400,12 @@ namespace SashaRX.UnityMeshLab
         void ExecAnalyzeUv0()
         {
             if (ctx.LodGroup == null) return;
+            PrepareTransferInputs();
             uv0Reports.Clear();
             foreach (var e in ctx.MeshEntries)
             {
                 if (!e.include || e.originalMesh == null) continue;
+                EnsureTransferWorkingMesh(e);
                 var report = Uv0Analyzer.Analyze(e.originalMesh);
                 uv0Reports[e.originalMesh.GetInstanceID()] = report;
             }
@@ -1362,17 +1413,16 @@ namespace SashaRX.UnityMeshLab
             RequestRepaint?.Invoke();
         }
 
-        /// <summary>meshopt binary-equivalence dedup + GPU cache/overdraw/
-        /// fetch reorder. NOT a UV weld — only removes vertices that are
-        /// byte-identical in position + normal + uv0 (per meshoptimizer's
-        /// generateVertexRemap; the library docs explicitly warn it is
-        /// unsuitable for attribute-seam handling). Exact duplicates are
-        /// always safe to merge, so no chart-awareness is needed here.
+        /// <summary>meshopt cache/overdraw triangle ordering with original
+        /// vertex identity and every vertex channel preserved. Position/UV0
+        /// equality alone cannot establish chart connectivity at point contacts.
         /// The semantic UV-aware seam weld is <see cref="ExecWeldUv0"/>.
         /// </summary>
         void ExecMeshOptimize()
         {
             if (ctx.LodGroup == null) return;
+            using var previewChange = PreservePreviewDuringMeshChange();
+            PrepareTransferInputs();
             foreach (var e in ctx.MeshEntries)
             {
                 if (!e.include || e.originalMesh == null) continue;
@@ -1381,14 +1431,13 @@ namespace SashaRX.UnityMeshLab
                     e.originalMesh = MeshAccess.ReadableCopy(e.fbxMesh);
                     e.originalMesh.name = e.fbxMesh.name + "_wc";
                 }
-                var optResult = MeshOptimizer.Optimize(e.originalMesh);
+                var optResult = MeshOptimizer.OptimizeUvTriangleOrder(e.originalMesh);
                 if (optResult.ok)
                 {
-                    e.wasWelded = true;
                     UvtLog.Info($"[MeshOpt] '{e.originalMesh.name}' LOD{e.lodIndex}: "
-                        + $"meshopt dedup/reorder ({optResult.originalVertexCount} → "
-                        + $"{optResult.optimizedVertexCount} verts)");
+                        + $"triangle order optimized ({optResult.originalVertexCount} verts, UV seams preserved)");
                 }
+                else UvtLog.Warn($"[MeshOpt] '{e.originalMesh.name}': {optResult.error}");
             }
             ctx.ClearAllCaches();
             RequestRepaint?.Invoke();
@@ -1399,15 +1448,18 @@ namespace SashaRX.UnityMeshLab
         /// endpoints (a real chart-interior false seam), with the
         /// instance-pair guard that blocks welds across mirror / N-fold
         /// instance shells. This is the actual "weld" — distinct from
-        /// the meshopt GPU dedup in <see cref="ExecMeshOptimize"/>.
+        /// the meshopt triangle ordering in <see cref="ExecMeshOptimize"/>.
         ///
         /// When <paramref name="runMeshoptFirst"/> is true (pipeline
-        /// default) the meshopt dedup runs first so exact duplicates are
-        /// gone before the UV weld looks for seams. Set false to run the
+        /// default) meshopt triangle ordering runs before the UV weld.
+        /// The edge weld decides which vertices may merge. Set false to run the
         /// pure UV weld in isolation.</summary>
         void ExecWeldUv0(bool runMeshoptFirst = true)
         {
             if (ctx.LodGroup == null) return;
+            ClearReverseSummary();
+            using var previewChange = PreservePreviewDuringMeshChange();
+            PrepareTransferInputs();
 
             if (runMeshoptFirst)
                 ExecMeshOptimize();
@@ -1426,6 +1478,7 @@ namespace SashaRX.UnityMeshLab
                 var welded = Uv0Analyzer.UvEdgeWeld(e.originalMesh);
                 if (welded != null && welded != e.originalMesh)
                 {
+                    DestroyWorkingMesh(ref e.originalMesh);
                     e.originalMesh = welded;
                     e.wasEdgeWelded = true;
                     UvtLog.Info($"[EdgeWeld] '{e.originalMesh.name}' LOD{e.lodIndex}: edge welded");
@@ -1439,7 +1492,10 @@ namespace SashaRX.UnityMeshLab
 
         void ExecSymmetrySplit(bool includeTargets, float separationThreshold = 0.10f)
         {
+            ClearReverseSummary();
             if (ctx.LodGroup == null) return;
+            using var previewChange = PreservePreviewDuringMeshChange();
+            PrepareTransferInputs();
             SymmetrySplitShells.CurrentThresholdMode = SymmetrySplitMode;
             lastSymmetrySplitLods.Clear();
 
@@ -1525,6 +1581,9 @@ namespace SashaRX.UnityMeshLab
         async Task ExecFullPipelineImpl(string runLabel, bool useAsync)
         {
             if (ctx.LodGroup == null) return;
+            using var previewChange = PreservePreviewDuringMeshChange();
+            PrepareTransferInputs();
+            var capture = TransferCaseCapture.Begin(ctx, this, runLabel);
             using var _bench = BenchmarkRecorder.NewRun(ctx, runLabel,
                 splitTargetsInSymmetryStep, SymmetrySplitMode);
             BenchmarkRecorder.Current?.StageBegin("pipeline");
@@ -1535,6 +1594,7 @@ namespace SashaRX.UnityMeshLab
             }
             finally
             {
+                capture?.Finish(completedSuccessfully);
                 BenchmarkRecorder.Current?.StageEnd("pipeline");
                 // When the pipeline aborts early (user-cancel or exception)
                 // the per-mesh shellTransferResult / validation state is stale
@@ -1556,19 +1616,42 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
-        /// Rewind every entry's working mesh to a pristine state before a
-        /// full-pipeline run so the run is idempotent. Working copies are
-        /// materialised lazily by the individual stages (each does
-        /// <c>if (e.originalMesh == e.fbxMesh) … MakeReadableCopy</c>), so it
-        /// is enough to point <see cref="MeshEntry.originalMesh"/> back at
-        /// <see cref="MeshEntry.fbxMesh"/>, destroy the stale clone, drop the
-        /// derived (repacked / transferred) meshes, and clear the per-step
-        /// flags. Mirrors the per-step reset done between auto-tune configs,
-        /// but covers the whole entry set including non-included entries so
-        /// nothing from a prior run leaks into this one.
+        /// Reimport selected model inputs without precision-losing importer
+        /// operations. A changed import invalidates all dependent working meshes;
+        /// an already prepared import leaves completed stages intact.
         /// </summary>
+        internal bool PrepareTransferInputs()
+        {
+            var paths = UvTransferInputPreparation.FindPaths(ctx.MeshEntries);
+            if (paths.Count == 0) return false;
+            using var previewChange = PreservePreviewDuringMeshChange();
+            // Renderers release owned meshes before the reset destroys them. Keep
+            // MeshEntry identity, inclusion and viewport state across the reimport.
+            ResetWorkingMeshesToFbx();
+            uv0Reports.Clear();
+            uv0Analyzed = false;
+            lastSymmetrySplitLods.Clear();
+            try { UvTransferInputPreparation.Reimport(ctx.MeshEntries, paths); }
+            finally
+            {
+                ctx.ClearAllCaches();
+                RequestRepaint?.Invoke();
+            }
+            return true;
+        }
+
+        void RequirePreparedTransferInputs()
+        {
+            if (PrepareTransferInputs())
+                throw new InvalidOperationException("UV inputs were reimported without mesh compression, optimization or importer welding. "
+                    + "Previous working meshes and atlases were invalidated. Run Full Pipeline (or repeat Weld/Symmetry and Repack) before Transfer.");
+        }
+
+        /// <summary>Rewind all owned working/derived meshes to their imported
+        /// baseline so full-pipeline reruns cannot accumulate previous edits.</summary>
         void ResetWorkingMeshesToFbx()
         {
+            ClearReverseSummary();
             if (ctx?.MeshEntries == null) return;
             foreach (var e in ctx.MeshEntries)
             {
@@ -1587,9 +1670,11 @@ namespace SashaRX.UnityMeshLab
                 }
                 e.repackedAtlasWidth = 0;
                 e.repackedAtlasHeight = 0;
+                e.diagnosticPackedAtlasWidth = e.diagnosticPackedAtlasHeight = 0;
                 e.transferState = null;
                 e.shellTransferResult = null;
                 e.validationReport = null;
+                e.reverseTransferJson = null;
 
                 // Rewind the working mesh to the imported fbx asset. The stale
                 // working clone (weld / sym-split product) is destroyed — it is
@@ -1618,11 +1703,12 @@ namespace SashaRX.UnityMeshLab
         /// Run the auto-tune full pipeline. Returns <c>true</c> when the
         /// pipeline ran end-to-end and the in-memory per-mesh state reflects
         /// the just-completed run; returns <c>false</c> when the user
-        /// cancelled mid-flight so the caller can skip artefact recording
+        /// cancelled or a required repack failed so the caller can skip artefact recording
         /// (stale state from a prior run would otherwise be written).
         /// </summary>
         async Task<bool> ExecFullPipelineCoreImpl(bool useAsync)
         {
+            PrepareTransferInputs();
             string version = UnityEditor.PackageManager.PackageInfo
                 .FindForAssembly(typeof(UvTransferWorkflow).Assembly)?.version ?? "0.0.0";
             UvtLog.Info($"[Pipeline] Starting full pipeline... (v{version})");
@@ -1638,8 +1724,10 @@ namespace SashaRX.UnityMeshLab
             // result every time. Resetting here makes a full-pipeline run a
             // pure function of (fbxMesh, settings).
             ResetWorkingMeshesToFbx();
+            ctx.DiagnosticCapture?.StageSafe(this, "imported");
 
             RunInitialPipelineStages();
+            ctx.DiagnosticCapture?.StageSafe(this, "after-analyze-weld");
 
             // ── Auto-tune: try multiple SymSplit configs, pick best ──
             // Save working copies so we can restore between attempts.
@@ -1653,26 +1741,23 @@ namespace SashaRX.UnityMeshLab
             if (!hasTransferTargets)
                 UvtLog.Warn("[Pipeline] No included target LOD meshes; running source repack only and skipping transfer/auto-tune.");
 
-            var best = new AutoTuneChoice();
+            using var best = new AutoTuneChoice();
 
-            bool cancelled = false;
+            bool aborted = false;
             UvProgress.Begin("Auto-tune Pipeline", cancelable: true);
             try
             {
-                cancelled = await RunAutoTuneAttempts(separationConfigs, savedMeshes, best, hasTransferTargets, useAsync);
+                aborted = await RunAutoTuneAttempts(separationConfigs, savedMeshes, best, hasTransferTargets, useAsync);
+                if (best.Meshes.Count > 0 && !aborted) RestoreAutoTuneChoice(best);
+                ctx.DiagnosticCapture?.StageSafe(this, "selected-final");
             }
             finally
             {
-                if (cancelled) UvProgress.Cancel(); else UvProgress.End();
+                if (UvProgress.CancelRequested) UvProgress.Cancel(); else UvProgress.End();
+                foreach (var m in savedMeshes.Values) UnityEngine.Object.DestroyImmediate(m);
             }
 
-            if (best.Meshes.Count > 0 && !cancelled) RestoreAutoTuneChoice(best);
-
-            // Cleanup saved copies
-            foreach (var m in savedMeshes.Values)
-                UnityEngine.Object.DestroyImmediate(m);
-
-            if (cancelled)
+            if (aborted)
             {
                 RequestRepaint?.Invoke();
                 return false;
@@ -1744,7 +1829,8 @@ namespace SashaRX.UnityMeshLab
                     var src = ctx.ForLod(ctx.SourceLodIndex);
                     if (ctx.RepackPerMesh) await ExecRepackPerMeshImpl(src, useAsync);
                     else                   await ExecRepackImpl(src, useAsync);
-                    stageOutcome[4] = ctx.HasRepack ? StageStatus.Success : StageStatus.Failed;
+                    stageOutcome[4] = src.Count > 0 && src.All(e => e.repackedMesh != null)
+                        ? StageStatus.Success : StageStatus.Failed;
                 }
                 catch { stageOutcome[4] = StageStatus.Failed; throw; }
             }
@@ -1788,6 +1874,7 @@ namespace SashaRX.UnityMeshLab
             // Restore saved meshes
             foreach (var kv in savedMeshes)
             {
+                ReleaseAttemptMeshes(kv.Key);
                 kv.Key.originalMesh = UnityEngine.Object.Instantiate(kv.Value);
                 kv.Key.originalMesh.name = kv.Value.name;
                 kv.Key.wasSymmetrySplit = false;
@@ -1804,13 +1891,27 @@ namespace SashaRX.UnityMeshLab
             ctx.HasTransfer = false;
         }
 
-        sealed class AutoTuneChoice
+        sealed class AutoTuneChoice : IDisposable
         {
             internal int Issues = int.MaxValue;
             internal float Coverage;
             internal int ConfigIndex;
             internal readonly Dictionary<MeshEntry, Mesh> Meshes = new Dictionary<MeshEntry, Mesh>();
+            internal readonly Dictionary<MeshEntry, (Mesh mesh, uint width, uint height, uint packedWidth, uint packedHeight)> Atlases =
+                new Dictionary<MeshEntry, (Mesh, uint, uint, uint, uint)>();
+            internal readonly Dictionary<MeshEntry, (bool symmetrySplit, TransferValidator.ValidationReport validation)> States =
+                new Dictionary<MeshEntry, (bool, TransferValidator.ValidationReport)>();
             internal readonly Dictionary<MeshEntry, (Mesh transferred, GroupedShellTransfer.TransferResult tr)> Transfers = new Dictionary<MeshEntry, (Mesh, GroupedShellTransfer.TransferResult)>();
+
+            public void Dispose()
+            {
+                foreach (var mesh in Meshes.Values) UnityEngine.Object.DestroyImmediate(mesh);
+                foreach (var atlas in Atlases.Values) UnityEngine.Object.DestroyImmediate(atlas.mesh);
+                foreach (var transfer in Transfers.Values) UnityEngine.Object.DestroyImmediate(transfer.transferred);
+                Clear();
+            }
+
+            internal void Clear() { Meshes.Clear(); Atlases.Clear(); Transfers.Clear(); States.Clear(); }
         }
 
         async Task<bool> RunAutoTuneAttempts(float[] separationConfigs, Dictionary<MeshEntry, Mesh> savedMeshes,
@@ -1836,8 +1937,19 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 RunSymmetryStage(sepThresh);
+                ctx.DiagnosticCapture?.StageSafe(this, $"attempt-{ci}-symmetry-separation-{sepThresh:R}");
                 await RunRepackStage(useAsync);
+                ctx.DiagnosticCapture?.StageSafe(this, $"attempt-{ci}-repack");
+                if (UvProgress.CancelRequested) return true;
+                if (stageOutcome[4] == StageStatus.Failed)
+                {
+                    RestoreAutoTuneStartingMeshes(savedMeshes);
+                    stageOutcome[5] = StageStatus.Skipped;
+                    UvtLog.Error("[Pipeline] Repack failed for one or more included source meshes; transfer and auto-tune stopped.");
+                    return true;
+                }
                 await RunTransferStage(useAsync, hasTransferTargets);
+                ctx.DiagnosticCapture?.StageSafe(this, $"attempt-{ci}-transfer");
 
                 if (!hasTransferTargets)
                     break;
@@ -1857,7 +1969,7 @@ namespace SashaRX.UnityMeshLab
             int totalIssues = totalRejected + totalOverlaps;
 
             UvtLog.Info($"[Pipeline] Config #{ci} (sep={sepThresh:P0}): " +
-                $"rejected={totalRejected}, overlaps={totalOverlaps}, coverage={coverage:P0}");
+                $"rejected={totalRejected}, overlaps={totalOverlaps}, vertexCoverage={coverage:P0}");
 
             bool better = false;
             if (totalIssues < best.Issues)
@@ -1882,31 +1994,60 @@ namespace SashaRX.UnityMeshLab
         void CaptureAutoTuneChoice(AutoTuneChoice best)
         {
             // Save best meshes
-            foreach (var m in best.Meshes.Values) UnityEngine.Object.DestroyImmediate(m);
-            best.Meshes.Clear();
-            best.Transfers.Clear();
+            best.Dispose();
             foreach (var e in ctx.MeshEntries)
             {
                 if (e.originalMesh != null)
                     best.Meshes[e] = UnityEngine.Object.Instantiate(e.originalMesh);
+                if (e.repackedMesh != null)
+                    best.Atlases[e] = (UnityEngine.Object.Instantiate(e.repackedMesh), e.repackedAtlasWidth, e.repackedAtlasHeight,
+                        e.diagnosticPackedAtlasWidth, e.diagnosticPackedAtlasHeight);
+                best.States[e] = (e.wasSymmetrySplit, e.validationReport);
                 if (e.transferredMesh != null)
                     best.Transfers[e] = (UnityEngine.Object.Instantiate(e.transferredMesh),
                         e.shellTransferResult);
             }
         }
 
-        static void RestoreAutoTuneChoice(AutoTuneChoice best)
+        void RestoreAutoTuneChoice(AutoTuneChoice best)
         {
             foreach (var kv in best.Meshes)
             {
+                ReleaseAttemptMeshes(kv.Key);
                 kv.Key.originalMesh = kv.Value;
                 kv.Key.originalMesh.name = kv.Value.name;
+            }
+            foreach (var kv in best.Atlases)
+            {
+                kv.Key.repackedMesh = kv.Value.mesh;
+                kv.Key.repackedAtlasWidth = kv.Value.width;
+                kv.Key.repackedAtlasHeight = kv.Value.height;
+                kv.Key.diagnosticPackedAtlasWidth = kv.Value.packedWidth;
+                kv.Key.diagnosticPackedAtlasHeight = kv.Value.packedHeight;
             }
             foreach (var kv in best.Transfers)
             {
                 kv.Key.transferredMesh = kv.Value.transferred;
                 kv.Key.shellTransferResult = kv.Value.tr;
             }
+            foreach (var kv in best.States)
+            {
+                kv.Key.wasSymmetrySplit = kv.Value.symmetrySplit;
+                kv.Key.validationReport = kv.Value.validation;
+            }
+            ctx.ClearAllCaches();
+            shellTransformCache.Clear();
+            crossLodHints.Clear();
+            // Ownership has moved to the entries. Cancel/error paths instead
+            // dispose the still-owned snapshot when the pipeline scope exits.
+            best.Clear();
+        }
+
+        static void ReleaseAttemptMeshes(MeshEntry entry)
+        {
+            DestroyWorkingMesh(ref entry.transferredMesh);
+            DestroyWorkingMesh(ref entry.repackedMesh);
+            if (entry.originalMesh != entry.fbxMesh) DestroyWorkingMesh(ref entry.originalMesh);
         }
 
         // Async entry — button-click path. Editor main thread is free during
@@ -1917,6 +2058,9 @@ namespace SashaRX.UnityMeshLab
         async Task ExecRepackImpl(List<MeshEntry> entries, bool useAsync)
         {
             if (entries.Count == 0) return;
+            ClearReverseSummary();
+            using var previewChange = PreservePreviewDuringMeshChange();
+            PrepareTransferInputs();
             using var _bench = BenchmarkRecorder.NewRun(ctx, "Repack",
                 splitTargetsInSymmetryStep, SymmetrySplitMode);
             bool ownsSession = _bench is BenchmarkRecorder;
@@ -1980,6 +2124,12 @@ namespace SashaRX.UnityMeshLab
                     UnityEngine.Object.DestroyImmediate(e.repackedMesh);
                     e.repackedMesh = null;
                 }
+                if (!string.IsNullOrEmpty(e.reverseTransferJson))
+                {
+                    DestroyWorkingMesh(ref e.transferredMesh);
+                    e.reverseTransferJson = null;
+                    e.transferState = null; e.shellTransferResult = null; e.validationReport = null;
+                }
                 e.repackedAtlasWidth = 0;
                 e.repackedAtlasHeight = 0;
 
@@ -2000,7 +2150,8 @@ namespace SashaRX.UnityMeshLab
             var opts = RepackOptions.Default;
             opts.resolution = resolvedResolution;
             opts.padding = (uint)safeShellPadding;
-            opts.borderPadding = (uint)safeBorderPadding;
+            // Border pixels are applied after conversion to the final square lightmap domain.
+            opts.borderPadding = 0;
             opts.bruteForce = ctx.XatlasBruteForce;
             opts.rotateCharts = ctx.XatlasRotateCharts;
             opts.rotateChartsToAxis = ctx.XatlasRotateChartsToAxis;
@@ -2018,7 +2169,37 @@ namespace SashaRX.UnityMeshLab
             opts.blockSize = ctx.XatlasBlockSize;
             opts.texelsPerUnit = ctx.XatlasTexelsPerUnit;
 
-            var results = await RepackMeshes(meshCopies.ToArray(), opts, useAsync);
+            var originalUv0 = new List<SourceTextureUvMetric.OriginalUv0>();
+            RepackResult[] results;
+            try {
+                try {
+                    for (int i = 0; i < meshCopies.Count; ++i) {
+                        var metric = SourceTextureUvMetric.Resolve(validEntries[i].renderer, validEntries[i].previewTexture, meshCopies[i]);
+                        if (ctx.CorrectSourceTextureAspect && metric.conflictingAspects)
+                            UvtLog.Warn(UvtLog.Category.Repack, $"[TextureAspect] '{meshCopies[i].name}': {metric.reason}");
+                        if (ctx.CutNarrowUvJunctions)
+                        {
+                            var scale = ctx.CorrectSourceTextureAspect && !metric.conflictingAspects ? metric.uvScale : Vector2.one;
+                            var cut = UvJunctionCuts.CopyForRepack(meshCopies[i], scale);
+                            if (cut)
+                            {
+                                UnityEngine.Object.DestroyImmediate(meshCopies[i]);
+                                meshCopies[i] = cut;
+                            }
+                        }
+                        originalUv0.Add(metric.PrepareTemporaryMesh(meshCopies[i], ctx.CorrectSourceTextureAspect));
+                    }
+                    results = await RepackMeshes(meshCopies.ToArray(), opts, useAsync);
+                }
+                finally {
+                    for (int i = 0; i < originalUv0.Count; ++i)
+                        if (meshCopies[i] != null) originalUv0[i].Restore(meshCopies[i]);
+                }
+            }
+            catch {
+                foreach (var copy in meshCopies) if (copy) UnityEngine.Object.DestroyImmediate(copy);
+                throw;
+            }
             for (int i = 0; i < validEntries.Count; i++)
             {
                 if (!results[i].ok)
@@ -2030,8 +2211,12 @@ namespace SashaRX.UnityMeshLab
                     continue;
                 }
                 validEntries[i].repackedMesh = meshCopies[i];
-                validEntries[i].repackedAtlasWidth = results[i].atlasWidth;
-                validEntries[i].repackedAtlasHeight = results[i].atlasHeight;
+                uint side = SourceTextureUvMetric.NormalizePackedLightmap(meshCopies[i], results[i].atlasWidth, results[i].atlasHeight);
+                XatlasRepack.ApplyBorderInset(meshCopies[i], safeBorderPadding, resolvedResolution > 0 ? resolvedResolution : side);
+                validEntries[i].diagnosticPackedAtlasWidth = results[i].atlasWidth;
+                validEntries[i].diagnosticPackedAtlasHeight = results[i].atlasHeight;
+                validEntries[i].repackedAtlasWidth = side;
+                validEntries[i].repackedAtlasHeight = side;
             }
 
             // HasRepack gates the Apply UV2 UI, so it must mean "a repacked mesh
@@ -2049,6 +2234,7 @@ namespace SashaRX.UnityMeshLab
 
         async Task ExecRepackPerMeshImpl(List<MeshEntry> entries, bool useAsync)
         {
+            PrepareTransferInputs();
             var groups = new Dictionary<string, List<MeshEntry>>();
             foreach (var e in entries)
             {
@@ -2064,6 +2250,9 @@ namespace SashaRX.UnityMeshLab
 
         async Task ExecTransferAllImpl(bool useAsync)
         {
+            using var previewChange = PreservePreviewDuringMeshChange();
+            RequirePreparedTransferInputs();
+            var capture = TransferCaseCapture.Begin(ctx, this, "TransferAll");
             using var _bench = BenchmarkRecorder.NewRun(ctx, "TransferAll",
                 splitTargetsInSymmetryStep, SymmetrySplitMode);
             bool ownsSession = _bench is BenchmarkRecorder;
@@ -2100,6 +2289,7 @@ namespace SashaRX.UnityMeshLab
             }
             finally
             {
+                capture?.Finish(completedSuccessfully);
                 BenchmarkRecorder.Current?.StageEnd("transfer");
                 if (completedSuccessfully && ownsSession) RecordIncludedTransferMeshes();
                 if (ownsProgress)
@@ -2142,15 +2332,19 @@ namespace SashaRX.UnityMeshLab
 
         static Task<GroupedShellTransfer.TransferResult> TransferMesh(Mesh target, Mesh source,
             List<GroupedShellTransfer.OverlapSourceHint> overlapHints,
-            List<GroupedShellTransfer.CrossLodMatchHint> matchHints, int atlasWidth, int atlasHeight, bool useAsync)
+            List<GroupedShellTransfer.CrossLodMatchHint> matchHints, int atlasWidth, int atlasHeight, bool useAsync,
+            TransferMatchTrace trace)
         {
             if (useAsync)
-                return GroupedShellTransfer.TransferAsync(target, source, overlapHints, matchHints, atlasWidth, atlasHeight);
-            return Task.FromResult(GroupedShellTransfer.Transfer(target, source, overlapHints, matchHints, atlasWidth, atlasHeight));
+                return GroupedShellTransfer.TransferAsyncWithDiagnostics(target, source, overlapHints, matchHints, atlasWidth, atlasHeight, trace);
+            return Task.FromResult(GroupedShellTransfer.TransferWithDiagnostics(target, source, overlapHints, matchHints, atlasWidth, atlasHeight, trace));
         }
 
         async Task ExecTransferLodImpl(int tLod, bool useAsync)
         {
+            ClearReverseSummary();
+            using var previewChange = PreservePreviewDuringMeshChange();
+            RequirePreparedTransferInputs();
             var targets = ctx.ForLod(tLod);
             if (targets.Count == 0) return;
             var sources = ctx.ForLod(ctx.SourceLodIndex);
@@ -2180,21 +2374,27 @@ namespace SashaRX.UnityMeshLab
 
             string meshGroupKey = tgt.meshGroupKey ?? tgt.renderer.name;
             var hintKey = (source: srcEntry, meshGroupKey: meshGroupKey);
-            if (!crossLodHints.TryGetValue(hintKey, out var hintState))
+            if (!crossLodHints.TryGetValue(hintKey, out var hintState) || hintState.sourceMesh != srcMesh)
             {
-                hintState = new CrossLodHintState();
-                crossLodHints.Add(hintKey, hintState);
+                // Repack and auto-tune can reorder charts without changing the
+                // entry/group key. Indices from another atlas are not reusable.
+                hintState = new CrossLodHintState(srcMesh);
+                crossLodHints[hintKey] = hintState;
             }
 
             if (!HasSourceShellTransforms(srcMesh)) return;
 
             UvProgress.Report(-1f, $"Transfer LOD{tLod} ← '{tgt.renderer.name}'");
+            var pair = ctx.DiagnosticCapture?.BeforePair(srcEntry, tgt, srcMesh, tgtMesh, hintState.overlapHints, hintState.matchHints);
             var tr = await TransferMesh(tgtMesh, srcMesh,
                 hintState.overlapHints.Count > 0 ? hintState.overlapHints : null,
                 hintState.matchHints.Count > 0 ? hintState.matchHints : null,
                 srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
-                srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0, useAsync);
-            if (tr.uv2 == null) { UvtLog.Warn($"[Transfer] Failed for '{tgt.renderer.name}'"); return; }
+                srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0, useAsync, pair?.trace);
+            if (tr.uv2 == null) {
+                ctx.DiagnosticCapture?.AfterPair(pair, tgt, tr);
+                UvtLog.Warn($"[Transfer] Failed for '{tgt.renderer.name}'"); return;
+            }
 
             // Accumulate overlap hints for subsequent LODs
             if (tr.overlapHints != null && tr.overlapHints.Count > 0)
@@ -2207,6 +2407,7 @@ namespace SashaRX.UnityMeshLab
                 hintState.matchHints.AddRange(tr.matchHints);
 
             ApplyTransferResult(tgt, tgtMesh, tr, tLod);
+            ctx.DiagnosticCapture?.AfterPair(pair, tgt, tr);
         }
 
         bool HasSourceShellTransforms(Mesh srcMesh)
@@ -2234,7 +2435,10 @@ namespace SashaRX.UnityMeshLab
                         $"Clamped {clamped} UV2 vert(s) into [0,1] on '{tgt.renderer.name}'");
             }
             om.SetUVs(1, new List<Vector2>(tr.uv2));
+            DestroyWorkingMesh(ref tgt.transferredMesh);
             tgt.transferredMesh = om;
+            if (!string.IsNullOrEmpty(tgt.reverseTransferJson)) DestroyWorkingMesh(ref tgt.repackedMesh);
+            tgt.reverseTransferJson = null;
             tgt.shellTransferResult = tr;
 
             // Validation
@@ -2243,7 +2447,8 @@ namespace SashaRX.UnityMeshLab
             BenchmarkRecorder.Current?.StageEnd("validate");
 
             float pct = tr.verticesTotal > 0 ? tr.verticesTransferred * 100f / tr.verticesTotal : 0;
-            UvtLog.Info($"[Transfer] '{tgt.renderer.name}' LOD{tLod}: {tr.shellsMatched} shells, {pct:F0}% coverage");
+            UvtLog.Info($"[Transfer] '{tgt.renderer.name}' LOD{tLod}: {tr.shellsMatched} shells, {pct:F0}% vertex coverage");
+            ctx.ClearAllCaches();
         }
 
         void ApplyUv2ToFbx() => ctx.Assets.ApplyUv2Public();
@@ -2261,6 +2466,28 @@ namespace SashaRX.UnityMeshLab
 
         public void BeforeAssetWrite() => RestoreAllPreviews();
         public void AfterAssetWrite() { OnRefresh(); SaveSettingsToSidecar(); RequestRepaint?.Invoke(); }
+
+        IDisposable PreservePreviewDuringMeshChange()
+        {
+            // Reuse the hub's nested suspension without refreshing the imported
+            // assets. Renderers must release working meshes before we destroy
+            // or mutate them; repaint may run while native packing is awaited.
+            var scope = ctx.Assets.PreservePreviewDuringWrite();
+            try
+            {
+                ctx.Assets.BeforeWrite?.Invoke();
+                foreach (var entry in ctx.MeshEntries)
+                {
+                    if (!entry.meshFilter || !entry.fbxMesh) continue;
+                    var shown = entry.meshFilter.sharedMesh;
+                    if (shown != entry.fbxMesh && (shown == entry.originalMesh
+                        || shown == entry.repackedMesh || shown == entry.transferredMesh))
+                        entry.meshFilter.sharedMesh = entry.fbxMesh;
+                }
+                return scope;
+            }
+            catch { scope.Dispose(); throw; }
+        }
 
         void RefreshSetupSelectionCache(GameObject selected, List<(GameObject go, int lodIndex)> siblings)
         {
@@ -2300,7 +2527,9 @@ namespace SashaRX.UnityMeshLab
 
         void ResetWorkingCopies()
         {
+            var mode = canvas.CurrentPreviewMode;
             RestoreAllPreviews();
+            canvas.CurrentPreviewMode = mode;
             // Destroy all working mesh copies and restore fbxMesh on MeshFilters.
             // Does NOT delete sidecar assets — use ResetUv2FromFbx for that.
             foreach (var e in ctx.MeshEntries)
@@ -2340,6 +2569,8 @@ namespace SashaRX.UnityMeshLab
         void ResetUv2FromFbx()
         {
             if (ctx.LodGroup == null) return;
+            using var previewWrite = ctx.Assets.PreservePreviewDuringWrite();
+            ctx.Assets.BeforeWrite?.Invoke();
             var fbxPaths = SidecarStore.FbxPaths(ctx.MeshEntries);
             SidecarStore.Delete(fbxPaths);
             AssetDatabase.Refresh();
@@ -2357,7 +2588,8 @@ namespace SashaRX.UnityMeshLab
             if (ctx.LodGroup == null) return;
             if (!EditorUtility.DisplayDialog("Reset Pipeline State", "Delete all sidecars and reset?", "Reset", CancelButton)) return;
 
-            RestoreAllPreviews();
+            using var previewWrite = ctx.Assets.PreservePreviewDuringWrite();
+            ctx.Assets.BeforeWrite?.Invoke();
             var fbxPaths = SidecarStore.FbxPaths(ctx.MeshEntries);
             SidecarStore.Delete(fbxPaths);
             AssetDatabase.Refresh();

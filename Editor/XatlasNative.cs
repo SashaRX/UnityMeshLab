@@ -64,6 +64,10 @@ namespace SashaRX.UnityMeshLab
             uint[] outChartIndex,
             int    maxVerts);
 
+        [DllImport(DLL)] internal static extern void xatlasPackChartsPreserveShape(
+            int maxChartSize, uint padding, float texelsPerUnit, uint resolution,
+            int bilinear, int blockAlign, int bruteForce, int rotateCharts, int rotateChartsToAxis);
+
         [DllImport(DLL)] public static extern int xatlasGetOutputIndices(
             int    meshIndex,
             uint[] outIndices,

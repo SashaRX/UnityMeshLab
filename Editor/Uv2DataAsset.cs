@@ -99,6 +99,8 @@ namespace SashaRX.UnityMeshLab
     public class MeshUv2Entry
     {
         public string meshName;
+        /// <summary>Optional reverse UV face ancestry and intentional overlap layers (JSON schema 1).</summary>
+        public string reverseTransferJson;
         public Vector2[] uv2;
         /// <summary>If true, postprocessor must run meshopt dedup (WeldInPlace) before applying UV2.</summary>
         public bool welded;
@@ -328,6 +330,7 @@ namespace SashaRX.UnityMeshLab
             if (e != null)
             {
                 e.uv2 = uv2;
+                e.reverseTransferJson = null;
                 e.welded = welded;
                 e.edgeWelded = edgeWelded;
                 // backward compat: if explicit step flag absent, keep legacy boolean
@@ -390,6 +393,7 @@ namespace SashaRX.UnityMeshLab
         static void CopyEntryFields(MeshUv2Entry src, MeshUv2Entry dst)
         {
             dst.meshName = src.meshName;
+            dst.reverseTransferJson = src.reverseTransferJson;
             dst.uv2 = src.uv2;
             dst.welded = src.welded;
             dst.edgeWelded = src.edgeWelded;

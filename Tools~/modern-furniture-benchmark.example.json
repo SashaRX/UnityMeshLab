@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "includeSynthetic": true,
+  "captures": [],
+  "assetCases": [
+    { "asset": "Assets/TransferBenchmarkInputs/Modern_DressingTable_A.fbx", "label": "Modern_DressingTable_A/weld-off", "symmetry": "adaptive", "textureWidth": 1, "textureHeight": 1, "resolution": 512, "preOptimize": true, "weldUv0": false },
+    { "asset": "Assets/TransferBenchmarkInputs/Modern_DressingTable_A.fbx", "label": "Modern_DressingTable_A/weld-on", "symmetry": "adaptive", "textureWidth": 1, "textureHeight": 1, "resolution": 512, "preOptimize": true, "weldUv0": true },
+    { "asset": "Assets/TransferBenchmarkInputs/Modern_Kitchen_A.fbx", "label": "Modern_Kitchen_A/weld-off", "symmetry": "adaptive", "textureWidth": 1, "textureHeight": 1, "resolution": 512, "preOptimize": true, "weldUv0": false },
+    { "asset": "Assets/TransferBenchmarkInputs/Modern_Kitchen_A.fbx", "label": "Modern_Kitchen_A/weld-on", "symmetry": "adaptive", "textureWidth": 1, "textureHeight": 1, "resolution": 512, "preOptimize": true, "weldUv0": true },
+    { "asset": "Assets/TransferBenchmarkInputs/speaker-retro.fbx", "label": "speaker-retro/weld-off", "symmetry": "adaptive", "textureWidth": 1, "textureHeight": 1, "resolution": 512, "preOptimize": true, "weldUv0": false },
+    { "asset": "Assets/TransferBenchmarkInputs/speaker-retro.fbx", "label": "speaker-retro/weld-on", "symmetry": "adaptive", "textureWidth": 1, "textureHeight": 1, "resolution": 512, "preOptimize": true, "weldUv0": true }
+  ],
+  "methods": ["grouped", "grouped-no-hints", "uv0-nearest", "surface-nearest", "surface-normal", "shell-similarity"],
+  "repetitions": 2,
+  "warmup": 0,
+  "maxPairs": 64,
+  "outputRoot": "BenchmarkReports/modern-furniture"
+}

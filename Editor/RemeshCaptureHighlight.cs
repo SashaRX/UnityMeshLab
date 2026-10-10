@@ -27,9 +27,10 @@ namespace SashaRX.UnityMeshLab
         public string Key { get; private set; }
         public string Summary { get; private set; } = "";
         public string Error { get; private set; }
+        internal Mesh PreviewMesh => painted;
 
         public static string KeyFor(GameObject root, RemeshSettings s) =>
-            $"{(root ? root.GetInstanceID() : 0)}|{s.lod0Only}|{s.keepHierarchy}|{s.sourceShape}|{s.voxelResolution}|{s.hullResolution}|{s.minPartSize:F4}|{s.minRodVoxels:F3}";
+            $"{(root ? root.GetInstanceID() : 0)}|{s.lod0Only}|{s.keepHierarchy}|{s.sourceShape}|{s.voxelResolution}|{s.hullResolution}|{s.minPartSize:R}|{s.minRodVoxels:R}";
 
         /// <summary>Rebuilds the paint for root under the given settings (main thread).</summary>
         public void Build(GameObject root, RemeshSettings settings)
@@ -49,13 +50,13 @@ namespace SashaRX.UnityMeshLab
                 int gridResolution = settings.sourceShape == RemeshShape.Hull ? settings.hullResolution : settings.voxelResolution;
                 var vertices = new List<Vector3>(); var colors = new List<Color32>(); var indices = new List<int>();
                 long keptFaces = 0, smallFaces = 0, rodFaces = 0; int skippedNodes = 0;
-                void Add(RemeshSource source, Matrix4x4 spaceToWorld, byte[] cls, bool nodeSkipped)
+                void Add(RemeshSource source, Matrix4x4 spaceToWorld, byte[] cls)
                 {
                     int baseIndex = vertices.Count;
                     var vertexClass = new byte[source.positions.Length];
                     int faceCount = source.indices.Length / 3;
                     for (int f = 0; f < faceCount; ++f) {
-                        byte c = nodeSkipped ? (byte)255 : cls != null ? cls[f] : RemeshSource.PartKept;
+                        byte c = cls != null ? cls[f] : RemeshSource.PartKept;
                         if (c == RemeshSource.PartKept) ++keptFaces; else if (c == RemeshSource.PartSmall) ++smallFaces; else if (c == RemeshSource.PartRod) ++rodFaces;
                         for (int k = 0; k < 3; ++k) vertexClass[source.indices[f * 3 + k]] = c;
                     }
@@ -72,7 +73,7 @@ namespace SashaRX.UnityMeshLab
                         var cls = source.ClassifyParts(settings.minPartSize, settings.minRodVoxels, gridResolution);
                         // The pipeline refuses a filter that would empty the weld: everything stays.
                         if (cls != null && Array.TrueForAll(cls, c => c != RemeshSource.PartKept)) cls = null;
-                        Add(source, root.transform.localToWorldMatrix, cls, false);
+                        Add(source, root.transform.localToWorldMatrix, cls);
                     }
                 }
                 else {
@@ -83,7 +84,7 @@ namespace SashaRX.UnityMeshLab
                         // A node whose every part fails the filter is skipped by the pipeline.
                         bool skipped = cls != null && Array.TrueForAll(cls, c => c != RemeshSource.PartKept);
                         if (skipped) ++skippedNodes;
-                        Add(source, renderer.transform.localToWorldMatrix, cls, skipped);
+                        Add(source, renderer.transform.localToWorldMatrix, cls);
                     }
                 }
                 if (indices.Count > 0) {
@@ -114,6 +115,15 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        // The painted capture is in world space. The shared preview removes the
+        // source root's scene placement, just like the normal source preview.
+        internal bool FillPreview(List<MeshViewport3D.Item> items, Matrix4x4 worldToFrame)
+        {
+            if (!painted || !EnsureMaterials()) return false;
+            items.Add(new MeshViewport3D.Item(painted, worldToFrame, new[] { paint }));
+            return true;
+        }
+
         static Mesh MeshOf(Renderer renderer)
         {
             if (renderer is SkinnedMeshRenderer skin) return skin.sharedMesh;
@@ -136,7 +146,7 @@ namespace SashaRX.UnityMeshLab
         public void Clear()
         {
             if (painted) Object.DestroyImmediate(painted);
-            painted = null; excluded.Clear(); Summary = ""; Key = null;
+            painted = null; excluded.Clear(); Summary = ""; Key = null; Error = null;
         }
 
         public void Dispose()

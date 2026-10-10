@@ -208,18 +208,26 @@ namespace SashaRX.UnityMeshLab
                             mesh = MeshAccess.ReadableCopy(filter.sharedMesh);
                         }
                         else continue;
-                        // Non-triangle submeshes (curtain lines, quad exports) drop out of the
-                        // capture; the renderer survives on its triangle submeshes alone and is
-                        // skipped with a warning when none remain.
+                        // KeepQuads FBX imports still contain surfaces. Convert only this
+                        // detached readable copy; imported meshes and settings stay intact.
+                        int quadSubmeshes = TriangulateCaptureQuads(mesh);
+                        if (quadSubmeshes > 0)
+                            reader.warnings.Add(renderer.name + ": " + quadSubmeshes + " quad submesh(es) triangulated on the capture copy.");
+                        // Lines/points carry no surface area and remain excluded.
                         int triangleSubmeshes = 0;
                         for (int sub = 0; sub < mesh.subMeshCount; ++sub)
                             if (mesh.GetTopology(sub) == MeshTopology.Triangles) ++triangleSubmeshes;
                         if (triangleSubmeshes == 0) {
-                            reader.warnings.Add(renderer.name + ": no triangle submeshes, skipped.");
+                            reader.warnings.Add(renderer.name + ": no triangle or quad surface submeshes, skipped.");
                             continue;
                         }
                         if (triangleSubmeshes < mesh.subMeshCount)
                             reader.warnings.Add(renderer.name + ": " + (mesh.subMeshCount - triangleSubmeshes) + " non-triangle submesh(es) skipped.");
+                        // Unity's normal/tangent recalculation tries every submesh,
+                        // including lines. Empty those slots on the capture copy first.
+                        for (int sub = 0; sub < mesh.subMeshCount; ++sub)
+                            if (mesh.GetTopology(sub) != MeshTopology.Triangles)
+                                mesh.SetIndices(Array.Empty<int>(), MeshTopology.Triangles, sub, false);
                         // A geometry-only capture (scene shadow casters, the Scene highlight)
                         // needs positions and triangles alone: a mesh without UV0 casts
                         // shadows in the game and keeps doing so here.
@@ -281,7 +289,7 @@ namespace SashaRX.UnityMeshLab
                         else for (int i = 0; i < p.Length; ++i) colors.Add(Color.white);
                         var shared = renderer.sharedMaterials;
                         for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
-                            if (mesh.GetTopology(sub) != MeshTopology.Triangles) continue;
+                            if (mesh.GetTopology(sub) != MeshTopology.Triangles || mesh.GetIndexCount(sub) == 0) continue;
                             int material = 0;
                             if (geometryOnly) {
                                 // Geometry-only captures (the Scene highlight) never read materials
@@ -351,6 +359,35 @@ namespace SashaRX.UnityMeshLab
                 vertexRenderer = vertexRenderer.ToArray(), rendererToSpace = rendererToSpace.ToArray(), rendererLayer = rendererLayer.ToArray() };
         }
 
+        internal int[] FaceOwners()
+        {
+            if (vertexRenderer == null || vertexRenderer.Length != positions.Length) return null;
+            var owners = new int[indices.Length / 3];
+            for (int f = 0; f < owners.Length; ++f) {
+                int a = vertexRenderer[indices[f * 3]], b = vertexRenderer[indices[f * 3 + 1]], c = vertexRenderer[indices[f * 3 + 2]];
+                owners[f] = a >= 0 && a == b && a == c ? a : -1;
+            }
+            return owners;
+        }
+
+        static int TriangulateCaptureQuads(Mesh mesh)
+        {
+            int converted = 0;
+            for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
+                if (mesh.GetTopology(sub) != MeshTopology.Quads) continue;
+                var quads = mesh.GetIndices(sub);
+                if (quads.Length % 4 != 0) throw new InvalidOperationException("Quad submesh has incomplete faces.");
+                var triangles = new int[checked(quads.Length / 4 * 6)];
+                for (int q = 0, t = 0; q < quads.Length; q += 4, t += 6) {
+                    triangles[t] = quads[q]; triangles[t + 1] = quads[q + 1]; triangles[t + 2] = quads[q + 2];
+                    triangles[t + 3] = quads[q]; triangles[t + 4] = quads[q + 2]; triangles[t + 5] = quads[q + 3];
+                }
+                mesh.SetIndices(triangles, MeshTopology.Triangles, sub, false);
+                ++converted;
+            }
+            return converted;
+        }
+
         /// <summary>
         /// Drops connected pieces that are too small or too rod-like to matter: a piece
         /// whose extent is under minSize × capture diagonal, or whose CROSS-SECTION — the
@@ -376,11 +413,11 @@ namespace SashaRX.UnityMeshLab
             // Pieces are counted once each: a component's faces all carry the same class,
             // and a component is identified by its root slot below.
             var slot = WeldSlots(out int slotCount);
-            var parent = ComponentForest(slot, slotCount);
+            var components = ComponentForest(slot, slotCount);
             var counted = new HashSet<int>();
             for (int f = 0; f < faceCount; ++f) {
                 if (cls[f] == PartKept) continue;
-                int root = FindRoot(parent, slot[indices[f * 3]]);
+                int root = components.Find(slot[indices[f * 3]]);
                 if (!counted.Add(root)) continue;
                 if (cls[f] == PartSmall) ++removedSmall; else ++removedThin;
             }
@@ -416,6 +453,82 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
+        // FilterSmallParts replaces streams rather than editing their elements.
+        // A separate wrapper therefore preserves the pre-filter donor without
+        // duplicating texture pixels or the unchanged vertex streams.
+        internal RemeshSource CopyForFiltering()
+        {
+            var copy = (RemeshSource)MemberwiseClone();
+            copy.lightmaps = null;
+            return copy;
+        }
+
+        /// <summary>Rebase an immutable donor snapshot into a hierarchy node's space.
+        /// Keep that node's diagonal so projection distances retain their meaning.</summary>
+        internal RemeshSource InSpace(Matrix4x4 transform, float nodeDiagonal)
+        {
+            if (Mathf.Abs(transform.determinant) < 1e-12f)
+                throw new InvalidOperationException("Zero-scale donor transform.");
+            var copy = CopyForFiltering();
+            var normalTransform = transform.inverse.transpose;
+            float sign = transform.determinant < 0 ? -1 : 1;
+            copy.positions = new Vector3[positions.Length];
+            copy.normals = new Vector3[normals.Length];
+            copy.tangents = new Vector4[tangents.Length];
+            for (int i = 0; i < positions.Length; ++i) {
+                copy.positions[i] = transform.MultiplyPoint3x4(positions[i]);
+                var n = normalTransform.MultiplyVector(normals[i]).normalized;
+                copy.normals[i] = n;
+                var t = transform.MultiplyVector(new Vector3(tangents[i].x, tangents[i].y, tangents[i].z));
+                t = (t - n * Vector3.Dot(n, t)).normalized;
+                copy.tangents[i] = new Vector4(t.x, t.y, t.z, tangents[i].w * sign);
+            }
+            if (sign < 0) {
+                copy.indices = (int[])indices.Clone();
+                for (int i = 0; i < copy.indices.Length; i += 3) {
+                    copy.indices[i + 1] = indices[i + 2];
+                    copy.indices[i + 2] = indices[i + 1];
+                }
+            }
+            copy.rendererToSpace = Array.ConvertAll(rendererToSpace, matrix => transform * matrix);
+            copy.groundNormal = normalTransform.MultiplyVector(groundNormal).normalized;
+            copy.diagonal = nodeDiagonal;
+            return copy;
+        }
+
+        // Assemble the root donor from the already read hierarchy captures. Surface
+        // and lightmap references are shared; no second texture readback is needed.
+        internal static RemeshSource Combine(IReadOnlyList<(RemeshSource source, Matrix4x4 toRoot)> captures, Vector3 groundNormal)
+        {
+            var positions = new List<Vector3>(); var normals = new List<Vector3>(); var tangents = new List<Vector4>();
+            var uv = new List<Vector2>(); var uv2 = new List<Vector2>(); var colors = new List<Color>();
+            var indices = new List<int>(); var faceMaterials = new List<int>(); var faceLightmaps = new List<int>();
+            var materials = new List<Surface>(); var lightmaps = new List<LightmapRef>(); var warnings = new List<string>();
+            var vertexRenderer = new List<int>(); var rendererToSpace = new List<Matrix4x4>(); var rendererLayer = new List<int>();
+            bool hasColors = false;
+            foreach (var capture in captures) {
+                var part = capture.source.InSpace(capture.toRoot, capture.source.diagonal);
+                int vertexOffset = positions.Count, materialOffset = materials.Count, lightmapOffset = lightmaps.Count, rendererOffset = rendererToSpace.Count;
+                positions.AddRange(part.positions); normals.AddRange(part.normals); tangents.AddRange(part.tangents);
+                uv.AddRange(part.uv); uv2.AddRange(part.uv2); colors.AddRange(part.colors); hasColors |= part.hasColors;
+                foreach (int index in part.indices) indices.Add(vertexOffset + index);
+                foreach (int material in part.faceMaterials) faceMaterials.Add(materialOffset + material);
+                foreach (int lightmap in part.faceLightmaps) faceLightmaps.Add(lightmap < 0 ? -1 : lightmapOffset + lightmap);
+                foreach (int renderer in part.vertexRenderer) vertexRenderer.Add(rendererOffset + renderer);
+                materials.AddRange(part.materials); lightmaps.AddRange(part.lightmapRefs); warnings.AddRange(part.warnings);
+                rendererToSpace.AddRange(part.rendererToSpace); rendererLayer.AddRange(part.rendererLayer);
+            }
+            if (indices.Count == 0) throw new InvalidOperationException("No source triangles found.");
+            var bounds = new Bounds(positions[0], Vector3.zero);
+            foreach (var position in positions) bounds.Encapsulate(position);
+            return new RemeshSource { positions = positions.ToArray(), normals = normals.ToArray(), tangents = tangents.ToArray(),
+                uv = uv.ToArray(), uv2 = uv2.ToArray(), colors = colors.ToArray(), hasColors = hasColors, indices = indices.ToArray(),
+                faceMaterials = faceMaterials.ToArray(), faceLightmaps = faceLightmaps.ToArray(), materials = materials.ToArray(),
+                lightmapRefs = lightmaps.ToArray(), warnings = warnings.ToArray(), vertexRenderer = vertexRenderer.ToArray(),
+                rendererToSpace = rendererToSpace.ToArray(), rendererLayer = rendererLayer.ToArray(), diagonal = bounds.size.magnitude,
+                groundNormal = groundNormal };
+        }
+
         public const byte PartKept = 0, PartSmall = 1, PartRod = 2;
 
         /// <summary>
@@ -435,14 +548,14 @@ namespace SashaRX.UnityMeshLab
             float cell = Mathf.Max(extent.x, Mathf.Max(extent.y, extent.z)) / Mathf.Max(1, resolution);
             float rodLimit = minRodVoxels * cell;
             var slot = WeldSlots(out int slotCount);
-            var parent = ComponentForest(slot, slotCount);
+            var components = ComponentForest(slot, slotCount);
             var members = new Dictionary<int, List<Vector3>>();
             var firstOfSlot = new int[slotCount];
             for (int i = 0; i < slotCount; ++i) firstOfSlot[i] = -1;
             for (int i = 0; i < vertexCount; ++i) {
                 if (firstOfSlot[slot[i]] >= 0) continue;  // one point per welded position
                 firstOfSlot[slot[i]] = i;
-                int root = FindRoot(parent, slot[i]);
+                int root = components.Find(slot[i]);
                 if (!members.TryGetValue(root, out var list)) members[root] = list = new List<Vector3>();
                 list.Add(positions[i]);
             }
@@ -454,7 +567,7 @@ namespace SashaRX.UnityMeshLab
                 verdict[pair.Key] = small ? PartSmall : rod ? PartRod : PartKept;
             }
             var cls = new byte[faceCount];
-            for (int f = 0; f < faceCount; ++f) cls[f] = verdict[FindRoot(parent, slot[indices[f * 3]])];
+            for (int f = 0; f < faceCount; ++f) cls[f] = verdict[components.Find(slot[indices[f * 3]])];
             return cls;
         }
 
@@ -462,25 +575,14 @@ namespace SashaRX.UnityMeshLab
         int[] WeldSlots(out int slotCount) => MeshGeometry.WeldPositions(positions, out slotCount);
 
         // Union-find over the welded slots joined by the triangles.
-        int[] ComponentForest(int[] slot, int slotCount)
+        DisjointSet ComponentForest(int[] slot, int slotCount)
         {
-            var parent = new int[slotCount];
-            for (int i = 0; i < slotCount; ++i) parent[i] = i;
+            var components = new DisjointSet(slotCount);
             for (int f = 0; f * 3 + 2 < indices.Length; ++f) {
-                int a = FindRoot(parent, slot[indices[f * 3]]);
-                int b = FindRoot(parent, slot[indices[f * 3 + 1]]);
-                int c = FindRoot(parent, slot[indices[f * 3 + 2]]);
-                if (a != b) parent[a] = b;
-                a = FindRoot(parent, a);
-                if (a != c) parent[a] = c;
+                components.Union(slot[indices[f * 3]], slot[indices[f * 3 + 1]]);
+                components.Union(slot[indices[f * 3]], slot[indices[f * 3 + 2]]);
             }
-            return parent;
-        }
-
-        static int FindRoot(int[] parent, int x)
-        {
-            while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
-            return x;
+            return components;
         }
 
         /// <summary>

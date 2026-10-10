@@ -20,8 +20,13 @@ in SHIMS with the reason. Keep that list short: every entry is an API the real
 Unity build sees and this check cannot.
 
 The Unity Test Framework is a separate package, absent from Unity3D.SDK. Its
-UnityTest marker attribute is stubbed only in the generated compile-check sources;
-coroutine execution is verified by the real Unity Test Runner.
+UnityTest marker and LogAssert.Expect signatures are stubbed only in the generated
+compile-check sources; coroutine execution and log assertions are verified by the
+real Unity Test Runner.
+
+Mesh.GetVertexBufferStride/GetVertexAttributeStream/GetVertexAttributeOffset are
+also absent from the reference Mesh type. Generated extension signatures bridge
+only that API gap; raw vertex layout and byte preservation require real Unity tests.
 
 Usage:
   python3 Tools~/compile_check.py                 # build both define variants
@@ -66,10 +71,24 @@ namespace SashaRX.UnityMeshLab
 {
     internal struct AssetEditingScopeShim : System.IDisposable { public void Dispose() { } }
 }
+namespace UnityEngine
+{
+    public static class MeshLayoutApiShim
+    {
+        public static int GetVertexBufferStride(this Mesh mesh, int stream) => throw new System.NotSupportedException();
+        public static int GetVertexAttributeStream(this Mesh mesh, UnityEngine.Rendering.VertexAttribute attribute) => throw new System.NotSupportedException();
+        public static int GetVertexAttributeOffset(this Mesh mesh, UnityEngine.Rendering.VertexAttribute attribute) => throw new System.NotSupportedException();
+    }
+}
 namespace UnityEngine.TestTools
 {
     [System.AttributeUsage(System.AttributeTargets.Method)]
     public sealed class UnityTestAttribute : System.Attribute { }
+    public static class LogAssert
+    {
+        public static void Expect(UnityEngine.LogType type, string message) { }
+        public static void Expect(UnityEngine.LogType type, System.Text.RegularExpressions.Regex message) { }
+    }
 }
 """
 

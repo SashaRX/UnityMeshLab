@@ -21,7 +21,8 @@ namespace SashaRX.UnityMeshLab
     {
         const string LogPrefix = "[Remesh] ";
 
-        internal enum Stage { Remesh, Simplify, Unwrap, Bake }
+        // Existing numeric values remain stable for callers and window preferences.
+        internal enum Stage { Prepare = -1, Remesh, Simplify, Unwrap, Bake }
 
         /// <summary>One captured piece of the source and its stage outputs.</summary>
         internal sealed class Node
@@ -35,7 +36,16 @@ namespace SashaRX.UnityMeshLab
             public Vector3 localScale = Vector3.one;
             public Matrix4x4 spaceToWorld = Matrix4x4.identity; // captured at remesh time
             public RemeshSource source;
+            internal RemeshSource unfilteredSource;
+            internal RemeshPlanarCap.Support support;
+            internal int[] voxelSyntheticFaces;
+            internal RemeshSyntheticFaces.Regions syntheticRegions;
             public RemeshNative.IndexedMesh voxel, simplified;
+            internal RemeshNative.IndexedMesh completeSimplified;
+            internal int[] completeSyntheticFaces;
+            internal TriangleBvh syntheticPickBvh;
+            internal int[] syntheticFaces;
+            internal bool[] selectedSyntheticFaces;
             // Trim mask: the untrimmed remesh and the class of each of its faces
             // (RemeshTrim.Kept/Back/Rim), for the Remesh stage's preview; null without a trim.
             public RemeshNative.IndexedMesh voxelRaw;
@@ -52,9 +62,13 @@ namespace SashaRX.UnityMeshLab
 
         readonly List<Node> nodes = new List<Node>();
         readonly string[] keys = new string[4];
+        string preparationKey;
         CancellationTokenSource cancellation;
         int running;
         bool hierarchy;
+        Node previewNode;
+        RemeshSource unfilteredRoot;
+        Matrix4x4 capturedRootToWorld;
         bool disposeRequested;   // Dispose() during a run: clear once the run has observed cancellation
         /// <summary>The root the remesh stage captured; the save resolves its output folder from this,
         /// not from whatever is selected at save time. Null until the stage ran.</summary>
@@ -62,10 +76,10 @@ namespace SashaRX.UnityMeshLab
 
         // Previews come from the primary node: the weld itself, or the largest node of
         // a hierarchy so the existing preview panel keeps working.
-        Mesh sourceMesh, voxelMesh, simplifiedMesh, trimMaskMesh;
+        Mesh sourceMesh, closureMesh, closureRims, voxelMesh, simplifiedMesh, trimMaskMesh, syntheticMaskMesh;
         Texture2D baseColorPreview;
 
-        /// <summary>Settings snapshot every stage output was built with, indexed by Stage.</summary>
+        /// <summary>Settings snapshots for the four existing native/bake stages; preparation has its own key.</summary>
         public IReadOnlyList<string> Keys => keys;
         public IReadOnlyList<Node> Nodes => nodes;
         public bool IsHierarchy => hierarchy;
@@ -89,6 +103,7 @@ namespace SashaRX.UnityMeshLab
         public Node Primary
         {
             get {
+                if (previewNode != null) return previewNode;
                 Node best = null;
                 foreach (var node in nodes)
                     if (best == null || (node.voxel != null && best.voxel != null && node.voxel.TriangleCount > best.voxel.TriangleCount)) best = node;
@@ -97,10 +112,22 @@ namespace SashaRX.UnityMeshLab
         }
 
         public Mesh SourceMesh => sourceMesh;
+        internal Mesh ClosureMesh => closureMesh;
+        internal Mesh ClosureRims => closureRims;
+        internal int[] ClosurePatchFaces { get; private set; }
+        internal string[] ClosureContourNames { get; private set; }
+        internal Vector3[][] ClosureContourEdges { get; private set; }
+        internal Color[] ClosureContourColors { get; private set; }
+        internal string[] ClosureContourReasons { get; private set; }
+        internal string ClosureSummary { get; private set; }
+        internal string ClosureSelectionWarning { get; private set; }
+        internal string ClosureLoopRanges { get; private set; }
+        internal string[] ClosureContourInfo { get; private set; }
         public Mesh VoxelMesh => voxelMesh;
         /// <summary>The untrimmed remesh of the primary node with one colour per trim
         /// class (green kept, red back of a sheet, orange rim); null when nothing was trimmed.</summary>
         public Mesh TrimMaskMesh => trimMaskMesh;
+        internal Mesh SyntheticMaskMesh => syntheticMaskMesh;
         /// <summary>Any node's capture renders both sides (two-sided materials or the setting).</summary>
         public bool ResultTwoSided => nodes.Exists(n => n.twoSided);
         public Mesh SimplifiedMesh => simplifiedMesh;
@@ -110,6 +137,18 @@ namespace SashaRX.UnityMeshLab
         public Texture2D BaseColorPreview => baseColorPreview;
         public float SourceDiagonal => Primary?.source != null ? Primary.source.diagonal : 0f;
         public RemeshSource Source => Primary?.source;
+        internal RemeshSource ProjectionSource(Node node, bool includeFiltered)
+        {
+            if (!includeFiltered) return node.source;
+            if (node.unfilteredSource == null && unfilteredRoot != null) {
+                var donor = unfilteredRoot.InSpace(node.spaceToWorld.inverse * capturedRootToWorld, node.source.diagonal);
+                // Only the primary preview retains a rebased full-root snapshot.
+                // Keeping one for every node would multiply memory by node count.
+                if (node == Primary) node.unfilteredSource = donor;
+                return donor;
+            }
+            return node.unfilteredSource ?? node.source;
+        }
         public bool SourceHasColors => nodes.Exists(n => n.source != null && n.source.hasColors);
 
         // True only when EVERY node carries the stage's output: a keep-hierarchy run
@@ -119,7 +158,8 @@ namespace SashaRX.UnityMeshLab
         {
             if (nodes.Count == 0) return false;
             foreach (var n in nodes) {
-                bool done = stage == Stage.Remesh ? n.voxel != null
+                bool done = stage == Stage.Prepare ? preparationKey != null
+                    : stage == Stage.Remesh ? n.voxel != null
                     : stage == Stage.Simplify ? n.simplified != null
                     : stage == Stage.Unwrap ? n.geometry != null
                     : n.maps != null;
@@ -134,6 +174,7 @@ namespace SashaRX.UnityMeshLab
             if (!Has(stage)) return null;
             long total = 0;
             switch (stage) {
+                case Stage.Prepare: return ClosureSummary;
                 case Stage.Remesh:
                     foreach (var n in nodes) { total += n.voxel.TriangleCount; }
                     return $"{total:N0} tris";
@@ -153,26 +194,32 @@ namespace SashaRX.UnityMeshLab
         public static string Key(Stage stage, RemeshSettings s, GameObject source)
         {
             switch (stage) {
-                case Stage.Remesh: return $"{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}|{s.lod0Only}|{s.keepHierarchy}|" +
-                    $"{s.sourceShape}|{s.hullResolution}|{s.hullTriangles}|{s.minPartSize:F4}|{s.minRodVoxels:F3}|{s.voxelResolution}|{s.trimToSource}|{s.sourceBackfaces}";
-                case Stage.Simplify: return $"{s.simplify}|{s.targetTriangles}|{s.maximumError}|{s.regularize}|{s.preserveFolds}|{s.pruneSmallParts}";
-                case Stage.Unwrap: return $"{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.normalWeighting}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
+                case Stage.Prepare: return $"{(source ? source.GetInstanceID() : 0)}|{s.lod0Only}|{s.keepHierarchy}|{s.sourceShape}|{s.shell}|" +
+                    $"{s.minPartSize:R}|{s.minRodVoxels:R}|{s.voxelResolution}|{s.hullResolution}|{s.sourceBackfaces}|" +
+                    $"cap{RemeshPlanarCap.Revision}|{s.planarCap}|{s.planarCapLoops}|{s.planarCapLocalPlanes}|{s.closureMode}|{s.capPlaneTolerance:R}|{s.bridgeCapFallback}";
+                case Stage.Remesh: return $"voxel{RemeshNative.VoxelRevision}|{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}|{s.lod0Only}|{s.keepHierarchy}|" +
+                    $"{s.sourceShape}|{s.hullResolution}|{s.hullTriangles}|{s.minPartSize:R}|{s.minRodVoxels:R}|{s.voxelResolution}|{s.trimToSource}|{s.sourceBackfaces}|" +
+                    $"cap{RemeshPlanarCap.Revision}|{s.planarCap}|{s.planarCapLoops}|{s.planarCapLocalPlanes}|{s.closureMode}|{s.capPlaneTolerance:R}|{s.bridgeCapFallback}";
+                case Stage.Simplify: return $"fit{RemeshSurfaceRefine.Revision}|{s.simplify}|{s.targetTriangles}|{s.maximumError}|{s.regularize}|{s.preserveFolds}|{s.pruneSmallParts}";
+                case Stage.Unwrap: return $"merge{UvChartMerge.Revision}|{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.normalWeighting}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
                     $"{s.chartNormalDeviation}|{s.chartNormalSeam}|{s.chartStraightness}|{s.chartRoundness}|{s.chartIterations}|" +
                     $"{s.maxChartArea}|{s.maxChartBoundary}|{s.packRotate}|{s.packBlockAlign}|{s.packBruteForce}|{s.reduceUvFragmentation}|{s.mergeCharts}";
-                default: return $"{s.bakeMode}|{s.projectionDistance}|{s.cageSmoothing:F3}|{s.cageFit}|{s.bakeSamples}|{s.transferVertexColor}|{s.transferVertexAlpha}|{s.vertexColorTint}|{s.proxyDepth:F4}|{s.sourceBackfaces}|{s.bakeSourceAO}|{s.multiplySourceAO}|{s.sourceAO?.Key}|{s.dilationRadius}";
+                default: return $"{s.bakeMode}|{s.bakeFilteredParts}|{s.projectionDistance}|{s.cageSmoothing:F3}|{s.cageFit}|{s.bakeSamples}|{s.transferVertexColor}|{s.transferVertexAlpha}|{s.vertexColorTint}|{s.proxyDepth:F4}|{s.sourceBackfaces}|{s.bakeSourceAO}|{s.multiplySourceAO}|{s.sourceAO?.Key}|{s.dilationRadius}";
             }
         }
 
         public bool IsStale(Stage stage, RemeshSettings settings, GameObject source)
-            => keys[(int)stage] != null && keys[(int)stage] != Key(stage, settings, source);
+            => StageKey(stage) != null && StageKey(stage) != Key(stage, settings, source ? source : CapturedSource);
+
+        string StageKey(Stage stage) => stage == Stage.Prepare ? preparationKey : keys[(int)stage];
 
         /// <summary>The first stage that must run so `target` is up to date: a missing
         /// output or changed settings. An emptied Source field does not invalidate a
         /// remesh already captured.</summary>
         public Stage FirstStale(Stage target, RemeshSettings settings, GameObject source)
         {
-            for (var s = Stage.Remesh; s < target; ++s)
-                if (keys[(int)s] == null || keys[(int)s] != Key(s, settings, source) && (s != Stage.Remesh || source)) return s;
+            for (var s = Stage.Prepare; s < target; ++s)
+                if (StageKey(s) == null || StageKey(s) != Key(s, settings, source ? source : CapturedSource)) return s;
             return target;
         }
 
@@ -191,20 +238,23 @@ namespace SashaRX.UnityMeshLab
             var token = cancellation.Token;
             bool locked = false;
             try {
-                live.Validate(); RemeshNative.CheckAvailable();
+                live.Validate();
+                if (to >= Stage.Remesh) RemeshNative.CheckAvailable();
                 var options = JsonUtility.FromJson<RemeshSettings>(JsonUtility.ToJson(live));
+                if (from == Stage.Remesh && (!Has(Stage.Prepare) || IsStale(Stage.Prepare, options, source))) from = Stage.Prepare;
                 ClearFrom(from);
                 EditorApplication.LockReloadAssemblies(); locked = true;
                 for (var stage = from; stage <= to; ++stage) {
                     RunningStage = stage; Changed?.Invoke();
-                    string key = Key(stage, options, source);
+                    string key = Key(stage, options, source ? source : CapturedSource);
                     switch (stage) {
-                        case Stage.Remesh: await RunRemesh(source, options, token); break;
+                        case Stage.Prepare: await RunPreparation(source, options, token); break;
+                        case Stage.Remesh: await RunRemesh(options, token); break;
                         case Stage.Simplify: await RunSimplify(options, token); break;
                         case Stage.Unwrap: await RunUnwrap(options, token); break;
                         default: await RunBake(source, options, token); break;
                     }
-                    keys[(int)stage] = key;
+                    if (stage == Stage.Prepare) preparationKey = key; else keys[(int)stage] = key;
                 }
                 return true;
             }
@@ -215,7 +265,7 @@ namespace SashaRX.UnityMeshLab
                 if (locked) EditorApplication.UnlockReloadAssemblies();
                 // A Dispose() that arrived mid-run waited for this point: the stage code
                 // above never sees a cleared node list or a destroyed mesh.
-                if (disposeRequested) { disposeRequested = false; ClearFrom(Stage.Remesh); }
+                if (disposeRequested) { disposeRequested = false; ClearFrom(Stage.Prepare); }
                 RunningStage = null;
                 Interlocked.Exchange(ref running, 0); Changed?.Invoke();
             }
@@ -225,7 +275,7 @@ namespace SashaRX.UnityMeshLab
 
         // ── stages ──
 
-        async Task RunRemesh(GameObject root, RemeshSettings options, CancellationToken token)
+        async Task RunPreparation(GameObject root, RemeshSettings options, CancellationToken token)
         {
             if (!root) throw new InvalidOperationException("Select a source root.");
             Report("Reading source geometry and textures…");
@@ -238,6 +288,7 @@ namespace SashaRX.UnityMeshLab
             RootRotation = root.transform.rotation;
             previewWorldToFrame = PreviewRootFrameInverse(root.transform);
             var rootToWorld = root.transform.localToWorldMatrix;
+            capturedRootToWorld = rootToWorld;
             var worldToRoot = root.transform.worldToLocalMatrix;
             var captures = new List<Node>();
             if (!hierarchy) {
@@ -262,18 +313,27 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (captures.Count == 0) throw new InvalidOperationException("Every captured node was empty; nothing to remesh.");
             }
-            long sourceTriangles = 0, resultTriangles = 0, trimmedFaces = 0, flippedFaces = 0, twoSidedFaces = 0; int warnings = 0, droppedSmall = 0, droppedThin = 0;
+            int droppedSmall = 0, droppedThin = 0;
             Report("Reading source textures…");
             // Drain submitted GPU reads before cancellation releases the capture.
             // The editor keeps ticking instead of blocking in Texture2D.ReadPixels.
             foreach (var node in captures) await node.source.TextureReadbacks;
             token.ThrowIfCancellationRequested();
+            if (hierarchy) {
+                // Retain fully removed renderers too, without reading textures twice.
+                var parts = captures.ConvertAll(node => (node.source, worldToRoot * node.spaceToWorld));
+                var groundNormal = worldToRoot.inverse.transpose.MultiplyVector(Vector3.up).normalized;
+                unfilteredRoot = await Task.Run(() => RemeshSource.Combine(parts, groundNormal), token);
+                token.ThrowIfCancellationRequested();
+            }
             var shape = options.sourceShape;
             // Part filter first, whatever the shape: small pieces and rods whose section
             // the voxel grid cannot carry (bolts, pipes, cables, railings) only add voxel
             // noise to a remesh and inflate a proxy's boxes or hull.
             for (int i = captures.Count - 1; i >= 0; --i) {
                 var node = captures[i];
+                if (!hierarchy) node.unfilteredSource = node.source;
+                node.source = node.source.CopyForFiltering();
                 int gridResolution = shape == RemeshShape.Hull ? options.hullResolution : options.voxelResolution;
                 Report($"Filtering parts of {node.name}…");
                 var filtered = await Task.Run(() => {
@@ -289,9 +349,71 @@ namespace SashaRX.UnityMeshLab
                 droppedSmall += filtered.small; droppedThin += filtered.thin;
             }
             if (captures.Count == 0) throw new InvalidOperationException("Every node fell below the part filter; nothing to remesh.");
+            // Build every selected closure before publishing this immutable working snapshot.
+            // Remaining unselected boundaries are allowed here; solid Remesh checks them later.
+            IProgress<string> progress = new Progress<string>(message => {
+                if (RunningStage == Stage.Prepare && preparationKey == null && !token.IsCancellationRequested && !disposeRequested) Report(message);
+            });
+            for (int i = 0; i < captures.Count; ++i) {
+                var node = captures[i]; var captured = node.source;
+                foreach (var warning in captured.warnings) UvtLog.Warn(LogPrefix + warning);
+                node.twoSided = captured.TwoSidedFaces(options.sourceBackfaces) != null;
+                Report($"Preparing closure {node.name} ({i + 1}/{captures.Count})…");
+                await Task.Run(() => {
+                    if (options.planarCap && shape != RemeshShape.BoundingBox && (shape == RemeshShape.Hull || !options.shell)) {
+                        var capOwners = captured.FaceOwners();
+                        try {
+                            node.support = RemeshPlanarCap.Prepare(captured.positions, captured.indices, options.planarCapLoops, token, options.planarCapLocalPlanes, options.closureMode, options.capPlaneTolerance, capOwners,
+                                (loop, done, total) => progress.Report($"{node.name}: processed loop {loop} ({done}/{total})"), continueOnRefusal: true, elementScopedContacts: true,
+                                bridgeCapFallback: options.bridgeCapFallback);
+                            string closureLabel = options.closureMode == RemeshClosureMode.SurfaceCaps ? "surface Cap " :
+                                options.closureMode == RemeshClosureMode.Bridge ? "Bridge " :
+                                options.closureMode == RemeshClosureMode.Automatic ? "automatic Cap/Bridge " : "planar Cap ";
+                            UvtLog.Info(LogPrefix + node.name + ": " + closureLabel + node.support.Description);
+                            if (node.support.selectionWarning != null)
+                                UvtLog.Warn(LogPrefix + node.name + ": " + node.support.selectionWarning);
+                            foreach (var failure in node.support.loopFailures)
+                                UvtLog.Warn(LogPrefix + node.name + $": closure loop {failure.Key} left open: {failure.Value}");
+                            foreach (var pair in node.support.bridgePartners)
+                                if (pair.Key < pair.Value) UvtLog.Info(LogPrefix + node.name + $": Bridge loops {pair.Key},{pair.Value}: " + node.support.bridgeSearch[pair.Key]);
+                            foreach (var fallback in node.support.bridgeCapFallbacks)
+                                UvtLog.Info(LogPrefix + node.name + $": loop {fallback.Key}: planar Cap fallback " +
+                                    (node.support.loopFailures.ContainsKey(fallback.Key) ? "refused" : "accepted") + "; " + fallback.Value);
+                            var contacts = node.support.externalContacts;
+                            if (contacts != null && contacts.count > 0)
+                                UvtLog.Warn(LogPrefix + node.name + $": Cap/Bridge has {contacts.count} contacts with other source meshes " +
+                                    $"(first added face {contacts.firstNewFace}, source face {contacts.firstSourceFace}). Prepared for inspection.");
+                            RemeshGeometryDiagnostics.CaptureSupport(captured, node.support, options, node.name);
+
+                        }
+                        catch (InvalidOperationException failure) {
+                            RemeshGeometryDiagnostics.CaptureFailure(captured.positions, captured.indices, null, null, options,
+                                "Cap preparation", node.name, failure.Message, 0, 0, 0, node.support, capOwners);
+                            throw;
+                        }
+                    }
+                }, token);
+            }
+            token.ThrowIfCancellationRequested();
+            nodes.AddRange(captures); CapturedSource = root;
+            foreach (var node in nodes)
+                if (previewNode == null || node.source.indices.Length > previewNode.source.indices.Length) previewNode = node;
+            BuildSourcePreview(); BuildClosurePreview();
+            ClosureSummary = $"{nodes.Count} node(s); " + ClosureCounts() +
+                (droppedSmall + droppedThin > 0 ? $"; filtered {droppedSmall} small, {droppedThin} thin parts" : "");
+            Report("Prepared: " + ClosureSummary + ". Inspect Cap / Bridge before Remesh.");
+        }
+
+        async Task RunRemesh(RemeshSettings options, CancellationToken token)
+        {
+            if (nodes.Count == 0) throw new InvalidOperationException("Prepare the source first.");
+            var captures = nodes;
+            var shape = options.sourceShape;
+            long sourceTriangles = 0, resultTriangles = 0, trimmedFaces = 0, flippedFaces = 0, twoSidedFaces = 0;
+            int warnings = 0;
             for (int i = 0; i < captures.Count; ++i) {
                 var node = captures[i];
-                foreach (var warning in node.source.warnings) { UvtLog.Warn(LogPrefix + warning); ++warnings; }
+                warnings += node.source.warnings.Length;
                 token.ThrowIfCancellationRequested();
                 string verb = shape == RemeshShape.LOD0 ? "Voxel remeshing" : shape == RemeshShape.BoundingBox ? "Boxing" : "Hulling";
                 Report(hierarchy ? $"{verb} {node.name} ({i + 1}/{captures.Count})…" : verb + "…");
@@ -305,8 +427,33 @@ namespace SashaRX.UnityMeshLab
                 RemeshTrim.Result trim = null;
                 node.voxel = await Task.Run(() => {
                     if (shape == RemeshShape.BoundingBox) return captured.OrientedBoxes();
-                    if (shape == RemeshShape.Hull) return Hull(captured, options, token);
-                    var voxel = RemeshNative.Voxelize(captured.positions, captured.indices, options, token);
+                    if (node.support != null) {
+                        try {
+                            var closed = RemeshTopology.ClosedVolumeFaces(node.support.positions, node.support.indices, token);
+                            foreach (bool face in closed) {
+                                if (!face) {
+                                    var remaining = RemeshTopology.Inspect(node.support.positions, node.support.indices, token);
+                                    if (remaining.boundary.Count == 0)
+                                        throw new InvalidOperationException("Cap support has no boundary edges but includes a zero-volume component. Inspect its geometry before solid Remesh.");
+                                    throw new InvalidOperationException($"Cap support still has {remaining.boundary.Count} boundary edges " +
+                                        $"after selection '{options.planarCapLoops}' from {node.support.loops} loops. " +
+                                        (node.support.selectionWarning != null ? "Correct the loop selection using the available contour numbers in Cap / Bridge; accepted closures are retained." :
+                                        node.support.loopFailures.Count > 0 ? "Inspect red refused contours and their reasons in Cap / Bridge; accepted closures are retained." :
+                                            "Choose All boundaries to close the remaining openings, or an explicit Bridge selection."));
+                                }
+                            }
+                        }
+                        catch (InvalidOperationException failure) {
+                            RemeshGeometryDiagnostics.CaptureFailure(captured.positions, captured.indices, null, null, options,
+                                "Prepared solid input", node.name, failure.Message, 0, 0, 0, node.support, captured.FaceOwners());
+                            throw;
+                        }
+                    }
+                    var supportPositions = node.support?.positions ?? captured.positions;
+                    var supportIndices = node.support?.indices ?? captured.indices;
+                    if (shape == RemeshShape.Hull) return Hull(captured, node.support, options, token, node.name);
+                    var voxel = RemeshNative.VoxelizeCaptured(supportPositions, supportIndices, options, token, node.name,
+                        captured.positions, captured.indices, node.support);
                     if (!options.trimToSource || voxel == null) {
                         if (voxel != null) RemeshGeometryDiagnostics.Capture(captured, voxel, voxel, options);
                         return voxel;
@@ -317,12 +464,13 @@ namespace SashaRX.UnityMeshLab
                     foreach (var p in captured.positions) { mn = Vector3.Min(mn, p); mx = Vector3.Max(mx, p); }
                     var extent = mx - mn;
                     float cell = Mathf.Max(extent.x, Mathf.Max(extent.y, extent.z)) / Mathf.Max(1, options.voxelResolution);
-                    trim = RemeshTrim.Trim(voxel, captured.positions, captured.indices, cell * 2f, token);
+                    trim = RemeshTrim.Trim(voxel, supportPositions, supportIndices, cell * 2f, token);
                     node.voxelRaw = voxel; node.trimClasses = trim.classes;
                     RemeshGeometryDiagnostics.Capture(captured, voxel, trim.mesh, options);
                     return trim.mesh;
                 }, token);
                 if (node.voxel == null || node.voxel.TriangleCount == 0) throw new InvalidOperationException("The remesh produced no geometry.");
+                node.voxelSyntheticFaces = await Task.Run(() => RemeshSyntheticFaces.Classify(node.voxel.positions,node.voxel.indices,node.support,token),token);
                 if (trim != null) {
                     if (trim.gaveUp) UvtLog.Warn(LogPrefix + (hierarchy ? node.name + ": " : "") + "Trim to source surface kept under a tenth of the remesh " +
                         "with the source's winding and with its inverse, so nothing was trimmed. The source winding is mixed beyond one flip, or the remesh sits " +
@@ -340,23 +488,119 @@ namespace SashaRX.UnityMeshLab
                 resultTriangles += node.voxel.TriangleCount;
             }
             token.ThrowIfCancellationRequested();
-            nodes.AddRange(captures);
-            CapturedSource = root;
+            if (hierarchy) {
+                var largestCapture = captures[0];
+                foreach (var node in captures)
+                    if (node.voxel.TriangleCount > largestCapture.voxel.TriangleCount) largestCapture = node;
+                var toPreview = largestCapture.spaceToWorld.inverse * capturedRootToWorld;
+                largestCapture.unfilteredSource = await Task.Run(() => unfilteredRoot.InSpace(toPreview, largestCapture.source.diagonal), token);
+                token.ThrowIfCancellationRequested();
+            }
+            this.previewNode = null;
+            this.previewNode = Primary;
+            BuildSourcePreview(); BuildClosurePreview();
             var primary = Primary;
-            sourceMesh = BuildMesh(ResultName + "_Source", primary.source.positions, primary.source.indices,
-                primary.source.normals, primary.source.hasColors ? primary.source.colors : null, primary.source.uv);
-            sourceMesh.tangents = primary.source.tangents;
             voxelMesh = BuildMesh(ResultName + "_Voxel", primary.voxel.positions, primary.voxel.indices, primary.voxel.normals, uv: primary.voxel.uv, draftUv: primary.voxel.draftUv);
             trimMaskMesh = primary.trimClasses != null ? BuildTrimMask(ResultName + "_TrimMask", primary.voxelRaw, primary.trimClasses) : null;
             Status = (hierarchy ? $"Remesh: {nodes.Count} node(s), " : "Remesh: ") +
                 $"{sourceTriangles:N0} → {resultTriangles:N0} triangles" +
                 (shape == RemeshShape.BoundingBox ? $" ({resultTriangles / 12:N0} oriented boxes)" : shape == RemeshShape.Hull ? " (hull)" : "") +
-                (droppedSmall + droppedThin > 0 ? $"; excluded {droppedSmall:N0} small part(s), {droppedThin:N0} rod(s)" : "") +
                 (trimmedFaces > 0 ? $"; trimmed {trimmedFaces:N0} face(s) the source has no surface for" : options.trimToSource && shape == RemeshShape.LOD0 ? "; nothing to trim" : "") +
                 (flippedFaces > 0 ? $"; re-wound {flippedFaces:N0} face(s) to one orientation" : "") +
                 (twoSidedFaces > 0 ? $"; {twoSidedFaces:N0} two-sided source face(s), the result renders both sides" : "") + "." +
                 (warnings > 0 ? $" {warnings} material warning(s), see Console." : "");
             UvtLog.Info(LogPrefix + Status);
+        }
+
+        void BuildSourcePreview()
+        {
+            if (sourceMesh) Object.DestroyImmediate(sourceMesh);
+            var primary = Primary;
+            sourceMesh = BuildMesh(ResultName + "_Source", primary.source.positions, primary.source.indices,
+                primary.source.normals, primary.source.hasColors ? primary.source.colors : null, primary.source.uv);
+            sourceMesh.tangents = primary.source.tangents;
+        }
+
+        string ClosureCounts()
+        {
+            int loops = 0, patches = 0, added = 0, remaining = 0, refused = 0, bridges = 0, fallbackCaps = 0;
+            foreach (var node in nodes) {
+                var support = node.support;
+                if (support == null) continue;
+                loops += support.loops; patches += support.patchEnds.Count; added += support.addedFaces;
+                remaining += support.remainingBoundaryEdges;
+                refused += support.loopFailures.Count;
+                bridges += support.bridgePartners.Count / 2;
+                foreach (int loop in support.bridgeCapFallbacks.Keys)
+                    if (!support.loopFailures.ContainsKey(loop)) ++fallbackCaps;
+            }
+            return $"{loops} initial loops; {patches} patches ({bridges} Bridges, {fallbackCaps} fallback Caps); {added} added faces; {refused} refused loops; {remaining} open edges remain";
+        }
+
+        void BuildClosurePreview()
+        {
+            if (closureMesh) Object.DestroyImmediate(closureMesh);
+            if (closureRims) Object.DestroyImmediate(closureRims);
+            var positions = new List<Vector3>(); var colors = new List<Color>(); var indices = new List<int>();
+            var patchFaces = new List<int>();
+            var rims = new List<Vector3>(); var rimIndices = new List<int>();
+            var rimColors = new List<Color>();
+            var contourNames = new List<string> { "All original rims" };
+            var contourEdges = new List<Vector3[]>();
+            var contourColors = new List<Color>(); var contourReasons = new List<string>();
+            var contourInfo = new List<string>();
+            var selectionWarnings = new List<string>(); var loopRanges = new List<string>();
+            var toPrimary = Primary.spaceToWorld.inverse;
+            foreach (var node in nodes) {
+                var support = node.support;
+                if (support != null) {
+                    loopRanges.Add(node.name + (support.loops == 0 ? ": no boundary loops" : $": 0..{support.loops - 1}"));
+                    if (support.selectionWarning != null) selectionWarnings.Add(node.name + ": " + support.selectionWarning);
+                }
+                var p = support?.positions ?? node.source.positions;
+                var ix = support?.indices ?? node.source.indices;
+                var matrix = toPrimary * node.spaceToWorld;
+                for (int f = 0; f < ix.Length / 3; ++f) {
+                    int patch = support?.facePatches == null ? 0 : support.facePatches[f];
+                    if (patch != 0) patchFaces.Add(indices.Count / 3);
+                    var color = patch == 0 ? new Color(.35f, .4f, .45f) :
+                        patch % 2 == 1 ? ViewportHighlight.Cap : ViewportHighlight.Closure;
+                    for (int k = 0; k < 3; ++k) {
+                        indices.Add(positions.Count); positions.Add(matrix.MultiplyPoint3x4(p[ix[f * 3 + k]])); colors.Add(color);
+                    }
+                }
+                if (support?.boundaryLoops == null) continue;
+                for (int loopId = 0; loopId < support.boundaryLoops.Length; ++loopId) {
+                    var loop = support.boundaryLoops[loopId]; var pairs = new Vector3[loop.Length * 2];
+                    bool refused = support.loopFailures.TryGetValue(loopId, out string reason);
+                    bool bridged = support.bridgePartners.TryGetValue(loopId,out int partner);
+                    bool fallback = support.bridgeCapFallbacks.TryGetValue(loopId, out string bridgeFailure);
+                    contourInfo.Add(bridged ? $"Bridge loops {loopId},{partner}: " + support.bridgeSearch[loopId] :
+                        fallback ? "Separate planar Cap after Bridge refusal: " + bridgeFailure : null);
+                    var rimColor = refused ? ViewportHighlight.Refused : ViewportHighlight.Hole;
+                    for (int k = 0; k < loop.Length; ++k) {
+                        pairs[k * 2] = matrix.MultiplyPoint3x4(p[loop[k]]);
+                        pairs[k * 2 + 1] = matrix.MultiplyPoint3x4(p[loop[(k + 1) % loop.Length]]);
+                        rimIndices.Add(rims.Count); rims.Add(pairs[k * 2]);
+                        rimIndices.Add(rims.Count); rims.Add(pairs[k * 2 + 1]);
+                        rimColors.Add(rimColor); rimColors.Add(rimColor);
+                    }
+                    string state = refused ? " — REFUSED" : bridged ? $" — BRIDGE to {partner}" : fallback ? " — CAP FALLBACK" : "";
+                    contourNames.Add($"{node.name} / loop {loopId} ({loop.Length} edges){state}"); contourEdges.Add(pairs);
+                    contourColors.Add(rimColor); contourReasons.Add(reason);
+                }
+            }
+            closureMesh = BuildMesh(ResultName + "_Closure", positions.ToArray(), indices.ToArray(), null, colors.ToArray());
+            ClosurePatchFaces = patchFaces.ToArray();
+            closureRims = new Mesh { name = ResultName + "_ClosureRims", hideFlags = HideFlags.HideAndDontSave,
+                indexFormat = rims.Count > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16 };
+            closureRims.SetVertices(rims); closureRims.SetIndices(rimIndices, MeshTopology.Lines, 0); closureRims.RecalculateBounds();
+            closureRims.SetColors(rimColors);
+            ClosureContourNames = contourNames.ToArray(); ClosureContourEdges = contourEdges.ToArray();
+            ClosureContourColors = contourColors.ToArray(); ClosureContourReasons = contourReasons.ToArray();
+            ClosureContourInfo = contourInfo.ToArray();
+            ClosureSelectionWarning = selectionWarnings.Count == 0 ? null : string.Join("\n", selectionWarnings);
+            ClosureLoopRanges = loopRanges.Count == 0 ? null : string.Join("; ", loopRanges);
         }
 
         static int CountTrue(bool[] mask)
@@ -387,11 +631,12 @@ namespace SashaRX.UnityMeshLab
         // design), then a strongly regularized simplification down to a small budget
         // with small-part pruning, so the result is a chunky silhouette that keeps L/T
         // footprints, courtyards and roof steps.
-        static RemeshNative.IndexedMesh Hull(RemeshSource captured, RemeshSettings options, CancellationToken token)
+        static RemeshNative.IndexedMesh Hull(RemeshSource captured, RemeshPlanarCap.Support support, RemeshSettings options, CancellationToken token, string node)
         {
             var coarse = JsonUtility.FromJson<RemeshSettings>(JsonUtility.ToJson(options));
             coarse.voxelResolution = options.hullResolution; coarse.solve = false; coarse.shell = false;
-            var voxel = RemeshNative.Voxelize(captured.positions, captured.indices, coarse, token);
+            var voxel = RemeshNative.VoxelizeCaptured(support?.positions ?? captured.positions, support?.indices ?? captured.indices,
+                coarse, token, node, captured.positions, captured.indices, support);
             coarse.targetTriangles = options.hullTriangles; coarse.maximumError = 0.5f;
             coarse.regularize = RemeshRegularize.Strong; coarse.preserveFolds = false; coarse.pruneSmallParts = true;
             return RemeshNative.Simplify(voxel, coarse, token, out _);
@@ -408,25 +653,107 @@ namespace SashaRX.UnityMeshLab
                 if (options.simplify) {
                     float error = 0;
                     var input = node.voxel;
-                    node.simplified = await Task.Run(() => {
-                        bool fit = options.solve && !options.shell && options.sourceShape == RemeshShape.LOD0;
-                        return fit ? RemeshSurfaceRefine.Simplify(input, node.source.positions, node.source.indices, options, token, out error)
-                            : RemeshNative.Simplify(input, options, token, out error);
-                    }, token);
+                    try {
+                        node.simplified = await Task.Run(() => {
+                            bool fit = options.solve && !options.shell && options.sourceShape == RemeshShape.LOD0;
+                            return fit ? RemeshSurfaceRefine.Simplify(input, node.support?.positions ?? node.source.positions,
+                                node.support?.indices ?? node.source.indices, options, token, out error)
+                                : RemeshNative.Simplify(input, options, token, out error);
+                        }, token);
+                    }
+                    catch (InvalidOperationException failure) {
+                        uint flags = (options.solve ? 1u : 0u) | (options.shell ? 2u : 0u);
+                        int resolution = options.sourceShape == RemeshShape.Hull ? options.hullResolution : options.voxelResolution;
+                        RemeshGeometryDiagnostics.CaptureFailure(node.source.positions, node.source.indices,
+                            node.voxelRaw, input, options, "Simplify", node.name, failure.Message, resolution, flags, flags, node.support);
+                        throw;
+                    }
                     node.simplifyError = error;
                     UvtLog.Info(UvtLog.Category.RemeshDiag, FormattableString.Invariant(
                         $"[{node.name}] Simplify: {input.TriangleCount} -> {node.simplified.TriangleCount} triangles; source={node.source.indices.Length / 3}; stopAt={options.targetTriangles}, maximumError={options.maximumError:G6}, achievedCollapseError={error:G6}."));
                 }
                 else { node.simplified = node.voxel; node.simplifyError = 0; }
+                node.completeSimplified = node.simplified;
+                node.syntheticFaces = await Task.Run(() => RemeshSyntheticFaces.Project(node.simplified.positions,
+                    node.simplified.indices,node.voxel.positions,node.voxel.indices,node.voxelSyntheticFaces,token),token);
+                node.selectedSyntheticFaces = node.syntheticFaces != null ? new bool[node.simplified.TriangleCount] : null;
+                node.completeSyntheticFaces = node.syntheticFaces;
+                node.syntheticRegions = node.syntheticFaces != null ? await Task.Run(() => RemeshSyntheticFaces.Group(node.simplified,node.syntheticFaces,node.spaceToWorld),token) : null;
+                if (node.syntheticRegions != null) UvtLog.Info(UvtLog.Category.RemeshDiag,
+                    $"[{node.name}] Closure mask projected from remesh: {node.syntheticRegions.faces.Count} connected regions; areas measured in world-space square units. Mixed regions require manual inspection.");
+                node.syntheticPickBvh = node.syntheticFaces != null ? await Task.Run(() => new TriangleBvh(node.simplified.positions, node.simplified.indices), token) : null;
                 before += node.voxel.TriangleCount; after += node.simplified.TriangleCount;
             }
             token.ThrowIfCancellationRequested();
             var primary = Primary;
             simplifiedMesh = BuildMesh(ResultName + "_Simplified", primary.simplified.positions, primary.simplified.indices, primary.simplified.normals, uv: primary.simplified.uv, draftUv: primary.simplified.draftUv);
+            RebuildSyntheticPreview();
             Status = (hierarchy ? $"Simplify: {nodes.Count} node(s), " : "Simplify: ") + $"{before:N0} → {after:N0} triangles.";
         }
 
         public float SimplifyError => Primary?.simplifyError ?? 0f;
+
+        internal void RebuildSyntheticPreview()
+        {
+            if (syntheticMaskMesh) Object.DestroyImmediate(syntheticMaskMesh);
+            syntheticMaskMesh = Primary?.syntheticFaces != null ? RemeshSyntheticFaces.Preview(ResultName + "_SyntheticFaces",
+                Primary.simplified, Primary.syntheticFaces, Primary.selectedSyntheticFaces) : null;
+            Changed?.Invoke();
+        }
+
+        internal void RemoveSelectedSyntheticFaces()
+        {
+            if (IsRunning || !Has(Stage.Simplify)) return;
+            if (!nodes.Exists(node => node.selectedSyntheticFaces != null && Array.Exists(node.selectedSyntheticFaces, value => value))) return;
+            // Validate every node before replacing any stage output.
+            var replacements = new List<RemeshNative.IndexedMesh>();
+            foreach (var node in nodes) {
+                if (node.selectedSyntheticFaces != null) {
+                    for (int f = 0; f < node.selectedSyntheticFaces.Length; ++f) {
+                        if (node.selectedSyntheticFaces[f] && node.syntheticFaces[f] == 0)
+                            throw new InvalidOperationException("Original faces cannot be removed with the Cap selection.");
+                    }
+                }
+                replacements.Add(node.selectedSyntheticFaces != null && Array.Exists(node.selectedSyntheticFaces, value => value)
+                    ? RemeshSyntheticFaces.Remove(node.simplified, node.selectedSyntheticFaces) : node.simplified);
+            }
+            ClearFrom(Stage.Unwrap);
+            for (int i = 0; i < nodes.Count; ++i) {
+                var node = nodes[i]; var previous = node.simplified;
+                node.simplified = replacements[i];
+                if (ReferenceEquals(previous, node.simplified)) continue;
+                var kept = new List<int>();
+                for (int f = 0; f < node.syntheticFaces.Length; ++f) if (!node.selectedSyntheticFaces[f]) kept.Add(node.syntheticFaces[f]);
+                node.syntheticFaces = kept.ToArray(); node.selectedSyntheticFaces = new bool[kept.Count];
+                node.syntheticPickBvh = null;
+                node.syntheticRegions = RemeshSyntheticFaces.Group(node.simplified,node.syntheticFaces,node.spaceToWorld);
+            }
+            Status = "Selected faces removed. Rerun Normals & UV, then Bake. Restore is available until Simplify is rerun.";
+            RebuildSimplifiedPreview();
+        }
+
+        internal void RestoreSyntheticFaces()
+        {
+            if (IsRunning || !Has(Stage.Simplify)) return;
+            ClearFrom(Stage.Unwrap);
+            foreach (var node in nodes) {
+                node.simplified = node.completeSimplified;
+                node.syntheticFaces = node.completeSyntheticFaces;
+                node.syntheticPickBvh = null;
+                node.selectedSyntheticFaces = node.syntheticFaces != null ? new bool[node.syntheticFaces.Length] : null;
+                node.syntheticRegions = node.syntheticFaces != null ? RemeshSyntheticFaces.Group(node.simplified,node.syntheticFaces,node.spaceToWorld) : null;
+            }
+            Status = "Restored optimized geometry. Rerun Normals & UV, then Bake."; RebuildSimplifiedPreview();
+        }
+
+        void RebuildSimplifiedPreview()
+        {
+            if (simplifiedMesh) Object.DestroyImmediate(simplifiedMesh);
+            var primary = Primary;
+            simplifiedMesh = BuildMesh(ResultName + "_Simplified", primary.simplified.positions, primary.simplified.indices,
+                primary.simplified.normals, uv: primary.simplified.uv, draftUv: primary.simplified.draftUv);
+            RebuildSyntheticPreview();
+        }
 
         async Task RunUnwrap(RemeshSettings options, CancellationToken token)
         {
@@ -472,7 +799,9 @@ namespace SashaRX.UnityMeshLab
                 Report(hierarchy ? $"Projecting {node.name} into its UV atlas ({i + 1}/{nodes.Count})…"
                     : beauty != null ? "Baking the lit view of the source into the atlas…" : "Projecting source materials into the new UV atlas…");
                 var nodeBeauty = beauty?.ForSpace(node.spaceToWorld, node.source.diagonal);
-                var source = node.source; var target = node.geometry; var frame = node.tangents;
+                var source = options.bakeFilteredParts
+                    ? await Task.Run(() => ProjectionSource(node, true), token) : node.source;
+                var target = node.geometry; var frame = node.tangents;
                 // The lightmap regions this node's faces use are read now, on the main
                 // thread, and dropped again after the bake — they are float readbacks
                 // and only Beauty needs them.
@@ -481,8 +810,8 @@ namespace SashaRX.UnityMeshLab
                     // GPU: the band loop is driven from here (main thread) so the compute
                     // dispatches are legal; CPU: the whole bake on a worker.
                     node.maps = options.gpuProjection && GpuBvh.Supported
-                        ? await RemeshBaker.BakeAsync(source, target, frame, options, token, nodeBeauty, RemeshBaker.CreateGpu)
-                        : await Task.Run(() => RemeshBaker.Bake(source, target, frame, options, token, nodeBeauty), token);
+                        ? await RemeshBaker.BakeAsync(source, target, frame, options, token, nodeBeauty, RemeshBaker.CreateGpu, support: node.support)
+                        : await Task.Run(() => RemeshBaker.Bake(source, target, frame, options, token, nodeBeauty, node.support), token);
                 }
                 finally { source.ReleaseLightmaps(); }
                 // A re-bake without the transfer must not keep the previous colors.
@@ -490,12 +819,15 @@ namespace SashaRX.UnityMeshLab
                 sourceTriangles += source.indices.Length / 3; targetTriangles += target.indices.Length / 3;
                 misses += node.maps.misses; covered += node.maps.covered; empty += node.maps.empty; warnings += source.warnings.Length;
                 partialMisses += node.maps.partialMisses;
-                LogDiagnostics(node, options.sourceShape);
+                LogDiagnostics(node, source, options.sourceShape);
+                if (node.support?.addedFaces > 0) UvtLog.Info(LogPrefix + node.name + $": Cap-associated bake texels {node.maps.capCovered}, " +
+                    $"missed {node.maps.capMisses}, partially projected {node.maps.capPartialMisses}. Original donors only; nearest-support face classification.");
             }
             token.ThrowIfCancellationRequested();
             var primary = Primary;
             baseColorPreview = TextureAssets.FromPixels(primary.maps.color, primary.maps.size, primary.maps.size, linear: false);
             Status = (hierarchy ? $"{nodes.Count} node(s): " : "") + $"{sourceTriangles:N0} → {targetTriangles:N0} triangles. " +
+                (options.bakeFilteredParts ? "Full pre-filter source donors. " : "") +
                 (misses == 0 && partialMisses == 0 ? "All covered texels projected." :
                     $"{misses:N0} / {covered:N0} texels missed (magenta), {partialMisses:N0} partially projected. Check projection distance and rebake.") +
                 (empty > 0 ? $" {empty:N0} proxy texels see no geometry (alpha 0, filled from neighbours)." : "") +
@@ -506,9 +838,9 @@ namespace SashaRX.UnityMeshLab
 
         // Bake health (RemeshDiag log category): BakeHealth judges the counters the bake
         // collected and the source/target scale; the pipeline only hands it the node.
-        static void LogDiagnostics(Node node, RemeshShape shape)
+        static void LogDiagnostics(Node node, RemeshSource source, RemeshShape shape)
         {
-            BakeHealth.Log(BakeHealth.Build(node.name, node.maps, node.source.diagonal, node.source.indices.Length / 3,
+            BakeHealth.Log(BakeHealth.Build(node.name, node.maps, source.diagonal, source.indices.Length / 3,
                 node.geometry.positions, node.geometry.indices.Length / 3, shape));
         }
 
@@ -576,16 +908,30 @@ namespace SashaRX.UnityMeshLab
                 }
             }
             if (stage <= Stage.Simplify) {
+                if (syntheticMaskMesh) Object.DestroyImmediate(syntheticMaskMesh);
+                syntheticMaskMesh = null;
                 if (simplifiedMesh) Object.DestroyImmediate(simplifiedMesh);
                 simplifiedMesh = null; keys[(int)Stage.Simplify] = null;
-                foreach (var node in nodes) { node.simplified = null; node.simplifyError = 0; }
+                foreach (var node in nodes) { node.simplified = node.completeSimplified = null; node.syntheticFaces = node.completeSyntheticFaces = null; node.syntheticPickBvh = null;
+                    node.syntheticRegions = null;
+                    node.selectedSyntheticFaces = null; node.simplifyError = 0; }
             }
             if (stage <= Stage.Remesh) {
                 if (voxelMesh) Object.DestroyImmediate(voxelMesh);
-                if (sourceMesh) Object.DestroyImmediate(sourceMesh);
                 if (trimMaskMesh) Object.DestroyImmediate(trimMaskMesh);
-                voxelMesh = null; sourceMesh = null; trimMaskMesh = null; keys[(int)Stage.Remesh] = null;
-                nodes.Clear(); hierarchy = false; CapturedSource = null;
+                voxelMesh = null; trimMaskMesh = null; keys[(int)Stage.Remesh] = null;
+                foreach (var node in nodes) { node.voxel = node.voxelRaw = null; node.trimClasses = null; node.voxelSyntheticFaces = null; }
+            }
+            if (stage <= Stage.Prepare) {
+                if (sourceMesh) Object.DestroyImmediate(sourceMesh);
+                if (closureMesh) Object.DestroyImmediate(closureMesh);
+                if (closureRims) Object.DestroyImmediate(closureRims);
+                sourceMesh = closureMesh = closureRims = null; preparationKey = null; ClosureSummary = null;
+                ClosureSelectionWarning = null; ClosureLoopRanges = null;
+                ClosureContourInfo = null;
+                ClosureContourNames = null; ClosureContourEdges = null;
+                ClosureContourColors = null; ClosureContourReasons = null;
+                nodes.Clear(); previewNode = null; hierarchy = false; CapturedSource = null; unfilteredRoot = null;
             }
         }
 
@@ -595,7 +941,7 @@ namespace SashaRX.UnityMeshLab
         public void Dispose()
         {
             if (IsRunning) { disposeRequested = true; cancellation?.Cancel(); return; }
-            ClearFrom(Stage.Remesh);
+            ClearFrom(Stage.Prepare);
         }
     }
 }

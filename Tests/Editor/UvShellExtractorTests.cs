@@ -10,6 +10,20 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class UvShellExtractorTests
     {
+        [Test]
+        public void Extract_PreservesHistoricalRankRootShellIds()
+        {
+            // Vertex 0 joins faces 0/4 first. Vertex 1 builds a higher-ranked root
+            // at face 2, which then absorbs face 0. Face 1 must keep shell ID 0.
+            var triangles = new[] { 0, 2, 3, 4, 5, 6, 1, 7, 8, 1, 9, 10, 0, 1, 11 };
+            var uv = new Vector2[12];
+            for (int i = 0; i < uv.Length; ++i) uv[i] = new Vector2(i % 4, i / 4);
+            var ids = UvShellExtractor.BuildPerFaceShellIds(uv, triangles, out var shells, out _);
+            CollectionAssert.AreEqual(new uint[] { 1, 0, 1, 1, 1 }, ids);
+            CollectionAssert.AreEqual(new[] { 1 }, shells[0].faceIndices);
+            CollectionAssert.AreEqual(new[] { 0, 2, 3, 4 }, shells[1].faceIndices);
+        }
+
         // Build a flat quad (two triangles) at the given UV bbox.
         static (Vector2[] uv, int[] tris, int vertOffset) BuildQuad(float u0, float v0, float u1, float v1, int baseVertex)
         {

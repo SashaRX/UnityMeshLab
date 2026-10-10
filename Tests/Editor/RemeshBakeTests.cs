@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Threading;
 using NUnit.Framework;
 using UnityEditor;
@@ -10,6 +12,28 @@ namespace SashaRX.UnityMeshLab.Tests
     public class RemeshBakeTests
     {
         static RemeshSource.Map Map() => new RemeshSource.Map();
+
+        [Test]
+        public void CapToleranceMigratesMissingAndFormerDefaultWithoutChangingOtherSettings()
+        {
+            Assert.AreEqual(.01f, new RemeshSettings().capPlaneTolerance);
+            foreach (string json in new[] {"{\"voxelResolution\":64,\"planarCapLocalPlanes\":true}",
+                "{\"voxelResolution\":64,\"planarCapLocalPlanes\":true,\"capPlaneTolerance\":0.00001}"}) {
+                var restored = RemeshSettings.FromSavedJson(json);
+                Assert.AreEqual(.01f, restored.capPlaneTolerance);
+                Assert.AreEqual("all", restored.planarCapLoops);
+                Assert.AreEqual(64, restored.voxelResolution); Assert.IsTrue(restored.planarCapLocalPlanes);
+            }
+        }
+
+        [TestCase(0f)] [TestCase(.000009999f)] [TestCase(.000010001f)]
+        [TestCase(.002f)] [TestCase(.01f)] [TestCase(.1f)]
+        public void CapTolerancePreservesExplicitCustomValues(float tolerance)
+        {
+            var settings = new RemeshSettings {capPlaneTolerance = tolerance, planarCapLoops = "3"};
+            var restored = RemeshSettings.FromSavedJson(JsonUtility.ToJson(settings));
+            Assert.AreEqual(tolerance, restored.capPlaneTolerance); Assert.AreEqual("3", restored.planarCapLoops);
+        }
 
         [TestCase(257)]
         [TestCase(512)]
@@ -1239,6 +1263,97 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(RemeshSource.PartSmall, SheetAndRod(10, false).ClassifyParts(0.2f, 0, 50)[0]);
             Assert.IsNull(SheetAndRod(10, false).ClassifyParts(0, 0, 50));
         }
+
+        [Test]
+        public void UnfilteredBakeSettingPersistsAndOnlyInvalidatesBake()
+        {
+            var settings = new RemeshSettings();
+            Assert.IsFalse(settings.bakeFilteredParts, "Existing bakes retain their donor choice");
+            foreach (RemeshPipeline.Stage stage in Enum.GetValues(typeof(RemeshPipeline.Stage))) {
+                string before = RemeshPipeline.Key(stage, settings, null);
+                settings.bakeFilteredParts = true;
+                Assert.AreEqual(stage == RemeshPipeline.Stage.Bake, before != RemeshPipeline.Key(stage, settings, null));
+                settings.bakeFilteredParts = false;
+            }
+            settings.bakeFilteredParts = true;
+            Assert.IsTrue(RemeshSettings.FromSavedJson(JsonUtility.ToJson(settings)).bakeFilteredParts);
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator FilteringPreservesDonorStreamsAndProjectionCanRecoverTheRemovedRod()
+        {
+            var original = SheetAndRod(10, false);
+            for (int i = 0; i < original.positions.Length; ++i) {
+                original.normals[i] = Vector3.forward;
+                original.tangents[i] = new Vector4(1, 0, 0, 1);
+            }
+            original.materials[0] = new RemeshSource.Surface { color = Map(), normal = Map(), metal = Map(), ao = Map(), emission = Map(),
+                tint = Color.white, emissionTint = Color.black, normalScale = 1, aoStrength = 1 };
+            var filtered = original.CopyForFiltering();
+            Assert.IsTrue(filtered.FilterSmallParts(0, 1, 50, out _, out _));
+            Assert.AreEqual(8, original.positions.Length); Assert.AreEqual(12, original.indices.Length);
+            Assert.AreEqual(4, filtered.positions.Length);
+            CollectionAssert.AreEqual(new[] { 0, 0, 0, 0 }, original.faceMaterials);
+            Assert.AreEqual(Color.blue, original.colors[7]);
+            var node = new RemeshPipeline.Node { source = filtered, unfilteredSource = original };
+            using (var pipeline = new RemeshPipeline()) {
+                var target = new RemeshNative.Geometry {
+                    positions = new[] { new Vector3(1, .002f, 3.001f), new Vector3(4, .002f, 3.001f),
+                        new Vector3(4, .008f, 3.001f), new Vector3(1, .008f, 3.001f) },
+                    normals = new[] { Vector3.forward, Vector3.forward, Vector3.forward, Vector3.forward },
+                    uv = new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up }, indices = new[] { 0, 1, 2, 0, 2, 3 }
+                };
+                var tangents = new[] { original.tangents[4], original.tangents[5], original.tangents[6], original.tangents[7] };
+                var settings = new RemeshSettings { textureResolution = 64, bakeSamples = 1, padding = 1, dilationRadius = 0,
+                    projectionDistance = .02f, cageFit = false, cageSmoothing = 0, gpuProjection = false };
+                var off = RemeshBaker.Bake(pipeline.ProjectionSource(node, false), target, tangents, settings, CancellationToken.None);
+                var on = RemeshBaker.Bake(pipeline.ProjectionSource(node, true), target, tangents, settings, CancellationToken.None);
+                Assert.AreEqual(off.covered, off.misses, "The remaining wall is outside projection reach");
+                Assert.AreEqual(0, on.misses, "The pre-filter rod is still a valid material donor");
+                Assert.AreEqual(new Color32(0, 0, 255, 255), on.color[32 * 64 + 32]);
+                if (GpuBvh.Supported && SystemInfo.supportsAsyncGPUReadback) {
+                    var gpu = RemeshBaker.BakeAsync(pipeline.ProjectionSource(node, true), target, tangents, settings,
+                        CancellationToken.None, null, RemeshBaker.CreateGpu);
+                    while (!gpu.IsCompleted) yield return null;
+                    Assert.IsFalse(gpu.IsFaulted, gpu.Exception?.ToString());
+                    Assert.IsTrue(gpu.Result.gpu, "Exercise the actual shader backend");
+                    Assert.AreEqual(on.misses, gpu.Result.misses);
+                    CollectionAssert.AreEqual(on.color, gpu.Result.color);
+                }
+            }
+        }
+
+        [Test]
+        public void RebasedDonorPreservesMaterialLightmapAndMirroredTangentFrame()
+        {
+            var original = SheetAndRod(10, false);
+            for (int i = 0; i < 8; ++i) { original.normals[i] = Vector3.forward; original.tangents[i] = new Vector4(1, 0, 0, 1); }
+            original.rendererLayer = new[] { 3, 7 };
+            original.uv2 = new Vector2[8];
+            original.lightmapRefs = new[] { new RemeshSource.LightmapRef { scaleOffset = new Vector4(1, 1, 0, 0) } };
+            original.faceLightmaps = new[] { -1, -1, 0, 0 };
+            var transform = Matrix4x4.TRS(new Vector3(3, 7, -2), Quaternion.Euler(25, 30, 10), new Vector3(-2, 3, 4));
+            var rebased = original.InSpace(transform, 2);
+            Assert.AreEqual(2, rebased.diagonal);
+            for (int i = 0; i < 8; ++i) {
+                Assert.That(Vector3.Distance(transform.MultiplyPoint3x4(original.positions[i]), rebased.positions[i]), Is.LessThan(1e-6f));
+                Assert.That(Vector3.Dot(rebased.normals[i], (Vector3)rebased.tangents[i]), Is.EqualTo(0).Within(1e-6f));
+                Assert.AreEqual(-1, rebased.tangents[i].w);
+            }
+            CollectionAssert.AreEqual(new[] { 0, 2, 1, 1, 2, 3, 4, 6, 5, 4, 7, 6 }, rebased.indices);
+            CollectionAssert.AreEqual(new[] { 0, 1, 2, 1, 3, 2, 4, 5, 6, 4, 6, 7 }, original.indices);
+            Assert.AreSame(original.materials, rebased.materials); Assert.AreSame(original.lightmapRefs, rebased.lightmapRefs);
+            CollectionAssert.AreEqual(original.faceLightmaps, rebased.faceLightmaps);
+            CollectionAssert.AreEqual(original.rendererLayer, rebased.rendererLayer);
+            var combined = RemeshSource.Combine(new[] { (original, Matrix4x4.identity), (original, transform) }, Vector3.up);
+            Assert.AreEqual(16, combined.positions.Length); Assert.AreEqual(24, combined.indices.Length);
+            CollectionAssert.AreEqual(new[] { -1, -1, 0, 0, -1, -1, 1, 1 }, combined.faceLightmaps);
+            CollectionAssert.AreEqual(new[] { 0, 0, 0, 0, 1, 1, 1, 1 }, combined.faceMaterials);
+            CollectionAssert.AreEqual(new[] { 3, 7, 3, 7 }, combined.rendererLayer);
+            Assert.AreSame(original.materials[0], combined.materials[1], "Texture snapshots are reused");
+            Assert.AreSame(original.lightmapRefs[0], combined.lightmapRefs[1]);
+            Assert.AreEqual(rebased.positions[7], combined.positions[15]);
+        }
         static void Cube(out Vector3[] positions, out int[] indices, bool inverted)
         {
             positions = new[] { new Vector3(0,0,0), new Vector3(1,0,0), new Vector3(1,1,0), new Vector3(0,1,0),
@@ -1860,6 +1975,91 @@ namespace SashaRX.UnityMeshLab.Tests
                 UnityEngine.Object.DestroyImmediate(normalWriter); UnityEngine.Object.DestroyImmediate(ao); UnityEngine.Object.DestroyImmediate(material);
                 AssetDatabase.DeleteAsset(normalPath);
             }
+        }
+
+        [Test]
+        public void CaptureKeepsDistinctRendererOwnershipEvenWhenTheyUseTheSameMeshAsset()
+        {
+            var first = new GameObject("First donor"); var second = new GameObject("Second donor");
+            var mesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, Vector3.up }, triangles = new[] { 0, 1, 2 } };
+            try {
+                first.AddComponent<MeshFilter>().sharedMesh = mesh; second.AddComponent<MeshFilter>().sharedMesh = mesh;
+                var a = first.AddComponent<MeshRenderer>(); var b = second.AddComponent<MeshRenderer>();
+                second.transform.position = Vector3.right * 2;
+                var source = RemeshSource.Capture(Matrix4x4.identity, new[] { a, b }, geometryOnly: true);
+                CollectionAssert.AreEqual(new[] { 0, 1 }, source.FaceOwners());
+                source.FilterSmallParts(0, 0, 64, out _, out _);
+                CollectionAssert.AreEqual(new[] { 0, 1 }, source.FaceOwners());
+                source.vertexRenderer[source.indices[0]] = -1;
+                CollectionAssert.AreEqual(new[] { -1, 1 }, source.FaceOwners());
+                source.vertexRenderer = null; Assert.IsNull(source.FaceOwners());
+            }
+            finally { UnityEngine.Object.DestroyImmediate(first); UnityEngine.Object.DestroyImmediate(second); UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
+        [Test]
+        public void CaptureTriangulatesQuadsKeepsMaterialSlotsAndSkipsOnlyLines()
+        {
+            var root = new GameObject("Mixed surface source");
+            var mesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, Vector3.right + Vector3.up, Vector3.up } };
+            var first = new Material(Shader.Find("Standard")); var second = new Material(Shader.Find("Standard"));
+            mesh.subMeshCount = 3;
+            mesh.SetIndices(new[] { 0, 1, 2, 3 }, MeshTopology.Quads, 0);
+            mesh.SetIndices(new[] { 0, 1, 3 }, MeshTopology.Triangles, 1);
+            mesh.SetIndices(new[] { 0, 1 }, MeshTopology.Lines, 2);
+            mesh.uv = new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up };
+            var before = TransferMeshSnapshot.Capture(mesh);
+            try {
+                root.transform.localScale = new Vector3(-2, 3, 1);
+                root.AddComponent<MeshFilter>().sharedMesh = mesh;
+                var renderer = root.AddComponent<MeshRenderer>(); renderer.sharedMaterials = new[] { first, second, first };
+                var source = RemeshSource.Capture(Matrix4x4.identity, new[] { renderer }, aoOnly: true);
+                Assert.AreEqual(9, source.indices.Length); CollectionAssert.AreEqual(new[] { 0, 0, 1 }, source.faceMaterials);
+                for (int f = 0; f < 3; ++f) {
+                    int t = f * 3; var a = source.positions[source.indices[t]];
+                    var b = source.positions[source.indices[t + 1]]; var c = source.positions[source.indices[t + 2]];
+                    Assert.Greater(Vector3.Dot(Vector3.Cross(b - a, c - a), Vector3.forward), 0);
+                }
+                CollectionAssert.AreEqual(mesh.uv, source.uv);
+                CollectionAssert.AreEqual(before, TransferMeshSnapshot.Capture(mesh));
+                Assert.IsTrue(source.warnings.Any(w => w.Contains("quad submesh(es) triangulated")));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(root); UnityEngine.Object.DestroyImmediate(mesh);
+                UnityEngine.Object.DestroyImmediate(first); UnityEngine.Object.DestroyImmediate(second); }
+        }
+
+        [Test]
+        public void RealCurtainWithKeepQuadsIsCapturedWithoutChangingItsFbx()
+        {
+            string file = Environment.GetEnvironmentVariable("MESH_LAB_REMESH_QUAD_FBX");
+            if (string.IsNullOrEmpty(file)) Assert.Ignore("Set MESH_LAB_REMESH_QUAD_FBX to the readonly curtain FBX.");
+            byte[] original = File.ReadAllBytes(file);
+            string folder = "Assets/MeshLabQuadCapture_" + Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", folder.Substring(7));
+            string path = folder + "/Curtain.fbx"; GameObject root = null;
+            try {
+                File.WriteAllBytes(path, original); AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.keepQuads = true; importer.isReadable = false; importer.SaveAndReimport();
+                var mesh = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().First();
+                Assert.IsFalse(mesh.isReadable);
+                int expectedFaces = 0, quadSubmeshes = 0;
+                for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
+                    if (mesh.GetTopology(sub) == MeshTopology.Quads) { ++quadSubmeshes; expectedFaces += (int)mesh.GetIndexCount(sub) / 2; }
+                    else if (mesh.GetTopology(sub) == MeshTopology.Triangles) expectedFaces += (int)mesh.GetIndexCount(sub) / 3;
+                }
+                Assert.Greater(quadSubmeshes, 0, "The real model must exercise the KeepQuads failure.");
+                root = new GameObject("Real curtain capture"); root.AddComponent<MeshFilter>().sharedMesh = mesh;
+                var renderer = root.AddComponent<MeshRenderer>();
+                var source = RemeshSource.Capture(Matrix4x4.identity, new[] { renderer }, aoOnly: true);
+                Assert.AreEqual(expectedFaces * 3, source.indices.Length); Assert.Greater(expectedFaces, 0);
+                Assert.IsFalse(importer.isReadable); Assert.IsTrue(importer.keepQuads);
+                CollectionAssert.AreEqual(original, File.ReadAllBytes(file));
+                CollectionAssert.AreEqual(original, File.ReadAllBytes(path));
+                Assert.AreEqual(MeshTopology.Quads, mesh.GetTopology(0));
+                TestContext.WriteLine($"Real curtain: {mesh.vertexCount} vertices, {quadSubmeshes} quad submeshes, {expectedFaces} captured faces.");
+            }
+            finally { if (root) UnityEngine.Object.DestroyImmediate(root); AssetDatabase.DeleteAsset(folder); }
         }
 
         [Test]

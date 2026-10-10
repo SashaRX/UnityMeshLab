@@ -66,12 +66,6 @@ namespace SashaRX.UnityMeshLab
         System.Action RequestRepaint { set; }
     }
 
-    internal interface IUvTool3DFrameContext
-    {
-        // Stable model identity across intermediate meshes of one pipeline.
-        object FrameContext { get; }
-    }
-
     internal interface IUvToolWindowPreferences
     {
         void SaveWindowPreferences();
@@ -92,6 +86,12 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>Draw on top of the content (wire, lines, points) through the viewport's overlay API.</summary>
         void OnDraw3D(MeshViewport3D view);
+    }
+
+    /// <summary>Optional input before the shared viewport handles orbit and spot selection.</summary>
+    internal interface IUvTool3DInput
+    {
+        void On3DInput(MeshViewport3D view, UnityEngine.Event input);
     }
 
     /// <summary>

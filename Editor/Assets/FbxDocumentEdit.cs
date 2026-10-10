@@ -228,7 +228,7 @@ namespace SashaRX.UnityMeshLab
             => mesh.GetLayerCount() > 0 ? mesh.GetLayer(0)?.GetVertexColors() : null;
 
         /// <summary>
-        /// Adds a UV set holding (corner index, -(ordinal + 1)) per corner so a Unity import
+        /// Adds a UV set holding a two-digit corner index and mesh ordinal so a Unity import
         /// of the file tells which FBX corner every vertex came from; returns the Unity UV
         /// channel the tag lands in. Only for the throwaway tagged copy.
         /// </summary>
@@ -237,6 +237,8 @@ namespace SashaRX.UnityMeshLab
             var topology = new Topology(mesh);
             if (topology.CornerCount >= 1 << 24)
                 throw new InvalidOperationException($"Mesh '{mesh.GetName()}' has too many corners to tag exactly.");
+            if (ordinal < 0 || ordinal >= CornerTagRadix)
+                throw new InvalidOperationException("The FBX has too many meshes to tag exactly.");
             var existing = UvElements(mesh);
             FbxLayerElementUV tag;
             int channel;
@@ -256,10 +258,15 @@ namespace SashaRX.UnityMeshLab
             tag.SetReferenceMode(FbxLayerElement.EReferenceMode.eDirect);
             var direct = tag.GetDirectArray();
             direct.SetCount(topology.CornerCount);
-            for (int c = 0; c < topology.CornerCount; c++) direct.SetAt(c, new FbxVector2(c, -(ordinal + 1)));
+            for (int c = 0; c < topology.CornerCount; c++)
+                direct.SetAt(c, new FbxVector2(c % CornerTagRadix, -(ordinal * CornerTagRadix + c / CornerTagRadix + 1)));
             tag.GetIndexArray().SetCount(0);
             return channel;
         }
+
+        // Split the 24-bit corner ID so neither component spans millions of values.
+        // Compression quantizes each component's range; the ordinal is a constant offset.
+        internal const int CornerTagRadix = 4096;
 
         /// <summary>Per-corner values (2 per corner) of a UV set.</summary>
         internal static double[] ReadUv(FbxLayerElementUV element, in Topology topology)

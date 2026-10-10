@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -13,6 +14,7 @@ extern "C" int meshLabRemeshBuild(const float*, uint32_t, const uint32_t*, uint3
 extern "C" int meshLabRemeshCopy(void*, float*, uint32_t, uint32_t*, uint32_t);
 extern "C" void meshLabRemeshDestroy(void*);
 extern "C" int meshLabVoxelRemesh(const float*, uint32_t, const uint32_t*, uint32_t, int, uint32_t, void**, uint32_t*, uint32_t*);
+extern "C" int meshLabVoxelRemeshManifold(const float*, uint32_t, const uint32_t*, uint32_t, int, void**, uint32_t*, uint32_t*);
 extern "C" int meshLabSimplify(const float*, uint32_t, const uint32_t*, uint32_t, uint32_t, float, uint32_t,
     void**, uint32_t*, uint32_t*, float*);
 extern "C" int meshLabMeshCopy(void*, float*, uint32_t, uint32_t*, uint32_t);
@@ -175,15 +177,125 @@ static void checkSimplifySlivers(float scale) {
     }
     for (const auto& edge : edges)
         check(edge.second.first == 2 && edge.second.second == 0, "simplify slivers: closed oriented surface");
-    // This apex is below xatlas's numerical face-area limit. Report failure;
-    // silently deleting its two side faces and returning an open UV mesh is
-    // not an acceptable way to make chart generation succeed.
+    // Atlas-only conditioning preserves every positive-area face, including
+    // this apex below xatlas's default absolute area limit.
     handle = nullptr;
-    check(meshLabUnwrap(p, 4, ix, 12, 3.1415926f, 0, nullptr, 0, &handle, &vertices, &count, nullptr) != 0 &&
-        !handle && vertices == 0 && count == 0, "unwrap slivers: reject instead of deleting surface faces");
+    check(meshLabUnwrap(p, 4, ix, 12, 3.1415926f, 0, nullptr, 0, &handle, &vertices, &count, nullptr) == 0 &&
+        handle && count == 12, "unwrap slivers: preserve all surface faces");
+    std::vector<float> output(size_t(vertices)*16); std::vector<uint32_t> outputIndices(count); std::vector<int32_t> charts(vertices);
+    check(meshLabUnwrapCopy(handle,output.data(),vertices,outputIndices.data(),count,charts.data()) == 0,"unwrap slivers: copy");
+    meshLabRemeshDestroy(handle);
+    for (size_t i=0;i<count;++i) for (int k=0;k<3;++k)
+        check(output[size_t(outputIndices[i])*16+k] == p[size_t(ix[i])*3+k],"unwrap slivers: original corners retained");
+    for (uint32_t i=0;i<vertices;++i) {
+        check(charts[i]>=0,"unwrap slivers: every vertex has an atlas chart");
+        for (int k=0;k<16;++k) check(std::isfinite(output[size_t(i)*16+k]),"unwrap slivers: finite channels");
+    }
+}
+
+static void checkSkinnySquareAtlas(float scale) {
+    const float p[]={0,0,0,scale,0,0,scale,scale*1e-4f,0,0,scale*1e-4f,0};
+    const uint32_t ix[]={0,1,2,0,2,3};
+    void* handle=nullptr; uint32_t vertices=0,count=0;
+    check(meshLabUnwrap(p,4,ix,6,1,0,nullptr,0,&handle,&vertices,&count,nullptr)==0 && handle,"skinny square: unwrap");
+    std::vector<float> out(size_t(vertices)*16); std::vector<uint32_t> indices(count); std::vector<int32_t> charts(vertices);
+    check(meshLabUnwrapCopy(handle,out.data(),vertices,indices.data(),count,charts.data())==0,"skinny square: copy");
+    meshLabRemeshDestroy(handle);
+    const size_t a=size_t(indices[0])*16,b=size_t(indices[1])*16,c=size_t(indices[5])*16;
+    const double longEdge=std::hypot(double(out[b+6])-out[a+6],double(out[b+7])-out[a+7]);
+    const double shortEdge=std::hypot(double(out[c+6])-out[a+6],double(out[c+7])-out[a+7]);
+    check(shortEdge>0 && std::abs((longEdge/shortEdge)/10000-1)<.002,"skinny square: physical aspect in square UV units");
+}
+
+// An isolated thin plate occupies only one voxel layer. The corner extractor
+// produces two coincident sides; the occupancy rescue must retain a real solid,
+// including the plate, rather than deleting that disconnected component.
+static void checkManifoldRescue(int resolution, int axis, float scale) {
+    const float cube[] = {-1,-1,-1,1,-1,-1,1,1,-1,-1,1,-1,-1,-1,1,1,-1,1,1,1,1,-1,1,1};
+    const uint32_t triangles[] = {0,2,1,0,3,2,4,5,6,4,6,7,0,1,5,0,5,4,3,7,6,3,6,2,0,4,7,0,7,3,1,2,6,1,6,5};
+    const float extent[2][3] = {{.3f,.3f,.3f},{1,.25f,.001f}};
+    const float offset[2][3] = {{0,0,0},{0,1,.217f}};
+    float input[48]; uint32_t indices[72];
+    for (int part = 0; part < 2; ++part) {
+        for (int v = 0; v < 8; ++v) for (int k = 0; k < 3; ++k)
+            input[(part*8+v)*3+(k+axis)%3] = (cube[v*3+k]*extent[part][k]+offset[part][k])*scale;
+        for (int i = 0; i < 36; ++i) indices[part*36+i] = triangles[i]+part*8;
+    }
+    void* handle = nullptr; uint32_t vertices = 0, count = 0;
+    check(meshLabVoxelRemeshManifold(input,16,indices,72,resolution,&handle,&vertices,&count)==0 && handle,
+        "occupancy rescue: remesh");
+    std::vector<float> p(size_t(vertices)*3); std::vector<uint32_t> ix(count);
+    check(meshLabMeshCopy(handle,p.data(),vertices,ix.data(),count)==0,"occupancy rescue: copy");
+    meshLabMeshDestroy(handle);
+    // Voxelization pads indices by one; recovery must undo that padding.
+    // Check authored locations independently of topology, across axis/scale cases.
+    double lower[2][3], upper[2][3];
+    for (int part=0;part<2;++part) for (int k=0;k<3;++k) {
+        lower[part][k]=std::numeric_limits<double>::infinity();
+        upper[part][k]=-std::numeric_limits<double>::infinity();
+    }
+    for (uint32_t v=0;v<vertices;++v) {
+        int part=p[v*3+(1+axis)%3]>.5f*scale?1:0;
+        for (int k=0;k<3;++k) {
+            lower[part][k]=std::min(lower[part][k],double(p[v*3+k]));
+            upper[part][k]=std::max(upper[part][k],double(p[v*3+k]));
+        }
+    }
+    const double cell=2.*scale*(resolution+.01)/resolution/(resolution-2);
+    for (int part=0;part<2;++part) for (int k=0;k<3;++k) {
+        const int outAxis=(k+axis)%3;
+        const double center=(lower[part][outAxis]+upper[part][outAxis])*.5;
+        check(std::abs(center-double(offset[part][k])*scale)<=.51*cell,
+            "occupancy rescue: authored component center within half a voxel");
+        check(std::abs(lower[part][outAxis]-(double(offset[part][k])-extent[part][k])*scale)<=1.01*cell &&
+              std::abs(upper[part][outAxis]-(double(offset[part][k])+extent[part][k])*scale)<=1.01*cell,
+            "occupancy rescue: authored bounds within one voxel");
+    }
+    std::set<std::vector<uint32_t>> faces;
+    std::unordered_map<uint64_t,std::pair<int,int>> edges;
+    std::vector<std::unordered_map<uint32_t,std::vector<uint32_t>>> links(vertices);
+    double volumes[2] = {}; int partFaces[2] = {};
+    for (size_t f = 0; f < ix.size(); f += 3) {
+        uint32_t a = ix[f], b = ix[f+1], c = ix[f+2];
+        check(a<vertices && b<vertices && c<vertices && a!=b && b!=c && a!=c,"occupancy rescue: valid corners");
+        std::vector<uint32_t> key = {a,b,c}; std::sort(key.begin(),key.end());
+        check(faces.insert(key).second,"occupancy rescue: no duplicate face");
+        double ab[3], ac[3];
+        for (int k = 0; k < 3; ++k) { ab[k]=double(p[b*3+k])-p[a*3+k]; ac[k]=double(p[c*3+k])-p[a*3+k]; }
+        double n[3] = {ab[1]*ac[2]-ab[2]*ac[1],ab[2]*ac[0]-ab[0]*ac[2],ab[0]*ac[1]-ab[1]*ac[0]};
+        check(n[0]*n[0]+n[1]*n[1]+n[2]*n[2]>0,"occupancy rescue: positive area");
+        int part = p[a*3+(1+axis)%3] > .5f*scale ? 1 : 0;
+        ++partFaces[part];
+        volumes[part] += (p[a*3]*n[0]+p[a*3+1]*n[1]+p[a*3+2]*n[2])/6;
+        uint32_t triangle[3] = {a,b,c};
+        for (int k = 0; k < 3; ++k) {
+            uint32_t u=triangle[k],v=triangle[(k+1)%3],w=triangle[(k+2)%3];
+            auto& edge=edges[(uint64_t(std::min(u,v))<<32)|std::max(u,v)];
+            ++edge.first; edge.second += u<v?1:-1;
+            links[u][v].push_back(w); links[u][w].push_back(v);
+        }
+    }
+    for (const auto& edge : edges) check(edge.second.first==2 && edge.second.second==0,"occupancy rescue: closed oriented edges");
+    for (const auto& link : links) {
+        check(!link.empty(),"occupancy rescue: compact vertices");
+        std::set<uint32_t> seen; std::vector<uint32_t> stack = {link.begin()->first};
+        while (!stack.empty()) {
+            uint32_t v=stack.back();stack.pop_back();
+            if (!seen.insert(v).second) continue;
+            const auto& next=link.at(v);
+            check(next.size()==2,"occupancy rescue: manifold link degree");
+            stack.insert(stack.end(),next.begin(),next.end());
+        }
+        check(seen.size()==link.size(),"occupancy rescue: connected vertex fan");
+    }
+    for (int part=0;part<2;++part) check(partFaces[part]>0 && volumes[part]>0,"occupancy rescue: both nonzero outward solids retained");
+    std::cout << "occupancy rescue " << resolution << " axis " << axis << " scale " << scale << ": " << count/3 << " closed faces\n";
 }
 
 int main(int argc, char** argv) {
+    for (int resolution : {32,64}) for (int axis=0;axis<3;++axis)
+        for (float scale : {.001f,1.f,1000.f}) checkManifoldRescue(resolution,axis,scale);
+    for(float scale:{1.f,.001f,1000.f}) checkSkinnySquareAtlas(scale);
     for (float scale : {1.f, .001f}) checkSimplifySlivers(scale);
     for (int resolution : {48, 512})
         for (uint32_t flags : {0u, 1u})
@@ -193,6 +305,8 @@ int main(int argc, char** argv) {
     uint32_t t[] = {0,2,1, 0,3,2, 4,5,6, 4,6,7, 0,1,5, 0,5,4, 3,7,6, 3,6,2, 0,4,7, 0,7,3, 1,2,6, 1,6,5};
     check(meshLabRemeshVersion() == 3, "ABI version");
     void* h = nullptr; uint32_t v = 0, n = 0;
+    check(meshLabVoxelRemeshManifold(p,8,t,36,1025,&h,&v,&n)==1 && !h && !v && !n,"occupancy rescue: reject invalid resolution");
+    check(meshLabVoxelRemeshManifold(p,8,t,35,32,&h,&v,&n)==1 && !h && !v && !n,"occupancy rescue: reject partial triangle");
     check(meshLabRemeshBuild(p,8,t,36,3,100,0.01f,1,0,256,4,1,&h,&v,&n)==1 && !h, "reject grid resolution");
     t[0]=99;
     check(meshLabRemeshBuild(p,8,t,36,16,100,0.01f,1,0,256,4,1,&h,&v,&n)==1 && !h, "reject bad index");

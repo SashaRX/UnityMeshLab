@@ -196,6 +196,8 @@ void ComputeCharts(Atlas *atlas, ChartOptions options = ChartOptions());
 
 struct PackOptions
 {
+    // Mesh Lab extension: integer raster bounds must not stretch chart UVs.
+    bool preserveChartShape = false;
 	// Charts larger than this will be scaled down. 0 means no limit.
 	uint32_t maxChartSize = 0;
 

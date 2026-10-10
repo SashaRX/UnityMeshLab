@@ -124,6 +124,11 @@ namespace SashaRX.UnityMeshLab
         /// non-uniform density.
         /// </summary>
         public bool NormalizeTexelDensity = true;
+        public bool CorrectSourceTextureAspect = true;
+        public bool CutNarrowUvJunctions;
+
+        internal bool CaptureNextTransfer;
+        internal TransferCaseCapture DiagnosticCapture;
 
         /// <summary>
         /// Auto-reparameterize shells whose UV0 stretch (Sander L² metric) exceeds
@@ -271,6 +276,7 @@ namespace SashaRX.UnityMeshLab
         public string SourceFbxPath;
 
         // ── Events ──
+        internal event Action BeforeRefresh;
         public event Action OnMeshEntriesChanged;
         public event Action OnSelectionChanged;
 
@@ -297,6 +303,7 @@ namespace SashaRX.UnityMeshLab
 
         public void Refresh(LODGroup lodGroup)
         {
+            BeforeRefresh?.Invoke();
             MeshEntries.Clear();
             HasRepack = HasTransfer = false;
             SrcCache.Clear();
@@ -375,6 +382,7 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public void RefreshStandalone(MeshRenderer mr)
         {
+            BeforeRefresh?.Invoke();
             MeshEntries.Clear();
             HasRepack = HasTransfer = false;
             SrcCache.Clear();

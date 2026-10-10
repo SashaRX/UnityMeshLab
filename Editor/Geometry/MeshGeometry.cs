@@ -301,16 +301,31 @@ namespace SashaRX.UnityMeshLab
             return directions;
         }
 
-        /// <summary>Barycentric weights (u, v, w) of p in the 2D triangle abc, either winding; false when the triangle is degenerate.</summary>
+        /// <summary>
+        /// Barycentric weights (u, v, w) of p in the 2D triangle abc, either winding, in
+        /// double so a sliver's determinant neither underflows nor needs a scale cutoff;
+        /// false when the triangle is degenerate or the weights are not finite.
+        /// </summary>
         public static bool Barycentric(Vector2 p, Vector2 a, Vector2 b, Vector2 c, out Vector3 weights)
         {
-            Vector2 ab = b - a, ac = c - a, ap = p - a;
-            float det = ab.x * ac.y - ab.y * ac.x;
-            if (Mathf.Abs(det) < 1e-15f) { weights = Vector3.zero; return false; }
-            float v = (ap.x * ac.y - ap.y * ac.x) / det;
-            float w = (ab.x * ap.y - ab.y * ap.x) / det;
-            weights = new Vector3(1 - v - w, v, w);
-            return true;
+            double bx = (double)b.x - a.x, by = (double)b.y - a.y, cx = (double)c.x - a.x, cy = (double)c.y - a.y;
+            double px = (double)p.x - a.x, py = (double)p.y - a.y, det = bx * cy - by * cx;
+            weights = default;
+            if (det == 0 || double.IsNaN(det) || double.IsInfinity(det)) return false;
+            double v = (px * cy - py * cx) / det, w = (bx * py - by * px) / det;
+            weights = new Vector3((float)(1 - v - w), (float)v, (float)w);
+            return !float.IsNaN(weights.x) && !float.IsNaN(weights.y) && !float.IsNaN(weights.z) &&
+                !float.IsInfinity(weights.x) && !float.IsInfinity(weights.y) && !float.IsInfinity(weights.z);
+        }
+
+        /// <summary>True when the 3D triangle abc has a nonzero, finite area. Double intermediates: no float underflow and no absolute scale cutoff.</summary>
+        public static bool HasArea(Vector3 a, Vector3 b, Vector3 c)
+        {
+            double abx = (double)b.x - a.x, aby = (double)b.y - a.y, abz = (double)b.z - a.z;
+            double acx = (double)c.x - a.x, acy = (double)c.y - a.y, acz = (double)c.z - a.z;
+            double x = aby * acz - abz * acy, y = abz * acx - abx * acz, z = abx * acy - aby * acx;
+            double area = x * x + y * y + z * z;
+            return area > 0 && !double.IsInfinity(area);
         }
 
         /// <summary>The axis-aligned box that encloses <paramref name="bounds"/> after <paramref name="matrix"/> (all eight corners carried through).</summary>
