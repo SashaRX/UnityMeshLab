@@ -23,8 +23,93 @@ namespace SashaRX.UnityMeshLab
             public int visibleColorSamples;
             public float visibleRgbaBefore, visibleRgbaAfter;
             public Vector4 visibleChannelsBefore, visibleChannelsAfter;
+            public VisibleNormalReport visibleNormals;
+            public LodSharedUvTransfer.Report sharedLightmapUv;
             public string note;
         }
+
+        [Serializable] internal sealed class VisibleNormalReport
+        {
+            public bool accepted;
+            public int samples, trials;
+            public string method;
+            public float blend, normalBefore, normalAfter, headlightBefore, headlightAfter;
+            public float[] normalViewsBefore, normalViewsAfter, headlightViewsBefore, headlightViewsAfter;
+            public LodSmoothingRegions.Error[] regionsBefore, regionsAfter;
+        }
+
+        // Final attribute-only pass: it cannot change the selected triangle budget
+        // or silhouette. Far faces spanning several source regions can fit visible
+        // normals independently at retained render splits instead of staying stale.
+        internal static Mesh CorrectVisibleNormals(Mesh source,Mesh reduced,MeshSimplifier.SimplifySettings settings,
+            LodScreenValidation screen,out VisibleNormalReport report,out LodSurfaceValidation.Metrics metrics,
+            Func<bool> cancelled = null,LodSurfaceValidation.Metrics? baseline = null)
+        {
+            metrics = baseline ?? LodSurfaceValidation.MeasureMeshes(source,reduced,settings,cancelled,ignoreDegenerateFaces:true);
+            report = new VisibleNormalReport();
+            if (screen == null || source.blendShapeCount > 0 || source.HasVertexAttribute(VertexAttribute.BlendWeight) ||
+                reduced.blendShapeCount > 0 || reduced.HasVertexAttribute(VertexAttribute.BlendWeight) ||
+                source.normals.Length != source.vertexCount || reduced.normals.Length != reduced.vertexCount) return null;
+            var before = screen.Measure(reduced,cancelled);
+            if (!before.normalsEvaluated || before.objectPixels > 128 || LodMeshData.TriangleCount(reduced) > 512 || before.normalRms < 75) return null;
+            report.normalBefore = report.normalAfter = before.normalRms; report.headlightBefore = report.headlightAfter = before.headlightRms;
+            report.normalViewsBefore = report.normalViewsAfter = before.normalViewRms;
+            report.headlightViewsBefore = report.headlightViewsAfter = before.headlightViewRms;
+            var original = new LodMeshData(source); var target = new LodMeshData(reduced);
+            var smoothing = new LodSmoothingRegions(original,target,cancelled);
+            report.regionsBefore = report.regionsAfter = smoothing.Measure(target.normals,cancelled);
+            var fit = new FieldFit(target.normals.Select(n => (Vector4)n.normalized).ToArray(),smoothing.owners);
+            var slots = new HashSet<int>[target.positions.Length];
+            for (int i = 0; i < slots.Length; i++) slots[i] = new HashSet<int>();
+            for (int s = 0; s < reduced.subMeshCount; s++) foreach (int vertex in LodMeshData.Triangles(reduced,s)) slots[vertex].Add(s);
+            for (int i = 0; i < slots.Length; i++) if (slots[i].Count > 1) fit.pinned[i] = true;
+            report.samples = screen.AddVisibleNormalSamples(reduced,fit.Add,cancelled);
+            if (report.samples == 0) return null;
+            var normalReport = report; var bestScreen = before; var bestMetrics = metrics;
+            Vector3[] accepted = target.normals;
+            Mesh trial = null;
+            try
+            {
+                trial = UnityEngine.Object.Instantiate(reduced); trial.name = reduced.name;
+                foreach (float prior in new[] { .1f,.02f,.002f }) Verify(fit.Solve(prior,cancelled),"visible normal least-squares "+prior);
+                Verify(fit.Resample(cancelled),"visible normal mass-average");
+                metrics = bestMetrics;
+                if (!report.accepted) return null;
+                report.regionsAfter = smoothing.Measure(accepted,cancelled);
+                trial.normals = accepted;
+                if (target.tangents.Length == target.positions.Length) trial.tangents = OrthogonalTangents(target.tangents,target.normals,accepted);
+                if (MeshUvState.IsDraft(reduced)) MeshUvState.SetDraft(trial,true);
+                var result = trial; trial = null; return result;
+                void Verify(Vector4[] fitted,string method)
+                {
+                    foreach (float blend in new[] { 1f,.5f,.25f })
+                    {
+                        CheckCancellation(cancelled); var values = new Vector3[target.positions.Length];
+                        for (int i = 0; i < values.Length; i++)
+                        {
+                            var n = ((Vector3)fitted[i]).normalized;
+                            values[i] = fit.pinned[i] || n.sqrMagnitude < .5f ? target.normals[i] : Vector3.Lerp(target.normals[i].normalized,n,blend).normalized;
+                            if (values[i].sqrMagnitude < .5f) values[i] = target.normals[i];
+                        }
+                        if (values.SequenceEqual(accepted)) continue;
+                        trial.normals = values;
+                        UvProgress.Report(UvProgress.Current.fraction,$"{source.name}: verify far visible normals {method} {blend:P0}");
+                        var local = screen.Measure(trial,cancelled); normalReport.trials++;
+                        if (!local.DoesNotWorsen(bestScreen,true) || local.normalRms >= bestScreen.normalRms-1e-4f ||
+                            local.headlightRms >= bestScreen.headlightRms-1e-6f || !ViewsDoNotWorsen(local.normalViewRms,bestScreen.normalViewRms,1e-4f) ||
+                            !ViewsDoNotWorsen(local.headlightViewRms,bestScreen.headlightViewRms,1e-6f)) continue;
+                        var measured = LodSurfaceValidation.MeasureMeshes(source,trial,settings,cancelled,ignoreDegenerateFaces:true);
+                        if (!Finite(measured) || measured.NormalRms > bestMetrics.NormalRms+1e-4f || measured.authoredNormalAngle > bestMetrics.authoredNormalAngle+1e-4f) continue;
+                        bestMetrics = measured; bestScreen = local; accepted = values; normalReport.accepted = true;
+                        normalReport.method = method; normalReport.blend = blend; normalReport.normalAfter = local.normalRms; normalReport.headlightAfter = local.headlightRms;
+                        normalReport.normalViewsAfter = local.normalViewRms; normalReport.headlightViewsAfter = local.headlightViewRms;
+                    }
+                }
+            }
+            finally { if (trial) UnityEngine.Object.DestroyImmediate(trial); }
+        }
+        static bool ViewsDoNotWorsen(float[] after,float[] before,float tolerance)
+            => after.Length == before.Length && after.Zip(before,(a,b) => !float.IsNaN(a) && !float.IsInfinity(a) && a <= b+tolerance).All(ok => ok);
 
         // Returns an owned replacement only on improvement. Inputs are never edited.
         internal static Mesh Correct(Mesh source, Mesh reduced, MeshSimplifier.SimplifySettings settings,

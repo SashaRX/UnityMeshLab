@@ -69,6 +69,40 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(fitted.colors.Max(c => c.g),Is.GreaterThan(1)); Assert.That(fitted.colors.Min(c => c.b),Is.LessThan(0));
         }
         [Test]
+        public void FarVisibleNormalsImproveEveryViewAndLightingWithoutChangingGeometryOrRgba()
+        {
+            var source = Grid(8,false); var reduced = Grid(1,false);
+            reduced.normals = Enumerable.Repeat(Vector3.right,reduced.vertexCount).ToArray();
+            var oldNormals = reduced.normals; var sourceNormals = source.normals;
+            var screen = new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            var before = screen.Measure(reduced);
+            var fitted = Track(LodAttributeCorrection.CorrectVisibleNormals(source,reduced,Settings,screen,out var report,out _));
+            Assert.That(fitted,Is.Not.Null); Assert.That(report.accepted,Is.True); Assert.That(report.samples,Is.GreaterThan(0));
+            var after = screen.Measure(fitted);
+            Assert.That(after.normalRms,Is.LessThan(before.normalRms)); Assert.That(after.headlightRms,Is.LessThan(before.headlightRms));
+            for (int v = 0; v < before.views; v++)
+            {
+                Assert.That(after.normalViewRms[v],Is.LessThanOrEqualTo(before.normalViewRms[v]+1e-4f));
+                Assert.That(after.headlightViewRms[v],Is.LessThanOrEqualTo(before.headlightViewRms[v]+1e-6f));
+            }
+            CollectionAssert.AreEqual(reduced.vertices,fitted.vertices); CollectionAssert.AreEqual(reduced.triangles,fitted.triangles);
+            CollectionAssert.AreEqual(reduced.colors,fitted.colors); CollectionAssert.AreEqual(reduced.uv2,fitted.uv2);
+            CollectionAssert.AreEqual(oldNormals,reduced.normals); CollectionAssert.AreEqual(sourceNormals,source.normals);
+            foreach (var n in fitted.normals) Assert.That(n.magnitude,Is.EqualTo(1).Within(1e-5));
+            for (int i = 0; i < fitted.vertexCount; i++)
+            { Assert.That(Vector3.Dot(fitted.normals[i],(Vector3)fitted.tangents[i]),Is.EqualTo(0).Within(1e-5)); Assert.That(fitted.tangents[i].w,Is.EqualTo(-1)); }
+        }
+        [Test]
+        public void FarVisibleNormalsCancelDuringOwnedVerificationWithoutLeaks()
+        {
+            var source = Grid(4,false); var reduced = Grid(1,false);
+            reduced.normals = Enumerable.Repeat(Vector3.right,reduced.vertexCount).ToArray(); reduced.name = "FarNormalsCancel_"+Guid.NewGuid().ToString("N");
+            var screen = new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            Assert.Throws<OperationCanceledException>(() => LodAttributeCorrection.CorrectVisibleNormals(source,reduced,Settings,screen,out _,out _,
+                () => Resources.FindObjectsOfTypeAll<Mesh>().Count(m => m.name == reduced.name) > 1));
+            Assert.That(Resources.FindObjectsOfTypeAll<Mesh>().Where(m => m.name == reduced.name).ToArray(),Is.EqualTo(new[] { reduced }));
+        }
+        [Test]
         public void SmoothColorUvSeam_UsesSharedFitWithoutChangingUvOrInventingAColorStep()
         {
             var source = Grid(8,true);

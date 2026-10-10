@@ -297,7 +297,23 @@ namespace SashaRX.UnityMeshLab.Tests
                             capture.incompleteSmoothingRegions = correction.incompleteSmoothingRegions;
                             capture.regionNormalsBefore = correction.regionNormalsBefore?.Select(RegionError).ToList();
                             capture.regionNormalsAfter = correction.regionNormalsAfter?.Select(RegionError).ToList();
-                            if (correction.regionNormalsBefore != null)
+                            var visibleNormals = correction.visibleNormals;
+                            if (visibleNormals?.accepted == true)
+                            {
+                                Assert.That(variant.info.screenQuality.objectPixels,Is.LessThanOrEqualTo(128));
+                                Assert.That(visibleNormals.normalAfter,Is.LessThan(visibleNormals.normalBefore));
+                                Assert.That(visibleNormals.headlightAfter,Is.LessThan(visibleNormals.headlightBefore));
+                                Assert.That(visibleNormals.normalViewsAfter.Length,Is.EqualTo(6));
+                                for (int v = 0; v < 6; v++)
+                                {
+                                    Assert.That(visibleNormals.normalViewsAfter[v],Is.LessThanOrEqualTo(visibleNormals.normalViewsBefore[v]+1e-4f));
+                                    Assert.That(visibleNormals.headlightViewsAfter[v],Is.LessThanOrEqualTo(visibleNormals.headlightViewsBefore[v]+1e-6f));
+                                }
+                                // Cross-region far faces use the visible-field gate;
+                                // the measured region diagnostics still describe the final normals.
+                                Assert.That(correction.regionNormalsAfter,Is.EqualTo(visibleNormals.regionsAfter));
+                            }
+                            else if (correction.regionNormalsBefore != null)
                                 Assert.That(LodSmoothingRegions.NoRegression(correction.regionNormalsAfter,correction.regionNormalsBefore),Is.True,
                                     model.name+"/"+variant.name+": a smoothing region's normal error increased");
                         }
@@ -322,19 +338,26 @@ namespace SashaRX.UnityMeshLab.Tests
                     Assert.That(capture.surfaceColorMax.magnitude,Is.LessThan(.001f),"An unchanged fallback must validate against LOD0: "+model.name);
                 // Asset evaluation records fidelity, including regressions and missed budgets;
                 // it does not claim all production models satisfy synthetic-fixture thresholds.
+                LodSharedLightmapChecks.Evaluate(model.asset,source,variants,matrix);
                 Assert.That(report.captures.Count,Is.GreaterThanOrEqualTo(6));
                 Assert.That(LodMeshData.TriangleCount(source),Is.EqualTo(report.sourceTriangles),"Source asset changed");
             }
             finally { foreach (Mesh mesh in generated) if (mesh) Object.DestroyImmediate(mesh); }
         }
 
-        static void Generate(Mesh source,LodReductionMode mode,int candidates,string prefix,
-            List<(string name, Mesh mesh, LodPipelineOps.LodInfo info, double ms)> variants,List<Mesh> generated,bool uncheckedColors = false,bool relaxedFar = false,bool pruneParts = false,bool correctAttributes = false,bool preserveHardEdges = false,bool coarsenHardEdgeChains = false,bool nativeHardEdgeConstraints = false,float[] requestedRatios = null,bool screenGuided = false,bool farScreenBudget = false)
+        internal static void Generate(Mesh source,LodReductionMode mode,int candidates,string prefix,
+            List<(string name, Mesh mesh, LodPipelineOps.LodInfo info, double ms)> variants,List<Mesh> generated,bool uncheckedColors = false,bool relaxedFar = false,bool pruneParts = false,bool correctAttributes = false,bool preserveHardEdges = false,bool coarsenHardEdgeChains = false,bool nativeHardEdgeConstraints = false,float[] requestedRatios = null,bool screenGuided = false,bool farScreenBudget = false,Renderer bakedReference = null)
         {
             var root = new GameObject("ProjectLODPreview");
             try
             {
-                root.AddComponent<MeshFilter>().sharedMesh = source; root.AddComponent<MeshRenderer>();
+                root.AddComponent<MeshFilter>().sharedMesh = source;
+                var renderer = root.AddComponent<MeshRenderer>();
+                if (bakedReference)
+                {
+                    renderer.lightmapIndex = bakedReference.lightmapIndex; renderer.lightmapScaleOffset = bakedReference.lightmapScaleOffset;
+                    root.transform.rotation = bakedReference.transform.rotation; root.transform.localScale = bakedReference.transform.lossyScale;
+                }
                 var context = new UvToolContext(); context.Refresh(LodGenerationTool.CreateLodGroupFromRenderers(root));
                 var options = new LodPipelineOps.Options { count = 2, ratios = new[] {.5f,.25f}, targetError = .2f,
                     uv2Weight = 20, normalWeight = 1, colorWeight = 1, maxNormalAngle = 15, maxColorError = .02f,

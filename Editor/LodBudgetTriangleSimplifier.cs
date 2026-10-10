@@ -212,6 +212,41 @@ namespace SashaRX.UnityMeshLab
                     }
                     finally { if (corrected) UnityEngine.Object.DestroyImmediate(corrected); }
                 }
+                if (options.screenBudget && options.correctSurfaceAttributes)
+                {
+                    var fitted = LodAttributeCorrection.CorrectVisibleNormals(source,best.simplifiedMesh,settings,screen,
+                        out var visibleNormals,out var measured,cancelled,bestMetrics);
+                    try
+                    {
+                        if (correction != null) correction.visibleNormals = visibleNormals;
+                        if (fitted)
+                        {
+                            UnityEngine.Object.DestroyImmediate(best.simplifiedMesh); best.simplifiedMesh = fitted; fitted = null;
+                            bestMetrics = measured; bestScreen = screen.Measure(best.simplifiedMesh,cancelled);
+                            bestScore = CandidateScore(bestMetrics,bestSilhouette,bestScreen,settings,options);
+                            correction.normalsAccepted = true; correction.normalRmsAfter = measured.NormalRms; correction.normalMaxAfter = measured.authoredNormalAngle;
+                            correction.normalBlend = visibleNormals.blend;
+                            correction.regionNormalsAfter = visibleNormals.regionsAfter;
+                            correction.note += $" Far visible normal refit accepted ({visibleNormals.samples} paired samples, {visibleNormals.trials} trials); each view's normal/headlight error retained or improved. Geometry/indices/UV2 unchanged. The earlier per-region gate applies to the surface fit; final source-region errors remain diagnostic for cross-region far faces.";
+                        }
+                    }
+                    finally { if (fitted) UnityEngine.Object.DestroyImmediate(fitted); }
+                }
+                if (options.screenBudget && options.correctSurfaceAttributes && options.bakedLightmapFields != null &&
+                    LodMeshData.TriangleCount(best.simplifiedMesh) <= 512 && screenPixels == 64)
+                {
+                    var lightmapScreen = new LodScreenValidation(source,true,cancelled,resolution:72,objectPixels:64,measureFields:true,allSides:true);
+                    var transferred = LodSharedUvTransfer.Transfer(source,best.simplifiedMesh,settings,out var uvReport,cancelled,
+                        lightmapScreen,options.bakedLightmapFields,minVisiblePixels:16);
+                    if (correction != null) correction.sharedLightmapUv = uvReport;
+                    if (transferred)
+                    {
+                        UnityEngine.Object.DestroyImmediate(best.simplifiedMesh); best.simplifiedMesh = transferred;
+                        bestMetrics = LodSurfaceValidation.MeasureMeshes(source,best.simplifiedMesh,settings,cancelled,ignoreDegenerateFaces:true);
+                        bestScore = CandidateScore(bestMetrics,bestSilhouette,bestScreen,settings,options);
+                        correction.note += $" Shared-lightmap UV2 refit accepted on {uvReport.assignedFaces} faces; 12-view pixel-averaged baked color/direction errors retained or improved. Triangle geometry, normals and RGBA unchanged; render vertices {uvReport.verticesBefore} -> {uvReport.verticesAfter}.";
+                    }
+                }
                 MeshUvState.SetDraft(best.simplifiedMesh,best.draftUv);
                 diagnostics = new LodLoopSimplifier.Result { metrics = bestMetrics,maxDistance = bestMetrics.distance,
                     maxNormalAngle = bestMetrics.normalAngle,maxColorError = bestMetrics.colorError,

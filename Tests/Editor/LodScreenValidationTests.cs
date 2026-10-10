@@ -165,12 +165,19 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(screen.AddVisibleColorSamples(target,(indices,at,bary,value,weight) => {
                 Assert.That(bary.x+bary.y+bary.z,Is.EqualTo(1).Within(1e-6f)); Assert.That(weight,Is.EqualTo(.25));
             }),Is.GreaterThan(100));
+            Assert.That(screen.AddVisibleNormalSamples(target,(_,__,bary,n,weight) => {
+                Assert.That(((Vector3)n).magnitude,Is.EqualTo(1).Within(1e-6f)); Assert.That(weight,Is.EqualTo(.25));
+                Assert.That(Vector3.Dot((Vector3)n,Vector3.forward),Is.GreaterThan(.99f));
+            }),Is.GreaterThan(100));
             target.triangles = target.triangles.Reverse().ToArray();
             Assert.That(screen.AddVisibleColorSamples(target,(_,__,___,____,_____) => Assert.Fail("Opposite face borrowed color")),Is.Zero);
+            Assert.That(screen.AddVisibleNormalSamples(target,(_,__,___,____,_____) => Assert.Fail("Opposite face borrowed normal")),Is.Zero);
             target.triangles = source.triangles; target.subMeshCount = 2;
             target.SetTriangles(System.Array.Empty<int>(),0); target.SetTriangles(source.triangles,1);
             Assert.That(screen.AddVisibleColorSamples(target,(_,__,___,____,_____) => Assert.Fail("Material slot borrowed color")),Is.Zero);
+            Assert.That(screen.AddVisibleNormalSamples(target,(_,__,___,____,_____) => Assert.Fail("Material slot borrowed normal")),Is.Zero);
             Assert.Throws<System.OperationCanceledException>(() => screen.AddVisibleColorSamples(source,(_,__,___,____,_____) => {},() => true));
+            Assert.Throws<System.OperationCanceledException>(() => screen.AddVisibleNormalSamples(source,(_,__,___,____,_____) => {},() => true));
         }
         [Test]
         public void FarBudgetUsesUnprotectedCandidatesAndMeasuresAllVariantsAt64Pixels()

@@ -40,6 +40,7 @@ namespace SashaRX.UnityMeshLab
             public int screenObjectPixels;
             public int[] screenPixelsByLevel;
             public float featureChainError;
+            internal System.Func<Vector2,Vector3,Vector4>[] bakedLightmapFields;
         }
 
         internal struct LevelQuality
@@ -345,6 +346,9 @@ namespace SashaRX.UnityMeshLab
                         string reductionNote;
                         try
                         {
+                            levelOptions.bakedLightmapFields = levelOptions.screenBudget && levelOptions.correctSurfaceAttributes &&
+                                TriCount(reductionMesh)*reductionSettings.targetRatio <= 512
+                                ? LodLightmapFields.TryCapture(entry.renderer)?.fields : null;
                             r = Reduce(reductionMesh, reductionSettings, levelOptions, reductionSources, out loop, out reductionNote,previousValidated);
                             if (opts.prioritizeTriangleBudget && opts.reductionMode == LodReductionMode.LoopsThenTriangles &&
                                 (!r.ok || r.simplifiedTriCount > Mathf.CeilToInt(TriCount(reductionMesh)*reductionSettings.targetRatio)))

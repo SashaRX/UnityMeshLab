@@ -285,7 +285,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 utility.camera.transform.position = view == "front" ? new Vector3(0,0,-3) : new Vector3(1.5f,.8f,-3);
                 utility.camera.transform.LookAt(Vector3.zero,Vector3.up);
             }
-            internal Color[] Draw(Mesh mesh, Mode mode, Matrix4x4? displayTransform = null, Texture albedo = null)
+            internal Color[] Draw(Mesh mesh, Mode mode, Matrix4x4? displayTransform = null, Texture albedo = null, Material overrideMaterial = null)
             {
                 var matrix = displayTransform ?? Matrix4x4.identity;
                 material.SetColor("_Color",mode == Mode.Wire || mode == Mode.Shaded ? new Color(.65f,.72f,.8f,1) : Color.white);
@@ -326,7 +326,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     Texture image;
                     try
                     {
-                        for (int s = 0; s < mesh.subMeshCount; s++) utility.DrawMesh(alphaMesh ? alphaMesh : mesh,matrix,material,s);
+                        for (int s = 0; s < mesh.subMeshCount; s++) utility.DrawMesh(alphaMesh ? alphaMesh : mesh,matrix,overrideMaterial ? overrideMaterial : material,s);
                         // Only the diagnostic overlay is offset to avoid coplanar
                         // depth rejection; measurements use untouched geometry.
                         if (wire) utility.DrawMesh(wire,Matrix4x4.Translate(-utility.camera.transform.forward*.002f)*matrix,lines,0);

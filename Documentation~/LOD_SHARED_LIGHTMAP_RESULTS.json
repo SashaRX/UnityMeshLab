@@ -1,0 +1,283 @@
+{
+  "binding": {
+    "asset": "Assets/LodProjectCopies/fire-shield/FireShield.fbx",
+    "color": "Assets/LodProjectCopies/fire-shield-bake/LMGroup_Level_Plan_Smallbuildings_final.hdr",
+    "direction": "Assets/LodProjectCopies/fire-shield-bake/LMGroup_Level_Plan_Smallbuildings_dir.tga",
+    "colorSha256": "459c68b8ae954d38fa1643efdccbe4ebd3312ce8125bc795276a2df997e48054",
+    "directionSha256": "48b3760aec6a9c96aa64009a83e40e019f11a3a2a4aaa4f17bcc620ff88d4664",
+    "scene": "C:\\LostInExtraction\\fps-project\\Assets\\_LostInExtraction\\Content\\Scenes\\Level_Plan.unity",
+    "hierarchy": "TransformerStation_Building/FireShield",
+    "sceneSha256": "aec1c03d52c61291434383afbaa0c45e94268998a666135b8f48c5512f42f405",
+    "atlas": 22,
+    "scaleOffset": {
+      "x": 0.02570655383169651,
+      "y": 0.025744657963514328,
+      "z": 0.2356075793504715,
+      "w": 0.7140594720840454
+    },
+    "rootRotation": {
+      "x": 4.440892627896218e-16,
+      "y": 0.9560138583183289,
+      "z": -5.329071365233699e-15,
+      "w": 0.2933216392993927
+    }
+  },
+  "sourceTriangles": 1850,
+  "targetTriangles": 204,
+  "atlasWidth": 1024,
+  "atlasHeight": 1024,
+  "textureFormat": "BC6H",
+  "preview": "Actual shared Bakery atlas and ST; linear baked irradiance only, with/without dominant direction. Original PBR material, normal maps, reflection probes and shadowmask direct lights are not evaluated.",
+  "transfer": {
+    "accepted": true,
+    "charts": 175,
+    "assignedFaces": 59,
+    "unresolvedFaces": 145,
+    "verticesBefore": 259,
+    "verticesAfter": 363,
+    "uvRmsBefore": 0.2794111967086792,
+    "uvRmsAfter": 0.26869088411331177,
+    "bakedField": true,
+    "visibleSamples": 22230
+  },
+  "restrictedTransfers": [
+    {
+      "accepted": true,
+      "charts": 175,
+      "assignedFaces": 47,
+      "unresolvedFaces": 157,
+      "verticesBefore": 259,
+      "verticesAfter": 334,
+      "uvRmsBefore": 0.2794111967086792,
+      "uvRmsAfter": 0.2715059518814087,
+      "bakedField": true,
+      "visibleSamples": 22230
+    },
+    {
+      "accepted": true,
+      "charts": 175,
+      "assignedFaces": 17,
+      "unresolvedFaces": 187,
+      "verticesBefore": 259,
+      "verticesAfter": 288,
+      "uvRmsBefore": 0.2794111967086792,
+      "uvRmsAfter": 0.2672245502471924,
+      "bakedField": true,
+      "visibleSamples": 22230
+    }
+  ],
+  "integratedTransfer": {
+    "accepted": true,
+    "charts": 175,
+    "assignedFaces": 17,
+    "unresolvedFaces": 187,
+    "verticesBefore": 259,
+    "verticesAfter": 288,
+    "uvRmsBefore": 0.2794111967086792,
+    "uvRmsAfter": 0.2672245502471924,
+    "bakedField": true,
+    "visibleSamples": 22230
+  },
+  "views": [
+    {
+      "name": "front",
+      "variant": "source",
+      "mode": "baked-color",
+      "rmsShadingError": 0.0,
+      "silhouetteMismatch": 0.0
+    },
+    {
+      "name": "front",
+      "variant": "far-lod2",
+      "mode": "baked-color",
+      "rmsShadingError": 0.12797921895980835,
+      "silhouetteMismatch": 0.1716146618127823
+    },
+    {
+      "name": "front",
+      "variant": "uv2-chart",
+      "mode": "baked-color",
+      "rmsShadingError": 0.12634187936782837,
+      "silhouetteMismatch": 0.1716146618127823
+    },
+    {
+      "name": "front",
+      "variant": "uv2-min4",
+      "mode": "baked-color",
+      "rmsShadingError": 0.12635624408721924,
+      "silhouetteMismatch": 0.1716146618127823
+    },
+    {
+      "name": "front",
+      "variant": "uv2-min16",
+      "mode": "baked-color",
+      "rmsShadingError": 0.12737400829792023,
+      "silhouetteMismatch": 0.1716146618127823
+    },
+    {
+      "name": "front",
+      "variant": "source",
+      "mode": "baked-directional",
+      "rmsShadingError": 0.0,
+      "silhouetteMismatch": 0.0
+    },
+    {
+      "name": "front",
+      "variant": "far-lod2",
+      "mode": "baked-directional",
+      "rmsShadingError": 0.09624454379081726,
+      "silhouetteMismatch": 0.1716146618127823
+    },
+    {
+      "name": "front",
+      "variant": "uv2-chart",
+      "mode": "baked-directional",
+      "rmsShadingError": 0.09452672302722931,
+      "silhouetteMismatch": 0.1716146618127823
+    },
+    {
+      "name": "front",
+      "variant": "uv2-min4",
+      "mode": "baked-directional",
+      "rmsShadingError": 0.0941443145275116,
+      "silhouetteMismatch": 0.1716146618127823
+    },
+    {
+      "name": "front",
+      "variant": "uv2-min16",
+      "mode": "baked-directional",
+      "rmsShadingError": 0.09587331861257553,
+      "silhouetteMismatch": 0.1716146618127823
+    },
+    {
+      "name": "oblique",
+      "variant": "source",
+      "mode": "baked-color",
+      "rmsShadingError": 0.0,
+      "silhouetteMismatch": 0.0
+    },
+    {
+      "name": "oblique",
+      "variant": "far-lod2",
+      "mode": "baked-color",
+      "rmsShadingError": 0.12038134038448334,
+      "silhouetteMismatch": 0.2045775055885315
+    },
+    {
+      "name": "oblique",
+      "variant": "uv2-chart",
+      "mode": "baked-color",
+      "rmsShadingError": 0.11932696402072906,
+      "silhouetteMismatch": 0.2045775055885315
+    },
+    {
+      "name": "oblique",
+      "variant": "uv2-min4",
+      "mode": "baked-color",
+      "rmsShadingError": 0.11909415572881699,
+      "silhouetteMismatch": 0.2045775055885315
+    },
+    {
+      "name": "oblique",
+      "variant": "uv2-min16",
+      "mode": "baked-color",
+      "rmsShadingError": 0.11976920068264008,
+      "silhouetteMismatch": 0.2045775055885315
+    },
+    {
+      "name": "oblique",
+      "variant": "source",
+      "mode": "baked-directional",
+      "rmsShadingError": 0.0,
+      "silhouetteMismatch": 0.0
+    },
+    {
+      "name": "oblique",
+      "variant": "far-lod2",
+      "mode": "baked-directional",
+      "rmsShadingError": 0.09381609410047531,
+      "silhouetteMismatch": 0.2045775055885315
+    },
+    {
+      "name": "oblique",
+      "variant": "uv2-chart",
+      "mode": "baked-directional",
+      "rmsShadingError": 0.0920284315943718,
+      "silhouetteMismatch": 0.2045775055885315
+    },
+    {
+      "name": "oblique",
+      "variant": "uv2-min4",
+      "mode": "baked-directional",
+      "rmsShadingError": 0.09125816076993942,
+      "silhouetteMismatch": 0.2045775055885315
+    },
+    {
+      "name": "oblique",
+      "variant": "uv2-min16",
+      "mode": "baked-directional",
+      "rmsShadingError": 0.09325859695672989,
+      "silhouetteMismatch": 0.2045775055885315
+    }
+  ],
+  "selectedVariant": "uv2-min16",
+  "tests": {
+    "total": "220",
+    "passed": "220",
+    "failed": "0",
+    "skipped": "0",
+    "duration": "164,9327162"
+  },
+  "gpu64": [
+    {
+      "view": "front",
+      "mode": "baked-color",
+      "beforeRms": 0.12404739111661911,
+      "afterRms": 0.12274693697690964,
+      "improvement": 0.010483526723160885
+    },
+    {
+      "view": "front",
+      "mode": "baked-directional",
+      "beforeRms": 0.09056416898965836,
+      "afterRms": 0.08995933830738068,
+      "improvement": 0.006678476587652971
+    },
+    {
+      "view": "oblique",
+      "mode": "baked-color",
+      "beforeRms": 0.118004709482193,
+      "afterRms": 0.11677040904760361,
+      "improvement": 0.01045975571657709
+    },
+    {
+      "view": "oblique",
+      "mode": "baked-directional",
+      "beforeRms": 0.08742702752351761,
+      "afterRms": 0.08685173094272614,
+      "improvement": 0.006580305851491053
+    }
+  ],
+  "rawSha256": {
+    "fire-shield-far-lod2-front-baked-color.rgba": "bf4a80547633695d77b36df810a7f41af658bd6a06f3334bf0c832e49053e714",
+    "fire-shield-far-lod2-front-baked-directional.rgba": "60628e83fc46f16d4b4911b71949e4cf7727ba228c17c6d81ddc9be23aea0638",
+    "fire-shield-far-lod2-oblique-baked-color.rgba": "9ad25d47f03e704a3ee310b8099afac2831e829995dc3b29ee990ef8d0a872c0",
+    "fire-shield-far-lod2-oblique-baked-directional.rgba": "af3308adc2ffa2854eeec5b70e49466cfc1c9870b599fef4b2a444a0005129ba",
+    "fire-shield-source-front-baked-color.rgba": "c39ec46e973bfa7aa125ee944ed90a05833bd5e8f8b896a352859f24365cdd54",
+    "fire-shield-source-front-baked-directional.rgba": "ac7486e1d6dd7a2a50015bdc40b762b5637b08f34cd3f2fa143dd3a2102b4cf7",
+    "fire-shield-source-oblique-baked-color.rgba": "21b9296dc0508c9820b0ff4a757e8a8e8e551eed58f33ea4afe25dfdc73c0504",
+    "fire-shield-source-oblique-baked-directional.rgba": "1ff4edf64aa4aeb9069b92864ee23c256fbf2f6c6fa423c5180a1399429efe59",
+    "fire-shield-uv2-chart-front-baked-color.rgba": "9f533763200ade3d1d6c4489019201fa2e124b93770685a2e418c6f4378212b2",
+    "fire-shield-uv2-chart-front-baked-directional.rgba": "b6a6687d19d1fda8d2b22ff2fa3e9f45649ecdff99e371f6703e186e75b3f9d4",
+    "fire-shield-uv2-chart-oblique-baked-color.rgba": "99078864ceebad3fbc080c6f162d6918d86b265df7758c13214f0e2c214bc3a3",
+    "fire-shield-uv2-chart-oblique-baked-directional.rgba": "6fbc5f0bdb365ed629cc14db05abc3429fa0bb4be7bf9f6f4c4e6be7db828863",
+    "fire-shield-uv2-min16-front-baked-color.rgba": "cb9b71534e2cd25f874ab1fd4b39901e625b192affe92406f49957217f7d2e7a",
+    "fire-shield-uv2-min16-front-baked-directional.rgba": "27985a071f3801584c9b3318f8a81a82b2dca050c88601490b5500ce0784fad5",
+    "fire-shield-uv2-min16-oblique-baked-color.rgba": "6f0eee926a061100c750e9d6be9767e150fdb0dc29e29c43ab136b5c6293a7b0",
+    "fire-shield-uv2-min16-oblique-baked-directional.rgba": "ec754c404a014387061b2a6c95042f52e9b4a4821a037bfbad898ec97b8d50f3",
+    "fire-shield-uv2-min4-front-baked-color.rgba": "5d572eaa1481acfca246de7172cd87efd1eb44dea23c0d5dad42bb0cd5737202",
+    "fire-shield-uv2-min4-front-baked-directional.rgba": "315476f12417f277c818e923812a900dae79b7e8bb70575750bc27fac134b896",
+    "fire-shield-uv2-min4-oblique-baked-color.rgba": "870fa2c4766344ea25b39f5ecf811a6911cc04a152352d9c02e0acc457ee8223",
+    "fire-shield-uv2-min4-oblique-baked-directional.rgba": "ebcca743a39525bfcdfdeedca92273267407cc8a899af551d1a56d62c6c6b2b6"
+  }
+}

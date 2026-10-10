@@ -8,6 +8,17 @@ Latest follow-up verification: **183 selected EditMode tests passed**, with all 
 
 ## Implemented
 
+The [far normal stage](LOD_FAR_NORMALS.md) retains all eight approximately 1/9
+budgets and silhouette/RGBA controls while improving the fire-shield normal field.
+The user confirmed shared LOD0 lightmaps and supplied the actual `Level_Plan /
+TransformerStation_Building / FireShield` instance. The [shared-atlas follow-up](LOD_SHARED_LIGHTMAP.md)
+now reads its actual Bakery bake and applies conservative UV2 chart transfer to
+large far faces when a supported source-renderer binding is assigned. Fire shield
+retains 204 triangles; 17 faces change UV2, vertices rise 259→288 and independent
+64px baked RGB errors improve by 0.66–1.05% in both views/fields. The lighting
+roadmap remains incomplete: mipmapped/packed bindings, stronger chart-boundary
+preservation and complete original-material/scene validation remain next.
+
 The [far silhouette and RGBA refinement](LOD_FAR_REFINEMENT.md) passes **215 selected tests** on the same eight models, keeping **8/8 LOD2 budgets near 1/9**. Wrench mean silhouette error drops from 25.91% to 10.41%, fire shield from 23.53% to 14.21%; tent RGBA RMS drops from 0.0807 to 0.0645 at 62 triangles. Bounded position correction keeps indices/counts intact; varying-color candidates receive visible fits before ranking. Fresh source/native/near raw controls are unchanged. The report records trade-offs: fire-shield normals/headlight error worsen, tent/colored-bench silhouette errors increase, paint boundaries still fail, and measured far-profile generation adds 42.23% work. Coarse normal reconstruction and visible component preservation remain next steps.
 
 The [far triangle-budget stage](LOD_FAR_TRIANGLE_BUDGET.md) enables a source-based LOD2 screen-budget profile in LOD Gen. **211 selected tests pass** with fresh native/far comparisons on all eight models; **8/8 LOD2 budgets reach approximately 1/9**. Exact crease/face belts become diagnostics on the far profile; Lock Border and material slots are retained. Six-view silhouette, normal/RGBA fields and local detail/paint guides are ranked at 64 pixels. Colored bench improves several measured errors, while wrench/fire-shield silhouette and other normal/paint regressions still require review. This completes the far-count step, rather than the full fidelity roadmap.
@@ -58,6 +69,12 @@ Detailed implementation: [LOD controls and operators](LOD_FULL_LOOPS.md). Resear
 The overview/chart retain the final capture lineage above; their LOD2 fields/counts remain identical to the post-review baseline. The RGBA figure compares that baseline with the final tent capture. Source hashes, feature/region checks and unchanged source PNG checks: `final-color-fallback/audit.json`. Integration PR: [#229](https://github.com/SashaRX/UnityMeshLab/pull/229).
 
 ## Next iteration, in order
+
+Priority after the actual shared-atlas test: extend UV2/chart-boundary and filtered
+lightmap checks to more assigned project instances, improve the remaining visible
+thin components at 64px, then exercise complete materials/assemblies and LOD
+transitions. Shared bindings currently support only unmipped full-HDR atlases.
+Keep lighting/color fidelity ahead of exact normal-region matching for LOD2.
 
 1. Native crease/junction constraints and the matched-count comparison are implemented and verified as an optional experiment. Remaining work in this stage: diagnose low-budget coverage failures, quality regressions and expensive retries; keep the strict/coarsened controls and rebuild native changes through CI.
 2. Local screen diagnostics and an optional CPU guide for candidate ranking, attribute-correction refusal and whole-small-component removal are implemented. See [screen-guided selection](LOD_SCREEN_GUIDED_SELECTION.md) for the fresh comparison and remaining limits. Next: calibrate thresholds at actual screen sizes, profile extra cost and address Bench A/Fire Shield thin details and the tent's RMS-versus-boundary tradeoff. Categorical labels and original-material acceptance remain unverified.
