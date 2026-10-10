@@ -146,8 +146,11 @@ namespace SashaRX.UnityMeshLab
             token.ThrowIfCancellationRequested();
             var topology = RemeshTopology.Inspect(candidate.positions, candidate.indices, token);
             bool valid = candidate.TriangleCount > 0 && topology.Valid && topology.boundary.Count == 0;
-            if (valid) foreach (bool closed in RemeshTopology.ClosedVolumeFaces(candidate.positions, candidate.indices, token))
-                if (!closed) { valid = false; break; }
+            if (valid) {
+                foreach (bool closed in RemeshTopology.ClosedVolumeFaces(candidate.positions, candidate.indices, token)) {
+                    if (!closed) { valid = false; break; }
+                }
+            }
             if (!valid) {
                 string reason = "Occupancy tetrahedra: " + topology.Description + "; nonzero component volumes required";
                 captureFailure?.Invoke(first, candidate, 0, reason);
