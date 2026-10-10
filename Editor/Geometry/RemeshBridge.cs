@@ -189,7 +189,7 @@ namespace SashaRX.UnityMeshLab
             CancellationToken token)
         {
             int first = CollarEvidence(p,topology,normals,a,b,token);
-            return first != 0 && (first & CollarEvidence(p,topology,normals,b,a,token)) != 0;
+            return first != 0 && (first & CollarEvidence(p,topology,normals,a:b,b:a,token:token)) != 0;
         }
 
         // Thin skins need a side strip, although their missing edge direction lies
