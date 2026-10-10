@@ -210,3 +210,73 @@ Measured results, remaining branch/voxel failures and limitations:
 `Documentation~/REMESH_COMPOUND_CAP.md`.
 The branch follow-up and remaining source defects are recorded in
 `Documentation~/REMESH_CAP_BRANCH.md`.
+
+## Actual library comparison and Unity replay
+
+`compare_fill.py` runs PyMeshLab and MeshLib on a fresh geometric weld of each
+private capture. It compares them with candidates exported by the actual C#
+Cap implementation, not a Python approximation of that implementation.
+The two sequential strategies preserve already accepted planar patches before
+trying Surface Caps or MeshLib minimum-area filling on the remaining boundaries.
+These are benchmark strategies; they do not change the production closure modes.
+
+Install the optional libraries into an isolated virtual environment:
+
+```powershell
+python -m venv .benchmark-venv
+.benchmark-venv/Scripts/python.exe -m pip install -r Tools~/RemeshCapBenchmark/compare-requirements.txt
+```
+
+Create a JSON manifest with absolute paths:
+
+```json
+{
+  "output": "C:/temp/cap-comparison",
+  "cases": [{"name": "Example", "source": "C:/temp/example/source.bin"}]
+}
+```
+
+Set `MESH_LAB_CAP_COMPARISON_MANIFEST` to that manifest and run the EditMode test
+`RemeshCapComparisonTests.GenerateProductionCandidates` in a scratch Unity project
+with this package and the test framework enabled. It writes `production.json`
+and geometry candidates. Actual donor mutation or changed source corners fail
+the test; a controlled algorithm refusal becomes a report row.
+
+```powershell
+.benchmark-venv/Scripts/python.exe Tools~/RemeshCapBenchmark/compare_fill.py --manifest MANIFEST.json
+```
+
+The script checks original oriented triangle multiplicity after conversion back
+to float32, rejecting donor movement, face loss, reversed faces or source-face
+subdivision. Reordering and adding interior Cap vertices are allowed. It restores
+the original triangle prefix, then audits welded topology and exact new-face
+contacts. Contacts with other connected elements are excluded. A pair budget
+exhaustion is incomplete, never accepted. Existing source/source contacts are
+not re-certified. `auditedClosed` certifies this gate only, not intended shape,
+component volume, projection or native output.
+
+Set the environment variable to the generated `native-manifest.json` and run
+`RemeshCapComparisonTests.ReplayAuditedNativeCandidates`. It verifies nonzero
+closed component volumes and runs Voxelize → Trim → Simplify → Unwrap, with Solve
+off and on. The default resolution is 64; each candidate can specify an integer
+`resolution`. Native topology guards remain enabled. A benchmark test completing
+does not mean every candidate passed: inspect the per-candidate `native.json`.
+
+```powershell
+.benchmark-venv/Scripts/python.exe Tools~/RemeshCapBenchmark/report_fill.py --manifest MANIFEST.json
+```
+
+This writes a Markdown matrix, JSON shape measurements and three PNG comparisons.
+Shape distances are bidirectional barycentric samples against the other patch,
+not exact Hausdorff bounds or independent ground truth. Source hashes and pinned
+library versions are recorded. Run the algorithms on all cases first; restricted
+method lists are useful for targeted experiments but cannot reproduce the full
+report. Private geometry and generated results stay outside Git.
+
+For disjoint replay batches, add `--native-report EXTRA_NATIVE.json` (repeatable)
+and optionally `--resolution-report RESOLUTION_NATIVE.json` to `report_fill.py`.
+Duplicate native attempt identities are rejected so repeated runs cannot inflate
+the matrix. Keep the original per-batch files rather than overwriting evidence.
+
+Measured results and the production decision:
+`Documentation~/REMESH_CAP_FILL_COMPARISON.md`.

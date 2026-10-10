@@ -446,3 +446,11 @@ private column replay also freezes the two planar-tolerance refusal baselines.
 Local validation: 350 EditMode tests passed, zero failures; 18 unrelated private
 input/external prerequisite tests were ignored. Both C# compile variants passed;
 the independent Python Cap benchmark passed all 115 tests.
+
+## Real-library follow-up
+
+The 2026-10-10 comparison runs MeshLab/MeshLib and our actual C# methods on nine
+captured meshes, including plane preservation and downstream native replay.
+See [REMESH_CAP_FILL_COMPARISON.md](REMESH_CAP_FILL_COMPARISON.md). It distinguishes
+closure failures, geometrically valid but wrong-shape disks, and voxel failures
+that persist across different Cap triangulations.
