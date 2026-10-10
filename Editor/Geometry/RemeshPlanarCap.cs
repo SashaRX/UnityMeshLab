@@ -10,7 +10,7 @@ namespace SashaRX.UnityMeshLab
     /// donor arrays are never mutated. Each closure candidate is accepted atomically.</summary>
     internal static class RemeshPlanarCap
     {
-        internal const int Revision = 11;
+        internal const int Revision = 12;
         const int MaxVertices = 200000, MaxIndices = 1200000, MaxLoopEdges = 512;
         const int MaxPairTrials = 2000000;
 
@@ -58,6 +58,8 @@ namespace SashaRX.UnityMeshLab
             internal int[][] boundaryLoops;
             internal ExternalContacts externalContacts;
             internal readonly Dictionary<int, string> loopFailures = new Dictionary<int, string>();
+            internal readonly Dictionary<int, int> bridgePartners = new Dictionary<int, int>();
+            internal readonly Dictionary<int, string> bridgeSearch = new Dictionary<int, string>();
             internal string selectionWarning;
             internal readonly List<int> patchEnds = new List<int>();
             internal string Description => $"welded {weldedVertices} vertices; {loops} boundary loops; selection {selection}; added {addedFaces} faces; " +
@@ -173,8 +175,10 @@ namespace SashaRX.UnityMeshLab
                     // refusal on the next. Its geometry, patch IDs and contacts stay private.
                     var candidatePositions = pWeld; var candidateExact = exact;
                     var candidate = new List<int>(assembled); var stats = new Support { originalFaces = result.originalFaces };
+                    RemeshBridge.SearchReport bridgeReport = null;
                     if (partner >= 0) {
-                        var patch = RemeshBridge.Generate(candidatePositions,candidate.ToArray(),loops[loop],loops[partner],token,ref contactTrials,out int tested, external);
+                        bridgeReport = new RemeshBridge.SearchReport();
+                        var patch = RemeshBridge.Generate(candidatePositions,candidate.ToArray(),loops[loop],loops[partner],token,ref contactTrials,out int tested, external,bridgeReport);
                         stats.contactTests += tested; candidate.AddRange(patch); stats.patchEnds.Add(candidate.Count / 3);
                     }
                     else if (mode == RemeshClosureMode.SurfaceCaps) {
@@ -200,6 +204,10 @@ namespace SashaRX.UnityMeshLab
                     result.patchEnds.AddRange(stats.patchEnds); result.contactTests += stats.contactTests;
                     result.localPatches += stats.localPatches; result.planeRechecks += stats.planeRechecks;
                     result.externalContacts?.Merge(external);
+                    if (partner >= 0) {
+                        result.bridgePartners.Add(loop,partner); result.bridgePartners.Add(partner,loop);
+                        result.bridgeSearch.Add(loop,bridgeReport.Description); result.bridgeSearch.Add(partner,bridgeReport.Description);
+                    }
                     closedLoops.Add(loop); if (partner >= 0) closedLoops.Add(partner);
                 }
                 catch (InvalidOperationException failure) when (continueOnRefusal) {
@@ -337,7 +345,7 @@ namespace SashaRX.UnityMeshLab
 
         // All vertices must have one fan (the preflight above). Each boundary
         // slot then has exactly one incoming/outgoing halfedge, no junction pairing.
-        static List<List<int>> Boundaries(RemeshTopology.Snapshot topology, CancellationToken token, bool limitLoopEdges = true)
+        internal static List<List<int>> Boundaries(RemeshTopology.Snapshot topology, CancellationToken token, bool limitLoopEdges = true)
         {
             var next = new SortedDictionary<int, int>(); var incoming = new HashSet<int>();
             var ix = topology.indices;

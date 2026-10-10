@@ -11,7 +11,7 @@ namespace SashaRX.UnityMeshLab.Tests
     /// <summary>Opt-in replay of private captures; outcomes are data, not acceptance assertions.</summary>
     public class RemeshCapComparisonTests
     {
-        [Serializable] public sealed class Case { public string name, source; }
+        [Serializable] public sealed class Case { public string name, source, selection; }
         [Serializable] public sealed class Candidate { public string caseName, method, path; public int resolution; }
         [Serializable] public sealed class Manifest
         {
@@ -96,6 +96,32 @@ namespace SashaRX.UnityMeshLab.Tests
                 }
             }
             File.WriteAllText(Path.Combine(manifest.output, "production.json"), JsonUtility.ToJson(report, true));
+        }
+
+        [Test]
+        public void GenerateBridgeCandidates()
+        {
+            var manifest=ReadManifest(); var report=new Report();
+            foreach (var source in manifest.cases) {
+                ReadMesh(source.source,out var p,out var ix);
+                var originalP=(Vector3[])p.Clone(); var originalI=(int[])ix.Clone();
+                var row=new Outcome {caseName=source.name,method="ours_bridge",sourceFaces=ix.Length/3};
+                var timer=Stopwatch.StartNew();
+                var support=RemeshPlanarCap.Prepare(p,ix,source.selection ?? "0,1",default,
+                    mode:RemeshClosureMode.Bridge,continueOnRefusal:true,elementScopedContacts:true);
+                row.loops=support.loops; row.addedFaces=support.addedFaces; row.boundaryEdges=support.remainingBoundaryEdges;
+                row.refusedLoops=support.loopFailures.Count;
+                row.reason=string.Join(" | ",support.loopFailures.Select(pair=>$"{pair.Key}: {pair.Value}"));
+                row.path=Path.Combine(manifest.output,source.name+"__ours_bridge.bin");
+                WriteMesh(row.path,support.positions,support.indices);
+                row.status=support.addedFaces>0?"generated":"refused";
+                row.seconds=timer.Elapsed.TotalSeconds; report.results.Add(row);
+                CollectionAssert.AreEqual(originalP,p); CollectionAssert.AreEqual(originalI,ix);
+                for (int corner=0;corner<ix.Length;++corner)
+                    Assert.AreEqual(p[ix[corner]],support.positions[support.indices[corner]],"Bridge moved a donor corner.");
+                TestContext.WriteLine($"{source.name}: {row.status}, +{row.addedFaces}, open={row.boundaryEdges}, {row.reason}");
+            }
+            File.WriteAllText(Path.Combine(manifest.output,"production-bridge.json"),JsonUtility.ToJson(report,true));
         }
 
         [Test]

@@ -1,5 +1,18 @@
 # Remesh Cap intersection benchmark
 
+## Bridge comparison
+
+`compare_bridge.py --output PRIVATE_OUTPUT` creates five explicit torus Bridge
+fixtures and a manifest. Run the opt-in Unity EditMode test
+`RemeshCapComparisonTests.GenerateBridgeCandidates` with
+`MESH_LAB_CAP_COMPARISON_MANIFEST` pointing to that manifest; then run
+`compare_bridge.py --output PRIVATE_OUTPUT --audit`. Add captures with
+`--capture 'NAME|SOURCE.bin|LOOP_A|LOOP_B'`. The offline audit compares actual
+MeshLib complex/universal stitching with the production output, preserving all
+donors and unselected boundaries. Use `compare-requirements.txt` in an isolated
+environment. Geometric acceptance does not establish the intended closure type.
+See `Documentation~/REMESH_BRIDGE_GENERATION.md` for measured limits/results.
+
 Offline diagnostics for a proposed source Cap. These tools do not change Unity
 meshes, settings, native binaries, or the production Remesh pipeline. Private
 model captures and generated reports belong in ignored scratch directories.

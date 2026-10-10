@@ -133,3 +133,80 @@ No original UV/material/normal/tangent streams are captured or assigned to new
 faces by these position/index tools. Managed attribute policy, bake donors,
 Undo/lifecycle and native Remesh effects still require Unity integration and
 actual Editor tests. Production code, plugins and package version are unchanged.
+
+## Production completion, 2026-10-10
+
+The preceding sections record the original offline experiment. The managed
+production zipper is now integrated into closure preparation (Cap revision 12).
+It preserves both source rims, connects unequal vertex counts without resampling,
+and leaves every unselected boundary unchanged. Explicit Bridge selects exactly
+two loop numbers; Automatic still requires a unique mutual collar continuation.
+Multiple independent automatic pairs are prepared separately alongside ordinary Caps.
+
+The previous production profile could exceed the contact budget even on a valid
+64-edge torus band. The new profile completes all dynamic-programming states
+before auditing candidates sorted by score. It returns the first candidate
+passing exact topology and contact gates, without auditing higher-score
+candidates after an accepted winner. Budget exhaustion before acceptance and
+cancellation still publish no partial patch.
+
+Production limits differ from the original offline generator: 128 edges per rim,
+at most 32 seam phases, eight retained paths per grid state, 600,000 grid states,
+and the existing shared 2,000,000 contact-pair budget. For rims above 32 edges,
+16 phases cover the circumference and 16 concentrate on short cross-rim links.
+The smaller rim supplies the phase profile. Search is bounded, not exhaustive;
+its refusal does not prove that no possible Bridge exists.
+
+Every candidate preserves the protected face prefix and exact unselected
+boundary set. Its patch must be one manifold annulus with precisely the selected
+boundary edges and Euler characteristic zero. Assembled Euler characteristic
+remains unchanged. Same-element closure retains component count; joining
+two elements reduces it by one. Both joined elements and earlier synthetic faces
+are protected in the contact audit. Unrelated elements do not block preparation.
+The preview names both connected loops, reports the completed search profile,
+and shows the first rejected face contact when no candidate passes. Each accepted
+Bridge remains one synthetic patch for mask projection and later region removal.
+
+Local Unity closure regressions include 64+64, 128+128, 6+7, 64+65 and 96+97 rims,
+reversed winding, rigid transforms/scales, an untouched third opening, separate
+element joining, blocked gaps, atomic budgets and several independent automatic
+pairs. Six native torus runs (32/64/128, source fitting off/on) retain genus one
+through Voxelize, Simplify and Unwrap, with complete UV audits and zero overlaps,
+degenerate faces or out-of-bounds UVs. These checks do not certify every real asset.
+
+### Independent upstream comparison
+
+`compare_bridge.py` prepares a private manifest and compares Unity production
+exports against actual MeshLib `3.1.4.297` stitching with complex and universal
+metrics. MeshLib documents stitching as a cylindrical patch between two
+holes: [stitching example](https://meshlib.io/documentation/ExampleMeshStitchHole.html),
+[API and metrics](https://meshlib.io/documentation/Cpp/group__FillHoleGroup.html).
+This is an isolated benchmark dependency, not a Unity runtime dependency.
+
+All three methods pass independent preservation, boundary, annulus, Euler,
+component and exact-contact checks on five known torus fixtures. Three real
+capture pairs are exploratory: their authorial Bridge intent is unverified.
+
+| Captured pair | Production | MeshLib complex | MeshLib universal |
+| --- | --- | --- | --- |
+| Univer_Column_C, loops 0/1 (22+24 edges) | Accepted, 46 faces, zero improper contacts | 4 improper contacts | 5 improper contacts |
+| Park_Bench_A, loops 3/4 (52+52 edges) | Refused after 256 audited candidates | 472 improper contacts | 651 improper contacts |
+| Garbage_Chute, loops 0/2 (24+24 edges) | Refused after 192 audited candidates | 93 improper contacts | 410 improper contacts |
+
+Acceptance is local geometric evidence. The accepted column probe still has
+other openings and is not a closed remesh input. Native defects previously
+observed on the bench are not repaired by these Bridge changes.
+
+```powershell
+python 'Tools~/RemeshCapBenchmark/compare_bridge.py' --output PRIVATE_OUTPUT
+# Set MESH_LAB_CAP_COMPARISON_MANIFEST=PRIVATE_OUTPUT/manifest.json and run
+# RemeshCapComparisonTests.GenerateBridgeCandidates in the Unity EditMode runner.
+python 'Tools~/RemeshCapBenchmark/compare_bridge.py' --output PRIVATE_OUTPUT --audit
+```
+
+Append `--capture 'NAME|SOURCE.bin|LOOP_A|LOOP_B'` during preparation for private
+captures. Reports and geometry are stored only under the chosen private output.
+This run: `_results~/bridge-20261010/comparison/comparison.json` (24 outcomes:
+16 locally accepted, 6 library outputs rejected by audit, 2 production refusals).
+The full offline geometry suite passes 128 tests; six cover the independent
+Bridge comparison gates, including rejection of separate disks on a torus.

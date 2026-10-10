@@ -27,6 +27,7 @@ namespace SashaRX.UnityMeshLab
             public Vector3[][] closureContourEdges;
             public Color[] closureContourColors;
             public string[] closureContourReasons;
+            public string[] closureContourInfo;
             public string closureSummary;
             public string closureSelectionWarning, closureLoopRanges;
             public bool closureReady, closureStale;
@@ -184,6 +185,9 @@ namespace SashaRX.UnityMeshLab
                     EditorGUILayout.LabelField("Available loops: " + data.closureLoopRanges, EditorStyles.wordWrappedMiniLabel);
                 if (!string.IsNullOrEmpty(data.closureSelectionWarning))
                     EditorGUILayout.HelpBox(data.closureSelectionWarning, MessageType.Warning);
+                if (closureContour > 0 && data.closureContourInfo != null && closureContour <= data.closureContourInfo.Length &&
+                    !string.IsNullOrEmpty(data.closureContourInfo[closureContour-1]))
+                    EditorGUILayout.LabelField(data.closureContourInfo[closureContour-1],EditorStyles.wordWrappedMiniLabel);
                 if (data.closureContourReasons != null) {
                     if (closureContour > 0 && closureContour <= data.closureContourReasons.Length) {
                         string reason = data.closureContourReasons[closureContour - 1];

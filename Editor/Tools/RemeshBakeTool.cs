@@ -405,6 +405,7 @@ namespace SashaRX.UnityMeshLab
             previewData.closureContourEdges = pipeline.ClosureContourEdges;
             previewData.closureContourColors = pipeline.ClosureContourColors;
             previewData.closureContourReasons = pipeline.ClosureContourReasons;
+            previewData.closureContourInfo = pipeline.ClosureContourInfo;
             previewData.closureSummary = pipeline.ClosureSummary;
             previewData.closureSelectionWarning = pipeline.ClosureSelectionWarning;
             previewData.closureLoopRanges = pipeline.ClosureLoopRanges;
@@ -575,7 +576,7 @@ namespace SashaRX.UnityMeshLab
                             "Original material/UV donors are preserved. " +
                             "Synthetic surfaces project from the original donor; missing projections remain visible as magenta."), settings.planarCap);
                         if (settings.planarCap) {
-                            settings.closureMode = (RemeshClosureMode)EditorGUILayout.EnumPopup(new GUIContent("Closure method","Caps: planar disks and local plane patches. Surface Caps: curved disks triangulated in 3D with fixed rim vertices. Bridge: exactly two rims. Automatic: mutual collar continuation selects Bridge; other supported contours use local planar Caps. All methods check topology and contacts within the affected element."),settings.closureMode);
+                            settings.closureMode = (RemeshClosureMode)EditorGUILayout.EnumPopup(new GUIContent("Closure method","Caps: planar disks and local plane patches. Surface Caps: curved disks triangulated in 3D with fixed rim vertices. Bridge: exactly two rims, up to 128 edges each; unequal counts supported. Automatic: mutual collar continuation selects Bridge; other supported contours use local planar Caps. All methods check topology and contacts within the affected element."),settings.closureMode);
                             settings.planarCapLocalPlanes = EditorGUILayout.Toggle(new GUIContent("Local compound caps",
                                 "Allow a uniquely supported split into two continuous planar arcs. Close the first arc, recheck the new boundary, " +
                                 "then recheck the remaining contour. Three-plane corner closures reconstruct their common corner. Ambiguous or intersecting closures are refused; source rim vertices remain fixed."), settings.planarCapLocalPlanes);

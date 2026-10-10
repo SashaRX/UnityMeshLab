@@ -146,6 +146,21 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void AutomaticClosesIndependentBridgePairsAndAnOrdinaryCap()
+        {
+            var (p,ix)=TorusGap();
+            var points=p.Concat(p.Select(v=>v+Vector3.right*8)).Concat(Box.Select(v=>v+Vector3.right*16)).ToArray();
+            var indices=ix.Concat(ix.Select(v=>v+p.Length)).Concat(Missing(0).Select(v=>v+p.Length*2)).ToArray();
+            var cap=RemeshPlanarCap.Prepare(points,indices,"all",default,mode:RemeshClosureMode.Automatic,
+                continueOnRefusal:true,elementScopedContacts:true);
+            Assert.AreEqual(5,cap.loops); Assert.AreEqual(26,cap.addedFaces); Assert.AreEqual(0,cap.remainingBoundaryEdges);
+            Assert.AreEqual(4,cap.bridgePartners.Count); Assert.AreEqual(3,cap.patchEnds.Count); Assert.IsEmpty(cap.loopFailures);
+            var after=RemeshTopology.Inspect(cap.positions,cap.indices);
+            Assert.IsTrue(after.Valid,after.Description); CollectionAssert.AreEqual(new[] {0,0,2},after.euler);
+            CollectionAssert.AreEqual(points,cap.positions); CollectionAssert.AreEqual(indices,cap.indices.Take(indices.Length));
+        }
+
+        [Test]
         public void BridgeIncludesBothConnectedElementsAndUnitesTheirPreparedFaceProvenance()
         {
             var p = Box.Select(v => v + Vector3.back * 2).Concat(Box.Select(v => v + Vector3.forward * 2)).ToArray();
@@ -158,10 +173,10 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(RemeshTopology.ClosedVolumeFaces(cap.positions, cap.indices, default).All(v => v));
         }
 
-        [Test]
-        public void BridgeWithUnequalRimsPreservesEveryBorderVertexAndEdge()
+        [TestCase(6)] [TestCase(64)] [TestCase(96)]
+        public void BridgeWithUnequalRimsPreservesEveryBorderVertexAndEdge(int edges)
         {
-            var (points,source)=TorusGap(); var p=points.ToList(); var ix=source.ToList();
+            var (points,source)=TorusGap(8,edges); var p=points.ToList(); var ix=source.ToList();
             var topology=RemeshTopology.Inspect(points,source); var edge=topology.edges.First(pair=>pair.Value.count==1);
             int f=edge.Value.firstFace;
             int k=Enumerable.Range(0,3).First(c=> {
@@ -171,10 +186,92 @@ namespace SashaRX.UnityMeshLab.Tests
             int x=ix[f*3+k],y=ix[f*3+(k+1)%3],z=ix[f*3+(k+2)%3],m=p.Count;
             p.Add((p[x]*3+p[y])/4); ix.RemoveRange(f*3,3); ix.AddRange(new[] {x,m,z,m,y,z});
             var cap=RemeshPlanarCap.Prepare(p.ToArray(),ix.ToArray(),"0,1",default,false,RemeshClosureMode.Bridge);
-            Assert.AreEqual(13,cap.addedFaces); Assert.AreEqual(p.Count,cap.positions.Length);
+            Assert.AreEqual(edges*2+1,cap.addedFaces); Assert.AreEqual(p.Count,cap.positions.Length);
             var closed=RemeshTopology.Inspect(cap.positions,cap.indices);
             Assert.IsTrue(closed.Valid,closed.Description); Assert.AreEqual(0,closed.boundary.Count);
             CollectionAssert.AreEqual(new[] {0},closed.euler);
+            CollectionAssert.AreEqual(p,cap.positions); CollectionAssert.AreEqual(ix,cap.indices.Take(ix.Count));
+            Assert.AreEqual(1,cap.bridgePartners[0]); Assert.AreEqual(0,cap.bridgePartners[1]);
+            Assert.IsTrue(cap.facePatches.Skip(ix.Count/3).All(id=>id==1));
+        }
+
+        [TestCase(64)] [TestCase(128)]
+        public void BridgeCompletesItsAdvertisedRimBudget(int edges)
+        {
+            var (p,ix) = TorusGap(8,edges);
+            var cap = RemeshPlanarCap.Prepare(p,ix,"0,1",default,mode:RemeshClosureMode.Bridge);
+            Assert.AreEqual(edges*2,cap.addedFaces); Assert.AreEqual(0,cap.remainingBoundaryEdges);
+            var closed = RemeshTopology.Inspect(cap.positions,cap.indices);
+            Assert.IsTrue(closed.Valid,closed.Description); CollectionAssert.AreEqual(new[] {0},closed.euler);
+            CollectionAssert.AreEqual(p,cap.positions); CollectionAssert.AreEqual(ix,cap.indices.Take(ix.Length));
+        }
+
+        [TestCase(false,.125f)] [TestCase(true,8f)]
+        public void BridgePreservesAnUnselectedHoleUnderTransformAndReversedWinding(bool reverse,float scale)
+        {
+            var (p,ix)=TorusGap(12,16);
+            p=p.Select(v=>Quaternion.Euler(23,39,17)*v*scale+new Vector3(3,-2,1)).ToArray();
+            ix=ix.Where((v,i)=>i/3!=166).ToArray();
+            if (reverse) for (int i=0;i<ix.Length;i+=3) (ix[i],ix[i+2])=(ix[i+2],ix[i]);
+            var before=RemeshTopology.Inspect(p,ix);
+            // The extra opening is far from the missing band and has three edges.
+            var loops=RemeshPlanarCap.Boundaries(before,default);
+            string selection=string.Join(",",loops.Select((loop,id)=>(loop,id)).Where(x=>x.loop.Count==16).Select(x=>x.id));
+            var untouched=loops.Single(loop=>loop.Count==3);
+            var expected=new HashSet<(Vector3,Vector3)>();
+            for (int j=0;j<3;++j) expected.Add(RemeshTopology.Snapshot.BoundaryKey(p[untouched[j]],p[untouched[(j+1)%3]]));
+            var cap=RemeshPlanarCap.Prepare(p,ix,selection,default,mode:RemeshClosureMode.Bridge);
+            var repeat=RemeshPlanarCap.Prepare(p,ix,selection,default,mode:RemeshClosureMode.Bridge);
+            Assert.AreEqual(32,cap.addedFaces); Assert.AreEqual(3,cap.remainingBoundaryEdges);
+            var after=RemeshTopology.Inspect(cap.positions,cap.indices);
+            Assert.IsTrue(after.Valid,after.Description); Assert.IsTrue(after.boundary.SetEquals(expected));
+            CollectionAssert.AreEqual(before.euler,after.euler);
+            CollectionAssert.AreEqual(p,cap.positions); CollectionAssert.AreEqual(ix,cap.indices.Take(ix.Length));
+            CollectionAssert.AreEqual(cap.indices,repeat.indices);
+        }
+
+        [Test]
+        public void BridgeSearchAndContactBudgetsKeepDonorsAndDiagnosticsUnchanged()
+        {
+            var (p,ix)=TorusGap(); var before=(int[])ix.Clone(); var points=(Vector3[])p.Clone();
+            var loops=RemeshPlanarCap.Boundaries(RemeshTopology.Inspect(p,ix),default);
+            var contacts=new RemeshPlanarCap.ExternalContacts {faceOwners=new int[ix.Length/3],closingOwners=new HashSet<int> {0}};
+            int trials=0;
+            StringAssert.Contains("search budget",Assert.Throws<InvalidOperationException>(()=>
+                RemeshBridge.Generate(p,ix,loops[0],loops[1],default,ref trials,out _,contacts,maxStates:1)).Message);
+            Assert.AreEqual(0,trials); Assert.AreEqual(0,contacts.count);
+            trials=2000000;
+            StringAssert.Contains("pair budget",Assert.Throws<InvalidOperationException>(()=>
+                RemeshBridge.Generate(p,ix,loops[0],loops[1],default,ref trials,out _,contacts)).Message);
+            Assert.AreEqual(0,contacts.count);
+            CollectionAssert.AreEqual(before,ix); CollectionAssert.AreEqual(points,p);
+        }
+
+        [TestCase(32,false)] [TestCase(32,true)] [TestCase(64,false)] [TestCase(64,true)]
+        [TestCase(128,false)] [TestCase(128,true)]
+        public void BridgeRetainsTheHandleThroughNativeRemeshSimplifyAndUv(int resolution,bool solve)
+        {
+            try { RemeshNative.CheckAvailable(); }
+            catch (InvalidOperationException ex) when (ex.InnerException is DllNotFoundException ||
+                ex.InnerException is EntryPointNotFoundException || ex.InnerException is BadImageFormatException)
+                { Assert.Ignore("Native remesh unavailable: "+ex.Message); }
+            var (p,ix)=TorusGap(16,16);
+            var cap=RemeshPlanarCap.Prepare(p,ix,"0,1",default,mode:RemeshClosureMode.Bridge);
+            var settings=new RemeshSettings {voxelResolution=resolution,solve=solve,maximumError=.02f,
+                textureResolution=512,padding=3,mergeCharts=true};
+            var voxel=RemeshNative.Voxelize(cap.positions,cap.indices,settings,default);
+            var simplified=solve ? RemeshSurfaceRefine.Simplify(voxel,cap.positions,cap.indices,settings,default,out _) :
+                RemeshNative.Simplify(voxel,settings,default,out _);
+            var uv=RemeshNative.Unwrap(simplified,settings,default);
+            foreach (var topology in new[] {RemeshTopology.Inspect(voxel.positions,voxel.indices),
+                RemeshTopology.Inspect(simplified.positions,simplified.indices),RemeshTopology.Inspect(uv.positions,uv.indices)}) {
+                Assert.IsTrue(topology.Valid,topology.Description); Assert.AreEqual(0,topology.boundary.Count);
+                CollectionAssert.AreEqual(new[] {0},topology.euler,"The torus handle must survive every downstream stage.");
+            }
+            var quality=UvChartQuality.Measure(uv,default); var atlas=UvAtlasDiagnostics.Measure(uv,default);
+            Assert.IsTrue(quality.valid); Assert.IsTrue(atlas.complete);
+            Assert.AreEqual(0,atlas.invalidFaces); Assert.AreEqual(0,atlas.degenerateFaces);
+            Assert.AreEqual(0,atlas.pairs); Assert.AreEqual(0,atlas.outOfBoundsVertices);
         }
 
         [Test]

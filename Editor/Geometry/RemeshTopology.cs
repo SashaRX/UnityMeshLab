@@ -132,7 +132,7 @@ namespace SashaRX.UnityMeshLab
                 return (a, b, c);
             }
 
-            static (Vector3, Vector3) BoundaryKey(Vector3 a, Vector3 b)
+            internal static (Vector3, Vector3) BoundaryKey(Vector3 a, Vector3 b)
             {
                 int order = a.x.CompareTo(b.x);
                 if (order == 0) order = a.y.CompareTo(b.y);

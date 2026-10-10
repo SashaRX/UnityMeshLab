@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- Bridge closure supports unequal rims up to 128 edges each with eight retained zipper paths per state and a bounded 32-phase search. Complete the search before auditing candidates in score order; validate exact remaining boundaries, annular topology and component/Euler invariants before publishing. The closure preview identifies connected rim pairs and search diagnostics; rejected contacts retain a face-level reason. Local Unity tests cover handle preservation through native Remesh/Simplify/UV at resolutions 32/64/128.
 - Explicit Surface Caps mode closes curved 3D rims with fixed source vertices, bounded ear search, topology/contact audits and per-contour synthetic masks. Planar Caps and automatic Bridge selection retain their existing behavior; refused contours preserve independent successful closures.
 - Remesh Cap/Bridge contact audits use connected geometric elements after weld. Other elements inside the same Mesh, including their earlier Caps, no longer block closure or consume its contact-pair budget. A Bridge protects both joined elements and updates later contact scopes; captures retain source/prepared element maps.
 - Invalid closure loop numbers retain the Cap / Bridge preview with available contour IDs and a selection warning. Valid explicitly listed Caps still run; invalid Bridge selections never infer a replacement pair. Selection warnings persist in geometry captures.
