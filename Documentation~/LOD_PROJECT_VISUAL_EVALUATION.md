@@ -1,5 +1,33 @@
 # Real project LOD evaluation — 2026-10-09
 
+## PR closure: fresh eight-model baseline — 2026-10-10
+
+### RGBA resampling follow-up
+
+The full comparison in `../_results~/lod-iteration-closure-20261010/color-resampling-models/` tries area-weighted redistribution of source RGBA alongside the regularized fit. It reuses the same bidirectional, facing-compatible, same-material barycentric samples. Each shared render-vertex variable receives its accumulated weighted source RGBA divided by its sample mass, within its original/sampled range; pinned variables retain their original value. Full/half/quarter blends are measured after storage quantization. Each channel's surface RMS and maximum must not increase relative to the current best result, and at least one RMS must improve.
+
+**162 selected tests pass** on the full eight-model experiment. Exactly one of eight varying-color outputs selects resampling: unprotected tent LOD1. Its maximum-channel surface RMS falls from **0.052244 to 0.046378 (11.2%)**; channel maxima decrease or remain unchanged. None of the other 31 outputs regress in per-channel RMS/maximum, triangle count, normal RMS or GPU silhouette. Worst-view pixel RGBA RMS improves from 0.019083 to 0.017752, but the front view worsens from 0.004796 to 0.006672. The improvement is sampled and view-dependent; categorical boundaries and original materials remain unverified. Strictly protected outputs keep their previous colors and triangle budgets.
+
+Production invokes this fallback only after all ordinary fitting strengths are rejected, and skips constant fields. The full experiment took 509.55 seconds versus the baseline's 423.58 seconds; those timings include losing trials that production now skips, and do not measure final production overhead. **Final verification passes 162 selected tests**, with zero failures/skips, including a tent-only GPU rerun in `final-color-fallback.xml`. Seven other captures retain the full comparison's lineage because their resampling candidates lost; their trial counts/timings remain historical. The combined directory is `final-color-fallback/`, with `audit.json`, `resampling-comparison.json` and `run-settings.json`.
+
+![Actual tent views and per-channel errors](LOD_RGBA_RESAMPLING.png)
+
+Rebuild this figure from the retained actual captures:
+
+```powershell
+python -X utf8 Tools~/render_lod_color_resampling.py '_results~/lod-iteration-closure-20261010/final-eight-models' '_results~/lod-iteration-closure-20261010/final-color-fallback' --output 'Documentation~/LOD_RGBA_RESAMPLING.png'
+```
+
+### Baseline and review fixes
+
+After rebasing onto main and fixing review findings, **162 selected LOD and collision EditMode tests pass**, with zero failures/skips. All eight GPU fixtures were regenerated in `../_results~/lod-iteration-closure-20261010/final-eight-models/`; their source FBX hashes and all 76 source PNGs exactly match the prior experiment. `final-eight.xml`, `audit.json`, `run-settings.json` and `report.md` retain the complete provenance. Both FBX compilation configurations and the identifier/dependency checks pass. GitHub's Unity job is license-gated; local Unity 6000.2.6f2 executes these tests.
+
+Regeneration now includes removal of previous generated LODs and prefab unpacking in the same Undo transaction. Cancellation and exceptions restore previous objects, meshes and context entries; new regressions verify both abort paths after clearing. Equal-color UV render duplicates share RGBA fitting variables only through unambiguous adjacent edges inside one material slot. Disconnected contacts and material boundaries stay separate and conservatively pinned. Repeated region pinning and identical-array comparisons no longer add quadratic passes. QSlim reports an invalid empty prepared input instead of dividing by zero; a native worker regression with libigl 2.6.3 verifies the refusal.
+
+Counts, normal errors and silhouettes remain those of Step 5. All 3019 source hard segments remain at both levels, all 1660 measured regional checks pass, and five of sixteen budgets are reached. RGBA seam constraints change some color fields: unprotected tent LOD2 maximum-channel surface RMS is now 0.078365 rather than 0.07627; protected tent remains 0.063702. This is a continuity tradeoff, not an unconditional global-error improvement. Categorical paint boundaries and original-material parity remain unverified.
+
+The portable [eight-model overview](LOD_PROJECT_OVERVIEW.png) and [triangle/feature/normal chart](LOD_HARD_EDGE_ERRORS.png) show this fresh baseline. Historical steps below retain their original measured results and capture lineage.
+
 ## Step 5: strict authored hard-edge preservation — 2026-10-10
 
 The current experiment is `../_results~/lod-hard-edges-final-20261010/`. It compares the same eight copied FBX meshes through LOD Gen's shared pipeline, with Balanced three-candidate selection and verified normal/RGBA correction. New simplifications start independently from working LOD0, targeting LOD1 1/3 and LOD2 1/9. The source hashes, selection, transforms, GPU/shaders and near/far settings match Step 4. The comparison is production meshoptimizer with versus without the new constraint; experimental QSlim remains unchanged.

@@ -518,15 +518,21 @@ namespace SashaRX.UnityMeshLab
             { UvtLog.Warn($"[GenerateLOD] {lastGenerationError}"); requestRepaint?.Invoke(); return; }
             if (generatedObjects.Count > 0)
             {
-                LodGroupUtility.ClearGeneratedLods(ctx, refreshContext: false);
                 GetGenerationBaseline(out _, out startLod, out _);
             }
             lastResults.Clear();
 
             var opts = BuildGenerationOptions(startLod);
 
-            var result = LodPipelineOps.Generate(ctx, startLod, opts, sources,parts);
-            if (!result.ok) { UvtLog.Error($"[GenerateLOD] {result.error}"); return; }
+            var result = LodPipelineOps.Generate(ctx, startLod, opts, sources,parts, replaceGenerated: true);
+            if (!result.ok)
+            {
+                lastGenerationError = result.error;
+                if (result.cancelled) UvtLog.Warn($"[GenerateLOD] {result.error}");
+                else UvtLog.Error($"[GenerateLOD] {result.error}");
+                requestRepaint?.Invoke();
+                return;
+            }
 
             foreach (var info in result.perLod)
             {

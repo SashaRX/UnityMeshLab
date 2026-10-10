@@ -92,6 +92,8 @@ def summarize_existing(directory):
 
 def allocations(counts, budget):
     total = sum(counts)
+    if total == 0:
+        return [0 for _ in counts]
     exact = [budget*c/total for c in counts]
     values = [min(c, max(1, math.floor(e))) if c else 0 for c, e in zip(counts, exact)]
     while sum(values) < budget:
@@ -147,6 +149,11 @@ def worker(source_path, output_path, library, blocked, clean_degenerate):
         meshes.append((positions, faces, birth_map))
     levels = []
     for level, target in enumerate(source['matchedTargets'], start=1):
+        if not any(len(f) for _, f, _ in meshes):
+            levels.append(dict(level=level, target=target, actual=0, valid=False, budgetReached=False,
+                               nativeMs=0, error='QSlim input refused: no triangles remain after source preparation',
+                               submeshes=[dict(positions=[], triangles=[], birthFaces=[]) for _ in meshes]))
+            continue
         budgets = allocations([len(f) for _, f, _ in meshes], target)
         outputs = []; issues = []; elapsed = 0
         for slot, ((v, f, birth_map), budget, prep) in enumerate(zip(meshes, budgets, preparation)):

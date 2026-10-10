@@ -106,7 +106,8 @@ namespace SashaRX.UnityMeshLab
             // An unchanged topology/position mapping is exact correspondence,
             // including overlapping faces and arbitrarily thin seam triangles.
             // Attribute changes are still measured on their matching faces.
-            bool sameConnectivity = fromTriangles.SequenceEqual(toTriangles) && from.positions.SequenceEqual(to.positions);
+            bool sameConnectivity = (ReferenceEquals(fromTriangles,toTriangles) || fromTriangles.SequenceEqual(toTriangles)) &&
+                (ReferenceEquals(from.positions,to.positions) || from.positions.SequenceEqual(to.positions));
             var bvh = sameConnectivity ? null : new TriangleBvh(to.positions, toTriangles);
             for (int i = 0; i < fromTriangles.Length; i += 3)
             {

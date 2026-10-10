@@ -233,6 +233,38 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(UvProgress.Last.status, Is.EqualTo(Progress.Status.Canceled));
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void AbortRegenerationAfterClearing_RestoresGeneratedObjectsMeshesAndBindings(bool fail)
+        {
+            var (tool, context) = CreateToolWithSource();
+            SetField(tool,"generateLodCount",1);
+            Generate(tool,1);
+            var previous = context.GeneratedLodObjects[0];
+            var previousMesh = context.GeneratedLodMeshes[previous];
+            meshes.Add(previousMesh);
+            var previousEntries = context.MeshEntries.ToArray();
+            var options = new LodPipelineOps.Options { count = 1,ratios = new[] {.25f},targetError = 1 };
+            if (fail) options.reductionMode = LodReductionMode.FullLoops;
+
+            var result = LodPipelineOps.Generate(context,1,options,
+                prepared: fail ? new Dictionary<Mesh,LodSourceTopology>() : null,
+                cancelled: () => !fail && context.GeneratedLodObjects.Count == 0 && context.GeneratedLodMeshes.Count > 0,
+                replaceGenerated: true);
+
+            Assert.That(result.cancelled,Is.EqualTo(!fail));
+            Assert.That(result.ok,Is.False);
+            Assert.That(result.error,Is.Not.Empty);
+            Assert.That(previous != null && previousMesh != null,Is.True);
+            Assert.That(context.GeneratedLodObjects,Is.EqualTo(new[] {previous}));
+            Assert.That(context.GeneratedLodMeshes,Has.Count.EqualTo(1));
+            Assert.That(context.GeneratedLodMeshes[previous],Is.SameAs(previousMesh));
+            Assert.That(context.MeshEntries,Is.EqualTo(previousEntries));
+            Assert.That(context.LodGroup.GetLODs()[1].renderers[0].gameObject == previous,Is.True);
+            Assert.That(GetGenerationBaseline(tool).startLod,Is.EqualTo(1));
+            Assert.That(root.transform.childCount,Is.EqualTo(2));
+        }
+
         [Test]
         public void GenerationBaseline_PreservesAuthoredLodsWhenGeneratedLevelsExist()
         {

@@ -140,6 +140,7 @@ namespace SashaRX.UnityMeshLab
         {
             bool identical = from.faces.SequenceEqual(to.faces) && from.data.positions.SequenceEqual(to.data.positions);
             float scale = reverse ? from.data.scale : to.data.scale;
+            bool regionPinned = false;
             for (int i = 0; i < from.faces.Length; i += 3)
             {
                 Cancel(cancelled);
@@ -154,7 +155,11 @@ namespace SashaRX.UnityMeshLab
                     {
                         unresolved[region]++;
                         // An incomplete correspondence cannot authorize a normal fit.
-                        foreach (int v in (reverse ? to : from).faces) pinned[v] = true;
+                        if (!regionPinned)
+                        {
+                            foreach (int v in (reverse ? to : from).faces) pinned[v] = true;
+                            regionPinned = true;
+                        }
                         return;
                     }
                     int j = hit.triangleIndex*3;
@@ -187,12 +192,12 @@ namespace SashaRX.UnityMeshLab
                 !float.IsNaN(a.rms) && !float.IsInfinity(a.rms) && !float.IsNaN(a.maximum) && !float.IsInfinity(a.maximum) &&
                 a.rms <= b.rms+1e-4f && a.maximum <= b.maximum+1e-4f).All(ok => ok);
 
-        readonly struct Edge
+        internal readonly struct Edge
         {
             internal readonly int face,a,b;
             internal Edge(int face,int a,int b) { this.face = face; this.a = a; this.b = b; }
         }
-        static IEnumerable<Edge[]> EdgePairs(LodMeshData mesh,int[] faces)
+        internal static IEnumerable<Edge[]> EdgePairs(LodMeshData mesh,int[] faces)
         {
             var points = new Dictionary<Vector3,int>();
             int Point(int v)

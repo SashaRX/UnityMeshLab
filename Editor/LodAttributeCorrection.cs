@@ -18,6 +18,7 @@ namespace SashaRX.UnityMeshLab
             public int samples, trials;
             public int smoothingRegions, linkedNormalDuplicates, mixedSmoothingFaces, missingSmoothingRegions, incompleteSmoothingRegions;
             public LodSmoothingRegions.Error[] regionNormalsBefore, regionNormalsAfter;
+            public string colorMethod;
             public string note;
         }
 
@@ -41,8 +42,9 @@ namespace SashaRX.UnityMeshLab
             if (!normals && !colors) { report.note = "No authored normals or RGBA channel to correct."; return null; }
             var smoothing = normals ? new LodSmoothingRegions(original,target,cancelled) : null;
             var normalFit = normals ? new FieldFit(target.normals.Select(n => (Vector4)n.normalized).ToArray(),smoothing.owners) : null;
-            var colorFit = colors ? new FieldFit(target.colors.Select(c => (Vector4)c).ToArray()) : null;
-            PinSeams(target,normalFit,colorFit,smoothing?.owners);
+            var colorOwners = colors ? ColorOwners(target) : null;
+            var colorFit = colors ? new FieldFit(target.colors.Select(c => (Vector4)c).ToArray(),colorOwners) : null;
+            PinSeams(target,normalFit,colorFit,smoothing?.owners,colorOwners);
             if (smoothing != null)
             {
                 report.smoothingRegions = smoothing.count; report.linkedNormalDuplicates = smoothing.linkedDuplicates;
@@ -112,24 +114,36 @@ namespace SashaRX.UnityMeshLab
                 var acceptedColors = target.colors;
                 if (colors)
                 {
-                    foreach (float blend in blends)
-                    {
-                        CheckCancellation(cancelled);
-                        var values = new Color[target.positions.Length];
-                        for (int i = 0; i < values.Length; i++) values[i] = (Color)Vector4.Lerp(target.colors[i],fittedColors[i],blend);
-                        if (values.SequenceEqual(target.colors)) continue;
-                        SetColors(trial,values,reduced.GetVertexAttributeFormat(VertexAttribute.Color));
-                        UvProgress.Report(UvProgress.Current.fraction,$"{source.name}: verify RGBA fit {blend:P0}");
-                        var measured = LodSurfaceValidation.MeasureMeshes(source,trial,settings,cancelled,ignoreDegenerateFaces:true); report.trials++;
-                        if (!ColorImproved(measured,best)) continue;
-                        best = measured; acceptedColors = values; report.colorsAccepted = true; report.colorBlend = blend;
-                    }
+                    var colorReport = report;
+                    VerifyColors(fittedColors,"least-squares");
+                    // Reuse the same facing-compatible, same-material source
+                    // barycentric samples for a bounded mass-average alternative.
+                    // Only retry rejected varying-color fits, avoiding extra
+                    // verification passes for already improved or constant fields.
+                    if (!report.colorsAccepted && original.colors.Any(c => !c.Equals(original.colors[0])))
+                        VerifyColors(colorFit.Resample(cancelled),"area-resampled");
                     SetColors(trial,acceptedColors,reduced.GetVertexAttributeFormat(VertexAttribute.Color));
+                    void VerifyColors(Vector4[] fitted,string method)
+                    {
+                        foreach (float blend in blends)
+                        {
+                            CheckCancellation(cancelled);
+                            var values = new Color[target.positions.Length];
+                            for (int i = 0; i < values.Length; i++) values[i] = (Color)Vector4.Lerp(target.colors[i],fitted[i],blend);
+                            if (values.SequenceEqual(target.colors)) continue;
+                            SetColors(trial,values,reduced.GetVertexAttributeFormat(VertexAttribute.Color));
+                            UvProgress.Report(UvProgress.Current.fraction,$"{source.name}: verify RGBA {method} {blend:P0}");
+                            var measured = LodSurfaceValidation.MeasureMeshes(source,trial,settings,cancelled,ignoreDegenerateFaces:true); colorReport.trials++;
+                            if (!ColorImproved(measured,best)) continue;
+                            best = measured; acceptedColors = values; colorReport.colorsAccepted = true; colorReport.colorBlend = blend;
+                            colorReport.colorMethod = method;
+                        }
+                    }
                 }
                 metrics = best;
                 report.normalRmsAfter = best.NormalRms; report.normalMaxAfter = best.authoredNormalAngle;
                 report.colorRmsAfter = best.ColorRms; report.colorMaxAfter = best.colorMax;
-                report.note = $"Surface attribute fit: normals {(report.normalsAccepted ? "improved" : "kept")}, RGBA {(report.colorsAccepted ? "improved" : "kept")} ({samples} samples, {report.trials} verification trials).";
+                report.note = $"Surface attribute fit: normals {(report.normalsAccepted ? "improved" : "kept")}, RGBA {(report.colorsAccepted ? "improved via "+report.colorMethod : "kept")} ({samples} samples, {report.trials} verification trials).";
                 if (smoothing != null) report.note += $" Smoothing: {smoothing.count} source regions, {smoothing.linkedDuplicates} linked normal duplicates, " +
                     $"{smoothing.mixedFaces} mixed/unmapped faces pinned, {smoothing.missingRegions} source regions without a mapped LOD face, " +
                     $"{report.incompleteSmoothingRegions} incomplete correspondences pinned. Per-region normal RMS/max must not increase.";
@@ -176,7 +190,37 @@ namespace SashaRX.UnityMeshLab
             return result;
         }
 
-        static void PinSeams(LodMeshData mesh,FieldFit normals,FieldFit colors,int[] normalOwners)
+        internal static int[] ColorOwners(LodMeshData mesh)
+        {
+            var owners = Enumerable.Range(0,mesh.positions.Length).ToArray();
+            int Root(int vertex)
+            {
+                while (owners[vertex] != vertex)
+                {
+                    owners[vertex] = owners[owners[vertex]];
+                    vertex = owners[vertex];
+                }
+                return vertex;
+            }
+            void Join(int first,int second)
+            {
+                if (!mesh.colors[first].Equals(mesh.colors[second])) return;
+                first = Root(first); second = Root(second);
+                owners[Math.Max(first,second)] = Math.Min(first,second);
+            }
+            // Join only unambiguous adjacent corners within a material slot.
+            // Coincident opposite faces and corner contacts remain independent.
+            for (int slot = 0; slot < mesh.source.subMeshCount; slot++)
+                foreach (var pair in LodSmoothingRegions.EdgePairs(mesh,LodMeshData.Triangles(mesh.source,slot)))
+                {
+                    Join(pair[0].a,pair[1].b);
+                    Join(pair[0].b,pair[1].a);
+                }
+            for (int vertex = 0; vertex < owners.Length; vertex++) owners[vertex] = Root(vertex);
+            return owners;
+        }
+
+        static void PinSeams(LodMeshData mesh,FieldFit normals,FieldFit colors,int[] normalOwners,int[] colorOwners)
         {
             var groups = new Dictionary<Vector3,List<int>>();
             for (int i = 0; i < mesh.positions.Length; i++)
@@ -188,7 +232,8 @@ namespace SashaRX.UnityMeshLab
             {
                 bool normalSeam = normals != null && group.Any(i => normalOwners[group[0]] != normalOwners[i] &&
                     Vector3.Dot(mesh.normals[group[0]].normalized,mesh.normals[i].normalized) < .9999f);
-                bool colorSeam = colors != null && group.Any(i => ((Vector4)mesh.colors[group[0]]-(Vector4)mesh.colors[i]).sqrMagnitude > 1e-8f);
+                bool colorSeam = colors != null && group.Any(i => colorOwners[group[0]] != colorOwners[i] ||
+                    ((Vector4)mesh.colors[group[0]]-(Vector4)mesh.colors[i]).sqrMagnitude > 1e-8f);
                 foreach (int i in group)
                 {
                     if (normalSeam) normals.pinned[i] = true;
@@ -342,6 +387,21 @@ namespace SashaRX.UnityMeshLab
                     }
                     for (int i = 0; i < count; i++)
                         if (!fixedVariables[i]) result[i][channel] = Mathf.Clamp((float)x[i],minimum[i][channel],maximum[i][channel]);
+                }
+                return owners.Select(i => result[i]).ToArray();
+            }
+            internal Vector4[] Resample(Func<bool> cancelled)
+            {
+                var result = (Vector4[])prior.Clone();
+                var fixedVariables = new bool[prior.Length];
+                for (int i = 0; i < pinned.Length; i++) if (pinned[i]) fixedVariables[owners[i]] = true;
+                for (int i = 0; i < result.Length; i++)
+                {
+                    CheckCancellation(cancelled);
+                    if (fixedVariables[i] || mass[i] <= 0) continue;
+                    var value = rhs[i]/(float)mass[i];
+                    for (int channel = 0; channel < 4; channel++)
+                        result[i][channel] = Mathf.Clamp(value[channel],minimum[i][channel],maximum[i][channel]);
                 }
                 return owners.Select(i => result[i]).ToArray();
             }

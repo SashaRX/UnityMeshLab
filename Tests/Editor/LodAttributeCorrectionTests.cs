@@ -52,6 +52,50 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void SmoothColorUvSeam_UsesSharedFitWithoutChangingUvOrInventingAColorStep()
+        {
+            var source = Grid(8,true);
+            var reduced = Grid(1,false);
+            var indices = reduced.triangles;
+            reduced.vertices = indices.Select(i => reduced.vertices[i]).ToArray();
+            reduced.normals = null;
+            source.normals = null;
+            reduced.colors = indices.Select(_ => new Color(.2f,2,-1,.2f)).ToArray();
+            var uv = Enumerable.Range(0,indices.Length).Select(i => new Vector2(i,0)).ToArray();
+            reduced.uv2 = uv;
+            reduced.tangents = null;
+            reduced.triangles = Enumerable.Range(0,indices.Length).ToArray();
+            var owners = LodAttributeCorrection.ColorOwners(new LodMeshData(reduced));
+            Assert.That(owners[0],Is.EqualTo(owners[3]));
+            Assert.That(owners[2],Is.EqualTo(owners[4]));
+
+            var corrected = Track(LodAttributeCorrection.Correct(source,reduced,Settings,default,out var report,out _));
+
+            Assert.That(report.colorsAccepted,Is.True);
+            Assert.That(corrected,Is.Not.Null);
+            Assert.That(corrected.colors[0],Is.EqualTo(corrected.colors[3]));
+            Assert.That(corrected.colors[2],Is.EqualTo(corrected.colors[4]));
+            Assert.That(corrected.uv2,Is.EqualTo(uv));
+            Assert.That(corrected.triangles,Is.EqualTo(reduced.triangles));
+        }
+
+        [Test]
+        public void ColorOwners_DoNotJoinDisconnectedCornerContactsOrMaterialSlots()
+        {
+            var mesh = Track(new Mesh { vertices = new[] { Vector3.zero,Vector3.right,Vector3.up,
+                Vector3.zero,Vector3.left,Vector3.down }, triangles = new[] {0,1,2,3,4,5} });
+            mesh.colors = Enumerable.Repeat(Color.gray,6).ToArray();
+            var owners = LodAttributeCorrection.ColorOwners(new LodMeshData(mesh));
+            Assert.That(owners[0],Is.Not.EqualTo(owners[3]));
+            mesh.vertices = new[] { Vector3.zero,Vector3.right,Vector3.up,Vector3.zero,Vector3.up,Vector3.left };
+            mesh.subMeshCount = 2;
+            mesh.SetTriangles(new[] {0,1,2},0); mesh.SetTriangles(new[] {3,4,5},1);
+            owners = LodAttributeCorrection.ColorOwners(new LodMeshData(mesh));
+            Assert.That(owners[0],Is.Not.EqualTo(owners[3]));
+            Assert.That(owners[2],Is.Not.EqualTo(owners[4]));
+        }
+
+        [Test]
         public void ConstantExactFields_ReturnNoReplacementAndDoNotInventChannels()
         {
             var source = Grid(4,false); var reduced = Grid(1,false);

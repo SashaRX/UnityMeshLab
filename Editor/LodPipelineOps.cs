@@ -98,6 +98,7 @@ namespace SashaRX.UnityMeshLab
         internal class Result
         {
             public bool ok;
+            public bool cancelled;
             public string error;
             public List<LodInfo> perLod = new List<LodInfo>();
             public List<GameObject> generatedObjects = new List<GameObject>();
@@ -154,7 +155,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         internal static Result Generate(UvToolContext ctx, int startLod, Options opts, Dictionary<Mesh, LodSourceTopology> prepared = null,
-            Dictionary<Mesh,LodSmallParts.Analysis> partAnalyses = null, System.Func<bool> cancelled = null)
+            Dictionary<Mesh,LodSmallParts.Analysis> partAnalyses = null, System.Func<bool> cancelled = null, bool replaceGenerated = false)
         {
             var result = new Result();
             if (ctx?.LodGroup == null) { result.error = "No LODGroup"; return result; }
@@ -174,16 +175,6 @@ namespace SashaRX.UnityMeshLab
                     if (!analysis.Matches(analysis.source.data.source)) { result.error = "Small-part source geometry changed after preflight"; return result; }
 
             var lgGo = ctx.LodGroup.gameObject;
-            if (PrefabUtility.IsPartOfPrefabInstance(lgGo))
-            {
-                var outer = PrefabUtility.GetOutermostPrefabInstanceRoot(lgGo);
-                if (outer != null)
-                {
-                    UvtLog.Info($"[LodPipelineOps] Unpacking prefab instance '{outer.name}' before LOD regeneration.");
-                    PrefabUtility.UnpackPrefabInstance(outer, PrefabUnpackMode.Completely, InteractionMode.AutomatedAction);
-                }
-            }
-
             var sourceMeshes = new List<(MeshEntry entry, Mesh mesh)>();
             foreach (var e in ctx.MeshEntries)
             {
@@ -193,15 +184,9 @@ namespace SashaRX.UnityMeshLab
             }
             if (sourceMeshes.Count == 0) { result.error = "No source meshes found"; return result; }
 
-            UvToolContext.CompactLodArray(ctx.LodGroup, removeEmptySlots: true);
-            var lods = ctx.LodGroup.GetLODs();
-            var newLods = new List<LOD>(lods);
-
-            // A group created from unlabelled renderers uses a low value so its only
-            // LOD is not culled early. Restore the normal LOD0 transition before
-            // appending generated levels; otherwise they start at 0.005 and below.
-            LodGroupUtility.NormalizeSingleLodTransitionForGeneration(newLods, startLod);
-
+            var previousObjects = new List<GameObject>(ctx.GeneratedLodObjects);
+            var previousOwnership = new Dictionary<GameObject,Mesh>(ctx.GeneratedLodMeshes);
+            var previousEntries = new List<MeshEntry>(ctx.MeshEntries);
             Undo.IncrementCurrentGroup();
             int generationUndoGroup = Undo.GetCurrentGroup();
             Undo.SetCurrentGroupName("Generate LODs");
@@ -211,6 +196,20 @@ namespace SashaRX.UnityMeshLab
             var validatedTriangles = new Dictionary<Mesh,(Mesh mesh,Options options)>(); // Borrowed meshes; Generate owns them.
             try
             {
+                CheckGenerationCancellation(cancelled);
+                if (PrefabUtility.IsPartOfPrefabInstance(lgGo))
+                {
+                    var outer = PrefabUtility.GetOutermostPrefabInstanceRoot(lgGo);
+                    if (outer != null)
+                    {
+                        UvtLog.Info($"[LodPipelineOps] Unpacking prefab instance '{outer.name}' before LOD regeneration.");
+                        PrefabUtility.UnpackPrefabInstance(outer, PrefabUnpackMode.Completely, InteractionMode.UserAction);
+                    }
+                }
+                if (replaceGenerated) LodGroupUtility.ClearGeneratedLods(ctx, refreshContext: false);
+                UvToolContext.CompactLodArray(ctx.LodGroup, removeEmptySlots: true);
+                var newLods = new List<LOD>(ctx.LodGroup.GetLODs());
+                LodGroupUtility.NormalizeSingleLodTransitionForGeneration(newLods, startLod);
                 for (int lodIdx = 0; lodIdx < opts.count; lodIdx++)
                 {
                     CheckGenerationCancellation(cancelled);
@@ -443,6 +442,12 @@ namespace SashaRX.UnityMeshLab
             catch (System.OperationCanceledException)
             {
                 result.error = CancellationMessage;
+                result.cancelled = true;
+                return result;
+            }
+            catch (System.Exception ex)
+            {
+                result.error = ex.Message;
                 return result;
             }
             finally
@@ -450,7 +455,10 @@ namespace SashaRX.UnityMeshLab
                 if (!committed)
                 {
                     Undo.RevertAllDownToGroup(generationUndoGroup);
-                    foreach (var go in result.generatedObjects) ctx.GeneratedLodMeshes.Remove(go);
+                    ctx.GeneratedLodMeshes.Clear();
+                    foreach (var pair in previousOwnership) ctx.GeneratedLodMeshes.Add(pair.Key,pair.Value);
+                    ctx.GeneratedLodObjects.Clear(); ctx.GeneratedLodObjects.AddRange(previousObjects);
+                    ctx.MeshEntries.Clear(); ctx.MeshEntries.AddRange(previousEntries);
                     foreach (var mesh in pendingMeshes)
                         if (mesh) Object.DestroyImmediate(mesh);
                     result.generatedObjects.Clear(); result.perLod.Clear();
@@ -458,6 +466,7 @@ namespace SashaRX.UnityMeshLab
                     ctx.ClearAllCaches();
                 }
                 if (UvProgress.CancelRequested) UvProgress.Cancel();
+                else if (!committed) UvProgress.Fail(result.error);
                 else UvProgress.End();
             }
 
