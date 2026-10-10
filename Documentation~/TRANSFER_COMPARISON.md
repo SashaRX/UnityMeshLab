@@ -156,10 +156,10 @@ Each run creates `BenchmarkReports/transfer_compare_<UTC>_<id>/`:
   When reused, its reference is treated as a recorded baseline; original analytic
   truth/control labels remain available in the originating `comparison.json`.
 
-Every measured repeat must have the same raw UV2 bit hash and shell mapping hash.
+Every measured repeat must have the same post-clamp UV2 bit hash and shell mapping hash.
 An additional untimed tracing run must agree. The final quality/reference metrics
 use the common captured clamp policy, with the number of clamped vertices reported;
-the repeat UV hash is before clamp. Full mesh snapshots are compared after each
+the repeat UV hash follows that same clamp policy. Full mesh snapshots are compared after each
 method, and public production/symmetry counters are restored. Reports are updated
 after each method so a partial run keeps completed rows.
 
@@ -167,7 +167,7 @@ Read anisotropy against 3D geometry (1 is isotropic), stretched faces (>1.25),
 degenerate/invalid faces, positive-area triangle overlap including same-shell
 overlap, out-of-bounds vertices, misses and reference error in atlas texels.
 Source quality uses local geometry; target quality uses the captured target world
-matrix. Unknown atlas dimensions use a 1x1 domain for reference error. Overlap
+matrix. Unknown atlas dimensions make reference error unavailable. Overlap
 scans have a two-million comparison budget; incomplete results are lower bounds,
 never proof of zero overlaps. Pair counts and summed pair areas are not unique
 overlap area. Do not rank methods using anisotropy alone: a collapsed result can
