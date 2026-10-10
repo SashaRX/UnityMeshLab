@@ -1060,6 +1060,7 @@ namespace SashaRX.UnityMeshLab
             var next = modes[EditorGUILayout.Popup(selected, names.ToArray(), EditorStyles.toolbarPopup, GUILayout.Width(150))];
             if (next != viewport.Mode) {
                 viewport.Mode = next;
+                CollectViewportItems();
                 if (next >= MeshViewport3D.Shading.UV0 && next <= MeshViewport3D.Shading.UV7 && canvas.HasPreviewChannel(ctx, next - MeshViewport3D.Shading.UV0))
                     OnPreviewChannelChanged(next - MeshViewport3D.Shading.UV0);
                 Repaint();
@@ -1114,6 +1115,7 @@ namespace SashaRX.UnityMeshLab
             canvas.EntriesOverride = toolOwnsUvContent ? uvContentEntries : null;
             viewportItems.Clear(); viewportEntries.Clear();
             canvas.DisplayMeshes.Clear();
+            canvas.DisplayMaterials.Clear();
             if (ActiveTool is IUvTool3D tool3D && tool3D.Get3DContent(viewportItems))
             {
                 viewportItems.RemoveAll(item => !item.mesh);
@@ -1144,7 +1146,11 @@ namespace SashaRX.UnityMeshLab
                 Mesh mesh = ctx.DMesh(e);
                 if (mesh == null) continue;
                 var matrix = e.renderer != null ? worldToPreview * e.renderer.localToWorldMatrix : Matrix4x4.identity;
-                viewportItems.Add(new MeshViewport3D.Item(mesh, matrix, e.renderer != null ? e.renderer.sharedMaterials : null));
+                var materials = e.renderer != null ? OriginalPreviewMaterials(e.renderer) : null;
+                // Surface retains the active Checker/Lightmap scene preview; channel
+                // inspection always samples the authored material beneath it.
+                if (!MeshViewport3D.IsMaterialMode(viewport.Mode) && e.renderer != null) materials = e.renderer.sharedMaterials;
+                viewportItems.Add(new MeshViewport3D.Item(mesh, matrix, materials));
                 viewportEntries.Add(e);
             }
             PrepareInspectionEntries();
@@ -1255,6 +1261,7 @@ namespace SashaRX.UnityMeshLab
                 var item = viewportItems[i]; var entry = viewportEntries[i];
                 if (!item.mesh) continue;
                 viewportEntries[i] = PrepareInspectionEntry(item, entry, active, out var readable);
+                canvas.DisplayMaterials[viewportEntries[i]] = item.materials;
                 item.mesh = readable; viewportItems[i] = item;
             }
             foreach (var key in inspectionEntries.Keys.Where(key => !active.Contains(key)).ToArray()) inspectionEntries.Remove(key);

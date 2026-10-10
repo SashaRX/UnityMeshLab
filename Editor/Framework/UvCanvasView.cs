@@ -81,6 +81,7 @@ namespace SashaRX.UnityMeshLab
         public List<MeshEntry> EntriesOverride;
         // Rendering copies are kept separately so callbacks retain the canonical entry.
         internal readonly Dictionary<MeshEntry, Mesh> DisplayMeshes = new Dictionary<MeshEntry, Mesh>();
+        internal readonly Dictionary<MeshEntry, Material[]> DisplayMaterials = new Dictionary<MeshEntry, Material[]>();
         internal Mesh DisplayMesh(UvToolContext ctx, MeshEntry entry)
         {
             if (entry == null) return null;
@@ -119,7 +120,8 @@ namespace SashaRX.UnityMeshLab
         public bool ShowBorder = true;
         public float FillAlpha = 0.25f;
         internal MeshViewport3D.Shading InspectionShading;
-        bool AttributeFillVisible => !FillHidden && InspectionShading != MeshViewport3D.Shading.Shaded;
+        bool AttributeFillVisible => !FillHidden && InspectionShading != MeshViewport3D.Shading.Shaded && !MeshViewport3D.IsMaterialMode(InspectionShading);
+        Material channelPreview;
         readonly Dictionary<long, Color32[]> inspectionColors = new Dictionary<long, Color32[]>();
 
         /// <summary>
@@ -225,11 +227,14 @@ namespace SashaRX.UnityMeshLab
             VertexChannels.Changed -= InvalidateInspection;
             inspectionColors.Clear();
             DisplayMeshes.Clear();
+            DisplayMaterials.Clear();
             if (canvasRT) { canvasRT.Release(); UnityEngine.Object.DestroyImmediate(canvasRT); canvasRT = null; }
             if (GlMat) UnityEngine.Object.DestroyImmediate(GlMat);
             if (TexMat) UnityEngine.Object.DestroyImmediate(TexMat);
             if (SpotMat) UnityEngine.Object.DestroyImmediate(SpotMat);
             if (ShellOverlayMat) UnityEngine.Object.DestroyImmediate(ShellOverlayMat);
+            if (channelPreview) UnityEngine.Object.DestroyImmediate(channelPreview);
+            channelPreview = null;
             GlMat = TexMat = SpotMat = ShellOverlayMat = null;
         }
 
@@ -379,7 +384,9 @@ namespace SashaRX.UnityMeshLab
 
                         int uN = uvs.Length, fN = tri.Length / 3;
 
-                        if (AttributeFillVisible)
+                        if (MeshViewport3D.IsMaterialMode(InspectionShading))
+                            GlMaterialFill(cx, cy, sz, mesh, entry, uvs);
+                        else if (AttributeFillVisible)
                             GlAttributeFill(cx, cy, sz, mesh, uvs, tri);
                         else if (CurrentPreviewMode == PreviewMode.Shells3D)
                             GlFillSh(ctx, cx, cy, sz, mesh, fN, uN, entry, -1, -1, uvs);
@@ -494,7 +501,8 @@ namespace SashaRX.UnityMeshLab
             }
             int uN = uvs.Length, fN = tri.Length / 3;
             bool hasFill = !CheckerEnabled && !FillHidden && FillModes.Count > 0 && ActiveFillModeIndex >= 0 && ActiveFillModeIndex < FillModes.Count;
-            if (!CheckerEnabled && AttributeFillVisible) GlAttributeFill(cx, cy, sz, mesh, uvs, tri);
+            if (MeshViewport3D.IsMaterialMode(InspectionShading)) GlMaterialFill(cx, cy, sz, mesh, entry, uvs);
+            else if (!CheckerEnabled && AttributeFillVisible) GlAttributeFill(cx, cy, sz, mesh, uvs, tri);
             else if (CurrentPreviewMode == PreviewMode.Shells3D) GlFillSh(ctx, cx, cy, sz, mesh, fN, uN, entry, -1, -1, uvs);
             else if (hasFill) FillModes[ActiveFillModeIndex].drawCallback?.Invoke(this, cx, cy, sz, mesh, entry);
             if (ShowBorder && drawBorders)
@@ -887,6 +895,42 @@ namespace SashaRX.UnityMeshLab
 
         void InvalidateInspection(Mesh mesh) { ClearInspectionCache(); ClearFrameCaches(); }
         internal void ClearInspectionCache() => inspectionColors.Clear();
+
+        void GlMaterialFill(float ox, float oy, float sz, Mesh mesh, MeshEntry entry, Vector2[] layout)
+        {
+            if (!channelPreview) {
+                var shader = Shader.Find("Hidden/MeshLab/MaterialChannelPreview");
+                if (!shader) return;
+                channelPreview = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
+                channelPreview.SetFloat("_ZWrite", 0);
+                channelPreview.SetFloat("_ZTest", (float)CompareFunction.Always);
+            }
+            Material[] materials = null;
+            if (entry != null) DisplayMaterials.TryGetValue(entry, out materials);
+            if (materials == null && entry?.renderer) materials = UvToolHub.OriginalPreviewMaterials(entry.renderer);
+            var sourceUv = RdUvCached(mesh, 0);
+            var colors = mesh.HasVertexAttribute(VertexAttribute.Color) ? mesh.colors : null;
+            for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
+                if (mesh.GetTopology(sub) != MeshTopology.Triangles) continue;
+                var source = materials != null && sub < materials.Length ? materials[sub] : null;
+                var data = MaterialChannelPreview.Read(source, InspectionShading);
+                if (!source && InspectionShading == MeshViewport3D.Shading.Albedo && entry?.previewTexture) {
+                    data.texture = entry.previewTexture; data.tint = Color.white;
+                }
+                data.Apply(channelPreview);
+                if (!channelPreview.SetPass(0)) continue;
+                GL.Begin(GL.TRIANGLES);
+                foreach (int vertex in mesh.GetTriangles(sub)) {
+                    if (vertex < 0 || vertex >= layout.Length) continue;
+                    var uv = sourceUv != null && vertex < sourceUv.Length ? sourceUv[vertex] : Vector2.zero;
+                    GL.Color(colors != null && vertex < colors.Length ? colors[vertex] : Color.white);
+                    GL.TexCoord2(uv.x, uv.y);
+                    GL.Vertex3(ox + layout[vertex].x * sz, oy + (1 - layout[vertex].y) * sz, 0);
+                }
+                GL.End();
+            }
+            GlMat.SetPass(0);
+        }
 
         void GlAttributeFill(float ox, float oy, float sz, Mesh mesh, Vector2[] uv, int[] triangles)
         {

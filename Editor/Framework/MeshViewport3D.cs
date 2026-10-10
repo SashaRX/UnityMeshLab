@@ -18,7 +18,8 @@ namespace SashaRX.UnityMeshLab
     {
         /// <summary>How the content's surfaces are coloured.</summary>
         public enum Shading { Shaded, VertexColors, Normals, Tangents, UV0, UV1, UV2, UV3,
-            UV4, UV5, UV6, UV7, Positions, TangentSign, ColorAlpha, BoneWeights, BoneIndices }
+            UV4, UV5, UV6, UV7, Positions, TangentSign, ColorAlpha, BoneWeights, BoneIndices,
+            Albedo, NormalMap, Gloss, Metalness, AO }
         public enum Projection { Perspective, XY, XZ, YZ }
         internal enum UpAxis { X, Y, Z }
 
@@ -33,7 +34,10 @@ namespace SashaRX.UnityMeshLab
         }
 
         public static readonly string[] ShadingNames = { "Surface", "Vertex colors", "Normals", "Tangents", "UV0", "UV1", "UV2", "UV3",
-            "UV4", "UV5", "UV6", "UV7", "Positions", "Tangent sign", "Color alpha", "Dominant bone weight", "Dominant bone index" };
+            "UV4", "UV5", "UV6", "UV7", "Positions", "Tangent sign", "Color alpha", "Dominant bone weight", "Dominant bone index",
+            "Unlit / Albedo", "Unlit / Normal map", "Unlit / Gloss", "Unlit / Metalness", "Unlit / AO" };
+
+        internal static bool IsMaterialMode(Shading mode) => mode >= Shading.Albedo && mode <= Shading.AO;
 
         public Shading Mode = Shading.Shaded;
         public Projection ViewProjection;
@@ -92,6 +96,7 @@ namespace SashaRX.UnityMeshLab
         Material surface, flat, wire, points;
         Material wireXRay, overlaySurface, overlayXRay;
         Material pointDots, pointDotsXRay;
+        Material materialChannels, translucentChannels;
         RenderTexture offscreen;   // owned; replaced only when the preview target's size, format or sample count changes
         Rect currentRect;
         bool drawing;
@@ -239,6 +244,16 @@ namespace SashaRX.UnityMeshLab
         void DrawItem(Item item)
         {
             var mesh = item.mesh;
+            if (IsMaterialMode(Mode)) {
+                for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
+                    var source = item.materials != null && sub < item.materials.Length ? item.materials[sub] : null;
+                    var block = Block();
+                    MaterialChannelPreview.Read(source, Mode).Apply(block);
+                    block.SetFloat("_Opacity", Mathf.Clamp01(SurfaceOpacity));
+                    utility.DrawMesh(mesh, item.matrix, SurfaceOpacity < .999f ? translucentChannels : materialChannels, sub, block);
+                }
+                return;
+            }
             if (SurfaceOpacity < .999f) {
                 var shown = Mode == Shading.Shaded ? mesh : Encoded(mesh, Mode);
                 if (!shown) shown = mesh;
@@ -616,12 +631,18 @@ namespace SashaRX.UnityMeshLab
         bool EnsureResources()
         {
             if (utility == null) utility = new PreviewRenderUtility { cameraFieldOfView = 30f };
-            if (surface && flat && wire && points && overlaySurface) return true;
+            if (surface && flat && wire && points && overlaySurface && materialChannels) return true;
             var shader = Shader.Find("Hidden/MeshLab/RemeshPreview");
             var lineShader = Shader.Find("Hidden/MeshLab/PreviewLines");
             var overlayShader = Shader.Find("Hidden/MeshLab/ViewportOverlay");
             var pointShader = Shader.Find("Hidden/MeshLab/PreviewPoints");
-            if (!shader || !lineShader || !overlayShader || !pointShader) return false;
+            var channelShader = Shader.Find("Hidden/MeshLab/MaterialChannelPreview");
+            if (!shader || !lineShader || !overlayShader || !pointShader || !channelShader) return false;
+            materialChannels = new Material(channelShader) { hideFlags = HideFlags.HideAndDontSave };
+            translucentChannels = new Material(channelShader) { hideFlags = HideFlags.HideAndDontSave, renderQueue = 3005 };
+            translucentChannels.SetFloat("_ZWrite", 0);
+            translucentChannels.SetFloat("_SrcBlend", (float)BlendMode.SrcAlpha);
+            translucentChannels.SetFloat("_DstBlend", (float)BlendMode.OneMinusSrcAlpha);
             surface = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
             flat = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
             flat.SetFloat("_DepthOffset", -1);
@@ -859,6 +880,9 @@ namespace SashaRX.UnityMeshLab
             if (overlayXRay) Object.DestroyImmediate(overlayXRay);
             if (pointDots) Object.DestroyImmediate(pointDots);
             if (pointDotsXRay) Object.DestroyImmediate(pointDotsXRay);
+            if (materialChannels) Object.DestroyImmediate(materialChannels);
+            if (translucentChannels) Object.DestroyImmediate(translucentChannels);
+            materialChannels = translucentChannels = null;
             pointDots = pointDotsXRay = null;
             wireXRay = overlaySurface = overlayXRay = null;
             surface = flat = wire = points = null;

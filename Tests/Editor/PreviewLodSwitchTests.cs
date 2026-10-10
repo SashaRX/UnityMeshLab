@@ -25,9 +25,20 @@ namespace SashaRX.UnityMeshLab.Tests
         readonly List<Object> owned = new List<Object>();
         UvToolHub hub;
         GameObject previousSelection;
+        string previousHubPreferences;
+        bool hadHubPreferences;
 
         [SetUp]
-        public void RememberSelection() => previousSelection = UnityEditor.Selection.activeGameObject;
+        public void RememberSelection()
+        {
+            previousSelection = UnityEditor.Selection.activeGameObject;
+            string key = MeshLabWindowPreferences.Key("Hub");
+            hadHubPreferences = UnityEditor.EditorPrefs.HasKey(key);
+            previousHubPreferences = UnityEditor.EditorPrefs.GetString(key, "");
+            // A preceding test can persist a material channel on window teardown.
+            // Each test chooses its own mode; preserve the user's prefs around it.
+            UnityEditor.EditorPrefs.DeleteKey(key);
+        }
 
         [TearDown]
         public void Cleanup()
@@ -38,6 +49,9 @@ namespace SashaRX.UnityMeshLab.Tests
             UnityEditor.Selection.activeGameObject = previousSelection;
             foreach (var item in owned) if (item) Object.DestroyImmediate(item);
             owned.Clear();
+            string key = MeshLabWindowPreferences.Key("Hub");
+            if (hadHubPreferences) UnityEditor.EditorPrefs.SetString(key, previousHubPreferences);
+            else UnityEditor.EditorPrefs.DeleteKey(key);
         }
 
         Mesh Quad(string name, bool withUv1)
@@ -334,20 +348,33 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsFalse(ShowsChecker(uv0Only)); Assert.IsFalse(ShowsChecker(uv1Model));
         }
 
-        [Test]
-        public void ModelSelectionClampsAnUnavailableLodAndRetainsInspectionShading()
+        [TestCase(MeshViewport3D.Shading.Normals)]
+        [TestCase(MeshViewport3D.Shading.Albedo)]
+        [TestCase(MeshViewport3D.Shading.NormalMap)]
+        [TestCase(MeshViewport3D.Shading.Gloss)]
+        [TestCase(MeshViewport3D.Shading.Metalness)]
+        [TestCase(MeshViewport3D.Shading.AO)]
+        public void ModelSelectionClampsAnUnavailableLodAndRetainsInspectionShading(MeshViewport3D.Shading shading)
         {
             Open(Group(true, out _, out _));
             SwitchLod(1);
             var viewport = Get<MeshViewport3D>(hub, "viewport");
-            viewport.Mode = MeshViewport3D.Shading.Normals;
+            viewport.Mode = shading;
             Call(hub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Checker);
+            SwitchLod(0); Assert.AreEqual(shading, viewport.Mode);
+            SwitchLod(1); Assert.AreEqual(shading, viewport.Mode);
             var singleLod = Group(true, out var next, out _);
+            var original = next.sharedMaterial;
             singleLod.SetLODs(new[] { new LOD(.5f, new Renderer[] { next }) });
             SelectModel(singleLod.gameObject);
             Assert.AreEqual(0, Get<UvToolContext>(hub, "ctx").PreviewLod);
-            Assert.AreEqual(MeshViewport3D.Shading.Normals, viewport.Mode);
+            Assert.AreEqual(shading, viewport.Mode);
             Assert.IsTrue(ShowsChecker(next));
+            if (MeshViewport3D.IsMaterialMode(shading)) {
+                Call(hub, "CollectViewportItems");
+                var item = Get<List<MeshViewport3D.Item>>(hub, "viewportItems")[0];
+                Assert.AreSame(original, item.materials[0], "Unlit channels must read the authored material beneath Checker");
+            }
         }
 
         [Test]

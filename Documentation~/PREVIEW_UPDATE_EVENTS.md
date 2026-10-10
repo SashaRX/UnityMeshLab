@@ -4,6 +4,31 @@ The hub retains the chosen Checker, Shells3D or Lightmap mode, preferred UV
 channel and camera/UV navigation state. Scene overrides and GPU textures are
 derived data: rebuilding them must not change those choices.
 
+The shared **Surface** dropdown also offers **Unlit / Albedo**, **Unlit / Normal
+map**, **Unlit / Gloss**, **Unlit / Metalness** and **Unlit / AO**. These modes
+ignore the preview lights and the Lit toggle. The chosen mode persists across
+models, LODs and UV/3D switches; existing serialized shading values retain their
+numbers. Checker/Lightmap scene overrides remain a separate choice: material
+channel inspection resolves the authored materials beneath those overrides.
+
+Channel values are bound per submesh every frame, without cloning or editing
+authored materials. Albedo shows the base texture and tint; Normal map shows
+decoded tangent-space RGB with the material's normal strength (distinct from
+the mesh's **Normals** attribute mode). Gloss means smoothness: packed metallic
+or specular alpha, optional albedo alpha, or the material scalar. Metalness reads
+packed red or the scalar; a specular workflow is nonmetallic. AO reads occlusion
+green and its strength. Missing maps use the material's scalar, neutral normal
+or white AO. Data channels display numeric values consistently in Gamma and
+Linear projects. Surface opacity also works for channel inspection.
+
+Standard and URP/Lit use their keywords and shared base-map UV transform. Custom
+shaders use common texture/scalar names and each texture's own transform; this
+does not evaluate arbitrary Shader Graph logic, custom packed-channel recipes
+or layered materials. In the UV view, channel maps are sampled with UV0 while
+triangles are placed through the selected layout channel. This lets UV1 layouts
+show the authored material correctly. Preview-owned materials are released on
+window teardown, alongside the existing viewport resources.
+
 `CollectCanvasEntries` observes both the identities of displayed entries/meshes
 and `UvToolContext.PreviewCacheVersion`. Identity changes cover replacement
 outputs; the version covers edits to the same mesh object. When either changes,
