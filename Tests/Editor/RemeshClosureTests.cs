@@ -72,6 +72,19 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void BridgeIncludesBothConnectedElementsAndUnitesTheirPreparedFaceProvenance()
+        {
+            var p = Box.Select(v => v + Vector3.back * 2).Concat(Box.Select(v => v + Vector3.forward * 2)).ToArray();
+            var ix = Missing(1).Concat(Missing(0).Select(v => v + 8)).ToArray();
+            var cap = RemeshPlanarCap.Prepare(p, ix, "0,1", default, mode: RemeshClosureMode.Bridge, elementScopedContacts: true);
+            Assert.AreEqual(8, cap.addedFaces); Assert.AreEqual(0, cap.remainingBoundaryEdges);
+            Assert.AreNotEqual(cap.externalContacts.faceElements[0], cap.externalContacts.faceElements[10]);
+            Assert.IsTrue(cap.faceElements.All(id => id == cap.faceElements[0]));
+            Assert.AreEqual(0, cap.externalContacts.excludedElementPairs);
+            Assert.IsTrue(RemeshTopology.ClosedVolumeFaces(cap.positions, cap.indices, default).All(v => v));
+        }
+
+        [Test]
         public void BridgeWithUnequalRimsPreservesEveryBorderVertexAndEdge()
         {
             var (points,source)=TorusGap(); var p=points.ToList(); var ix=source.ToList();

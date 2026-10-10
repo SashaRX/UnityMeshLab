@@ -96,10 +96,10 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
                 var run = pipeline.Run(root, settings, RemeshPipeline.Stage.Prepare, RemeshPipeline.Stage.Prepare);
                 while (!run.IsCompleted) yield return null;
                 Assert.IsTrue(run.Result, pipeline.Status); Assert.IsTrue(pipeline.Has(RemeshPipeline.Stage.Prepare));
-                Assert.AreEqual(6, pipeline.Nodes.Sum(node => node.support.addedFaces));
-                Assert.AreEqual(2, pipeline.Nodes.Sum(node => node.support.loopFailures.Count));
+                Assert.AreEqual(8, pipeline.Nodes.Sum(node => node.support.addedFaces));
+                Assert.AreEqual(1, pipeline.Nodes.Sum(node => node.support.loopFailures.Count));
                 Assert.AreEqual(5, pipeline.ClosureContourReasons.Length);
-                Assert.AreEqual(2, pipeline.ClosureContourReasons.Count(reason => !string.IsNullOrEmpty(reason)));
+                Assert.AreEqual(1, pipeline.ClosureContourReasons.Count(reason => !string.IsNullOrEmpty(reason)));
                 for (int i = 0; i < pipeline.ClosureContourReasons.Length; ++i) {
                     var c = pipeline.ClosureContourColors[i];
                     if (!string.IsNullOrEmpty(pipeline.ClosureContourReasons[i])) {
@@ -110,7 +110,7 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
                 }
                 Assert.IsTrue(pipeline.ClosureRims.colors.Any(c => c.r > .9f && c.g < .2f));
                 Assert.IsTrue(pipeline.ClosureRims.colors.Any(c => c.r < .3f && c.b > .9f));
-                Assert.AreEqual((17 + 6) * 3, pipeline.ClosureMesh.triangles.Length);
+                Assert.AreEqual((17 + 8) * 3, pipeline.ClosureMesh.triangles.Length);
                 CollectionAssert.AreEqual(saved, bad.triangles);
                 Assert.AreSame(bad, root.transform.GetChild(0).GetComponent<MeshFilter>().sharedMesh);
                 Assert.AreSame(good, root.transform.GetChild(1).GetComponent<MeshFilter>().sharedMesh);

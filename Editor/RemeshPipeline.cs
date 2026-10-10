@@ -362,7 +362,7 @@ namespace SashaRX.UnityMeshLab
                         var capOwners = captured.FaceOwners();
                         try {
                             node.support = RemeshPlanarCap.Prepare(captured.positions, captured.indices, options.planarCapLoops, token, options.planarCapLocalPlanes, options.closureMode, options.capPlaneTolerance, capOwners,
-                                (loop, done, total) => progress.Report($"{node.name}: processed loop {loop} ({done}/{total})"), continueOnRefusal: true);
+                                (loop, done, total) => progress.Report($"{node.name}: processed loop {loop} ({done}/{total})"), continueOnRefusal: true, elementScopedContacts: true);
                             UvtLog.Info(LogPrefix + node.name + ": planar Cap " + node.support.Description);
                             if (node.support.selectionWarning != null)
                                 UvtLog.Warn(LogPrefix + node.name + ": " + node.support.selectionWarning);

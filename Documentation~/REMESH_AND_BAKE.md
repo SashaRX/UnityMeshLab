@@ -30,6 +30,11 @@ the same snapshot; a subsequent solid-input or native-output refusal retains it.
 Changing capture/filter/closure settings requires preparation again. Changing
 only Solve, trim, Simplify, UV or bake settings reuses the captured support.
 
+Closure contacts are checked against its connected geometric element after weld.
+Faces and earlier Caps from other elements do not block closure, including inside
+one Mesh asset. Bridges protect both elements they join; subsequent closures use
+the updated connectivity. Unsupported contours still retain their refusal reasons.
+
 Each stage has its own settings and button; running a
 stage first brings every earlier stage up to date (missing output or changed
 settings, marked "settings changed" in its header) and clears everything after it.

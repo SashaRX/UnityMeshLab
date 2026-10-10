@@ -56,9 +56,31 @@ controls cover failures before/after successful caps, compound rollback, failed
 Bridge pairs and oversized rims beside small valid openings. The frozen Bush_19
 contact with face 26 remains refused and inspectable without changing its donor.
 
-## Revision 5: contacts with other captured meshes
+## Revision 8: contact audits follow connected geometric elements
 
-The production pipeline passes original face ownership from the capture into
+Production preparation uses edge-connected face components after position weld,
+not renderer or material identity. Original faces and already accepted synthetic
+faces on a different element are excluded from the closure contact audit and its
+pair budget, even inside one imported Mesh. Same-element faces and every new face
+of the current candidate remain protected. A Bridge protects both participating
+elements; subsequent candidates use the accepted topology, so a Bridge joining
+two elements also joins their future contact scope.
+
+The source and prepared face-element maps and excluded-pair count are stored in
+v3 captures. Excluded pairs are not reported as proven intersections. The
+Garbage_Chute capture has contour 4 on element 472 while face 467 belongs to
+element 400: the unrelated face no longer refuses that Cap. Unsupported local
+plane decompositions still remain open with their reasons. Native output topology
+checks and the requirement for closed solid support are unchanged.
+
+Offline array callers retain the strict/renderer-scoped legacy oracle by default;
+`elementScopedContacts: true` reproduces the editor policy independently of
+`continueOnRefusal`. No source vertices, material assignments or UV channels are
+modified by element classification.
+
+## Legacy renderer-scoped contact policy (revision 5)
+
+The legacy policy uses original face ownership from the capture in
 Cap/Bridge preparation. Ownership identifies a captured renderer instance, so
 two instances of the same shared Mesh asset are distinct donors. Filtering keeps
 that provenance. A closure derives its owner set from the original rim faces;
@@ -70,7 +92,7 @@ added/source face pair are recorded with source face owners in capture metadata.
 These contacts do not affect donor attributes or the synthetic-face mask. The
 Bridge and compound searches report contacts from their accepted candidate only.
 
-Contacts with the closing donor, unknown ownership and any other newly generated
+In that legacy policy, contacts with the closing donor, unknown ownership and any other newly generated
 patch remain strict. Earlier accepted patches never become original donors during
 incremental closure. Existing preflight, winding, fan, boundary, budget and native
 output checks remain in place. Offline array callers without ownership keep strict

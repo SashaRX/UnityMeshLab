@@ -10,7 +10,7 @@ namespace SashaRX.UnityMeshLab
     /// donor arrays are never mutated. Each closure candidate is accepted atomically.</summary>
     internal static class RemeshPlanarCap
     {
-        internal const int Revision = 7;
+        internal const int Revision = 8;
         const int MaxVertices = 200000, MaxIndices = 1200000, MaxLoopEdges = 512;
         const int MaxPairTrials = 2000000;
 
@@ -18,18 +18,29 @@ namespace SashaRX.UnityMeshLab
         {
             internal int[] faceOwners;
             internal HashSet<int> closingOwners;
+            internal int[] faceElements;
+            internal HashSet<int> closingElements;
+            internal long excludedElementPairs;
             internal int count, firstNewFace = -1, firstSourceFace = -1;
-            internal ExternalContacts Fork(HashSet<int> owners = null) =>
-                new ExternalContacts { faceOwners = faceOwners, closingOwners = owners ?? closingOwners };
-            internal bool IsExternal(int face) => face < faceOwners.Length && faceOwners[face] >= 0 &&
-                closingOwners != null && closingOwners.Count > 0 && !closingOwners.Contains(faceOwners[face]);
+            internal ExternalContacts Fork(HashSet<int> owners = null, int[] elements = null, HashSet<int> closing = null) =>
+                new ExternalContacts { faceOwners = faceOwners, closingOwners = owners ?? closingOwners,
+                    faceElements = elements ?? faceElements, closingElements = closing ?? closingElements };
+            internal bool IsExternal(int face)
+            {
+                if (faceElements != null) return face < faceElements.Length && faceElements[face] >= 0 &&
+                    closingElements != null && closingElements.Count > 0 && !closingElements.Contains(faceElements[face]);
+                return faceOwners != null && face < faceOwners.Length && faceOwners[face] >= 0 &&
+                    closingOwners != null && closingOwners.Count > 0 && !closingOwners.Contains(faceOwners[face]);
+            }
             internal void Add(int addedFace, int sourceFace)
             {
                 if (count++ == 0) { firstNewFace = addedFace; firstSourceFace = sourceFace; }
             }
             internal void Merge(ExternalContacts accepted)
             {
-                if (accepted == null || accepted.count == 0) return;
+                if (accepted == null) return;
+                excludedElementPairs += accepted.excludedElementPairs;
+                if (accepted.count == 0) return;
                 if (count == 0) { firstNewFace = accepted.firstNewFace; firstSourceFace = accepted.firstSourceFace; }
                 count += accepted.count;
             }
@@ -43,6 +54,7 @@ namespace SashaRX.UnityMeshLab
             internal int remainingBoundaryEdges;
             internal string selection;
             internal int[] facePatches;
+            internal int[] faceElements;
             internal int[][] boundaryLoops;
             internal ExternalContacts externalContacts;
             internal readonly Dictionary<int, string> loopFailures = new Dictionary<int, string>();
@@ -50,13 +62,14 @@ namespace SashaRX.UnityMeshLab
             internal readonly List<int> patchEnds = new List<int>();
             internal string Description => $"welded {weldedVertices} vertices; {loops} boundary loops; selection {selection}; added {addedFaces} faces; " +
                 $"{localPatches} local patches; {planeRechecks} fresh plane checks; {contactTests} exact contact tests; " +
-                $"{externalContacts?.count ?? 0} non-blocking contacts with other source meshes; {loopFailures.Count} refused loops" +
+                (externalContacts?.faceElements != null ? $"{externalContacts.excludedElementPairs} pairs with other elements excluded from contact audit" :
+                    $"{externalContacts?.count ?? 0} non-blocking contacts with other source meshes") + $"; {loopFailures.Count} refused loops" +
                 (selectionWarning == null ? "" : "; " + selectionWarning);
         }
 
         internal static Support Prepare(Vector3[] positions, int[] indices, string selection, CancellationToken token, bool localPlanes = false,
             RemeshClosureMode mode = RemeshClosureMode.Caps, double planeTolerance = 0, int[] sourceFaceOwners = null,
-            Action<int, int, int> loopCompleted = null, bool continueOnRefusal = false)
+            Action<int, int, int> loopCompleted = null, bool continueOnRefusal = false, bool elementScopedContacts = false)
         {
             token.ThrowIfCancellationRequested();
             if (!Enum.IsDefined(typeof(RemeshClosureMode),mode)) throw Refuse("unknown closure method");
@@ -87,6 +100,11 @@ namespace SashaRX.UnityMeshLab
                 weldedVertices = positions.Length - count, loops = loops.Count, selection = selection };
             result.boundaryLoops = loops.ConvertAll(loop => loop.ToArray()).ToArray();
             if (sourceFaceOwners != null) result.externalContacts = new ExternalContacts { faceOwners = (int[])sourceFaceOwners.Clone() };
+            if (elementScopedContacts) {
+                result.externalContacts ??= new ExternalContacts();
+                result.externalContacts.faceElements = ElementIds(topology, token);
+                result.faceElements = result.externalContacts.faceElements;
+            }
             if (loops.Count == 0) return result;
             var chosen = Selection(selection, loops.Count, continueOnRefusal, out result.selectionWarning);
             // An explicit Bridge needs exactly the authored pair. Do not silently
@@ -98,6 +116,7 @@ namespace SashaRX.UnityMeshLab
             var exact = new RemeshCapIntersection.Q[pWeld.Length][];
             for (int i = 0; i < exact.Length; ++i) exact[i] = RemeshCapIntersection.Point(pWeld[i]);
             var assembled = new List<int>(iWeld); int contactTrials = 0;
+            var currentTopology = topology;
             var finished = new HashSet<int>();
             var closedLoops = new HashSet<int>();
             var partners = new Dictionary<int,int>();
@@ -142,6 +161,14 @@ namespace SashaRX.UnityMeshLab
                     if (contactTrials > MaxPairTrials) throw Refuse("Cap contact audit exceeds the pair budget");
                     var owners = ClosingOwners(topology, loops[loop], partner >= 0 ? loops[partner] : null, sourceFaceOwners);
                     var external = owners == null ? null : result.externalContacts?.Fork(owners);
+                    if (elementScopedContacts) {
+                        // Accepted Bridges can join previously separate elements. Use
+                        // current connectivity, including all earlier synthetic faces.
+                        var current = currentTopology;
+                        var elements = ElementIds(current, token);
+                        var closing = ClosingOwners(current, loops[loop], partner >= 0 ? loops[partner] : null, elements);
+                        external = result.externalContacts.Fork(owners, elements, closing);
+                    }
                     // Local/compound closure may append one patch before discovering a
                     // refusal on the next. Its geometry, patch IDs and contacts stay private.
                     var candidatePositions = pWeld; var candidateExact = exact;
@@ -164,6 +191,7 @@ namespace SashaRX.UnityMeshLab
                     if (!candidateTopology.Valid || candidateTopology.boundary.Count != topology.boundary.Count - removed)
                         throw Refuse("closure candidate topology: " + candidateTopology.Description);
                     pWeld = candidatePositions; exact = candidateExact; assembled = candidate;
+                    currentTopology = candidateTopology;
                     result.patchEnds.AddRange(stats.patchEnds); result.contactTests += stats.contactTests;
                     result.localPatches += stats.localPatches; result.planeRechecks += stats.planeRechecks;
                     result.externalContacts?.Merge(external);
@@ -183,6 +211,7 @@ namespace SashaRX.UnityMeshLab
             if (!after.Valid || after.boundary.Count != topology.boundary.Count - removedEdges)
                 throw Refuse("assembled Cap topology: " + after.Description);
             result.remainingBoundaryEdges = after.boundary.Count;
+            if (elementScopedContacts) result.faceElements = ElementIds(after, token);
             result.positions = pWeld; result.indices = allIndices; result.addedFaces = (allIndices.Length - iWeld.Length) / 3;
             result.facePatches = new int[allIndices.Length / 3];
             int patchStart = result.originalFaces;
@@ -191,6 +220,16 @@ namespace SashaRX.UnityMeshLab
                 patchStart = result.patchEnds[patch];
             }
             return result;
+        }
+
+        static int[] ElementIds(RemeshTopology.Snapshot topology, CancellationToken token)
+        {
+            var elements = new int[topology.indices.Length / 3];
+            for (int face = 0; face < elements.Length; ++face) {
+                if ((face & 1023) == 0) token.ThrowIfCancellationRequested();
+                elements[face] = topology.components.Find(face);
+            }
+            return elements;
         }
 
         static HashSet<int> ClosingOwners(RemeshTopology.Snapshot topology, List<int> first, List<int> second, int[] faceOwners)
@@ -443,7 +482,18 @@ namespace SashaRX.UnityMeshLab
                 var a = positions[ix[f * 3]]; var b = positions[ix[f * 3 + 1]]; var c = positions[ix[f * 3 + 2]];
                 low[f] = Vector3.Min(a, Vector3.Min(b, c)); high[f] = Vector3.Max(a, Vector3.Max(b, c));
             }
-            for (int f = originalFaces; f < faces; ++f) for (int g = 0; g < f; ++g) {
+            List<int> protectedFaces = null;
+            if (external?.faceElements != null) {
+                protectedFaces = new List<int>(faces);
+                for (int face = 0; face < faces; ++face) {
+                    if ((face & 1023) == 0) token.ThrowIfCancellationRequested();
+                    if (!external.IsExternal(face)) protectedFaces.Add(face);
+                }
+                external.excludedElementPairs += (long)(faces - protectedFaces.Count) * (faces - originalFaces);
+            }
+            for (int f = originalFaces; f < faces; ++f) for (int k = 0; k < (protectedFaces?.Count ?? f); ++k) {
+                int g = protectedFaces == null ? k : protectedFaces[k];
+                if (g >= f) break;
                 if ((trials & 255) == 0) token.ThrowIfCancellationRequested();
                 if (++trials > MaxPairTrials) throw Refuse("Cap contact audit exceeds the pair budget");
                 if (low[f].x > high[g].x || low[g].x > high[f].x || low[f].y > high[g].y || low[g].y > high[f].y || low[f].z > high[g].z || low[g].z > high[f].z) continue;

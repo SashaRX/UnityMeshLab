@@ -19,6 +19,8 @@ namespace SashaRX.UnityMeshLab
             public int capRevision;
             public int[] sourceFaceOwners;
             public int externalContactCount;
+            public int[] sourceFaceElements, preparedFaceElements;
+            public long excludedElementPairs;
             public int[] refusedLoops;
             public string[] refusedLoopReasons;
             public string closureSelectionWarning;
@@ -72,6 +74,9 @@ namespace SashaRX.UnityMeshLab
                 string partial = path + ".tmp";
                 try {
                     if (support != null) {
+                        metadata.sourceFaceElements = support.externalContacts?.faceElements;
+                        metadata.preparedFaceElements = support.faceElements;
+                        metadata.excludedElementPairs = support.externalContacts?.excludedElementPairs ?? 0;
                         metadata.closureSelectionWarning = support.selectionWarning;
                         metadata.refusedLoops = new int[support.loopFailures.Count];
                         metadata.refusedLoopReasons = new string[support.loopFailures.Count];

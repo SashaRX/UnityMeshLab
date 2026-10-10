@@ -321,6 +321,114 @@ namespace SashaRX.UnityMeshLab.Tests
             TestContext.WriteLine("Measured native limitation after successful Cap: " + error.Message);
         }
 
+        [TestCase(false, 1, false)] [TestCase(false, 1, true)]
+        [TestCase(true, 2, false)] [TestCase(true, 2, true)]
+        [TestCase(true, 3, false)] [TestCase(true, 3, true)]
+        public void OtherConnectedElementsInTheSameMeshDoNotBlockCaps(bool local, int missing, bool ownersPresent)
+        {
+            int[] absent = missing == 1 ? new[] {2} : missing == 2 ? new[] {0,2} : new[] {0,2,4};
+            var donor = Faces.Where((_, k) => !absent.Contains(k / 6)).ToArray();
+            var p = Box.Concat(new[] {
+                new Vector3(-1.3f,-1.3f,-1.3f),new Vector3(-.7f,-1.3f,-.7f),
+                new Vector3(-.7f,-.7f,-1.3f),new Vector3(-1.3f,-.7f,-.7f)}).ToArray();
+            var ix = donor.Concat(new[] {8,10,9,8,9,11,9,10,11,10,8,11}).ToArray();
+            var saved = (int[])ix.Clone(); var savedPoints = (Vector3[])p.Clone();
+            var cap = RemeshPlanarCap.Prepare(p, ix, "all", default, local,
+                sourceFaceOwners: ownersPresent ? new int[ix.Length / 3] : null, elementScopedContacts: true);
+            Assert.AreEqual(missing * 2, cap.addedFaces); Assert.Greater(cap.externalContacts.excludedElementPairs, 0);
+            Assert.AreNotEqual(cap.externalContacts.faceElements[0], cap.externalContacts.faceElements[donor.Length / 3]);
+            Assert.IsTrue(RemeshTopology.ClosedVolumeFaces(cap.positions, cap.indices, default).All(v => v));
+            CollectionAssert.AreEqual(saved, ix); CollectionAssert.AreEqual(savedPoints, p);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void ElementScopeStillRefusesContactWithItsOwnFoldedSurface(bool local)
+        {
+            var p = (Vector3[])Box.Clone(); p[2] = new Vector3(0,-2,0);
+            var ix = Faces.Where((_, k) => k / 6 != 2).ToArray();
+            Assert.IsTrue(RemeshTopology.Inspect(p, ix).Valid);
+            var error = Assert.Throws<InvalidOperationException>(() => RemeshPlanarCap.Prepare(p, ix, "all", default, local, elementScopedContacts: true));
+            StringAssert.Contains("contacts face", error.Message);
+        }
+
+        [Test]
+        public void CapsMayCrossEarlierCapsOfAnotherElementInTheSameMesh()
+        {
+            var p = Box.Concat(Box.Select(v => v + new Vector3(.5f,-.5f,.5f))).ToArray();
+            var ix = Faces.Where((_, k) => k / 6 != 2).Concat(Faces.Skip(6).Select(v => v + 8)).ToArray();
+            var cap = RemeshPlanarCap.Prepare(p, ix, "all", default, sourceFaceOwners: new int[ix.Length / 3], elementScopedContacts: true);
+            Assert.AreEqual(4, cap.addedFaces); Assert.AreEqual(0, cap.remainingBoundaryEdges);
+            Assert.AreEqual(cap.faceElements[0], cap.faceElements[20]);
+            Assert.AreEqual(cap.faceElements[10], cap.faceElements[22]);
+            Assert.AreNotEqual(cap.faceElements[20], cap.faceElements[22]);
+            Assert.Greater(cap.externalContacts.excludedElementPairs, 40);
+            CollectionAssert.AreEqual(ix, cap.indices.Take(ix.Length));
+        }
+
+        [Test]
+        public void AnEarlierCapInTheSameElementStillBlocksAContactAndExternalPairsDoNotConsumeItsBudget()
+        {
+            var p = new[] {new Vector3(10,10,10),new Vector3(11,10,10),new Vector3(10,11,10),
+                Vector3.zero,Vector3.right,Vector3.up,
+                new Vector3(.25f,.25f,-1),new Vector3(.25f,.25f,1),new Vector3(.75f,.25f,0)};
+            var external = new RemeshPlanarCap.ExternalContacts {faceElements = new[] {1,0}, closingElements = new System.Collections.Generic.HashSet<int> {0}};
+            int trials = 1999999;
+            var error = Assert.Throws<InvalidOperationException>(() => RemeshPlanarCap.AuditContacts(p, p.Select(RemeshCapIntersection.Point).ToArray(),
+                Enumerable.Range(0,9).ToArray(), 2, default, ref trials, out _, external));
+            StringAssert.Contains("new face 2 contacts face 1", error.Message);
+            Assert.AreEqual(2000000, trials); Assert.AreEqual(1, external.excludedElementPairs);
+        }
+
+        [Test]
+        public void FrozenGarbageChuteClosesLoopFourDespiteFace467InAnotherElement()
+        {
+            string path = Environment.GetEnvironmentVariable("MESH_LAB_CAP_ELEMENT_SOURCE");
+            if (string.IsNullOrEmpty(path)) Assert.Ignore("Set MESH_LAB_CAP_ELEMENT_SOURCE to the decoded Garbage_Chute source.bin.");
+            using var reader = new BinaryReader(File.OpenRead(path));
+            int vertices = reader.ReadInt32(), count = reader.ReadInt32();
+            var p = new Vector3[vertices]; var ix = new int[count];
+            for (int i = 0; i < vertices; ++i) p[i] = new Vector3(reader.ReadSingle(),reader.ReadSingle(),reader.ReadSingle());
+            for (int i = 0; i < count; ++i) ix[i] = reader.ReadInt32();
+            var old = RemeshPlanarCap.Prepare(p, ix, "all", default, true, planeTolerance: 1e-5, continueOnRefusal: true);
+            Assert.AreEqual(44, old.addedFaces); StringAssert.Contains("face 467", old.loopFailures[4]);
+            var cap = RemeshPlanarCap.Prepare(p, ix, "all", default, true, planeTolerance: 1e-5,
+                sourceFaceOwners: new int[count / 3], continueOnRefusal: true, elementScopedContacts: true);
+            Assert.IsFalse(cap.loopFailures.ContainsKey(4)); Assert.GreaterOrEqual(cap.addedFaces, 46);
+            CollectionAssert.AreEquivalent(new[] {1,3}, cap.loopFailures.Keys);
+            Assert.AreEqual(24, cap.remainingBoundaryEdges);
+            Assert.Greater(cap.externalContacts.excludedElementPairs, 0);
+            Assert.AreNotEqual(cap.externalContacts.faceElements[467], cap.faceElements[cap.faceElements.Length - 1]);
+            Assert.IsTrue(RemeshTopology.Inspect(cap.positions, cap.indices).Valid);
+            for (int i = 0; i < ix.Length; ++i) Assert.AreEqual(p[ix[i]], cap.positions[cap.indices[i]]);
+            TestContext.WriteLine(cap.Description);
+        }
+
+        [Test]
+        public void ElementScopeCaptureKeepsSourceAndPreparedFaceMapsAndExcludedPairCount()
+        {
+            var p = Box.Concat(Box.Select(v => v + new Vector3(.5f,-.5f,.5f))).ToArray();
+            var ix = Faces.Where((_, k) => k / 6 != 2).Concat(Faces.Skip(6).Select(v => v + 8)).ToArray();
+            var support = RemeshPlanarCap.Prepare(p, ix, "all", default, elementScopedContacts: true);
+            string folder = Path.Combine(Path.GetTempPath(), "meshlab-cap-test-" + Guid.NewGuid().ToString("N"));
+            try {
+                string path = RemeshGeometryDiagnostics.WriteFailure(folder, p, ix, null, null,
+                    new RemeshGeometryDiagnostics.FailureMetadata {stage = "Element scope"}, support);
+                using var reader = new BinaryReader(File.OpenRead(path));
+                Assert.AreEqual(0x524D4C42, reader.ReadInt32()); Assert.AreEqual(3, reader.ReadInt32());
+                var metadata = JsonUtility.FromJson<RemeshGeometryDiagnostics.FailureMetadata>(reader.ReadString());
+                CollectionAssert.AreEqual(support.externalContacts.faceElements, metadata.sourceFaceElements);
+                CollectionAssert.AreEqual(support.faceElements, metadata.preparedFaceElements);
+                Assert.AreEqual(20, metadata.sourceFaceElements.Length); Assert.AreEqual(24, metadata.preparedFaceElements.Length);
+                Assert.AreEqual(support.externalContacts.excludedElementPairs, metadata.excludedElementPairs);
+                Assert.Greater(metadata.excludedElementPairs, 0);
+            }
+            finally {
+                string expected = Path.Combine(Path.GetFullPath(Path.GetTempPath()), "meshlab-cap-test-");
+                if (!Path.GetFullPath(folder).StartsWith(expected, StringComparison.OrdinalIgnoreCase)) throw new InvalidOperationException("Unsafe test cleanup path.");
+                Directory.Delete(folder, true);
+            }
+        }
+
         [TestCase(1)] [TestCase(2)]
         public void ExternalSourcePolicyNeverExemptsEarlierSyntheticFaces(int priorFaces)
         {
