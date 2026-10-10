@@ -249,7 +249,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
-        [Test]
+        [Test, Timeout(1800000)] // Opt-in saved brute-force settings can take minutes per atlas.
         public void VerifyCapturedClosureWithFallbackThroughNativeStages()
         {
             var manifest = ReadManifest(); RemeshNative.CheckAvailable();

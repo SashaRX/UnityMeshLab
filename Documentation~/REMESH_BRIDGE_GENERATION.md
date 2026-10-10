@@ -31,6 +31,14 @@ Remesh, source-fitted Simplify and UV using those saved settings. The original
 donors must remain unchanged and the final atlas scan must be complete and clean.
 Outputs include the closed support mesh and `closure-native.json`.
 
+The complete saved-setting replay reaches 241,028 voxel faces, 16,938 simplified
+faces and 754 UV islands (mean/worst stretch 1.03814/8.461). Its full atlas scan
+has no overlap, degenerate, invalid or out-of-bounds faces/vertices. Worst stretch
+remains a quality defect; material Bake was not evaluated. Saved brute-force
+packing took about 14 minutes, so this opt-in test has a 30-minute timeout rather
+than the runner's default three minutes. The initial run completed every geometry
+assertion but was reported failed by that default timeout.
+
 2026-10-09, following the [paired-rim topology counterexample](REMESH_CAP_BRIDGE.md).
 The offline `bridge.py` now generates candidate strips from two explicitly
 selected boundary loops, without supplied reference triangles. `collar_growth.py`
