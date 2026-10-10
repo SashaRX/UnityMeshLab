@@ -17,7 +17,9 @@ namespace SashaRX.UnityMeshLab
             internal readonly int a, b, c;
             internal readonly Vector3 weights;
             internal Sample(int a, int b, int c, Vector3 weights) { this.a = a; this.b = b; this.c = c; this.weights = weights; }
-            internal int Exact => weights.x == 1 ? a : weights.y == 1 ? b : weights.z == 1 ? c : -1;
+            // Only a complete canonical corner identifies an original byte copy;
+            // a nearly-one weight must still interpolate all source attributes.
+            internal int Exact => weights.Equals(Vector3.right) ? a : weights.Equals(Vector3.up) ? b : weights.Equals(Vector3.forward) ? c : -1;
         }
 
         internal static Mesh Copy(Mesh source, int[] sourceFaces, Vector3[] barycentrics, Vector2[] uv)

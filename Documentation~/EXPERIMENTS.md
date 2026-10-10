@@ -96,7 +96,10 @@ Older merged captures with no unique source transform are unsuitable as a live
 acceptance baseline; the full imported chains above provide explicit frames.
 
 Isolated Unity 6000.2.6f2 run: 157 tests passed, zero failed, one unrelated optional
-legacy-capture test skipped. Both reference-assembly compile variants and the
+legacy-capture test skipped. After Sonar fixes, the focused reverse/junction run
+passes 98 tests with zero failures and the same optional skip; all 32 asset
+trials retain identical acceptance, atlas size and inherited-area measurements.
+Both reference-assembly compile variants and the
 identifier/dependency gates pass. Private chains are enabled with
 `MESHLAB_REVERSE_ASSET_PATHS` (semicolon-separated imported FBX paths);
 `MESHLAB_REVERSE_OUTPUT` retains the old/new per-policy audits and refusal matrix.

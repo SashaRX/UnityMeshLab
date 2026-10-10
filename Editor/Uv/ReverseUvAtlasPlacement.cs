@@ -76,17 +76,19 @@ namespace SashaRX.UnityMeshLab
             for (y = border; y + height <= rows.Length; ++y)
             {
                 token.ThrowIfCancellationRequested();
-                for (x = border; x + width <= rows.Length; ++x)
+                x = border;
+                while (x + width <= rows.Length)
                 {
-                    bool free = true;
+                    bool free = true; int nextX = x + 1;
                     for (int r = y; r < y + height && free; ++r)
                     {
                         if (++work > 128000000) throw new InvalidOperationException("Reverse UV atlas vacancy search exceeded its work budget.");
                         int first = FirstAfter(rows[r], x);
                         if (first == rows[r].Count || rows[r][first].start >= x + width) continue;
-                        x = rows[r][first].end - 1; free = false;
+                        nextX = rows[r][first].end; free = false;
                     }
                     if (free) return true;
+                    x = nextX;
                 }
             }
             x = y = 0; return false;
@@ -128,10 +130,18 @@ namespace SashaRX.UnityMeshLab
                         for (int e = 0; e < 3; ++e)
                         {
                             var a = triangle[e]; var b = triangle[(e + 1) % 3];
-                            if (a.y == b.y) continue;
+                            float rise = b.y - a.y;
+                            if (Math.Abs(rise) <= 1e-6f)
+                            {
+                                // A nearly horizontal edge can straddle a row
+                                // boundary. Reserve its full span conservatively.
+                                if (Math.Min(a.y, b.y) <= top && Math.Max(a.y, b.y) >= bottom)
+                                { min = Math.Min(min, Math.Min(a.x, b.x)); max = Math.Max(max, Math.Max(a.x, b.x)); }
+                                continue;
+                            }
                             foreach (float v in new[] { bottom, top })
                             {
-                                float t = (v - a.y) / (b.y - a.y);
+                                float t = (v - a.y) / rise;
                                 if (t < 0 || t > 1) continue;
                                 float x = a.x + (b.x - a.x) * t; min = Math.Min(min, x); max = Math.Max(max, x);
                             }
