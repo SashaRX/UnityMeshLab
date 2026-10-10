@@ -54,6 +54,22 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void ScreenFootprintsFollowAbsoluteLodNumbersAndIgnoreFarQualityToggle()
+        {
+            var tool = new LodGenerationTool();
+            var build = typeof(LodGenerationTool).GetMethod("BuildGenerationOptions",BindingFlags.NonPublic|BindingFlags.Instance);
+            SetField(tool,"generateRelaxFarLods",false);
+            SetField(tool,"generateFarScreenPixels",64);
+            var options = (LodPipelineOps.Options)build.Invoke(tool,new object[] {1});
+            Assert.That(LodPipelineOps.ForLevel(options,0).screenObjectPixels,Is.EqualTo(248));
+            Assert.That(LodPipelineOps.ForLevel(options,1).screenObjectPixels,Is.EqualTo(64));
+            options = (LodPipelineOps.Options)build.Invoke(tool,new object[] {2});
+            Assert.That(LodPipelineOps.ForLevel(options,0).screenObjectPixels,Is.EqualTo(64));
+            SetField(tool,"generateFarScreenPixels",32);
+            options = (LodPipelineOps.Options)build.Invoke(tool,new object[] {2});
+            Assert.That(LodPipelineOps.ForLevel(options,1).screenObjectPixels,Is.EqualTo(32));
+        }
+        [Test]
         public void GenerationOptions_DefaultBudgetAndThreefoldRatiosReachPipeline()
         {
             var tool = new LodGenerationTool();

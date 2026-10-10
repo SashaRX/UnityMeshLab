@@ -35,6 +35,8 @@ namespace SashaRX.UnityMeshLab
             public bool coarsenHardEdgeChains;
             public bool nativeHardEdgeConstraints;
             public bool screenGuidedSelection;
+            public int screenObjectPixels;
+            public int[] screenPixelsByLevel;
             public float featureChainError;
         }
 
@@ -49,11 +51,23 @@ namespace SashaRX.UnityMeshLab
 
         internal static Options ForLevel(Options options,int index)
         {
+            if (options.screenPixelsByLevel != null) options.screenObjectPixels = options.screenPixelsByLevel[index];
             if (options.levelQuality == null) return options;
             var quality = options.levelQuality[index];
             options.targetError = quality.targetError; options.normalWeight = quality.normalWeight;
             options.colorWeight = quality.colorWeight; options.maxNormalAngle = quality.maxNormalAngle;
             options.maxColorError = quality.maxColorError;
+            return options;
+        }
+
+        static int ForLevelScreenPixels(Options options,int index) => options.screenPixelsByLevel != null ? options.screenPixelsByLevel[index] : options.screenObjectPixels;
+
+        // Absolute LOD numbers matter when appending to an existing group.
+        internal static Options WithScreenFootprints(Options options,int startLod,int farPixels = 64)
+        {
+            options.screenPixelsByLevel = new int[options.count];
+            for (int i = 0; i < options.count; i++)
+                options.screenPixelsByLevel[i] = startLod+i >= 2 ? farPixels : 248;
             return options;
         }
 
@@ -180,6 +194,17 @@ namespace SashaRX.UnityMeshLab
             if (ctx?.LodGroup == null) { result.error = "No LODGroup"; return result; }
             if (opts.ratios == null || opts.count <= 0) { result.error = "No ratios"; return result; }
             if (opts.count > opts.ratios.Length) { result.error = "Missing LOD ratios"; return result; }
+            if (opts.screenGuidedSelection)
+            {
+                if (opts.screenPixelsByLevel == null && opts.screenObjectPixels == 0) opts = WithScreenFootprints(opts,startLod);
+                if (opts.screenPixelsByLevel != null && opts.screenPixelsByLevel.Length < opts.count)
+                { result.error = "Missing per-LOD screen footprints"; return result; }
+                for (int i = 0; i < opts.count; i++)
+                {
+                    int pixels = ForLevelScreenPixels(opts,i);
+                    if (pixels < 16 || pixels > 248) { result.error = "LOD screen footprint must be between 16 and 248 pixels"; return result; }
+                }
+            }
             if (opts.smallParts.enabled && !opts.smallParts.IsValid) { result.error = "Invalid small-part settings"; return result; }
             if (opts.levelQuality != null)
             {
@@ -273,6 +298,8 @@ namespace SashaRX.UnityMeshLab
                         if (partAnalyses.TryGetValue(srcMesh,out var analysis))
                         {
                             float entryHeight = lodLevel > 0 && lodLevel-1 < newLods.Count ? newLods[lodLevel-1].screenRelativeTransitionHeight : 1;
+                            if (opts.screenGuidedSelection)
+                                entryHeight = Mathf.Min(entryHeight,(float)levelOptions.screenObjectPixels/opts.smallParts.screenHeight);
                             var scale = ctx.LodGroup.transform.lossyScale;
                             float worldSize = ctx.LodGroup.size*Mathf.Max(Mathf.Abs(scale.x),Mathf.Max(Mathf.Abs(scale.y),Mathf.Abs(scale.z)));
                             partPlan = LodSmallParts.Select(analysis,opts.smallParts,lodLevel,entryHeight,

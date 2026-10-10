@@ -33,6 +33,7 @@ namespace SashaRX.UnityMeshLab
         bool generateCoarsenHardEdgeChains;
         bool generateNativeHardEdgeConstraints;
         bool generateScreenGuidedSelection;
+        int generateFarScreenPixels = 64;
         float generateFeatureChainError = .005f;
         float generateReductionStep = 3;
         float generateTargetError = 0.2f;
@@ -414,7 +415,11 @@ namespace SashaRX.UnityMeshLab
             }
             generateValidateColors = EditorGUILayout.Toggle("Validate Vertex Colors", generateValidateColors);
             using (new EditorGUI.DisabledScope(!generateBudgetPriority || generateReductionMode != LodReductionMode.Triangles))
+            {
                 generateScreenGuidedSelection = EditorGUILayout.Toggle(new GUIContent("Screen Quality Guide", "Experimental: rank candidates by visible thin-detail and RGBA boundary loss, prevent correction from worsening these losses, and guard small-part removal at the estimated LOD entry size."),generateScreenGuidedSelection);
+                if (generateScreenGuidedSelection)
+                    generateFarScreenPixels = EditorGUILayout.IntSlider(new GUIContent("LOD2+ Object Pixels", "Maximum projected object extent for far-LOD quality checks. Preserves aspect ratio; this is the object's size, not the display resolution or LODGroup transition setting."),generateFarScreenPixels,16,248);
+            }
             if (generateValidateColors)
                 generateMaxColorError = EditorGUILayout.Slider("Max Color Error", generateMaxColorError, 0.001f, 1f);
             if (generateReductionMode != LodReductionMode.Triangles || generateValidateColors || generateBudgetPriority)
@@ -480,7 +485,7 @@ namespace SashaRX.UnityMeshLab
                         EditorGUILayout.LabelField($"      area RMS distance {r.sourceDistanceRms:P3}, normal {r.normalRms:F1}°; silhouette mean/max {r.silhouetteMean:P1}/{r.silhouetteMax:P1}",EditorStyles.miniLabel);
                         EditorGUILayout.LabelField($"      relative selection score {r.selectionScore:G4}; native probes {r.nativeProbes}",EditorStyles.miniLabel);
                         if (r.screenQuality != null)
-                            EditorGUILayout.LabelField($"      screen guide detail loss {r.screenQuality.detailLoss:P1}; RGBA boundary loss " +
+                            EditorGUILayout.LabelField($"      screen guide {r.screenQuality.objectPixels}px: detail loss {r.screenQuality.detailLoss:P1}; RGBA boundary loss " +
                                 (r.screenQuality.colorViews > 0 ? r.screenQuality.colorLoss.ToString("P1") : "n/a"),EditorStyles.miniLabel);
                         if (r.attributeCorrection != null)
                         {
@@ -618,7 +623,7 @@ namespace SashaRX.UnityMeshLab
                     maxColorError = generateFarMaxColorError, normalWeight = generateNormalWeight*generateFarNormalWeightScale,
                     colorWeight = generateColorWeight*generateFarColorWeightScale
                 });
-            return opts;
+            return LodPipelineOps.WithScreenFootprints(opts,startLod,generateFarScreenPixels);
         }
 
         internal static float[] SteppedRatios(float sourceRatio,float reduction,int count)

@@ -187,5 +187,32 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(result.perLod[1].reductionNote,Does.Contain("retained LOD0"));
             Assert.That(LodMeshData.TriangleCount(mesh),Is.EqualTo(34));
         }
+
+        [Test]
+        public void ScreenGuideUsesFarFootprintForPartEligibilityAndDeletionGuard()
+        {
+            var mesh = Model(true); var positions = mesh.vertices;
+            positions[26] = positions[25]+new Vector3(.15f,0,0);
+            positions[27] = positions[25]+new Vector3(.15f,.15f,0);
+            positions[28] = positions[25]+new Vector3(0,.15f,0);
+            mesh.vertices = positions; mesh.RecalculateBounds(); mesh.RecalculateNormals();
+            Assert.That(Select(Analyze(mesh),Settings()).removed,Is.Empty,"The part exceeds the limit at the old transition estimate.");
+            root = new GameObject("FarParts"); root.AddComponent<MeshFilter>().sharedMesh = mesh; root.AddComponent<MeshRenderer>();
+            var ctx = new UvToolContext(); ctx.Refresh(LodGenerationTool.CreateLodGroupFromRenderers(root));
+            Assert.That(LodSmallParts.Select(Analyze(mesh),Settings(),2,64f/1080,Matrix4x4.identity,ctx.LodGroup.size).removed,
+                Has.Count.EqualTo(1),"The conservative sum of part extents must fit the far pixel limit.");
+            var result = LodPipelineOps.Generate(ctx,1,new LodPipelineOps.Options {
+                count = 2,ratios = new[] {1f,1f},targetError = .2f,candidateCount = 1,
+                reductionMode = LodReductionMode.Triangles,prioritizeTriangleBudget = true,
+                screenGuidedSelection = true,skipColorValidation = true,smallParts = Settings() });
+            foreach (var go in result.generatedObjects) Track(go.GetComponent<MeshFilter>().sharedMesh);
+            Assert.That(result.ok,Is.True,result.error);
+            Assert.That(result.perLod[0].removedParts,Is.Zero);
+            Assert.That(result.perLod[1].removedParts,Is.EqualTo(1),result.perLod[1].reductionNote);
+            Assert.That(result.perLod[1].simplifiedTris,Is.EqualTo(32));
+            Assert.That(result.perLod[1].screenQuality.objectPixels,Is.EqualTo(64));
+            Assert.That(LodMeshData.TriangleCount(mesh),Is.EqualTo(34));
+            CollectionAssert.AreEqual(positions,mesh.vertices);
+        }
     }
 }

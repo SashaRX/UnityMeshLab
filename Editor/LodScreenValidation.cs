@@ -14,6 +14,7 @@ namespace SashaRX.UnityMeshLab
         [Serializable] internal sealed class Report
         {
             public int views, detailViews, colorViews;
+            public int objectPixels, resolution;
             public float detailLoss, colorLoss;
             public bool detailAccepted, colorAccepted;
             internal float Penalty(float colorWeight) => 4*(detailLoss+colorLoss*Mathf.Max(0,colorWeight));
@@ -35,14 +36,17 @@ namespace SashaRX.UnityMeshLab
         readonly Matrix4x4 transform;
         readonly Vector3 origin;
         readonly int resolution;
+        readonly int objectPixels;
 
         // pixelsPerUnit=0 fits the mesh at a fixed diagnostic footprint. A positive
         // value checks removal at the LODGroup transition's estimated screen size.
         internal LodScreenValidation(Mesh source,bool colors,Func<bool> cancelled = null,
-            Matrix4x4? transform = null,float pixelsPerUnit = 0,int resolution = Size)
+            Matrix4x4? transform = null,float pixelsPerUnit = 0,int resolution = Size,int objectPixels = 0)
         {
             if (resolution < 32 || resolution > 1024) throw new ArgumentException("LOD screen resolution must be between 32 and 1024.");
+            if (objectPixels < 0 || objectPixels > resolution-8) throw new ArgumentException("Object footprint must fit inside the screen preview padding.");
             this.resolution = resolution;
+            this.objectPixels = objectPixels > 0 ? objectPixels : resolution-8;
             this.transform = transform ?? Matrix4x4.identity;
             origin = source.bounds.center;
             var positions = Positions(source); var triangles = Triangles(source); var rgba = Colors(source);
@@ -60,7 +64,7 @@ namespace SashaRX.UnityMeshLab
                     minimum = Vector2.Min(minimum,projected); maximum = Vector2.Max(maximum,projected);
                 }
                 float extent = Mathf.Max((maximum-minimum).x,(maximum-minimum).y);
-                float fit = (resolution-8)/Mathf.Max(extent,1e-7f);
+                float fit = this.objectPixels/Mathf.Max(extent,1e-7f);
                 var view = new View { horizontal = horizontal,vertical = vertical,normal = normal,
                     center = (minimum+maximum)*.5f,pixelsPerUnit = pixelsPerUnit > 0 ? Mathf.Min(fit,pixelsPerUnit) : fit };
                 var frame = Rasterize(positions,triangles,rgba,view,resolution,cancelled);
@@ -73,7 +77,7 @@ namespace SashaRX.UnityMeshLab
         internal Report Measure(Mesh mesh,Func<bool> cancelled = null)
         {
             var positions = Positions(mesh); var triangles = Triangles(mesh); var colors = Colors(mesh);
-            var result = new Report { views = views.Count,detailAccepted = true };
+            var result = new Report { views = views.Count,detailAccepted = true,objectPixels = objectPixels,resolution = resolution };
             foreach (var view in views)
             {
                 var frame = Rasterize(positions,triangles,colors,view,resolution,cancelled);

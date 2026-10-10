@@ -5,8 +5,8 @@ triangle-budget candidate selection and whole-component removal. It is an
 experimental option, disabled by default. Native crease constraints and chain
 coarsening remain separate options.
 The option is available with `Triangles` and `Prioritize Triangle Budget`; the
-result panel shows local detail and RGBA-boundary loss, with unevaluated paint as
-`n/a`.
+result panel shows the object footprint, local detail and RGBA-boundary loss,
+with unevaluated paint as `n/a`.
 
 ## Decisions
 
@@ -19,7 +19,23 @@ missing, constant or insufficiently resolved paint is not reported as accepted.
 
 The existing `LodScreenAcceptance` helper measures thin regions, visible image
 components and sharp RGBA boundaries. The selection guide uses the worst eligible
-regional loss across the six views at a fixed 256-pixel frame. Its added score is
+regional loss across the six views. LOD1 uses a maximum object extent of 248
+pixels inside a 256-pixel frame. LOD2 and later use **64 pixels** by default,
+inside a 72-pixel frame with padding. `LOD2+ Object Pixels` adjusts this to
+16–248 pixels independently of the far-LOD attribute settings. Absolute LOD
+indices also apply when appending levels. Every view preserves aspect ratio;
+a narrow model occupies less than 64 pixels along its shorter dimension.
+The value describes a diagnostic object footprint, not a display resolution
+or an automatic change to LODGroup switching thresholds.
+
+Pixel eligibility, boundary contrast and the one-pixel displacement tolerance
+are applied after rendering at that footprint. Unresolvable small regions do
+not receive a local visibility penalty; broad paint regions and visible silhouette
+loss still do. Missing eligible paint remains `n/a`, rather than a passed check.
+The original guide results below were measured at the preceding fixed 256-pixel
+frame. [The footprint calibration](LOD_FAR_SCREEN_FOOTPRINT.md) records the new run.
+
+Its added score is
 `4 * (detailLoss + levelColorWeight * colorLoss)`. The far-LOD color weight therefore
 still permits a weaker color preference. Budget reachability, the preceding
 protected density cap and the existing five-percent undershoot band keep their
@@ -37,7 +53,9 @@ This guard does not fit new categorical paint labels or optimize paint seams.
 Before accepting a proposed whole-component deletion, the same helper compares
 the retained source with the complete source. Its pixels-per-world-unit estimate
 uses the existing LODGroup size, renderer transform, target transition height and
-configured screen height. Removal probes allocate a canvas large enough to retain
+configured screen height, capped by the level's diagnostic object extent.
+Both the proposed-part eligibility and deletion guard use this capped estimate.
+Removal probes allocate a canvas large enough to retain
 that pixel scale, capped at 1024 pixels. An oversized/invalid probe retains the
 parts rather than making them artificially subpixel. The plan is rejected as a
 whole if an eligible region loses more than 25%; subpixel and small excluded

@@ -1,0 +1,167 @@
+{
+  "tests": [
+    {
+      "total": "205",
+      "passed": "205",
+      "failed": "0",
+      "skipped": "0",
+      "duration": "73,7957162"
+    },
+    {
+      "total": "1",
+      "passed": "1",
+      "failed": "0",
+      "skipped": "0",
+      "duration": "413,9139232"
+    }
+  ],
+  "note": "Fresh generations; CPU guide uses six views. GPU illustration is a source-framed resize of fresh 384px captures, not a project camera screenshot. Timings are single runs.",
+  "models": [
+    {
+      "fixture": "tent-colored",
+      "sourceTriangles": 560,
+      "sourceSha256": "a4aafe5dc9b4bc31200f31d1a0549a93b729aa7d657bcb7501acdd310e616839",
+      "unity": "6000.2.6f2",
+      "gpu": "NVIDIA GeForce GTX 980 Ti",
+      "graphicsApi": "Direct3D12",
+      "levels": [
+        {
+          "level": 1,
+          "triangles": 186,
+          "targetTriangles": 187,
+          "selectedCandidate": 3,
+          "previousTriangles": 186,
+          "rawCapturesIdenticalToPrevious": true,
+          "previousGuide": {
+            "views": 6,
+            "detailViews": 6,
+            "colorViews": 3,
+            "detailLoss": 0.21508756279945374,
+            "colorLoss": 0.8709677457809448,
+            "detailAccepted": true,
+            "colorAccepted": false
+          },
+          "guide": {
+            "views": 6,
+            "detailViews": 6,
+            "colorViews": 3,
+            "objectPixels": 248,
+            "resolution": 256,
+            "detailLoss": 0.21508756279945374,
+            "colorLoss": 0.8709677457809448,
+            "detailAccepted": true,
+            "colorAccepted": false
+          }
+        },
+        {
+          "level": 2,
+          "triangles": 178,
+          "targetTriangles": 63,
+          "selectedCandidate": 3,
+          "previousTriangles": 178,
+          "rawCapturesIdenticalToPrevious": true,
+          "previousGuide": {
+            "views": 6,
+            "detailViews": 6,
+            "colorViews": 3,
+            "detailLoss": 0.2985074520111084,
+            "colorLoss": 0.8161290287971497,
+            "detailAccepted": false,
+            "colorAccepted": false
+          },
+          "guide": {
+            "views": 6,
+            "detailViews": 6,
+            "colorViews": 2,
+            "objectPixels": 64,
+            "resolution": 72,
+            "detailLoss": 0.09206349402666092,
+            "colorLoss": 1.0,
+            "detailAccepted": true,
+            "colorAccepted": false
+          }
+        }
+      ],
+      "nativeGenerateSeconds": 8.4661823,
+      "guidedGenerateSeconds": 10.876409800000001,
+      "previousGuidedGenerateSeconds": 14.748149600000001
+    },
+    {
+      "fixture": "bench-colored",
+      "sourceTriangles": 9334,
+      "sourceSha256": "313fe7429853f372f1b01a15c47145f266fc1c1e39d1e80c42a8563179077471",
+      "unity": "6000.2.6f2",
+      "gpu": "NVIDIA GeForce GTX 980 Ti",
+      "graphicsApi": "Direct3D12",
+      "levels": [
+        {
+          "level": 1,
+          "triangles": 3111,
+          "targetTriangles": 3112,
+          "selectedCandidate": 2,
+          "previousTriangles": 3111,
+          "rawCapturesIdenticalToPrevious": true,
+          "previousGuide": {
+            "views": 6,
+            "detailViews": 6,
+            "colorViews": 6,
+            "detailLoss": 0.0,
+            "colorLoss": 0.75,
+            "detailAccepted": true,
+            "colorAccepted": false
+          },
+          "guide": {
+            "views": 6,
+            "detailViews": 6,
+            "colorViews": 6,
+            "objectPixels": 248,
+            "resolution": 256,
+            "detailLoss": 0.0,
+            "colorLoss": 0.75,
+            "detailAccepted": true,
+            "colorAccepted": false
+          }
+        },
+        {
+          "level": 2,
+          "triangles": 2424,
+          "targetTriangles": 1038,
+          "selectedCandidate": 3,
+          "previousTriangles": 2424,
+          "rawCapturesIdenticalToPrevious": true,
+          "previousGuide": {
+            "views": 6,
+            "detailViews": 6,
+            "colorViews": 6,
+            "detailLoss": 1.0,
+            "colorLoss": 1.0,
+            "detailAccepted": false,
+            "colorAccepted": false
+          },
+          "guide": {
+            "views": 6,
+            "detailViews": 6,
+            "colorViews": 6,
+            "objectPixels": 64,
+            "resolution": 72,
+            "detailLoss": 0.12574850022792816,
+            "colorLoss": 0.6499999761581421,
+            "detailAccepted": true,
+            "colorAccepted": false
+          }
+        }
+      ],
+      "nativeGenerateSeconds": 190.4890681,
+      "guidedGenerateSeconds": 216.5613725,
+      "previousGuidedGenerateSeconds": 231.0642336
+    }
+  ],
+  "focusedTests": {
+    "total": "45",
+    "passed": "45",
+    "failed": "0",
+    "skipped": "0",
+    "duration": "28,4980661"
+  },
+  "uniquePassedTests": 206
+}

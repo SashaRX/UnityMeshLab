@@ -72,7 +72,9 @@ namespace SashaRX.UnityMeshLab
             int count = Mathf.Clamp(options.candidateCount,1,5);
             var reports = new List<CandidateReport>();
             var silhouette = new LodSilhouetteValidation(source,cancelled);
-            var screen = options.screenGuidedSelection ? new LodScreenValidation(source,!options.skipColorValidation,cancelled) : null;
+            int screenPixels = options.screenObjectPixels > 0 ? options.screenObjectPixels : 248;
+            var screen = options.screenGuidedSelection ? new LodScreenValidation(source,!options.skipColorValidation,cancelled,
+                resolution:Mathf.Max(32,screenPixels+8),objectPixels:screenPixels) : null;
             var probeEvaluation = chains?.mesh || native || screen != null ? new ProbeEvaluation { source = source,settings = settings,options = options,silhouette = silhouette,screen = screen } : null;
             bool rankOverBudgetQuality = protectedFloorExceedsBudget || probeEvaluation != null;
             try
@@ -159,7 +161,7 @@ namespace SashaRX.UnityMeshLab
                 string selectedName = reusedPrevious ? "previous protected source candidate" : VariantName(selected-1);
                 note = $"Triangle budget prioritized; selected {selectedName} from {reports.Count} quality candidates ({probes} native probes). " +
                 "Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic.";
-                if (screen != null) note += $" CPU screen guide adds worst visible detail/RGBA boundary loss ({bestScreen.detailLoss:P1}/{bestScreen.colorLoss:P1}) at a fixed 256px footprint; budget and density rules still take precedence.";
+                if (screen != null) note += $" CPU screen guide adds worst visible detail/RGBA boundary loss ({bestScreen.detailLoss:P1}/{bestScreen.colorLoss:P1}) at a {bestScreen.objectPixels}px object extent; budget and density rules still take precedence.";
                 if (protectedFloorExceedsBudget) note += " Protected face floor already reaches/exceeds the requested budget; no error/weight relaxation. Over-budget candidates ranked by measured quality.";
                 else if (probeEvaluation != null) note += " Over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape.";
                 if (reusedPrevious) note += " All new candidates exceeded the preceding protected density; cloned and remeasured that source-derived geometry. No recursive collapse; reported result error is sampled weighted error, not a new native bound.";

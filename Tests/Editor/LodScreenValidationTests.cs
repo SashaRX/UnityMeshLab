@@ -34,6 +34,19 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(validation.Measure(Panels(false)).detailLoss,Is.GreaterThan(.9f));
         }
         [Test]
+        public void FarFootprintIgnoresUnresolvablePartsButKeepsLargePaintBoundaries()
+        {
+            var source = Panels(true,.04f); var target = Panels(false);
+            Assert.That(new LodScreenValidation(source,true).Measure(target).detailLoss,Is.GreaterThan(.9f));
+            var far = new LodScreenValidation(source,true,resolution:72,objectPixels:64);
+            var report = far.Measure(target);
+            Assert.That(report.objectPixels,Is.EqualTo(64)); Assert.That(report.resolution,Is.EqualTo(72));
+            Assert.That(report.detailLoss,Is.Zero,"A subpixel component must not count as a visible lost region.");
+            Assert.That(report.colorViews,Is.GreaterThan(0));
+            target.colors = Enumerable.Repeat(new Color(1,0,0,.5f),target.vertexCount).ToArray();
+            Assert.That(far.Measure(target).colorLoss,Is.GreaterThan(.9f),"Broad authored alpha regions remain visible at 64 pixels.");
+        }
+        [Test]
         public void DepthTestingIgnoresHiddenColorAndReversedWinding()
         {
             var source = Panels(false); var target = Track(Object.Instantiate(source));

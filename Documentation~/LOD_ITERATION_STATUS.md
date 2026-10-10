@@ -8,6 +8,8 @@ Latest follow-up verification: **183 selected EditMode tests passed**, with all 
 
 ## Implemented
 
+The [far-screen calibration](LOD_FAR_SCREEN_FOOTPRINT.md) evaluates the optional local guide at a 64-pixel maximum object extent for LOD2 and later, matching the intended small on-screen footprint. 206 distinct selected tests pass, including fresh tent/colored-bench generations. Local detail checks now pass at that size; paint guides still fail and selected geometry is unchanged. LOD1 keeps its preceding diagnostic size. Protected-budget limits and the remaining geometry work still apply.
+
 The latest [screen-acceptance stage](LOD_SCREEN_ACCEPTANCE.md) adds local thin-detail and sharp RGBA-boundary diagnostics at three footprints. **196 selected tests pass**, with 528 comparisons on the prior eight-model GPU readbacks and a separate fresh tent generation/capture. The tent proves lower RGBA RMS can still accompany worse sharp-boundary retention. These diagnostic gates do not yet change candidate selection or generation defaults.
 
 - Independent per-level settings and source-based budgets; multiple meshoptimizer candidates ranked by measured geometry, silhouette, normals, UV and RGBA errors.
