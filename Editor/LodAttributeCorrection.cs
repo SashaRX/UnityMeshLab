@@ -19,13 +19,17 @@ namespace SashaRX.UnityMeshLab
             public int smoothingRegions, linkedNormalDuplicates, mixedSmoothingFaces, missingSmoothingRegions, incompleteSmoothingRegions;
             public LodSmoothingRegions.Error[] regionNormalsBefore, regionNormalsAfter;
             public string colorMethod;
+            public bool screenColorVerification;
+            public int visibleColorSamples;
+            public float visibleRgbaBefore, visibleRgbaAfter;
+            public Vector4 visibleChannelsBefore, visibleChannelsAfter;
             public string note;
         }
 
         // Returns an owned replacement only on improvement. Inputs are never edited.
         internal static Mesh Correct(Mesh source, Mesh reduced, MeshSimplifier.SimplifySettings settings,
             LodPipelineOps.Options options, out Report report, out LodSurfaceValidation.Metrics metrics,
-            Func<bool> cancelled = null, LodSurfaceValidation.Metrics? baseline = null)
+            Func<bool> cancelled = null, LodSurfaceValidation.Metrics? baseline = null,LodScreenValidation screen = null)
         {
             metrics = baseline ?? LodSurfaceValidation.MeasureMeshes(source,reduced,settings,cancelled,ignoreDegenerateFaces:true);
             report = new Report { normalRmsBefore = metrics.NormalRms, normalRmsAfter = metrics.NormalRms,
@@ -37,6 +41,14 @@ namespace SashaRX.UnityMeshLab
             if (float.IsInfinity(metrics.weightedError) || float.IsNaN(metrics.weightedError))
             { report.note = "Attribute correction skipped: invalid surface correspondence."; return null; }
             var original = new LodMeshData(source); var target = new LodMeshData(reduced);
+            var visible = options.screenBudget ? screen : null;
+            var bestScreen = visible?.Measure(reduced,cancelled);
+            if (bestScreen != null)
+            {
+                report.screenColorVerification = true;
+                report.visibleRgbaBefore = report.visibleRgbaAfter = bestScreen.rgbaRms;
+                report.visibleChannelsBefore = report.visibleChannelsAfter = bestScreen.rgbaChannelRms;
+            }
             bool normals = original.normals.Length == original.positions.Length && target.normals.Length == target.positions.Length;
             bool colors = original.colors.Length == original.positions.Length && target.colors.Length == target.positions.Length;
             if (!normals && !colors) { report.note = "No authored normals or RGBA channel to correct."; return null; }
@@ -104,6 +116,9 @@ namespace SashaRX.UnityMeshLab
                         var regions = smoothing.Measure(values,cancelled);
                         if (!LodSmoothingRegions.NoRegression(regions,report.regionNormalsAfter) ||
                             !LodSmoothingRegions.NoRegression(regions,report.regionNormalsBefore)) continue;
+                        var local = visible?.Measure(trial,cancelled);
+                        if (local != null && !local.DoesNotWorsen(bestScreen,true)) continue;
+                        if (local != null) bestScreen = local;
                         report.regionNormalsAfter = regions;
                         best = measured; acceptedNormals = values; report.normalsAccepted = true; report.normalBlend = blend;
                     }
@@ -122,7 +137,35 @@ namespace SashaRX.UnityMeshLab
                     // verification passes for already improved or constant fields.
                     if (!report.colorsAccepted && original.colors.Any(c => !c.Equals(original.colors[0])))
                         VerifyColors(colorFit.Resample(cancelled),"area-resampled");
+                    int visibleSamples = 0;
+                    if (visible != null && original.colors.Any(c => !c.Equals(original.colors[0])))
+                    {
+                        var screenFit = new FieldFit(target.colors.Select(c => (Vector4)c).ToArray(),colorOwners);
+                        Array.Copy(colorFit.pinned,screenFit.pinned,colorFit.pinned.Length);
+                        visibleSamples = visible.AddVisibleColorSamples(reduced,screenFit.Add,cancelled);
+                        if (visibleSamples > 0)
+                        {
+                            VerifyColors(screenFit.Solve(.02f,cancelled),"visible-pixel least-squares");
+                            VerifyColors(screenFit.Solve(.002f,cancelled),"visible-pixel weak-prior fit");
+                        }
+                    }
                     SetColors(trial,acceptedColors,reduced.GetVertexAttributeFormat(VertexAttribute.Color));
+                    if (visible != null)
+                    {
+                        if (report.colorsAccepted)
+                        {
+                            var measured = LodSurfaceValidation.MeasureMeshes(source,trial,settings,cancelled,ignoreDegenerateFaces:true);
+                            if (Finite(measured)) best = measured;
+                            else
+                            {
+                                acceptedColors = target.colors; SetColors(trial,acceptedColors,reduced.GetVertexAttributeFormat(VertexAttribute.Color));
+                                report.colorsAccepted = false; report.colorBlend = 0; bestScreen = visible.Measure(trial,cancelled);
+                            }
+                        }
+                        report.visibleColorSamples = visibleSamples;
+                        report.visibleRgbaAfter = bestScreen.rgbaRms; report.visibleChannelsAfter = bestScreen.rgbaChannelRms;
+                        report.note = $" Far RGBA uses {visibleSamples} paired visible samples; all four screen-channel RMS values and local paint loss must not increase. Surface RGBA errors remain diagnostic.";
+                    }
                     void VerifyColors(Vector4[] fitted,string method)
                     {
                         foreach (float blend in blends)
@@ -133,17 +176,41 @@ namespace SashaRX.UnityMeshLab
                             if (values.SequenceEqual(target.colors)) continue;
                             SetColors(trial,values,reduced.GetVertexAttributeFormat(VertexAttribute.Color));
                             UvProgress.Report(UvProgress.Current.fraction,$"{source.name}: verify RGBA {method} {blend:P0}");
+                            if (visible != null) { VerifyVisible(values,method,blend); continue; }
                             var measured = LodSurfaceValidation.MeasureMeshes(source,trial,settings,cancelled,ignoreDegenerateFaces:true); colorReport.trials++;
                             if (!ColorImproved(measured,best)) continue;
                             best = measured; acceptedColors = values; colorReport.colorsAccepted = true; colorReport.colorBlend = blend;
                             colorReport.colorMethod = method;
+                        }
+                        if (visible == null) return;
+                        // Different RGBA channels can prefer different priors or
+                        // blend amounts. Keep every already accepted channel and
+                        // test a single-channel replacement against the full view.
+                        for (int channel = 0; channel < 4; channel++) foreach (float blend in blends)
+                        {
+                            CheckCancellation(cancelled);
+                            var values = (Color[])acceptedColors.Clone();
+                            for (int i = 0; i < values.Length; i++) values[i][channel] = Mathf.Lerp(target.colors[i][channel],fitted[i][channel],blend);
+                            if (values.SequenceEqual(acceptedColors)) continue;
+                            SetColors(trial,values,reduced.GetVertexAttributeFormat(VertexAttribute.Color));
+                            VerifyVisible(values,method+" channel "+channel,blend);
+                        }
+                        void VerifyVisible(Color[] values,string name,float blend)
+                        {
+                            var local = visible.Measure(trial,cancelled); colorReport.trials++;
+                            if (float.IsNaN(local.rgbaRms) || float.IsInfinity(local.rgbaRms) || !local.DoesNotWorsen(bestScreen,true)) return;
+                            bool improved = local.rgbaRms < bestScreen.rgbaRms-1e-6f;
+                            for (int ch = 0; ch < 4; ch++) improved |= local.rgbaChannelRms[ch] < bestScreen.rgbaChannelRms[ch]-1e-6f;
+                            if (!improved) return;
+                            bestScreen = local; acceptedColors = values; colorReport.colorsAccepted = true;
+                            colorReport.colorBlend = blend; colorReport.colorMethod = name;
                         }
                     }
                 }
                 metrics = best;
                 report.normalRmsAfter = best.NormalRms; report.normalMaxAfter = best.authoredNormalAngle;
                 report.colorRmsAfter = best.ColorRms; report.colorMaxAfter = best.colorMax;
-                report.note = $"Surface attribute fit: normals {(report.normalsAccepted ? "improved" : "kept")}, RGBA {(report.colorsAccepted ? "improved via "+report.colorMethod : "kept")} ({samples} samples, {report.trials} verification trials).";
+                report.note = $"Surface attribute fit: normals {(report.normalsAccepted ? "improved" : "kept")}, RGBA {(report.colorsAccepted ? "improved via "+report.colorMethod : "kept")} ({samples} samples, {report.trials} verification trials)."+report.note;
                 if (smoothing != null) report.note += $" Smoothing: {smoothing.count} source regions, {smoothing.linkedDuplicates} linked normal duplicates, " +
                     $"{smoothing.mixedFaces} mixed/unmapped faces pinned, {smoothing.missingRegions} source regions without a mapped LOD face, " +
                     $"{report.incompleteSmoothingRegions} incomplete correspondences pinned. Per-region normal RMS/max must not increase.";

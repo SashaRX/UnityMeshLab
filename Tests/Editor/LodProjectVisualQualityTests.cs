@@ -286,6 +286,7 @@ namespace SashaRX.UnityMeshLab.Tests
                             if (variant.name.StartsWith("hard-") || variant.name.StartsWith("chains-") || variant.name.StartsWith("native-") || variant.name.StartsWith("matched-") || variant.name.StartsWith("guided-")) Assert.That(features.Valid,Is.True,model.name+"/"+variant.name+": hard features or patch interfaces changed");
                         }
                         var correction = variant.info.attributeCorrection;
+                        capture.attributeFit = correction;
                         if (correction != null)
                         {
                             capture.correctionNote = correction.note; capture.normalsCorrected = correction.normalsAccepted; capture.colorsCorrected = correction.colorsAccepted;
@@ -382,7 +383,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     {
                         Assert.That(info.budgetPriority,Is.True);
                         if (info.hardEdges?.sourceFallback != true)
-                            Assert.That(info.evaluatedCandidates,Is.EqualTo(candidates+(info.budgetCandidates?.Any(c => c.name == "previous protected source candidate") == true ? 1 : 0)));
+                            Assert.That(info.evaluatedCandidates,Is.EqualTo(candidates+(info.budgetCandidates?.Count(c => c.name == "previous protected source candidate" || c.name == "screen silhouette refit") ?? 0)));
                         Assert.That(float.IsNaN(info.selectionScore) || float.IsInfinity(info.selectionScore),Is.False,
                             "Visible real project models require a finite quality ranking: "+source.name);
                         if (!preserveHardEdges || farScreenBudget && info.lodLevel >= 2) Assert.That(info.simplifiedTris,Is.LessThanOrEqualTo(info.targetTris),$"{source.name}/LOD{info.lodLevel}: failed requested 3x budget");

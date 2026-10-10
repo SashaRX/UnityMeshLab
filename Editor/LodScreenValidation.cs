@@ -19,12 +19,19 @@ namespace SashaRX.UnityMeshLab
             public bool detailAccepted, colorAccepted;
             public bool normalsEvaluated, rgbaEvaluated;
             public float silhouetteMean, silhouetteMax, normalRms, rgbaRms;
+            public Vector4 rgbaChannelRms;
             internal float Penalty(float colorWeight) => 4*(detailLoss+colorLoss*Mathf.Max(0,colorWeight));
             internal float ScreenScore(float normalWeight,float colorWeight) => silhouetteMean/.05f+silhouetteMax/.2f+
                 normalRms/30*Mathf.Max(0,normalWeight)+rgbaRms/.1f*Mathf.Max(0,colorWeight)+Penalty(colorWeight);
             internal bool DoesNotWorsen(Report before,bool fields = false) => detailLoss <= before.detailLoss+1e-6f && colorLoss <= before.colorLoss+1e-6f &&
                 (!fields || silhouetteMean <= before.silhouetteMean+1e-6f && silhouetteMax <= before.silhouetteMax+1e-6f &&
-                    normalRms <= before.normalRms+1e-6f && rgbaRms <= before.rgbaRms+1e-6f);
+                    normalRms <= before.normalRms+1e-6f && ColorsDoNotWorsen(before));
+            internal bool ColorsDoNotWorsen(Report before) => colorLoss <= before.colorLoss+1e-6f && rgbaRms <= before.rgbaRms+1e-6f && ChannelsDoNotWorsen(before);
+            bool ChannelsDoNotWorsen(Report before)
+            {
+                for (int ch = 0; ch < 4; ch++) if (rgbaChannelRms[ch] > before.rgbaChannelRms[ch]+1e-6f) return false;
+                return true;
+            }
         }
         sealed class View
         {
@@ -38,6 +45,9 @@ namespace SashaRX.UnityMeshLab
         {
             internal readonly Color[] colors, coverage;
             internal readonly Vector3[] normals;
+            internal Color[] samples;
+            internal int[] triangleAt;
+            internal Vector3[] baryAt;
             internal Frame(int size,bool fields) { colors = new Color[size*size]; coverage = new Color[size*size]; normals = fields ? new Vector3[size*size] : null; }
         }
         readonly List<View> views = new List<View>();
@@ -46,6 +56,9 @@ namespace SashaRX.UnityMeshLab
         readonly int resolution;
         readonly int objectPixels;
         readonly bool measureFields, checkColors, hasNormals;
+        readonly float sourceExtent;
+        readonly int[] sourceSlots;
+        readonly Vector3[] sourceFaceNormals;
 
         // pixelsPerUnit=0 fits the mesh at a fixed diagnostic footprint. A positive
         // value checks removal at the LODGroup transition's estimated screen size.
@@ -61,7 +74,9 @@ namespace SashaRX.UnityMeshLab
             checkColors = colors && source.colors.Length == source.vertexCount;
             hasNormals = source.normals.Length == source.vertexCount;
             origin = source.bounds.center;
+            var size = source.bounds.size; sourceExtent = Mathf.Max(size.x,Mathf.Max(size.y,size.z));
             var positions = Positions(source); var triangles = Triangles(source); var rgba = Colors(source);
+            sourceSlots = FaceSlots(source); sourceFaceNormals = FaceNormals(positions,triangles);
             var sourceNormals = Normals(source);
             bool varying = colors && HasVariation(rgba);
             foreach (var direction in Directions)
@@ -109,9 +124,169 @@ namespace SashaRX.UnityMeshLab
             result.detailAccepted &= result.detailViews > 0;
             return result;
         }
+
+        // Coordinate descent of an already source-derived candidate. Index and
+        // attribute buffers stay intact; coincident render wedges move together.
+        // Coverage counts permit local face updates without re-rendering the mesh.
+        internal Mesh RefineSilhouette(Mesh mesh,out int moves,out int trials,Func<bool> cancelled = null)
+        {
+            moves = trials = 0;
+            if (!measureFields || objectPixels > 128 || mesh.blendShapeCount > 0 ||
+                mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.BlendWeight)) return null;
+            var indices = Triangles(mesh); int faces = indices.Length/3;
+            if (faces == 0 || faces > 512) return null;
+            var positions = mesh.vertices; var groups = new Dictionary<Vector3,List<int>>();
+            var attached = new List<int>[positions.Length];
+            for (int i = 0; i < positions.Length; i++)
+            {
+                attached[i] = new List<int>();
+                if (!groups.TryGetValue(positions[i],out var group)) groups[positions[i]] = group = new List<int>();
+                group.Add(i);
+            }
+            var slotSets = new HashSet<int>[positions.Length];
+            for (int i = 0; i < slotSets.Length; i++) slotSets[i] = new HashSet<int>();
+            for (int s = 0; s < mesh.subMeshCount; s++) foreach (int v in LodMeshData.Triangles(mesh,s)) slotSets[v].Add(s);
+            var originalNormals = new Vector3[faces];
+            for (int f = 0; f < faces; f++)
+            {
+                for (int k = 0; k < 3; k++) attached[indices[f*3+k]].Add(f);
+                originalNormals[f] = FaceNormal(positions,indices,f);
+            }
+            var buffers = new CoverageBuffer[views.Count];
+            for (int v = 0; v < views.Count; v++)
+            {
+                Check(cancelled); var buffer = new CoverageBuffer(faces,resolution*resolution*4); buffers[v] = buffer;
+                for (int f = 0; f < faces; f++)
+                {
+                    buffer.faces[f] = FaceSamples(positions,indices,f,views[v],cancelled);
+                    foreach (int sample in buffer.faces[f]) buffer.counts[sample]++;
+                }
+            }
+            var before = CoverageErrors(buffers,cancelled); float score = before.x*20+before.y*5;
+            var ordered = new List<KeyValuePair<Vector3,List<int>>>(groups);
+            ordered.Sort((a,b) => { int x = a.Key.x.CompareTo(b.Key.x); int y = a.Key.y.CompareTo(b.Key.y); return x != 0 ? x : y != 0 ? y : a.Key.z.CompareTo(b.Key.z); });
+            foreach (float step in new[] { 1f,.5f,.25f })
+            {
+                int groupIndex = 0;
+                foreach (var pair in ordered)
+                {
+                    Check(cancelled);
+                    if (groupIndex++%16 == 0) UvProgress.Report(UvProgress.Current.fraction,$"{mesh.name}: far silhouette refit {step:G2}px");
+                    var group = pair.Value; var slots = new HashSet<int>();
+                    foreach (int vertex in group) slots.UnionWith(slotSets[vertex]);
+                    if (slots.Count > 1) continue; // Pin material interfaces.
+                    var faceSet = new SortedSet<int>(); foreach (int vertex in group) faceSet.UnionWith(attached[vertex]);
+                    if (faceSet.Count == 0) continue;
+                    var incident = new List<int>(faceSet); var previous = positions[group[0]]; var best = previous;
+                    int[][][] accepted = null;
+                    for (int axis = 0; axis < 3; axis++) for (int sign = -1; sign <= 1; sign += 2)
+                    {
+                        var proposed = previous; proposed[axis] += sign*step*sourceExtent/objectPixels;
+                        if ((proposed-pair.Key).magnitude > 2*sourceExtent/objectPixels) continue;
+                        foreach (int vertex in group) positions[vertex] = proposed;
+                        bool valid = true;
+                        foreach (int f in incident)
+                        {
+                            var normal = FaceNormal(positions,indices,f);
+                            if (originalNormals[f].sqrMagnitude > 1e-20f &&
+                                (normal.sqrMagnitude < originalNormals[f].sqrMagnitude*1e-4f || Vector3.Dot(normal,originalNormals[f]) <= 0)) { valid = false; break; }
+                        }
+                        if (!valid) continue;
+                        var masks = new int[views.Count][][];
+                        for (int v = 0; v < views.Count; v++)
+                        {
+                            masks[v] = new int[incident.Count][];
+                            for (int i = 0; i < incident.Count; i++)
+                            {
+                                masks[v][i] = FaceSamples(positions,indices,incident[i],views[v],cancelled);
+                                ReplaceCounts(buffers[v],incident[i],masks[v][i],1);
+                            }
+                        }
+                        var error = CoverageErrors(buffers,cancelled); trials++;
+                        for (int v = 0; v < views.Count; v++) for (int i = 0; i < incident.Count; i++) ReplaceCounts(buffers[v],incident[i],masks[v][i],-1);
+                        float value = error.x*20+error.y*5;
+                        if (value >= score-1e-6f || error.x > before.x+1e-6f || error.y > before.y+1e-6f) continue;
+                        score = value; best = proposed; accepted = masks;
+                    }
+                    foreach (int vertex in group) positions[vertex] = best;
+                    if (accepted == null) continue;
+                    moves++;
+                    for (int v = 0; v < views.Count; v++) for (int i = 0; i < incident.Count; i++)
+                    {
+                        ReplaceCounts(buffers[v],incident[i],accepted[v][i],1);
+                        buffers[v].faces[incident[i]] = accepted[v][i];
+                    }
+                }
+            }
+            if (moves == 0) return null;
+            Check(cancelled);
+            var result = UnityEngine.Object.Instantiate(mesh);
+            try { result.vertices = positions; result.RecalculateBounds(); return result; }
+            catch { UnityEngine.Object.DestroyImmediate(result); throw; }
+        }
+
+        sealed class CoverageBuffer
+        {
+            internal readonly int[][] faces;
+            internal readonly int[] counts;
+            internal CoverageBuffer(int faceCount,int samples) { faces = new int[faceCount][]; counts = new int[samples]; }
+        }
+        static Vector3 FaceNormal(Vector3[] positions,int[] indices,int face)
+            => Vector3.Cross(positions[indices[face*3+1]]-positions[indices[face*3]],positions[indices[face*3+2]]-positions[indices[face*3]]);
+        static void ReplaceCounts(CoverageBuffer buffer,int face,int[] samples,int sign)
+        {
+            foreach (int sample in buffer.faces[face]) buffer.counts[sample] -= sign;
+            foreach (int sample in samples) buffer.counts[sample] += sign;
+        }
+        Vector2 CoverageErrors(CoverageBuffer[] buffers,Func<bool> cancelled)
+        {
+            float mean = 0, maximum = 0;
+            for (int v = 0; v < buffers.Length; v++)
+            {
+                double union = 0, difference = 0; var counts = buffers[v].counts; var source = views[v].source.coverage;
+                for (int pixel = 0; pixel < source.Length; pixel++)
+                {
+                    if (pixel%1024 == 0) Check(cancelled);
+                    float a = source[pixel].r, b = 0;
+                    for (int sample = 0; sample < 4; sample++) if (counts[pixel*4+sample] > 0) b += .25f;
+                    union += Mathf.Max(a,b); difference += Mathf.Abs(a-b);
+                }
+                float error = union > 0 ? (float)(difference/union) : 0;
+                mean += error/buffers.Length; maximum = Mathf.Max(maximum,error);
+            }
+            return new Vector2(mean,maximum);
+        }
+        int[] FaceSamples(Vector3[] positions,int[] indices,int face,View view,Func<bool> cancelled)
+        {
+            Vector3 Project(int vertex)
+            {
+                var p = transform.MultiplyVector(positions[vertex]-origin);
+                return new Vector3((Vector3.Dot(p,view.horizontal)-view.center.x)*view.pixelsPerUnit+resolution*.5f,
+                    (Vector3.Dot(p,view.vertical)-view.center.y)*view.pixelsPerUnit+resolution*.5f,0);
+            }
+            var a = Project(indices[face*3]); var b = Project(indices[face*3+1]); var c = Project(indices[face*3+2]);
+            float area = Cross(b-a,c-a); if (Mathf.Abs(area) < 1e-8f) return Array.Empty<int>();
+            int left = Mathf.Max(0,Mathf.FloorToInt(Mathf.Min(a.x,Mathf.Min(b.x,c.x))));
+            int right = Mathf.Min(resolution-1,Mathf.FloorToInt(Mathf.Max(a.x,Mathf.Max(b.x,c.x))));
+            int bottom = Mathf.Max(0,Mathf.FloorToInt(Mathf.Min(a.y,Mathf.Min(b.y,c.y))));
+            int top = Mathf.Min(resolution-1,Mathf.FloorToInt(Mathf.Max(a.y,Mathf.Max(b.y,c.y))));
+            var samples = new List<int>();
+            for (int y = bottom; y <= top; y++)
+            {
+                Check(cancelled);
+                for (int x = left; x <= right; x++) for (int sample = 0; sample < 4; sample++)
+                {
+                    var p = new Vector3(x+((sample&1) == 0 ? .25f : .75f),y+((sample&2) == 0 ? .25f : .75f),0);
+                    float u = Cross(b-p,c-p)/area, v = Cross(c-p,a-p)/area;
+                    if (u >= -1e-6f && v >= -1e-6f && 1-u-v >= -1e-6f) samples.Add((y*resolution+x)*4+sample);
+                }
+            }
+            return samples.ToArray();
+        }
         static void MeasureFields(Frame source,Frame target,Report result,Func<bool> cancelled)
         {
             double union = 0, difference = 0, overlap = 0, normalSquared = 0, colorSquared = 0;
+            var channelSquared = new double[4];
             for (int i = 0; i < source.colors.Length; i++)
             {
                 if (i%1024 == 0) Check(cancelled);
@@ -125,7 +300,11 @@ namespace SashaRX.UnityMeshLab
                     float angle = n.sqrMagnitude > .5f && m.sqrMagnitude > .5f ? Vector3.Angle(n,m) : (n-m).sqrMagnitude > .5f ? 180 : 0;
                     normalSquared += weight*angle*angle;
                 }
-                if (result.rgbaEvaluated) { Vector4 delta = source.colors[i]-target.colors[i]; colorSquared += weight*delta.sqrMagnitude/4; }
+                if (result.rgbaEvaluated)
+                {
+                    Vector4 delta = source.colors[i]-target.colors[i]; colorSquared += weight*delta.sqrMagnitude/4;
+                    for (int ch = 0; ch < 4; ch++) channelSquared[ch] += weight*delta[ch]*delta[ch];
+                }
             }
             float error = union > 0 ? (float)(difference/union) : 0;
             result.silhouetteMean += error/result.views; result.silhouetteMax = Mathf.Max(result.silhouetteMax,error);
@@ -133,7 +312,49 @@ namespace SashaRX.UnityMeshLab
             {
                 result.normalRms = Mathf.Max(result.normalRms,(float)Math.Sqrt(normalSquared/overlap));
                 result.rgbaRms = Mathf.Max(result.rgbaRms,(float)Math.Sqrt(colorSquared/overlap));
+                for (int ch = 0; ch < 4; ch++) result.rgbaChannelRms[ch] = Mathf.Max(result.rgbaChannelRms[ch],(float)Math.Sqrt(channelSquared[ch]/overlap));
             }
+        }
+        internal int AddVisibleColorSamples(Mesh mesh,Action<int[],int,Vector3,Vector4,double> add,Func<bool> cancelled = null)
+        {
+            if (!measureFields || !checkColors || mesh.colors.Length != mesh.vertexCount) return 0;
+            var positions = Positions(mesh); var indices = Triangles(mesh); var colors = Colors(mesh);
+            var slots = FaceSlots(mesh); var normals = FaceNormals(positions,indices); int count = 0;
+            var authored = Normals(mesh);
+            foreach (var view in views)
+            {
+                var frame = Rasterize(positions,indices,colors,authored,view,resolution,cancelled,true);
+                for (int pixel = 0; pixel < frame.colors.Length; pixel++)
+                {
+                    if (pixel%1024 == 0) Check(cancelled);
+                    // Train on paired covered samples. Occluded samples and a
+                    // different material or opposite geometric face cannot lend color.
+                    for (int s = 0; s < 4; s++)
+                    {
+                        int at = pixel*4+s, original = view.source.triangleAt[at], target = frame.triangleAt[at];
+                        if (original < 0 || target < 0 || sourceSlots[original] != slots[target] ||
+                            Vector3.Dot(sourceFaceNormals[original],normals[target]) <= 0) continue;
+                        add(indices,target*3,frame.baryAt[at],view.source.samples[at],.25); count++;
+                    }
+                }
+            }
+            return count;
+        }
+        static int[] FaceSlots(Mesh mesh)
+        {
+            var result = new List<int>();
+            for (int s = 0; s < mesh.subMeshCount; s++)
+            {
+                int count = LodMeshData.Triangles(mesh,s).Length/3;
+                for (int i = 0; i < count; i++) result.Add(s);
+            }
+            return result.ToArray();
+        }
+        static Vector3[] FaceNormals(Vector3[] positions,int[] indices)
+        {
+            var result = new Vector3[indices.Length/3];
+            for (int i = 0; i < result.Length; i++) result[i] = FaceNormal(positions,indices,i).normalized;
+            return result;
         }
         Vector3[] Normals(Mesh mesh)
         {
@@ -174,7 +395,10 @@ namespace SashaRX.UnityMeshLab
             // Four subpixel samples distinguish fully covered paint interiors from borders.
             var depth = new float[size*size*4]; var samples = new Color[depth.Length];
             var normalSamples = fields ? new Vector3[depth.Length] : null;
+            var triangleAt = fields ? new int[depth.Length] : null;
+            var baryAt = fields ? new Vector3[depth.Length] : null;
             for (int i = 0; i < depth.Length; i++) depth[i] = float.NegativeInfinity;
+            if (fields) for (int i = 0; i < triangleAt.Length; i++) triangleAt[i] = -1;
             bool painted = colors.Length == positions.Length;
             for (int t = 0; t < indices.Length; t += 3)
             {
@@ -198,12 +422,14 @@ namespace SashaRX.UnityMeshLab
                         float z = u*a.z+v*b.z+w*c.z; int index = (y*size+x)*4+sample;
                         if (z <= depth[index]) continue;
                         depth[index] = z; samples[index] = painted ? colors[ia]*u+colors[ib]*v+colors[ic]*w : Color.white;
+                        if (fields) { triangleAt[index] = t/3; baryAt[index] = new Vector3(u,v,w); }
                         if (normalSamples != null && normals.Length == positions.Length)
                             normalSamples[index] = (normals[ia]*u+normals[ib]*v+normals[ic]*w).normalized;
                     }
                 }
             }
             var result = new Frame(size,fields);
+            if (fields) { result.samples = samples; result.triangleAt = triangleAt; result.baryAt = baryAt; }
             for (int i = 0; i < result.colors.Length; i++)
             {
                 int count = 0; Color sum = Color.clear; Vector3 normalSum = Vector3.zero;

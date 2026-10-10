@@ -52,6 +52,23 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void FarColorCorrectionImprovesAllVisibleRgbaChannelsIncludingAlpha()
+        {
+            var source = Grid(8,true); var reduced = Grid(1,false);
+            var positions = reduced.vertices; var colors = reduced.colors;
+            var screen = new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            var before = screen.Measure(reduced);
+            var fitted = Track(LodAttributeCorrection.Correct(source,reduced,Settings,
+                new LodPipelineOps.Options { screenBudget = true,maxColorError = .1f },out var report,out _,screen:screen));
+            Assert.That(fitted,Is.Not.Null); Assert.That(report.colorsAccepted,Is.True);
+            var after = screen.Measure(fitted);
+            Assert.That(after.rgbaRms,Is.LessThan(before.rgbaRms)); Assert.That(after.DoesNotWorsen(before,true),Is.True);
+            for (int ch = 0; ch < 4; ch++) Assert.That(after.rgbaChannelRms[ch],Is.LessThanOrEqualTo(before.rgbaChannelRms[ch]+1e-6f));
+            Assert.That(report.note,Does.Contain("paired visible samples"));
+            CollectionAssert.AreEqual(positions,fitted.vertices); CollectionAssert.AreEqual(colors,reduced.colors);
+            Assert.That(fitted.colors.Max(c => c.g),Is.GreaterThan(1)); Assert.That(fitted.colors.Min(c => c.b),Is.LessThan(0));
+        }
+        [Test]
         public void SmoothColorUvSeam_UsesSharedFitWithoutChangingUvOrInventingAColorStep()
         {
             var source = Grid(8,true);

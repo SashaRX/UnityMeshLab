@@ -422,7 +422,7 @@ namespace SashaRX.UnityMeshLab
                 if (generateScreenGuidedSelection || generateFarScreenBudget)
                     generateFarScreenPixels = EditorGUILayout.IntSlider(new GUIContent("LOD2+ Object Pixels", "Maximum projected object extent for far-LOD quality checks. Preserves aspect ratio; this is the object's size, not the display resolution or LODGroup transition setting."),generateFarScreenPixels,16,248);
                 if (generateFarScreenBudget && generateBudgetPriority && generateReductionMode == LodReductionMode.Triangles)
-                    EditorGUILayout.HelpBox("LOD2 and later can lose exact hard edges to reach their triangle target. Compare silhouette, normals and colors at the selected screen size. Lock Border and material slots retain their settings.",MessageType.Info);
+                    EditorGUILayout.HelpBox("LOD2 and later can lose exact hard edges to reach their triangle target. Far candidates can adjust vertex positions to improve silhouette; attribute correction optimizes visible colors at the selected screen size. Lock Border and material slots retain their settings.",MessageType.Info);
             }
             if (generateValidateColors)
                 generateMaxColorError = EditorGUILayout.Slider("Max Color Error", generateMaxColorError, 0.001f, 1f);

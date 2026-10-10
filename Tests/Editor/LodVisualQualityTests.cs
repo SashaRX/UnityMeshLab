@@ -49,6 +49,7 @@ namespace SashaRX.UnityMeshLab.Tests
             [SerializeField] internal List<LodScreenAcceptance.Report> screenAcceptance;
             [SerializeField] internal LodScreenValidation.Report screenQuality;
             [SerializeField] internal LodScreenValidation.Report farComparison;
+            [SerializeField] internal LodAttributeCorrection.Report attributeFit;
             public int removedParts, removedPartTris;
             public float removedPartAreaFraction, removedPartMaxPixels;
         }

@@ -7,6 +7,11 @@ The far option is enabled by default in LOD Gen's triangle-budget mode and can
 be disabled to retain the preceding exact hard-edge policy. Direct pipeline
 callers explicitly opt in with `farScreenBudget`.
 
+The subsequent [silhouette/color refinement](LOD_FAR_REFINEMENT.md) keeps all
+eight budgets near 1/9, improves the requested wrench/fire-shield silhouettes
+and tent colors, and records remaining normal/paint and performance trade-offs.
+Measurements below remain the preceding budget-stage baseline.
+
 ## Why the preceding LOD2 stopped early
 
 Strict authored-crease protection freezes incident triangles and patch borders.

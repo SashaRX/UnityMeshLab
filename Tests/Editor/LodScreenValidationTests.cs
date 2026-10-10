@@ -120,6 +120,59 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(validation.Measure(target).silhouetteMean,Is.GreaterThan(.5f));
         }
         [Test]
+        public void SilhouetteRefitImprovesCoverageWithoutChangingTopologyAttributesOrInputs()
+        {
+            var source = Panels(false); var target = Track(Object.Instantiate(source));
+            target.vertices = target.vertices.Select(p => p*.9f).ToArray(); target.RecalculateBounds();
+            target.uv2 = target.vertices.Select(p => new Vector2(p.x,p.y)).ToArray();
+            var positions = target.vertices; var indices = target.triangles; var colors = target.colors; var uv = target.uv2;
+            var validation = new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            var before = validation.Measure(target);
+            var fitted = Track(validation.RefineSilhouette(target,out int moves,out int trials));
+            Assert.That(fitted,Is.Not.Null); Assert.That(moves,Is.GreaterThan(0)); Assert.That(trials,Is.GreaterThan(moves));
+            var after = validation.Measure(fitted);
+            Assert.That(after.silhouetteMean,Is.LessThan(before.silhouetteMean)); Assert.That(after.silhouetteMax,Is.LessThanOrEqualTo(before.silhouetteMax));
+            CollectionAssert.AreEqual(indices,fitted.triangles); CollectionAssert.AreEqual(colors,fitted.colors); CollectionAssert.AreEqual(uv,fitted.uv2);
+            CollectionAssert.AreEqual(positions,target.vertices);
+            var values = fitted.vertices;
+            for (int i = 0; i < values.Length; i++)
+            {
+                Assert.That(Vector3.Distance(values[i],positions[i]),Is.LessThanOrEqualTo(4f/64+1e-6f));
+                for (int j = 0; j < i; j++) if (positions[i].Equals(positions[j])) Assert.That(values[i],Is.EqualTo(values[j]));
+            }
+            for (int f = 0; f < indices.Length; f += 3)
+                Assert.That(Vector3.Dot(Vector3.Cross(values[indices[f+1]]-values[indices[f]],values[indices[f+2]]-values[indices[f]]),Vector3.forward),Is.GreaterThan(0));
+        }
+        [Test]
+        public void SilhouetteRefitPinsMaterialInterfacesAndCancelsWithoutAnOwnedMeshLeak()
+        {
+            var source = Panels(false); var target = Track(Object.Instantiate(source));
+            target.vertices = target.vertices.Select(p => p*.9f).ToArray(); target.RecalculateBounds();
+            target.subMeshCount = 2; target.SetTriangles(new[] {0,1,2,0,2,3},0); target.SetTriangles(new[] {4,5,6,4,6,7},1);
+            var validation = new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            var fitted = Track(validation.RefineSilhouette(target,out _,out _));
+            Assert.That(fitted,Is.Not.Null);
+            foreach (int vertex in new[] {1,2,4,7}) Assert.That(fitted.vertices[vertex],Is.EqualTo(target.vertices[vertex]));
+            target.name = "RefitCancel_"+System.Guid.NewGuid().ToString("N"); int checks = 0;
+            Assert.Throws<System.OperationCanceledException>(() => validation.RefineSilhouette(target,out _,out _,() => ++checks > 100));
+            Assert.That(Resources.FindObjectsOfTypeAll<Mesh>().Where(m => m.name == target.name).ToArray(),Is.EqualTo(new[] {target}));
+        }
+        [Test]
+        public void VisibleColorTrainingDoesNotCrossMaterialsOrOppositeGeometricFaces()
+        {
+            var source = Panels(false); var target = Track(Object.Instantiate(source));
+            var screen = new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            Assert.That(screen.AddVisibleColorSamples(target,(indices,at,bary,value,weight) => {
+                Assert.That(bary.x+bary.y+bary.z,Is.EqualTo(1).Within(1e-6f)); Assert.That(weight,Is.EqualTo(.25));
+            }),Is.GreaterThan(100));
+            target.triangles = target.triangles.Reverse().ToArray();
+            Assert.That(screen.AddVisibleColorSamples(target,(_,__,___,____,_____) => Assert.Fail("Opposite face borrowed color")),Is.Zero);
+            target.triangles = source.triangles; target.subMeshCount = 2;
+            target.SetTriangles(System.Array.Empty<int>(),0); target.SetTriangles(source.triangles,1);
+            Assert.That(screen.AddVisibleColorSamples(target,(_,__,___,____,_____) => Assert.Fail("Material slot borrowed color")),Is.Zero);
+            Assert.Throws<System.OperationCanceledException>(() => screen.AddVisibleColorSamples(source,(_,__,___,____,_____) => {},() => true));
+        }
+        [Test]
         public void FarBudgetUsesUnprotectedCandidatesAndMeasuresAllVariantsAt64Pixels()
         {
             var source = Panels(false); var positions = source.vertices; var colors = source.colors;
@@ -130,6 +183,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(result.simplifiedTriCount,Is.LessThanOrEqualTo(2));
             Assert.That(diagnostics.screenQuality.objectPixels,Is.EqualTo(64));
             Assert.That(diagnostics.budgetCandidates.All(c => c.screenQuality.normalsEvaluated && c.screenQuality.objectPixels == 64),Is.True);
+            Assert.That(diagnostics.budgetCandidates.Take(3).Select(c => c.name),Is.EqualTo(new[] {"balanced","shape","RGBA"}));
             Assert.That(note,Does.Contain("Far screen budget"));
             CollectionAssert.AreEqual(positions,source.vertices); CollectionAssert.AreEqual(colors,source.colors);
         }
