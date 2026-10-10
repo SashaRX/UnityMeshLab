@@ -35,6 +35,50 @@ namespace SashaRX.UnityMeshLab
             public int samples,trials,verticesBefore,verticesAfter;
             public float boundaryBefore,boundaryAfter,worstBefore,worstAfter,rgbaBefore,rgbaAfter;
             public float[] viewsBefore,viewsAfter;
+            public CornerSharingReport cornerSharing;
+        }
+
+        [Serializable] internal sealed class CornerSharingReport
+        {
+            public int verticesBefore,verticesAfter,trials;
+            public float colorTolerance,rgbaBefore,rgbaAfter,boundaryBefore,boundaryAfter;
+        }
+
+        internal static Mesh ShareVisibleColorCorners(Mesh fitted,LodScreenValidation screen,
+            out CornerSharingReport report,Func<bool> cancelled = null)
+        {
+            report = new CornerSharingReport { verticesBefore=fitted.vertexCount,verticesAfter=fitted.vertexCount };
+            if (screen == null || fitted.blendShapeCount > 0 || fitted.HasVertexAttribute(VertexAttribute.BlendWeight)) return null;
+            var before = screen.Measure(fitted,cancelled);
+            report.rgbaBefore = report.rgbaAfter = before.rgbaRms;
+            report.boundaryBefore = report.boundaryAfter = before.colorBoundaryMean;
+            var data = new LodMeshData(fitted); Mesh accepted = null;
+            try
+            {
+                // Exact RGBA sharing retains the fitted field in every camera.
+                // Approximate sharing passed the CPU guide but slightly worsened
+                // real bench GPU captures, so it is not enabled for generation.
+                var tolerances = new[] { 0f };
+                foreach (float tolerance in tolerances)
+                {
+                    CheckCancellation(cancelled);
+                    Mesh candidate = data.ShareRenderCorners(tolerance,cancelled);
+                    try
+                    {
+                        if (!candidate || candidate.vertexCount >= report.verticesAfter) continue;
+                        UvProgress.Report(UvProgress.Current.fraction,$"{fitted.name}: verify shared far color corners");
+                        var measured = screen.Measure(candidate,cancelled); report.trials++;
+                        if (!measured.DoesNotWorsen(before,true)) continue;
+                        if (accepted) UnityEngine.Object.DestroyImmediate(accepted);
+                        accepted = candidate; candidate = null;
+                        report.verticesAfter = accepted.vertexCount; report.colorTolerance = tolerance;
+                        report.rgbaAfter = measured.rgbaRms; report.boundaryAfter = measured.colorBoundaryMean;
+                    }
+                    finally { if (candidate) UnityEngine.Object.DestroyImmediate(candidate); }
+                }
+                var result = accepted; accepted = null; return result;
+            }
+            finally { if (accepted) UnityEngine.Object.DestroyImmediate(accepted); }
         }
 
         // Color seams need independent render corners, not more triangles.
@@ -78,6 +122,12 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (!report.accepted) return null;
                 SetColors(trial,accepted,reduced.GetVertexAttributeFormat(VertexAttribute.Color));
+                var shared = ShareVisibleColorCorners(trial,screen,out report.cornerSharing,cancelled);
+                if (shared)
+                {
+                    UnityEngine.Object.DestroyImmediate(trial); trial = shared;
+                    best = screen.Measure(trial,cancelled);
+                }
                 report.boundaryAfter = best.colorBoundaryMean; report.worstAfter = best.colorLoss;
                 report.rgbaAfter = best.rgbaRms; report.viewsAfter = best.colorBoundaryViewLoss; report.verticesAfter = trial.vertexCount;
                 var result = trial; trial = null; return result;

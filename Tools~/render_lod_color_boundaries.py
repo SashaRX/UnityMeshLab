@@ -69,10 +69,12 @@ def main():
     parser.add_argument('--previous', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--paint-surface', type=Path)
+    parser.add_argument('--corner-sharing', action='store_true', help='Audit render-corner reduction against the fitted-color baseline.')
+    parser.add_argument('--previous-paint-surface', type=Path, help='Optional preceding-stage opposite-side captures for the corner-sharing audit.')
     args = parser.parse_args()
     test = ET.parse(args.directory/'tests.xml').getroot()
     assert test.get('result') == 'Passed' and test.get('failed') == test.get('skipped') == '0'
-    result = {'baselineCommit': '9c47d01', 'tests': {k: test.get(k) for k in ('total', 'passed', 'failed', 'skipped')},
+    result = {'baselineCommit': 'e37264d' if args.corner_sharing else '9c47d01', 'tests': {k: test.get(k) for k in ('total', 'passed', 'failed', 'skipped')},
               'footprint': '64px maximum source extent with 4px padding; actual Unity GPU diagnostic vertex RGBA.',
               'limits': 'No original materials or categorical paint labels. Sharp boundaries use all four linear RGBA channels, contrast .15, tolerance .1, one-pixel correspondence, minimum four pairs.',
               'models': []}
@@ -99,11 +101,13 @@ def main():
         for c in new['captures']:
             if c['variant'] == 'far-lod2':
                 continue
-            for kind in ('color', 'coverage', 'shaded'):
+            for kind in ('color', 'coverage', 'shaded', 'wire', 'alpha'):
                 filename = f'{name}-{c["variant"]}-{c["view"]}-{kind}.rgba'
+                if not (args.directory/filename).exists() and not (args.previous/filename).exists():
+                    continue
                 controls[filename] = digest(args.directory/filename)
                 assert controls[filename] == digest(args.previous/filename), f'Changed control: {filename}'
-        row = {'fixture': name, 'sourceSha256': new['sourceSha256'], 'sourceTriangles': new['sourceTriangles'],
+        row = {'fixture': name, 'sourceSha256': new['sourceSha256'], 'sourceTriangles': new['sourceTriangles'], 'sourceVertices': new['sourceVertices'],
                'beforeTriangles': before['triangles'], 'afterTriangles': after['triangles'], 'targetTriangles': after['targetTriangles'],
                'before64': before['farComparison'], 'after64': after['farComparison'],
                'fit': {key: after['attributeFit'][key] for key in ('colorsAccepted', 'colorMethod', 'screenColorVerification',
@@ -112,6 +116,47 @@ def main():
                'selection': after['reductionNote'], 'beforeMs': before['simplifyMs'], 'afterMs': after['simplifyMs'],
                'candidates': after['budgetCandidates'], 'unchangedControls': controls, 'unchangedFarGeometryShading': fixed,
                'gpu64': compare_gpu(args.directory, args.previous, name), 'boundaries64': []}
+        if args.corner_sharing:
+            sharing = fit['cornerSharing']
+            assert sharing['colorTolerance'] == 0, 'Generation must retain exact fitted RGBA.'
+            old_vertices = before['attributeFit']['visibleColorBoundaries']['verticesAfter']
+            assert sharing['verticesBefore'] == old_vertices
+            assert fit['verticesAfter'] == sharing['verticesAfter'] < old_vertices
+            assert before['triangles'] == after['triangles']
+            for key in ('colorLoss', 'colorBoundaryMean', 'rgbaRms', 'silhouetteMean', 'silhouetteMax', 'detailLoss', 'normalRms'):
+                assert after['farComparison'][key] <= before['farComparison'][key]+1e-6, f'Regression: {name} {key}'
+            for key in ('rgbaChannelRms', 'colorBoundaryViewLoss'):
+                a, b = after['farComparison'][key], before['farComparison'][key]
+                a, b = (list(a.values()), list(b.values())) if isinstance(a, dict) else (a, b)
+                assert all(x <= y+1e-6 for x, y in zip(a, b)), f'Regression: {name} {key}'
+            row['cornerSharing'] = sharing
+            row['beforeVertices'] = old_vertices
+            row['afterVertices'] = sharing['verticesAfter']
+            for gpu in row['gpu64']:
+                assert gpu['after']['rgbaRms'] <= gpu['before']['rgbaRms']+1e-6, f'GPU RGBA regression: {name} {gpu["view"]}'
+                assert all(a <= b+1e-6 for a, b in zip(gpu['after']['rgbaChannelRms'], gpu['before']['rgbaChannelRms'])), f'GPU channel regression: {name} {gpu["view"]}'
+            row['colorReadbackComparison'] = []
+            for view in ('front', 'oblique', 'paint-surface'):
+                filename = f'{name}-far-lod2-{view}-color.rgba'
+                preceding = args.previous
+                if view == 'paint-surface' and not (preceding/filename).exists() and args.previous_paint_surface:
+                    preceding = args.previous_paint_surface
+                    if (preceding/filename).exists():
+                        assert json.loads((preceding/f'{name}-metrics.json').read_text())['sourceSha256'] == new['sourceSha256']
+                if not (args.directory/filename).exists() or not (preceding/filename).exists():
+                    continue
+                a = readback(args.directory/filename); b = readback(preceding/filename)
+                assert digest(args.directory/filename) == digest(preceding/filename), f'Changed fitted RGBA readback: {name} {view}'
+                source_mask = coverage(args.directory, name, 'source', view)
+                ref, ref_cov = fields(args.directory, name, 'source', view, source_mask)
+                scores = {}
+                for label, folder in (('before', preceding), ('after', args.directory)):
+                    values, cov = fields(folder, name, 'far-lod2', view, source_mask)
+                    weight = np.minimum(cov, ref_cov)
+                    scores[label] = float(np.sqrt(np.sum((values-ref)**2*weight[:, :, None])/(4*max(weight.sum(), 1e-20))))
+                assert scores['after'] <= scores['before']+1e-6, f'Additional GPU RGBA regression: {name} {view}'
+                row['colorReadbackComparison'].append({'view': view, 'beforeSha256': digest(preceding/filename),
+                    'afterSha256': digest(args.directory/filename), 'maximumAbsoluteRgbaDelta': float(np.max(abs(a-b))), 'rgbaRms64': scores})
         for v, view in enumerate(('front', 'oblique')):
             source_mask = coverage(args.directory, name, 'source', view)
             source_rgba, source_cov = fields(args.directory, name, 'source', view, source_mask)
@@ -121,6 +166,9 @@ def main():
                 boundary[label] = boundary_loss(source_rgba, source_cov, rgba, cov)
                 boundary[label]['rawSha256'] = digest(folder/f'{name}-far-lod2-{view}-color.rgba')
             row['boundaries64'].append(boundary)
+            if args.corner_sharing:
+                for key in ('lostPairs', 'worstRegionLoss'):
+                    assert boundary['after'][key] <= boundary['before'][key], f'GPU boundary regression: {name} {view} {key}'
             for col, (folder, variant, triangles) in enumerate(((args.directory, 'source', new['sourceTriangles']),
                     (args.previous, 'far-lod2', before['triangles']), (args.directory, 'far-lod2', after['triangles']))):
                 rgba, cov = fields(folder, name, variant, view, source_mask)
@@ -140,8 +188,8 @@ def main():
                                  ('Worst CPU paint-boundary loss', 'Worst CPU RGBA RMS', 'Mean CPU silhouette mismatch')):
             ax.bar(xs, [m[policy+'64'][key] for m in result['models']], width=.28, label=policy)
             ax.set_title(title); ax.set_xticks(np.arange(2), ['Colored bench', 'Tent']); ax.grid(axis='y', alpha=.2)
-        axes[3].bar(xs, [m['fit']['visibleColorBoundaries']['boundaryBefore' if policy == 'before' else 'boundaryAfter'] for m in result['models']], width=.28)
-    axes[3].set_title('Mean boundary loss within final pass'); axes[3].set_xticks(np.arange(2), ['Colored bench', 'Tent']); axes[3].grid(axis='y', alpha=.2)
+        axes[3].bar(xs, [m[policy+'Vertices'] if args.corner_sharing else m['fit']['visibleColorBoundaries']['boundaryBefore' if policy == 'before' else 'boundaryAfter'] for m in result['models']], width=.28)
+    axes[3].set_title('Render vertices' if args.corner_sharing else 'Mean boundary loss within final pass'); axes[3].set_xticks(np.arange(2), ['Colored bench', 'Tent']); axes[3].grid(axis='y', alpha=.2)
     axes[0].legend(); fig.tight_layout(); fig.savefig(str(args.output)+'_ERRORS.png', dpi=130); plt.close(fig)
     if args.paint_surface:
         extra = args.paint_surface
@@ -176,7 +224,8 @@ def main():
         label.text((505, 52), 'Absolute R error, magnified 4x', fill='white')
         picture.save(str(args.output)+'_PAINT_SIDE.png')
     Path(str(args.output)+'.json').write_text(json.dumps(result, indent=2))
-    print(json.dumps({'tests': result['tests'], 'models': [{k:m[k] for k in ('fixture', 'afterTriangles', 'after64', 'boundaries64')} for m in result['models']]}, indent=2))
+    keys = ('fixture', 'afterTriangles', 'after64', 'boundaries64') + (('beforeVertices', 'afterVertices', 'cornerSharing') if args.corner_sharing else ())
+    print(json.dumps({'tests': result['tests'], 'models': [{k:m[k] for k in keys} for m in result['models']]}, indent=2))
 
 
 if __name__ == '__main__':

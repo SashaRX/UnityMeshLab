@@ -2,13 +2,61 @@
 
 Iteration [#229](https://github.com/SashaRX/UnityMeshLab/pull/229) was merged into main and released as 1.1.37. The complete LOD quality roadmap is not finished. The intended hierarchy remains LOD0, LOD1 and LOD2, with independent source reduction to approximately 1/3 and 1/9 of LOD0.
 
-The subsequent [feature-chain experiment](LOD_FEATURE_CHAINS.md) adds an optional managed prepass with original-polyline/shading checks, contact/component isolation and quality-ranked native retries. The [native-constraint follow-up](LOD_NATIVE_CONSTRAINTS.md) now allows neighboring patches to retriangulate while preserving validated creases, junctions, material borders and ambiguous faces. Both options remain disabled by default. The snapshot below describes the preceding merged iteration, rather than these unmerged follow-ups.
+The subsequent [feature-chain experiment](LOD_FEATURE_CHAINS.md) adds an optional managed prepass with original-polyline/shading checks, contact/component isolation and quality-ranked native retries. The [native-constraint follow-up](LOD_NATIVE_CONSTRAINTS.md) now allows neighboring patches to retriangulate while preserving validated creases, junctions, material borders and ambiguous faces. Both options remain disabled by default. The evidence below includes unmerged far-budget follow-ups; the preceding merged iteration is retained as historical context.
 
-Latest follow-up verification: **183 selected EditMode tests passed**, with all eight meshes and 176 variant/view GPU captures freshly evaluated at a physical 384×384 target. Native builds and CTests passed on Windows/Linux/macOS through CI. Native constraints reach 6/16 source budgets; only 2/8 LOD2 budgets pass, and Bench B LOD2 selects a reported strict-belt fallback. At matched counts, Wrench/First Aid Kit/Fire Shield LOD2 normal RMS improves 67.8%/48.6%/54.7%; tent LOD2 RGBA RMS improves 30.5% at exactly 280 triangles. Other color/normal/silhouette regressions and slow native retries keep this experimental. Details, portable graphs/data and the next checks are in the native experiment. The 177-test managed-prepass comparison remains its historical control.
+Native-constraint experiment verification: **183 selected EditMode tests passed**, with all eight meshes and 176 variant/view GPU captures freshly evaluated at a physical 384×384 target. Native builds and CTests passed on Windows/Linux/macOS through CI. Native constraints reach 6/16 source budgets; only 2/8 LOD2 budgets pass, and Bench B LOD2 selects a reported strict-belt fallback. At matched counts, Wrench/First Aid Kit/Fire Shield LOD2 normal RMS improves 67.8%/48.6%/54.7%; tent LOD2 RGBA RMS improves 30.5% at exactly 280 triangles. Other color/normal/silhouette regressions and slow native retries keep this experimental. Details, portable graphs/data and the next checks are in the native experiment. The 177-test managed-prepass comparison remains its historical control.
 
 ## Implemented
 
-The latest **vertex-color boundary stage** fits independent render corners on the
+The **render-corner sharing follow-up** compacts the accepted far color fit only
+where RGBA, positions, normals, tangents and all UV channels match exactly.
+Unambiguous reversed-edge adjacency limits sharing to neighboring corners;
+material slots, hard-field seams, overlapping shells and corner contacts remain
+separate. Deforming meshes bypass sharing and cancellation releases candidates.
+Triangle order, winding and the selected approximately 1/9 triangle count remain
+unchanged. No public setting, native ABI or plugin binary changed.
+
+An approximate 1/255 color-diameter trial reduced the bench from 3096 to 2146
+vertices and improved worst CPU RGBA RMS from 0.02605082 to 0.02604022, but actual
+64px GPU RMS rose from 0.01356405 to 0.01356752 in front and from 0.01420742 to
+0.01421247 obliquely. It was rejected for generation: exact RGBA sharing is the
+only enabled policy. The low-level bounded-sharing primitive remains exercised
+by unit tests, without an enabled approximate generation path.
+
+**232 selected EditMode tests passed, zero failures/skips**, on Unity 6000.2.6f2,
+with final-code Generate captures of the same two project models at a 64px
+maximum source extent. Both FBX compile configurations and static dependency/
+identifier checks pass. The six-view CPU fields and boundary losses are unchanged.
+Front/oblique GPU RGBA readbacks match the preceding stage byte-for-byte for both
+models; the tent's opposite-side readback also matches its preceding final-code
+capture. Source/native/LOD1 color, alpha, coverage, wire and headlight controls,
+plus far coverage/wire/headlight readbacks, are unchanged. The other six models
+were not freshly recaptured in this stage.
+
+| Mesh | LOD2 triangles / source | Fitted → shared render vertices | Vertex reduction |
+| --- | ---: | ---: | ---: |
+| Colored bench | 1032 / 9334 (9.04×) | 3096 → 2251 | 27.3% |
+| Tent | 62 / 560 (9.03×) | 186 → 154 | 17.2% |
+
+The remaining vertices include real paint/shading/UV splits. Source vertex counts
+are 5994/396; the triangle factor is not a measured game-rendering speedup.
+Bench worst paint-region loss remains 25%; tent worst-region loss remains 100%,
+so this storage optimization does not resolve the tent's remaining paint failure.
+Original complete materials, shared filtered/mipped lightmaps and scene transitions
+remain outside this diagnostic vertex-field comparison.
+
+Portable evidence: [numeric sharing audit](LOD_CORNER_SHARING_RESULTS.json),
+[actual 64px vertex fields](LOD_CORNER_SHARING_RESULTS_MODELS.png),
+[unchanged errors and reduced vertex counts](LOD_CORNER_SHARING_RESULTS_ERRORS.png).
+Raw captures and `tests.xml`: `_results~/lod-corner-sharing-20261010/final-exact/`.
+The rejected approximate trial is retained in `final-adjacency/`; the earlier
+stopped pre-adjacency run is not verification evidence.
+
+```powershell
+python -B Tools~/render_lod_color_boundaries.py _results~/lod-corner-sharing-20261010/final-exact --previous _results~/lod-color-boundaries-20261010/final --previous-paint-surface _results~/lod-color-boundaries-20261010/paint-surface --corner-sharing --output Documentation~/LOD_CORNER_SHARING_RESULTS
+```
+
+The preceding **vertex-color boundary stage** fits independent render corners on the
 selected far mesh, without adding triangles or moving geometry. Uniform and
 boundary-weighted source-visible fits are checked after Color32 quantization;
 Float/HDR and alpha remain supported. Samples cannot borrow from a different
@@ -173,9 +221,10 @@ The overview/chart retain the final capture lineage above; their LOD2 fields/cou
 
 ## Next iteration, in order
 
-Priority after this color stage: reduce unnecessary render-corner duplication
-without losing the verified field/boundary gains, then align coarse tent edges
-with the remaining lost paint regions at the same 1/9 budget and 64px footprint.
+Priority after exact corner sharing: align coarse tent edges with the remaining
+lost paint regions at the same 1/9 budget and 64px footprint. Profile actual
+rendering/buffer cost; matching paint/shading/UV seams must remain separate, and
+further approximate sharing needs stronger validation than the CPU guide alone.
 Extend UV2/chart-boundary and filtered lightmap checks to more assigned project instances.
 Thin-strip distortion on the fire shield remains a geometry follow-up, with the
 authored 303-triangle control kept visible. Exercise complete materials/assemblies
