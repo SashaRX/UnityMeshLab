@@ -62,6 +62,14 @@ namespace SashaRX.UnityMeshLab
                 settings.lockNativeCreaseChains = true;
                 result = SimplifyCore(sourceMesh,settings);
                 result.nativeRetries = 1;
+                if (result.ok && result.hardEdges?.sourceFallback == true)
+                {
+                    Object.DestroyImmediate(result.simplifiedMesh);
+                    settings.nativeHardEdgeConstraints = false;
+                    result = SimplifyCore(sourceMesh,settings);
+                    result.nativeRetries = 2;
+                    if (result.hardEdges != null) result.hardEdges.beltFallback = true;
+                }
             }
             return result;
         }

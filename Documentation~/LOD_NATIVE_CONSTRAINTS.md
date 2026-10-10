@@ -15,8 +15,11 @@ Coincident but disconnected vertex fans are locked consistently across wedges.
 Every prepared source crease must remain covered by a discontinuous target edge
 with both oriented material sides and its original normal field. Native chain
 collapses receive only numerical tolerance. If that check fails, simplification
-retries with every crease vertex locked. A second failure retains a source copy
-and reports the fallback. Native retry counts include this additional attempt.
+retries with every crease vertex locked. A second failure uses the existing
+strict incident-face belt and reports that backend explicitly. If its protected
+face floor exceeds the requested budget, additional relaxed native probes stop.
+Source copies remain a last-resort validation fallback. Retry counts include
+both additional mesh-simplification attempts.
 
 The optional managed prepass can first shorten chains within its separately
 verified bounds; final coverage still measures every original working LOD0
@@ -34,4 +37,6 @@ locks and invalid-buffer rejection. Unity regression and actual FBX/GPU evaluati
 use `-meshlabLodNativeFeatures` alongside the existing budget/hard-edge/chain flags.
 All platform builds and both native CTests passed in [CI run 38041076577](https://github.com/SashaRX/UnityMeshLab/actions/runs/38041076577).
 The binaries were imported through CI's commit `3513525`; they were not rebuilt or
-copied by hand. Measured model results will follow the local Unity evaluation.
+copied by hand. The initial extended comparison completed every model but exceeded
+its 15-minute timeout (182 other checks passed). The final comparison uses a
+30-minute timeout, strict-belt fallback and additional matched-count candidates.

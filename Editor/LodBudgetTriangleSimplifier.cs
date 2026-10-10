@@ -151,7 +151,9 @@ namespace SashaRX.UnityMeshLab
                 {
                     bool sourceFallback = best.hardEdges?.sourceFallback ?? false;
                     bool lockedRetry = best.hardEdges?.lockedChainRetry ?? false;
-                    best.hardEdges = native ? protection.MeasureNative(best.simplifiedMesh,lockedRetry) : protection.Measure(best.simplifiedMesh);
+                    bool beltFallback = best.hardEdges?.beltFallback ?? false;
+                    best.hardEdges = native && !beltFallback ? protection.MeasureNative(best.simplifiedMesh,lockedRetry) : protection.Measure(best.simplifiedMesh);
+                    best.hardEdges.beltFallback = beltFallback;
                     if (chains?.mesh)
                     {
                         best.hardEdges = originalProtection.MeasureCoarsened(best.simplifiedMesh,chains.Configure(best.hardEdges));
@@ -235,6 +237,7 @@ namespace SashaRX.UnityMeshLab
                     }
                     UvProgress.Report(UvProgress.Current.fraction,$"{source.name}: triangle budget probe {probe+1}/4");
                     var candidate = MeshSimplifier.Simplify(source,attempt); count += 1+candidate.nativeRetries;
+                    bool beltFloor = candidate.hardEdges?.beltFallback == true && candidate.hardEdges.protectedTriangles >= target;
                     try
                     {
                         if (!candidate.ok) { error = candidate.error; continue; }
@@ -251,6 +254,7 @@ namespace SashaRX.UnityMeshLab
                         }
                     }
                     finally { if (candidate.simplifiedMesh) UnityEngine.Object.DestroyImmediate(candidate.simplifiedMesh); }
+                    if (beltFloor) break; // Strict fallback has a proved floor; further budget relaxation cannot lower it.
                     if (best.ok && best.simplifiedTriCount <= target) break;
                 }
                 if (!best.ok) return new MeshSimplifier.SimplifyResult { error = error ?? "No nonempty triangle-budget candidate." };

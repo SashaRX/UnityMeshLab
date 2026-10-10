@@ -302,10 +302,12 @@ namespace SashaRX.UnityMeshLab
                             {
                                 var protection = new LodHardEdges(reductionMesh);
                                 bool sourceFallback = r.hardEdges?.sourceFallback ?? false;
+                                bool beltFallback = r.hardEdges?.beltFallback ?? false;
                                 bool coarsened = opts.coarsenHardEdgeChains && opts.prioritizeTriangleBudget && opts.reductionMode == LodReductionMode.Triangles && r.hardEdges?.coarsenedPoints > 0;
                                 r.hardEdges = coarsened ? protection.MeasureCoarsened(r.simplifiedMesh,r.hardEdges) :
                                     r.hardEdges?.nativeConstraints == true ? protection.MeasureNative(r.simplifiedMesh,r.hardEdges.lockedChainRetry) : protection.Measure(r.simplifiedMesh);
                                 r.hardEdges.sourceFallback = sourceFallback;
+                                r.hardEdges.beltFallback = beltFallback;
                                 if (!r.hardEdges.Valid)
                                 {
                                     LodSurfaceValidation.Metrics restoredMetrics;

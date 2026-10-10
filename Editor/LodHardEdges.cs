@@ -16,13 +16,14 @@ namespace SashaRX.UnityMeshLab
             public float featureDeviation, featureNormalAngle;
             public int missingEdges, missingFaces, missingInterfaces;
             public bool sourceFallback;
-            public bool nativeConstraints, lockedChainRetry;
+            public bool nativeConstraints, lockedChainRetry, beltFallback;
             internal bool Valid => missingEdges == 0 && missingFaces == 0 && missingInterfaces == 0;
             internal string Note => $"Hard-edge coverage: {edges-missingEdges}/{edges}; protected faces {protectedTriangles}, " +
                 $"ambiguous edges {ambiguousEdges}, patch interfaces {interfaces-missingInterfaces}/{interfaces}." +
                 (coarsenedPoints > 0 ? $" Coarsened {coarsenedPoints} points; feature deviation ≤{featureDeviation:P2} of source diagonal, endpoint normal guide {featureNormalAngle:F1}°." : "") +
                 (nativeConstraints ? " Direct native constraints; only ambiguous faces remain frozen." : "") +
                 (lockedChainRetry ? " Retried with all crease vertices locked." : "") +
+                (beltFallback ? " Native coverage rejected both attempts; used strict incident-face protection." : "") +
                 (sourceFallback ? " Rejected candidate; retained source copy." : "");
         }
         readonly struct Side

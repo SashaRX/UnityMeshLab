@@ -37,7 +37,7 @@ namespace SashaRX.UnityMeshLab.Tests
             public int patchInterfaces, missingPatchInterfaces, ambiguousFeatureEdges;
             public int coarsenedFeaturePoints, coarsenedFeatureTriangles;
             public bool hardEdgeSourceFallback;
-            public bool nativeCreaseConstraints, lockedChainRetry;
+            public bool nativeCreaseConstraints, lockedChainRetry, nativeBeltFallback;
             public bool normalsCorrected, colorsCorrected;
             public string correctionNote;
             public float normalRmsBefore, authoredNormalMaxBefore, authoredNormalMaxAfter;

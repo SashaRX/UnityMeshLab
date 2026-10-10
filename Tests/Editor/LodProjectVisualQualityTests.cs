@@ -44,7 +44,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        [Timeout(900000)] // Opt-in eight-FBX comparison includes multiple full-surface fits and GPU captures.
+        [Timeout(1800000)] // Extended native + matched-count matrix includes full-surface fits and GPU captures.
         public void CopiedProjectModelsProduceActualGenerateCaptures()
         {
             string[] args = Environment.GetCommandLineArgs();
@@ -144,6 +144,12 @@ namespace SashaRX.UnityMeshLab.Tests
                             Generate(source,LodReductionMode.Triangles,3,"chains",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true,coarsenHardEdgeChains:true);
                         if (argsHave("-meshlabLodNativeFeatures"))
                             Generate(source,LodReductionMode.Triangles,3,"native",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true,coarsenHardEdgeChains:true,nativeHardEdgeConstraints:true);
+                        if (argsHave("-meshlabLodMatchedFeatures"))
+                        {
+                            var chainCounts = variants.Where(v => v.name.StartsWith("chains-")).Select(v => (v.info.simplifiedTris-.25f)/report.sourceTriangles).ToArray();
+                            Assert.That(chainCounts.Length,Is.EqualTo(2),"Matched comparison requires the coarsened-belt controls.");
+                            Generate(source,LodReductionMode.Triangles,3,"matched",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true,coarsenHardEdgeChains:true,nativeHardEdgeConstraints:true,requestedRatios:chainCounts);
+                        }
                     }
                     else if (argsHave("-meshlabQslimCompare"))
                     {
@@ -226,7 +232,7 @@ namespace SashaRX.UnityMeshLab.Tests
                         capture.selectionScore = variant.info.selectionScore; capture.nativeProbes = variant.info.nativeProbes;
                         if (argsHave("-meshlabLodHardEdges"))
                         {
-                            var features = variant.name.StartsWith("chains-") || variant.name.StartsWith("native-") ? variant.info.hardEdges : new LodHardEdges(source).Measure(variant.mesh);
+                            var features = variant.name.StartsWith("chains-") || variant.name.StartsWith("native-") || variant.name.StartsWith("matched-") ? variant.info.hardEdges : new LodHardEdges(source).Measure(variant.mesh);
                             capture.hardEdges = features.edges; capture.missingHardEdges = features.missingEdges;
                             capture.protectedTriangles = features.protectedTriangles; capture.missingProtectedTriangles = features.missingFaces;
                             capture.patchInterfaces = features.interfaces; capture.missingPatchInterfaces = features.missingInterfaces;
@@ -234,7 +240,8 @@ namespace SashaRX.UnityMeshLab.Tests
                             capture.hardEdgeSourceFallback = variant.info.hardEdges?.sourceFallback ?? false;
                             capture.coarsenedFeaturePoints = features.coarsenedPoints; capture.coarsenedFeatureTriangles = features.coarsenedTriangles;
                             capture.nativeCreaseConstraints = features.nativeConstraints; capture.lockedChainRetry = features.lockedChainRetry;
-                            if (variant.name.StartsWith("hard-") || variant.name.StartsWith("chains-") || variant.name.StartsWith("native-")) Assert.That(features.Valid,Is.True,model.name+"/"+variant.name+": hard features or patch interfaces changed");
+                            capture.nativeBeltFallback = features.beltFallback;
+                            if (variant.name.StartsWith("hard-") || variant.name.StartsWith("chains-") || variant.name.StartsWith("native-") || variant.name.StartsWith("matched-")) Assert.That(features.Valid,Is.True,model.name+"/"+variant.name+": hard features or patch interfaces changed");
                         }
                         var correction = variant.info.attributeCorrection;
                         if (correction != null)
@@ -279,7 +286,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         static void Generate(Mesh source,LodReductionMode mode,int candidates,string prefix,
-            List<(string name, Mesh mesh, LodPipelineOps.LodInfo info, double ms)> variants,List<Mesh> generated,bool uncheckedColors = false,bool relaxedFar = false,bool pruneParts = false,bool correctAttributes = false,bool preserveHardEdges = false,bool coarsenHardEdgeChains = false,bool nativeHardEdgeConstraints = false)
+            List<(string name, Mesh mesh, LodPipelineOps.LodInfo info, double ms)> variants,List<Mesh> generated,bool uncheckedColors = false,bool relaxedFar = false,bool pruneParts = false,bool correctAttributes = false,bool preserveHardEdges = false,bool coarsenHardEdgeChains = false,bool nativeHardEdgeConstraints = false,float[] requestedRatios = null)
         {
             var root = new GameObject("ProjectLODPreview");
             try
@@ -295,6 +302,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 if (budgetOnly)
                 {
                     options.count = 2; options.ratios = LodGenerationTool.SteppedRatios(1,3,2); options.prioritizeTriangleBudget = true;
+                    if (requestedRatios != null) options.ratios = requestedRatios;
                     options.correctSurfaceAttributes = correctAttributes;
                     options.preserveHardEdges = preserveHardEdges;
                     options.coarsenHardEdgeChains = coarsenHardEdgeChains;
