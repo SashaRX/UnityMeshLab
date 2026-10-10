@@ -28,12 +28,9 @@ namespace SashaRX.UnityMeshLab
             if (!string.IsNullOrEmpty(reverseSummary)) EditorGUILayout.HelpBox(reverseSummary, MessageType.Info);
         }
 
-        void ClearReverseProvenance()
-        {
-            reverseSummary = null;
-            if (ctx?.MeshEntries == null) return;
-            foreach (var entry in ctx.MeshEntries) entry.reverseTransferJson = null;
-        }
+        // An unrelated or failed operation must not remove the export guard from
+        // reverse-generated meshes that are still owned by their entries.
+        void ClearReverseSummary() => reverseSummary = null;
 
         /// <summary>Standalone progressive mode. Existing Analyze/Weld can be run
         /// explicitly beforehand; no target shell matching is used here.</summary>
@@ -81,7 +78,7 @@ namespace SashaRX.UnityMeshLab
                 // write or validation cannot leave a partly updated LOD chain.
                 var json = ReverseUvAudit.Provenance(result.report);
                 string auditPath = ReverseUvAudit.Write(result, levels);
-                ClearReverseProvenance();
+                ClearReverseSummary();
                 int reportNode = 0;
                 for (int level = 0; level < groups.Count; ++level)
                     for (int node = 0; node < groups[level].Count; ++node)

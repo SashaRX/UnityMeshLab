@@ -12,6 +12,39 @@ namespace SashaRX.UnityMeshLab.Tests
         static readonly int[] Tetrahedron = { 0, 2, 1, 0, 1, 3, 1, 2, 3, 2, 0, 3 };
         static Vector3[] TetraPositions() => new[] { Vector3.zero, Vector3.right, Vector3.up, Vector3.forward };
 
+        [TestCase(UvtLog.Level.Info,true,false,false)] [TestCase(UvtLog.Level.Verbose,false,false,false)]
+        [TestCase(UvtLog.Level.Verbose,true,false,true)] [TestCase(UvtLog.Level.Off,false,true,true)]
+        public void SuccessfulCapCapturesRequireDiagnosticsButRefusalsRemainAvailable(
+            UvtLog.Level level, bool category, bool refused, bool written)
+        {
+            var p = TetraPositions(); var ix = new[] {0,1,3,1,2,3,2,0,3};
+            if (refused) {
+                p = p.Concat(new[] {new Vector3(.2f,.2f,-.5f),new Vector3(.2f,.2f,.5f),new Vector3(.4f,.2f,0)}).ToArray();
+                ix = ix.Concat(new[] {4,5,6}).ToArray();
+            }
+            var cap = RemeshPlanarCap.Prepare(p,ix,"0",default,continueOnRefusal:true);
+            Assert.AreEqual(refused ? 1 : 0,cap.loopFailures.Count);
+            var source = new RemeshSource {positions=p,indices=ix};
+            string folder = Path.Combine(Path.GetTempPath(),"meshlab-cap-diagnostics-test-"+Guid.NewGuid().ToString("N"));
+            var previousLevel = UvtLog.Current; var previousMask = UvtLog.EnabledCategories;
+            try {
+                UvtLog.Current = level; UvtLog.EnabledCategories = category ? UvtLog.Category.RemeshDiag : 0;
+                string path = RemeshGeometryDiagnostics.CaptureSupport(source,cap,new RemeshSettings(),"test",folder);
+                Assert.AreEqual(written,path != null);
+                if (written) {
+                    Assert.IsTrue(File.Exists(path));
+                    using var reader = new BinaryReader(File.OpenRead(path)); reader.ReadInt32(); reader.ReadInt32();
+                    var metadata = JsonUtility.FromJson<RemeshGeometryDiagnostics.FailureMetadata>(reader.ReadString());
+                    Assert.AreEqual(refused ? 1 : 0,metadata.refusedLoops.Length);
+                }
+                else Assert.IsFalse(Directory.Exists(folder),"Quiet preparation must not create a capture directory.");
+            }
+            finally {
+                UvtLog.Current = previousLevel; UvtLog.EnabledCategories = previousMask;
+                if (Directory.Exists(folder)) Directory.Delete(folder,true);
+            }
+        }
+
         [Test]
         public void FailedSolidObserverReceivesBothAttemptsAndNeverRunsOnSuccessOrCancellation()
         {

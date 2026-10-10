@@ -1446,7 +1446,7 @@ namespace SashaRX.UnityMeshLab
         void ExecWeldUv0(bool runMeshoptFirst = true)
         {
             if (ctx.LodGroup == null) return;
-            ClearReverseProvenance();
+            ClearReverseSummary();
             using var previewChange = PreservePreviewDuringMeshChange();
             PrepareTransferInputs();
 
@@ -1481,7 +1481,7 @@ namespace SashaRX.UnityMeshLab
 
         void ExecSymmetrySplit(bool includeTargets, float separationThreshold = 0.10f)
         {
-            ClearReverseProvenance();
+            ClearReverseSummary();
             if (ctx.LodGroup == null) return;
             using var previewChange = PreservePreviewDuringMeshChange();
             PrepareTransferInputs();
@@ -1640,7 +1640,7 @@ namespace SashaRX.UnityMeshLab
         /// baseline so full-pipeline reruns cannot accumulate previous edits.</summary>
         void ResetWorkingMeshesToFbx()
         {
-            ClearReverseProvenance();
+            ClearReverseSummary();
             if (ctx?.MeshEntries == null) return;
             foreach (var e in ctx.MeshEntries)
             {
@@ -1663,6 +1663,7 @@ namespace SashaRX.UnityMeshLab
                 e.transferState = null;
                 e.shellTransferResult = null;
                 e.validationReport = null;
+                e.reverseTransferJson = null;
 
                 // Rewind the working mesh to the imported fbx asset. The stale
                 // working clone (weld / sym-split product) is destroyed — it is
@@ -2046,7 +2047,7 @@ namespace SashaRX.UnityMeshLab
         async Task ExecRepackImpl(List<MeshEntry> entries, bool useAsync)
         {
             if (entries.Count == 0) return;
-            ClearReverseProvenance();
+            ClearReverseSummary();
             using var previewChange = PreservePreviewDuringMeshChange();
             PrepareTransferInputs();
             using var _bench = BenchmarkRecorder.NewRun(ctx, "Repack",
@@ -2111,6 +2112,12 @@ namespace SashaRX.UnityMeshLab
                 {
                     UnityEngine.Object.DestroyImmediate(e.repackedMesh);
                     e.repackedMesh = null;
+                }
+                if (!string.IsNullOrEmpty(e.reverseTransferJson))
+                {
+                    DestroyWorkingMesh(ref e.transferredMesh);
+                    e.reverseTransferJson = null;
+                    e.transferState = null; e.shellTransferResult = null; e.validationReport = null;
                 }
                 e.repackedAtlasWidth = 0;
                 e.repackedAtlasHeight = 0;
@@ -2314,7 +2321,7 @@ namespace SashaRX.UnityMeshLab
 
         async Task ExecTransferLodImpl(int tLod, bool useAsync)
         {
-            ClearReverseProvenance();
+            ClearReverseSummary();
             using var previewChange = PreservePreviewDuringMeshChange();
             RequirePreparedTransferInputs();
             var targets = ctx.ForLod(tLod);
@@ -2409,6 +2416,8 @@ namespace SashaRX.UnityMeshLab
             om.SetUVs(1, new List<Vector2>(tr.uv2));
             DestroyWorkingMesh(ref tgt.transferredMesh);
             tgt.transferredMesh = om;
+            if (!string.IsNullOrEmpty(tgt.reverseTransferJson)) DestroyWorkingMesh(ref tgt.repackedMesh);
+            tgt.reverseTransferJson = null;
             tgt.shellTransferResult = tr;
 
             // Validation

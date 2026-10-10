@@ -130,18 +130,24 @@ namespace SashaRX.UnityMeshLab
             if (present) Write(writer, positions, indices);
         }
 
-        internal static void CaptureSupport(RemeshSource source, RemeshPlanarCap.Support support, RemeshSettings settings, string node)
+        internal static string CaptureSupport(RemeshSource source, RemeshPlanarCap.Support support, RemeshSettings settings, string node,
+            string directory = null)
         {
+            // Refused contours and invalid selections remain reproducible at every
+            // log level. Ordinary successful preparation only dumps at Verbose.
+            if (support.loopFailures.Count == 0 && support.selectionWarning == null &&
+                (UvtLog.Current < UvtLog.Level.Verbose || !UvtLog.IsCategoryEnabled(UvtLog.Category.RemeshDiag))) return null;
             try {
-                string path = WriteFailure(Path.Combine(Path.GetTempPath(), "meshlab-uvmerge", "cap"), source.positions, source.indices,
+                string path = WriteFailure(directory ?? Path.Combine(Path.GetTempPath(), "meshlab-uvmerge", "cap"), source.positions, source.indices,
                     null, null, new FailureMetadata { stage = "Cap preparation", node = node, reason = support.Description,
                         settingsJson = JsonUtility.ToJson(settings), capRevision = RemeshPlanarCap.Revision,
                         sourceFaceOwners = source.FaceOwners(), externalContactCount = support.externalContacts?.count ?? 0,
                         firstContactAddedFace = support.externalContacts?.firstNewFace ?? -1,
                         firstContactSourceFace = support.externalContacts?.firstSourceFace ?? -1 }, support);
                 UvtLog.Info("[Remesh] Original donor and prepared Cap support captured to " + path);
+                return path;
             }
-            catch (Exception error) { UvtLog.Warn("[Remesh] Cap support capture failed: " + error.Message); }
+            catch (Exception error) { UvtLog.Warn("[Remesh] Cap support capture failed: " + error.Message); return null; }
         }
 
         internal static void Capture(RemeshSource source, RemeshNative.IndexedMesh raw,

@@ -888,6 +888,60 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        [Test]
+        public void ForwardTransferKeepsReverseExportGuardOnUntouchedEntries()
+        {
+            var ctx = Open(Group(true,out var sourceRenderer,out var targetRenderer));
+            var source = ctx.MeshEntries.Find(e => e.renderer == sourceRenderer);
+            var target = ctx.MeshEntries.Find(e => e.renderer == targetRenderer);
+            var untouched = source.repackedMesh = ReverseUvMesh.Copy(source.fbxMesh,source.fbxMesh.triangles,
+                new[] {Vector2.zero,Vector2.right*.2f,Vector2.one*.2f,Vector2.one*.6f,Vector2.one*.8f,Vector2.up*.8f});
+            source.repackedAtlasWidth = source.repackedAtlasHeight = 128;
+            source.reverseTransferJson = "source ancestry";
+            var oldRepack = target.repackedMesh = Object.Instantiate(target.fbxMesh);
+            var oldTransfer = target.transferredMesh = Object.Instantiate(target.fbxMesh);
+            target.reverseTransferJson = "target ancestry";
+            UvProgress.Begin("Forward transfer provenance regression",cancelable:true);
+            try { ((System.Threading.Tasks.Task)CallWorkflow("ExecTransferLodImpl",1,false)).GetAwaiter().GetResult(); }
+            finally { UvProgress.End(); }
+            Assert.AreSame(untouched,source.repackedMesh); Assert.AreEqual("source ancestry",source.reverseTransferJson);
+            Assert.IsFalse(SidecarStore.TryBuildEntry(source,untouched,false,SidecarStore.AoUvTarget.None,out var sidecar));
+            Assert.IsNull(sidecar);
+            Assert.IsTrue(oldRepack == null); Assert.IsTrue(oldTransfer == null);
+            Assert.IsNull(target.reverseTransferJson); Assert.IsNotNull(target.transferredMesh);
+        }
+
+        [Test]
+        public void SelectedRepackDiscardsOnlyItsReverseMeshesAndLeavesOtherExportGuards()
+        {
+            var ctx = Open(Group(true,out var selectedRenderer,out var untouchedRenderer));
+            var selected = ctx.MeshEntries.Find(e => e.renderer == selectedRenderer);
+            var untouched = ctx.MeshEntries.Find(e => e.renderer == untouchedRenderer);
+            var oldRepack = selected.repackedMesh = Object.Instantiate(selected.fbxMesh);
+            var oldTransfer = selected.transferredMesh = Object.Instantiate(selected.fbxMesh);
+            selected.reverseTransferJson = "selected ancestry";
+            var protectedMesh = untouched.transferredMesh = ReverseUvMesh.Copy(untouched.fbxMesh,untouched.fbxMesh.triangles,
+                new[] {Vector2.zero,Vector2.right*.2f,Vector2.one*.2f,Vector2.one*.6f,Vector2.one*.8f,Vector2.up*.8f});
+            untouched.reverseTransferJson = "untouched ancestry";
+            ctx.AtlasResolution = 128; ctx.RepackResolutionMode = ResolutionMode.Manual;
+            ((System.Threading.Tasks.Task)CallWorkflow("ExecRepackImpl",new List<MeshEntry> {selected},false)).GetAwaiter().GetResult();
+            Assert.IsTrue(oldRepack == null); Assert.IsTrue(oldTransfer == null);
+            Assert.IsNull(selected.reverseTransferJson); Assert.IsNull(selected.transferredMesh); Assert.IsNotNull(selected.repackedMesh);
+            Assert.AreSame(protectedMesh,untouched.transferredMesh); Assert.AreEqual("untouched ancestry",untouched.reverseTransferJson);
+            Assert.IsFalse(SidecarStore.TryBuildEntry(untouched,protectedMesh,false,SidecarStore.AoUvTarget.None,out var sidecar));
+            Assert.IsNull(sidecar);
+        }
+
+        [Test]
+        public void TransferWithoutTargetsKeepsReverseMeshesAndTheirExportGuards()
+        {
+            var ctx = Open(Group(true,out var renderer,out _));
+            var entry = ctx.MeshEntries.Find(e => e.renderer == renderer);
+            var previous = entry.transferredMesh = Object.Instantiate(entry.fbxMesh); entry.reverseTransferJson = "ancestry";
+            ((System.Threading.Tasks.Task)CallWorkflow("ExecTransferLodImpl",99,false)).GetAwaiter().GetResult();
+            Assert.AreSame(previous,entry.transferredMesh); Assert.AreEqual("ancestry",entry.reverseTransferJson);
+        }
+
         [Test] public void FailedReverseTransferKeepsThePreviousChainAndProvenance()
         {
             var ctx = Open(Group(true,out var fineRenderer,out var coarseRenderer));

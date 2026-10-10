@@ -27,6 +27,11 @@ The guards, retries and cancellation behavior are unchanged. Capture is not a
 repair and never authorizes invalid geometry downstream. Failed capture I/O is
 reported and does not replace the original topology exception.
 
+Successful Cap preparation snapshots require `Verbose` and the `RemeshDiag`
+category. A per-contour refusal or invalid selection captures original/prepared
+geometry at every log level, as do later solid Remesh and Simplify failures.
+Intentional unselected openings alone do not force a preparation dump.
+
 ## 2026-10-10 curtain and Bush diagnosis
 
 `WindowsCurtain_15` uses a KeepQuads FBX import. Capture now triangulates its
