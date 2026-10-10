@@ -10,6 +10,7 @@ endpoints, junctions, material borders and vertices of ambiguous faces are locke
 degree-two crease vertices protect their attribute discontinuity. Meshoptimizer
 can retriangulate neighboring faces without freezing their original triangles.
 Ambiguous faces remain frozen, with occurrence and interface checks.
+Coincident but disconnected vertex fans are locked consistently across wedges.
 
 Every prepared source crease must remain covered by a discontinuous target edge
 with both oriented material sides and its original normal field. Native chain
@@ -31,4 +32,6 @@ entry rejects invalid index/flag buffers and nonfinite input before library read
 Native CTest exercises zero attribute costs, oriented shading-side retention,
 locks and invalid-buffer rejection. Unity regression and actual FBX/GPU evaluation
 use `-meshlabLodNativeFeatures` alongside the existing budget/hard-edge/chain flags.
-Measured model results will be recorded after CI rebuild and local Unity testing.
+All platform builds and both native CTests passed in [CI run 38041076577](https://github.com/SashaRX/UnityMeshLab/actions/runs/38041076577).
+The binaries were imported through CI's commit `3513525`; they were not rebuilt or
+copied by hand. Measured model results will follow the local Unity evaluation.

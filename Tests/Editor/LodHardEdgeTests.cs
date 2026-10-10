@@ -76,8 +76,9 @@ namespace SashaRX.UnityMeshLab.Tests
         }
         [Test] public void NativeFlagsLockEndpointsMaterialBordersAndTagUnusedVerticesSafely()
         {
-            var source = Fold(true,true,true); source.vertices = source.vertices.Concat(new[] { Vector3.one*10 }).ToArray();
-            source.normals = source.normals.Concat(new[] { Vector3.up }).ToArray();
+            var source = Fold(true,true,true); var originalNormals = source.normals;
+            source.vertices = source.vertices.Concat(new[] { Vector3.one*10 }).ToArray();
+            source.normals = originalNormals.Concat(new[] { Vector3.up }).ToArray();
             var flags = new LodHardEdges(source).VertexLocks(false); var positions = source.vertices;
             Assert.That(flags.Last(),Is.Zero);
             for (int i = 0; i < positions.Length-1; i++)
@@ -101,6 +102,14 @@ namespace SashaRX.UnityMeshLab.Tests
             var source = Fold(true); var result = ReduceNative(source);
             result.simplifiedMesh.normals = Enumerable.Repeat(new Vector3(1,0,1).normalized,result.simplifiedMesh.vertexCount).ToArray();
             Assert.That(new LodHardEdges(source).MeasureNative(result.simplifiedMesh).missingEdges,Is.GreaterThan(0));
+        }
+        [Test] public void NativeCoincidentDisconnectedFansHaveConsistentLockedWedges()
+        {
+            var source = Track(new Mesh { vertices = new[] { Vector3.zero,Vector3.right,Vector3.up,Vector3.zero,Vector3.left,Vector3.back },
+                normals = new[] { Vector3.forward,Vector3.forward,Vector3.forward,Vector3.up,Vector3.up,Vector3.up }, triangles = new[] { 0,1,2,3,4,5 } });
+            var flags = new LodHardEdges(source).VertexLocks(false);
+            Assert.That(flags[0],Is.EqualTo(MeshoptNative.VertexLock)); Assert.That(flags[3],Is.EqualTo(flags[0]));
+            Assert.That(flags[1],Is.Zero); Assert.That(flags[2],Is.Zero);
         }
         [Test] public void AuthoredCreaseSurvivesPermissiveZeroWeightBudgetProbe()
         {

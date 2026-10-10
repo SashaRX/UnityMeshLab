@@ -117,11 +117,49 @@ namespace SashaRX.UnityMeshLab
                 if (degree[i] > 0) flags[i] = lockChains || degree[i] != 2 ? MeshoptNative.VertexLock : MeshoptNative.VertexProtect;
             foreach (var edge in nativeInterfaces)
                 flags[edge.a] = flags[edge.b] = MeshoptNative.VertexLock;
+            LockContactFans(flags);
             foreach (var entry in edges.Values)
                 foreach (var side in entry)
                     if (ambiguousFrozen[side.slot][side.face])
                         flags[points[source.positions[side.a]]] = flags[points[source.positions[side.b]]] = flags[points[source.positions[side.c]]] = MeshoptNative.VertexLock;
             return source.positions.Select(p => points.TryGetValue(p,out int id) ? flags[id] : (byte)0).ToArray();
+        }
+
+        // Coincidence alone does not connect vertex fans. Keep contact locations
+        // fixed so permissive wedge processing cannot move disconnected surfaces
+        // through each other while shortening a crease on one of them.
+        void LockContactFans(byte[] flags)
+        {
+            var incident = new Dictionary<int,HashSet<(int slot,int face)>>();
+            var connected = new Dictionary<(int point,int slot,int face),List<(int slot,int face)>>();
+            foreach (var entry in edges)
+                foreach (int point in new[] {entry.Key.a,entry.Key.b})
+                {
+                    if (!incident.TryGetValue(point,out var faces)) incident[point] = faces = new HashSet<(int,int)>();
+                    foreach (var side in entry.Value) faces.Add((side.slot,side.face));
+                    var sides = entry.Value;
+                    if (sides.Count != 2 || !source.positions[sides[0].a].Equals(source.positions[sides[1].b]) ||
+                        !source.positions[sides[0].b].Equals(source.positions[sides[1].a])) continue;
+                    for (int i = 0; i < 2; i++)
+                    {
+                        var key = (point,sides[i].slot,sides[i].face);
+                        if (!connected.TryGetValue(key,out var neighbors)) connected[key] = neighbors = new List<(int,int)>();
+                        neighbors.Add((sides[1-i].slot,sides[1-i].face));
+                    }
+                }
+            foreach (var entry in incident)
+            {
+                var remaining = entry.Value;
+                var queue = new Queue<(int slot,int face)>();
+                var first = remaining.First(); remaining.Remove(first); queue.Enqueue(first);
+                while (queue.Count > 0)
+                {
+                    var face = queue.Dequeue();
+                    if (!connected.TryGetValue((entry.Key,face.slot,face.face),out var neighbors)) continue;
+                    foreach (var neighbor in neighbors) if (remaining.Remove(neighbor)) queue.Enqueue(neighbor);
+                }
+                if (remaining.Count > 0) flags[entry.Key] = MeshoptNative.VertexLock;
+            }
         }
 
         internal int NativeProtectedTriangles => ambiguousFrozen.Sum(slot => slot.Count(value => value));
