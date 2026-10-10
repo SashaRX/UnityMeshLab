@@ -327,7 +327,9 @@ namespace SashaRX.UnityMeshLab
                 }
                 compact[i] = mapped;
             }
-            mesh.SetVertices(positions); if (colors.Count > 0) mesh.SetColors(colors); if (normals.Count > 0) mesh.SetNormals(normals);
+            mesh.SetVertices(positions);
+            if (colors.Count > 0) mesh.SetColors(colors);
+            if (normals.Count > 0) mesh.SetNormals(normals);
             mesh.SetIndices(compact, MeshTopology.Triangles, 0); mesh.RecalculateBounds(); return mesh;
         }
 

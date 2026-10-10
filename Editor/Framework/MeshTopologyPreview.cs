@@ -25,7 +25,14 @@ namespace SashaRX.UnityMeshLab
             internal bool pointsRequested;
             internal readonly PreviewWork<PointData> pointsWork = new PreviewWork<PointData>("[3D] Vertex preview");
             internal readonly PreviewWork<ViewportTopology> work = new PreviewWork<ViewportTopology>("[3D] Hole search");
-            public void Dispose() { work.Dispose(); pointsWork.Dispose(); if (boundaries) Object.DestroyImmediate(boundaries); if (defects) Object.DestroyImmediate(defects); if (vertices) Object.DestroyImmediate(vertices); }
+            public void Dispose()
+            {
+                work.Dispose();
+                pointsWork.Dispose();
+                if (boundaries) Object.DestroyImmediate(boundaries);
+                if (defects) Object.DestroyImmediate(defects);
+                if (vertices) Object.DestroyImmediate(vertices);
+            }
         }
         sealed class PointData { internal Vector3[] positions; internal Vector2[] corners; internal int[] indices; }
         readonly Dictionary<Mesh, Cache> caches = new Dictionary<Mesh, Cache>();
@@ -279,7 +286,11 @@ namespace SashaRX.UnityMeshLab
             if (selected.mesh == mesh) selected = default;
             selectedRim = -1;
         }
-        internal void Clear() { foreach (var mesh in caches.Keys.ToArray()) InvalidateMesh(mesh); shownRims.Clear(); }
+        internal void Clear()
+        {
+            foreach (var mesh in caches.Keys.ToArray()) InvalidateMesh(mesh);
+            shownRims.Clear();
+        }
         public void Dispose()
         {
             VertexChannels.Changed -= InvalidateMesh; Clear();

@@ -60,6 +60,7 @@ namespace SashaRX.UnityMeshLab
 
         static readonly int ColorId = Shader.PropertyToID("_Color");
         static readonly int UseVertexColorId = Shader.PropertyToID("_UseVertexColor");
+        const string MainTextureProperty = "_MainTex";
 
         // The orbit stores the drag: x turns around the vertical axis (yaw), y tilts (pitch).
         Quaternion OrbitRotation()
@@ -248,8 +249,8 @@ namespace SashaRX.UnityMeshLab
                     tint.a = Mathf.Clamp01(SurfaceOpacity); block.SetColor(ColorId, tint);
                     bool vertexColors = Mode != Shading.Shaded || (material && material.HasProperty("_UseVertexColor") && material.GetFloat("_UseVertexColor") > .5f);
                     block.SetFloat(UseVertexColorId, vertexColors ? 1 : 0);
-                    Texture texture = material && material.HasProperty("_BaseMap") ? material.GetTexture("_BaseMap") : material && material.HasProperty("_MainTex") ? material.GetTexture("_MainTex") : null;
-                    block.SetTexture("_MainTex", texture ? texture : Texture2D.whiteTexture);
+                    Texture texture = material && material.HasProperty("_BaseMap") ? material.GetTexture("_BaseMap") : material && material.HasProperty(MainTextureProperty) ? material.GetTexture(MainTextureProperty) : null;
+                    block.SetTexture(MainTextureProperty, texture ? texture : Texture2D.whiteTexture);
                     block.SetFloat("_UseTexture", Mode == Shading.Shaded && texture ? 1 : 0);
                     utility.DrawMesh(shown, item.matrix, overlaySurface, sub, block);
                 }
@@ -312,7 +313,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (!drawing || !mesh || !material) return;
             var block = Block();
-            block.SetTexture("_MainTex", texture ? texture : Texture2D.whiteTexture);
+            block.SetTexture(MainTextureProperty, texture ? texture : Texture2D.whiteTexture);
             block.SetColor(ColorId, tint);
             if (SurfaceOpacity < .999f) { tint.a *= Mathf.Clamp01(SurfaceOpacity); block.SetColor(ColorId, tint); }
             block.SetFloat("_UVChannel", uvChannel);
