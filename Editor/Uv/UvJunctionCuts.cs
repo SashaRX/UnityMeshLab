@@ -26,7 +26,7 @@ namespace SashaRX.UnityMeshLab
         {
             internal Vector2 axis, min, max;
             internal double Area => (double)(max.x - min.x) * (max.y - min.y);
-            internal Vector2 Project(Vector2 p) => new Vector2(Vector2.Dot(p, axis), Vector2.Dot(p, new Vector2(-axis.y, axis.x)));
+            internal Vector2 Project(Vector2 p) => new Vector2(Vector2.Dot(p, axis), axis.x * p.y - axis.y * p.x);
         }
 
         static long Key(int a, int b) => ((long)Math.Min(a, b) << 32) | (uint)Math.Max(a, b);
@@ -44,7 +44,11 @@ namespace SashaRX.UnityMeshLab
                 {
                     int a = triangles[f * 3 + k], b = triangles[f * 3 + (k + 1) % 3];
                     long key = Key(a, b);
-                    if (!edges.TryGetValue(key, out var edge)) edges.Add(key, edge = new Edge { a = a, b = b });
+                    if (!edges.TryGetValue(key, out var edge))
+                    {
+                        edge = new Edge { a = a, b = b };
+                        edges.Add(key, edge);
+                    }
                     else connected.Union(f, edge.faces[0]);
                     edge.faces.Add(f);
                 }
@@ -112,7 +116,11 @@ namespace SashaRX.UnityMeshLab
                 {
                     foreach (int v in new[] { edge.a, edge.b })
                     {
-                        if (!internalEdges.TryGetValue(v, out var list)) internalEdges.Add(v, list = new List<Edge>());
+                        if (!internalEdges.TryGetValue(v, out var list))
+                        {
+                            list = new List<Edge>();
+                            internalEdges.Add(v, list);
+                        }
                         list.Add(edge);
                     }
                 }
