@@ -15,10 +15,10 @@ from render_lod_far_refinement import BACKGROUND, coverage, frame
 from render_lod_screen_acceptance import readback
 
 
-def fields(directory, fixture, variant, view, source_mask):
+def fields(directory, fixture, variant, view, source_mask, mode='color'):
     mask = coverage(directory, fixture, variant, view)
     cov = frame(mask[:, :, None], source_mask)[:, :, 0]
-    rgba = readback(directory / f'{fixture}-{variant}-{view}-color.rgba')
+    rgba = readback(directory / f'{fixture}-{variant}-{view}-{mode}.rgba')
     rgba = frame(rgba - BACKGROUND*(1-mask[:, :, None]), source_mask)/np.maximum(cov[:, :, None], 1e-20)
     return rgba, cov
 

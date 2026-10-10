@@ -349,10 +349,35 @@ namespace SashaRX.UnityMeshLab
                             correction.colorsAccepted=true; correction.colorMethod="verified source paint diagonals";
                             correction.colorRmsAfter=measured.ColorRms; correction.colorMaxAfter=measured.colorMax;
                             correction.visibleRgbaAfter=bestScreen.rgbaRms; correction.visibleChannelsAfter=bestScreen.rgbaChannelRms;
-                            correction.note += $" Source paint diagonal correction accepted ({paintGeometry.flips} flips, {paintGeometry.trials} trials); triangles and render vertex count retained. Mean paint loss {paintGeometry.boundaryBefore:P1} -> {paintGeometry.boundaryAfter:P1}. UV2 refitted within original source islands; surface UV2 RMS retained or improved and each paired view's UV2 RMS increase capped at {paintGeometry.uvViewRmsTolerance:G3}. Result error is sampled against LOD0; the native bound no longer applies after retriangulation.";
+                            correction.note += $" Source paint diagonal correction accepted ({paintGeometry.flips} flips, including {paintGeometry.sharedFlips} shared pairs, {paintGeometry.trials} trials); triangles and render vertex count retained. Mean paint loss {paintGeometry.boundaryBefore:P1} -> {paintGeometry.boundaryAfter:P1}. Shared pairs retain UV2; isolated pairs refit within original source islands. Surface UV2 RMS retained or improved and each paired view's UV2 RMS increase capped at {paintGeometry.uvViewRmsTolerance:G3}. Result error is sampled against LOD0; the native bound no longer applies after retriangulation.";
                         }
                     }
                     finally { if (retriangulated) UnityEngine.Object.DestroyImmediate(retriangulated); }
+                }
+                if (options.screenBudget && options.correctSurfaceAttributes && varyingColors && !options.skipColorValidation)
+                {
+                    var gradient=LodAttributeCorrection.CorrectVisibleGradient(source,best.simplifiedMesh,screen,out var gradientReport,cancelled);
+                    try
+                    {
+                        if (correction!=null) correction.visibleGradient=gradientReport;
+                        if (gradient)
+                        {
+                            var measured=LodSurfaceValidation.MeasureMeshes(source,gradient,settings,cancelled,ignoreDegenerateFaces:true);
+                            if (!float.IsNaN(measured.weightedError) && !float.IsInfinity(measured.weightedError))
+                            {
+                                UnityEngine.Object.DestroyImmediate(best.simplifiedMesh); best.simplifiedMesh=gradient; gradient=null;
+                                bestMetrics=measured; bestScreen=screen.Measure(best.simplifiedMesh,cancelled);
+                                bestScore=CandidateScore(bestMetrics,bestSilhouette,bestScreen,settings,options);
+                                best.resultError=measured.weightedError;
+                                correction.colorsAccepted=true; correction.colorMethod="verified 12-view gradient";
+                                correction.colorRmsAfter=measured.ColorRms; correction.colorMaxAfter=measured.colorMax;
+                                correction.visibleRgbaAfter=bestScreen.rgbaRms; correction.visibleChannelsAfter=bestScreen.rgbaChannelRms;
+                                correction.note += $" Final gradient fit accepted: 12-view worst RGBA RMS {gradientReport.before.rgbaRms:G4} -> {gradientReport.after.rgbaRms:G4}; paint guides retain or improve and each channel/view RMS increase is capped at 1/255. Geometry, render count, UVs, normals and tangents unchanged.";
+                            }
+                            else gradientReport.accepted=false;
+                        }
+                    }
+                    finally { if (gradient) UnityEngine.Object.DestroyImmediate(gradient); }
                 }
                 if (options.screenBudget && options.correctSurfaceAttributes && options.bakedLightmapFields != null &&
                     LodMeshData.TriangleCount(best.simplifiedMesh) <= 512 && screenPixels == 64)

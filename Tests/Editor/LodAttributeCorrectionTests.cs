@@ -69,6 +69,38 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(fitted.colors.Max(c => c.g),Is.GreaterThan(1)); Assert.That(fitted.colors.Min(c => c.b),Is.LessThan(0));
         }
 
+        [Test]
+        public void FinalGradientFitsTwelveViewsWithoutChangingGeometryOrAtlas()
+        {
+            var source=Grid(8,true); var reduced=Grid(1,false);
+            var screen=new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            var sourceColors=source.colors; var targetColors=reduced.colors;
+            var fitted=Track(LodAttributeCorrection.CorrectVisibleGradient(source,reduced,screen,out var report));
+            Assert.That(fitted,Is.Not.Null); Assert.That(report.accepted,Is.True);
+            Assert.That(report.before.views,Is.EqualTo(12)); Assert.That(report.after.views,Is.EqualTo(12));
+            Assert.That(report.after.rgbaRms,Is.LessThan(report.before.rgbaRms));
+            Assert.That(report.after.ColorViewsWithin(report.before,1f/255),Is.True);
+            Assert.That(report.after.PaintViewsDoNotWorsen(report.before),Is.True);
+            CollectionAssert.AreEqual(reduced.vertices,fitted.vertices); CollectionAssert.AreEqual(reduced.triangles,fitted.triangles);
+            CollectionAssert.AreEqual(reduced.normals,fitted.normals); CollectionAssert.AreEqual(reduced.tangents,fitted.tangents);
+            CollectionAssert.AreEqual(reduced.uv2,fitted.uv2); CollectionAssert.AreEqual(targetColors,reduced.colors);
+            CollectionAssert.AreEqual(sourceColors,source.colors); Assert.That(fitted.vertexCount,Is.EqualTo(reduced.vertexCount));
+        }
+
+        [Test]
+        public void FinalGradientKeepsExactPaintSeamsAndCleansUpCancelledTrial()
+        {
+            var source=PolygonPanels(false,false); var reduced=Track(Object.Instantiate(source));
+            var screen=new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            Assert.That(LodAttributeCorrection.CorrectVisibleGradient(source,reduced,screen,out _),Is.Null);
+            var colors=reduced.colors;
+            int count=Resources.FindObjectsOfTypeAll<Mesh>().Length,checks=0;
+            Assert.Throws<OperationCanceledException>(() => LodAttributeCorrection.CorrectVisibleGradient(source,reduced,screen,out _,() =>
+                ++checks%128==0 && Resources.FindObjectsOfTypeAll<Mesh>().Length>count));
+            CollectionAssert.AreEqual(colors,reduced.colors);
+            Assert.That(Resources.FindObjectsOfTypeAll<Mesh>().Length,Is.EqualTo(count));
+        }
+
         Mesh PolygonPanels(bool contaminated,bool packed)
         {
             var mesh = Track(new Mesh { vertices = new[] { new Vector3(-1,-1,0),new Vector3(0,-1,0),new Vector3(0,1,0),new Vector3(-1,1,0),

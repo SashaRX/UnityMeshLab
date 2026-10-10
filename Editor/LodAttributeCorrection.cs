@@ -27,6 +27,7 @@ namespace SashaRX.UnityMeshLab
             public VisibleColorBoundaryReport visibleColorBoundaries;
             public VisibleColorBoundaryReport polygonColorBoundaries;
             public LodPaintRetriangulation.Report paintRetriangulation;
+            public VisibleGradientReport visibleGradient;
             public LodSharedUvTransfer.Report sharedLightmapUv;
             public string note;
         }
@@ -47,6 +48,77 @@ namespace SashaRX.UnityMeshLab
         {
             public int verticesBefore,verticesAfter,trials;
             public float colorTolerance,rgbaBefore,rgbaAfter,boundaryBefore,boundaryAfter;
+        }
+
+        [Serializable] internal sealed class VisibleGradientReport
+        {
+            public bool accepted;
+            public int samples,boundarySamples,trials,pinnedCorners;
+            public LodScreenValidation.Report before,after;
+            public List<GradientProbe> probes=new List<GradientProbe>();
+        }
+        [Serializable] internal sealed class GradientProbe
+        {
+            public float prior,blend,rgba,boundary;
+            public bool boundaryWeighted;
+            public string refusal;
+        }
+
+        internal static Mesh CorrectVisibleGradient(Mesh source,Mesh reduced,LodScreenValidation screen,
+            out VisibleGradientReport report,Func<bool> cancelled = null)
+        {
+            report=new VisibleGradientReport();
+            if (screen==null || source.colors.Length!=source.vertexCount || reduced.colors.Length!=reduced.vertexCount ||
+                source.vertexCount==0 || reduced.vertexCount==0 || LodMeshData.TriangleCount(reduced)>128 ||
+                source.blendShapeCount>0 || reduced.blendShapeCount>0 ||
+                source.HasVertexAttribute(VertexAttribute.BlendWeight) || reduced.HasVertexAttribute(VertexAttribute.BlendWeight)) return null;
+            var before=screen.Measure(reduced,cancelled);
+            if (!before.rgbaEvaluated || before.objectPixels>128) return null;
+            var allSides=screen.WithAllSides(source,cancelled);
+            report.before=report.after=allSides.Measure(reduced,cancelled);
+            var data=new LodMeshData(reduced);
+            var fit=new FieldFit(data.colors.Select(c => (Vector4)c).ToArray(),ColorOwners(data));
+            // Distinct RGBA copies and shared material interfaces stay pinned.
+            // Equal-color copies on independent sheets remain independent fit
+            // variables; they need not be frozen merely because their positions coincide.
+            PinSeams(data,null,fit,null,null);
+            report.pinnedCorners=fit.pinned.Count(v => v);
+            report.samples=allSides.AddVisibleColorSamples(reduced,fit.Add,cancelled);
+            if (report.samples==0) return null;
+            Mesh trial=null,accepted=null; var best=before; var bestAll=report.before;
+            try
+            {
+                trial=UnityEngine.Object.Instantiate(reduced);
+                for (int method=0; method<3; method++)
+                {
+                    if (method==2)
+                    {
+                        report.boundarySamples=allSides.AddVisibleBoundaryColorSamples(reduced,fit.Add,2,cancelled);
+                        if (report.boundarySamples==0) continue;
+                    }
+                    float prior=method==0 ? .02f : .002f;
+                    var fitted=fit.Solve(prior,cancelled);
+                    foreach (float blend in new[] { 1f,.5f,.25f,.125f,.0625f,.03125f })
+                    {
+                        CheckCancellation(cancelled);
+                        var values=data.colors.Select((c,i) => (Color)Vector4.Lerp(c,fitted[i],blend)).ToArray();
+                        SetColors(trial,values,reduced.GetVertexAttributeFormat(VertexAttribute.Color));
+                        var local=screen.Measure(trial,cancelled); report.trials++;
+                        var probe=new GradientProbe { prior=prior,blend=blend,boundaryWeighted=method==2,
+                            rgba=local.rgbaRms,boundary=local.colorBoundaryMean }; report.probes.Add(probe);
+                        if (!local.DoesNotWorsen(best,true) || local.rgbaRms>=best.rgbaRms-1e-6f)
+                        { probe.refusal="primary fields/paint"; continue; }
+                        var all=allSides.Measure(trial,cancelled);
+                        if (!all.PaintViewsDoNotWorsen(bestAll) || !all.ColorViewsWithin(bestAll,1f/255) ||
+                            !all.ColorViewsWithin(report.before,1f/255) ||
+                            all.rgbaRms>bestAll.rgbaRms+1e-6f) { probe.refusal="reverse fields/paint"; continue; }
+                        if (accepted) UnityEngine.Object.DestroyImmediate(accepted);
+                        accepted=UnityEngine.Object.Instantiate(trial); best=local; bestAll=all; report.accepted=true;
+                    }
+                }
+                report.after=bestAll; var result=accepted; accepted=null; return result;
+            }
+            finally { if (trial) UnityEngine.Object.DestroyImmediate(trial); if (accepted) UnityEngine.Object.DestroyImmediate(accepted); }
         }
 
         internal static Mesh ShareVisibleColorCorners(Mesh fitted,LodScreenValidation screen,
@@ -604,7 +676,7 @@ namespace SashaRX.UnityMeshLab
             {
                 bool normalSeam = normals != null && group.Any(i => normalOwners[group[0]] != normalOwners[i] &&
                     Vector3.Dot(mesh.normals[group[0]].normalized,mesh.normals[i].normalized) < .9999f);
-                bool colorSeam = colors != null && group.Any(i => colorOwners[group[0]] != colorOwners[i] ||
+                bool colorSeam = colors != null && group.Any(i => colorOwners != null && colorOwners[group[0]] != colorOwners[i] ||
                     ((Vector4)mesh.colors[group[0]]-(Vector4)mesh.colors[i]).sqrMagnitude > 1e-8f);
                 foreach (int i in group)
                 {

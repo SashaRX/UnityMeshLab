@@ -108,15 +108,7 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             var output = LodVisualQualityTests.OutputDirectory();
             foreach (var item in new[] { ("source",source),("far-lod2",reduced) })
-            {
-                var data = new LodMeshData(item.Item2);
-                File.WriteAllText(Path.Combine(output,fixture+"-"+item.Item1+"-mesh.json"),JsonUtility.ToJson(new Snapshot {
-                    positions=data.positions,normals=data.normals,tangents=data.tangents,colors=data.colors,
-                    colorFormat=(int)item.Item2.GetVertexAttributeFormat(UnityEngine.Rendering.VertexAttribute.Color),
-                    slots=Enumerable.Range(0,item.Item2.subMeshCount).Select(s => new Slot { indices=LodMeshData.Triangles(item.Item2,s) }).ToArray(),
-                    uvs=Enumerable.Range(0,8).Select(c => new Uv { dimension=data.uvDimensions[c],values=data.uvs[c]?.ToArray() }).ToArray()
-                },true));
-            }
+                ExportMeshSnapshot(fixture,item.Item1,item.Item2);
             var screen = new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
             var lost = new LostPairs();
             screen.VisitLostPaintPairs(reduced,(view,a,b,ca,cb,region) => lost.pairs.Add(new LostPair { view=view,a=a,b=b,ca=ca,cb=cb,region=region }));
@@ -134,6 +126,17 @@ namespace SashaRX.UnityMeshLab.Tests
                     finally { Object.DestroyImmediate(picture); }
                 }
             });
+        }
+
+        internal static void ExportMeshSnapshot(string fixture,string variant,Mesh mesh)
+        {
+            var data=new LodMeshData(mesh);
+            File.WriteAllText(Path.Combine(LodVisualQualityTests.OutputDirectory(),fixture+"-"+variant+"-mesh.json"),JsonUtility.ToJson(new Snapshot {
+                positions=data.positions,normals=data.normals,tangents=data.tangents,colors=data.colors,
+                colorFormat=(int)mesh.GetVertexAttributeFormat(UnityEngine.Rendering.VertexAttribute.Color),
+                slots=Enumerable.Range(0,mesh.subMeshCount).Select(s => new Slot { indices=LodMeshData.Triangles(mesh,s) }).ToArray(),
+                uvs=Enumerable.Range(0,8).Select(c => new Uv { dimension=data.uvDimensions[c],values=data.uvs[c]?.ToArray() }).ToArray()
+            },true));
         }
 
         internal static void CapturePaintEdges(string fixture,Mesh source,Mesh reduced,LodVisualQualityTests.Renderer renderer)

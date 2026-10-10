@@ -92,6 +92,17 @@ namespace SashaRX.UnityMeshLab.Tests
                 { report.colorMin = Vector4.Min(report.colorMin,c); report.colorMax = Vector4.Max(report.colorMax,c); }
                 report.varyingVertexColors = (report.colorMax-report.colorMin).sqrMagnitude > 1e-8f;
             }
+            if (argsHave("-meshlabLodSnapshotOnly"))
+            {
+                LodColorBoundaryProjectTests.ExportMeshSnapshot(model.name,"source",source);
+                string key=UvToolContext.ExtractGroupKey(source.name);
+                foreach (int level in new[] { 1,2 })
+                {
+                    var authored=importedMeshes.SingleOrDefault(m => m.name==key+"_LOD"+level);
+                    if (authored) LodColorBoundaryProjectTests.ExportMeshSnapshot(model.name,"authored-lod"+level,authored);
+                }
+                SaveReport(report); return;
+            }
             var topologyImports = new Dictionary<string, object>();
             bool loops = LodSourceTopology.TryLoad(new MeshEntry { fbxMesh = source },source,
                 topologyImports,out var topology,out string reason);

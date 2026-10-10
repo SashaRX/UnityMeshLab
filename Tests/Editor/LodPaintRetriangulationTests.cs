@@ -53,6 +53,28 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void SharedGradientDiagonalKeepsIncidentFacesAndEveryVertexField()
+        {
+            var source=Track(new Mesh { name="SharedGradient",vertices=new[] {
+                Vector3.zero,Vector3.right,new Vector3(1,1,0),Vector3.up,new Vector3(2,0,0) },
+                triangles=new[] { 3,1,2,1,3,0,1,4,2 },
+                colors=new[] { Color.black,Color.white,Color.white,Color.white,Color.white } });
+            source.normals=source.vertices.Select(_ => Vector3.forward).ToArray();
+            source.uv2=source.vertices.Select(p => new Vector2(p.x,p.y)).ToArray();
+            var reduced=Track(Object.Instantiate(source)); reduced.triangles=new[] { 0,1,2,2,3,0,1,4,2 };
+            var before=reduced.triangles; var vertices=reduced.vertices; var colors=reduced.colors;
+            var screen=new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            var result=Track(LodPaintRetriangulation.Correct(source,reduced,screen,Settings,out var report));
+            Assert.That(result,Is.Not.Null,JsonUtility.ToJson(report)); Assert.That(report.sharedFlips,Is.EqualTo(1));
+            Assert.That(screen.Measure(result).rgbaRms,Is.LessThan(screen.Measure(reduced).rgbaRms));
+            CollectionAssert.AreEqual(vertices,result.vertices); CollectionAssert.AreEqual(colors,result.colors);
+            CollectionAssert.AreEqual(source.normals,result.normals); CollectionAssert.AreEqual(source.uv2,result.uv2);
+            CollectionAssert.AreEqual(before.Skip(6),result.triangles.Skip(6)); CollectionAssert.AreEqual(before,reduced.triangles);
+            Assert.That(result.vertexCount,Is.EqualTo(reduced.vertexCount)); Assert.That(result.triangles.Length,Is.EqualTo(before.Length));
+            Assert.That(screen.WithAllSides(source).Measure(result).rgbaRms,Is.LessThan(1e-6f));
+        }
+
+        [Test]
         public void PaintSeamSamplesDoNotDependOnTriangleOrder()
         {
             var source=Panel(true); var reordered=Track(Object.Instantiate(source));

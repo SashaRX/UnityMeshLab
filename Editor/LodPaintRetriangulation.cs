@@ -6,7 +6,7 @@ using UnityEngine.Rendering;
 
 namespace SashaRX.UnityMeshLab
 {
-    // Flip only an isolated pair's diagonal; retain its four geometric corners,
+    // Flip an isolated or shared pair's diagonal; retain its four geometric corners,
     // boundary, winding, render-buffer size and continuous UV charts.
     internal static class LodPaintRetriangulation
     {
@@ -14,7 +14,7 @@ namespace SashaRX.UnityMeshLab
         [Serializable] internal sealed class Report
         {
             public bool accepted;
-            public int pairs,trials,flips,verticesBefore,verticesAfter,intersectionRejected,screenRejected,uvRejected;
+            public int pairs,trials,flips,sharedPairs,sharedFlips,verticesBefore,verticesAfter,intersectionRejected,screenRejected,uvRejected;
             public float boundaryBefore,boundaryAfter,uvBefore,uvAfter,distanceBefore,distanceAfter;
             public float uvViewRmsTolerance=UvViewRmsTolerance;
             public float[] uvViewsBefore,uvViewsAfter;
@@ -41,7 +41,7 @@ namespace SashaRX.UnityMeshLab
                 source.normals.Length!=source.vertexCount || reduced.normals.Length!=reduced.vertexCount)) return null;
             var before=screen.Measure(reduced,cancelled); var best=before;
             report.boundaryBefore=report.boundaryAfter=before.colorBoundaryMean;
-            if (!before.rgbaEvaluated || before.objectPixels > 128 || before.colorBoundaryMean <= 0) return null;
+            if (!before.rgbaEvaluated || before.objectPixels > 128 || before.rgbaRms <= 1e-6f) return null;
             var verification=screen.WithAllSides(source,cancelled); var allBefore=verification.Measure(reduced,cancelled);
             var sourceData=new LodMeshData(source);
             var uvBefore=UvViews(sourceData,reduced,verification,cancelled);
@@ -67,16 +67,28 @@ namespace SashaRX.UnityMeshLab
                     {
                         Check(cancelled); if (pair.Value.Count != 2) continue;
                         var a=pair.Value[0]; var b=pair.Value[1];
-                        if (!active.Contains(a.face) && !active.Contains(b.face)) continue;
+                        if (active.Count>0 && !active.Contains(a.face) && !active.Contains(b.face)) continue;
                         var left=Enumerable.Range(0,3).Select(k => indices[a.face*3+(a.corner+k)%3]).ToArray();
                         var right=Enumerable.Range(0,3).Select(k => indices[b.face*3+(b.corner+k)%3]).ToArray();
                         if (!CanFlip(data,left,right,uses,indices)) continue;
                         report.pairs++;
+                        bool shared=left.Concat(right).Any(v => uses[v]!=1);
+                        if (shared) report.sharedPairs++;
                         trial=UnityEngine.Object.Instantiate(current);
-                        var replacements=new Dictionary<int,int> { [left[0]]=left[2],[left[1]]=right[2],[left[2]]=left[1],
-                            [right[0]]=right[2],[right[1]]=left[2],[right[2]]=right[1] };
-                        CopyCorners(trial,data,replacements);
-                        if (IntroducesIntersection(data.positions,trial.vertices,indices,a.face,b.face))
+                        if (shared)
+                        {
+                            var changedIndices=(int[])indices.Clone();
+                            Array.Copy(new[] { left[2],right[2],left[1] },0,changedIndices,a.face*3,3);
+                            Array.Copy(new[] { right[2],left[2],right[1] },0,changedIndices,b.face*3,3);
+                            trial.triangles=changedIndices;
+                        }
+                        else
+                        {
+                            var replacements=new Dictionary<int,int> { [left[0]]=left[2],[left[1]]=right[2],[left[2]]=left[1],
+                                [right[0]]=right[2],[right[1]]=left[2],[right[2]]=right[1] };
+                            CopyCorners(trial,data,replacements);
+                        }
+                        if (IntroducesIntersection(data.positions,trial.vertices,indices,trial.triangles,a.face,b.face))
                         { report.intersectionRejected++; UnityEngine.Object.DestroyImmediate(trial); trial=null; continue; }
                         var colors=trial.colors;
                         var sums=new Vector4[2]; var masses=new double[2];
@@ -88,8 +100,11 @@ namespace SashaRX.UnityMeshLab
                             if (found<0) list.Add((value*(float)mass,mass));
                             else list[found]=(list[found].sum+value*(float)mass,list[found].mass+mass);
                         },8,cancelled);
-                        LodAttributeCorrection.FitVisibleUv2(source,trial,verification,cancelled);
-                        for (int method=0; method<3; method++)
+                        // Shared corner fields also serve incident faces. Keep
+                        // them unchanged; refitting or flattening them here would
+                        // modify triangles outside the proposed pair.
+                        if (!shared) LodAttributeCorrection.FitVisibleUv2(source,trial,verification,cancelled);
+                        for (int method=0; method<(shared ? 1 : 3); method++)
                         {
                             Check(cancelled); var values=(Color[])colors.Clone();
                             if (method>0) for (int id=0; id<2; id++)
@@ -104,8 +119,10 @@ namespace SashaRX.UnityMeshLab
                             UvProgress.Report(UvProgress.Current.fraction,$"{source.name}: verify far paint diagonal");
                             var local=screen.Measure(trial,cancelled); report.trials++;
                             var probe=new Probe { a=a.face,b=b.face,method=method,boundary=local.colorBoundaryMean,detail=local.detailLoss,rgba=local.rgbaRms,outlineMean=local.silhouetteMean,outlineMax=local.silhouetteMax,boundaries=local.colorBoundaryViewLoss }; report.probes.Add(probe);
-                            if (!local.DoesNotWorsen(best) || !local.PaintViewsDoNotWorsen(best) ||
-                                local.colorBoundaryMean >= best.colorBoundaryMean-1e-6f || local.rgbaRms>before.rgbaRms+1e-6f ||
+                            bool improved=local.colorBoundaryMean<best.colorBoundaryMean-1e-6f ||
+                                shared && local.rgbaRms<best.rgbaRms-1e-6f;
+                            if (!local.DoesNotWorsen(best) || !local.PaintViewsDoNotWorsen(best) || !improved ||
+                                local.rgbaRms>before.rgbaRms+1e-6f ||
                                 local.silhouetteMean>before.silhouetteMean+1e-6f || local.silhouetteMax>before.silhouetteMax+1e-6f) { probe.refusal="screen"; report.screenRejected++; continue; }
                             var all=verification.Measure(trial,cancelled);
                             if (!all.ColorViewsWithin(allBefore,1f/255) || all.detailLoss>allBefore.detailLoss+1e-6f ||
@@ -125,7 +142,7 @@ namespace SashaRX.UnityMeshLab
                             report.uvViewsAfter=uvViews;
                         }
                         UnityEngine.Object.DestroyImmediate(trial); trial=null;
-                        if (changed) { report.flips++; break; }
+                        if (changed) { report.flips++; if (shared) report.sharedFlips++; break; }
                     }
                     if (!changed) break;
                 }
@@ -149,8 +166,12 @@ namespace SashaRX.UnityMeshLab
         static bool CanFlip(LodMeshData data,int[] a,int[] b,int[] uses,int[] indices)
         {
             var p=data.positions;
+            bool isolated=a.Concat(b).Distinct().Count()==6 && a.Concat(b).All(v => uses[v]==1);
+            // A shared render edge must use the same indices at both endpoints.
+            // Partial duplication can encode a field seam and stays pinned.
+            bool shared=a[0]==b[1] && a[1]==b[0] && a.Concat(b).Distinct().Count()==4;
             if (!p[a[0]].Equals(p[b[1]]) || !p[a[1]].Equals(p[b[0]]) ||
-                a.Concat(b).Distinct().Count()!=6 || a.Concat(b).Any(v => uses[v]!=1) || p[a[2]].Equals(p[b[2]])) return false;
+                !isolated && !shared || p[a[2]].Equals(p[b[2]])) return false;
             var n=Vector3.Cross(p[a[1]]-p[a[0]],p[a[2]]-p[a[0]]);
             var m=Vector3.Cross(p[b[1]]-p[b[0]],p[b[2]]-p[b[0]]);
             if (n.sqrMagnitude<1e-20f || m.sqrMagnitude<1e-20f || Vector3.Dot(n.normalized,m.normalized)<.99f) return false;
@@ -196,15 +217,15 @@ namespace SashaRX.UnityMeshLab
             }
             mesh.RecalculateBounds();
         }
-        static bool IntroducesIntersection(Vector3[] before,Vector3[] after,int[] indices,int a,int b)
+        static bool IntroducesIntersection(Vector3[] before,Vector3[] after,int[] oldIndices,int[] indices,int a,int b)
         {
             foreach (int changed in new[] { a,b }) for (int f=0; f<indices.Length/3; f++)
             {
                 if (f==a || f==b || !LodTriangleIntersections.Overlap(after,indices,changed*3,indices,f*3)) continue;
                 // A reduction can already contain touching/overlapping sheets;
                 // changing one diagonal must not introduce a new sheet contact.
-                if (!LodTriangleIntersections.Overlap(before,indices,a*3,indices,f*3) &&
-                    !LodTriangleIntersections.Overlap(before,indices,b*3,indices,f*3)) return true;
+                if (!LodTriangleIntersections.Overlap(before,oldIndices,a*3,oldIndices,f*3) &&
+                    !LodTriangleIntersections.Overlap(before,oldIndices,b*3,oldIndices,f*3)) return true;
             }
             return LodTriangleIntersections.Overlap(after,indices,a*3,indices,b*3);
         }

@@ -1,5 +1,8 @@
 # Vertex-color generalization check — actual benches, 2026-10-10
 
+Baseline at `0ffa5d2`. The following shared-corner iteration and its before/after
+evidence are recorded in [LOD_SHARED_PAINT_PATCHES.md](LOD_SHARED_PAINT_PATCHES.md).
+
 The source-driven attribute pipeline runs on other vertex-color models, but the
 recent paint-diagonal stage does **not** generalize to these shared-corner meshes.
 Neither new bench passes the complete color guide. This is measured validation
