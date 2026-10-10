@@ -40,6 +40,49 @@
 
 ## Progressive reverse atlas — 2026-10-09
 
+### Metric-aware rescue vacancies — 2026-10-11
+
+Continuation on PR225, baseline `5ffec80`. The supplied Kamaz log refuses a
+new LOD1 face after both original and compact seed preparation. Frozen 512 /
+10 texels-per-unit controls reproduce the same failure class: a positive-area
+triangle with a 0.24-micrometre edge gets identical Float32 UV corners when
+translated to high atlas coordinates. Reconstructing inside its collapsed
+zero-width footprint cannot recover the metric; changing only the stretch gate
+would publish invalid UVs.
+
+Independent intrinsic rescues now participate in vacancy selection with their
+source metric, rather than their already rounded UV bounds. Their longest-edge
+frame defines the reserved rectangle, with at least one texel per dimension.
+The thinnest rescues are placed first. Cyclic bases, quarter-turns and bounded
+Float32 translation phases are tested before reserving a vacancy; a failed
+position is skipped, the transposed rectangle is tried, and the existing canvas
+growth/size limits still apply. Rounded coincident UV edges cannot weld separate
+rescues back together. Ordinary charts keep their rigid layout; inherited texel
+coordinates, source geometry and the nominal density remain fixed. Publication
+and independent overlap/stretch audits stay mandatory. An unrepresentable
+triangle remains a refusal, including when no valid vacancy exists.
+
+The frozen Kamaz harness supports explicit resolution/density, a single frame,
+the actual junction/packing workflow, and required accepted frames. Source mesh
+snapshots are compared after both policies. Its timeout covers successful full
+chains rather than only fast refusals. Public controls include the two captured
+thin triangles, occupied donor space, padding zero/two, both overlap policies,
+final square normalization, exact configured metric-limit acceptance, unchanged
+ordinary chart scale and refusal of an unrepresentable triangle.
+
+Isolated Unity 6000.2.6f2: **118 passed, zero failed, nine optional corpus skips**
+(365.4 seconds). The 512 / 10 texels-per-unit frozen Kamaz matrix changes from
+eight refusals to six accepted chains: frames 1, 2 and the imported identity
+frame 3 pass both policies, including independent final metric/overlap audits.
+Exclusive results use 1024-square atlases; allowed-overlap results use 512.
+Worst anisotropy ranges from 3.94729 to 3.99703; finest inherited area ranges from
+90.824% to 92.475%; all six have zero unexpected overlaps/invalid/degenerate UVs.
+Frame 0 retains its two earlier refusals because face 9057 collapses in the
+shared *3D* frame, before new chart creation. The UV fix does not repair that
+different defect. Low triangle-area atlas utilization and declined donor seam
+refinement remain limitations. Both FBX-define reference builds and the
+identifier/dependency checks pass.
+
 ### Coarsest normalization, compact packing and junction paths — 2026-10-10
 
 Continuation on PR225, baseline `30fcd06`, requested by the user. The forward

@@ -184,19 +184,26 @@ namespace SashaRX.UnityMeshLab.Tests
         }
         [Serializable] sealed class KamazTrials { public List<KamazTrial> trials = new List<KamazTrial>(); }
 
-        [UnityTest]
+        [UnityTest, Timeout(600000)]
         public IEnumerator FrozenKamazFullLodChainAfterCleanup()
         {
             string directory = Environment.GetEnvironmentVariable("MESHLAB_REVERSE_KAMAZ");
             if (string.IsNullOrEmpty(directory)) Assert.Ignore("Set MESHLAB_REVERSE_KAMAZ to the readonly Kamaz captures.");
             string output = Environment.GetEnvironmentVariable("MESHLAB_REVERSE_OUTPUT");
             Assert.IsNotEmpty(output); System.IO.Directory.CreateDirectory(output);
+            int resolution = int.TryParse(Environment.GetEnvironmentVariable("MESHLAB_REVERSE_KAMAZ_RESOLUTION"), out int configuredResolution) ? configuredResolution : 256;
+            float density = float.TryParse(Environment.GetEnvironmentVariable("MESHLAB_REVERSE_KAMAZ_DENSITY"),
+                System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float configuredDensity) ? configuredDensity : 0;
+            int[] frames = int.TryParse(Environment.GetEnvironmentVariable("MESHLAB_REVERSE_KAMAZ_FRAME"), out int configuredFrame)
+                ? new[] { configuredFrame } : Enumerable.Range(0, 4).ToArray();
+            Assert.IsTrue(frames.All(f => f >= 0 && f < 4));
+            bool workflow = Environment.GetEnvironmentVariable("MESHLAB_REVERSE_KAMAZ_WORKFLOW") == "1";
             var trials = new KamazTrials();
             var previousOutput = BenchmarkRecorder.OutputDirectoryOverride;
             BenchmarkRecorder.OutputDirectoryOverride = output;
             try
             {
-                for (int frame = 0; frame < 4; ++frame)
+                foreach (int frame in frames)
                 {
                     var captures = new List<KamazCapture>();
                     for (int file = frame * 15; file < (frame == 3 ? 61 : (frame + 1) * 15); ++file)
@@ -212,6 +219,7 @@ namespace SashaRX.UnityMeshLab.Tests
                                 return new ReverseUvTransfer.Input { mesh = mesh, key = c.key, toWorld = c.toWorld };
                             }).ToArray() }).ToArray();
                     Assert.AreEqual(3, levels.Length); Assert.IsTrue(levels.All(l => l.inputs.Length == 5));
+                    var originals = levels.SelectMany(l => l.inputs).Select(i => TransferMeshSnapshot.Capture(i.mesh)).ToArray();
                     foreach (bool overlap in new[] { false, true })
                     {
                         var trial = new KamazTrial { frame = frame, overlap = overlap, stage = "cleanup" };
@@ -227,14 +235,28 @@ namespace SashaRX.UnityMeshLab.Tests
                                 Assert.AreEqual(levels[l].inputs[n].mesh.triangles.Length / 3,
                                     input.sourceFaces.Length + input.removedSourceFaces.Length);
                             }
+                        if (workflow)
+                        {
+                            trial.stage = "workflow";
+                            var layout = ReverseUvJunctionTrial.Build(levels, new ReverseUvTransfer.Options {
+                                seedResolution = resolution, preserveProjectedOverlap = overlap, projectionReach = .05f }, true, density, true);
+                            while (!layout.IsCompleted) yield return null;
+                            if (layout.IsFaulted) { trial.error = layout.Exception.GetBaseException().Message; continue; }
+                            using var state = layout.Result;
+                            trial.stage = "audit";
+                            try { trial.audit = ReverseUvAudit.Write(state.result, state.inputs.levels); trial.accepted = true; }
+                            catch (Exception ex) { trial.error = ex.Message; }
+                            continue;
+                        }
                         trial.stage = "seed";
                         int size = 0;
-                        try { size = prepared.PrepareSeed(256, 2, 0, default); }
+                        try { size = prepared.PrepareSeed(resolution, 2, density, default); }
                         catch (Exception ex) { trial.error = ex.Message; }
                         if (trial.error != null) continue;
                         trial.stage = "projection";
                         var task = ReverseUvTransfer.Build(prepared.levels, new ReverseUvTransfer.Options {
-                            seedResolution = size, preserveProjectedOverlap = overlap, projectionReach = .05f }, true);
+                            seedResolution = size, preserveProjectedOverlap = overlap, projectionReach = .05f,
+                            seedDensity = density > 0 ? prepared.seedDensity : 0 }, true);
                         while (!task.IsCompleted) yield return null;
                         if (task.IsFaulted) { trial.error = task.Exception.GetBaseException().Message; continue; }
                         using var result = task.Result;
@@ -242,11 +264,22 @@ namespace SashaRX.UnityMeshLab.Tests
                         try { trial.audit = ReverseUvAudit.Write(result, prepared.levels); trial.accepted = true; }
                         catch (Exception ex) { trial.error = ex.Message; }
                     }
+                    int source = 0;
+                    foreach (var input in levels.SelectMany(l => l.inputs))
+                        CollectionAssert.AreEqual(originals[source++], TransferMeshSnapshot.Capture(input.mesh));
                 }
                 System.IO.File.WriteAllText(System.IO.Path.Combine(output, "kamaz-trials.json"), JsonUtility.ToJson(trials, true));
             }
             finally { BenchmarkRecorder.OutputDirectoryOverride = previousOutput; }
-            Assert.AreEqual(8, trials.trials.Count);
+            Assert.AreEqual(frames.Length * 2, trials.trials.Count);
+            string required = Environment.GetEnvironmentVariable("MESHLAB_REVERSE_KAMAZ_REQUIRED_FRAMES");
+            if (!string.IsNullOrEmpty(required))
+                foreach (int frame in required.Split(',').Select(int.Parse))
+                {
+                    var selected = trials.trials.Where(t => t.frame == frame).ToArray();
+                    Assert.AreEqual(2, selected.Length);
+                    Assert.IsTrue(selected.All(t => t.accepted), string.Join("\n", selected.Select(t => t.error)));
+                }
         }
 
         static void Clean(Mesh mesh, bool overlaps = false)
@@ -858,6 +891,61 @@ namespace SashaRX.UnityMeshLab.Tests
             ReverseUvNewCharts.Stabilize(corners,pixels,new[] {true},1,4);
             CollectionAssert.AreEqual(before,pixels);
             Assert.IsTrue(double.IsInfinity(ReverseUvTransfer.TriangleAnisotropy(corners[0],corners[1],corners[2],pixels[0],pixels[1],pixels[2])));
+        }
+
+        [TestCase(0,false)] [TestCase(0,true)] [TestCase(2,false)] [TestCase(2,true)]
+        public void AtlasPlacementPreservesCapturedKamazThinFacesAndInheritedCoordinates(int padding,bool overlap)
+        {
+            var positions=new[] {
+                new Vector3(1.76524448f,2.80752397f,.731544495f),
+                new Vector3(1.76524448f,2.80752373f,.731544495f),
+                new Vector3(1.83134747f,2.80645442f,.79942143f),
+                new Vector3(-.754247129f,2.82715535f,-1.72387326f),
+                new Vector3(-.754247129f,2.82715511f,-1.72387326f),
+                new Vector3(-.754247129f,2.82715511f,-1.81862569f),
+                new Vector3(10,0,0),new Vector3(22,0,0),new Vector3(10,12,0)};
+            var pixels=new[] {new Vector2(456,267),new Vector2(456,267),new Vector2(456.010681f,267.947479f),
+                new Vector2(476,4),new Vector2(476,4),new Vector2(476,4.94752455f),
+                Vector2.zero,Vector2.right*120,Vector2.up*120};
+            Assert.IsFalse(ReverseUvNewCharts.TryPlaceTriangle(positions,0,10,4,new Vector2(456,267),1,1,out _));
+            var occupied=new ReverseUvTransfer.Surface {
+                pixels=new[] {Vector2.zero,Vector2.right*400,Vector2.one*400,
+                    Vector2.zero,Vector2.one*400,Vector2.up*400},
+                faces=new[] {new ReverseUvTransfer.Face {inherited=true},new ReverseUvTransfer.Face {inherited=true}} };
+            var inherited=occupied.pixels.ToArray(); var original=pixels.ToArray(); var geometry=positions.ToArray();
+            var options=Options(overlap); options.padding=padding;
+            var output=ReverseUvAtlasPlacement.Place(positions,pixels,new List<ReverseUvTransfer.Surface[]> {new[] {occupied}},
+                Array.Empty<ReverseUvTransfer.Surface>(),options,512,512,default,new[] {true,true,false},10);
+            CollectionAssert.AreEqual(inherited,occupied.pixels); CollectionAssert.AreEqual(original,pixels);
+            CollectionAssert.AreEqual(geometry,positions);
+            for(int t=0;t<positions.Length;t+=3)
+                Assert.LessOrEqual(ReverseUvTransfer.TriangleAnisotropy(positions[t],positions[t+1],positions[t+2],
+                    output[t]/1024,output[t+1]/1024,output[t+2]/1024),4);
+            Assert.AreEqual(120,(output[7]-output[6]).magnitude,1e-4);
+            var all=occupied.pixels.Concat(output).ToArray();
+            var scan=UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {uv=all,
+                indices=Enumerable.Range(0,all.Length).ToArray(),charts=new int[all.Length]},default);
+            Assert.IsTrue(scan.complete); Assert.AreEqual(0,scan.pairs); Assert.AreEqual(0,scan.degenerateFaces);
+        }
+
+        [Test]
+        public void MetricAwarePlacementRefusesWhenNoRepresentableVacancyExists()
+        {
+            var corners=new[] {Vector3.zero,Vector3.right,new Vector3(0,1e-12f,0)};
+            var pixels=new[] {Vector2.zero,Vector2.right,Vector2.zero}; var before=pixels.ToArray();
+            var options=Options(); options.maxAtlasSize=128;
+            Assert.Throws<InvalidOperationException>(()=>ReverseUvAtlasPlacement.Place(corners,pixels,
+                new List<ReverseUvTransfer.Surface[]>(),Array.Empty<ReverseUvTransfer.Surface>(),options,128,128,
+                default,new[] {true},1));
+            CollectionAssert.AreEqual(before,pixels);
+        }
+
+        [Test]
+        public void IntrinsicPlacementAcceptsTheExactConfiguredStretchLimit()
+        {
+            var corners=new[] {Vector3.zero,Vector3.right,Vector3.up};
+            Assert.IsTrue(ReverseUvNewCharts.TryPlaceTriangle(corners,0,1,1,Vector2.zero,1,1,out var output));
+            Assert.AreEqual(1,ReverseUvTransfer.TriangleAnisotropy(corners[0],corners[1],corners[2],output[0],output[1],output[2]));
         }
 
         [TestCase(0)] [TestCase(32)]

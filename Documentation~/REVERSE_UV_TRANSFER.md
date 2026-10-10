@@ -141,6 +141,8 @@ modes. `kamaz-trials.json` reports refusals rather than disguising them as accep
 transfers. The 2026-10-10 run removes one LOD1 face in each trial and prepares the
 seed, but all eight trials still refuse projection: one scene frame collapses a
 different thin face, and the other frames fail the strict UV stretch gate.
+The 2026-10-11 metric-aware vacancy run at 512 / 10 texels-per-unit accepts both
+policies in frames 1, 2 and 3. The two frame-0 shared-3D-frame refusals remain.
 
 For isolated EditMode runs, set `MESHLAB_REVERSE_MANIFESTS` to semicolon-separated
 manifest paths, `MESHLAB_REVERSE_OUTPUT` to the output directory, and run
@@ -253,8 +255,24 @@ area is 95.320%, worst anisotropy is 1.741, and there are no degenerate UVs or
 unexpected overlaps. The overlap policy classifies three intended LOD1 pairs.
 Manual 256 seed mode also completes with vacancy packing in both policies.
 
+Independent rescue triangles are also checked *while choosing a vacancy*.
+Their rectangle comes from the source triangle metric, with at least one texel
+per dimension, so a UV that has already collapsed to a line cannot request a
+zero-width box. The thinnest rescues are placed first and reoriented within that
+box where necessary to retain Float32 precision. Failed placements reserve no
+space. Larger canvases may be tried; the size limit, padding and stretch gate
+still apply. Ordinary and inherited charts are not reconstructed or moved by
+this step.
+
+The frozen Kamaz test accepts `MESHLAB_REVERSE_KAMAZ_RESOLUTION` and
+`MESHLAB_REVERSE_KAMAZ_DENSITY` (defaults 256 and automatic density), an optional
+`MESHLAB_REVERSE_KAMAZ_FRAME` (0–3), and `MESHLAB_REVERSE_KAMAZ_WORKFLOW=1` to
+exercise the actual original/compact seed selection. Set
+`MESHLAB_REVERSE_KAMAZ_REQUIRED_FRAMES=1,2,3` to require successful audits in both
+overlap policies, rather than merely recording trial outcomes.
+
 This precision repair does not compact the seed atlas: the measured per-LOD UV
 triangle area is only 7.34–8.37% of the 512 square at 32 texels/unit. Better seed
-chart packing remains separate work. The complete Kitchen seed and eight Kamaz
-frame/policy cases still refuse publication. In ordinary forward logs, vertex
+chart packing remains separate work. The complete Kitchen seed and the two
+Kamaz frame-0 cases still refuse publication. In ordinary forward logs, vertex
 coverage measures matched vertices; it does not certify nondegenerate UVs.

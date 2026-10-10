@@ -597,6 +597,7 @@ namespace SashaRX.UnityMeshLab
         static void AppendNew(Surface[] surfaces, List<Surface[]> previousLevels, float density, Options options, ref float width,
             ref float height, ref int nextChart, CancellationToken token)
         {
+            const string coordinateFormat = "G9";
             var refs = new List<(Surface s, int f)>(); var positions = new List<Vector3>();
             foreach (var s in surfaces)
                 for (int f = 0; f < s.faces.Length; ++f)
@@ -630,7 +631,7 @@ namespace SashaRX.UnityMeshLab
                 var offset = new Vector2(width + options.padding, options.padding);
                 var placed = options.fillAtlasVacancies
                     ? ReverseUvAtlasPlacement.Place(positions.ToArray(), pixels, previousLevels, surfaces,
-                        options, width, height, token)
+                        options, width, height, token, fallback, density)
                     : pixels.Select(p => p - min + offset).ToArray();
                 ReverseUvNewCharts.Stabilize(positions.ToArray(), placed, fallback, density, options.maxAnisotropy, token: token);
                 for (int i = 0; i < refs.Count; ++i)
@@ -642,7 +643,9 @@ namespace SashaRX.UnityMeshLab
                     face.localFallback = fallback[i];
                     for (int k = 0; k < 3; ++k) s.pixels[f * 3 + k] = placed[i * 3 + k];
                     if (Anisotropy(s, f) > options.maxAnisotropy)
-                        throw new InvalidOperationException($"New reverse UV '{s.input.key}' face {f} exceeds the stretch limit (anisotropy {Anisotropy(s,f):G5}, local fallback {face.localFallback}); atlas was not published.");
+                        throw new InvalidOperationException($"New reverse UV '{s.input.key}' face {f} exceeds the stretch limit (anisotropy {Anisotropy(s,f):G5}, local fallback {face.localFallback}); atlas was not published. "
+                            + $"Density {density:G9}; positions {s.positions[s.indices[f*3]].ToString(coordinateFormat)} / {s.positions[s.indices[f*3+1]].ToString(coordinateFormat)} / {s.positions[s.indices[f*3+2]].ToString(coordinateFormat)}; "
+                            + $"pixels {placed[i*3].ToString(coordinateFormat)} / {placed[i*3+1].ToString(coordinateFormat)} / {placed[i*3+2].ToString(coordinateFormat)}.");
                 }
                 foreach (var s in surfaces)
                     AssignCharts(s, Enumerable.Range(0, s.faces.Length).Where(f => !s.faces[f].inherited).ToArray(), ref nextChart);
