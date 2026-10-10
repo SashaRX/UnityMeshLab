@@ -172,7 +172,10 @@ namespace SashaRX.UnityMeshLab
             var original = faces.Select(f => (int[])f.points.Clone()).ToArray();
             var incident = new Dictionary<int,HashSet<int>>();
             for (int i = 0; i < original.Length; i++) foreach (int point in original[i])
-            { if (!incident.TryGetValue(point,out var set)) incident[point] = set = new HashSet<int>(); set.Add(i); }
+            {
+                if (!incident.TryGetValue(point,out var set)) incident[point] = set = new HashSet<int>();
+                set.Add(i);
+            }
             int contacts = 0;
             foreach (var pair in incident)
             {
@@ -231,8 +234,11 @@ namespace SashaRX.UnityMeshLab
             }
             return result;
         }
-        static void Add(Dictionary<int,HashSet<int>> map,int a,int b)
-        { if (!map.TryGetValue(a,out var neighbors)) map[a] = neighbors = new HashSet<int>(); neighbors.Add(b); }
+        static void Add(Dictionary<int,HashSet<int>> map,int from,int to)
+        {
+            if (!map.TryGetValue(from,out var neighbors)) map[from] = neighbors = new HashSet<int>();
+            neighbors.Add(to);
+        }
         static Vector3 Position(int id,List<LodSourceTopology.Face> faces,LodMeshData data,LodTopologyGraph graph)
         { var face = faces[graph.vertexFaces[id][0]]; return data.positions[face.vertices[Array.IndexOf(face.points,id)]]; }
 
@@ -308,8 +314,8 @@ namespace SashaRX.UnityMeshLab
         }
         static bool NormalMatch(Vector3 a,Vector3 b,float angle) => angle <= 0 ? NormalEqual(a,b) : a.sqrMagnitude > .5f && b.sqrMagnitude > .5f && Vector3.Angle(a,b) <= angle;
         static bool TangentMatch(Vector4 a,Vector4 b,float angle) => Mathf.Abs(a.w-b.w) <= 1e-5f && NormalMatch(a,b,angle);
-        static float SegmentDistance(Vector3 p,Vector3 a,Vector3 b)
-        { var line = b-a; return (p-(a+line*Mathf.Clamp01(Vector3.Dot(p-a,line)/line.sqrMagnitude))).magnitude; }
+        static float SegmentDistance(Vector3 p,Vector3 start,Vector3 end)
+        { var line = end-start; return (p-(start+line*Mathf.Clamp01(Vector3.Dot(p-start,line)/line.sqrMagnitude))).magnitude; }
         static bool NormalEqual(Vector3 a,Vector3 b) => (a-b).sqrMagnitude <= 1e-10f;
         static LodSourceTopology.Face Face(int slot,int[] points,int[] vertices)
             => new LodSourceTopology.Face { submesh = slot,points = points,vertices = vertices,triangles = vertices,referenceTriangles = vertices };

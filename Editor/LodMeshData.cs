@@ -191,10 +191,10 @@ namespace SashaRX.UnityMeshLab
                 while (owners[vertex] != vertex) { owners[vertex] = owners[owners[vertex]]; vertex = owners[vertex]; }
                 return vertex;
             }
-            void Join(int a,int b)
+            void Join(int first,int second)
             {
-                if (!SameAttributes(a,b,false)) return;
-                a = Root(a); b = Root(b); owners[Math.Max(a,b)] = Math.Min(a,b);
+                if (!SameAttributes(first,second,false)) return;
+                first = Root(first); second = Root(second); owners[Math.Max(first,second)] = Math.Min(first,second);
             }
             // EdgePairs rejects ambiguous edges, opposite coincident faces and
             // corner-only contacts. Color can vary; all other fields must match.

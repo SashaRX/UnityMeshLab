@@ -126,7 +126,11 @@ namespace SashaRX.UnityMeshLab
                 }
                 report.after=bestAll; var result=accepted; accepted=null; return result;
             }
-            finally { if (trial) UnityEngine.Object.DestroyImmediate(trial); if (accepted) UnityEngine.Object.DestroyImmediate(accepted); }
+            finally
+            {
+                if (trial) UnityEngine.Object.DestroyImmediate(trial);
+                if (accepted) UnityEngine.Object.DestroyImmediate(accepted);
+            }
         }
 
         internal static Mesh ShareVisibleColorCorners(Mesh fitted,LodScreenValidation screen,
@@ -244,7 +248,11 @@ namespace SashaRX.UnityMeshLab
                 trial = UnityEngine.Object.Instantiate(reduced);
                 var indices = reduced.triangles; int faces = indices.Length/3;
                 var owners = Enumerable.Range(0,faces).ToArray(); var first = Enumerable.Repeat(-1,reduced.vertexCount).ToArray();
-                int Owner(int face) { while (owners[face] != face) face = owners[face]; return face; }
+                int Owner(int face)
+                {
+                    while (owners[face] != face) face = owners[face];
+                    return face;
+                }
                 for (int f = 0; f < faces; f++) for (int k = 0; k < 3; k++)
                 {
                     int v = indices[f*3+k]; if (first[v] < 0) first[v] = f;
@@ -297,7 +305,11 @@ namespace SashaRX.UnityMeshLab
                 report.worstAfter = best.colorLoss; report.rgbaAfter = best.rgbaRms; report.viewsAfter = best.colorBoundaryViewLoss;
                 var result = accepted; accepted = null; return result;
             }
-            finally { if (trial) UnityEngine.Object.DestroyImmediate(trial); if (accepted) UnityEngine.Object.DestroyImmediate(accepted); }
+            finally
+            {
+                if (trial) UnityEngine.Object.DestroyImmediate(trial);
+                if (accepted) UnityEngine.Object.DestroyImmediate(accepted);
+            }
         }
 
         // A continuous variable per current UV2 wedge keeps atlas seams separate
@@ -311,7 +323,8 @@ namespace SashaRX.UnityMeshLab
             var representatives=new Dictionary<(Vector3,Vector4),int>();
             var owners=Enumerable.Range(0,target.vertexCount).Select(v => {
                 var key=(data.positions[v],data.uvs[1][v]);
-                if (!representatives.TryGetValue(key,out int owner)) representatives[key]=owner=v; return owner;
+                if (!representatives.TryGetValue(key,out int owner)) representatives[key]=owner=v;
+                return owner;
             }).ToArray();
             var fit=new FieldFit(data.uvs[1].ToArray(),owners);
             int mismatches=0;

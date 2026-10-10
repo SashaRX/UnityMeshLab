@@ -136,30 +136,45 @@ namespace SashaRX.UnityMeshLab
                                 uvViews.Where((error,v) => float.IsNaN(error) || float.IsInfinity(error) || error>uvBefore[v]+UvViewRmsTolerance).Any() || metrics.DistanceRms>originalMetrics.DistanceRms+1e-6f ||
                                 metrics.distance>originalMetrics.distance+1e-6f) { probe.refusal="surface/UV"; report.uvRejected++; continue; }
                             var replacement=UnityEngine.Object.Instantiate(trial);
-                            if (accepted) UnityEngine.Object.DestroyImmediate(accepted); accepted=replacement; best=local;
+                            if (accepted) UnityEngine.Object.DestroyImmediate(accepted);
+                            accepted=replacement; best=local;
                             report.accepted=true; changed=true;
                             report.uvAfter=metrics.UvRms; report.distanceAfter=metrics.DistanceRms;
                             report.uvViewsAfter=uvViews;
                         }
                         UnityEngine.Object.DestroyImmediate(trial); trial=null;
-                        if (changed) { report.flips++; if (shared) report.sharedFlips++; break; }
+                        if (changed)
+                        {
+                            report.flips++;
+                            if (shared) report.sharedFlips++;
+                            break;
+                        }
                     }
                     if (!changed) break;
                 }
                 report.boundaryAfter=best.colorBoundaryMean;
                 var result=accepted; accepted=null; return result;
             }
-            finally { if (trial) UnityEngine.Object.DestroyImmediate(trial); if (accepted) UnityEngine.Object.DestroyImmediate(accepted); }
+            finally
+            {
+                if (trial) UnityEngine.Object.DestroyImmediate(trial);
+                if (accepted) UnityEngine.Object.DestroyImmediate(accepted);
+            }
         }
 
         static Dictionary<long,List<Side>> Edges(Vector3[] positions,int[] indices)
         {
             var ids=new Dictionary<Vector3,int>(); var edges=new Dictionary<long,List<Side>>();
-            int Point(int v) { if (!ids.TryGetValue(positions[v],out int id)) ids[positions[v]]=id=ids.Count; return id; }
+            int Point(int v)
+            {
+                if (!ids.TryGetValue(positions[v],out int id)) ids[positions[v]]=id=ids.Count;
+                return id;
+            }
             for (int f=0; f<indices.Length/3; f++) for (int k=0; k<3; k++)
             {
                 long key=LodTopologyGraph.EdgeKey(Point(indices[f*3+k]),Point(indices[f*3+(k+1)%3]));
-                if (!edges.TryGetValue(key,out var sides)) edges[key]=sides=new List<Side>(); sides.Add(new Side(f,k));
+                if (!edges.TryGetValue(key,out var sides)) edges[key]=sides=new List<Side>();
+                sides.Add(new Side(f,k));
             }
             return edges;
         }
@@ -185,7 +200,10 @@ namespace SashaRX.UnityMeshLab
                 int x=a[k],y=b[1-k];
                 for (int ch=0; ch<8; ch++) if (data.uvs[ch]!=null && (data.uvs[ch][x]-data.uvs[ch][y]).sqrMagnitude>1e-12f) return false;
                 if (data.normals.Length==p.Length && Vector3.Dot(data.normals[x].normalized,data.normals[y].normalized)<.99f) return false;
-                if (data.tangents.Length==p.Length && data.tangents[x].w!=data.tangents[y].w) return false;
+                // w is an authored handedness label; retain exact equality of
+                // finite labels rather than relaxing the seam with a tolerance.
+                if (data.tangents.Length==p.Length && (float.IsNaN(data.tangents[x].w) || float.IsNaN(data.tangents[y].w) ||
+                    !data.tangents[x].w.Equals(data.tangents[y].w))) return false;
             }
             for (int i=0; i<indices.Length; i++)
             {

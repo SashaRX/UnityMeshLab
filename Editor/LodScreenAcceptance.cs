@@ -42,7 +42,7 @@ namespace SashaRX.UnityMeshLab
         readonly Frame source;
         readonly bool[] colorInterior, colorBoundary;
         readonly int inputWidth, inputHeight;
-        readonly int[] thinLabels, componentLabels, colorLabels;
+        readonly int[] thinLabels, componentLabels;
         readonly int[] thinCounts, componentCounts, colorCounts;
         readonly int[] gradientCounts;
         readonly List<Pair> pairs = new List<Pair>();
@@ -78,7 +78,7 @@ namespace SashaRX.UnityMeshLab
                 if (x+1 < source.width) AddPair(a,a+1,boundaries,gradientPixels);
                 if (y+1 < source.height) AddPair(a,a+source.width,boundaries,gradientPixels);
             }
-            colorLabels = Label(boundaries,source.width,source.height,out var unused,cancelled);
+            var colorLabels = Label(boundaries,source.width,source.height,out var unused,cancelled);
             colorBoundary = boundaries;
             colorCounts = new int[unused.Length];
             for (int i = 0; i < pairs.Count; i++)
@@ -222,7 +222,9 @@ namespace SashaRX.UnityMeshLab
                 if (x0<0 || y0<0 || x1<0 || y1<0 || x0>=source.width || x1>=source.width || y0>=source.height || y1>=source.height) continue;
                 int a=y0*source.width+x0,b=y1*source.width+x1; if (!target.full[a] || !target.full[b]) continue;
                 var error=Square((Vector4)(target.colors[a]-source.colors[pair.a]))+Square((Vector4)(target.colors[b]-source.colors[pair.b]));
-                float next=MaxChannel(error); if (next>=score) continue; score=next; best=error;
+                float next=MaxChannel(error);
+                if (next>=score) continue;
+                score=next; best=error;
             }
             // Missing local support cannot look like a perfect gradient match.
             if (float.IsPositiveInfinity(score)) best=Vector4.Max(Square(source.colors[pair.a])+Square(source.colors[pair.b]),

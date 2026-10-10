@@ -317,14 +317,11 @@ namespace SashaRX.UnityMeshLab
                                 retained = LodSmallParts.Retain(analysis,partPlan);
                                 if (levelOptions.screenGuidedSelection && worldSize > 0)
                                 {
-                                    bool accepted;
-                                    try
-                                    {
-                                        accepted = LodSmallParts.ScreenSafe(srcMesh,retained.data.source,!levelOptions.skipColorValidation,
-                                            entry.renderer ? entry.renderer.localToWorldMatrix : Matrix4x4.identity,
-                                            entryHeight*opts.smallParts.screenHeight/worldSize,() => UvProgress.CancelRequested);
-                                    }
-                                    catch { Object.DestroyImmediate(retained.data.source); retained = null; throw; }
+                                    // The surrounding reduction finally owns the
+                                    // retained mesh, including screen-check failure.
+                                    bool accepted = LodSmallParts.ScreenSafe(srcMesh,retained.data.source,!levelOptions.skipColorValidation,
+                                        entry.renderer ? entry.renderer.localToWorldMatrix : Matrix4x4.identity,
+                                        entryHeight*opts.smallParts.screenHeight/worldSize,() => UvProgress.CancelRequested);
                                     if (!accepted)
                                     {
                                         Object.DestroyImmediate(retained.data.source); retained = null;

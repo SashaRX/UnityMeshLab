@@ -28,7 +28,7 @@ namespace SashaRX.UnityMeshLab
             if (!WrapSupported(color) || direction && !WrapSupported(direction)) return null;
             var light = new Pixels(color); var dominant = direction ? new Pixels(direction) : null;
             Vector2 Atlas(Vector2 uv) => new Vector2(uv.x*st.x+st.z,uv.y*st.y+st.w);
-            Vector4 Plain(Vector2 uv,Vector3 normal)
+            Vector4 Plain(Vector2 uv)
             { var c = light.Sample(Atlas(uv)); return new Vector4(c.r,c.g,c.b,0); }
             Vector4 Directional(Vector2 uv,Vector3 normal)
             {
@@ -36,7 +36,8 @@ namespace SashaRX.UnityMeshLab
                 float weight = (Vector3.Dot(normalToWorld.MultiplyVector(normal).normalized,new Vector3(d.r-.5f,d.g-.5f,d.b-.5f))+.5f)/Mathf.Max(d.a,1e-4f);
                 return new Vector4(c.r*weight,c.g*weight,c.b*weight,0);
             }
-            return new LodLightmapFields(dominant == null ? new Func<Vector2,Vector3,Vector4>[] {Plain} : new Func<Vector2,Vector3,Vector4>[] {Plain,Directional});
+            Func<Vector2,Vector3,Vector4> plain = (uv,_) => Plain(uv);
+            return new LodLightmapFields(dominant == null ? new Func<Vector2,Vector3,Vector4>[] {plain} : new Func<Vector2,Vector3,Vector4>[] {plain,Directional});
         }
         static bool WrapSupported(Texture2D texture) =>
             (texture.wrapModeU == TextureWrapMode.Clamp || texture.wrapModeU == TextureWrapMode.Repeat) &&

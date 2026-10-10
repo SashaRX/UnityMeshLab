@@ -49,7 +49,7 @@ namespace SashaRX.UnityMeshLab
                 if (silhouetteViewErrors == null || before.silhouetteViewErrors == null)
                     return silhouetteViewErrors == null && before.silhouetteViewErrors == null;
                 return silhouetteViewErrors.Length == before.silhouetteViewErrors.Length &&
-                    silhouetteViewErrors.Where((error,v) => error > before.silhouetteViewErrors[v]+1e-6f).Count() == 0;
+                    !silhouetteViewErrors.Where((error,v) => error > before.silhouetteViewErrors[v]+1e-6f).Any();
             }
             internal bool ColorViewsWithin(Report before,float tolerance)
             {
@@ -80,7 +80,7 @@ namespace SashaRX.UnityMeshLab
                     gradientRegionRms.Where((rms,r) => rms>before.gradientRegionRms[r]+tolerance).Any())) return false;
                 if (gradientViewRms==null || before.gradientViewRms==null) return true;
                 return gradientViewRms.Length==before.gradientViewRms.Length &&
-                    gradientViewRms.Where((loss,v) => loss>before.gradientViewRms[v]+tolerance).Count()==0;
+                    !gradientViewRms.Where((loss,v) => loss>before.gradientViewRms[v]+tolerance).Any();
             }
             bool ChannelsDoNotWorsen(Report before)
             {
@@ -164,7 +164,9 @@ namespace SashaRX.UnityMeshLab
                     foreach (int pixel in new[] { a,b }) for (int sample=0; sample<4; sample++)
                     {
                         int face=frame.triangleAt[pixel*4+sample]; if (face<0) return true;
-                        int next=colorRegions[face]; if (region>=0 && region!=next) return true; region=next;
+                        int next=colorRegions[face];
+                        if (region>=0 && region!=next) return true;
+                        region=next;
                     }
                     // Connected vertex paint can still contain a narrow stripe
                     // or abrupt slope change. Only a locally regular ramp is smooth.
@@ -237,7 +239,7 @@ namespace SashaRX.UnityMeshLab
                 foreach (var pair in LodSmoothingRegions.EdgePairs(data,faces))
                 {
                     Check(cancelled);
-                    bool Same(int a,int b) => MaxChannel((Vector4)data.colors[a]-(Vector4)data.colors[b])<=1f/255+1e-6f;
+                    bool Same(int first,int second) => MaxChannel((Vector4)data.colors[first]-(Vector4)data.colors[second])<=1f/255+1e-6f;
                     if (!Same(pair[0].a,pair[1].b) || !Same(pair[0].b,pair[1].a)) continue;
                     int a=Root(offset+pair[0].face),b=Root(offset+pair[1].face);
                     regions[Mathf.Max(a,b)]=Mathf.Min(a,b);
