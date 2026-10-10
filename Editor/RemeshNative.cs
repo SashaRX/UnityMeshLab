@@ -130,12 +130,12 @@ namespace SashaRX.UnityMeshLab
 
         static IndexedMesh RepairVoxelFins(IndexedMesh result, CancellationToken token)
         {
-            var candidate = RemeshTopology.RemoveCollapsedFins(result,token,out int removed);
+            var candidate = RemeshTopology.RemoveCollapsedFinPatches(result,token,out int removed);
             if (removed == 0) return result;
             var topology = RemeshTopology.Inspect(candidate.positions,candidate.indices,token);
             if (!topology.Valid || topology.boundary.Count != 0) return result;
             foreach (bool closed in RemeshTopology.ClosedVolumeFaces(candidate.positions,candidate.indices,token)) if (!closed) return result;
-            UvtLog.Info(UvtLog.Category.RemeshDiag,$"Solid voxel cleanup removed {removed} coincident opposing fin faces; retained {candidate.TriangleCount} faces, closed topology verified.");
+            UvtLog.Info(UvtLog.Category.RemeshDiag,$"Solid voxel cleanup removed {removed} coincident opposing fin patch faces; retained {candidate.TriangleCount} faces, closed topology verified.");
             return candidate.PrepareChannels(token);
         }
 

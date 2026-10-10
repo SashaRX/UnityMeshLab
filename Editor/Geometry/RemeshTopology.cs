@@ -205,6 +205,59 @@ namespace SashaRX.UnityMeshLab
                 foreach (var edgeKey in keys) data.edges[edgeKey].count -= 2;
             }
             if (removed == 0) return mesh;
+            return WithoutFaces(mesh, drop, removed, token);
+        }
+
+        // Solid voxel output can contain entire collapsed two-sided patches.
+        // Removing pairs greedily can strand their neighbours or fail at an edge
+        // shared by several pairs. Audit and remove each edge-connected patch as
+        // one operation. Ordinary Simplify keeps the narrower single-fin policy.
+        internal static RemeshNative.IndexedMesh RemoveCollapsedFinPatches(RemeshNative.IndexedMesh mesh, CancellationToken token, out int removed)
+        {
+            var data = Inspect(mesh.positions, mesh.indices, token);
+            var pairs = new List<List<int>>();
+            var edges = new List<(int, int)[]>();
+            foreach (var entry in data.faces) {
+                token.ThrowIfCancellationRequested();
+                var list = entry.Value;
+                if (list.Count != 2 || Orientation(data, list[0]) == Orientation(data, list[1])) continue;
+                var key = entry.Key;
+                pairs.Add(list);
+                edges.Add(new[] {EdgeKey(key.Item1, key.Item2), EdgeKey(key.Item2, key.Item3), EdgeKey(key.Item3, key.Item1)});
+            }
+            removed = 0;
+            if (pairs.Count == 0) return mesh;
+            var groups = new DisjointSet(pairs.Count);
+            var first = new Dictionary<(int, int), int>();
+            var counts = new Dictionary<(int, int), int>();
+            for (int i = 0; i < pairs.Count; ++i) {
+                token.ThrowIfCancellationRequested();
+                foreach (var edge in edges[i]) {
+                    if (first.TryGetValue(edge, out int other)) groups.Union(i, other);
+                    else first.Add(edge, i);
+                    counts.TryGetValue(edge, out int count); counts[edge] = count + 2;
+                }
+            }
+            var unsafeGroups = new HashSet<int>(); var attachedGroups = new HashSet<int>();
+            foreach (var entry in counts) {
+                token.ThrowIfCancellationRequested();
+                int group = groups.Find(first[entry.Key]);
+                var edge = data.edges[entry.Key]; int remaining = edge.count - entry.Value;
+                if (edge.balance != 0 || remaining != 0 && remaining != 2) unsafeGroups.Add(group);
+                if (remaining == 2) attachedGroups.Add(group);
+            }
+            var drop = new bool[mesh.TriangleCount];
+            for (int i = 0; i < pairs.Count; ++i) {
+                token.ThrowIfCancellationRequested();
+                int group = groups.Find(i);
+                if (unsafeGroups.Contains(group) || !attachedGroups.Contains(group)) continue;
+                drop[pairs[i][0]] = drop[pairs[i][1]] = true; removed += 2;
+            }
+            return removed == 0 ? mesh : WithoutFaces(mesh, drop, removed, token);
+        }
+
+        static RemeshNative.IndexedMesh WithoutFaces(RemeshNative.IndexedMesh mesh, bool[] drop, int removed, CancellationToken token)
+        {
             var remap = new int[mesh.positions.Length];
             for (int i = 0; i < remap.Length; i++) remap[i] = -1;
             var positions = new List<Vector3>(); var indices = new int[mesh.indices.Length - removed * 3]; int write = 0;

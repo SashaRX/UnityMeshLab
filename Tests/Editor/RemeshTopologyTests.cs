@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using NUnit.Framework;
 using UnityEngine;
@@ -265,6 +266,103 @@ namespace SashaRX.UnityMeshLab.Tests
                 var result = RemeshTopology.RemoveCollapsedFins(mesh, CancellationToken.None, out int removed);
                 Assert.AreEqual(0, removed); Assert.AreSame(mesh, result);
             }
+        }
+
+        [TestCase(false, false, false)] [TestCase(false, false, true)]
+        [TestCase(false, true, false)] [TestCase(false, true, true)]
+        [TestCase(true, false, false)] [TestCase(true, false, true)]
+        [TestCase(true, true, false)] [TestCase(true, true, true)]
+        public void SolidVoxelRepairsWholeFinPatchIndependentOfFaceOrderAndVertexSplits(bool sharedSurfaceEdge, bool reverse, bool splitVertices)
+        {
+            var input = FinPatch(sharedSurfaceEdge, reverse, splitVertices);
+            var points = (Vector3[])input.positions.Clone(); var indices = (int[])input.indices.Clone();
+            var result = RemeshTopology.RemoveCollapsedFinPatches(input, default, out int removed);
+            Assert.AreEqual(4, removed); Assert.AreEqual(4, result.TriangleCount);
+            AssertRetainedTetrahedron(result);
+            foreach (uint flags in new[] {0u, 1u}) {
+                var guarded = RemeshNative.GuardVoxelSolid(input, flags, 64, default,
+                    _ => throw new Exception("A repaired closed patch must not request a native retry"));
+                AssertRetainedTetrahedron(guarded);
+                Assert.AreEqual(guarded.positions.Length, guarded.normals.Length);
+                Assert.AreEqual(guarded.positions.Length, guarded.uv.Length);
+            }
+            CollectionAssert.AreEqual(points, input.positions); CollectionAssert.AreEqual(indices, input.indices);
+        }
+
+        [Test]
+        public void FinPatchCannotRemoveAnAuthoredOpeningOrPassAnUnrelatedHole()
+        {
+            var attachedOpening = FinPatch(false, false, false);
+            attachedOpening.indices = attachedOpening.indices.Skip(3).ToArray();
+            Assert.AreSame(attachedOpening, RemeshTopology.RemoveCollapsedFinPatches(attachedOpening, default, out int removed));
+            Assert.AreEqual(0, removed, "One unsafe edge must preserve the entire patch.");
+            var unrelatedOpening = FinPatch(false, false, false);
+            unrelatedOpening.indices = unrelatedOpening.indices.Take(9).Concat(unrelatedOpening.indices.Skip(12)).ToArray();
+            RemeshTopology.RemoveCollapsedFinPatches(unrelatedOpening, default, out int candidateRemoved);
+            Assert.AreEqual(4, candidateRemoved, "The patch itself is removable, but the whole solid is still invalid.");
+            foreach (var input in new[] {attachedOpening, unrelatedOpening}) {
+                var saved = (int[])input.indices.Clone();
+                foreach (uint flags in new[] {0u, 1u})
+                    Assert.Throws<InvalidOperationException>(() => RemeshNative.GuardVoxelSolid(input, flags, 64, default, _ => input));
+                CollectionAssert.AreEqual(saved, input.indices);
+            }
+        }
+
+        [Test]
+        public void FinPatchPreservesIsolatedSheetsVertexOnlyContactAndSameWindingCopies()
+        {
+            var p = new[] {Vector3.zero, Vector3.right, Vector3.up, Vector3.forward,
+                new Vector3(2, -1, 0), new Vector3(2, -2, 0), new Vector3(3, -1, 0)};
+            foreach (var extra in new[] {
+                new[] {4, 5, 6, 5, 4, 6}, // isolated two-sided sheet
+                new[] {0, 4, 5, 4, 0, 5}, // vertex contact without a shared edge
+                new[] {0, 1, 4, 0, 1, 4}, // identical winding is not a collapsed fin
+                new[] {0, 1, 4, 1, 0, 4, 0, 1, 4} // ambiguous triple copy
+            }) {
+                var input = new RemeshNative.IndexedMesh {positions = p, indices = Tetrahedron.Concat(extra).ToArray()};
+                Assert.AreSame(input, RemeshTopology.RemoveCollapsedFinPatches(input, default, out int removed));
+                Assert.AreEqual(0, removed);
+            }
+        }
+
+        [Test]
+        public void FinPatchGuardRejectsZeroVolumeAndHonoursCancellation()
+        {
+            var input = FinPatch(false, false, false);
+            input.positions[3] = new Vector3(.25f, .25f, 0);
+            var candidate = RemeshTopology.RemoveCollapsedFinPatches(input, default, out int removed);
+            Assert.AreEqual(4, removed);
+            Assert.IsFalse(RemeshTopology.ClosedVolumeFaces(candidate.positions, candidate.indices, default).All(v => v));
+            foreach (uint flags in new[] {0u, 1u})
+                Assert.Throws<InvalidOperationException>(() => RemeshNative.GuardVoxelSolid(input, flags, 64, default, _ => input));
+            var saved = (int[])input.indices.Clone();
+            using var cancellation = new CancellationTokenSource(); cancellation.Cancel();
+            Assert.Throws<OperationCanceledException>(() => RemeshTopology.RemoveCollapsedFinPatches(input, cancellation.Token, out _));
+            CollectionAssert.AreEqual(saved, input.indices);
+        }
+
+        static RemeshNative.IndexedMesh FinPatch(bool sharedSurfaceEdge, bool reverse, bool splitVertices)
+        {
+            var p = TetraPositions().Concat(new[] {new Vector3(1, -1, 0), new Vector3(0, -1, 0)}).ToArray();
+            var patch = sharedSurfaceEdge ? new[] {0, 1, 4, 1, 0, 4, 0, 1, 5, 1, 0, 5}
+                : new[] {0, 1, 4, 1, 0, 4, 0, 4, 5, 4, 0, 5};
+            if (reverse) patch = Enumerable.Range(0, 4).Reverse().SelectMany(f => patch.Skip(f * 3).Take(3)).ToArray();
+            var ix = Tetrahedron.Concat(patch).ToArray();
+            if (splitVertices) {
+                p = ix.Select(v => p[v]).ToArray();
+                ix = Enumerable.Range(0, ix.Length).ToArray();
+            }
+            return new RemeshNative.IndexedMesh {positions = p, indices = ix};
+        }
+
+        static void AssertRetainedTetrahedron(RemeshNative.IndexedMesh result)
+        {
+            var p = TetraPositions();
+            Assert.AreEqual(Tetrahedron.Length, result.indices.Length);
+            for (int i = 0; i < Tetrahedron.Length; ++i) Assert.AreEqual(p[Tetrahedron[i]], result.positions[result.indices[i]]);
+            var topology = RemeshTopology.Inspect(result.positions, result.indices);
+            Assert.IsTrue(topology.Valid, topology.Description); Assert.AreEqual(0, topology.boundary.Count);
+            Assert.IsTrue(RemeshTopology.ClosedVolumeFaces(result.positions, result.indices, default).All(v => v));
         }
 
         [Test]
