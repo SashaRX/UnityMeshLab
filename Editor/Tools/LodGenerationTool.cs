@@ -31,6 +31,7 @@ namespace SashaRX.UnityMeshLab
         bool generateCorrectAttributes = true;
         bool generatePreserveHardEdges = true;
         bool generateCoarsenHardEdgeChains;
+        bool generateNativeHardEdgeConstraints;
         float generateFeatureChainError = .005f;
         float generateReductionStep = 3;
         float generateTargetError = 0.2f;
@@ -404,6 +405,7 @@ namespace SashaRX.UnityMeshLab
             generatePreserveHardEdges = EditorGUILayout.Toggle(new GUIContent("Preserve Hard Edges", "Keep authored normal creases and their incident triangles; lock boundaries of the remaining patches. This strict constraint can prevent reaching the triangle budget."),generatePreserveHardEdges);
             using (new EditorGUI.DisabledScope(!generatePreserveHardEdges || !generateBudgetPriority || generateReductionMode != LodReductionMode.Triangles))
             {
+                generateNativeHardEdgeConstraints = EditorGUILayout.Toggle(new GUIContent("Native Crease Constraints", "Experimental: constrain crease vertices directly and simplify neighboring triangles. Requires the rebuilt native plugin. Invalid seam collapses retry with locked crease points."),generateNativeHardEdgeConstraints);
                 generateCoarsenHardEdgeChains = EditorGUILayout.Toggle(new GUIContent("Coarsen Crease Chains", "Experimental: remove intermediate crease points while preserving topology, endpoints, junctions and separate shading sides. Available in Triangles with Prioritize Triangle Budget."),generateCoarsenHardEdgeChains);
                 if (generateCoarsenHardEdgeChains)
                     generateFeatureChainError = EditorGUILayout.Slider(new GUIContent("Crease Deviation", "Maximum original polyline deviation as a fraction of the source diagonal. Zero permits straight chains with affine fields only. Bounded mode permits up to 5 degrees of crease normal error, 0.001 UV error and the level's RGBA guide before source validation."),generateFeatureChainError,0,.01f);
@@ -598,6 +600,7 @@ namespace SashaRX.UnityMeshLab
                 correctSurfaceAttributes = generateCorrectAttributes && generateBudgetPriority && generateReductionMode != LodReductionMode.FullLoops,
                 preserveHardEdges = generatePreserveHardEdges,
                 coarsenHardEdgeChains = generateCoarsenHardEdgeChains && generateBudgetPriority && generateReductionMode == LodReductionMode.Triangles,
+                nativeHardEdgeConstraints = generateNativeHardEdgeConstraints && generateBudgetPriority && generateReductionMode == LodReductionMode.Triangles,
                 featureChainError = generateFeatureChainError
             };
             if (generateRelaxFarLods)

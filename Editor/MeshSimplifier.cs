@@ -19,6 +19,8 @@ namespace SashaRX.UnityMeshLab
             public float colorWeight;   // importance of float RGBA preservation; 0 disables the cost
             public bool lockBorder;     // lock mesh boundary vertices
             public bool preserveHardEdges; // retain authored normal creases and their incident face belt
+            internal bool nativeHardEdgeConstraints; // opt-in replacement of the incident face belt
+            internal bool lockNativeCreaseChains; // validated retry when a protected seam collapse loses coverage
             internal bool allowAttributeSeamCollapse; // budget fallback; retains attribute channels
             public int uvChannel;       // which UV channel to protect (default 1 = UV2)
 
@@ -44,6 +46,7 @@ namespace SashaRX.UnityMeshLab
             public int simplifiedTriCount;
             public float resultError;
             internal LodHardEdges.Report hardEdges;
+            internal int nativeRetries;
         }
 
         /// <summary>
@@ -51,6 +54,19 @@ namespace SashaRX.UnityMeshLab
         /// Creates a new Mesh instance (does not modify the input).
         /// </summary>
         public static SimplifyResult Simplify(Mesh sourceMesh, SimplifySettings settings)
+        {
+            var result = SimplifyCore(sourceMesh,settings);
+            if (settings.nativeHardEdgeConstraints && !settings.lockNativeCreaseChains && result.ok && result.hardEdges?.sourceFallback == true)
+            {
+                Object.DestroyImmediate(result.simplifiedMesh);
+                settings.lockNativeCreaseChains = true;
+                result = SimplifyCore(sourceMesh,settings);
+                result.nativeRetries = 1;
+            }
+            return result;
+        }
+
+        static SimplifyResult SimplifyCore(Mesh sourceMesh, SimplifySettings settings)
         {
             var result = new SimplifyResult();
 
@@ -76,6 +92,18 @@ namespace SashaRX.UnityMeshLab
 
             // ── Read all vertex data ──
             var hardEdges = settings.preserveHardEdges ? new LodHardEdges(sourceMesh) : null;
+            bool constrained = hardEdges != null && settings.nativeHardEdgeConstraints;
+            if (constrained)
+            {
+                try
+                {
+                    if (MeshoptNative.meshoptConstraintVersion() != 1)
+                    { result.error = "Unsupported native crease constraint ABI."; return result; }
+                }
+                catch (System.EntryPointNotFoundException)
+                { result.error = "Native crease constraints require the rebuilt xatlas-unity plugin."; return result; }
+            }
+            var vertexLocks = constrained ? hardEdges.VertexLocks(settings.lockNativeCreaseChains) : null;
             Vector3[] positions = sourceMesh.vertices;
             Vector3[] normals   = sourceMesh.normals;
             Vector4[] tangents  = sourceMesh.tangents;
@@ -165,7 +193,8 @@ namespace SashaRX.UnityMeshLab
                 var reducibleIndices = new List<uint>();
                 for (int i = 0; i < subTris.Length; i += 3)
                 {
-                    var destination = hardEdges != null && hardEdges.frozen[s][i/3] ? retainedIndices : reducibleIndices;
+                    var retained = constrained ? hardEdges.ambiguousFrozen : hardEdges?.frozen;
+                    var destination = retained != null && retained[s][i/3] ? retainedIndices : reducibleIndices;
                     for (int k = 0; k < 3; k++) destination.Add((uint)globalToLocal[subTris[i+k]]);
                 }
                 uint localIndexCount = (uint)reducibleIndices.Count;
@@ -237,7 +266,18 @@ namespace SashaRX.UnityMeshLab
                     patchRatio = localIndexCount > 0 ? Mathf.Min(1,remainingTarget/(localIndexCount/3f)) : 1;
                 }
 
-                int err = localIndexCount == 0 ? 0 : MeshoptNative.meshoptSimplify(
+                var localLocks = constrained ? new byte[localVertCount] : null;
+                if (constrained) foreach (var pair in globalToLocal) localLocks[pair.Value] = vertexLocks[pair.Key];
+                int err;
+                if (localIndexCount == 0) err = 0;
+                else if (constrained) err = MeshoptNative.meshoptSimplifyConstrained(
+                    posBytes, (uint)localVertCount, (uint)POS_STRIDE,
+                    localIndices, localIndexCount, attrArray, attrStride,
+                    weightArray, (uint)(weightArray != null ? weightArray.Length : 0),
+                    localLocks, (uint)localLocks.Length,
+                    patchRatio, settings.targetError, patchOptions,
+                    outIndices, out outIndexCount, out simplifyError);
+                else err = MeshoptNative.meshoptSimplify(
                     posBytes, (uint)localVertCount, (uint)POS_STRIDE,
                     localIndices, localIndexCount,
                     attrArray, attrStride,
@@ -367,14 +407,14 @@ namespace SashaRX.UnityMeshLab
             result.simplifiedTriCount = totalSimplTris;
             if (hardEdges != null)
             {
-                result.hardEdges = hardEdges.Measure(outMesh);
+                result.hardEdges = constrained ? hardEdges.MeasureNative(outMesh,settings.lockNativeCreaseChains) : hardEdges.Measure(outMesh);
                 if (!result.hardEdges.Valid)
                 {
                     Object.DestroyImmediate(outMesh);
                     result.simplifiedMesh = Object.Instantiate(sourceMesh);
                     MeshUvState.SetDraft(result.simplifiedMesh,result.draftUv);
                     result.simplifiedTriCount = totalOrigTris; result.resultError = 0;
-                    result.hardEdges = hardEdges.Measure(result.simplifiedMesh);
+                    result.hardEdges = constrained ? hardEdges.MeasureNative(result.simplifiedMesh,settings.lockNativeCreaseChains) : hardEdges.Measure(result.simplifiedMesh);
                     result.hardEdges.sourceFallback = true;
                     UvtLog.Warn("[Simplify] Protected face / edge / patch-interface check failed; retained source mesh.");
                 }

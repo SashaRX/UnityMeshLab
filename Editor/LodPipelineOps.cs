@@ -33,6 +33,7 @@ namespace SashaRX.UnityMeshLab
             public bool correctSurfaceAttributes;
             public bool preserveHardEdges;
             public bool coarsenHardEdgeChains;
+            public bool nativeHardEdgeConstraints;
             public float featureChainError;
         }
 
@@ -240,6 +241,7 @@ namespace SashaRX.UnityMeshLab
                         colorWeight  = levelOptions.colorWeight,
                         lockBorder   = opts.lockBorder,
                         preserveHardEdges = opts.preserveHardEdges,
+                        nativeHardEdgeConstraints = opts.nativeHardEdgeConstraints && opts.reductionMode == LodReductionMode.Triangles && opts.prioritizeTriangleBudget,
                         uvChannel    = 1
                     };
 
@@ -301,7 +303,8 @@ namespace SashaRX.UnityMeshLab
                                 var protection = new LodHardEdges(reductionMesh);
                                 bool sourceFallback = r.hardEdges?.sourceFallback ?? false;
                                 bool coarsened = opts.coarsenHardEdgeChains && opts.prioritizeTriangleBudget && opts.reductionMode == LodReductionMode.Triangles && r.hardEdges?.coarsenedPoints > 0;
-                                r.hardEdges = coarsened ? protection.MeasureCoarsened(r.simplifiedMesh,r.hardEdges) : protection.Measure(r.simplifiedMesh);
+                                r.hardEdges = coarsened ? protection.MeasureCoarsened(r.simplifiedMesh,r.hardEdges) :
+                                    r.hardEdges?.nativeConstraints == true ? protection.MeasureNative(r.simplifiedMesh,r.hardEdges.lockedChainRetry) : protection.Measure(r.simplifiedMesh);
                                 r.hardEdges.sourceFallback = sourceFallback;
                                 if (!r.hardEdges.Valid)
                                 {

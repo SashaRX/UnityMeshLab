@@ -60,15 +60,16 @@ namespace SashaRX.UnityMeshLab
             if (chains?.mesh) reductionSettings.targetRatio = Mathf.Min(1,(float)target/LodMeshData.TriangleCount(reductionSource));
             var protection = settings.preserveHardEdges ? new LodHardEdges(reductionSource) : null;
             var originalProtection = settings.preserveHardEdges ? new LodHardEdges(source) : null;
-            bool protectedFloorExceedsBudget = protection != null && protection.protectedTriangles >= target;
+            bool native = settings.nativeHardEdgeConstraints && protection != null;
+            bool protectedFloorExceedsBudget = protection != null && (native ? protection.NativeProtectedTriangles : protection.protectedTriangles) >= target;
             int previousCount = previousProtected ? LodMeshData.TriangleCount(previousProtected) : 0;
-            int densityLimit = settings.preserveHardEdges && previousCount > target && protection.Measure(previousProtected).Valid
+            int densityLimit = settings.preserveHardEdges && previousCount > target && (native ? protection.MeasureNative(previousProtected) : protection.Measure(previousProtected)).Valid
                 ? previousCount : int.MaxValue;
             bool reusedPrevious = false;
             int count = Mathf.Clamp(options.candidateCount,1,5);
             var reports = new List<CandidateReport>();
             var silhouette = new LodSilhouetteValidation(source,cancelled);
-            var probeEvaluation = chains?.mesh ? new ProbeEvaluation { source = source,settings = settings,options = options,silhouette = silhouette } : null;
+            var probeEvaluation = chains?.mesh || native ? new ProbeEvaluation { source = source,settings = settings,options = options,silhouette = silhouette } : null;
             bool rankOverBudgetQuality = protectedFloorExceedsBudget || probeEvaluation != null;
             try
             {
@@ -149,7 +150,8 @@ namespace SashaRX.UnityMeshLab
                 if (protection != null)
                 {
                     bool sourceFallback = best.hardEdges?.sourceFallback ?? false;
-                    best.hardEdges = protection.Measure(best.simplifiedMesh);
+                    bool lockedRetry = best.hardEdges?.lockedChainRetry ?? false;
+                    best.hardEdges = native ? protection.MeasureNative(best.simplifiedMesh,lockedRetry) : protection.Measure(best.simplifiedMesh);
                     if (chains?.mesh)
                     {
                         best.hardEdges = originalProtection.MeasureCoarsened(best.simplifiedMesh,chains.Configure(best.hardEdges));
@@ -232,7 +234,7 @@ namespace SashaRX.UnityMeshLab
                         attempt.allowAttributeSeamCollapse = probe >= 2;
                     }
                     UvProgress.Report(UvProgress.Current.fraction,$"{source.name}: triangle budget probe {probe+1}/4");
-                    var candidate = MeshSimplifier.Simplify(source,attempt); count++;
+                    var candidate = MeshSimplifier.Simplify(source,attempt); count += 1+candidate.nativeRetries;
                     try
                     {
                         if (!candidate.ok) { error = candidate.error; continue; }

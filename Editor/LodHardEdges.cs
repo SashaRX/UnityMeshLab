@@ -16,10 +16,13 @@ namespace SashaRX.UnityMeshLab
             public float featureDeviation, featureNormalAngle;
             public int missingEdges, missingFaces, missingInterfaces;
             public bool sourceFallback;
+            public bool nativeConstraints, lockedChainRetry;
             internal bool Valid => missingEdges == 0 && missingFaces == 0 && missingInterfaces == 0;
             internal string Note => $"Hard-edge coverage: {edges-missingEdges}/{edges}; protected faces {protectedTriangles}, " +
                 $"ambiguous edges {ambiguousEdges}, patch interfaces {interfaces-missingInterfaces}/{interfaces}." +
                 (coarsenedPoints > 0 ? $" Coarsened {coarsenedPoints} points; feature deviation ≤{featureDeviation:P2} of source diagonal, endpoint normal guide {featureNormalAngle:F1}°." : "") +
+                (nativeConstraints ? " Direct native constraints; only ambiguous faces remain frozen." : "") +
+                (lockedChainRetry ? " Retried with all crease vertices locked." : "") +
                 (sourceFallback ? " Rejected candidate; retained source copy." : "");
         }
         readonly struct Side
@@ -38,15 +41,19 @@ namespace SashaRX.UnityMeshLab
         readonly Dictionary<Edge,List<Side>> edges = new Dictionary<Edge,List<Side>>();
         readonly List<List<Side>> hard = new List<List<Side>>();
         readonly List<Edge> interfaces = new List<Edge>();
+        readonly List<Edge> nativeInterfaces = new List<Edge>();
         internal readonly bool[][] frozen;
+        internal readonly bool[][] ambiguousFrozen;
         internal readonly int protectedTriangles, ambiguousEdges;
 
         internal LodHardEdges(Mesh mesh)
         {
             source = new LodMeshData(mesh); frozen = new bool[mesh.subMeshCount][];
+            ambiguousFrozen = new bool[mesh.subMeshCount][];
             for (int slot = 0; slot < frozen.Length; slot++)
             {
                 int[] faces = LodMeshData.Triangles(mesh,slot); frozen[slot] = new bool[faces.Length/3];
+                ambiguousFrozen[slot] = new bool[faces.Length/3];
                 for (int i = 0; i < faces.Length; i += 3)
                     for (int k = 0; k < 3; k++)
                     {
@@ -69,11 +76,20 @@ namespace SashaRX.UnityMeshLab
                 if (!ambiguous && !discontinuous) continue;
                 if (ambiguous) ambiguousEdges++;
                 if (discontinuous) hard.Add(sides);
-                foreach (var side in sides) frozen[side.slot][side.face] = true;
+                foreach (var side in sides)
+                {
+                    frozen[side.slot][side.face] = true;
+                    if (ambiguous) ambiguousFrozen[side.slot][side.face] = true;
+                }
             }
             foreach (var entry in edges)
+            {
                 if (entry.Value.Any(s => frozen[s.slot][s.face]) && entry.Value.Any(s => !frozen[s.slot][s.face]))
                     interfaces.Add(entry.Key);
+                if (entry.Value.Select(s => s.slot).Distinct().Count() > 1 ||
+                    entry.Value.Any(s => ambiguousFrozen[s.slot][s.face]) && entry.Value.Any(s => !ambiguousFrozen[s.slot][s.face]))
+                    nativeInterfaces.Add(entry.Key);
+            }
             protectedTriangles = frozen.Sum(slot => slot.Count(value => value));
         }
         int Point(Vector3 p)
@@ -86,10 +102,45 @@ namespace SashaRX.UnityMeshLab
         static bool NormalEqual(Vector3 a,Vector3 b) => a.sqrMagnitude > .5f && b.sqrMagnitude > .5f
             ? (a.normalized-b.normalized).sqrMagnitude <= 1e-10f : a.Equals(b);
 
-        internal Report Measure(Mesh target)
+        // Protect degree-two shading seams; endpoints, junctions, material borders
+        // and every vertex of an ambiguous face are immovable. Tag all wedges.
+        internal byte[] VertexLocks(bool lockChains)
         {
-            var report = new Report { edges = hard.Count, protectedTriangles = protectedTriangles,
-                ambiguousEdges = ambiguousEdges, interfaces = interfaces.Count };
+            var flags = new byte[points.Count];
+            var degree = new int[points.Count];
+            foreach (var feature in hard)
+            {
+                degree[points[source.positions[feature[0].a]]]++;
+                degree[points[source.positions[feature[0].b]]]++;
+            }
+            for (int i = 0; i < flags.Length; i++)
+                if (degree[i] > 0) flags[i] = lockChains || degree[i] != 2 ? MeshoptNative.VertexLock : MeshoptNative.VertexProtect;
+            foreach (var edge in nativeInterfaces)
+                flags[edge.a] = flags[edge.b] = MeshoptNative.VertexLock;
+            foreach (var entry in edges.Values)
+                foreach (var side in entry)
+                    if (ambiguousFrozen[side.slot][side.face])
+                        flags[points[source.positions[side.a]]] = flags[points[source.positions[side.b]]] = flags[points[source.positions[side.c]]] = MeshoptNative.VertexLock;
+            return source.positions.Select(p => points.TryGetValue(p,out int id) ? flags[id] : (byte)0).ToArray();
+        }
+
+        internal int NativeProtectedTriangles => ambiguousFrozen.Sum(slot => slot.Count(value => value));
+        internal Report MeasureNative(Mesh target,bool lockedRetry = false)
+        {
+            var report = Measure(target,true);
+            report.nativeConstraints = true; report.lockedChainRetry = lockedRetry;
+            // Native seam collapses must cover the prepared crease exactly. Only
+            // the separately verified managed prepass gets a deviation allowance.
+            return MeasureCoarsened(target,report);
+        }
+
+        internal Report Measure(Mesh target) => Measure(target,false);
+        Report Measure(Mesh target,bool native)
+        {
+            var retained = native ? ambiguousFrozen : frozen;
+            var boundaries = native ? nativeInterfaces : interfaces;
+            var report = new Report { edges = hard.Count, protectedTriangles = native ? NativeProtectedTriangles : protectedTriangles,
+                ambiguousEdges = ambiguousEdges, interfaces = boundaries.Count };
             var positions = target.vertices; var normals = target.normals;
             var targetEdges = new Dictionary<Edge,List<Side>>();
             var targetFaces = new Dictionary<(int slot,int a,int b,int c),int>();
@@ -116,6 +167,7 @@ namespace SashaRX.UnityMeshLab
             }
             foreach (var feature in hard)
             {
+                if (native) continue;
                 var key = new Edge(points[source.positions[feature[0].a]],points[source.positions[feature[0].b]]);
                 if (!targetEdges.TryGetValue(key,out var sides) || normals.Length != positions.Length ||
                     feature.Any(f => !sides.Any(s => s.slot == f.slot && positions[s.a].Equals(source.positions[f.a]) &&
@@ -126,7 +178,7 @@ namespace SashaRX.UnityMeshLab
             {
                 int[] faces = LodMeshData.Triangles(source.source,slot);
                 for (int i = 0; i < faces.Length; i += 3)
-                    if (frozen[slot][i/3])
+                    if (retained[slot][i/3])
                     {
                         var face = FaceKey(slot,points[source.positions[faces[i]]],points[source.positions[faces[i+1]]],points[source.positions[faces[i+2]]]);
                         targetFaces.TryGetValue(face,out int occurrences);
@@ -134,7 +186,7 @@ namespace SashaRX.UnityMeshLab
                         else targetFaces[face] = occurrences-1;
                     }
             }
-            foreach (var edge in interfaces)
+            foreach (var edge in boundaries)
                 if (!targetEdges.TryGetValue(edge,out var sides) || edges[edge].Any(f =>
                     !sides.Any(s => s.slot == f.slot && positions[s.a].Equals(source.positions[f.a]) && positions[s.b].Equals(source.positions[f.b]))))
                     report.missingInterfaces++;
@@ -163,12 +215,16 @@ namespace SashaRX.UnityMeshLab
                     }
             }
             foreach (var feature in hard)
-                if (n.Length != p.Length || !targetEdges.Values.Any(sides => sides.Count >= 2 && sides.Skip(1).Any(s =>
+            {
+                bool Covered(List<Side> sides) => n.Length == p.Length && sides.Count >= 2 && sides.Skip(1).Any(s =>
                     !NormalEqual(n[sides[0].a],n[p[s.a].Equals(p[sides[0].a]) ? s.a : s.b]) ||
                     !NormalEqual(n[sides[0].b],n[p[s.a].Equals(p[sides[0].b]) ? s.a : s.b])) &&
                     feature.All(f => sides.Any(s => s.slot == f.slot &&
-                        Covers(source.positions[f.a],source.normals[f.a],source.positions[f.b],source.normals[f.b],p[s.a],n[s.a],p[s.b],n[s.b],reference.featureDeviation,reference.featureNormalAngle)))))
+                        Covers(source.positions[f.a],source.normals[f.a],source.positions[f.b],source.normals[f.b],p[s.a],n[s.a],p[s.b],n[s.b],reference.featureDeviation,reference.featureNormalAngle)));
+                var key = new Edge(points[source.positions[feature[0].a]],points[source.positions[feature[0].b]]);
+                if (!(targetEdges.TryGetValue(key,out var exact) && Covered(exact)) && !targetEdges.Values.Any(Covered))
                     reference.missingEdges++;
+            }
             return reference;
         }
         bool Covers(Vector3 a,Vector3 an,Vector3 b,Vector3 bn,Vector3 from,Vector3 fn,Vector3 to,Vector3 tn,float deviation,float angle)

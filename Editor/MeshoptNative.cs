@@ -50,6 +50,23 @@ namespace SashaRX.UnityMeshLab
             out uint  outIndexCount,
             out float outResultError);
 
+        [DllImport(DLL)]
+        internal static extern int meshoptConstraintVersion();
+
+        // Additive ABI: byte count must equal vertexCount, including unused wedges.
+        [DllImport(DLL)]
+        internal static extern int meshoptSimplifyConstrained(
+            byte[] vertexData, uint vertexCount, uint vertexStride,
+            uint[] indices, uint indexCount,
+            float[] attributes, uint attributeStride,
+            float[] attributeWeights, uint attributeCount,
+            byte[] vertexLocks, uint lockCount,
+            float targetRatio, float targetError, uint options,
+            uint[] outIndices, out uint outIndexCount, out float outResultError);
+
+        internal const byte VertexLock = 1;
+        internal const byte VertexProtect = 2;
+
         // meshopt simplify option flags (match meshoptimizer.h enum)
         public const uint SimplifyLockBorder    = 1;
         public const uint SimplifySparse        = 2;

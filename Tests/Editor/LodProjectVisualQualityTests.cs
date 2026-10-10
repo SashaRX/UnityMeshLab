@@ -142,6 +142,8 @@ namespace SashaRX.UnityMeshLab.Tests
                         Generate(source,LodReductionMode.Triangles,3,"hard",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true);
                         if (argsHave("-meshlabLodFeatureChains"))
                             Generate(source,LodReductionMode.Triangles,3,"chains",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true,coarsenHardEdgeChains:true);
+                        if (argsHave("-meshlabLodNativeFeatures"))
+                            Generate(source,LodReductionMode.Triangles,3,"native",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true,coarsenHardEdgeChains:true,nativeHardEdgeConstraints:true);
                     }
                     else if (argsHave("-meshlabQslimCompare"))
                     {
@@ -224,14 +226,15 @@ namespace SashaRX.UnityMeshLab.Tests
                         capture.selectionScore = variant.info.selectionScore; capture.nativeProbes = variant.info.nativeProbes;
                         if (argsHave("-meshlabLodHardEdges"))
                         {
-                            var features = variant.name.StartsWith("chains-") ? variant.info.hardEdges : new LodHardEdges(source).Measure(variant.mesh);
+                            var features = variant.name.StartsWith("chains-") || variant.name.StartsWith("native-") ? variant.info.hardEdges : new LodHardEdges(source).Measure(variant.mesh);
                             capture.hardEdges = features.edges; capture.missingHardEdges = features.missingEdges;
                             capture.protectedTriangles = features.protectedTriangles; capture.missingProtectedTriangles = features.missingFaces;
                             capture.patchInterfaces = features.interfaces; capture.missingPatchInterfaces = features.missingInterfaces;
                             capture.ambiguousFeatureEdges = features.ambiguousEdges;
                             capture.hardEdgeSourceFallback = variant.info.hardEdges?.sourceFallback ?? false;
                             capture.coarsenedFeaturePoints = features.coarsenedPoints; capture.coarsenedFeatureTriangles = features.coarsenedTriangles;
-                            if (variant.name.StartsWith("hard-") || variant.name.StartsWith("chains-")) Assert.That(features.Valid,Is.True,model.name+"/"+variant.name+": hard features or patch interfaces changed");
+                            capture.nativeCreaseConstraints = features.nativeConstraints; capture.lockedChainRetry = features.lockedChainRetry;
+                            if (variant.name.StartsWith("hard-") || variant.name.StartsWith("chains-") || variant.name.StartsWith("native-")) Assert.That(features.Valid,Is.True,model.name+"/"+variant.name+": hard features or patch interfaces changed");
                         }
                         var correction = variant.info.attributeCorrection;
                         if (correction != null)
@@ -276,7 +279,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         static void Generate(Mesh source,LodReductionMode mode,int candidates,string prefix,
-            List<(string name, Mesh mesh, LodPipelineOps.LodInfo info, double ms)> variants,List<Mesh> generated,bool uncheckedColors = false,bool relaxedFar = false,bool pruneParts = false,bool correctAttributes = false,bool preserveHardEdges = false,bool coarsenHardEdgeChains = false)
+            List<(string name, Mesh mesh, LodPipelineOps.LodInfo info, double ms)> variants,List<Mesh> generated,bool uncheckedColors = false,bool relaxedFar = false,bool pruneParts = false,bool correctAttributes = false,bool preserveHardEdges = false,bool coarsenHardEdgeChains = false,bool nativeHardEdgeConstraints = false)
         {
             var root = new GameObject("ProjectLODPreview");
             try
@@ -295,6 +298,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     options.correctSurfaceAttributes = correctAttributes;
                     options.preserveHardEdges = preserveHardEdges;
                     options.coarsenHardEdgeChains = coarsenHardEdgeChains;
+                    options.nativeHardEdgeConstraints = nativeHardEdgeConstraints;
                     options.featureChainError = coarsenHardEdgeChains ? .005f : 0;
                 }
                 if (relaxedFar)

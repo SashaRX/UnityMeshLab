@@ -45,6 +45,63 @@ namespace SashaRX.UnityMeshLab.Tests
                 targetRatio = ratio,targetError = 1,uvChannel = 1,preserveHardEdges = preserve,allowAttributeSeamCollapse = true });
             Assert.That(result.ok,Is.True,result.error); return Track(result.simplifiedMesh);
         }
+        MeshSimplifier.SimplifyResult ReduceNative(Mesh source,float ratio = 1f/9)
+        {
+            var result = MeshSimplifier.Simplify(source,new MeshSimplifier.SimplifySettings {
+                targetRatio = ratio,targetError = 1,uvChannel = 1,preserveHardEdges = true,
+                nativeHardEdgeConstraints = true,allowAttributeSeamCollapse = true });
+            if (result.simplifiedMesh) Track(result.simplifiedMesh);
+            Assert.That(result.ok,Is.True,result.error); return result;
+        }
+        [Test] public void NativeConstraintsReleaseIncidentBeltAndPreserveBothShadingSides()
+        {
+            var source = Fold(true,true); var original = source.vertices; var indices = source.triangles;
+            var strict = Reduce(source,true); var result = ReduceNative(source);
+            Assert.That(result.hardEdges.Valid,Is.True); Assert.That(result.hardEdges.nativeConstraints,Is.True);
+            Assert.That(result.hardEdges.sourceFallback,Is.False);
+            Assert.That(result.simplifiedTriCount,Is.LessThan(LodMeshData.TriangleCount(strict)));
+            Assert.That(new LodHardEdges(source).MeasureNative(result.simplifiedMesh).Valid,Is.True);
+            Assert.That(new LodHardEdges(source).Measure(result.simplifiedMesh).missingFaces,Is.GreaterThan(0),"Control: neighboring faces are now free to retriangulate.");
+            CollectionAssert.AreEqual(original,source.vertices); CollectionAssert.AreEqual(indices,source.triangles);
+        }
+        [Test] public void NativeCurvedCreaseRetriesWithLockedChainInsteadOfLosingCoverage()
+        {
+            var source = Fold(true); var p = source.vertices;
+            for (int i = 0; i < p.Length; i++) p[i].z += p[i].y*p[i].y*.1f;
+            source.vertices = p;
+            var result = ReduceNative(source);
+            Assert.That(result.hardEdges.Valid,Is.True); Assert.That(result.hardEdges.sourceFallback,Is.False);
+            Assert.That(new LodHardEdges(source).MeasureNative(result.simplifiedMesh).Valid,Is.True);
+            Assert.That(result.hardEdges.lockedChainRetry,Is.True);
+        }
+        [Test] public void NativeFlagsLockEndpointsMaterialBordersAndTagUnusedVerticesSafely()
+        {
+            var source = Fold(true,true,true); source.vertices = source.vertices.Concat(new[] { Vector3.one*10 }).ToArray();
+            source.normals = source.normals.Concat(new[] { Vector3.up }).ToArray();
+            var flags = new LodHardEdges(source).VertexLocks(false); var positions = source.vertices;
+            Assert.That(flags.Last(),Is.Zero);
+            for (int i = 0; i < positions.Length-1; i++)
+                if (positions[i].x == 0 && positions[i].z == 0) Assert.That(flags[i],Is.EqualTo(MeshoptNative.VertexLock));
+            var result = ReduceNative(source);
+            Assert.That(result.hardEdges.Valid,Is.True); Assert.That(result.hardEdges.sourceFallback,Is.False);
+            Assert.That(result.simplifiedMesh.subMeshCount,Is.EqualTo(2));
+        }
+        [Test] public void NativeAmbiguousFaceOccurrencesStayProtected()
+        {
+            var source = Track(new Mesh { vertices = new[] { Vector3.zero,Vector3.right,Vector3.up,Vector3.zero,Vector3.up,Vector3.forward },
+                normals = new[] { Vector3.forward,Vector3.forward,Vector3.forward,Vector3.right,Vector3.right,Vector3.right },
+                triangles = new[] { 0,1,2,3,4,5,0,1,2 } });
+            var result = ReduceNative(source);
+            Assert.That(result.hardEdges.Valid,Is.True); Assert.That(result.hardEdges.protectedTriangles,Is.EqualTo(3));
+            var target = Track(Object.Instantiate(source)); target.triangles = target.triangles.Take(6).ToArray();
+            Assert.That(new LodHardEdges(source).MeasureNative(target).missingFaces,Is.EqualTo(1));
+        }
+        [Test] public void NativeCoverageRejectsSmoothedCreaseAfterCorrection()
+        {
+            var source = Fold(true); var result = ReduceNative(source);
+            result.simplifiedMesh.normals = Enumerable.Repeat(new Vector3(1,0,1).normalized,result.simplifiedMesh.vertexCount).ToArray();
+            Assert.That(new LodHardEdges(source).MeasureNative(result.simplifiedMesh).missingEdges,Is.GreaterThan(0));
+        }
         [Test] public void AuthoredCreaseSurvivesPermissiveZeroWeightBudgetProbe()
         {
             var source = Fold(true,true); var original = source.vertices; var indices = source.triangles;
