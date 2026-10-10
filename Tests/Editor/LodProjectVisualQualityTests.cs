@@ -51,6 +51,7 @@ namespace SashaRX.UnityMeshLab.Tests
             if (index < 0 || index + 1 >= args.Length) Assert.Ignore("Specify copied project models with -meshlabLodProjectCases.");
             if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) Assert.Ignore("Requires a graphics device; omit -nographics.");
             Assert.That(LodVisualQualityTests.OutputDirectory(), Is.Not.Null.And.Not.Empty);
+            Directory.CreateDirectory(LodVisualQualityTests.OutputDirectory());
             var dataset = JsonUtility.FromJson<Dataset>(File.ReadAllText(args[index + 1]));
             Assert.That(dataset.cases, Is.Not.Empty);
             foreach (var model in dataset.cases) Evaluate(model);
