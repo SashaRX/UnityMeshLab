@@ -16,6 +16,135 @@ namespace SashaRX.UnityMeshLab.Tests
         static readonly int[] Faces = { 0,2,1,0,3,2, 4,5,6,4,6,7, 0,1,5,0,5,4, 3,7,6,3,6,2, 0,4,7,0,7,3, 1,2,6,1,6,5 };
         static int[] Missing(params int[] missing) => Faces.Where((v,k) => !missing.Contains(k / 6)).ToArray();
 
+        static (Vector3[] p,int[] ix) ReadFrozenClosure(string variable)
+        {
+            string path=Environment.GetEnvironmentVariable(variable);
+            if (string.IsNullOrEmpty(path)) Assert.Ignore("Set " + variable + " to the decoded private source.bin.");
+            using var reader=new BinaryReader(File.OpenRead(path));
+            int vertices=reader.ReadInt32(),count=reader.ReadInt32();
+            var p=new Vector3[vertices]; var ix=new int[count];
+            for (int i=0;i<vertices;++i) p[i]=new Vector3(reader.ReadSingle(),reader.ReadSingle(),reader.ReadSingle());
+            for (int i=0;i<count;++i) ix[i]=reader.ReadInt32();
+            return (p,ix);
+        }
+
+        [Test]
+        public void FrozenGabionBridgeRetainsDonorsAndClosesTheCapturedPair()
+        {
+            var (p,ix)=ReadFrozenClosure("MESH_LAB_BRIDGE_GABION_SOURCE");
+            var savedP=(Vector3[])p.Clone(); var savedI=(int[])ix.Clone();
+            var cap=RemeshPlanarCap.Prepare(p,ix,"0,1",default,mode:RemeshClosureMode.Bridge,
+                continueOnRefusal:true,elementScopedContacts:true);
+            Assert.IsEmpty(cap.loopFailures,cap.Description);
+            Assert.AreEqual(37,cap.addedFaces); Assert.AreEqual(0,cap.remainingBoundaryEdges);
+            Assert.AreEqual(2,cap.bridgePartners.Count); Assert.IsEmpty(cap.bridgeCapFallbacks);
+            StringAssert.Contains("contact-filtered retry True",cap.bridgeSearch[0]);
+            var topology=RemeshTopology.Inspect(cap.positions,cap.indices);
+            Assert.IsTrue(topology.Valid,topology.Description); CollectionAssert.AreEqual(new[] {2},topology.euler);
+            CollectionAssert.AreEqual(savedP,p); CollectionAssert.AreEqual(savedI,ix);
+            for (int i=0;i<ix.Length;++i) Assert.AreEqual(p[ix[i]],cap.positions[cap.indices[i]]);
+            TestContext.WriteLine(cap.Description + " / " + cap.bridgeSearch[0]);
+        }
+
+        [Test]
+        public void FrozenSofaSurfaceCapRetainsDonorsAndClosesAllCapturedRims()
+        {
+            var (p,ix)=ReadFrozenClosure("MESH_LAB_CAP_SOFA_SOURCE");
+            var savedP=(Vector3[])p.Clone(); var savedI=(int[])ix.Clone();
+            var cap=RemeshPlanarCap.Prepare(p,ix,"all",default,true,RemeshClosureMode.Automatic,.01,
+                continueOnRefusal:true,elementScopedContacts:true);
+            TestContext.WriteLine(cap.Description);
+            foreach (var failure in cap.loopFailures) TestContext.WriteLine(failure.Value);
+            Assert.IsEmpty(cap.loopFailures,cap.Description);
+            Assert.AreEqual(48,cap.addedFaces); Assert.AreEqual(0,cap.remainingBoundaryEdges);
+            var topology=RemeshTopology.Inspect(cap.positions,cap.indices);
+            Assert.IsTrue(topology.Valid,topology.Description);
+            CollectionAssert.AreEqual(savedP,p); CollectionAssert.AreEqual(savedI,ix);
+            for (int i=0;i<ix.Length;++i) Assert.AreEqual(p[ix[i]],cap.positions[cap.indices[i]]);
+        }
+
+        [TestCase(10000,67108864)] [TestCase(600000,650000)]
+        public void FrozenGabionRetryBudgetRefusesWithoutPublishingOrResettingWork(int maxStates,int maxBytes)
+        {
+            var (p,ix)=ReadFrozenClosure("MESH_LAB_BRIDGE_GABION_SOURCE");
+            var support=RemeshPlanarCap.Prepare(p,ix,"all",default,planeTolerance:1e-5,
+                continueOnRefusal:true,elementScopedContacts:true);
+            Assert.AreEqual(0,support.addedFaces);
+            var savedP=(Vector3[])support.positions.Clone(); var savedI=(int[])support.indices.Clone();
+            var external=new RemeshPlanarCap.ExternalContacts {faceElements=support.faceElements,
+                closingElements=new HashSet<int>(support.faceElements)};
+            var report=new RemeshBridge.SearchReport(); int trials=0;
+            var failure=Assert.Throws<InvalidOperationException>(()=>RemeshBridge.Generate(support.positions,support.indices,
+                support.boundaryLoops[0].ToList(),support.boundaryLoops[1].ToList(),default,ref trials,out _,external,report,maxStates,maxBytes));
+            StringAssert.Contains("budget",failure.Message);
+            Assert.AreEqual(6426,report.states); Assert.Greater(trials,0);
+            Assert.IsFalse(report.contactFilteredRetry); Assert.AreEqual(0,report.filteredContacts);
+            Assert.AreEqual(0,external.count); Assert.AreEqual(0,external.excludedElementPairs);
+            CollectionAssert.AreEqual(savedP,support.positions); CollectionAssert.AreEqual(savedI,support.indices);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void FrozenGabionBridgePassesNativeRemeshSimplifyAndUv(bool solve)
+        {
+            VerifyFrozenNative("MESH_LAB_BRIDGE_GABION_SOURCE","MilitaryGabion_2",RemeshClosureMode.Bridge,"0,1",solve);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void FrozenSofaSurfaceCapPassesNativeRemeshSimplifyAndUv(bool solve)
+        {
+            VerifyFrozenNative("MESH_LAB_CAP_SOFA_SOURCE","Old_Sofa",RemeshClosureMode.Automatic,"all",solve);
+        }
+
+        static void VerifyFrozenNative(string variable,string model,RemeshClosureMode mode,string selection,bool solve)
+        {
+            var (p,ix)=ReadFrozenClosure(variable);
+            var savedP=(Vector3[])p.Clone(); var savedI=(int[])ix.Clone();
+            var cap=RemeshPlanarCap.Prepare(p,ix,selection,default,true,mode,.01,
+                continueOnRefusal:true,elementScopedContacts:true);
+            Assert.IsEmpty(cap.loopFailures,cap.Description); Assert.AreEqual(0,cap.remainingBoundaryEdges);
+            var settings=new RemeshSettings {voxelResolution=64,solve=solve,textureResolution=256,padding=2,
+                maximumError=.04f,pruneSmallParts=false};
+            var voxel=RemeshNative.VoxelizeCaptured(cap.positions,cap.indices,settings,default,model + " replay",p,ix,cap);
+            var raw=RemeshTopology.Inspect(voxel.positions,voxel.indices);
+            Assert.IsTrue(raw.Valid,raw.Description); Assert.AreEqual(0,raw.boundary.Count);
+            var extent=cap.positions.Aggregate(Vector3.Min)-cap.positions.Aggregate(Vector3.Max);
+            float cell=Mathf.Max(Mathf.Abs(extent.x),Mathf.Max(Mathf.Abs(extent.y),Mathf.Abs(extent.z)))/64;
+            var trimmed=RemeshTrim.Trim(voxel,cap.positions,cap.indices,cell*2f,default);
+            var simplified=solve ? RemeshSurfaceRefine.Simplify(trimmed.mesh,cap.positions,cap.indices,settings,default,out _)
+                : RemeshNative.Simplify(trimmed.mesh,settings,default,out _);
+            var after=RemeshTopology.Inspect(simplified.positions,simplified.indices);
+            Assert.IsTrue(after.Valid,after.Description); Assert.AreEqual(0,after.boundary.Count);
+            var uv=RemeshNative.Unwrap(simplified,settings,default);
+            var quality=UvChartQuality.Measure(uv,default); var atlas=UvAtlasDiagnostics.Measure(uv,default);
+            Assert.IsTrue(quality.valid); Assert.IsTrue(atlas.complete);
+            Assert.AreEqual(0,atlas.pairs); Assert.AreEqual(0,atlas.degenerateFaces); Assert.AreEqual(0,atlas.outOfBoundsVertices);
+            CollectionAssert.AreEqual(savedP,p); CollectionAssert.AreEqual(savedI,ix);
+            TestContext.WriteLine($"{model} solve={solve}: voxel {voxel.TriangleCount}, simplified {simplified.TriangleCount}, charts {uv.chartCount}; UV overlaps {atlas.pairs}");
+        }
+
+        [Test]
+        public void BridgeSourceFilterCachesFixedContactsAndHonoursElementScope()
+        {
+            var p=new[] {Vector3.zero,Vector3.right,Vector3.up,new Vector3(1,-1,0),
+                new Vector3(.2f,.2f,-1),new Vector3(.2f,.2f,1),new Vector3(.8f,.2f,0)};
+            var exact=p.Select(RemeshCapIntersection.Point).ToArray();
+            var source=new[] {0,1,2};
+            var filter=new RemeshPlanarCap.SourceContactFilter(p,exact,source,default,null,0);
+            Assert.IsTrue(filter.Allows(0,3,1)); // contact only on the shared edge
+            Assert.IsFalse(filter.Allows(4,5,6)); // a crossing through the source face
+            int saved=filter.trials; Assert.IsFalse(filter.Allows(6,4,5)); Assert.AreEqual(saved,filter.trials);
+            Assert.AreEqual(1,filter.blocked);
+            var external=new RemeshPlanarCap.ExternalContacts {faceElements=new[] {7},closingElements=new HashSet<int> {8}};
+            var scoped=new RemeshPlanarCap.SourceContactFilter(p,exact,source,default,external,0);
+            Assert.IsTrue(scoped.Allows(4,5,6)); Assert.AreEqual(0,scoped.trials);
+            Assert.AreEqual(0,external.count); Assert.AreEqual(0,external.excludedElementPairs);
+            var limited=new RemeshPlanarCap.SourceContactFilter(p,exact,source,default,null,0,limit:0);
+            StringAssert.Contains("pair budget",Assert.Throws<InvalidOperationException>(()=>limited.Allows(0,3,1)).Message);
+            var cancellation=new CancellationTokenSource(); cancellation.Cancel();
+            Assert.Throws<OperationCanceledException>(()=>new RemeshPlanarCap.SourceContactFilter(p,exact,source,cancellation.Token,null,0));
+            CollectionAssert.AreEqual(new[] {0,1,2},source);
+        }
+
         [TestCase(.01f, RemeshClosureMode.Caps, 7, false)] [TestCase(.1f, RemeshClosureMode.Caps, 4, false)]
         [TestCase(.01f, RemeshClosureMode.SurfaceCaps, 0, false)] [TestCase(.01f, RemeshClosureMode.SurfaceCaps, 0, true)]
         public void FrozenUniverColumnReplaysClosureTolerance(float tolerance, RemeshClosureMode mode, int refused, bool solve)

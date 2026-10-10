@@ -17,10 +17,12 @@ namespace SashaRX.UnityMeshLab
             internal SearchReport(bool captureRejected = false) { this.captureRejected=captureRejected; }
             internal readonly bool captureRejected;
             internal int phases, states, candidates, audited, topologyRejected;
+            internal int filteredTriangles, filteredContacts;
+            internal bool contactFilteredRetry;
             internal long plannedStates, plannedBytes;
             internal string firstContact;
             internal int[] firstRejectedIndices;
-            internal string Description => $"{phases} seam phases; {states}/{plannedStates} search states; {plannedBytes} estimated retained bytes; {candidates} candidates; {audited} audited; {topologyRejected} topology refusals";
+            internal string Description => $"{phases} seam phases; {states}/{plannedStates} search states; {plannedBytes} estimated retained bytes; {candidates} candidates; {audited} audited; {topologyRejected} topology refusals; contact-filtered retry {contactFilteredRetry}; {filteredTriangles} source-blocked triangles; {filteredContacts} filtered exact contact tests";
         }
 
         internal static int[] Generate(Vector3[] p, int[] source, List<int> a, List<int> forwardB,
@@ -57,49 +59,76 @@ namespace SashaRX.UnityMeshLab
             int componentCount = topology.euler.Count;
             if (Component(topology,a) != Component(topology,forwardB)) --componentCount;
             int states = 0, order = 0; var candidates = new List<Candidate>();
-            // Complete the bounded search profile before auditing. Auditing in
-            // score order lets us accept its best valid strip without spending
-            // the contact budget on already dominated candidates.
-            foreach (int phase in Phases(normalized,a,forwardB)) {
-                ++report.phases;
-                var b = new List<int>(); var nb = new Vector3[forwardB.Count];
-                for (int j = 0; j < forwardB.Count; ++j) {
-                    b.Add(forwardB[(phase-j+forwardB.Count)%forwardB.Count]);
-                    nb[j] = nbForward[(phase-j-1+forwardB.Count*2)%forwardB.Count];
+            for (int attempt = 0; attempt < 2; ++attempt) {
+                RemeshPlanarCap.SourceContactFilter filter = null;
+                if (attempt > 0) {
+                    if (report.firstContact == null) break;
+                    // Keep existing successful strips unchanged. Retry only after every
+                    // ordinary strip refused, with fixed-source contacts pruned before
+                    // the eight paths per state can discard a geometrically valid path.
+                    var retryBudget = new SearchReport();
+                    CheckBudget(a.Count, forwardB.Count, retryBudget, maxStates - states, maxSearchBytes);
+                    retryBudget.plannedBytes += source.Length/3L*28 + 2L*a.Count*forwardB.Count*96;
+                    if (retryBudget.plannedBytes>maxSearchBytes)
+                        throw new InvalidOperationException("Bridge memory budget exceeded before source-contact filtering. No partial winner was accepted.");
+                    report.plannedStates += retryBudget.plannedStates;
+                    report.plannedBytes = Math.Max(report.plannedBytes,retryBudget.plannedBytes);
+                    report.contactFilteredRetry = true;
+                    candidates.Clear();
+                    filter = new RemeshPlanarCap.SourceContactFilter(p, exact, source, token, external, trials);
                 }
-                foreach (var path in Paths(normalized,a,b,na,nb,token,ref states,ref order,maxStates))
-                    candidates.Add(new Candidate { path=path,b=b });
-                if (a.Count == b.Count) foreach (bool firstA in new[] {true,false}) {
-                    var path = AlignedPath(normalized,a,b,na,nb,firstA,token,ref states,ref order,maxStates);
-                    if (path != null) candidates.Add(new Candidate {path=path,b=b});
-                }
-            }
-            report.states = states; report.candidates = candidates.Count;
-            candidates.Sort((x,y)=>Compare(x.path,y.path));
-            foreach (var choice in candidates) {
-                token.ThrowIfCancellationRequested();
-                var patch = Faces(a,choice.b,choice.path); var candidate = new int[source.Length+patch.Length];
-                Array.Copy(source,candidate,source.Length); Array.Copy(patch,0,candidate,source.Length,patch.Length);
-                var after = RemeshTopology.Inspect(p,candidate,token);
-                if (!after.Valid || !after.boundary.SetEquals(remainingBoundary) || after.euler.Count != componentCount ||
-                    Euler(after) != Euler(topology)) { ++report.topologyRejected; continue; }
-                // The patch itself must be one annulus; duplicates, fans and winding
-                // are checked above, not inferred from the zipper's score.
-                var annulus = RemeshTopology.Inspect(p,patch,token);
-                if (!annulus.Valid || annulus.euler.Count != 1 || annulus.euler[0] != 0 || !annulus.boundary.SetEquals(selectedBoundary))
-                    { ++report.topologyRejected; continue; }
-                var candidateContacts = external?.Fork();
-                ++report.audited;
-                try { RemeshPlanarCap.AuditContacts(p,exact,candidate,source.Length/3,token,ref trials,out int tested,candidateContacts); contacts += tested; }
-                catch (InvalidOperationException ex) when (ex.Message.Contains("contacts face")) {
-                    if (report.firstContact==null) {
-                        report.firstContact=ex.Message;
-                        if (report.captureRejected) report.firstRejectedIndices=candidate;
+                Func<int,int,int,bool> allows = filter == null ? null : filter.Allows;
+                // Complete the bounded search profile before auditing. Auditing in
+                // score order lets us accept its best valid strip without spending
+                // the contact budget on already dominated candidates.
+                try { foreach (int phase in Phases(normalized,a,forwardB)) {
+                    ++report.phases;
+                    var b = new List<int>(); var nb = new Vector3[forwardB.Count];
+                    for (int j = 0; j < forwardB.Count; ++j) {
+                        b.Add(forwardB[(phase-j+forwardB.Count)%forwardB.Count]);
+                        nb[j] = nbForward[(phase-j-1+forwardB.Count*2)%forwardB.Count];
                     }
-                    continue;
+                    foreach (var path in Paths(normalized,a,b,na,nb,token,ref states,ref order,maxStates,allows))
+                        candidates.Add(new Candidate { path=path,b=b });
+                    if (a.Count == b.Count) foreach (bool firstA in new[] {true,false}) {
+                        var path = AlignedPath(normalized,a,b,na,nb,firstA,token,ref states,ref order,maxStates,allows);
+                        if (path != null) candidates.Add(new Candidate {path=path,b=b});
+                    }
+                } }
+                finally {
+                    report.states = states;
+                    if (filter != null) {
+                        trials = filter.trials; contacts += filter.exactTests;
+                        report.filteredTriangles = filter.blocked; report.filteredContacts = filter.exactTests;
+                    }
                 }
-                external?.Merge(candidateContacts);
-                return patch;
+                report.candidates += candidates.Count;
+                candidates.Sort((x,y)=>Compare(x.path,y.path));
+                foreach (var choice in candidates) {
+                    token.ThrowIfCancellationRequested();
+                    var patch = Faces(a,choice.b,choice.path); var candidate = new int[source.Length+patch.Length];
+                    Array.Copy(source,candidate,source.Length); Array.Copy(patch,0,candidate,source.Length,patch.Length);
+                    var after = RemeshTopology.Inspect(p,candidate,token);
+                    if (!after.Valid || !after.boundary.SetEquals(remainingBoundary) || after.euler.Count != componentCount ||
+                        Euler(after) != Euler(topology)) { ++report.topologyRejected; continue; }
+                    // The patch itself must be one annulus; duplicates, fans and winding
+                    // are checked above, not inferred from the zipper's score.
+                    var annulus = RemeshTopology.Inspect(p,patch,token);
+                    if (!annulus.Valid || annulus.euler.Count != 1 || annulus.euler[0] != 0 || !annulus.boundary.SetEquals(selectedBoundary))
+                        { ++report.topologyRejected; continue; }
+                    var candidateContacts = external?.Fork();
+                    ++report.audited;
+                    try { RemeshPlanarCap.AuditContacts(p,exact,candidate,source.Length/3,token,ref trials,out int tested,candidateContacts); contacts += tested; }
+                    catch (InvalidOperationException ex) when (ex.Message.Contains("contacts face")) {
+                        if (report.firstContact==null) {
+                            report.firstContact=ex.Message;
+                            if (report.captureRejected) report.firstRejectedIndices=candidate;
+                        }
+                        continue;
+                    }
+                    external?.Merge(candidateContacts);
+                    return patch;
+                }
             }
             throw new InvalidOperationException("Bridge refused: no non-intersecting annulus in the bounded zipper family (" + report.Description + ")." +
                 (report.firstContact == null ? "" : " First rejected contact: " + report.firstContact));
@@ -243,7 +272,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         static List<Path> Paths(Vector3[] p,List<int> a,List<int> b,Vector3[] na,Vector3[] nb,CancellationToken token,
-            ref int states,ref int order,int maxStates)
+            ref int states,ref int order,int maxStates,Func<int,int,int,bool> allows = null)
         {
             int m=a.Count,n=b.Count; var grid=new List<Path>[m+1,n+1];
             grid[0,0]=new List<Path> { new Path() };
@@ -257,8 +286,12 @@ namespace SashaRX.UnityMeshLab
                     if(previous==null || !double.IsFinite(cost)) return;
                     foreach(var old in previous) paths.Add(new Path {score=old.score+cost,previous=old,move=move,length=old.length+1,order=++nextOrder});
                 }
-                Extend(grid[i-1,j],Cost(p,a[(i-1)%m],b[j%n],a[i%m],na[(i-1)%m]),'A');
-                if(j>0) Extend(grid[i,j-1],Cost(p,a[i%m],b[(j-1)%n],b[j%n],nb[(j-1)%n]),'B');
+                double FilteredCost(int x,int y,int z,Vector3 normal) {
+                    double cost=Cost(p,x,y,z,normal);
+                    return double.IsFinite(cost) && (allows == null || allows(x,y,z)) ? cost : double.PositiveInfinity;
+                }
+                Extend(grid[i-1,j],FilteredCost(a[(i-1)%m],b[j%n],a[i%m],na[(i-1)%m]),'A');
+                if(j>0) Extend(grid[i,j-1],FilteredCost(a[i%m],b[(j-1)%n],b[j%n],nb[(j-1)%n]),'B');
                 paths.Sort(Compare);
                 if(paths.Count>PathsPerState) paths.RemoveRange(PathsPerState,paths.Count-PathsPerState);
                 grid[i,j]=paths;
@@ -271,7 +304,7 @@ namespace SashaRX.UnityMeshLab
         // sharply bent skins. Keep both uniform quad diagonals in the completed
         // equal-count profile, independently of the eight ranked DP paths.
         static Path AlignedPath(Vector3[] p, List<int> a, List<int> b, Vector3[] na, Vector3[] nb, bool firstA,
-            CancellationToken token, ref int states, ref int order, int maxStates)
+            CancellationToken token, ref int states, ref int order, int maxStates,Func<int,int,int,bool> allows = null)
         {
             var path = new Path(); int i = 0, j = 0;
             for (int step = 0; step < a.Count*2; ++step) {
@@ -281,6 +314,8 @@ namespace SashaRX.UnityMeshLab
                 double cost = advanceA ? Cost(p,a[i%a.Count],b[j%b.Count],a[(i+1)%a.Count],na[i%a.Count]) :
                     Cost(p,a[i%a.Count],b[j%b.Count],b[(j+1)%b.Count],nb[j%b.Count]);
                 if (!double.IsFinite(cost)) return null;
+                if (allows != null && !(advanceA ? allows(a[i%a.Count],b[j%b.Count],a[(i+1)%a.Count]) :
+                    allows(a[i%a.Count],b[j%b.Count],b[(j+1)%b.Count]))) return null;
                 path = new Path {score=path.score+cost,previous=path,move=advanceA?'A':'B',length=path.length+1,order=++order};
                 if (advanceA) ++i; else ++j;
             }

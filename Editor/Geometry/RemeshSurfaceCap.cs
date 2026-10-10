@@ -41,8 +41,15 @@ namespace SashaRX.UnityMeshLab
                 exact = new RemeshCapIntersection.Q[positions.Length][]};
             for (int i = 0; i < positions.Length; ++i) search.exact[i] = RemeshCapIntersection.Point(positions[i]);
             try {
-                if (!Fill(search, new List<int>(loop), new List<int>(source), external?.Fork(), out var result, out var contacts))
-                    throw Refuse("no complete audited triangulation" + (search.lastFailure == null ? "" : ": " + search.lastFailure));
+                List<int> result=null; RemeshPlanarCap.ExternalContacts contacts=null;
+                bool filled;
+                try { filled=Fill(search,new List<int>(loop),new List<int>(source),external?.Fork(),out result,out contacts); }
+                catch (InvalidOperationException failure) when (maxCandidates==MaxCandidates && failure.Message.Contains("candidate search budget exceeded")) {
+                    filled=false;
+                }
+                if (!filled && maxCandidates==MaxCandidates)
+                    filled=FillIntervals(search,source,loop,external,out result,out contacts);
+                if (!filled) throw Refuse("no complete audited triangulation" + (search.lastFailure == null ? "" : ": " + search.lastFailure));
                 // Re-audit the entire accepted patch before exporting any triangles or
                 // statistics. Failed search branches never alter the caller's arrays.
                 RemeshPlanarCap.AuditContacts(positions, search.exact, result.ToArray(), search.originalFaces,
@@ -87,6 +94,80 @@ namespace SashaRX.UnityMeshLab
                 if (Fill(search, next, candidate, branch, out result, out acceptedContacts)) return true;
             }
             return false;
+        }
+
+        sealed class DiskPath
+        {
+            internal double area;
+            internal int order;
+            internal int[] faces;
+        }
+
+        // A complete interval profile avoids exploring every permutation of the
+        // same ears. Keep four least-area triangulations per subpolygon, pruning
+        // immutable source contacts before ranking. This is a bounded candidate
+        // family; the assembled disk still needs the exact whole-patch audit.
+        static bool FillIntervals(Search search,int[] source,List<int> ring,RemeshPlanarCap.ExternalContacts external,
+            out List<int> result,out RemeshPlanarCap.ExternalContacts acceptedContacts)
+        {
+            result=null; acceptedContacts=null;
+            const int retained=4,maxCombinations=1000000;
+            int n=ring.Count;
+            long planned=(long)n*(n-1)*(n-2)/6*retained*retained;
+            if (planned>maxCombinations) throw Refuse("interval search budget exceeded before allocation; no partial patch accepted");
+            var grid=new List<DiskPath>[n,n];
+            for (int i=0;i+1<n;++i) grid[i,i+1]=new List<DiskPath> {new DiskPath {faces=Array.Empty<int>()}};
+            var filter=new RemeshPlanarCap.SourceContactFilter(search.positions,search.exact,source,search.token,external,search.trials);
+            int work=0,order=0;
+            try {
+                for (int width=2;width<n;++width) for (int first=0;first+width<n;++first) {
+                    search.token.ThrowIfCancellationRequested();
+                    int last=first+width; var paths=new List<DiskPath>(); grid[first,last]=paths;
+                    for (int middle=first+1;middle<last;++middle) {
+                        var left=grid[first,middle]; var right=grid[middle,last];
+                        if (left==null || right==null || left.Count==0 || right.Count==0) continue;
+                        int a=ring[first],b=ring[last],c=ring[middle];
+                        double area=TriangleArea(search.positions[a],search.positions[b],search.positions[c]);
+                        if (!(area>0) || !filter.Allows(a,b,c)) continue;
+                        foreach (var l in left) foreach (var r in right) {
+                            if (++work>maxCombinations) throw Refuse("interval search budget exceeded; no partial patch accepted");
+                            double sum=l.area+r.area+area;
+                            if (paths.Count==retained && sum>=paths[paths.Count-1].area) continue;
+                            var faces=new int[l.faces.Length+r.faces.Length+3];
+                            Array.Copy(l.faces,faces,l.faces.Length); Array.Copy(r.faces,0,faces,l.faces.Length,r.faces.Length);
+                            faces[faces.Length-3]=a; faces[faces.Length-2]=b; faces[faces.Length-1]=c;
+                            paths.Add(new DiskPath {area=sum,order=++order,faces=faces});
+                            paths.Sort((x,y)=>{int compared=x.area.CompareTo(y.area);return compared!=0?compared:x.order.CompareTo(y.order);});
+                            if (paths.Count>retained) paths.RemoveAt(paths.Count-1);
+                        }
+                    }
+                }
+            }
+            finally { search.trials=filter.trials; }
+            foreach (var path in grid[0,n-1]) {
+                search.token.ThrowIfCancellationRequested();
+                var candidate=new List<int>(source); candidate.AddRange(path.faces);
+                var topology=RemeshTopology.Inspect(search.positions,candidate.ToArray(),search.token);
+                if (!topology.Valid || topology.boundary.Count!=search.initialBoundary-search.rimEdges) continue;
+                var contacts=external?.Fork();
+                try {
+                    RemeshPlanarCap.AuditContacts(search.positions,search.exact,candidate.ToArray(),search.originalFaces,
+                        search.token,ref search.trials,out _,contacts);
+                }
+                catch (InvalidOperationException failure) when (!failure.Message.Contains("budget")) {
+                    search.lastFailure=failure.Message; continue;
+                }
+                result=candidate; acceptedContacts=contacts; return true;
+            }
+            return false;
+        }
+
+        static double TriangleArea(Vector3 a,Vector3 b,Vector3 c)
+        {
+            double ux=(double)b.x-a.x,uy=(double)b.y-a.y,uz=(double)b.z-a.z;
+            double vx=(double)c.x-a.x,vy=(double)c.y-a.y,vz=(double)c.z-a.z;
+            double x=uy*vz-uz*vy,y=uz*vx-ux*vz,z=ux*vy-uy*vx;
+            return Math.Sqrt(x*x+y*y+z*z);
         }
 
         static List<Ear> RankedEars(Vector3[] positions, List<int> ring, RemeshTopology.Snapshot topology)

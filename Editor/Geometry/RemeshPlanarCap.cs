@@ -10,12 +10,65 @@ namespace SashaRX.UnityMeshLab
     /// donor arrays are never mutated. Each closure candidate is accepted atomically.</summary>
     internal static class RemeshPlanarCap
     {
-        internal const int Revision = 16;
+        internal const int Revision = 17;
         const int MaxVertices = 200000, MaxIndices = 1200000, MaxLoopEdges = 512;
-        const int MaxPairTrials = 2000000;
+        internal const int MaxPairTrials = 2000000;
         const long MaxCollarComparisons = 2000000;
         const int MaxCollarPairVisits = 200000;
         internal const string ContactSourceFaceKey = "MeshLab.ContactSourceFace";
+
+        /// <summary>Only contacts with the immutable source can be safely cached
+        /// across paths. Candidate/candidate contacts still require the final audit.</summary>
+        internal sealed class SourceContactFilter
+        {
+            readonly Vector3[] positions, low, high;
+            readonly RemeshCapIntersection.Q[][] exact;
+            readonly int[] source;
+            readonly int[] protectedFaces;
+            readonly CancellationToken token;
+            readonly int limit;
+            readonly Dictionary<(int,int,int),bool> cache = new Dictionary<(int,int,int),bool>();
+            internal int trials, exactTests, blocked;
+
+            internal SourceContactFilter(Vector3[] positions, RemeshCapIntersection.Q[][] exact, int[] source,
+                CancellationToken token, RemeshPlanarCap.ExternalContacts external, int trials,
+                int limit = RemeshPlanarCap.MaxPairTrials)
+            {
+                this.positions=positions; this.exact=exact; this.source=source; this.token=token;
+                this.trials=trials; this.limit=limit;
+                low=new Vector3[source.Length/3]; high=new Vector3[low.Length];
+                var protectedList=new List<int>(low.Length);
+                for (int face=0;face<low.Length;++face) {
+                    if ((face&255)==0) token.ThrowIfCancellationRequested();
+                    var a=positions[source[face*3]]; var b=positions[source[face*3+1]]; var c=positions[source[face*3+2]];
+                    low[face]=Vector3.Min(a,Vector3.Min(b,c)); high[face]=Vector3.Max(a,Vector3.Max(b,c));
+                    if (external == null || !external.IsExternal(face)) protectedList.Add(face);
+                }
+                protectedFaces=protectedList.ToArray();
+            }
+
+            internal bool Allows(int a,int b,int c)
+            {
+                token.ThrowIfCancellationRequested();
+                int first=Math.Min(a,Math.Min(b,c)),last=Math.Max(a,Math.Max(b,c));
+                var key=(first,a+b+c-first-last,last);
+                if (cache.TryGetValue(key,out bool accepted)) return accepted;
+                var minimum=Vector3.Min(positions[a],Vector3.Min(positions[b],positions[c]));
+                var maximum=Vector3.Max(positions[a],Vector3.Max(positions[b],positions[c]));
+                var triangle=new[] {exact[a],exact[b],exact[c]};
+                foreach (int face in protectedFaces) {
+                    if ((trials&255)==0) token.ThrowIfCancellationRequested();
+                    if (++trials>limit) throw new InvalidOperationException("Closure source-contact filter exceeds the pair budget. No partial winner was accepted.");
+                    if (minimum.x>high[face].x || low[face].x>maximum.x || minimum.y>high[face].y ||
+                        low[face].y>maximum.y || minimum.z>high[face].z || low[face].z>maximum.z) continue;
+                    ++exactTests;
+                    var other=new[] {exact[source[face*3]],exact[source[face*3+1]],exact[source[face*3+2]]};
+                    if (!RemeshCapIntersection.Improper(triangle,other)) continue;
+                    cache.Add(key,false); ++blocked; return false;
+                }
+                cache.Add(key,true); return true;
+            }
+        }
 
         internal sealed class ExternalContacts
         {

@@ -1,6 +1,6 @@
 # Generated annular Bridge and virtual averaged co-normal growth
 
-Current production (revision 16) removes the 16-selected-loop gate in favour of
+Current production (revision 17) retains the revision-16 removal of the selected-loop gate in favour of
 two million collar edge comparisons and 200,000 pair visits. Incomplete partner
 searches remain refused per contour. Independent rims can use an audited Surface
 Cap after a whole local planar proposal is discarded. Thin opposing skins can
@@ -430,3 +430,61 @@ the test exporter itself passing does not certify those failed rows.
 Private evidence is under `_results~/bridge-budget-20261010/`: `closure-final.xml`,
 `export-final.xml`, `real-caps.xml`, `native-real.xml`, `comparison/production.json`,
 `comparison/native.json`, `comparison/comparison.json` and `rejections/`.
+
+## Fixed-source contact constraints during search (revision 17)
+
+MilitaryGabion_2's two nonplanar rims have 20 and 17 edges. All 136 ordinary
+zipper candidates passed the annulus topology checks but intersected a donor.
+The eight cheapest paths at each grid state could discard the safe, more costly
+paths before any contact check. An independent source-constrained DP found an
+audited annulus; MeshLib complex/universal stitching introduced 115/16 contacts.
+
+After every ordinary candidate refuses on contact, Bridge now retries the same
+phase profile with immutable source contacts excluded before path ranking. Only
+triangle/source results are cached. Triangle/triangle contacts and the assembled
+annulus topology are audited after completing the profile. Existing successful
+ordinary Bridges retain their exact output. The retry shares the remaining
+state and contact budgets; its memory preflight includes bounds, protected face
+indices and the triangle cache. Resource exhaustion publishes no candidate.
+Preparation revision 17 invalidates older cached support.
+
+The captured pair adds 37 faces without moving a donor corner, joins its two
+components into one closed component with Euler characteristic 2, and leaves no
+boundary edges. The first rejected strip remains diagnostic geometry, rather
+than accepted support. The retry report records source-blocked triangles and
+the exact filtering tests.
+
+Old_Sofa exposed a different failure: Surface Cap's recursive ear search reached
+4096 candidates on a 19-edge rim. Three independent MeshLib disk profiles closed
+that element with 17 faces and no introduced contacts. Surface Cap now tries a
+bounded interval profile after the default ear search refuses or exhausts its
+candidate budget. Four least-area triangulations are retained per subpolygon;
+fixed-source contacts are excluded before ranking. A complete profile has at
+most one million path combinations for the supported 64-edge rim. The final
+disk still needs topology and exact whole-patch contact audits. Explicitly lower
+ear budgets continue to refuse without this extra profile. The existing shared
+two-million contact budget is never reset.
+
+Automatic preparation closes all seven captured Old_Sofa rims with 48 new faces,
+retaining each source corner and allowing contacts with other elements. Old
+successful ear triangulations and accepted closures on other rims are retained.
+This extends two bounded search families; it does not prove that every possible
+Bridge or nonplanar disk can be generated without adding vertices.
+
+Private controls use `MESH_LAB_BRIDGE_GABION_SOURCE` and
+`MESH_LAB_CAP_SOFA_SOURCE` with decoded `source.bin` files. They assert closure,
+donor preservation and native Remesh/Trim/Simplify/UV quality with Solve off/on.
+Private geometry remains outside the repository. Evidence:
+`_results~/gabion-bridge-20261011/`, including `probe-summary.json`,
+`sofa-probe-summary.json`, comparison meshes and exact-contact reports.
+
+Validation on 2026-10-11: 207 closure/planar/local/budget EditMode tests passed,
+zero failed; 31 optional private inputs were not configured (215.4 seconds).
+After the shared-filter relocation and retry-memory guard, 14 focused cases
+passed with zero failures and 12 unrelated optional inputs skipped (77.8 seconds).
+Both captures also pass native resolution-64 Remesh/Trim/Simplify/UV with Solve
+off/on and complete atlas scans: zero overlaps, degenerates or outside vertices.
+Gabion: 35,114 voxel faces, 36/32 simplified faces, six charts. Sofa: 12,440 voxel
+faces, 388 simplified faces, 32/43 charts. These are resolution-64 controls, not
+a replay of the user's resolution-256 bake or proof of invented-face texture
+coverage. Both reference-assembly FBX define variants compile without errors.
