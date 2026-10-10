@@ -29,8 +29,14 @@ LOD number and advances toward LOD0. The existing forward solver is unchanged.
   Double area arithmetic has no epsilon: nonzero thin faces remain. Nonfinite
   positions and meshes with no remaining faces are refused. Material slots
   (including empty slots), vertex streams, skin weights and blend shapes survive.
-  Reverse UV does not change FBX files or importer settings; importer precision
-  preparation remains a separate forward-pipeline operation.
+  Read/Write-disabled static meshes use an owned `MeshAccess` readable copy before
+  cleanup; failed preparation releases every earlier copy. Readable skin/blend
+  streams remain supported. Unreadable skinned/blend-shape inputs require
+  Read/Write enabled because the shared readback cannot preserve those streams.
+  Reverse UV leaves FBX files unchanged. The shared reader may temporarily
+  reimport an unreadable model when MeshData is unavailable and restores its
+  Read/Write setting; importer precision preparation remains a separate
+  forward-pipeline operation.
 - Outputs are staged before replacing the visible chain. Failed validation,
   cancellation or failed audit writes publish no new chain. Temporary cleaned
   inputs and prepared seed meshes are destroyed on success, failure or cancellation.

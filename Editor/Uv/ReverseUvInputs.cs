@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace SashaRX.UnityMeshLab
 {
@@ -37,9 +38,16 @@ namespace SashaRX.UnityMeshLab
 
         ReverseUvTransfer.Input Clean(ReverseUvTransfer.Input source, int lod, CancellationToken token)
         {
-            if (source == null || !source.mesh || !source.mesh.isReadable)
-                throw new InvalidOperationException("Reverse UV cleanup requires readable working meshes.");
-            var mesh = source.mesh;
+            if (source == null || !source.mesh)
+                throw new InvalidOperationException("Reverse UV cleanup requires an input mesh.");
+            // MeshData cannot retain these CPU-only streams on every unreadable
+            // mesh. Keep the attribute-preservation contract instead of stripping
+            // skinning/blend shapes through the shared static-mesh readback path.
+            if (!source.mesh.isReadable && (source.mesh.blendShapeCount > 0 ||
+                source.mesh.HasVertexAttribute(VertexAttribute.BlendWeight) || source.mesh.HasVertexAttribute(VertexAttribute.BlendIndices)))
+                throw new InvalidOperationException($"Reverse UV input '{source.key ?? source.mesh.name}' is Read/Write-disabled with skinning or blend shapes. Enable Read/Write to preserve those attributes.");
+            var mesh = MeshAccess.Readable(source.mesh, out bool ownsReadable);
+            if (ownsReadable) owned.Add(mesh);
             var positions = mesh.vertices;
             var parts = new int[mesh.subMeshCount][];
             var retained = new List<int>(); var removed = new List<int>();
@@ -65,12 +73,13 @@ namespace SashaRX.UnityMeshLab
                 throw new InvalidOperationException($"Reverse UV input '{source.key ?? mesh.name}' LOD{lod} has no nonzero-area triangles; cleanup was not published.");
             // Instantiate retains raw streams, skin weights and every blend shape.
             // No vertex compaction: the only mutation is each submesh's index list.
-            var copy = UnityEngine.Object.Instantiate(mesh);
-            owned.Add(copy); copy.hideFlags = HideFlags.HideAndDontSave;
-            copy.name = mesh.name + "_reverseInput";
+            var copy = ownsReadable ? mesh : UnityEngine.Object.Instantiate(mesh);
+            if (!ownsReadable) owned.Add(copy);
+            copy.hideFlags = HideFlags.HideAndDontSave;
+            copy.name = source.mesh.name + "_reverseInput";
             for (int sub = 0; sub < parts.Length; ++sub) copy.SetTriangles(parts[sub], sub, false);
-            copy.bounds = mesh.bounds;
-            MeshUvState.SetDraft(copy, MeshUvState.IsDraft(mesh));
+            copy.bounds = source.mesh.bounds;
+            MeshUvState.SetDraft(copy, MeshUvState.IsDraft(source.mesh));
             return new ReverseUvTransfer.Input { mesh = copy, key = source.key, toWorld = source.toWorld,
                 sourceFaces = retained.ToArray(), removedSourceFaces = removed.ToArray() };
         }

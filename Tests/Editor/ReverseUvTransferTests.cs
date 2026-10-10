@@ -97,6 +97,64 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void ReadWriteDisabledStaticInputsPreserveStreamsAndCompleteReverseProjection()
+        {
+            var source = Quad();
+            source.triangles = new[] { 0, 1, 2, 0, 2, 3, 0, 0, 0 };
+            source.colors = Enumerable.Repeat(new Color(.2f, .4f, .6f, .25f), 4).ToArray();
+            source.tangents = Enumerable.Repeat(new Vector4(1, 0, 0, -1), 4).ToArray();
+            var uv4 = Enumerable.Repeat(new Vector4(.1f, .2f, .3f, .4f), 4).ToList(); source.SetUVs(2, uv4);
+            var before = TransferMeshSnapshot.Capture(source); var colors = source.colors; var tangents = source.tangents;
+            source.UploadMeshData(true); Assert.IsFalse(source.isReadable);
+            Mesh copy;
+            using (var prepared = ReverseUvInputs.Prepare(new[] { Level(1, source), Level(0, source) })) {
+                copy = prepared.levels[1].inputs[0].mesh;
+                Assert.AreNotSame(source, copy); Assert.IsTrue(copy.isReadable);
+                CollectionAssert.AreEqual(colors, copy.colors); CollectionAssert.AreEqual(tangents, copy.tangents);
+                var actualUv = new List<Vector4>(); copy.GetUVs(2, actualUv); CollectionAssert.AreEqual(uv4, actualUv);
+                CollectionAssert.AreEqual(new[] { 0, 1 }, prepared.levels[1].inputs[0].sourceFaces);
+                CollectionAssert.AreEqual(new[] { 2 }, prepared.levels[1].inputs[0].removedSourceFaces);
+                int size = prepared.PrepareSeed(128, 2, 0, default);
+                using var result = Build(new ReverseUvTransfer.Options { seedResolution = size, projectionReach = .1f }, prepared.levels);
+                Assert.AreEqual(2, result.report.inheritedFaces); Assert.AreEqual(0, result.report.newFaces);
+                Assert.AreEqual(2, result.meshes[1][0].triangles.Length / 3);
+            }
+            Assert.IsTrue(copy == null); Assert.IsFalse(source.isReadable); Assert.AreEqual(9, source.GetIndexCount(0));
+            var witness = MeshAccess.Readable(source, out bool ownsWitness);
+            try { CollectionAssert.AreEqual(before, TransferMeshSnapshot.Capture(witness)); }
+            finally { if (ownsWitness) Object.DestroyImmediate(witness); }
+        }
+
+        [Test]
+        public void UnreadableCleanupFailureReleasesEarlierDetachedCopies()
+        {
+            var good = Quad(); var empty = Quad(); empty.triangles = new[] { 0, 0, 0 };
+            good.UploadMeshData(true); empty.UploadMeshData(true);
+            int count = Resources.FindObjectsOfTypeAll<Mesh>().Length;
+            for (int attempt = 0; attempt < 3; attempt++) {
+                Assert.Throws<InvalidOperationException>(() => ReverseUvInputs.Prepare(new[] { Level(1, good, empty) }));
+                Assert.AreEqual(count, Resources.FindObjectsOfTypeAll<Mesh>().Length);
+                Assert.IsFalse(good.isReadable); Assert.IsFalse(empty.isReadable);
+            }
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void UnreadableSkinOrBlendShapeRefusesInsteadOfLosingAttributes(bool blend)
+        {
+            var source = Quad();
+            if (blend) {
+                var delta = Enumerable.Repeat(Vector3.up, 4).ToArray(); source.AddBlendShapeFrame("move", 100, delta, delta, delta);
+            } else {
+                source.bindposes = new[] { Matrix4x4.identity };
+                source.boneWeights = Enumerable.Repeat(new BoneWeight { boneIndex0 = 0, weight0 = 1 }, 4).ToArray();
+            }
+            source.UploadMeshData(true); int count = Resources.FindObjectsOfTypeAll<Mesh>().Length;
+            var error = Assert.Throws<InvalidOperationException>(() => ReverseUvInputs.Prepare(new[] { Level(1, source) }));
+            StringAssert.Contains("skinning or blend shapes", error.Message);
+            Assert.AreEqual(count, Resources.FindObjectsOfTypeAll<Mesh>().Length); Assert.IsFalse(source.isReadable);
+        }
+
+        [Test]
         public void CleanupRejectsNonfiniteAndEmptyGeometryAndHonoursCancellation()
         {
             var mesh = Quad(); var before = mesh.triangles;
