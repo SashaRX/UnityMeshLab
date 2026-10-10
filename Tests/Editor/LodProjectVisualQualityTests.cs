@@ -338,6 +338,14 @@ namespace SashaRX.UnityMeshLab.Tests
                     Assert.That(capture.surfaceColorMax.magnitude,Is.LessThan(.001f),"An unchanged fallback must validate against LOD0: "+model.name);
                 // Asset evaluation records fidelity, including regressions and missed budgets;
                 // it does not claim all production models satisfy synthetic-fixture thresholds.
+                if (argsHave("-meshlabLodFarBudget") && report.varyingVertexColors)
+                {
+                    renderer.SetView("front");
+                    var opposite = Matrix4x4.Rotate(Quaternion.Euler(0,180,0))*matrix;
+                    foreach (var variant in variants.Where(v => v.name == "source" || v.name == "far-lod2"))
+                        foreach (var mode in new[] { RenderMode.Colors,RenderMode.Coverage })
+                            LodVisualQualityTests.Save(model.name,variant.name,"paint-surface",mode == RenderMode.Colors ? "color" : "coverage",renderer.Draw(variant.mesh,mode,opposite));
+                }
                 LodSharedLightmapChecks.Evaluate(model.asset,source,variants,matrix);
                 Assert.That(report.captures.Count,Is.GreaterThanOrEqualTo(6));
                 Assert.That(LodMeshData.TriangleCount(source),Is.EqualTo(report.sourceTriangles),"Source asset changed");

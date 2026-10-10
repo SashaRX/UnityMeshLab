@@ -96,6 +96,44 @@ namespace SashaRX.UnityMeshLab
             catch { UnityEngine.Object.DestroyImmediate(mesh); throw; }
         }
 
+        // Geometry and every authored corner channel are retained. Separate
+        // render corners let a verified far-color fit express discontinuities.
+        internal Mesh ExpandTriangleCorners()
+        {
+            var corners = new List<int>(); var indices = new int[source.subMeshCount][];
+            for (int s = 0; s < indices.Length; s++)
+            {
+                var faces = Triangles(source,s); indices[s] = new int[faces.Length];
+                for (int i = 0; i < faces.Length; i++) { indices[s][i] = corners.Count; corners.Add(faces[i]); }
+            }
+            var mesh = new Mesh { name=source.name,indexFormat=corners.Count > 65535 ? IndexFormat.UInt32 : source.indexFormat };
+            try
+            {
+                mesh.SetVertices(corners.ConvertAll(v => positions[v]));
+                if (normals.Length == positions.Length) mesh.SetNormals(corners.ConvertAll(v => normals[v]));
+                if (tangents.Length == positions.Length) mesh.SetTangents(corners.ConvertAll(v => tangents[v]));
+                if (colors.Length == positions.Length)
+                {
+                    if (source.GetVertexAttributeFormat(VertexAttribute.Color) == VertexAttributeFormat.UNorm8)
+                        mesh.SetColors(corners.ConvertAll(v => (Color32)colors[v]));
+                    else mesh.SetColors(corners.ConvertAll(v => colors[v]));
+                }
+                for (int ch = 0; ch < 8; ch++)
+                {
+                    if (uvs[ch] == null) continue;
+                    int channel = ch;
+                    if (uvDimensions[ch] == 2) mesh.SetUVs(ch,corners.ConvertAll(v => (Vector2)uvs[channel][v]));
+                    else if (uvDimensions[ch] == 3) mesh.SetUVs(ch,corners.ConvertAll(v => (Vector3)uvs[channel][v]));
+                    else mesh.SetUVs(ch,corners.ConvertAll(v => uvs[channel][v]));
+                }
+                mesh.subMeshCount = indices.Length;
+                for (int s = 0; s < indices.Length; s++) mesh.SetTriangles(indices[s],s);
+                mesh.RecalculateBounds(); if (MeshUvState.IsDraft(source)) MeshUvState.SetDraft(mesh,true);
+                return mesh;
+            }
+            catch { UnityEngine.Object.DestroyImmediate(mesh); throw; }
+        }
+
         internal static int[] Triangles(Mesh mesh, int submesh)
         {
             var topology = mesh.GetTopology(submesh);

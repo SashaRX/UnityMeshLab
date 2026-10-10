@@ -8,7 +8,63 @@ Latest follow-up verification: **183 selected EditMode tests passed**, with all 
 
 ## Implemented
 
-The latest **far geometry stage** adds one independent LOD0 candidate for static,
+The latest **vertex-color boundary stage** fits independent render corners on the
+selected far mesh, without adding triangles or moving geometry. Uniform and
+boundary-weighted source-visible fits are checked after Color32 quantization;
+Float/HDR and alpha remain supported. Samples cannot borrow from a different
+material or opposite-facing face. Mean and per-view boundary loss now accompany
+the worst-region guide, and every measured view's boundary loss must not increase.
+The pass requires a strict mean-boundary gain, unchanged silhouette/detail/normal
+guides and non-increasing worst-view RGBA/channel RMS. Rejected/cancelled expanded
+meshes are released; authored positions, normals, tangents and all UV dimensions
+are retained. Near LODs, deforming meshes and disabled color validation bypass it.
+
+**226 selected EditMode tests passed, zero failures/skips**, with fresh Generate
+captures of the actual tent and colored bench at a 64px maximum source extent.
+A further 31-test run recaptured the tent's opposite side with the final code;
+its existing six-view measurements and front/oblique raw readbacks exactly match
+the complete run. The overlapping test counts are not additive. Both FBX compile
+configurations and static identifier/dependency checks pass. Both models' source/
+native/LOD1 controls, plus far coverage/wire/headlight readbacks, match the previous
+`9c47d01` stage byte-for-byte. Other six models were not freshly recaptured here.
+
+| Mesh | Source → LOD2 triangles | Previous → new worst RGBA RMS | Mean boundary loss before → after the final pass | Render vertices before → after |
+| --- | ---: | ---: | ---: | ---: |
+| Colored bench | 9334 → 1032 (9.04×) | 0.03437 → 0.02605 (24.2% lower) | 5.28% → 3.93% (25.6% lower) | 1064 → 3096 |
+| Tent | 560 → 62 (9.03×) | 0.06452 → 0.03251 (49.6% lower) | 86.11% → 50.09% (41.8% lower) | 48 → 186 |
+
+The mean-boundary columns compare the current selected mesh immediately before
+and after the corner pass, not an unavailable six-view mean from the preceding
+iteration. Tightened per-view gates also affect the ordinary fit: the bench's
+pre-corner RGBA RMS is 0.03849. Independent GPU RMS improves 11–14% for the bench
+and 46–53% for the tent across the existing two 64px views. The bench's previously
+lost front pair is retained; its worst CPU region reaches the 25% guide. Tent's
+worst region still loses 100%, so categorical boundary acceptance remains false.
+The existing GPU tent views and the additional opposite side contain no eligible
+sharp pairs at this footprint; these are RGBA field checks, not a GPU paint-pass
+claim. No categorical labels or original material semantics are recovered.
+
+Render-vertex overhead is material: the source meshes have 5994/396 vertices,
+while the accepted far meshes have 3096/186. Selective corner sharing is a next
+optimization; the approximately 1/9 claim applies to triangles. Recorded far-
+profile generation times are 344.39s/13.68s versus 322.81s/13.07s, including both
+levels; these single-run timings do not measure game rendering performance.
+
+Portable evidence: [numeric report](LOD_COLOR_BOUNDARIES_RESULTS.json),
+[actual vertex fields](LOD_COLOR_BOUNDARIES_RESULTS_MODELS.png),
+[error graphs](LOD_COLOR_BOUNDARIES_RESULTS_ERRORS.png),
+[additional opposite-side capture](LOD_COLOR_BOUNDARIES_RESULTS_PAINT_SIDE.png).
+Raw captures and `tests.xml`: `_results~/lod-color-boundaries-20261010/final/`,
+`paint-surface/` and `corners-reverse/`. An opt-in real-model cost study found that
+stronger native RGBA weights distort the tent or exceed its budget; those costs
+are not a production profile change. Weighting the unchanged shared vertices
+alone did not improve either model. No native ABI/binary or public setting changes.
+
+```powershell
+python -B Tools~/render_lod_color_boundaries.py _results~/lod-color-boundaries-20261010/final --previous _results~/lod-components-20261010/final --paint-surface _results~/lod-color-boundaries-20261010/paint-surface --output Documentation~/LOD_COLOR_BOUNDARIES_RESULTS
+```
+
+The preceding **far geometry stage** adds one independent LOD0 candidate for static,
 non-varying-color meshes with at most 512 target triangles. It retains the
 configured normal cost while omitting UV/RGBA costs during that probe, then runs
 the existing attribute and shared-lightmap correction. Selection requires better
@@ -117,9 +173,10 @@ The overview/chart retain the final capture lineage above; their LOD2 fields/cou
 
 ## Next iteration, in order
 
-Priority after this geometry stage: correct categorical paint boundaries on the
-tent and colored bench at the same 1/9 budget and 64px footprint; then extend
-UV2/chart-boundary and filtered lightmap checks to more assigned project instances.
+Priority after this color stage: reduce unnecessary render-corner duplication
+without losing the verified field/boundary gains, then align coarse tent edges
+with the remaining lost paint regions at the same 1/9 budget and 64px footprint.
+Extend UV2/chart-boundary and filtered lightmap checks to more assigned project instances.
 Thin-strip distortion on the fire shield remains a geometry follow-up, with the
 authored 303-triangle control kept visible. Exercise complete materials/assemblies
 and LOD transitions after those checks. Shared bindings currently support only

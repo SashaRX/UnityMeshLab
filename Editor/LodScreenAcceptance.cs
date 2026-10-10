@@ -36,7 +36,7 @@ namespace SashaRX.UnityMeshLab
         struct Pair { internal int a, b, region; }
         readonly Settings settings;
         readonly Frame source;
-        readonly bool[] colorInterior;
+        readonly bool[] colorInterior, colorBoundary;
         readonly int inputWidth, inputHeight;
         readonly int[] thinLabels, componentLabels, colorLabels;
         readonly int[] thinCounts, componentCounts, colorCounts;
@@ -70,6 +70,7 @@ namespace SashaRX.UnityMeshLab
                 if (y+1 < source.height) AddPair(a,a+source.width,boundaries);
             }
             colorLabels = Label(boundaries,source.width,source.height,out var unused,cancelled);
+            colorBoundary = boundaries;
             colorCounts = new int[unused.Length];
             for (int i = 0; i < pairs.Count; i++)
             {
@@ -77,6 +78,8 @@ namespace SashaRX.UnityMeshLab
                 colorCounts[pair.region]++;
             }
         }
+
+        internal bool IsColorBoundary(int pixel) => colorBoundary[pixel];
 
         void AddPair(int a,int b,bool[] boundary)
         {

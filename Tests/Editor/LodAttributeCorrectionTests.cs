@@ -225,5 +225,58 @@ namespace SashaRX.UnityMeshLab.Tests
                 () => Resources.FindObjectsOfTypeAll<Mesh>().Count(m => m.name == reduced.name) > 1));
             Assert.That(Resources.FindObjectsOfTypeAll<Mesh>().Where(m => m.name == reduced.name).ToArray(),Is.EqualTo(new[] { reduced }));
         }
+
+        Mesh PaintPanels(bool reference,bool quantized)
+        {
+            var p = new[] { new Vector3(-1,-1,0),new Vector3(0,-1,0),new Vector3(0,1,0),new Vector3(-1,1,0),
+                new Vector3(0,-1,0),new Vector3(1,-1,0),new Vector3(1,1,0),new Vector3(0,1,0) };
+            var values = Enumerable.Range(0,8).Select(i => reference ? i < 4 ? new Color(2,-1,.3f,.2f) : new Color(3,-.4f,.6f,.8f) : new Color(2.5f,-.7f,.45f,.5f)).ToArray();
+            var mesh = Track(new Mesh { vertices=p,triangles=new[] {0,1,2,0,2,3,4,5,6,4,6,7} });
+            if (quantized) mesh.SetColors(values.Select(c => (Color32)c).ToArray()); else mesh.colors = values;
+            mesh.RecalculateNormals(); mesh.tangents = p.Select(_ => new Vector4(1,0,0,-1)).ToArray();
+            mesh.SetUVs(0,p.Select(v => new Vector4(v.x,v.y,2,3)).ToList()); mesh.uv2 = p.Select(v => new Vector2(v.x,v.y)).ToArray();
+            mesh.RecalculateBounds(); return mesh;
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void FarBoundaryCornersRestoreRgbAndAlphaWithoutAddingTrianglesOrChangingOtherChannels(bool quantized)
+        {
+            var source = PaintPanels(true,quantized); var reduced = PaintPanels(false,quantized);
+            var sourceColors = source.colors; var reducedColors = reduced.colors; var indices = reduced.triangles;
+            var screen = new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            var fitted = Track(LodAttributeCorrection.CorrectVisibleColorBoundaries(source,reduced,screen,out var report));
+            Assert.That(fitted,Is.Not.Null); Assert.That(report.accepted,Is.True);
+            Assert.That(report.boundaryAfter,Is.LessThan(report.boundaryBefore)); Assert.That(report.rgbaAfter,Is.LessThan(report.rgbaBefore));
+            Assert.That(LodMeshData.TriangleCount(fitted),Is.EqualTo(LodMeshData.TriangleCount(reduced)));
+            Assert.That(screen.Measure(fitted).ColorsDoNotWorsen(screen.Measure(reduced)),Is.True);
+            Assert.That(fitted.GetVertexAttributeFormat(VertexAttribute.Color),Is.EqualTo(reduced.GetVertexAttributeFormat(VertexAttribute.Color)));
+            var oldData = new LodMeshData(reduced); var newData = new LodMeshData(fitted);
+            for (int i = 0; i < indices.Length; i++)
+            {
+                Assert.That(newData.positions[i],Is.EqualTo(oldData.positions[indices[i]]));
+                Assert.That(newData.normals[i],Is.EqualTo(oldData.normals[indices[i]]));
+                Assert.That(newData.tangents[i],Is.EqualTo(oldData.tangents[indices[i]]));
+                for (int ch = 0; ch < 8; ch++) if (oldData.uvs[ch] != null)
+                { Assert.That(newData.uvDimensions[ch],Is.EqualTo(oldData.uvDimensions[ch])); Assert.That(newData.uvs[ch][i],Is.EqualTo(oldData.uvs[ch][indices[i]])); }
+            }
+            CollectionAssert.AreEqual(sourceColors,source.colors); CollectionAssert.AreEqual(reducedColors,reduced.colors);
+        }
+
+        [Test]
+        public void FarBoundaryCancellationReleasesExpandedMeshAndRetainsInputs()
+        {
+            var source = PaintPanels(true,false); var reduced = PaintPanels(false,false);
+            reduced.name = "BoundaryCancel_"+Guid.NewGuid().ToString("N"); var colors = reduced.colors;
+            var screen = new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            UvProgress.Begin("Boundary cancellation",cancelable:true);
+            try
+            {
+                Assert.Throws<OperationCanceledException>(() => LodAttributeCorrection.CorrectVisibleColorBoundaries(source,reduced,screen,out _,
+                    () => UvProgress.Current.detail?.Contains("verify far color boundary corners") == true));
+                Assert.That(Resources.FindObjectsOfTypeAll<Mesh>().Where(m => m.name == reduced.name).ToArray(),Is.EqualTo(new[] { reduced }));
+                CollectionAssert.AreEqual(colors,reduced.colors);
+            }
+            finally { UvProgress.End(); }
+        }
     }
 }

@@ -285,6 +285,30 @@ namespace SashaRX.UnityMeshLab
                     }
                     finally { if (fitted) UnityEngine.Object.DestroyImmediate(fitted); }
                 }
+                if (options.screenBudget && options.correctSurfaceAttributes && varyingColors && !options.skipColorValidation)
+                {
+                    var fitted = LodAttributeCorrection.CorrectVisibleColorBoundaries(source,best.simplifiedMesh,screen,out var boundaryReport,cancelled);
+                    try
+                    {
+                        if (correction != null) correction.visibleColorBoundaries = boundaryReport;
+                        if (fitted)
+                        {
+                            var measured = LodSurfaceValidation.MeasureMeshes(source,fitted,settings,cancelled,ignoreDegenerateFaces:true);
+                            if (!float.IsNaN(measured.weightedError) && !float.IsInfinity(measured.weightedError))
+                            {
+                                UnityEngine.Object.DestroyImmediate(best.simplifiedMesh); best.simplifiedMesh = fitted; fitted = null;
+                                bestMetrics = measured; bestScreen = screen.Measure(best.simplifiedMesh,cancelled);
+                                bestScore = CandidateScore(bestMetrics,bestSilhouette,bestScreen,settings,options); best.resultError = measured.weightedError;
+                                correction.colorsAccepted = true; correction.colorMethod = "verified visible boundary corners";
+                                correction.colorRmsAfter = measured.ColorRms; correction.colorMaxAfter = measured.colorMax;
+                                correction.visibleRgbaAfter = bestScreen.rgbaRms; correction.visibleChannelsAfter = bestScreen.rgbaChannelRms;
+                                correction.note += $" Far color-boundary corner fit accepted; mean paint loss {boundaryReport.boundaryBefore:P1} -> {boundaryReport.boundaryAfter:P1}, all views/channels retain or improve. Triangle geometry, normals, tangents and UVs retained; render vertices {boundaryReport.verticesBefore} -> {boundaryReport.verticesAfter}.";
+                            }
+                            else boundaryReport.accepted = false;
+                        }
+                    }
+                    finally { if (fitted) UnityEngine.Object.DestroyImmediate(fitted); }
+                }
                 if (options.screenBudget && options.correctSurfaceAttributes && options.bakedLightmapFields != null &&
                     LodMeshData.TriangleCount(best.simplifiedMesh) <= 512 && screenPixels == 64)
                 {

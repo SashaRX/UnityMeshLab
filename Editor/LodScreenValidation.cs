@@ -22,6 +22,8 @@ namespace SashaRX.UnityMeshLab
             public float silhouetteMean, silhouetteMax, normalRms, rgbaRms;
             public Vector4 rgbaChannelRms;
             public float headlightRms;
+            public float colorBoundaryMean;
+            public float[] colorBoundaryViewLoss;
             public float[] normalViewRms, headlightViewRms;
             internal float Penalty(float colorWeight) => 4*(detailLoss+colorLoss*Mathf.Max(0,colorWeight));
             internal float ScreenScore(float normalWeight,float colorWeight) => silhouetteMean/.05f+silhouetteMax/.2f+
@@ -29,7 +31,15 @@ namespace SashaRX.UnityMeshLab
             internal bool DoesNotWorsen(Report before,bool fields = false) => detailLoss <= before.detailLoss+1e-6f && colorLoss <= before.colorLoss+1e-6f &&
                 (!fields || silhouetteMean <= before.silhouetteMean+1e-6f && silhouetteMax <= before.silhouetteMax+1e-6f &&
                     normalRms <= before.normalRms+1e-6f && ColorsDoNotWorsen(before));
-            internal bool ColorsDoNotWorsen(Report before) => colorLoss <= before.colorLoss+1e-6f && rgbaRms <= before.rgbaRms+1e-6f && ChannelsDoNotWorsen(before);
+            internal bool ColorsDoNotWorsen(Report before) => colorLoss <= before.colorLoss+1e-6f && rgbaRms <= before.rgbaRms+1e-6f && ChannelsDoNotWorsen(before) && BoundariesDoNotWorsen(before);
+            bool BoundariesDoNotWorsen(Report before)
+            {
+                if (colorBoundaryViewLoss == null || before.colorBoundaryViewLoss == null) return true;
+                if (colorBoundaryViewLoss.Length != before.colorBoundaryViewLoss.Length) return false;
+                for (int i = 0; i < colorBoundaryViewLoss.Length; i++)
+                    if (colorBoundaryViewLoss[i] > before.colorBoundaryViewLoss[i]+1e-6f) return false;
+                return colorBoundaryMean <= before.colorBoundaryMean+1e-6f;
+            }
             bool ChannelsDoNotWorsen(Report before)
             {
                 for (int ch = 0; ch < 4; ch++) if (rgbaChannelRms[ch] > before.rgbaChannelRms[ch]+1e-6f) return false;
@@ -113,7 +123,7 @@ namespace SashaRX.UnityMeshLab
             var positions = Positions(mesh); var triangles = Triangles(mesh); var colors = Colors(mesh);
             var normals = Normals(mesh);
             var result = new Report { views = views.Count,detailAccepted = true,objectPixels = objectPixels,resolution = resolution,
-                normalsEvaluated = measureFields && hasNormals,rgbaEvaluated = measureFields && checkColors,
+                normalsEvaluated = measureFields && hasNormals,rgbaEvaluated = measureFields && checkColors,colorBoundaryViewLoss = new float[views.Count],
                 normalViewRms = measureFields ? new float[views.Count] : null,headlightViewRms = measureFields ? new float[views.Count] : null };
             int viewIndex = 0;
             foreach (var view in views)
@@ -122,13 +132,18 @@ namespace SashaRX.UnityMeshLab
                 if (measureFields) MeasureFields(view.source,frame,result,viewIndex,cancelled);
                 var report = view.acceptance.Measure(frame.colors,frame.coverage,cancelled);
                 if (report.detailEvaluated) result.detailViews++;
-                if (report.colorEvaluated) result.colorViews++;
+                if (report.colorEvaluated)
+                {
+                    result.colorViews++; result.colorBoundaryViewLoss[viewIndex] = report.colorBoundaryLoss;
+                    result.colorBoundaryMean += report.colorBoundaryLoss;
+                }
                 result.detailLoss = Mathf.Max(result.detailLoss,Mathf.Max(report.worstThinRegionLoss,report.worstComponentLoss));
                 result.colorLoss = Mathf.Max(result.colorLoss,report.worstColorRegionLoss);
                 if (report.detailEvaluated) result.detailAccepted &= report.detailAccepted;
                 viewIndex++;
             }
             result.colorAccepted = result.colorViews > 0 && result.colorLoss <= .25f;
+            if (result.colorViews > 0) result.colorBoundaryMean /= result.colorViews;
             result.detailAccepted &= result.detailViews > 0;
             return result;
         }
@@ -330,6 +345,8 @@ namespace SashaRX.UnityMeshLab
         }
         internal int AddVisibleColorSamples(Mesh mesh,Action<int[],int,Vector3,Vector4,double> add,Func<bool> cancelled = null)
             => AddVisibleSamples(mesh,add,false,cancelled);
+        internal int AddVisibleBoundaryColorSamples(Mesh mesh,Action<int[],int,Vector3,Vector4,double> add,float boundaryWeight,Func<bool> cancelled = null)
+            => AddVisibleSamples(mesh,add,false,cancelled,boundaryWeight);
         internal int AddVisibleNormalSamples(Mesh mesh,Action<int[],int,Vector3,Vector4,double> add,Func<bool> cancelled = null)
             => AddVisibleSamples(mesh,add,true,cancelled);
         internal void AddVisibleSurfaceSamples(Mesh mesh,Action<int,Vector3,int,Vector3,Vector3,Vector3,int,int> add,Func<bool> cancelled = null)
@@ -351,7 +368,7 @@ namespace SashaRX.UnityMeshLab
                 }
             }
         }
-        int AddVisibleSamples(Mesh mesh,Action<int[],int,Vector3,Vector4,double> add,bool normalField,Func<bool> cancelled)
+        int AddVisibleSamples(Mesh mesh,Action<int[],int,Vector3,Vector4,double> add,bool normalField,Func<bool> cancelled,float boundaryWeight = 1)
         {
             if (!measureFields || (normalField ? !hasNormals || mesh.normals.Length != mesh.vertexCount : !checkColors || mesh.colors.Length != mesh.vertexCount)) return 0;
             var positions = Positions(mesh); var indices = Triangles(mesh); var colors = Colors(mesh);
@@ -376,7 +393,8 @@ namespace SashaRX.UnityMeshLab
                             var n = view.source.normalSamples[at]; if (n.sqrMagnitude < .5f) continue;
                             desired = transform.transpose.MultiplyVector(n).normalized;
                         }
-                        add(indices,target*3,frame.baryAt[at],desired,.25); count++;
+                        double weight = !normalField && view.acceptance.IsColorBoundary(pixel) ? .25*boundaryWeight : .25;
+                        add(indices,target*3,frame.baryAt[at],desired,weight); count++;
                     }
                 }
             }

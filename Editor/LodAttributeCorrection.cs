@@ -24,8 +24,65 @@ namespace SashaRX.UnityMeshLab
             public float visibleRgbaBefore, visibleRgbaAfter;
             public Vector4 visibleChannelsBefore, visibleChannelsAfter;
             public VisibleNormalReport visibleNormals;
+            public VisibleColorBoundaryReport visibleColorBoundaries;
             public LodSharedUvTransfer.Report sharedLightmapUv;
             public string note;
+        }
+
+        [Serializable] internal sealed class VisibleColorBoundaryReport
+        {
+            public bool accepted;
+            public int samples,trials,verticesBefore,verticesAfter;
+            public float boundaryBefore,boundaryAfter,worstBefore,worstAfter,rgbaBefore,rgbaAfter;
+            public float[] viewsBefore,viewsAfter;
+        }
+
+        // Color seams need independent render corners, not more triangles.
+        // Keep all geometry/other fields and require every measured paint view
+        // and RGBA channel to retain or improve its source correspondence.
+        internal static Mesh CorrectVisibleColorBoundaries(Mesh source,Mesh reduced,LodScreenValidation screen,
+            out VisibleColorBoundaryReport report,Func<bool> cancelled = null)
+        {
+            report = new VisibleColorBoundaryReport { verticesBefore=reduced.vertexCount,verticesAfter=reduced.vertexCount };
+            var sourceColors = source.colors; var reducedColors = reduced.colors;
+            if (screen == null || source.blendShapeCount > 0 || reduced.blendShapeCount > 0 ||
+                source.HasVertexAttribute(VertexAttribute.BlendWeight) || reduced.HasVertexAttribute(VertexAttribute.BlendWeight) ||
+                sourceColors.Length != source.vertexCount || reducedColors.Length != reduced.vertexCount ||
+                !sourceColors.Any(c => !c.Equals(sourceColors[0]))) return null;
+            var before = screen.Measure(reduced,cancelled);
+            if (!before.rgbaEvaluated || before.colorViews == 0 || before.colorBoundaryMean <= 0) return null;
+            report.boundaryBefore = report.boundaryAfter = before.colorBoundaryMean;
+            report.worstBefore = report.worstAfter = before.colorLoss; report.rgbaBefore = report.rgbaAfter = before.rgbaRms;
+            report.viewsBefore = report.viewsAfter = before.colorBoundaryViewLoss;
+            Mesh trial = null;
+            try
+            {
+                trial = new LodMeshData(reduced).ExpandTriangleCorners();
+                var original = trial.colors; var accepted = original; var best = before;
+                foreach (float weight in new[] { 1f,8f })
+                {
+                    var fit = new FieldFit(original.Select(c => (Vector4)c).ToArray());
+                    report.samples = screen.AddVisibleBoundaryColorSamples(trial,fit.Add,weight,cancelled);
+                    if (report.samples == 0) continue;
+                    var values = fit.Solve(.002f,cancelled);
+                    foreach (float blend in new[] { 1f,.5f,.25f })
+                    {
+                        CheckCancellation(cancelled);
+                        SetColors(trial,original.Select((c,i) => (Color)Vector4.Lerp(c,values[i],blend)).ToArray(),reduced.GetVertexAttributeFormat(VertexAttribute.Color));
+                        UvProgress.Report(UvProgress.Current.fraction,$"{source.name}: verify far color boundary corners");
+                        CheckCancellation(cancelled);
+                        var local = screen.Measure(trial,cancelled); report.trials++;
+                        if (!local.DoesNotWorsen(best,true) || local.colorBoundaryMean >= best.colorBoundaryMean-1e-6f) continue;
+                        accepted = trial.colors; best = local; report.accepted = true;
+                    }
+                }
+                if (!report.accepted) return null;
+                SetColors(trial,accepted,reduced.GetVertexAttributeFormat(VertexAttribute.Color));
+                report.boundaryAfter = best.colorBoundaryMean; report.worstAfter = best.colorLoss;
+                report.rgbaAfter = best.rgbaRms; report.viewsAfter = best.colorBoundaryViewLoss; report.verticesAfter = trial.vertexCount;
+                var result = trial; trial = null; return result;
+            }
+            finally { if (trial) UnityEngine.Object.DestroyImmediate(trial); }
         }
 
         [Serializable] internal sealed class VisibleNormalReport

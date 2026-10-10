@@ -25,6 +25,32 @@ namespace SashaRX.UnityMeshLab.Tests
             mesh.RecalculateNormals(); mesh.RecalculateBounds(); return mesh;
         }
         [Test]
+        public void BoundaryTrainingWeightsAlphaEdgesWithoutBorrowingAcrossMaterials()
+        {
+            var source = Panels(false); var target = Panels(false); var colors = source.colors;
+            var validation = new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            var samples = new List<(Vector4 desired,double weight)>();
+            int count = validation.AddVisibleBoundaryColorSamples(target,(_,__,___,desired,weight) => samples.Add((desired,weight)),8);
+            Assert.That(count,Is.EqualTo(samples.Count).And.GreaterThan(0));
+            Assert.That(samples.Any(s => s.weight == 2),Is.True,"Sharp alpha edges need the same weight as RGB edges.");
+            Assert.That(samples.Any(s => s.weight == .25),Is.True,"Interior samples must still constrain the field.");
+            Assert.That(samples.All(s => s.desired.w >= .2f-1e-6f && s.desired.w <= .8f+1e-6f),Is.True);
+            CollectionAssert.AreEqual(colors,source.colors);
+            var indices = target.triangles; target.subMeshCount = 2; target.SetTriangles(new int[0],0); target.SetTriangles(indices,1);
+            Assert.That(validation.AddVisibleBoundaryColorSamples(target,(_,__,___,____,_____) => Assert.Fail("Different materials cannot lend color."),8),Is.Zero);
+            Assert.Throws<System.OperationCanceledException>(() => validation.AddVisibleBoundaryColorSamples(source,(_,__,___,____,_____) => {},8,() => true));
+        }
+        [Test]
+        public void SmoothColorGradientDoesNotReceiveSharpBoundaryTrainingWeights()
+        {
+            var source = Panels(false);
+            source.colors = source.vertices.Select(p => new Color(2+.01f*p.x,-1,3,.3f)).ToArray();
+            var validation = new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            Assert.That(validation.AddVisibleBoundaryColorSamples(source,(_,__,___,desired,weight) => {
+                Assert.That(weight,Is.EqualTo(.25)); Assert.That(desired.z,Is.EqualTo(3).Within(1e-6));
+            },8),Is.GreaterThan(0));
+        }
+        [Test]
         public void SelfComparisonPreservesAlphaBoundaryAndMissingDetailIsLocalLoss()
         {
             var source = Panels(true,.08f); var validation = new LodScreenValidation(source,true);
