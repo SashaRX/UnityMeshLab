@@ -9,6 +9,7 @@ This iteration is ready to integrate as an incremental implementation. The compl
 - Raw FBX topology preparation through temporary imports without changing the original FBX; conservative full-loop and disconnected-small-part experiments.
 - Optional strict hard-edge preservation. LOD Gen enables it by default; existing direct simplifier/pipeline callers opt in. Protected triangles and patch interfaces are validated before and after correction. No native ABI or distributed binary changes.
 - Known protected-face floors prevent futile aggressive retries. Eligible preceding source-derived geometry can cap increasing density; it is cloned and remeasured, never recursively simplified.
+- PR review fixes preserve edited working sources and preflight bindings during regeneration. Cancellation rolls generation back through Undo, restores existing LOD renderers and releases pending meshes. All 15 focused LOD generation tests pass, including working-quad/RGBA regeneration and cancellation in the middle of a multi-mesh level and after a completed level.
 - Reproducible Unity GPU evaluation on eight actual project FBX meshes and an experimental libigl QSlim comparison. QSlim is a test/tooling experiment, not a production dependency or selected backend.
 
 ## Verified snapshot and limitations

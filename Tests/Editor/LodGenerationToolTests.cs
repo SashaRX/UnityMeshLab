@@ -148,6 +148,92 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void RegenerateFullLoops_KeepsEditedWorkingSourceAndPreflightBindings()
+        {
+            var (tool, context) = CreateToolWithSource();
+            SetField(tool, "generateLodCount", 1);
+            Generate(tool, 1);
+            var previousMesh = context.GeneratedLodObjects[0].GetComponent<MeshFilter>().sharedMesh;
+            var entry = context.MeshEntries[0];
+            var working = Object.Instantiate(entry.originalMesh);
+            meshes.Add(working);
+            const int size = 20;
+            var quads = new int[size*size*4];
+            for (int y = 0; y < size; y++)
+                for (int x = 0; x < size; x++)
+                {
+                    int vertex = y*(size+1)+x, offset = (y*size+x)*4;
+                    quads[offset] = vertex; quads[offset+1] = vertex+size+1;
+                    quads[offset+2] = vertex+size+2; quads[offset+3] = vertex+1;
+                }
+            working.SetIndices(quads, MeshTopology.Quads, 0);
+            var colors = new Color[working.vertexCount];
+            for (int i = 0; i < colors.Length; i++) colors[i] = Color.red;
+            working.colors = colors;
+            entry.repackedMesh = working;
+            context.HasRepack = true;
+            SetField(tool, "generateReductionMode", LodReductionMode.FullLoops);
+            SetField(tool, "generatePruneParts", true);
+
+            Generate(tool, 2);
+
+            Assert.That(context.MeshEntries[0], Is.SameAs(entry));
+            Assert.That(context.MeshEntries[0].repackedMesh, Is.SameAs(working));
+            Assert.That(context.HasRepack, Is.True);
+            Assert.That(previousMesh == null, Is.True, "Old generated mesh is released");
+            Assert.That(context.GeneratedLodObjects, Has.Count.EqualTo(1));
+            var generated = context.GeneratedLodObjects[0].GetComponent<MeshFilter>().sharedMesh;
+            meshes.Add(generated);
+            Assert.That(generated.colors, Is.Not.Empty);
+            foreach (var color in generated.colors) Assert.That(color, Is.EqualTo(Color.red));
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void CancelGeneration_RestoresAuthoredLevelsAndReleasesPendingMeshes(bool afterCompleteLevel)
+        {
+            var (_, context) = CreateToolWithSource();
+            var secondSource = CreateChild("Second_LOD0");
+            secondSource.AddComponent<MeshFilter>().sharedMesh = CreateGrid();
+            var secondRenderer = secondSource.AddComponent<MeshRenderer>();
+            var oldChild = CreateChild("Authored_LOD1");
+            oldChild.AddComponent<MeshFilter>().sharedMesh = CreateGrid();
+            var oldRenderer = oldChild.AddComponent<MeshRenderer>();
+            var originalLods = new[] {
+                new LOD(.5f, new[] { context.MeshEntries[0].renderer, secondRenderer }),
+                new LOD(.1f, new[] { oldRenderer })
+            };
+            context.LodGroup.SetLODs(originalLods);
+            context.Refresh(context.LodGroup);
+            var options = new LodPipelineOps.Options { count = 2, ratios = new[] { .5f, .25f }, targetError = 1 };
+            var pending = new List<Mesh>();
+            bool CancelAfterCreatedMeshes()
+            {
+                foreach (var mesh in context.GeneratedLodMeshes.Values)
+                    if (!pending.Contains(mesh)) pending.Add(mesh);
+                return afterCompleteLevel ? pending.Count >= 2 && oldRenderer == null : pending.Count >= 1;
+            }
+
+            var result = LodPipelineOps.Generate(context, 1, options, cancelled: CancelAfterCreatedMeshes);
+
+            Assert.That(result.ok, Is.False);
+            Assert.That(result.error, Does.Contain("cancelled"));
+            Assert.That(result.generatedObjects, Is.Empty);
+            Assert.That(result.perLod, Is.Empty);
+            Assert.That(context.GeneratedLodMeshes, Is.Empty);
+            Assert.That(context.GeneratedLodObjects, Is.Empty);
+            Assert.That(root.transform.childCount, Is.EqualTo(3));
+            Assert.That(oldRenderer != null, Is.True, "Existing authored renderer survives cancellation");
+            var restored = context.LodGroup.GetLODs();
+            Assert.That(restored, Has.Length.EqualTo(2));
+            Assert.That(restored[0].renderers, Is.EqualTo(originalLods[0].renderers));
+            Assert.That(restored[1].renderers, Is.EqualTo(originalLods[1].renderers));
+            Assert.That(pending, Has.Count.EqualTo(afterCompleteLevel ? 2 : 1));
+            foreach (var mesh in pending) Assert.That(mesh == null, Is.True, "Cancelled geometry is released");
+            Assert.That(UvProgress.Last.status, Is.EqualTo(Progress.Status.Canceled));
+        }
+
+        [Test]
         public void GenerationBaseline_PreservesAuthoredLodsWhenGeneratedLevelsExist()
         {
             var source = CreateGrid();

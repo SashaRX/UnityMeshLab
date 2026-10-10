@@ -154,7 +154,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         internal static Result Generate(UvToolContext ctx, int startLod, Options opts, Dictionary<Mesh, LodSourceTopology> prepared = null,
-            Dictionary<Mesh,LodSmallParts.Analysis> partAnalyses = null)
+            Dictionary<Mesh,LodSmallParts.Analysis> partAnalyses = null, System.Func<bool> cancelled = null)
         {
             var result = new Result();
             if (ctx?.LodGroup == null) { result.error = "No LODGroup"; return result; }
@@ -202,13 +202,18 @@ namespace SashaRX.UnityMeshLab
             // appending generated levels; otherwise they start at 0.005 and below.
             LodGroupUtility.NormalizeSingleLodTransitionForGeneration(newLods, startLod);
 
+            Undo.IncrementCurrentGroup();
+            int generationUndoGroup = Undo.GetCurrentGroup();
+            Undo.SetCurrentGroupName("Generate LODs");
+            bool committed = false;
+            var pendingMeshes = new List<Mesh>();
             UvProgress.Begin($"Generate LODs ({opts.count} levels)", cancelable: true);
             var validatedTriangles = new Dictionary<Mesh,(Mesh mesh,Options options)>(); // Borrowed meshes; Generate owns them.
             try
             {
                 for (int lodIdx = 0; lodIdx < opts.count; lodIdx++)
                 {
-                    if (UvProgress.CancelRequested) break;
+                    CheckGenerationCancellation(cancelled);
                     float ratio = opts.ratios[lodIdx];
                     var levelOptions = ForLevel(opts,lodIdx);
                     var settings = new MeshSimplifier.SimplifySettings
@@ -234,7 +239,7 @@ namespace SashaRX.UnityMeshLab
 
                     foreach (var (entry, srcMesh) in sourceMeshes)
                     {
-                        if (UvProgress.CancelRequested) break;
+                        CheckGenerationCancellation(cancelled);
                         validatedTriangles.TryGetValue(srcMesh,out var previous);
                         // A candidate accepted under weaker native constraints must
                         // not bypass a later, stricter profile via color-only reuse.
@@ -300,6 +305,8 @@ namespace SashaRX.UnityMeshLab
                         }
                         catch (System.OperationCanceledException) { r = new MeshSimplifier.SimplifyResult { error = CancellationMessage }; loop = null; reductionNote = null; }
                         finally { if (retained != null) Object.DestroyImmediate(retained.data.source); }
+                        if (r.simplifiedMesh) pendingMeshes.Add(r.simplifiedMesh);
+                        CheckGenerationCancellation(cancelled);
                         if (partPlan.removed.Count > 0)
                             reductionNote = $"Removed {partPlan.removed.Count} disconnected parts ({partPlan.triangles} source tris, " +
                                 $"{partPlan.area/analysis.area:P2} area, estimated ≤{partPlan.maxPixels:F2} px). Surface errors use retained LOD0. "+reductionNote;
@@ -408,6 +415,7 @@ namespace SashaRX.UnityMeshLab
                         }
                     }
 
+                    CheckGenerationCancellation(cancelled);
                     if (lodRenderers.Count > 0)
                     {
                         if (lodLevel < newLods.Count)
@@ -427,10 +435,31 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
 
+                CheckGenerationCancellation(cancelled);
                 ctx.LodGroup = LodGroupUtility.Rebuild(ctx.LodGroup.gameObject, newLods.ToArray());
                 AssetDatabase.SaveAssets();
+                committed = true;
             }
-            finally { UvProgress.End(); }
+            catch (System.OperationCanceledException)
+            {
+                result.error = CancellationMessage;
+                return result;
+            }
+            finally
+            {
+                if (!committed)
+                {
+                    Undo.RevertAllDownToGroup(generationUndoGroup);
+                    foreach (var go in result.generatedObjects) ctx.GeneratedLodMeshes.Remove(go);
+                    foreach (var mesh in pendingMeshes)
+                        if (mesh) Object.DestroyImmediate(mesh);
+                    result.generatedObjects.Clear(); result.perLod.Clear();
+                    ctx.LodGroup = lgGo.GetComponent<LODGroup>();
+                    ctx.ClearAllCaches();
+                }
+                if (UvProgress.CancelRequested) UvProgress.Cancel();
+                else UvProgress.End();
+            }
 
             foreach (var (entry, srcMesh) in sourceMeshes)
             {
@@ -448,8 +477,16 @@ namespace SashaRX.UnityMeshLab
             ctx.GeneratedLodObjects.RemoveAll(go => go == null);
             ctx.GeneratedLodObjects.AddRange(result.generatedObjects);
             ctx.ClearAllCaches();
+            Undo.CollapseUndoOperations(generationUndoGroup);
             result.ok = true;
             return result;
+        }
+
+        static void CheckGenerationCancellation(System.Func<bool> cancelled)
+        {
+            if (!UvProgress.CancelRequested && cancelled?.Invoke() != true) return;
+            UvProgress.RequestCancel();
+            throw new System.OperationCanceledException(CancellationMessage);
         }
 
         static MeshSimplifier.SimplifyResult Reduce(Mesh mesh, MeshSimplifier.SimplifySettings settings, Options options,

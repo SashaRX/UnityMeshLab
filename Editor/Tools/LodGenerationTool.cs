@@ -518,7 +518,7 @@ namespace SashaRX.UnityMeshLab
             { UvtLog.Warn($"[GenerateLOD] {lastGenerationError}"); requestRepaint?.Invoke(); return; }
             if (generatedObjects.Count > 0)
             {
-                ClearGeneratedLods();
+                LodGroupUtility.ClearGeneratedLods(ctx, refreshContext: false);
                 GetGenerationBaseline(out _, out startLod, out _);
             }
             lastResults.Clear();
