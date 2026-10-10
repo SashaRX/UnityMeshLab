@@ -466,11 +466,11 @@ namespace SashaRX.UnityMeshLab
             }
             token.ThrowIfCancellationRequested();
             if (hierarchy) {
-                var previewNode = captures[0];
+                var largestCapture = captures[0];
                 foreach (var node in captures)
-                    if (node.voxel.TriangleCount > previewNode.voxel.TriangleCount) previewNode = node;
-                var toPreview = previewNode.spaceToWorld.inverse * capturedRootToWorld;
-                previewNode.unfilteredSource = await Task.Run(() => unfilteredRoot.InSpace(toPreview, previewNode.source.diagonal), token);
+                    if (node.voxel.TriangleCount > largestCapture.voxel.TriangleCount) largestCapture = node;
+                var toPreview = largestCapture.spaceToWorld.inverse * capturedRootToWorld;
+                largestCapture.unfilteredSource = await Task.Run(() => unfilteredRoot.InSpace(toPreview, largestCapture.source.diagonal), token);
                 token.ThrowIfCancellationRequested();
             }
             this.previewNode = null;
