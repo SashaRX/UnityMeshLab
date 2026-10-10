@@ -1,4 +1,4 @@
-# LOD iteration handoff — 2026-10-10
+# LOD iteration handoff — 2026-10-11
 
 Iteration [#229](https://github.com/SashaRX/UnityMeshLab/pull/229) was merged into main and released as 1.1.37. The complete LOD quality roadmap is not finished. The intended hierarchy remains LOD0, LOD1 and LOD2, with independent source reduction to approximately 1/3 and 1/9 of LOD0.
 
@@ -7,6 +7,25 @@ The subsequent [feature-chain experiment](LOD_FEATURE_CHAINS.md) adds an optiona
 Native-constraint experiment verification: **183 selected EditMode tests passed**, with all eight meshes and 176 variant/view GPU captures freshly evaluated at a physical 384×384 target. Native builds and CTests passed on Windows/Linux/macOS through CI. Native constraints reach 6/16 source budgets; only 2/8 LOD2 budgets pass, and Bench B LOD2 selects a reported strict-belt fallback. At matched counts, Wrench/First Aid Kit/Fire Shield LOD2 normal RMS improves 67.8%/48.6%/54.7%; tent LOD2 RGBA RMS improves 30.5% at exactly 280 triangles. Other color/normal/silhouette regressions and slow native retries keep this experimental. Details, portable graphs/data and the next checks are in the native experiment. The 177-test managed-prepass comparison remains its historical control.
 
 ## Implemented
+
+### Current: bounded thin-frame silhouette correction (2026-10-11)
+
+[The silhouette iteration](LOD_SILHOUETTE.md) freezes the previous vertex-color
+algorithms and improves the real SmallBench frame at **77/708 triangles and
+125 vertices**. Fourteen-view GPU mean/worst coverage error falls
+**10.435%/23.881% → 8.713%/18.064%**. Colors, UVs, tangents and triangle arrays
+remain exact; worst RGBA/alpha and source UV correspondence improve. University
+Pot and the tent retain their previous meshes and GPU results.
+
+The stage now catches a bad individual view hidden by a low mean, verifies each
+group before committing, checks new contacts and vertex sweeps, and uses both
+64px and 128px source guides. Post-position attribute fitting also verifies
+reverse views. **264 selected EditMode tests and both FBX compile configurations
+pass.** The linked report includes actual masks, authored comparisons, per-view
+GPU graphs and numeric evidence. SmallBench generation increased from 41s to
+104s; source-data caching/local evaluation and remaining thin-part allocation
+are the next work. Original material/shared-lightmap acceptance and protected
+LOD1 budget fallbacks remain unfinished.
 
 ### New model validation: university and apartment benches
 
@@ -28,7 +47,7 @@ vertex/material support, weak-view GPU validation and SmallBench frame retention
 now take priority over additional tent-only tuning. Source hashes, limitations,
 actual model images and graphs are retained in the linked check.
 
-### Current: far paint diagonals and shared UV2 (2026-10-10)
+### Earlier: far paint diagonals and shared UV2 (2026-10-10)
 
 The far Screen Budget path now tries local diagonal changes on isolated,
 nearly coplanar pairs near lost source paint boundaries. Existing render corners

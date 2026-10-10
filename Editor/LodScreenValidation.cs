@@ -25,6 +25,7 @@ namespace SashaRX.UnityMeshLab
             public bool detailAccepted, colorAccepted;
             public bool normalsEvaluated, rgbaEvaluated;
             public float silhouetteMean, silhouetteMax, normalRms, rgbaRms;
+            public float[] silhouetteViewErrors;
             public Vector4 rgbaChannelRms;
             public float[] rgbaViewRms;
             public Vector4[] rgbaChannelViewRms;
@@ -43,6 +44,13 @@ namespace SashaRX.UnityMeshLab
             internal bool PaintViewsDoNotWorsen(Report before) => colorLoss <= before.colorLoss+1e-6f && BoundariesDoNotWorsen(before) && GradientsDoNotWorsen(before);
             internal bool ColorViewsDoNotWorsen(Report before)
                 => ColorViewsWithin(before,0) && ColorsDoNotWorsen(before);
+            internal bool SilhouetteViewsDoNotWorsen(Report before)
+            {
+                if (silhouetteViewErrors == null || before.silhouetteViewErrors == null)
+                    return silhouetteViewErrors == null && before.silhouetteViewErrors == null;
+                return silhouetteViewErrors.Length == before.silhouetteViewErrors.Length &&
+                    silhouetteViewErrors.Where((error,v) => error > before.silhouetteViewErrors[v]+1e-6f).Count() == 0;
+            }
             internal bool ColorViewsWithin(Report before,float tolerance)
             {
                 if (rgbaViewRms == null || before.rgbaViewRms == null || rgbaChannelViewRms == null || before.rgbaChannelViewRms == null ||
@@ -177,6 +185,7 @@ namespace SashaRX.UnityMeshLab
                 normalsEvaluated = measureFields && hasNormals,rgbaEvaluated = measureFields && checkColors,colorBoundaryViewLoss = new float[views.Count],
                 gradientViewRms=new float[views.Count],
                 normalViewRms = measureFields ? new float[views.Count] : null,headlightViewRms = measureFields ? new float[views.Count] : null,
+                silhouetteViewErrors = measureFields ? new float[views.Count] : null,
                 rgbaViewRms = measureFields && checkColors ? new float[views.Count] : null,
                 rgbaChannelViewRms = measureFields && checkColors ? new Vector4[views.Count] : null };
             int viewIndex = 0;
@@ -291,14 +300,14 @@ namespace SashaRX.UnityMeshLab
         // Coordinate descent of an already source-derived candidate. Index and
         // attribute buffers stay intact; coincident render wedges move together.
         // Coverage counts permit local face updates without re-rendering the mesh.
-        internal Mesh RefineSilhouette(Mesh mesh,out int moves,out int trials,Func<bool> cancelled = null)
+        internal Mesh RefineSilhouette(Mesh mesh,out int moves,out int trials,Func<bool> cancelled = null,Func<Mesh,bool> acceptMove = null)
         {
             moves = trials = 0;
             if (!measureFields || objectPixels > 128 || mesh.blendShapeCount > 0 ||
                 mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.BlendWeight)) return null;
             var indices = Triangles(mesh); int faces = indices.Length/3;
             if (faces == 0 || faces > 512) return null;
-            var positions = mesh.vertices; var groups = new Dictionary<Vector3,List<int>>();
+            var positions = mesh.vertices; var originalPositions = (Vector3[])positions.Clone(); var groups = new Dictionary<Vector3,List<int>>();
             var attached = new List<int>[positions.Length];
             for (int i = 0; i < positions.Length; i++)
             {
@@ -328,64 +337,83 @@ namespace SashaRX.UnityMeshLab
             var before = CoverageErrors(buffers,cancelled); float score = before.x*20+before.y*5;
             var ordered = new List<KeyValuePair<Vector3,List<int>>>(groups);
             ordered.Sort((a,b) => { int x = a.Key.x.CompareTo(b.Key.x); int y = a.Key.y.CompareTo(b.Key.y); return x != 0 ? x : y != 0 ? y : a.Key.z.CompareTo(b.Key.z); });
-            foreach (float step in new[] { 1f,.5f,.25f })
+            // A geometry-only optimum can repaint newly covered pixels or move
+            // the surface away from its lightmap chart. Validate each group before
+            // committing its coverage counts, so one bad move cannot discard all
+            // useful moves. This owned probe never changes the input mesh.
+            Mesh probe = acceptMove == null ? null : UnityEngine.Object.Instantiate(mesh);
+            try
             {
-                int groupIndex = 0;
-                foreach (var pair in ordered)
+                foreach (float step in new[] { 1f,.5f,.25f })
                 {
-                    Check(cancelled);
-                    if (groupIndex++%16 == 0) UvProgress.Report(UvProgress.Current.fraction,$"{mesh.name}: far silhouette refit {step:G2}px");
-                    var group = pair.Value; var slots = new HashSet<int>();
-                    foreach (int vertex in group) slots.UnionWith(slotSets[vertex]);
-                    if (slots.Count > 1) continue; // Pin material interfaces.
-                    var faceSet = new SortedSet<int>(); foreach (int vertex in group) faceSet.UnionWith(attached[vertex]);
-                    if (faceSet.Count == 0) continue;
-                    var incident = new List<int>(faceSet); var previous = positions[group[0]]; var best = previous;
-                    int[][][] accepted = null;
-                    for (int axis = 0; axis < 3; axis++) for (int sign = -1; sign <= 1; sign += 2)
+                    int groupIndex = 0;
+                    foreach (var pair in ordered)
                     {
-                        var proposed = previous; proposed[axis] += sign*step*sourceExtent/objectPixels;
-                        if ((proposed-pair.Key).magnitude > 2*sourceExtent/objectPixels) continue;
-                        foreach (int vertex in group) positions[vertex] = proposed;
-                        bool valid = true;
-                        foreach (int f in incident)
+                        Check(cancelled);
+                        if (groupIndex++%16 == 0) UvProgress.Report(UvProgress.Current.fraction,$"{mesh.name}: far silhouette refit {step:G2}px");
+                        var group = pair.Value; var slots = new HashSet<int>();
+                        foreach (int vertex in group) slots.UnionWith(slotSets[vertex]);
+                        if (slots.Count > 1) continue; // Pin material interfaces.
+                        var faceSet = new SortedSet<int>(); foreach (int vertex in group) faceSet.UnionWith(attached[vertex]);
+                        if (faceSet.Count == 0) continue;
+                        var incident = new List<int>(faceSet); var previous = positions[group[0]]; var best = previous;
+                        int[][][] accepted = null; float previousScore = score;
+                        for (int axis = 0; axis < 3; axis++) for (int sign = -1; sign <= 1; sign += 2)
                         {
-                            var normal = FaceNormal(positions,indices,f);
-                            if (originalNormals[f].sqrMagnitude > 1e-20f &&
-                                (normal.sqrMagnitude < originalNormals[f].sqrMagnitude*1e-4f || Vector3.Dot(normal,originalNormals[f]) <= 0)) { valid = false; break; }
-                        }
-                        if (!valid) continue;
-                        var masks = new int[views.Count][][];
-                        for (int v = 0; v < views.Count; v++)
-                        {
-                            masks[v] = new int[incident.Count][];
-                            for (int i = 0; i < incident.Count; i++)
+                            var proposed = previous; proposed[axis] += sign*step*sourceExtent/objectPixels;
+                            if ((proposed-pair.Key).magnitude > 2*sourceExtent/objectPixels) continue;
+                            foreach (int vertex in group) positions[vertex] = proposed;
+                            bool valid = true;
+                            foreach (int f in incident)
                             {
-                                masks[v][i] = FaceSamples(positions,indices,incident[i],views[v],cancelled);
-                                ReplaceCounts(buffers[v],incident[i],masks[v][i],1);
+                                var normal = FaceNormal(positions,indices,f);
+                                if (originalNormals[f].sqrMagnitude > 1e-20f &&
+                                    (normal.sqrMagnitude < originalNormals[f].sqrMagnitude*1e-4f || Vector3.Dot(normal,originalNormals[f]) <= 0)) { valid = false; break; }
+                            }
+                            if (!valid || LodTriangleIntersections.MovesThroughFaces(previous,proposed,positions,indices,faceSet,cancelled) ||
+                                LodTriangleIntersections.IntroducesContacts(originalPositions,positions,indices,faceSet,cancelled)) continue;
+                            var masks = new int[views.Count][][];
+                            for (int v = 0; v < views.Count; v++)
+                            {
+                                masks[v] = new int[incident.Count][];
+                                for (int i = 0; i < incident.Count; i++)
+                                {
+                                    masks[v][i] = FaceSamples(positions,indices,incident[i],views[v],cancelled);
+                                    ReplaceCounts(buffers[v],incident[i],masks[v][i],1);
+                                }
+                            }
+                            var error = CoverageErrors(buffers,cancelled); trials++;
+                            for (int v = 0; v < views.Count; v++) for (int i = 0; i < incident.Count; i++) ReplaceCounts(buffers[v],incident[i],masks[v][i],-1);
+                            float value = error.x*20+error.y*5;
+                            if (value >= score-1e-6f || error.x > before.x+1e-6f || error.y > before.y+1e-6f) continue;
+                            score = value; best = proposed; accepted = masks;
+                        }
+                        foreach (int vertex in group) positions[vertex] = best;
+                        if (accepted == null) continue;
+                        if (probe)
+                        {
+                            Check(cancelled); probe.vertices = positions; probe.RecalculateBounds();
+                            if (!acceptMove(probe))
+                            {
+                                foreach (int vertex in group) positions[vertex] = previous;
+                                score = previousScore; continue;
                             }
                         }
-                        var error = CoverageErrors(buffers,cancelled); trials++;
-                        for (int v = 0; v < views.Count; v++) for (int i = 0; i < incident.Count; i++) ReplaceCounts(buffers[v],incident[i],masks[v][i],-1);
-                        float value = error.x*20+error.y*5;
-                        if (value >= score-1e-6f || error.x > before.x+1e-6f || error.y > before.y+1e-6f) continue;
-                        score = value; best = proposed; accepted = masks;
-                    }
-                    foreach (int vertex in group) positions[vertex] = best;
-                    if (accepted == null) continue;
-                    moves++;
-                    for (int v = 0; v < views.Count; v++) for (int i = 0; i < incident.Count; i++)
-                    {
-                        ReplaceCounts(buffers[v],incident[i],accepted[v][i],1);
-                        buffers[v].faces[incident[i]] = accepted[v][i];
+                        moves++;
+                        for (int v = 0; v < views.Count; v++) for (int i = 0; i < incident.Count; i++)
+                        {
+                            ReplaceCounts(buffers[v],incident[i],accepted[v][i],1);
+                            buffers[v].faces[incident[i]] = accepted[v][i];
+                        }
                     }
                 }
+                if (moves == 0) return null;
+                Check(cancelled);
+                var result = UnityEngine.Object.Instantiate(mesh);
+                try { result.vertices = positions; result.RecalculateBounds(); return result; }
+                catch { UnityEngine.Object.DestroyImmediate(result); throw; }
             }
-            if (moves == 0) return null;
-            Check(cancelled);
-            var result = UnityEngine.Object.Instantiate(mesh);
-            try { result.vertices = positions; result.RecalculateBounds(); return result; }
-            catch { UnityEngine.Object.DestroyImmediate(result); throw; }
+            finally { if (probe) UnityEngine.Object.DestroyImmediate(probe); }
         }
 
         sealed class CoverageBuffer
@@ -472,6 +500,7 @@ namespace SashaRX.UnityMeshLab
                 }
             }
             float error = union > 0 ? (float)(difference/union) : 0;
+            result.silhouetteViewErrors[view] = error;
             result.silhouetteMean += error/result.views; result.silhouetteMax = Mathf.Max(result.silhouetteMax,error);
             if (overlap > 0)
             {

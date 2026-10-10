@@ -228,6 +228,82 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.That(Vector3.Dot(Vector3.Cross(values[indices[f+1]]-values[indices[f]],values[indices[f+2]]-values[indices[f]]),Vector3.forward),Is.GreaterThan(0));
         }
         [Test]
+        public void FarSilhouetteRefitDoesNotHideOneBadViewOrMissingThinDetailsInTheAverage()
+        {
+            Assert.That(LodBudgetTriangleSimplifier.NeedsSilhouetteRefit(new LodScreenValidation.Report {
+                silhouetteMean = .098f,silhouetteMax = .235f }),Is.True);
+            Assert.That(LodBudgetTriangleSimplifier.NeedsSilhouetteRefit(new LodScreenValidation.Report {
+                silhouetteMean = .04f,silhouetteMax = .08f,detailLoss = .06f }),Is.True);
+            Assert.That(LodBudgetTriangleSimplifier.NeedsSilhouetteRefit(new LodScreenValidation.Report {
+                silhouetteMean = .04f,silhouetteMax = .08f,detailLoss = .01f }),Is.False);
+            Assert.That(LodBudgetTriangleSimplifier.NeedsSilhouetteRefit(null),Is.False);
+        }
+        [Test]
+        public void SilhouetteMoveColorToleranceIsBoundedPerChannelAndDoesNotPermitPaintOrUvLoss()
+        {
+            var before = new LodScreenValidation.Report { silhouetteMean = .1f,silhouetteMax = .2f,detailLoss = .1f,rgbaEvaluated = true,
+                rgbaViewRms = new[] { .05f },rgbaChannelViewRms = new[] { Vector4.one*.05f } };
+            var after = new LodScreenValidation.Report { silhouetteMean = .06f,silhouetteMax = .17f,detailLoss = .05f,rgbaEvaluated = true,
+                rgbaViewRms = new[] { .052f },rgbaChannelViewRms = new[] { Vector4.one*.052f } };
+            Assert.That(LodBudgetTriangleSimplifier.SilhouetteFieldsDoNotWorsen(after,before),Is.True);
+            after.rgbaChannelViewRms[0] = new Vector4(.052f,.052f,.052f,.06f);
+            Assert.That(LodBudgetTriangleSimplifier.SilhouetteFieldsDoNotWorsen(after,before),Is.False,"Alpha is a protected channel");
+            after.rgbaChannelViewRms[0] = Vector4.one*.052f; after.colorLoss = .01f;
+            Assert.That(LodBudgetTriangleSimplifier.SilhouetteFieldsDoNotWorsen(after,before),Is.False,"Paint loss cannot be traded for coverage");
+            after.colorLoss = 0; before.silhouetteViewErrors = new[] { .02f,.2f }; after.silhouetteViewErrors = new[] { .03f,.17f };
+            Assert.That(LodBudgetTriangleSimplifier.SilhouetteFieldsDoNotWorsen(after,before),Is.False,"A better average and maximum must not conceal a damaged top view");
+            var surface = new LodSurfaceValidation.Metrics { surfaceArea = 1,uvSquaredIntegral = .01,distanceSquaredIntegral = .01,distance = .2f };
+            var improved = surface; improved.distanceSquaredIntegral = .008;
+            Assert.That(LodBudgetTriangleSimplifier.SilhouetteSurfaceDoesNotWorsen(improved,surface),Is.True);
+            improved.uvSquaredIntegral = .02;
+            Assert.That(LodBudgetTriangleSimplifier.SilhouetteSurfaceDoesNotWorsen(improved,surface),Is.False,"Moving positions retains UV values but must also retain source UV correspondence");
+        }
+        [Test]
+        public void ColorlessOrUncheckedRefitDoesNotRequireMissingColorViews()
+        {
+            var before = new LodScreenValidation.Report(); var after = new LodScreenValidation.Report();
+            Assert.That(LodBudgetTriangleSimplifier.RefitColorViewsWithin(after,before),Is.True);
+            after.rgbaEvaluated = true;
+            Assert.That(LodBudgetTriangleSimplifier.RefitColorViewsWithin(after,before),Is.False);
+            before.rgbaEvaluated = true;
+            Assert.That(LodBudgetTriangleSimplifier.RefitColorViewsWithin(after,before),Is.False,"An evaluated color guide must have its actual view arrays");
+        }
+        [Test]
+        public void SilhouetteMovementCannotCreateAContactWithAPreviouslySeparateSheet()
+        {
+            var before = new[] { new Vector3(-1,0,-1),new Vector3(1,0,-1),new Vector3(0,0,1),
+                new Vector3(0,-2,-.5f),new Vector3(0,-1,.5f),new Vector3(0,-1,-.5f) };
+            var after = (Vector3[])before.Clone(); for (int i = 3; i < 6; i++) after[i] += Vector3.up*1.5f;
+            var indices = new[] { 0,1,2,3,4,5 }; var changed = new HashSet<int> { 1 };
+            Assert.That(LodTriangleIntersections.IntroducesContacts(before,after,indices,changed),Is.True);
+            Assert.That(LodTriangleIntersections.IntroducesContacts(after,after,indices,changed),Is.False,"Existing contacts are permitted");
+            Assert.That(LodTriangleIntersections.IntroducesContacts(before,before,indices,changed),Is.False);
+            Assert.Throws<System.OperationCanceledException>(() => LodTriangleIntersections.IntroducesContacts(before,after,indices,changed,() => true));
+            var crossed = (Vector3[])before.Clone(); for (int i = 3; i < 6; i++) crossed[i] += Vector3.up*4;
+            Assert.That(LodTriangleIntersections.IntroducesContacts(before,crossed,indices,changed),Is.False,"Both end poses are separate");
+            Assert.That(LodTriangleIntersections.MovesThroughFaces(new Vector3(0,-2,0),new Vector3(0,2,0),crossed,indices,changed),Is.True);
+            Assert.That(LodTriangleIntersections.MovesThroughFaces(new Vector3(0,0,0),new Vector3(0,2,0),crossed,indices,changed),Is.False,"Moving away from an existing contact is permitted");
+        }
+        [Test]
+        public void GuardedSilhouetteRefitRejectsMovesAndCleansUpItsProbeOnFailure()
+        {
+            var source = Panels(false); var target = Track(Object.Instantiate(source));
+            target.vertices = target.vertices.Select(p => p*.9f).ToArray(); target.RecalculateBounds();
+            target.name = "GuardedRefit_"+System.Guid.NewGuid().ToString("N");
+            var positions = target.vertices; var indices = target.triangles; var colors = target.colors;
+            var validation = new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            int checks = 0;
+            var rejected = validation.RefineSilhouette(target,out int moves,out int trials,acceptMove:proposal => {
+                checks++; CollectionAssert.AreEqual(indices,proposal.triangles); CollectionAssert.AreEqual(colors,proposal.colors);
+                return false;
+            });
+            Assert.That(rejected,Is.Null); Assert.That(moves,Is.Zero); Assert.That(trials,Is.GreaterThan(0)); Assert.That(checks,Is.GreaterThan(0));
+            CollectionAssert.AreEqual(positions,target.vertices);
+            Assert.Throws<System.InvalidOperationException>(() => validation.RefineSilhouette(target,out _,out _,
+                acceptMove:proposal => throw new System.InvalidOperationException("guard failure")));
+            Assert.That(Resources.FindObjectsOfTypeAll<Mesh>().Where(m => m.name.StartsWith(target.name)).ToArray(),Is.EqualTo(new[] {target}));
+        }
+        [Test]
         public void SilhouetteRefitPinsMaterialInterfacesAndCancelsWithoutAnOwnedMeshLeak()
         {
             var source = Panels(false); var target = Track(Object.Instantiate(source));

@@ -154,10 +154,28 @@ namespace SashaRX.UnityMeshLab
                         score = bestScore,distanceRms = metrics.DistanceRms,normalRms = metrics.NormalRms,colorRms = Maximum(metrics.ColorRms),
                         uvRms = metrics.UvRms,silhouetteMean = outline.mean,silhouetteMax = outline.maximum,screenQuality = bestScreen });
                 }
-                if (options.screenBudget && !settings.lockBorder && bestScreen.silhouetteMean > .1f &&
+                if (options.screenBudget && !settings.lockBorder && best.simplifiedTriCount <= 512 && screenPixels <= 128 && NeedsSilhouetteRefit(bestScreen) &&
                     source.blendShapeCount == 0 && !source.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.BlendWeight))
                 {
-                    var fitted = screen.RefineSilhouette(best.simplifiedMesh,out int moves,out int trials,cancelled);
+                    var verification = screen.WithAllSides(source,cancelled);
+                    var allBefore = verification.Measure(best.simplifiedMesh,cancelled);
+                    // A four-sample far pixel can miss narrow depth/coverage
+                    // changes. Verify the same proposal with a denser source
+                    // grid too; final ranking remains at the requested footprint.
+                    int densePixels = screenPixels*2;
+                    var denseVerification = new LodScreenValidation(source,!options.skipColorValidation,cancelled,
+                        resolution:densePixels+8,objectPixels:densePixels,measureFields:true,allSides:true);
+                    var denseBefore = denseVerification.Measure(best.simplifiedMesh,cancelled);
+                    bool AcceptMove(Mesh proposal)
+                    {
+                        var all = verification.Measure(proposal,cancelled);
+                        if (!GeometryDoesNotWorsen(all,allBefore) || !all.SilhouetteViewsDoNotWorsen(allBefore) || !RefitColorViewsWithin(all,allBefore)) return false;
+                        var dense = denseVerification.Measure(proposal,cancelled);
+                        if (!dense.SilhouetteViewsDoNotWorsen(denseBefore) || !dense.ColorsDoNotWorsen(denseBefore) || !RefitColorViewsWithin(dense,denseBefore)) return false;
+                        var surface = LodSurfaceValidation.MeasureMeshes(source,proposal,settings,cancelled,ignoreDegenerateFaces:true);
+                        return SilhouetteSurfaceDoesNotWorsen(surface,bestMetrics);
+                    }
+                    var fitted = screen.RefineSilhouette(best.simplifiedMesh,out int moves,out int trials,cancelled,AcceptMove);
                     try
                     {
                         if (fitted)
@@ -165,12 +183,11 @@ namespace SashaRX.UnityMeshLab
                             var measured = LodSurfaceValidation.MeasureMeshes(source,fitted,settings,cancelled,ignoreDegenerateFaces:true);
                             var local = screen.Measure(fitted,cancelled); var outline = Outline(null,fitted,local,cancelled);
                             float score = CandidateScore(measured,outline,local,settings,options);
-                            bool accept = score < bestScore && local.silhouetteMean <= bestScreen.silhouetteMean+1e-6f &&
-                                local.silhouetteMax <= bestScreen.silhouetteMax+1e-6f && local.detailLoss <= bestScreen.detailLoss+1e-6f && local.ColorsDoNotWorsen(bestScreen);
+                            bool accept = score < bestScore && SilhouetteFieldsDoNotWorsen(local,bestScreen) && AcceptMove(fitted);
                             reports.Add(new CandidateReport { variant = count+1,name = "screen silhouette refit",triangles = best.simplifiedTriCount,
                                 score = score,distanceRms = measured.DistanceRms,normalRms = measured.NormalRms,colorRms = Maximum(measured.ColorRms),
                                 uvRms = measured.UvRms,silhouetteMean = outline.mean,silhouetteMax = outline.maximum,screenQuality = local });
-                            shapeNote = $" Far silhouette refit {(accept ? "accepted" : "rejected")} ({moves} moves, {trials} local trials); fixed indices, ≤2px source-extent displacement, winding/material interfaces retained.";
+                            shapeNote = $" Far silhouette refit {(accept ? "accepted" : "rejected")} ({moves} moves, {trials} local trials); fixed indices, ≤2px source-extent displacement, winding/material interfaces retained. Each committed group retains twelve-view silhouette/detail/paint, worst RGBA/channel RMS and source surface distance/UV RMS; coverage and colors are additionally verified on a {densePixels}px source grid. Individual-view RGBA/channel increase capped at 1/255 against the initial candidate, without accumulating tolerance per move.";
                             if (accept)
                             {
                                 UnityEngine.Object.DestroyImmediate(best.simplifiedMesh); best.simplifiedMesh = fitted; fitted = null;
@@ -240,14 +257,21 @@ namespace SashaRX.UnityMeshLab
                 if (options.correctSurfaceAttributes && correction == null)
                 {
                     UvProgress.Report(UvProgress.Current.fraction,$"{source.name}: verify surface attribute correction");
+                    // Position correction changes visible correspondence. Fitting
+                    // only primary views can undo a verified reverse-view color
+                    // result, even while improving the primary guide.
+                    var correctionScreen = options.screenBudget && varyingColors ? screen.WithAllSides(source,cancelled) : options.screenBudget ? screen : null;
+                    var correctionBefore = correctionScreen?.Measure(best.simplifiedMesh,cancelled);
                     var corrected = LodAttributeCorrection.Correct(source,best.simplifiedMesh,settings,options,
-                        out correction,out var correctedMetrics,cancelled,bestMetrics,options.screenBudget ? screen : null);
+                        out correction,out var correctedMetrics,cancelled,bestMetrics,correctionScreen);
                     try
                     {
                         if (corrected)
                         {
                             var correctedScreen = screen?.Measure(corrected,cancelled);
-                            if (correctedScreen == null || correctedScreen.DoesNotWorsen(bestScreen,options.screenBudget))
+                            var allCorrected = correctionScreen?.Measure(corrected,cancelled);
+                            bool colorViewsRetained = allCorrected == null || allCorrected.ColorsDoNotWorsen(correctionBefore) && RefitColorViewsWithin(allCorrected,correctionBefore);
+                            if ((correctedScreen == null || correctedScreen.DoesNotWorsen(bestScreen,options.screenBudget)) && colorViewsRetained)
                             {
                                 UnityEngine.Object.DestroyImmediate(best.simplifiedMesh); best.simplifiedMesh = corrected; corrected = null;
                                 bestMetrics = correctedMetrics; bestScreen = correctedScreen;
@@ -259,7 +283,7 @@ namespace SashaRX.UnityMeshLab
                                 correction.normalRmsAfter = bestMetrics.NormalRms; correction.colorRmsAfter = bestMetrics.ColorRms;
                                 correction.normalMaxAfter = bestMetrics.authoredNormalAngle; correction.colorMaxAfter = bestMetrics.colorMax;
                                 correction.normalBlend = correction.colorBlend = 0; correction.regionNormalsAfter = correction.regionNormalsBefore;
-                                correction.note += " CPU screen guide rejected the attribute replacement: local detail/paint loss worsened; kept original candidate attributes.";
+                                correction.note += " CPU screen guides rejected the attribute replacement: primary detail/paint/fields or reverse-view RGBA worsened; kept original candidate attributes.";
                             }
                         }
                     }
@@ -448,6 +472,24 @@ namespace SashaRX.UnityMeshLab
             }
             finally { if (best.simplifiedMesh) UnityEngine.Object.DestroyImmediate(best.simplifiedMesh); }
         }
+
+        // A small average can hide a damaged frame in one view. Missing thin
+        // source regions also warrant a bounded, topology-preserving proposal.
+        internal static bool NeedsSilhouetteRefit(LodScreenValidation.Report report)
+            => report != null && (report.silhouetteMean > .1f || report.silhouetteMax > .2f || report.detailLoss > .05f);
+
+        internal static bool SilhouetteSurfaceDoesNotWorsen(LodSurfaceValidation.Metrics after,LodSurfaceValidation.Metrics before)
+            => !float.IsNaN(after.weightedError) && !float.IsInfinity(after.weightedError) &&
+                after.DistanceRms <= before.DistanceRms+1e-6f && after.distance <= before.distance+1e-6f &&
+                after.UvRms <= before.UvRms+1e-6f;
+
+        internal static bool SilhouetteFieldsDoNotWorsen(LodScreenValidation.Report after,LodScreenValidation.Report before)
+            => after.silhouetteMean <= before.silhouetteMean+1e-6f && after.silhouetteMax <= before.silhouetteMax+1e-6f &&
+                after.detailLoss <= before.detailLoss+1e-6f && after.SilhouetteViewsDoNotWorsen(before) && after.PaintViewsDoNotWorsen(before) &&
+                RefitColorViewsWithin(after,before);
+
+        internal static bool RefitColorViewsWithin(LodScreenValidation.Report after,LodScreenValidation.Report before)
+            => after.rgbaEvaluated == before.rgbaEvaluated && (!after.rgbaEvaluated || after.ColorViewsWithin(before,1f/255));
 
         internal static bool GeometryDoesNotWorsen(LodScreenValidation.Report after,LodScreenValidation.Report before)
             => after.silhouetteMean <= before.silhouetteMean+1e-6f && after.silhouetteMax <= before.silhouetteMax+1e-6f &&

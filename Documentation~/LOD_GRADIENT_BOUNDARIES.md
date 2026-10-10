@@ -6,6 +6,10 @@ and rechecks University bench Pot, SmallBench and the rainbow tent at 64px.
 The previous generated meshes are from `eeb6a0e`, recorded in
 [the shared-corner report](LOD_SHARED_PAINT_PATCHES.md).
 
+Vertex-color algorithm experiments are paused at this baseline. The subsequent
+[silhouette iteration](LOD_SILHOUETTE.md) improves SmallBench's frame at the same
+budget, rechecking both benches and the tent without changing their color buffers.
+
 ## Source guide
 
 Faces join a continuous color region only across a verified, oppositely directed

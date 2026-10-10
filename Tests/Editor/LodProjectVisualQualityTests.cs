@@ -268,6 +268,17 @@ namespace SashaRX.UnityMeshLab.Tests
                     var comparison = new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
                     foreach (var variant in variants) farComparisons[variant.name] = comparison.Measure(variant.mesh);
                     report.farAllSidesGuide = comparison.WithAllSides(source).Measure(variants.Single(v => v.name == "far-lod2").mesh);
+                    if (argsHave("-meshlabLodSilhouetteRegression"))
+                    {
+                        Assert.That(report.baselineFarAllSidesGuide,Is.Not.Null,"Supply -meshlabLodGuideBaseline for this regression");
+                        var before = report.baselineFarAllSidesGuide; var after = report.farAllSidesGuide;
+                        Assert.That(after.silhouetteMean,Is.LessThanOrEqualTo(before.silhouetteMean+1e-6f),model.name);
+                        Assert.That(after.silhouetteMax,Is.LessThanOrEqualTo(before.silhouetteMax+1e-6f),model.name);
+                        Assert.That(after.detailLoss,Is.LessThanOrEqualTo(before.detailLoss+1e-6f),model.name);
+                        Assert.That(after.SilhouetteViewsDoNotWorsen(before),Is.True,model.name+": individual silhouette views must also be retained");
+                        Assert.That(after.ColorsDoNotWorsen(before),Is.True,model.name+": final correction must retain worst channels and paint in reverse views");
+                        Assert.That(after.ColorViewsWithin(before,1f/255),Is.True,model.name+": the original allowance cannot accumulate through later correction stages");
+                    }
                 }
                 using var renderer = new LodVisualQualityTests.Renderer();
                 foreach (string view in new[] { "front", "oblique" })

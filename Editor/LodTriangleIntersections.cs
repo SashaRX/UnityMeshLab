@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
@@ -38,6 +39,40 @@ namespace SashaRX.UnityMeshLab
             var bounds = new Bounds(p[t[i]], Vector3.zero);
             bounds.Encapsulate(p[t[i + 1]]); bounds.Encapsulate(p[t[i + 2]]);
             return bounds;
+        }
+
+        // Preserve existing contacts without permitting a moved frame/patch to
+        // pass through a previously separate surface. Indices remain unchanged.
+        internal static bool IntroducesContacts(Vector3[] before,Vector3[] after,int[] indices,ISet<int> movedFaces,Func<bool> cancelled = null)
+        {
+            foreach (int face in movedFaces)
+            {
+                var bounds = TriangleBounds(after,indices,face*3);
+                for (int other = 0; other < indices.Length/3; other++)
+                {
+                    if (other%64 == 0 && cancelled?.Invoke() == true) throw new OperationCanceledException();
+                    if (other == face || other < face && movedFaces.Contains(other)) continue;
+                    if (bounds.Intersects(TriangleBounds(after,indices,other*3)) &&
+                        Overlap(after,indices,face*3,indices,other*3) && !Overlap(before,indices,face*3,indices,other*3)) return true;
+                }
+            }
+            return false;
+        }
+
+        // End poses can be separate even if a step tunneled through a thin seat.
+        internal static bool MovesThroughFaces(Vector3 from,Vector3 to,Vector3[] positions,int[] indices,ISet<int> incident,Func<bool> cancelled = null)
+        {
+            var sweep = new Bounds(from,Vector3.zero); sweep.Encapsulate(to);
+            for (int face = 0; face < indices.Length/3; face++)
+            {
+                if (face%64 == 0 && cancelled?.Invoke() == true) throw new OperationCanceledException();
+                if (incident.Contains(face) || !sweep.Intersects(TriangleBounds(positions,indices,face*3))) continue;
+                var a = positions[indices[face*3]]; var b = positions[indices[face*3+1]]; var c = positions[indices[face*3+2]];
+                var normal = Vector3.Cross(b-a,c-a).normalized;
+                float epsilon = Mathf.Max(Mathf.Max((b-a).magnitude,(c-a).magnitude)*1e-6f,1e-10f);
+                if (SegmentHits(from,to,a,b,c,normal,epsilon)) return true;
+            }
+            return false;
         }
 
         internal static bool Overlap(Vector3[] p, int[] a, int i, int[] b, int j)

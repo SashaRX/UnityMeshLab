@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from render_lod_vertex_color_models import coverage, display, errors, fields, ownership
+from render_lod_far_refinement import BACKGROUND
 
 
 def load(path):
@@ -23,6 +24,7 @@ def main():
     parser.add_argument('after', type=Path)
     parser.add_argument('dataset', type=Path)
     parser.add_argument('output', type=Path)
+    parser.add_argument('--silhouette', action='store_true', help='Compare silhouette masks and choose the worst prior coverage view')
     parser.add_argument('--supplement', type=Path, help='Completed rerun resolving every skipped test in the main run')
     args = parser.parse_args()
     test_root=ET.parse(args.after/'tests.xml').getroot()
@@ -64,9 +66,21 @@ def main():
             source, a = fields(args.after, name, 'source', view, sm)
             variants=[('before', args.before, 'far-lod2'), ('after', args.after, 'far-lod2')]
             if authored: variants.insert(0,('authored', args.after, 'authored-lod2'))
+            samples={}
             for label, directory, variant in variants:
                 target, b = fields(directory, name, variant, view, sm)
-                gpu.append({'view': view, 'variant': label, **errors(source, target, a, b)})
+                samples[label]=(target,b)
+                source_image=source*a[:,:,None]+BACKGROUND*(1-a[:,:,None])
+                target_image=target*b[:,:,None]+BACKGROUND*(1-b[:,:,None])
+                gpu.append({'view': view, 'variant': label, **errors(source, target, a, b),
+                            'imageRgbaRms':float(np.sqrt(np.mean((source_image-target_image)**2)))})
+            # Restored pixels change the conditional overlap set. Also compare
+            # color on the same source/before/after pixels and the full image.
+            common=np.minimum(a,np.minimum(samples['before'][1],samples['after'][1]))
+            for label in ('before','after'):
+                shared=errors(source,samples[label][0],common,common)
+                row=next(r for r in gpu if r['view']==view and r['variant']==label)
+                row['commonRgbaRms']=shared['rgbaRms']; row['commonRgbaChannelRms']=shared['rgbaChannelRms']
         meshes = [load(d/f'{name}-far-lod2-mesh.json') for d in (args.before, args.after)]
         assert len(meshes[1]['positions']) <= len(meshes[0]['positions'])
         assert len(meshes[1]['slots']) == new['submeshes']
@@ -77,6 +91,9 @@ def main():
             samples = [r for r in gpu if r['variant'] == variant]
             if not samples: continue
             summary[variant] = {
+                'meanImageRgba': float(np.mean([r['imageRgbaRms'] for r in samples])),
+                'worstImageRgba': max(r['imageRgbaRms'] for r in samples),
+                'meanCoverage': float(np.mean([r['coverageError'] for r in samples])),
                 'meanRgba': float(np.mean([r['rgbaRms'] for r in samples])),
                 'worstRgba': max(r['rgbaRms'] for r in samples),
                 'worstCoverage': max(r['coverageError'] for r in samples),
@@ -87,6 +104,7 @@ def main():
                                      'before': rows[0]['far-lod2']['triangles'],
                                      'after': rows[1]['far-lod2']['triangles']},
                        'vertices': [len(m['positions']) for m in meshes],
+                       'retainedBuffers': {key:meshes[0][key]==meshes[1][key] for key in ('colors','uvs','slots','tangents')},
                        'farGenerateMs': [r['far-lod2']['simplifyMs'] for r in rows],
                        'nearTriangles': [r['far-lod1']['triangles'] for r in rows],
                        'cpu64': [r['far-lod2']['farComparison'] for r in rows],
@@ -94,11 +112,28 @@ def main():
                        'beforeAllSidesUnderCurrentGuide': new.get('baselineFarAllSidesGuide'),
                        'afterAllSidesUnderCurrentGuide': new.get('farAllSidesGuide'),
                        'attributeFit': rows[1]['far-lod2']['attributeFit'],
+                       'selection': rows[1]['far-lod2']['reductionNote'],
+                       'candidates': rows[1]['far-lod2']['budgetCandidates'],
                        'ownership': [ownership(m) for m in meshes],
                        'summary': summary, 'gpu64': gpu})
+        if args.silhouette:
+            assert summary['after']['meanCoverage'] <= summary['before']['meanCoverage']+1e-6, name
+            assert summary['after']['worstCoverage'] <= summary['before']['worstCoverage']+1e-6, name
+            assert summary['after']['worstRgba'] <= summary['before']['worstRgba']+1e-6, name
+            assert summary['after']['meanImageRgba'] <= summary['before']['meanImageRgba']+1e-6, name
+            assert summary['after']['worstImageRgba'] <= summary['before']['worstImageRgba']+1e-6, name
+            for view in views:
+                before,after=[next(r for r in gpu if r['variant']==v and r['view']==view) for v in ('before','after')]
+                assert after['coverageError'] <= before['coverageError']+1/255+1e-6, (name,view,'coverage')
+                assert after['imageRgbaRms'] <= before['imageRgbaRms']+1/255+1e-6, (name,view,'full image')
+                assert after['commonRgbaRms'] <= before['commonRgbaRms']+1/255+1e-6, (name,view,'same-pixel RGBA')
+                assert all(a <= b+1/255+1e-6 for a,b in zip(after['commonRgbaChannelRms'],before['commonRgbaChannelRms'])), (name,view,'same-pixel channel')
+            for metric in ('sourceDistanceRms','sourceDistance','uvRms'):
+                assert rows[1]['far-lod2'][metric] <= rows[0]['far-lod2'][metric]+1e-6, (name,metric)
     fig, axes = plt.subplots(len(models)*3, 4, figsize=(13, len(models)*8), squeeze=False)
     for i, model in enumerate(models):
-        worst = max((r for r in model['gpu64'] if r['variant'] == 'before'), key=lambda r: r['rgbaRms'])['view']
+        worst = max((r for r in model['gpu64'] if r['variant'] == 'before'),
+                    key=lambda r: r['coverageError' if args.silhouette else 'rgbaRms'])['view']
         for j, view in enumerate(('front', 'oblique', worst)):
             sm = coverage(args.after, model['fixture'], 'source', view)
             variants = [('LOD0', args.after, 'source', model['sourceTriangles']),
@@ -119,6 +154,50 @@ def main():
     fig.text(.5, .008, 'Diagnostic fields; original materials and baked lightmaps not evaluated. Authored budget differs.', ha='center')
     args.output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(str(args.output)+'_MODELS.png', dpi=130); plt.close(fig)
+    if args.silhouette:
+        fig, axes = plt.subplots(len(models)*3, 4, figsize=(13, len(models)*8), squeeze=False)
+        for i, model in enumerate(models):
+            name=model['fixture']
+            worst=max((r for r in model['gpu64'] if r['variant']=='before'),key=lambda r:r['coverageError'])['view']
+            for j,view in enumerate(('front','oblique',worst)):
+                sm=coverage(args.after,name,'source',view)
+                _,source=fields(args.after,name,'source',view,sm)
+                columns=[('LOD0',args.after,'source'),('Before',args.before,'far-lod2'),('After',args.after,'far-lod2')]
+                for col,(label,directory,variant) in enumerate(columns):
+                    _,mask=fields(directory,name,variant,view,sm)
+                    axes[i*3+j,col].imshow(np.flipud(mask),cmap='gray',vmin=0,vmax=1,interpolation='nearest')
+                    axes[i*3+j,col].set_title(label)
+                _,mask=fields(args.after,name,'far-lod2',view,sm)
+                error=np.stack((np.maximum(source-mask,0),np.minimum(source,mask)*.65,np.maximum(mask-source,0)),axis=-1)
+                axes[i*3+j,3].imshow(np.flipud(error),interpolation='nearest'); axes[i*3+j,3].set_title('After versus source')
+                axes[i*3+j,0].set_ylabel(name+'\n'+view)
+                for axis in axes[i*3+j]: axis.set_xticks([]); axis.set_yticks([])
+        fig.suptitle('Actual GPU silhouette at 64px: red = missing, blue = excess, green = overlap',y=.995)
+        fig.tight_layout(rect=(0,.02,1,.975))
+        fig.text(.5,.008,'Front, oblique and worst previous coverage view; source framing and 1/9 budget retained.',ha='center')
+        fig.savefig(str(args.output)+'_SILHOUETTE.png',dpi=130); plt.close(fig)
+        fig,axes=plt.subplots(1,3,figsize=(15,5))
+        labels=[m['fixture'] for m in models]; x=np.arange(len(models))
+        for axis,metric,title in zip(axes,('meanCoverage','worstCoverage','worstAlpha'),
+                                    ('Mean silhouette mismatch','Worst silhouette mismatch','Worst alpha RMS')):
+            for n,variant in enumerate(('authored','before','after')):
+                values=[m['summary'].get(variant,{}).get(metric,np.nan) for m in models]
+                bars=axis.bar(x+(n-1)*.25,values,.25,label=variant)
+                for bar,value in zip(bars,values):
+                    if np.isfinite(value): axis.text(bar.get_x()+bar.get_width()/2,value,f'{value:.4g}',ha='center',va='bottom',fontsize=8,rotation=90)
+            axis.set_xticks(x,labels,rotation=15); axis.set_title(title+' · 14 GPU views'); axis.grid(axis='y',alpha=.2); axis.margins(y=.22)
+        axes[0].legend(); fig.tight_layout(); fig.savefig(str(args.output)+'_COVERAGE.png',dpi=130); plt.close(fig)
+        fig,axes=plt.subplots(len(models),3,figsize=(16,len(models)*3.2),squeeze=False)
+        for i,model in enumerate(models):
+            for axis,metric,title in zip(axes[i],('coverageError','commonRgbaRms','imageRgbaRms'),
+                                        ('Silhouette mismatch','RGBA RMS on identical visible pixels','Full diagnostic RGBA image RMS')):
+                for label in ('before','after'):
+                    samples=[r for r in model['gpu64'] if r['variant']==label]
+                    axis.plot(np.arange(len(views)),[r[metric] for r in samples],marker='.',label=label)
+                axis.set_xticks(np.arange(len(views)),views,rotation=60,fontsize=7)
+                axis.set_title(model['fixture']+' · '+title,fontsize=9); axis.grid(alpha=.2)
+            axes[i,0].legend()
+        fig.tight_layout(); fig.savefig(str(args.output)+'_VIEWS.png',dpi=130); plt.close(fig)
     fig, axes = plt.subplots(len(models), 4, figsize=(13, len(models)*3), squeeze=False)
     for i, model in enumerate(models):
         view='field1'
@@ -177,6 +256,7 @@ def main():
     report = {'tests': test, 'supplementaryTests': supplement, 'distinctPassedTests': len(passed),
               'before': str(args.before), 'after': str(args.after), 'models': models,
               'scope': 'Same FBX bytes, identical source/authored GPU controls, 14 views, source extent 64px.',
+              'colorComparisonScope': 'Conditional overlap RMS is retained. Common RMS uses the identical source/before/after overlap set; full-image RMS includes lost or excess coverage on the fixed diagnostic background.',
               'gradientRegionScope': 'High-contrast pairs >=0.15; at least four pairs per region. No gradientViews means unmeasured regional ramps, not zero color error.'}
     Path(str(args.output)+'_RESULTS.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
     print(json.dumps([{k: m[k] for k in ('fixture', 'triangles', 'vertices', 'summary')} for m in models], indent=2))
