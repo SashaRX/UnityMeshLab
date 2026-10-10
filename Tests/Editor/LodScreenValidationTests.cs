@@ -104,6 +104,36 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(new LodScreenValidation.Report { detailLoss = .49f,colorLoss = 1.01f }.DoesNotWorsen(loss),Is.False);
         }
         [Test]
+        public void VisibleFieldsMeasureNormalColorAndSilhouetteErrorsAtFarSize()
+        {
+            var source = Panels(false); var target = Track(Object.Instantiate(source));
+            var validation = new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            var self = validation.Measure(target);
+            Assert.That(self.silhouetteMax,Is.Zero); Assert.That(self.normalRms,Is.Zero); Assert.That(self.rgbaRms,Is.Zero);
+            target.normals = Enumerable.Repeat(Vector3.right,target.vertexCount).ToArray();
+            target.colors = Enumerable.Repeat(Color.green,target.vertexCount).ToArray();
+            var changed = validation.Measure(target);
+            Assert.That(changed.normalRms,Is.GreaterThan(89)); Assert.That(changed.rgbaRms,Is.GreaterThan(.5f));
+            Assert.That(changed.silhouetteMean,Is.Zero); Assert.That(changed.ScreenScore(1,1),Is.GreaterThan(self.ScreenScore(1,1)));
+            Assert.That(changed.DoesNotWorsen(self,true),Is.False);
+            target.vertices = target.vertices.Select(v => v*.5f).ToArray(); target.RecalculateBounds();
+            Assert.That(validation.Measure(target).silhouetteMean,Is.GreaterThan(.5f));
+        }
+        [Test]
+        public void FarBudgetUsesUnprotectedCandidatesAndMeasuresAllVariantsAt64Pixels()
+        {
+            var source = Panels(false); var positions = source.vertices; var colors = source.colors;
+            var result = LodBudgetTriangleSimplifier.Simplify(source,new MeshSimplifier.SimplifySettings {
+                targetRatio = .5f,targetError = .3f,normalWeight = 1,colorWeight = 1,preserveHardEdges = true },
+                new LodPipelineOps.Options { screenBudget = true,candidateCount = 3 },out var diagnostics,out string note,null);
+            Track(result.simplifiedMesh); Assert.That(result.ok,Is.True,result.error);
+            Assert.That(result.simplifiedTriCount,Is.LessThanOrEqualTo(2));
+            Assert.That(diagnostics.screenQuality.objectPixels,Is.EqualTo(64));
+            Assert.That(diagnostics.budgetCandidates.All(c => c.screenQuality.normalsEvaluated && c.screenQuality.objectPixels == 64),Is.True);
+            Assert.That(note,Does.Contain("Far screen budget"));
+            CollectionAssert.AreEqual(positions,source.vertices); CollectionAssert.AreEqual(colors,source.colors);
+        }
+        [Test]
         public void BudgetGenerationMeasuresEveryVariantAndKeepsTheSourceUntouched()
         {
             var source = Panels(); var positions = source.vertices; var colors = source.colors;

@@ -150,7 +150,12 @@ namespace SashaRX.UnityMeshLab.Tests
                 bool budgetOnly = Environment.GetCommandLineArgs().Contains("-meshlabLodBudget");
                 if (budgetOnly)
                 {
-                    if (argsHave("-meshlabLodScreenGuided"))
+                    if (argsHave("-meshlabLodFarBudget"))
+                    {
+                        Generate(source,LodReductionMode.Triangles,3,"native",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true,coarsenHardEdgeChains:true,nativeHardEdgeConstraints:true);
+                        Generate(source,LodReductionMode.Triangles,3,"far",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true,coarsenHardEdgeChains:true,nativeHardEdgeConstraints:true,screenGuided:true,farScreenBudget:true);
+                    }
+                    else if (argsHave("-meshlabLodScreenGuided"))
                     {
                         Generate(source,LodReductionMode.Triangles,3,"native",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true,coarsenHardEdgeChains:true,nativeHardEdgeConstraints:true);
                         Generate(source,LodReductionMode.Triangles,3,"guided",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true,coarsenHardEdgeChains:true,nativeHardEdgeConstraints:true,screenGuided:true);
@@ -220,6 +225,12 @@ namespace SashaRX.UnityMeshLab.Tests
                 Matrix4x4 matrix = Matrix4x4.Rotate(Quaternion.Euler(model.rotation)) * Matrix4x4.Scale(Vector3.one*scale)
                     * Matrix4x4.Translate(-source.bounds.center);
                 Texture albedo = string.IsNullOrEmpty(model.albedo) ? null : AssetDatabase.LoadAssetAtPath<Texture>(model.albedo);
+                var farComparisons = new Dictionary<string,LodScreenValidation.Report>();
+                if (argsHave("-meshlabLodFarBudget"))
+                {
+                    var comparison = new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+                    foreach (var variant in variants) farComparisons[variant.name] = comparison.Measure(variant.mesh);
+                }
                 using var renderer = new LodVisualQualityTests.Renderer();
                 foreach (string view in new[] { "front", "oblique" })
                 {
@@ -259,14 +270,16 @@ namespace SashaRX.UnityMeshLab.Tests
                         capture.silhouetteMean = variant.info.silhouetteMean; capture.silhouetteMax = variant.info.silhouetteMax;
                         capture.selectionScore = variant.info.selectionScore; capture.nativeProbes = variant.info.nativeProbes;
                         capture.screenQuality = variant.info.screenQuality;
+                        if (farComparisons.TryGetValue(variant.name,out var farComparison)) capture.farComparison = farComparison;
                         if (argsHave("-meshlabLodHardEdges"))
                         {
-                            var features = variant.name.StartsWith("chains-") || variant.name.StartsWith("native-") || variant.name.StartsWith("matched-") || variant.name.StartsWith("guided-") ? variant.info.hardEdges : new LodHardEdges(source).Measure(variant.mesh);
+                            var features = variant.name.StartsWith("chains-") || variant.name.StartsWith("native-") || variant.name.StartsWith("matched-") || variant.name.StartsWith("guided-") || variant.name.StartsWith("far-") ? variant.info.hardEdges : new LodHardEdges(source).Measure(variant.mesh);
                             capture.hardEdges = features.edges; capture.missingHardEdges = features.missingEdges;
                             capture.protectedTriangles = features.protectedTriangles; capture.missingProtectedTriangles = features.missingFaces;
                             capture.patchInterfaces = features.interfaces; capture.missingPatchInterfaces = features.missingInterfaces;
                             capture.ambiguousFeatureEdges = features.ambiguousEdges;
                             capture.hardEdgeSourceFallback = variant.info.hardEdges?.sourceFallback ?? false;
+                            capture.screenBudgetRelaxed = variant.info.hardEdges?.screenBudgetRelaxed ?? false;
                             capture.coarsenedFeaturePoints = features.coarsenedPoints; capture.coarsenedFeatureTriangles = features.coarsenedTriangles;
                             capture.nativeCreaseConstraints = features.nativeConstraints; capture.lockedChainRetry = features.lockedChainRetry;
                             capture.nativeBeltFallback = features.beltFallback;
@@ -315,7 +328,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         static void Generate(Mesh source,LodReductionMode mode,int candidates,string prefix,
-            List<(string name, Mesh mesh, LodPipelineOps.LodInfo info, double ms)> variants,List<Mesh> generated,bool uncheckedColors = false,bool relaxedFar = false,bool pruneParts = false,bool correctAttributes = false,bool preserveHardEdges = false,bool coarsenHardEdgeChains = false,bool nativeHardEdgeConstraints = false,float[] requestedRatios = null,bool screenGuided = false)
+            List<(string name, Mesh mesh, LodPipelineOps.LodInfo info, double ms)> variants,List<Mesh> generated,bool uncheckedColors = false,bool relaxedFar = false,bool pruneParts = false,bool correctAttributes = false,bool preserveHardEdges = false,bool coarsenHardEdgeChains = false,bool nativeHardEdgeConstraints = false,float[] requestedRatios = null,bool screenGuided = false,bool farScreenBudget = false)
         {
             var root = new GameObject("ProjectLODPreview");
             try
@@ -337,6 +350,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     options.coarsenHardEdgeChains = coarsenHardEdgeChains;
                     options.nativeHardEdgeConstraints = nativeHardEdgeConstraints;
                     options.screenGuidedSelection = screenGuided;
+                    options.farScreenBudget = farScreenBudget;
                     options.featureChainError = coarsenHardEdgeChains ? .005f : 0;
                 }
                 if (relaxedFar)
@@ -371,7 +385,7 @@ namespace SashaRX.UnityMeshLab.Tests
                             Assert.That(info.evaluatedCandidates,Is.EqualTo(candidates+(info.budgetCandidates?.Any(c => c.name == "previous protected source candidate") == true ? 1 : 0)));
                         Assert.That(float.IsNaN(info.selectionScore) || float.IsInfinity(info.selectionScore),Is.False,
                             "Visible real project models require a finite quality ranking: "+source.name);
-                        if (!preserveHardEdges) Assert.That(info.simplifiedTris,Is.LessThanOrEqualTo(info.targetTris),$"{source.name}/LOD{info.lodLevel}: failed requested 3x budget");
+                        if (!preserveHardEdges || farScreenBudget && info.lodLevel >= 2) Assert.That(info.simplifiedTris,Is.LessThanOrEqualTo(info.targetTris),$"{source.name}/LOD{info.lodLevel}: failed requested 3x budget");
                         else
                         {
                             Assert.That(info.hardEdges.Valid,Is.True);

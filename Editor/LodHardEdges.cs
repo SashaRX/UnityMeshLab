@@ -17,10 +17,12 @@ namespace SashaRX.UnityMeshLab
             public int missingEdges, missingFaces, missingInterfaces;
             public bool sourceFallback;
             public bool nativeConstraints, lockedChainRetry, beltFallback;
+            public bool screenBudgetRelaxed;
             internal bool Valid => missingEdges == 0 && missingFaces == 0 && missingInterfaces == 0;
             internal string Note => $"Hard-edge coverage: {edges-missingEdges}/{edges}; protected faces {protectedTriangles}, " +
                 $"ambiguous edges {ambiguousEdges}, patch interfaces {interfaces-missingInterfaces}/{interfaces}." +
                 (coarsenedPoints > 0 ? $" Coarsened {coarsenedPoints} points; feature deviation ≤{featureDeviation:P2} of source diagonal, endpoint normal guide {featureNormalAngle:F1}°." : "") +
+                (screenBudgetRelaxed ? " Far screen budget: exact crease/face coverage is diagnostic; silhouette, normals and RGBA are ranked at the object footprint." : "") +
                 (nativeConstraints ? " Direct native constraints; only ambiguous faces remain frozen." : "") +
                 (lockedChainRetry ? " Retried with all crease vertices locked." : "") +
                 (beltFallback ? " Native coverage rejected both attempts; used strict incident-face protection." : "") +

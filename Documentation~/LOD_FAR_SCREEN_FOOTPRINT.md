@@ -69,6 +69,11 @@ not reproduce the project's cameras, shaders or packed material maps.
 
 ## Remaining work
 
+The subsequent [far triangle-budget profile](LOD_FAR_TRIANGLE_BUDGET.md) now
+reaches approximately 1/9 on all eight project models by relaxing exact far-LOD
+crease/face protection and ranking visible fields at this footprint. Its measured
+losses and remaining fidelity work supersede the count limitation below.
+
 Screen size alone does not remove the protected-geometry floor or produce a
 better geometric candidate. Continue with geometry variants that simplify
 neighboring patches without locking entire face belts, evaluated at the far

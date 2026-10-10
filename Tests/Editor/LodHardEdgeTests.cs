@@ -53,6 +53,36 @@ namespace SashaRX.UnityMeshLab.Tests
             if (result.simplifiedMesh) Track(result.simplifiedMesh);
             Assert.That(result.ok,Is.True,result.error); return result;
         }
+        [TestCase(false)] [TestCase(true)]
+        public void FarScreenBudgetRelaxesFaceBeltButHonorsExplicitBorderLocks(bool lockBorder)
+        {
+            var source = Fold(true,true,true); var original = source.vertices; var normals = source.normals;
+            var root = new GameObject("FarCreaseBudget");
+            try
+            {
+                root.AddComponent<MeshFilter>().sharedMesh = source; root.AddComponent<MeshRenderer>();
+                var ctx = new UvToolContext(); ctx.Refresh(LodGenerationTool.CreateLodGroupFromRenderers(root));
+                var result = LodPipelineOps.Generate(ctx,1,new LodPipelineOps.Options {
+                    count = 2,ratios = new[] {1f/3,1f/9},targetError = .3f,candidateCount = 3,
+                    reductionMode = LodReductionMode.Triangles,prioritizeTriangleBudget = true,
+                    preserveHardEdges = true,farScreenBudget = true,normalWeight = .5f,lockBorder = lockBorder });
+                foreach (var go in result.generatedObjects) Track(go.GetComponent<MeshFilter>().sharedMesh);
+                Assert.That(result.ok,Is.True,result.error);
+                Assert.That(result.perLod[0].hardEdges.Valid,Is.True);
+                var far = result.perLod[1];
+                Assert.That(far.hardEdges.screenBudgetRelaxed,Is.True); Assert.That(far.hardEdges.sourceFallback,Is.False);
+                Assert.That(far.screenQuality.objectPixels,Is.EqualTo(64)); Assert.That(far.screenQuality.normalsEvaluated,Is.True);
+                Assert.That(result.generatedObjects[1].GetComponent<MeshFilter>().sharedMesh.subMeshCount,Is.EqualTo(2));
+                if (lockBorder) Assert.That(far.targetNotReached,Is.True,"An explicit border lock is never silently removed to force the count.");
+                else
+                {
+                    Assert.That(far.simplifiedTris,Is.LessThanOrEqualTo(far.targetTris));
+                    Assert.That(far.hardEdges.missingFaces,Is.GreaterThan(0),"Exact face-belt coverage must not restore the source.");
+                }
+                CollectionAssert.AreEqual(original,source.vertices); CollectionAssert.AreEqual(normals,source.normals);
+            }
+            finally { Object.DestroyImmediate(root); }
+        }
         [Test] public void NativeConstraintsReleaseIncidentBeltAndPreserveBothShadingSides()
         {
             var source = Fold(true,true); var original = source.vertices; var indices = source.triangles;

@@ -37,6 +37,7 @@ namespace SashaRX.UnityMeshLab.Tests
             public int patchInterfaces, missingPatchInterfaces, ambiguousFeatureEdges;
             public int coarsenedFeaturePoints, coarsenedFeatureTriangles;
             public bool hardEdgeSourceFallback;
+            public bool screenBudgetRelaxed;
             public bool nativeCreaseConstraints, lockedChainRetry, nativeBeltFallback;
             public bool normalsCorrected, colorsCorrected;
             public string correctionNote;
@@ -47,6 +48,7 @@ namespace SashaRX.UnityMeshLab.Tests
             public List<BudgetCandidate> budgetCandidates;
             [SerializeField] internal List<LodScreenAcceptance.Report> screenAcceptance;
             [SerializeField] internal LodScreenValidation.Report screenQuality;
+            [SerializeField] internal LodScreenValidation.Report farComparison;
             public int removedParts, removedPartTris;
             public float removedPartAreaFraction, removedPartMaxPixels;
         }

@@ -17,8 +17,14 @@ namespace SashaRX.UnityMeshLab
             public int objectPixels, resolution;
             public float detailLoss, colorLoss;
             public bool detailAccepted, colorAccepted;
+            public bool normalsEvaluated, rgbaEvaluated;
+            public float silhouetteMean, silhouetteMax, normalRms, rgbaRms;
             internal float Penalty(float colorWeight) => 4*(detailLoss+colorLoss*Mathf.Max(0,colorWeight));
-            internal bool DoesNotWorsen(Report before) => detailLoss <= before.detailLoss+1e-6f && colorLoss <= before.colorLoss+1e-6f;
+            internal float ScreenScore(float normalWeight,float colorWeight) => silhouetteMean/.05f+silhouetteMax/.2f+
+                normalRms/30*Mathf.Max(0,normalWeight)+rgbaRms/.1f*Mathf.Max(0,colorWeight)+Penalty(colorWeight);
+            internal bool DoesNotWorsen(Report before,bool fields = false) => detailLoss <= before.detailLoss+1e-6f && colorLoss <= before.colorLoss+1e-6f &&
+                (!fields || silhouetteMean <= before.silhouetteMean+1e-6f && silhouetteMax <= before.silhouetteMax+1e-6f &&
+                    normalRms <= before.normalRms+1e-6f && rgbaRms <= before.rgbaRms+1e-6f);
         }
         sealed class View
         {
@@ -26,30 +32,37 @@ namespace SashaRX.UnityMeshLab
             internal Vector2 center;
             internal float pixelsPerUnit;
             internal LodScreenAcceptance acceptance;
+            internal Frame source;
         }
         sealed class Frame
         {
             internal readonly Color[] colors, coverage;
-            internal Frame(int size) { colors = new Color[size*size]; coverage = new Color[size*size]; }
+            internal readonly Vector3[] normals;
+            internal Frame(int size,bool fields) { colors = new Color[size*size]; coverage = new Color[size*size]; normals = fields ? new Vector3[size*size] : null; }
         }
         readonly List<View> views = new List<View>();
         readonly Matrix4x4 transform;
         readonly Vector3 origin;
         readonly int resolution;
         readonly int objectPixels;
+        readonly bool measureFields, checkColors, hasNormals;
 
         // pixelsPerUnit=0 fits the mesh at a fixed diagnostic footprint. A positive
         // value checks removal at the LODGroup transition's estimated screen size.
         internal LodScreenValidation(Mesh source,bool colors,Func<bool> cancelled = null,
-            Matrix4x4? transform = null,float pixelsPerUnit = 0,int resolution = Size,int objectPixels = 0)
+            Matrix4x4? transform = null,float pixelsPerUnit = 0,int resolution = Size,int objectPixels = 0,bool measureFields = false)
         {
             if (resolution < 32 || resolution > 1024) throw new ArgumentException("LOD screen resolution must be between 32 and 1024.");
             if (objectPixels < 0 || objectPixels > resolution-8) throw new ArgumentException("Object footprint must fit inside the screen preview padding.");
             this.resolution = resolution;
             this.objectPixels = objectPixels > 0 ? objectPixels : resolution-8;
             this.transform = transform ?? Matrix4x4.identity;
+            this.measureFields = measureFields;
+            checkColors = colors && source.colors.Length == source.vertexCount;
+            hasNormals = source.normals.Length == source.vertexCount;
             origin = source.bounds.center;
             var positions = Positions(source); var triangles = Triangles(source); var rgba = Colors(source);
+            var sourceNormals = Normals(source);
             bool varying = colors && HasVariation(rgba);
             foreach (var direction in Directions)
             {
@@ -67,7 +80,8 @@ namespace SashaRX.UnityMeshLab
                 float fit = this.objectPixels/Mathf.Max(extent,1e-7f);
                 var view = new View { horizontal = horizontal,vertical = vertical,normal = normal,
                     center = (minimum+maximum)*.5f,pixelsPerUnit = pixelsPerUnit > 0 ? Mathf.Min(fit,pixelsPerUnit) : fit };
-                var frame = Rasterize(positions,triangles,rgba,view,resolution,cancelled);
+                var frame = Rasterize(positions,triangles,rgba,sourceNormals,view,resolution,cancelled,measureFields);
+                if (measureFields) view.source = frame;
                 var settings = LodScreenAcceptance.Settings.Default; settings.checkColorBoundaries = varying;
                 view.acceptance = new LodScreenAcceptance(frame.colors,frame.coverage,resolution,resolution,settings,cancelled);
                 views.Add(view);
@@ -77,10 +91,13 @@ namespace SashaRX.UnityMeshLab
         internal Report Measure(Mesh mesh,Func<bool> cancelled = null)
         {
             var positions = Positions(mesh); var triangles = Triangles(mesh); var colors = Colors(mesh);
-            var result = new Report { views = views.Count,detailAccepted = true,objectPixels = objectPixels,resolution = resolution };
+            var normals = Normals(mesh);
+            var result = new Report { views = views.Count,detailAccepted = true,objectPixels = objectPixels,resolution = resolution,
+                normalsEvaluated = measureFields && hasNormals,rgbaEvaluated = measureFields && checkColors };
             foreach (var view in views)
             {
-                var frame = Rasterize(positions,triangles,colors,view,resolution,cancelled);
+                var frame = Rasterize(positions,triangles,colors,normals,view,resolution,cancelled,measureFields);
+                if (measureFields) MeasureFields(view.source,frame,result,cancelled);
                 var report = view.acceptance.Measure(frame.colors,frame.coverage,cancelled);
                 if (report.detailEvaluated) result.detailViews++;
                 if (report.colorEvaluated) result.colorViews++;
@@ -91,6 +108,39 @@ namespace SashaRX.UnityMeshLab
             result.colorAccepted = result.colorViews > 0 && result.colorLoss <= .25f;
             result.detailAccepted &= result.detailViews > 0;
             return result;
+        }
+        static void MeasureFields(Frame source,Frame target,Report result,Func<bool> cancelled)
+        {
+            double union = 0, difference = 0, overlap = 0, normalSquared = 0, colorSquared = 0;
+            for (int i = 0; i < source.colors.Length; i++)
+            {
+                if (i%1024 == 0) Check(cancelled);
+                float a = source.coverage[i].r, b = target.coverage[i].r;
+                union += Mathf.Max(a,b); difference += Mathf.Abs(a-b);
+                float weight = Mathf.Min(a,b); if (weight <= 0) continue;
+                overlap += weight;
+                if (result.normalsEvaluated)
+                {
+                    var n = source.normals[i]; var m = target.normals[i];
+                    float angle = n.sqrMagnitude > .5f && m.sqrMagnitude > .5f ? Vector3.Angle(n,m) : (n-m).sqrMagnitude > .5f ? 180 : 0;
+                    normalSquared += weight*angle*angle;
+                }
+                if (result.rgbaEvaluated) { Vector4 delta = source.colors[i]-target.colors[i]; colorSquared += weight*delta.sqrMagnitude/4; }
+            }
+            float error = union > 0 ? (float)(difference/union) : 0;
+            result.silhouetteMean += error/result.views; result.silhouetteMax = Mathf.Max(result.silhouetteMax,error);
+            if (overlap > 0)
+            {
+                result.normalRms = Mathf.Max(result.normalRms,(float)Math.Sqrt(normalSquared/overlap));
+                result.rgbaRms = Mathf.Max(result.rgbaRms,(float)Math.Sqrt(colorSquared/overlap));
+            }
+        }
+        Vector3[] Normals(Mesh mesh)
+        {
+            if (!measureFields) return Array.Empty<Vector3>();
+            var values = mesh.normals; var matrix = transform.inverse.transpose;
+            for (int i = 0; i < values.Length; i++) values[i] = matrix.MultiplyVector(values[i]).normalized;
+            return values;
         }
         Vector3[] Positions(Mesh mesh)
         {
@@ -114,7 +164,7 @@ namespace SashaRX.UnityMeshLab
             for (int s = 0; s < mesh.subMeshCount; s++) indices.AddRange(LodMeshData.Triangles(mesh,s));
             return indices.ToArray();
         }
-        static Frame Rasterize(Vector3[] positions,int[] indices,Color[] colors,View view,int size,Func<bool> cancelled)
+        static Frame Rasterize(Vector3[] positions,int[] indices,Color[] colors,Vector3[] normals,View view,int size,Func<bool> cancelled,bool fields)
         {
             var projected = new Vector3[positions.Length];
             for (int i = 0; i < positions.Length; i++) projected[i] = new Vector3(
@@ -123,6 +173,7 @@ namespace SashaRX.UnityMeshLab
                 Vector3.Dot(positions[i],view.normal));
             // Four subpixel samples distinguish fully covered paint interiors from borders.
             var depth = new float[size*size*4]; var samples = new Color[depth.Length];
+            var normalSamples = fields ? new Vector3[depth.Length] : null;
             for (int i = 0; i < depth.Length; i++) depth[i] = float.NegativeInfinity;
             bool painted = colors.Length == positions.Length;
             for (int t = 0; t < indices.Length; t += 3)
@@ -147,16 +198,20 @@ namespace SashaRX.UnityMeshLab
                         float z = u*a.z+v*b.z+w*c.z; int index = (y*size+x)*4+sample;
                         if (z <= depth[index]) continue;
                         depth[index] = z; samples[index] = painted ? colors[ia]*u+colors[ib]*v+colors[ic]*w : Color.white;
+                        if (normalSamples != null && normals.Length == positions.Length)
+                            normalSamples[index] = (normals[ia]*u+normals[ib]*v+normals[ic]*w).normalized;
                     }
                 }
             }
-            var result = new Frame(size);
+            var result = new Frame(size,fields);
             for (int i = 0; i < result.colors.Length; i++)
             {
-                int count = 0; Color sum = Color.clear;
-                for (int s = 0; s < 4; s++) if (!float.IsNegativeInfinity(depth[i*4+s])) { count++; sum += samples[i*4+s]; }
+                int count = 0; Color sum = Color.clear; Vector3 normalSum = Vector3.zero;
+                for (int s = 0; s < 4; s++) if (!float.IsNegativeInfinity(depth[i*4+s]))
+                { count++; sum += samples[i*4+s]; if (normalSamples != null) normalSum += normalSamples[i*4+s]; }
                 result.coverage[i] = new Color(count*.25f,0,0,0);
                 if (count > 0) result.colors[i] = sum/count;
+                if (fields) result.normals[i] = normalSum.normalized;
             }
             return result;
         }

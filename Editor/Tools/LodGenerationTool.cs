@@ -33,6 +33,7 @@ namespace SashaRX.UnityMeshLab
         bool generateCoarsenHardEdgeChains;
         bool generateNativeHardEdgeConstraints;
         bool generateScreenGuidedSelection;
+        bool generateFarScreenBudget = true;
         int generateFarScreenPixels = 64;
         float generateFeatureChainError = .005f;
         float generateReductionStep = 3;
@@ -417,8 +418,11 @@ namespace SashaRX.UnityMeshLab
             using (new EditorGUI.DisabledScope(!generateBudgetPriority || generateReductionMode != LodReductionMode.Triangles))
             {
                 generateScreenGuidedSelection = EditorGUILayout.Toggle(new GUIContent("Screen Quality Guide", "Experimental: rank candidates by visible thin-detail and RGBA boundary loss, prevent correction from worsening these losses, and guard small-part removal at the estimated LOD entry size."),generateScreenGuidedSelection);
-                if (generateScreenGuidedSelection)
+                generateFarScreenBudget = EditorGUILayout.Toggle(new GUIContent("LOD2 Screen Budget", "Prioritize the requested far triangle budget. Exact crease/face preservation is relaxed from LOD2; compare silhouette, authored normals and RGBA at the configured object size. LOD1 keeps its protection settings."),generateFarScreenBudget);
+                if (generateScreenGuidedSelection || generateFarScreenBudget)
                     generateFarScreenPixels = EditorGUILayout.IntSlider(new GUIContent("LOD2+ Object Pixels", "Maximum projected object extent for far-LOD quality checks. Preserves aspect ratio; this is the object's size, not the display resolution or LODGroup transition setting."),generateFarScreenPixels,16,248);
+                if (generateFarScreenBudget && generateBudgetPriority && generateReductionMode == LodReductionMode.Triangles)
+                    EditorGUILayout.HelpBox("LOD2 and later can lose exact hard edges to reach their triangle target. Compare silhouette, normals and colors at the selected screen size. Lock Border and material slots retain their settings.",MessageType.Info);
             }
             if (generateValidateColors)
                 generateMaxColorError = EditorGUILayout.Slider("Max Color Error", generateMaxColorError, 0.001f, 1f);
@@ -485,8 +489,14 @@ namespace SashaRX.UnityMeshLab
                         EditorGUILayout.LabelField($"      area RMS distance {r.sourceDistanceRms:P3}, normal {r.normalRms:F1}°; silhouette mean/max {r.silhouetteMean:P1}/{r.silhouetteMax:P1}",EditorStyles.miniLabel);
                         EditorGUILayout.LabelField($"      relative selection score {r.selectionScore:G4}; native probes {r.nativeProbes}",EditorStyles.miniLabel);
                         if (r.screenQuality != null)
+                        {
                             EditorGUILayout.LabelField($"      screen guide {r.screenQuality.objectPixels}px: detail loss {r.screenQuality.detailLoss:P1}; RGBA boundary loss " +
                                 (r.screenQuality.colorViews > 0 ? r.screenQuality.colorLoss.ToString("P1") : "n/a"),EditorStyles.miniLabel);
+                            if (r.screenQuality.normalsEvaluated || r.screenQuality.rgbaEvaluated)
+                                EditorGUILayout.LabelField($"      screen silhouette mean/max {r.screenQuality.silhouetteMean:P1}/{r.screenQuality.silhouetteMax:P1}; normal RMS " +
+                                    (r.screenQuality.normalsEvaluated ? r.screenQuality.normalRms.ToString("F1")+"°" : "n/a")+"; RGBA RMS "+
+                                    (r.screenQuality.rgbaEvaluated ? r.screenQuality.rgbaRms.ToString("G3") : "n/a"),EditorStyles.miniLabel);
+                        }
                         if (r.attributeCorrection != null)
                         {
                             EditorGUILayout.LabelField($"      correction: normals {(r.attributeCorrection.normalsAccepted ? "improved" : "kept")}, RGBA {(r.attributeCorrection.colorsAccepted ? "improved" : "kept")}",EditorStyles.miniLabel);
@@ -615,6 +625,7 @@ namespace SashaRX.UnityMeshLab
                 coarsenHardEdgeChains = generateCoarsenHardEdgeChains && generateBudgetPriority && generateReductionMode == LodReductionMode.Triangles,
                 nativeHardEdgeConstraints = generateNativeHardEdgeConstraints && generateBudgetPriority && generateReductionMode == LodReductionMode.Triangles,
                 screenGuidedSelection = generateScreenGuidedSelection && generateBudgetPriority && generateReductionMode == LodReductionMode.Triangles,
+                farScreenBudget = generateFarScreenBudget && generateBudgetPriority && generateReductionMode == LodReductionMode.Triangles,
                 featureChainError = generateFeatureChainError
             };
             if (generateRelaxFarLods)

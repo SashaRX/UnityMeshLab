@@ -4,6 +4,10 @@
 triangle-budget candidate selection and whole-component removal. It is an
 experimental option, disabled by default. Native crease constraints and chain
 coarsening remain separate options.
+The separate [LOD2 Screen Budget profile](LOD_FAR_TRIANGLE_BUDGET.md) is enabled
+by default in LOD Gen's triangle-budget mode and automatically uses the local
+guide plus visible field/coverage measurements for far levels. The general
+guide toggle still controls the preceding exact-protection profile and LOD1.
 The option is available with `Triangles` and `Prioritize Triangle Budget`; the
 result panel shows the object footprint, local detail and RGBA-boundary loss,
 with unevaluated paint as `n/a`.

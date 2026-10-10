@@ -8,6 +8,8 @@ Latest follow-up verification: **183 selected EditMode tests passed**, with all 
 
 ## Implemented
 
+The [far triangle-budget stage](LOD_FAR_TRIANGLE_BUDGET.md) enables a source-based LOD2 screen-budget profile in LOD Gen. **211 selected tests pass** with fresh native/far comparisons on all eight models; **8/8 LOD2 budgets reach approximately 1/9**. Exact crease/face belts become diagnostics on the far profile; Lock Border and material slots are retained. Six-view silhouette, normal/RGBA fields and local detail/paint guides are ranked at 64 pixels. Colored bench improves several measured errors, while wrench/fire-shield silhouette and other normal/paint regressions still require review. This completes the far-count step, rather than the full fidelity roadmap.
+
 The [far-screen calibration](LOD_FAR_SCREEN_FOOTPRINT.md) evaluates the optional local guide at a 64-pixel maximum object extent for LOD2 and later, matching the intended small on-screen footprint. 206 distinct selected tests pass, including fresh tent/colored-bench generations. Local detail checks now pass at that size; paint guides still fail and selected geometry is unchanged. LOD1 keeps its preceding diagnostic size. Protected-budget limits and the remaining geometry work still apply.
 
 The latest [screen-acceptance stage](LOD_SCREEN_ACCEPTANCE.md) adds local thin-detail and sharp RGBA-boundary diagnostics at three footprints. **196 selected tests pass**, with 528 comparisons on the prior eight-model GPU readbacks and a separate fresh tent generation/capture. The tent proves lower RGBA RMS can still accompany worse sharp-boundary retention. These diagnostic gates do not yet change candidate selection or generation defaults.

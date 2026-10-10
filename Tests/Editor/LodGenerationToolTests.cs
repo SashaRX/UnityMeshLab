@@ -70,6 +70,24 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(LodPipelineOps.ForLevel(options,1).screenObjectPixels,Is.EqualTo(32));
         }
         [Test]
+        public void FarScreenBudgetDefaultsOnlyToLod2AndCanBeDisabled()
+        {
+            var tool = new LodGenerationTool();
+            var build = typeof(LodGenerationTool).GetMethod("BuildGenerationOptions",BindingFlags.NonPublic|BindingFlags.Instance);
+            var options = (LodPipelineOps.Options)build.Invoke(tool,new object[] {1});
+            Assert.That(LodPipelineOps.ForLevel(options,0).screenBudget,Is.False);
+            Assert.That(LodPipelineOps.ForLevel(options,1).screenBudget,Is.True);
+            Assert.That(LodPipelineOps.ForLevel(options,1).screenGuidedSelection,Is.True);
+            options = (LodPipelineOps.Options)build.Invoke(tool,new object[] {2});
+            Assert.That(LodPipelineOps.ForLevel(options,0).screenBudget,Is.True);
+            SetField(tool,"generateFarScreenBudget",false);
+            options = (LodPipelineOps.Options)build.Invoke(tool,new object[] {1});
+            Assert.That(LodPipelineOps.ForLevel(options,1).screenBudget,Is.False);
+            SetField(tool,"generateFarScreenBudget",true); SetField(tool,"generateBudgetPriority",false);
+            options = (LodPipelineOps.Options)build.Invoke(tool,new object[] {1});
+            Assert.That(LodPipelineOps.ForLevel(options,1).screenBudget,Is.False);
+        }
+        [Test]
         public void GenerationOptions_DefaultBudgetAndThreefoldRatiosReachPipeline()
         {
             var tool = new LodGenerationTool();

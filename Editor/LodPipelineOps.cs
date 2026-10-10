@@ -35,6 +35,8 @@ namespace SashaRX.UnityMeshLab
             public bool coarsenHardEdgeChains;
             public bool nativeHardEdgeConstraints;
             public bool screenGuidedSelection;
+            public bool farScreenBudget, screenBudget;
+            public int firstGeneratedLod;
             public int screenObjectPixels;
             public int[] screenPixelsByLevel;
             public float featureChainError;
@@ -51,6 +53,9 @@ namespace SashaRX.UnityMeshLab
 
         internal static Options ForLevel(Options options,int index)
         {
+            options.screenBudget = options.farScreenBudget && options.firstGeneratedLod+index >= 2 &&
+                options.prioritizeTriangleBudget && options.reductionMode == LodReductionMode.Triangles;
+            options.screenGuidedSelection |= options.screenBudget;
             if (options.screenPixelsByLevel != null) options.screenObjectPixels = options.screenPixelsByLevel[index];
             if (options.levelQuality == null) return options;
             var quality = options.levelQuality[index];
@@ -65,6 +70,7 @@ namespace SashaRX.UnityMeshLab
         // Absolute LOD numbers matter when appending to an existing group.
         internal static Options WithScreenFootprints(Options options,int startLod,int farPixels = 64)
         {
+            options.firstGeneratedLod = startLod;
             options.screenPixelsByLevel = new int[options.count];
             for (int i = 0; i < options.count; i++)
                 options.screenPixelsByLevel[i] = startLod+i >= 2 ? farPixels : 248;
@@ -194,7 +200,8 @@ namespace SashaRX.UnityMeshLab
             if (ctx?.LodGroup == null) { result.error = "No LODGroup"; return result; }
             if (opts.ratios == null || opts.count <= 0) { result.error = "No ratios"; return result; }
             if (opts.count > opts.ratios.Length) { result.error = "Missing LOD ratios"; return result; }
-            if (opts.screenGuidedSelection)
+            opts.firstGeneratedLod = startLod;
+            if (opts.screenGuidedSelection || opts.farScreenBudget)
             {
                 if (opts.screenPixelsByLevel == null && opts.screenObjectPixels == 0) opts = WithScreenFootprints(opts,startLod);
                 if (opts.screenPixelsByLevel != null && opts.screenPixelsByLevel.Length < opts.count)
@@ -267,8 +274,8 @@ namespace SashaRX.UnityMeshLab
                         normalWeight = levelOptions.normalWeight,
                         colorWeight  = levelOptions.colorWeight,
                         lockBorder   = opts.lockBorder,
-                        preserveHardEdges = opts.preserveHardEdges,
-                        nativeHardEdgeConstraints = opts.nativeHardEdgeConstraints && opts.reductionMode == LodReductionMode.Triangles && opts.prioritizeTriangleBudget,
+                        preserveHardEdges = opts.preserveHardEdges && !levelOptions.screenBudget,
+                        nativeHardEdgeConstraints = opts.nativeHardEdgeConstraints && !levelOptions.screenBudget && opts.reductionMode == LodReductionMode.Triangles && opts.prioritizeTriangleBudget,
                         uvChannel    = 1
                     };
 
@@ -298,7 +305,7 @@ namespace SashaRX.UnityMeshLab
                         if (partAnalyses.TryGetValue(srcMesh,out var analysis))
                         {
                             float entryHeight = lodLevel > 0 && lodLevel-1 < newLods.Count ? newLods[lodLevel-1].screenRelativeTransitionHeight : 1;
-                            if (opts.screenGuidedSelection)
+                            if (levelOptions.screenGuidedSelection)
                                 entryHeight = Mathf.Min(entryHeight,(float)levelOptions.screenObjectPixels/opts.smallParts.screenHeight);
                             var scale = ctx.LodGroup.transform.lossyScale;
                             float worldSize = ctx.LodGroup.size*Mathf.Max(Mathf.Abs(scale.x),Mathf.Max(Mathf.Abs(scale.y),Mathf.Abs(scale.z)));
@@ -307,7 +314,7 @@ namespace SashaRX.UnityMeshLab
                             if (partPlan.removed.Count > 0)
                             {
                                 retained = LodSmallParts.Retain(analysis,partPlan);
-                                if (opts.screenGuidedSelection && worldSize > 0)
+                                if (levelOptions.screenGuidedSelection && worldSize > 0)
                                 {
                                     bool accepted;
                                     try
@@ -356,7 +363,8 @@ namespace SashaRX.UnityMeshLab
                                     r.hardEdges?.nativeConstraints == true ? protection.MeasureNative(r.simplifiedMesh,r.hardEdges.lockedChainRetry) : protection.Measure(r.simplifiedMesh);
                                 r.hardEdges.sourceFallback = sourceFallback;
                                 r.hardEdges.beltFallback = beltFallback;
-                                if (!r.hardEdges.Valid)
+                                r.hardEdges.screenBudgetRelaxed = levelOptions.screenBudget;
+                                if (!r.hardEdges.Valid && !levelOptions.screenBudget)
                                 {
                                     LodSurfaceValidation.Metrics restoredMetrics;
                                     try { restoredMetrics = LodSurfaceValidation.MeasureMeshes(reductionMesh,reductionMesh,reductionSettings,() => UvProgress.CancelRequested,ignoreDegenerateFaces:true); }
