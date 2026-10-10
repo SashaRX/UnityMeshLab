@@ -44,6 +44,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- Reverse UV reconstructs failed intrinsic rescue triangles at their final reserved texel footprint to avoid Float32 translation shear. Wooden_Box_Long now passes both overlap policies without deleting thin faces; fixed nominal density, inherited placements and final metric/overlap gates remain. Forward logs explicitly label matched vertex coverage.
+
 - Final Remesh regularization can retriangulate float-roundoff faces using a healthy adjoining normal while preserving source features and topology/surface audits; UV refusal reports include exact scan counters and private replays retain the Simplify input.
 
 - Correct the one-voxel offset along each axis in solid occupancy Remesh recovery; authored component center/bounds tests catch misplaced but topologically valid output, and the Remesh revision invalidates cached results.

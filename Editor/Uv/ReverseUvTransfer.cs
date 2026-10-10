@@ -628,6 +628,7 @@ namespace SashaRX.UnityMeshLab
                     ? ReverseUvAtlasPlacement.Place(positions.ToArray(), pixels, previousLevels, surfaces,
                         options, width, height, token)
                     : pixels.Select(p => p - min + offset).ToArray();
+                ReverseUvNewCharts.Stabilize(positions.ToArray(), placed, fallback, density, options.maxAnisotropy, token: token);
                 for (int i = 0; i < refs.Count; ++i)
                 {
                     var (s, f) = refs[i];

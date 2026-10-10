@@ -1968,7 +1968,7 @@ namespace SashaRX.UnityMeshLab
             int totalIssues = totalRejected + totalOverlaps;
 
             UvtLog.Info($"[Pipeline] Config #{ci} (sep={sepThresh:P0}): " +
-                $"rejected={totalRejected}, overlaps={totalOverlaps}, coverage={coverage:P0}");
+                $"rejected={totalRejected}, overlaps={totalOverlaps}, vertexCoverage={coverage:P0}");
 
             bool better = false;
             if (totalIssues < best.Issues)
@@ -2446,7 +2446,7 @@ namespace SashaRX.UnityMeshLab
             BenchmarkRecorder.Current?.StageEnd("validate");
 
             float pct = tr.verticesTotal > 0 ? tr.verticesTransferred * 100f / tr.verticesTotal : 0;
-            UvtLog.Info($"[Transfer] '{tgt.renderer.name}' LOD{tLod}: {tr.shellsMatched} shells, {pct:F0}% coverage");
+            UvtLog.Info($"[Transfer] '{tgt.renderer.name}' LOD{tLod}: {tr.shellsMatched} shells, {pct:F0}% vertex coverage");
             ctx.ClearAllCaches();
         }
 

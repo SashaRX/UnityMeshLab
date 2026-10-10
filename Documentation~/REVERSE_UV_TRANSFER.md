@@ -180,8 +180,12 @@ block borders and intrinsic rescue shelves, not every connected chart edge.
 
 Preparation supports 50000 combined seed faces, each transfer input supports
 250000 faces, and the UI limits the atlas to 8192 pixels. Projection, footprint and
-overlap checks have comparison budgets. Very thin triangles can lose a valid UV
-metric at float precision after placement and are refused. Native unwrap runs on
+overlap checks have comparison budgets. A failed independent intrinsic rescue is
+rebuilt at its final atlas location using cyclic triangle bases, quarter-turns and
+bounded sub-ULP translations inside its reserved texel rectangle. Nominal density,
+inherited UVs and the stretch gate remain fixed; the final audit measures actual
+Float32 density and distortion. If no representable placement passes, the triangle
+is retained and publication is refused. Native unwrap runs on
 the editor thread; projection runs on a worker with cancellation support.
 
 Reverse is a standalone alternative to forward Transfer, available in Setup.
@@ -195,3 +199,26 @@ and pixel padding is not guaranteed.
 Next: improve safe local refinement acceptance on curved donors and numerical
 limits of exceptionally thin imported geometry. Ordered overlap baking remains
 separate work.
+
+### Wooden_Box_Long precision regression
+
+The supplied logs loaded `0a544f5` and stopped on a locally rescued LOD1 triangle.
+The same failure family reproduces on the PRE-PROD FBX in a detached standalone
+chain at `0596960`: corner order and repeated Float32 translations deform an almost
+collinear nonzero LOD0 triangle. Reconstructing at the final reserved footprint
+allows both overlap policies to pass independent metric/overlap audits, without
+removing this face or changing imported geometry.
+
+`ReverseUvSeamTests.FrozenWoodenBoxReverseStandaloneCompletes` accepts an optional
+private input via `MESHLAB_REVERSE_WOODEN_BOX` (imported FBX asset path) and writes
+both policy audits plus exact per-LOD geometry to `MESHLAB_REVERSE_OUTPUT`. At
+32 texels/unit the geometry seed and final atlas are 512 square; finest inherited
+area is 95.320%, worst anisotropy is 1.741, and there are no degenerate UVs or
+unexpected overlaps. The overlap policy classifies three intended LOD1 pairs.
+Manual 256 seed mode also completes with vacancy packing in both policies.
+
+This precision repair does not compact the seed atlas: the measured per-LOD UV
+triangle area is only 7.34–8.37% of the 512 square at 32 texels/unit. Better seed
+chart packing remains separate work. The complete Kitchen seed and eight Kamaz
+frame/policy cases still refuse publication. In ordinary forward logs, vertex
+coverage measures matched vertices; it does not certify nondegenerate UVs.

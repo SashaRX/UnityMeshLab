@@ -226,6 +226,68 @@ namespace SashaRX.UnityMeshLab.Tests
         }
         [Serializable] sealed class AssetTrials { public List<AssetTrial> trials = new List<AssetTrial>(); }
 
+        [Serializable] sealed class WoodenInputDump
+        {
+            public string key;
+            public int lod;
+            public Vector3[] positions;
+            public int[] indices;
+            public Vector2[] uv;
+        }
+
+        [UnityTest]
+        public IEnumerator FrozenWoodenBoxReverseStandaloneCompletes()
+        {
+            string path=Environment.GetEnvironmentVariable("MESHLAB_REVERSE_WOODEN_BOX");
+            if(string.IsNullOrEmpty(path)) Assert.Ignore("Optional Wooden_Box_Long FBX is not configured.");
+            var root=AssetDatabase.LoadAssetAtPath<GameObject>(path); Assert.IsNotNull(root,path);
+            var levels=root.GetComponentsInChildren<MeshFilter>(true).Where(f=>f.sharedMesh && !f.sharedMesh.name.Contains("_COL"))
+                .Select(f=>(filter:f,match:System.Text.RegularExpressions.Regex.Match(f.sharedMesh.name,@"_LOD(\d+)",System.Text.RegularExpressions.RegexOptions.IgnoreCase)))
+                .Where(p=>p.match.Success).GroupBy(p=>int.Parse(p.match.Groups[1].Value)).OrderByDescending(g=>g.Key)
+                .Select(g=>new ReverseUvTransfer.Level {lod=g.Key,inputs=g.Select(p=>new ReverseUvTransfer.Input {
+                    mesh=p.filter.sharedMesh,key=p.filter.sharedMesh.name,toWorld=p.filter.transform.localToWorldMatrix}).ToArray()}).ToArray();
+            Assert.GreaterOrEqual(levels.Length,2,path);
+            var snapshots=levels.SelectMany(l=>l.inputs).Select(i=>Snapshot(i.mesh)).ToArray();
+            string directory=Environment.GetEnvironmentVariable("MESHLAB_REVERSE_OUTPUT"); Assert.IsNotEmpty(directory);
+            Directory.CreateDirectory(directory); var trials=new AssetTrials(); var previous=BenchmarkRecorder.OutputDirectoryOverride;
+            try
+            {
+                foreach(bool overlap in new[] {false,true})
+                {
+                    using var prepared=ReverseUvInputs.Prepare(levels);
+                    var origin=prepared.levels[0].inputs[0].toWorld.GetColumn(3);
+                    foreach(var level in prepared.levels)
+                        foreach(var input in level.inputs)
+                            File.WriteAllText(Path.Combine(directory,input.key+"-geometry.json"),JsonUtility.ToJson(new WoodenInputDump {
+                                key=input.key,lod=level.lod,positions=ReverseUvTransfer.RelativePositions(input,origin),indices=input.mesh.triangles},true));
+                    int side=prepared.PrepareSeed(256,2,32,default);
+                    var trial=new AssetTrial {asset=path,overlap=overlap,improved=true,stage="projection"}; trials.trials.Add(trial);
+                    var task=ReverseUvTransfer.Build(prepared.levels,new ReverseUvTransfer.Options {seedResolution=side,preserveProjectedOverlap=overlap},true);
+                    while(!task.IsCompleted) yield return null;
+                    if(task.IsFaulted) trial.error=task.Exception.GetBaseException().Message;
+                    else
+                    {
+                        using var result=task.Result;
+                        BenchmarkRecorder.OutputDirectoryOverride=Path.Combine(directory,overlap?"overlap":"exclusive");
+                        trial.stage="audit"; trial.audit=ReverseUvAudit.Write(result,prepared.levels);
+                        trial.inheritedAreaFraction=JsonUtility.FromJson<ReverseUvAudit.Audit>(File.ReadAllText(trial.audit)).levels.OrderBy(l=>l.lod).First().inheritedAreaFraction;
+                        trial.accepted=true; trial.atlas=result.report.atlasSize;
+                        for(int level=0;level<prepared.levels.Length;++level)
+                            for(int node=0;node<prepared.levels[level].inputs.Length;++node)
+                            {
+                                var input=prepared.levels[level].inputs[node]; var mesh=result.meshes[level][node];
+                                File.WriteAllText(Path.Combine(BenchmarkRecorder.OutputDirectoryOverride,input.key+"-layout.json"),JsonUtility.ToJson(new WoodenInputDump {
+                                    key=input.key,lod=prepared.levels[level].lod,positions=mesh.vertices,indices=mesh.triangles,uv=mesh.uv2},true));
+                            }
+                    }
+                    File.WriteAllText(Path.Combine(directory,"wooden-trials.json"),JsonUtility.ToJson(trials,true));
+                }
+                int i=0;foreach(var input in levels.SelectMany(l=>l.inputs)) CollectionAssert.AreEqual(snapshots[i++],Snapshot(input.mesh));
+            }
+            finally {BenchmarkRecorder.OutputDirectoryOverride=previous;}
+            Assert.IsTrue(trials.trials.All(t=>t.accepted),string.Join("\n",trials.trials.Select(t=>t.error)));
+        }
+
         [UnityTest]
         public IEnumerator FrozenAssetChainsRetainBaselineAcceptance()
         {

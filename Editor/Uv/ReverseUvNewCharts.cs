@@ -64,6 +64,62 @@ namespace SashaRX.UnityMeshLab
             }
             return options.cutNarrowJunctions ? UvJunctionCuts.Pack(corners, output, options.padding, token) : output;
         }
+        /// <summary>Reconstruct only failed independent rescue triangles at their
+        /// final atlas location. Float32 rounding depends on the translation;
+        /// try cyclic bases and sub-ULP rigid shifts inside the reserved texel box.
+        /// Geometry, density, inherited UVs and the stretch limit stay fixed.</summary>
+        internal static void Stabilize(Vector3[] corners, Vector2[] pixels, bool[] fallback,
+            float density, float maxAnisotropy, float texel = 1, CancellationToken token = default)
+        {
+            for(int f=0;f<fallback.Length;++f)
+            {
+                token.ThrowIfCancellationRequested();
+                int t=f*3;
+                if(!fallback[f] || Metric(corners,pixels,t)<=maxAnisotropy) continue;
+                var min=Vector2.Min(pixels[t],Vector2.Min(pixels[t+1],pixels[t+2]));
+                var max=Vector2.Max(pixels[t],Vector2.Max(pixels[t+1],pixels[t+2]));
+                double width=Math.Ceiling(((double)max.x-min.x)/texel)*texel;
+                double height=Math.Ceiling(((double)max.y-min.y)/texel)*texel;
+                // Search less than one Float32 spacing at the largest coordinate.
+                double step=Math.Pow(2,Math.Floor(Math.Log(Math.Max(1,Math.Max(Math.Abs(max.x),Math.Abs(max.y))),2))-23);
+                double best=maxAnisotropy; Vector2[] selected=null;
+                for(int basis=0;basis<3;++basis)
+                {
+                    var frame=ReverseUvTransfer.TriangleFrame(corners[t+basis],corners[t+(basis+1)%3],corners[t+(basis+2)%3]);
+                    var local=new (double x,double y)[3];
+                    local[(basis+1)%3]=(frame.length*density,0);
+                    local[(basis+2)%3]=(frame.x*density,frame.y*density);
+                    for(int turn=0;turn<4;++turn)
+                    {
+                        double sign=turn<2?1:-1;
+                        var rotated=local.Select(p=>turn%2==0?(x:p.x*sign,y:p.y*sign):(x:-p.y*sign,y:p.x*sign)).ToArray();
+                        double left=rotated.Min(p=>p.x),bottom=rotated.Min(p=>p.y);
+                        bool vertical=rotated.Max(p=>p.y)-bottom>rotated.Max(p=>p.x)-left;
+                        for(int phase=0;phase<16;++phase)
+                        {
+                            var candidate=new Vector2[3]; bool fits=true;
+                            for(int k=0;k<3;++k)
+                            {
+                                double shift=step*phase/16;
+                                candidate[k]=new Vector2((float)(rotated[k].x-left+min.x+(vertical?0:shift)),
+                                    (float)(rotated[k].y-bottom+min.y+(vertical?shift:0)));
+                                if(candidate[k].x<min.x || candidate[k].x>min.x+width
+                                    || candidate[k].y<min.y || candidate[k].y>min.y+height) fits=false;
+                            }
+                            if(!fits) continue;
+                            double quality=ReverseUvTransfer.TriangleAnisotropy(corners[t],corners[t+1],corners[t+2],candidate[0],candidate[1],candidate[2]);
+                            if(quality>=best) continue;
+                            best=quality; selected=candidate;
+                        }
+                    }
+                }
+                if(selected!=null) Array.Copy(selected,0,pixels,t,3);
+            }
+        }
+
+        static double Metric(Vector3[] corners,Vector2[] pixels,int t)=>ReverseUvTransfer.TriangleAnisotropy(
+            corners[t],corners[t+1],corners[t+2],pixels[t],pixels[t+1],pixels[t+2]);
+
         static double Cross(Vector2 a,Vector2 b)=>(double)a.x*b.y-(double)a.y*b.x;
     }
 }

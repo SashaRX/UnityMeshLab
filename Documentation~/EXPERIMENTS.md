@@ -40,6 +40,53 @@
 
 ## Progressive reverse atlas — 2026-10-09
 
+### Final-placement intrinsic precision — 2026-10-10
+
+Continuation of the reverse-atlas experiment on PR225, baseline `0596960`.
+Both supplied Wooden_Box_Long logs are identical and load the older `0a544f5`.
+Standalone reproduction on the PRE-PROD FBX at 32 texels/unit still refuses
+LOD0 face 2 with anisotropy 6.4708. Its nonzero geometry is almost collinear;
+normal Float32 shelf and atlas translations introduce shear even after an exact
+intrinsic unwrap. Choosing only a different local base edge is insufficient.
+
+Only a failed *independent intrinsic fallback* is reconstructed after its final
+vacancy placement. Three cyclic bases, their quarter-turns and sixteen bounded
+translation phases are evaluated in double before final Float32 storage. The
+candidate must fit the already reserved integer texel rectangle and satisfy the
+unchanged anisotropy gate. Ordinary valid charts, inherited UVs, source positions,
+face count, nominal density, atlas reservations and publication audits remain.
+Cancellation is supported. If no representable candidate passes, retain the
+failed UV for the existing publication refusal; never delete a thin source face.
+
+Wooden_Box_Long now passes both current overlap policies at 32 texels/unit:
+512-square seed/final atlas, 95.320% finest inherited area, worst anisotropy 1.741,
+no invalid/degenerate UVs or unexpected overlaps. Overlap mode classifies three
+intentional LOD1 pairs. Manual 256 mode also passes with vacancy packing, finest
+inherited area 95.369% / 95.366%; the legacy append-only control remains refused.
+A nanometre Backsplash local fixture also becomes valid and now tests independent
+quality, preserved source bytes and exact output geometry instead of demanding
+its former numerical refusal. This is not acceptance of the complete Kitchen
+model: its seed still fails. The eight Kamaz frame/policy trials remain refused.
+
+Packing remains unresolved on this asset: only 7.34–8.37% of the density-driven
+512 square is occupied by UV triangle area on each LOD. The repair addresses
+metric representability, not seed-chart compactness. Forward's 100% coverage in
+the supplied log only counted matched vertices despite degenerate target UVs;
+its diagnostics now explicitly say vertex coverage.
+
+The private standalone test is enabled by `MESHLAB_REVERSE_WOODEN_BOX`; outputs
+use `MESHLAB_REVERSE_OUTPUT`. Public controls cover cyclic orders, the reserved
+footprint, idempotence, ordinary/inherited coordinate preservation, cancellation,
+and an unrepresentable placement that stays refused.
+
+Final isolated Unity 6000.2.6f2 selection: **166 passed, zero failed, one optional
+legacy-capture skip**. All 32 previous FBX policy/algorithm trials retain identical
+acceptance, atlas size, inherited area, complete quality arrays and density extrema;
+all eight Kamaz refusals retain their causes. The final ten focused precision cases
+also pass. Both FBX define reference builds, identifiers and dependencies pass.
+Inputs were copied to the isolated project; FBX SHA-256 remains
+`6FA71BC2A815BED6A23AB42AB4B2CC84BA55F73CC18A3F0D9F978E31CC9AE09F`.
+
 ### Correspondence graph, donor seam refinement and vacancy packing — 2026-10-10
 
 Continuation of PR225 from `0a544f5`, requested by the user. Reverse remains a

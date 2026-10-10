@@ -641,7 +641,7 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(before,TransferMeshSnapshot.Capture(mesh));
         }
 
-        [Test] public void CapturedNanometreBacksplashRefusesPublicationWithoutChangingGeometry()
+        [Test] public void CapturedNanometreBacksplashKeepsGeometryWhenRescuePassesAudit()
         {
             var fine=new Mesh {name="Backsplash nanometre face"}; owned.Add(fine);
             fine.vertices=new[] {
@@ -649,12 +649,21 @@ namespace SashaRX.UnityMeshLab.Tests
                 new Vector3(-.7002735733985901f,.06392237544059753f,-.19298714399337769f),
                 new Vector3(-.7007233500480652f,.06392237544059753f,-.19298714399337769f) };
             fine.triangles=new[] {0,1,2}; fine.uv=new[] {Vector2.zero,Vector2.right,Vector2.up};
-            // A normal neighbouring surface keeps Unity's connected unwrap alive;
-            // the nanometre triangle must then fail the final placement gate.
+            // A normal neighbouring surface keeps Unity's connected unwrap alive.
+            // The rescue now passes after reconstruction at its final texel box;
+            // acceptance still requires the independent final quality audit.
             fine=Combine(fine,Quad(8));
             var before=TransferMeshSnapshot.Capture(fine);
             Assert.IsTrue(MeshGeometry.HasArea(fine.vertices[0],fine.vertices[1],fine.vertices[2]));
-            Assert.Throws<InvalidOperationException>(()=> {using var result=Build(Options(),Level(1,Quad(4)),Level(0,fine));});
+            var levels=new[] {Level(1,Quad(4)),Level(0,fine)};
+            using var result=Build(Options(),levels);
+            var mesh=result.meshes[1][0]; Clean(mesh);
+            var quality=TransferUvQuality.Measure(mesh,mesh.uv2,Vector2.one,Matrix4x4.identity);
+            Assert.LessOrEqual(quality.worstAnisotropy,4.001);
+            Assert.AreEqual(fine.triangles.Length,mesh.triangles.Length);
+            var inputVertices=fine.vertices; var inputTriangles=fine.triangles;
+            var outputVertices=mesh.vertices; var outputTriangles=mesh.triangles;
+            for(int i=0;i<inputTriangles.Length;++i) Assert.AreEqual(inputVertices[inputTriangles[i]],outputVertices[outputTriangles[i]]);
             CollectionAssert.AreEqual(before,TransferMeshSnapshot.Capture(fine));
         }
 
@@ -793,6 +802,62 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(64f,(output[5]-output[3]).magnitude,.001f);
             var scan=UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {uv=output,indices=new[] {0,1,2,3,4,5},charts=new int[6]},default);
             Assert.AreEqual(0,scan.pairs); Assert.AreEqual(0,scan.degenerateFaces);
+        }
+
+        [TestCase(0,false)] [TestCase(1,false)] [TestCase(2,false)]
+        [TestCase(0,true)] [TestCase(1,true)] [TestCase(2,true)]
+        public void WoodenBoxThinRescueRetainsMetricAfterAtlasTranslation(int order,bool vertical)
+        {
+            var captured=new[] {
+                new Vector3(.6493524312973022f,.10999730229377747f,.5877611041069031f),
+                new Vector3(.6493524312973022f,1.739912986755371f,.5877636075019836f),
+                new Vector3(.6493524312973022f,1.860024094581604f,.5877636075019836f)};
+            var corners=Enumerable.Range(0,3).Select(k=>captured[(order+k)%3]).ToArray();
+            var output=ReverseUvNewCharts.Prepare(corners,new Vector2[3],32,Options(),default,out var fallback);
+            Assert.IsTrue(fallback[0]);
+            if(vertical) output=output.Select(p=>new Vector2(-p.y,p.x)).ToArray();
+            var normalized=output.Select(p=>(p-Vector2.Min(output[0],Vector2.Min(output[1],output[2]))+(vertical?new Vector2(16,238):new Vector2(238,16)))/512).ToArray();
+            if(order==0) Assert.Greater(ReverseUvTransfer.TriangleAnisotropy(corners[0],corners[1],corners[2],normalized[0],normalized[1],normalized[2]),4);
+            var before=normalized.ToArray();
+            ReverseUvNewCharts.Stabilize(corners,normalized,fallback,32f/512,4,1f/512);
+            Assert.LessOrEqual(ReverseUvTransfer.TriangleAnisotropy(corners[0],corners[1],corners[2],
+                normalized[0],normalized[1],normalized[2]),4);
+            var stable=normalized.ToArray();
+            ReverseUvNewCharts.Stabilize(corners,normalized,fallback,32f/512,4,1f/512);
+            CollectionAssert.AreEqual(stable,normalized);
+            var min=Vector2.Min(before[0],Vector2.Min(before[1],before[2]));
+            var max=Vector2.Max(before[0],Vector2.Max(before[1],before[2]));
+            foreach(var p in normalized)
+            {
+                Assert.GreaterOrEqual(p.x,min.x); Assert.GreaterOrEqual(p.y,min.y);
+                Assert.LessOrEqual(p.x,min.x+Math.Ceiling(((double)max.x-min.x)*512)/512);
+                Assert.LessOrEqual(p.y,min.y+Math.Ceiling(((double)max.y-min.y)*512)/512);
+            }
+        }
+
+        [Test]
+        public void MetricStabilizationPreservesOrdinaryAndInheritedCoordinates()
+        {
+            var corners=new[] {Vector3.zero,Vector3.right,Vector3.up,Vector3.zero,Vector3.right,Vector3.up};
+            var pixels=new[] {new Vector2(10,10),new Vector2(11,10),new Vector2(10,10.00001f),
+                new Vector2(20,20),new Vector2(21,20),new Vector2(20,21)};
+            var before=pixels.ToArray();
+            ReverseUvNewCharts.Stabilize(corners,pixels,new[] {false,true},1,4);
+            CollectionAssert.AreEqual(before,pixels);
+            Assert.Throws<OperationCanceledException>(()=>ReverseUvNewCharts.Stabilize(corners,pixels,
+                new[] {true,true},1,4,token:new CancellationToken(true)));
+        }
+
+        [Test]
+        public void MetricStabilizationRetainsUnrepresentableRescueForPublicationRefusal()
+        {
+            var corners=new[] {Vector3.zero,Vector3.right,new Vector3(0,1e-6f,0)};
+            var pixels=new[] {new Vector2(1048576,1048576),new Vector2(1048577,1048576),new Vector2(1048576,1048576)};
+            var before=pixels.ToArray();
+            Assert.IsTrue(MeshGeometry.HasArea(corners[0],corners[1],corners[2]));
+            ReverseUvNewCharts.Stabilize(corners,pixels,new[] {true},1,4);
+            CollectionAssert.AreEqual(before,pixels);
+            Assert.IsTrue(double.IsInfinity(ReverseUvTransfer.TriangleAnisotropy(corners[0],corners[1],corners[2],pixels[0],pixels[1],pixels[2])));
         }
 
         [TestCase(0)] [TestCase(32)]
