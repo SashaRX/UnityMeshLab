@@ -28,6 +28,7 @@ namespace SashaRX.UnityMeshLab
             public Color[] closureContourColors;
             public string[] closureContourReasons;
             public string closureSummary;
+            public string closureSelectionWarning, closureLoopRanges;
             public bool closureReady, closureStale;
             public int sourceVertices, sourceTriangles;
             public Matrix4x4 spaceToWorld = Matrix4x4.identity;
@@ -179,6 +180,10 @@ namespace SashaRX.UnityMeshLab
                     closureContour = EditorGUILayout.Popup("Hole rim", Mathf.Clamp(closureContour, 0, data.closureContourNames.Length - 1), data.closureContourNames);
                 EditorGUILayout.LabelField("Grey: original surface · orange / purple: accepted patches · cyan: original rims · red: refused contours.", EditorStyles.wordWrappedMiniLabel);
                 EditorGUILayout.LabelField(data.closureSummary ?? "Prepare closure to inspect it before Remesh.", EditorStyles.wordWrappedMiniLabel);
+                if (!string.IsNullOrEmpty(data.closureLoopRanges))
+                    EditorGUILayout.LabelField("Available loops: " + data.closureLoopRanges, EditorStyles.wordWrappedMiniLabel);
+                if (!string.IsNullOrEmpty(data.closureSelectionWarning))
+                    EditorGUILayout.HelpBox(data.closureSelectionWarning, MessageType.Warning);
                 if (data.closureContourReasons != null) {
                     if (closureContour > 0 && closureContour <= data.closureContourReasons.Length) {
                         string reason = data.closureContourReasons[closureContour - 1];

@@ -10,7 +10,7 @@ namespace SashaRX.UnityMeshLab
     /// donor arrays are never mutated. Each closure candidate is accepted atomically.</summary>
     internal static class RemeshPlanarCap
     {
-        internal const int Revision = 6;
+        internal const int Revision = 7;
         const int MaxVertices = 200000, MaxIndices = 1200000, MaxLoopEdges = 512;
         const int MaxPairTrials = 2000000;
 
@@ -46,10 +46,12 @@ namespace SashaRX.UnityMeshLab
             internal int[][] boundaryLoops;
             internal ExternalContacts externalContacts;
             internal readonly Dictionary<int, string> loopFailures = new Dictionary<int, string>();
+            internal string selectionWarning;
             internal readonly List<int> patchEnds = new List<int>();
             internal string Description => $"welded {weldedVertices} vertices; {loops} boundary loops; selection {selection}; added {addedFaces} faces; " +
                 $"{localPatches} local patches; {planeRechecks} fresh plane checks; {contactTests} exact contact tests; " +
-                $"{externalContacts?.count ?? 0} non-blocking contacts with other source meshes; {loopFailures.Count} refused loops";
+                $"{externalContacts?.count ?? 0} non-blocking contacts with other source meshes; {loopFailures.Count} refused loops" +
+                (selectionWarning == null ? "" : "; " + selectionWarning);
         }
 
         internal static Support Prepare(Vector3[] positions, int[] indices, string selection, CancellationToken token, bool localPlanes = false,
@@ -86,7 +88,13 @@ namespace SashaRX.UnityMeshLab
             result.boundaryLoops = loops.ConvertAll(loop => loop.ToArray()).ToArray();
             if (sourceFaceOwners != null) result.externalContacts = new ExternalContacts { faceOwners = (int[])sourceFaceOwners.Clone() };
             if (loops.Count == 0) return result;
-            var chosen = Selection(selection, loops.Count);
+            var chosen = Selection(selection, loops.Count, continueOnRefusal, out result.selectionWarning);
+            // An explicit Bridge needs exactly the authored pair. Do not silently
+            // reinterpret an invalid three-entry selection as a different pair.
+            if (mode == RemeshClosureMode.Bridge && result.selectionWarning != null) {
+                chosen.Clear();
+                result.selectionWarning += " Bridge was not attempted: select exactly two unique available loop numbers.";
+            }
             var exact = new RemeshCapIntersection.Q[pWeld.Length][];
             for (int i = 0; i < exact.Length; ++i) exact[i] = RemeshCapIntersection.Point(pWeld[i]);
             var assembled = new List<int>(iWeld); int contactTrials = 0;
@@ -308,17 +316,23 @@ namespace SashaRX.UnityMeshLab
             return loops;
         }
 
-        static SortedSet<int> Selection(string text, int count)
+        static SortedSet<int> Selection(string text, int count, bool partial, out string warning)
         {
             var result = new SortedSet<int>();
+            warning = null;
             if (string.Equals(text?.Trim(), "all", StringComparison.OrdinalIgnoreCase)) {
                 for (int loop = 0; loop < count; ++loop) result.Add(loop);
                 return result;
             }
+            var invalid = new List<string>();
             foreach (string part in (text ?? "").Split(',')) {
-                if (!int.TryParse(part.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out int loop) || loop < 0 || loop >= count || !result.Add(loop))
-                    throw Refuse($"disk selection '{text}' must list unique loop numbers from 0 to {count - 1}");
+                if (!int.TryParse(part.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out int loop) || loop < 0 || loop >= count || !result.Add(loop)) {
+                    if (!partial) throw Refuse($"disk selection '{text}' must list unique loop numbers from 0 to {count - 1}");
+                    invalid.Add("'" + part.Trim() + "'");
+                }
             }
+            if (invalid.Count > 0) warning = $"Invalid or repeated closure loop entries: {string.Join(", ", invalid)}. " +
+                $"Available loop numbers: 0..{count - 1}. Invalid entries were skipped; no other contours were selected automatically.";
             return result;
         }
 

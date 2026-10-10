@@ -406,6 +406,8 @@ namespace SashaRX.UnityMeshLab
             previewData.closureContourColors = pipeline.ClosureContourColors;
             previewData.closureContourReasons = pipeline.ClosureContourReasons;
             previewData.closureSummary = pipeline.ClosureSummary;
+            previewData.closureSelectionWarning = pipeline.ClosureSelectionWarning;
+            previewData.closureLoopRanges = pipeline.ClosureLoopRanges;
             previewData.closureReady = pipeline.Has(RemeshPipeline.Stage.Prepare);
             previewData.closureStale = pipeline.IsStale(RemeshPipeline.Stage.Prepare, settings, source);
             previewData.geometry = pipeline.Geometry; previewData.maps = pipeline.Maps; previewData.baseColor = pipeline.BaseColorPreview;
@@ -573,7 +575,7 @@ namespace SashaRX.UnityMeshLab
                             "Original material/UV donors are preserved. " +
                             "Synthetic surfaces project from the original donor; missing projections remain visible as magenta."), settings.planarCap);
                         if (settings.planarCap) {
-                            settings.closureMode = (RemeshClosureMode)EditorGUILayout.EnumPopup(new GUIContent("Closure method","Caps: selected disks. Bridge: exactly two rims. Automatic: mutual collar continuation selects Bridge; other supported contours use local planar Caps. Ambiguity refuses the run."),settings.closureMode);
+                            settings.closureMode = (RemeshClosureMode)EditorGUILayout.EnumPopup(new GUIContent("Closure method","Caps: selected disks. Bridge: exactly two rims. Automatic: mutual collar continuation selects Bridge; other supported contours use local planar Caps. Ambiguous contours remain open with a reason."),settings.closureMode);
                             settings.planarCapLocalPlanes = EditorGUILayout.Toggle(new GUIContent("Local compound caps",
                                 "Allow a uniquely supported split into two continuous planar arcs. Close the first arc, recheck the new boundary, " +
                                 "then recheck the remaining contour. Three-plane corner closures reconstruct their common corner. Ambiguous or intersecting closures are refused; source rim vertices remain fixed."), settings.planarCapLocalPlanes);
@@ -582,7 +584,9 @@ namespace SashaRX.UnityMeshLab
                                 "Close every detected opening with the chosen method. Bridge requires exactly two loops; use loop numbers to select a pair."),allLoops);
                             if (chooseAll != allLoops) settings.planarCapLoops = chooseAll ? "all" : "0";
                             if (!chooseAll) settings.planarCapLoops = EditorGUILayout.TextField(new GUIContent("Closure loop numbers",
-                                "Comma-separated loop numbers, starting at 0 in welded vertex order (e.g. 0,1). Solid remesh requires every opening to be closed."),settings.planarCapLoops);
+                                "Contour IDs, not a hole count. Comma-separated numbers starting at 0 (e.g. 0,1). Prepare first to inspect available IDs. Solid remesh requires every opening to be closed."),settings.planarCapLoops);
+                            if (pipeline.Has(RemeshPipeline.Stage.Prepare) && !string.IsNullOrEmpty(pipeline.ClosureLoopRanges))
+                                EditorGUILayout.LabelField("Last prepared loops: " + pipeline.ClosureLoopRanges, EditorStyles.wordWrappedMiniLabel);
                             settings.capPlaneTolerance = Mathf.Max(0,EditorGUILayout.FloatField(new GUIContent("Cap plane tolerance",
                                 "Minimum plane-fit tolerance in source-local units (default 0.00001). Handles small import deviations without moving boundary vertices. The relative plane tolerance, topology and intersection checks still apply."),settings.capPlaneTolerance));
                         }
@@ -594,6 +598,8 @@ namespace SashaRX.UnityMeshLab
                     StageButton(RemeshPipeline.Stage.Prepare, "Prepare / inspect Cap & Bridge");
                     if (pipeline.Has(RemeshPipeline.Stage.Prepare))
                         EditorGUILayout.LabelField(pipeline.ClosureSummary, EditorStyles.wordWrappedMiniLabel);
+                    if (!string.IsNullOrEmpty(pipeline.ClosureSelectionWarning))
+                        EditorGUILayout.HelpBox(pipeline.ClosureSelectionWarning, MessageType.Warning);
                     EditorGUILayout.LabelField("Closes one contour (or one Bridge pair) at a time. Preparation stops before native Remesh; inspect the Cap / Bridge preview first.", EditorStyles.wordWrappedMiniLabel);
                     StageButton(RemeshPipeline.Stage.Remesh, "Remesh");
                 }

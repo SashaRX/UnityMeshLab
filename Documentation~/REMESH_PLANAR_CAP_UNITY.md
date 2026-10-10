@@ -39,8 +39,12 @@ Production preparation accepts each contour independently. A refused contour doe
 not undo previous closures or prevent later independent contours from being tried.
 A two/three-plane Cap or Bridge remains atomic: if any part fails, its entire
 candidate is discarded, including generated vertices, patches and contact counts.
-Cancellation, invalid source topology and invalid loop-selection syntax still stop
-the preparation. Offline callers keep strict whole-operation refusal by default;
+Cancellation and invalid source topology still stop the preparation. Invalid or
+repeated selection entries are skipped with a warning and the available loop
+range; valid explicitly listed Caps continue. If no valid IDs remain, preparation
+shows the original contours without adding closures. Invalid Bridge selections
+never infer a replacement pair. Loop numbers are contour IDs, not a hole count.
+Offline callers keep strict whole-operation refusal by default;
 `continueOnRefusal` opts into the same partial result used in the editor.
 To inspect a subset, enter its loop numbers and prepare it separately. Caps supports more than 16 loops; Automatic is
 limited to 16 selected loops to bound partner search. Other limits are 512 edges

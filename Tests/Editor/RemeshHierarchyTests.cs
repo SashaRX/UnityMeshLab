@@ -150,6 +150,40 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
         }
 
         [UnityTest]
+        public IEnumerator InvalidLoopNumberBuildsAnInspectablePreviewAndCanBeCorrected()
+        {
+            var root = new GameObject("Invalid closure selection"); var mesh = TwoHoleBox();
+            var material = new Material(Shader.Find("Standard"));
+            root.AddComponent<MeshFilter>().sharedMesh = mesh; root.AddComponent<MeshRenderer>().sharedMaterial = material;
+            using var pipeline = new RemeshPipeline();
+            var settings = new RemeshSettings { planarCap = true, planarCapLoops = "16", shell = false, minPartSize = 0, minRodVoxels = 0 };
+            try {
+                var run = pipeline.Run(root, settings, RemeshPipeline.Stage.Prepare, RemeshPipeline.Stage.Prepare);
+                while (!run.IsCompleted) yield return null;
+                Assert.IsTrue(run.Result, pipeline.Status); Assert.IsTrue(pipeline.Has(RemeshPipeline.Stage.Prepare));
+                Assert.AreEqual(0, pipeline.Primary.support.addedFaces);
+                Assert.AreEqual(8 * 3, pipeline.ClosureMesh.triangles.Length);
+                Assert.AreEqual(2, pipeline.ClosureContourEdges.Length);
+                StringAssert.Contains("'16'", pipeline.ClosureSelectionWarning);
+                StringAssert.Contains("0..1", pipeline.ClosureLoopRanges);
+                Assert.IsTrue(pipeline.ClosureContourReasons.All(reason => reason == null));
+                Assert.IsTrue(pipeline.ClosureRims.colors.All(c => c.r < .3f && c.b > .9f));
+                Assert.IsTrue(pipeline.ClosureMesh.colors.All(c => c.r < .9f));
+                Assert.AreSame(mesh, root.GetComponent<MeshFilter>().sharedMesh);
+                settings.planarCapLoops = "0,1";
+                run = pipeline.Run(root, settings, RemeshPipeline.Stage.Prepare, RemeshPipeline.Stage.Prepare);
+                while (!run.IsCompleted) yield return null;
+                Assert.IsTrue(run.Result, pipeline.Status);
+                Assert.AreEqual(4, pipeline.Primary.support.addedFaces); Assert.IsNull(pipeline.ClosureSelectionWarning);
+                Assert.AreEqual(0, pipeline.Primary.support.remainingBoundaryEdges);
+                Assert.AreSame(mesh, root.GetComponent<MeshFilter>().sharedMesh);
+                pipeline.ClearFrom(RemeshPipeline.Stage.Prepare);
+                Assert.IsNull(pipeline.ClosureLoopRanges); Assert.IsNull(pipeline.ClosureSelectionWarning);
+            }
+            finally { Object.DestroyImmediate(root); Object.DestroyImmediate(mesh); Object.DestroyImmediate(material); }
+        }
+
+        [UnityTest]
         public IEnumerator DisposeDuringPreparationCancelsAndReleasesSnapshot()
         {
             var root = GameObject.CreatePrimitive(PrimitiveType.Cube); var pipeline = new RemeshPipeline();

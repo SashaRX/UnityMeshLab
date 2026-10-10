@@ -21,6 +21,7 @@ namespace SashaRX.UnityMeshLab
             public int externalContactCount;
             public int[] refusedLoops;
             public string[] refusedLoopReasons;
+            public string closureSelectionWarning;
             public int firstContactAddedFace = -1, firstContactSourceFace = -1;
             public uint initialFlags, resultFlags;
         }
@@ -71,6 +72,7 @@ namespace SashaRX.UnityMeshLab
                 string partial = path + ".tmp";
                 try {
                     if (support != null) {
+                        metadata.closureSelectionWarning = support.selectionWarning;
                         metadata.refusedLoops = new int[support.loopFailures.Count];
                         metadata.refusedLoopReasons = new string[support.loopFailures.Count];
                         int entry = 0;

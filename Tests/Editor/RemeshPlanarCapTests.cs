@@ -87,6 +87,48 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(ix, cap.indices.Take(ix.Length));
         }
 
+        [TestCase("16", 0)] [TestCase("0,16", 2)] [TestCase("0,0", 2)]
+        [TestCase("all,1", 2)] [TestCase("", 0)] [TestCase("0,,1", 4)]
+        public void InvalidSelectionEntriesKeepInspectableContoursAndOnlyExplicitValidCaps(string selection, int added)
+        {
+            var ix = Faces.Skip(12).ToArray();
+            var cap = RemeshPlanarCap.Prepare(Box, ix, selection, default, continueOnRefusal: true);
+            Assert.AreEqual(added, cap.addedFaces); Assert.AreEqual(2, cap.boundaryLoops.Length);
+            StringAssert.Contains("Available loop numbers: 0..1", cap.selectionWarning);
+            Assert.IsEmpty(cap.loopFailures, "Selection mistakes are not geometric contour refusals.");
+            Assert.AreEqual(8 - added * 2, cap.remainingBoundaryEdges);
+            CollectionAssert.AreEqual(ix, cap.indices.Take(ix.Length)); CollectionAssert.AreEqual(Box, cap.positions);
+            Assert.Throws<InvalidOperationException>(() => RemeshPlanarCap.Prepare(Box, ix, selection, default));
+        }
+
+        [TestCase("0,1,16")] [TestCase("0,16")]
+        public void InvalidBridgeSelectionDoesNotInventAPair(string selection)
+        {
+            var ix = Faces.Skip(12).ToArray();
+            var cap = RemeshPlanarCap.Prepare(Box, ix, selection, default, mode: RemeshClosureMode.Bridge, continueOnRefusal: true);
+            Assert.AreEqual(0, cap.addedFaces); Assert.AreEqual(8, cap.remainingBoundaryEdges);
+            Assert.IsNotNull(cap.selectionWarning); Assert.IsEmpty(cap.patchEnds);
+            CollectionAssert.AreEqual(ix, cap.indices);
+        }
+
+        [Test]
+        public void FrozenGabionInvalidNumberKeepsAllThreeContoursForInspection()
+        {
+            string path = Environment.GetEnvironmentVariable("MESH_LAB_CAP_SELECTION_SOURCE");
+            if (string.IsNullOrEmpty(path)) Assert.Ignore("Set MESH_LAB_CAP_SELECTION_SOURCE to the decoded MilitaryGabion source.bin.");
+            using var reader = new BinaryReader(File.OpenRead(path));
+            int vertices = reader.ReadInt32(), count = reader.ReadInt32();
+            var p = new Vector3[vertices]; var ix = new int[count];
+            for (int i = 0; i < vertices; ++i) p[i] = new Vector3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
+            for (int i = 0; i < count; ++i) ix[i] = reader.ReadInt32();
+            var cap = RemeshPlanarCap.Prepare(p, ix, "16", default, true, planeTolerance: 1e-5, continueOnRefusal: true);
+            Assert.AreEqual(3, cap.boundaryLoops.Length); Assert.AreEqual(0, cap.addedFaces);
+            Assert.AreEqual(47, cap.remainingBoundaryEdges); Assert.IsEmpty(cap.loopFailures);
+            StringAssert.Contains("'16'", cap.selectionWarning); StringAssert.Contains("0..2", cap.selectionWarning);
+            Assert.IsTrue(RemeshTopology.Inspect(cap.positions, cap.indices).Valid);
+            for (int i = 0; i < ix.Length; ++i) Assert.AreEqual(p[ix[i]], cap.positions[cap.indices[i]]);
+        }
+
         [Test]
         public void AutomaticBudgetRefusalsRemainInspectableWithoutInventingClosures()
         {
@@ -435,7 +477,7 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             var p = Box.Concat(new[] {new Vector3(0,-2,0),new Vector3(0,0,0),new Vector3(.4f,-1,.4f)}).ToArray();
             var ix = Faces.Where((v,k) => k / 6 != 2).Concat(new[] {8,9,10}).ToArray();
-            var support = RemeshPlanarCap.Prepare(p, ix, "0", default, continueOnRefusal: true);
+            var support = RemeshPlanarCap.Prepare(p, ix, "0,16", default, continueOnRefusal: true);
             string folder = Path.Combine(Path.GetTempPath(), "meshlab-cap-test-" + Guid.NewGuid().ToString("N"));
             try {
                 string path = RemeshGeometryDiagnostics.WriteFailure(folder, p, ix, null, null,
@@ -445,6 +487,8 @@ namespace SashaRX.UnityMeshLab.Tests
                 var metadata = JsonUtility.FromJson<RemeshGeometryDiagnostics.FailureMetadata>(reader.ReadString());
                 CollectionAssert.AreEqual(new[] {0}, metadata.refusedLoops);
                 CollectionAssert.AreEqual(new[] {support.loopFailures[0]}, metadata.refusedLoopReasons);
+                Assert.AreEqual(support.selectionWarning, metadata.closureSelectionWarning);
+                StringAssert.Contains("'16'", metadata.closureSelectionWarning);
                 Assert.IsTrue(reader.ReadBoolean()); Assert.AreEqual(p.Length, reader.ReadInt32()); Assert.AreEqual(ix.Length, reader.ReadInt32());
                 for (int i = 0; i < p.Length; ++i) Assert.AreEqual(p[i], new Vector3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle()));
                 for (int i = 0; i < ix.Length; ++i) Assert.AreEqual(ix[i], reader.ReadInt32());

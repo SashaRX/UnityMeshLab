@@ -119,6 +119,8 @@ namespace SashaRX.UnityMeshLab
         internal Color[] ClosureContourColors { get; private set; }
         internal string[] ClosureContourReasons { get; private set; }
         internal string ClosureSummary { get; private set; }
+        internal string ClosureSelectionWarning { get; private set; }
+        internal string ClosureLoopRanges { get; private set; }
         public Mesh VoxelMesh => voxelMesh;
         /// <summary>The untrimmed remesh of the primary node with one colour per trim
         /// class (green kept, red back of a sheet, orange rim); null when nothing was trimmed.</summary>
@@ -362,6 +364,8 @@ namespace SashaRX.UnityMeshLab
                             node.support = RemeshPlanarCap.Prepare(captured.positions, captured.indices, options.planarCapLoops, token, options.planarCapLocalPlanes, options.closureMode, options.capPlaneTolerance, capOwners,
                                 (loop, done, total) => progress.Report($"{node.name}: processed loop {loop} ({done}/{total})"), continueOnRefusal: true);
                             UvtLog.Info(LogPrefix + node.name + ": planar Cap " + node.support.Description);
+                            if (node.support.selectionWarning != null)
+                                UvtLog.Warn(LogPrefix + node.name + ": " + node.support.selectionWarning);
                             foreach (var failure in node.support.loopFailures)
                                 UvtLog.Warn(LogPrefix + node.name + $": closure loop {failure.Key} left open: {failure.Value}");
                             var contacts = node.support.externalContacts;
@@ -422,7 +426,8 @@ namespace SashaRX.UnityMeshLab
                                         throw new InvalidOperationException("Cap support has no boundary edges but includes a zero-volume component. Inspect its geometry before solid Remesh.");
                                     throw new InvalidOperationException($"Cap support still has {remaining.boundary.Count} boundary edges " +
                                         $"after selection '{options.planarCapLoops}' from {node.support.loops} loops. " +
-                                        (node.support.loopFailures.Count > 0 ? "Inspect red refused contours and their reasons in Cap / Bridge; accepted closures are retained." :
+                                        (node.support.selectionWarning != null ? "Correct the loop selection using the available contour numbers in Cap / Bridge; accepted closures are retained." :
+                                        node.support.loopFailures.Count > 0 ? "Inspect red refused contours and their reasons in Cap / Bridge; accepted closures are retained." :
                                             "Choose All boundaries to close the remaining openings, or an explicit Bridge selection."));
                                 }
                             }
@@ -528,9 +533,14 @@ namespace SashaRX.UnityMeshLab
             var contourNames = new List<string> { "All original rims" };
             var contourEdges = new List<Vector3[]>();
             var contourColors = new List<Color>(); var contourReasons = new List<string>();
+            var selectionWarnings = new List<string>(); var loopRanges = new List<string>();
             var toPrimary = Primary.spaceToWorld.inverse;
             foreach (var node in nodes) {
                 var support = node.support;
+                if (support != null) {
+                    loopRanges.Add(node.name + (support.loops == 0 ? ": no boundary loops" : $": 0..{support.loops - 1}"));
+                    if (support.selectionWarning != null) selectionWarnings.Add(node.name + ": " + support.selectionWarning);
+                }
                 var p = support?.positions ?? node.source.positions;
                 var ix = support?.indices ?? node.source.indices;
                 var matrix = toPrimary * node.spaceToWorld;
@@ -565,6 +575,8 @@ namespace SashaRX.UnityMeshLab
             closureRims.SetColors(rimColors);
             ClosureContourNames = contourNames.ToArray(); ClosureContourEdges = contourEdges.ToArray();
             ClosureContourColors = contourColors.ToArray(); ClosureContourReasons = contourReasons.ToArray();
+            ClosureSelectionWarning = selectionWarnings.Count == 0 ? null : string.Join("\n", selectionWarnings);
+            ClosureLoopRanges = loopRanges.Count == 0 ? null : string.Join("; ", loopRanges);
         }
 
         static int CountTrue(bool[] mask)
@@ -891,6 +903,7 @@ namespace SashaRX.UnityMeshLab
                 if (closureMesh) Object.DestroyImmediate(closureMesh);
                 if (closureRims) Object.DestroyImmediate(closureRims);
                 sourceMesh = closureMesh = closureRims = null; preparationKey = null; ClosureSummary = null;
+                ClosureSelectionWarning = null; ClosureLoopRanges = null;
                 ClosureContourNames = null; ClosureContourEdges = null;
                 ClosureContourColors = null; ClosureContourReasons = null;
                 nodes.Clear(); previewNode = null; hierarchy = false; CapturedSource = null; unfilteredRoot = null;
