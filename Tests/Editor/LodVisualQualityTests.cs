@@ -45,6 +45,7 @@ namespace SashaRX.UnityMeshLab.Tests
             public int smoothingRegions, linkedNormalDuplicates, mixedSmoothingFaces, missingSmoothingRegions, incompleteSmoothingRegions;
             public List<RegionNormalError> regionNormalsBefore, regionNormalsAfter;
             public List<BudgetCandidate> budgetCandidates;
+            [SerializeField] internal List<LodScreenAcceptance.Report> screenAcceptance;
             public int removedParts, removedPartTris;
             public float removedPartAreaFraction, removedPartMaxPixels;
         }

@@ -8,6 +8,8 @@ Latest follow-up verification: **183 selected EditMode tests passed**, with all 
 
 ## Implemented
 
+The latest [screen-acceptance stage](LOD_SCREEN_ACCEPTANCE.md) adds local thin-detail and sharp RGBA-boundary diagnostics at three footprints. **196 selected tests pass**, with 528 comparisons on the prior eight-model GPU readbacks and a separate fresh tent generation/capture. The tent proves lower RGBA RMS can still accompany worse sharp-boundary retention. These diagnostic gates do not yet change candidate selection or generation defaults.
+
 - Independent per-level settings and source-based budgets; multiple meshoptimizer candidates ranked by measured geometry, silhouette, normals, UV and RGBA errors.
 - Verified normal and vertex-color correction, including connected smoothing regions and correction non-regression checks. Regions represent authored normal continuity, not recovered DCC smoothing-group IDs.
 - Raw FBX topology preparation through temporary imports without changing the original FBX; conservative full-loop and disconnected-small-part experiments.
@@ -52,7 +54,7 @@ The overview/chart retain the final capture lineage above; their LOD2 fields/cou
 ## Next iteration, in order
 
 1. Native crease/junction constraints and the matched-count comparison are implemented and verified as an optional experiment. Remaining work in this stage: diagnose low-budget coverage failures, quality regressions and expensive retries; keep the strict/coarsened controls and rebuild native changes through CI.
-2. Next implementation: add acceptance checks for disappearing thin/soft components and categorical vertex-color boundaries. Keep matched-count comparisons and evaluate real screen sizes, including Bench B LOD1 color, Wrench silhouette and aggressive grenade reduction as controls.
+2. Local screen-acceptance diagnostics are implemented and verified. Next implementation: use detail/paint retention in candidate selection and whole-small-component removal, calibrate the experimental thresholds at actual screen sizes and preserve Bench A/Fire Shield thin details and the tent's RMS-versus-boundary tradeoff. Categorical labels and original-material acceptance remain unverified.
 3. Exercise original materials, normal maps, complete assemblies and LOD transitions in the project's render pipeline. Separate geometric silhouette, shading and color errors in the report.
 4. Revisit full-loop removal on irregular project topology. Keep source provenance and topology/winding/intersection validation; require a measured reduction benefit before changing defaults.
 5. Reconsider QSlim as an additional candidate only after equivalent attribute, topology, crease and quality checks. Any necessary native plugin change must be rebuilt through `build-native.yml`.

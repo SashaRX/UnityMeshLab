@@ -208,12 +208,21 @@ namespace SashaRX.UnityMeshLab.Tests
                     var original = renderer.Draw(source,RenderMode.Colors,matrix);
                     var coverage = renderer.Draw(source,RenderMode.Coverage,matrix);
                     var shading = renderer.Draw(source,RenderMode.Shaded,matrix);
+                    var screens = new List<LodScreenAcceptance>();
+                    foreach (int divisor in new[] { 1,2,4 })
+                    {
+                        var screenSettings = LodScreenAcceptance.Settings.Default; screenSettings.divisor = divisor;
+                        screenSettings.checkColorBoundaries = report.varyingVertexColors;
+                        screens.Add(new LodScreenAcceptance(original,coverage,LodVisualQualityTests.Size,LodVisualQualityTests.Size,screenSettings));
+                    }
                     foreach (var variant in variants)
                     {
                         var color = renderer.Draw(variant.mesh,RenderMode.Colors,matrix);
                         var mask = renderer.Draw(variant.mesh,RenderMode.Coverage,matrix);
                         var lit = renderer.Draw(variant.mesh,RenderMode.Shaded,matrix);
                         var capture = LodVisualQualityTests.Compare(original,color,coverage,mask,shading,lit);
+                        capture.screenAcceptance = new List<LodScreenAcceptance.Report>();
+                        foreach (var screen in screens) capture.screenAcceptance.Add(screen.Measure(color,mask));
                         capture.variant = variant.name; capture.view = view;
                         capture.triangles = LodMeshData.TriangleCount(variant.mesh);
                         capture.targetRatio = variant.name == "source" ? 1 : variant.info.targetRatio;

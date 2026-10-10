@@ -173,6 +173,10 @@ python Tools~/render_lod_native_constraints.py <output> --tests <results.xml> --
    categorical vertex-color boundaries at matched counts and real screen sizes.
    Keep Bench B LOD1 color, Wrench silhouette and aggressive grenade reduction as
    explicit regression controls. Profile failed native coverage and costly retries.
+   The [local screen diagnostics](LOD_SCREEN_ACCEPTANCE.md) now evaluate visible
+   details and sharp RGBA boundaries, with 196 selected tests passing. Their next
+   step is candidate/removal policy and threshold calibration; semantic categorical
+   labels and original-material acceptance remain outstanding.
 2. Test original project materials, normal maps, full assemblies and transitions.
 3. Revisit full-loop and QSlim candidates only with equivalent topology, feature,
    attribute and source-quality checks. Do not change defaults until the factor-three
