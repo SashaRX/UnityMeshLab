@@ -219,3 +219,37 @@ component with two open rims; after the second there is one closed genus-one
 component. Original vertices/faces are preserved and prepared element labels
 are unified. This is evidence for these two controls, not a guarantee for
 arbitrary ambiguous pairs or intersecting contours.
+
+## Optional planar Caps after Bridge refusal (revision 13)
+
+`Cap on Bridge refusal` is available in Bridge and Automatic. It is disabled in
+new and older saved settings. After an actual paired Bridge attempt refuses,
+preparation rolls back that candidate and tries a planar disk on each original
+rim independently. Successful Bridges remain Bridges. Invalid selections,
+ambiguous Automatic pairings and cancellation do not trigger a substitute
+closure. Contact exhaustion does not reset the shared audit budget.
+
+Each disk retains the current element contact scope, source vertices/faces,
+topology checks and its own synthetic patch ID. A refused disk leaves that rim
+open and does not discard a valid disk on the other rim in partial preparation.
+Nonplanar rims still refuse the planar disk; this fallback does not introduce
+Surface Caps or invent a compound closure.
+
+Separate disks change the intended shape. On one torus with two missing bands,
+four fallback disks leave two closed tube segments (Euler 2 each), whereas two
+successful Bridges restore one genus-one component (Euler 0). The preview labels
+accepted fallback rims `CAP FALLBACK`, reports the original Bridge refusal and
+keeps refused Caps red. Diagnostic metadata distinguishes fallback attempts from
+rims that actually remain refused, and includes the saved opt-in setting.
+
+Unity controls cover 129-edge rim refusals, nearby/opposite double cuts, a blocked
+Bridge whose disks are valid, one blocked disk without losing its partner, a
+retained successful Bridge, invalid selection, cancellation, settings/cache
+invalidation and the shared contact budget. A native control carries the capped
+tube through voxel Remesh, Simplify and UV, checking genus and atlas overlaps.
+
+Validation on 2026-10-10: 154 Unity EditMode controls passed, zero failed;
+29 optional private-capture cases were ignored because their inputs were not
+configured. Six diagnostic capture controls also passed after adding the fallback
+metadata. Both FBX compile variants have zero errors. Private results:
+`_results~/bridge-cap-fallback-20261010/closure-final.xml` and `metadata.xml`.

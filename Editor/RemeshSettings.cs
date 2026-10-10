@@ -97,6 +97,9 @@ namespace SashaRX.UnityMeshLab
         public float capPlaneTolerance = DefaultCapPlaneTolerance;
         public bool planarCapLocalPlanes;
         public RemeshClosureMode closureMode;
+        // Opt-in topology change: a refused Bridge may instead close each rim
+        // with a separate planar disk. Successful Bridges are retained.
+        public bool bridgeCapFallback;
         // After the voxel remesh, drop the faces the source has no surface for: the
         // voxelizer closes an open sheet into a slab, and its back side and rims have no
         // source face nearby with an aligned normal. Closed sources are left whole.

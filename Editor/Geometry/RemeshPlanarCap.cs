@@ -10,7 +10,7 @@ namespace SashaRX.UnityMeshLab
     /// donor arrays are never mutated. Each closure candidate is accepted atomically.</summary>
     internal static class RemeshPlanarCap
     {
-        internal const int Revision = 12;
+        internal const int Revision = 13;
         const int MaxVertices = 200000, MaxIndices = 1200000, MaxLoopEdges = 512;
         const int MaxPairTrials = 2000000;
 
@@ -60,18 +60,20 @@ namespace SashaRX.UnityMeshLab
             internal readonly Dictionary<int, string> loopFailures = new Dictionary<int, string>();
             internal readonly Dictionary<int, int> bridgePartners = new Dictionary<int, int>();
             internal readonly Dictionary<int, string> bridgeSearch = new Dictionary<int, string>();
+            internal readonly Dictionary<int, string> bridgeCapFallbacks = new Dictionary<int, string>();
             internal string selectionWarning;
             internal readonly List<int> patchEnds = new List<int>();
             internal string Description => $"welded {weldedVertices} vertices; {loops} boundary loops; selection {selection}; added {addedFaces} faces; " +
                 $"{localPatches} local patches; {planeRechecks} fresh plane checks; {contactTests} exact contact tests; " +
                 (externalContacts?.faceElements != null ? $"{externalContacts.excludedElementPairs} pairs with other elements excluded from contact audit" :
                     $"{externalContacts?.count ?? 0} non-blocking contacts with other source meshes") + $"; {loopFailures.Count} refused loops" +
-                (selectionWarning == null ? "" : "; " + selectionWarning);
+                $"; {bridgeCapFallbacks.Count} Bridge-to-Cap attempts" + (selectionWarning == null ? "" : "; " + selectionWarning);
         }
 
         internal static Support Prepare(Vector3[] positions, int[] indices, string selection, CancellationToken token, bool localPlanes = false,
             RemeshClosureMode mode = RemeshClosureMode.Caps, double planeTolerance = 0, int[] sourceFaceOwners = null,
-            Action<int, int, int> loopCompleted = null, bool continueOnRefusal = false, bool elementScopedContacts = false)
+            Action<int, int, int> loopCompleted = null, bool continueOnRefusal = false, bool elementScopedContacts = false,
+            bool bridgeCapFallback = false)
         {
             token.ThrowIfCancellationRequested();
             if (!Enum.IsDefined(typeof(RemeshClosureMode),mode)) throw Refuse("unknown closure method");
@@ -152,67 +154,85 @@ namespace SashaRX.UnityMeshLab
                 token.ThrowIfCancellationRequested();
                 if (finished.Contains(loop)) continue;
                 int partner = -1;
-                if (mode == RemeshClosureMode.Bridge && chosen.Count == 2) { foreach (int other in chosen) if (other != loop) partner = other; }
-                else if (mode == RemeshClosureMode.Automatic && partners.TryGetValue(loop,out int paired)) partner = paired;
-                try {
-                    if (selectionRefusal != null) throw Refuse(selectionRefusal);
-                    if (ambiguous.Contains(loop) || partner >= 0 && ambiguous.Contains(partner))
-                        throw Refuse("automatic closure has more than one collar partner; select Bridge intent explicitly");
-                    if (loops[loop].Count > MaxLoopEdges || partner >= 0 && loops[partner].Count > MaxLoopEdges)
-                        throw Refuse("a selected boundary loop exceeds 512 edges");
-                    if (contactTrials > MaxPairTrials) throw Refuse("Cap contact audit exceeds the pair budget");
-                    var owners = ClosingOwners(topology, loops[loop], partner >= 0 ? loops[partner] : null, sourceFaceOwners);
-                    var external = owners == null ? null : result.externalContacts?.Fork(owners);
-                    if (elementScopedContacts) {
-                        // Accepted Bridges can join previously separate elements. Use
-                        // current connectivity, including all earlier synthetic faces.
-                        var current = currentTopology;
-                        var elements = ElementIds(current, token);
-                        var closing = ClosingOwners(current, loops[loop], partner >= 0 ? loops[partner] : null, elements);
-                        external = result.externalContacts.Fork(owners, elements, closing);
-                    }
-                    // Local/compound closure may append one patch before discovering a
-                    // refusal on the next. Its geometry, patch IDs and contacts stay private.
-                    var candidatePositions = pWeld; var candidateExact = exact;
-                    var candidate = new List<int>(assembled); var stats = new Support { originalFaces = result.originalFaces };
-                    RemeshBridge.SearchReport bridgeReport = null;
-                    if (partner >= 0) {
-                        bridgeReport = new RemeshBridge.SearchReport();
-                        var patch = RemeshBridge.Generate(candidatePositions,candidate.ToArray(),loops[loop],loops[partner],token,ref contactTrials,out int tested, external,bridgeReport);
-                        stats.contactTests += tested; candidate.AddRange(patch); stats.patchEnds.Add(candidate.Count / 3);
-                    }
-                    else if (mode == RemeshClosureMode.SurfaceCaps) {
-                        var patch = RemeshSurfaceCap.Generate(candidatePositions, candidate.ToArray(), loops[loop], token,
-                            ref contactTrials, out int tested, external);
-                        stats.contactTests += tested; candidate.AddRange(patch); stats.patchEnds.Add(candidate.Count / 3);
-                    }
-                    else if (localPlanes || mode == RemeshClosureMode.Automatic)
-                        CloseLocal(ref candidatePositions, ref candidateExact, candidate, loops[loop], token, stats, ref contactTrials, planeTolerance, external);
-                    else {
-                        candidate.AddRange(Triangulate(candidatePositions, candidateExact, loops[loop], token, planeTolerance));
-                        AuditContacts(candidatePositions, candidateExact, candidate.ToArray(), assembled.Count / 3, token, ref contactTrials, out int tested, external);
-                        stats.contactTests += tested; stats.patchEnds.Add(candidate.Count / 3);
-                    }
-                    if (candidate.Count - iWeld.Length > MaxLoopEdges * 3 * 8) throw Refuse("total Cap face budget exceeded");
-                    int removed = loops[loop].Count + (partner < 0 ? 0 : loops[partner].Count);
-                    foreach (int accepted in closedLoops) removed += loops[accepted].Count;
-                    var candidateTopology = RemeshTopology.Inspect(candidatePositions, candidate.ToArray(), token);
-                    if (!candidateTopology.Valid || candidateTopology.boundary.Count != topology.boundary.Count - removed)
-                        throw Refuse("closure candidate topology: " + candidateTopology.Description);
-                    pWeld = candidatePositions; exact = candidateExact; assembled = candidate;
-                    currentTopology = candidateTopology;
-                    result.patchEnds.AddRange(stats.patchEnds); result.contactTests += stats.contactTests;
-                    result.localPatches += stats.localPatches; result.planeRechecks += stats.planeRechecks;
-                    result.externalContacts?.Merge(external);
-                    if (partner >= 0) {
-                        result.bridgePartners.Add(loop,partner); result.bridgePartners.Add(partner,loop);
-                        result.bridgeSearch.Add(loop,bridgeReport.Description); result.bridgeSearch.Add(partner,bridgeReport.Description);
-                    }
-                    closedLoops.Add(loop); if (partner >= 0) closedLoops.Add(partner);
+                if (!result.bridgeCapFallbacks.ContainsKey(loop)) {
+                    if (mode == RemeshClosureMode.Bridge && chosen.Count == 2) { foreach (int other in chosen) if (other != loop) partner = other; }
+                    else if (mode == RemeshClosureMode.Automatic && partners.TryGetValue(loop,out int paired)) partner = paired;
                 }
-                catch (InvalidOperationException failure) when (continueOnRefusal) {
-                    result.loopFailures.Add(loop, failure.Message);
-                    if (partner >= 0) result.loopFailures.Add(partner, failure.Message);
+                while (true) {
+                    bool bridgeAttempted = false;
+                    try {
+                        if (selectionRefusal != null) throw Refuse(selectionRefusal);
+                        if (ambiguous.Contains(loop) || partner >= 0 && ambiguous.Contains(partner))
+                            throw Refuse("automatic closure has more than one collar partner; select Bridge intent explicitly");
+                        if (loops[loop].Count > MaxLoopEdges || partner >= 0 && loops[partner].Count > MaxLoopEdges)
+                            throw Refuse("a selected boundary loop exceeds 512 edges");
+                        if (contactTrials > MaxPairTrials) throw Refuse("Cap contact audit exceeds the pair budget");
+                        var owners = ClosingOwners(topology, loops[loop], partner >= 0 ? loops[partner] : null, sourceFaceOwners);
+                        var external = owners == null ? null : result.externalContacts?.Fork(owners);
+                        if (elementScopedContacts) {
+                            // Accepted Bridges can join previously separate elements. Use
+                            // current connectivity, including all earlier synthetic faces.
+                            var current = currentTopology;
+                            var elements = ElementIds(current, token);
+                            var closing = ClosingOwners(current, loops[loop], partner >= 0 ? loops[partner] : null, elements);
+                            external = result.externalContacts.Fork(owners, elements, closing);
+                        }
+                        // Local/compound closure may append one patch before discovering a
+                        // refusal on the next. Its geometry, patch IDs and contacts stay private.
+                        var candidatePositions = pWeld; var candidateExact = exact;
+                        var candidate = new List<int>(assembled); var stats = new Support { originalFaces = result.originalFaces };
+                        RemeshBridge.SearchReport bridgeReport = null;
+                        if (partner >= 0) {
+                            bridgeAttempted = true;
+                            bridgeReport = new RemeshBridge.SearchReport();
+                            var patch = RemeshBridge.Generate(candidatePositions,candidate.ToArray(),loops[loop],loops[partner],token,ref contactTrials,out int tested, external,bridgeReport);
+                            stats.contactTests += tested; candidate.AddRange(patch); stats.patchEnds.Add(candidate.Count / 3);
+                        }
+                        else if (mode == RemeshClosureMode.SurfaceCaps) {
+                            var patch = RemeshSurfaceCap.Generate(candidatePositions, candidate.ToArray(), loops[loop], token,
+                                ref contactTrials, out int tested, external);
+                            stats.contactTests += tested; candidate.AddRange(patch); stats.patchEnds.Add(candidate.Count / 3);
+                        }
+                        else if (!result.bridgeCapFallbacks.ContainsKey(loop) && (localPlanes || mode == RemeshClosureMode.Automatic))
+                            CloseLocal(ref candidatePositions, ref candidateExact, candidate, loops[loop], token, stats, ref contactTrials, planeTolerance, external);
+                        else {
+                            candidate.AddRange(Triangulate(candidatePositions, candidateExact, loops[loop], token, planeTolerance));
+                            AuditContacts(candidatePositions, candidateExact, candidate.ToArray(), assembled.Count / 3, token, ref contactTrials, out int tested, external);
+                            stats.contactTests += tested; stats.patchEnds.Add(candidate.Count / 3);
+                        }
+                        if (candidate.Count - iWeld.Length > MaxLoopEdges * 3 * 8) throw Refuse("total Cap face budget exceeded");
+                        int removed = loops[loop].Count + (partner < 0 ? 0 : loops[partner].Count);
+                        foreach (int accepted in closedLoops) removed += loops[accepted].Count;
+                        var candidateTopology = RemeshTopology.Inspect(candidatePositions, candidate.ToArray(), token);
+                        if (!candidateTopology.Valid || candidateTopology.boundary.Count != topology.boundary.Count - removed)
+                            throw Refuse("closure candidate topology: " + candidateTopology.Description);
+                        pWeld = candidatePositions; exact = candidateExact; assembled = candidate;
+                        currentTopology = candidateTopology;
+                        result.patchEnds.AddRange(stats.patchEnds); result.contactTests += stats.contactTests;
+                        result.localPatches += stats.localPatches; result.planeRechecks += stats.planeRechecks;
+                        result.externalContacts?.Merge(external);
+                        if (partner >= 0) {
+                            result.bridgePartners.Add(loop,partner); result.bridgePartners.Add(partner,loop);
+                            result.bridgeSearch.Add(loop,bridgeReport.Description); result.bridgeSearch.Add(partner,bridgeReport.Description);
+                        }
+                        closedLoops.Add(loop); if (partner >= 0) closedLoops.Add(partner);
+                        break;
+                    }
+                    catch (InvalidOperationException failure) when (continueOnRefusal || bridgeAttempted && bridgeCapFallback) {
+                        if (bridgeAttempted && bridgeCapFallback && contactTrials <= MaxPairTrials) {
+                            // A refused Bridge published no geometry. Retry each rim as
+                            // its own planar disk, sharing the remaining contact budget.
+                            // The second rim is processed normally by the outer loop.
+                            result.bridgeCapFallbacks.Add(loop, failure.Message);
+                            result.bridgeCapFallbacks.Add(partner, failure.Message);
+                            partner = -1;
+                            continue;
+                        }
+                        if (!continueOnRefusal) throw;
+                        result.loopFailures.Add(loop, failure.Message);
+                        if (partner >= 0) result.loopFailures.Add(partner, failure.Message);
+                        break;
+                    }
                 }
                 finished.Add(loop);
                 if (partner >= 0) finished.Add(partner);

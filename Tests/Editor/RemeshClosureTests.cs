@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using NUnit.Framework;
@@ -161,6 +162,152 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(after.Valid,after.Description); CollectionAssert.AreEqual(new[] {0},after.euler);
             Assert.IsTrue(cap.faceElements.All(id=>id==cap.faceElements[0]));
             CollectionAssert.AreEqual(p,cap.positions); CollectionAssert.AreEqual(ix,cap.indices.Take(ix.Length));
+        }
+
+        [Test]
+        public void BridgeCapFallbackIsOptInAndKeepsSuccessfulBridges()
+        {
+            var (p,ix) = TorusGap();
+            var cap = RemeshPlanarCap.Prepare(p,ix,"0,1",default,mode:RemeshClosureMode.Bridge,bridgeCapFallback:true);
+            Assert.AreEqual(2,cap.bridgePartners.Count); Assert.IsEmpty(cap.bridgeCapFallbacks);
+            CollectionAssert.AreEqual(new[] {0},RemeshTopology.Inspect(cap.positions,cap.indices).euler);
+            var settings = new RemeshSettings {planarCap=true,closureMode=RemeshClosureMode.Automatic};
+            string prepareKey = RemeshPipeline.Key(RemeshPipeline.Stage.Prepare,settings,null);
+            string remeshKey = RemeshPipeline.Key(RemeshPipeline.Stage.Remesh,settings,null);
+            Assert.IsFalse(RemeshSettings.FromSavedJson("{\"planarCap\":true,\"closureMode\":2}").bridgeCapFallback);
+            settings.bridgeCapFallback = true;
+            Assert.IsTrue(RemeshSettings.FromSavedJson(JsonUtility.ToJson(settings)).bridgeCapFallback);
+            Assert.AreNotEqual(prepareKey,RemeshPipeline.Key(RemeshPipeline.Stage.Prepare,settings,null));
+            Assert.AreNotEqual(remeshKey,RemeshPipeline.Key(RemeshPipeline.Stage.Remesh,settings,null));
+        }
+
+        [TestCase(RemeshClosureMode.Bridge)] [TestCase(RemeshClosureMode.Automatic)]
+        public void RefusedOversizedBridgeCanCloseBothRimsAsSeparatePlanarCaps(RemeshClosureMode mode)
+        {
+            var (p,ix) = TorusGap(16,129);
+            var points = (Vector3[])p.Clone(); var indices = (int[])ix.Clone();
+            var refused = RemeshPlanarCap.Prepare(p,ix,"0,1",default,mode:mode,continueOnRefusal:true);
+            Assert.AreEqual(2,refused.loopFailures.Count); Assert.AreEqual(0,refused.addedFaces);
+            Assert.IsEmpty(refused.bridgeCapFallbacks); CollectionAssert.AreEqual(ix,refused.indices);
+            var progress = new List<int>();
+            var cap = RemeshPlanarCap.Prepare(p,ix,"0,1",default,mode:mode,elementScopedContacts:true,
+                loopCompleted:(loop,done,total)=>progress.Add(done),bridgeCapFallback:true);
+            Assert.IsEmpty(cap.loopFailures); Assert.IsEmpty(cap.bridgePartners); Assert.AreEqual(2,cap.bridgeCapFallbacks.Count);
+            Assert.IsTrue(cap.bridgeCapFallbacks.Values.All(reason=>reason.Contains("128 edges")));
+            Assert.AreEqual(254,cap.addedFaces); Assert.AreEqual(2,cap.patchEnds.Count); Assert.AreEqual(0,cap.remainingBoundaryEdges);
+            CollectionAssert.AreEqual(new[] {1,2},progress);
+            var after = RemeshTopology.Inspect(cap.positions,cap.indices);
+            Assert.IsTrue(after.Valid,after.Description); CollectionAssert.AreEqual(new[] {2},after.euler);
+            Assert.IsTrue(RemeshTopology.ClosedVolumeFaces(cap.positions,cap.indices,default).All(v=>v));
+            Assert.IsTrue(cap.facePatches.Take(ix.Length/3).All(id=>id==0));
+            Assert.AreEqual(127,cap.facePatches.Count(id=>id==1)); Assert.AreEqual(127,cap.facePatches.Count(id=>id==2));
+            CollectionAssert.AreEqual(points,p); CollectionAssert.AreEqual(indices,ix);
+            CollectionAssert.AreEqual(p,cap.positions); CollectionAssert.AreEqual(ix,cap.indices.Take(ix.Length));
+        }
+
+        [TestCase(8)] [TestCase(3)]
+        public void TwoRefusedBridgesWithCapFallbackLeaveTwoClosedTorusSegments(int secondCut)
+        {
+            const int ring = 129;
+            var (p,source) = TorusGap(16,ring);
+            var ix = source.Where((v,i)=>i/(ring*6)!=secondCut-1).ToArray();
+            var cap = RemeshPlanarCap.Prepare(p,ix,"all",default,mode:RemeshClosureMode.Automatic,
+                continueOnRefusal:true,elementScopedContacts:true,bridgeCapFallback:true);
+            Assert.IsEmpty(cap.loopFailures); Assert.IsEmpty(cap.bridgePartners);
+            Assert.AreEqual(4,cap.bridgeCapFallbacks.Count); Assert.AreEqual(4,cap.patchEnds.Count);
+            Assert.AreEqual(508,cap.addedFaces); Assert.AreEqual(0,cap.remainingBoundaryEdges);
+            var after = RemeshTopology.Inspect(cap.positions,cap.indices);
+            Assert.IsTrue(after.Valid,after.Description); CollectionAssert.AreEqual(new[] {2,2},after.euler);
+            Assert.IsTrue(RemeshTopology.ClosedVolumeFaces(cap.positions,cap.indices,default).All(v=>v));
+            CollectionAssert.AreEqual(p,cap.positions); CollectionAssert.AreEqual(ix,cap.indices.Take(ix.Length));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void CapFallbackAuditsEachRimIndependentlyAndRetainsTheOtherCap(bool intersectCap)
+        {
+            var (points,source) = TorusGap(); var p = points.ToList(); var ix = source.ToList();
+            float angle = intersectCap ? 0 : Mathf.PI/12;
+            var radial = new Vector3(Mathf.Cos(angle),Mathf.Sin(angle),0);
+            p.Add(radial+Vector3.back); p.Add(radial*3+Vector3.back);
+            p.Add(radial*3+Vector3.forward); p.Add(radial+Vector3.forward);
+            int n=points.Length; ix.AddRange(new[] {n,n+1,n+2,n,n+2,n+3});
+            var savedPoints=p.ToArray(); var savedIndices=ix.ToArray();
+            var cap=RemeshPlanarCap.Prepare(savedPoints,savedIndices,"0,1",default,mode:RemeshClosureMode.Bridge,
+                continueOnRefusal:true,bridgeCapFallback:true);
+            Assert.AreEqual(2,cap.bridgeCapFallbacks.Count); Assert.IsEmpty(cap.bridgePartners);
+            Assert.IsTrue(cap.bridgeCapFallbacks.Values.All(reason=>reason.Contains("contacts face")));
+            Assert.AreEqual(intersectCap ? 1 : 0,cap.loopFailures.Count);
+            Assert.AreEqual(intersectCap ? 1 : 2,cap.patchEnds.Count);
+            Assert.AreEqual(intersectCap ? 4 : 8,cap.addedFaces);
+            Assert.AreEqual(intersectCap ? 10 : 4,cap.remainingBoundaryEdges);
+            if (intersectCap) StringAssert.Contains("contacts face",cap.loopFailures.Values.Single());
+            var after=RemeshTopology.Inspect(cap.positions,cap.indices); Assert.IsTrue(after.Valid,after.Description);
+            CollectionAssert.AreEqual(savedPoints,p); CollectionAssert.AreEqual(savedIndices,ix);
+            CollectionAssert.AreEqual(savedIndices,cap.indices.Take(savedIndices.Length));
+            string directory=Path.Combine(Path.GetTempPath(),"meshlab-bridge-fallback-test-"+Guid.NewGuid().ToString("N"));
+            try {
+                var metadata=new RemeshGeometryDiagnostics.FailureMetadata {
+                    settingsJson=JsonUtility.ToJson(new RemeshSettings {bridgeCapFallback=true}) };
+                string path=RemeshGeometryDiagnostics.WriteFailure(directory,savedPoints,savedIndices,null,null,metadata,cap);
+                using var reader=new BinaryReader(File.OpenRead(path)); reader.ReadInt32(); Assert.AreEqual(3,reader.ReadInt32());
+                var restored=JsonUtility.FromJson<RemeshGeometryDiagnostics.FailureMetadata>(reader.ReadString());
+                CollectionAssert.AreEqual(cap.bridgeCapFallbacks.Keys,restored.bridgeCapFallbackLoops);
+                CollectionAssert.AreEqual(cap.bridgeCapFallbacks.Values,restored.bridgeCapFallbackReasons);
+                Assert.AreEqual(intersectCap ? 1 : 0,restored.refusedLoops.Length);
+                Assert.IsTrue(RemeshSettings.FromSavedJson(restored.settingsJson).bridgeCapFallback);
+            }
+            finally { if (Directory.Exists(directory)) Directory.Delete(directory,true); }
+        }
+
+        [Test]
+        public void CapFallbackDoesNotReinterpretAnInvalidBridgeSelectionOrCancellation()
+        {
+            var (p,ix) = TorusGap();
+            var cap = RemeshPlanarCap.Prepare(p,ix,"0",default,mode:RemeshClosureMode.Bridge,
+                continueOnRefusal:true,bridgeCapFallback:true);
+            Assert.AreEqual(1,cap.loopFailures.Count); Assert.IsEmpty(cap.bridgeCapFallbacks); Assert.AreEqual(0,cap.addedFaces);
+            CollectionAssert.AreEqual(ix,cap.indices);
+            Assert.Throws<OperationCanceledException>(()=>RemeshPlanarCap.Prepare(p,ix,"0,1",
+                new System.Threading.CancellationToken(true),mode:RemeshClosureMode.Bridge,bridgeCapFallback:true));
+        }
+
+        [Test]
+        public void CapFallbackRetainsTheSharedContactBudget()
+        {
+            var (points,source) = TorusGap(12,129);
+            var p = points.Concat(points.Select(v=>v+Vector3.right*8)).Concat(points.Select(v=>v+Vector3.right*16)).ToArray();
+            var ix = source.Concat(source.Select(v=>v+points.Length)).Concat(source.Select(v=>v+points.Length*2)).ToArray();
+            var cap = RemeshPlanarCap.Prepare(p,ix,"0,1",default,mode:RemeshClosureMode.Bridge,
+                continueOnRefusal:true,bridgeCapFallback:true);
+            Assert.AreEqual(2,cap.bridgeCapFallbacks.Count); Assert.AreEqual(1,cap.patchEnds.Count);
+            Assert.AreEqual(127,cap.addedFaces); Assert.AreEqual(1,cap.loopFailures.Count);
+            StringAssert.Contains("pair budget",cap.loopFailures.Values.Single());
+            CollectionAssert.AreEqual(ix,cap.indices.Take(ix.Length));
+        }
+
+        [Test]
+        public void CapFallbackClosesTheTubeThroughNativeRemeshSimplifyAndUv()
+        {
+            try { RemeshNative.CheckAvailable(); }
+            catch (InvalidOperationException ex) when (ex.InnerException is DllNotFoundException ||
+                ex.InnerException is EntryPointNotFoundException || ex.InnerException is BadImageFormatException)
+                { Assert.Ignore("Native remesh unavailable: "+ex.Message); }
+            var (p,ix) = TorusGap(12,129);
+            var cap = RemeshPlanarCap.Prepare(p,ix,"0,1",default,mode:RemeshClosureMode.Bridge,
+                elementScopedContacts:true,bridgeCapFallback:true);
+            var settings = new RemeshSettings {voxelResolution=64,solve=false,maximumError=.02f,
+                textureResolution=512,padding=3,mergeCharts=true};
+            var voxel = RemeshNative.Voxelize(cap.positions,cap.indices,settings,default);
+            var simplified = RemeshNative.Simplify(voxel,settings,default,out _);
+            var uv = RemeshNative.Unwrap(simplified,settings,default);
+            foreach (var topology in new[] {RemeshTopology.Inspect(voxel.positions,voxel.indices),
+                RemeshTopology.Inspect(simplified.positions,simplified.indices),RemeshTopology.Inspect(uv.positions,uv.indices)}) {
+                Assert.IsTrue(topology.Valid,topology.Description); Assert.AreEqual(0,topology.boundary.Count);
+                CollectionAssert.AreEqual(new[] {2},topology.euler,"Separate Caps must leave a closed tube, without restoring the handle.");
+            }
+            var atlas = UvAtlasDiagnostics.Measure(uv,default);
+            Assert.IsTrue(atlas.complete); Assert.AreEqual(0,atlas.invalidFaces); Assert.AreEqual(0,atlas.degenerateFaces);
+            Assert.AreEqual(0,atlas.pairs); Assert.AreEqual(0,atlas.outOfBoundsVertices);
         }
 
         [Test]

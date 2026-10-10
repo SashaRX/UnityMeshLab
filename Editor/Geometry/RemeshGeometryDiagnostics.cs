@@ -23,6 +23,8 @@ namespace SashaRX.UnityMeshLab
             public long excludedElementPairs;
             public int[] refusedLoops;
             public string[] refusedLoopReasons;
+            public int[] bridgeCapFallbackLoops;
+            public string[] bridgeCapFallbackReasons;
             public string closureSelectionWarning;
             public int firstContactAddedFace = -1, firstContactSourceFace = -1;
             public uint initialFlags, resultFlags;
@@ -83,6 +85,13 @@ namespace SashaRX.UnityMeshLab
                         int entry = 0;
                         foreach (var failure in support.loopFailures) {
                             metadata.refusedLoops[entry] = failure.Key; metadata.refusedLoopReasons[entry++] = failure.Value;
+                        }
+                        metadata.bridgeCapFallbackLoops = new int[support.bridgeCapFallbacks.Count];
+                        metadata.bridgeCapFallbackReasons = new string[support.bridgeCapFallbacks.Count];
+                        entry = 0;
+                        foreach (var fallback in support.bridgeCapFallbacks) {
+                            metadata.bridgeCapFallbackLoops[entry] = fallback.Key;
+                            metadata.bridgeCapFallbackReasons[entry++] = fallback.Value;
                         }
                     }
                     using (var writer = new BinaryWriter(File.Create(partial))) {

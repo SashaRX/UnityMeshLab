@@ -195,10 +195,10 @@ namespace SashaRX.UnityMeshLab
             switch (stage) {
                 case Stage.Prepare: return $"{(source ? source.GetInstanceID() : 0)}|{s.lod0Only}|{s.keepHierarchy}|{s.sourceShape}|{s.shell}|" +
                     $"{s.minPartSize:R}|{s.minRodVoxels:R}|{s.voxelResolution}|{s.hullResolution}|{s.sourceBackfaces}|" +
-                    $"cap{RemeshPlanarCap.Revision}|{s.planarCap}|{s.planarCapLoops}|{s.planarCapLocalPlanes}|{s.closureMode}|{s.capPlaneTolerance:R}";
+                    $"cap{RemeshPlanarCap.Revision}|{s.planarCap}|{s.planarCapLoops}|{s.planarCapLocalPlanes}|{s.closureMode}|{s.capPlaneTolerance:R}|{s.bridgeCapFallback}";
                 case Stage.Remesh: return $"{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}|{s.lod0Only}|{s.keepHierarchy}|" +
                     $"{s.sourceShape}|{s.hullResolution}|{s.hullTriangles}|{s.minPartSize:R}|{s.minRodVoxels:R}|{s.voxelResolution}|{s.trimToSource}|{s.sourceBackfaces}|" +
-                    $"cap{RemeshPlanarCap.Revision}|{s.planarCap}|{s.planarCapLoops}|{s.planarCapLocalPlanes}|{s.closureMode}|{s.capPlaneTolerance:R}";
+                    $"cap{RemeshPlanarCap.Revision}|{s.planarCap}|{s.planarCapLoops}|{s.planarCapLocalPlanes}|{s.closureMode}|{s.capPlaneTolerance:R}|{s.bridgeCapFallback}";
                 case Stage.Simplify: return $"{s.simplify}|{s.targetTriangles}|{s.maximumError}|{s.regularize}|{s.preserveFolds}|{s.pruneSmallParts}";
                 case Stage.Unwrap: return $"{s.hardEdges}|{s.normalCrease}|{s.normalSmoothing}|{s.normalWeighting}|{s.textureResolution}|{s.padding}|{s.chartMaxCost}|" +
                     $"{s.chartNormalDeviation}|{s.chartNormalSeam}|{s.chartStraightness}|{s.chartRoundness}|{s.chartIterations}|" +
@@ -363,7 +363,8 @@ namespace SashaRX.UnityMeshLab
                         var capOwners = captured.FaceOwners();
                         try {
                             node.support = RemeshPlanarCap.Prepare(captured.positions, captured.indices, options.planarCapLoops, token, options.planarCapLocalPlanes, options.closureMode, options.capPlaneTolerance, capOwners,
-                                (loop, done, total) => progress.Report($"{node.name}: processed loop {loop} ({done}/{total})"), continueOnRefusal: true, elementScopedContacts: true);
+                                (loop, done, total) => progress.Report($"{node.name}: processed loop {loop} ({done}/{total})"), continueOnRefusal: true, elementScopedContacts: true,
+                                bridgeCapFallback: options.bridgeCapFallback);
                             string closureLabel = options.closureMode == RemeshClosureMode.SurfaceCaps ? "surface Cap " :
                                 options.closureMode == RemeshClosureMode.Bridge ? "Bridge " :
                                 options.closureMode == RemeshClosureMode.Automatic ? "automatic Cap/Bridge " : "planar Cap ";
@@ -374,6 +375,9 @@ namespace SashaRX.UnityMeshLab
                                 UvtLog.Warn(LogPrefix + node.name + $": closure loop {failure.Key} left open: {failure.Value}");
                             foreach (var pair in node.support.bridgePartners)
                                 if (pair.Key < pair.Value) UvtLog.Info(LogPrefix + node.name + $": Bridge loops {pair.Key},{pair.Value}: " + node.support.bridgeSearch[pair.Key]);
+                            foreach (var fallback in node.support.bridgeCapFallbacks)
+                                UvtLog.Info(LogPrefix + node.name + $": loop {fallback.Key}: planar Cap fallback " +
+                                    (node.support.loopFailures.ContainsKey(fallback.Key) ? "refused" : "accepted") + "; " + fallback.Value);
                             var contacts = node.support.externalContacts;
                             if (contacts != null && contacts.count > 0)
                                 UvtLog.Warn(LogPrefix + node.name + $": Cap/Bridge has {contacts.count} contacts with other source meshes " +
@@ -518,7 +522,7 @@ namespace SashaRX.UnityMeshLab
 
         string ClosureCounts()
         {
-            int loops = 0, patches = 0, added = 0, remaining = 0, refused = 0, bridges = 0;
+            int loops = 0, patches = 0, added = 0, remaining = 0, refused = 0, bridges = 0, fallbackCaps = 0;
             foreach (var node in nodes) {
                 var support = node.support;
                 if (support == null) continue;
@@ -526,8 +530,10 @@ namespace SashaRX.UnityMeshLab
                 remaining += support.remainingBoundaryEdges;
                 refused += support.loopFailures.Count;
                 bridges += support.bridgePartners.Count / 2;
+                foreach (int loop in support.bridgeCapFallbacks.Keys)
+                    if (!support.loopFailures.ContainsKey(loop)) ++fallbackCaps;
             }
-            return $"{loops} initial loops; {patches} patches ({bridges} Bridges); {added} added faces; {refused} refused loops; {remaining} open edges remain";
+            return $"{loops} initial loops; {patches} patches ({bridges} Bridges, {fallbackCaps} fallback Caps); {added} added faces; {refused} refused loops; {remaining} open edges remain";
         }
 
         void BuildClosurePreview()
@@ -565,7 +571,9 @@ namespace SashaRX.UnityMeshLab
                     var loop = support.boundaryLoops[loopId]; var pairs = new Vector3[loop.Length * 2];
                     bool refused = support.loopFailures.TryGetValue(loopId, out string reason);
                     bool bridged = support.bridgePartners.TryGetValue(loopId,out int partner);
-                    contourInfo.Add(bridged ? $"Bridge loops {loopId},{partner}: " + support.bridgeSearch[loopId] : null);
+                    bool fallback = support.bridgeCapFallbacks.TryGetValue(loopId, out string bridgeFailure);
+                    contourInfo.Add(bridged ? $"Bridge loops {loopId},{partner}: " + support.bridgeSearch[loopId] :
+                        fallback ? "Separate planar Cap after Bridge refusal: " + bridgeFailure : null);
                     var rimColor = refused ? new Color(1f, .12f, .15f, 1f) : new Color(.2f, .85f, 1f, .95f);
                     for (int k = 0; k < loop.Length; ++k) {
                         pairs[k * 2] = matrix.MultiplyPoint3x4(p[loop[k]]);
@@ -574,7 +582,7 @@ namespace SashaRX.UnityMeshLab
                         rimIndices.Add(rims.Count); rims.Add(pairs[k * 2 + 1]);
                         rimColors.Add(rimColor); rimColors.Add(rimColor);
                     }
-                    string state = refused ? " — REFUSED" : bridged ? $" — BRIDGE to {partner}" : "";
+                    string state = refused ? " — REFUSED" : bridged ? $" — BRIDGE to {partner}" : fallback ? " — CAP FALLBACK" : "";
                     contourNames.Add($"{node.name} / loop {loopId} ({loop.Length} edges){state}"); contourEdges.Add(pairs);
                     contourColors.Add(rimColor); contourReasons.Add(reason);
                 }
