@@ -210,3 +210,12 @@ This run: `_results~/bridge-20261010/comparison/comparison.json` (24 outcomes:
 16 locally accepted, 6 library outputs rejected by audit, 2 production refusals).
 The full offline geometry suite passes 128 tests; six cover the independent
 Bridge comparison gates, including rejection of separate disks on a torus.
+
+Two-cut controls on one torus also pass in Unity: 16 longitudinal samples and
+eight vertices per rim, with the second missing band either opposite (band 8)
+or nearby (band 3). Automatic closes four rims with two independent Bridges,
+each across its own missing band. After the first Bridge there is one connected
+component with two open rims; after the second there is one closed genus-one
+component. Original vertices/faces are preserved and prepared element labels
+are unified. This is evidence for these two controls, not a guarantee for
+arbitrary ambiguous pairs or intersecting contours.

@@ -136,6 +136,33 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(ix,cap.indices.Take(ix.Length));
         }
 
+        [TestCase(8)] [TestCase(3)]
+        public void TwoCutsInOneTorusRestoreOneHandle(int secondCut)
+        {
+            const int ring=8;
+            var (p,source)=TorusGap(16,ring);
+            var ix=source.Where((v,i)=>i/(ring*6)!=secondCut-1).ToArray();
+            var before=RemeshTopology.Inspect(p,ix);
+            Assert.AreEqual(2,before.euler.Count); Assert.AreEqual(ring*4,before.boundary.Count);
+            var cap=RemeshPlanarCap.Prepare(p,ix,"all",default,mode:RemeshClosureMode.Automatic,
+                continueOnRefusal:true,elementScopedContacts:true);
+            Assert.IsEmpty(cap.loopFailures); Assert.AreEqual(4,cap.loops);
+            Assert.AreEqual(4,cap.bridgePartners.Count); Assert.AreEqual(2,cap.patchEnds.Count);
+            Assert.AreEqual(ring*4,cap.addedFaces); Assert.AreEqual(0,cap.remainingBoundaryEdges);
+            foreach (var pair in cap.bridgePartners) {
+                int a=cap.boundaryLoops[pair.Key][0]/ring,b=cap.boundaryLoops[pair.Value][0]/ring;
+                Assert.IsTrue(Math.Min(a,b)==0 && Math.Max(a,b)==1 ||
+                    Math.Min(a,b)==secondCut && Math.Max(a,b)==secondCut+1,"Each Bridge must connect the two sides of its own cut.");
+            }
+            var first=RemeshTopology.Inspect(cap.positions,cap.indices.Take(cap.patchEnds[0]*3).ToArray());
+            Assert.IsTrue(first.Valid,first.Description); Assert.AreEqual(1,first.euler.Count);
+            Assert.AreEqual(ring*2,first.boundary.Count);
+            var after=RemeshTopology.Inspect(cap.positions,cap.indices);
+            Assert.IsTrue(after.Valid,after.Description); CollectionAssert.AreEqual(new[] {0},after.euler);
+            Assert.IsTrue(cap.faceElements.All(id=>id==cap.faceElements[0]));
+            CollectionAssert.AreEqual(p,cap.positions); CollectionAssert.AreEqual(ix,cap.indices.Take(ix.Length));
+        }
+
         [Test]
         public void AutomaticOppositeBoxHolesChooseDisksAndNotABridge()
         {
