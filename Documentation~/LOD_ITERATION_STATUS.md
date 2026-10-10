@@ -8,6 +8,65 @@ Native-constraint experiment verification: **183 selected EditMode tests passed*
 
 ## Implemented
 
+### Current: far paint diagonals and shared UV2 (2026-10-10)
+
+The far Screen Budget path now tries local diagonal changes on isolated,
+nearly coplanar pairs near lost source paint boundaries. Existing render corners
+are reassigned; no triangles, vertices or geometric positions are added. UV and
+authored shading seams, material splits and deformers refuse this operation.
+The small-mesh limit is 128 triangles. Each accepted candidate must improve
+the six-view paint guide while retaining silhouette/detail guides, source
+distance RMS/maximum and the twelve-view RGBA allowance of 1/255 per-channel RMS.
+New contacts against other sheets are refused relative to the existing mesh;
+this does not certify an intersection-free input.
+
+Two-dimensional UV2 is fitted from visible source correspondences and projected
+into the original source islands. Ambiguous island seeds remain pinned; missing
+or mismatched UV2 fields cannot silently pass an evaluated transfer. Full-surface
+UV2 RMS must retain or improve, and each paired-view UV2 RMS increase is capped
+at **0.00002 normalized UV**. Higher-dimensional UV fields retain their values.
+CPU paint samples now use one consistent owner on an exact triangle edge,
+avoiding color differences caused solely by triangle ordering.
+
+Fresh actual Generate tests keep the same rainbow tent at **62/560 triangles
+(9.03x), 154 render vertices and 33 geometric positions**. One accepted diagonal
+change improves mean lost paint pairs **44.09% -> 39.25%** (11% relative); sampled
+UV2 RMS improves **0.015978 -> 0.014188** (11.2%). Eleven of twelve paired UV2
+views improve; the remaining increase is 0.00001949. These are coordinate
+correspondence measurements, **not an actual baked tent atlas lighting test**.
+Silhouette coverage is unchanged. GPU vertex-RGBA RMS at a 64px maximum source
+extent improves front **0.008800 -> 0.008714**, but worsens oblique
+**0.013156 -> 0.013342**. The dedicated paint-edge view changes
+**0.030410 -> 0.030564**; the opposite paint angle changes
+**0.020037 -> 0.020267**. Original project materials and the complete stall
+assembly are still outside this diagnostic.
+
+The red guide recovers three eligible sample pairs. **Blue/violet paint regions
+remain incomplete, worst-region loss stays 100%, and paint acceptance is false.**
+An offline real-mesh prototype moved an interior roof point to the missing blue
+strip boundary while retaining the budget. It improved one color view but raised
+another silhouette error from 16.3% to 24.6%; it was rejected and is not part of
+the generator. Further progress needs coordinated source-based patch allocation,
+not a single large vertex move or more color fitting.
+
+The same colored bench retains **1032/9334 triangles and 2251 vertices**. This
+small-mesh stage bypasses it; all thirty source/native/near/far GPU fields across
+the two recorded views are byte-identical to the preceding corner-sharing run.
+**249 selected EditMode tests pass, zero failures/skips**, on Unity 6000.2.6f2,
+including fresh Generate captures for both models and the new diagonal, UV-island,
+packed-color, edge-ownership, refusal and cancellation checks. Both FBX compile
+configurations and static dependency/identifier checks pass. No native ABI or
+binary changed. One tent two-level far generation sample takes **21.84s vs
+18.63s** before; this is not a repeated performance benchmark.
+
+Portable evidence: [measured results](LOD_PAINT_GEOMETRY_RESULTS.json),
+[actual GPU models](LOD_PAINT_GEOMETRY_MODELS.png),
+[error chart](LOD_PAINT_GEOMETRY_ERRORS.png). Raw selected tests and captures:
+`_results~/lod-paint-geometry-20261010/final/`. Reproduce the portable report with
+`python -B Tools~/render_lod_polygon_paint.py _results~/lod-paint-geometry-20261010/final _results~/lod-tent-paint-20261010/final-complete Documentation~/LOD_PAINT_GEOMETRY --retriangulated --bench-baseline _results~/lod-corner-sharing-20261010/final-exact`.
+
+### Preceding: polygon paint
+
 The **polygon paint follow-up** replaces stretched gradients with constant source
 colors on selected faces and their already-shared render corners. It searches
 the lost paint pairs, including small regions counted in the mean, and their
@@ -283,9 +342,11 @@ The overview/chart retain the final capture lineage above; their LOD2 fields/cou
 
 ## Next iteration, in order
 
-Priority after the partial polygon paint correction: rebuild coarse tent
-triangles along the remaining red/violet/blue paint regions at the same 1/9
-budget, retained render-vertex limit and 64px footprint. Profile actual
+Priority after the partial paint-diagonal correction: allocate coarse tent
+patches along the remaining violet/blue paint regions at the same 1/9
+budget, retained render-vertex limit and 64px footprint. A single moved roof
+control point has already failed the silhouette check; compare coordinated patch
+replacements against all views and source UV2 before enabling them. Profile actual
 rendering/buffer cost; matching paint/shading/UV seams must remain separate, and
 further approximate sharing needs stronger validation than the CPU guide alone.
 Extend UV2/chart-boundary and filtered lightmap checks to more assigned project instances.

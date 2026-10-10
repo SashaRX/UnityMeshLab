@@ -26,6 +26,7 @@ namespace SashaRX.UnityMeshLab
             public VisibleNormalReport visibleNormals;
             public VisibleColorBoundaryReport visibleColorBoundaries;
             public VisibleColorBoundaryReport polygonColorBoundaries;
+            public LodPaintRetriangulation.Report paintRetriangulation;
             public LodSharedUvTransfer.Report sharedLightmapUv;
             public string note;
         }
@@ -217,6 +218,34 @@ namespace SashaRX.UnityMeshLab
                 var result = accepted; accepted = null; return result;
             }
             finally { if (trial) UnityEngine.Object.DestroyImmediate(trial); if (accepted) UnityEngine.Object.DestroyImmediate(accepted); }
+        }
+
+        // A continuous variable per current UV2 wedge keeps atlas seams separate
+        // while fitting the original chart's visible field after retriangulation.
+        internal static void FitVisibleUv2(Mesh source,Mesh target,LodScreenValidation screen,Func<bool> cancelled = null)
+        {
+            if (!source.HasVertexAttribute(VertexAttribute.TexCoord1) || !target.HasVertexAttribute(VertexAttribute.TexCoord1) ||
+                source.GetVertexAttributeDimension(VertexAttribute.TexCoord1)!=2 || target.GetVertexAttributeDimension(VertexAttribute.TexCoord1)!=2) return;
+            var original=new LodMeshData(source); var data=new LodMeshData(target);
+            var sourceIndices=source.triangles; var targetIndices=target.triangles;
+            var representatives=new Dictionary<(Vector3,Vector4),int>();
+            var owners=Enumerable.Range(0,target.vertexCount).Select(v => {
+                var key=(data.positions[v],data.uvs[1][v]);
+                if (!representatives.TryGetValue(key,out int owner)) representatives[key]=owner=v; return owner;
+            }).ToArray();
+            var fit=new FieldFit(data.uvs[1].ToArray(),owners);
+            int mismatches=0;
+            screen.AddVisibleSurfaceSamples(target,(sf,sb,tf,tb,sn,tn,view,pixel) => {
+                var desired=original.uvs[1][sourceIndices[sf*3]]*sb.x+original.uvs[1][sourceIndices[sf*3+1]]*sb.y+original.uvs[1][sourceIndices[sf*3+2]]*sb.z;
+                var current=data.uvs[1][targetIndices[tf*3]]*tb.x+data.uvs[1][targetIndices[tf*3+1]]*tb.y+data.uvs[1][targetIndices[tf*3+2]]*tb.z;
+                // Opposite sheets / atlas islands cannot donate a distant UV.
+                float difference=(current-desired).sqrMagnitude;
+                if (difference<=.05f*.05f) { fit.Add(targetIndices,tf*3,tb,desired,.25); if (difference>1e-12f) mismatches++; }
+            },cancelled);
+            if (mismatches==0) return;
+            var values=fit.Solve(.02f,cancelled).Select(v => (Vector2)v).ToArray();
+            LodSharedUvTransfer.ProjectOriginalCharts(source,target,values,cancelled);
+            target.SetUVs(1,values.ToList());
         }
 
         [Serializable] internal sealed class VisibleNormalReport

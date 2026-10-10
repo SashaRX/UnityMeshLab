@@ -368,7 +368,7 @@ namespace SashaRX.UnityMeshLab
                 {
                     var p = new Vector3(x+((sample&1) == 0 ? .25f : .75f),y+((sample&2) == 0 ? .25f : .75f),0);
                     float u = Cross(b-p,c-p)/area, v = Cross(c-p,a-p)/area;
-                    if (u >= -1e-6f && v >= -1e-6f && 1-u-v >= -1e-6f) samples.Add((y*resolution+x)*4+sample);
+                    if (InsideSample(u,b,c,area) && InsideSample(v,c,a,area) && InsideSample(1-u-v,a,b,area)) samples.Add((y*resolution+x)*4+sample);
                 }
             }
             return samples.ToArray();
@@ -550,7 +550,9 @@ namespace SashaRX.UnityMeshLab
                     {
                         var p = new Vector3(x+((sample&1) == 0 ? .25f : .75f),y+((sample&2) == 0 ? .25f : .75f),0);
                         float u = Cross(b-p,c-p)/area, v = Cross(c-p,a-p)/area, w = 1-u-v;
-                        if (u < -1e-6f || v < -1e-6f || w < -1e-6f) continue;
+                        // A shared edge belongs to one triangle. Otherwise a color
+                        // seam's samples depend on triangle order at equal depth.
+                        if (!InsideSample(u,b,c,area) || !InsideSample(v,c,a,area) || !InsideSample(w,a,b,area)) continue;
                         float z = u*a.z+v*b.z+w*c.z; int index = (y*size+x)*4+sample;
                         if (z <= depth[index]) continue;
                         depth[index] = z; samples[index] = painted ? colors[ia]*u+colors[ib]*v+colors[ic]*w : Color.white;
@@ -572,6 +574,13 @@ namespace SashaRX.UnityMeshLab
                 if (fields) { result.normals[i] = normalSum.normalized; if (count > 0) result.headlight[i] = light/count; }
             }
             return result;
+        }
+        static bool InsideSample(float bary,Vector3 a,Vector3 b,float area)
+        {
+            if (bary>1e-6f) return true;
+            if (bary<-1e-6f) return false;
+            var edge=area>0 ? b-a : a-b;
+            return edge.y<0 || edge.y==0 && edge.x<0;
         }
         static float Cross(Vector3 a,Vector3 b) => a.x*b.y-a.y*b.x;
         static void Check(Func<bool> cancelled)

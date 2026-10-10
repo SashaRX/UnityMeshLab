@@ -333,6 +333,27 @@ namespace SashaRX.UnityMeshLab
                     }
                     finally { if (painted) UnityEngine.Object.DestroyImmediate(painted); }
                 }
+                if (options.screenBudget && options.correctSurfaceAttributes && varyingColors && !options.skipColorValidation)
+                {
+                    var retriangulated=LodPaintRetriangulation.Correct(source,best.simplifiedMesh,screen,settings,out var paintGeometry,cancelled);
+                    try
+                    {
+                        if (correction!=null) correction.paintRetriangulation=paintGeometry;
+                        if (retriangulated)
+                        {
+                            var measured=LodSurfaceValidation.MeasureMeshes(source,retriangulated,settings,cancelled,ignoreDegenerateFaces:true);
+                            UnityEngine.Object.DestroyImmediate(best.simplifiedMesh); best.simplifiedMesh=retriangulated; retriangulated=null;
+                            bestMetrics=measured; bestScreen=screen.Measure(best.simplifiedMesh,cancelled);
+                            bestSilhouette=Outline(null,best.simplifiedMesh,bestScreen,cancelled);
+                            bestScore=CandidateScore(bestMetrics,bestSilhouette,bestScreen,settings,options); best.resultError=measured.weightedError;
+                            correction.colorsAccepted=true; correction.colorMethod="verified source paint diagonals";
+                            correction.colorRmsAfter=measured.ColorRms; correction.colorMaxAfter=measured.colorMax;
+                            correction.visibleRgbaAfter=bestScreen.rgbaRms; correction.visibleChannelsAfter=bestScreen.rgbaChannelRms;
+                            correction.note += $" Source paint diagonal correction accepted ({paintGeometry.flips} flips, {paintGeometry.trials} trials); triangles and render vertex count retained. Mean paint loss {paintGeometry.boundaryBefore:P1} -> {paintGeometry.boundaryAfter:P1}. UV2 refitted within original source islands; surface UV2 RMS retained or improved and each paired view's UV2 RMS increase capped at {paintGeometry.uvViewRmsTolerance:G3}. Result error is sampled against LOD0; the native bound no longer applies after retriangulation.";
+                        }
+                    }
+                    finally { if (retriangulated) UnityEngine.Object.DestroyImmediate(retriangulated); }
+                }
                 if (options.screenBudget && options.correctSurfaceAttributes && options.bakedLightmapFields != null &&
                     LodMeshData.TriangleCount(best.simplifiedMesh) <= 512 && screenPixels == 64)
                 {

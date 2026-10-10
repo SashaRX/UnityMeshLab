@@ -1,4 +1,4 @@
-"""Compare a real tent Generate run with the retained 62-triangle baseline."""
+"""Compare real tent polygon paint / retriangulation with its preceding 62-triangle stage."""
 import argparse
 import json
 import xml.etree.ElementTree as ET
@@ -33,6 +33,8 @@ def main():
     parser.add_argument("directory", type=Path)
     parser.add_argument("baseline", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--bench-baseline", type=Path)
+    parser.add_argument("--retriangulated", action="store_true", help="Audit retained geometric corners and refitted UV2 instead of unchanged triangles.")
     args = parser.parse_args()
     directory, baseline, output = args.directory, args.baseline, args.output
     test = ET.parse(directory / "tests.xml").getroot().attrib
@@ -53,7 +55,17 @@ def main():
     unchanged["uvs"] = all(a["dimension"] == b["dimension"] and (a["dimension"] == 0 or
         [[a["values"][v] for v in s["indices"]] for s in mesh["slots"]] ==
         [[b["values"][v] for v in s["indices"]] for s in previous_mesh["slots"]]) for a,b in zip(mesh["uvs"],previous_mesh["uvs"]))
-    assert all(unchanged.values())
+    retained_corners = {tuple(p[k] for k in "xyz") for p in mesh["positions"]} == {tuple(p[k] for k in "xyz") for p in previous_mesh["positions"]}
+    assert len(mesh["slots"]) == len(previous_mesh["slots"]) and unchanged["slots"]
+    assert [v["dimension"] for v in mesh["uvs"]] == [v["dimension"] for v in previous_mesh["uvs"]]
+    if args.retriangulated:
+        correction = row["attributeFit"]["paintRetriangulation"]
+        assert retained_corners and correction["accepted"] and correction["flips"] > 0
+        assert abs(correction["boundaryBefore"] - prior["farComparison"]["colorBoundaryMean"]) < 1e-6
+        assert correction["uvAfter"] <= correction["uvBefore"] + 1e-6
+        assert all(a <= b + correction["uvViewRmsTolerance"] + 1e-7 for a, b in zip(correction["uvViewsAfter"], correction["uvViewsBefore"]))
+    else:
+        assert all(unchanged.values())
     for view in ("front", "oblique"):
         for mode in ("color", "coverage", "shaded"):
             name = f"tent-colored-source-{view}-{mode}.rgba"
@@ -81,17 +93,21 @@ def main():
             display = np.where(display <= .0031308, display*12.92, 1.055*display**(1/2.4)-.055)
             axes[n, col].imshow(np.flipud(display), interpolation="nearest")
             axes[n, col].set_xticks([]); axes[n, col].set_yticks([])
-            if n == 0: axes[n, col].set_title(("Source · 560 triangles", "Before · 62 / 154 vertices", f"Polygon paint · 62 / {len(mesh['positions'])} vertices")[col])
+            if n == 0: axes[n, col].set_title(("Source · 560 triangles", "Before · 62 / 154 vertices", f"{'Paint geometry' if args.retriangulated else 'Polygon paint'} · 62 / {len(mesh['positions'])} vertices")[col])
         axes[n, 0].set_ylabel(view)
     fig.suptitle("Actual project rainbow tent · vertex RGB\nSource frame: 64-pixel maximum extent, aspect ratio retained; nearest-pixel enlargement")
     fig.text(.5, .025, "Fresh Unity GPU fields; original project materials and complete tent assembly are not evaluated.", ha="center")
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(str(output)+"_MODELS.png", dpi=140); plt.close(fig)
     before, after = prior["farComparison"], row["farComparison"]
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
-    for axis, label, values in zip(axes, ("CPU mean lost paint pairs", "CPU worst RGBA RMS", "GPU RGBA RMS at 64px"),
-                                  ((before["colorBoundaryMean"], after["colorBoundaryMean"]), (before["rgbaRms"], after["rgbaRms"]),
-                                   ([g["before"]["rgbaRms"] for g in gpu], [g["after"]["rgbaRms"] for g in gpu]))):
+    labels = ["CPU mean lost paint pairs", "CPU worst RGBA RMS", "GPU RGBA RMS at 64px"]
+    quantities = [(before["colorBoundaryMean"], after["colorBoundaryMean"]), (before["rgbaRms"], after["rgbaRms"]),
+                  ([g["before"]["rgbaRms"] for g in gpu], [g["after"]["rgbaRms"] for g in gpu])]
+    if args.retriangulated:
+        labels.insert(1, "Source surface UV2 RMS")
+        quantities.insert(1, (correction["uvBefore"], correction["uvAfter"]))
+    fig, axes = plt.subplots(1, len(labels), figsize=(4.3*len(labels), 4))
+    for axis, label, values in zip(axes, labels, quantities):
         if label.startswith("GPU"):
             x = np.arange(2); axis.bar(x-.18, values[0], .36, label="Before"); axis.bar(x+.18, values[1], .36, label="After")
             axis.set_xticks(x, [g["view"] for g in gpu]); axis.legend()
@@ -107,6 +123,29 @@ def main():
               "tests": {k: test[k] for k in ("total", "passed", "failed", "skipped", "duration")},
               "raw": str(directory), "baselineRaw": str(baseline),
               "limits": "Diagnostic vertex RGBA; original materials/assembly/transition and semantic paint labels unverified. CPU guide acceptance remains explicit."}
+    if args.retriangulated:
+        report["retriangulation"] = correction
+        report["geometricCornersRetained"] = retained_corners
+        report["limits"] += " UV2 metrics are coordinate correspondence, not an actual baked-atlas irradiance test. One view's UV2 RMS may increase by at most 0.00002."
+    if args.bench_baseline:
+        bench = json.loads((directory / "bench-colored-metrics.json").read_text(encoding="utf-8"))
+        old_bench = json.loads((args.bench_baseline / "bench-colored-metrics.json").read_text(encoding="utf-8"))
+        assert bench["sourceSha256"] == old_bench["sourceSha256"]
+        bench_row = next(r for r in bench["captures"] if r["variant"] == "far-lod2")
+        old_row = next(r for r in old_bench["captures"] if r["variant"] == "far-lod2")
+        stage = bench_row["attributeFit"]["paintRetriangulation"]
+        assert bench_row["triangles"] == old_row["triangles"] == 1032
+        assert stage["verticesBefore"] == stage["verticesAfter"] == 2251 and not stage["accepted"]
+        matched = {}
+        for variant in ("source", "native-lod1", "native-lod2", "far-lod1", "far-lod2"):
+            for view in ("front", "oblique"):
+                for mode in ("color", "coverage", "shaded"):
+                    name = f"bench-colored-{variant}-{view}-{mode}.rgba"
+                    matched[name] = digest(directory / name) == digest(args.bench_baseline / name)
+        assert all(matched.values())
+        report["benchRegression"] = {"sourceSha256": bench["sourceSha256"], "triangles": bench_row["triangles"],
+            "vertices": stage["verticesAfter"], "stageBypassed": True, "gpuFieldsIdentical": matched,
+            "gpu64": compare_gpu(directory, args.bench_baseline, "bench-colored"), "baselineRaw": str(args.bench_baseline)}
     Path(str(output)+"_RESULTS.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps({"tests": report["tests"], "polygonCorrection": report["polygonCorrection"], "gpu64": gpu}, indent=2))
 

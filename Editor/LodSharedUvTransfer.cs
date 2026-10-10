@@ -184,6 +184,35 @@ namespace SashaRX.UnityMeshLab
             }
             return errors;
         }
+        // Keep a fitted corner inside the same source atlas island as its prior.
+        // Ambiguous seed islands stay pinned. No render corners are introduced.
+        internal static void ProjectOriginalCharts(Mesh source,Mesh target,Vector2[] values,Func<bool> cancelled = null)
+        {
+            var original=new LodMeshData(source); var reduced=new LodMeshData(target);
+            var charts=Charts(original,cancelled);
+            var points=original.uvs[1].Select(v => new Vector3(v.x,v.y,0)).ToArray();
+            var trees=charts.Select(c => new TriangleBvh(points,c.faces)).ToArray();
+            for (int v=0; v<values.Length; v++)
+            {
+                Check(cancelled); var prior=new Vector3(reduced.uvs[1][v].x,reduced.uvs[1][v].y,0);
+                int selected=-1; float best=float.PositiveInfinity; bool ambiguous=false;
+                for (int c=0; c<charts.Count; c++)
+                {
+                    var uv=trees[c].FindNearest(prior); var geometry=charts[c].bvh.FindNearest(reduced.positions[v]);
+                    if (uv.triangleIndex<0 || geometry.triangleIndex<0) continue;
+                    float score=uv.distSq+geometry.distSq/(original.scale*original.scale);
+                    if (score<best-1e-10f) { best=score; selected=c; ambiguous=false; }
+                    else if (Mathf.Abs(score-best)<=1e-10f) ambiguous=true;
+                }
+                if (selected<0 || ambiguous) { values[v]=(Vector2)reduced.uvs[1][v]; continue; }
+                var hit=trees[selected].FindNearest(new Vector3(values[v].x,values[v].y,0));
+                if (hit.triangleIndex<0) { values[v]=(Vector2)reduced.uvs[1][v]; continue; }
+                var faces=charts[selected].faces; int i=hit.triangleIndex*3;
+                values[v]=(Vector2)(original.uvs[1][faces[i]]*hit.barycentric.x+
+                    original.uvs[1][faces[i+1]]*hit.barycentric.y+original.uvs[1][faces[i+2]]*hit.barycentric.z);
+            }
+        }
+
         static List<Chart> Charts(LodMeshData mesh,Func<bool> cancelled)
         {
             var result = new List<Chart>();
