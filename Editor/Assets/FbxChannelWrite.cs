@@ -547,7 +547,7 @@ namespace SashaRX.UnityMeshLab
 
         // ── Tagged import ──
 
-        static Dictionary<string, Tagged> ImportTagged(string sourceFbxPath, bool swapUv, out HashSet<string> importedNames)
+        internal static Dictionary<string, Tagged> ImportTagged(string sourceFbxPath, bool swapUv, out HashSet<string> importedNames)
         {
             importedNames = new HashSet<string>(StringComparer.Ordinal);
             if (!AssetDatabase.IsValidFolder(TempFolder)) AssetDatabase.CreateFolder("Assets", TempFolder.Substring("Assets/".Length));

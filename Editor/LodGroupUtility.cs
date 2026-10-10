@@ -254,7 +254,7 @@ namespace SashaRX.UnityMeshLab
                 PrefabUtility.RecordPrefabInstancePropertyModifications(imported);
         }
 
-        internal static void ClearGeneratedLods(UvToolContext ctx)
+        internal static void ClearGeneratedLods(UvToolContext ctx, bool refreshContext = true)
         {
             if (ctx.GeneratedLodObjects.Count == 0) return;
             int undoGroup = Undo.GetCurrentGroup();
@@ -262,7 +262,15 @@ namespace SashaRX.UnityMeshLab
             DestroyGeneratedLodObjects(ctx);
             Undo.CollapseUndoOperations(undoGroup);
             ctx.GeneratedLodObjects.Clear();
-            if (ctx.LodGroup != null) ctx.Refresh(ctx.LodGroup);
+            if (ctx.LodGroup == null) return;
+            if (refreshContext) ctx.Refresh(ctx.LodGroup);
+            else
+            {
+                // Regeneration keeps the source entries and their edited working
+                // channels, which also key the already validated preflight data.
+                ctx.MeshEntries.RemoveAll(entry => entry.renderer == null);
+                ctx.ClearAllCaches();
+            }
         }
 
         static void RemoveGeneratedLodSlots(UvToolContext ctx)
