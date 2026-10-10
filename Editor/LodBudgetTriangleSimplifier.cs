@@ -6,6 +6,13 @@ namespace SashaRX.UnityMeshLab
 {
     internal static class LodBudgetTriangleSimplifier
     {
+        sealed class ProbeEvaluation
+        {
+            internal Mesh source;
+            internal MeshSimplifier.SimplifySettings settings;
+            internal LodPipelineOps.Options options;
+            internal LodSilhouetteValidation silhouette;
+        }
         internal struct CandidateReport
         {
             internal int variant, triangles, nativeProbes;
@@ -19,6 +26,30 @@ namespace SashaRX.UnityMeshLab
         {
             diagnostics = null; note = null;
             if (!source || source.vertexCount == 0) return new MeshSimplifier.SimplifyResult { error = "Source mesh has no vertices." };
+            var chains = options.coarsenHardEdgeChains && settings.preserveHardEdges && options.reductionMode == LodReductionMode.Triangles
+                ? LodFeatureChains.Coarsen(source,cancelled,new LodFeatureChains.Settings {
+                    relativeDeviation = Mathf.Clamp(options.featureChainError,0,.01f),
+                    normalAngle = options.featureChainError > 0 ? Mathf.Min(5,Mathf.Max(0,options.maxNormalAngle)) : 0,
+                    colorError = options.featureChainError > 0 ? Mathf.Max(0,options.maxColorError) : 0,
+                    uvError = options.featureChainError > 0 ? .001f : 0 }) : null;
+            try
+            {
+                if (chains?.mesh && !new LodHardEdges(source).MeasureCoarsened(chains.mesh,chains.Configure(new LodHardEdges(chains.mesh).Measure(chains.mesh))).Valid)
+                {
+                    UnityEngine.Object.DestroyImmediate(chains.mesh); chains.mesh = null;
+                    chains.removedPoints = chains.removedTriangles = 0; chains.refusal = "Original feature coverage rejected the prepass; retained source.";
+                }
+                return SimplifyPrepared(source,chains,settings,options,out diagnostics,out note,cancelled,previousProtected);
+            }
+            finally { if (chains?.mesh) UnityEngine.Object.DestroyImmediate(chains.mesh); }
+        }
+
+        static MeshSimplifier.SimplifyResult SimplifyPrepared(Mesh source,LodFeatureChains.Result chains,MeshSimplifier.SimplifySettings settings,
+            LodPipelineOps.Options options,out LodLoopSimplifier.Result diagnostics,out string note,Func<bool> cancelled,Mesh previousProtected)
+        {
+            diagnostics = null; note = null;
+            Mesh reductionSource = chains?.mesh ? chains.mesh : source;
+            var reductionSettings = settings;
             var best = new MeshSimplifier.SimplifyResult();
             var selectedSettings = settings;
             var bestMetrics = new LodSurfaceValidation.Metrics();
@@ -26,20 +57,25 @@ namespace SashaRX.UnityMeshLab
             float bestScore = float.PositiveInfinity;
             int selected = 0, probes = 0;
             int target = Mathf.Max(1,Mathf.CeilToInt(LodMeshData.TriangleCount(source)*settings.targetRatio));
-            bool protectedFloorExceedsBudget = settings.preserveHardEdges && new LodHardEdges(source).protectedTriangles >= target;
+            if (chains?.mesh) reductionSettings.targetRatio = Mathf.Min(1,(float)target/LodMeshData.TriangleCount(reductionSource));
+            var protection = settings.preserveHardEdges ? new LodHardEdges(reductionSource) : null;
+            var originalProtection = settings.preserveHardEdges ? new LodHardEdges(source) : null;
+            bool protectedFloorExceedsBudget = protection != null && protection.protectedTriangles >= target;
             int previousCount = previousProtected ? LodMeshData.TriangleCount(previousProtected) : 0;
-            int densityLimit = settings.preserveHardEdges && previousCount > target && new LodHardEdges(source).Measure(previousProtected).Valid
+            int densityLimit = settings.preserveHardEdges && previousCount > target && protection.Measure(previousProtected).Valid
                 ? previousCount : int.MaxValue;
             bool reusedPrevious = false;
             int count = Mathf.Clamp(options.candidateCount,1,5);
             var reports = new List<CandidateReport>();
             var silhouette = new LodSilhouetteValidation(source,cancelled);
+            var probeEvaluation = chains?.mesh ? new ProbeEvaluation { source = source,settings = settings,options = options,silhouette = silhouette } : null;
+            bool rankOverBudgetQuality = protectedFloorExceedsBudget || probeEvaluation != null;
             try
             {
                 for (int variant = 0; variant < count; variant++)
                 {
                     UvProgress.Report(UvProgress.Current.fraction,$"{source.name}: quality variant {variant+1}/{count}");
-                    var candidate = SimplifyOne(source,Variant(settings,variant),out var nativeSettings,out int attempts,cancelled,protectedFloorExceedsBudget);
+                    var candidate = SimplifyOne(reductionSource,Variant(reductionSettings,variant),out var nativeSettings,out int attempts,cancelled,protectedFloorExceedsBudget,probeEvaluation);
                     probes += attempts;
                     try
                     {
@@ -50,7 +86,7 @@ namespace SashaRX.UnityMeshLab
                         reports.Add(new CandidateReport { variant = variant+1,name = VariantName(variant),triangles = candidate.simplifiedTriCount,
                             nativeProbes = attempts,score = score,distanceRms = metrics.DistanceRms,normalRms = metrics.NormalRms,
                             colorRms = Maximum(metrics.ColorRms),uvRms = metrics.UvRms,silhouetteMean = outline.mean,silhouetteMax = outline.maximum });
-                        if (!best.ok || Better(candidate.simplifiedTriCount,score,best.simplifiedTriCount,bestScore,target,protectedFloorExceedsBudget,densityLimit))
+                        if (!best.ok || Better(candidate.simplifiedTriCount,score,best.simplifiedTriCount,bestScore,target,rankOverBudgetQuality,densityLimit))
                         {
                             if (best.simplifiedMesh) UnityEngine.Object.DestroyImmediate(best.simplifiedMesh);
                             best = candidate; candidate.simplifiedMesh = null;
@@ -100,6 +136,7 @@ namespace SashaRX.UnityMeshLab
                 note = $"Triangle budget prioritized; selected {selectedName} from {reports.Count} quality candidates ({probes} native probes). " +
                 "Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic.";
                 if (protectedFloorExceedsBudget) note += " Protected face floor already reaches/exceeds the requested budget; no error/weight relaxation. Over-budget candidates ranked by measured quality.";
+                else if (probeEvaluation != null) note += " Coarsened over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape.";
                 if (reusedPrevious) note += " All new candidates exceeded the preceding protected density; cloned and remeasured that source-derived geometry. No recursive collapse; reported result error is sampled weighted error, not a new native bound.";
                 else
                 {
@@ -109,6 +146,24 @@ namespace SashaRX.UnityMeshLab
                         $"{selectedSettings.uv2Weight:G3}/{selectedSettings.normalWeight:G3}/{selectedSettings.colorWeight:G3}.";
                 }
                 if (correction != null) note += " "+correction.note;
+                if (protection != null)
+                {
+                    bool sourceFallback = best.hardEdges?.sourceFallback ?? false;
+                    best.hardEdges = protection.Measure(best.simplifiedMesh);
+                    if (chains?.mesh)
+                    {
+                        best.hardEdges = originalProtection.MeasureCoarsened(best.simplifiedMesh,chains.Configure(best.hardEdges));
+                        best.resultError = bestMetrics.weightedError;
+                        note += " Coarsened-source result error is sampled against LOD0; the native bound applies only to the prepared mesh.";
+                    }
+                    best.hardEdges.sourceFallback = sourceFallback;
+                    if (chains != null)
+                    {
+                        best.hardEdges.coarsenedPoints = chains.removedPoints; best.hardEdges.coarsenedTriangles = chains.removedTriangles;
+                        note += " " + chains.Note;
+                    }
+                }
+                best.originalTriCount = LodMeshData.TriangleCount(source);
                 if (!options.skipColorValidation && options.maxColorError > 0 && bestMetrics.colorError > options.maxColorError)
                     note += $" RGBA error {bestMetrics.colorError:G3} exceeds requested {options.maxColorError:G3}.";
                 if (options.maxNormalAngle > 0 && bestMetrics.normalAngle > options.maxNormalAngle)
@@ -157,10 +212,11 @@ namespace SashaRX.UnityMeshLab
         }
 
         static MeshSimplifier.SimplifyResult SimplifyOne(Mesh source,MeshSimplifier.SimplifySettings settings,
-            out MeshSimplifier.SimplifySettings selectedSettings,out int count,Func<bool> cancelled,bool protectedFloorExceedsBudget)
+            out MeshSimplifier.SimplifySettings selectedSettings,out int count,Func<bool> cancelled,bool protectedFloorExceedsBudget,ProbeEvaluation evaluation = null)
         {
             var best = new MeshSimplifier.SimplifyResult();
             selectedSettings = settings; count = 0; string error = null;
+            float bestScore = float.PositiveInfinity;
             int target = Mathf.Max(1,Mathf.CeilToInt(LodMeshData.TriangleCount(source)*settings.targetRatio));
             try
             {
@@ -181,10 +237,15 @@ namespace SashaRX.UnityMeshLab
                     {
                         if (!candidate.ok) { error = candidate.error; continue; }
                         if (candidate.simplifiedTriCount <= 0 || candidate.simplifiedMesh.vertexCount == 0) continue;
-                        if (!best.ok || candidate.simplifiedTriCount < best.simplifiedTriCount)
+                        float score = evaluation == null ? 0 : Score(
+                            LodSurfaceValidation.MeasureMeshes(evaluation.source,candidate.simplifiedMesh,evaluation.settings,cancelled,ignoreDegenerateFaces:true),
+                            evaluation.silhouette.Measure(candidate.simplifiedMesh,cancelled),evaluation.settings,evaluation.options);
+                        bool preferable = evaluation == null ? candidate.simplifiedTriCount < best.simplifiedTriCount :
+                            Better(candidate.simplifiedTriCount,score,best.simplifiedTriCount,bestScore,target,true);
+                        if (!best.ok || preferable)
                         {
                             if (best.simplifiedMesh) UnityEngine.Object.DestroyImmediate(best.simplifiedMesh);
-                            best = candidate; candidate.simplifiedMesh = null; selectedSettings = attempt;
+                            best = candidate; candidate.simplifiedMesh = null; selectedSettings = attempt; bestScore = score;
                         }
                     }
                     finally { if (candidate.simplifiedMesh) UnityEngine.Object.DestroyImmediate(candidate.simplifiedMesh); }

@@ -1,6 +1,10 @@
 # LOD iteration handoff — 2026-10-10
 
-This iteration is ready to integrate as an incremental implementation. The complete LOD quality roadmap is not finished. The intended hierarchy remains LOD0, LOD1 and LOD2, with independent source reduction to approximately 1/3 and 1/9 of LOD0.
+Iteration [#229](https://github.com/SashaRX/UnityMeshLab/pull/229) was merged into main and released as 1.1.37. The complete LOD quality roadmap is not finished. The intended hierarchy remains LOD0, LOD1 and LOD2, with independent source reduction to approximately 1/3 and 1/9 of LOD0.
+
+The subsequent [feature-chain experiment](LOD_FEATURE_CHAINS.md) adds an optional managed prepass with original-polyline/shading checks, contact/component isolation and quality-ranked native retries. It remains disabled by default; the native incident-triangle belt is still present. The snapshot below describes the preceding merged iteration.
+
+Follow-up verification: 177 selected EditMode tests passed, all eight meshes freshly captured at a fixed 384×384 GPU target. Tent surface RGBA RMS improves about 62%/40% at LOD1/LOD2; its LOD1 is denser (306 versus 284 triangles), while LOD2 uses accepted area-resampled colors at 280 versus 284. Five of sixteen budgets still pass. Detailed gains, regressions, portable plots/data and the remaining native-constraint work are recorded in the experiment above.
 
 ## Implemented
 
@@ -47,7 +51,7 @@ The overview/chart retain the final capture lineage above; their LOD2 fields/cou
 
 ## Next iteration, in order
 
-1. Replace the frozen incident-triangle belt with feature-polyline coarsening: preserve crease shape, endpoints, junctions and separate shading sides while allowing shorter chains. Compare against the present strict baseline on the same eight models and LOD1/LOD2 budgets.
+1. Continue replacing the frozen incident-triangle belt: the optional managed feature-chain prepass now has real-model evidence, but direct native crease/junction constraints are still needed to simplify patches without frozen neighboring faces. Keep the strict and coarsened eight-model controls, source-polyline/shading checks and LOD1/LOD2 budgets; rebuild any native ABI/binary change through CI.
 2. Add acceptance checks for disappearing thin/soft components and categorical vertex-color boundaries. Evaluate visual error at matched triangle counts and real screen sizes; keep the documented Bench B and tent regressions as explicit controls.
 3. Exercise original materials, normal maps, complete assemblies and LOD transitions in the project's render pipeline. Separate geometric silhouette, shading and color errors in the report.
 4. Revisit full-loop removal on irregular project topology. Keep source provenance and topology/winding/intersection validation; require a measured reduction benefit before changing defaults.

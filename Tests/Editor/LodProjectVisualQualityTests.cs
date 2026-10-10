@@ -31,6 +31,7 @@ namespace SashaRX.UnityMeshLab.Tests
             public float targetError = .2f, uv2Weight = 20, normalWeight = 1, colorWeight = 1, maxColorError = .02f;
             public List<LodVisualQualityTests.Capture> captures = new List<LodVisualQualityTests.Capture>();
             public string partConnectivity;
+            public string featureChainProbe;
             public List<PartReport> parts = new List<PartReport>();
             public float partPixelLimit;
         }
@@ -43,7 +44,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        [Timeout(600000)] // Opt-in eight-FBX comparison includes multiple full-surface fits and GPU captures.
+        [Timeout(900000)] // Opt-in eight-FBX comparison includes multiple full-surface fits and GPU captures.
         public void CopiedProjectModelsProduceActualGenerateCaptures()
         {
             string[] args = Environment.GetCommandLineArgs();
@@ -108,6 +109,18 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { Object.DestroyImmediate(probe); }
             SaveReport(report); // Preserve provenance even if a later generation fails.
             UvtLog.Info($"[LOD project visuals] {model.name}/{source.name}: {report.sourceTriangles} tris, varying colors={report.varyingVertexColors}, loops={report.loopStatus}");
+            if (argsHave("-meshlabLodFeatureProbe"))
+            {
+                var coarsened = LodFeatureChains.Coarsen(source,settings:new LodFeatureChains.Settings {
+                    relativeDeviation = .005f,normalAngle = 5,colorError = .02f,uvError = .001f });
+                try
+                {
+                    report.featureChainProbe = coarsened.Note;
+                    if (coarsened.mesh) Assert.That(new LodHardEdges(source).MeasureCoarsened(coarsened.mesh,coarsened.Configure(new LodHardEdges(coarsened.mesh).Measure(coarsened.mesh))).Valid,Is.True,model.name+": "+coarsened.Note);
+                    SaveReport(report); return;
+                }
+                finally { if (coarsened.mesh) Object.DestroyImmediate(coarsened.mesh); }
+            }
             if (argsHave("-meshlabQslimExport"))
             {
                 LodQslimComparison.Export(model,source,topologyImports);
@@ -127,6 +140,8 @@ namespace SashaRX.UnityMeshLab.Tests
                     {
                         Generate(source,LodReductionMode.Triangles,3,"unprotected",variants,generated,relaxedFar:true,correctAttributes:true);
                         Generate(source,LodReductionMode.Triangles,3,"hard",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true);
+                        if (argsHave("-meshlabLodFeatureChains"))
+                            Generate(source,LodReductionMode.Triangles,3,"chains",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true,coarsenHardEdgeChains:true);
                     }
                     else if (argsHave("-meshlabQslimCompare"))
                     {
@@ -209,13 +224,14 @@ namespace SashaRX.UnityMeshLab.Tests
                         capture.selectionScore = variant.info.selectionScore; capture.nativeProbes = variant.info.nativeProbes;
                         if (argsHave("-meshlabLodHardEdges"))
                         {
-                            var features = new LodHardEdges(source).Measure(variant.mesh);
+                            var features = variant.name.StartsWith("chains-") ? variant.info.hardEdges : new LodHardEdges(source).Measure(variant.mesh);
                             capture.hardEdges = features.edges; capture.missingHardEdges = features.missingEdges;
                             capture.protectedTriangles = features.protectedTriangles; capture.missingProtectedTriangles = features.missingFaces;
                             capture.patchInterfaces = features.interfaces; capture.missingPatchInterfaces = features.missingInterfaces;
                             capture.ambiguousFeatureEdges = features.ambiguousEdges;
                             capture.hardEdgeSourceFallback = variant.info.hardEdges?.sourceFallback ?? false;
-                            if (variant.name.StartsWith("hard-")) Assert.That(features.Valid,Is.True,model.name+"/"+variant.name+": hard features or patch interfaces changed");
+                            capture.coarsenedFeaturePoints = features.coarsenedPoints; capture.coarsenedFeatureTriangles = features.coarsenedTriangles;
+                            if (variant.name.StartsWith("hard-") || variant.name.StartsWith("chains-")) Assert.That(features.Valid,Is.True,model.name+"/"+variant.name+": hard features or patch interfaces changed");
                         }
                         var correction = variant.info.attributeCorrection;
                         if (correction != null)
@@ -260,7 +276,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         static void Generate(Mesh source,LodReductionMode mode,int candidates,string prefix,
-            List<(string name, Mesh mesh, LodPipelineOps.LodInfo info, double ms)> variants,List<Mesh> generated,bool uncheckedColors = false,bool relaxedFar = false,bool pruneParts = false,bool correctAttributes = false,bool preserveHardEdges = false)
+            List<(string name, Mesh mesh, LodPipelineOps.LodInfo info, double ms)> variants,List<Mesh> generated,bool uncheckedColors = false,bool relaxedFar = false,bool pruneParts = false,bool correctAttributes = false,bool preserveHardEdges = false,bool coarsenHardEdgeChains = false)
         {
             var root = new GameObject("ProjectLODPreview");
             try
@@ -278,6 +294,8 @@ namespace SashaRX.UnityMeshLab.Tests
                     options.count = 2; options.ratios = LodGenerationTool.SteppedRatios(1,3,2); options.prioritizeTriangleBudget = true;
                     options.correctSurfaceAttributes = correctAttributes;
                     options.preserveHardEdges = preserveHardEdges;
+                    options.coarsenHardEdgeChains = coarsenHardEdgeChains;
+                    options.featureChainError = coarsenHardEdgeChains ? .005f : 0;
                 }
                 if (relaxedFar)
                     options = LodPipelineOps.RelaxFarLods(options,1,2,new LodPipelineOps.LevelQuality {

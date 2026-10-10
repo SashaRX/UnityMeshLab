@@ -32,6 +32,8 @@ namespace SashaRX.UnityMeshLab
             public bool prioritizeTriangleBudget;
             public bool correctSurfaceAttributes;
             public bool preserveHardEdges;
+            public bool coarsenHardEdgeChains;
+            public float featureChainError;
         }
 
         internal struct LevelQuality
@@ -298,7 +300,8 @@ namespace SashaRX.UnityMeshLab
                             {
                                 var protection = new LodHardEdges(reductionMesh);
                                 bool sourceFallback = r.hardEdges?.sourceFallback ?? false;
-                                r.hardEdges = protection.Measure(r.simplifiedMesh);
+                                bool coarsened = opts.coarsenHardEdgeChains && opts.prioritizeTriangleBudget && opts.reductionMode == LodReductionMode.Triangles && r.hardEdges?.coarsenedPoints > 0;
+                                r.hardEdges = coarsened ? protection.MeasureCoarsened(r.simplifiedMesh,r.hardEdges) : protection.Measure(r.simplifiedMesh);
                                 r.hardEdges.sourceFallback = sourceFallback;
                                 if (!r.hardEdges.Valid)
                                 {

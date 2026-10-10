@@ -52,7 +52,7 @@ namespace SashaRX.UnityMeshLab
         internal Mesh CreateMesh(List<LodSourceTopology.Face> faces)
             => CreateMesh(faces, out _);
 
-        internal Mesh CreateMesh(List<LodSourceTopology.Face> faces, out Dictionary<int, int> remap)
+        internal Mesh CreateMesh(List<LodSourceTopology.Face> faces, out Dictionary<int, int> remap, bool ensureChannels = true)
         {
             var indices = new List<int>[source.subMeshCount];
             for (int s = 0; s < indices.Length; s++) indices[s] = new List<int>();
@@ -88,7 +88,7 @@ namespace SashaRX.UnityMeshLab
                 mesh.subMeshCount = indices.Length;
                 var mapping = remap;
                 for (int s = 0; s < indices.Length; s++) mesh.SetTriangles(indices[s].ConvertAll(v => mapping[v]), s);
-                MeshGeometry.EnsureMeshChannels(mesh);
+                if (ensureChannels) MeshGeometry.EnsureMeshChannels(mesh);
                 if (MeshUvState.IsDraft(source)) MeshUvState.SetDraft(mesh, true);
                 mesh.RecalculateBounds();
                 return mesh;

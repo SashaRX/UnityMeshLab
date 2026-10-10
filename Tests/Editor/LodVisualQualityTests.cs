@@ -35,6 +35,7 @@ namespace SashaRX.UnityMeshLab.Tests
             public int nativeProbes;
             public int hardEdges, missingHardEdges, protectedTriangles, missingProtectedTriangles;
             public int patchInterfaces, missingPatchInterfaces, ambiguousFeatureEdges;
+            public int coarsenedFeaturePoints, coarsenedFeatureTriangles;
             public bool hardEdgeSourceFallback;
             public bool normalsCorrected, colorsCorrected;
             public string correctionNote;
@@ -306,10 +307,13 @@ namespace SashaRX.UnityMeshLab.Tests
                         }
                         wire = PreviewLines.Build(mesh.vertices,edges.ToArray(),null).Upload();
                     }
-                    utility.BeginPreview(new Rect(0,0,Size,Size),GUIStyle.none);
+                    float previewPoints = Size/EditorGUIUtility.pixelsPerPoint;
+                    utility.BeginPreview(new Rect(0,0,previewPoints,previewPoints),GUIStyle.none);
                     // PreviewRenderUtility scales its target with editor DPI. The
                     // ribbon shader works in actual target pixels, not GUI points.
                     var previewTarget = utility.camera.targetTexture;
+                    Assert.That(previewTarget.width,Is.EqualTo(Size),"GPU measurement width must be independent of editor DPI.");
+                    Assert.That(previewTarget.height,Is.EqualTo(Size),"GPU measurement height must be independent of editor DPI.");
                     lines.SetVector("_ViewportSize",new Vector4(previewTarget.width,previewTarget.height,0,0));
                     lines.SetFloat("_LineWidth",1.25f*previewTarget.width/Size);
                     Texture image;

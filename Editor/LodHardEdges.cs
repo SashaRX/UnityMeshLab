@@ -12,11 +12,14 @@ namespace SashaRX.UnityMeshLab
         internal sealed class Report
         {
             public int edges, protectedTriangles, ambiguousEdges, interfaces;
+            public int coarsenedPoints, coarsenedTriangles;
+            public float featureDeviation, featureNormalAngle;
             public int missingEdges, missingFaces, missingInterfaces;
             public bool sourceFallback;
             internal bool Valid => missingEdges == 0 && missingFaces == 0 && missingInterfaces == 0;
-            internal string Note => $"Hard edges: {edges-missingEdges}/{edges} retained; protected faces {protectedTriangles}, " +
+            internal string Note => $"Hard-edge coverage: {edges-missingEdges}/{edges}; protected faces {protectedTriangles}, " +
                 $"ambiguous edges {ambiguousEdges}, patch interfaces {interfaces-missingInterfaces}/{interfaces}." +
+                (coarsenedPoints > 0 ? $" Coarsened {coarsenedPoints} points; feature deviation ≤{featureDeviation:P2} of source diagonal, endpoint normal guide {featureNormalAngle:F1}°." : "") +
                 (sourceFallback ? " Rejected candidate; retained source copy." : "");
         }
         readonly struct Side
@@ -137,6 +140,49 @@ namespace SashaRX.UnityMeshLab
                     report.missingInterfaces++;
             return report;
         }
+
+        // Original feature coverage is checked in addition to the coarsened
+        // reference's exact face/interface checks. Longer segments must preserve
+        // both oriented material sides and their authored endpoint normal field.
+        internal Report MeasureCoarsened(Mesh target,Report reference)
+        {
+            reference.edges = hard.Count; reference.missingEdges = 0;
+            var p = target.vertices; var n = target.normals;
+            var targetEdges = new Dictionary<Edge,List<Side>>();
+            for (int slot = 0; slot < target.subMeshCount; slot++)
+            {
+                var indices = LodMeshData.Triangles(target,slot);
+                for (int i = 0; i < indices.Length; i += 3)
+                    for (int k = 0; k < 3; k++)
+                    {
+                        int a = indices[i+k], b = indices[i+(k+1)%3];
+                        if (!points.TryGetValue(p[a],out int pa) || !points.TryGetValue(p[b],out int pb) || pa == pb) continue;
+                        var key = new Edge(pa,pb);
+                        if (!targetEdges.TryGetValue(key,out var sides)) targetEdges[key] = sides = new List<Side>();
+                        sides.Add(new Side(slot,i/3,a,b,indices[i+(k+2)%3]));
+                    }
+            }
+            foreach (var feature in hard)
+                if (n.Length != p.Length || !targetEdges.Values.Any(sides => sides.Count >= 2 && sides.Skip(1).Any(s =>
+                    !NormalEqual(n[sides[0].a],n[p[s.a].Equals(p[sides[0].a]) ? s.a : s.b]) ||
+                    !NormalEqual(n[sides[0].b],n[p[s.a].Equals(p[sides[0].b]) ? s.a : s.b])) &&
+                    feature.All(f => sides.Any(s => s.slot == f.slot &&
+                        Covers(source.positions[f.a],source.normals[f.a],source.positions[f.b],source.normals[f.b],p[s.a],n[s.a],p[s.b],n[s.b],reference.featureDeviation,reference.featureNormalAngle)))))
+                    reference.missingEdges++;
+            return reference;
+        }
+        bool Covers(Vector3 a,Vector3 an,Vector3 b,Vector3 bn,Vector3 from,Vector3 fn,Vector3 to,Vector3 tn,float deviation,float angle)
+        {
+            var line = to-from;
+            if (line.sqrMagnitude == 0) return false;
+            float u = Vector3.Dot(a-from,line)/line.sqrMagnitude, v = Vector3.Dot(b-from,line)/line.sqrMagnitude;
+            float epsilon = source.scale*Mathf.Max(1e-6f,deviation);
+            return u >= -1e-6f && v <= 1+1e-6f && v > u &&
+                (a-(from+u*line)).sqrMagnitude <= epsilon*epsilon && (b-(from+v*line)).sqrMagnitude <= epsilon*epsilon &&
+                FeatureNormalEqual(an,Vector3.LerpUnclamped(fn,tn,u),angle) && FeatureNormalEqual(bn,Vector3.LerpUnclamped(fn,tn,v),angle);
+        }
+        static bool FeatureNormalEqual(Vector3 a,Vector3 b,float angle) => angle <= 0 ? NormalEqual(a,b) :
+            a.sqrMagnitude > .5f && b.sqrMagnitude > .5f && Vector3.Angle(a,b) <= angle;
         static (int slot,int a,int b,int c) FaceKey(int slot,int a,int b,int c)
         {
             var first = (slot,a,b,c); var second = (slot,b,c,a); var third = (slot,c,a,b);

@@ -30,6 +30,8 @@ namespace SashaRX.UnityMeshLab
         bool generateBudgetPriority = true;
         bool generateCorrectAttributes = true;
         bool generatePreserveHardEdges = true;
+        bool generateCoarsenHardEdgeChains;
+        float generateFeatureChainError = .005f;
         float generateReductionStep = 3;
         float generateTargetError = 0.2f;
         float generateUv2Weight = 20f;
@@ -400,6 +402,12 @@ namespace SashaRX.UnityMeshLab
             generateColorWeight = EditorGUILayout.Slider("Color Weight", generateColorWeight, 0f, 10f);
             generateLockBorder = EditorGUILayout.Toggle("Lock Border", generateLockBorder);
             generatePreserveHardEdges = EditorGUILayout.Toggle(new GUIContent("Preserve Hard Edges", "Keep authored normal creases and their incident triangles; lock boundaries of the remaining patches. This strict constraint can prevent reaching the triangle budget."),generatePreserveHardEdges);
+            using (new EditorGUI.DisabledScope(!generatePreserveHardEdges || !generateBudgetPriority || generateReductionMode != LodReductionMode.Triangles))
+            {
+                generateCoarsenHardEdgeChains = EditorGUILayout.Toggle(new GUIContent("Coarsen Crease Chains", "Experimental: remove intermediate crease points while preserving topology, endpoints, junctions and separate shading sides. Available in Triangles with Prioritize Triangle Budget."),generateCoarsenHardEdgeChains);
+                if (generateCoarsenHardEdgeChains)
+                    generateFeatureChainError = EditorGUILayout.Slider(new GUIContent("Crease Deviation", "Maximum original polyline deviation as a fraction of the source diagonal. Zero permits straight chains with affine fields only. Bounded mode permits up to 5 degrees of crease normal error, 0.001 UV error and the level's RGBA guide before source validation."),generateFeatureChainError,0,.01f);
+            }
             generateValidateColors = EditorGUILayout.Toggle("Validate Vertex Colors", generateValidateColors);
             if (generateValidateColors)
                 generateMaxColorError = EditorGUILayout.Slider("Max Color Error", generateMaxColorError, 0.001f, 1f);
@@ -588,7 +596,9 @@ namespace SashaRX.UnityMeshLab
                 smallParts = PartSettings(),
                 prioritizeTriangleBudget = generateBudgetPriority && generateReductionMode != LodReductionMode.FullLoops,
                 correctSurfaceAttributes = generateCorrectAttributes && generateBudgetPriority && generateReductionMode != LodReductionMode.FullLoops,
-                preserveHardEdges = generatePreserveHardEdges
+                preserveHardEdges = generatePreserveHardEdges,
+                coarsenHardEdgeChains = generateCoarsenHardEdgeChains && generateBudgetPriority && generateReductionMode == LodReductionMode.Triangles,
+                featureChainError = generateFeatureChainError
             };
             if (generateRelaxFarLods)
                 opts = LodPipelineOps.RelaxFarLods(opts,startLod,generateRelaxFromLod,new LodPipelineOps.LevelQuality {
