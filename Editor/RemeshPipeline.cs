@@ -196,7 +196,7 @@ namespace SashaRX.UnityMeshLab
                 case Stage.Prepare: return $"{(source ? source.GetInstanceID() : 0)}|{s.lod0Only}|{s.keepHierarchy}|{s.sourceShape}|{s.shell}|" +
                     $"{s.minPartSize:R}|{s.minRodVoxels:R}|{s.voxelResolution}|{s.hullResolution}|{s.sourceBackfaces}|" +
                     $"cap{RemeshPlanarCap.Revision}|{s.planarCap}|{s.planarCapLoops}|{s.planarCapLocalPlanes}|{s.closureMode}|{s.capPlaneTolerance:R}|{s.bridgeCapFallback}";
-                case Stage.Remesh: return $"{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}|{s.lod0Only}|{s.keepHierarchy}|" +
+                case Stage.Remesh: return $"voxel{RemeshNative.VoxelRevision}|{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}|{s.lod0Only}|{s.keepHierarchy}|" +
                     $"{s.sourceShape}|{s.hullResolution}|{s.hullTriangles}|{s.minPartSize:R}|{s.minRodVoxels:R}|{s.voxelResolution}|{s.trimToSource}|{s.sourceBackfaces}|" +
                     $"cap{RemeshPlanarCap.Revision}|{s.planarCap}|{s.planarCapLoops}|{s.planarCapLocalPlanes}|{s.closureMode}|{s.capPlaneTolerance:R}|{s.bridgeCapFallback}";
                 case Stage.Simplify: return $"{s.simplify}|{s.targetTriangles}|{s.maximumError}|{s.regularize}|{s.preserveFolds}|{s.pruneSmallParts}";

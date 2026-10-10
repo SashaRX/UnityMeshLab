@@ -9,6 +9,7 @@ namespace SashaRX.UnityMeshLab
     {
         const string Library = "xatlas-unity";
         const int AbiVersion = 3;
+        internal const int VoxelRevision = 1;
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         static extern int meshLabRemeshVersion();
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
@@ -16,6 +17,9 @@ namespace SashaRX.UnityMeshLab
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         static extern int meshLabVoxelRemesh(float[] positions, uint vertexCount, int[] indices, uint indexCount,
             int resolution, uint flags, out IntPtr handle, out uint vertices, out uint outputIndices);
+        [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
+        static extern int meshLabVoxelRemeshManifold(float[] positions, uint vertexCount, int[] indices, uint indexCount,
+            int resolution, out IntPtr handle, out uint vertices, out uint outputIndices);
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         static extern int meshLabUnwrap(float[] positions, uint vertexCount, int[] indices, uint indexCount,
             float crease, float smoothing, float[] options, uint optionCount,
@@ -89,7 +93,8 @@ namespace SashaRX.UnityMeshLab
                 retryFlags => VoxelizeRaw(positions, indices, resolution, retryFlags, token),
                 (first, rejected, rejectedFlags, reason) => RemeshGeometryDiagnostics.CaptureFailure(
                     donorPositions ?? positions, donorIndices ?? indices, first, rejected, settings, "Voxel solid preflight", node, reason,
-                    resolution, flags, rejectedFlags, support)).PrepareChannels(token);
+                    resolution, flags, rejectedFlags, support),
+                () => VoxelizeRaw(positions, indices, resolution, 0, token, manifold: true)).PrepareChannels(token);
         }
 
         // A raw solid voxel result must be closed BEFORE source trimming. Otherwise
@@ -98,7 +103,8 @@ namespace SashaRX.UnityMeshLab
         // handling without loading the plugin or changing serialized settings.
         internal static IndexedMesh GuardVoxelSolid(IndexedMesh result, uint flags, int resolution, CancellationToken token,
             Func<uint, IndexedMesh> retryWithoutSolve,
-            Action<IndexedMesh, IndexedMesh, uint, string> captureFailure = null)
+            Action<IndexedMesh, IndexedMesh, uint, string> captureFailure = null,
+            Func<IndexedMesh> retryManifold = null)
         {
             token.ThrowIfCancellationRequested();
             if ((flags & 2u) != 0) return result;
@@ -107,6 +113,7 @@ namespace SashaRX.UnityMeshLab
             var repaired = RepairVoxelFins(result,token);
             if (!ReferenceEquals(repaired,result)) return repaired;
             if ((flags & 1u) == 0) {
+                if (retryManifold != null) return RetryManifoldSolid(result, result, resolution, token, retryManifold, captureFailure);
                 captureFailure?.Invoke(result, result, flags, topology.Description);
                 throw new InvalidOperationException($"Solid voxel remesh is not a valid closed surface before trim ({topology.Description}). " +
                     "Source trimming and Simplify were not run on this result.");
@@ -119,6 +126,7 @@ namespace SashaRX.UnityMeshLab
             if (retry.TriangleCount == 0 || !after.Valid || after.boundary.Count != 0) {
                 repaired = RepairVoxelFins(retry,token);
                 if (!ReferenceEquals(repaired,retry)) return repaired;
+                if (retryManifold != null) return RetryManifoldSolid(result, retry, resolution, token, retryManifold, captureFailure);
                 captureFailure?.Invoke(result, retry, flags & ~1u, after.Description);
                 throw new InvalidOperationException($"Solid voxel retry without source fitting is not a valid closed surface before trim ({after.Description}). " +
                     "Source trimming and Simplify were not run on this result.");
@@ -126,6 +134,28 @@ namespace SashaRX.UnityMeshLab
             UvtLog.Info(UvtLog.Category.RemeshDiag, $"Solid voxel fallback accepted at resolution {resolution}: " +
                 $"{result.TriangleCount} → {retry.TriangleCount} faces, boundary {topology.boundary.Count} → 0; source fitting disabled for this native attempt only.");
             return retry;
+        }
+
+        static IndexedMesh RetryManifoldSolid(IndexedMesh first, IndexedMesh rejected, int resolution, CancellationToken token,
+            Func<IndexedMesh> factory, Action<IndexedMesh, IndexedMesh, uint, string> captureFailure)
+        {
+            token.ThrowIfCancellationRequested();
+            UvtLog.Warn($"[Remesh] Corner-based solid voxel output remains invalid at resolution {resolution}. " +
+                "Retrying the same occupancy grid with a tetrahedral isosurface, without source fitting for this attempt; settings are unchanged.");
+            var candidate = factory();
+            token.ThrowIfCancellationRequested();
+            var topology = RemeshTopology.Inspect(candidate.positions, candidate.indices, token);
+            bool valid = candidate.TriangleCount > 0 && topology.Valid && topology.boundary.Count == 0;
+            if (valid) foreach (bool closed in RemeshTopology.ClosedVolumeFaces(candidate.positions, candidate.indices, token))
+                if (!closed) { valid = false; break; }
+            if (!valid) {
+                captureFailure?.Invoke(first, candidate, 0, topology.Description);
+                throw new InvalidOperationException($"Solid occupancy fallback is not a valid closed volume ({topology.Description}). " +
+                    "Source trimming and Simplify were not run on this result.");
+            }
+            UvtLog.Info(UvtLog.Category.RemeshDiag, $"Solid occupancy fallback accepted at resolution {resolution}: " +
+                $"{rejected.TriangleCount} → {candidate.TriangleCount} faces; closed topology and component volumes verified.");
+            return candidate;
         }
 
         static IndexedMesh RepairVoxelFins(IndexedMesh result, CancellationToken token)
@@ -139,16 +169,22 @@ namespace SashaRX.UnityMeshLab
             return candidate.PrepareChannels(token);
         }
 
-        static IndexedMesh VoxelizeRaw(Vector3[] positions, int[] indices, int resolution, uint flags, CancellationToken token)
+        static IndexedMesh VoxelizeRaw(Vector3[] positions, int[] indices, int resolution, uint flags, CancellationToken token, bool manifold = false)
         {
             IntPtr handle = IntPtr.Zero;
             try {
-                int code = meshLabVoxelRemesh(MeshSimplifier.PackPositions(positions), (uint)positions.Length, indices, (uint)indices.Length,
-                    resolution, flags,
-                    out handle, out uint vertexCount, out uint indexCount);
+                var packed = MeshSimplifier.PackPositions(positions);
+                uint vertexCount, indexCount;
+                int code = manifold ? meshLabVoxelRemeshManifold(packed, (uint)positions.Length, indices, (uint)indices.Length,
+                    resolution, out handle, out vertexCount, out indexCount) :
+                    meshLabVoxelRemesh(packed, (uint)positions.Length, indices, (uint)indices.Length,
+                    resolution, flags, out handle, out vertexCount, out indexCount);
                 token.ThrowIfCancellationRequested();
                 if (code != 0) throw new InvalidOperationException("Voxel remesh failed: " + Error(code));
                 return CopyMesh(handle, vertexCount, indexCount);
+            }
+            catch (EntryPointNotFoundException e) when (manifold) {
+                throw new InvalidOperationException("Solid voxel recovery requires the rebuilt native plugin. Update Mesh Lab after Build Native Libraries finishes and restart Unity.", e);
             }
             finally { if (handle != IntPtr.Zero) MeshSimplifier.meshLabMeshDestroy(handle); }
         }

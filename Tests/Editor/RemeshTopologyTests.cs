@@ -203,6 +203,71 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.Throws<OperationCanceledException>(() => RemeshNative.GuardVoxelSolid(opened, 1u, 256, cancelled.Token, _ => opened));
         }
 
+        [TestCase(0u)] [TestCase(1u)]
+        public void InvalidCornerVoxelUsesOneAuditedOccupancyRescue(uint flags)
+        {
+            var opened = new RemeshNative.IndexedMesh { positions = TetraPositions(), indices = new[] {0,2,1} };
+            var closed = new RemeshNative.IndexedMesh { positions = TetraPositions(), indices = (int[])Tetrahedron.Clone() };
+            int ordinary = 0, rescue = 0;
+            var original = (int[])opened.indices.Clone();
+            var result = RemeshNative.GuardVoxelSolid(opened,flags,64,default,_ => { ordinary++; return opened; },
+                (_,_,_,_) => Assert.Fail("Successful rescue must not capture a failure."),
+                () => { rescue++; return closed; });
+            Assert.AreSame(closed,result); Assert.AreEqual(flags == 1 ? 1 : 0,ordinary); Assert.AreEqual(1,rescue);
+            CollectionAssert.AreEqual(original,opened.indices);
+            foreach (uint mode in new[] {0u,1u,2u,3u})
+                Assert.AreSame(closed,RemeshNative.GuardVoxelSolid(closed,mode,64,default,_ => throw new Exception("Unexpected retry"),
+                    retryManifold:() => throw new Exception("Unexpected rescue")));
+            Assert.AreSame(opened,RemeshNative.GuardVoxelSolid(opened,flags|2,64,default,_ => opened,
+                retryManifold:() => throw new Exception("Unexpected shell rescue")));
+        }
+
+        [Test]
+        public void OccupancyRescueCannotBypassTopologyVolumeOrCancellationChecks()
+        {
+            var opened = new RemeshNative.IndexedMesh { positions = TetraPositions(), indices = new[] {0,2,1} };
+            var flat = new RemeshNative.IndexedMesh { positions = new[] {Vector3.zero,Vector3.right,Vector3.up,Vector3.one-Vector3.forward},
+                indices = (int[])Tetrahedron.Clone() };
+            int captured = 0;
+            foreach (var rejected in new[] {opened,flat}) {
+                Assert.Throws<InvalidOperationException>(() => RemeshNative.GuardVoxelSolid(opened,0,64,default,_ => opened,
+                    (first,last,flags,_) => { Assert.AreSame(opened,first); Assert.AreSame(rejected,last); Assert.AreEqual(0,flags); captured++; },
+                    () => rejected));
+            }
+            Assert.AreEqual(2,captured);
+            using var cancelled = new CancellationTokenSource();
+            Assert.Throws<OperationCanceledException>(() => RemeshNative.GuardVoxelSolid(opened,0,64,cancelled.Token,_ => opened,
+                (_,_,_,_) => Assert.Fail("Cancelled rescue must not capture a failure."),
+                () => { cancelled.Cancel(); return flat; }));
+        }
+
+        [TestCase(false,.001f)] [TestCase(true,.001f)]
+        [TestCase(false,1f)] [TestCase(true,1f)]
+        [TestCase(false,1000f)] [TestCase(true,1000f)]
+        public void ThinDisconnectedSolidSurvivesVoxelRescueSimplifyAndUnwrap(bool solve, float scale)
+        {
+            RemeshNative.CheckAvailable();
+            var cube = new[] {new Vector3(-1,-1,-1),new Vector3(1,-1,-1),new Vector3(1,1,-1),new Vector3(-1,1,-1),
+                new Vector3(-1,-1,1),new Vector3(1,-1,1),new Vector3(1,1,1),new Vector3(-1,1,1)};
+            var box = new[] {0,2,1,0,3,2,4,5,6,4,6,7,0,1,5,0,5,4,3,7,6,3,6,2,0,4,7,0,7,3,1,2,6,1,6,5};
+            var p = cube.Select(v => v*.3f*scale).Concat(cube.Select(v =>
+                (Vector3.Scale(v,new Vector3(1,.25f,.001f))+new Vector3(0,1,.217f))*scale)).ToArray();
+            var ix = box.Concat(box.Select(v => v+8)).ToArray();
+            var original = (Vector3[])p.Clone(); var originalI = (int[])ix.Clone();
+            var settings = new RemeshSettings {voxelResolution=32,solve=solve,pruneSmallParts=false,maximumError=.02f,textureResolution=256,padding=3};
+            var voxel = RemeshNative.Voxelize(p,ix,settings,default);
+            var topology = RemeshTopology.Inspect(voxel.positions,voxel.indices);
+            Assert.IsTrue(topology.Valid,topology.Description); Assert.AreEqual(0,topology.boundary.Count);
+            CollectionAssert.AreEqual(new[] {2,2},topology.euler,"Both authored solids must survive the rescue.");
+            Assert.IsTrue(RemeshTopology.ClosedVolumeFaces(voxel.positions,voxel.indices,default).All(v => v));
+            var simplified = RemeshNative.Simplify(voxel,settings,default,out _);
+            var uv = RemeshNative.Unwrap(simplified,settings,default);
+            var atlas = UvAtlasDiagnostics.Measure(uv,default);
+            Assert.IsTrue(atlas.complete); Assert.AreEqual(0,atlas.invalidFaces); Assert.AreEqual(0,atlas.pairs);
+            Assert.AreEqual(0,atlas.degenerateFaces); Assert.AreEqual(0,atlas.outOfBoundsVertices);
+            CollectionAssert.AreEqual(original,p); CollectionAssert.AreEqual(originalI,ix);
+        }
+
         [Test]
         public void FittedSolidRetriesInvalidWeldsEvenWithoutBoundaryEdges()
         {

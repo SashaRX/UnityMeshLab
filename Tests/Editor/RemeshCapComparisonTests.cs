@@ -186,5 +186,18 @@ namespace SashaRX.UnityMeshLab.Tests
                 TestContext.WriteLine($"{row.caseName}/{row.method}/solve={solve}: {row.status} {row.reason}");
             }
         }
+
+        [Test]
+        public void VerifyAuditedNativeCandidates()
+        {
+            // Separate opt-in acceptance gate: the comparison exporter intentionally
+            // records failed rows without turning every research run into a failure.
+            var manifest = ReadManifest();
+            ReplayAuditedNativeCandidates();
+            var report = JsonUtility.FromJson<Report>(File.ReadAllText(Path.Combine(manifest.output,"native.json")));
+            Assert.AreEqual(manifest.candidates.Length*2,report.results.Count);
+            foreach (var row in report.results)
+                Assert.AreEqual("passed",row.status,$"{row.caseName}/solve={row.solve}: {row.reason}");
+        }
     }
 }

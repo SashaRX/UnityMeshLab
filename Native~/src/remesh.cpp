@@ -413,6 +413,27 @@ EXPORT int meshLabVoxelRemesh(const float* positions, uint32_t vertexCount,
     } catch (...) { return Internal; }
 }
 
+// Additive ABI 3 entry point. Only used after the editor rejects both the fitted
+// and unfitted corner extractor. Same occupancy/solidification, new isosurface;
+// no source fit and no change to the ordinary remesher or two-sided shell mode.
+EXPORT int meshLabVoxelRemeshManifold(const float* positions, uint32_t vertexCount,
+    const uint32_t* indices, uint32_t indexCount, int resolution,
+    void** handle, uint32_t* outVertices, uint32_t* outIndices)
+{
+    if (!handle || !outVertices || !outIndices) return Invalid;
+    *handle = nullptr; *outVertices = 0; *outIndices = 0;
+    if (resolution < 4 || resolution > MaxVoxelResolution) return Invalid;
+    if (int code = ValidateMesh(positions, vertexCount, indices, indexCount)) return code;
+    try {
+        auto mesh = std::make_unique<PosMesh>();
+        if (int code = Voxelize(positions, vertexCount, indices, indexCount, resolution, 1u << 29, *mesh)) return code;
+        if (int code = Clean(*mesh, 0.0)) return code;
+        *outVertices = uint32_t(mesh->pos.size() / 3); *outIndices = uint32_t(mesh->idx.size());
+        Publish(mesh, handle);
+        return Ok;
+    } catch (...) { return Internal; }
+}
+
 // Stage 2: quadric simplification of an indexed mesh (moved vertex positions are kept),
 // degenerate cleanup and compaction. targetTriangles == 0 means error-limited only.
 // error is relative to the mesh extent, as in meshoptimizer.
