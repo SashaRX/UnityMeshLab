@@ -348,8 +348,8 @@ namespace SashaRX.UnityMeshLab.Tests
             var target = Quad(); target.Clear(); target.vertices = new[] { new Vector3(.1f,.1f,0), new Vector3(.9f,.1f,0), new Vector3(.1f,.9f,0) };
             target.triangles = new[] { 0, 1, 2 }; target.uv = new[] { Vector2.zero,Vector2.right,Vector2.up }; target.uv2 = target.uv;
             using var result = Build(Options(), Level(1, source), Level(0, target));
-            Assert.AreEqual(0, result.report.inheritedFaces); Assert.AreEqual(1, result.report.newFaces);
-            Assert.Greater(result.report.ambiguousFaces, 0); Clean(result.meshes[1][0]);
+            Assert.Greater(result.report.inheritedFaces, 1); Assert.AreEqual(0, result.report.newFaces);
+            Assert.Greater(result.report.splitSourceFaces, 0); Clean(result.meshes[1][0]);
         }
 
         [Test] public void CoincidentParentChartsAreAmbiguous()
@@ -433,8 +433,8 @@ namespace SashaRX.UnityMeshLab.Tests
             var target = new Mesh { name="AcrossHole" }; owned.Add(target);
             target.vertices=new[] {Vector3.zero,Vector3.right,Vector3.up}; target.triangles=new[] {0,1,2};
             using var result = Build(Options(),Level(1,seed),Level(0,target));
-            Assert.AreEqual(0,result.report.inheritedFaces); Assert.AreEqual(1,result.report.newFaces);
-            Assert.AreEqual(1,result.report.ambiguousFaces); Clean(result.meshes[1][0]);
+            Assert.Greater(result.report.inheritedFaces,0); Assert.Greater(result.report.newFaces,0);
+            Assert.Greater(result.report.splitSourceFaces,0); Clean(result.meshes[1][0]);
         }
 
         [TestCase("budget")] [TestCase("atlas")] [TestCase("seed-overlap")] [TestCase("seed-stretch")]

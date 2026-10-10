@@ -40,6 +40,68 @@
 
 ## Progressive reverse atlas — 2026-10-09
 
+### Correspondence graph, donor seam refinement and vacancy packing — 2026-10-10
+
+Continuation of PR225 from `0a544f5`, requested by the user. Reverse remains a
+standalone coarse-to-fine alternative; the Full Pipeline still runs forward.
+No native solver or imported FBX is changed.
+
+- Geometry edge adjacency records continuous UV, chart/UV seams, layer boundaries,
+  open rims and nonmanifold incidence. Connected groups are distinct from root
+  donor chart IDs. Source-face maps and barycentric partitions survive subdivision.
+- Failed target faces are cut by locally overlapping donor seams/rims in the
+  target plane. Subdivision points propagate to incident target faces. Original
+  corners keep their bytes; new samples interpolate vertex streams, skin weights
+  and blend-shape deltas, preserving submesh slots and packed UV dimensions/formats.
+  Position samples use Float32. Optional cuts below representable precision are
+  refused locally; thin nonzero source triangles are never removed to pass a gate.
+- An initial Cafe/Park trial increased the inherited face count but lost inherited
+  *area* on the following LOD. That is a real regression. The final trial compares
+  complete regions in original-face barycentric space across the whole chain,
+  protects responsible intermediate donor faces, retries local exclusions, and
+  retains the continuous baseline if inheritance, overlaps, distortion, density
+  or atlas size regresses. Existing accepted claims precede new refinement claims.
+- New connected islands use a row-interval occupancy raster across every earlier
+  LOD and accepted current faces. Search holes and other vacant texels before
+  increasing the square; all chart moves are translations with pixel padding.
+  Inherited pixels remain fixed. Grouping or an atlas-size reduction does not
+  by itself prove improved inheritance; independent audits report area fractions.
+
+Frozen asset-frame chains, legacy algorithm versus guarded refinement plus
+vacancy packing; **both overlap policies**:
+
+| Model | Atlas before → after | Finest inherited area (exclusive / overlap) |
+|---|---|---|
+| Modern_DressingTable_A | 512 → 512 | 96.338% / 96.338%, preserved by guard |
+| speaker-retro | 512 → 256 | 98.514% / 99.126%, preserved by guard |
+| Park_Bench_A | 1024 → 512 | 83.337 → 83.364% / 83.265 → 83.324% |
+| Shelf_C | 512 → 512 | 99.132% / 99.138%, preserved by guard |
+| Tire_C | 1024 → 512 | 72.890% / 72.890%, preserved by guard |
+| Bench_Metal_A | 1024 → 512 | 98.062 → 98.107%, both policies |
+| TrainCarriage | 1024 → 512 | 94.256 → 94.291% / 94.110 → 94.235% |
+| Modern_Kitchen_A | refused in both versions | prepared Backsplash seed loses its UV metric at float precision |
+
+Cafe_Table uses the previously captured exact scene frame. Atlas 256 → 128;
+finest UV area fraction 5.76 → 23.02% in both policies at unchanged pixel density.
+LOD1 exclusive inherited area 92.900 → 92.930%; LOD0 stays 100%. The overlap
+refinement trial retains its uncut baseline after a distortion regression;
+vacancy packing still halves that atlas. Geometry/snapshot and final overlap,
+degenerate, bounds and stretch audits pass. Fixed density, padding and fine-only
+detail reservations do not imply 100% occupied UV area on every coarse LOD.
+
+Kamaz: all eight frame/policy captures remain refused, with exact causes recorded:
+one shared-frame collapse and microscopic new-face UV placement collapse in the
+remaining frames. These are remaining precision limits, not successful transfers.
+Older merged captures with no unique source transform are unsuitable as a live
+acceptance baseline; the full imported chains above provide explicit frames.
+
+Isolated Unity 6000.2.6f2 run: 157 tests passed, zero failed, one unrelated optional
+legacy-capture test skipped. Both reference-assembly compile variants and the
+identifier/dependency gates pass. Private chains are enabled with
+`MESHLAB_REVERSE_ASSET_PATHS` (semicolon-separated imported FBX paths);
+`MESHLAB_REVERSE_OUTPUT` retains the old/new per-policy audits and refusal matrix.
+`MESHLAB_JUNCTION_FIXTURES`/`MESHLAB_JUNCTION_OUTPUT` retain the Cafe UV/index layouts.
+
 ### Narrow UV junction cuts — 2026-10-10
 
 Continuation of PR225 at the user's request, baseline `16462a0`. The legacy

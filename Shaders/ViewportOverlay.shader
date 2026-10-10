@@ -3,6 +3,7 @@ Shader "Hidden/MeshLab/ViewportOverlay"
     Properties
     {
         _MainTex ("Surface", 2D) = "white" {}
+        _UvScaleOffset ("Surface UV scale / offset", Vector) = (1,1,0,0)
         _Color ("Tint", Color) = (1,1,1,1)
         _UseVertexColor ("Vertex colours", Float) = 0
         _UseTexture ("Texture", Float) = 0
@@ -25,6 +26,7 @@ Shader "Hidden/MeshLab/ViewportOverlay"
             #include "UnityCG.cginc"
             sampler2D _MainTex;
             float4 _Color;
+            float4 _UvScaleOffset;
             float _UseVertexColor, _UseTexture, _Lit;
             struct appdata { float4 vertex : POSITION; float3 normal : NORMAL; float2 uv : TEXCOORD0; float4 color : COLOR; };
             struct v2f { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; float4 color : COLOR; float3 normal : TEXCOORD1; float3 view : TEXCOORD2; };
@@ -32,7 +34,7 @@ Shader "Hidden/MeshLab/ViewportOverlay"
             {
                 v2f o;
                 o.pos = UnityObjectToClipPos(v.vertex);
-                o.uv = v.uv;
+                o.uv = v.uv * _UvScaleOffset.xy + _UvScaleOffset.zw;
                 o.color = _Color;
                 if (_UseVertexColor > .5) o.color *= v.color;
                 o.normal = UnityObjectToWorldNormal(v.normal);

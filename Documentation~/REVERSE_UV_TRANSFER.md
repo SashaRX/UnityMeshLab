@@ -17,13 +17,31 @@ LOD number and advances toward LOD0. The existing forward solver is unchanged.
   consistency, reach, affine interior probes, orientation and exact UV footprint
   coverage determine inheritance. A donor hole between probes is not considered
   covered. Equal-distance different charts are ambiguous.
+- A correspondence graph distinguishes continuous edges, chart/UV seams,
+  overlap-layer boundaries, open rims and nonmanifold adjacency. Each face keeps
+  its root chart, connected group, previous donor and original input face.
+  Rejected target faces can be subdivided along donor seams/rims projected into
+  their own plane. Edge subdivisions propagate to incident target faces;
+  material slots, UV0 and the remaining vertex channels are preserved/interpolated.
+  New position samples use Float32; other packed channel formats/dimensions stay
+  intact. Skin weights and blend-shape deltas are interpolated on owned copies.
+  Numerically unrepresentable optional cuts are refused locally, without deleting
+  the thin source face. Coincident incompatible donors remain ambiguous.
 - Shared positions in one chart receive identical UV2 values when interpolation
   differs by less than 0.001 pixel. UV0 seams, materials and other vertex attributes
   survive; only UV2 conflicts split vertices.
 - New or rejected faces receive a geometry unwrap. Local failures get separate
-  intrinsic triangle charts. New blocks append to the occupied canvas; inherited
+  intrinsic triangle charts. Connected new islands are placed in vacant texels
+  across the complete chain, with conservative pixel padding, before growing the
+  square. The search preserves holes inside existing islands; inherited
   coordinates remain fixed in pixels. One final square normalization applies to
   **every LOD**, including the seed.
+- Refinement first establishes a valid uncut chain, then checks the complete
+  inherited regions in original-face barycentric space, intentional overlaps,
+  distortion, density and atlas size. An intermediate cut that harms a finer LOD
+  protects the responsible donor faces and retries locally. Bounded trials retain
+  the uncut chain if they cannot establish a safe refinement. Reports retain the
+  refusal; candidate meshes are destroyed. This can cost several projection runs.
 - Before seed preparation and projection, all inputs are cloned and exactly
   zero-area source-local triangles are removed from those detached copies.
   Double area arithmetic has no epsilon: nonzero thin faces remain. Nonfinite
@@ -131,10 +149,10 @@ the complete cut chain with an uncut chain before applying either: every already
 inherited face and intentional overlap must survive, per-face anisotropy must
 not worsen beyond float roundoff, density must not drop and the atlas cannot
 grow. A refused candidate keeps the baseline and displays the reason; an enabled
-trial may run the complete chain twice. In the frozen Cafe_Table case the new
-seed seams require target-triangle clipping, so the trial retains the baseline.
-This pattern does not yet create edges through triangle interiors or fill vacant
-space inside the inherited atlas.
+trial runs additional chains. The pattern planner itself uses existing edges;
+the projection refinement handles target face interiors separately. Some seed
+cuts are still refused in Cafe_Table when they harm the finer chain. Atlas vacancy
+placement is shared by both the cut trial and its retained baseline.
 
 Legacy sidecar replay cannot recreate Reverse UV seam splits or deleted faces.
 Saving such a result through a sidecar is refused explicitly; use Save Mesh Assets
@@ -152,9 +170,10 @@ New captures record the source and target renderer frames independently. Older
 captures require a unique source frame in their stage snapshots; missing frames
 are reported as refused trials rather than silently replaced by the target frame.
 
-This is a conservative face projection prototype. A triangle crossing incompatible
-donor chart boundaries becomes new UV; it is not split along the seam. Intrinsic
-rescue can create many islands. Expanded blocks are not globally compacted. New
+This is a conservative projection prototype. Eligible triangles crossing donor
+chart boundaries are split; incompatible correspondence, excessive local
+arrangements, or cuts below Float32 precision retain new UV or the protected
+uncut chain. Intrinsic rescue can create many islands. New
 blocks use median seed density; density extrema are measured rather than assumed
 equal. Unity's connected unwrap uses its internal margin; pixel padding governs
 block borders and intrinsic rescue shelves, not every connected chart edge.
@@ -165,5 +184,14 @@ overlap checks have comparison budgets. Very thin triangles can lose a valid UV
 metric at float precision after placement and are refused. Native unwrap runs on
 the editor thread; projection runs on a worker with cancellation support.
 
-Next: split detailed triangles at donor chart boundaries, then place unmatched
-regions into free atlas space without moving inherited placements.
+Reverse is a standalone alternative to forward Transfer, available in Setup.
+With seed preparation enabled it builds the last included LOD directly from
+geometry; a prior forward pipeline is unnecessary. With preparation disabled,
+provide a valid coarsest UV2/repack. Full Pipeline continues to run the forward
+workflow. A coarse LOD can legitimately occupy less of the common atlas than
+LOD0: finer-only details reserve space too. Filling 100% at a fixed texel density
+and pixel padding is not guaranteed.
+
+Next: improve safe local refinement acceptance on curved donors and numerical
+limits of exceptionally thin imported geometry. Ordered overlap baking remains
+separate work.

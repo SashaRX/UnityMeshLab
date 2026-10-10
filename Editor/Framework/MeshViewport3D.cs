@@ -245,7 +245,11 @@ namespace SashaRX.UnityMeshLab
                 for (int sub = 0; sub < shown.subMeshCount; ++sub) {
                     var material = item.materials != null && sub < item.materials.Length ? item.materials[sub] : null;
                     var block = SurfaceBlock(shown, Mode != Shading.Shaded);
-                    Color tint = Mode == Shading.Shaded && material && material.HasProperty("_Color") ? material.GetColor("_Color") : Color.white;
+                    Color tint = Color.white;
+                    if (Mode == Shading.Shaded && material) {
+                        if (material.HasProperty("_BaseColor")) tint = material.GetColor("_BaseColor");
+                        else if (material.HasProperty("_Color")) tint = material.GetColor("_Color");
+                    }
                     tint.a = Mathf.Clamp01(SurfaceOpacity); block.SetColor(ColorId, tint);
                     bool vertexColors = Mode != Shading.Shaded || (material && material.HasProperty("_UseVertexColor") && material.GetFloat("_UseVertexColor") > .5f);
                     block.SetFloat(UseVertexColorId, vertexColors ? 1 : 0);

@@ -18,6 +18,7 @@ namespace SashaRX.UnityMeshLab
         {
             EditorGUILayout.Space(6);
             EditorGUILayout.LabelField("Reverse UV — coarse → fine (experimental)", EditorStyles.boldLabel);
+            EditorGUILayout.HelpBox("Standalone alternative to forward Transfer. Starts at the last included LOD; a prior forward Transfer is not required.", MessageType.None);
             reversePrepareSeed = EditorGUILayout.ToggleLeft("Prepare coarsest LOD from geometry", reversePrepareSeed);
             reversePreserveOverlap = EditorGUILayout.ToggleLeft(new GUIContent("Allow projected detail overlap",
                 "Details can inherit the light under them. Overlap ancestry is saved; ordered baking is not implemented yet."), reversePreserveOverlap);
@@ -99,8 +100,9 @@ namespace SashaRX.UnityMeshLab
                 ctx.HasRepack = ctx.HasTransfer = true;
                 ctx.ClearAllCaches();
                 reverseSummary = $"Atlas {result.report.atlasSize}² · inherited {result.report.inheritedFaces} · new {result.report.newFaces}"
-                    + $" · overlap {result.report.overlapFaces} · ambiguous {result.report.ambiguousFaces} · removed zero-area {removed}";
+                    + $" · overlap {result.report.overlapFaces} · ambiguous {result.report.ambiguousFaces} · split source faces {result.report.splitSourceFaces} · removed zero-area {removed}";
                 if (prepared.refusal != null) reverseSummary += " · junction cuts skipped: " + prepared.refusal;
+                if (result.report.refinementRefusal != null) reverseSummary += " · donor seam cuts skipped: " + result.report.refinementRefusal;
                 UvtLog.Info($"[ReverseUV] {reverseSummary}. Audit: {auditPath}");
                 if (ownsProgress) UvProgress.End();
             }

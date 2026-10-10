@@ -13,7 +13,7 @@ namespace SashaRX.UnityMeshLab
         [Serializable] internal sealed class NodeKey { public int lod, node; public string key; }
         [Serializable] internal sealed class ProvenanceEntry
         {
-            public int schema = 1, atlasSize, seedResolution;
+            public int schema = 2, atlasSize, seedResolution;
             public float texelsPerUnit;
             public ReverseUvTransfer.NodeReport surface;
             public NodeKey[] chain;
@@ -38,6 +38,8 @@ namespace SashaRX.UnityMeshLab
             public int lod, triangles, allowedOverlapPairs, unexpectedOverlapPairs;
             public bool complete;
             public double texelsPerUnitMin, texelsPerUnitMax;
+            public double uvAreaFraction, inheritedAreaFraction;
+            public int splitSourceFaces, refusedCutFaces, groups, charts;
         }
 
         internal static string[] Provenance(ReverseUvTransfer.Report report)
@@ -68,9 +70,15 @@ namespace SashaRX.UnityMeshLab
             {
                 var pixels = new List<Vector2>(); var faces = new List<ReverseUvTransfer.Face>();
                 var measurement = new LevelMeasurement { lod = inputs[level].lod, texelsPerUnitMin = double.MaxValue };
+                double surfaceArea = 0, inheritedArea = 0;
                 for (int node = 0; node < inputs[level].inputs.Length; ++node)
                 {
                     var mesh = result.meshes[level][node];
+                    var nodeReport = result.report.nodes[reportNode];
+                    ValidateSourcePartition(nodeReport);
+                    measurement.splitSourceFaces += nodeReport.splitSourceFaces;
+                    measurement.refusedCutFaces += nodeReport.faces.Select((f, i) => (f, i)).Where(p => p.f.cutRefusal != null)
+                        .Select(p => nodeReport.sourceFaces[p.i]).Distinct().Count();
                     var quality = TransferUvQuality.Measure(mesh, mesh.uv2, Vector2.one, inputs[level].inputs[node].toWorld);
                     if (!quality.overlapScanComplete || quality.invalidFaces > 0 || quality.degenerateFaces > 0
                         || quality.outOfBoundsVertices > 0 || double.IsNaN(quality.worstAnisotropy) || quality.worstAnisotropy > 4.001)
@@ -90,6 +98,9 @@ namespace SashaRX.UnityMeshLab
                         double uvArea = Math.Abs((double)u.x * v.y - (double)u.y * v.x);
                         double worldArea = Vector3.Cross(transform.MultiplyVector(positions[b] - positions[a]), transform.MultiplyVector(positions[c] - positions[a])).magnitude;
                         double density = result.report.atlasSize * Math.Sqrt(uvArea / worldArea);
+                        surfaceArea += worldArea;
+                        if (nodeReport.faces[t / 3].inherited) inheritedArea += worldArea;
+                        measurement.uvAreaFraction += uvArea * .5;
                         measurement.texelsPerUnitMin = Math.Min(measurement.texelsPerUnitMin, density);
                         measurement.texelsPerUnitMax = Math.Max(measurement.texelsPerUnitMax, density);
                     }
@@ -99,6 +110,9 @@ namespace SashaRX.UnityMeshLab
                     indices = System.Linq.Enumerable.Range(0, pixels.Count).ToArray(), charts = new int[pixels.Count] }, default,
                     comparisonBudget: 2000000, collectConflicts: true);
                 measurement.triangles = faces.Count; measurement.complete = scan.complete;
+                measurement.inheritedAreaFraction = surfaceArea > 0 ? inheritedArea / surfaceArea : 0;
+                measurement.charts = faces.Select(f => f.chart).Distinct().Count();
+                measurement.groups = faces.Select(f => f.group).Distinct().Count();
                 foreach (var (a, b) in scan.conflicts)
                 {
                     if (faces[a].inherited && faces[b].inherited && (faces[a].intentionalOverlap || faces[b].intentionalOverlap)) ++measurement.allowedOverlapPairs;
@@ -114,6 +128,24 @@ namespace SashaRX.UnityMeshLab
             string path = Path.Combine(directory, "reverse_" + DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff") + "_" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".json");
             File.WriteAllText(path, JsonUtility.ToJson(audit, true));
             return path;
+        }
+
+        static void ValidateSourcePartition(ReverseUvTransfer.NodeReport node)
+        {
+            if (node.sourceBarycentrics == null) return;
+            if (node.sourceBarycentrics.Length != node.faces.Length * 3 || node.sourceFaces.Length != node.faces.Length)
+                throw new InvalidOperationException("Reverse UV source partition has inconsistent corner ancestry.");
+            var areas = new Dictionary<int, double>();
+            for (int f = 0; f < node.faces.Length; ++f)
+            {
+                var a = node.sourceBarycentrics[f * 3]; var b = node.sourceBarycentrics[f * 3 + 1]; var c = node.sourceBarycentrics[f * 3 + 2];
+                double area = ((double)b.y - a.y) * ((double)c.z - a.z) - ((double)b.z - a.z) * ((double)c.y - a.y);
+                if (area <= 0 || new[] { a, b, c }.Any(p => p.x < -1e-6f || p.y < -1e-6f || p.z < -1e-6f || Math.Abs(p.x + p.y + p.z - 1) > 1e-6))
+                    throw new InvalidOperationException("Reverse UV subdivision leaves or inverts a source triangle.");
+                areas.TryGetValue(node.sourceFaces[f], out double sum); areas[node.sourceFaces[f]] = sum + area;
+            }
+            if (areas.Values.Any(area => Math.Abs(area - 1) > 1e-5))
+                throw new InvalidOperationException("Reverse UV subdivision does not retain the complete source triangle area.");
         }
     }
 }
