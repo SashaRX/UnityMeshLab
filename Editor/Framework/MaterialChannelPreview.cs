@@ -7,6 +7,10 @@ namespace SashaRX.UnityMeshLab
     // the last material's maps; nothing is assigned to the scene or authored assets.
     internal static class MaterialChannelPreview
     {
+        const string MainTextureProperty = "_MainTex";
+        const string ColorProperty = "_Color";
+        const string MetallicGlossProperty = "_MetallicGlossMap";
+        const string MaskProperty = "_MaskMap";
         internal struct Data
         {
             internal Texture texture;
@@ -16,9 +20,9 @@ namespace SashaRX.UnityMeshLab
 
             internal void Apply(MaterialPropertyBlock block)
             {
-                block.SetTexture("_MainTex", texture ? texture : Texture2D.whiteTexture);
+                block.SetTexture(MainTextureProperty, texture ? texture : Texture2D.whiteTexture);
                 block.SetVector("_UvScaleOffset", transform);
-                block.SetColor("_Color", tint);
+                block.SetColor(ColorProperty, tint);
                 block.SetFloat("_ViewerMode", mode);
                 block.SetFloat("_UseTexture", texture ? 1 : 0);
                 block.SetFloat("_Channel", channel);
@@ -31,9 +35,9 @@ namespace SashaRX.UnityMeshLab
 
             internal void Apply(Material material)
             {
-                material.SetTexture("_MainTex", texture ? texture : Texture2D.whiteTexture);
+                material.SetTexture(MainTextureProperty, texture ? texture : Texture2D.whiteTexture);
                 material.SetVector("_UvScaleOffset", transform);
-                material.SetColor("_Color", tint);
+                material.SetColor(ColorProperty, tint);
                 material.SetFloat("_ViewerMode", mode);
                 material.SetFloat("_UseTexture", texture ? 1 : 0);
                 material.SetFloat("_Channel", channel);
@@ -55,7 +59,7 @@ namespace SashaRX.UnityMeshLab
             bool urp = shader == "Universal Render Pipeline/Lit";
             bool standard = shader == "Standard" || shader == "Standard (Specular setup)";
             bool specular = shader == "Standard (Specular setup)" || (urp && Value(material, 1, "_WorkflowMode") == 0);
-            string albedo = Property(material, "_BaseMap", "_MainTex", "_BaseColorMap", "_AlbedoMap", "_Albedo");
+            string albedo = Property(material, "_BaseMap", MainTextureProperty, "_BaseColorMap", "_AlbedoMap", "_Albedo");
             string property = null;
             switch (mode) {
                 case MeshViewport3D.Shading.Albedo:
@@ -72,7 +76,7 @@ namespace SashaRX.UnityMeshLab
                 case MeshViewport3D.Shading.Gloss:
                     bool fromAlbedo = material && material.IsKeywordEnabled("_SMOOTHNESS_TEXTURE_ALBEDO_CHANNEL_A");
                     property = fromAlbedo ? albedo : GlossProperty(material, standard, urp, specular);
-                    data.channel = fromAlbedo || property == "_MetallicGlossMap" || property == "_SpecGlossMap" || property == "_MaskMap" ? 3 : 0;
+                    data.channel = fromAlbedo || property == MetallicGlossProperty || property == "_SpecGlossMap" || property == MaskProperty ? 3 : 0;
                     data.scalar = standard ? Value(material, .5f, property != null || fromAlbedo ? "_GlossMapScale" : "_Glossiness") : Value(material, .5f, "_Smoothness", "_Glossiness", "_GlossMapScale");
                     break;
                 case MeshViewport3D.Shading.Metalness:
@@ -80,8 +84,8 @@ namespace SashaRX.UnityMeshLab
                     data.scalar = specular ? 0 : property != null ? 1 : Value(material, 0, "_Metallic", "_Metalness");
                     break;
                 case MeshViewport3D.Shading.AO:
-                    property = Property(material, "_OcclusionMap", "_AOMap", "_AmbientOcclusionMap", "_MaskMap");
-                    data.channel = property == "_OcclusionMap" || property == "_MaskMap" ? 1 : 0;
+                    property = Property(material, "_OcclusionMap", "_AOMap", "_AmbientOcclusionMap", MaskProperty);
+                    data.channel = property == "_OcclusionMap" || property == MaskProperty ? 1 : 0;
                     data.scalar = Mathf.Clamp01(Value(material, 1, "_OcclusionStrength"));
                     data.bias = 1 - data.scalar;
                     break;
@@ -89,7 +93,7 @@ namespace SashaRX.UnityMeshLab
             if (property != null) {
                 data.texture = material.GetTexture(property);
                 // Lit shaders share the base transform; custom shaders keep each map's ST.
-                string st = (standard || urp) ? DeclaredProperty(material, urp ? "_BaseMap" : "_MainTex") ?? property : property;
+                string st = (standard || urp) ? DeclaredProperty(material, urp ? "_BaseMap" : MainTextureProperty) ?? property : property;
                 var scale = material.GetTextureScale(st); var offset = material.GetTextureOffset(st);
                 data.transform = new Vector4(scale.x, scale.y, offset.x, offset.y);
             }
@@ -106,15 +110,15 @@ namespace SashaRX.UnityMeshLab
         {
             if (standard || urp) {
                 string keyword = urp ? "_METALLICSPECGLOSSMAP" : specular ? "_SPECGLOSSMAP" : "_METALLICGLOSSMAP";
-                return material.IsKeywordEnabled(keyword) ? Property(material, specular ? "_SpecGlossMap" : "_MetallicGlossMap") : null;
+                return material.IsKeywordEnabled(keyword) ? Property(material, specular ? "_SpecGlossMap" : MetallicGlossProperty) : null;
             }
-            return Property(material, "_SmoothnessMap", "_GlossMap", "_MetallicGlossMap", "_SpecGlossMap", "_MaskMap");
+            return Property(material, "_SmoothnessMap", "_GlossMap", MetallicGlossProperty, "_SpecGlossMap", MaskProperty);
         }
 
         static string MetalProperty(Material material, bool standard, bool urp)
         {
             if ((standard || urp) && !material.IsKeywordEnabled(urp ? "_METALLICSPECGLOSSMAP" : "_METALLICGLOSSMAP")) return null;
-            return Property(material, "_MetallicGlossMap", "_MetallicMap", "_MetalnessMap", "_MaskMap");
+            return Property(material, MetallicGlossProperty, "_MetallicMap", "_MetalnessMap", MaskProperty);
         }
 
         static string Property(Material material, params string[] names)
@@ -142,7 +146,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (!material) return new Color(.72f, .72f, .72f, 1);
             if (material.HasProperty("_BaseColor")) return material.GetColor("_BaseColor");
-            return material.HasProperty("_Color") ? material.GetColor("_Color") : Color.white;
+            return material.HasProperty(ColorProperty) ? material.GetColor(ColorProperty) : Color.white;
         }
     }
 }
