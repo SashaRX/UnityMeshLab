@@ -227,6 +227,30 @@ static void checkManifoldRescue(int resolution, int axis, float scale) {
     std::vector<float> p(size_t(vertices)*3); std::vector<uint32_t> ix(count);
     check(meshLabMeshCopy(handle,p.data(),vertices,ix.data(),count)==0,"occupancy rescue: copy");
     meshLabMeshDestroy(handle);
+    // Voxelization pads indices by one; recovery must undo that padding.
+    // Check authored locations independently of topology, across axis/scale cases.
+    double lower[2][3], upper[2][3];
+    for (int part=0;part<2;++part) for (int k=0;k<3;++k) {
+        lower[part][k]=std::numeric_limits<double>::infinity();
+        upper[part][k]=-std::numeric_limits<double>::infinity();
+    }
+    for (uint32_t v=0;v<vertices;++v) {
+        int part=p[v*3+(1+axis)%3]>.5f*scale?1:0;
+        for (int k=0;k<3;++k) {
+            lower[part][k]=std::min(lower[part][k],double(p[v*3+k]));
+            upper[part][k]=std::max(upper[part][k],double(p[v*3+k]));
+        }
+    }
+    const double cell=2.*scale*(resolution+.01)/resolution/(resolution-2);
+    for (int part=0;part<2;++part) for (int k=0;k<3;++k) {
+        const int outAxis=(k+axis)%3;
+        const double center=(lower[part][outAxis]+upper[part][outAxis])*.5;
+        check(std::abs(center-double(offset[part][k])*scale)<=.51*cell,
+            "occupancy rescue: authored component center within half a voxel");
+        check(std::abs(lower[part][outAxis]-(double(offset[part][k])-extent[part][k])*scale)<=1.01*cell &&
+              std::abs(upper[part][outAxis]-(double(offset[part][k])+extent[part][k])*scale)<=1.01*cell,
+            "occupancy rescue: authored bounds within one voxel");
+    }
     std::set<std::vector<uint32_t>> faces;
     std::unordered_map<uint64_t,std::pair<int,int>> edges;
     std::vector<std::unordered_map<uint32_t,std::vector<uint32_t>>> links(vertices);

@@ -31,7 +31,7 @@ Remesh, source-fitted Simplify and UV using those saved settings. The original
 donors must remain unchanged and the final atlas scan must be complete and clean.
 Outputs include the closed support mesh and `closure-native.json`.
 
-The complete saved-setting replay reaches 241,028 voxel faces, 16,938 simplified
+The complete saved-setting replay with voxel revision 1 reaches 241,028 voxel faces, 16,938 simplified
 faces and 754 UV islands (mean/worst stretch 1.03814/8.461). Its full atlas scan
 has no overlap, degenerate, invalid or out-of-bounds faces/vertices. Worst stretch
 remains a quality defect; material Bake was not evaluated. Saved brute-force

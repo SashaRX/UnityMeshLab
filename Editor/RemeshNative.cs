@@ -9,7 +9,7 @@ namespace SashaRX.UnityMeshLab
     {
         const string Library = "xatlas-unity";
         const int AbiVersion = 3;
-        internal const int VoxelRevision = 1;
+        internal const int VoxelRevision = 2;
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]
         static extern int meshLabRemeshVersion();
         [DllImport(Library, CallingConvention = CallingConvention.Cdecl)]

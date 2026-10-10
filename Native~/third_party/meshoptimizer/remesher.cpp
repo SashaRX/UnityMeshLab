@@ -767,9 +767,11 @@ static size_t polygonizeManifold(float* destination, size_t capacity, const Grid
 							b[i] = ni == 1 ? outside[i] : outside[0];
 						}
 						const int origin[3] = {x,y,z};
+						// Rasterization stores source cell x at padded index x+1;
+						// grid index g therefore denotes the center g-0.5.
 						for (int i = 0; i < (ni == 2 ? 4 : 3); ++i)
 							for (int k = 0; k < 3; ++k)
-								points[i][k] = (origin[k] + .5f * (((a[i] >> k) & 1) + ((b[i] >> k) & 1) + 1)) * rscale + offset[k];
+								points[i][k] = (origin[k] + .5f * (((a[i] >> k) & 1) + ((b[i] >> k) & 1) - 1)) * rscale + offset[k];
 						const int order[2][3] = {{0,1,2},{1,3,2}};
 						for (int i = 0; i < triangles && count + i < capacity; ++i)
 						{

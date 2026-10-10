@@ -67,6 +67,25 @@ an editor that still has the old DLL loaded must restart before using recovery.
 
 ## Reproduction and verification
 
+### Voxel revision 2: source-space position
+
+Revision 1's occupancy midpoint formula accidentally added the rasterizer's
+padding instead of removing it, translating recovered vertices by one voxel
+along every axis. Rasterization puts source cell `x` at padded index `x + 1`,
+so padded grid index `g` represents source center `g - 0.5`. Revision 2 corrects
+only this coordinate mapping and invalidates cached Remesh stages. Ordinary
+extractors, occupancy, triangles, topology guards and resolution are unchanged.
+
+The eighteen disconnected box/thin-plate controls additionally compare every
+component's bounds and center with authored geometry. Centers may deviate by
+at most half a voxel (plus rounding allowance); bounds by one voxel. This
+position check fails on the prior formula, independently of topology validity.
+Native binaries must be rebuilt by CI and loaded after restarting the Editor.
+
+The measurements below are historical revision-1 results; corrected geometry
+can change later Trim, source fitting, Simplify and UV results, so those numbers
+must not be treated as revision-2 acceptance evidence.
+
 Private local captures remain outside the package in `_results~`. Baseline and
 resolution reports are under `_results~/voxel-solid-20261010/`. The prepared
 inputs come from `_results~/bridge-budget-20261010/comparison/`.

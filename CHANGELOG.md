@@ -37,6 +37,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Removed the obsolete standalone Python/BAT sweep-gallery generator. It only understood the retired flat `BenchmarkReports/*_sweep_*.csv` + `{csvBase}_png/` layout; sweeps now generate their own `index.html` in the current nested run layout. Benchmark documentation and hierarchical-repack artefact descriptions now name the files the current code actually writes.
 
 ### Fixed
+
+- Correct the one-voxel offset along each axis in solid occupancy Remesh recovery; authored component center/bounds tests catch misplaced but topologically valid output, and the Remesh revision invalidates cached results.
 - Source-shell UV overlap scans now stop transfer when the comparison budget is exhausted instead of treating a partial conflict set as a certified non-overlapping shell. Covered with zero/one-comparison budget regressions.
 - Partial UV Repack/Transfer retains reverse ancestry and legacy-sidecar export guards on untouched results. Replaced reverse results discard their old derived meshes before clearing provenance; empty or failed Transfer leaves the prior guard intact.
 - Successful Cap preparation dumps geometry only with Verbose Remesh diagnostics enabled. Refused contours and invalid selections remain captured independently of logger settings.

@@ -10,6 +10,10 @@ No downloaded dependency tree or checked-in plugin binary is modified.
 
 Local changes:
 
+- Occupancy midpoint positions undo the rasterizer's one-cell padding: padded
+  index `g` has source-space center `g - 0.5`. Component center/bounds checks
+  cover three axes, resolutions 32/64 and scales 0.001/1/1000.
+
 - Grid access and row offsets are templated. Grids up to 256 retain upstream's
   byte storage and behavior; 257 through 1024 use unsigned 16-bit offsets.
 - Interior sentinels, row comparisons and flood-fill temporary values use the

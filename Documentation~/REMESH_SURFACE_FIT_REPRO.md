@@ -3,6 +3,9 @@
 ## Frozen baseline and bounded correction
 
 Baseline `fc62cc8`, Unity 6000.2.6f2 / DX11, CI-published native DLL unchanged.
+These measurements use voxel revision 1; the coordinate correction in voxel
+revision 2 requires fresh downstream acceptance results. See
+[solid recovery position correction](REMESH_SOLID_RECOVERY.md#voxel-revision-2-source-space-position).
 Inputs are prepared, closed Park_Bench_A and Garbage_Chute captures from
 [solid recovery](REMESH_SOLID_RECOVERY.md). Settings: resolution 64, collapse
 error 0.02, small-part pruning, 512 atlas, padding 3, chart merging on,
