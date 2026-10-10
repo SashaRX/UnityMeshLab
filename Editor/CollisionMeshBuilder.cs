@@ -150,6 +150,9 @@ namespace SashaRX.UnityMeshLab
             public float elementFitError;   // sampled distance / element bounds diagonal
             public int elementRemeshResolution;
             public int elementTargetTriangles;
+            public bool preferSimpleShapes;
+            public float shapeFitError; // sampled distance / group bounds diagonal
+            public float projectionThicknessRatio;
 
             public static ConvexDecompSettings Default => new ConvexDecompSettings
             {
@@ -167,7 +170,9 @@ namespace SashaRX.UnityMeshLab
                 boxFillThreshold  = .9f,
                 elementFitError   = .02f,
                 elementRemeshResolution = 32,
-                elementTargetTriangles = 64
+                elementTargetTriangles = 64,
+                shapeFitError = .035f,
+                projectionThicknessRatio = .25f
             };
 
             /// <summary>Coarse prop colliders: close small detail within similarly oriented parts.</summary>
@@ -184,6 +189,25 @@ namespace SashaRX.UnityMeshLab
                     return settings;
                 }
             }
+
+            public static ConvexDecompSettings Structural
+            {
+                get { var s = CoarseParts; s.preferSimpleShapes = true; s.shapeFitError = .075f; return s; }
+            }
+        }
+
+        public enum ShapeKind { ConvexMesh, Box, Projected }
+
+        [Serializable]
+        public struct ShapeReport
+        {
+            public ShapeKind kind;
+            public int groupIndex;
+            public Vector3 center, size, projectionNormal;
+            public Quaternion rotation;
+            public int profileVertices;
+            public float sampledError;
+            public string detail;
         }
 
         public enum ElementPreparation { Source, Box, RemeshDecimate, Decimate }
@@ -206,6 +230,7 @@ namespace SashaRX.UnityMeshLab
             public int sourceTriCount;
             public int partGroupCount;
             public List<ElementReport> elementReports;
+            public List<ShapeReport> shapeReports;
         }
 
         /// <summary>
@@ -278,7 +303,7 @@ namespace SashaRX.UnityMeshLab
                 return result;
             }
 
-            if (settings.groupNearbyParts || settings.prepareElements)
+            if (settings.groupNearbyParts || settings.prepareElements || settings.preferSimpleShapes)
             {
                 if (!ValidPartSettings(settings))
                 {
@@ -288,6 +313,11 @@ namespace SashaRX.UnityMeshLab
                 if (settings.prepareElements && !CollisionElementPreprocessor.ValidSettings(settings))
                 {
                     result.error = "Invalid element preparation settings: fill 50-100%, fit error 0.01-10%, voxel resolution 16-256, triangle budget 12-4096";
+                    return result;
+                }
+                if (settings.preferSimpleShapes && !CollisionShapeFitter.ValidSettings(settings))
+                {
+                    result.error = "Shape fit must be 0.01-10%; projection thickness ratio must be 1-100%";
                     return result;
                 }
                 return BuildGroupedDecomposition(sourceMesh, settings);
@@ -425,7 +455,8 @@ namespace SashaRX.UnityMeshLab
             ExtractMeshData(source, out var positions, out var indices);
             var parts = CollisionPartGrouper.Group(positions, indices, settings.groupNearbyParts ? settings.partMergeDistance : 0, settings.partMergeAngle);
             var result = new ConvexDecompResult {
-                hulls = new List<Mesh>(), sourceTriCount = indices.Length / 3, partGroupCount = parts.Count, elementReports = new List<ElementReport>()
+                hulls = new List<Mesh>(), sourceTriCount = indices.Length / 3, partGroupCount = parts.Count,
+                elementReports = new List<ElementReport>(), shapeReports = new List<ShapeReport>()
             };
             int budget = Mathf.Clamp(settings.maxHulls, 1, 64);
             if (parts.Count > budget)
@@ -435,21 +466,24 @@ namespace SashaRX.UnityMeshLab
             }
             var meshes = new List<Mesh>();
             var outputs = new List<ConvexDecompResult>();
+            var rawMeshes = new List<Mesh>();
+            var fitReasons = new string[parts.Count];
             var limits = new int[parts.Count];
             bool prepareElements = settings.prepareElements;
+            bool simpleShapes = settings.preferSimpleShapes;
             settings.groupNearbyParts = false;
             settings.prepareElements = false;
+            settings.preferSimpleShapes = false;
             try
             {
                 for (int i = 0; i < parts.Count; i++)
                 {
-                    var mesh = prepareElements
-                        ? BuildPreparedPartMesh(source.name, positions, parts[i], settings, i, result.elementReports)
-                        : BuildPartMesh(source.name, positions, parts[i].indices);
-                    meshes.Add(mesh);
+                    var raw = BuildPartMesh(source.name, positions, parts[i].indices);
+                    rawMeshes.Add(raw);
+                    meshes.Add(null);
                     limits[i] = budget / parts.Count + (i < budget % parts.Count ? 1 : 0);
                     settings.maxHulls = limits[i];
-                    var output = BuildConvexDecompositionReadable(mesh, settings);
+                    var output = BuildGroupOutput(i);
                     outputs.Add(output);
                     if (!output.ok) { result.error = $"Part group {i}: {output.error}"; return result; }
                 }
@@ -471,26 +505,49 @@ namespace SashaRX.UnityMeshLab
                         int i = capped[n];
                         limits[i] += spare / capped.Count + (n < spare % capped.Count ? 1 : 0);
                         settings.maxHulls = limits[i];
-                        var output = BuildConvexDecompositionReadable(meshes[i], settings);
+                        var output = BuildGroupOutput(i);
                         DestroyHulls(outputs[i].hulls);
                         outputs[i] = output;
                         if (!output.ok) { result.error = $"Part group {i}: {output.error}"; return result; }
                     }
                 }
-                foreach (var output in outputs)
+                for (int i = 0; i < outputs.Count; i++)
+                {
+                    var output = outputs[i];
                     foreach (var hull in output.hulls)
                     {
                         hull.name = source.name + "_hull" + result.hulls.Count;
                         result.hulls.Add(hull);
                     }
+                    if (output.shapeReports != null) result.shapeReports.AddRange(output.shapeReports);
+                    else foreach (var hull in output.hulls) result.shapeReports.Add(new ShapeReport {
+                        kind = ShapeKind.ConvexMesh, groupIndex = i, sampledError = -1,
+                        detail = fitReasons[i] ?? "3D decomposition requested." });
+                }
+                result.elementReports.RemoveAll(r => outputs[r.groupIndex].shapeReports != null);
+                for (int i = 0; i < result.elementReports.Count; i++) {
+                    var report = result.elementReports[i]; report.elementIndex = i; result.elementReports[i] = report;
+                }
                 result.ok = true;
                 return result;
             }
             finally
             {
                 foreach (var mesh in meshes) UnityEngine.Object.DestroyImmediate(mesh);
+                foreach (var mesh in rawMeshes) UnityEngine.Object.DestroyImmediate(mesh);
                 if (!result.ok)
                     foreach (var output in outputs) DestroyHulls(output.hulls);
+            }
+
+            ConvexDecompResult BuildGroupOutput(int i)
+            {
+                if (simpleShapes) {
+                    if (CollisionShapeFitter.TryBuild(rawMeshes[i], settings, i, out var fitted)) return fitted;
+                    fitReasons[i] = fitted.error;
+                }
+                if (meshes[i] == null && prepareElements)
+                    meshes[i] = BuildPreparedPartMesh(source.name, positions, parts[i], settings, i, result.elementReports);
+                return BuildConvexDecompositionReadable(meshes[i] != null ? meshes[i] : rawMeshes[i], settings);
             }
         }
 

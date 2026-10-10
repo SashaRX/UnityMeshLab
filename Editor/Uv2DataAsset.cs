@@ -232,6 +232,13 @@ namespace SashaRX.UnityMeshLab
         public int maxHulls;
         public int resolution;
         public int maxVertsPerHull;
+        // Optional metadata; old sidecars retain their mesh-only behavior. The
+        // flattened geometry remains the portable proxy for FBX and reimport.
+        public CollisionMeshBuilder.ShapeReport[] shapes;
+        public string sourceHierarchyPath;
+        public bool preferSimpleShapes;
+        public float shapeFitError;
+        public float projectionThicknessRatio;
     }
 
     [CreateAssetMenu(menuName = "Mesh Lab/UV2 Data (internal)", fileName = "uv2data")]
