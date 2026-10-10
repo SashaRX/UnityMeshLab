@@ -8,7 +8,28 @@ Native-constraint experiment verification: **183 selected EditMode tests passed*
 
 ## Implemented
 
-### Current: bounded thin-frame silhouette correction (2026-10-11)
+### Current decision: quality experiments closed (2026-10-11)
+
+[The final component-allocation attempt](LOD_PART_ALLOCATION_CLOSURE.md) used
+78/79 triangles on SmallBench but worsened mean silhouette error, thin-detail
+loss and UV correspondence. It was rejected. The prototype and its tests are
+archived in a reproducible patch; they are removed from the shipping code so
+generation does not pay for the rejected alternative. **Retain the generator
+from `7739c46`. Further vertex-color/silhouette parameter experiments on these
+fixtures are closed and must not restart without a new request.**
+
+Fresh actual Generate and fourteen-view 64px GPU checks retain SmallBench at
+77 triangles / 125 vertices, University Pot at 74 / 71 and the tent at 62 / 154.
+Their selected mesh snapshots are byte-identical and coverage/RGBA results are
+unchanged. The final attempt passed 237 selected EditMode tests with zero
+failures; five unrelated opt-in experiments were ignored and are explicitly
+listed in its report. Both FBX compile configurations passed. Missing SmallBench
+frame details remain a known limit; its authored 144-triangle LOD2 is better.
+Protected LOD1 budgets, generation performance and original-material/shared-
+lightmap integration remain unfinished. This is an experiment closure, not
+production acceptance.
+
+### Retained: bounded thin-frame silhouette correction (2026-10-11)
 
 [The silhouette iteration](LOD_SILHOUETTE.md) freezes the previous vertex-color
 algorithms and improves the real SmallBench frame at **77/708 triangles and

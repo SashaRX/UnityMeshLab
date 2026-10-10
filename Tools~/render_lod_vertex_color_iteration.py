@@ -26,11 +26,14 @@ def main():
     parser.add_argument('output', type=Path)
     parser.add_argument('--silhouette', action='store_true', help='Compare silhouette masks and choose the worst prior coverage view')
     parser.add_argument('--supplement', type=Path, help='Completed rerun resolving every skipped test in the main run')
+    parser.add_argument('--allow-unrequested-experiments', action='store_true',
+                        help='Report known opt-in experiment skips without running unrelated experiments; required Generate must pass')
     args = parser.parse_args()
     test_root=ET.parse(args.after/'tests.xml').getroot()
     test=test_root.attrib
     assert int(test['failed']) == int(test['inconclusive']) == 0
     supplement=None
+    unrequested=[]
     passed={t.attrib['fullname'] for t in test_root.iter('test-case') if t.attrib['result']=='Passed'}
     if args.supplement:
         rerun=ET.parse(args.supplement).getroot(); supplement=rerun.attrib
@@ -38,6 +41,21 @@ def main():
         resolved={t.attrib['fullname'] for t in rerun.iter('test-case') if t.attrib['result']=='Passed'}
         assert all(t.attrib['fullname'] in resolved for t in test_root.iter('test-case') if t.attrib['result']=='Skipped')
         passed |= resolved
+    elif args.allow_unrequested_experiments:
+        optional={
+            'SashaRX.UnityMeshLab.Tests.LodColorBoundaryProjectTests.CaptureSourceColorCostCandidates',
+            'SashaRX.UnityMeshLab.Tests.LodColorBoundaryProjectTests.ReplayPaintDiagonals',
+            'SashaRX.UnityMeshLab.Tests.LodColorBoundaryProjectTests.ReplayPaintGeometryCandidates',
+            'SashaRX.UnityMeshLab.Tests.LodOriginalProjectCaptures.CaptureAuthoredLods',
+            'SashaRX.UnityMeshLab.Tests.LodScreenAcceptanceTests.ExistingActualProjectGpuReadbacksProduceIndependentAcceptanceReports',
+        }
+        for item in test_root.iter('test-case'):
+            if item.attrib['result'] != 'Skipped':
+                continue
+            name=item.attrib['fullname']; reason=item.findtext('reason/message')
+            assert name in optional and reason and ('Requires ' in reason or 'Specify actual GPU readbacks' in reason), (name,reason)
+            unrequested.append({'test':name,'reason':reason})
+        assert len(unrequested) == int(test['skipped'])
     else:
         assert int(test['skipped']) == 0
     assert any(t.attrib.get('name')=='CopiedProjectModelsProduceActualGenerateCaptures' and t.attrib['result']=='Passed'
@@ -253,7 +271,7 @@ def main():
         for axis in axes:
             axis.set_xticks(x,labels,rotation=15); axis.grid(axis='y',alpha=.2)
         fig.tight_layout(); fig.savefig(str(args.output)+'_GUIDE.png',dpi=130); plt.close(fig)
-    report = {'tests': test, 'supplementaryTests': supplement, 'distinctPassedTests': len(passed),
+    report = {'tests': test, 'supplementaryTests': supplement, 'unrequestedSkippedTests': unrequested, 'distinctPassedTests': len(passed),
               'before': str(args.before), 'after': str(args.after), 'models': models,
               'scope': 'Same FBX bytes, identical source/authored GPU controls, 14 views, source extent 64px.',
               'colorComparisonScope': 'Conditional overlap RMS is retained. Common RMS uses the identical source/before/after overlap set; full-image RMS includes lost or excess coverage on the fixed diagnostic background.',

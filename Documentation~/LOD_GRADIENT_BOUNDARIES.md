@@ -1,5 +1,8 @@
 # Smooth RGBA fields and sharp paint boundaries — 2026-10-11
 
+**Series closed:** the following color rules remain frozen alongside the retained
+silhouette refit. See [the final decision and remaining limits](LOD_PART_ALLOCATION_CLOSURE.md).
+
 This iteration separates high-contrast continuous ramps from sharp vertex-paint
 interfaces in the source guide. It retains the independent LOD2 target of 1/9
 and rechecks University bench Pot, SmallBench and the rainbow tent at 64px.

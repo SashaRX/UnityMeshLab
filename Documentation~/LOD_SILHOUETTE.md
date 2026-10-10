@@ -1,5 +1,11 @@
 # Thin-frame silhouette refinement — 2026-10-11
 
+**Final decision:** retain this generator (`7739c46`). The subsequent
+[component-allocation attempt](LOD_PART_ALLOCATION_CLOSURE.md) was rejected and
+removed from the shipping path. The color/silhouette tuning series is closed;
+the source-allocation recommendations below are historical next steps, not an
+active work plan.
+
 This iteration starts silhouette work on the real SmallBench frame, retaining
 independent source reduction to an LOD2 target of 1/9. University bench Pot and
 the rainbow tent remain comparison fixtures. The baseline is `53f7689`, recorded
