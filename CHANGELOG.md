@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- Optional LOD Screen Quality Guide ranks triangle-budget candidates by six CPU views of thin-detail and sharp RGBA-boundary loss, rejects attribute replacements that worsen those local guides, and guards whole-small-part removal at the estimated LOD entry size. 203 selected tests pass; fresh captures on eight project models select unchanged results with 46% extra measured generation time. Generation defaults remain unchanged.
 - Local LOD screen diagnostics measure thin-detail/visible-component loss and sharp RGBA-boundary retention at three footprints, with explicit unevaluated cases. Actual-model readback replay and a fresh tent capture pass 196 selected tests; diagnostics expose regional regressions without changing simplification defaults.
 - Optional native LOD crease constraints permit patch retriangulation while protecting shading seams, junctions, material borders and ambiguous faces; failed coverage retries locked chains, then reports the strict-belt fallback. CI-built native plugins and 183 selected Unity tests cover the additive ABI and fresh eight-model source-budget/matched-count comparisons; measured regressions keep the option disabled by default.
 - Optional LOD crease-chain coarsening preserves tracked feature shape, separate shading sides, material junctions and topology; coarsened native retries rank sampled source quality. Actual-model evaluation keeps the strict protected baseline and verifies DPI-independent GPU captures.

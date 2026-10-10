@@ -34,6 +34,8 @@ namespace SashaRX.UnityMeshLab.Tests
             public string featureChainProbe;
             public List<PartReport> parts = new List<PartReport>();
             public float partPixelLimit;
+            public int screenPartProposed, screenPartTris;
+            public bool screenPartAccepted;
         }
         [Serializable] public sealed class PartReport
         {
@@ -105,6 +107,18 @@ namespace SashaRX.UnityMeshLab.Tests
                         areaFraction = (float)(part.area/parts.area), protectedReason = part.protectedReason,
                         pixelsLod2 = LodSmallParts.Pixels(part,Matrix4x4.identity,group.size,.25f,1080),
                         pixelsLod4 = LodSmallParts.Pixels(part,Matrix4x4.identity,group.size,.0625f,1080) });
+                if (argsHave("-meshlabLodScreenGuided"))
+                {
+                    var plan = LodSmallParts.Select(parts,new LodSmallParts.Settings { enabled = true,firstLod = 2,
+                        screenHeight = 1080,maxPixels = 8,maxAreaFraction = .02f,maxTriangleFraction = .2f },2,.25f,Matrix4x4.identity,group.size);
+                    report.screenPartProposed = plan.removed.Count; report.screenPartTris = plan.triangles;
+                    if (plan.removed.Count > 0)
+                    {
+                        var retained = LodSmallParts.Retain(parts,plan);
+                        try { report.screenPartAccepted = LodSmallParts.ScreenSafe(source,retained.data.source,true,Matrix4x4.identity,270/group.size); }
+                        finally { Object.DestroyImmediate(retained.data.source); }
+                    }
+                }
             }
             finally { Object.DestroyImmediate(probe); }
             SaveReport(report); // Preserve provenance even if a later generation fails.
@@ -136,7 +150,12 @@ namespace SashaRX.UnityMeshLab.Tests
                 bool budgetOnly = Environment.GetCommandLineArgs().Contains("-meshlabLodBudget");
                 if (budgetOnly)
                 {
-                    if (argsHave("-meshlabLodHardEdges"))
+                    if (argsHave("-meshlabLodScreenGuided"))
+                    {
+                        Generate(source,LodReductionMode.Triangles,3,"native",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true,coarsenHardEdgeChains:true,nativeHardEdgeConstraints:true);
+                        Generate(source,LodReductionMode.Triangles,3,"guided",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true,coarsenHardEdgeChains:true,nativeHardEdgeConstraints:true,screenGuided:true);
+                    }
+                    else if (argsHave("-meshlabLodHardEdges"))
                     {
                         Generate(source,LodReductionMode.Triangles,3,"unprotected",variants,generated,relaxedFar:true,correctAttributes:true);
                         Generate(source,LodReductionMode.Triangles,3,"hard",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true);
@@ -239,9 +258,10 @@ namespace SashaRX.UnityMeshLab.Tests
                         capture.sourceDistanceRms = variant.info.sourceDistanceRms; capture.normalRms = variant.info.normalRms; capture.uvRms = variant.info.uvRms;
                         capture.silhouetteMean = variant.info.silhouetteMean; capture.silhouetteMax = variant.info.silhouetteMax;
                         capture.selectionScore = variant.info.selectionScore; capture.nativeProbes = variant.info.nativeProbes;
+                        capture.screenQuality = variant.info.screenQuality;
                         if (argsHave("-meshlabLodHardEdges"))
                         {
-                            var features = variant.name.StartsWith("chains-") || variant.name.StartsWith("native-") || variant.name.StartsWith("matched-") ? variant.info.hardEdges : new LodHardEdges(source).Measure(variant.mesh);
+                            var features = variant.name.StartsWith("chains-") || variant.name.StartsWith("native-") || variant.name.StartsWith("matched-") || variant.name.StartsWith("guided-") ? variant.info.hardEdges : new LodHardEdges(source).Measure(variant.mesh);
                             capture.hardEdges = features.edges; capture.missingHardEdges = features.missingEdges;
                             capture.protectedTriangles = features.protectedTriangles; capture.missingProtectedTriangles = features.missingFaces;
                             capture.patchInterfaces = features.interfaces; capture.missingPatchInterfaces = features.missingInterfaces;
@@ -250,7 +270,7 @@ namespace SashaRX.UnityMeshLab.Tests
                             capture.coarsenedFeaturePoints = features.coarsenedPoints; capture.coarsenedFeatureTriangles = features.coarsenedTriangles;
                             capture.nativeCreaseConstraints = features.nativeConstraints; capture.lockedChainRetry = features.lockedChainRetry;
                             capture.nativeBeltFallback = features.beltFallback;
-                            if (variant.name.StartsWith("hard-") || variant.name.StartsWith("chains-") || variant.name.StartsWith("native-") || variant.name.StartsWith("matched-")) Assert.That(features.Valid,Is.True,model.name+"/"+variant.name+": hard features or patch interfaces changed");
+                            if (variant.name.StartsWith("hard-") || variant.name.StartsWith("chains-") || variant.name.StartsWith("native-") || variant.name.StartsWith("matched-") || variant.name.StartsWith("guided-")) Assert.That(features.Valid,Is.True,model.name+"/"+variant.name+": hard features or patch interfaces changed");
                         }
                         var correction = variant.info.attributeCorrection;
                         if (correction != null)
@@ -270,7 +290,7 @@ namespace SashaRX.UnityMeshLab.Tests
                         capture.budgetCandidates = variant.info.budgetCandidates?.Select(c => new LodVisualQualityTests.BudgetCandidate {
                             variant = c.variant,name = c.name,triangles = c.triangles,nativeProbes = c.nativeProbes,score = c.score,
                             distanceRms = c.distanceRms,normalRms = c.normalRms,colorRms = c.colorRms,uvRms = c.uvRms,
-                            silhouetteMean = c.silhouetteMean,silhouetteMax = c.silhouetteMax }).ToList();
+                            silhouetteMean = c.silhouetteMean,silhouetteMax = c.silhouetteMax,screenQuality = c.screenQuality }).ToList();
                         capture.removedParts = variant.info.removedParts; capture.removedPartTris = variant.info.removedPartTris;
                         capture.removedPartAreaFraction = variant.info.removedPartAreaFraction; capture.removedPartMaxPixels = variant.info.removedPartMaxPixels;
                         report.captures.Add(capture);
@@ -295,7 +315,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         static void Generate(Mesh source,LodReductionMode mode,int candidates,string prefix,
-            List<(string name, Mesh mesh, LodPipelineOps.LodInfo info, double ms)> variants,List<Mesh> generated,bool uncheckedColors = false,bool relaxedFar = false,bool pruneParts = false,bool correctAttributes = false,bool preserveHardEdges = false,bool coarsenHardEdgeChains = false,bool nativeHardEdgeConstraints = false,float[] requestedRatios = null)
+            List<(string name, Mesh mesh, LodPipelineOps.LodInfo info, double ms)> variants,List<Mesh> generated,bool uncheckedColors = false,bool relaxedFar = false,bool pruneParts = false,bool correctAttributes = false,bool preserveHardEdges = false,bool coarsenHardEdgeChains = false,bool nativeHardEdgeConstraints = false,float[] requestedRatios = null,bool screenGuided = false)
         {
             var root = new GameObject("ProjectLODPreview");
             try
@@ -316,6 +336,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     options.preserveHardEdges = preserveHardEdges;
                     options.coarsenHardEdgeChains = coarsenHardEdgeChains;
                     options.nativeHardEdgeConstraints = nativeHardEdgeConstraints;
+                    options.screenGuidedSelection = screenGuided;
                     options.featureChainError = coarsenHardEdgeChains ? .005f : 0;
                 }
                 if (relaxedFar)

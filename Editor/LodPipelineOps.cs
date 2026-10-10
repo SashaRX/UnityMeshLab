@@ -34,6 +34,7 @@ namespace SashaRX.UnityMeshLab
             public bool preserveHardEdges;
             public bool coarsenHardEdgeChains;
             public bool nativeHardEdgeConstraints;
+            public bool screenGuidedSelection;
             public float featureChainError;
         }
 
@@ -97,6 +98,7 @@ namespace SashaRX.UnityMeshLab
             public List<LodBudgetTriangleSimplifier.CandidateReport> budgetCandidates;
             public LodAttributeCorrection.Report attributeCorrection;
             public LodHardEdges.Report hardEdges;
+            public LodScreenValidation.Report screenQuality;
         }
 
         internal class Result
@@ -278,6 +280,25 @@ namespace SashaRX.UnityMeshLab
                             if (partPlan.removed.Count > 0)
                             {
                                 retained = LodSmallParts.Retain(analysis,partPlan);
+                                if (opts.screenGuidedSelection && worldSize > 0)
+                                {
+                                    bool accepted;
+                                    try
+                                    {
+                                        accepted = LodSmallParts.ScreenSafe(srcMesh,retained.data.source,!levelOptions.skipColorValidation,
+                                            entry.renderer ? entry.renderer.localToWorldMatrix : Matrix4x4.identity,
+                                            entryHeight*opts.smallParts.screenHeight/worldSize,() => UvProgress.CancelRequested);
+                                    }
+                                    catch { Object.DestroyImmediate(retained.data.source); retained = null; throw; }
+                                    if (!accepted)
+                                    {
+                                        Object.DestroyImmediate(retained.data.source); retained = null;
+                                        partPlan = new LodSmallParts.Plan { note = "Screen guide retained the proposed disconnected parts: visible detail or RGBA boundary loss exceeds 25%." };
+                                    }
+                                }
+                            }
+                            if (retained != null)
+                            {
                                 reductionMesh = retained.data.source;
                                 reductionSettings.targetRatio = Mathf.Min(1,ratio*analysis.triangles/LodMeshData.TriangleCount(reductionMesh));
                                 reductionSources = new Dictionary<Mesh,LodSourceTopology>(prepared) { [reductionMesh] = retained };
@@ -381,6 +402,7 @@ namespace SashaRX.UnityMeshLab
                             budgetCandidates = loop?.budgetCandidates,
                             attributeCorrection = loop?.attributeCorrection,
                             hardEdges = r.hardEdges,
+                            screenQuality = loop?.screenQuality,
                             reductionNote = reductionNote,
                             allowedColorError = opts.skipColorValidation ? 0 : levelOptions.maxColorError,
                             allowedNormalAngle = levelOptions.maxNormalAngle, targetError = levelOptions.targetError,

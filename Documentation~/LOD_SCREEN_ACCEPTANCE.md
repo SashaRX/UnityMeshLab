@@ -2,10 +2,11 @@
 
 `LodScreenAcceptance` adds independent diagnostics for visible thin features,
 disconnected image regions and sharp vertex-color boundaries. It evaluates linear
-GPU color/coverage readbacks at 384, 192 and 96 pixels. These diagnostic gates
-**do not yet reject simplification candidates or change generation defaults**.
-They expose regressions that whole-surface RMS and total silhouette mismatch can
-hide, before implementing a new retention/removal policy.
+GPU color/coverage readbacks at 384, 192 and 96 pixels. This document records the
+independent diagnostic snapshot; direct GPU readbacks do not change generation.
+The subsequent optional [CPU screen guide](LOD_SCREEN_GUIDED_SELECTION.md) uses
+the same regional checks in candidate ranking, attribute-correction guarding and
+small-part removal. Generation defaults remain unchanged.
 
 ## Measurements and experimental guides
 
@@ -124,9 +125,9 @@ fixed and is not counted as test evidence.
 python Tools~/render_lod_screen_acceptance.py <output> --baseline <native-matched-output> --tests <final-corrected.xml>
 ```
 
-Next, connect source detail/paint retention to candidate selection and removal of
-whole small components without forcing every subpixel feature to remain forever. Use
-Bench A/Fire Shield details and the tent's RMS-versus-boundary tradeoff as controls,
-calibrate the experimental guides against original materials and actual screen
-sizes, then test full assemblies and transitions. The factor-three budgets and
-general visual acceptance are still unfinished.
+The optional CPU candidate/removal policy is documented separately in
+[screen-guided selection](LOD_SCREEN_GUIDED_SELECTION.md). Next, use Bench A/Fire
+Shield details and the tent's RMS-versus-boundary tradeoff as controls to calibrate
+the experimental guides against original materials and actual screen sizes, then
+test full assemblies and transitions. The factor-three budgets and general visual
+acceptance are still unfinished.

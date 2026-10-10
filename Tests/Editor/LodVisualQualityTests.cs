@@ -46,6 +46,7 @@ namespace SashaRX.UnityMeshLab.Tests
             public List<RegionNormalError> regionNormalsBefore, regionNormalsAfter;
             public List<BudgetCandidate> budgetCandidates;
             [SerializeField] internal List<LodScreenAcceptance.Report> screenAcceptance;
+            [SerializeField] internal LodScreenValidation.Report screenQuality;
             public int removedParts, removedPartTris;
             public float removedPartAreaFraction, removedPartMaxPixels;
         }
@@ -59,6 +60,7 @@ namespace SashaRX.UnityMeshLab.Tests
             public int variant, triangles, nativeProbes;
             public string name;
             public float score, distanceRms, normalRms, colorRms, uvRms, silhouetteMean, silhouetteMax;
+            [SerializeField] internal LodScreenValidation.Report screenQuality;
         }
         [Serializable]
         public sealed class Report

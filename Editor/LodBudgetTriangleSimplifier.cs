@@ -12,12 +12,14 @@ namespace SashaRX.UnityMeshLab
             internal MeshSimplifier.SimplifySettings settings;
             internal LodPipelineOps.Options options;
             internal LodSilhouetteValidation silhouette;
+            internal LodScreenValidation screen;
         }
         internal struct CandidateReport
         {
             internal int variant, triangles, nativeProbes;
             internal string name;
             internal float score, distanceRms, normalRms, colorRms, uvRms, silhouetteMean, silhouetteMax;
+            internal LodScreenValidation.Report screenQuality;
         }
         // Budget-first generation still uses edge collapse. It never drops arbitrary
         // triangles to manufacture a count, and never simplifies a preceding LOD.
@@ -54,6 +56,7 @@ namespace SashaRX.UnityMeshLab
             var selectedSettings = settings;
             var bestMetrics = new LodSurfaceValidation.Metrics();
             var bestSilhouette = new LodSilhouetteValidation.Metrics();
+            LodScreenValidation.Report bestScreen = null;
             float bestScore = float.PositiveInfinity;
             int selected = 0, probes = 0;
             int target = Mathf.Max(1,Mathf.CeilToInt(LodMeshData.TriangleCount(source)*settings.targetRatio));
@@ -69,7 +72,8 @@ namespace SashaRX.UnityMeshLab
             int count = Mathf.Clamp(options.candidateCount,1,5);
             var reports = new List<CandidateReport>();
             var silhouette = new LodSilhouetteValidation(source,cancelled);
-            var probeEvaluation = chains?.mesh || native ? new ProbeEvaluation { source = source,settings = settings,options = options,silhouette = silhouette } : null;
+            var screen = options.screenGuidedSelection ? new LodScreenValidation(source,!options.skipColorValidation,cancelled) : null;
+            var probeEvaluation = chains?.mesh || native || screen != null ? new ProbeEvaluation { source = source,settings = settings,options = options,silhouette = silhouette,screen = screen } : null;
             bool rankOverBudgetQuality = protectedFloorExceedsBudget || probeEvaluation != null;
             try
             {
@@ -83,15 +87,16 @@ namespace SashaRX.UnityMeshLab
                         if (!candidate.ok) { note = candidate.error; continue; }
                         var metrics = LodSurfaceValidation.MeasureMeshes(source,candidate.simplifiedMesh,settings,cancelled,ignoreDegenerateFaces:true);
                         var outline = silhouette.Measure(candidate.simplifiedMesh,cancelled);
-                        float score = Score(metrics,outline,settings,options);
+                        var local = screen?.Measure(candidate.simplifiedMesh,cancelled);
+                        float score = Score(metrics,outline,settings,options)+(local?.Penalty(settings.colorWeight) ?? 0);
                         reports.Add(new CandidateReport { variant = variant+1,name = VariantName(variant),triangles = candidate.simplifiedTriCount,
                             nativeProbes = attempts,score = score,distanceRms = metrics.DistanceRms,normalRms = metrics.NormalRms,
-                            colorRms = Maximum(metrics.ColorRms),uvRms = metrics.UvRms,silhouetteMean = outline.mean,silhouetteMax = outline.maximum });
+                            colorRms = Maximum(metrics.ColorRms),uvRms = metrics.UvRms,silhouetteMean = outline.mean,silhouetteMax = outline.maximum,screenQuality = local });
                         if (!best.ok || Better(candidate.simplifiedTriCount,score,best.simplifiedTriCount,bestScore,target,rankOverBudgetQuality,densityLimit))
                         {
                             if (best.simplifiedMesh) UnityEngine.Object.DestroyImmediate(best.simplifiedMesh);
                             best = candidate; candidate.simplifiedMesh = null;
-                            bestMetrics = metrics; bestSilhouette = outline; bestScore = score;
+                            bestMetrics = metrics; bestSilhouette = outline; bestScore = score; bestScreen = local;
                             selected = variant+1; selectedSettings = nativeSettings;
                         }
                     }
@@ -109,35 +114,54 @@ namespace SashaRX.UnityMeshLab
                     UnityEngine.Object.DestroyImmediate(best.simplifiedMesh);
                     best = new MeshSimplifier.SimplifyResult { ok = true,simplifiedMesh = copy,draftUv = draft,
                         originalTriCount = LodMeshData.TriangleCount(source),simplifiedTriCount = previousCount,resultError = metrics.weightedError };
-                    bestMetrics = metrics; bestSilhouette = outline; bestScore = Score(metrics,outline,settings,options);
+                    bestScreen = screen?.Measure(copy,cancelled);
+                    bestMetrics = metrics; bestSilhouette = outline; bestScore = Score(metrics,outline,settings,options)+(bestScreen?.Penalty(settings.colorWeight) ?? 0);
                     selected = count+1; reusedPrevious = true;
                     reports.Add(new CandidateReport { variant = selected,name = "previous protected source candidate",triangles = previousCount,
                         score = bestScore,distanceRms = metrics.DistanceRms,normalRms = metrics.NormalRms,colorRms = Maximum(metrics.ColorRms),
-                        uvRms = metrics.UvRms,silhouetteMean = outline.mean,silhouetteMax = outline.maximum });
+                        uvRms = metrics.UvRms,silhouetteMean = outline.mean,silhouetteMax = outline.maximum,screenQuality = bestScreen });
                 }
                 LodAttributeCorrection.Report correction = null;
                 if (options.correctSurfaceAttributes)
                 {
                     UvProgress.Report(UvProgress.Current.fraction,$"{source.name}: verify surface attribute correction");
                     var corrected = LodAttributeCorrection.Correct(source,best.simplifiedMesh,settings,options,
-                        out correction,out bestMetrics,cancelled,bestMetrics);
-                    if (corrected)
+                        out correction,out var correctedMetrics,cancelled,bestMetrics);
+                    try
                     {
-                        UnityEngine.Object.DestroyImmediate(best.simplifiedMesh); best.simplifiedMesh = corrected;
-                        bestScore = Score(bestMetrics,bestSilhouette,settings,options);
+                        if (corrected)
+                        {
+                            var correctedScreen = screen?.Measure(corrected,cancelled);
+                            if (correctedScreen == null || correctedScreen.DoesNotWorsen(bestScreen))
+                            {
+                                UnityEngine.Object.DestroyImmediate(best.simplifiedMesh); best.simplifiedMesh = corrected; corrected = null;
+                                bestMetrics = correctedMetrics; bestScreen = correctedScreen;
+                                bestScore = Score(bestMetrics,bestSilhouette,settings,options)+(bestScreen?.Penalty(settings.colorWeight) ?? 0);
+                            }
+                            else
+                            {
+                                correction.normalsAccepted = correction.colorsAccepted = false;
+                                correction.normalRmsAfter = bestMetrics.NormalRms; correction.colorRmsAfter = bestMetrics.ColorRms;
+                                correction.normalMaxAfter = bestMetrics.authoredNormalAngle; correction.colorMaxAfter = bestMetrics.colorMax;
+                                correction.normalBlend = correction.colorBlend = 0; correction.regionNormalsAfter = correction.regionNormalsBefore;
+                                correction.note += " CPU screen guide rejected the attribute replacement: local detail/paint loss worsened; kept original candidate attributes.";
+                            }
+                        }
                     }
+                    finally { if (corrected) UnityEngine.Object.DestroyImmediate(corrected); }
                 }
                 MeshUvState.SetDraft(best.simplifiedMesh,best.draftUv);
                 diagnostics = new LodLoopSimplifier.Result { metrics = bestMetrics,maxDistance = bestMetrics.distance,
                     maxNormalAngle = bestMetrics.normalAngle,maxColorError = bestMetrics.colorError,
                     evaluatedCandidates = reports.Count,selectedCandidate = selected,nativeProbes = probes,
                     silhouetteMean = bestSilhouette.mean,silhouetteMax = bestSilhouette.maximum,selectionScore = bestScore,budgetCandidates = reports,
-                    attributeCorrection = correction };
+                    attributeCorrection = correction,screenQuality = bestScreen };
                 string selectedName = reusedPrevious ? "previous protected source candidate" : VariantName(selected-1);
                 note = $"Triangle budget prioritized; selected {selectedName} from {reports.Count} quality candidates ({probes} native probes). " +
                 "Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic.";
+                if (screen != null) note += $" CPU screen guide adds worst visible detail/RGBA boundary loss ({bestScreen.detailLoss:P1}/{bestScreen.colorLoss:P1}) at a fixed 256px footprint; budget and density rules still take precedence.";
                 if (protectedFloorExceedsBudget) note += " Protected face floor already reaches/exceeds the requested budget; no error/weight relaxation. Over-budget candidates ranked by measured quality.";
-                else if (probeEvaluation != null) note += " Coarsened over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape.";
+                else if (probeEvaluation != null) note += " Over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape.";
                 if (reusedPrevious) note += " All new candidates exceeded the preceding protected density; cloned and remeasured that source-derived geometry. No recursive collapse; reported result error is sampled weighted error, not a new native bound.";
                 else
                 {
@@ -245,6 +269,7 @@ namespace SashaRX.UnityMeshLab
                         float score = evaluation == null ? 0 : Score(
                             LodSurfaceValidation.MeasureMeshes(evaluation.source,candidate.simplifiedMesh,evaluation.settings,cancelled,ignoreDegenerateFaces:true),
                             evaluation.silhouette.Measure(candidate.simplifiedMesh,cancelled),evaluation.settings,evaluation.options);
+                        if (evaluation?.screen != null) score += evaluation.screen.Measure(candidate.simplifiedMesh,cancelled).Penalty(evaluation.settings.colorWeight);
                         bool preferable = evaluation == null ? candidate.simplifiedTriCount < best.simplifiedTriCount :
                             Better(candidate.simplifiedTriCount,score,best.simplifiedTriCount,bestScore,target,true);
                         if (!best.ok || preferable)

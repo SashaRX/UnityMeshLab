@@ -32,6 +32,7 @@ namespace SashaRX.UnityMeshLab
         bool generatePreserveHardEdges = true;
         bool generateCoarsenHardEdgeChains;
         bool generateNativeHardEdgeConstraints;
+        bool generateScreenGuidedSelection;
         float generateFeatureChainError = .005f;
         float generateReductionStep = 3;
         float generateTargetError = 0.2f;
@@ -81,6 +82,7 @@ namespace SashaRX.UnityMeshLab
             public int nativeProbes;
             public float sourceDistanceRms, normalRms, silhouetteMean, silhouetteMax, selectionScore;
             public LodAttributeCorrection.Report attributeCorrection;
+            public LodScreenValidation.Report screenQuality;
             public string reductionNote;
             public float allowedColorError, targetError;
             public int removedParts, removedPartTris;
@@ -411,6 +413,8 @@ namespace SashaRX.UnityMeshLab
                     generateFeatureChainError = EditorGUILayout.Slider(new GUIContent("Crease Deviation", "Maximum original polyline deviation as a fraction of the source diagonal. Zero permits straight chains with affine fields only. Bounded mode permits up to 5 degrees of crease normal error, 0.001 UV error and the level's RGBA guide before source validation."),generateFeatureChainError,0,.01f);
             }
             generateValidateColors = EditorGUILayout.Toggle("Validate Vertex Colors", generateValidateColors);
+            using (new EditorGUI.DisabledScope(!generateBudgetPriority || generateReductionMode != LodReductionMode.Triangles))
+                generateScreenGuidedSelection = EditorGUILayout.Toggle(new GUIContent("Screen Quality Guide", "Experimental: rank candidates by visible thin-detail and RGBA boundary loss, prevent correction from worsening these losses, and guard small-part removal at the estimated LOD entry size."),generateScreenGuidedSelection);
             if (generateValidateColors)
                 generateMaxColorError = EditorGUILayout.Slider("Max Color Error", generateMaxColorError, 0.001f, 1f);
             if (generateReductionMode != LodReductionMode.Triangles || generateValidateColors || generateBudgetPriority)
@@ -475,6 +479,9 @@ namespace SashaRX.UnityMeshLab
                         EditorGUILayout.LabelField($"      measured distance {r.sourceDistance:P3}, normal {r.normalError:F1}°",EditorStyles.miniLabel);
                         EditorGUILayout.LabelField($"      area RMS distance {r.sourceDistanceRms:P3}, normal {r.normalRms:F1}°; silhouette mean/max {r.silhouetteMean:P1}/{r.silhouetteMax:P1}",EditorStyles.miniLabel);
                         EditorGUILayout.LabelField($"      relative selection score {r.selectionScore:G4}; native probes {r.nativeProbes}",EditorStyles.miniLabel);
+                        if (r.screenQuality != null)
+                            EditorGUILayout.LabelField($"      screen guide detail loss {r.screenQuality.detailLoss:P1}; RGBA boundary loss " +
+                                (r.screenQuality.colorViews > 0 ? r.screenQuality.colorLoss.ToString("P1") : "n/a"),EditorStyles.miniLabel);
                         if (r.attributeCorrection != null)
                         {
                             EditorGUILayout.LabelField($"      correction: normals {(r.attributeCorrection.normalsAccepted ? "improved" : "kept")}, RGBA {(r.attributeCorrection.colorsAccepted ? "improved" : "kept")}",EditorStyles.miniLabel);
@@ -568,6 +575,7 @@ namespace SashaRX.UnityMeshLab
                     nativeProbes = info.nativeProbes,sourceDistanceRms = info.sourceDistanceRms,normalRms = info.normalRms,
                     silhouetteMean = info.silhouetteMean,silhouetteMax = info.silhouetteMax,selectionScore = info.selectionScore,
                     attributeCorrection = info.attributeCorrection,
+                    screenQuality = info.screenQuality,
                     reductionNote = info.reductionNote,
                     allowedColorError = info.allowedColorError, targetError = info.targetError,
                     removedParts = info.removedParts, removedPartTris = info.removedPartTris,
@@ -601,6 +609,7 @@ namespace SashaRX.UnityMeshLab
                 preserveHardEdges = generatePreserveHardEdges,
                 coarsenHardEdgeChains = generateCoarsenHardEdgeChains && generateBudgetPriority && generateReductionMode == LodReductionMode.Triangles,
                 nativeHardEdgeConstraints = generateNativeHardEdgeConstraints && generateBudgetPriority && generateReductionMode == LodReductionMode.Triangles,
+                screenGuidedSelection = generateScreenGuidedSelection && generateBudgetPriority && generateReductionMode == LodReductionMode.Triangles,
                 featureChainError = generateFeatureChainError
             };
             if (generateRelaxFarLods)
