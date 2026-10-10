@@ -40,8 +40,10 @@ namespace SashaRX.UnityMeshLab
             internal Vector3[] positions;
             internal int[] indices;
             internal int originalFaces, weldedVertices, loops, addedFaces, contactTests, localPatches, planeRechecks;
+            internal int remainingBoundaryEdges;
             internal string selection;
             internal int[] facePatches;
+            internal int[][] boundaryLoops;
             internal ExternalContacts externalContacts;
             internal readonly List<int> patchEnds = new List<int>();
             internal string Description => $"welded {weldedVertices} vertices; {loops} boundary loops; selection {selection}; added {addedFaces} faces; " +
@@ -50,7 +52,8 @@ namespace SashaRX.UnityMeshLab
         }
 
         internal static Support Prepare(Vector3[] positions, int[] indices, string selection, CancellationToken token, bool localPlanes = false,
-            RemeshClosureMode mode = RemeshClosureMode.Caps, double planeTolerance = 0, int[] sourceFaceOwners = null)
+            RemeshClosureMode mode = RemeshClosureMode.Caps, double planeTolerance = 0, int[] sourceFaceOwners = null,
+            Action<int, int, int> loopCompleted = null)
         {
             token.ThrowIfCancellationRequested();
             if (!Enum.IsDefined(typeof(RemeshClosureMode),mode)) throw Refuse("unknown closure method");
@@ -79,6 +82,7 @@ namespace SashaRX.UnityMeshLab
             var loops = Boundaries(topology, token);
             var result = new Support { positions = pWeld, indices = iWeld, originalFaces = iWeld.Length / 3,
                 weldedVertices = positions.Length - count, loops = loops.Count, selection = selection };
+            result.boundaryLoops = loops.ConvertAll(loop => loop.ToArray()).ToArray();
             if (sourceFaceOwners != null) result.externalContacts = new ExternalContacts { faceOwners = (int[])sourceFaceOwners.Clone() };
             if (loops.Count == 0) return result;
             var chosen = Selection(selection, loops.Count);
@@ -121,12 +125,14 @@ namespace SashaRX.UnityMeshLab
                 result.externalContacts?.Merge(external);
                 finished.Add(loop);
                 if (assembled.Count - iWeld.Length > MaxLoopEdges * 3 * 8) throw Refuse("total Cap face budget exceeded");
+                loopCompleted?.Invoke(loop, finished.Count, chosen.Count);
             }
             var allIndices = assembled.ToArray();
             var after = RemeshTopology.Inspect(pWeld, allIndices, token);
             int removedEdges = 0; foreach (int loop in chosen) removedEdges += loops[loop].Count;
             if (!after.Valid || after.boundary.Count != topology.boundary.Count - removedEdges)
                 throw Refuse("assembled Cap topology: " + after.Description);
+            result.remainingBoundaryEdges = after.boundary.Count;
             result.positions = pWeld; result.indices = allIndices; result.addedFaces = (allIndices.Length - iWeld.Length) / 3;
             result.facePatches = new int[allIndices.Length / 3];
             int patchStart = result.originalFaces;

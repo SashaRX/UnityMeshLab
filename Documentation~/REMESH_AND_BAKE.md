@@ -17,7 +17,18 @@ not the strict geometry validation of Remesh/Reverse UV stages.
 
 ## Workflow
 
-The tab runs four stages. Each stage has its own settings and button; running a
+The tab prepares the source and then runs four native/bake stages. **Prepare / inspect Cap & Bridge**
+in the Remesh section captures and filters the source, welds the geometry-only
+support and prepares the selected closures without invoking native Remesh. The
+**Cap / Bridge** preview shows all retained hierarchy nodes: grey original faces,
+orange/purple closure patches and cyan original hole rims. Its summary reports
+initial loops, generated patches/faces and remaining boundary edges. A partial
+loop selection can be inspected even with other holes still open. Remesh consumes
+the same snapshot; a subsequent solid-input or native-output refusal retains it.
+Changing capture/filter/closure settings requires preparation again. Changing
+only Solve, trim, Simplify, UV or bake settings reuses the captured support.
+
+Each stage has its own settings and button; running a
 stage first brings every earlier stage up to date (missing output or changed
 settings, marked "settings changed" in its header) and clears everything after it.
 **Run all stages** re-runs the whole chain. The right panel previews the result:

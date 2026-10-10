@@ -16,12 +16,17 @@ namespace SashaRX.UnityMeshLab
     internal sealed class RemeshPreview : IDisposable
     {
         internal enum View { Mesh, Maps }
-        internal enum Stage { Source, Remesh, Simplified, Result }
+        internal enum Stage { Source, Remesh, Simplified, Result, Closure }
         internal enum Channel { BaseColor, Normal, MetallicSmoothness, Occlusion, Emission }
 
         internal sealed class Data
         {
-            public readonly Mesh[] meshes = new Mesh[4]; // indexed by Stage
+            public readonly Mesh[] meshes = new Mesh[5]; // indexed by Stage; old persisted values stay unchanged
+            public Mesh closureRims;
+            public string[] closureContourNames;
+            public Vector3[][] closureContourEdges;
+            public string closureSummary;
+            public bool closureReady, closureStale;
             public int sourceVertices, sourceTriangles;
             public Matrix4x4 spaceToWorld = Matrix4x4.identity;
             public RemeshNative.Geometry geometry;
@@ -51,6 +56,8 @@ namespace SashaRX.UnityMeshLab
         Stage stage = Stage.Result;
         Channel channel;
         bool textured = true, bumpMap = true, cageView, trimMaskView = true, syntheticMaskView = true;
+        int closureContour;
+        Mesh closureSelectionMesh;
 
         [Serializable]
         sealed class WindowSettings
@@ -164,6 +171,13 @@ namespace SashaRX.UnityMeshLab
                 EditorGUILayout.LabelField("Trim mask: green kept · red back of a sheet (opposite normal) · orange rim / no source within reach", EditorStyles.wordWrappedMiniLabel);
             if (ShowsSyntheticFaces && data.syntheticMask)
                 EditorGUILayout.LabelField("Purple: closure · orange: mixed / uncertain · red: selected. Shift-click to select a connected region.", EditorStyles.wordWrappedMiniLabel);
+            if (stage == Stage.Closure) {
+                if (closureSelectionMesh != mesh) { closureSelectionMesh = mesh; closureContour = 0; }
+                if (data.closureContourNames != null && data.closureContourNames.Length > 1)
+                    closureContour = EditorGUILayout.Popup("Hole rim", Mathf.Clamp(closureContour, 0, data.closureContourNames.Length - 1), data.closureContourNames);
+                EditorGUILayout.LabelField("Grey: original surface · orange / purple: separate closure patches · cyan: original hole rims.", EditorStyles.wordWrappedMiniLabel);
+                EditorGUILayout.LabelField(data.closureSummary ?? "Prepare closure to inspect it before Remesh.", EditorStyles.wordWrappedMiniLabel);
+            }
             if (result && data.maps != null && data.maps.beauty && textured)
                 EditorGUILayout.LabelField("Beauty contains baked scene lighting and renders unlit.", EditorStyles.wordWrappedMiniLabel);
             if (result && data.twoSided && resultSurface && !resultSurface.HasProperty("_Cull"))
@@ -178,24 +192,25 @@ namespace SashaRX.UnityMeshLab
         }
 
         internal static Stage? PreviewStage(RemeshPipeline.Stage? running)
-            => !running.HasValue ? (Stage?)null : running == RemeshPipeline.Stage.Remesh ? Stage.Remesh :
+            => !running.HasValue ? (Stage?)null : running == RemeshPipeline.Stage.Prepare ? Stage.Closure : running == RemeshPipeline.Stage.Remesh ? Stage.Remesh :
                 running == RemeshPipeline.Stage.Simplify ? Stage.Simplified : Stage.Result;
 
         void DrawStageButtons(Data data)
         {
             const float buttonHeight = 44, gap = 6;
-            var area = GUILayoutUtility.GetRect(0, buttonHeight * 2 + gap, GUILayout.ExpandWidth(true));
+            var area = GUILayoutUtility.GetRect(0, buttonHeight * 3 + gap * 2, GUILayout.ExpandWidth(true));
             var running = PreviewStage(data.runningStage);
-            var labels = new[] { "Source", "Remesh", "Simplify", "Result" };
-            var ready = new[] { data.sourceVertices > 0 || data.meshes[0], data.remeshReady, data.simplifyReady, data.unwrapReady };
-            var stale = new[] { false, data.remeshStale, data.simplifyStale, data.unwrapStale || data.bakeStale };
+            var stages = new[] { Stage.Source, Stage.Closure, Stage.Remesh, Stage.Simplified, Stage.Result };
+            var labels = new[] { "Source", "Cap / Bridge", "Remesh", "Simplify", "Result" };
+            var ready = new[] { data.sourceVertices > 0 || data.meshes[0], data.closureReady, data.remeshReady, data.simplifyReady, data.unwrapReady };
+            var stale = new[] { false, data.closureStale, data.remeshStale, data.simplifyStale, data.unwrapStale || data.bakeStale };
             var titleStyle = new GUIStyle(EditorStyles.label) {
                 alignment = TextAnchor.MiddleCenter, fontSize = 12, fontStyle = FontStyle.Bold,
                 padding = new RectOffset(), margin = new RectOffset(), fixedHeight = 0, wordWrap = false
             };
             var stateStyle = new GUIStyle(titleStyle) { fontSize = 11, fontStyle = FontStyle.Normal };
-            for (int i = 0; i < 4; i++) {
-                var value = (Stage)i;
+            for (int i = 0; i < stages.Length; i++) {
+                var value = stages[i];
                 var r = new Rect(area.x + (i % 2) * (area.width + gap) * .5f,
                     area.y + (i / 2) * (buttonHeight + gap), (area.width - gap) * .5f, buttonHeight);
                 bool working = running == value;
@@ -262,7 +277,7 @@ namespace SashaRX.UnityMeshLab
             // Beauty maps already contain the lighting; shading them again would
             // double it, so the surface renders unlit exactly like the saved material.
             surface.SetFloat("_Lit", stage == Stage.Result && data.maps != null && data.maps.beauty ? 0 : 1);
-            surface.SetFloat("_UseVertexColor", (trimMask || ShowsSyntheticFaces) && mesh.HasVertexAttribute(VertexAttribute.Color) ? 1 : 0);
+            surface.SetFloat("_UseVertexColor", (trimMask || ShowsSyntheticFaces || stage == Stage.Closure) && mesh.HasVertexAttribute(VertexAttribute.Color) ? 1 : 0);
             surface.SetColor("_Color", Color.white);
             var materials = new Material[mesh.subMeshCount];
             for (int sub = 0; sub < materials.Length; ++sub) materials[sub] = surface;
@@ -307,6 +322,12 @@ namespace SashaRX.UnityMeshLab
         {
             var mesh = DisplayMesh(data);
             if (!mesh || !EnsureResources()) return;
+            if (stage == Stage.Closure && data.closureRims) {
+                var color = new Color(.2f, .85f, 1f, .95f);
+                if (closureSelectionMesh == mesh && closureContour > 0 && data.closureContourEdges != null && closureContour <= data.closureContourEdges.Length)
+                    view.DrawLines(data.closureContourEdges[closureContour - 1], data.spaceToWorld, color);
+                else view.DrawLineMesh(data.closureRims, data.spaceToWorld, color);
+            }
             if (cageView && stage == Stage.Result && data.geometry != null && data.cageDistance > 0)
                 DrawCage(view, mesh, data);
         }

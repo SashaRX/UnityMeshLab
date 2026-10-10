@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using NUnit.Framework;
 using UnityEditor;
@@ -12,6 +13,32 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public sealed class RemeshPreviewLightingTests
     {
+        [Test]
+        public void ClosurePreviewActuallyRendersPatchColorsWithoutBakedTextures()
+        {
+            RequireGraphics();
+            var mesh = Plane();
+            using var preview = new RemeshPreview(); using var render = new RenderFixture();
+            try {
+                var data = new RemeshPreview.Data(); data.meshes[(int)RemeshPreview.Stage.Closure] = mesh;
+                preview.Show(RemeshPreview.Stage.Closure);
+                var items = new List<MeshViewport3D.Item>();
+                mesh.colors = System.Linq.Enumerable.Repeat(new Color(.35f, .4f, .45f), mesh.vertexCount).ToArray();
+                Assert.IsTrue(preview.Fill3D(data, items));
+                var material = items[0].materials[0];
+                Assert.AreEqual(1, material.GetFloat("_UseVertexColor"));
+                Assert.AreEqual(0, material.GetFloat("_UseTexture"));
+                var original = render.Sample(mesh, Matrix4x4.identity, material, Vector3.forward, "closure-original");
+                mesh.colors = System.Linq.Enumerable.Repeat(new Color(1f, .5f, .12f), mesh.vertexCount).ToArray();
+                var cap = render.Sample(mesh, Matrix4x4.identity, material, Vector3.forward, "closure-cap");
+                Assert.That(cap.r, Is.GreaterThan(cap.b * 3));
+                Assert.That(RgbDistance(original, cap), Is.GreaterThan(.15f));
+                Assert.AreEqual(RemeshPreview.Stage.Closure, RemeshPreview.PreviewStage(RemeshPipeline.Stage.Prepare));
+                Assert.AreEqual(3, (int)RemeshPreview.Stage.Result, "Existing persisted stage values must not change");
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
+
         [Test]
         public void ResultMatchesSourcePbrAndRespondsToThePreviewLights()
         {

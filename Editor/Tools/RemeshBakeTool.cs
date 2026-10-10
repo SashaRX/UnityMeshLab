@@ -399,6 +399,13 @@ namespace SashaRX.UnityMeshLab
             previewData.meshes[(int)RemeshPreview.Stage.Remesh] = pipeline.VoxelMesh;
             previewData.meshes[(int)RemeshPreview.Stage.Simplified] = pipeline.SimplifiedMesh;
             previewData.meshes[(int)RemeshPreview.Stage.Result] = pipeline.ResultMesh;
+            previewData.meshes[(int)RemeshPreview.Stage.Closure] = pipeline.ClosureMesh;
+            previewData.closureRims = pipeline.ClosureRims;
+            previewData.closureContourNames = pipeline.ClosureContourNames;
+            previewData.closureContourEdges = pipeline.ClosureContourEdges;
+            previewData.closureSummary = pipeline.ClosureSummary;
+            previewData.closureReady = pipeline.Has(RemeshPipeline.Stage.Prepare);
+            previewData.closureStale = pipeline.IsStale(RemeshPipeline.Stage.Prepare, settings, source);
             previewData.geometry = pipeline.Geometry; previewData.maps = pipeline.Maps; previewData.baseColor = pipeline.BaseColorPreview;
             previewData.trimMask = pipeline.TrimMaskMesh;
             previewData.syntheticMask = pipeline.SyntheticMaskMesh;
@@ -415,7 +422,7 @@ namespace SashaRX.UnityMeshLab
             previewData.simplifyReady = pipeline.Has(RemeshPipeline.Stage.Simplify);
             previewData.unwrapReady = pipeline.Has(RemeshPipeline.Stage.Unwrap);
             previewData.bakeReady = pipeline.Has(RemeshPipeline.Stage.Bake);
-            previewData.remeshStale = pipeline.IsStale(RemeshPipeline.Stage.Remesh, settings, source);
+            previewData.remeshStale = previewData.closureStale || pipeline.IsStale(RemeshPipeline.Stage.Remesh, settings, source);
             previewData.simplifyStale = previewData.remeshStale || pipeline.IsStale(RemeshPipeline.Stage.Simplify, settings, source);
             previewData.unwrapStale = previewData.simplifyStale || pipeline.IsStale(RemeshPipeline.Stage.Unwrap, settings, source);
             previewData.bakeStale = previewData.unwrapStale || pipeline.IsStale(RemeshPipeline.Stage.Bake, settings, source);
@@ -582,6 +589,10 @@ namespace SashaRX.UnityMeshLab
                         "Whether the source's back faces count as surface. From materials: two-sided when a material's cull mode is Off or its double-sided " +
                         "switch is on (a Cull Off written into the shader itself is not detectable — use Always). The trim still keeps one sheet; the result " +
                         "material renders both sides instead, and the bake samples two-sided faces from either side. Never: only fronts count."), settings.sourceBackfaces);
+                    StageButton(RemeshPipeline.Stage.Prepare, "Prepare / inspect Cap & Bridge");
+                    if (pipeline.Has(RemeshPipeline.Stage.Prepare))
+                        EditorGUILayout.LabelField(pipeline.ClosureSummary, EditorStyles.wordWrappedMiniLabel);
+                    EditorGUILayout.LabelField("Closes one contour (or one Bridge pair) at a time. Preparation stops before native Remesh; inspect the Cap / Bridge preview first.", EditorStyles.wordWrappedMiniLabel);
                     StageButton(RemeshPipeline.Stage.Remesh, "Remesh");
                 }
                 if (StageHeader(RemeshPipeline.Stage.Simplify)) {
@@ -757,7 +768,7 @@ namespace SashaRX.UnityMeshLab
 
         void StageButton(RemeshPipeline.Stage stage, string label)
         {
-            using (new EditorGUI.DisabledScope(!source && !pipeline.Has(RemeshPipeline.Stage.Remesh) || UvProgress.IsActive))
+            using (new EditorGUI.DisabledScope(!source && (!pipeline.Has(RemeshPipeline.Stage.Prepare) || stage == RemeshPipeline.Stage.Prepare) || UvProgress.IsActive))
                 if (GUILayout.Button(label)) Start(stage, false);
         }
 
@@ -765,7 +776,7 @@ namespace SashaRX.UnityMeshLab
         // output or changed settings). "Run all" re-runs everything.
         void Start(RemeshPipeline.Stage target, bool all)
         {
-            var from = all ? RemeshPipeline.Stage.Remesh : pipeline.FirstStale(target, settings, source);
+            var from = all ? RemeshPipeline.Stage.Prepare : pipeline.FirstStale(target, settings, source);
             // Preview caches key on mesh instances the run is about to destroy.
             previews.Invalidate();
             saveStatus = null;
@@ -785,8 +796,11 @@ namespace SashaRX.UnityMeshLab
             try { ok = await run; }
             catch (Exception e) { UvtLog.Error("[Remesh] Stage failed: " + e); saveStatus = e.Message; RequestRepaint?.Invoke(); return; }
             if (ok)
-                previews.Show(target == RemeshPipeline.Stage.Remesh ? RemeshPreview.Stage.Remesh :
+                previews.Show(target == RemeshPipeline.Stage.Prepare ? RemeshPreview.Stage.Closure : target == RemeshPipeline.Stage.Remesh ? RemeshPreview.Stage.Remesh :
                     target == RemeshPipeline.Stage.Simplify ? RemeshPreview.Stage.Simplified : RemeshPreview.Stage.Result);
+            else if (pipeline.Has(RemeshPipeline.Stage.Prepare) && !pipeline.Has(RemeshPipeline.Stage.Remesh))
+                previews.Show(RemeshPreview.Stage.Closure);
+            RequestRepaint?.Invoke();
         }
 
         void Save()

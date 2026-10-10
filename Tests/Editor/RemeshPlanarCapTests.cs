@@ -14,6 +14,42 @@ namespace SashaRX.UnityMeshLab.Tests
             new Vector3(-1,-1,1), new Vector3(1,-1,1), new Vector3(1,1,1), new Vector3(-1,1,1) };
         static readonly int[] Faces = { 0,2,1,0,3,2, 4,5,6,4,6,7, 0,1,5,0,5,4, 3,7,6,3,6,2, 0,4,7,0,7,3, 1,2,6,1,6,5 };
 
+        [TestCase(1)] [TestCase(16)] [TestCase(32)]
+        public void ManyHolesCloseSequentiallyAsSeparatePatches(int holes)
+        {
+            var p = new System.Collections.Generic.List<Vector3>(); var ix = new System.Collections.Generic.List<int>();
+            for (int n = 0; n < holes; ++n) {
+                int offset = p.Count; p.AddRange(Box.Select(v => v + new Vector3(n * 4, 0, 0)));
+                ix.AddRange(Faces.Skip(6).Select(v => v + offset));
+            }
+            var before = ix.ToArray(); var progress = new System.Collections.Generic.List<(int, int, int)>();
+            var a = RemeshPlanarCap.Prepare(p.ToArray(), before, "all", default,
+                loopCompleted: (loop, done, total) => progress.Add((loop, done, total)));
+            Assert.AreEqual(holes, a.loops); Assert.AreEqual(holes, a.boundaryLoops.Length);
+            Assert.AreEqual(holes * 2, a.addedFaces); Assert.AreEqual(holes, a.patchEnds.Count);
+            Assert.AreEqual(0, RemeshTopology.Inspect(a.positions, a.indices).boundary.Count);
+            for (int n = 0; n < holes; ++n) {
+                Assert.AreEqual((n, n + 1, holes), progress[n]);
+                Assert.AreEqual(holes * 10 + (n + 1) * 2, a.patchEnds[n]);
+                for (int k = (holes * 10 + n * 2) * 3; k < (holes * 10 + (n + 1) * 2) * 3; ++k)
+                    Assert.AreEqual(n, a.indices[k] / 8, "A cap must stay on its own box, never bridge unrelated holes");
+            }
+            CollectionAssert.AreEqual(before, ix);
+        }
+
+        [Test]
+        public void CancellationBetweenHolesLeavesDonorUntouchedAndPublishesNoSupport()
+        {
+            var p = Box.Concat(Box.Select(v => v + Vector3.right * 4)).ToArray();
+            var ix = Faces.Skip(6).Concat(Faces.Skip(6).Select(v => v + 8)).ToArray();
+            var saved = (int[])ix.Clone();
+            using var cancel = new CancellationTokenSource();
+            int completed = 0;
+            Assert.Throws<OperationCanceledException>(() => RemeshPlanarCap.Prepare(p, ix, "all", cancel.Token,
+                loopCompleted: (_, _, _) => { ++completed; cancel.Cancel(); }));
+            Assert.AreEqual(1, completed); CollectionAssert.AreEqual(saved, ix);
+        }
+
         [TestCase(0)] [TestCase(1)] [TestCase(2)] [TestCase(3)] [TestCase(4)] [TestCase(5)]
         public void WeldsAttributeSplitBoxBeforeCapAndPreservesDonor(int missing)
         {

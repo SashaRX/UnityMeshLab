@@ -14,6 +14,34 @@ Enable **Local compound caps** to also allow a selected nonplanar cycle with one
 supported decomposition into two continuous planar arcs. The option is off in
 existing settings. Automatic mode enables local compound analysis implicitly.
 
+## Visual preparation and multiple holes
+
+Use **Prepare / inspect Cap & Bridge** before **Remesh**. The separate **Cap / Bridge**
+3D stage shows original faces grey, individual closure patches orange/purple and
+the original rims cyan.
+Use **Hole rim** to highlight all contours or one named node/loop at a time; these
+are the same loop numbers used by **Closure loop numbers**.
+Preparation does not run the native plugin and permits unselected openings to
+remain. Solid Remesh checks completeness afterward; a
+refusal preserves this preview. Source FBX, imported meshes and scene renderers
+are not modified. The viewport camera is not reframed when changing stages.
+
+Closures run sequentially: one selected contour or one explicit/mutually matched
+Bridge pair at a time. Each candidate is audited against original faces and
+previous accepted patches. Local two-plane closure re-extracts the changed rim
+after its first patch. Completion reports the original loop number and selected
+loops completed (a Bridge completes two). Initial loop numbers are local to each
+filtered node when Keep hierarchy is enabled.
+
+The complete preparation remains atomic: a refused contour cancels that preparation,
+and no unaudited partial support is published. To inspect a subset, enter its loop
+numbers and prepare it separately. Caps supports more than 16 loops; Automatic is
+limited to 16 selected loops to bound partner search. Other limits are 512 edges
+per rim, 4096 added triangles per preparation, 200000 source vertices, 1200000
+source indices and 2000000 contact trials. These are refusal limits, not silent
+truncation. Analytic controls close 1, 16 and 32 independent box openings and verify
+separate patches, per-loop completion order and unchanged donor geometry.
+
 ## Revision 5: contacts with other captured meshes
 
 The production pipeline passes original face ownership from the capture into
