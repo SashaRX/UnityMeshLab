@@ -1,9 +1,35 @@
 # Generated annular Bridge and virtual averaged co-normal growth
 
-Current production (revision 14): the 128-edge Bridge guard is replaced by a
+Current production (revision 15): automatic collar ambiguity also respects the
+explicit **Cap on Bridge refusal** option. Without it, an ambiguous partner graph
+still refuses Bridge. With it, no partner is guessed: each selected ambiguous rim
+tries its own planar disk under the existing topology, contact and volume audits.
+The preview/capture retains the ambiguity reason and separate fallback masks.
+
+The 128-edge Bridge guard is replaced by a
 pre-allocation complete-profile budget (600,000 states and a conservative 64 MiB
 retained-search estimate). General closure preparation still bounds individual
 contours to 512 edges. Historical results below retain their original limits.
+
+### CafeChair_12 captured refusal (2026-10-10)
+
+The saved automatic preparation selected all ten loops, used plane tolerance
+0.01 and enabled Cap fallback. Eight loops had multiple collar candidates; the
+old ambiguity check refused them before entering the Bridge-to-Cap retry path.
+Only two ordinary Caps succeeded, leaving 44 open edges.
+
+Revision 15 closes all ten loops with 36 added triangles and zero remaining open
+edges on the exact captured donor geometry. No Bridge is inferred, source corner
+positions stay unchanged, and every closed component passes the volume audit.
+Public controls exercise the same ambiguity at scales 0.001, 1 and 1000 with
+reversed winding, both strict and partial preparation, and fallback disabled.
+
+`RemeshCapComparisonTests.VerifyCapturedClosureWithFallbackThroughNativeStages`
+replays an opt-in manifest with `cases[].source`, `cases[].settingsJson` and
+`cases[].sourceFaceOwners`. It requires successful closure and then runs native
+Remesh, source-fitted Simplify and UV using those saved settings. The original
+donors must remain unchanged and the final atlas scan must be complete and clean.
+Outputs include the closed support mesh and `closure-native.json`.
 
 2026-10-09, following the [paired-rim topology counterexample](REMESH_CAP_BRIDGE.md).
 The offline `bridge.py` now generates candidate strips from two explicitly
@@ -230,9 +256,10 @@ arbitrary ambiguous pairs or intersecting contours.
 `Cap on Bridge refusal` is available in Bridge and Automatic. It is disabled in
 new and older saved settings. After an actual paired Bridge attempt refuses,
 preparation rolls back that candidate and tries a planar disk on each original
-rim independently. Successful Bridges remain Bridges. Invalid selections,
-ambiguous Automatic pairings and cancellation do not trigger a substitute
-closure. Contact exhaustion does not reset the shared audit budget.
+rim independently. Successful Bridges remain Bridges. Invalid selections and
+cancellation do not trigger a substitute closure. Since revision 15, ambiguous
+Automatic pairings use the same explicit fallback without selecting a partner.
+Contact exhaustion does not reset the shared audit budget.
 
 Each disk retains the current element contact scope, source vertices/faces,
 topology checks and its own synthetic patch ID. A refused disk leaves that rim

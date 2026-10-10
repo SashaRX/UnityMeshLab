@@ -8,10 +8,10 @@ using UnityEngine;
 
 namespace SashaRX.UnityMeshLab.Tests
 {
-    /// <summary>Opt-in replay of private captures; outcomes are data, not acceptance assertions.</summary>
+    /// <summary>Opt-in private comparison exports and separate assertion-based acceptance replays.</summary>
     public class RemeshCapComparisonTests
     {
-        [Serializable] public sealed class Case { public string name, source, selection; }
+        [Serializable] public sealed class Case { public string name, source, selection, settingsJson; public int[] sourceFaceOwners; }
         [Serializable] public sealed class Candidate { public string caseName, method, path; public int resolution; }
         [Serializable] public sealed class Manifest
         {
@@ -246,6 +246,45 @@ namespace SashaRX.UnityMeshLab.Tests
                 string summary = $"{candidate.caseName}: {manifest.unwrapRepeats} identical valid atlases, SHA256 {expected}, {timer.Elapsed.TotalSeconds:F3}s";
                 hashes.Add(summary); TestContext.WriteLine(summary);
                 File.WriteAllLines(Path.Combine(manifest.output, "unwrap-repeats.txt"), hashes);
+            }
+        }
+
+        [Test]
+        public void VerifyCapturedClosureWithFallbackThroughNativeStages()
+        {
+            var manifest = ReadManifest(); RemeshNative.CheckAvailable();
+            Assert.IsNotNull(manifest.cases);
+            var report = new Report();
+            foreach (var capture in manifest.cases) {
+                ReadMesh(capture.source, out var p, out var ix);
+                var original = (Vector3[])p.Clone(); var originalIndices = (int[])ix.Clone();
+                var settings = RemeshSettings.FromSavedJson(capture.settingsJson);
+                Assert.IsTrue(settings.bridgeCapFallback, "This replay requires explicit saved fallback intent.");
+                var timer = Stopwatch.StartNew();
+                var support = RemeshPlanarCap.Prepare(p, ix, settings.planarCapLoops, default, settings.planarCapLocalPlanes,
+                    settings.closureMode, settings.capPlaneTolerance, continueOnRefusal:true, sourceFaceOwners:capture.sourceFaceOwners,
+                    elementScopedContacts:true, bridgeCapFallback:settings.bridgeCapFallback);
+                Assert.IsEmpty(support.loopFailures); Assert.AreEqual(0, support.remainingBoundaryEdges);
+                Assert.IsEmpty(support.bridgePartners); Assert.IsNotEmpty(support.bridgeCapFallbacks);
+                Assert.IsTrue(RemeshTopology.ClosedVolumeFaces(support.positions, support.indices, default).All(v => v));
+                string path = Path.Combine(manifest.output, capture.name + "__closed.bin");
+                WriteMesh(path, support.positions, support.indices);
+                var voxel = RemeshNative.Voxelize(support.positions, support.indices, settings, default);
+                float span = (p.Aggregate(Vector3.Min) - p.Aggregate(Vector3.Max)).magnitude;
+                var trimmed = settings.trimToSource ? RemeshTrim.Trim(voxel, support.positions, support.indices, span / settings.voxelResolution * 2, default).mesh : voxel;
+                var simplified = settings.solve ? RemeshSurfaceRefine.Simplify(trimmed, support.positions, support.indices, settings, default, out _) :
+                    RemeshNative.Simplify(trimmed, settings, default, out _);
+                var uv = RemeshNative.Unwrap(simplified, settings, default);
+                var atlas = UvAtlasDiagnostics.Measure(uv, default); var quality = UvChartQuality.Measure(uv, default);
+                Assert.IsTrue(quality.valid); Assert.IsTrue(atlas.complete);
+                Assert.AreEqual(0, atlas.pairs); Assert.AreEqual(0, atlas.degenerateFaces); Assert.AreEqual(0, atlas.invalidFaces); Assert.AreEqual(0, atlas.outOfBoundsVertices);
+                CollectionAssert.AreEqual(original, p); CollectionAssert.AreEqual(originalIndices, ix);
+                for (int corner = 0; corner < ix.Length; corner++) Assert.AreEqual(p[ix[corner]], support.positions[support.indices[corner]]);
+                report.results.Add(new Outcome { caseName = capture.name, path = path, status = "passed",
+                    loops = support.loops, addedFaces = support.addedFaces, refusedLoops = support.loopFailures.Count,
+                    voxelFaces = voxel.TriangleCount, simplifiedFaces = simplified.TriangleCount, charts = quality.charts,
+                    meanStretch = quality.meanStretch, maxStretch = quality.maxStretch, seconds = timer.Elapsed.TotalSeconds });
+                File.WriteAllText(Path.Combine(manifest.output, "closure-native.json"), JsonUtility.ToJson(report, true));
             }
         }
 

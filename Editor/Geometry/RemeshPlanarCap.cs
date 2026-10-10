@@ -10,7 +10,7 @@ namespace SashaRX.UnityMeshLab
     /// donor arrays are never mutated. Each closure candidate is accepted atomically.</summary>
     internal static class RemeshPlanarCap
     {
-        internal const int Revision = 14;
+        internal const int Revision = 15;
         const int MaxVertices = 200000, MaxIndices = 1200000, MaxLoopEdges = 512;
         const int MaxPairTrials = 2000000;
 
@@ -136,7 +136,7 @@ namespace SashaRX.UnityMeshLab
                         if (!RemeshBridge.ContinuesToward(pWeld,topology,normals,loops[a],loops[b]) ||
                             !RemeshBridge.ContinuesToward(pWeld,topology,normals,loops[b],loops[a])) continue;
                         if (partners.ContainsKey(a) || partners.ContainsKey(b)) {
-                            if (!continueOnRefusal) throw Refuse("automatic closure has more than one collar partner; select Bridge intent explicitly");
+                            if (!continueOnRefusal && !bridgeCapFallback) throw Refuse("automatic closure has more than one collar partner; select Bridge intent explicitly");
                             ambiguous.Add(a); ambiguous.Add(b);
                             if (partners.TryGetValue(a, out int oldA)) ambiguous.Add(oldA);
                             if (partners.TryGetValue(b, out int oldB)) ambiguous.Add(oldB);
@@ -150,6 +150,15 @@ namespace SashaRX.UnityMeshLab
                 selectionRefusal = "Bridge requires exactly two selected loops";
                 if (!continueOnRefusal) throw Refuse(selectionRefusal);
             }
+            if (mode == RemeshClosureMode.Automatic && bridgeCapFallback) {
+                foreach (int loop in ambiguous) {
+                    // No pair is selected and no Bridge geometry was generated.
+                    // The explicit fallback authorizes independent planar disks,
+                    // not guessing a partner from the ambiguous candidate graph.
+                    result.bridgeCapFallbacks.Add(loop, Refuse("automatic closure has more than one collar partner; select Bridge intent explicitly").Message);
+                    partners.Remove(loop);
+                }
+            }
             foreach (int loop in chosen) {
                 token.ThrowIfCancellationRequested();
                 if (finished.Contains(loop)) continue;
@@ -162,7 +171,7 @@ namespace SashaRX.UnityMeshLab
                     bool bridgeAttempted = false;
                     try {
                         if (selectionRefusal != null) throw Refuse(selectionRefusal);
-                        if (ambiguous.Contains(loop) || partner >= 0 && ambiguous.Contains(partner))
+                        if (!result.bridgeCapFallbacks.ContainsKey(loop) && (ambiguous.Contains(loop) || partner >= 0 && ambiguous.Contains(partner)))
                             throw Refuse("automatic closure has more than one collar partner; select Bridge intent explicitly");
                         if (loops[loop].Count > MaxLoopEdges || partner >= 0 && loops[partner].Count > MaxLoopEdges)
                             throw Refuse("a selected boundary loop exceeds 512 edges");

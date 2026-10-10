@@ -270,6 +270,32 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(ix,cap.indices.Take(ix.Length));
         }
 
+        [TestCase(.001f, false)] [TestCase(1f, false)] [TestCase(1000f, true)]
+        public void AmbiguousAutomaticPartnersUseIndependentCapsOnlyWhenFallbackIsEnabled(float scale, bool reverse)
+        {
+            var (p,ix) = TorusGap();
+            var points = p.Concat(p.Select(v => v + Vector3.forward * .1f)).Select(v => v * scale).ToArray();
+            var indices = ix.Concat(ix.Select(v => v + p.Length)).ToArray();
+            if (reverse) for (int i = 0; i < indices.Length; i += 3) (indices[i],indices[i+2]) = (indices[i+2],indices[i]);
+            var original = (int[])indices.Clone(); var originalPoints = (Vector3[])points.Clone();
+            var refused = RemeshPlanarCap.Prepare(points, indices, "all", default, mode:RemeshClosureMode.Automatic,
+                continueOnRefusal:true, elementScopedContacts:true);
+            Assert.AreEqual(4, refused.loopFailures.Count); Assert.IsEmpty(refused.bridgeCapFallbacks);
+            Assert.AreEqual(0, refused.addedFaces);
+            foreach (bool partial in new[] { false, true }) {
+                var cap = RemeshPlanarCap.Prepare(points, indices, "all", default, mode:RemeshClosureMode.Automatic,
+                    continueOnRefusal:partial, elementScopedContacts:true, bridgeCapFallback:true);
+                Assert.AreEqual(4, cap.bridgeCapFallbacks.Count); Assert.IsEmpty(cap.bridgePartners); Assert.IsEmpty(cap.loopFailures);
+                Assert.IsTrue(cap.bridgeCapFallbacks.Values.All(reason => reason.Contains("more than one collar partner")));
+                Assert.AreEqual(16, cap.addedFaces); Assert.AreEqual(0, cap.remainingBoundaryEdges);
+                var topology = RemeshTopology.Inspect(cap.positions, cap.indices);
+                Assert.IsTrue(topology.Valid, topology.Description); CollectionAssert.AreEqual(new[] {2,2}, topology.euler);
+                Assert.IsTrue(RemeshTopology.ClosedVolumeFaces(cap.positions, cap.indices, default).All(v => v));
+                CollectionAssert.AreEqual(original, cap.indices.Take(indices.Length)); CollectionAssert.AreEqual(originalPoints, cap.positions);
+            }
+            CollectionAssert.AreEqual(original, indices); CollectionAssert.AreEqual(originalPoints, points);
+        }
+
         [TestCase(8)] [TestCase(3)]
         public void TwoCutsInOneTorusRestoreOneHandle(int secondCut)
         {
