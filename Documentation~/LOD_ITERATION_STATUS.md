@@ -8,6 +8,68 @@ Native-constraint experiment verification: **183 selected EditMode tests passed*
 
 ## Implemented
 
+The **polygon paint follow-up** replaces stretched gradients with constant source
+colors on selected faces and their already-shared render corners. It searches
+the lost paint pairs, including small regions counted in the mean, and their
+one-pixel correspondence neighbors, rather than
+flattening every face. Positions, triangle order, winding, normals, tangents and
+all UV fields remain intact; the current 154-vertex buffer is retained. Static,
+single-material far meshes with at most 128 triangles are eligible. Dense meshes,
+material splits and deformers bypass this stage. No public setting or native
+binary/ABI changed.
+
+Six primary paint views must retain or improve each boundary guide and the worst
+RGBA RMS. Twelve views, including reverse directions, cap each channel/view RMS
+increase at **1/255 linear RGBA**. This is a small far-LOD color allowance, not an
+exact-color guarantee or a maximum per-pixel error bound. The initial unrestricted
+flat-color result worsened front GPU RMS by 0.00139 and was rejected. Requiring
+zero error increase in every reverse view rejected all tent replacements; the
+bounded policy follows the intended LOD2 quality tradeoff. Approximate vertex
+sharing remains disabled.
+
+At a 64px maximum source extent, the same actual tent retains **62/560 triangles
+(9.03x) and 154 vertices**. Mean lost paint pairs improve **50.09% -> 44.09%**
+(12% relative), and worst primary-view RGBA RMS improves 0.032515 -> 0.032258.
+GPU front RMS changes 0.008613 -> 0.008800; oblique RMS improves 0.013255 ->
+0.013156. The dedicated paint-edge camera improves 0.031000 -> 0.030410;
+the opposite paint angle changes 0.019991 -> 0.020037. Geometry/coverage and
+diagnostic headlight fields are unchanged. These are diagnostic vertex-color
+passes; original materials and the complete stall assembly remain unverified.
+
+The cyan paint region recovers its two previously lost eligible pairs. **The red,
+violet and blue regions are not fully repaired; worst-region loss is still 100%**,
+so paint acceptance still fails. This is a partial improvement, not a production
+quality certification. Moving corners in the exploratory replay helped some
+boundaries but changed normal/coverage errors; those geometry experiments were
+not enabled. The next step needs source-derived triangle placement along paint
+regions, particularly the blue valance, rather than more attribute fitting.
+
+**239 selected EditMode tests passed, zero failures/skips**, with a fresh actual
+tent Generate capture on Unity 6000.2.6f2. Cases include packed/float RGBA, retained
+geometry/UV/shading/storage, reverse-view drift refusal, dense/material/deformer
+bypasses, cancellation after allocation without leaking the owned clone, and the
+recorded actual-model paint improvement. Both FBX compile configurations and
+static dependency/identifier checks pass.
+
+The active-face search reduces the trial count from 231 to 156 (26 of 38 connected
+color groups), retaining the preceding unrestricted search's exact final mesh
+buffers and fields. Omitting small regions initially lost one improvement and
+was caught by the real-model regression check; they must be included because
+mean boundary loss counts them. One local two-level generation timing sample is
+18.63s versus the preceding 14.74s; extra cost still needs profiling, and this is
+not a repeated performance benchmark.
+
+Portable evidence: [measured fields](LOD_POLYGON_PAINT_RESULTS.json),
+[actual GPU model comparison](LOD_POLYGON_PAINT_MODELS.png) and
+[error chart](LOD_POLYGON_PAINT_ERRORS.png). Raw current-code captures and selected
+tests are under `_results~/lod-tent-paint-20261010/final-complete/`.
+Reproduce the portable figures with
+`python -B Tools~/render_lod_polygon_paint.py <current-capture-dir> <baseline-snapshot-dir> Documentation~/LOD_POLYGON_PAINT`.
+The source FBX SHA256 remains
+`a4aafe5dc9b4bc31200f31d1a0549a93b729aa7d657bcb7501acdd310e616839`.
+The colored bench and the other project models were not freshly recaptured in
+this follow-up. The bench's 1032-triangle LOD2 bypasses the new 128-triangle limit.
+
 The **render-corner sharing follow-up** compacts the accepted far color fit only
 where RGBA, positions, normals, tangents and all UV channels match exactly.
 Unambiguous reversed-edge adjacency limits sharing to neighboring corners;
@@ -221,8 +283,9 @@ The overview/chart retain the final capture lineage above; their LOD2 fields/cou
 
 ## Next iteration, in order
 
-Priority after exact corner sharing: align coarse tent edges with the remaining
-lost paint regions at the same 1/9 budget and 64px footprint. Profile actual
+Priority after the partial polygon paint correction: rebuild coarse tent
+triangles along the remaining red/violet/blue paint regions at the same 1/9
+budget, retained render-vertex limit and 64px footprint. Profile actual
 rendering/buffer cost; matching paint/shading/UV seams must remain separate, and
 further approximate sharing needs stronger validation than the CPU guide alone.
 Extend UV2/chart-boundary and filtered lightmap checks to more assigned project instances.

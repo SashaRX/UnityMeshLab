@@ -68,6 +68,103 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(positions,fitted.vertices); CollectionAssert.AreEqual(colors,reduced.colors);
             Assert.That(fitted.colors.Max(c => c.g),Is.GreaterThan(1)); Assert.That(fitted.colors.Min(c => c.b),Is.LessThan(0));
         }
+
+        Mesh PolygonPanels(bool contaminated,bool packed)
+        {
+            var mesh = Track(new Mesh { vertices = new[] { new Vector3(-1,-1,0),new Vector3(0,-1,0),new Vector3(0,1,0),new Vector3(-1,1,0),
+                new Vector3(0,-1,0),new Vector3(1,-1,0),new Vector3(1,1,0),new Vector3(0,1,0) }, triangles = new[] {0,1,2,0,2,3,4,5,6,4,6,7} });
+            var colors = Enumerable.Range(0,8).Select(i => i < 4 ? new Color(1,0,0,.8f) : new Color(0,0,1,.4f)).ToArray();
+            if (contaminated) for (int i = 0; i < 8; i++) colors[i] = Color.Lerp(colors[i],Color.gray,i%2 == 0 ? .25f : .1f);
+            if (packed) mesh.SetColors(colors.Select(c => (Color32)c).ToArray()); else mesh.colors = colors;
+            mesh.normals = Enumerable.Repeat(Vector3.forward,8).ToArray(); mesh.tangents = Enumerable.Repeat(new Vector4(1,0,0,1),8).ToArray();
+            mesh.SetUVs(1,mesh.vertices.Select(p => new Vector4(p.x,p.y,2,3)).ToList()); return mesh;
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void PolygonPaintRestoresFlatRgbaAndRetainsRenderBuffers(bool packed)
+        {
+            var source = PolygonPanels(false,packed); var reduced = PolygonPanels(true,packed); var colors = reduced.colors;
+            var sourceColors = source.colors; var screen = new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            var before = screen.Measure(reduced);
+            var painted = Track(LodAttributeCorrection.PaintFaceBoundaries(source,reduced,screen,out var report));
+            Assert.That(painted,Is.Not.Null); Assert.That(report.accepted,Is.True);
+            Assert.That(screen.Measure(painted).DoesNotWorsen(before,true),Is.True);
+            var allSides = screen.WithAllSides(source);
+            Assert.That(allSides.Measure(painted).ColorViewsDoNotWorsen(allSides.Measure(reduced)),Is.True);
+            Assert.That(screen.Measure(painted).rgbaRms,Is.LessThan(before.rgbaRms));
+            Assert.That(painted.vertexCount,Is.EqualTo(reduced.vertexCount)); CollectionAssert.AreEqual(reduced.triangles,painted.triangles);
+            CollectionAssert.AreEqual(reduced.vertices,painted.vertices); CollectionAssert.AreEqual(reduced.normals,painted.normals);
+            CollectionAssert.AreEqual(reduced.tangents,painted.tangents);
+            var a = new List<Vector4>(); var b = new List<Vector4>(); reduced.GetUVs(1,a); painted.GetUVs(1,b); CollectionAssert.AreEqual(a,b);
+            Assert.That(painted.GetVertexAttributes(),Is.EqualTo(reduced.GetVertexAttributes()));
+            foreach (int f in new[] {0,3,6,9})
+            {
+                var indices = painted.triangles; Assert.That(painted.colors[indices[f]],Is.EqualTo(painted.colors[indices[f+1]]));
+                Assert.That(painted.colors[indices[f]],Is.EqualTo(painted.colors[indices[f+2]]));
+            }
+            CollectionAssert.AreEqual(colors,reduced.colors); CollectionAssert.AreEqual(sourceColors,source.colors);
+        }
+
+        [Test]
+        public void PolygonPaintDoesNotFlattenAnAlreadyMatchingFieldAndCancelsWithoutMutatingInputs()
+        {
+            var source = PolygonPanels(false,false); var screen = new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            Assert.That(LodAttributeCorrection.PaintFaceBoundaries(source,source,screen,out _),Is.Null);
+            var reduced = PolygonPanels(true,false); var colors = reduced.colors;
+            Assert.Throws<OperationCanceledException>(() => LodAttributeCorrection.PaintFaceBoundaries(source,reduced,screen,out _,() => true));
+            CollectionAssert.AreEqual(colors,reduced.colors);
+        }
+
+        [Test]
+        public void PolygonPaintViewGateRejectsARegressionHiddenByLowerWorstRgbaRms()
+        {
+            var before = new LodScreenValidation.Report { rgbaRms=.3f,rgbaChannelRms=Vector4.one*.3f,
+                rgbaViewRms=new[] {.01f,.3f},rgbaChannelViewRms=new[] {Vector4.one*.01f,Vector4.one*.3f} };
+            var after = new LodScreenValidation.Report { rgbaRms=.2f,rgbaChannelRms=Vector4.one*.2f,
+                rgbaViewRms=new[] {.1f,.2f},rgbaChannelViewRms=new[] {Vector4.one*.1f,Vector4.one*.2f} };
+            Assert.That(after.ColorsDoNotWorsen(before),Is.True);
+            Assert.That(after.ColorViewsDoNotWorsen(before),Is.False);
+            Assert.That(new LodScreenValidation.Report().ColorViewsDoNotWorsen(before),Is.False);
+        }
+
+        [Test]
+        public void PolygonPaintViewAllowanceIsBoundedInEveryRgbaChannel()
+        {
+            var before = new LodScreenValidation.Report { rgbaViewRms=new[] {.01f},rgbaChannelViewRms=new[] {Vector4.one*.01f} };
+            var after = new LodScreenValidation.Report { rgbaViewRms=new[] {.011f},rgbaChannelViewRms=new[] {Vector4.one*.011f} };
+            Assert.That(after.ColorViewsWithin(before,1f/255),Is.True);
+            after.rgbaChannelViewRms[0].w = .014f;
+            Assert.That(after.ColorViewsWithin(before,1f/255),Is.False);
+        }
+
+        [Test]
+        public void PolygonPaintSkipsDenseMeshesAndDeformers()
+        {
+            var large = Grid(9,true); var largeScreen = new LodScreenValidation(large,true,resolution:72,objectPixels:64,measureFields:true);
+            Assert.That(LodAttributeCorrection.PaintFaceBoundaries(large,large,largeScreen,out var skipped),Is.Null);
+            Assert.That(skipped.trials,Is.Zero);
+            var source = PolygonPanels(false,false); var reduced = PolygonPanels(true,false);
+            reduced.AddBlendShapeFrame("Move",100,Enumerable.Repeat(Vector3.right,reduced.vertexCount).ToArray(),null,null);
+            var screen = new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            Assert.That(LodAttributeCorrection.PaintFaceBoundaries(source,reduced,screen,out skipped),Is.Null);
+            Assert.That(skipped.trials,Is.Zero);
+            var materialSplit = PolygonPanels(true,false); materialSplit.subMeshCount = 2;
+            materialSplit.SetTriangles(new[] {0,1,2,0,2,3},0); materialSplit.SetTriangles(new[] {4,5,6,4,6,7},1);
+            Assert.That(LodAttributeCorrection.PaintFaceBoundaries(source,materialSplit,screen,out skipped),Is.Null);
+            Assert.That(skipped.trials,Is.Zero);
+        }
+
+        [Test]
+        public void PolygonPaintCancellationAfterCloningReleasesItsOwnedMesh()
+        {
+            var source = PolygonPanels(false,false); var reduced = PolygonPanels(true,false); var colors = reduced.colors;
+            var screen = new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            int meshCount = Resources.FindObjectsOfTypeAll<Mesh>().Length,checks = 0;
+            Assert.Throws<OperationCanceledException>(() => LodAttributeCorrection.PaintFaceBoundaries(source,reduced,screen,out _,
+                () => ++checks%128 == 0 && Resources.FindObjectsOfTypeAll<Mesh>().Length > meshCount));
+            Assert.That(Resources.FindObjectsOfTypeAll<Mesh>().Length,Is.EqualTo(meshCount));
+            CollectionAssert.AreEqual(colors,reduced.colors);
+        }
         [Test]
         public void FarVisibleNormalsImproveEveryViewAndLightingWithoutChangingGeometryOrRgba()
         {

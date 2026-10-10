@@ -222,6 +222,8 @@ namespace SashaRX.UnityMeshLab.Tests
                     if (report.varyingVertexColors) Generate(source,LodReductionMode.Triangles,1,"unchecked",variants,generated,true);
                 }
                 float scale = 1f / Mathf.Max(source.bounds.size.x,Mathf.Max(source.bounds.size.y,source.bounds.size.z));
+                if (argsHave("-meshlabLodPaintDiagnostics"))
+                    LodColorBoundaryProjectTests.ExportPaintDiagnostic(model.name,source,variants.Single(v => v.name == "far-lod2").mesh);
                 Matrix4x4 matrix = Matrix4x4.Rotate(Quaternion.Euler(model.rotation)) * Matrix4x4.Scale(Vector3.one*scale)
                     * Matrix4x4.Translate(-source.bounds.center);
                 Texture albedo = string.IsNullOrEmpty(model.albedo) ? null : AssetDatabase.LoadAssetAtPath<Texture>(model.albedo);
@@ -347,6 +349,8 @@ namespace SashaRX.UnityMeshLab.Tests
                             LodVisualQualityTests.Save(model.name,variant.name,"paint-surface",mode == RenderMode.Colors ? "color" : "coverage",renderer.Draw(variant.mesh,mode,opposite));
                 }
                 LodSharedLightmapChecks.Evaluate(model.asset,source,variants,matrix);
+                if (argsHave("-meshlabLodPaintDiagnostics"))
+                    LodColorBoundaryProjectTests.CapturePaintEdges(model.name,source,variants.Single(v => v.name == "far-lod2").mesh,renderer);
                 Assert.That(report.captures.Count,Is.GreaterThanOrEqualTo(6));
                 Assert.That(LodMeshData.TriangleCount(source),Is.EqualTo(report.sourceTriangles),"Source asset changed");
             }

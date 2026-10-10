@@ -309,6 +309,30 @@ namespace SashaRX.UnityMeshLab
                     }
                     finally { if (fitted) UnityEngine.Object.DestroyImmediate(fitted); }
                 }
+                if (options.screenBudget && options.correctSurfaceAttributes && varyingColors && !options.skipColorValidation)
+                {
+                    var painted = LodAttributeCorrection.PaintFaceBoundaries(source,best.simplifiedMesh,screen,out var paintReport,cancelled);
+                    try
+                    {
+                        if (correction != null) correction.polygonColorBoundaries = paintReport;
+                        if (painted)
+                        {
+                            var measured = LodSurfaceValidation.MeasureMeshes(source,painted,settings,cancelled,ignoreDegenerateFaces:true);
+                            if (!float.IsNaN(measured.weightedError) && !float.IsInfinity(measured.weightedError))
+                            {
+                                UnityEngine.Object.DestroyImmediate(best.simplifiedMesh); best.simplifiedMesh = painted; painted = null;
+                                bestMetrics = measured; bestScreen = screen.Measure(best.simplifiedMesh,cancelled);
+                                bestScore = CandidateScore(bestMetrics,bestSilhouette,bestScreen,settings,options); best.resultError = measured.weightedError;
+                                correction.colorsAccepted = true; correction.colorMethod = "verified polygon paint boundaries";
+                                correction.colorRmsAfter = measured.ColorRms; correction.colorMaxAfter = measured.colorMax;
+                                correction.visibleRgbaAfter = bestScreen.rgbaRms; correction.visibleChannelsAfter = bestScreen.rgbaChannelRms;
+                                correction.note += $" Polygon paint boundary correction accepted; mean paint loss {paintReport.boundaryBefore:P1} -> {paintReport.boundaryAfter:P1}. Triangle geometry retained; render vertices {paintReport.verticesBefore} -> {paintReport.verticesAfter}. Worst primary-view RGBA RMS retained or improved; each channel/view RMS may increase by at most {paintReport.viewColorRmsTolerance:G3} across 12 source views. The six primary paint boundary views retain or improve.";
+                            }
+                            else paintReport.accepted = false;
+                        }
+                    }
+                    finally { if (painted) UnityEngine.Object.DestroyImmediate(painted); }
+                }
                 if (options.screenBudget && options.correctSurfaceAttributes && options.bakedLightmapFields != null &&
                     LodMeshData.TriangleCount(best.simplifiedMesh) <= 512 && screenPixels == 64)
                 {

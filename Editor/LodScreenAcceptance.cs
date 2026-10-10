@@ -80,6 +80,15 @@ namespace SashaRX.UnityMeshLab
         }
 
         internal bool IsColorBoundary(int pixel) => colorBoundary[pixel];
+        internal int CorrespondenceRadius => settings.tolerance;
+
+        internal void VisitLostColorPairs(Color[] colors,Color[] coverage,Action<int,int,Color,Color,int> visit,Func<bool> cancelled = null,bool includeSmallRegions = false)
+        {
+            var target = Read(colors,coverage,inputWidth,inputHeight,settings.divisor,cancelled);
+            foreach (var pair in pairs)
+                if ((includeSmallRegions || colorCounts[pair.region] >= settings.minimumPairs) && !PairRetained(pair,target))
+                    visit(pair.a,pair.b,source.colors[pair.a],source.colors[pair.b],pair.region);
+        }
 
         void AddPair(int a,int b,bool[] boundary)
         {

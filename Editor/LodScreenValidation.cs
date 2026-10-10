@@ -21,6 +21,8 @@ namespace SashaRX.UnityMeshLab
             public bool normalsEvaluated, rgbaEvaluated;
             public float silhouetteMean, silhouetteMax, normalRms, rgbaRms;
             public Vector4 rgbaChannelRms;
+            public float[] rgbaViewRms;
+            public Vector4[] rgbaChannelViewRms;
             public float headlightRms;
             public float colorBoundaryMean;
             public float[] colorBoundaryViewLoss;
@@ -32,6 +34,21 @@ namespace SashaRX.UnityMeshLab
                 (!fields || silhouetteMean <= before.silhouetteMean+1e-6f && silhouetteMax <= before.silhouetteMax+1e-6f &&
                     normalRms <= before.normalRms+1e-6f && ColorsDoNotWorsen(before));
             internal bool ColorsDoNotWorsen(Report before) => colorLoss <= before.colorLoss+1e-6f && rgbaRms <= before.rgbaRms+1e-6f && ChannelsDoNotWorsen(before) && BoundariesDoNotWorsen(before);
+            internal bool PaintViewsDoNotWorsen(Report before) => colorLoss <= before.colorLoss+1e-6f && BoundariesDoNotWorsen(before);
+            internal bool ColorViewsDoNotWorsen(Report before)
+                => ColorViewsWithin(before,0) && ColorsDoNotWorsen(before);
+            internal bool ColorViewsWithin(Report before,float tolerance)
+            {
+                if (rgbaViewRms == null || before.rgbaViewRms == null || rgbaChannelViewRms == null || before.rgbaChannelViewRms == null ||
+                    rgbaViewRms.Length != before.rgbaViewRms.Length || rgbaChannelViewRms.Length != rgbaViewRms.Length ||
+                    before.rgbaChannelViewRms.Length != before.rgbaViewRms.Length) return false;
+                for (int v = 0; v < rgbaViewRms.Length; v++)
+                {
+                    if (rgbaViewRms[v] > before.rgbaViewRms[v]+tolerance+1e-6f) return false;
+                    for (int ch = 0; ch < 4; ch++) if (rgbaChannelViewRms[v][ch] > before.rgbaChannelViewRms[v][ch]+tolerance+1e-6f) return false;
+                }
+                return true;
+            }
             bool BoundariesDoNotWorsen(Report before)
             {
                 if (colorBoundaryViewLoss == null || before.colorBoundaryViewLoss == null) return true;
@@ -72,6 +89,7 @@ namespace SashaRX.UnityMeshLab
         readonly int objectPixels;
         readonly bool measureFields, checkColors, hasNormals;
         readonly float sourceExtent;
+        readonly float requestedPixelsPerUnit;
         readonly int[] sourceSlots;
         readonly Vector3[] sourceFaceNormals;
 
@@ -86,6 +104,7 @@ namespace SashaRX.UnityMeshLab
             this.objectPixels = objectPixels > 0 ? objectPixels : resolution-8;
             this.transform = transform ?? Matrix4x4.identity;
             this.measureFields = measureFields;
+            requestedPixelsPerUnit = pixelsPerUnit;
             checkColors = colors && source.colors.Length == source.vertexCount;
             hasNormals = source.normals.Length == source.vertexCount;
             origin = source.bounds.center;
@@ -124,7 +143,9 @@ namespace SashaRX.UnityMeshLab
             var normals = Normals(mesh);
             var result = new Report { views = views.Count,detailAccepted = true,objectPixels = objectPixels,resolution = resolution,
                 normalsEvaluated = measureFields && hasNormals,rgbaEvaluated = measureFields && checkColors,colorBoundaryViewLoss = new float[views.Count],
-                normalViewRms = measureFields ? new float[views.Count] : null,headlightViewRms = measureFields ? new float[views.Count] : null };
+                normalViewRms = measureFields ? new float[views.Count] : null,headlightViewRms = measureFields ? new float[views.Count] : null,
+                rgbaViewRms = measureFields && checkColors ? new float[views.Count] : null,
+                rgbaChannelViewRms = measureFields && checkColors ? new Vector4[views.Count] : null };
             int viewIndex = 0;
             foreach (var view in views)
             {
@@ -146,6 +167,52 @@ namespace SashaRX.UnityMeshLab
             if (result.colorViews > 0) result.colorBoundaryMean /= result.colorViews;
             result.detailAccepted &= result.detailViews > 0;
             return result;
+        }
+
+        internal LodScreenValidation WithAllSides(Mesh source,Func<bool> cancelled = null)
+            => new LodScreenValidation(source,checkColors,cancelled,transform,requestedPixelsPerUnit,resolution,objectPixels,measureFields,allSides:true);
+
+        internal void CaptureDiagnostic(Mesh mesh,Action<int,Color[],Color[],Color[],Color[]> capture,Func<bool> cancelled = null)
+        {
+            var positions = Positions(mesh); var triangles = Triangles(mesh); var colors = Colors(mesh); var normals = Normals(mesh);
+            for (int i = 0; i < views.Count; i++)
+            {
+                var view = views[i]; var target = Rasterize(positions,triangles,colors,normals,view,resolution,cancelled,measureFields);
+                capture(i,view.source.colors,view.source.coverage,target.colors,target.coverage);
+            }
+        }
+
+        internal void VisitLostPaintPairs(Mesh mesh,Action<int,int,int,Color,Color,int> visit,Func<bool> cancelled = null)
+        {
+            var positions = Positions(mesh); var triangles = Triangles(mesh); var colors = Colors(mesh); var normals = Normals(mesh);
+            for (int i = 0; i < views.Count; i++)
+            {
+                int index = i; var view = views[i]; var target = Rasterize(positions,triangles,colors,normals,view,resolution,cancelled,measureFields);
+                view.acceptance.VisitLostColorPairs(target.colors,target.coverage,(a,b,ca,cb,region) => visit(index,a,b,ca,cb,region),cancelled);
+            }
+        }
+
+        internal int[] LostPaintFaces(Mesh mesh,Func<bool> cancelled = null)
+        {
+            var faces = new SortedSet<int>();
+            var positions = Positions(mesh); var indices = Triangles(mesh); var colors = Colors(mesh); var normals = Normals(mesh);
+            foreach (var view in views)
+            {
+                var target = Rasterize(positions,indices,colors,normals,view,resolution,cancelled,true);
+                view.acceptance.VisitLostColorPairs(target.colors,target.coverage,(a,b,ca,cb,region) => {
+                    int radius = view.acceptance.CorrespondenceRadius;
+                    foreach (int pixel in new[] { a,b }) for (int dy = -radius; dy <= radius; dy++) for (int dx = -radius; dx <= radius; dx++)
+                    {
+                        int x = pixel%resolution+dx,y = pixel/resolution+dy;
+                        if (x < 0 || y < 0 || x >= resolution || y >= resolution) continue;
+                        for (int sample = 0; sample < 4; sample++)
+                        {
+                            int face = target.triangleAt[(y*resolution+x)*4+sample]; if (face >= 0) faces.Add(face);
+                        }
+                    }
+                },cancelled,includeSmallRegions:true);
+            }
+            return faces.ToArray();
         }
 
         // Coordinate descent of an already source-derived candidate. Index and
@@ -340,6 +407,11 @@ namespace SashaRX.UnityMeshLab
                 result.headlightViewRms[view] = (float)Math.Sqrt(headlightSquared/overlap);
                 result.headlightRms = Mathf.Max(result.headlightRms,result.headlightViewRms[view]);
                 result.rgbaRms = Mathf.Max(result.rgbaRms,(float)Math.Sqrt(colorSquared/overlap));
+                if (result.rgbaEvaluated)
+                {
+                    result.rgbaViewRms[view] = (float)Math.Sqrt(colorSquared/overlap);
+                    for (int ch = 0; ch < 4; ch++) result.rgbaChannelViewRms[view][ch] = (float)Math.Sqrt(channelSquared[ch]/overlap);
+                }
                 for (int ch = 0; ch < 4; ch++) result.rgbaChannelRms[ch] = Mathf.Max(result.rgbaChannelRms[ch],(float)Math.Sqrt(channelSquared[ch]/overlap));
             }
         }

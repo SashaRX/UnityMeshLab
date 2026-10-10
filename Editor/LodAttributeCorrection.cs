@@ -25,6 +25,7 @@ namespace SashaRX.UnityMeshLab
             public Vector4 visibleChannelsBefore, visibleChannelsAfter;
             public VisibleNormalReport visibleNormals;
             public VisibleColorBoundaryReport visibleColorBoundaries;
+            public VisibleColorBoundaryReport polygonColorBoundaries;
             public LodSharedUvTransfer.Report sharedLightmapUv;
             public string note;
         }
@@ -33,6 +34,9 @@ namespace SashaRX.UnityMeshLab
         {
             public bool accepted;
             public int samples,trials,verticesBefore,verticesAfter;
+            public int polygonGroups;
+            public int activePolygonGroups;
+            public float viewColorRmsTolerance;
             public float boundaryBefore,boundaryAfter,worstBefore,worstAfter,rgbaBefore,rgbaAfter;
             public float[] viewsBefore,viewsAfter;
             public CornerSharingReport cornerSharing;
@@ -133,6 +137,86 @@ namespace SashaRX.UnityMeshLab
                 var result = trial; trial = null; return result;
             }
             finally { if (trial) UnityEngine.Object.DestroyImmediate(trial); }
+        }
+
+        // Replace stretched gradients on faces covering lost paint transitions.
+        // Existing shared corners stay one color variable, so flat replacements
+        // cannot expand the render buffer or change other authored fields.
+        internal static Mesh PaintFaceBoundaries(Mesh source,Mesh reduced,LodScreenValidation screen,
+            out VisibleColorBoundaryReport report,Func<bool> cancelled = null)
+        {
+            report = new VisibleColorBoundaryReport { verticesBefore=reduced.vertexCount,verticesAfter=reduced.vertexCount };
+            if (screen == null || source.vertexCount == 0 || reduced.vertexCount == 0 || source.colors.Length != source.vertexCount || reduced.colors.Length != reduced.vertexCount ||
+                source.subMeshCount != 1 || reduced.subMeshCount != 1 ||
+                source.blendShapeCount > 0 || reduced.blendShapeCount > 0 || source.HasVertexAttribute(VertexAttribute.BlendWeight) ||
+                reduced.HasVertexAttribute(VertexAttribute.BlendWeight) || LodMeshData.TriangleCount(reduced) > 128) return null;
+            var before = screen.Measure(reduced,cancelled); var best = before;
+            report.boundaryBefore = report.boundaryAfter = before.colorBoundaryMean;
+            report.worstBefore = report.worstAfter = before.colorLoss; report.rgbaBefore = report.rgbaAfter = before.rgbaRms;
+            report.viewsBefore = report.viewsAfter = before.colorBoundaryViewLoss;
+            if (!before.rgbaEvaluated || before.objectPixels > 128 || before.colorViews == 0 || before.colorBoundaryMean <= 0) return null;
+            var verification = screen.WithAllSides(source,cancelled); var allSidesBefore = verification.Measure(reduced,cancelled);
+            report.viewColorRmsTolerance = 1f/255;
+            Mesh trial = null, accepted = null;
+            try
+            {
+                trial = UnityEngine.Object.Instantiate(reduced);
+                var indices = reduced.triangles; int faces = indices.Length/3;
+                var owners = Enumerable.Range(0,faces).ToArray(); var first = Enumerable.Repeat(-1,reduced.vertexCount).ToArray();
+                int Owner(int face) { while (owners[face] != face) face = owners[face]; return face; }
+                for (int f = 0; f < faces; f++) for (int k = 0; k < 3; k++)
+                {
+                    int v = indices[f*3+k]; if (first[v] < 0) first[v] = f;
+                    else owners[Owner(f)] = Owner(first[v]);
+                }
+                for (int f = 0; f < faces; f++) owners[f] = Owner(f);
+                report.polygonGroups = owners.Distinct().Count();
+                var active = screen.LostPaintFaces(reduced,cancelled).Select(f => owners[f]).Distinct().OrderBy(f => f).ToArray();
+                report.activePolygonGroups = active.Length;
+                var original = reduced.colors;
+                foreach (float weight in new[] { 1f,8f,32f })
+                {
+                    var sums = new Vector4[faces]; var masses = new double[faces];
+                    var clusters = Enumerable.Range(0,faces).Select(_ => new List<(Vector4 sum,double mass)>()).ToArray();
+                    report.samples = screen.AddVisibleBoundaryColorSamples(trial,(indices,offset,bary,value,mass) => {
+                        int face = owners[offset/3]; sums[face] += value*(float)mass; masses[face] += mass;
+                        var list = clusters[face]; int found = -1;
+                        for (int i = 0; i < list.Count; i++)
+                        {
+                            var delta = value-list[i].sum/(float)list[i].mass;
+                            if (Mathf.Max(Mathf.Abs(delta.x),Mathf.Max(Mathf.Abs(delta.y),Mathf.Max(Mathf.Abs(delta.z),Mathf.Abs(delta.w)))) < .15f) { found = i; break; }
+                        }
+                        if (found < 0) list.Add((value*(float)mass,mass));
+                        else list[found] = (list[found].sum+value*(float)mass,list[found].mass+mass);
+                    },weight,cancelled);
+                    foreach (bool dominant in new[] { false,true }) foreach (int ownerToPaint in active)
+                    {
+                        UvProgress.Report(UvProgress.Current.fraction,$"{source.name}: verify polygon paint boundary");
+                        CheckCancellation(cancelled);
+                        var values = accepted ? accepted.colors : (Color[])original.Clone();
+                        for (int f = 0; f < faces; f++)
+                        {
+                            int owner = owners[f]; if (owner != ownerToPaint || masses[owner] == 0) continue;
+                            var value = sums[owner]/(float)masses[owner];
+                            if (dominant) { var cluster = clusters[owner].OrderByDescending(c => c.mass).First(); value = cluster.sum/(float)cluster.mass; }
+                            for (int k = 0; k < 3; k++) values[indices[f*3+k]] = value;
+                        }
+                        SetColors(trial,values,reduced.GetVertexAttributeFormat(VertexAttribute.Color));
+                        var local = screen.Measure(trial,cancelled); report.trials++;
+                        if (!local.DoesNotWorsen(before) || !local.PaintViewsDoNotWorsen(before) || local.rgbaRms > before.rgbaRms+1e-6f ||
+                            local.colorBoundaryMean >= best.colorBoundaryMean-1e-6f) continue;
+                        if (!verification.Measure(trial,cancelled).ColorViewsWithin(allSidesBefore,report.viewColorRmsTolerance)) continue;
+                        var shared = UnityEngine.Object.Instantiate(trial);
+                        if (accepted) UnityEngine.Object.DestroyImmediate(accepted);
+                        accepted = shared; best = local; report.accepted = true;
+                    }
+                }
+                if (!accepted) return null;
+                report.verticesAfter = accepted.vertexCount; report.boundaryAfter = best.colorBoundaryMean;
+                report.worstAfter = best.colorLoss; report.rgbaAfter = best.rgbaRms; report.viewsAfter = best.colorBoundaryViewLoss;
+                var result = accepted; accepted = null; return result;
+            }
+            finally { if (trial) UnityEngine.Object.DestroyImmediate(trial); if (accepted) UnityEngine.Object.DestroyImmediate(accepted); }
         }
 
         [Serializable] internal sealed class VisibleNormalReport
