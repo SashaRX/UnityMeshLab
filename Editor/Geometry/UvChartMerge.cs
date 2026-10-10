@@ -92,6 +92,9 @@ namespace SashaRX.UnityMeshLab
         internal static bool PreferBroad(UvChartQuality narrow, UvChartQuality broad, UvPackingQuality narrowPacking, UvPackingQuality broadPacking)
             => broad.Improves(narrow, narrow) && broadPacking.Preserves(narrowPacking);
 
+        internal static bool CanReachChartCount(int originalCharts, int mergeLimit, int referenceCharts)
+            => (long)originalCharts - mergeLimit <= referenceCharts;
+
         static void ApplyStrategy(RemeshNative.Geometry geometry, UvChartQuality preMerge, UvChartQuality stretchReference, RemeshSettings settings,
             CancellationToken token, float seamResidual, float localWorstStretch)
         {
@@ -127,6 +130,14 @@ namespace SashaRX.UnityMeshLab
                 int packingAttempts = refinePacking ? 6 : 32;
                 for (int attempt = 0; attempt < packingAttempts; ++attempt)
                 {
+                    // In the halving path every later budget is smaller. Even
+                    // perfect joins cannot beat the narrow atlas's chart count
+                    // once this lower bound exceeds it. Equal counts may still
+                    // improve small charts, so preserve that boundary case.
+                    if (!refinePacking && !CanReachChartCount(chartCountSnapshot, mergeLimit, stretchReference.charts)) {
+                        UvtLog.Info(UvtLog.Category.RemeshDiag, $"[UV] merge-probe-pruned: merge budget={mergeLimit} cannot reach reference charts={stretchReference.charts} from {chartCountSnapshot}; retained validated strategy results.");
+                        break;
+                    }
                     var mergedCharts = new HashSet<int>();
                     int merged = MergeChartsLimited(geometry, settings, token, mergedCharts, mergeLimit, seamResidual, localWorstStretch);
                     UvtLog.Info(UvtLog.Category.RemeshDiag,

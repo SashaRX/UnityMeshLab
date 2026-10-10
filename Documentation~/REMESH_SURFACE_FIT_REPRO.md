@@ -88,3 +88,22 @@ positions, indices, UVs, chart IDs, normals and tangents. Results are written to
 Public controls cover short cross-section edges, reduced motion around a source
 protrusion at scales 0.001/1/1000, unchanged boundaries/input buffers, opposite
 sheets, cancellation, invalid topology and UV strategy quality/packing.
+
+## Avoiding provably losing packing retries
+
+The saved CafeChair_12 settings use brute-force packing. A narrow result has 754
+charts; the broad 588-chart candidate fails its stricter post-pack stretch bound
+(9.62185 versus 9.3071). The old retry then halves the merge budget to 1079 from
+a 2747-chart baseline. Even perfect joins leave at least 1668 charts, so this
+candidate cannot beat the 754-chart result regardless of stretch or packing.
+The unpruned replay was stopped while pursuing further losing retries; it is
+not counted as a successful full-stage test.
+
+The halving/first-success path now stops before generating or packing such a
+candidate. Every subsequent budget is smaller, so none can win either. Equal
+chart counts remain eligible because the small-chart count can improve. The
+interactive refined search stays unchanged: its budgets can increase again.
+Existing accepted checkpoints, quality bounds and final strategy choice remain
+unchanged; there is no timing-based cutoff or automatic packing-setting change.
+The public policy control includes the measured CafeChair counts, equal-count
+small-chart improvement and the initial unlimited-budget boundary.
