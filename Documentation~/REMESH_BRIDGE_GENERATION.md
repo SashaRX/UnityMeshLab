@@ -39,6 +39,16 @@ packing took about 14 minutes, so this opt-in test has a 30-minute timeout rathe
 than the runner's default three minutes. The initial run completed every geometry
 assertion but was reported failed by that default timeout.
 
+The fresh voxel-2/surface-fit-2 saved-setting case passes in 1,557.9 seconds:
+the same 10 closed rims / 36 added faces lead to 241,028 voxel faces, 30,128
+simplified faces and 663 islands (397 small), with mean/worst stretch
+1.07793/7.36968. The complete final scan has zero overlaps, degenerate or
+invalid UV faces and out-of-bounds vertices. Donors remain unchanged. This
+supersedes revision-1 downstream numbers, but does not certify texture Bake
+or acceptable interactive performance. See the
+[surface-fit replay](REMESH_SURFACE_FIT_REPRO.md#roundoff-face-normals-after-corrected-voxel-recovery)
+for the intermediate packed-candidate refusal and final broad result.
+
 2026-10-09, following the [paired-rim topology counterexample](REMESH_CAP_BRIDGE.md).
 The offline `bridge.py` now generates candidate strips from two explicitly
 selected boundary loops, without supplied reference triangles. `collar_growth.py`

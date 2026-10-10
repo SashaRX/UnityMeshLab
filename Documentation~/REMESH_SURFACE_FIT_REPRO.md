@@ -133,7 +133,26 @@ On CafeChair this enables four additional audited flips and removes all three
 zero-area UV faces. Existing seam-cut repair then removes twelve overlapping
 pairs, yielding a complete clean 30,128-face / 3,641-island atlas before optional
 chart merging. Mean/worst stretch is 1.03076/12,219.9: finite certification is
-not acceptable unwrap quality for these thin triangles. Full saved-setting
-chart merging remains a separate expensive step; this intermediate atlas is
-not a successful final pipeline assertion. The private replay now saves exact
-Simplify geometry before Unwrap, and refusal messages include scan counters.
+not acceptable unwrap quality for these thin triangles. The private replay now
+saves exact Simplify geometry before Unwrap, and refusal messages include scan
+counters.
+
+The completed saved-setting replay (voxel 2 / surface-fit 2, resolution 128,
+512 atlas, padding 3, brute-force packing) passes every donor/topology/UV
+assertion. The narrow 896-chart candidate is refused for one same-chart
+intersection of area `3.45652e-11`; its clean unpacked state does not certify
+the packed atlas. The independent broad strategy passes with 663 islands
+(397 small), mean/worst stretch 1.07793/7.36968, fill 0.333322 and chart density
+CV `8.2093e-7`. Its complete whole-atlas scan has zero overlaps, degenerate or
+invalid UV faces and out-of-bounds vertices. Total saved-setting time is
+1,557.9 seconds (about 26 minutes). It removes the extreme intermediate
+distortion but remains a slow, fragmented atlas with stretched thin regions;
+material Bake was not evaluated.
+
+Evidence: `_results~/cafe-chair-20261010/revision2/closure-native.json` and the
+`VerifyCapturedClosureWithFallbackThroughNativeStages` case in `roundoff.xml`.
+That case passes; the mixed long-running XML also contains three obsolete
+prototype fixture failures, compiled before their protected-source expectations
+were corrected. The corrected six controls pass in `roundoff-controls-final.xml`
+and the final 322-pass regression run. Do not report that mixed XML as a
+zero-failure suite.

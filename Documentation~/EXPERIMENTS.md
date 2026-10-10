@@ -9,6 +9,12 @@
   surface audits. Six scale/protected-edge controls pass. Exact Simplify inputs
   and rejection counters are retained; clean UV certification still does not
   imply acceptable stretch (12,219.9 on the intermediate CafeChair repair).
+  Its completed saved-setting case selects a certified broad result: 30,128
+  faces / 663 islands, mean/worst stretch 1.07793/7.36968, zero UV defects,
+  1,557.9 seconds. The narrow 896-island packed candidate is refused for one
+  tiny same-chart intersection; certification is not relaxed. The long case
+  passes, while final corrected public controls run separately from its three
+  outdated prototype fixture failures.
 
 - Same Remesh UV0 chart-merge experiment; baseline `fc62cc8`. Legacy transfer,
   `GroupedShellTransfer`, `XatlasRepack` and `SymmetrySplitShells` are unchanged.
@@ -16,7 +22,7 @@
   retries reduced motion under the existing topology/distance gates. Broad UV
   merging must preserve the quality already achieved by narrow merging, rather
   than spend the original atlas's larger stretch allowance.
-- Park at 64 / Solve On: same 2,946 triangles, target RMS 0.0415130 → 0.0405652;
+- Historical voxel-1 Park at 64 / Solve On: same 2,946 triangles, target RMS 0.0415130 → 0.0405652;
   112 → 113 islands, worst stretch 2.85105 → 3.12150, zero overlaps/degenerates/OOB.
   Reverse maximum rises within the unchanged surface gate. The 83-island variant
   with worst stretch 5.38553 is rejected. This does not solve fragmentation or
