@@ -69,7 +69,7 @@ namespace SashaRX.UnityMeshLab
                     throw Refuse("no unique local closure: multiple non-intersecting three-plane corners");
                 if(winner==null) { winner=result; winnerContacts=candidateContacts; }
             }
-            if (winner == null) throw Refuse("no unique local closure: no audited three-plane corner");
+            if (winner == null) return RemeshArcCap.Generate(p, source, loop, token, ref trials, planeTolerance, external);
             external?.Merge(winnerContacts);
             return winner;
         }

@@ -390,15 +390,20 @@ namespace SashaRX.UnityMeshLab.Tests
             for (int i = 0; i < vertices; ++i) p[i] = new Vector3(reader.ReadSingle(),reader.ReadSingle(),reader.ReadSingle());
             for (int i = 0; i < count; ++i) ix[i] = reader.ReadInt32();
             var old = RemeshPlanarCap.Prepare(p, ix, "all", default, true, planeTolerance: 1e-5, continueOnRefusal: true);
-            Assert.AreEqual(44, old.addedFaces); StringAssert.Contains("face 467", old.loopFailures[4]);
+            TestContext.WriteLine("Legacy contact scope: " + old.Description);
+            Assert.AreEqual(52, old.addedFaces);
+            StringAssert.Contains("face 467", old.loopFailures[4]);
             var cap = RemeshPlanarCap.Prepare(p, ix, "all", default, true, planeTolerance: 1e-5,
                 sourceFaceOwners: new int[count / 3], continueOnRefusal: true, elementScopedContacts: true);
             Assert.IsFalse(cap.loopFailures.ContainsKey(4)); Assert.GreaterOrEqual(cap.addedFaces, 46);
-            CollectionAssert.AreEquivalent(new[] {1,3}, cap.loopFailures.Keys);
-            Assert.AreEqual(24, cap.remainingBoundaryEdges);
+            TestContext.WriteLine("Element contact scope: " + cap.Description);
+            foreach (var failure in cap.loopFailures) TestContext.WriteLine($"Loop {failure.Key}: {failure.Value}");
+            Assert.IsEmpty(cap.loopFailures); Assert.AreEqual(66, cap.addedFaces);
+            Assert.AreEqual(0, cap.remainingBoundaryEdges);
             Assert.Greater(cap.externalContacts.excludedElementPairs, 0);
             Assert.AreNotEqual(cap.externalContacts.faceElements[467], cap.faceElements[cap.faceElements.Length - 1]);
             Assert.IsTrue(RemeshTopology.Inspect(cap.positions, cap.indices).Valid);
+            Assert.IsTrue(RemeshTopology.ClosedVolumeFaces(cap.positions, cap.indices, default).All(v => v));
             for (int i = 0; i < ix.Length; ++i) Assert.AreEqual(p[ix[i]], cap.positions[cap.indices[i]]);
             TestContext.WriteLine(cap.Description);
         }

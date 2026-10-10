@@ -16,6 +16,71 @@ namespace SashaRX.UnityMeshLab.Tests
         static readonly int[] Faces = { 0,2,1,0,3,2, 4,5,6,4,6,7, 0,1,5,0,5,4, 3,7,6,3,6,2, 0,4,7,0,7,3, 1,2,6,1,6,5 };
         static int[] Missing(params int[] missing) => Faces.Where((v,k) => !missing.Contains(k / 6)).ToArray();
 
+        [TestCase(false, 1f)] [TestCase(true, 1f)] [TestCase(false, .125f)] [TestCase(false, 8f)]
+        public void ThreeMissingFacesWithParallelPlanesCloseWithoutAnInferredCorner(bool reverse, float scale)
+        {
+            var p = Box.Select(v => Quaternion.Euler(27,39,13) * v * scale + new Vector3(3,-2,1)).ToArray();
+            var ix = Missing(0,1,2);
+            if (reverse) ix = Enumerable.Range(0, ix.Length / 3).SelectMany(f => ix.Skip(f * 3).Take(3).Reverse()).ToArray();
+            var original = (int[])ix.Clone();
+            var cap = RemeshPlanarCap.Prepare(p, ix, "all", default, true, elementScopedContacts: true);
+            Assert.AreEqual(6, cap.addedFaces); Assert.AreEqual(3, cap.localPatches);
+            var topology = RemeshTopology.Inspect(cap.positions, cap.indices);
+            Assert.IsTrue(topology.Valid, topology.Description); Assert.AreEqual(0, topology.boundary.Count);
+            CollectionAssert.AreEqual(new[] {2}, topology.euler);
+            Assert.IsTrue(RemeshTopology.ClosedVolumeFaces(cap.positions, cap.indices, default).All(v => v));
+            CollectionAssert.AreEqual(p, cap.positions); CollectionAssert.AreEqual(original, ix);
+            CollectionAssert.AreEqual(ix, cap.indices.Take(ix.Length));
+        }
+
+        [Test]
+        public void ParallelPlaneArcCandidatesStillRefuseIntersectingSourceAndCancelAtomically()
+        {
+            var p = Box.Concat(new[] {new Vector3(0,-2,0),new Vector3(0,0,0),new Vector3(.4f,-1,.4f)}).ToArray();
+            var ix = Missing(0,1,2).Concat(new[] {8,9,10}).ToArray();
+            var saved = (int[])ix.Clone(); var savedPoints = (Vector3[])p.Clone();
+            var support = RemeshPlanarCap.Prepare(p, ix, "0", default, true, continueOnRefusal: true);
+            Assert.AreEqual(0, support.addedFaces); Assert.IsNotEmpty(support.loopFailures);
+            CollectionAssert.AreEqual(saved, support.indices); CollectionAssert.AreEqual(savedPoints, support.positions);
+            CollectionAssert.AreEqual(saved, ix); CollectionAssert.AreEqual(savedPoints, p);
+            int trials = 0;
+            Assert.Throws<OperationCanceledException>(() => RemeshArcCap.Generate(p, ix, new List<int> {0,1,5,4,7,3},
+                new CancellationToken(true), ref trials, 0, null));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void FrozenFairStallStepsKeepsStrictToleranceAndReplaysExplicitLargerTolerance(bool solve)
+        {
+            string path = Environment.GetEnvironmentVariable("MESH_LAB_CAP_STEPS_SOURCE");
+            if (string.IsNullOrEmpty(path)) Assert.Ignore("Set MESH_LAB_CAP_STEPS_SOURCE to the decoded FairStall_Steps source.bin.");
+            using var reader = new BinaryReader(File.OpenRead(path));
+            int vertices = reader.ReadInt32(), count = reader.ReadInt32();
+            var p = new Vector3[vertices]; var ix = new int[count];
+            for (int i = 0; i < vertices; ++i) p[i] = new Vector3(reader.ReadSingle(),reader.ReadSingle(),reader.ReadSingle());
+            for (int i = 0; i < count; ++i) ix[i] = reader.ReadInt32();
+            var saved = (int[])ix.Clone(); var savedPoints = (Vector3[])p.Clone();
+            var strict = RemeshPlanarCap.Prepare(p, ix, "all", default, true, planeTolerance: 1e-5,
+                continueOnRefusal: true, elementScopedContacts: true);
+            Assert.AreEqual(0, strict.addedFaces); Assert.AreEqual(12, strict.remainingBoundaryEdges);
+            StringAssert.Contains("configured tolerance", strict.loopFailures[0]);
+            var analysis = RemeshCapPlanes.Analyze(strict.positions, strict.boundaryLoops[0].ToList(), default, minimumTolerance: .002);
+            Assert.AreEqual(RemeshCapPlanes.Kind.TwoPlanes, analysis.kind);
+            var cap = RemeshPlanarCap.Prepare(p, ix, "all", default, true, planeTolerance: .002,
+                continueOnRefusal: true, elementScopedContacts: true);
+            TestContext.WriteLine(cap.Description);
+            foreach (var failure in cap.loopFailures) TestContext.WriteLine(failure.Value);
+            Assert.IsEmpty(cap.loopFailures); Assert.AreEqual(10, cap.addedFaces);
+            Assert.AreEqual(2, cap.localPatches); Assert.AreEqual(0, cap.remainingBoundaryEdges);
+            Assert.AreEqual(62, cap.positions.Length);
+            Assert.IsTrue(RemeshTopology.ClosedVolumeFaces(cap.positions, cap.indices, default).All(v => v));
+            for (int i = 0; i < ix.Length; ++i) Assert.AreEqual(p[ix[i]], cap.positions[cap.indices[i]]);
+            CollectionAssert.AreEqual(saved, ix); CollectionAssert.AreEqual(savedPoints, p);
+            var voxel = RemeshNative.Voxelize(cap.positions, cap.indices, new RemeshSettings {voxelResolution = 64, solve = solve}, default);
+            var topology = RemeshTopology.Inspect(voxel.positions, voxel.indices);
+            Assert.IsTrue(topology.Valid, topology.Description); Assert.AreEqual(0, topology.boundary.Count);
+            TestContext.WriteLine($"FairStall_Steps r64 solve={solve}: {voxel.TriangleCount} triangles");
+        }
+
         [TestCase(0,2)] [TestCase(0,3)] [TestCase(0,4)] [TestCase(0,5)]
         [TestCase(1,2)] [TestCase(1,3)] [TestCase(1,4)] [TestCase(1,5)]
         [TestCase(2,4)] [TestCase(2,5)] [TestCase(3,4)] [TestCase(3,5)]

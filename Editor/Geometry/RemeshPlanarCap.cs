@@ -10,7 +10,7 @@ namespace SashaRX.UnityMeshLab
     /// donor arrays are never mutated. Each closure candidate is accepted atomically.</summary>
     internal static class RemeshPlanarCap
     {
-        internal const int Revision = 8;
+        internal const int Revision = 9;
         const int MaxVertices = 200000, MaxIndices = 1200000, MaxLoopEdges = 512;
         const int MaxPairTrials = 2000000;
 
@@ -267,6 +267,14 @@ namespace SashaRX.UnityMeshLab
             AppendPatch(p, exact, assembled, arc, false, token, result, ref contactTrials, planeTolerance, external);
             // Accepting the first patch changes the actual halfedge contour. Use
             // that new topology, not the stale second arc or guessed loop number.
+            var remaining = RemainingContour(p, assembled, arc, token);
+            var next = RemeshCapPlanes.Analyze(p, remaining, token, minimumTolerance: planeTolerance); ++result.planeRechecks;
+            if (next.kind != RemeshCapPlanes.Kind.Planar) throw Refuse("the remaining local contour is not wholly planar after the first patch");
+            AppendPatch(p, exact, assembled, remaining, true, token, result, ref contactTrials, planeTolerance, external);
+        }
+
+        internal static List<int> RemainingContour(Vector3[] p, List<int> assembled, List<int> arc, CancellationToken token)
+        {
             var fresh = Boundaries(RemeshTopology.Inspect(p, assembled.ToArray(), token), token, false);
             List<int> remaining = null; int a = arc[0], b = arc[arc.Count - 1];
             foreach (var candidate in fresh) for (int i = 0; i < candidate.Count; ++i) {
@@ -276,9 +284,7 @@ namespace SashaRX.UnityMeshLab
                 remaining = candidate;
             }
             if (remaining == null) throw Refuse("the new closure chord is missing from the remaining contour");
-            var next = RemeshCapPlanes.Analyze(p, remaining, token, minimumTolerance: planeTolerance); ++result.planeRechecks;
-            if (next.kind != RemeshCapPlanes.Kind.Planar) throw Refuse("the remaining local contour is not wholly planar after the first patch");
-            AppendPatch(p, exact, assembled, remaining, true, token, result, ref contactTrials, planeTolerance, external);
+            return remaining;
         }
 
         static (int, int) EdgeKey(int a, int b) => a < b ? (a, b) : (b, a);
@@ -290,7 +296,7 @@ namespace SashaRX.UnityMeshLab
             return result;
         }
 
-        static void AppendPatch(Vector3[] p, RemeshCapIntersection.Q[][] exact, List<int> assembled,
+        internal static void AppendPatch(Vector3[] p, RemeshCapIntersection.Q[][] exact, List<int> assembled,
             List<int> arc, bool closed, CancellationToken token, Support result, ref int trials, double planeTolerance, ExternalContacts external)
         {
             int oldFaces = assembled.Count / 3;

@@ -11,8 +11,38 @@ collar partner. Other supported contours receive local Caps. Ambiguous partners,
 unsupported geometry and exhausted search budgets leave the affected contours open.
 
 Enable **Local compound caps** to also allow a selected nonplanar cycle with one
-supported decomposition into two continuous planar arcs. The option is off in
+supported decomposition into continuous planar patches. The option is off in
 existing settings. Automatic mode enables local compound analysis implicitly.
+
+## Revision 9: sequential planar arcs and explicit tolerances
+
+When neither a two-plane split nor an audited three-plane corner succeeds, local
+Cap tries a bounded disk decomposition into continuous planar arcs. This also
+handles parallel planes without constructing an artificial common apex. Every
+patch needs at least four supported vertices; arbitrary triangular fans remain
+unsupported. Source positions and the configured **Cap plane tolerance** are
+preserved. The changed boundary is re-extracted and checked after every patch.
+
+The fallback searches rims of at most 16 edges, with 2048 contour states, 32768
+plane fits, two million support samples and at most 128 minimum-patch plans per
+state. All minimum-patch plans undergo the existing topology and exact contact
+audits. Different surviving triangulated surfaces or exhausted budgets refuse the
+whole contour; more complex plans are not tried after minimum plans fail. Other
+independent contours still continue, and the solid/native guards are unchanged.
+
+The frozen `FairStall_Steps` input has 203 donor vertices, 110 faces and one
+12-edge rim. At its saved tolerance `1e-5`, no supported complete planar closure
+exists. At explicitly selected tolerance `0.002` in capture coordinates, the
+existing two-plane method adds 10 faces in two patches without moving vertices.
+Native Remesh at resolution 64 passes closed topology with Solve off and on
+(11210 triangles each). This tolerance is specific to the captured model; the
+tool does not automatically widen it for other objects.
+
+The `Garbage_Chute` capture benefits from the new arc fallback at its original
+`1e-5` tolerance. With production element-scoped contacts, all five contours close:
+66 added faces in nine patches, zero open edges, valid closed volumes. The legacy
+strict contact oracle adds 52 faces and still refuses the two affected contours.
+Closure support acceptance does not certify downstream native union geometry.
 
 ## Visual preparation and multiple holes
 
