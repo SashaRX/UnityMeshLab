@@ -57,6 +57,13 @@ namespace SashaRX.UnityMeshLab
                 }
                 return result;
             }
+
+            static List<int> Arc(List<int> loop, int start, int length)
+            {
+                var result = new List<int>(length + 1);
+                for (int i = 0; i <= length; ++i) result.Add(loop[(start + i) % loop.Count]);
+                return result;
+            }
         }
 
         internal static RemeshCompoundCap.Result Generate(Vector3[] p, int[] source, List<int> loop,
@@ -102,13 +109,6 @@ namespace SashaRX.UnityMeshLab
             if (winner == null) throw Refuse("no audited planar arc decomposition" + (lastFailure == null ? "" : ": " + lastFailure));
             external?.Merge(winnerContacts);
             return winner;
-        }
-
-        static List<int> Arc(List<int> loop, int start, int length)
-        {
-            var result = new List<int>(length + 1);
-            for (int i = 0; i <= length; ++i) result.Add(loop[(start + i) % loop.Count]);
-            return result;
         }
 
         static string Signature(List<int> indices, int originalIndices)
