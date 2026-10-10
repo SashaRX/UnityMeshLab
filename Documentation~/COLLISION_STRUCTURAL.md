@@ -39,6 +39,10 @@ full matrix into a convex mesh proxy. Placement and removal participate in Undo.
 Preview, sidecar and FBX retain the matching mesh proxies. Sidecars additionally
 save optional shape metadata; existing sidecars remain mesh-only. Reimport and
 FBX export use the mesh proxies, not native Unity BoxCollider components.
+New entries have a stable instance key derived from the source mesh name and
+root-relative hierarchy path. Separate nodes sharing a mesh retain separate
+entries and placements in both document saves and normalized rebuilds. Legacy
+entries continue to use mesh-name lookup.
 
 On the packed Park_Bench_A LOD0 (3,832 source triangles), the Structural preset
 produces two boxes for seat/back and six profiles for the side structures. The

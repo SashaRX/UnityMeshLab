@@ -59,6 +59,7 @@ namespace SashaRX.UnityMeshLab
         internal readonly List<(string name, Mesh mesh)> reshaped = new List<(string, Mesh)>();
         /// <summary>From the sidecar; the meshes are owned by the plan.</summary>
         internal readonly List<(string key, List<Mesh> meshes, bool convex)> collisions = new List<(string, List<Mesh>, bool)>();
+        internal readonly Dictionary<string, CollisionMeshEntry> collisionSources = new Dictionary<string, CollisionMeshEntry>(StringComparer.Ordinal);
         internal readonly List<MaterialEdit> materials = new List<MaterialEdit>();
         internal readonly List<string> refusals = new List<string>();
         /// <summary>A mesh written whole carries UV1 work (repack, transfer) of its own.</summary>
@@ -134,6 +135,8 @@ namespace SashaRX.UnityMeshLab
                 else plan.refusals.Add($"'{name}' cannot be paired with the LOD{sourceLodIndex} mesh of '{System.IO.Path.GetFileName(fbxPath)}' it was generated from");
             }
             plan.collisions.AddRange(SidecarStore.CollisionMeshes(fbxPath));
+            foreach (var source in SidecarStore.CollisionSources(fbxPath))
+                plan.collisionSources[source.Key] = source.Value;
             // Collision meshes Cleanup flagged (UVs or colours) are rewritten clean when the
             // sidecar replaces them; any other is the rebuild's to strip.
             var replaced = new HashSet<string>(plan.collisions.SelectMany(NodeNames), StringComparer.Ordinal);
@@ -360,6 +363,7 @@ namespace SashaRX.UnityMeshLab
             public FbxNode node;
             public FbxSpaceFit fit;
             public bool reverse;
+            public bool instanceResolved;
             /// <summary>Node material index per Unity submesh; null when the node has no materials.</summary>
             public int[] submeshMaterials;
             public int uvSets;
@@ -392,6 +396,17 @@ namespace SashaRX.UnityMeshLab
                 if (!references.TryGetValue(name, out var r)) references[name] = r = Resolve(document, tagged, name);
                 return r;
             }
+            var collisionReferences = new Dictionary<string, Reference>(StringComparer.Ordinal);
+            Reference CollisionRef(string key)
+            {
+                if (collisionReferences.TryGetValue(key, out var existing)) return existing;
+                plan.collisionSources.TryGetValue(key, out var metadata);
+                string sourceName = string.IsNullOrEmpty(metadata?.sourceMeshName) ? key : metadata.sourceMeshName;
+                string path = string.IsNullOrEmpty(metadata?.sourceMeshName) ? null : metadata.sourceHierarchyPath;
+                var resolved = Resolve(document, tagged, CollisionSource(tagged, sourceName), path);
+                collisionReferences[key] = resolved;
+                return resolved;
+            }
 
             // Every source is resolved and checked before the document changes: a mesh being
             // replaced may also be the source of a LOD or a collider.
@@ -403,7 +418,7 @@ namespace SashaRX.UnityMeshLab
             var collisions = plan.collisions.Where(c => !CollisionUnchanged(c, tagged)).ToList();
             foreach (var (key, meshes, _) in collisions)
             {
-                var source = Ref(CollisionSource(tagged, key));
+                var source = CollisionRef(key);
                 RequireSiblingRoom(scene, source, preserveHierarchy);
                 foreach (var mesh in meshes) RequirePlaceable(source, mesh, key + "_COL");
             }
@@ -451,7 +466,7 @@ namespace SashaRX.UnityMeshLab
             }
             foreach (var collision in collisions)
             {
-                changes += WriteCollision(scene, Ref(CollisionSource(tagged, collision.key)), collision, log);
+                changes += WriteCollision(scene, CollisionRef(collision.key), collision, log);
             }
             foreach (var (name, mesh) in plan.reshaped)
             {
@@ -609,14 +624,15 @@ namespace SashaRX.UnityMeshLab
 
         static readonly string[] MainTextureNames = { "_BaseMap", "_MainTex", "_BaseColorMap", "_AlbedoMap", "_Albedo" };
 
-        static Reference Resolve(FbxSourceDocument document, Dictionary<string, FbxChannelWrite.Tagged> tagged, string name)
+        static Reference Resolve(FbxSourceDocument document, Dictionary<string, FbxChannelWrite.Tagged> tagged, string name, string sourcePath = null)
         {
             if (!tagged.TryGetValue(name, out var tag))
                 throw new FbxStructureRefusalException($"'{name}' is not a mesh of the FBX (or its corner tags did not survive the import)");
             var mesh = document.Meshes[tag.ordinal];
             if (FbxStructureEdit.HasDeformers(mesh))
                 throw new FbxStructureRefusalException($"'{name}' is skinned or has blend shapes; geometry made from it cannot be placed through its import");
-            var node = FbxStructureEdit.NodeOf(mesh, name)
+            var node = string.IsNullOrEmpty(sourcePath) ? FbxStructureEdit.NodeOf(mesh, name) : CollisionNode(mesh, sourcePath);
+            node = node
                 ?? throw new FbxStructureRefusalException($"'{name}' is instanced by several nodes and none is named after it");
 
             var (fit, reverse) = FitOf(mesh, tag, name);
@@ -628,9 +644,47 @@ namespace SashaRX.UnityMeshLab
             return new Reference
             {
                 name = name, mesh = mesh, node = node, fit = fit, reverse = reverse, submeshMaterials = submeshMaterials,
+                instanceResolved = !string.IsNullOrEmpty(sourcePath),
                 uvSets = uvSets, uvNames = uvNames != null && uvNames.Count == uvSets ? uvNames : null,
                 colors = FbxLayerChannels.ColorElement(mesh) != null,
             };
+        }
+
+        static FbxNode CollisionNode(FbxMesh mesh, string path)
+        {
+            FbxNode found = null;
+            for (int i = 0; i < mesh.GetNodeCount(); i++)
+            {
+                var node = mesh.GetNode(i);
+                string candidate = CollisionNodePath(node);
+                // The imported model root can omit the FBX's outer wrapper node.
+                bool matches = candidate == path || candidate.EndsWith("/" + path, StringComparison.Ordinal);
+                if (path == ".") matches = mesh.GetNodeCount() == 1;
+                if (!matches) continue;
+                if (found != null) throw new FbxStructureRefusalException($"collision path '{path}' matches multiple FBX nodes");
+                found = node;
+            }
+            return found ?? throw new FbxStructureRefusalException($"collision path '{path}' has no source node in the FBX");
+        }
+
+        static string CollisionNodePath(FbxNode node)
+        {
+            var parts = new List<string>();
+            while (node.GetParent() != null)
+            {
+                var parent = node.GetParent();
+                int ordinal = 0;
+                for (int i = 0; i < parent.GetChildCount(); i++)
+                {
+                    var sibling = parent.GetChild(i);
+                    if (sibling == node) break;
+                    if (sibling.GetName() == node.GetName()) ordinal++;
+                }
+                parts.Add(CollisionHierarchyAnalyzer.PathPart(node.GetName(), ordinal));
+                node = parent;
+            }
+            parts.Reverse();
+            return parts.Count == 0 ? "." : string.Join("/", parts);
         }
 
         /// <summary>
@@ -705,7 +759,7 @@ namespace SashaRX.UnityMeshLab
 
         static void RequireSiblingRoom(FbxScene scene, Reference source, bool preserveHierarchy)
         {
-            if (source.mesh.GetNodeCount() > 1)
+            if (source.mesh.GetNodeCount() > 1 && !source.instanceResolved)
                 throw new FbxStructureRefusalException(
                     $"'{source.name}' is instanced by {source.mesh.GetNodeCount()} nodes; which instance a node next to it belongs with cannot be told from the mesh");
             if (FbxStructureEdit.HasTransformAnimation(source.node))

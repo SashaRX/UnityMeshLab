@@ -236,6 +236,7 @@ namespace SashaRX.UnityMeshLab
         // flattened geometry remains the portable proxy for FBX and reimport.
         public CollisionMeshBuilder.ShapeReport[] shapes;
         public string sourceHierarchyPath;
+        public string sourceMeshName;
         public bool preferSimpleShapes;
         public float shapeFitError;
         public float projectionThicknessRatio;

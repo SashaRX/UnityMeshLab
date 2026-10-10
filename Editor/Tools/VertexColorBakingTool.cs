@@ -1554,6 +1554,7 @@ namespace SashaRX.UnityMeshLab
             float effectiveRadius)
         {
             var sidecarEntries = SidecarStore.CollisionMeshes(ctx.SourceFbxPath);
+            var collisionSources = SidecarStore.CollisionSources(ctx.SourceFbxPath);
             if (sidecarEntries == null || sidecarEntries.Count == 0)
                 return;
 
@@ -1571,7 +1572,9 @@ namespace SashaRX.UnityMeshLab
                         batch.temporaryMeshesToDestroy.Add(mesh);
                 }
 
-                var matchedRenderer = FindBestSidecarRenderer(meshName, candidateRenderers, batch);
+                collisionSources.TryGetValue(meshName, out var sourceMetadata);
+                string sourceName = string.IsNullOrEmpty(sourceMetadata?.sourceMeshName) ? meshName : sourceMetadata.sourceMeshName;
+                var matchedRenderer = FindBestSidecarRenderer(sourceName, candidateRenderers, batch, sourceMetadata);
                 if (matchedRenderer == null)
                     continue;
 
@@ -1600,7 +1603,7 @@ namespace SashaRX.UnityMeshLab
             batch.usedSidecarCollisionFallback = addedAny;
         }
 
-        Renderer FindBestSidecarRenderer(string meshName, Renderer[] candidateRenderers, LodBakeBatch batch)
+        Renderer FindBestSidecarRenderer(string meshName, Renderer[] candidateRenderers, LodBakeBatch batch, CollisionMeshEntry sourceMetadata = null)
         {
             Renderer best = null;
             int bestScore = 0;
@@ -1609,6 +1612,14 @@ namespace SashaRX.UnityMeshLab
             {
                 if (renderer == null || !renderer.enabled || !renderer.gameObject.activeInHierarchy)
                     continue;
+
+                if (!string.IsNullOrEmpty(sourceMetadata?.sourceMeshName) && !string.IsNullOrEmpty(sourceMetadata.sourceHierarchyPath))
+                {
+                    var original = PrefabUtility.GetCorrespondingObjectFromOriginalSource(renderer.transform);
+                    string path = original != null ? CollisionHierarchyAnalyzer.RelativePath(original.root, original)
+                        : CollisionHierarchyAnalyzer.RelativePath(ctx.LodGroup != null ? ctx.LodGroup.transform : renderer.transform.root, renderer.transform);
+                    if (path != sourceMetadata.sourceHierarchyPath) continue;
+                }
 
                 int score = GetSidecarRendererScore(meshName, renderer, batch);
                 if (score <= 0 || score <= bestScore)

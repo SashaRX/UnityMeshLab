@@ -391,6 +391,53 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void Structure_CollisionInstancesFollowTheirOwnNodePaths(bool sameParent)
+        {
+            using var document = FbxSourceDocument.Load(WriteSource());
+            var scene = document.Scene;
+            var first = FbxStructureEdit.FindNodes(scene, "Rock_LOD0").Single();
+            var second = FbxNode.Create(scene, "Rock_LOD0");
+            var parent = first.GetParent();
+            if (!sameParent)
+            {
+                parent = FbxNode.Create(scene, "OtherGroup");
+                scene.GetRootNode().AddChild(parent);
+            }
+            parent.AddChild(second);
+            second.SetNodeAttribute(first.GetMesh());
+            second.LclTranslation.Set(new FbxDouble3(8, 4, -2));
+            var (positions, triangles) = SimulatedImport(document.Meshes[0]);
+            var tagged = new Dictionary<string, FbxChannelWrite.Tagged> {
+                ["Rock_LOD0"] = new FbxChannelWrite.Tagged {
+                    ordinal = 0, cornerPositions = positions, submeshCorners = new[] { triangles }, submeshFaceSizes = new[] { 3 }
+                }
+            };
+            using var plan = new FbxStructurePlan();
+            var paths = new[] { "Group[0]/Rock_LOD0[0]", sameParent ? "Group[0]/Rock_LOD0[1]" : "OtherGroup[0]/Rock_LOD0[0]" };
+            foreach (string path in paths)
+            {
+                string key = CollisionHierarchyAnalyzer.InstanceKey("Rock_LOD0", path);
+                var mesh = new UnityEngine.Mesh();
+                var vertices = new UnityEngine.Vector3[positions.Length / 3];
+                for (int i = 0; i < vertices.Length; i++)
+                    vertices[i] = new UnityEngine.Vector3(positions[i*3], positions[i*3+1], positions[i*3+2]);
+                mesh.vertices = vertices; mesh.triangles = triangles.Take(3).ToArray();
+                plan.collisions.Add((key, new List<UnityEngine.Mesh> { mesh }, false));
+                plan.collisionSources[key] = new CollisionMeshEntry { meshGroupKey = key, sourceMeshName = "Rock_LOD0", sourceHierarchyPath = path };
+            }
+            Assert.AreEqual(2, FbxStructureWrite.Apply(document, tagged, plan,
+                new FbxStructureWrite.Options { preserveHierarchy = true }, new List<string>()));
+            var sourceNodes = new[] { first, second };
+            for (int i = 0; i < 2; i++)
+            {
+                var collision = FbxStructureEdit.FindNodes(scene, plan.collisions[i].key + "_COL").Single();
+                Assert.IsTrue(FbxStructureEdit.SamePlacement(sourceNodes[i], collision, true));
+                Assert.AreEqual(sourceNodes[i].GetParent(), collision.GetParent());
+            }
+        }
+
         [Test]
         public void Structure_ANewLodReimportsAsTheUnityMeshItWasMadeFrom()
         {

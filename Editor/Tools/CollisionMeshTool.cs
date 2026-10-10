@@ -667,6 +667,7 @@ namespace SashaRX.UnityMeshLab
                 MeshFingerprint fp = null;
                 var srcEntry = ctx.MeshEntries.FirstOrDefault(
                     e => e.lodIndex == ctx.SourceLodIndex && e.include &&
+                    (r.sourceTransform == null || e.renderer?.transform == r.sourceTransform) &&
                     (e.fbxMesh != null ? e.fbxMesh.name : e.originalMesh?.name) == r.meshName);
                 if (srcEntry != null && srcEntry.fbxMesh != null)
                     fp = MeshFingerprint.Compute(srcEntry.fbxMesh);
@@ -694,9 +695,14 @@ namespace SashaRX.UnityMeshLab
                     allTri.AddRange(localTris);
                 }
 
+                var importedSource = r.sourceTransform != null
+                    ? PrefabUtility.GetCorrespondingObjectFromOriginalSource(r.sourceTransform) : null;
+                string sourcePath = importedSource != null
+                    ? CollisionHierarchyAnalyzer.RelativePath(importedSource.root, importedSource)
+                    : CollisionHierarchyAnalyzer.RelativePath(ctx.LodGroup.transform, r.sourceTransform);
                 var entry = new CollisionMeshEntry
                 {
-                    meshGroupKey      = r.meshName,
+                    meshGroupKey      = CollisionHierarchyAnalyzer.InstanceKey(r.meshName, sourcePath),
                     mode              = (int)generatedMode,
                     sourceFingerprint = fp,
                     allPositions      = allPos.ToArray(),
@@ -709,14 +715,16 @@ namespace SashaRX.UnityMeshLab
                     resolution        = convexResolution,
                     maxVertsPerHull   = convexMaxVertsPerHull,
                     shapes            = r.shapeReports?.ToArray(),
-                    sourceHierarchyPath = r.hierarchyPath,
+                    sourceHierarchyPath = sourcePath,
+                    sourceMeshName    = r.meshName,
                     preferSimpleShapes = convexSimpleShapes,
                     shapeFitError     = convexShapeFit,
                     projectionThicknessRatio = convexProjectionThickness,
                 };
 
-                // Replace existing entry for same meshGroupKey
-                data.collisionEntries.RemoveAll(c => c.meshGroupKey == entry.meshGroupKey);
+                // Replace this instance and the old unscoped mesh entry, retaining others.
+                data.collisionEntries.RemoveAll(c => c != null && (c.meshGroupKey == entry.meshGroupKey ||
+                    (string.IsNullOrEmpty(c.sourceMeshName) && c.meshGroupKey == r.meshName)));
                 data.collisionEntries.Add(entry);
             }
 

@@ -7,6 +7,39 @@ namespace SashaRX.UnityMeshLab
     /// boundaries, including instances sharing a mesh asset under different parents.</summary>
     internal static class CollisionHierarchyAnalyzer
     {
+        // Root-relative, escaped names with ordinals among same-named siblings.
+        // Unrelated collision/LOD nodes added by an export do not shift these ordinals.
+        internal static string RelativePath(Transform root, Transform node)
+        {
+            if (root == null || node == null) return null;
+            var parts = new List<string>();
+            while (node != null && node != root)
+            {
+                int ordinal = 0;
+                if (node.parent != null)
+                    for (int i = 0; i < node.GetSiblingIndex(); i++)
+                        if (node.parent.GetChild(i).name == node.name) ordinal++;
+                parts.Add(PathPart(node.name, ordinal));
+                node = node.parent;
+            }
+            if (node != root) return null;
+            parts.Reverse();
+            return parts.Count == 0 ? "." : string.Join("/", parts);
+        }
+
+        internal static string PathPart(string name, int ordinal)
+            => $"{System.Uri.EscapeDataString(name)}[{ordinal}]";
+
+        internal static string InstanceKey(string meshName, string path)
+        {
+            if (string.IsNullOrEmpty(path)) return meshName;
+            using (var hash = System.Security.Cryptography.SHA256.Create())
+            {
+                var bytes = hash.ComputeHash(System.Text.Encoding.UTF8.GetBytes(path));
+                return meshName + "_Instance" + System.BitConverter.ToString(bytes, 0, 8).Replace("-", "");
+            }
+        }
+
         internal sealed class Source
         {
             internal MeshEntry entry;

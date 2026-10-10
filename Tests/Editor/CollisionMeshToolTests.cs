@@ -473,6 +473,74 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        [Test]
+        public void SidecarRetainsSharedMeshInstancesAndRebuildUsesEachHierarchyFrame()
+        {
+            var first = Prepare(true, 2);
+            var ctx = Field<UvToolContext>(tool, "ctx");
+            var shared = ctx.MeshEntries[0].originalMesh;
+            first.gameObject.AddComponent<MeshFilter>().sharedMesh = shared;
+            var branch = new GameObject("OtherBranch").transform;
+            branch.SetParent(root.transform, false);
+            branch.localPosition = new Vector3(7, 4, -2);
+            var second = new GameObject(first.name).transform;
+            second.SetParent(branch, false);
+            second.localRotation = Quaternion.Euler(12, 60, 5);
+            second.gameObject.AddComponent<MeshFilter>().sharedMesh = shared;
+            var secondRenderer = second.gameObject.AddComponent<MeshRenderer>();
+            ctx.MeshEntries.Add(new MeshEntry { renderer = secondRenderer, originalMesh = shared, include = true, lodIndex = 0 });
+            var results = (IList)Field<object>(tool, "lastResults");
+            var info = results[0].GetType();
+            var firstResult = results[0];
+            info.GetField("hullCount").SetValue(firstResult, 1);
+            results[0] = firstResult;
+            var secondResult = Activator.CreateInstance(info);
+            info.GetField("meshName").SetValue(secondResult, shared.name);
+            info.GetField("sourceTransform").SetValue(secondResult, second);
+            info.GetField("hullCount").SetValue(secondResult, 1);
+            results.Add(secondResult);
+
+            if (!AssetDatabase.IsValidFolder("Assets/UnityMeshLab")) AssetDatabase.CreateFolder("Assets", "UnityMeshLab");
+            string fbxPath = "Assets/UnityMeshLab/CollisionInstances-" + Guid.NewGuid().ToString("N") + ".fbx";
+            assets.Add(fbxPath); assets.Add(SidecarStore.PathFor(fbxPath));
+            var exportRoot = Object.Instantiate(root); owned.Add(exportRoot);
+            FbxExport.Write(fbxPath, exportRoot);
+            AssetDatabase.ImportAsset(fbxPath, ImportAssetOptions.ForceSynchronousImport);
+            var imported = Array.Find(AssetDatabase.LoadAllAssetsAtPath(fbxPath), a => a is Mesh) as Mesh;
+            Assert.IsNotNull(imported);
+            foreach (var entry in ctx.MeshEntries) entry.fbxMesh = imported;
+            // The instance identity, not a different geometry name, distinguishes the entries.
+            shared.name = imported.name;
+            for (int i = 0; i < results.Count; i++)
+            {
+                var result = results[i];
+                info.GetField("meshName").SetValue(result, imported.name);
+                results[i] = result;
+            }
+            Call(tool, "SaveToSidecar");
+            Call(tool, "SaveToSidecar");
+            var saved = SidecarStore.Load(fbxPath);
+            Assert.AreEqual(2, saved.collisionEntries.Count);
+            Assert.AreNotEqual(saved.collisionEntries[0].meshGroupKey, saved.collisionEntries[1].meshGroupKey);
+            Assert.AreNotEqual(saved.collisionEntries[0].sourceHierarchyPath, saved.collisionEntries[1].sourceHierarchyPath);
+            var frames = FbxExport.CollisionSourceFrames(root);
+            var roundTrip = SidecarStore.CollisionMeshes(fbxPath);
+            var sink = new List<Mesh>();
+            try
+            {
+                Assert.AreEqual(2, FbxExport.InjectCollisionMeshes(exportRoot, roundTrip, sink, frames, SidecarStore.CollisionSources(fbxPath)));
+                var sources = new[] { first, second };
+                for (int instance = 0; instance < 2; instance++)
+                {
+                    var actual = roundTrip[instance].meshes[0].vertices;
+                    var local = Field<List<Mesh>>(tool, "generatedMeshes")[instance].vertices;
+                    for (int i = 0; i < actual.Length; i++)
+                        Assert.Less(Vector3.Distance(sources[instance].TransformPoint(local[i]) - root.transform.position, actual[i]), .0001f);
+                }
+            }
+            finally { foreach (var mesh in sink) if (mesh) Object.DestroyImmediate(mesh); }
+        }
+
         [TestCase(false, 0, true)]
         [TestCase(true, 0, false)]
         [TestCase(true, 2, false)]
@@ -519,7 +587,8 @@ namespace SashaRX.UnityMeshLab.Tests
             var originalVertices = generated[0].vertices;
             Call(tool, "SaveToSidecar");
             var saved = SidecarStore.Load(fbxPath);
-            Assert.AreEqual(sourceName, saved.collisionEntries[0].meshGroupKey);
+            Assert.AreEqual(sourceName, saved.collisionEntries[0].sourceMeshName);
+            Assert.AreEqual(CollisionHierarchyAnalyzer.InstanceKey(sourceName, saved.collisionEntries[0].sourceHierarchyPath), saved.collisionEntries[0].meshGroupKey);
             Assert.IsNotNull(saved.collisionEntries[0].sourceFingerprint);
             var roundTrip = SidecarStore.CollisionMeshes(fbxPath);
             Assert.AreEqual(1, roundTrip.Count);
@@ -533,7 +602,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }
             var frames = FbxExport.CollisionSourceFrames(root);
             var sink = new List<Mesh>();
-            Assert.AreEqual(generated.Count, FbxExport.InjectCollisionMeshes(exportRoot, roundTrip, sink, frames));
+            Assert.AreEqual(generated.Count, FbxExport.InjectCollisionMeshes(exportRoot, roundTrip, sink, frames, SidecarStore.CollisionSources(fbxPath)));
             for (int h = 0; h < generated.Count; ++h)
             {
                 var mesh = roundTrip[0].meshes[h];

@@ -209,7 +209,10 @@ namespace SashaRX.UnityMeshLab
 
         static List<Vector2> Hull(List<Vector2> points)
         {
-            points.Sort((a,b) => a.x != b.x ? a.x.CompareTo(b.x) : a.y.CompareTo(b.y));
+            points.Sort((a,b) => {
+                int xOrder = a.x.CompareTo(b.x);
+                return xOrder == 0 ? a.y.CompareTo(b.y) : xOrder;
+            });
             var min = points[0]; var max = min;
             foreach (var p in points) { min = Vector2.Min(min, p); max = Vector2.Max(max, p); }
             float areaEpsilon = (max - min).sqrMagnitude * .000001f;
@@ -292,13 +295,18 @@ namespace SashaRX.UnityMeshLab
                 shapeReports = new List<CollisionMeshBuilder.ShapeReport>(reports) };
             try {
                 foreach (var proxy in proxies) {
-                    var mesh = new Mesh { name = name + "_hull" + result.hulls.Count };
+                    var mesh = new Mesh { name = $"{name}_hull{result.hulls.Count}" };
                     result.hulls.Add(mesh);
                     mesh.SetVertices(proxy.positions); mesh.SetTriangles(proxy.indices, 0); mesh.RecalculateBounds();
                 }
                 return result;
             }
-            catch { foreach (var mesh in result.hulls) UnityEngine.Object.DestroyImmediate(mesh); throw; }
+            catch
+            {
+                foreach (var mesh in result.hulls)
+                    UnityEngine.Object.DestroyImmediate(mesh);
+                throw;
+            }
         }
     }
 }

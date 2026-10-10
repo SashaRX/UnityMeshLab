@@ -1235,6 +1235,8 @@ namespace SashaRX.UnityMeshLab
             {
                 var mesh = filter.sharedMesh;
                 if (!mesh || MeshNaming.IsCollision(filter.name)) continue;
+                string path = CollisionHierarchyAnalyzer.RelativePath(root.transform, filter.transform);
+                frames["hierarchy:" + path] = recenter * filter.transform.localToWorldMatrix;
                 string key = mesh.name;
                 if (ambiguous.Contains(key)) continue;
                 var frame = recenter * filter.transform.localToWorldMatrix;
@@ -1251,7 +1253,8 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Adds owned sidecar meshes as collision children, optionally converting
         /// source-local geometry with frames captured before normalization.</summary>
         internal static int InjectCollisionMeshes(GameObject tempRoot, List<(string meshName, List<Mesh> meshes, bool isConvex)> collisionData,
-            List<Mesh> tempSink, Dictionary<string, Matrix4x4> sourceFrames = null)
+            List<Mesh> tempSink, Dictionary<string, Matrix4x4> sourceFrames = null,
+            Dictionary<string, CollisionMeshEntry> collisionSources = null)
         {
             if (tempSink == null) throw new ArgumentNullException(nameof(tempSink));
             if (collisionData == null || collisionData.Count == 0) return 0;
@@ -1270,11 +1273,18 @@ namespace SashaRX.UnityMeshLab
             {
                 if (sourceFrames != null)
                 {
-                    if (!sourceFrames.TryGetValue(colMeshName, out var frame))
+                    CollisionMeshEntry metadata = null;
+                    collisionSources?.TryGetValue(colMeshName, out metadata);
+                    string sourceName = string.IsNullOrEmpty(metadata?.sourceMeshName) ? colMeshName : metadata.sourceMeshName;
+                    string frameKey = !string.IsNullOrEmpty(metadata?.sourceMeshName) && !string.IsNullOrEmpty(metadata.sourceHierarchyPath)
+                        ? "hierarchy:" + metadata.sourceHierarchyPath : sourceName;
+                    if (!sourceFrames.TryGetValue(frameKey, out var frame))
                     {
+                        if (frameKey != sourceName)
+                            throw new InvalidOperationException($"Cannot place collision '{colMeshName}': source hierarchy path '{metadata.sourceHierarchyPath}' no longer exists");
                         int matches = 0;
                         foreach (var pair in sourceFrames)
-                            if (MeshNaming.GroupKey(pair.Key) == colMeshName && MeshNaming.LodIndex(pair.Key) <= 0)
+                            if (!pair.Key.StartsWith("hierarchy:", StringComparison.Ordinal) && MeshNaming.GroupKey(pair.Key) == sourceName && MeshNaming.LodIndex(pair.Key) <= 0)
                             { frame = pair.Value; ++matches; }
                         if (matches != 1)
                             throw new InvalidOperationException($"Cannot place collision '{colMeshName}': no unique source mesh frame in the FBX hierarchy");
