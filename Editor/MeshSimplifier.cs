@@ -1,6 +1,6 @@
 // MeshSimplifier.cs — Mesh simplification via meshoptimizer with attribute preservation
 // Reduces triangle count while preserving vertex attributes (normals, UVs).
-// Uses meshopt_simplifyWithAttributes (v0.22) for UV-aware simplification.
+// Uses meshopt_simplifyWithAttributes for attribute-aware simplification.
 
 using System.Collections.Generic;
 using UnityEngine;
@@ -16,7 +16,10 @@ namespace SashaRX.UnityMeshLab
             public float targetError;   // max simplification error (0.01 typical)
             public float uv2Weight;     // importance of UV2 preservation (100 typical)
             public float normalWeight;  // importance of normal preservation (1 typical)
+            public float colorWeight;   // importance of float RGBA preservation; 0 disables the cost
             public bool lockBorder;     // lock mesh boundary vertices
+            public bool preserveHardEdges; // retain authored normal creases and their incident face belt
+            internal bool allowAttributeSeamCollapse; // budget fallback; retains attribute channels
             public int uvChannel;       // which UV channel to protect (default 1 = UV2)
 
             public static SimplifySettings Default => new SimplifySettings
@@ -25,6 +28,7 @@ namespace SashaRX.UnityMeshLab
                 targetError  = 0.01f,
                 uv2Weight    = 100f,
                 normalWeight = 1f,
+                colorWeight  = 1f,
                 lockBorder   = true,
                 uvChannel    = 1
             };
@@ -39,6 +43,7 @@ namespace SashaRX.UnityMeshLab
             public int originalTriCount;
             public int simplifiedTriCount;
             public float resultError;
+            internal LodHardEdges.Report hardEdges;
         }
 
         /// <summary>
@@ -70,10 +75,11 @@ namespace SashaRX.UnityMeshLab
             }
 
             // ── Read all vertex data ──
+            var hardEdges = settings.preserveHardEdges ? new LodHardEdges(sourceMesh) : null;
             Vector3[] positions = sourceMesh.vertices;
             Vector3[] normals   = sourceMesh.normals;
             Vector4[] tangents  = sourceMesh.tangents;
-            Color32[] colors    = sourceMesh.colors32;
+            Color[] colors      = sourceMesh.colors;
 
             bool hasNormal  = normals  != null && normals.Length  == vertCount;
             bool hasTangent = tangents != null && tangents.Length == vertCount;
@@ -94,18 +100,21 @@ namespace SashaRX.UnityMeshLab
             }
 
             // ── Determine attribute layout for simplification ──
-            // Attributes passed to meshopt: normal (3 floats) + protected UV (2 floats)
+            // Attributes passed to meshopt: normal (3), protected UV (2), float RGBA (4).
             int attrFloatCount = 0;
             bool useNormalAttr = hasNormal && settings.normalWeight > 0;
             bool useUvAttr = uvDim[settings.uvChannel] >= 2 && settings.uv2Weight > 0;
+            bool useColorAttr = hasColor && settings.colorWeight > 0;
 
             if (useNormalAttr) attrFloatCount += 3;
             if (useUvAttr)     attrFloatCount += 2;
+            if (useColorAttr)  attrFloatCount += 4;
 
             // Build attribute weights array
             var weights = new List<float>();
             if (useNormalAttr) { weights.Add(settings.normalWeight); weights.Add(settings.normalWeight); weights.Add(settings.normalWeight); }
             if (useUvAttr)     { weights.Add(settings.uv2Weight);    weights.Add(settings.uv2Weight); }
+            if (useColorAttr)  for (int i = 0; i < 4; i++) weights.Add(settings.colorWeight);
 
             float[] weightArray = weights.Count > 0 ? weights.ToArray() : null;
             uint attrStride = (uint)(attrFloatCount * 4); // bytes
@@ -114,6 +123,8 @@ namespace SashaRX.UnityMeshLab
             uint options = 0;
             if (settings.lockBorder)
                 options |= MeshoptNative.SimplifyLockBorder;
+            if (settings.allowAttributeSeamCollapse)
+                options |= MeshoptNative.SimplifyPermissive;
 
             // ── Process each submesh independently ──
             int totalOrigTris = 0;
@@ -122,7 +133,7 @@ namespace SashaRX.UnityMeshLab
             var allOutPositions = new List<Vector3>();
             var allOutNormals   = hasNormal  ? new List<Vector3>() : null;
             var allOutTangents  = hasTangent ? new List<Vector4>() : null;
-            var allOutColors    = hasColor   ? new List<Color32>() : null;
+            var allOutColors    = hasColor   ? new List<Color>() : null;
             var allOutUv = new List<Vector4>[MAX_UV];
             for (int ch = 0; ch < MAX_UV; ch++)
                 if (uvDim[ch] > 0) allOutUv[ch] = new List<Vector4>();
@@ -132,7 +143,7 @@ namespace SashaRX.UnityMeshLab
 
             for (int s = 0; s < subCount; s++)
             {
-                int[] subTris = sourceMesh.GetTriangles(s);
+                int[] subTris = LodMeshData.Triangles(sourceMesh, s);
                 if (subTris.Length == 0)
                 {
                     submeshTriangles.Add(new int[0]);
@@ -150,7 +161,14 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 int localVertCount = globalToLocal.Count;
-                uint localIndexCount = (uint)subTris.Length;
+                var retainedIndices = new List<uint>();
+                var reducibleIndices = new List<uint>();
+                for (int i = 0; i < subTris.Length; i += 3)
+                {
+                    var destination = hardEdges != null && hardEdges.frozen[s][i/3] ? retainedIndices : reducibleIndices;
+                    for (int k = 0; k < 3; k++) destination.Add((uint)globalToLocal[subTris[i+k]]);
+                }
+                uint localIndexCount = (uint)reducibleIndices.Count;
 
                 // Pack position buffer (interleaved, position first — 12 bytes per vertex)
                 // meshopt_simplify only reads positions from this buffer
@@ -169,7 +187,7 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
 
-                // Pack attribute buffer (normal + uv as flat floats)
+                // Pack attribute buffer (normal + UV + RGBA as flat floats).
                 float[] attrArray = null;
                 if (attrFloatCount > 0)
                 {
@@ -192,25 +210,39 @@ namespace SashaRX.UnityMeshLab
                             attrArray[baseIdx + off++] = uv.x;
                             attrArray[baseIdx + off++] = uv.y;
                         }
+                        if (useColorAttr)
+                        {
+                            var color = colors[gi];
+                            attrArray[baseIdx + off++] = color.r;
+                            attrArray[baseIdx + off++] = color.g;
+                            attrArray[baseIdx + off++] = color.b;
+                            attrArray[baseIdx + off] = color.a;
+                        }
                     }
                 }
 
                 // Local index buffer
-                uint[] localIndices = new uint[subTris.Length];
-                for (int i = 0; i < subTris.Length; i++)
-                    localIndices[i] = (uint)globalToLocal[subTris[i]];
+                uint[] localIndices = reducibleIndices.ToArray();
 
                 // Output buffer
-                uint[] outIndices = new uint[localIndexCount];
-                uint outIndexCount;
-                float simplifyError;
+                uint[] outIndices = new uint[subTris.Length];
+                uint outIndexCount = 0;
+                float simplifyError = 0;
+                uint patchOptions = options;
+                float patchRatio = settings.targetRatio;
+                if (retainedIndices.Count > 0)
+                {
+                    patchOptions |= MeshoptNative.SimplifyLockBorder;
+                    int remainingTarget = Mathf.Max(1,Mathf.CeilToInt(subTris.Length/3*settings.targetRatio)-retainedIndices.Count/3);
+                    patchRatio = localIndexCount > 0 ? Mathf.Min(1,remainingTarget/(localIndexCount/3f)) : 1;
+                }
 
-                int err = MeshoptNative.meshoptSimplify(
+                int err = localIndexCount == 0 ? 0 : MeshoptNative.meshoptSimplify(
                     posBytes, (uint)localVertCount, (uint)POS_STRIDE,
                     localIndices, localIndexCount,
                     attrArray, attrStride,
                     weightArray, (uint)(weightArray != null ? weightArray.Length : 0),
-                    settings.targetRatio, settings.targetError, options,
+                    patchRatio, settings.targetError, patchOptions,
                     outIndices, out outIndexCount, out simplifyError);
 
                 if (err != 0)
@@ -218,6 +250,7 @@ namespace SashaRX.UnityMeshLab
                     result.error = $"meshoptSimplify error {err} on submesh {s}";
                     return result;
                 }
+                foreach (uint index in retainedIndices) outIndices[outIndexCount++] = index;
 
                 result.resultError = Mathf.Max(result.resultError, simplifyError);
                 totalSimplTris += (int)outIndexCount / 3;
@@ -277,7 +310,12 @@ namespace SashaRX.UnityMeshLab
             outMesh.SetVertices(allOutPositions);
             if (allOutNormals  != null) outMesh.SetNormals(allOutNormals);
             if (allOutTangents != null) outMesh.SetTangents(allOutTangents);
-            if (allOutColors   != null) outMesh.SetColors(allOutColors);
+            if (allOutColors != null)
+            {
+                if (sourceMesh.GetVertexAttributeFormat(VertexAttribute.Color) == VertexAttributeFormat.UNorm8)
+                    outMesh.SetColors(allOutColors.ConvertAll(c => (Color32)c));
+                else outMesh.SetColors(allOutColors);
+            }
 
             for (int ch = 0; ch < MAX_UV; ch++)
             {
@@ -327,8 +365,22 @@ namespace SashaRX.UnityMeshLab
             result.draftUv = MeshUvState.IsDraft(outMesh);
             result.originalTriCount = totalOrigTris;
             result.simplifiedTriCount = totalSimplTris;
+            if (hardEdges != null)
+            {
+                result.hardEdges = hardEdges.Measure(outMesh);
+                if (!result.hardEdges.Valid)
+                {
+                    Object.DestroyImmediate(outMesh);
+                    result.simplifiedMesh = Object.Instantiate(sourceMesh);
+                    MeshUvState.SetDraft(result.simplifiedMesh,result.draftUv);
+                    result.simplifiedTriCount = totalOrigTris; result.resultError = 0;
+                    result.hardEdges = hardEdges.Measure(result.simplifiedMesh);
+                    result.hardEdges.sourceFallback = true;
+                    UvtLog.Warn("[Simplify] Protected face / edge / patch-interface check failed; retained source mesh.");
+                }
+            }
 
-            UvtLog.Info($"[Simplify] Done: {totalOrigTris} → {totalSimplTris} tris " +
+            UvtLog.Info($"[Simplify] Done: {totalOrigTris} → {result.simplifiedTriCount} tris " +
                       $"(ratio={settings.targetRatio:F2}, error={result.resultError:F6})");
 
             return result;

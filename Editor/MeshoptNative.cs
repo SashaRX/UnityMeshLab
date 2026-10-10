@@ -55,5 +55,7 @@ namespace SashaRX.UnityMeshLab
         public const uint SimplifySparse        = 2;
         public const uint SimplifyErrorAbsolute = 4;
         public const uint SimplifyPrune         = 8;
+        // meshoptimizer v1.3, pinned in Native~/CMakeLists.txt; existing options ABI.
+        public const uint SimplifyPermissive    = 1 << 5;
     }
 }
