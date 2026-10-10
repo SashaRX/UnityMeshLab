@@ -104,13 +104,18 @@ namespace SashaRX.UnityMeshLab
 
         static int Euler(RemeshTopology.Snapshot topology)
         {
-            int sum=0; foreach (int value in topology.euler) sum+=value; return sum;
+            int sum=0;
+            foreach (int value in topology.euler) { sum+=value; }
+            return sum;
         }
 
         static List<int> Phases(Vector3[] p,List<int> a,List<int> b)
         {
             var phases = new List<int>();
-            if (b.Count <= MaxPhases) { for (int j=0;j<b.Count;++j) phases.Add(j); return phases; }
+            if (b.Count <= MaxPhases) {
+                for (int j=0;j<b.Count;++j) { phases.Add(j); }
+                return phases;
+            }
             // Half the profile covers the whole rim, half concentrates on short
             // cross-rim links. No claim of exhaustive correspondence is made.
             for (int j=0;j<MaxPhases/2;++j) phases.Add(j*b.Count/(MaxPhases/2));
