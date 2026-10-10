@@ -149,8 +149,9 @@ namespace SashaRX.UnityMeshLab
             if (valid) foreach (bool closed in RemeshTopology.ClosedVolumeFaces(candidate.positions, candidate.indices, token))
                 if (!closed) { valid = false; break; }
             if (!valid) {
-                captureFailure?.Invoke(first, candidate, 0, topology.Description);
-                throw new InvalidOperationException($"Solid occupancy fallback is not a valid closed volume ({topology.Description}). " +
+                string reason = "Occupancy tetrahedra: " + topology.Description + "; nonzero component volumes required";
+                captureFailure?.Invoke(first, candidate, 0, reason);
+                throw new InvalidOperationException($"Solid occupancy fallback is not a valid closed volume ({reason}). " +
                     "Source trimming and Simplify were not run on this result.");
             }
             UvtLog.Info(UvtLog.Category.RemeshDiag, $"Solid occupancy fallback accepted at resolution {resolution}: " +

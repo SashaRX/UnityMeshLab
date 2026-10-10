@@ -255,6 +255,7 @@ Requirements: CMake 3.20+, C++17 compiler. xatlas and V-HACD are vendored in `Na
 ## Documentation
 
 * [Remesh & Bake](Documentation~/REMESH_AND_BAKE.md) — workflow, architecture, limits, validation checklist
+* [Solid voxel recovery](Documentation~/REMESH_SOLID_RECOVERY.md) — singular thin-feature output, occupancy fallback, native and capture tests
 * [Transfer pipeline experiments](Documentation~/EXPERIMENTS.md) and [benchmark protocol](Documentation~/TRANSFER_BENCHMARK.md)
 * [FBX pipeline checklist](Documentation~/FBX_PIPELINE_CHECKLIST.md)
 * [Vertex Color Baking architecture](Documentation~/VERTEX_COLOR_BAKING_ARCHITECTURE.md)

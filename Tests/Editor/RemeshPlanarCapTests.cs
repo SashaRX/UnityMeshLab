@@ -303,8 +303,8 @@ namespace SashaRX.UnityMeshLab.Tests
             TestContext.WriteLine($"External closed mesh: {support.externalContacts.count} diagnostic contacts; {support.addedFaces} added faces.");
         }
 
-        [Test]
-        public void NativeGuardStillRefusesMeasuredOpenUnionOfIntersectingClosedDonors()
+        [TestCase(false)] [TestCase(true)]
+        public void NativeGuardRecoversMeasuredUnionOfIntersectingClosedDonors(bool solve)
         {
             var points = Box.Concat(new[] {
                 new Vector3(-1.3f,-1.3f,-1.3f), new Vector3(-.7f,-1.3f,-.7f),
@@ -315,12 +315,17 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.Greater(support.externalContacts.count, 0);
             Assert.IsTrue(RemeshTopology.ClosedVolumeFaces(support.positions, support.indices, default).All(v => v));
             var saved = (int[])support.indices.Clone(); var savedPoints = (Vector3[])support.positions.Clone();
-            var error = Assert.Throws<InvalidOperationException>(() =>
-                RemeshNative.Voxelize(support.positions, support.indices, new RemeshSettings { voxelResolution = 64, solve = false }, default));
-            StringAssert.Contains("Solid voxel remesh is not a valid closed surface", error.Message);
-            StringAssert.Contains("boundary 9", error.Message);
+            var settings = new RemeshSettings {voxelResolution=64,solve=solve,maximumError=.02f,textureResolution=256,padding=3};
+            var voxel = RemeshNative.Voxelize(support.positions,support.indices,settings,default);
+            var topology = RemeshTopology.Inspect(voxel.positions,voxel.indices);
+            Assert.IsTrue(topology.Valid,topology.Description); Assert.AreEqual(0,topology.boundary.Count);
+            Assert.IsTrue(RemeshTopology.ClosedVolumeFaces(voxel.positions,voxel.indices,default).All(v => v));
+            var simplified = RemeshNative.Simplify(voxel,settings,default,out _);
+            var atlas = UvAtlasDiagnostics.Measure(RemeshNative.Unwrap(simplified,settings,default),default);
+            Assert.IsTrue(atlas.complete); Assert.AreEqual(0,atlas.invalidFaces); Assert.AreEqual(0,atlas.pairs);
+            Assert.AreEqual(0,atlas.degenerateFaces); Assert.AreEqual(0,atlas.outOfBoundsVertices);
             CollectionAssert.AreEqual(saved, support.indices); CollectionAssert.AreEqual(savedPoints, support.positions);
-            TestContext.WriteLine("Measured native limitation after successful Cap: " + error.Message);
+            TestContext.WriteLine($"Intersecting closed donors recovered: {voxel.TriangleCount} voxel → {simplified.TriangleCount} simplified faces.");
         }
 
         [TestCase(false, 1, false)] [TestCase(false, 1, true)]
