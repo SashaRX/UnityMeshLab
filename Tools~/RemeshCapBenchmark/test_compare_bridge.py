@@ -6,7 +6,7 @@ import unittest
 import numpy as np
 
 from bridge_probe import torus_gap
-from compare_bridge import border, prepare, verify
+from compare_bridge import border, longitudinal_gap, prepare, verify
 
 
 class BridgeComparisonTests(unittest.TestCase):
@@ -47,11 +47,28 @@ class BridgeComparisonTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'original oriented faces'):
             verify(p, source, moved, bridge, selected)
 
-    def test_prepare_writes_five_replayable_fixtures(self):
+    def test_longitudinal_reference_stays_one_component_and_restores_the_handle(self):
+        for strip in (0, 4, 8):
+            with self.subTest(strip=strip):
+                p, source, bridge = longitudinal_gap(strip=strip)
+                selected, _ = border(p, source)
+                report = verify(p, source, p, bridge, selected)
+                self.assertTrue(report['accepted'])
+                self.assertEqual(len(report['before']['components']), 1)
+                self.assertEqual(report['before']['boundaryLoops'], 2)
+                self.assertEqual(len(report['after']['components']), 1)
+                self.assertEqual(report['after']['components'][0]['genus'], 1)
+
+    def test_longitudinal_strip_selection_is_validated(self):
+        for strip in (-1, 16, 1.5, True):
+            with self.subTest(strip=strip), self.assertRaises(ValueError):
+                longitudinal_gap(strip=strip)
+
+    def test_prepare_writes_eight_replayable_fixtures(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
             manifest = prepare(output, [])
-            self.assertEqual(len(manifest['cases']), 5)
+            self.assertEqual(len(manifest['cases']), 8)
             self.assertEqual(json.loads((output / 'manifest.json').read_text()), manifest)
             self.assertTrue(all(Path(case['source']).is_file() for case in manifest['cases']))
 

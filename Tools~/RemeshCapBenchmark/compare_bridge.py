@@ -18,6 +18,21 @@ from compare_fill import audit, preserve_source, write_mesh
 from surface_signature import signature
 
 
+def longitudinal_gap(major=24, minor=16, strip=0):
+    """Remove a circumferential band without splitting the torus component."""
+    p, *_ = torus_gap(major, minor)
+    if type(strip) is not int or strip < 0 or strip >= minor:
+        raise ValueError('Longitudinal strip must be an available minor ring index')
+    source, patch = [], []
+    for i in range(major):
+        for j in range(minor):
+            a, b = i * minor + j, ((i + 1) % major) * minor + j
+            c, d = ((i + 1) % major) * minor + (j + 1) % minor, i * minor + (j + 1) % minor
+            (patch if j == strip else source).extend(((a, b, c), (a, c, d)))
+    source = np.asarray(source, dtype='i4')
+    return p, source, np.concatenate((source, np.asarray(patch, dtype='i4')))
+
+
 def prepare(output, captures):
     output.mkdir(parents=True, exist_ok=True)
     cases = []
@@ -28,6 +43,11 @@ def prepare(output, captures):
         p, ix, *_ = torus_gap(major, minor)
         if split:
             p, ix = subdivide_boundary(p, ix)
+        path = output / (name + '__source.bin')
+        write_mesh(path, p, ix)
+        cases.append(dict(name=name, source=str(path.resolve()), selection='0,1', intent='torus'))
+    for name, strip in (('LongitudinalOuter', 0), ('LongitudinalTop', 4), ('LongitudinalInner', 8)):
+        p, ix, _ = longitudinal_gap(strip=strip)
         path = output / (name + '__source.bin')
         write_mesh(path, p, ix)
         cases.append(dict(name=name, source=str(path.resolve()), selection='0,1', intent='torus'))

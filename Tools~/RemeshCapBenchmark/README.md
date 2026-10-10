@@ -2,8 +2,9 @@
 
 ## Bridge comparison
 
-`compare_bridge.py --output PRIVATE_OUTPUT` creates five explicit torus Bridge
-fixtures and a manifest. Run the opt-in Unity EditMode test
+`compare_bridge.py --output PRIVATE_OUTPUT` creates eight explicit torus Bridge
+fixtures and a manifest: five transverse/unequal controls and three circumferential
+bands (outer, top and inner) that leave the source connected. Run the opt-in Unity EditMode test
 `RemeshCapComparisonTests.GenerateBridgeCandidates` with
 `MESH_LAB_CAP_COMPARISON_MANIFEST` pointing to that manifest; then run
 `compare_bridge.py --output PRIVATE_OUTPUT --audit`. Add captures with

@@ -253,3 +253,39 @@ Validation on 2026-10-10: 154 Unity EditMode controls passed, zero failed;
 configured. Six diagnostic capture controls also passed after adding the fallback
 metadata. Both FBX compile variants have zero errors. Private results:
 `_results~/bridge-cap-fallback-20261010/closure-final.xml` and `metadata.xml`.
+
+## Circumferential slit on one connected torus
+
+A longitudinal strip removes one minor-angle band all the way around the major
+circle. The remaining surface is one connected annulus with two circumferential
+rims and Euler 0. This is distinct from transverse cuts producing separate tube
+segments. Bridge must add one annulus between the two rims and leave a single
+closed genus-one component. Separate disks can pass contact/topology checks on
+the inner slit but close the central handle instead (Euler 2).
+
+Production controls cover outer/top/inner/bottom strips and the minor-angle wrap,
+16/24/32/64 edges per rim, transformed/scaled reversed winding, exact donor/patch
+preservation, and circumferential edge locality (no chords across the hole).
+Automatic selects Bridge and retains it even when Cap fallback is enabled.
+With 129-edge circumferential rims the existing Bridge limit refuses; the opted-in
+planar fallback closes an inner slit into one genus-zero component, not two
+segments. The test records that shape change explicitly.
+
+On 2026-10-10 all 66 Unity closure controls passed with no skips or failures.
+The 14 new cases include four resolution-64 native Remesh/Simplify/UV runs on
+outer/top/inner slits with source fitting off/on. Every native stage retains one
+closed genus-one component; complete atlas scans report zero overlaps,
+degenerates and out-of-bounds vertices. Private results:
+`_results~/bridge-longitudinal-20261010/longitudinal.xml` and `closure-all.xml`.
+The offline suite passes 130 tests, and the default comparison manifest now
+includes all three circumferential slit fixtures. No production algorithm change
+was required for these controls.
+
+The opt-in comparison exporter preserved every source corner and wrote actual
+production Bridge, Automatic and Cap meshes for the outer/top/inner fixtures.
+Independent exact-contact and annulus-intent audits accept all nine Bridge
+outputs (production, MeshLib complex and MeshLib universal on each of the three
+fixtures). The inner pair of production planar Caps adds 44 faces, passes the
+local closure controls and has genus 0, so it fails the Bridge intent gate.
+Private evidence: `comparison/comparison.json`, `comparison/caps-intent.json`
+and `comparison/longitudinal-preview.png` under the longitudinal result folder.
