@@ -1,6 +1,19 @@
 # Generated annular Bridge and virtual averaged co-normal growth
 
-Current production (revision 15): automatic collar ambiguity also respects the
+Current production (revision 16) removes the 16-selected-loop gate in favour of
+two million collar edge comparisons and 200,000 pair visits. Incomplete partner
+searches remain refused per contour. Independent rims can use an audited Surface
+Cap after a whole local planar proposal is discarded. Thin opposing skins can
+pair when both complete rims pass proximity, winding and normal tests.
+
+Equal-count Bridge profiles include both aligned quad diagonals for every seam
+phase, alongside the eight retained dynamic-programming paths. Triangle compactness
+alone can discard a valid side strip on a thin bent sheet. Aligned paths consume
+the same preflight state/storage budget, participate in score-ordered auditing,
+and must pass all original annulus, remaining-boundary and exact contact checks.
+Unequal-count correspondence remains handled by the bounded zipper.
+
+Revision 15 introduced automatic collar ambiguity handling that respects the
 explicit **Cap on Bridge refusal** option. Without it, an ambiguous partner graph
 still refuses Bridge. With it, no partner is guessed: each selected ambiguous rim
 tries its own planar disk under the existing topology, contact and volume audits.

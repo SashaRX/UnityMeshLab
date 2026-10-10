@@ -19,6 +19,7 @@ namespace SashaRX.UnityMeshLab
             internal CancellationToken token;
             internal int trials, candidates, originalFaces, initialBoundary, rimEdges, limit;
             internal string lastFailure;
+            internal readonly HashSet<(int,int,int)> sourceBlocked = new HashSet<(int,int,int)>();
         }
 
         readonly struct Ear
@@ -60,8 +61,11 @@ namespace SashaRX.UnityMeshLab
             var ears = RankedEars(search.positions, ring, topology);
             foreach (var ear in ears) {
                 search.token.ThrowIfCancellationRequested();
-                if (++search.candidates > search.limit) throw Refuse("candidate search budget exceeded; no partial patch accepted");
                 int a = ring[(ear.slot + ring.Count - 1) % ring.Count], b = ring[ear.slot], c = ring[(ear.slot + 1) % ring.Count];
+                int low = Math.Min(a,Math.Min(b,c)), high = Math.Max(a,Math.Max(b,c));
+                var key = (low,a+b+c-low-high,high);
+                if (search.sourceBlocked.Contains(key)) continue;
+                if (++search.candidates > search.limit) throw Refuse("candidate search budget exceeded; no partial patch accepted");
                 var candidate = new List<int>(faces) {a,c,b};
                 var next = new List<int>(ring); next.RemoveAt(ear.slot);
                 var current = RemeshTopology.Inspect(search.positions, candidate.ToArray(), search.token);
@@ -73,6 +77,10 @@ namespace SashaRX.UnityMeshLab
                         search.token, ref search.trials, out _, branch);
                 }
                 catch (InvalidOperationException failure) when (!failure.Message.Contains("budget")) {
+                    // Contact with fixed input faces is independent of earlier ears.
+                    // Contact with another tentative Cap remains branch-dependent.
+                    if (failure.Data[RemeshPlanarCap.ContactSourceFaceKey] is int face && face < search.originalFaces)
+                        search.sourceBlocked.Add(key);
                     search.lastFailure = failure.Message; continue;
                 }
                 if (ring.Count == 3) { result = candidate; acceptedContacts = branch; return true; }

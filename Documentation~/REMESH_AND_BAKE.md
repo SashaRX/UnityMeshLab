@@ -10,8 +10,9 @@ omitted from the preview. If a nonempty mesh has no Position channel or its data
 cannot be read, the partial preview is discarded and the sidebar shows the error
 with **Retry source preview**. Selecting another source or refreshing also retries.
 Queued work is cancelled when the preview/tool is cleared. MeshData availability
-is checked against the source layout/count; unavailable imported buffers use the
-existing temporary Read/Write fallback outside IMGUI, while truly empty copies do
+is checked against the source layout/count; imported buffers use the Editor
+MeshUtility read-only snapshot without changing Read/Write. Unavailable snapshots
+retain the temporary importer fallback outside IMGUI, while truly empty copies do
 not acquire vertex data or reimport anything. These checks affect preview handling,
 not the strict geometry validation of Remesh/Reverse UV stages.
 
@@ -34,6 +35,12 @@ Closure contacts are checked against its connected geometric element after weld.
 Faces and earlier Caps from other elements do not block closure, including inside
 one Mesh asset. Bridges protect both elements they join; subsequent closures use
 the updated connectivity. Unsupported contours still retain their refusal reasons.
+
+Automatic closure supports more than 16 selected contours, with work budgets for
+partner analysis instead of a global loop-count refusal. It recognizes mutually
+continuing collars and close, oppositely wound thin skins as Bridge candidates.
+Independent rims try local planar closure and then an audited curved Surface Cap.
+The full proposal is discarded on refusal; accepted closures on other rims remain.
 
 Each stage has its own settings and button; running a
 stage first brings every earlier stage up to date (missing output or changed

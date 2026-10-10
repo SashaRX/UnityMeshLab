@@ -11,6 +11,49 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class ViewportOverlayTests
     {
+        [Test]
+        public void TranslucentTextureBindingKeepsMaterialTilingAndOffset()
+        {
+            var material = new Material(Shader.Find("Unlit/Texture"));
+            var texture = new Texture2D(2,2);
+            try {
+                material.mainTexture = texture; material.mainTextureScale = new Vector2(2,.5f);
+                material.mainTextureOffset = new Vector2(.3f,-.2f);
+                var block = new MaterialPropertyBlock();
+                Assert.AreSame(texture,MeshViewport3D.BindSurfaceTexture(material,block));
+                Assert.AreEqual(new Vector4(2,.5f,.3f,-.2f),block.GetVector("_UvScaleOffset"));
+                Assert.AreSame(texture,block.GetTexture("_MainTex"));
+                MeshViewport3D.BindSurfaceTexture(null,block);
+                Assert.AreEqual(new Vector4(1,1,0,0),block.GetVector("_UvScaleOffset"));
+            }
+            finally { Object.DestroyImmediate(material); Object.DestroyImmediate(texture); }
+        }
+
+        [UnityTest]
+        public IEnumerator PolygonPickingDistinguishesTwoInstancesOfTheSameMesh()
+        {
+            if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) Assert.Ignore("Requires GPU preview rendering.");
+            var window = ScriptableObject.CreateInstance<OverlayWindow>();
+            try {
+                window.instances = true; window.topology.Mode = MeshTopologyPreview.Element.Polygon;
+                window.Show(); window.position = new Rect(0,0,600,300);
+                window.view.Frame(new Bounds(Vector3.zero,new Vector3(6,2,.1f)));
+                var items = window.Items; window.topology.Prepare(items);
+                double deadline = EditorApplication.timeSinceStartup + 10;
+                while (window.topology.Data(window.original) == null && EditorApplication.timeSinceStartup < deadline) yield return null;
+                Capture(window);
+                var pick = typeof(MeshTopologyPreview).GetMethod("Pick",BindingFlags.Instance|BindingFlags.NonPublic);
+                for (int item = 0; item < items.Length; ++item) {
+                    var world = items[item].matrix.MultiplyPoint3x4(new Vector3(.25f,.2f,0));
+                    Assert.IsTrue(window.view.TryProject(world,out var pointer,out _));
+                    var hit = (MeshTopologyPreview.Hit)pick.Invoke(window.topology,new object[] {window.view,pointer,items});
+                    Assert.AreEqual(item,hit.item); Assert.AreSame(window.original,hit.mesh);
+                    Assert.IsTrue(hit.Matches(items[item],item)); Assert.IsFalse(hit.Matches(items[1-item],1-item));
+                }
+            }
+            finally { window.Close(); }
+        }
+
         [UnityTest]
         public IEnumerator SharedInspectionToolbarDrawsEveryElementModeWithoutLayoutErrors()
         {
@@ -81,7 +124,12 @@ namespace SashaRX.UnityMeshLab.Tests
             internal readonly MeshViewport3D view = new MeshViewport3D { ViewProjection = MeshViewport3D.Projection.XY, ShowGrid = false, ShowAxes = false, Lit = false };
             internal readonly MeshTopologyPreview topology = new MeshTopologyPreview { ShowHoles = true };
             internal bool controls;
+            internal bool instances;
             internal Mesh original;
+            internal MeshViewport3D.Item[] Items => instances ? new[] {
+                new MeshViewport3D.Item(original,Matrix4x4.Translate(Vector3.left*2)),
+                new MeshViewport3D.Item(original,Matrix4x4.Translate(Vector3.right*2))
+            } : new[] {new MeshViewport3D.Item(original,Matrix4x4.identity)};
             Mesh patch;
             void OnEnable()
             {
@@ -93,7 +141,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }
             void OnGUI()
             {
-                var items = new[] { new MeshViewport3D.Item(original,Matrix4x4.identity) };
+                var items = Items;
                 if (controls) topology.Toolbar(items, view);
                 view.Draw(controls ? GUILayoutUtility.GetRect(100,100,GUILayout.ExpandWidth(true),GUILayout.ExpandHeight(true)) : new Rect(0,0,position.width,position.height),items,
                     v => { v.DrawHighlightMesh(patch,Matrix4x4.identity,new Color(1,1,1,.65f),true); if (controls) topology.Draw(v,items); });

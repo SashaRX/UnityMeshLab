@@ -69,6 +69,10 @@ namespace SashaRX.UnityMeshLab
                 }
                 foreach (var path in Paths(normalized,a,b,na,nb,token,ref states,ref order,maxStates))
                     candidates.Add(new Candidate { path=path,b=b });
+                if (a.Count == b.Count) foreach (bool firstA in new[] {true,false}) {
+                    var path = AlignedPath(normalized,a,b,na,nb,firstA,token,ref states,ref order,maxStates);
+                    if (path != null) candidates.Add(new Candidate {path=path,b=b});
+                }
             }
             report.states = states; report.candidates = candidates.Count;
             candidates.Sort((x,y)=>Compare(x.path,y.path));
@@ -107,13 +111,14 @@ namespace SashaRX.UnityMeshLab
             if (first<3 || second<3) throw new InvalidOperationException("Bridge refused: each rim needs at least three edges.");
             long cells=((long)first+1)*((long)second+1);
             int phases=Math.Min(Math.Min(first,second),MaxPhases);
-            report.plannedStates=Multiply(cells,phases);
+            long alignedStates = first == second ? 2L*((long)first+second) : 0;
+            report.plannedStates=Multiply(cells+alignedStates,phases);
             // Estimate retained storage, not the process heap: a grid cell/list/
             // backing array plus eight path nodes, and all terminal ancestry.
             // 64 bytes per path and 256 per cell conservatively cover supported
             // managed layouts. Transient allocations and GC timing are separate.
             long gridBytes=Multiply(cells,256+PathsPerState*64);
-            long ancestryBytes=Multiply((long)first+second+1,(long)phases*PathsPerState*64);
+            long ancestryBytes=Multiply((long)first+second+1,(long)phases*(PathsPerState+(first==second?2:0))*64);
             report.plannedBytes=gridBytes>long.MaxValue-ancestryBytes ? long.MaxValue : gridBytes+ancestryBytes;
             if (report.plannedStates>maxStates)
                 throw new InvalidOperationException($"Bridge search budget exceeded before allocation: {first}x{second} rims need {report.plannedStates} states; budget {maxStates}. No partial winner was accepted.");
@@ -177,23 +182,50 @@ namespace SashaRX.UnityMeshLab
         // Automatic selection requires mutual collar continuation toward the other
         // rim. A pair of opposite box holes grows away from one another and fails.
         // This is bounded shape evidence; Generate still audits topology/contacts.
-        internal static bool ContinuesToward(Vector3[] p, RemeshTopology.Snapshot topology, Vector3[] normals, List<int> a, List<int> b)
+        internal static bool ContinuesToward(Vector3[] p, RemeshTopology.Snapshot topology, Vector3[] normals, List<int> a, List<int> b,
+            CancellationToken token = default) => (CollarEvidence(p,topology,normals,a,b,token) & 1) != 0;
+
+        internal static bool MatchesPartner(Vector3[] p, RemeshTopology.Snapshot topology, Vector3[] normals, List<int> a, List<int> b,
+            CancellationToken token)
+        {
+            int first = CollarEvidence(p,topology,normals,a,b,token);
+            return first != 0 && (first & CollarEvidence(p,topology,normals,b,a,token)) != 0;
+        }
+
+        // Thin skins need a side strip, although their missing edge direction lies
+        // across the sheet normal rather than in the donor tangent plane. Require
+        // close, oppositely wound edges and opposite face normals over the entire
+        // rim in both directions. The annulus still receives the full exact audit.
+        static int CollarEvidence(Vector3[] p, RemeshTopology.Snapshot topology, Vector3[] normals, List<int> a, List<int> b,
+            CancellationToken token)
         {
             var collar = Collar(topology,normals,a);
-            int good = 0;
+            int good = 0; bool thinSheet = true;
             for (int i = 0; i < a.Count; ++i) {
-                var middle = (p[a[i]]+p[a[(i+1)%a.Count]])*.5f;
-                var growth = Vector3.Cross((p[a[(i+1)%a.Count]]-p[a[i]]).normalized,collar[i]).normalized;
-                float nearest = float.PositiveInfinity; Vector3 destination = default;
+                token.ThrowIfCancellationRequested();
+                var ownEdge = p[a[(i+1)%a.Count]]-p[a[i]];
+                var middle = p[a[i]] + ownEdge*.5f;
+                var growth = Vector3.Cross(ownEdge.normalized,collar[i]).normalized;
+                float nearest = float.PositiveInfinity; Vector3 destination = default, nearestEdge = default;
+                int nearestSlot = -1;
                 for (int j = 0; j < b.Count; ++j) {
                     var start = p[b[j]]; var edge = p[b[(j+1)%b.Count]]-start;
                     var point = start + edge*Mathf.Clamp01(Vector3.Dot(middle-start,edge)/edge.sqrMagnitude);
                     float distance = (point-middle).sqrMagnitude;
-                    if (distance < nearest) { nearest=distance; destination=point; }
+                    if (distance < nearest) { nearest=distance; destination=point; nearestEdge=edge; nearestSlot=j; }
                 }
-                if (nearest > 0 && Vector3.Dot(growth,(destination-middle).normalized) > .6f) ++good;
+                var direction = (destination-middle).normalized;
+                if (nearest > 0 && Vector3.Dot(growth,direction) > .6f) ++good;
+                if (thinSheet && nearestSlot >= 0) {
+                    int first = topology.slots[b[nearestSlot]], second = topology.slots[b[(nearestSlot+1)%b.Count]];
+                    var otherNormal = normals[topology.edges[first<second ? (first,second) : (second,first)].firstFace];
+                    thinSheet = nearest > 0 && nearest <= .0625f * Math.Min(ownEdge.sqrMagnitude,nearestEdge.sqrMagnitude) &&
+                        Vector3.Dot(ownEdge.normalized,nearestEdge.normalized) < -.95f &&
+                        Vector3.Dot(collar[i],otherNormal) < -.95f && Math.Abs(Vector3.Dot(collar[i],direction)) > .6f;
+                }
+                else thinSheet = false;
             }
-            return good >= Math.Ceiling(a.Count*.8);
+            return (good >= Math.Ceiling(a.Count*.8) ? 1 : 0) | (thinSheet ? 2 : 0);
         }
 
         static double Cost(Vector3[] p, int a, int b, int c, Vector3 collar)
@@ -233,6 +265,26 @@ namespace SashaRX.UnityMeshLab
             }
             order=nextOrder;
             return grid[m,n] ?? new List<Path>();
+        }
+
+        // Compact-triangle cost can prune every correctly aligned strip on thin,
+        // sharply bent skins. Keep both uniform quad diagonals in the completed
+        // equal-count profile, independently of the eight ranked DP paths.
+        static Path AlignedPath(Vector3[] p, List<int> a, List<int> b, Vector3[] na, Vector3[] nb, bool firstA,
+            CancellationToken token, ref int states, ref int order, int maxStates)
+        {
+            var path = new Path(); int i = 0, j = 0;
+            for (int step = 0; step < a.Count*2; ++step) {
+                token.ThrowIfCancellationRequested();
+                if (++states > maxStates) throw new InvalidOperationException("Bridge search budget exceeded; no partial winner was accepted.");
+                bool advanceA = (step%2==0) == firstA;
+                double cost = advanceA ? Cost(p,a[i%a.Count],b[j%b.Count],a[(i+1)%a.Count],na[i%a.Count]) :
+                    Cost(p,a[i%a.Count],b[j%b.Count],b[(j+1)%b.Count],nb[j%b.Count]);
+                if (!double.IsFinite(cost)) return null;
+                path = new Path {score=path.score+cost,previous=path,move=advanceA?'A':'B',length=path.length+1,order=++order};
+                if (advanceA) ++i; else ++j;
+            }
+            return path;
         }
 
         static int[] Faces(List<int> a,List<int> b,Path path)

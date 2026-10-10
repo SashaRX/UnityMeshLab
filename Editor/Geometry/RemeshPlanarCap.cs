@@ -10,9 +10,12 @@ namespace SashaRX.UnityMeshLab
     /// donor arrays are never mutated. Each closure candidate is accepted atomically.</summary>
     internal static class RemeshPlanarCap
     {
-        internal const int Revision = 15;
+        internal const int Revision = 16;
         const int MaxVertices = 200000, MaxIndices = 1200000, MaxLoopEdges = 512;
         const int MaxPairTrials = 2000000;
+        const long MaxCollarComparisons = 2000000;
+        const int MaxCollarPairVisits = 200000;
+        internal const string ContactSourceFaceKey = "MeshLab.ContactSourceFace";
 
         internal sealed class ExternalContacts
         {
@@ -61,13 +64,15 @@ namespace SashaRX.UnityMeshLab
             internal readonly Dictionary<int, int> bridgePartners = new Dictionary<int, int>();
             internal readonly Dictionary<int, string> bridgeSearch = new Dictionary<int, string>();
             internal readonly Dictionary<int, string> bridgeCapFallbacks = new Dictionary<int, string>();
+            internal readonly Dictionary<int, string> surfaceCapFallbacks = new Dictionary<int, string>();
             internal string selectionWarning;
             internal readonly List<int> patchEnds = new List<int>();
             internal string Description => $"welded {weldedVertices} vertices; {loops} boundary loops; selection {selection}; added {addedFaces} faces; " +
                 $"{localPatches} local patches; {planeRechecks} fresh plane checks; {contactTests} exact contact tests; " +
                 (externalContacts?.faceElements != null ? $"{externalContacts.excludedElementPairs} pairs with other elements excluded from contact audit" :
                     $"{externalContacts?.count ?? 0} non-blocking contacts with other source meshes") + $"; {loopFailures.Count} refused loops" +
-                $"; {bridgeCapFallbacks.Count} Bridge-to-Cap attempts" + (selectionWarning == null ? "" : "; " + selectionWarning);
+                $"; {bridgeCapFallbacks.Count} Bridge-to-Cap attempts; {surfaceCapFallbacks.Count} automatic Surface Caps" +
+                (selectionWarning == null ? "" : "; " + selectionWarning);
         }
 
         internal static Support Prepare(Vector3[] positions, int[] indices, string selection, CancellationToken token, bool localPlanes = false,
@@ -125,27 +130,11 @@ namespace SashaRX.UnityMeshLab
             var closedLoops = new HashSet<int>();
             var partners = new Dictionary<int,int>();
             var ambiguous = new HashSet<int>();
+            var incompletePartners = new HashSet<int>();
             string selectionRefusal = null;
-            if (mode == RemeshClosureMode.Automatic) {
-                if (chosen.Count > 16) selectionRefusal = "automatic closure is limited to 16 selected loops; split the operation or select explicit Caps";
-                if (selectionRefusal != null && !continueOnRefusal) throw Refuse(selectionRefusal);
-                if (selectionRefusal == null) {
-                    var normals = MeshGeometry.FaceNormals(pWeld,iWeld);
-                    foreach (int a in chosen) foreach (int b in chosen) {
-                        if (b <= a) continue;
-                        if (!RemeshBridge.ContinuesToward(pWeld,topology,normals,loops[a],loops[b]) ||
-                            !RemeshBridge.ContinuesToward(pWeld,topology,normals,loops[b],loops[a])) continue;
-                        if (partners.ContainsKey(a) || partners.ContainsKey(b)) {
-                            if (!continueOnRefusal && !bridgeCapFallback) throw Refuse("automatic closure has more than one collar partner; select Bridge intent explicitly");
-                            ambiguous.Add(a); ambiguous.Add(b);
-                            if (partners.TryGetValue(a, out int oldA)) ambiguous.Add(oldA);
-                            if (partners.TryGetValue(b, out int oldB)) ambiguous.Add(oldB);
-                            continue;
-                        }
-                        partners.Add(a,b); partners.Add(b,a);
-                    }
-                }
-            }
+            if (mode == RemeshClosureMode.Automatic)
+                FindAutomaticPartners(pWeld,topology,loops,chosen,token,continueOnRefusal || bridgeCapFallback,
+                    partners,ambiguous,incompletePartners);
             if (mode == RemeshClosureMode.Bridge && chosen.Count != 2) {
                 selectionRefusal = "Bridge requires exactly two selected loops";
                 if (!continueOnRefusal) throw Refuse(selectionRefusal);
@@ -171,6 +160,8 @@ namespace SashaRX.UnityMeshLab
                     bool bridgeAttempted = false;
                     try {
                         if (selectionRefusal != null) throw Refuse(selectionRefusal);
+                        if (incompletePartners.Contains(loop) || partner >= 0 && incompletePartners.Contains(partner))
+                            throw Refuse("automatic collar search work budget exceeded for this contour; select Caps or an explicit Bridge pair");
                         if (!result.bridgeCapFallbacks.ContainsKey(loop) && (ambiguous.Contains(loop) || partner >= 0 && ambiguous.Contains(partner)))
                             throw Refuse("automatic closure has more than one collar partner; select Bridge intent explicitly");
                         if (loops[loop].Count > MaxLoopEdges || partner >= 0 && loops[partner].Count > MaxLoopEdges)
@@ -191,6 +182,7 @@ namespace SashaRX.UnityMeshLab
                         var candidatePositions = pWeld; var candidateExact = exact;
                         var candidate = new List<int>(assembled); var stats = new Support { originalFaces = result.originalFaces };
                         RemeshBridge.SearchReport bridgeReport = null;
+                        string surfaceFallback = null;
                         if (partner >= 0) {
                             bridgeAttempted = true;
                             bridgeReport = new RemeshBridge.SearchReport();
@@ -202,8 +194,23 @@ namespace SashaRX.UnityMeshLab
                                 ref contactTrials, out int tested, external);
                             stats.contactTests += tested; candidate.AddRange(patch); stats.patchEnds.Add(candidate.Count / 3);
                         }
-                        else if (!result.bridgeCapFallbacks.ContainsKey(loop) && (localPlanes || mode == RemeshClosureMode.Automatic))
-                            CloseLocal(ref candidatePositions, ref candidateExact, candidate, loops[loop], token, stats, ref contactTrials, planeTolerance, external);
+                        else if (!result.bridgeCapFallbacks.ContainsKey(loop) && (localPlanes || mode == RemeshClosureMode.Automatic)) {
+                            try {
+                                CloseLocal(ref candidatePositions, ref candidateExact, candidate, loops[loop], token, stats, ref contactTrials, planeTolerance, external);
+                            }
+                            catch (InvalidOperationException failure) when (mode == RemeshClosureMode.Automatic && contactTrials < MaxPairTrials) {
+                                // A failed local proposal may have appended an intermediate
+                                // plane patch. Discard the entire proposal before trying a
+                                // curved disk on the original rim; never retain a partial Cap.
+                                candidatePositions = pWeld; candidateExact = exact;
+                                candidate = new List<int>(assembled); stats = new Support {originalFaces = result.originalFaces};
+                                external = external?.Fork();
+                                var patch = RemeshSurfaceCap.Generate(candidatePositions,candidate.ToArray(),loops[loop],token,
+                                    ref contactTrials,out int tested,external);
+                                stats.contactTests += tested; candidate.AddRange(patch); stats.patchEnds.Add(candidate.Count / 3);
+                                surfaceFallback = failure.Message;
+                            }
+                        }
                         else {
                             candidate.AddRange(Triangulate(candidatePositions, candidateExact, loops[loop], token, planeTolerance));
                             AuditContacts(candidatePositions, candidateExact, candidate.ToArray(), assembled.Count / 3, token, ref contactTrials, out int tested, external);
@@ -220,6 +227,7 @@ namespace SashaRX.UnityMeshLab
                         result.patchEnds.AddRange(stats.patchEnds); result.contactTests += stats.contactTests;
                         result.localPatches += stats.localPatches; result.planeRechecks += stats.planeRechecks;
                         result.externalContacts?.Merge(external);
+                        if (surfaceFallback != null) result.surfaceCapFallbacks.Add(loop,surfaceFallback);
                         if (partner >= 0) {
                             result.bridgePartners.Add(loop,partner); result.bridgePartners.Add(partner,loop);
                             result.bridgeSearch.Add(loop,bridgeReport.Description); result.bridgeSearch.Add(partner,bridgeReport.Description);
@@ -374,6 +382,39 @@ namespace SashaRX.UnityMeshLab
 
         // All vertices must have one fan (the preflight above). Each boundary
         // slot then has exactly one incoming/outgoing halfedge, no junction pairing.
+        static void FindAutomaticPartners(Vector3[] positions, RemeshTopology.Snapshot topology, List<List<int>> loops,
+            SortedSet<int> chosen, CancellationToken token, bool partial, Dictionary<int,int> partners,
+            HashSet<int> ambiguous, HashSet<int> incomplete)
+        {
+            var normals = MeshGeometry.FaceNormals(positions,topology.indices);
+            var ordered = new List<int>(chosen);
+            long comparisons = 0; int visits = 0;
+            for (int ai = 0; ai < ordered.Count; ++ai) for (int bi = ai+1; bi < ordered.Count; ++bi) {
+                token.ThrowIfCancellationRequested();
+                if (++visits > MaxCollarPairVisits) {
+                    // All earlier rows were scanned completely. The unvisited tail
+                    // cannot safely choose a partner or assume an independent disk.
+                    for (int i = ai; i < ordered.Count; ++i) incomplete.Add(ordered[i]);
+                    return;
+                }
+                int a = ordered[ai], b = ordered[bi];
+                long cost = 2L * loops[a].Count * loops[b].Count;
+                if (cost > MaxCollarComparisons - comparisons) {
+                    incomplete.Add(a); incomplete.Add(b); continue;
+                }
+                comparisons += cost;
+                if (!RemeshBridge.MatchesPartner(positions,topology,normals,loops[a],loops[b],token)) continue;
+                if (partners.ContainsKey(a) || partners.ContainsKey(b)) {
+                    if (!partial) throw Refuse("automatic closure has more than one collar partner; select Bridge intent explicitly");
+                    ambiguous.Add(a); ambiguous.Add(b);
+                    if (partners.TryGetValue(a,out int oldA)) ambiguous.Add(oldA);
+                    if (partners.TryGetValue(b,out int oldB)) ambiguous.Add(oldB);
+                    continue;
+                }
+                partners.Add(a,b); partners.Add(b,a);
+            }
+        }
+
         internal static List<List<int>> Boundaries(RemeshTopology.Snapshot topology, CancellationToken token, bool limitLoopEdges = true)
         {
             var next = new SortedDictionary<int, int>(); var incoming = new HashSet<int>();
@@ -550,7 +591,9 @@ namespace SashaRX.UnityMeshLab
                 var b = new[] { exact[ix[g * 3]], exact[ix[g * 3 + 1]], exact[ix[g * 3 + 2]] };
                 if (!RemeshCapIntersection.Improper(a, b)) continue;
                 if (external != null && external.IsExternal(g)) { external.Add(f, g); continue; }
-                throw Refuse($"new face {f} contacts face {g} beyond their shared vertex/edge");
+                var failure = Refuse($"new face {f} contacts face {g} beyond their shared vertex/edge");
+                failure.Data[ContactSourceFaceKey] = g;
+                throw failure;
             }
         }
 

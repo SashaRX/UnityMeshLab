@@ -28,15 +28,56 @@ namespace SashaRX.UnityMeshLab.Tests
             return (p,ix.ToArray());
         }
 
-        [TestCase(false,.125f)] [TestCase(false,1f)] [TestCase(true,8f)]
-        public void SurfaceCapClosesCurvedRimAndPreservesSourceAndSyntheticMask(bool reverse, float scale)
+        [TestCase(.125f,false)] [TestCase(1f,false)] [TestCase(8f,true)]
+        public void AutomaticBridgesTwoSidesOfACurvedThinSheet(float scale, bool reverse)
+        {
+            const int count = 16;
+            var p = new Vector3[count*4]; var ix = new List<int>();
+            for (int side = 0; side < 2; ++side) for (int i = 0; i < count; ++i) {
+                float y = (float)i/(count-1), z = .15f*Mathf.Sin(y*Mathf.PI) + side*.005f;
+                int a = side*count*2+i*2;
+                p[a] = new Vector3(-.5f,y,z); p[a+1] = new Vector3(.5f,y,z);
+                if (i+1 < count) {
+                    var faces = new[] {a,a+1,a+3,a,a+3,a+2};
+                    if (side == 1) for (int k = 0; k < faces.Length; k += 3) (faces[k],faces[k+2]) = (faces[k+2],faces[k]);
+                    ix.AddRange(faces);
+                }
+            }
+            p = p.Select(v => Quaternion.Euler(23,39,17)*v*scale + new Vector3(3,-2,1)).ToArray();
+            var source = ix.ToArray();
+            if (reverse) for (int k = 0; k < source.Length; k += 3) (source[k],source[k+2]) = (source[k+2],source[k]);
+            var cap = RemeshPlanarCap.Prepare(p,source,"all",default,mode:RemeshClosureMode.Automatic,elementScopedContacts:true);
+            Assert.AreEqual(2,cap.bridgePartners.Count); Assert.IsEmpty(cap.surfaceCapFallbacks);
+            Assert.AreEqual(count*4,cap.addedFaces); Assert.AreEqual(1,cap.patchEnds.Count); Assert.AreEqual(0,cap.remainingBoundaryEdges);
+            var topology = RemeshTopology.Inspect(cap.positions,cap.indices);
+            Assert.IsTrue(topology.Valid,topology.Description); CollectionAssert.AreEqual(new[] {2},topology.euler);
+            Assert.IsTrue(RemeshTopology.ClosedVolumeFaces(cap.positions,cap.indices,default).All(closed=>closed));
+            CollectionAssert.AreEqual(p,cap.positions); CollectionAssert.AreEqual(source,cap.indices.Take(source.Length));
+        }
+
+        [Test]
+        public void AutomaticDoesNotBridgeNearbySheetsWithTheSameWinding()
+        {
+            var p = new[] {Vector3.zero,Vector3.right,Vector3.up,Vector3.forward*.005f,
+                Vector3.right+Vector3.forward*.005f,Vector3.up+Vector3.forward*.005f};
+            var ix = new[] {0,1,2,3,4,5};
+            var topology = RemeshTopology.Inspect(p,ix);
+            var loops = RemeshPlanarCap.Boundaries(topology,default);
+            Assert.IsFalse(RemeshBridge.MatchesPartner(p,topology,MeshGeometry.FaceNormals(p,ix),loops[0],loops[1],default));
+        }
+
+        [TestCase(false,.125f,RemeshClosureMode.SurfaceCaps)] [TestCase(false,1f,RemeshClosureMode.SurfaceCaps)]
+        [TestCase(true,8f,RemeshClosureMode.SurfaceCaps)] [TestCase(false,.125f,RemeshClosureMode.Automatic)]
+        [TestCase(false,1f,RemeshClosureMode.Automatic)] [TestCase(true,8f,RemeshClosureMode.Automatic)]
+        public void SurfaceCapClosesCurvedRimAndPreservesSourceAndSyntheticMask(bool reverse, float scale, RemeshClosureMode mode)
         {
             var (p,ix) = CurvedPrism();
             p = p.Select(v => Quaternion.Euler(23,39,17) * v * scale + new Vector3(3,-2,1)).ToArray();
             if (reverse) for (int i=0;i<ix.Length;i+=3) (ix[i],ix[i+2]) = (ix[i+2],ix[i]);
             var points = (Vector3[])p.Clone(); var indices = (int[])ix.Clone();
-            var cap = RemeshPlanarCap.Prepare(p,ix,"all",default,mode:RemeshClosureMode.SurfaceCaps);
-            var repeat = RemeshPlanarCap.Prepare(p,ix,"all",default,mode:RemeshClosureMode.SurfaceCaps);
+            var cap = RemeshPlanarCap.Prepare(p,ix,"all",default,mode:mode);
+            var repeat = RemeshPlanarCap.Prepare(p,ix,"all",default,mode:mode);
+            Assert.AreEqual(mode == RemeshClosureMode.Automatic ? 1 : 0,cap.surfaceCapFallbacks.Count);
             Assert.AreEqual(18,cap.addedFaces); Assert.AreEqual(1,cap.patchEnds.Count);
             Assert.AreEqual(0,cap.remainingBoundaryEdges);
             var topology = RemeshTopology.Inspect(cap.positions,cap.indices);

@@ -770,6 +770,18 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsNull(saved); CollectionAssert.AreEqual(before, TransferMeshSnapshot.Capture(source));
         }
 
+        [TestCase(false,false,false)] [TestCase(true,false,false)] [TestCase(false,true,false)] [TestCase(false,false,true)]
+        public void ReverseSidecarChecksTheReplayPositionBucket(bool distinctBucket, bool distinctUv0, bool sameUv2)
+        {
+            var source = Quad();
+            var entry = new MeshUv2Entry {
+                vertPositions = new[] {Vector3.right*.00001f,Vector3.right*(distinctBucket?.0002f:.00002f),Vector3.up,Vector3.one},
+                vertUv0 = new[] {Vector2.zero,distinctUv0?Vector2.right:Vector2.zero,Vector2.up,Vector2.one},
+                uv2 = new[] {Vector2.zero,sameUv2?Vector2.zero:Vector2.right,Vector2.up,Vector2.one}
+            };
+            Assert.AreEqual(distinctBucket || distinctUv0 || sameUv2,SidecarStore.ReverseLegacyTopologySafe(source,entry));
+        }
+
         [Test] public void LocalRescueKeepsValidChartsAndUnwrapsNeedlesWithExactMetric()
         {
             var corners=new[] {Vector3.zero,Vector3.right,Vector3.up,new Vector3(3,0,0),new Vector3(4,0,0),new Vector3(3,1,0)};

@@ -1549,7 +1549,7 @@ namespace SashaRX.UnityMeshLab
             return result;
         }
 
-        static (int, int, int) QuantizePos(Vector3 pos)
+        internal static (int, int, int) QuantizePos(Vector3 pos)
         {
             return (
                 Mathf.RoundToInt(pos.x * 10000f),

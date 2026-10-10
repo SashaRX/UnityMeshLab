@@ -1,12 +1,48 @@
 // MeshAccessTests.cs — the readable copy and the matrix bake on meshes the engine lets
 // us build in a test (readable); the Read/Write-disabled path needs an import.
 using NUnit.Framework;
+using UnityEditor;
 using UnityEngine;
 
 namespace SashaRX.UnityMeshLab.Tests
 {
     public class MeshAccessTests
     {
+        [Test]
+        public void ReadWriteDisabledModelSnapshotPreservesBuffersWithoutReimporting()
+        {
+            string folder = "Assets/__MeshLabReadOnly_" + System.Guid.NewGuid().ToString("N");
+            string path = folder + "/probe.obj";
+            Mesh copy = null;
+            try {
+                AssetDatabase.CreateFolder("Assets",System.IO.Path.GetFileName(folder));
+                System.IO.File.WriteAllText(path,"v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nvn 0 0 1\nf 1/1/1 2/2/1 3/3/1\n");
+                AssetDatabase.ImportAsset(path);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.isReadable = true; importer.SaveAndReimport();
+                var original = AssetDatabase.LoadAssetAtPath<GameObject>(path).GetComponentInChildren<MeshFilter>().sharedMesh;
+                var vertices = original.vertices; var normals = original.normals; var uv = original.uv; var indices = original.triangles;
+                importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.isReadable = false; importer.SaveAndReimport();
+                original = AssetDatabase.LoadAssetAtPath<GameObject>(path).GetComponentInChildren<MeshFilter>().sharedMesh;
+                Assert.IsFalse(original.isReadable);
+                var assetBytes = System.IO.File.ReadAllBytes(path); var metaBytes = System.IO.File.ReadAllBytes(path+".meta");
+                MeshAccessImportWatch.Path = path; MeshAccessImportWatch.Count = 0;
+                copy = MeshAccess.ReadableCopy(original);
+                Assert.AreEqual(0,MeshAccessImportWatch.Count,"Reading an imported mesh must not trigger Bakery or dependent prefab imports.");
+                Assert.IsFalse(original.isReadable); Assert.IsFalse(((ModelImporter)AssetImporter.GetAtPath(path)).isReadable);
+                CollectionAssert.AreEqual(vertices,copy.vertices); CollectionAssert.AreEqual(normals,copy.normals);
+                CollectionAssert.AreEqual(uv,copy.uv); CollectionAssert.AreEqual(indices,copy.triangles);
+                CollectionAssert.AreEqual(assetBytes,System.IO.File.ReadAllBytes(path));
+                CollectionAssert.AreEqual(metaBytes,System.IO.File.ReadAllBytes(path+".meta"));
+            }
+            finally {
+                MeshAccessImportWatch.Path = null;
+                if (copy) Object.DestroyImmediate(copy);
+                AssetDatabase.DeleteAsset(folder);
+            }
+        }
+
         static Mesh QuadTopology()
         {
             var m = new Mesh { name = "Q" };
@@ -162,5 +198,15 @@ namespace SashaRX.UnityMeshLab.Tests
             }
             finally { Object.DestroyImmediate(m); }
         }
+    }
+}
+
+namespace SashaRX.UnityMeshLab.Tests
+{
+    internal sealed class MeshAccessImportWatch : AssetPostprocessor
+    {
+        internal static string Path;
+        internal static int Count;
+        void OnPostprocessModel(GameObject root) { if (assetPath == Path) ++Count; }
     }
 }

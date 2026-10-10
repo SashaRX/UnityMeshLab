@@ -249,8 +249,7 @@ namespace SashaRX.UnityMeshLab
                     tint.a = Mathf.Clamp01(SurfaceOpacity); block.SetColor(ColorId, tint);
                     bool vertexColors = Mode != Shading.Shaded || (material && material.HasProperty("_UseVertexColor") && material.GetFloat("_UseVertexColor") > .5f);
                     block.SetFloat(UseVertexColorId, vertexColors ? 1 : 0);
-                    Texture texture = material && material.HasProperty("_BaseMap") ? material.GetTexture("_BaseMap") : material && material.HasProperty(MainTextureProperty) ? material.GetTexture(MainTextureProperty) : null;
-                    block.SetTexture(MainTextureProperty, texture ? texture : Texture2D.whiteTexture);
+                    Texture texture = BindSurfaceTexture(material,block);
                     block.SetFloat("_UseTexture", Mode == Shading.Shaded && texture ? 1 : 0);
                     utility.DrawMesh(shown, item.matrix, overlaySurface, sub, block);
                 }
@@ -285,6 +284,17 @@ namespace SashaRX.UnityMeshLab
         // materials — otherwise the last value set would paint every queued draw.
         readonly List<MaterialPropertyBlock> frameBlocks = new List<MaterialPropertyBlock>();
         MaterialPropertyBlock Block() { var block = new MaterialPropertyBlock(); frameBlocks.Add(block); return block; }
+        internal static Texture BindSurfaceTexture(Material material, MaterialPropertyBlock block)
+        {
+            string property = material && material.HasProperty("_BaseMap") ? "_BaseMap" : MainTextureProperty;
+            var texture = material && material.HasProperty(property) ? material.GetTexture(property) : null;
+            var scale = material && material.HasProperty(property) ? material.GetTextureScale(property) : Vector2.one;
+            var offset = material && material.HasProperty(property) ? material.GetTextureOffset(property) : Vector2.zero;
+            block.SetVector("_UvScaleOffset",new Vector4(scale.x,scale.y,offset.x,offset.y));
+            block.SetTexture(MainTextureProperty,texture ? texture : Texture2D.whiteTexture);
+            return texture;
+        }
+
         MaterialPropertyBlock SurfaceBlock(Mesh mesh, bool encoded)
         {
             var block = Block();

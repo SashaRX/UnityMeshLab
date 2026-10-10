@@ -70,7 +70,6 @@ namespace SashaRX.UnityMeshLab
             CancellationToken token, ref int trials, double planeTolerance, RemeshPlanarCap.ExternalContacts external)
         {
             token.ThrowIfCancellationRequested();
-            if (loop.Count > 16) throw Refuse("planar arc fallback is limited to 16 rim edges");
             var plans = new Search {positions = p, token = token, tolerance = planeTolerance}.Plans(loop);
             if (plans.Count == 0) throw Refuse("no complete planar arc decomposition at the configured tolerance " +
                 planeTolerance.ToString("G6", CultureInfo.InvariantCulture));

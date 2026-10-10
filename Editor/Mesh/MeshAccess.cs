@@ -10,10 +10,10 @@ namespace SashaRX.UnityMeshLab
     /// <summary>
     /// The one way this package reads a mesh it may not be allowed to read. Unity's
     /// classic vertex getters log "Not allowed to access" and return EMPTY arrays on a
-    /// Read/Write-disabled import; <see cref="Mesh.AcquireReadOnlyMeshData"/> is served
-    /// by the engine regardless of the flag, so <see cref="ReadableCopy"/> copies every
-    /// attribute through it, and only when even that is refused (some Unity 6000.2
-    /// imports) flips the file's importer for one read and puts it back. No tool
+    /// Read/Write-disabled import; the Editor's <see cref="MeshUtility.AcquireReadOnlyMeshData(Mesh)"/>
+    /// can read imported buffers without enabling Read/Write. Only when the Editor
+    /// snapshot is unavailable does the compatibility fallback temporarily reimport
+    /// the model, restoring the importer even when reimport fails. No tool
     /// toggles Read/Write on an importer for its own reading any more. Main thread.
     /// </summary>
     internal static class MeshAccess
@@ -67,8 +67,7 @@ namespace SashaRX.UnityMeshLab
                     return MakeReadableCopyFromMeshData(src, dst);
                 }
                 catch (Exception e) when (e is MeshDataUnavailableException || (e.Message != null && e.Message.IndexOf("isReadable", StringComparison.OrdinalIgnoreCase) >= 0)) {
-                    // Unity 6000.2's read-only MeshData still refuses some Read/Write-disabled
-                    // imports. The only sanctioned read left is through the importer itself:
+                    // An unavailable Editor snapshot leaves only the importer path:
                     // flip THIS file's Read/Write for the read and put it back afterwards —
                     // a reimport pair only for files the MeshData path cannot serve, never
                     // for the readable or MeshData-served majority.
@@ -76,8 +75,8 @@ namespace SashaRX.UnityMeshLab
                     if (!(AssetImporter.GetAtPath(path) is ModelImporter model))
                         throw new InvalidOperationException(src.name + " is Read/Write-disabled with no importer to read it through; enable Read/Write on its import or drop it from the capture.", e);
                     model.isReadable = true;
-                    model.SaveAndReimport();
                     try {
+                        model.SaveAndReimport();
                         FillReadableCopy(src, dst);
                         return dst;
                     }
@@ -97,7 +96,7 @@ namespace SashaRX.UnityMeshLab
         // Copy raw buffers for these meshes to keep their original layout.
         static Mesh CopyRawUvMesh(Mesh src, Mesh dst)
         {
-            using (var data = Mesh.AcquireReadOnlyMeshData(src)) {
+            using (var data = MeshUtility.AcquireReadOnlyMeshData(src)) {
                 var meshData = data[0];
                 ValidateMeshData(src, meshData);
                 dst.SetVertexBufferParams(meshData.vertexCount, src.GetVertexAttributes());
@@ -140,7 +139,7 @@ namespace SashaRX.UnityMeshLab
                 originalLayout = mesh.GetVertexAttributes();
                 descriptor = Array.Find(originalLayout, item => item.attribute == attribute);
                 vertexCount = mesh.vertexCount;
-                using (var data = Mesh.AcquireReadOnlyMeshData(mesh))
+                using (var data = MeshUtility.AcquireReadOnlyMeshData(mesh))
                     bytes = ReadAttribute(mesh, data[0], descriptor);
             }
 
@@ -153,7 +152,7 @@ namespace SashaRX.UnityMeshLab
                     throw new InvalidOperationException("Cannot restore a vertex channel after changing the vertex count.");
                 var layout = mesh.GetVertexAttributes();
                 var channels = new byte[layout.Length][];
-                using (var data = Mesh.AcquireReadOnlyMeshData(mesh)) {
+                using (var data = MeshUtility.AcquireReadOnlyMeshData(mesh)) {
                     for (int i = 0; i < layout.Length; ++i) {
                         if (layout[i].attribute == descriptor.attribute) {
                             channels[i] = bytes;
@@ -262,7 +261,7 @@ namespace SashaRX.UnityMeshLab
         static Mesh MakeReadableCopyFromMeshData(Mesh src, Mesh dst)
         {
             if (NeedsRawUvCopy(src)) return CopyRawUvMesh(src, dst);
-            using (var dataArray = Mesh.AcquireReadOnlyMeshData(src))
+            using (var dataArray = MeshUtility.AcquireReadOnlyMeshData(src))
             {
                 var md = dataArray[0];
                 ValidateMeshData(src, md);

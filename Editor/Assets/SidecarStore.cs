@@ -357,10 +357,10 @@ namespace SashaRX.UnityMeshLab
             if (!raw || entry.uv2 == null || entry.uv2.Length != raw.vertexCount
                 || entry.vertPositions == null || entry.vertPositions.Length != raw.vertexCount
                 || entry.vertUv0 == null || entry.vertUv0.Length != raw.vertexCount) return false;
-            var values = new Dictionary<(Vector3, Vector2), Vector2>();
+            var values = new Dictionary<((int,int,int), Vector2), Vector2>();
             for (int i = 0; i < entry.uv2.Length; ++i)
             {
-                var key = (entry.vertPositions[i], entry.vertUv0[i]);
+                var key = (Uv2AssetPostprocessor.QuantizePos(entry.vertPositions[i]), entry.vertUv0[i]);
                 if (values.TryGetValue(key, out var prior) && prior != entry.uv2[i]) return false;
                 values[key] = entry.uv2[i];
             }

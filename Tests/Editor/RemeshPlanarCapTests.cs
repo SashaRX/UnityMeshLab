@@ -14,8 +14,10 @@ namespace SashaRX.UnityMeshLab.Tests
             new Vector3(-1,-1,1), new Vector3(1,-1,1), new Vector3(1,1,1), new Vector3(-1,1,1) };
         static readonly int[] Faces = { 0,2,1,0,3,2, 4,5,6,4,6,7, 0,1,5,0,5,4, 3,7,6,3,6,2, 0,4,7,0,7,3, 1,2,6,1,6,5 };
 
-        [TestCase(1)] [TestCase(16)] [TestCase(32)]
-        public void ManyHolesCloseSequentiallyAsSeparatePatches(int holes)
+        [TestCase(1, RemeshClosureMode.Caps)] [TestCase(16, RemeshClosureMode.Caps)] [TestCase(32, RemeshClosureMode.Caps)]
+        [TestCase(1, RemeshClosureMode.Automatic)] [TestCase(17, RemeshClosureMode.Automatic)]
+        [TestCase(34, RemeshClosureMode.Automatic)] [TestCase(64, RemeshClosureMode.Automatic)]
+        public void ManyHolesCloseSequentiallyAsSeparatePatches(int holes, RemeshClosureMode mode)
         {
             var p = new System.Collections.Generic.List<Vector3>(); var ix = new System.Collections.Generic.List<int>();
             for (int n = 0; n < holes; ++n) {
@@ -24,7 +26,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }
             var before = ix.ToArray(); var progress = new System.Collections.Generic.List<(int, int, int)>();
             var a = RemeshPlanarCap.Prepare(p.ToArray(), before, "all", default,
-                loopCompleted: (loop, done, total) => progress.Add((loop, done, total)));
+                mode: mode, loopCompleted: (loop, done, total) => progress.Add((loop, done, total)));
             Assert.AreEqual(holes, a.loops); Assert.AreEqual(holes, a.boundaryLoops.Length);
             Assert.AreEqual(holes * 2, a.addedFaces); Assert.AreEqual(holes, a.patchEnds.Count);
             Assert.AreEqual(0, RemeshTopology.Inspect(a.positions, a.indices).boundary.Count);
@@ -132,13 +134,28 @@ namespace SashaRX.UnityMeshLab.Tests
         [Test]
         public void AutomaticBudgetRefusalsRemainInspectableWithoutInventingClosures()
         {
-            var p = Enumerable.Range(0,17).SelectMany(n => Box.Select(v => v + Vector3.right * n * 4)).ToArray();
-            var ix = Enumerable.Range(0,17).SelectMany(n => Faces.Skip(6).Select(v => v + n * 8)).ToArray();
-            var cap = RemeshPlanarCap.Prepare(p, ix, "all", default, mode: RemeshClosureMode.Automatic, continueOnRefusal: true);
-            Assert.AreEqual(17, cap.loopFailures.Count); Assert.AreEqual(0, cap.addedFaces);
-            Assert.AreEqual(68, cap.remainingBoundaryEdges); Assert.IsEmpty(cap.patchEnds);
-            Assert.IsTrue(cap.loopFailures.Values.All(reason => reason.Contains("16 selected loops")));
-            CollectionAssert.AreEqual(ix, cap.indices); CollectionAssert.AreEqual(p, cap.positions);
+            const int count = 384, holes = 8;
+            var p = new System.Collections.Generic.List<Vector3>(); var ix = new System.Collections.Generic.List<int>();
+            for (int n = 0; n < holes; ++n) {
+                int offset = p.Count;
+                p.AddRange(Enumerable.Range(0,count).Select(i => {
+                    float angle = i * 2 * Mathf.PI / count;
+                    return new Vector3(Mathf.Cos(angle) + n * 4, Mathf.Sin(angle), 0);
+                }));
+                p.Add(new Vector3(n * 4, 0, 1));
+                ix.AddRange(Enumerable.Range(0,count).SelectMany(i => new[] {offset+i, offset+(i+1)%count, offset+count}));
+            }
+            int boxOffset = p.Count;
+            p.AddRange(Box.Select(v => v + Vector3.up * 10));
+            ix.AddRange(Faces.Skip(6).Select(v => v + boxOffset));
+            var source = p.ToArray(); var indices = ix.ToArray();
+            var cap = RemeshPlanarCap.Prepare(source, indices, "all", default, mode: RemeshClosureMode.Automatic,
+                continueOnRefusal: true, elementScopedContacts: true);
+            Assert.AreEqual(holes, cap.loopFailures.Count); Assert.AreEqual(2, cap.addedFaces);
+            Assert.AreEqual(count * holes, cap.remainingBoundaryEdges); Assert.AreEqual(1, cap.patchEnds.Count);
+            Assert.IsTrue(cap.loopFailures.Values.All(reason => reason.Contains("collar search work budget")));
+            for (int i = 0; i < indices.Length; ++i) Assert.AreEqual(source[indices[i]], cap.positions[cap.indices[i]]);
+            CollectionAssert.AreEqual(source, p); CollectionAssert.AreEqual(indices, ix);
         }
 
         [TestCase(false)] [TestCase(true)]

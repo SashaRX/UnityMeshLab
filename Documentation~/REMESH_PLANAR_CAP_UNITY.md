@@ -14,6 +14,52 @@ Enable **Local compound caps** to also allow a selected nonplanar cycle with one
 supported decomposition into continuous planar patches. The option is off in
 existing settings. Automatic mode enables local compound analysis implicitly.
 
+## Revision 16: many rims, curved disks and thin skin pairs
+
+Automatic preparation no longer refuses every selection above 16 loops. Partner
+analysis reserves at most two million edge comparisons and visits at most 200,000
+rim pairs. A contour whose partner search is incomplete stays open with a work
+budget reason; already completed independent contours remain eligible. No pair
+or disk is inferred from an incomplete search. Cancellation is checked throughout.
+
+Local planar arc decomposition no longer has a separate 16-edge guard. Its
+existing state/plane-fit/support-sample budgets still apply. When an independent
+Automatic contour has no accepted local planar solution, discard the complete
+tentative proposal and try an audited Surface Cap on the original fixed rim.
+That disk search remains limited to 64 edges and 4096 candidate ears; contact
+with fixed input faces is cached only as negative evidence. Contacts with earlier
+tentative ears remain branch-dependent, and the final patch is audited again.
+Bridge refusal fallback remains an explicitly enabled, independent planar disk.
+
+Automatic Bridge evidence also recognizes the opposing skins of a thin sheet.
+Every rim edge must have a close, oppositely wound counterpart with opposite
+adjacent face normals and separation across the surface normal; both directions
+must pass the same test. This uses one quarter of the shorter local edge length
+as the maximum separation. It proposes an annulus, which still has to pass full
+topology, remaining-boundary, Euler/component and exact contact audits.
+
+Imported Read/Write-disabled mesh buffers use
+`UnityEditor.MeshUtility.AcquireReadOnlyMeshData`. Ordinary capture no longer
+requires two importer changes or triggers dependent Bakery/prefab imports.
+The compatibility importer fallback remains for unavailable Editor snapshots.
+
+Captured saved-setting checks (2026-10-10):
+
+| Input | Original rims | Added faces | Remaining edges / refused rims | Native Remesh faces |
+| --- | ---: | ---: | --- | ---: |
+| Volvol_Truck | 7 | 66 | 0 / 0 | 285,936 |
+| Playground | 34 | 416 | 0 / 0 | 329,312 |
+
+Each replay retains the exact donor corner positions and original arrays. Every
+closed support component passes the volume audit; native output passes closed
+manifold topology at the captured settings. Playground's two 30-edge skin rims
+are joined with one Bridge instead of intersecting disk Caps. These measurements
+validate preparation and native Remesh, not texture Bake or final UV quality.
+`RemeshCapBudgetTests` accepts decoded private captures via
+`MESH_LAB_CAP_BUDGET_ROOT` and exports the support and native check report.
+
+The following revision-specific measurements describe their historical budgets.
+
 ## Revision 9: sequential planar arcs and explicit tolerances
 
 When neither a two-plane split nor an audited three-plane corner succeeds, local
@@ -23,7 +69,7 @@ patch needs at least four supported vertices; arbitrary triangular fans remain
 unsupported. Source positions and the configured **Cap plane tolerance** are
 preserved. The changed boundary is re-extracted and checked after every patch.
 
-The fallback searches rims of at most 16 edges, with 2048 contour states, 32768
+The revision-9 fallback searched rims of at most 16 edges, with 2048 contour states, 32768
 plane fits, two million support samples and at most 128 minimum-patch plans per
 state. All minimum-patch plans undergo the existing topology and exact contact
 audits. Different surviving triangulated surfaces or exhausted budgets refuse the
@@ -76,8 +122,9 @@ shows the original contours without adding closures. Invalid Bridge selections
 never infer a replacement pair. Loop numbers are contour IDs, not a hole count.
 Offline callers keep strict whole-operation refusal by default;
 `continueOnRefusal` opts into the same partial result used in the editor.
-To inspect a subset, enter its loop numbers and prepare it separately. Caps supports more than 16 loops; Automatic is
-limited to 16 selected loops to bound partner search. Other limits are 512 edges
+To inspect a subset, enter its loop numbers and prepare it separately. Caps and
+Automatic support more than 16 loops; Automatic bounds actual partner-search work.
+Other limits are 512 edges
 per rim, 4096 added triangles per preparation, 200000 source vertices, 1200000
 source indices and 2000000 contact trials. These are refusal limits, not silent
 truncation. Analytic controls close 1, 16 and 32 independent box openings and verify
@@ -150,7 +197,7 @@ remaining limitation rather than claiming the whole Remesh succeeds.
   boundaries and all existing faces. Different surviving corners are ambiguous.
   The search is bounded to 64 rim edges, 32,768 fits and two million samples.
   Arbitrary four-or-more-plane feature graphs remain unsupported.
-- Automatic mode permits at most 16 selected rims. At least 80% of each rim's
+- Revision-12 Automatic mode permitted at most 16 selected rims. At least 80% of each rim's
   edge co-normals must point toward its unique partner with dot > 0.6. Opposite
   box holes grow away from one another and use Caps; a cut torus uses Bridge.
   This evidence selects a candidate family; the independent audits still apply.

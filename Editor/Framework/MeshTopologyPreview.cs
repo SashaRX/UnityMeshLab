@@ -16,7 +16,14 @@ namespace SashaRX.UnityMeshLab
         internal Element Mode;
         internal bool ShowHoles;
         internal Action Repaint;
-        internal struct Hit { internal Mesh mesh; internal int index; }
+        internal struct Hit
+        {
+            internal Mesh mesh;
+            internal int index, item;
+            internal Matrix4x4 matrix;
+            internal bool Matches(MeshViewport3D.Item candidate, int slot) =>
+                mesh && mesh == candidate.mesh && item == slot && matrix == candidate.matrix;
+        }
         sealed class Cache : IDisposable
         {
             internal ViewportTopology data;
@@ -67,8 +74,8 @@ namespace SashaRX.UnityMeshLab
         {
             var active = new HashSet<Mesh>(items.Where(i => i.mesh).Select(i => i.mesh));
             foreach (var mesh in caches.Keys.Where(m => !m || !active.Contains(m)).ToArray()) InvalidateMesh(mesh);
-            if (selected.mesh && !active.Contains(selected.mesh)) selected = default;
-            if (hover.mesh && !active.Contains(hover.mesh)) hover = default;
+            if (selected.mesh && !MatchesCurrentItem(selected,items)) selected = default;
+            if (hover.mesh && !MatchesCurrentItem(hover,items)) hover = default;
             if (!Active) return;
             foreach (var item in items) {
                 var mesh = item.mesh;
@@ -154,7 +161,7 @@ namespace SashaRX.UnityMeshLab
             hover = Pick(viewport, e.mousePosition, items);
             if (e.type == EventType.MouseDown && e.button == 0) {
                 selected = hover;
-                if (ShowHoles && Mode == Element.Off && hover.mesh) selectedRim = shownRims.FindIndex(r => r.mesh == hover.mesh && r.rim == hover.index);
+                if (ShowHoles && Mode == Element.Off && hover.mesh) selectedRim = shownRims.FindIndex(r => r.mesh == hover.mesh && r.item == hover.item && r.rim == hover.index);
                 e.Use();
             }
             Repaint?.Invoke();
@@ -164,18 +171,20 @@ namespace SashaRX.UnityMeshLab
         {
             if (!viewport.TryScreenRay(pointer, out var origin, out var direction)) return default;
             Hit hit = default; float best = 100, nearest = float.MaxValue;
-            foreach (var item in items) {
+            for (int itemIndex = 0; itemIndex < items.Count; ++itemIndex) {
+                var item = items[itemIndex];
                 if (!item.mesh || !caches.TryGetValue(item.mesh, out var cache) || cache.data?.bvh == null) continue;
                 var inverse = item.matrix.inverse;
                 var localOrigin = inverse.MultiplyPoint3x4(origin); var localDirection = inverse.MultiplyVector(direction).normalized;
                 var ray = cache.data.bvh.Raycast(localOrigin, localDirection, float.MaxValue);
                 if (ray.triangleIndex >= 0) {
                     float distance = Vector3.Distance(origin, item.matrix.MultiplyPoint3x4(localOrigin + localDirection * ray.t));
-                    if (distance < nearest) { nearest = distance; if (Mode == Element.Polygon) hit = new Hit { mesh = item.mesh, index = ray.triangleIndex }; }
+                    if (distance < nearest) { nearest = distance; if (Mode == Element.Polygon) hit = new Hit { mesh = item.mesh, index = ray.triangleIndex, item = itemIndex, matrix = item.matrix }; }
                 }
             }
             if (Mode == Element.Polygon) return hit;
-            foreach (var item in items) {
+            for (int itemIndex = 0; itemIndex < items.Count; ++itemIndex) {
+                var item = items[itemIndex];
                 if (!item.mesh || !caches.TryGetValue(item.mesh, out var cache) || cache.data == null) continue;
                 var data = cache.data;
                 if (Mode == Element.Vertex) {
@@ -183,7 +192,7 @@ namespace SashaRX.UnityMeshLab
                         var world = item.matrix.MultiplyPoint3x4(data.positions[vertex]);
                         if (!viewport.TryProject(world, out var screen, out _)) continue;
                         float score = (screen - pointer).sqrMagnitude;
-                        if (score < best && Visible(world)) { best = score; hit = new Hit { mesh = item.mesh, index = vertex }; }
+                        if (score < best && Visible(world)) { best = score; hit = new Hit { mesh = item.mesh, index = vertex, item = itemIndex, matrix = item.matrix }; }
                     }
                 }
                 else {
@@ -197,7 +206,7 @@ namespace SashaRX.UnityMeshLab
                         if (score >= best || !Visible(Vector3.Lerp(a,b,t))) continue;
                         int index = i;
                         if (Mode == Element.Off) index = Array.FindIndex(data.rims, r => Array.IndexOf(r.edges, i) >= 0);
-                        best = score; hit = new Hit { mesh = item.mesh, index = index };
+                        best = score; hit = new Hit { mesh = item.mesh, index = index, item = itemIndex, matrix = item.matrix };
                     }
                 }
             }
@@ -208,7 +217,8 @@ namespace SashaRX.UnityMeshLab
         internal void Draw(MeshViewport3D viewport, IReadOnlyList<MeshViewport3D.Item> items)
         {
             if (!Active) return;
-            foreach (var item in items) {
+            for (int itemIndex = 0; itemIndex < items.Count; ++itemIndex) {
+                var item = items[itemIndex];
                 if (!item.mesh || !caches.TryGetValue(item.mesh, out var cache) || cache.data == null) continue;
                 if (Mode == Element.Border && !ShowHoles) viewport.DrawLineMesh(cache.boundaries, item.matrix, ViewportHighlight.Border, ViewportHighlight.EdgeWidth);
                 if (Mode == Element.Edge) viewport.DrawWire(item.mesh, item.matrix, viewport.WireColor);
@@ -219,12 +229,12 @@ namespace SashaRX.UnityMeshLab
                 if (ShowHoles) {
                     viewport.DrawLineMesh(cache.boundaries, item.matrix, ViewportHighlight.Hole, ViewportHighlight.EdgeWidth);
                     viewport.DrawLineMesh(cache.defects, item.matrix, ViewportHighlight.Refused, ViewportHighlight.EdgeWidth);
-                    if (selectedRim >= 0 && selectedRim < shownRims.Count && shownRims[selectedRim].mesh == item.mesh)
+                    if (selectedRim >= 0 && selectedRim < shownRims.Count && shownRims[selectedRim].mesh == item.mesh && shownRims[selectedRim].item == itemIndex)
                         DrawRim(viewport, item.matrix, cache.data, shownRims[selectedRim].rim, ViewportHighlight.Selected);
                 }
-                DrawHit(viewport, item, cache.data, selected, ViewportHighlight.Selected, ref selectedFace);
-                if (hover.mesh != selected.mesh || hover.index != selected.index)
-                    DrawHit(viewport, item, cache.data, hover, ViewportHighlight.Hover, ref hoverFace);
+                DrawHit(viewport, item, itemIndex, cache.data, selected, ViewportHighlight.Selected, ref selectedFace);
+                if (hover.mesh != selected.mesh || hover.index != selected.index || hover.item != selected.item || hover.matrix != selected.matrix)
+                    DrawHit(viewport, item, itemIndex, cache.data, hover, ViewportHighlight.Hover, ref hoverFace);
             }
         }
 
@@ -252,9 +262,12 @@ namespace SashaRX.UnityMeshLab
             });
         }
 
-        void DrawHit(MeshViewport3D viewport, MeshViewport3D.Item item, ViewportTopology data, Hit hit, Color color, ref Mesh face)
+        static bool MatchesCurrentItem(Hit hit, IReadOnlyList<MeshViewport3D.Item> items) =>
+            hit.item >= 0 && hit.item < items.Count && hit.Matches(items[hit.item],hit.item);
+
+        void DrawHit(MeshViewport3D viewport, MeshViewport3D.Item item, int itemIndex, ViewportTopology data, Hit hit, Color color, ref Mesh face)
         {
-            if (hit.mesh != item.mesh) return;
+            if (!hit.Matches(item,itemIndex)) return;
             if (Mode == Element.Vertex) viewport.DrawPoints(new[] { data.positions[hit.index] }, item.matrix, color, ViewportHighlight.VertexSize);
             else if (Mode == Element.Polygon) {
                 var p = new[] { data.positions[data.triangles[hit.index*3]], data.positions[data.triangles[hit.index*3+1]], data.positions[data.triangles[hit.index*3+2]] };
