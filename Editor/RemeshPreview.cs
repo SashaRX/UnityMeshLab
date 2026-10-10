@@ -18,11 +18,13 @@ namespace SashaRX.UnityMeshLab
         internal enum View { Mesh, Maps }
         internal enum Stage { Source, Remesh, Simplified, Result, Closure }
         internal enum Channel { BaseColor, Normal, MetallicSmoothness, Occlusion, Emission }
+        internal enum ClosureSurface { All, Original, Patches }
 
         internal sealed class Data
         {
             public readonly Mesh[] meshes = new Mesh[5]; // indexed by Stage; old persisted values stay unchanged
             public Mesh closureRims;
+            public int[] closurePatchFaces;
             public string[] closureContourNames;
             public Vector3[][] closureContourEdges;
             public Color[] closureContourColors;
@@ -39,6 +41,7 @@ namespace SashaRX.UnityMeshLab
             // Remesh stage: the untrimmed remesh coloured per trim class (null without a trim).
             public Mesh trimMask;
             public Mesh syntheticMask;
+            public int[] syntheticLabels;
             // Ray travel of the bake projection (source diagonal × projection distance);
             // the Cage toggle draws the result mesh inflated by ±this along the cage
             // directions, i.e. the exact shells the projection rays start and end on.
@@ -61,7 +64,12 @@ namespace SashaRX.UnityMeshLab
         Channel channel;
         bool textured = true, bumpMap = true, cageView, trimMaskView = true, syntheticMaskView = true;
         int closureContour;
+        string closureSearch = "";
+        bool onlyRefusedContours;
         Mesh closureSelectionMesh;
+        ClosureSurface closureSurface;
+        Mesh closurePartsSource, closureOriginal, closurePatches;
+        Mesh syntheticPartsSource, syntheticPatches;
 
         [Serializable]
         sealed class WindowSettings
@@ -70,6 +78,7 @@ namespace SashaRX.UnityMeshLab
             public Stage stage = Stage.Result;
             public Channel channel;
             public bool textured = true, bumpMap = true, cageView, trimMaskView = true, syntheticMaskView = true;
+            public ClosureSurface closureSurface;
         }
 
         internal void RestoreWindowSettings()
@@ -81,12 +90,14 @@ namespace SashaRX.UnityMeshLab
             textured = state.textured; bumpMap = state.bumpMap;
             cageView = state.cageView; trimMaskView = state.trimMaskView;
             syntheticMaskView = state.syntheticMaskView;
+            closureSurface = MeshLabWindowPreferences.ValidEnum(state.closureSurface, ClosureSurface.All);
         }
 
         internal void SaveWindowSettings()
             => MeshLabWindowPreferences.Save("RemeshPreview", new WindowSettings {
                 view = view, stage = stage, channel = channel, textured = textured,
-                bumpMap = bumpMap, cageView = cageView, trimMaskView = trimMaskView, syntheticMaskView = syntheticMaskView
+                bumpMap = bumpMap, cageView = cageView, trimMaskView = trimMaskView, syntheticMaskView = syntheticMaskView,
+                closureSurface = closureSurface
             });
 
         Material surface;
@@ -119,6 +130,8 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Drop cached per-mesh wireframes; call before destroying preview meshes.</summary>
         public void Invalidate()
         {
+            ReleaseClosureParts(); closureSelectionMesh = null; closureContour = 0;
+            ReleaseSyntheticParts();
             cageWork.Dispose(); cageReady = false; cageGeometryRef = null;
             if (cageOuter) Object.DestroyImmediate(cageOuter);
             if (cageInner) Object.DestroyImmediate(cageInner);
@@ -137,6 +150,7 @@ namespace SashaRX.UnityMeshLab
         public void Dispose()
         {
             Invalidate();
+            ReleaseClosureParts();
             if (surface) Object.DestroyImmediate(surface);
         }
 
@@ -174,11 +188,12 @@ namespace SashaRX.UnityMeshLab
             if (ShowTrimMask(data))
                 EditorGUILayout.LabelField("Trim mask: green kept · red back of a sheet (opposite normal) · orange rim / no source within reach", EditorStyles.wordWrappedMiniLabel);
             if (ShowsSyntheticFaces && data.syntheticMask)
-                EditorGUILayout.LabelField("Purple: closure · orange: mixed / uncertain · red: selected. Shift-click to select a connected region.", EditorStyles.wordWrappedMiniLabel);
+                EditorGUILayout.LabelField("Purple: closure · orange: mixed / uncertain · yellow: selected. Shift-click to select a connected region; X-ray shows masked faces through the surface.", EditorStyles.wordWrappedMiniLabel);
             if (stage == Stage.Closure) {
-                if (closureSelectionMesh != mesh) { closureSelectionMesh = mesh; closureContour = 0; }
-                if (data.closureContourNames != null && data.closureContourNames.Length > 1)
-                    closureContour = EditorGUILayout.Popup("Hole rim", Mathf.Clamp(closureContour, 0, data.closureContourNames.Length - 1), data.closureContourNames);
+                closureSurface = (ClosureSurface)EditorGUILayout.Popup("Surface", (int)closureSurface,
+                    new[] { "All geometry", "Original surface", "Cap / Bridge only" });
+                if (closureSelectionMesh != data.meshes[(int)Stage.Closure]) { closureSelectionMesh = data.meshes[(int)Stage.Closure]; closureContour = 0; }
+                DrawClosureSearch(data);
                 EditorGUILayout.LabelField("Grey: original surface · orange / purple: accepted patches · cyan: original rims · red: refused contours.", EditorStyles.wordWrappedMiniLabel);
                 EditorGUILayout.LabelField(data.closureSummary ?? "Prepare closure to inspect it before Remesh.", EditorStyles.wordWrappedMiniLabel);
                 if (!string.IsNullOrEmpty(data.closureLoopRanges))
@@ -272,7 +287,98 @@ namespace SashaRX.UnityMeshLab
 
         // The mesh the 3D view shows for the stage: the trim mask stands in for the
         // trimmed remesh while its toggle is on.
-        internal Mesh DisplayMesh(Data data) => ShowTrimMask(data) ? data.trimMask : ShowsSyntheticFaces && data.syntheticMask ? data.syntheticMask : data.meshes[(int)stage];
+        internal Mesh DisplayMesh(Data data)
+        {
+            if (stage == Stage.Closure && closureSurface != ClosureSurface.All) {
+                PrepareClosureParts(data);
+                return closureSurface == ClosureSurface.Original ? closureOriginal : closurePatches;
+            }
+            return ShowTrimMask(data) ? data.trimMask : ShowsSyntheticFaces && data.syntheticMask ? data.syntheticMask : data.meshes[(int)stage];
+        }
+
+        internal void PrepareClosureParts(Data data)
+        {
+            var source = data.meshes[(int)Stage.Closure];
+            if (ReferenceEquals(closurePartsSource, source)) return;
+            ReleaseClosureParts(); closurePartsSource = source;
+            if (!source) return;
+            var patches = new HashSet<int>(data.closurePatchFaces ?? Array.Empty<int>());
+            var triangles = source.triangles; var original = new List<int>(); var added = new List<int>();
+            for (int face = 0; face < triangles.Length / 3; ++face) {
+                var target = patches.Contains(face) ? added : original;
+                for (int k = 0; k < 3; ++k) target.Add(triangles[face * 3 + k]);
+            }
+            closureOriginal = ClosurePart(source, original, "Original");
+            closurePatches = ClosurePart(source, added, "Patches");
+        }
+
+        internal static Mesh ClosurePart(Mesh source, List<int> indices, string name)
+        {
+            var mesh = new Mesh { name = source.name + "_" + name, hideFlags = HideFlags.HideAndDontSave, indexFormat = source.indexFormat };
+            var sourcePositions = source.vertices; var sourceColors = source.colors; var sourceNormals = source.normals;
+            var positions = new List<Vector3>(); var colors = new List<Color>(); var normals = new List<Vector3>();
+            var lookup = new Dictionary<int, int>(); var compact = new int[indices.Count];
+            for (int i = 0; i < indices.Count; ++i) {
+                int original = indices[i];
+                if (!lookup.TryGetValue(original, out int mapped)) {
+                    mapped = positions.Count; lookup.Add(original, mapped); positions.Add(sourcePositions[original]);
+                    if (sourceColors.Length == sourcePositions.Length) colors.Add(sourceColors[original]);
+                    if (sourceNormals.Length == sourcePositions.Length) normals.Add(sourceNormals[original]);
+                }
+                compact[i] = mapped;
+            }
+            mesh.SetVertices(positions); if (colors.Count > 0) mesh.SetColors(colors); if (normals.Count > 0) mesh.SetNormals(normals);
+            mesh.SetIndices(compact, MeshTopology.Triangles, 0); mesh.RecalculateBounds(); return mesh;
+        }
+
+        void ReleaseClosureParts()
+        {
+            if (closureOriginal) Object.DestroyImmediate(closureOriginal);
+            if (closurePatches) Object.DestroyImmediate(closurePatches);
+            closurePartsSource = closureOriginal = closurePatches = null;
+        }
+
+        void DrawClosureSearch(Data data)
+        {
+            if (data.closureContourNames == null || data.closureContourNames.Length <= 1) return;
+            closureSearch = EditorGUILayout.TextField(new GUIContent("Find rim", "Filter by node name or loop number."), closureSearch);
+            onlyRefusedContours = EditorGUILayout.ToggleLeft("Refused contours only", onlyRefusedContours);
+            var choices = new List<int> { 0 }; var names = new List<string> { "All original rims" };
+            for (int i = 1; i < data.closureContourNames.Length; ++i) {
+                string name = data.closureContourNames[i];
+                if (closureSearch.Length > 0 && name.IndexOf(closureSearch, StringComparison.OrdinalIgnoreCase) < 0) continue;
+                if (onlyRefusedContours && (data.closureContourReasons == null || i > data.closureContourReasons.Length || string.IsNullOrEmpty(data.closureContourReasons[i - 1]))) continue;
+                choices.Add(i); names.Add(name);
+            }
+            int current = Mathf.Max(0, choices.IndexOf(closureContour));
+            using (new EditorGUILayout.HorizontalScope()) {
+                current = EditorGUILayout.Popup("Hole rim", current, names.ToArray());
+                using (new EditorGUI.DisabledScope(choices.Count <= 1)) {
+                    if (GUILayout.Button("<", GUILayout.Width(24))) current = current <= 1 ? choices.Count - 1 : current - 1;
+                    if (GUILayout.Button(">", GUILayout.Width(24))) current = current >= choices.Count - 1 ? 1 : current + 1;
+                }
+            }
+            closureContour = choices[current];
+            EditorGUILayout.LabelField($"{choices.Count - 1} matching original contours. Use X-ray to inspect hidden rims and patches.", EditorStyles.wordWrappedMiniLabel);
+        }
+
+        void ReleaseSyntheticParts()
+        {
+            if (syntheticPatches) Object.DestroyImmediate(syntheticPatches);
+            syntheticPatches = syntheticPartsSource = null;
+        }
+
+        void PrepareSyntheticParts(Data data)
+        {
+            if (ReferenceEquals(syntheticPartsSource, data.syntheticMask)) return;
+            ReleaseSyntheticParts(); syntheticPartsSource = data.syntheticMask;
+            if (!syntheticPartsSource || data.syntheticLabels == null) return;
+            var triangles = syntheticPartsSource.triangles; var indices = new List<int>();
+            for (int f = 0; f < data.syntheticLabels.Length && f < triangles.Length / 3; ++f)
+                if (data.syntheticLabels[f] != 0)
+                    for (int k = 0; k < 3; ++k) indices.Add(triangles[f * 3 + k]);
+            syntheticPatches = ClosurePart(syntheticPartsSource, indices, "SyntheticPatches");
+        }
 
         public bool Fill3D(Data data, List<MeshViewport3D.Item> items)
         {
@@ -348,13 +454,20 @@ namespace SashaRX.UnityMeshLab
         {
             var mesh = DisplayMesh(data);
             if (!mesh || !EnsureResources()) return;
+            if (ShowsSyntheticFaces && view.XRay) {
+                PrepareSyntheticParts(data);
+                view.DrawHighlightMesh(syntheticPatches, data.spaceToWorld, new Color(1,1,1,.65f), true);
+            }
             if (stage == Stage.Closure && data.closureRims) {
+                PrepareClosureParts(data);
+                if (closurePatches && closureSurface != ClosureSurface.Original)
+                    view.DrawHighlightMesh(closurePatches, data.spaceToWorld, new Color(1, 1, 1, .65f), true);
                 var color = Color.white;
-                if (closureSelectionMesh == mesh && closureContour > 0 && data.closureContourEdges != null && closureContour <= data.closureContourEdges.Length)
+                view.DrawLineMesh(data.closureRims, data.spaceToWorld, color, ViewportHighlight.EdgeWidth);
+                if (closureSelectionMesh == data.meshes[(int)Stage.Closure] && closureContour > 0 && data.closureContourEdges != null && closureContour <= data.closureContourEdges.Length)
                     view.DrawLines(data.closureContourEdges[closureContour - 1], data.spaceToWorld,
                         data.closureContourColors != null && closureContour <= data.closureContourColors.Length
-                            ? data.closureContourColors[closureContour - 1] : new Color(.2f, .85f, 1f, .95f));
-                else view.DrawLineMesh(data.closureRims, data.spaceToWorld, color);
+                            ? ViewportHighlight.Selected : ViewportHighlight.Hole, ViewportHighlight.ActiveWidth);
             }
             if (cageView && stage == Stage.Result && data.geometry != null && data.cageDistance > 0)
                 DrawCage(view, mesh, data);

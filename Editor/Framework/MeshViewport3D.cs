@@ -41,6 +41,8 @@ namespace SashaRX.UnityMeshLab
         public bool Wireframe;
         public bool Lit = true;
         public bool ShowGrid = true, ShowAxes = true;
+        public bool XRay;
+        public float SurfaceOpacity = 1f;
         public Color Background = new Color(0.16f, 0.19f, 0.24f, 1f);
         public Action RequestRepaint;
         /// <summary>The wire colour that reads on the current shading: near-black on the lit
@@ -87,6 +89,8 @@ namespace SashaRX.UnityMeshLab
 
         PreviewRenderUtility utility;
         Material surface, flat, wire, points;
+        Material wireXRay, overlaySurface, overlayXRay;
+        Material pointDots, pointDotsXRay;
         RenderTexture offscreen;   // owned; replaced only when the preview target's size, format or sample count changes
         Rect currentRect;
         bool drawing;
@@ -234,6 +238,23 @@ namespace SashaRX.UnityMeshLab
         void DrawItem(Item item)
         {
             var mesh = item.mesh;
+            if (SurfaceOpacity < .999f) {
+                var shown = Mode == Shading.Shaded ? mesh : Encoded(mesh, Mode);
+                if (!shown) shown = mesh;
+                for (int sub = 0; sub < shown.subMeshCount; ++sub) {
+                    var material = item.materials != null && sub < item.materials.Length ? item.materials[sub] : null;
+                    var block = SurfaceBlock(shown, Mode != Shading.Shaded);
+                    Color tint = Mode == Shading.Shaded && material && material.HasProperty("_Color") ? material.GetColor("_Color") : Color.white;
+                    tint.a = Mathf.Clamp01(SurfaceOpacity); block.SetColor(ColorId, tint);
+                    bool vertexColors = Mode != Shading.Shaded || (material && material.HasProperty("_UseVertexColor") && material.GetFloat("_UseVertexColor") > .5f);
+                    block.SetFloat(UseVertexColorId, vertexColors ? 1 : 0);
+                    Texture texture = material && material.HasProperty("_BaseMap") ? material.GetTexture("_BaseMap") : material && material.HasProperty("_MainTex") ? material.GetTexture("_MainTex") : null;
+                    block.SetTexture("_MainTex", texture ? texture : Texture2D.whiteTexture);
+                    block.SetFloat("_UseTexture", Mode == Shading.Shaded && texture ? 1 : 0);
+                    utility.DrawMesh(shown, item.matrix, overlaySurface, sub, block);
+                }
+                return;
+            }
             if (Mode == Shading.Shaded) {
                 for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
                     var material = item.materials != null && sub < item.materials.Length ? item.materials[sub] : null;
@@ -293,6 +314,7 @@ namespace SashaRX.UnityMeshLab
             var block = Block();
             block.SetTexture("_MainTex", texture ? texture : Texture2D.whiteTexture);
             block.SetColor(ColorId, tint);
+            if (SurfaceOpacity < .999f) { tint.a *= Mathf.Clamp01(SurfaceOpacity); block.SetColor(ColorId, tint); }
             block.SetFloat("_UVChannel", uvChannel);
             block.SetVector("_UvScaleOffset", uvScaleOffset);
             for (int sub = 0; sub < mesh.subMeshCount; ++sub) utility.DrawMesh(mesh, matrix, material, sub, block);
@@ -308,18 +330,51 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>Draws a prebuilt line-topology mesh in one colour (cage shells, edge sets).</summary>
         public void DrawLineMesh(Mesh lines, Matrix4x4 matrix, Color color)
+            => DrawLineMesh(lines, matrix, color, 1f);
+
+        internal void DrawLineMesh(Mesh lines, Matrix4x4 matrix, Color color, float width)
         {
             if (!drawing || !lines) return;
-            DrawRibbons(lineRibbons.Get(lines), matrix, color);
+            DrawRibbons(lineRibbons.Get(lines), matrix, color, width);
         }
 
-        void DrawRibbons(Mesh ribbons, Matrix4x4 matrix, Color color)
+        void DrawRibbons(Mesh ribbons, Matrix4x4 matrix, Color color, float width = 1f)
         {
             if (!ribbons) return;
             var target = utility.camera.targetTexture;
             var block = Block(); block.SetColor(ColorId, color);
+            block.SetFloat("_LineWidth", width);
             block.SetVector("_ViewportSize", new Vector4(target.width, target.height, 0, 0));
-            utility.DrawMesh(ribbons, matrix, wire, 0, block);
+            utility.DrawMesh(ribbons, matrix, XRay ? wireXRay : wire, 0, block);
+        }
+
+        internal void DrawHighlightMesh(Mesh mesh, Matrix4x4 matrix, Color color, bool vertexColors = false)
+        {
+            if (!drawing || !mesh) return;
+            var block = Block(); block.SetColor(ColorId, color);
+            block.SetFloat(UseVertexColorId, vertexColors ? 1 : 0);
+            utility.DrawMesh(mesh, matrix, XRay ? overlayXRay : overlaySurface, 0, block);
+        }
+
+        internal void DrawPointMesh(Mesh mesh, Matrix4x4 matrix, Color color, float size)
+        {
+            if (!drawing || !mesh) return;
+            var target = utility.camera.targetTexture; var block = Block();
+            block.SetColor(ColorId, color); block.SetFloat("_PointSize", size);
+            block.SetVector("_ViewportSize", new Vector4(target.width, target.height, 0, 0));
+            utility.DrawMesh(mesh, matrix, XRay ? pointDotsXRay : pointDots, 0, block);
+        }
+
+        internal bool TryProject(Vector3 world, out Vector2 gui, out float depth)
+        {
+            var rotation = OrbitRotation();
+            var local = Quaternion.Inverse(rotation) * (world - (pivot - rotation * Vector3.forward * distance));
+            depth = local.z; gui = default;
+            if (depth <= 0 || currentRect.height <= 0 || currentRect.width <= 0) return false;
+            float half = Mathf.Tan(15f * Mathf.Deg2Rad) * (ViewProjection == Projection.Perspective ? depth : distance);
+            gui = new Vector2(currentRect.center.x + local.x / half * currentRect.height * .5f,
+                currentRect.center.y - local.y / half * currentRect.height * .5f);
+            return true;
         }
 
         /// <summary>The world-space ray under a GUI point of the last drawn rect, from the
@@ -345,13 +400,16 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>Draws line segments given as consecutive point pairs.</summary>
         public void DrawLines(IList<Vector3> pairs, Matrix4x4 matrix, Color color)
+            => DrawLines(pairs, matrix, color, 1f);
+
+        internal void DrawLines(IList<Vector3> pairs, Matrix4x4 matrix, Color color, float width)
         {
             if (!drawing || pairs == null || pairs.Count < 2) return;
             var indices = new int[pairs.Count - pairs.Count % 2];
             for (int i = 0; i < indices.Length; ++i) indices[i] = i;
             var mesh = PreviewLines.Build(pairs, indices, null).Upload();
             frameMeshes.Add(mesh);
-            DrawRibbons(mesh, matrix, color);
+            DrawRibbons(mesh, matrix, color, width);
         }
 
         /// <summary>Draws per-segment coloured lines: pairs[i*2..i*2+1] in colors[i].</summary>
@@ -439,7 +497,8 @@ namespace SashaRX.UnityMeshLab
             var mesh = new Mesh { hideFlags = HideFlags.HideAndDontSave, indexFormat = IndexFormat.UInt32 };
             mesh.vertices = vertices; mesh.colors = vertexColors; mesh.SetIndices(indices, MeshTopology.Triangles, 0);
             frameMeshes.Add(mesh);
-            utility.DrawMesh(mesh, Matrix4x4.identity, points, 0);
+            var block = Block(); block.SetColor(ColorId, Color.white); block.SetFloat(UseVertexColorId, 1);
+            utility.DrawMesh(mesh, Matrix4x4.identity, XRay ? overlayXRay : overlaySurface, 0, block);
         }
 
         /// <summary>A material of the viewport's own shader: flat colour, optional
@@ -542,16 +601,29 @@ namespace SashaRX.UnityMeshLab
         bool EnsureResources()
         {
             if (utility == null) utility = new PreviewRenderUtility { cameraFieldOfView = 30f };
-            if (surface && flat && wire && points) return true;
+            if (surface && flat && wire && points && overlaySurface) return true;
             var shader = Shader.Find("Hidden/MeshLab/RemeshPreview");
             var lineShader = Shader.Find("Hidden/MeshLab/PreviewLines");
-            if (!shader || !lineShader) return false;
+            var overlayShader = Shader.Find("Hidden/MeshLab/ViewportOverlay");
+            var pointShader = Shader.Find("Hidden/MeshLab/PreviewPoints");
+            if (!shader || !lineShader || !overlayShader || !pointShader) return false;
             surface = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
             flat = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
             flat.SetFloat("_DepthOffset", -1);
             // Lines sit above the flat overlays and the UV layer (both at -1): at the same
             // offset the layer, drawn later, covered the wire wherever it was opaque.
             wire = new Material(lineShader) { hideFlags = HideFlags.HideAndDontSave };
+            wireXRay = new Material(lineShader) { hideFlags = HideFlags.HideAndDontSave };
+            wireXRay.SetFloat("_ZTest", (float)CompareFunction.Always);
+            wireXRay.renderQueue = 3030;
+            overlaySurface = new Material(overlayShader) { hideFlags = HideFlags.HideAndDontSave };
+            overlayXRay = new Material(overlayShader) { hideFlags = HideFlags.HideAndDontSave };
+            overlayXRay.SetFloat("_ZTest", (float)CompareFunction.Always);
+            overlayXRay.renderQueue = 3020;
+            pointDots = new Material(pointShader) { hideFlags = HideFlags.HideAndDontSave };
+            pointDotsXRay = new Material(pointShader) { hideFlags = HideFlags.HideAndDontSave };
+            pointDotsXRay.SetFloat("_ZTest", (float)CompareFunction.Always);
+            pointDotsXRay.renderQueue = 3040;
             points = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
             points.SetFloat("_Lit", 0); points.SetFloat(UseVertexColorId, 1); points.SetFloat("_DepthOffset", -3);
             return true;
@@ -767,6 +839,13 @@ namespace SashaRX.UnityMeshLab
             if (flat) Object.DestroyImmediate(flat);
             if (wire) Object.DestroyImmediate(wire);
             if (points) Object.DestroyImmediate(points);
+            if (wireXRay) Object.DestroyImmediate(wireXRay);
+            if (overlaySurface) Object.DestroyImmediate(overlaySurface);
+            if (overlayXRay) Object.DestroyImmediate(overlayXRay);
+            if (pointDots) Object.DestroyImmediate(pointDots);
+            if (pointDotsXRay) Object.DestroyImmediate(pointDotsXRay);
+            pointDots = pointDotsXRay = null;
+            wireXRay = overlaySurface = overlayXRay = null;
             surface = flat = wire = points = null;
         }
     }

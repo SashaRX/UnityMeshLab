@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- Shared viewport element inspection (polygon, edge, geometry border and vertex), asynchronous position-welded hole search with text filtering and contour navigation, and persistent X-ray / surface opacity controls. Cap/Bridge preview can isolate original or added faces, filter refused rims, and show hidden closure patches using the same hover/selection colours as UV inspection.
 - Reverse UV reads Read/Write-disabled static meshes through owned readable copies before zero-area cleanup, retaining face identity and vertex streams and releasing copies on failure. Unreadable skin/blend-shape inputs keep an explicit refusal to prevent attribute loss.
 - Automatic closure honors the explicit Cap on Bridge refusal option when multiple collar partners make pairing ambiguous. Try independent audited disks without guessing a Bridge, retain refusal diagnostics and fallback masks, and invalidate closure caches. Regression controls cover fallback off/on, strict/partial preparation, scale and winding; private captures can replay closure through native Remesh/Simplify/UV with saved settings.
 - Coarse source fitting includes long patches adjacent to short cross-section edges and retries bounded partial motion under unchanged topology/distance gates. Broad UV chart merging preserves the quality already achieved by narrow merging. Stage revisions invalidate affected caches; opt-in benchmarks export bidirectional surface error and verify repeated atlas hashes.

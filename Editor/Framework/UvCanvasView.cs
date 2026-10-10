@@ -946,8 +946,8 @@ namespace SashaRX.UnityMeshLab
                 if (selected < 0 && hovered < 0) continue;
                 var cache = GetPreviewShellCache(ctx, item.Item1, ctx.PreviewUvChannel);
                 if (cache == null) continue;
-                if (selected >= 0) GlOutlineShell(x, y, size, cache.uvs, cache.triangles, cache.uvs.Length, cache, selected, new Color(1f, .95f, .2f, .95f), ctx, item.Item2);
-                if (hovered >= 0 && hovered != selected) GlOutlineShell(x, y, size, cache.uvs, cache.triangles, cache.uvs.Length, cache, hovered, new Color(.25f, 1f, .95f, .85f), ctx, item.Item2);
+                if (selected >= 0) GlOutlineShell(x, y, size, cache.uvs, cache.triangles, cache.uvs.Length, cache, selected, ViewportHighlight.Selected, ctx, item.Item2);
+                if (hovered >= 0 && hovered != selected) GlOutlineShell(x, y, size, cache.uvs, cache.triangles, cache.uvs.Length, cache, hovered, ViewportHighlight.Hover, ctx, item.Item2);
             }
         }
 
@@ -1002,7 +1002,7 @@ namespace SashaRX.UnityMeshLab
             var pairs = GetPreviewBoundary(ctx, mesh, ctx.PreviewUvChannel);
             if (pairs == null || pairs.Length == 0) return;
             GL.Begin(GL.LINES);
-            GL.Color(new Color(1f, .35f, .05f, .9f));
+            GL.Color(ViewportHighlight.Border);
             for (int i = 0; i + 1 < pairs.Length; i += 2)
             {
                 int a = pairs[i], b = pairs[i + 1];

@@ -114,6 +114,7 @@ namespace SashaRX.UnityMeshLab
         public Mesh SourceMesh => sourceMesh;
         internal Mesh ClosureMesh => closureMesh;
         internal Mesh ClosureRims => closureRims;
+        internal int[] ClosurePatchFaces { get; private set; }
         internal string[] ClosureContourNames { get; private set; }
         internal Vector3[][] ClosureContourEdges { get; private set; }
         internal Color[] ClosureContourColors { get; private set; }
@@ -541,6 +542,7 @@ namespace SashaRX.UnityMeshLab
             if (closureMesh) Object.DestroyImmediate(closureMesh);
             if (closureRims) Object.DestroyImmediate(closureRims);
             var positions = new List<Vector3>(); var colors = new List<Color>(); var indices = new List<int>();
+            var patchFaces = new List<int>();
             var rims = new List<Vector3>(); var rimIndices = new List<int>();
             var rimColors = new List<Color>();
             var contourNames = new List<string> { "All original rims" };
@@ -560,8 +562,9 @@ namespace SashaRX.UnityMeshLab
                 var matrix = toPrimary * node.spaceToWorld;
                 for (int f = 0; f < ix.Length / 3; ++f) {
                     int patch = support?.facePatches == null ? 0 : support.facePatches[f];
+                    if (patch != 0) patchFaces.Add(indices.Count / 3);
                     var color = patch == 0 ? new Color(.35f, .4f, .45f) :
-                        patch % 2 == 1 ? new Color(1f, .5f, .12f) : new Color(.65f, .35f, .95f);
+                        patch % 2 == 1 ? ViewportHighlight.Cap : ViewportHighlight.Closure;
                     for (int k = 0; k < 3; ++k) {
                         indices.Add(positions.Count); positions.Add(matrix.MultiplyPoint3x4(p[ix[f * 3 + k]])); colors.Add(color);
                     }
@@ -574,7 +577,7 @@ namespace SashaRX.UnityMeshLab
                     bool fallback = support.bridgeCapFallbacks.TryGetValue(loopId, out string bridgeFailure);
                     contourInfo.Add(bridged ? $"Bridge loops {loopId},{partner}: " + support.bridgeSearch[loopId] :
                         fallback ? "Separate planar Cap after Bridge refusal: " + bridgeFailure : null);
-                    var rimColor = refused ? new Color(1f, .12f, .15f, 1f) : new Color(.2f, .85f, 1f, .95f);
+                    var rimColor = refused ? ViewportHighlight.Refused : ViewportHighlight.Hole;
                     for (int k = 0; k < loop.Length; ++k) {
                         pairs[k * 2] = matrix.MultiplyPoint3x4(p[loop[k]]);
                         pairs[k * 2 + 1] = matrix.MultiplyPoint3x4(p[loop[(k + 1) % loop.Length]]);
@@ -588,6 +591,7 @@ namespace SashaRX.UnityMeshLab
                 }
             }
             closureMesh = BuildMesh(ResultName + "_Closure", positions.ToArray(), indices.ToArray(), null, colors.ToArray());
+            ClosurePatchFaces = patchFaces.ToArray();
             closureRims = new Mesh { name = ResultName + "_ClosureRims", hideFlags = HideFlags.HideAndDontSave,
                 indexFormat = rims.Count > 65535 ? IndexFormat.UInt32 : IndexFormat.UInt16 };
             closureRims.SetVertices(rims); closureRims.SetIndices(rimIndices, MeshTopology.Lines, 0); closureRims.RecalculateBounds();

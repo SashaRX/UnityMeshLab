@@ -115,8 +115,8 @@ namespace SashaRX.UnityMeshLab
             var positions = new Vector3[mesh.indices.Length]; var colors = new Color[positions.Length];
             var indices = new int[positions.Length];
             for (int f = 0; f < mesh.TriangleCount; ++f) {
-                var color = selected != null && selected[f] ? new Color(1,.15f,.1f) : labels[f] < 0
-                    ? new Color(1,.65f,.1f) : labels[f] > 0 ? new Color(.9f,.25f,.85f) : new Color(.45f,.5f,.55f);
+                var color = selected != null && selected[f] ? ViewportHighlight.Selected : labels[f] < 0
+                    ? ViewportHighlight.Cap : labels[f] > 0 ? ViewportHighlight.Closure : new Color(.45f,.5f,.55f);
                 for (int k = 0; k < 3; ++k) {
                     int i = f*3+k; positions[i] = mesh.positions[mesh.indices[i]]; colors[i] = color; indices[i] = i;
                 }

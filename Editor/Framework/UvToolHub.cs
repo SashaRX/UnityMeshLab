@@ -42,6 +42,7 @@ namespace SashaRX.UnityMeshLab
         MeshViewport3D viewport;
         UvLayer3D uvLayer;
         MeshInspection inspection;
+        MeshTopologyPreview topologyPreview;
         Action<Mesh> meshInvalidated;
         bool inspectMesh;
         int inspectedItem, planarProjection;
@@ -131,6 +132,7 @@ namespace SashaRX.UnityMeshLab
             viewport = new MeshViewport3D { RequestRepaint = Repaint };
             uvLayer = new UvLayer3D();
             inspection = new MeshInspection();
+            topologyPreview = new MeshTopologyPreview { Repaint = Repaint };
             // The context's per-mesh caches are keyed by instance ID and would outlive
             // an in-place rewrite; drop them on the same notification the views use.
             meshInvalidated = mesh => {
@@ -215,6 +217,7 @@ namespace SashaRX.UnityMeshLab
             viewport?.Dispose(); viewport = null;
             uvLayer?.Dispose(); uvLayer = null;
             inspection?.Dispose(); inspection = null;
+            topologyPreview?.Dispose(); topologyPreview = null;
             inspectionEntries.Clear();
             VertexChannels.Changed -= meshInvalidated; meshInvalidated = null;
 
@@ -1071,6 +1074,7 @@ namespace SashaRX.UnityMeshLab
             }
             GUILayout.FlexibleSpace();
             EditorGUILayout.EndHorizontal();
+            if (canvas3D || UseGeometry2D) topologyPreview.Toolbar(viewportItems, viewport);
             if (!inspectMesh || viewportItems.Count == 0) return;
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
             inspectedItem = Mathf.Clamp(inspectedItem, 0, viewportItems.Count - 1);
@@ -1284,6 +1288,7 @@ namespace SashaRX.UnityMeshLab
             canvas?.ClearFrameCaches();
             uvLayer?.Invalidate();
             viewport?.InvalidateCaches();
+            topologyPreview?.Clear();
             if (clearInspection) inspection?.Clear(); else inspection?.InvalidateData();
             canvas?.ClearInspectionCache();
         }
@@ -1292,7 +1297,7 @@ namespace SashaRX.UnityMeshLab
         // meshes) feeds the same hover/selection state the UV canvas and the tools read.
         void OnPreviewReady()
         {
-            if (canvas3D && canvas.SpotMode && viewportSpotPointerValid && !canvas.SpotSelectionLocked)
+            if (canvas3D && canvas.SpotMode && viewportSpotPointerValid && !canvas.SpotSelectionLocked && !topologyPreview.Active)
                 RefreshViewportSpot();
         }
 
@@ -1350,18 +1355,20 @@ namespace SashaRX.UnityMeshLab
             {
                 var e = Event.current;
                 viewport.PrepareRect(rect, e.type);
+                topologyPreview.Input(viewport, e, items);
                 if (rect.Contains(e.mousePosition)) (ActiveTool as IUvTool3DInput)?.On3DInput(viewport, e);
                 if (inspectMesh && e.type == EventType.MouseDown && e.button == 0 && e.control && rect.Contains(e.mousePosition) &&
                     viewport.TryScreenRay(e.mousePosition, out var origin, out var direction)) {
                     if (inspection.Pick(items, origin, direction, out int item)) { inspectedItem = item; Repaint(); }
                     e.Use();
                 }
-                HandleViewportSpot(rect, e);
+                if (!topologyPreview.Active) HandleViewportSpot(rect, e);
                 var tool3D = ActiveTool as IUvTool3D;
                 viewport.Draw(rect, items, view =>
                 {
                     uvLayer.Draw(view, canvas, ctx, viewportItems, viewportEntries);
                     tool3D?.OnDraw3D(view);
+                    topologyPreview.Draw(view, items);
                 });
                 if (canvas.SpotMode) canvas.DrawShellInfoPanel(rect);
             }

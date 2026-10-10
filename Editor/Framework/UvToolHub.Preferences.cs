@@ -23,6 +23,9 @@ namespace SashaRX.UnityMeshLab
             public MeshViewport3D.Projection viewProjection;
             public MeshViewport3D.UpAxis upAxis = MeshViewport3D.UpAxis.Y;
             public bool wire, lit = true, grid = true, axes = true;
+            public bool holes, xRay;
+            public MeshTopologyPreview.Element element;
+            public float surfaceOpacity = 1;
             public Color background = new Color(.16f, .19f, .24f, 1);
         }
 
@@ -50,6 +53,10 @@ namespace SashaRX.UnityMeshLab
             viewport.Up = MeshLabWindowPreferences.ValidEnum(state.upAxis, MeshViewport3D.UpAxis.Y);
             viewport.Wireframe = state.wire; viewport.Lit = state.lit;
             viewport.ShowGrid = state.grid; viewport.ShowAxes = state.axes; viewport.Background = state.background;
+            viewport.XRay = state.xRay;
+            viewport.SurfaceOpacity = MeshLabWindowPreferences.Clamp(state.surfaceOpacity, .05f, 1, 1);
+            topologyPreview.ShowHoles = state.holes;
+            topologyPreview.Mode = MeshLabWindowPreferences.ValidEnum(state.element, MeshTopologyPreview.Element.Off);
         }
 
         void SaveWindowSettings()
@@ -69,7 +76,9 @@ namespace SashaRX.UnityMeshLab
                 fillHidden = canvas.FillHidden, spot = canvas.SpotMode,
                 shading = viewport.Mode, viewProjection = viewport.ViewProjection, upAxis = viewport.Up,
                 wire = viewport.Wireframe, lit = viewport.Lit, grid = viewport.ShowGrid,
-                axes = viewport.ShowAxes, background = viewport.Background
+                axes = viewport.ShowAxes, background = viewport.Background,
+                holes = topologyPreview.ShowHoles, element = topologyPreview.Mode,
+                xRay = viewport.XRay, surfaceOpacity = viewport.SurfaceOpacity
             });
             SaveFillPreference();
             (ActiveTool as IUvToolWindowPreferences)?.SaveWindowPreferences();

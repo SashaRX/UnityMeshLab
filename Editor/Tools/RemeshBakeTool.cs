@@ -401,6 +401,7 @@ namespace SashaRX.UnityMeshLab
             previewData.meshes[(int)RemeshPreview.Stage.Result] = pipeline.ResultMesh;
             previewData.meshes[(int)RemeshPreview.Stage.Closure] = pipeline.ClosureMesh;
             previewData.closureRims = pipeline.ClosureRims;
+            previewData.closurePatchFaces = pipeline.ClosurePatchFaces;
             previewData.closureContourNames = pipeline.ClosureContourNames;
             previewData.closureContourEdges = pipeline.ClosureContourEdges;
             previewData.closureContourColors = pipeline.ClosureContourColors;
@@ -414,6 +415,7 @@ namespace SashaRX.UnityMeshLab
             previewData.geometry = pipeline.Geometry; previewData.maps = pipeline.Maps; previewData.baseColor = pipeline.BaseColorPreview;
             previewData.trimMask = pipeline.TrimMaskMesh;
             previewData.syntheticMask = pipeline.SyntheticMaskMesh;
+            previewData.syntheticLabels = pipeline.Primary?.syntheticFaces;
             previewData.spaceToWorld = pipeline.PreviewSpaceToWorld;
             // Live from the current settings so the cage preview reflects projection
             // distance changes before a re-bake; zero until a source snapshot exists.
