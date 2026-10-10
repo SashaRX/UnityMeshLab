@@ -26,7 +26,8 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
-        [TestCase(0f)] [TestCase(.002f)] [TestCase(.01f)] [TestCase(.1f)]
+        [TestCase(0f)] [TestCase(.000009999f)] [TestCase(.000010001f)]
+        [TestCase(.002f)] [TestCase(.01f)] [TestCase(.1f)]
         public void CapTolerancePreservesExplicitCustomValues(float tolerance)
         {
             var settings = new RemeshSettings {capPlaneTolerance = tolerance, planarCapLoops = "3"};

@@ -247,8 +247,10 @@ namespace SashaRX.UnityMeshLab
                 restored.planarCapLoops = "all";
             // Replace the former shipped default; keep other authored tolerances,
             // including an explicit zero that selects only the relative allowance.
+            // Match the stored default's representation, not a range that would
+            // also replace nearby manually selected values.
             if (restored != null && (json.IndexOf("\"capPlaneTolerance\"", StringComparison.Ordinal) < 0 ||
-                restored.capPlaneTolerance == .00001f))
+                BitConverter.SingleToInt32Bits(restored.capPlaneTolerance) == BitConverter.SingleToInt32Bits(.00001f)))
                 restored.capPlaneTolerance = DefaultCapPlaneTolerance;
             return restored;
         }
