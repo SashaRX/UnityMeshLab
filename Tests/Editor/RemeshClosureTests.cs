@@ -483,6 +483,49 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(cap.facePatches.Skip(ix.Count/3).All(id=>id==1));
         }
 
+        [TestCase(RemeshClosureMode.Bridge,false,1f)]
+        [TestCase(RemeshClosureMode.Automatic,false,1f)]
+        [TestCase(RemeshClosureMode.Bridge,true,.125f)]
+        [TestCase(RemeshClosureMode.Automatic,true,8f)]
+        public void BridgeWithEightAndSixteenEdgesPreservesBothRims(RemeshClosureMode mode,bool reverse,float scale)
+        {
+            const int ring=8;
+            var (points,source)=TorusGap(16,ring);
+            var p=points.ToList(); var faces=new List<int>();
+            // Double every edge on one rim, preserving its shape and the donor surface.
+            for (int f=0;f<source.Length;f+=3) {
+                int k=Enumerable.Range(0,3).Where(corner=>source[f+corner]<ring && source[f+(corner+1)%3]<ring).DefaultIfEmpty(-1).First();
+                if (k<0) { faces.AddRange(source.Skip(f).Take(3)); continue; }
+                int a=source[f+k],b=source[f+(k+1)%3],c=source[f+(k+2)%3],m=p.Count;
+                p.Add((p[a]+p[b])*.5f); faces.AddRange(new[] {a,m,c,m,b,c});
+            }
+            var vertices=p.ToArray(); var indices=faces.ToArray();
+            if (reverse) {
+                vertices=vertices.Select(v=>Quaternion.Euler(23,39,17)*v*scale+new Vector3(3,-2,1)).ToArray();
+                for (int f=0;f<indices.Length;f+=3) (indices[f],indices[f+2])=(indices[f+2],indices[f]);
+            }
+            var originalPoints=(Vector3[])vertices.Clone(); var originalFaces=(int[])indices.Clone();
+            var before=RemeshTopology.Inspect(vertices,indices);
+            Assert.IsTrue(before.Valid,before.Description);
+            var cap=RemeshPlanarCap.Prepare(vertices,indices,"0,1",default,mode:mode,
+                continueOnRefusal:true,elementScopedContacts:true,bridgeCapFallback:true);
+            CollectionAssert.AreEquivalent(new[] {8,16},cap.boundaryLoops.Select(loop=>loop.Length));
+            Assert.IsEmpty(cap.loopFailures); Assert.IsEmpty(cap.bridgeCapFallbacks);
+            Assert.AreEqual(24,cap.addedFaces); Assert.AreEqual(1,cap.patchEnds.Count);
+            Assert.AreEqual(1,cap.bridgePartners[0]); Assert.AreEqual(0,cap.bridgePartners[1]);
+            var closed=RemeshTopology.Inspect(cap.positions,cap.indices);
+            Assert.IsTrue(closed.Valid,closed.Description); Assert.AreEqual(0,closed.boundary.Count);
+            CollectionAssert.AreEqual(new[] {0},closed.euler);
+            Assert.IsTrue(RemeshTopology.ClosedVolumeFaces(cap.positions,cap.indices,default).All(v=>v));
+            var annulus=RemeshTopology.Inspect(cap.positions,cap.indices.Skip(indices.Length).ToArray());
+            Assert.IsTrue(annulus.Valid,annulus.Description); CollectionAssert.AreEqual(new[] {0},annulus.euler);
+            Assert.IsTrue(annulus.boundary.SetEquals(before.boundary));
+            Assert.IsTrue(cap.facePatches.Take(indices.Length/3).All(id=>id==0));
+            Assert.IsTrue(cap.facePatches.Skip(indices.Length/3).All(id=>id==1));
+            CollectionAssert.AreEqual(originalPoints,vertices); CollectionAssert.AreEqual(originalFaces,indices);
+            CollectionAssert.AreEqual(vertices,cap.positions); CollectionAssert.AreEqual(indices,cap.indices.Take(indices.Length));
+        }
+
         [TestCase(64)] [TestCase(128)]
         public void BridgeCompletesItsAdvertisedRimBudget(int edges)
         {

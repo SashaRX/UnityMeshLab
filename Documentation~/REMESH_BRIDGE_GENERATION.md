@@ -289,3 +289,29 @@ fixtures). The inner pair of production planar Caps adds 44 faces, passes the
 local closure controls and has genus 0, so it fails the Bridge intent gate.
 Private evidence: `comparison/comparison.json`, `comparison/caps-intent.json`
 and `comparison/longitudinal-preview.png` under the longitudinal result folder.
+
+## Two-to-one rim segmentation
+
+The rim edge counts do not need to match. The 128-edge limit applies to each rim
+independently and bounds search allocations/work; it is not an annulus topology
+constraint. The search also has separate state, phase, retained-path and exact
+contact budgets. Removing only the edge guard would not make larger searches
+unboundedly supported.
+
+An 8-versus-16 control splits every original edge on one rim at its midpoint,
+retriangulating adjacent donor faces without changing the source surface. All
+four Unity controls pass: explicit/Automatic Bridge and transformed, scaled,
+reversed winding. They add exactly 24 triangles in one annulus, preserve every
+donor vertex, oriented face and boundary edge, and retain one closed genus-one
+component. The enabled Cap fallback is never used. This verifies a two-to-one
+segmentation difference on matching contours, not every possible rim shape.
+
+The fixture is included in the default autonomous comparison manifest as
+`Unequal8x16`. Private Unity evidence:
+`_results~/bridge-eight-sixteen-20261010/eight-sixteen.xml`. The complete closure
+suite passes 70 tests with no failures or skips (`closure-all.xml`); the offline
+suite passes 130 tests. Both reference-assembly FBX define variants compile
+without errors. No production algorithm change was required.
+The opt-in Unity exporter and independent exact-contact/annulus audits also
+accept the production output and both MeshLib stitching variants on this same
+fixture (three accepted results in `comparison/comparison.json`).

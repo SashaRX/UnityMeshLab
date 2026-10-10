@@ -6,6 +6,7 @@ import unittest
 import numpy as np
 
 from bridge_probe import torus_gap
+from analyze import read_mesh
 from compare_bridge import border, longitudinal_gap, prepare, verify
 
 
@@ -64,13 +65,17 @@ class BridgeComparisonTests(unittest.TestCase):
             with self.subTest(strip=strip), self.assertRaises(ValueError):
                 longitudinal_gap(strip=strip)
 
-    def test_prepare_writes_eight_replayable_fixtures(self):
+    def test_prepare_writes_nine_replayable_fixtures(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
             manifest = prepare(output, [])
-            self.assertEqual(len(manifest['cases']), 8)
+            self.assertEqual(len(manifest['cases']), 9)
             self.assertEqual(json.loads((output / 'manifest.json').read_text()), manifest)
             self.assertTrue(all(Path(case['source']).is_file() for case in manifest['cases']))
+            unequal = next(case for case in manifest['cases'] if case['name'] == 'Unequal8x16')
+            points, faces = read_mesh(unequal['source'])
+            loops, _ = border(points, faces)
+            self.assertEqual(sorted(len(loop['halfedges']) for loop in loops), [8, 16])
 
 
 if __name__ == '__main__':

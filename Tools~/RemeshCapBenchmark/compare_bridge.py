@@ -33,6 +33,22 @@ def longitudinal_gap(major=24, minor=16, strip=0):
     return p, source, np.concatenate((source, np.asarray(patch, dtype='i4')))
 
 
+def doubled_rim_gap(major=16, minor=8):
+    """Split each donor edge on one rim without changing the torus surface."""
+    p, source, *_ = torus_gap(major, minor)
+    points, faces = list(p), []
+    for face in source:
+        corners = [k for k in range(3) if face[k] < minor and face[(k + 1) % 3] < minor]
+        if not corners:
+            faces.append(face)
+            continue
+        a, b, c = map(int, np.roll(face, -corners[0]))
+        midpoint = len(points)
+        points.append((p[a] + p[b]) * .5)
+        faces.extend(((a, midpoint, c), (midpoint, b, c)))
+    return np.asarray(points, dtype=p.dtype), np.asarray(faces, dtype=source.dtype)
+
+
 def prepare(output, captures):
     output.mkdir(parents=True, exist_ok=True)
     cases = []
@@ -46,6 +62,10 @@ def prepare(output, captures):
         path = output / (name + '__source.bin')
         write_mesh(path, p, ix)
         cases.append(dict(name=name, source=str(path.resolve()), selection='0,1', intent='torus'))
+    p, ix = doubled_rim_gap()
+    path = output / 'Unequal8x16__source.bin'
+    write_mesh(path, p, ix)
+    cases.append(dict(name='Unequal8x16', source=str(path.resolve()), selection='0,1', intent='torus'))
     for name, strip in (('LongitudinalOuter', 0), ('LongitudinalTop', 4), ('LongitudinalInner', 8)):
         p, ix, _ = longitudinal_gap(strip=strip)
         path = output / (name + '__source.bin')
