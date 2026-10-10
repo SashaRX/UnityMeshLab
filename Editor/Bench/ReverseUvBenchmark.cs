@@ -72,16 +72,14 @@ namespace SashaRX.UnityMeshLab
                             coarse = TransferCaseReplay.Load(file.DirectoryName, pair.targetMesh);
                             fine = TransferCaseReplay.Load(file.DirectoryName, pair.sourceMesh);
                             trial.failureStage = "cleanup";
-                            using var prepared = ReverseUvInputs.Prepare(new[] {
+                            var sources = new[] {
                                 new ReverseUvTransfer.Level { lod = 1, inputs = new[] { new ReverseUvTransfer.Input { mesh = coarse, key = pair.target, toWorld = pair.localToWorld } } },
                                 new ReverseUvTransfer.Level { lod = 0, inputs = new[] { new ReverseUvTransfer.Input { mesh = fine, key = pair.source, toWorld = SourceTransform(pair, sourceFrames) } } }
-                            });
-                            trial.failureStage = "seed";
-                            int seedSize = prepared.PrepareSeed(256, 2, 0, default);
-                            var levels = prepared.levels;
-                            trial.failureStage = "projection";
-                            using var result = await ReverseUvTransfer.Build(levels, new ReverseUvTransfer.Options {
-                                seedResolution = seedSize, projectionReach = .05f, preserveProjectedOverlap = overlap }, true);
+                            };
+                            trial.failureStage = "seed/projection";
+                            using var prepared = await ReverseUvJunctionTrial.Build(sources, new ReverseUvTransfer.Options {
+                                seedResolution = 256, projectionReach = .05f, preserveProjectedOverlap = overlap }, true, 0, true);
+                            var levels = prepared.inputs.levels; var result = prepared.result;
                             trial.failureStage = "audit";
                             trial.audit = ReverseUvAudit.Write(result, levels); trial.result = result.report;
                             trial.accepted = true; trial.failureStage = null; ++summary.accepted;

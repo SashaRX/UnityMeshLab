@@ -5,12 +5,31 @@ LOD number and advances toward LOD0. The existing forward solver is unchanged.
 
 ## Contract
 
-- **Prepare coarsest LOD from geometry** builds one atlas across its included
+- **Normalize and repair coarsest LOD** builds one atlas across its included
   renderers in world space. Fragmented UV0 and rectangular source textures do not
   control this parameterization. Connected charts are retained where valid;
   collapsed, overlapping or excessively stretched faces get intrinsic triangle
-  charts. Manual mode uniformly fits the requested resolution. Auto density mode
-  preserves the requested texels per world unit and chooses a square size.
+  charts. Density is normalized per connected chart against its world surface
+  area; already normalized coordinates within 0.1%, or within the area uncertainty
+  implied by Float32 coordinate spacing, are preserved to avoid adding rounding
+  noise. The geometric/UV quality gates still apply. Manual mode searches a uniform density that fits the requested
+  square. Auto mode retains the requested texels per world unit.
+- Preparation compares the normalized original placement with compact rectangle
+  packing, using the **Rotate charts** and **Align charts to axis** Repack
+  settings. Compact packing tests 0/90-degree placement; optional axis alignment
+  uses sampled edge directions. Charts keep their metric and never undergo
+  independent U/V stretching to fit a rectangle. Failed intrinsic rescue faces
+  are stabilized at their final texel location before the seed is accepted.
+- Each packing/cut candidate runs the complete coarse-to-fine chain. It must
+  retain every inherited region and intentional overlap, density, per-face
+  distortion and atlas size. Final output meshes also undergo independent metric
+  validation. A refused candidate retains the validated normalized control;
+  `seedPacking`, `seedChartRotation` and `seedPackingRefusal` record the choice.
+  Preparation can therefore run multiple chains. Inherited placements remain
+  fixed while subsequent LODs are projected.
+  The original-placement trial preserves its reference median density for
+  allocating new islands; one-ULP changes in that estimate can otherwise change
+  downstream overlap classifications after a valid chart correction.
 - Disable preparation to use an existing coarsest repack/UV2. Its combined atlas
   must be finite, nonoverlapping and have triangle anisotropy at most 4.
 - Each next LOD projects onto the immediately preceding LOD's chart BVHs. Normal
@@ -141,8 +160,11 @@ metric and refusal of float placement collapse without source geometry changes.
 
 ## Current limits
 
-`Cut narrow UV junctions (experimental)` in the Repack controls proposes cuts
-across T/H/U/L junctions and frame corners along existing triangle edges. Repack
+`Cut narrow UV junctions (experimental)` in Setup/Repack proposes cuts across
+U/T/F/E/H/O/X/C branches and frame corners along paths of existing triangle
+edges, including intermediate tessellation vertices. The shortest interior path
+must cross a narrow join with a limited detour; the resulting regions must reduce
+summed oriented bounding-box area by at least 15%. Repack
 splits an owned work copy before xatlas; the authored UV0 corners and surface
 geometry remain unchanged. It is disabled by default. Reverse trials compare
 the complete cut chain with an uncut chain before applying either: every already
@@ -153,6 +175,20 @@ trial runs additional chains. The pattern planner itself uses existing edges;
 the projection refinement handles target face interiors separately. Some seed
 cuts are still refused in Cafe_Table when they harm the finer chain. Atlas vacancy
 placement is shared by both the cut trial and its retained baseline.
+
+Forward **Transfer only** inherits the already prepared donor atlas. It does not
+run this splitter or repack the donor; enable the option before **Repack** / Full
+Pipeline. Reverse is a standalone alternative and performs coarsest preparation
+before projecting any finer LOD. Subsequent atlas vacancy placement uses rigid
+translations; seed-packing rotations never relocate already inherited UVs.
+
+The private `FrozenAssetChainsRetainBaselineAcceptance` test accepts imported
+FBX paths through `MESHLAB_REVERSE_ASSET_PATHS`. Set
+`MESHLAB_REVERSE_JUNCTION_CUTS=1` to exercise the cut workflow in both policies.
+An optional `MESHLAB_REVERSE_BASELINE_TRIALS` points to the immutable
+`asset-trials.json` of a prior commit: the current solver is then compared
+directly with those recorded trials instead of rerunning the legacy solver.
+Acceptance, finest inherited area and atlas size remain regression gates.
 
 Legacy sidecar replay cannot recreate Reverse UV seam splits or deleted faces.
 Saving such a result through a sidecar is refused explicitly; use Save Mesh Assets

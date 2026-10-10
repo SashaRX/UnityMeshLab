@@ -880,5 +880,93 @@ namespace SashaRX.UnityMeshLab.Tests
             if(density>0) Assert.AreEqual(density,result.report.texelsPerUnit,.1f);
             CollectionAssert.AreEqual(before,a.uv);
         }
+
+        [TestCase(false)] [TestCase(true)]
+        public void SeedPackingNormalizesEachChartAndRepairsInvalidFaces(bool fixedDensity)
+        {
+            var positions = new List<Vector3>(); var uv = new List<Vector2>();
+            for (int q = 0; q < 4; ++q)
+                foreach (int k in new[] { 0, 1, 2, 0, 2, 3 })
+                {
+                    var p = new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up }[k];
+                    positions.Add(new Vector3(p.x + q * 3, p.y, 0));
+                    uv.Add(q == 3 ? new Vector2(100,100) : p * (q + 1) * 7 + new Vector2(q * 30, 0));
+                }
+            var original = uv.ToArray();
+            var pixels = ReverseUvSeedPacking.Prepare(positions.ToArray(), uv.ToArray(), 32, fixedDensity,
+                new ReverseUvTransfer.Options { seedResolution = 128, padding = 2 }, default, out int side);
+            var scan = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry { uv = pixels,
+                indices = Enumerable.Range(0,pixels.Length).ToArray(), charts = new int[pixels.Length] }, default);
+            Assert.IsTrue(scan.complete); Assert.AreEqual(0,scan.pairs); Assert.AreEqual(0,scan.degenerateFaces);
+            float density = (pixels[1] - pixels[0]).magnitude;
+            if (fixedDensity) Assert.AreEqual(32,density,1e-3);
+            else { Assert.AreEqual(128,side); Assert.Greater(density,32); }
+            for (int t = 0; t < pixels.Length; t += 3)
+            {
+                Assert.AreEqual(density,(pixels[t+1]-pixels[t]).magnitude/(positions[t+1]-positions[t]).magnitude,1e-3);
+                Assert.Less(ReverseUvTransfer.TriangleAnisotropy(positions[t],positions[t+1],positions[t+2],
+                    pixels[t],pixels[t+1],pixels[t+2]),1.001);
+            }
+            CollectionAssert.AreEqual(original,uv);
+            Assert.IsTrue(pixels.All(p=>p.x>=2 && p.y>=2 && p.x<=side-2 && p.y<=side-2));
+        }
+
+        [Test]
+        public void SeedQuarterTurnAvoidsAtlasGrowthWithoutChangingDensity()
+        {
+            var positions = new List<Vector3>(); var uv = new List<Vector2>();
+            foreach (var size in new[] { new Vector2(13,4),new Vector2(4,13) })
+            {
+                int q = positions.Count / 6;
+                foreach (int k in new[] {0,1,2,0,2,3})
+                {
+                    var p = Vector2.Scale(new[] {Vector2.zero,Vector2.right,Vector2.one,Vector2.up}[k],size);
+                    positions.Add(new Vector3(p.x+q*20,p.y,0)); uv.Add(p+Vector2.right*q*20);
+                }
+            }
+            foreach (bool rotate in new[] {false,true})
+            {
+                var pixels = ReverseUvSeedPacking.Prepare(positions.ToArray(),uv.ToArray(),1,true,
+                    new ReverseUvTransfer.Options {seedResolution=16,padding=0,rotateCharts=rotate,rotateChartsToAxis=false},default,out int side);
+                Assert.AreEqual(rotate?16:32,side);
+                for (int t=0;t<pixels.Length;t+=3)
+                {
+                    Assert.AreEqual((positions[t+1]-positions[t]).magnitude,(pixels[t+1]-pixels[t]).magnitude,1e-4);
+                    Assert.Less(ReverseUvTransfer.TriangleAnisotropy(positions[t],positions[t+1],positions[t+2],pixels[t],pixels[t+1],pixels[t+2]),1.001);
+                }
+            }
+        }
+
+        [Test]
+        public void NormalizedOriginalSeedPreservesDensityWithinFloat32AreaUncertainty()
+        {
+            var positions=new[] {Vector3.zero,new Vector3(10,0,0),new Vector3(0,10,0),
+                new Vector3(20,0,0),new Vector3(23,0,0),new Vector3(20,.0001f,0)};
+            var uv=new[] {Vector2.zero,new Vector2(10,0),new Vector2(0,10),
+                new Vector2(257,123.45f),new Vector2(260,123.45f),new Vector2(257,123.4501f)};
+            var options=new ReverseUvTransfer.Options {seedResolution=512,padding=2};
+            var old=ReverseUvNewCharts.Prepare(positions,uv,1,options,default,out var fallback);
+            Assert.IsTrue(fallback.All(f=>!f));
+            var min=old.Aggregate(Vector2.Min);
+            var expected=old.Select(p=>p-min+Vector2.one*options.padding).ToArray();
+            var actual=ReverseUvSeedPacking.Prepare(positions,uv,1,true,options,default,out int side,false);
+            Assert.AreEqual(512,side); CollectionAssert.AreEqual(expected,actual);
+        }
+
+        [Test]
+        public void NormalizedOriginalSeedPreservesAlreadyRepairedTriangles()
+        {
+            var positions=new[] {Vector3.zero,new Vector3(10,0,0),new Vector3(0,10,0),
+                new Vector3(20,0,0),new Vector3(23,0,0),new Vector3(19.3f,.04f,0)};
+            var uv=new[] {Vector2.zero,new Vector2(10,0),new Vector2(0,10),
+                Vector2.zero,Vector2.zero,Vector2.zero};
+            var options=new ReverseUvTransfer.Options {seedResolution=128,padding=2};
+            var repaired=ReverseUvNewCharts.Prepare(positions,uv,1,options,default,out var fallback);
+            Assert.IsTrue(fallback[1]);
+            var min=repaired.Aggregate(Vector2.Min);
+            var expected=repaired.Select(p=>p-min+Vector2.one*options.padding).ToArray();
+            var actual=ReverseUvSeedPacking.Prepare(positions,uv,1,true,options,default,out _,false);
+            CollectionAssert.AreEqual(expected,actual);
+        }
     }
 }

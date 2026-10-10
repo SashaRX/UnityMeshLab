@@ -22,7 +22,7 @@ namespace SashaRX.UnityMeshLab.Tests
             public int[] trianglesBefore, trianglesAfter;
         }
 
-        static Mesh Grid(string pattern)
+        static Mesh Grid(string pattern, int subdivisions = 1)
         {
             var rows = pattern.Split('/'); var vertices = new List<Vector3>();
             var indices = new List<int>(); var unique = new Dictionary<Vector3, int>();
@@ -30,20 +30,57 @@ namespace SashaRX.UnityMeshLab.Tests
                 for (int x = 0; x < rows[y].Length; ++x)
                 {
                     if (rows[y][x] != '#') continue;
-                    var cell = new[] { new Vector3(x, y), new Vector3(x + 1, y), new Vector3(x + 1, y + 1), new Vector3(x, y + 1) };
-                    var ids = new int[4];
-                    for (int k = 0; k < 4; ++k)
+                    for (int sy = 0; sy < subdivisions; ++sy)
+                    for (int sx = 0; sx < subdivisions; ++sx)
                     {
-                        if (!unique.TryGetValue(cell[k], out int v)) { v = vertices.Count; unique.Add(cell[k], v); vertices.Add(cell[k]); }
-                        ids[k] = v;
+                        float left = x + sx / (float)subdivisions, bottom = y + sy / (float)subdivisions;
+                        float right = x + (sx + 1) / (float)subdivisions, top = y + (sy + 1) / (float)subdivisions;
+                        var cell = new[] { new Vector3(left, bottom), new Vector3(right, bottom), new Vector3(right, top), new Vector3(left, top) };
+                        var ids = new int[4];
+                        for (int k = 0; k < 4; ++k)
+                        {
+                            if (!unique.TryGetValue(cell[k], out int v)) { v = vertices.Count; unique.Add(cell[k], v); vertices.Add(cell[k]); }
+                            ids[k] = v;
+                        }
+                        foreach (int k in new[] { 0, 1, 2, 0, 2, 3 }) indices.Add(ids[k]);
                     }
-                    foreach (int k in new[] { 0, 1, 2, 0, 2, 3 }) indices.Add(ids[k]);
                 }
             var mesh = new Mesh { name = "Junction fixture" };
             mesh.SetVertices(vertices); mesh.triangles = indices.ToArray();
             mesh.uv = vertices.Select(p => new Vector2(p.x, p.y)).ToArray();
             mesh.uv2 = mesh.uv; mesh.RecalculateNormals();
             return mesh;
+        }
+
+        [TestCase("#...#/#...#/#...#/#...#/#####", 0f)] // U
+        [TestCase("#####/..#../..#../..#../..#..", 17f)] // T
+        [TestCase("#####/#..../#..../####./#..../#..../#....", 43f)] // F
+        [TestCase("#####/#..../#..../####./#..../#..../#####", 73f)] // E
+        [TestCase("#...#/#...#/#...#/#####/#...#/#...#/#...#", 91f)] // H
+        [TestCase("#######/#.....#/#.....#/#.....#/#.....#/#.....#/#######", 137f)] // O
+        [TestCase("...#.../...#.../...#.../#######/...#.../...#.../...#...", 45f)] // X
+        [TestCase("#####/#..../#..../#..../#####", 211f)] // C
+        public void JunctionPathsCrossTessellationAndPreserveMetric(string pattern, float angle)
+        {
+            var mesh = Grid(pattern, 3);
+            try
+            {
+                float a = angle * Mathf.Deg2Rad;
+                mesh.uv = mesh.uv.Select(p => new Vector2(Mathf.Cos(a) * p.x - Mathf.Sin(a) * p.y,
+                    Mathf.Sin(a) * p.x + Mathf.Cos(a) * p.y)).ToArray();
+                var plan = UvJunctionCuts.Find(mesh.uv, mesh.triangles);
+                Assert.AreEqual(1, plan.originalCharts); Assert.Greater(plan.charts, 1); Assert.Greater(plan.cuts, 1);
+                var corners = mesh.triangles.Select(i => mesh.vertices[i]).ToArray();
+                var pixels = mesh.triangles.Select(i => mesh.uv[i] * 8).ToArray();
+                var packed = UvJunctionCuts.Pack(corners, pixels, 2, default);
+                var scan = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry { uv = packed,
+                    indices = Enumerable.Range(0, packed.Length).ToArray(), charts = new int[packed.Length] }, default);
+                Assert.IsTrue(scan.complete); Assert.AreEqual(0, scan.pairs); Assert.AreEqual(0, scan.degenerateFaces);
+                for (int t = 0; t < pixels.Length; t += 3)
+                    Assert.Less(ReverseUvTransfer.TriangleAnisotropy(corners[t], corners[t + 1], corners[t + 2],
+                        packed[t], packed[t + 1], packed[t + 2]), 1.001);
+            }
+            finally { Object.DestroyImmediate(mesh); }
         }
 
         [TestCase("#####/..#../..#../..#../..#..", 2)]

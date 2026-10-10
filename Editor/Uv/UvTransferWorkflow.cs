@@ -1082,8 +1082,9 @@ namespace SashaRX.UnityMeshLab
             {
                 EditorGUI.indentLevel++;
                 ctx.XatlasRotateChartsToAxis = EditorGUILayout.ToggleLeft(
-                    new GUIContent("Snap rotation to axis",
-                        "Constrain rotation to 0/90/180/270° (preserves texel alignment)."),
+                    new GUIContent("Align charts to axis",
+                        "Rotate each chart toward its compact bounding-box axes before packing. "
+                        + "With this off, Rotate charts still permits quarter-turn placement."),
                     ctx.XatlasRotateChartsToAxis);
                 EditorGUI.indentLevel--;
             }
@@ -1115,7 +1116,7 @@ namespace SashaRX.UnityMeshLab
         {
             ctx.CutNarrowUvJunctions = EditorGUILayout.ToggleLeft(
                 new GUIContent("Cut narrow UV junctions (experimental)",
-                    "Separate T/H/U branches and frame corners along existing mesh edges before Repack or Reverse UV preparation. Source UV0 and geometry are preserved."),
+                    "Separate U/T/F/E/H/O/X/C branches and frame corners along paths of existing mesh edges before Repack or Reverse UV preparation. Requires a compactness improvement. Source UV0 and geometry are preserved."),
                 ctx.CutNarrowUvJunctions);
         }
 

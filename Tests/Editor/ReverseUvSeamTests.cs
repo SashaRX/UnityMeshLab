@@ -254,30 +254,30 @@ namespace SashaRX.UnityMeshLab.Tests
             {
                 foreach(bool overlap in new[] {false,true})
                 {
-                    using var prepared=ReverseUvInputs.Prepare(levels);
-                    var origin=prepared.levels[0].inputs[0].toWorld.GetColumn(3);
-                    foreach(var level in prepared.levels)
+                    using var geometry=ReverseUvInputs.Prepare(levels);
+                    var origin=geometry.levels[0].inputs[0].toWorld.GetColumn(3);
+                    foreach(var level in geometry.levels)
                         foreach(var input in level.inputs)
                             File.WriteAllText(Path.Combine(directory,input.key+"-geometry.json"),JsonUtility.ToJson(new WoodenInputDump {
                                 key=input.key,lod=level.lod,positions=ReverseUvTransfer.RelativePositions(input,origin),indices=input.mesh.triangles},true));
-                    int side=prepared.PrepareSeed(256,2,32,default);
                     var trial=new AssetTrial {asset=path,overlap=overlap,improved=true,stage="projection"}; trials.trials.Add(trial);
-                    var task=ReverseUvTransfer.Build(prepared.levels,new ReverseUvTransfer.Options {seedResolution=side,preserveProjectedOverlap=overlap},true);
+                    var task=ReverseUvJunctionTrial.Build(levels,new ReverseUvTransfer.Options {seedResolution=256,preserveProjectedOverlap=overlap,
+                        cutNarrowJunctions=Environment.GetEnvironmentVariable("MESHLAB_REVERSE_JUNCTION_CUTS")=="1"},true,32,true);
                     while(!task.IsCompleted) yield return null;
                     if(task.IsFaulted) trial.error=task.Exception.GetBaseException().Message;
                     else
                     {
-                        using var result=task.Result;
+                        using var prepared=task.Result; var result=prepared.result;
                         BenchmarkRecorder.OutputDirectoryOverride=Path.Combine(directory,overlap?"overlap":"exclusive");
-                        trial.stage="audit"; trial.audit=ReverseUvAudit.Write(result,prepared.levels);
+                        trial.stage="audit"; trial.audit=ReverseUvAudit.Write(result,prepared.inputs.levels);
                         trial.inheritedAreaFraction=JsonUtility.FromJson<ReverseUvAudit.Audit>(File.ReadAllText(trial.audit)).levels.OrderBy(l=>l.lod).First().inheritedAreaFraction;
                         trial.accepted=true; trial.atlas=result.report.atlasSize;
-                        for(int level=0;level<prepared.levels.Length;++level)
-                            for(int node=0;node<prepared.levels[level].inputs.Length;++node)
+                        for(int level=0;level<prepared.inputs.levels.Length;++level)
+                            for(int node=0;node<prepared.inputs.levels[level].inputs.Length;++node)
                             {
-                                var input=prepared.levels[level].inputs[node]; var mesh=result.meshes[level][node];
+                                var input=prepared.inputs.levels[level].inputs[node]; var mesh=result.meshes[level][node];
                                 File.WriteAllText(Path.Combine(BenchmarkRecorder.OutputDirectoryOverride,input.key+"-layout.json"),JsonUtility.ToJson(new WoodenInputDump {
-                                    key=input.key,lod=prepared.levels[level].lod,positions=mesh.vertices,indices=mesh.triangles,uv=mesh.uv2},true));
+                                    key=input.key,lod=prepared.inputs.levels[level].lod,positions=mesh.vertices,indices=mesh.triangles,uv=mesh.uv2},true));
                             }
                     }
                     File.WriteAllText(Path.Combine(directory,"wooden-trials.json"),JsonUtility.ToJson(trials,true));
@@ -288,7 +288,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(trials.trials.All(t=>t.accepted),string.Join("\n",trials.trials.Select(t=>t.error)));
         }
 
-        [UnityTest]
+        [UnityTest, Timeout(600000)]
         public IEnumerator FrozenAssetChainsRetainBaselineAcceptance()
         {
             string paths=Environment.GetEnvironmentVariable("MESHLAB_REVERSE_ASSET_PATHS");
@@ -296,6 +296,8 @@ namespace SashaRX.UnityMeshLab.Tests
             string directory=Environment.GetEnvironmentVariable("MESHLAB_REVERSE_OUTPUT"); Assert.IsNotEmpty(directory);
             Directory.CreateDirectory(directory); var trials=new AssetTrials(); var previous=BenchmarkRecorder.OutputDirectoryOverride;
             var regressions=new List<string>();
+            string baselineFile=Environment.GetEnvironmentVariable("MESHLAB_REVERSE_BASELINE_TRIALS");
+            var frozenBaseline=string.IsNullOrEmpty(baselineFile)?null:JsonUtility.FromJson<AssetTrials>(File.ReadAllText(baselineFile));
             try
             {
                 foreach(string path in paths.Split(';'))
@@ -310,28 +312,26 @@ namespace SashaRX.UnityMeshLab.Tests
                     var snapshots=levels.SelectMany(l=>l.inputs).Select(i=>Snapshot(i.mesh)).ToArray();
                     foreach(bool overlap in new[] {false,true})
                     {
-                        AssetTrial baseline=null;
-                        foreach(bool improved in new[] {false,true})
+                        AssetTrial baseline=frozenBaseline?.trials.Single(t=>t.asset==path && t.overlap==overlap && t.improved);
+                        foreach(bool improved in frozenBaseline==null?new[] {false,true}:new[] {true})
                         {
                             var trial=new AssetTrial {asset=path,overlap=overlap,improved=improved,stage="cleanup"}; trials.trials.Add(trial);
-                            using var prepared=ReverseUvInputs.Prepare(levels);
-                            int side=0; trial.stage="seed";
-                            try {side=prepared.PrepareSeed(256,2,0,default);} catch(Exception e) {trial.error=e.Message;}
-                            if(trial.error==null)
+                            trial.stage="seed/projection";
                             {
                                 trial.stage="projection";
-                                var task=ReverseUvTransfer.Build(prepared.levels,new ReverseUvTransfer.Options {seedResolution=side,
-                                    splitDonorSeams=improved,fillAtlasVacancies=improved,preserveProjectedOverlap=overlap},true);
+                                var task=ReverseUvJunctionTrial.Build(levels,new ReverseUvTransfer.Options {seedResolution=256,
+                                    splitDonorSeams=improved,fillAtlasVacancies=improved,preserveProjectedOverlap=overlap,
+                                    cutNarrowJunctions=improved && Environment.GetEnvironmentVariable("MESHLAB_REVERSE_JUNCTION_CUTS")=="1"},true,0,true);
                                 while(!task.IsCompleted) yield return null;
                                 if(task.IsFaulted) trial.error=task.Exception.GetBaseException().Message;
                                 else
                                 {
-                                    using var result=task.Result; trial.stage="audit";
+                                    using var prepared=task.Result; var result=prepared.result; trial.stage="audit";
                                     BenchmarkRecorder.OutputDirectoryOverride=Path.Combine(directory,"assets",Path.GetFileNameWithoutExtension(path),
                                         (improved?"improved":"previous")+(overlap?"-overlap":"-exclusive"));
                                     try
                                     {
-                                        trial.audit=ReverseUvAudit.Write(result,prepared.levels);
+                                        trial.audit=ReverseUvAudit.Write(result,prepared.inputs.levels);
                                         var audit=JsonUtility.FromJson<ReverseUvAudit.Audit>(File.ReadAllText(trial.audit));
                                         trial.inheritedAreaFraction=audit.levels.Last().inheritedAreaFraction;
                                         trial.atlas=result.report.atlasSize; trial.accepted=true;

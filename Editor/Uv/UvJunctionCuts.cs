@@ -6,7 +6,7 @@ using UnityEngine;
 
 namespace SashaRX.UnityMeshLab
 {
-    /// <summary>Existing-edge cuts from reflex border corners across narrow joins.
+    /// <summary>Existing-edge paths from reflex border corners across narrow joins.
     /// UV shape alone proposes cuts; a compactness gate keeps ordinary charts intact.</summary>
     internal static class UvJunctionCuts
     {
@@ -136,25 +136,57 @@ namespace SashaRX.UnityMeshLab
             foreach (int v in reflex.OrderBy(v => v))
             {
                 token.ThrowIfCancellationRequested();
-                if (!internalEdges.TryGetValue(v, out var candidates)) continue;
+                if (!internalEdges.ContainsKey(v)) continue;
                 double run = Math.Max(BorderRun(v, next, uv, ref remaining), BorderRun(v, previous, uv, ref remaining));
                 if (remaining < 0) return new HashSet<long>();
-                Edge winner = null; double best = double.MaxValue; bool joinsReflexCorners = false;
-                foreach (var edge in candidates)
-                {
-                    int other = edge.a == v ? edge.b : edge.a;
-                    if (!next.ContainsKey(other)) continue;
-                    double length = (uv[v] - uv[other]).magnitude;
-                    // Width at most half a straight border run: a narrow join.
-                    if (length <= 0 || length > run * .5) continue;
-                    bool paired = reflex.Contains(other), tie = Math.Abs(length - best) <= best * 1e-5;
-                    if (winner == null || (!tie && length < best) || (tie && paired && !joinsReflexCorners)
-                        || (tie && paired == joinsReflexCorners && Key(edge.a, edge.b) < Key(winner.a, winner.b)))
-                    { winner = edge; best = length; joinsReflexCorners = paired; }
-                }
-                if (winner != null) selected.Add(Key(winner.a, winner.b));
+                var path = AcrossJoin(v, uv, internalEdges, next, reflex, run * .5, token, ref remaining);
+                if (remaining < 0) return new HashSet<long>();
+                foreach (long edge in path) selected.Add(edge);
             }
             return selected;
+        }
+
+        // A join may contain intermediate tessellation vertices. Search through
+        // the interior, stop at its opposite border and avoid a bent detour that
+        // would just peel triangles off the corner. No face interior is changed.
+        static List<long> AcrossJoin(int start, Vector2[] uv, Dictionary<int, List<Edge>> edges,
+            Dictionary<int, int> border, HashSet<int> reflex, double limit, CancellationToken token, ref long remaining)
+        {
+            var queue = new SortedSet<(double distance, int vertex)> { (0, start) };
+            var distances = new Dictionary<int, double> { [start] = 0 };
+            var parents = new Dictionary<int, int>();
+            int winner = -1; double best = double.MaxValue; bool paired = false;
+            while (queue.Count > 0)
+            {
+                token.ThrowIfCancellationRequested();
+                if (--remaining < 0) return new List<long>();
+                var item = queue.Min; queue.Remove(item);
+                if (item.distance > limit || item.distance > best * 1.00001) break;
+                int v = item.vertex;
+                if (v != start && border.ContainsKey(v))
+                {
+                    double chord = (uv[start] - uv[v]).magnitude;
+                    if (chord <= 0 || item.distance > chord * 1.25) continue;
+                    bool joinsReflex = reflex.Contains(v), tie = Math.Abs(item.distance - best) <= best * 1e-5;
+                    if (winner < 0 || (!tie && item.distance < best) || (tie && joinsReflex && !paired)
+                        || (tie && joinsReflex == paired && v < winner))
+                    { winner = v; best = item.distance; paired = joinsReflex; }
+                    continue;
+                }
+                if (!edges.TryGetValue(v, out var incident)) continue;
+                foreach (var edge in incident)
+                {
+                    if (--remaining < 0) return new List<long>();
+                    int other = edge.a == v ? edge.b : edge.a;
+                    double distance = item.distance + (uv[v] - uv[other]).magnitude;
+                    if (distance > limit || (distances.TryGetValue(other, out double old) && distance >= old)) continue;
+                    if (distances.TryGetValue(other, out old)) queue.Remove((old, other));
+                    distances[other] = distance; parents[other] = v; queue.Add((distance, other));
+                }
+            }
+            var result = new List<long>();
+            for (int v = winner; v >= 0 && v != start; v = parents[v]) result.Add(Key(v, parents[v]));
+            return result;
         }
 
         static double BorderRun(int start, Dictionary<int, int> walk, Vector2[] uv, ref long remaining)
@@ -197,6 +229,9 @@ namespace SashaRX.UnityMeshLab
             return best;
         }
 
+        internal static Box AxisBox(Vector2[] uv, int[] triangles, int[] faces)
+            => MeasureBox(uv, triangles, faces, Vector2.right);
+
         static Box MeasureBox(Vector2[] uv, int[] triangles, int[] faces, Vector2 axis)
         {
             var box = new Box { axis = axis, min = new Vector2(float.MaxValue, float.MaxValue), max = new Vector2(float.MinValue, float.MinValue) };
@@ -224,7 +259,7 @@ namespace SashaRX.UnityMeshLab
             return copy;
         }
 
-        internal static Vector2[] Pack(Vector3[] corners, Vector2[] pixels, int padding, CancellationToken token)
+        internal static Vector2[] Pack(Vector3[] corners, Vector2[] pixels, int padding, CancellationToken token, bool alignToAxis = true)
         {
             var unique = new Dictionary<(Vector3, Vector2), int>();
             var uv = new List<Vector2>(); var indices = new int[corners.Length];
@@ -238,7 +273,8 @@ namespace SashaRX.UnityMeshLab
             var array = uv.ToArray(); var plan = Find(array, indices, token);
             if (plan.cuts == 0) return pixels;
             var pieces = Enumerable.Range(0, plan.regions.Length).GroupBy(f => plan.regions[f])
-                .Select(g => (faces: g.ToArray(), box: BestBox(array, indices, g.ToArray(), token))).ToArray();
+                .Select(g => (faces: g.ToArray(), box: alignToAxis ? BestBox(array, indices, g.ToArray(), token)
+                    : AxisBox(array, indices, g.ToArray()))).ToArray();
             double rectangles = pieces.Sum(p => (p.box.max.x - p.box.min.x + padding) * (double)(p.box.max.y - p.box.min.y + padding));
             float shelf = Math.Max(pieces.Max(p => p.box.max.x - p.box.min.x), (float)Math.Sqrt(rectangles * 1.25));
             var output = new Vector2[pixels.Length]; float x = 0, y = 0, height = 0;

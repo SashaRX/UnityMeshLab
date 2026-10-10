@@ -12,7 +12,9 @@ namespace SashaRX.UnityMeshLab
         /// <summary>One seed atlas in world metric, independent of UV0 fragmentation
         /// and source texture aspect. Outputs remain detached until the chain commits.</summary>
         internal static Mesh[] Prepare(ReverseUvTransfer.Input[] inputs, int resolution, int padding,
-            float texelsPerUnit, CancellationToken token, out int atlasSize, bool cutNarrowJunctions = false)
+            float texelsPerUnit, CancellationToken token, out int atlasSize, bool cutNarrowJunctions = false,
+            bool rotateCharts = true, bool rotateChartsToAxis = false, bool compact = true,
+            Action<float> preparedDensity = null)
         {
             if (resolution < 16 || resolution > 8192 || padding < 0 || padding >= resolution / 2
                 || float.IsNaN(texelsPerUnit) || float.IsInfinity(texelsPerUnit) || texelsPerUnit < 0)
@@ -50,20 +52,16 @@ namespace SashaRX.UnityMeshLab
                 var uv=Unwrapping.GeneratePerTriangleUV(temporary,settings);
                 if(uv.Length!=corners.Count) throw new InvalidOperationException("Reverse seed unwrap failed.");
                 float density=texelsPerUnit>0?texelsPerUnit:(float)(resolution*Math.Sqrt(.6/area));
-                var options=new ReverseUvTransfer.Options {seedResolution=resolution,padding=padding,cutNarrowJunctions=cutNarrowJunctions};
-                var pixels=ReverseUvNewCharts.Prepare(corners.ToArray(),uv,density,options,token,out _);
-                var min=pixels[0]; var max=min;
-                foreach(var p in pixels) { min=Vector2.Min(min,p); max=Vector2.Max(max,p); }
-                float span=Math.Max(max.x-min.x,max.y-min.y);
-                atlasSize=texelsPerUnit>0?Math.Max(16,Mathf.NextPowerOfTwo(Mathf.CeilToInt(span+padding*2))):resolution;
-                if(atlasSize>8192) throw new InvalidOperationException("Reverse seed atlas exceeds 8192 pixels.");
-                float scale=texelsPerUnit>0?1:(resolution-padding*2)/span;
+                var options=new ReverseUvTransfer.Options {seedResolution=resolution,padding=padding,cutNarrowJunctions=cutNarrowJunctions,
+                    rotateCharts=rotateCharts,rotateChartsToAxis=rotateChartsToAxis};
+                var pixels=ReverseUvSeedPacking.Prepare(corners.ToArray(),uv,density,texelsPerUnit>0,options,token,out atlasSize,compact);
+                preparedDensity?.Invoke(options.seedDensity);
                 int offset=0;
                 for(int node=0;node<inputs.Length;++node)
                 {
                     token.ThrowIfCancellationRequested();
                     var normalized=new Vector2[originalIndices[node].Length];
-                    for(int i=0;i<normalized.Length;++i) normalized[i]=((pixels[offset+i]-min)*scale+Vector2.one*padding)/atlasSize;
+                    for(int i=0;i<normalized.Length;++i) normalized[i]=pixels[offset+i]/atlasSize;
                     offset+=normalized.Length;
                     output[node]=ReverseUvMesh.Copy(inputs[node].mesh,originalIndices[node],normalized);
                 }

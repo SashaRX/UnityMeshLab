@@ -14,17 +14,7 @@ namespace SashaRX.UnityMeshLab
         internal static Vector2[] Prepare(Vector3[] corners, Vector2[] uv, float density,
             ReverseUvTransfer.Options options, CancellationToken token, out bool[] fallback)
         {
-            fallback = new bool[corners.Length / 3];
-            for (int f = 0; f < fallback.Length; ++f)
-            {
-                int t = f * 3;
-                fallback[f] = ReverseUvTransfer.TriangleAnisotropy(corners[t],corners[t+1],corners[t+2],uv[t],uv[t+1],uv[t+2]) > options.maxAnisotropy;
-            }
-            var scan = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry { uv = uv,
-                indices = Enumerable.Range(0, uv.Length).ToArray(), charts = new int[uv.Length] }, token,
-                comparisonBudget: options.comparisonBudget, collectConflicts:true);
-            if (!scan.complete) throw new InvalidOperationException("New reverse chart validation exceeded its budget.");
-            foreach (var (a,b) in scan.conflicts) { fallback[a]=true; fallback[b]=true; }
+            fallback = Classify(corners, uv, options, token);
             double worldArea = 0, uvArea = 0;
             var min = new Vector2(float.MaxValue,float.MaxValue); var max = -min;
             for (int f = 0; f < fallback.Length; ++f)
@@ -62,14 +52,32 @@ namespace SashaRX.UnityMeshLab
                 int t=rect.face*3; output[t]=offset; output[t+1]=rect.b+offset; output[t+2]=rect.c+offset;
                 x+=rect.width+options.padding; rowHeight=Math.Max(rowHeight,rect.height);
             }
-            return options.cutNarrowJunctions ? UvJunctionCuts.Pack(corners, output, options.padding, token) : output;
+            return options.cutNarrowJunctions ? UvJunctionCuts.Pack(corners, output, options.padding, token,
+                options.rotateCharts && options.rotateChartsToAxis) : output;
+        }
+
+        internal static bool[] Classify(Vector3[] corners, Vector2[] uv, ReverseUvTransfer.Options options, CancellationToken token)
+        {
+            var fallback = new bool[corners.Length / 3];
+            for (int f = 0; f < fallback.Length; ++f)
+            {
+                int t = f * 3;
+                fallback[f] = ReverseUvTransfer.TriangleAnisotropy(corners[t],corners[t+1],corners[t+2],uv[t],uv[t+1],uv[t+2]) > options.maxAnisotropy;
+            }
+            var scan = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry { uv = uv,
+                indices = Enumerable.Range(0, uv.Length).ToArray(), charts = new int[uv.Length] }, token,
+                comparisonBudget: options.comparisonBudget, collectConflicts:true);
+            if (!scan.complete) throw new InvalidOperationException("New reverse chart validation exceeded its budget.");
+            foreach (var (a,b) in scan.conflicts) { fallback[a]=true; fallback[b]=true; }
+            return fallback;
         }
         /// <summary>Reconstruct only failed independent rescue triangles at their
         /// final atlas location. Float32 rounding depends on the translation;
         /// try cyclic bases and sub-ULP rigid shifts inside the reserved texel box.
         /// Geometry, density, inherited UVs and the stretch limit stay fixed.</summary>
         internal static void Stabilize(Vector3[] corners, Vector2[] pixels, bool[] fallback,
-            float density, float maxAnisotropy, float texel = 1, CancellationToken token = default)
+            float density, float maxAnisotropy, float texel = 1, CancellationToken token = default,
+            bool reserveCollapsedFootprint = false)
         {
             for(int f=0;f<fallback.Length;++f)
             {
@@ -80,6 +88,7 @@ namespace SashaRX.UnityMeshLab
                 var max=Vector2.Max(pixels[t],Vector2.Max(pixels[t+1],pixels[t+2]));
                 double width=Math.Ceiling(((double)max.x-min.x)/texel)*texel;
                 double height=Math.Ceiling(((double)max.y-min.y)/texel)*texel;
+                if(reserveCollapsedFootprint) {width=Math.Max(texel,width);height=Math.Max(texel,height);}
                 // Search less than one Float32 spacing at the largest coordinate.
                 double step=Math.Pow(2,Math.Floor(Math.Log(Math.Max(1,Math.Max(Math.Abs(max.x),Math.Abs(max.y))),2))-23);
                 double best=maxAnisotropy; Vector2[] selected=null;

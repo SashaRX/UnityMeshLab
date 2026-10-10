@@ -18,6 +18,8 @@ namespace SashaRX.UnityMeshLab
             public float projectionReach = .05f, normalDot = .5f, maxAnisotropy = 4;
             public bool preserveProjectedOverlap;
             public bool cutNarrowJunctions;
+            public bool rotateCharts = true, rotateChartsToAxis;
+            internal float seedDensity;
             public bool splitDonorSeams = true, fillAtlasVacancies = true;
             public long comparisonBudget = 2000000;
             internal Dictionary<(int lod, int node), HashSet<int>> seamCutExclusions;
@@ -73,6 +75,8 @@ namespace SashaRX.UnityMeshLab
             public List<OverlapRelation> overlaps = new List<OverlapRelation>();
             public List<ReverseUvCorrespondenceGraph.Edge> edges = new List<ReverseUvCorrespondenceGraph.Edge>();
             public string refinementRefusal;
+            public string seedPacking, seedPackingRefusal;
+            public bool seedChartRotation;
         }
 
         [Serializable] internal sealed class OverlapRelation
@@ -132,7 +136,7 @@ namespace SashaRX.UnityMeshLab
                 token.ThrowIfCancellationRequested();
                 var seed = Capture(levels[0], origin);
                 InitializeSeed(seed, options, ref nextChart, token);
-                float density = Density(seed);
+                float density = options.seedDensity>0?options.seedDensity:Density(seed);
                 result.report.texelsPerUnit = density;
                 all.Add(seed);
                 for (int level = 1; level < levels.Length; ++level)

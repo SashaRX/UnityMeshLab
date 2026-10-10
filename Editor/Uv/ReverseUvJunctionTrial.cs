@@ -23,12 +23,23 @@ namespace SashaRX.UnityMeshLab
             ReverseUvTransfer.Options options, bool prepareSeed, float density, bool useAsync = false,
             CancellationToken token = default)
         {
-            var baseline = await BuildOne(sources, options, prepareSeed, density, false, useAsync, token);
-            if (!options.cutNarrowJunctions) return baseline;
+            PreparedResult baseline;
+            try { baseline = await BuildOne(sources, options, prepareSeed, density, false, useAsync, token, false); }
+            catch (InvalidOperationException) when (prepareSeed)
+            { baseline = await BuildOne(sources, options, prepareSeed, density, false, useAsync, token, true); }
+            if (prepareSeed) baseline = await TryLayout(baseline, sources, options, density, false, useAsync, token);
+            if (options.cutNarrowJunctions)
+                baseline = await TryLayout(baseline, sources, options, density, true, useAsync, token, prepareSeed);
+            return baseline;
+        }
+
+        static async Task<PreparedResult> TryLayout(PreparedResult baseline, ReverseUvTransfer.Level[] sources,
+            ReverseUvTransfer.Options options, float density, bool cuts, bool useAsync, CancellationToken token, bool prepareSeed = true)
+        {
             PreparedResult candidate = null;
             try
             {
-                candidate = await BuildOne(sources, options, prepareSeed, density, true, useAsync, token);
+                candidate = await BuildOne(sources, options, prepareSeed, density, cuts, useAsync, token, true);
                 string refusal = Compare(baseline, candidate, token);
                 if (refusal == null)
                 {
@@ -46,26 +57,43 @@ namespace SashaRX.UnityMeshLab
                 candidate?.Dispose(); baseline.Dispose(); throw;
             }
             candidate?.Dispose();
-            UvtLog.Warn(UvtLog.Category.Repack, $"[JunctionCuts] Reverse retained the baseline: {baseline.refusal}");
+            baseline.result.report.seedPackingRefusal=baseline.refusal;
+            UvtLog.Warn(UvtLog.Category.Repack, $"[ReverseUV] Retained normalized seed layout ({(cuts ? "junction cuts" : "packing/projection trial")}): {baseline.refusal}");
             return baseline;
         }
 
         static async Task<PreparedResult> BuildOne(ReverseUvTransfer.Level[] sources,
             ReverseUvTransfer.Options options, bool prepareSeed, float density, bool cuts, bool useAsync,
-            CancellationToken token)
+            CancellationToken token, bool compact)
         {
             var state = new PreparedResult();
             try
             {
+                if(UvProgress.IsActive) UvProgress.Report(.12f,compact?"Normalize seed and test compact packing":"Normalize and repair coarsest LOD");
                 state.inputs = ReverseUvInputs.Prepare(sources, token);
-                int size = prepareSeed ? state.inputs.PrepareSeed(options.seedResolution, options.padding, density, token, cuts)
+                int size = prepareSeed ? state.inputs.PrepareSeed(options.seedResolution, options.padding, density, token, cuts,
+                    options.rotateCharts, options.rotateChartsToAxis, compact)
                     : options.seedResolution;
                 var trial = new ReverseUvTransfer.Options { seedResolution = size, padding = options.padding,
                     maxAtlasSize = options.maxAtlasSize, projectionReach = options.projectionReach, normalDot = options.normalDot,
                     maxAnisotropy = options.maxAnisotropy, preserveProjectedOverlap = options.preserveProjectedOverlap,
                     comparisonBudget = options.comparisonBudget, cutNarrowJunctions = cuts,
-                    splitDonorSeams = options.splitDonorSeams, fillAtlasVacancies = options.fillAtlasVacancies };
+                    splitDonorSeams = options.splitDonorSeams, fillAtlasVacancies = options.fillAtlasVacancies,
+                    rotateCharts = options.rotateCharts, rotateChartsToAxis = options.rotateChartsToAxis,
+                    seedDensity=state.inputs.seedDensity };
+                if(UvProgress.IsActive) UvProgress.Report(.25f,cuts?"Project with junction cuts":"Validate packing across the LOD chain");
                 state.result = await ReverseUvTransfer.Build(state.inputs.levels, trial, useAsync, token);
+                state.result.report.seedPacking=prepareSeed?(compact?"compact":"normalized-original"):"existing";
+                state.result.report.seedChartRotation=prepareSeed && compact && options.rotateCharts;
+                for(int level=0;level<state.result.meshes.Count;++level)
+                    for(int node=0;node<state.result.meshes[level].Length;++node)
+                    {
+                        var mesh=state.result.meshes[level][node];
+                        var quality=TransferUvQuality.Measure(mesh,mesh.uv2,Vector2.one,state.inputs.levels[level].inputs[node].toWorld);
+                        if(!quality.overlapScanComplete || quality.invalidFaces>0 || quality.degenerateFaces>0
+                            || quality.outOfBoundsVertices>0 || double.IsNaN(quality.worstAnisotropy) || quality.worstAnisotropy>4.001)
+                            throw new InvalidOperationException($"Reverse layout metric failed for LOD{state.inputs.levels[level].lod} '{state.inputs.levels[level].inputs[node].key}' (anisotropy {quality.worstAnisotropy:G6}, invalid {quality.invalidFaces}, collapsed {quality.degenerateFaces}, outside {quality.outOfBoundsVertices}).");
+                    }
                 return state;
             }
             catch { state.Dispose(); throw; }

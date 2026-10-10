@@ -40,6 +40,78 @@
 
 ## Progressive reverse atlas — 2026-10-09
 
+### Coarsest normalization, compact packing and junction paths — 2026-10-10
+
+Continuation on PR225, baseline `30fcd06`, requested by the user. The forward
+solvers/native ABI are unchanged. Narrow cuts previously required one direct
+interior edge between two border vertices; extra tessellation prevented the
+same geometric cut. A bounded shortest interior-edge path now crosses the join,
+stopping at the opposite border. Width remains at most half a straight border
+run, path detour at most 1.25 times its chord, and total oriented-box area must
+improve by at least 15%. U/T/F/E/H/O/X/C controls cover rotated shapes with three
+segments per original grid edge, complete overlap scans and unchanged metric.
+Convex, nonmanifold and ambiguous charts retain the existing topology. No new
+edge through a face interior is synthesized by this preparation pass.
+
+Reverse preparation now normalizes world density per connected coarsest chart,
+repairs invalid UV faces, tests compact rectangle packing with optional quarter
+turns/axis alignment, and stabilizes intrinsic rescues at their final location.
+Manual mode searches the highest uniform scale that fits; auto mode retains the
+requested density. It never scales U and V independently. Incremental pruning
+checks only new free-rectangle fragments, avoiding repeated scans of unchanged
+pairs on fragmented Train inputs without increasing the packing work budget.
+
+Initial trials were **not safe to publish**: blindly moving the seed reduced
+DressingTable inheritance from 96.34% to 88.29%, and some placements failed the
+independent final metric gate. Recentring already normalized tiny charts added
+Float32 errors. Charts already within 0.1% of the requested world density, or
+within the area uncertainty derived from Float32 coordinate spacing and triangle
+perimeter, now retain their coordinates exactly. An analytic thin-chart control
+checks exact preservation, including already repaired triangles. The normalized
+original trial also retains its original canvas when a correction shrinks a
+chart, avoiding a fresh global refit of unaffected coordinates. This is a density
+normalization tolerance;
+zero-area, stretch and overlap publication gates are unchanged.
+
+Train exposed a separate one-ULP median-density change after valid per-chart
+corrections: the inferred new-chart density changed from 1.923953533 to
+1.923953652 and overlap inheritance decreased by 0.052343 percentage points.
+The original-placement trial now carries the original seed's reference median
+through projection/refinement, rather than re-estimating it after corrections.
+The compact trial still measures its own seed. Frozen prior-commit trial reports
+are accepted as the private benchmark baseline so this small correspondence
+regression is detected independently of the current legacy solver.
+
+The workflow compares complete chains from the normalized original placement,
+compact packing and optional junction cuts. A candidate must preserve every
+inherited barycentric region/overlap, density, distortion and atlas side; final
+output meshes also pass the independent quality measurement used by the audit.
+Failed candidates release their meshes and retain the accepted normalized
+control. This may run two or three complete chains. Reports record `seedPacking`,
+`seedChartRotation` and `seedPackingRefusal`; the viewport summary identifies a
+retained safer layout. Frozen FBX and captured-case benchmarks use this same
+workflow rather than bypassing seed selection.
+
+Forward Transfer-only continues to inherit an existing atlas; enable the narrow
+cut option before Repack/Full Pipeline. Reverse prepares the last included LOD
+before projection and does not require a preceding forward transfer. Once the
+seed has been accepted, vacancy placement still only translates new islands;
+inherited texel coordinates remain fixed. Remaining Kitchen/Kamaz precision
+refusals are recorded separately from passing unit or corpus tests.
+
+Final isolated Unity 6000.2.6f2 validation: **179 passed, zero failed, one unrelated
+optional legacy-input skip**, 533.6 seconds. With cuts enabled, all 18 current
+solver FBX/policy trials match `30fcd06` in acceptance, atlas size, finest inherited
+area, per-mesh quality and density: 16 accepted and two Kitchen refusals. Train's
+only remaining measurement differences are triangle UV-area fractions below
+2.7e-10 after normalization; inheritance and overlap counts are unchanged. The
+eight Kamaz controls still refuse invalid Float32 seed placements. Both FBX
+define reference builds, identifier/dependency checks and diff whitespace pass.
+The earlier 36-row legacy/current run also retained acceptance and atlas sizes;
+superseded packing prototypes are not counted as final validation. Wooden's
+compact auto-density candidate is still rejected for lost inheritance, retaining
+the 512-square layout and its low 7.34–8.37% triangle UV coverage.
+
 ### Final-placement intrinsic precision — 2026-10-10
 
 Continuation of the reverse-atlas experiment on PR225, baseline `0596960`.
