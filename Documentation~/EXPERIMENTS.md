@@ -15,6 +15,13 @@
   tiny same-chart intersection; certification is not relaxed. The long case
   passes, while final corrected public controls run separately from its three
   outdated prototype fixture failures.
+  Packing controls use byte-identical Simplify inputs: no merge finishes in
+  62.9 seconds but retains 3,641 islands / worst stretch 12,216.9. Fast packing
+  plus merge reaches a certified 898-island / 3.89556 narrow checkpoint, then
+  is stopped after the 30-minute research budget without a full-case pass.
+  The remaining broad bracket cannot beat 898 islands after its rejected
+  upper budget falls to 2,233 joins; early exit and rejected-pair reuse remain
+  proposed performance work. See the replay's packing-control table.
 
 - Same Remesh UV0 chart-merge experiment; baseline `fc62cc8`. Legacy transfer,
   `GroupedShellTransfer`, `XatlasRepack` and `SymmetrySplitShells` are unchanged.

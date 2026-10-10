@@ -156,3 +156,33 @@ prototype fixture failures, compiled before their protected-source expectations
 were corrected. The corrected six controls pass in `roundoff-controls-final.xml`
 and the final 322-pass regression run. Do not report that mixed XML as a
 zero-failure suite.
+
+### Packing and merge cost controls
+
+All three variants export the same Simplify geometry (SHA-256
+`B486AA2DAF9F4D4765186D815DF805F756AD5F59B7B53B7C97267261E1B6ED6E`).
+Only the packing/merge settings differ; working-project settings stay intact.
+
+| Variant | Status | Islands | Mean/worst stretch | Time |
+|---|---|---:|---:|---:|
+| Saved brute force + merge | Full case passed | 663 | 1.07793 / 7.36968 | 1,557.9 s case |
+| Fast packing, no merge | Full case passed | 3,641 | 1.03076 / 12,216.9 | 62.9 s case |
+| Fast packing + merge | Research budget stop; full case incomplete | 898 certified narrow checkpoint | 1.04129 / 3.89556 checkpoint | 1,834.1 s process including startup |
+
+The completed atlases and recorded narrow checkpoint have complete scans with
+zero overlaps, degenerate faces and out-of-bounds vertices. The budget-stopped
+case is not counted as passed. Reports/logs are in `revision2-fast-no-merge/`
+and `revision2-fast/` beneath the CafeChair result directory; the latter has
+an explicit `research-budget.json` rather than a successful final-case report.
+
+The first fast broad proposal has 663 islands but worsens stretch to 11.0917,
+so the existing quality gate rejects it. A later refusal lowers the search's
+upper join budget to 2,233. Even perfect remaining joins leave at least
+`3,641 - 2,233 = 1,408` islands, above the certified narrow 898. Within that
+remaining refinement bracket, no probe can win chart-count selection. This
+points to a safe early-exit condition based on the rejected upper budget;
+the current fast-packing refinement does not implement it. Pair checks also
+rebuild/retry globally after each accepted join. Caching rejected pairs until
+either endpoint chart changes is a separate proposed optimization, requiring
+exact output/deterministic-order controls before adoption. Neither proposal
+is included in these measurement-only changes.
