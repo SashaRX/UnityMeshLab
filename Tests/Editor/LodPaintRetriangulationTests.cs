@@ -12,6 +12,8 @@ namespace SashaRX.UnityMeshLab.Tests
     {
         readonly List<Mesh> owned=new List<Mesh>();
         Mesh Track(Mesh mesh) { if (mesh) owned.Add(mesh); return mesh; }
+        static byte[] TangentBytes(IEnumerable<Vector4> values)
+            => values.SelectMany(v => new[] {v.x,v.y,v.z,v.w}).SelectMany(value => BitConverter.GetBytes(value)).ToArray();
         [TearDown] public void Cleanup() { foreach (var mesh in owned) if (mesh) Object.DestroyImmediate(mesh); owned.Clear(); }
         static MeshSimplifier.SimplifySettings Settings => new MeshSimplifier.SimplifySettings { uvChannel=1,uv2Weight=20,normalWeight=1,colorWeight=1 };
         Mesh Panel(bool source,bool packed=false,bool seam=false)
@@ -127,7 +129,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var screen=new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
             var result=Track(LodPaintRetriangulation.Correct(source,reduced,screen,Settings,out var report));
             Assert.That(result!=null,Is.EqualTo(allowed),JsonUtility.ToJson(report));
-            CollectionAssert.AreEqual(tangents,reduced.tangents); CollectionAssert.AreEqual(indices,reduced.triangles);
+            CollectionAssert.AreEqual(TangentBytes(tangents),TangentBytes(reduced.tangents)); CollectionAssert.AreEqual(indices,reduced.triangles);
         }
 
         [Test]
