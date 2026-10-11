@@ -155,7 +155,7 @@ namespace SashaRX.UnityMeshLab
                 Object ping;
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
                 if (!hierarchy) {
-                    ping = ExportFbx(folder + "/" + clean + ".fbx", root, materials[0], prefabPath, settings.embedFbxTextures, normalize);
+                    ping = ExportFbx(folder + "/" + clean + ".fbx", root, materials[0], prefabPath, normalize);
                 }
                 else
 #endif
@@ -194,11 +194,9 @@ namespace SashaRX.UnityMeshLab
         // channel re-save of a source FBX, so the isolated-export core's same-vertex-
         // count snapshot contract does not apply; a failed export still rolls the
         // whole folder back.
-        static Object ExportFbx(string fbxPath, GameObject root, Material material, string prefabPath, bool embedTextures, bool normalizedTransforms)
+        static Object ExportFbx(string fbxPath, GameObject root, Material material, string prefabPath, bool normalizedTransforms)
         {
-            // Embedded maps make the FBX self-contained; a linked FBX would reference
-            // this machine's absolute paths instead.
-            FbxExport.Write(fbxPath, root, embedTextures, normalizedTransforms);
+            FbxExport.Write(fbxPath, root, normalizedTransforms: normalizedTransforms);
             var modelImporter = (ModelImporter)AssetImporter.GetAtPath(fbxPath);
             if (modelImporter != null) {
                 // The curated material + prefab ship next to the FBX; keep the importer

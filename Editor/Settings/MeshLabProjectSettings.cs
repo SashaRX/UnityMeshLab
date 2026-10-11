@@ -6,6 +6,8 @@ using UnityEngine;
 
 namespace SashaRX.UnityMeshLab
 {
+    public enum MeshLabFbxFormat { Binary, ASCII }
+
     class MeshLabProjectSettings : ScriptableObject
     {
         const string AssetPath = "ProjectSettings/MeshLabSettings.asset";
@@ -18,6 +20,8 @@ namespace SashaRX.UnityMeshLab
 
         // ── Output ──
         public string savePath = "Assets/UnityMeshLab/Output";
+        public MeshLabFbxFormat fbxFormat = MeshLabFbxFormat.Binary;
+        public bool embedFbxTextures;
 
         // ── UV2 pipeline ──
         public bool sidecarMode;
@@ -79,7 +83,7 @@ namespace SashaRX.UnityMeshLab
                 keywords = new HashSet<string>
                 {
                     "mesh", "lab", "atlas", "repack", "padding",
-                    "uv", "sidecar", "ao", "vertex", "lightmap"
+                    "uv", "sidecar", "ao", "vertex", "lightmap", "fbx", "binary", "textures"
                 }
             };
         }
@@ -123,6 +127,16 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.Space(12);
             EditorGUILayout.LabelField("Output", EditorStyles.boldLabel);
             inst.savePath = EditorGUILayout.TextField("Default Save Path", inst.savePath);
+
+            EditorGUILayout.Space(12);
+            EditorGUILayout.LabelField("FBX Export", EditorStyles.boldLabel);
+            inst.fbxFormat = (MeshLabFbxFormat)EditorGUILayout.EnumPopup(
+                new GUIContent("Format", "Used by FBX overwrite, export and Remesh saves."), inst.fbxFormat);
+            using (new EditorGUI.DisabledScope(inst.fbxFormat != MeshLabFbxFormat.Binary))
+                inst.embedFbxTextures = EditorGUILayout.Toggle(new GUIContent("Embed textures",
+                    "Include texture files inside binary FBX. Off: keep external texture references."), inst.embedFbxTextures);
+            if (inst.fbxFormat == MeshLabFbxFormat.ASCII)
+                EditorGUILayout.HelpBox("ASCII FBX uses external textures; embedding is disabled.", MessageType.None);
 
             EditorGUILayout.Space(12);
             EditorGUILayout.LabelField("UV2 Pipeline", EditorStyles.boldLabel);
@@ -169,7 +183,7 @@ namespace SashaRX.UnityMeshLab
 
                 if (GUILayout.Button(
                         new GUIContent("Reset to defaults",
-                            "Reset every Mesh Lab project setting (Repack defaults, Output path, "
+                            "Reset every Mesh Lab project setting (Repack defaults, Output path, FBX export, "
                             + "Sidecar mode, Vertex AO defaults, Show Debug UI) back to its built-in "
                             + "default value. Does NOT touch existing sidecar files or scene state."),
                         GUILayout.Height(22), GUILayout.MaxWidth(180)))
@@ -239,6 +253,8 @@ namespace SashaRX.UnityMeshLab
                 inst.borderPaddingPx = fresh.borderPaddingPx;
                 inst.repackPerMesh   = fresh.repackPerMesh;
                 inst.savePath        = fresh.savePath;
+                inst.fbxFormat       = fresh.fbxFormat;
+                inst.embedFbxTextures = fresh.embedFbxTextures;
                 inst.sidecarMode     = fresh.sidecarMode;
                 inst.aoChannelType   = fresh.aoChannelType;
                 inst.aoChannelComp   = fresh.aoChannelComp;

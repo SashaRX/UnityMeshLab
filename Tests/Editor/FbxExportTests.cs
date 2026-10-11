@@ -341,8 +341,12 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        public void NormalizedFbxRetainsEmbeddedTexturesAfterDeletingTheOriginalMap()
+        public void NormalizedFbxUsesProjectEmbeddingAfterDeletingTheOriginalMap()
         {
+            var settings = MeshLabProjectSettings.Instance;
+            var previousFormat = settings.fbxFormat;
+            bool previousEmbed = settings.embedFbxTextures;
+            settings.fbxFormat = MeshLabFbxFormat.Binary; settings.embedFbxTextures = true;
             string folderName = "MeshLabFbxEmbedded_" + System.Guid.NewGuid().ToString("N");
             string folder = "Assets/" + folderName;
             AssetDatabase.CreateFolder("Assets", folderName);
@@ -360,7 +364,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 var root = Node("Embedded", null, Quad("Embedded"), renderer: true);
                 root.GetComponent<MeshRenderer>().sharedMaterial = material;
                 string path = folder + "/embedded.fbx";
-                FbxExport.Write(path, root, embedTextures: true, normalizedTransforms: true);
+                FbxExport.Write(path, root, normalizedTransforms: true);
                 AssetDatabase.DeleteAsset(mapPath);
                 AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
                 AssetDatabase.CreateFolder(folder, "Extracted");
@@ -369,7 +373,11 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsNotEmpty(AssetDatabase.FindAssets("t:Texture2D", new[] { folder + "/Extracted" }),
                     "the converted file carries the map independently of its source path");
             }
-            finally { AssetDatabase.DeleteAsset(folder); }
+            finally
+            {
+                settings.fbxFormat = previousFormat; settings.embedFbxTextures = previousEmbed;
+                AssetDatabase.DeleteAsset(folder);
+            }
         }
 #endif
 

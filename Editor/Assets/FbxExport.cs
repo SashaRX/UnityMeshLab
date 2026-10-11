@@ -24,6 +24,17 @@ namespace SashaRX.UnityMeshLab
         const string MetaExtension = ".meta";
         const string RelinkUndoLabel = "Relink Mesh";
 
+        /// <summary>Explicit shading edits on selected submeshes of a new FBX variant.</summary>
+        internal sealed class ShadingSelection
+        {
+            internal readonly Dictionary<string, bool[]> submeshes = new Dictionary<string, bool[]>(StringComparer.Ordinal);
+            internal readonly Dictionary<string, HashSet<string>> sourceNodes = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+            internal Action<string, ImportAssetOptions> importAsset = AssetDatabase.ImportAsset;
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+            internal readonly FbxSourceDocument.MediaOwnership mediaOwnership = new FbxSourceDocument.MediaOwnership();
+#endif
+        }
+
         // ─────────────────────────────────────────────────────────────────
         // Names
         // ─────────────────────────────────────────────────────────────────
@@ -595,7 +606,8 @@ namespace SashaRX.UnityMeshLab
             FbxExportIntent intent,
             string outputFbxPath,
             Material collisionMaterial,
-            LODGroup sceneRoot)
+            LODGroup sceneRoot,
+            ShadingSelection shadingSelection = null)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             if (string.IsNullOrEmpty(sourceFbxPath) || entries == null) return false;
@@ -604,7 +616,7 @@ namespace SashaRX.UnityMeshLab
             // else in the file is rebuilt (see FbxChannelWrite).
             if (FbxChannelWrite.Handles(intent))
             {
-                try { return FbxChannelWrite.Write(sourceFbxPath, entries, intent, outputFbxPath, sceneRoot); }
+                try { return FbxChannelWrite.Write(sourceFbxPath, entries, intent, outputFbxPath, sceneRoot, shadingSelection: shadingSelection); }
                 catch (Exception ex)
                 {
                     UvtLog.Error($"[FBX Export] '{sourceFbxPath}' was not written: {ex.Message}");
@@ -764,15 +776,16 @@ namespace SashaRX.UnityMeshLab
         // ─────────────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Writes <paramref name="root"/> to <paramref name="fbxPath"/> as a binary FBX and
+        /// Writes <paramref name="root"/> to <paramref name="fbxPath"/> using project FBX settings and
         /// throws when the exporter produced nothing. For new files; a re-save of an
         /// existing asset goes through <see cref="WriteAtomic"/>.
         /// </summary>
-        internal static void Write(string fbxPath, GameObject root, bool embedTextures = false, bool normalizedTransforms = false)
+        internal static void Write(string fbxPath, GameObject root, bool? embedTextures = null, bool normalizedTransforms = false)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-            ExportFile(fbxPath, root, embedTextures, normalizedTransforms);
-            if (normalizedTransforms) ConvertNormalizedFile(fbxPath, embedTextures);
+            var settings = FbxWriteSettings.FromProject(embedTextures);
+            ExportFile(fbxPath, root, settings, normalizedTransforms);
+            if (normalizedTransforms) ConvertNormalizedFile(fbxPath, settings);
             var info = new FileInfo(Path.GetFullPath(fbxPath));
             if (!info.Exists || info.Length == 0)
                 throw new IOException($"FBX Exporter produced an empty/missing file at '{fbxPath}'.");
@@ -782,7 +795,7 @@ namespace SashaRX.UnityMeshLab
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-        static void ExportFile(string path, GameObject root, bool embedTextures, bool normalizedTransforms)
+        static void ExportFile(string path, GameObject root, FbxWriteSettings settings, bool normalizedTransforms)
         {
             GameObject exportRoot = root;
             var copies = new List<Mesh>();
@@ -805,8 +818,9 @@ namespace SashaRX.UnityMeshLab
                 }
                 UnityEditor.Formats.Fbx.Exporter.ModelExporter.ExportObjects(path, new Object[] { exportRoot },
                     new UnityEditor.Formats.Fbx.Exporter.ExportModelOptions {
-                        ExportFormat = UnityEditor.Formats.Fbx.Exporter.ExportFormat.Binary,
-                        EmbedTextures = embedTextures });
+                        ExportFormat = settings.Binary ? UnityEditor.Formats.Fbx.Exporter.ExportFormat.Binary
+                            : UnityEditor.Formats.Fbx.Exporter.ExportFormat.ASCII,
+                        EmbedTextures = settings.EmbedTextures });
             }
             finally {
                 if (exportRoot != root) Object.DestroyImmediate(exportRoot);
@@ -817,7 +831,7 @@ namespace SashaRX.UnityMeshLab
         // Unity's exporter always writes centimeters/Y-up. A meter-based Max scene
         // imports that with 1% scale. Convert coordinates as well as metadata; setting
         // only UnitScaleFactor would enlarge the geometry 100 times.
-        static void ConvertNormalizedFile(string path, bool embedTextures)
+        static void ConvertNormalizedFile(string path, FbxWriteSettings settings)
         {
             string fullPath = Path.GetFullPath(path);
             string converted = fullPath + ".normalized.tmp";
@@ -829,7 +843,7 @@ namespace SashaRX.UnityMeshLab
                 using var manager = FbxManager.Create();
                 var io = FbxIOSettings.Create(manager, Globals.IOSROOT);
                 manager.SetIOSettings(io);
-                io.SetBoolProp(Globals.EXP_FBX_EMBEDDED, embedTextures);
+                io.SetBoolProp(Globals.EXP_FBX_EMBEDDED, settings.EmbedTextures);
                 var scene = FbxScene.Create(manager, "NormalizedMeshLabExport");
                 using (var importer = FbxImporter.Create(manager, "MeshLabImport")) {
                     if (!importer.Initialize(input, -1, io) || !importer.Import(scene))
@@ -857,7 +871,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 scene.GetGlobalSettings().SetSystemUnit(FbxSystemUnit.m);
                 using (var exporter = FbxExporter.Create(manager, "MeshLabExport")) {
-                    if (!exporter.Initialize(converted, -1, io) || !exporter.Export(scene))
+                    if (!exporter.Initialize(converted, settings.WriterFormat(manager), io) || !exporter.Export(scene))
                         throw new IOException("Cannot write normalized FBX.");
                 }
                 File.Copy(converted, fullPath, true);
@@ -878,10 +892,11 @@ namespace SashaRX.UnityMeshLab
         internal static void WriteAtomic(string targetFbxPath, GameObject root, bool normalizedTransforms = false)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+            var settings = FbxWriteSettings.FromProject();
             ReplaceAtomically(targetFbxPath, tmpRelPath =>
             {
-                ExportFile(tmpRelPath, root, false, normalizedTransforms);
-                if (normalizedTransforms) ConvertNormalizedFile(Path.GetFullPath(tmpRelPath), false);
+                ExportFile(tmpRelPath, root, settings, normalizedTransforms);
+                if (normalizedTransforms) ConvertNormalizedFile(Path.GetFullPath(tmpRelPath), settings);
             });
 #else
             throw new InvalidOperationException("FBX Exporter package not installed.");
@@ -894,7 +909,7 @@ namespace SashaRX.UnityMeshLab
         /// target's `.meta` as it was. If the writer throws or writes an empty file the
         /// target on disk is untouched. Throws on failure after removing the temp file.
         /// </summary>
-        internal static void ReplaceAtomically(string targetFbxPath, Action<string> write)
+        internal static void ReplaceAtomically(string targetFbxPath, Action<string> write, Action committed = null)
         {
             string fullPath = Path.GetFullPath(targetFbxPath);
             // Hash the full path so two FBX files with the same filename get distinct
@@ -906,6 +921,7 @@ namespace SashaRX.UnityMeshLab
 
             string tmpRelPath = targetFbxPath + ".tmp";
             string tmpAbsPath = Path.GetFullPath(tmpRelPath);
+            string fbxBak = null;
             if (File.Exists(tmpAbsPath)) File.Delete(tmpAbsPath); // leftover from a crashed run
             try
             {
@@ -918,14 +934,16 @@ namespace SashaRX.UnityMeshLab
                 // is a move.
                 if (File.Exists(fullPath))
                 {
-                    string fbxBak = Path.Combine(Path.GetTempPath(), Path.GetFileName(fullPath) + "." + pathHash + ".fbx.bak");
+                    fbxBak = Path.Combine(Path.GetTempPath(), Path.GetFileName(fullPath) + "." + pathHash + ".fbx.bak");
                     File.Replace(tmpAbsPath, fullPath, fbxBak);
-                    if (File.Exists(fbxBak)) File.Delete(fbxBak);
                 }
                 else
                 {
                     File.Move(tmpAbsPath, fullPath);
                 }
+                // From this point the installed FBX owns its new external media,
+                // even if later metadata restoration or housekeeping fails.
+                committed?.Invoke();
 
                 // The exporter may have generated a .meta for the .tmp — strip it so the
                 // AssetDatabase does not pick up a ghost asset on the next refresh.
@@ -937,6 +955,8 @@ namespace SashaRX.UnityMeshLab
                     File.Copy(metaBak, fullPath + MetaExtension, true);
                     File.Delete(metaBak);
                 }
+                // Keep the original recoverable until metadata restoration succeeds.
+                if (fbxBak != null && File.Exists(fbxBak)) File.Delete(fbxBak);
             }
             catch
             {
