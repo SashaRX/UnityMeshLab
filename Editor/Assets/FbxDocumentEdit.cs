@@ -27,6 +27,7 @@ namespace SashaRX.UnityMeshLab
         };
 
         readonly string scratch;
+        internal readonly string SourceDirectory;
         public readonly FbxManager Manager;
         public readonly FbxScene Scene;
         public readonly bool Binary;
@@ -37,6 +38,7 @@ namespace SashaRX.UnityMeshLab
 
         FbxSourceDocument(string path)
         {
+            SourceDirectory = Path.GetDirectoryName(Path.GetFullPath(path));
             // The importer extracts embedded media next to the file it reads; reading a
             // copy in a scratch folder keeps the project clean. The writer embeds the
             // media again or copies it to durable external files per project settings.
@@ -116,7 +118,6 @@ namespace SashaRX.UnityMeshLab
         void SaveWithSettings(string path, FbxWriteSettings settings, bool atomic)
         {
             var io = Manager.GetIOSettings();
-            io.SetBoolProp(Globals.EXP_FBX_EMBEDDED, settings.EmbedTextures);
             int format = settings.WriterFormat(Manager);
             var createdMedia = new List<string>();
             var createdFolders = new List<string>();
@@ -129,8 +130,11 @@ namespace SashaRX.UnityMeshLab
                 // in SDK scenes throughout; the temporary format is never a user output.
                 var scene = EmbedsMedia && !settings.EmbedTextures
                     ? FbxExternalMedia.Prepare(this, scratch, path, createdMedia, createdFolders) : Scene;
+                if (settings.EmbedTextures) scene = FbxExternalMedia.ResolveExternal(this, scratch, path);
+                io.SetBoolProp(Globals.EXP_FBX_EMBEDDED, settings.EmbedTextures);
                 if (atomic) FbxExport.ReplaceAtomically(path, temp => ExportScene(scene, Path.GetFullPath(temp), format, io), () => committed = true);
-                else ExportScene(scene, path, format, io);
+                else { ExportScene(scene, path, format, io); committed = true; }
+                FbxExternalMedia.ImportCreated(createdMedia);
             }
             catch
             {

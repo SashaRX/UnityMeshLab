@@ -85,7 +85,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-        string Source(bool binary, bool embedded = false)
+        string Source(bool binary, bool embedded = false, bool external = false)
         {
             string path = Path.Combine(folder, "source.fbx");
             using var manager = FbxManager.Create();
@@ -101,13 +101,13 @@ namespace SashaRX.UnityMeshLab.Tests
             FbxLayerChannels.WriteUv(mesh, 0, topology, Enumerable.Repeat(.234567890123456, 8).ToArray(), Enumerable.Repeat(true, 4).ToArray());
             FbxLayerChannels.WriteColor(mesh, topology, Enumerable.Repeat(.345678901234567, 16).ToArray(), Enumerable.Repeat(true, 4).ToArray());
             var node = FbxNode.Create(scene, "Quad_LOD0"); node.SetNodeAttribute(mesh); scene.GetRootNode().AddChild(node);
-            if (embedded)
+            if (embedded || external)
             {
                 var texture = new Texture2D(2, 2);
                 try { File.WriteAllBytes(Path.Combine(folder, "map.png"), texture.EncodeToPNG()); }
                 finally { UnityEngine.Object.DestroyImmediate(texture); }
                 node.AddMaterial(FbxStructureEdit.NewMaterial(scene, "M_Quad", 1, 1, 1, "T_Quad_Albedo",
-                    Path.Combine(folder, "map.png"), "map.png", null));
+                    Path.Combine(folder, external ? "missing/map.png" : "map.png"), "map.png", null));
             }
             using var exporter = FbxExporter.Create(manager, "Source");
             int format = new FbxWriteSettings(binary, embedded).WriterFormat(manager);
@@ -179,6 +179,86 @@ namespace SashaRX.UnityMeshLab.Tests
             MeshLabProjectSettings.Instance.embedFbxTextures = true;
             using (var document = FbxSourceDocument.Load(source)) document.Save(output);
             using (var document = FbxSourceDocument.Load(output)) Assert.IsTrue(document.EmbedsMedia);
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void EmbeddingResolvesExternalMapsRelativeToTheOriginalDocument(bool binary)
+        {
+            string source = Source(binary, external: true);
+            var original = File.ReadAllBytes(Path.Combine(folder, "map.png"));
+            string relocated = Path.Combine(folder, "relocated"); Directory.CreateDirectory(Path.Combine(relocated, "missing"));
+            string sourceMap = Path.Combine(relocated, "missing", "map.png"); File.WriteAllBytes(sourceMap, original);
+            string relocatedSource = Path.Combine(relocated, "source.fbx"); File.Move(source, relocatedSource); source = relocatedSource;
+            string destination = Path.Combine(folder, "elsewhere"); Directory.CreateDirectory(destination);
+            string output = Path.Combine(destination, "embedded.fbx");
+            MeshLabProjectSettings.Instance.embedFbxTextures = true;
+            using (var document = FbxSourceDocument.Load(source)) document.SaveAtomic(output);
+            File.Delete(source); File.Delete(sourceMap); File.Delete(Path.Combine(folder, "map.png"));
+            using var saved = FbxSourceDocument.Load(output);
+            Assert.IsTrue(saved.EmbedsMedia, "relative-only source maps must be embedded despite scratch import and moved output");
+            MeshLabProjectSettings.Instance.embedFbxTextures = false;
+            saved.Save(Path.Combine(destination, "external.fbx"));
+            string[] extracted = Directory.GetFiles(Path.Combine(destination, "external.fbm"), "*.png", SearchOption.AllDirectories);
+            Assert.AreEqual(1, extracted.Length);
+            CollectionAssert.AreEqual(original, File.ReadAllBytes(extracted[0]));
+        }
+
+        [Test]
+        public void MissingExternalMediaRefusesEmbeddingBeforeReplacingTheTarget()
+        {
+            string source = Source(false, external: true), output = Path.Combine(folder, "existing.fbx");
+            byte[] original = { 5, 7, 11 }; File.WriteAllBytes(output, original);
+            MeshLabProjectSettings.Instance.embedFbxTextures = true;
+            using var document = FbxSourceDocument.Load(source);
+            Assert.Throws<IOException>(() => document.SaveAtomic(output));
+            CollectionAssert.AreEqual(original, File.ReadAllBytes(output));
+            Assert.IsFalse(File.Exists(output + ".tmp"));
+        }
+
+        [Test]
+        public void ExternalizedMapsAreImportedBeforeTheSavedModel()
+        {
+            string source = Source(true, embedded: true);
+            string name = "MeshLabMediaImport_" + Guid.NewGuid().ToString("N"), assets = "Assets/" + name;
+            UnityEditor.AssetDatabase.CreateFolder("Assets", name);
+            try
+            {
+                string output = Path.GetFullPath(assets + "/output.fbx");
+                using (var document = FbxSourceDocument.Load(source)) document.SaveAtomic(output);
+                string[] maps = Directory.GetFiles(Path.Combine(Path.GetDirectoryName(output), "output.fbm"), "*.png", SearchOption.AllDirectories);
+                Assert.IsNotEmpty(maps);
+                foreach (string map in maps)
+                {
+                    string relative = "Assets/" + Path.GetRelativePath(Application.dataPath, map).Replace('\\', '/');
+                    Assert.IsNotNull(UnityEditor.AssetDatabase.LoadAssetAtPath<Texture2D>(relative), "new maps must be imported without a global refresh: " + relative);
+                }
+                UnityEditor.AssetDatabase.ImportAsset(assets + "/output.fbx", UnityEditor.ImportAssetOptions.ForceSynchronousImport);
+                Assert.IsNotNull(UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(assets + "/output.fbx"));
+            }
+            finally { UnityEditor.AssetDatabase.DeleteAsset(assets); }
+        }
+
+        [Test]
+        public void LocalPackageRollbackDeletesImportedMediaAndItsMeta()
+        {
+            var package = UnityEditor.PackageManager.PackageInfo.FindForAssetPath("Packages/com.sasharx.unitymeshlab");
+            Assert.IsNotNull(package);
+            string name = "MeshLabMediaRollback_" + Guid.NewGuid().ToString("N"), asset = package.assetPath + "/" + name;
+            UnityEditor.AssetDatabase.CreateFolder(package.assetPath, name);
+            var texture = new Texture2D(2, 2);
+            try
+            {
+                string directory = Path.Combine(package.resolvedPath, name), file = Path.Combine(directory, "map.png");
+                File.WriteAllBytes(file, texture.EncodeToPNG());
+                UnityEditor.AssetDatabase.ImportAsset(asset + "/map.png", UnityEditor.ImportAssetOptions.ForceSynchronousImport);
+                Assert.IsTrue(File.Exists(file + ".meta"));
+                FbxExternalMedia.DeleteCreated(file);
+                Assert.IsFalse(File.Exists(file)); Assert.IsFalse(File.Exists(file + ".meta"), "local-package cleanup must use AssetDatabase");
+                FbxExternalMedia.DeleteCreated(directory);
+                Assert.IsFalse(Directory.Exists(directory)); Assert.IsFalse(File.Exists(directory + ".meta"));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(texture); UnityEditor.AssetDatabase.DeleteAsset(asset); }
         }
 
         [TestCase(false, false)]

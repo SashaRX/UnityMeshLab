@@ -239,6 +239,10 @@ Before merging any code that writes FBX:
     A source's embedded media is extracted into content-addressed subfolders of
     `<output>.fbm` when embedding is off, so texture references survive temporary
     SDK document disposal. Existing external maps are never overwritten.
+    Newly externalized project/package maps are imported before the model;
+    rollback uses AssetDatabase for project/package resources. Explicit
+    embedding resolves external maps against the original FBX directory and
+    refuses a missing map before replacing the target file.
 
 If the tool produces a file that flags ANY category in
 `patch_fbx_materials --report-file`, the tool is wrong, not the

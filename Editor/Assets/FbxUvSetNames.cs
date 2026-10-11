@@ -24,6 +24,56 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         internal static Dictionary<string, List<string>> Read(string path) => ReadLayers(path).uvSetNames;
 
+        // Read the original texture/video path pairs before the SDK normalizes
+        // relative references against the temporary import directory.
+        internal static List<(string filename, string relative)> ReadMediaReferences(string path)
+        {
+            var bytes = File.ReadAllBytes(path);
+            var result = new List<(string, string)>();
+            if (bytes.Length > 27 && Encoding.ASCII.GetString(bytes, 0, BinaryMagic.Length) == BinaryMagic)
+            {
+                bool wide = BitConverter.ToUInt32(bytes, 23) >= 7500;
+                foreach (var objects in Nodes(bytes, 27, bytes.Length, wide))
+                    if (objects.name == "Objects")
+                        foreach (var media in Nodes(bytes, objects.children, objects.end, wide))
+                        {
+                            if (media.name != "Texture" && media.name != "Video") continue;
+                            string filename = null, relative = null;
+                            foreach (var child in Nodes(bytes, media.children, media.end, wide))
+                            {
+                                if (child.name == "FileName" || child.name == "Filename") filename = Property(bytes, child, 0) as string;
+                                if (child.name == "RelativeFilename") relative = Property(bytes, child, 0) as string;
+                            }
+                            result.Add((filename, relative));
+                        }
+            }
+            else ReadAsciiMedia(Encoding.UTF8.GetString(bytes), result);
+            return result;
+        }
+
+        static void ReadAsciiMedia(string text, List<(string filename, string relative)> result)
+        {
+            int depth = 0, mediaDepth = -1;
+            string filename = null, relative = null;
+            foreach (string raw in text.Split('\n'))
+            {
+                string line = raw.Trim();
+                if (line.Length == 0 || line[0] == ';') continue;
+                if (mediaDepth < 0 && (line.StartsWith("Texture:", StringComparison.Ordinal) || line.StartsWith("Video:", StringComparison.Ordinal))
+                    && line.EndsWith("{", StringComparison.Ordinal))
+                {
+                    mediaDepth = depth; filename = null; relative = null;
+                }
+                else if (mediaDepth >= 0 && depth == mediaDepth + 1)
+                {
+                    if (line.StartsWith("FileName:", StringComparison.Ordinal) || line.StartsWith("Filename:", StringComparison.Ordinal)) filename = FirstQuoted(line);
+                    if (line.StartsWith("RelativeFilename:", StringComparison.Ordinal)) relative = FirstQuoted(line);
+                }
+                depth += BraceBalance(line);
+                if (mediaDepth >= 0 && depth <= mediaDepth) { result.Add((filename, relative)); mediaDepth = -1; }
+            }
+        }
+
         /// <summary>
         /// The UV set names (as <see cref="Read"/>) and whether each mesh has a smoothing
         /// element, by mesh name; a shared name is in neither.

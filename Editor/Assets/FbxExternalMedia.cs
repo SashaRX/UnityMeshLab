@@ -52,16 +52,99 @@ namespace SashaRX.UnityMeshLab
             }
 
             string staged = Path.Combine(scratch, "external.fbx");
-            var io = document.Manager.GetIOSettings();
-            document.ExportScene(document.Scene, staged, new FbxWriteSettings(false, false).WriterFormat(document.Manager), io);
-            string[] lines = File.ReadAllLines(staged);
+            string[] lines = Stage(document, staged);
             for (int i = 0; i < lines.Length; i++) lines[i] = RewriteFilename(lines[i], paths, scratch, target);
+            RebaseTextureBlocks(lines, scratch, document.SourceDirectory, target, SourcePaths(document, scratch), false);
+            return ImportStaged(document, staged, lines);
+        }
+
+        internal static FbxScene ResolveExternal(FbxSourceDocument document, string scratch, string target)
+        {
+            string staged = Path.Combine(scratch, "resolved.fbx");
+            string[] lines = Stage(document, staged);
+            RebaseTextureBlocks(lines, scratch, document.SourceDirectory, Path.GetFullPath(target), SourcePaths(document, scratch), true);
+            return ImportStaged(document, staged, lines);
+        }
+
+        static string[] Stage(FbxSourceDocument document, string staged)
+        {
+            var io = document.Manager.GetIOSettings();
+            io.SetBoolProp(Globals.EXP_FBX_EMBEDDED, false);
+            document.ExportScene(document.Scene, staged, new FbxWriteSettings(false, false).WriterFormat(document.Manager), io);
+            return File.ReadAllLines(staged);
+        }
+
+        static FbxScene ImportStaged(FbxSourceDocument document, string staged, string[] lines)
+        {
             File.WriteAllLines(staged, lines);
             var scene = FbxScene.Create(document.Manager, "MeshLabExternalMedia");
             using var importer = FbxImporter.Create(document.Manager, "MeshLabExternalMediaImport");
-            if (!importer.Initialize(staged, -1, io) || !importer.Import(scene))
+            if (!importer.Initialize(staged, -1, document.Manager.GetIOSettings()) || !importer.Import(scene))
                 throw new IOException("FBX SDK cannot read the external-media document.");
             return scene;
+        }
+
+        // SDK ASCII texture/video objects contain paired absolute and relative
+        // filename records. Resolve each object independently to avoid mixing maps
+        // with identical basenames in different source folders.
+        static Dictionary<string, string> SourcePaths(FbxSourceDocument document, string scratch)
+        {
+            var paths = new Dictionary<string, string>(PathComparer);
+            var ambiguous = new HashSet<string>(PathComparer);
+            foreach (var reference in FbxUvSetNames.ReadMediaReferences(Path.Combine(scratch, "input.fbx")))
+            {
+                string absolute = string.IsNullOrEmpty(reference.filename) ? null : MediaPath(reference.filename, document.SourceDirectory);
+                string relative = string.IsNullOrEmpty(reference.relative) ? null : MediaPath(reference.relative, document.SourceDirectory);
+                string resolved = absolute != null && File.Exists(absolute) ? absolute : relative;
+                if (resolved == null || !File.Exists(resolved)) continue;
+                if (absolute == null) continue;
+                if (paths.TryGetValue(absolute, out string previous) && !PathComparer.Equals(previous, resolved)) ambiguous.Add(absolute);
+                else paths[absolute] = resolved;
+            }
+            foreach (string key in ambiguous) paths.Remove(key);
+            return paths;
+        }
+
+        static void RebaseTextureBlocks(string[] lines, string scratch, string source, string target, IReadOnlyDictionary<string, string> originalPaths, bool requireMedia)
+        {
+            for (int start = 0; start < lines.Length; start++)
+            {
+                string header = lines[start].TrimStart();
+                if (!header.StartsWith("Texture:", StringComparison.Ordinal) && !header.StartsWith("Video:", StringComparison.Ordinal)) continue;
+                string closing = lines[start].Substring(0, lines[start].Length - header.Length) + "}";
+                int end = start + 1;
+                while (end < lines.Length && lines[end].TrimEnd() != closing) end++;
+                RebaseTextureBlock(lines, start + 1, end, scratch, source, target, originalPaths, requireMedia);
+                start = end;
+            }
+        }
+
+        static void RebaseTextureBlock(string[] lines, int start, int end, string scratch, string source, string target, IReadOnlyDictionary<string, string> originalPaths, bool requireMedia)
+        {
+            var names = new List<string>();
+            for (int i = start; i < end; i++)
+            {
+                var match = FilenameLine.Match(lines[i]);
+                if (match.Success && !string.IsNullOrEmpty(match.Groups[2].Value)) names.Add(match.Groups[2].Value);
+            }
+            string resolved = names.Select(name => MediaPath(name, scratch)).FirstOrDefault(File.Exists)
+                ?? names.Select(name => originalPaths.TryGetValue(MediaPath(name, source), out string mapped) ? mapped : null).FirstOrDefault(path => path != null)
+                ?? names.Where(name => !Path.IsPathRooted(name.Replace('\\', Path.DirectorySeparatorChar)))
+                    .Select(name => MediaPath(name, source)).FirstOrDefault(File.Exists);
+            if (resolved == null)
+            {
+                if (requireMedia && names.Count > 0) throw new IOException("Cannot embed missing FBX media: " + names[0]);
+                return;
+            }
+            var paths = new Dictionary<string, string>(PathComparer);
+            foreach (string name in names) paths[MediaPath(name, scratch)] = resolved;
+            for (int i = start; i < end; i++) lines[i] = RewriteFilename(lines[i], paths, scratch, target);
+        }
+
+        static string MediaPath(string name, string directory)
+        {
+            string stored = name.Replace('\\', Path.DirectorySeparatorChar);
+            return Path.GetFullPath(Path.IsPathRooted(stored) ? stored : Path.Combine(directory, stored));
         }
 
         internal static string RewriteFilename(string line, IReadOnlyDictionary<string, string> paths, string scratch, string target)
@@ -78,10 +161,9 @@ namespace SashaRX.UnityMeshLab
 
         internal static void DeleteCreated(string file)
         {
-            string assets = Path.GetFullPath(UnityEngine.Application.dataPath) + Path.DirectorySeparatorChar;
-            if (file.StartsWith(assets, PathComparison))
+            string relative = AssetPath(file);
+            if (relative != null)
             {
-                string relative = "Assets/" + file.Substring(assets.Length).Replace('\\', '/');
                 if (UnityEditor.AssetDatabase.DeleteAsset(relative)) return;
                 if (!File.Exists(file) && !Directory.Exists(file)) return;
                 // SDK-created files/folders may not be registered yet. Import the
@@ -92,6 +174,34 @@ namespace SashaRX.UnityMeshLab
             }
             else if (Directory.Exists(file)) Directory.Delete(file);
             else File.Delete(file);
+        }
+
+        internal static void ImportCreated(IEnumerable<string> files)
+        {
+            var assets = files.Select(AssetPath).Where(path => path != null).Distinct().ToArray();
+            if (assets.Length == 0) return;
+            UnityEditor.AssetDatabase.StartAssetEditing();
+            try
+            {
+                foreach (string asset in assets)
+                    UnityEditor.AssetDatabase.ImportAsset(asset, UnityEditor.ImportAssetOptions.ForceSynchronousImport);
+            }
+            finally { UnityEditor.AssetDatabase.StopAssetEditing(); }
+        }
+
+        internal static string AssetPath(string file)
+        {
+            string full = Path.GetFullPath(file);
+            string assets = Path.GetFullPath(UnityEngine.Application.dataPath) + Path.DirectorySeparatorChar;
+            if (full.StartsWith(assets, PathComparison)) return "Assets/" + full.Substring(assets.Length).Replace('\\', '/');
+            string packages = Path.GetFullPath(Path.Combine(UnityEngine.Application.dataPath, "../Packages")) + Path.DirectorySeparatorChar;
+            if (full.StartsWith(packages, PathComparison)) return "Packages/" + full.Substring(packages.Length).Replace('\\', '/');
+            foreach (var package in UnityEditor.PackageManager.PackageInfo.GetAllRegisteredPackages())
+            {
+                string root = Path.GetFullPath(package.resolvedPath) + Path.DirectorySeparatorChar;
+                if (full.StartsWith(root, PathComparison)) return package.assetPath + "/" + full.Substring(root.Length).Replace('\\', '/');
+            }
+            return null;
         }
 
         static void CreateFolder(string path, List<string> created)
