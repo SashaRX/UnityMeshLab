@@ -42,17 +42,19 @@ namespace SashaRX.UnityMeshLab
 
         private static TexturePackingImage ReadTga(string path, CancellationToken token)
         {
-            using (var input = File.OpenRead(path))
-            using (var bytes = new MemoryStream())
+            using (var input = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
             {
-                var buffer = new byte[65536];
-                int read;
-                while ((read = input.Read(buffer, 0, buffer.Length)) != 0)
+                token.ThrowIfCancellationRequested();
+                var bytes = new byte[checked((int)input.Length)];
+                int offset = 0;
+                while (offset < bytes.Length)
                 {
                     token.ThrowIfCancellationRequested();
-                    bytes.Write(buffer, 0, read);
+                    int read = input.Read(bytes, offset, Math.Min(65536, bytes.Length - offset));
+                    if (read == 0) throw new EndOfStreamException("Source changed while loading: " + path);
+                    offset += read;
                 }
-                return TexturePackingImage.DecodeTga(bytes.ToArray(), token);
+                return TexturePackingImage.DecodeTga(bytes, token);
             }
         }
 

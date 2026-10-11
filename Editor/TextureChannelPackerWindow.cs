@@ -68,6 +68,7 @@ namespace SashaRX.UnityMeshLab
         {
             public string path;
             public string staged;
+            public string assetPath;
             public Func<CancellationToken, TexturePackingImage> build;
             public bool isNormal;
             public bool isAlbedo;
@@ -98,6 +99,7 @@ namespace SashaRX.UnityMeshLab
             UnsubscribeSave(TickSave);
             UnsubscribeSave(TickLoads);
             CancelLoads();
+            selectionPending = false;
             CancelSaveOnClose();
             ClearPreviews();
             foreach (var source in loaded.Values) DestroyImmediate(source.thumbnail);
@@ -320,6 +322,9 @@ namespace SashaRX.UnityMeshLab
 
         private void TickLoads()
         {
+            if (pendingSources.Count == 0) return;
+            var completed = new List<string>();
+            var failures = new System.Text.StringBuilder(error);
             // Bound concurrent decoders; assigning the same image to several slots schedules it once.
             foreach (string path in pendingSources)
             {
@@ -328,13 +333,10 @@ namespace SashaRX.UnityMeshLab
                 try { activeLoads.Add(path, new TexturePackingLoad(path)); }
                 catch (Exception exception)
                 {
-                    error += path + ": " + exception.Message + "\n";
-                    pendingSources.Remove(path);
-                    Repaint();
-                    return;
+                    failures.Append(path).Append(": ").AppendLine(exception.Message);
+                    completed.Add(path);
                 }
             }
-            var completed = new List<string>();
             foreach (var entry in activeLoads)
             {
                 try
@@ -345,16 +347,17 @@ namespace SashaRX.UnityMeshLab
                 }
                 catch (Exception exception)
                 {
-                    error += entry.Key + ": " + exception.Message + "\n";
+                    failures.Append(entry.Key).Append(": ").AppendLine(exception.Message);
                     completed.Add(entry.Key);
                 }
             }
             foreach (string path in completed)
             {
-                activeLoads[path].Dispose();
+                if (activeLoads.TryGetValue(path, out var load)) load.Dispose();
                 activeLoads.Remove(path);
                 pendingSources.Remove(path);
             }
+            error = failures.ToString();
             if (completed.Count > 0) Repaint();
         }
 
@@ -501,8 +504,11 @@ namespace SashaRX.UnityMeshLab
                 textureName.Trim() == "." || textureName.Trim() == "..")
                 throw new InvalidOperationException("Enter a valid texture base name without a path.");
             if (!Directory.Exists(outputFolder)) throw new DirectoryNotFoundException("Choose an existing output folder.");
-            var paths = new HashSet<string>(TexturePackingFiles.ComparisonForDirectory(outputFolder) == StringComparison.Ordinal ?
-                StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
+            var comparison = TexturePackingFiles.ComparisonForDirectory(outputFolder);
+            var comparer = comparison == StringComparison.Ordinal ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
+            var paths = new HashSet<string>(comparer);
+            var sourcePaths = new HashSet<string>(comparer);
+            foreach (string sourcePath in loaded.Keys) sourcePaths.Add(TexturePackingFiles.ResolveExistingFile(sourcePath));
             var overwrite = new List<string>();
             var requests = new List<SaveRequest>();
             foreach (var output in outputs)
@@ -510,17 +516,17 @@ namespace SashaRX.UnityMeshLab
                 if (!HasInput(output)) throw new InvalidOperationException("An enabled texture has no source images.");
                 string path = Path.Combine(Path.GetFullPath(outputFolder), FileName(output));
                 if (!paths.Add(path)) throw new InvalidOperationException("Choose distinct suffixes for each output.");
-                foreach (string sourcePath in loaded.Keys)
-                    if (TexturePackingFiles.SameSource(sourcePath, path))
-                        throw new InvalidOperationException("An output would overwrite a source texture: " + path);
+                if (sourcePaths.Contains(TexturePackingFiles.ResolveExistingFile(path)))
+                    throw new InvalidOperationException("An output would overwrite a source texture: " + path);
                 if (File.Exists(path)) overwrite.Add(Path.GetFileName(path));
                 // Validate every referenced source before writing any output.
                 if (!output.split) Source(output.rgb);
                 for (int i = output.split ? 0 : 3; i < 4; i++)
                     if (output != normal) Source(output.slots[i]);
-                ValidateAssetDestination(path);
+                string assetPath = AssetPathWithComparison(path, comparison);
+                ValidateImportablePath(assetPath);
                 var existing = new FileInfo(path);
-                requests.Add(new SaveRequest { path = path, build = PrepareBuild(output, Sizes[widthIndex], Sizes[heightIndex]),
+                requests.Add(new SaveRequest { path = path, assetPath = assetPath, build = PrepareBuild(output, Sizes[widthIndex], Sizes[heightIndex]),
                     isNormal = output == normal, isAlbedo = output == albedo, existed = existing.Exists,
                     length = existing.Exists ? existing.Length : 0, modified = existing.Exists ? existing.LastWriteTimeUtc : default });
             }
@@ -610,7 +616,7 @@ namespace SashaRX.UnityMeshLab
             var imports = new List<TexturePackingImports.Input>();
             foreach (var request in requests)
             {
-                string assetPath = AssetPath(request.path);
+                string assetPath = request.assetPath;
                 if (assetPath != null) imports.Add(new TexturePackingImports.Input
                     { path = assetPath, normal = request.isNormal, albedo = request.isAlbedo });
             }
@@ -671,7 +677,11 @@ namespace SashaRX.UnityMeshLab
 
         private static void ValidateAssetDestination(string path)
         {
-            string assetPath = AssetPath(path);
+            ValidateImportablePath(AssetPath(path));
+        }
+
+        private static void ValidateImportablePath(string assetPath)
+        {
             if (assetPath == null) return;
             foreach (string segment in assetPath.Split('/'))
                 if (segment.StartsWith(".", StringComparison.Ordinal) || segment.EndsWith("~", StringComparison.Ordinal))
@@ -680,9 +690,14 @@ namespace SashaRX.UnityMeshLab
 
         private static string AssetPath(string path)
         {
+            return AssetPathWithComparison(path, TexturePackingFiles.ComparisonForDirectory(Path.GetDirectoryName(Path.GetFullPath(path))));
+        }
+
+        private static string AssetPathWithComparison(string path, StringComparison comparison)
+        {
             path = Path.GetFullPath(path);
             string assets = Path.GetFullPath(Application.dataPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            return path.StartsWith(assets, TexturePackingFiles.ComparisonForDirectory(Path.GetDirectoryName(path))) ?
+            return path.StartsWith(assets, comparison) ?
                 "Assets/" + path.Substring(assets.Length).Replace('\\', '/') : null;
         }
 
