@@ -438,8 +438,7 @@ namespace SashaRX.UnityMeshLab
                 {
                     if (GUILayout.Button("Apply to Scene"))
                     {
-                        pipeline.Apply();
-                        RequestRepaint?.Invoke();
+                        ApplyToScene();
                     }
                 }
 
@@ -517,6 +516,16 @@ namespace SashaRX.UnityMeshLab
             {
                 RequestRepaint?.Invoke();
             }
+        }
+        internal void ApplyToScene()
+        {
+            try { pipeline.Apply(); }
+            catch (Exception e)
+            {
+                previewCanApply = null;
+                UvtLog.Error("[Foliage] " + e.Message);
+            }
+            RequestRepaint?.Invoke();
         }
         void Save()
         {

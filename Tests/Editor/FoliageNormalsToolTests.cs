@@ -102,6 +102,16 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.Throws<InvalidOperationException>(() => tool.pipeline.Save("Assets"));
                 Assert.Throws<InvalidOperationException>(() => tool.pipeline.SaveFbx("Assets"));
                 Assert.AreSame(fixture.mesh, fixture.root.GetComponent<MeshFilter>().sharedMesh);
+                var current = FoliageTargetSnapshot.ContentFingerprint(fixture.mesh);
+                int meshCount = Resources.FindObjectsOfTypeAll<Mesh>().Length, repaintCount = 0;
+                tool.RequestRepaint = () => repaintCount++;
+                LogAssert.Expect(LogType.Error, new System.Text.RegularExpressions.Regex("Build and transfer a current result first"));
+                Assert.DoesNotThrow(() => tool.ApplyToScene());
+                Assert.IsFalse(tool.CanApplyPreview, "An Apply error must invalidate stale UI eligibility.");
+                Assert.AreEqual(1, repaintCount);
+                Assert.AreEqual(meshCount, Resources.FindObjectsOfTypeAll<Mesh>().Length);
+                Assert.AreSame(fixture.mesh, fixture.root.GetComponent<MeshFilter>().sharedMesh);
+                Assert.AreEqual(current, FoliageTargetSnapshot.ContentFingerprint(fixture.mesh));
                 VertexChannels.RaiseChanged(fixture.mesh);
                 Assert.IsFalse(tool.CanApplyPreview);
                 Assert.IsFalse(tool.pipeline.Has(FoliageNormalsPipeline.Stage.Capture));
