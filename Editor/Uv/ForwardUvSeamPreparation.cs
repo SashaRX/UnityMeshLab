@@ -100,7 +100,8 @@ namespace SashaRX.UnityMeshLab
                     while(!projection.IsCompleted)
                     {
                         if(UvProgress.CancelRequested) cancellation.Cancel();
-                        await Task.WhenAny(projection,Task.Delay(25));
+                        // Keep polling until the cancelled worker exits before disposing its donor data.
+                        await Task.WhenAny(projection,Task.Delay(25,CancellationToken.None));
                     }
                     await projection;
                 }

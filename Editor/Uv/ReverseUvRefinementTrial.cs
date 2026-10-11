@@ -74,8 +74,8 @@ namespace SashaRX.UnityMeshLab
                     token.ThrowIfCancellationRequested(); var face = a.faces[f];
                     if (!face.inherited && !face.intentionalOverlap) continue;
                     if (!pieces.TryGetValue(a.sourceFaces[f],out var descendants)) return false;
-                    bool inheritedCovered=!face.inherited || ReverseUvJunctionTrial.Covered(a,f,b,descendants.Where(p=>b.faces[p].inherited),token);
-                    bool overlapCovered=!face.intentionalOverlap || ReverseUvJunctionTrial.Covered(a,f,b,descendants.Where(p=>b.faces[p].intentionalOverlap),token);
+                    bool inheritedCovered = !face.inherited || ReverseUvJunctionTrial.Covered(a,f,b,descendants.Where(p=>b.faces[p].inherited),token);
+                    bool overlapCovered = !face.intentionalOverlap || ReverseUvJunctionTrial.Covered(a,f,b,descendants.Where(p=>b.faces[p].intentionalOverlap),token);
                     if (inheritedCovered && overlapCovered) continue;
                     int mesh=before.nodes.Take(n).Count(p=>p.lod==a.lod);
                     extended |= ProtectFace(trial,(a.lod,mesh),a.sourceFaces[f]);

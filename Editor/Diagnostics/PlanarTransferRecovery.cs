@@ -91,9 +91,12 @@ namespace SashaRX.UnityMeshLab
                 var scan=Scan(result.uv2);
                 var refused=new HashSet<int>();
                 if (!oldScan.complete || !scan.complete) refused.UnionWith(previous.Keys);
-                else foreach(var pair in scan.conflicts)
-                    if (!contacts.Contains((Math.Min(pair.a,pair.b),Math.Max(pair.a,pair.b))))
-                    { refused.Add(result.faceToTargetShell[pair.a]); refused.Add(result.faceToTargetShell[pair.b]); }
+                else
+                {
+                    foreach(var pair in scan.conflicts)
+                        if (!contacts.Contains((Math.Min(pair.a,pair.b),Math.Max(pair.a,pair.b))))
+                        { refused.Add(result.faceToTargetShell[pair.a]); refused.Add(result.faceToTargetShell[pair.b]); }
+                }
                 refused.IntersectWith(previous.Keys);
                 if (refused.Count==0) break;
                 foreach(int shell in refused)

@@ -107,8 +107,9 @@ namespace SashaRX.UnityMeshLab
                         return $"LOD{a.lod} '{a.key}' face {f} loses its projected overlap";
                 }
             }
-            foreach (var failure in DistortionFailures(baseline,candidate,levels,token))
-                return $"LOD{after.nodes[failure.node].lod} face {failure.face} increases distortion";
+            using var failures = DistortionFailures(baseline,candidate,levels,token).GetEnumerator();
+            if (failures.MoveNext())
+                return $"LOD{after.nodes[failures.Current.node].lod} face {failures.Current.face} increases distortion";
             return null;
         }
 
