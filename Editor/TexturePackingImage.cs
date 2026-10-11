@@ -180,7 +180,15 @@ namespace SashaRX.UnityMeshLab
 
         public static TexturePackingImage DecodeTga(byte[] bytes, CancellationToken cancellation = default)
         {
-            using (var reader = new BinaryReader(new MemoryStream(bytes, false)))
+            using (var stream = new MemoryStream(bytes, false)) return DecodeTga(stream, cancellation);
+        }
+
+        /// <summary>Decode directly from a seekable source; leave its ownership with the caller.</summary>
+        public static TexturePackingImage DecodeTga(Stream stream, CancellationToken cancellation = default)
+        {
+            if (stream == null || !stream.CanRead || !stream.CanSeek)
+                throw new ArgumentException("TGA input must be readable and seekable.", nameof(stream));
+            using (var reader = new BinaryReader(stream, System.Text.Encoding.UTF8, true))
             {
                 byte[] header = reader.ReadBytes(18);
                 if (header.Length != 18) throw new InvalidDataException("Truncated TGA header.");

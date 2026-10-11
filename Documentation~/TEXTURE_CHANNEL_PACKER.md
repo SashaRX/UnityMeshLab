@@ -41,7 +41,9 @@ Outside Assets, only the file is written. Saving next to a model requires a
 writable folder (registry/package-cache models may need a different destination).
 
 Source reads and TGA decoding run on workers; PNG/JPEG decoding uses Unity's
-asynchronous texture downloader with local file URLs. Pixel copies are sliced
+asynchronous texture downloader with local file URLs, without mipmaps. TGA reads
+only its header and pixel payload from a stream. Read leases and file identity
+checks reject source rewrites or replacements during decoding. Pixel copies are sliced
 across editor updates. At most two source decoders run at once, and repeated
 assignments of one file share one load. Full-resolution resizing and RLE encoding
 run in the background. Resize parallelizes rows with at most four workers,
@@ -56,9 +58,11 @@ assembly reload drains that queue before unloading. Files are staged beside thei
 installed only after encoding completes, so an encoding failure leaves existing
 textures intact and their `.meta` GUIDs are retained. If an output appears or
 changes during packing, save is refused so its overwrite can be confirmed again.
+Existing outputs are hashed before confirmation and verified on a worker before
+installation; preserved file sizes and timestamps do not bypass this check.
 A failure installing a later file restores earlier files in the same batch.
-Source collision checks
-resolve symbolic links and junctions; replacing a hard-linked destination detaches
+Source collision and Assets destination checks
+resolve symbolic links and directory junctions; replacing a hard-linked destination detaches
 that link without modifying other links. Under Assets, ignored folders such as
 `Textures~` are rejected before export; a missing texture importer is reported as
 an error. Filesystem path checks probe the destination's actual case rules,

@@ -59,6 +59,7 @@ namespace SashaRX.UnityMeshLab
         private string error = "";
         private string status = "";
         private Task<List<SaveRequest>> saveTask;
+        private bool snapshotPending;
         private Task importTask;
         private List<SaveRequest> committedRequests;
         private CancellationTokenSource saveCancellation;
@@ -75,6 +76,8 @@ namespace SashaRX.UnityMeshLab
             public bool existed;
             public long length;
             public DateTime modified;
+            public byte[] contentHash;
+            public TexturePackingFiles.PendingFile pending;
         }
 
         [MenuItem("Tools/Mesh Lab/Texture Channel Packer", priority = 80)]
@@ -155,7 +158,8 @@ namespace SashaRX.UnityMeshLab
             }
             if (saveTask != null)
             {
-                EditorGUILayout.LabelField(importTask == null ? "Resizing and encoding textures in the background…" : "Importing saved textures…");
+                EditorGUILayout.LabelField(snapshotPending ? "Checking existing outputs in the background…" :
+                    importTask == null ? "Resizing and encoding textures in the background…" : "Importing saved textures…");
                 using (new EditorGUI.DisabledScope(importTask != null))
                     if (GUILayout.Button("Cancel export")) saveCancellation.Cancel();
             }
@@ -504,21 +508,20 @@ namespace SashaRX.UnityMeshLab
                 textureName.Trim() == "." || textureName.Trim() == "..")
                 throw new InvalidOperationException("Enter a valid texture base name without a path.");
             if (!Directory.Exists(outputFolder)) throw new DirectoryNotFoundException("Choose an existing output folder.");
-            var comparison = TexturePackingFiles.ComparisonForDirectory(outputFolder);
+            string resolvedFolder = TexturePackingFiles.ResolveDirectory(outputFolder);
+            var comparison = TexturePackingFiles.ComparisonForDirectory(resolvedFolder);
             var comparer = comparison == StringComparison.Ordinal ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
             var paths = new HashSet<string>(comparer);
             var sourcePaths = new HashSet<string>(comparer);
             foreach (string sourcePath in loaded.Keys) sourcePaths.Add(TexturePackingFiles.ResolveExistingFile(sourcePath));
-            var overwrite = new List<string>();
             var requests = new List<SaveRequest>();
             foreach (var output in outputs)
             {
                 if (!HasInput(output)) throw new InvalidOperationException("An enabled texture has no source images.");
-                string path = Path.Combine(Path.GetFullPath(outputFolder), FileName(output));
+                string path = Path.Combine(resolvedFolder, FileName(output));
                 if (!paths.Add(path)) throw new InvalidOperationException("Choose distinct suffixes for each output.");
                 if (sourcePaths.Contains(TexturePackingFiles.ResolveExistingFile(path)))
                     throw new InvalidOperationException("An output would overwrite a source texture: " + path);
-                if (File.Exists(path)) overwrite.Add(Path.GetFileName(path));
                 // Validate every referenced source before writing any output.
                 if (!output.split) Source(output.rgb);
                 for (int i = output.split ? 0 : 3; i < 4; i++)
@@ -530,12 +533,25 @@ namespace SashaRX.UnityMeshLab
                     isNormal = output == normal, isAlbedo = output == albedo, existed = existing.Exists,
                     length = existing.Exists ? existing.Length : 0, modified = existing.Exists ? existing.LastWriteTimeUtc : default });
             }
-            if (overwrite.Count > 0 && !EditorUtility.DisplayDialog("Overwrite textures?",
-                string.Join("\n", overwrite), "Overwrite", "Cancel")) return;
             saveCancellation = new CancellationTokenSource();
             var token = saveCancellation.Token;
-            saveTask = Task.Run(() => StageOutputs(requests, token), token);
+            snapshotPending = true;
+            saveTask = Task.Run(() => SnapshotOutputs(requests, token), token);
             SubscribeSave(TickSave);
+        }
+
+        private static List<SaveRequest> SnapshotOutputs(List<SaveRequest> requests, CancellationToken token)
+        {
+            foreach (var request in requests)
+            {
+                token.ThrowIfCancellationRequested();
+                if (!request.existed) continue;
+                request.contentHash = TexturePackingFiles.ContentHash(request.path, token);
+                var current = new FileInfo(request.path);
+                if (!current.Exists || current.Length != request.length || current.LastWriteTimeUtc != request.modified)
+                    throw new IOException("Output changed while preparing overwrite confirmation: " + request.path);
+            }
+            return requests;
         }
 
         private static List<SaveRequest> StageOutputs(List<SaveRequest> requests, CancellationToken token)
@@ -548,6 +564,13 @@ namespace SashaRX.UnityMeshLab
                     var image = request.build(token);
                     request.staged = TexturePackingFiles.Stage(request.path, stream => image.WriteTgaRle(stream, token));
                     request.build = null;
+                }
+                // Verify destination content on the worker, retaining read leases through the short installation phase.
+                foreach (var request in requests)
+                {
+                    request.pending = new TexturePackingFiles.PendingFile(request.staged, request.path,
+                        request.existed, request.length, request.modified, request.contentHash);
+                    request.pending.VerifyContent(token);
                 }
                 token.ThrowIfCancellationRequested();
                 return requests;
@@ -568,11 +591,27 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
             var finished = saveTask;
+            bool continuing = false;
             try
             {
                 if (importTask == null)
                 {
                     var requests = finished.GetAwaiter().GetResult();
+                    if (snapshotPending)
+                    {
+                        saveCancellation.Token.ThrowIfCancellationRequested();
+                        var overwrite = new List<string>();
+                        foreach (var request in requests)
+                            if (request.existed) overwrite.Add(Path.GetFileName(request.path));
+                        if (overwrite.Count > 0 && !EditorUtility.DisplayDialog("Overwrite textures?",
+                            string.Join("\n", overwrite), "Overwrite", "Cancel"))
+                            throw new OperationCanceledException();
+                        snapshotPending = false;
+                        var token = saveCancellation.Token;
+                        saveTask = Task.Run(() => StageOutputs(requests, token), token);
+                        continuing = true;
+                        return;
+                    }
                     try
                     {
                         saveCancellation.Token.ThrowIfCancellationRequested();
@@ -593,9 +632,10 @@ namespace SashaRX.UnityMeshLab
             }
             finally
             {
-                if (committedRequests == null || (importTask != null && importTask.IsCompleted))
+                if (!continuing && (committedRequests == null || (importTask != null && importTask.IsCompleted)))
                 {
                     saveTask = null;
+                    snapshotPending = false;
                     importTask = null;
                     committedRequests = null;
                     UnsubscribeSave(TickSave);
@@ -611,8 +651,7 @@ namespace SashaRX.UnityMeshLab
         {
             var files = new List<TexturePackingFiles.PendingFile>();
             foreach (var request in requests)
-                files.Add(new TexturePackingFiles.PendingFile(request.staged, request.path,
-                    request.existed, request.length, request.modified));
+                files.Add(request.pending);
             var imports = new List<TexturePackingImports.Input>();
             foreach (var request in requests)
             {
@@ -638,7 +677,7 @@ namespace SashaRX.UnityMeshLab
             var failures = new List<Exception>();
             foreach (var request in requests)
             {
-                try { TexturePackingFiles.Discard(request.staged); }
+                try { request.pending?.Dispose(); TexturePackingFiles.Discard(request.staged); }
                 catch (Exception exception) { failures.Add(exception); }
             }
             if (failures.Count > 0) throw new AggregateException("Some texture temporary files could not be removed.", failures);
@@ -695,8 +734,8 @@ namespace SashaRX.UnityMeshLab
 
         private static string AssetPathWithComparison(string path, StringComparison comparison)
         {
-            path = Path.GetFullPath(path);
-            string assets = Path.GetFullPath(Application.dataPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            path = Path.Combine(TexturePackingFiles.ResolveDirectory(Path.GetDirectoryName(Path.GetFullPath(path))), Path.GetFileName(path));
+            string assets = TexturePackingFiles.ResolveDirectory(Application.dataPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
             return path.StartsWith(assets, comparison) ?
                 "Assets/" + path.Substring(assets.Length).Replace('\\', '/') : null;
         }

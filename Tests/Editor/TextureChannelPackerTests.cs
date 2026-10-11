@@ -529,6 +529,12 @@ namespace SashaRX.UnityMeshLab.Tests
                 InvokePrivate(window, "Assign", output, output.GetType().GetField("rgb").GetValue(output), path);
                 yield return WaitForSources(window);
                 InvokePrivate(window, "SaveEnabled");
+                double snapshotDeadline = EditorApplication.timeSinceStartup + 30;
+                while ((bool)GetPrivate(window, "snapshotPending"))
+                {
+                    Assert.Less(EditorApplication.timeSinceStartup, snapshotDeadline);
+                    yield return null;
+                }
                 var task = (System.Threading.Tasks.Task)GetPrivate(window, "saveTask");
                 Assert.IsNotNull(task);
                 UnityEngine.Object.DestroyImmediate(window);
@@ -573,6 +579,14 @@ namespace SashaRX.UnityMeshLab.Tests
                 UnsubscribeUpdate(callback);
                 var task = (System.Threading.Tasks.Task)GetPrivate(window, "saveTask");
                 double deadline = EditorApplication.timeSinceStartup + 30;
+                while (!task.IsCompleted)
+                {
+                    Assert.Less(EditorApplication.timeSinceStartup, deadline);
+                    yield return null;
+                }
+                InvokePrivate(window, "TickSave");
+                UnsubscribeUpdate(callback);
+                task = (System.Threading.Tasks.Task)GetPrivate(window, "saveTask");
                 while (!task.IsCompleted)
                 {
                     Assert.Less(EditorApplication.timeSinceStartup, deadline);
