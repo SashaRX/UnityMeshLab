@@ -52,7 +52,7 @@ namespace SashaRX.UnityMeshLab
                 if (!Eligible(renderer, mesh)) continue;
                 var selected = Remap(seed, renderer, settings, meshFor);
                 var mask = Mask(mesh, renderer.sharedMaterials, selected);
-                if (!Enumerable.Range(0, mask.Length).Any(s => mask[s] && mesh.GetIndexCount(s) > 0)) continue;
+                if (!HasTriangles(mesh, mask)) continue;
                 result.Add(new Target { renderer = renderer, settings = selected, submeshes = mask,
                     proxySource = result.Count == 0 || !settings.lod0Only, lodLevel = Level(renderer, mesh) });
             }
@@ -78,7 +78,10 @@ namespace SashaRX.UnityMeshLab
         }
 
         static bool Eligible(MeshRenderer renderer, Mesh mesh) => renderer && renderer.enabled &&
-            renderer.gameObject.activeInHierarchy && mesh && !MeshNaming.IsCollision(renderer.name) && !MeshNaming.IsCollision(mesh.name);
+            renderer.gameObject.activeInHierarchy && mesh && !MeshNaming.IsCollision(renderer.name) && !MeshNaming.IsCollision(mesh.name) && HasTriangles(mesh);
+
+        static bool HasTriangles(Mesh mesh, bool[] mask = null) => Enumerable.Range(0, mesh.subMeshCount).Any(sub =>
+            mesh.GetTopology(sub) == MeshTopology.Triangles && mesh.GetIndexCount(sub) > 0 && (mask == null || mask[sub]));
 
         static bool[] Mask(Mesh mesh, Material[] materials, FoliageNormalsSettings settings) =>
             Enumerable.Range(0, mesh.subMeshCount).Select(s => mesh.GetTopology(s) == MeshTopology.Triangles &&

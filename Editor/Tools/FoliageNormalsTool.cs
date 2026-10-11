@@ -30,7 +30,7 @@ namespace SashaRX.UnityMeshLab
         internal bool followSelection = true;
         internal readonly FoliageNormalsPreview sourcePreview = new FoliageNormalsPreview();
         GameObject lastSelection, pendingRoot;
-        bool hasPendingRoot;
+        bool hasPendingRoot, pendingHierarchyRefresh;
         bool previewCaptured;
         GameObject previewCapturedRoot;
         float normalLength = .025f;
@@ -72,6 +72,7 @@ namespace SashaRX.UnityMeshLab
         void PipelineChanged()
         {
             previewCanApply = null;
+            if (active) RefreshHierarchyWhenIdle();
             ValidateComparisonPreview();
             bool captured = pipeline.Has(FoliageNormalsPipeline.Stage.Capture);
             if (captured != previewCaptured || pipeline.CapturedRoot != previewCapturedRoot)
@@ -175,6 +176,7 @@ namespace SashaRX.UnityMeshLab
         void Clear()
         {
             previewCanApply = null;
+            pendingHierarchyRefresh = false;
             hasPendingRoot = false;
             pendingRoot = null;
             sourcePreview.Dispose();
@@ -193,13 +195,18 @@ namespace SashaRX.UnityMeshLab
         void HierarchyChanged()
         {
             previewCanApply = null;
-            if (!pipeline.IsRunning)
-            {
-                RefreshFilters();
-                pipeline.InvalidateChanged(settings, root);
-                RefreshSourcePreview();
-            }
+            pendingHierarchyRefresh = true;
+            RefreshHierarchyWhenIdle();
             RequestRepaint?.Invoke();
+        }
+
+        void RefreshHierarchyWhenIdle()
+        {
+            if (!pendingHierarchyRefresh || pipeline.IsRunning) return;
+            pendingHierarchyRefresh = false;
+            RefreshFilters();
+            pipeline.InvalidateChanged(settings, root);
+            RefreshSourcePreview();
         }
 
         void SourceChannelsChanged(Mesh mesh)
@@ -247,6 +254,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             root = source;
+            pendingHierarchyRefresh = false;
             settings.renderers = Array.Empty<MeshRenderer>();
             settings.materials = Array.Empty<Material>();
             settings.filterRenderers = false;

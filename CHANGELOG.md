@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Fixed
+- Foliage selection rejects line/point meshes and empty triangle submeshes. Hierarchy changes during active calculations refresh source context and selection masks once the pipeline becomes idle, including failed runs.
 - Foliage bbox fits clamp planar thickness after scaling and account for float precision at the fitted center. Preview refreshes cancel and serialize active paint work; named LOD siblings refresh on source-channel changes, and Before/After spacing includes all visible context geometry.
 - Object-bounds sphere/hemisphere fitting derives automatic transfer reach from both selected capture bounds and the fitted proxy, so large excluded geometry cannot prevent transfer at the default distance. Positive distance limits retain their exact meaning.
 - Foliage Before/After uses a shared nonzero offset for meshes and normal arrows when source bounds have zero X width, keeping YZ-plane cards separated and their arrows aligned.

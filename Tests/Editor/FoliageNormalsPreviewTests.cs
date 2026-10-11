@@ -241,6 +241,71 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
+        public IEnumerator NonTriangleAndEmptyMeshSelectionsKeepTheWorkingTreeAndDoNotCancelRuns()
+        {
+            using var first = new FoliageNormalTransferTests.Fixture();
+            using var fixture = new ToolFixture(); var tool = fixture.tool;
+            Selection.activeGameObject = first.root; tool.OnActivate(null, null);
+            foreach (var topology in new[] { MeshTopology.Lines, MeshTopology.Points, MeshTopology.Triangles })
+                foreach (bool unreadable in new[] { false, true })
+                {
+                    using var unsupported = new FoliageNormalTransferTests.Fixture();
+                    unsupported.mesh.Clear(); unsupported.mesh.vertices = new[] { Vector3.zero, Vector3.right, Vector3.up };
+                    unsupported.mesh.SetIndices(topology == MeshTopology.Lines ? new[] { 0, 1 } :
+                        topology == MeshTopology.Points ? new[] { 0 } : Array.Empty<int>(), topology, 0);
+                    if (unreadable) unsupported.mesh.UploadMeshData(true);
+                    Assert.IsFalse(FoliageLodSelection.HasEligibleRenderer(unsupported.root));
+                    Selection.activeGameObject = unsupported.root; tool.FollowSelection(); Assert.AreSame(first.root, tool.root);
+                    Selection.activeGameObject = first.root; tool.FollowSelection();
+                    tool.pipeline.ClearFrom(FoliageNormalsPipeline.Stage.Capture);
+                    var task = tool.pipeline.Run(first.root, tool.settings, FoliageNormalsPipeline.Stage.Transfer);
+                    Assert.IsTrue(tool.pipeline.IsRunning);
+                    Selection.activeGameObject = unsupported.root; tool.FollowSelection();
+                    yield return FoliageNormalsToolTests.Await(task);
+                    Assert.IsTrue(task.Result, tool.pipeline.Status); Assert.AreSame(first.root, tool.root);
+                    Assert.IsTrue(tool.pipeline.CanApply);
+                    Assert.AreSame(first.mesh, first.root.GetComponent<MeshFilter>().sharedMesh);
+                }
+        }
+
+        [UnityTest]
+        public IEnumerator HierarchyRefreshesReplayWhenSuccessfulOrFailedCalculationsBecomeIdle()
+        {
+            foreach (bool fail in new[] { false, true })
+            {
+                using var leaf = new FoliageNormalTransferTests.Fixture(); using var context = new FoliageNormalTransferTests.Fixture();
+                using var fixture = new ToolFixture(); var tool = fixture.tool;
+                Selection.activeGameObject = leaf.root; tool.OnActivate(null, null);
+                var hierarchy = (Action)Delegate.CreateDelegate(typeof(Action), tool,
+                    typeof(FoliageNormalsTool).GetMethod("HierarchyChanged", BindingFlags.Instance | BindingFlags.NonPublic));
+                // Deliver the hierarchy event explicitly while running, so a later
+                // automatic idle event cannot conceal a dropped notification.
+                EditorApplication.hierarchyChanged -= hierarchy;
+                tool.settings.filterRenderers = true; tool.settings.renderers = new[] { leaf.renderer };
+                var capture = tool.pipeline.Run(leaf.root, tool.settings, FoliageNormalsPipeline.Stage.Capture);
+                yield return FoliageNormalsToolTests.Await(capture); Assert.IsTrue(capture.Result, tool.pipeline.Status);
+                yield return AwaitPreview(tool.sourcePreview);
+                var previous = tool.sourcePreview.Sources(0).Single().mask;
+                var task = tool.pipeline.Run(leaf.root, tool.settings,
+                    fail ? FoliageNormalsPipeline.Stage.Transfer : FoliageNormalsPipeline.Stage.Scatter);
+                Assert.IsTrue(tool.pipeline.IsRunning);
+                context.root.transform.SetParent(leaf.root.transform, false);
+                if (fail)
+                {
+                    leaf.mesh.vertices = leaf.mesh.vertices.Select(p => p + Vector3.right).ToArray(); leaf.mesh.RecalculateBounds();
+                    LogAssert.Expect(LogType.Error, new System.Text.RegularExpressions.Regex("Source.*changed.*Recapture"));
+                }
+                hierarchy(); Assert.IsTrue(previous, "Active calculations defer the preview replacement.");
+                yield return FoliageNormalsToolTests.Await(task); Assert.AreEqual(!fail, task.Result, tool.pipeline.Status);
+                yield return AwaitPreview(tool.sourcePreview);
+                Assert.IsFalse(previous); Assert.AreEqual(2, tool.sourcePreview.Sources(0).Count());
+                Assert.IsTrue(tool.sourcePreview.Sources(0).All(source => source.mask));
+                Assert.AreEqual(!fail, tool.pipeline.Has(FoliageNormalsPipeline.Stage.Capture));
+                Assert.AreSame(leaf.mesh, leaf.root.GetComponent<MeshFilter>().sharedMesh);
+            }
+        }
+
+        [UnityTest]
         public IEnumerator PreCaptureNormalArrowsSampleSelectedVerticesBeforeApplyingTheLimit()
         {
             var positions = Enumerable.Range(0, 512).Select(i => new Vector3(i % 32, i / 32, 0)).ToArray();
