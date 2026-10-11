@@ -126,6 +126,13 @@ namespace SashaRX.UnityMeshLab
             return best;
         }
 
+        internal HitResult FindNearestExceptTriangle(Vector3 queryPoint, int excludedTriangle)
+        {
+            var best = new HitResult { triangleIndex = -1, distSq = float.MaxValue };
+            FindNearestRecursive(0, queryPoint, ref best, excludedTriangle);
+            return best;
+        }
+
         /// <summary>
         /// Find nearest triangle whose face normal has dot >= normalDotMin with queryNormal.
         /// faceNormals is indexed by local face index (same as returned triangleIndex).
@@ -331,7 +338,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        void FindNearestRecursive(int nodeIdx, Vector3 q, ref HitResult best)
+        void FindNearestRecursive(int nodeIdx, Vector3 q, ref HitResult best, int excludedTriangle = -1)
         {
             ref Node node = ref nodes[nodeIdx];
 
@@ -345,6 +352,7 @@ namespace SashaRX.UnityMeshLab
                 for (int i = node.triStart; i < node.triStart + node.triCount; i++)
                 {
                     int f = triIndices[i];
+                    if (f == excludedTriangle) continue;
                     int i0 = tris[f * 3], i1 = tris[f * 3 + 1], i2 = tris[f * 3 + 2];
 
                     Vector3 closest = ClosestPointOnTriangle(q, verts[i0], verts[i1], verts[i2],
@@ -367,13 +375,13 @@ namespace SashaRX.UnityMeshLab
 
             if (dL < dR)
             {
-                FindNearestRecursive(node.left, q, ref best);
-                FindNearestRecursive(node.right, q, ref best);
+                FindNearestRecursive(node.left, q, ref best, excludedTriangle);
+                FindNearestRecursive(node.right, q, ref best, excludedTriangle);
             }
             else
             {
-                FindNearestRecursive(node.right, q, ref best);
-                FindNearestRecursive(node.left, q, ref best);
+                FindNearestRecursive(node.right, q, ref best, excludedTriangle);
+                FindNearestRecursive(node.left, q, ref best, excludedTriangle);
             }
         }
 

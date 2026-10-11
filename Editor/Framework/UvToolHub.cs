@@ -207,7 +207,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
-        /// Restore fbxMesh on MeshFilter and destroy temporary working meshes.
+        /// Restore only this context's temporary swaps and destroy its working meshes.
         /// Must be called before clearing or switching MeshEntries.
         /// </summary>
         void RestoreWorkingMeshes()
@@ -215,8 +215,13 @@ namespace SashaRX.UnityMeshLab
             if (ctx?.MeshEntries == null) return;
             foreach (var e in ctx.MeshEntries)
             {
-                if (e.meshFilter != null && e.fbxMesh != null)
-                    e.meshFilter.sharedMesh = e.fbxMesh;
+                if (e.meshFilter != null && e.fbxMesh != null) {
+                    var current = e.meshFilter.sharedMesh;
+                    bool ownedSwap = current != null && (current == e.transferredMesh || current == e.repackedMesh ||
+                        e.originalMesh != e.fbxMesh && current == e.originalMesh);
+                    // A scene result assigned by a tool/Undo must survive context refresh and window close.
+                    if (ownedSwap) e.meshFilter.sharedMesh = e.fbxMesh;
+                }
                 if (e.transferredMesh != null) { DestroyImmediate(e.transferredMesh); e.transferredMesh = null; }
                 if (e.repackedMesh != null) { DestroyImmediate(e.repackedMesh); e.repackedMesh = null; }
                 e.repackedAtlasWidth = 0;
@@ -2010,7 +2015,8 @@ namespace SashaRX.UnityMeshLab
             foreach (var b in lightmapBackups)
             {
                 if (b.renderer != null) b.renderer.sharedMaterials = b.origMaterials;
-                if (b.meshFilter != null && b.origMesh != null) b.meshFilter.sharedMesh = b.origMesh;
+                if (b.meshFilter != null && b.origMesh != null && b.meshFilter.sharedMesh == b.tempMesh)
+                    b.meshFilter.sharedMesh = b.origMesh;
                 if (b.tempMesh != null) DestroyImmediate(b.tempMesh);
                 if (b.tempMat != null) DestroyImmediate(b.tempMat);
             }

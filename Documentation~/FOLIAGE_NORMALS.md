@@ -1,0 +1,339 @@
+# Foliage Normals
+
+Open **Tools → Mesh Lab → Open Mesh Lab → Foliage Normals**. Select a scene root,
+choose foliage renderers/materials/submeshes, and press **One Click: Build + Transfer**.
+The tool builds a smooth volume around leaf cards and assigns explicit normals from
+that volume to mesh clones. No scene objects are created for the spheres.
+
+Use **Build Proxy**, **Smooth / rebuild**, **Remesh / rebuild** and **Transfer normals** for individual
+stages. Every button runs any missing/stale prerequisites. A settings change clears
+only its stage and subsequent results. **Clear Preview** releases the captured and
+generated preview meshes. **Apply to Scene** and **Save Mesh Asset** become available
+only after a successful transfer with at least one transferred vertex.
+
+## Normal source: voxel envelope, sphere or hemisphere
+
+**Proxy shape** chooses the source surface for the same nearest-triangle normal
+transfer. **Voxel Envelope** scatters overlapping spheres, voxelizes their union
+and applies Taubin smoothing followed by isotropic surface remeshing as described below. **Sphere** and **Hemisphere**
+directly generate an indexed surface with smooth radial vertex normals; scatter,
+native voxelization, geometry smoothing and isotropic remeshing are skipped. They require no native
+remesher, and CPU/GPU projection, blend, distance limits, boundary splits,
+preview, Undo and asset saving use the common transfer/output stages.
+
+By default **Auto fit selected foliage** uses only selected triangle vertices.
+A sphere is centered on their capture bounds and its radius is the greatest
+distance from that center to a selected vertex. A hemisphere's axis defaults to
+root-local +Y; its center lies on the lowest selected point's plane along that
+axis, with radius equal to the greatest selected distance from that center.
+**Rotation (root local)** rotates the hemisphere and its fitting axis. It has an
+open equator, with **no flat base cap**, so bottom faces cannot supply downward
+cap normals. This intentional boundary is validated separately from the closed
+voxel envelope. Points below the equator project to the curved surface or rim.
+
+**Center offset** moves the automatic center before radius fitting;
+**Radius multiplier** scales the fitted radius. Disable auto fit to enter an
+absolute root-local center and radius in capture units. **Segments** controls
+surface resolution (16–128 in multiples of four, default 64). Spheres have one
+vertex per pole and shared ring vertices; hemispheres share their equator ring.
+Normals are radial, then interpolated at the nearest proxy triangle like all
+other source modes; the final normal is not calculated directly from the target
+position. Manual sphere/hemisphere settings affect Envelope and downstream
+stages; changing source mode clears Scatter and downstream while keeping Capture.
+Unused scatter/smoothing/remesh settings do not rebuild a sphere or hemisphere.
+
+## Capture and coordinate spaces
+
+All processing takes place in the selected root's local space. Each static renderer
+has an independent `FoliageTargetSnapshot`, preserving the source Mesh reference,
+readable original snapshot, per-submesh index arrays and selection, materials,
+original positions/normals, vertex usage masks and full matrices:
+
+```
+M = root.worldToLocalMatrix * renderer.localToWorldMatrix
+capturePosition = M.MultiplyPoint3x4(localPosition)
+normalLocalToCapture = M.inverse.transpose
+captureNormal = normalize(normalLocalToCapture.MultiplyVector(localNormal))
+normalCaptureToLocal = M.transpose
+localResultNormal = normalize(normalCaptureToLocal.MultiplyVector(proxyNormal))
+```
+
+This includes nested hierarchies, nonuniform or negative scale and FBX axis
+conversion. Root placement, rotation and scale never change. Proxy spheres and
+distances are measured in capture units; a nonuniformly scaled root therefore
+deforms the displayed world-space envelope. This is intentional root-local metric
+behaviour, rather than a world-space isotropic sphere union.
+
+`MeshAccess` reads imported meshes with Read/Write disabled. Its existing rare
+Unity fallback temporarily enables Read/Write for a read and restores it; foliage
+does not change importer normals or write the model file. Unreadable deforming
+meshes whose full skin/blend shape streams cannot be preserved are rejected.
+Sources must contain finite positions and authored unit normals at every vertex.
+
+The three face filters are all triangle submeshes, selected material references,
+and selected submesh numbers. Disabled/inactive renderers, collision names from
+`MeshNaming`, non-triangle submeshes and (with LOD0 Only) higher named LODs and
+LODGroup levels are excluded. Higher LODs may be selected when LOD0 Only is off.
+With Choose renderers disabled, all eligible renderers are used. When enabled,
+an empty selection is an error and cannot silently process all renderers.
+SkinnedMeshRenderer is not a write-back target.
+
+## Surface sampling
+
+Selected geometry is combined for scatter alone; renderer vertex correspondence
+never comes from the combined geometry. `MeshGeometry.WeldPositions` joins exact
+position copies before a union-find builds connected face islands. UV or normal
+splits consequently do not separate one leaf card. Degenerate triangles are
+counted and excluded.
+
+Triangle area is `0.5 * length(cross(b-a, c-a))`. For island area A and spacing h,
+the surface sample count is `max(minimumSamplesPerIsland, ceil(A / h²))`. Triangle
+choice uses stratified points `(i+0.5)/count` in the island's area CDF. Two seeded,
+scrambled radical-inverse dimensions (bases 2 and 3) supply u and v in [0,1).
+The exact uniform barycentric formula is:
+
+```
+r  = sqrt(u)
+b0 = 1 - r
+b1 = r * (1 - v)
+b2 = r * v
+p  = a*b0 + b*b1 + c*b2
+```
+
+Optional source vertices and triangle centroids are added. A spatial hash removes
+samples closer than `h * dedupSpacingFraction`, checking neighbouring cells by
+actual Euclidean distance. Every island reserves its minimum first. If dedup
+prevents that minimum, the operation fails with an actionable error. After dedup,
+the primitive cap retains island minima plus a deterministic evenly distributed
+subset of the remaining samples. Counts, surface area, skipped degenerates and
+exact nearest-neighbour min/mean/max are reported. Neighbour diagnostics reuse
+`TriangleBvh` with point triangles and self-face exclusion.
+
+Defaults: spacing 5% of selected capture diagonal, radius = spacing, one sample per
+island, source vertices on, centroids off, seed 1729, primitive budget 20,000.
+Scatter refuses more than one million candidates. The hard primitive cap is
+50,000; actual geometry also has a two-million-triangle/128 MiB input budget.
+Increase spacing or reduce sphere subdivision if the geometry budget is exceeded.
+
+## Voxel envelope
+
+`FoliagePrimitiveBuilder` expands one shared unit icosphere template (subdivision
+0 or 1) into one geometry-only indexed triangle soup. No sphere GameObjects,
+normals, UVs or tangents are needed. Mesh previews use UInt32 indices when needed.
+
+`IFoliageProxyBuilder` is implemented by `MeshoptVoxelProxyBuilder`. It calls
+`RemeshNative.Voxelize` / `meshLabVoxelRemesh` using a separate RemeshSettings
+snapshot: solve=false, shell=false, trimToSource=false, simplify=false. The existing
+native bridge owns and releases native handles, including after cancellation.
+
+The reference semantics are `d(p) = min_i(length(p-center_i)-radius_i)`, surface
+`d(p)=0`. This implementation voxelizes tessellated spheres, approximating the
+union. It does **not** retain a dense signed-distance grid or SDF asset. The UI
+calls the result **Voxel Envelope / Volume Proxy**. Subdivision 0 has visible
+icosahedral approximation error; subdivision 1 is the default. Voxel bounds are
+validated against the actual primitive union within 1.5 voxel cells. Reference
+EditMode tests additionally compare subdivision-1 spheres with analytic union
+bounds and check overlap has no internal surface.
+
+Every result must be nonempty, finite, correctly indexed and closed/manifold under
+`RemeshTopology.Inspect`. Signed volume orients each disconnected component outward;
+an inverted component cannot hide behind the volume of another one. One sphere,
+two overlapping spheres and two separated spheres are explicit backend tests.
+Separated foliage clusters legitimately produce several closed components in one
+indexed proxy. No secondary voxelizer is used.
+
+## Smoothing
+
+Taubin geometry smoothing builds sorted vertex adjacency and alternates positive
+lambda and negative mu Laplacian passes. Defaults are lambda=0.5, mu=-0.53,
+strength=1 and five iterations. Topology/indices remain unchanged. Finite geometry,
+degeneracy, closed topology and outward component volume are validated afterward.
+The operation fails if total volume drops below half the original; relative volume
+change over 15% is reported as a warning. Bounds and signed volumes before/after
+are retained in diagnostics. This is shrink-compensated smoothing, not an exact
+volume constraint or a self-intersection solver.
+
+`MeshGeometry.AveragedNormals` generates smooth area-weighted proxy normals. Proxy
+normal data is validated for finite unit directions. Proxy hard edges are never
+introduced.
+
+## Uniform triangle proxy remeshing
+
+**Uniform triangles** is enabled by default for the voxel envelope. The separate
+Remesh stage runs **after Taubin smoothing and before normal transfer**, on the
+proxy alone. It changes proxy topology; source leaf-card geometry is untouched.
+`IFoliageProxyRemesher` uses the original managed `FoliageProxyRemesher`
+implementation of incremental isotropic surface remeshing. No libigl/CGAL code,
+TetGen dependency or tetrahedral volume is embedded. The standard surface
+algorithm consists of edge split/collapse/flip, tangential relaxation and
+projection ([CGAL algorithm reference](https://doc.cgal.org/latest/PMP_Remeshing/group__PMP__local__remeshing__grp.html)).
+
+For target edge length h, each iteration:
+
+1. Splits edges longer than `4h/3`, projecting their midpoints onto the smoothed
+   reference surface through `TriangleBvh.FindNearest`.
+2. Collapses edges shorter than `4h/5` when the manifold link condition, face
+   orientation, duplicate-face check and resulting edge-length constraints pass.
+3. Flips interior edges to improve valence towards six and triangle shape.
+4. Moves vertices towards their neighbour centroid in the tangent plane,
+   then projects them onto the unchanged smoothed reference surface.
+
+Projection rejects a hit on another disconnected reference component. All edits
+reject degenerate/inverted incident faces. Sorted candidates and neighbours make
+the result deterministic. Adjacency is updated locally rather than scanning all
+faces per edit; recycled face and vertex slots bound working storage. All array
+processing occurs in Task.Run, with cancellation checks throughout each pass.
+No temporary Unity objects or compute buffers are allocated by this stage.
+
+**Edge length (0 = auto)** is in root-local capture units; zero uses the smoothed
+proxy's mean unique-edge length. Defaults: five iterations, relaxation 0.5,
+100,000-triangle budget (hard cap 200,000). Input and estimated ideal triangle
+counts are checked before creating mutable adjacency; each split checks the
+budget again. Working adjacency costs approximately 1 KiB per triangle, varying
+with valence and allocator overhead. Reduce voxel resolution or increase target
+length if the budget is exceeded. Source modes Sphere/Hemisphere keep their
+radial normals and bypass this stage. Disabling Uniform triangles passes the
+smoothed proxy through unchanged.
+
+`RemeshTopology.Inspect` verifies the final closed manifold and component/Euler
+counts; every component must retain positive signed volume. Finite unit vertex
+normals are regenerated by `MeshGeometry.AveragedNormals` on the final geometry.
+Surface deviation is measured in both directions at vertices and face centroids
+using BVHs; deviation over `h/2` or total volume change over 25% fails the stage.
+Volume change over 10% is a warning. These sampled distances are diagnostics,
+not a certified continuous Hausdorff bound or a complete self-intersection test.
+
+Diagnostics compare triangle counts, edge-length and triangle-area coefficients
+of variation (standard deviation / mean), minimum angle and mean triangle shape
+`q = 2√3 * |cross(b-a,c-a)| / (|a-b|²+|b-c|²+|c-a|²)` (equilateral = 1).
+They also report split/collapse/flip/rejection counts, projection deviation and
+volume change. The target is approximately uniform triangles; tight curvature
+and topology constraints can retain short edges. Inspect **Smoothed Proxy**
+versus **Transfer Proxy**, with **Show proxy edges**, and tune h/iterations.
+Changing remesh parameters invalidates Remesh and Transfer only, preserving
+Capture, Scatter, Envelope and Smooth.
+
+## Normal Thief transfer
+
+The final remeshed proxy feeds the existing `TriangleBvh` (the smoothed proxy when
+remeshing is disabled, or the radial sphere/hemisphere). CPU queries use `FindNearest`;
+GPU batches use `GpuBvh.TryCreate` and `NearestAsync`. Neither casts rays along the
+old card normal. Both resolve nearest triangle, closest point, squared distance
+and barycentric weights. GPU edge hits, hits near the distance limit and misses
+are canonicalized through the same CPU BVH to avoid floating-point face choices
+on shared edges. The number and CPU cost of these canonical queries are reported.
+GPU availability fallback is logged and the actual backend is displayed; GPU
+dispatch/readback errors fail the stage.
+
+```
+n = normalize(proxyNormals[i0]*bary.x
+            + proxyNormals[i1]*bary.y
+            + proxyNormals[i2]*bary.z)
+if (alignToOriginalHemisphere && dot(n, originalCaptureNormal) < 0) n = -n
+n = normalize(lerp(originalCaptureNormal, n, transferBlend))
+localNormal = normalize(M.transpose.MultiplyVector(n))
+```
+
+Hemisphere alignment defaults off, matching normal theft from the proxy. Blend
+defaults to 1. Blend 0 and projection misses retain the exact original local
+normal. A cancelling blend or invalid hit counts as a miss and never writes a zero
+normal. Max distance 0 means twice the selected capture diagonal; positive values
+are explicit capture-unit distances. Zero transferred vertices fail the pipeline.
+
+## Selected/excluded boundary vertices
+
+A vertex used by both selected and excluded faces is appended once for selected
+faces; only selected submesh indices are remapped to the duplicate. Original
+vertices and excluded normals remain intact. Raw MeshData vertex streams are
+copied by stride, preserving every stored attribute/dimension/format, UV0–UV7,
+HDR colours and tangents. Variable bone weights, bind poses and blend-shape frames
+are copied separately. Materials, submesh topology, face order and bounds remain.
+Any unsupported capture or copy fails rather than modifying trunk normals.
+
+Tangents are recalculated only if requested and UV0 exists, is finite and has
+nondegenerate UV triangles. Without valid UV0, original tangents are retained and
+a warning is emitted. Existing excluded tangent values are restored after
+recalculation. Target normals are never regenerated with RecalculateNormals.
+
+## Preview, apply and assets
+
+The shared `MeshViewport3D` supports source cards, primitive sample points, voxel
+proxy, smoothed proxy, remeshed transfer proxy, transferred cards and side-by-side before/after. Choose
+Normals shading for colour comparison. Before/after also draws cyan original and
+yellow transferred normal vectors. Primitive points are bounded to 4,096 per
+frame. **Show proxy edges** uses the viewport's cached wire drawing for the three
+proxy previews. Transient meshes use HideAndDontSave and never replace scene meshes during
+preview.
+
+Apply checks that captured Mesh references, matrices and material assignments are
+still current, then creates scene-owned result clones and records renderer and
+MeshFilter changes in one Undo group. Prefab instance overrides are recorded.
+Clearing previews or rebuilding cannot destroy applied meshes; Undo/Redo owns
+their scene lifetime. The hub restores only its owned temporary mesh swaps, so
+Undo/Redo, switching selection and closing Mesh Lab preserve applied scene meshes.
+Save writes unique separate `_FoliageNormals.asset` meshes
+under an Assets folder via the existing asset-folder helper. FBX files are not
+overwritten and imported normals settings are not changed.
+
+## Stages, cancellation and diagnostics
+
+Capture → Scatter → Envelope → Smooth → Remesh → Transfer each has a settings key. One run
+per pipeline is allowed, and reload is locked until the run exits. Array workers
+run through Task.Run; Unity object access, GPU dispatches, mesh writes and asset
+saves occur on the main thread. Cancellation waits for in-flight native calls and
+GPU readbacks. Dispose during a run requests cancellation and defers cleanup until
+the worker exits. Failed/cancelled stages clear incomplete downstream outputs.
+Reload/deactivation unregister callbacks and dispose previews; no static pipeline
+state survives reload.
+
+Status shows stage/time, primitive count, proxy triangles/components, transferred
+and missed vertices. Transfer diagnostics include renderers, selected faces and
+vertices, misses/percentage, invalid hits, hemisphere flips, duplicated boundary
+vertices, mean/max projection distance, actual CPU/GPU backend, canonical query
+count, and CPU/GPU timings. Timings include asynchronous scheduling/readback costs
+and vary by hardware/editor load.
+
+## Validation and limitations
+
+EditMode fixtures cover sampling, primitive budgets, native sphere unions,
+shrink-compensated smoothing, isotropic remesh uniformity/density/determinism,
+closed components, budgets, cancellation and deferred disposal, explicit normal interpolation, boundary channel
+copying, FBX-style matrices, GPU parity/cancellation, stage invalidation,
+Apply Undo/Redo, imported unreadable capture, asset saving and repeated runs.
+Sphere/hemisphere fixtures verify radial interpolation, indexed topology,
+the intentional open rim, rotated base-plane fitting, CPU/GPU parity,
+selected-only fitting, cancellation, Undo and stage/resource lifecycles.
+The synthetic crown uses 96 independent cards with varied plane normals. Its
+test optionally writes rendered previews and CPU/GPU metrics when
+`MESHLAB_FOLIAGE_OUTPUT` names an output directory outside Assets.
+
+`FoliageReferenceAssetTests` is an opt-in check for `Forest_pine_03_Optimized.fbx`.
+The model is not distributed with the package. Import a reference Unity package
+containing it at `Assets/FoliageReferenceInput/Forest_pine_03_Optimized.fbx` with
+Unity's `-importPackage` argument, then set `MESHLAB_FOLIAGE_REFERENCE_PACKAGE`
+to that package path and `MESHLAB_FOLIAGE_OUTPUT` to a directory outside Assets.
+Run it in a disposable test project: the fixture removes its input/output asset
+folders after exporting previews, metrics and a separate result Mesh package.
+It reproduces the verified material slots with portable test materials:
+slot 0 `M_Pine_trunk_05_Optimized` is excluded; only slot 1
+`M_Pine_leaves_Optimized` contributes to the proxy and receives new normals.
+It checks every excluded normal/tangent, all UV channels, positions, indices,
+material references, transforms, unchanged FBX/importer bytes, CPU/GPU agreement
+and Apply Undo/Redo. Preview colours visualize normals without the source HDRP
+shader or alpha textures.
+
+The pine profile uses spacing at 4% of the selected bounds diagonal, radius
+multiplier 1.6, dedup fraction 0.01, voxel resolution 64 and three Taubin iterations
+at strength 0.5. A smaller dedup distance is needed for its densely adjacent
+islands. Finer profiles tested on this model produced invalid native topology
+(point/edge contacts); validation rejected them before Transfer. Increase
+primitive overlap or change voxel resolution when that diagnostic occurs.
+
+Version one supports static MeshRenderer targets; normal sources are a voxel
+union of sphere primitives, an explicit sphere or an open hemisphere.
+It samples geometric cards, ignoring alpha textures. There is no runtime
+component, wind, skin write-back, capsule/ellipsoid, dense SDF Texture3D, UV unwrap,
+material bake or automatic whole-scene processing. Low voxel resolutions can
+merge close clusters; wide spacing can leave disconnected volumes. Thin gaps and
+overlapping cards require tuning spacing/radius/resolution. Smoothing validates
+topology and volume but does not detect all geometric self-intersections.
