@@ -235,7 +235,9 @@ jobs:
             -UnityPath "$UNITY_PATH" -TemplateProject "$TEMPLATE_PROJECT")
           if [ -n "$MODEL_CASES" ]; then UNITY_ARGS+=(-ModelCases "$MODEL_CASES"); fi
           if [ -n "$SCREEN_INPUT" ]; then UNITY_ARGS+=(-ScreenInput "$SCREEN_INPUT"); fi
-          "$POWERSHELL" -NoProfile -File "$(wslpath -w "$GITHUB_WORKSPACE/Tools~/run-unity-coverage.ps1")" \
+          # WSL's UNC checkout is remote to Windows; allow this trusted main script
+          # for this PowerShell process without changing the host execution policy.
+          "$POWERSHELL" -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w "$GITHUB_WORKSPACE/Tools~/run-unity-coverage.ps1")" \
             "${UNITY_ARGS[@]}"
 
       - name: Upload measured coverage and source fingerprints
