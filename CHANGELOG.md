@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Fixed
+- Foliage Normals resolves all 39 advisory Sonar findings by separating sampling, proxy edits, transfer, preview and FBX save operations into focused methods. Deterministic geometry processing, selected-corner shading writes, mesh channel preservation and cleanup remain unchanged; no analyzer suppressions or rule policy changes are added.
 - Foliage Normals refuses stale mesh data, changes to the eligible renderer set and additional vertex streams; Prefab Mode requires a persistent saved output before assignment. Multi-renderer mesh saves reserve distinct asset paths. Foliage tangent recalculation ignores excluded UV degeneracy, and partial FBX export retains the source tangent import/calculation mode. Gating Sonar findings in the foliage pipeline are fixed without suppressions.
 
 ### Added

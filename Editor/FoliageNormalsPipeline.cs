@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEditor;
@@ -121,12 +122,9 @@ namespace SashaRX.UnityMeshLab
                 return false;
             }
 
-            foreach (var t in targets)
+            if (targets.Any(t => !t.IsCurrent(CapturedRoot.transform.worldToLocalMatrix)))
             {
-                if (!t.IsCurrent(CapturedRoot.transform.worldToLocalMatrix))
-                {
-                    return false;
-                }
+                return false;
             }
 
             var current = EligibleRenderers(CapturedRoot, captureSettings, CancellationToken.None);
@@ -148,7 +146,6 @@ namespace SashaRX.UnityMeshLab
 
         internal static string Key(Stage stage, FoliageNormalsSettings s, GameObject root)
         {
-            string Ids<T>(T[] objects) where T : Object => string.Join(",", Array.ConvertAll(objects, o => o ? o.GetInstanceID().ToString() : "0"));
             switch (stage)
             {
                 case Stage.Capture:
@@ -160,10 +157,22 @@ namespace SashaRX.UnityMeshLab
                 case Stage.Smooth:
                     return s.normalSource != FoliageNormalSource.VoxelEnvelope ? s.normalSource.ToString() : FormattableString.Invariant($"{s.smoothingIterations}|{s.smoothingStrength:R}|{s.lambda:R}|{s.mu:R}");
                 case Stage.Remesh:
-                    return s.normalSource != FoliageNormalSource.VoxelEnvelope ? s.normalSource.ToString() : !s.remeshProxy ? "Disabled" : FormattableString.Invariant($"{s.remeshEdgeLength:R}|{s.remeshIterations}|{s.remeshRelaxation:R}|{s.maximumProxyTriangles}");
+                    return RemeshKey(s);
                 default:
                     return FormattableString.Invariant($"{s.maxTransferDistance:R}|{s.transferBlend:R}|{s.alignToOriginalHemisphere}|{s.gpuProjection}|{s.recalculateTangents}");
             }
+        }
+
+        static string Ids<T>(T[] objects) where T : Object => string.Join(",", Array.ConvertAll(objects, o => o ? o.GetInstanceID().ToString() : "0"));
+
+        static string RemeshKey(FoliageNormalsSettings settings)
+        {
+            if (settings.normalSource != FoliageNormalSource.VoxelEnvelope)
+            {
+                return settings.normalSource.ToString();
+            }
+
+            return settings.remeshProxy ? FormattableString.Invariant($"{settings.remeshEdgeLength:R}|{settings.remeshIterations}|{settings.remeshRelaxation:R}|{settings.maximumProxyTriangles}") : "Disabled";
         }
 
         internal void InvalidateChanged(FoliageNormalsSettings settings, GameObject root)
@@ -213,8 +222,7 @@ namespace SashaRX.UnityMeshLab
                 for (var stage = Stage.Capture; stage <= to; stage++)
                 {
                     token.ThrowIfCancellationRequested();
-                    bool changed = keys[(int)stage] == null || keys[(int)stage] != Key(stage, options, root) || stage == Stage.Capture && !CaptureCurrent();
-                    if (!changed)
+                    if (!StageChanged(stage, options, root))
                     {
                         continue;
                     }
@@ -225,84 +233,7 @@ namespace SashaRX.UnityMeshLab
                     Changed?.Invoke();
                     await Task.Yield();
                     token.ThrowIfCancellationRequested();
-                    switch (stage)
-                    {
-                        case Stage.Capture:
-                            await Capture(root, options, token);
-                            break;
-                        case Stage.Scatter:
-                            if (options.normalSource != FoliageNormalSource.VoxelEnvelope)
-                            {
-                                break;
-                            }
-
-                            Samples = await Task.Run(() => FoliageSurfaceSampler.Sample(capturePositions, captureIndices, options, token), token);
-                            Primitives = new FoliagePrimitive[Samples.samples.Length];
-                            for (int i = 0; i < Primitives.Length; i++)
-                            {
-                                Primitives[i] = new FoliagePrimitive { center = Samples.samples[i], radius = Samples.spacing * options.radiusMultiplier };
-                            }
-
-                            break;
-                        case Stage.Envelope:
-                            if (options.normalSource != FoliageNormalSource.VoxelEnvelope)
-                            {
-                                ShapeProxy = await Task.Run(() => FoliageShapeProxyBuilder.Build(capturePositions, captureIndices, CaptureBounds, options, token), token);
-                                Envelope = ShapeProxy.mesh;
-                                ProxyComponents = 1;
-                                EnvelopeMesh = PreviewMesh(ProxyName, Envelope);
-                                break;
-                            }
-                            var spheres = Primitives;
-                            Envelope = await Task.Run(() => builder.Build(FoliagePrimitiveBuilder.Build(spheres, options.primitiveSubdivision, token), options.voxelResolution, token), token);
-                            ProxyComponents = await Task.Run(() => FoliageProxyBuilder.Validate(Envelope, token, false).euler.Count, token);
-                            EnvelopeMesh = PreviewMesh(ProxyName, Envelope);
-                            break;
-                        case Stage.Smooth:
-                            if (options.normalSource != FoliageNormalSource.VoxelEnvelope)
-                            {
-                                Smoothed = Envelope;
-                                SmoothedMesh = PreviewMesh(ProxyName, Smoothed);
-                                break;
-                            }
-                            FoliageProxySmoother.Diagnostics diagnostic = null;
-                            Smoothed = await Task.Run(() => FoliageProxySmoother.Smooth(Envelope, options, token, out diagnostic), token);
-                            SmoothDiagnostics = diagnostic;
-                            if (diagnostic.VolumeChange > .15)
-                            {
-                                UvtLog.Warn($"[Foliage] Smoothing volume changed {diagnostic.VolumeChange:P1}; reduce strength/iterations.");
-                            }
-
-                            SmoothedMesh = PreviewMesh("Smoothed Volume Proxy", Smoothed);
-                            break;
-                        case Stage.Remesh:
-                            if (options.normalSource != FoliageNormalSource.VoxelEnvelope || !options.remeshProxy)
-                            {
-                                Remeshed = Smoothed;
-                            }
-                            else
-                            {
-                                var remeshResult = await Task.Run(() => remesher.Remesh(Smoothed, options, token), token);
-                                Remeshed = remeshResult.mesh;
-                                RemeshDiagnostics = remeshResult.diagnostics;
-                                if (RemeshDiagnostics.volumeChange > .1)
-                                {
-                                    UvtLog.Warn($"[Foliage] Proxy remesh volume changed {RemeshDiagnostics.volumeChange:P1}; reduce target edge length.");
-                                }
-
-                                if (RemeshDiagnostics.after.edgeVariation > RemeshDiagnostics.before.edgeVariation + .01)
-                                {
-                                    UvtLog.Warn("[Foliage] Proxy edge variation increased; inspect the wire preview and adjust target edge length/iterations.");
-                                }
-
-                                UvtLog.Info("[Foliage] " + RemeshDiagnostics);
-                            }
-                            RemeshedMesh = PreviewMesh(options.normalSource == FoliageNormalSource.VoxelEnvelope ? "Remeshed Volume Proxy" : ProxyName, Remeshed);
-                            break;
-                        default:
-                            await Transfer(options, token);
-                            break;
-                    }
+                    await RunStage(stage, root, options, token);
                     token.ThrowIfCancellationRequested();
                     keys[(int)stage] = Key(stage, options, root);
                     elapsedSeconds = clock.Elapsed.TotalSeconds;
@@ -334,6 +265,100 @@ namespace SashaRX.UnityMeshLab
                 Interlocked.Exchange(ref running, 0);
                 Changed?.Invoke();
             }
+        }
+
+        bool StageChanged(Stage stage, FoliageNormalsSettings options, GameObject root)
+        {
+            return keys[(int)stage] == null || keys[(int)stage] != Key(stage, options, root) || stage == Stage.Capture && !CaptureCurrent();
+        }
+
+        async Task RunStage(Stage stage, GameObject root, FoliageNormalsSettings options, CancellationToken token)
+        {
+            switch (stage)
+            {
+                case Stage.Capture: await Capture(root, options, token); break;
+                case Stage.Scatter: await Scatter(options, token); break;
+                case Stage.Envelope: await BuildEnvelope(options, token); break;
+                case Stage.Smooth: await SmoothProxy(options, token); break;
+                case Stage.Remesh: await RemeshProxy(options, token); break;
+                default: await Transfer(options, token); break;
+            }
+        }
+
+        async Task Scatter(FoliageNormalsSettings options, CancellationToken token)
+        {
+            if (options.normalSource != FoliageNormalSource.VoxelEnvelope)
+            {
+                return;
+            }
+
+            Samples = await Task.Run(() => FoliageSurfaceSampler.Sample(capturePositions, captureIndices, options, token), token);
+            Primitives = new FoliagePrimitive[Samples.samples.Length];
+            for (int i = 0; i < Primitives.Length; i++)
+            {
+                Primitives[i] = new FoliagePrimitive { center = Samples.samples[i], radius = Samples.spacing * options.radiusMultiplier };
+            }
+        }
+
+        async Task BuildEnvelope(FoliageNormalsSettings options, CancellationToken token)
+        {
+            if (options.normalSource != FoliageNormalSource.VoxelEnvelope)
+            {
+                ShapeProxy = await Task.Run(() => FoliageShapeProxyBuilder.Build(capturePositions, captureIndices, CaptureBounds, options, token), token);
+                Envelope = ShapeProxy.mesh;
+                ProxyComponents = 1;
+                EnvelopeMesh = PreviewMesh(ProxyName, Envelope);
+                return;
+            }
+            var spheres = Primitives;
+            Envelope = await Task.Run(() => builder.Build(FoliagePrimitiveBuilder.Build(spheres, options.primitiveSubdivision, token), options.voxelResolution, token), token);
+            ProxyComponents = await Task.Run(() => FoliageProxyBuilder.Validate(Envelope, token, false).euler.Count, token);
+            EnvelopeMesh = PreviewMesh(ProxyName, Envelope);
+        }
+
+        async Task SmoothProxy(FoliageNormalsSettings options, CancellationToken token)
+        {
+            if (options.normalSource != FoliageNormalSource.VoxelEnvelope)
+            {
+                Smoothed = Envelope;
+                SmoothedMesh = PreviewMesh(ProxyName, Smoothed);
+                return;
+            }
+            FoliageProxySmoother.Diagnostics diagnostic = null;
+            Smoothed = await Task.Run(() => FoliageProxySmoother.Smooth(Envelope, options, token, out diagnostic), token);
+            SmoothDiagnostics = diagnostic;
+            if (diagnostic.VolumeChange > .15)
+            {
+                UvtLog.Warn($"[Foliage] Smoothing volume changed {diagnostic.VolumeChange:P1}; reduce strength/iterations.");
+            }
+
+            SmoothedMesh = PreviewMesh("Smoothed Volume Proxy", Smoothed);
+        }
+
+        async Task RemeshProxy(FoliageNormalsSettings options, CancellationToken token)
+        {
+            if (options.normalSource != FoliageNormalSource.VoxelEnvelope || !options.remeshProxy)
+            {
+                Remeshed = Smoothed;
+            }
+            else
+            {
+                var remeshResult = await Task.Run(() => remesher.Remesh(Smoothed, options, token), token);
+                Remeshed = remeshResult.mesh;
+                RemeshDiagnostics = remeshResult.diagnostics;
+                if (RemeshDiagnostics.volumeChange > .1)
+                {
+                    UvtLog.Warn($"[Foliage] Proxy remesh volume changed {RemeshDiagnostics.volumeChange:P1}; reduce target edge length.");
+                }
+
+                if (RemeshDiagnostics.after.edgeVariation > RemeshDiagnostics.before.edgeVariation + .01)
+                {
+                    UvtLog.Warn("[Foliage] Proxy edge variation increased; inspect the wire preview and adjust target edge length/iterations.");
+                }
+
+                UvtLog.Info("[Foliage] " + RemeshDiagnostics);
+            }
+            RemeshedMesh = PreviewMesh(options.normalSource == FoliageNormalSource.VoxelEnvelope ? "Remeshed Volume Proxy" : ProxyName, Remeshed);
         }
 
         async Task Capture(GameObject root, FoliageNormalsSettings options, CancellationToken token)
@@ -397,68 +422,71 @@ namespace SashaRX.UnityMeshLab
         static List<MeshRenderer> EligibleRenderers(GameObject root, FoliageNormalsSettings options, CancellationToken token)
         {
             var result = new List<MeshRenderer>();
-            var excluded = new HashSet<Renderer>();
-            if (options.lod0Only)
-            {
-                foreach (var group in root.GetComponentsInChildren<LODGroup>())
-                {
-                    var lods = group.GetLODs();
-                    var first = new HashSet<Renderer>(lods.Length > 0 ? lods[0].renderers : Array.Empty<Renderer>());
-                    for (int i = 1; i < lods.Length; i++)
-                    {
-                        foreach (var r in lods[i].renderers)
-                        {
-                            if (!first.Contains(r))
-                            {
-                                excluded.Add(r);
-                            }
-                        }
-                    }
-                }
-            }
-
+            var excluded = ExcludedLodRenderers(root, options.lod0Only);
             foreach (var renderer in root.GetComponentsInChildren<MeshRenderer>())
             {
                 token.ThrowIfCancellationRequested();
-                if (!renderer.enabled || !renderer.gameObject.activeInHierarchy || excluded.Contains(renderer) ||
-                    (options.filterRenderers || options.renderers.Length > 0) && Array.IndexOf(options.renderers, renderer) < 0)
+                if (IsEligible(renderer, excluded, options))
                 {
-                    continue;
+                    result.Add(renderer);
                 }
-
-                var filter = renderer.GetComponent<MeshFilter>();
-                if (!filter || !filter.sharedMesh)
-                {
-                    continue;
-                }
-
-                if (MeshNaming.IsCollision(renderer.name) || MeshNaming.IsCollision(filter.sharedMesh.name) || options.lod0Only &&
-                    (MeshNaming.LodIndex(renderer.name) > 0 || MeshNaming.LodIndex(filter.sharedMesh.name) > 0))
-                {
-                    continue;
-                }
-
-                bool eligible = false;
-                var materials = renderer.sharedMaterials;
-                for (int s = 0; s < filter.sharedMesh.subMeshCount; s++)
-                {
-                    if (filter.sharedMesh.GetTopology(s) == MeshTopology.Triangles &&
-                        filter.sharedMesh.GetIndexCount(s) > 0 &&
-                        FoliageTargetSnapshot.SelectsSubmesh(s, materials, options))
-                    {
-                        eligible = true;
-                        break;
-                    }
-                }
-
-                if (!eligible)
-                {
-                    continue;
-                }
-
-                result.Add(renderer);
             }
             return result;
+        }
+
+        static HashSet<Renderer> ExcludedLodRenderers(GameObject root, bool lod0Only)
+        {
+            var excluded = new HashSet<Renderer>();
+            if (!lod0Only)
+            {
+                return excluded;
+            }
+            foreach (var group in root.GetComponentsInChildren<LODGroup>())
+            {
+                var lods = group.GetLODs();
+                var first = new HashSet<Renderer>(lods.Length > 0 ? lods[0].renderers : Array.Empty<Renderer>());
+                for (int i = 1; i < lods.Length; i++)
+                {
+                    foreach (var renderer in lods[i].renderers.Where(renderer => !first.Contains(renderer)))
+                    {
+                        excluded.Add(renderer);
+                    }
+                }
+            }
+            return excluded;
+        }
+
+        static bool IsEligible(MeshRenderer renderer, HashSet<Renderer> excluded, FoliageNormalsSettings options)
+        {
+            if (!renderer.enabled || !renderer.gameObject.activeInHierarchy || excluded.Contains(renderer) ||
+                (options.filterRenderers || options.renderers.Length > 0) && Array.IndexOf(options.renderers, renderer) < 0)
+            {
+                return false;
+            }
+            var filter = renderer.GetComponent<MeshFilter>();
+            if (!filter || !filter.sharedMesh)
+            {
+                return false;
+            }
+            if (MeshNaming.IsCollision(renderer.name) || MeshNaming.IsCollision(filter.sharedMesh.name) || options.lod0Only &&
+                (MeshNaming.LodIndex(renderer.name) > 0 || MeshNaming.LodIndex(filter.sharedMesh.name) > 0))
+            {
+                return false;
+            }
+            return HasSelectedTriangles(filter.sharedMesh, renderer.sharedMaterials, options);
+        }
+
+        static bool HasSelectedTriangles(Mesh mesh, Material[] materials, FoliageNormalsSettings options)
+        {
+            for (int submesh = 0; submesh < mesh.subMeshCount; submesh++)
+            {
+                if (mesh.GetTopology(submesh) == MeshTopology.Triangles && mesh.GetIndexCount(submesh) > 0 &&
+                    FoliageTargetSnapshot.SelectsSubmesh(submesh, materials, options))
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         async Task Transfer(FoliageNormalsSettings options, CancellationToken token)
@@ -508,7 +536,9 @@ namespace SashaRX.UnityMeshLab
                     outputs.Clear();
                     TransferDiagnostics = diagnostics;
                 }
-                finally { foreach (var mesh in outputs)
+                finally
+                {
+                    foreach (var mesh in outputs)
                     {
                         FoliageTargetSnapshot.Destroy(mesh);
                     }

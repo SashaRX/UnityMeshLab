@@ -590,14 +590,7 @@ namespace SashaRX.UnityMeshLab
             {
                 using (var tagDocument = FbxSourceDocument.Load(Path.GetFullPath(sourceFbxPath)))
                 {
-                    for (int i = 0; i < tagDocument.Meshes.Count; i++)
-                    {
-                        var mesh = tagDocument.Meshes[i];
-                        var sets = FbxLayerChannels.UvElements(mesh);
-                        if (sets.Count >= FbxLayerChannels.MaxUnityUvChannels)
-                            takenSets[i] = FbxLayerChannels.ReadUv(sets[FbxLayerChannels.MaxUnityUvChannels - 1], new FbxLayerChannels.Topology(mesh));
-                        tagChannels[i] = FbxUvSet(FbxLayerChannels.AddCornerTag(mesh, i), swapUv);
-                    }
+                    AddCornerTags(tagDocument, swapUv, tagChannels, takenSets);
                     tagDocument.Save(Path.GetFullPath(tempPath));
                 }
 
@@ -617,15 +610,7 @@ namespace SashaRX.UnityMeshLab
                 importer.SaveAndReimport();
 
                 var tagged = new Dictionary<string, Tagged>(StringComparer.Ordinal);
-                foreach (var mesh in AssetDatabase.LoadAllAssetsAtPath(tempPath).OfType<Mesh>())
-                {
-                    importedNames.Add(mesh.name);
-                    var tag = ReadTags(mesh, tagChannels);
-                    if (tag == null) continue;
-                    if (tagged.TryGetValue(mesh.name, out var first)) { first.ambiguous = true; continue; }
-                    if (takenSets.TryGetValue(tag.ordinal, out var values)) tag.uvs[tagChannels[tag.ordinal]] = PerCornerUvs(values, tag.cornerPositions.Length / 3);
-                    tagged[mesh.name] = tag;
-                }
+                ReadImportedTags(tempPath, tagChannels, takenSets, importedNames, tagged);
                 return tagged;
             }
             finally
@@ -639,6 +624,32 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (AssetDatabase.IsValidFolder(TempFolder) && AssetDatabase.FindAssets(string.Empty, new[] { TempFolder }).Length == 0)
                     AssetDatabase.DeleteAsset(TempFolder);
+            }
+        }
+
+        static void AddCornerTags(FbxSourceDocument document, bool swapUv, Dictionary<int, int> channels, Dictionary<int, double[]> takenSets)
+        {
+            for (int i = 0; i < document.Meshes.Count; i++)
+            {
+                var mesh = document.Meshes[i];
+                var sets = FbxLayerChannels.UvElements(mesh);
+                if (sets.Count >= FbxLayerChannels.MaxUnityUvChannels)
+                    takenSets[i] = FbxLayerChannels.ReadUv(sets[FbxLayerChannels.MaxUnityUvChannels - 1], new FbxLayerChannels.Topology(mesh));
+                channels[i] = FbxUvSet(FbxLayerChannels.AddCornerTag(mesh, i), swapUv);
+            }
+        }
+
+        static void ReadImportedTags(string path, Dictionary<int, int> tagChannels, Dictionary<int, double[]> takenSets,
+            HashSet<string> importedNames, Dictionary<string, Tagged> tagged)
+        {
+            foreach (var mesh in AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>())
+            {
+                importedNames.Add(mesh.name);
+                var tag = ReadTags(mesh, tagChannels);
+                if (tag == null) continue;
+                if (tagged.TryGetValue(mesh.name, out var first)) { first.ambiguous = true; continue; }
+                if (takenSets.TryGetValue(tag.ordinal, out var values)) tag.uvs[tagChannels[tag.ordinal]] = PerCornerUvs(values, tag.cornerPositions.Length / 3);
+                tagged[mesh.name] = tag;
             }
         }
 

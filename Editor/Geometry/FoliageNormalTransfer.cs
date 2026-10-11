@@ -154,58 +154,69 @@ namespace SashaRX.UnityMeshLab
                 {
                     token.ThrowIfCancellationRequested();
                 }
-
-                int v = selected[k];
-                var hit = hits[k];
-                if (hit.triangleIndex < 0)
-                {
-                    r.diagnostics.misses++;
-                    continue;
-                }
-                bool valid = hit.triangleIndex < proxy.TriangleCount && FoliageTargetSnapshot.Finite(hit.distSq) && hit.distSq >= 0 && hit.distSq <= reach * reach &&
-                    FoliageTargetSnapshot.Finite(hit.point) && FoliageTargetSnapshot.Finite(hit.barycentric) &&
-                    Math.Abs(hit.barycentric.x + hit.barycentric.y + hit.barycentric.z - 1) < .001f &&
-                    hit.barycentric.x >= -.001f && hit.barycentric.y >= -.001f && hit.barycentric.z >= -.001f;
-                Vector3 n = valid ? Interpolate(proxy, hit.triangleIndex, hit.barycentric) : Vector3.zero;
-                if (!valid || !MeshGeometry.UsableNormal(n))
-                {
-                    r.diagnostics.invalidHits++;
-                    r.diagnostics.misses++;
-                    continue;
-                }
-                var original = target.captureNormals[v];
-                if (settings.alignToOriginalHemisphere && Vector3.Dot(n, original) < 0)
-                {
-                    n = -n;
-                    r.diagnostics.hemisphereFlips++;
-                }
-                n = MeshGeometry.UnitDirection(Vector3.Lerp(original, n, settings.transferBlend));
-                if (!MeshGeometry.UsableNormal(n))
-                {
-                    r.diagnostics.invalidHits++;
-                    r.diagnostics.misses++;
-                    continue;
-                }
-                // Blend 0 and misses retain the original local value exactly.
-                r.normals[v] = settings.transferBlend == 0 ? target.localNormals[v] : MeshGeometry.UnitDirection(target.normalCaptureToLocal.MultiplyVector(n));
-                r.diagnostics.transferred++;
-                double distance = Math.Sqrt(hit.distSq);
-                r.diagnostics.sumDistance += distance;
-                r.diagnostics.maxDistance = Math.Max(distance, r.diagnostics.maxDistance);
+                ResolveVertex(target, proxy, selected[k], hits[k], settings, reach, r);
             }
-            for (int i = 0; i < r.normals.Length; i++)
+            ValidateOutput(target, r.normals);
+            return r;
+        }
+
+        static bool ValidHit(RemeshNative.IndexedMesh proxy, TriangleBvh.HitResult hit, float reach) =>
+            hit.triangleIndex < proxy.TriangleCount && FoliageTargetSnapshot.Finite(hit.distSq) && hit.distSq >= 0 && hit.distSq <= reach * reach &&
+            FoliageTargetSnapshot.Finite(hit.point) && FoliageTargetSnapshot.Finite(hit.barycentric) &&
+            Math.Abs(hit.barycentric.x + hit.barycentric.y + hit.barycentric.z - 1) < .001f &&
+            hit.barycentric.x >= -.001f && hit.barycentric.y >= -.001f && hit.barycentric.z >= -.001f;
+
+        static void ResolveVertex(FoliageTargetSnapshot target, RemeshNative.IndexedMesh proxy, int v,
+            TriangleBvh.HitResult hit, FoliageNormalsSettings settings, float reach, Result r)
+        {
+            if (hit.triangleIndex < 0)
             {
-                if (!FoliageTargetSnapshot.Finite(r.normals[i]) || Math.Abs(r.normals[i].magnitude - 1) > .01f)
+                r.diagnostics.misses++;
+                return;
+            }
+            bool valid = ValidHit(proxy, hit, reach);
+            Vector3 n = valid ? Interpolate(proxy, hit.triangleIndex, hit.barycentric) : Vector3.zero;
+            if (!valid || !MeshGeometry.UsableNormal(n))
+            {
+                r.diagnostics.invalidHits++;
+                r.diagnostics.misses++;
+                return;
+            }
+            var original = target.captureNormals[v];
+            if (settings.alignToOriginalHemisphere && Vector3.Dot(n, original) < 0)
+            {
+                n = -n;
+                r.diagnostics.hemisphereFlips++;
+            }
+            n = MeshGeometry.UnitDirection(Vector3.Lerp(original, n, settings.transferBlend));
+            if (!MeshGeometry.UsableNormal(n))
+            {
+                r.diagnostics.invalidHits++;
+                r.diagnostics.misses++;
+                return;
+            }
+            // Blend 0 and misses retain the original local value exactly.
+            r.normals[v] = settings.transferBlend == 0 ? target.localNormals[v] : MeshGeometry.UnitDirection(target.normalCaptureToLocal.MultiplyVector(n));
+            r.diagnostics.transferred++;
+            double distance = Math.Sqrt(hit.distSq);
+            r.diagnostics.sumDistance += distance;
+            r.diagnostics.maxDistance = Math.Max(distance, r.diagnostics.maxDistance);
+        }
+
+        static void ValidateOutput(FoliageTargetSnapshot target, Vector3[] normals)
+        {
+            for (int i = 0; i < normals.Length; i++)
+            {
+                if (!FoliageTargetSnapshot.Finite(normals[i]) || Math.Abs(normals[i].magnitude - 1) > .01f)
                 {
                     throw new InvalidOperationException("Output normal is not finite/unit length.");
                 }
 
-                if (!target.selectedVertices[i] && r.normals[i] != target.localNormals[i])
+                if (!target.selectedVertices[i] && normals[i] != target.localNormals[i])
                 {
                     throw new InvalidOperationException("Excluded vertex changed.");
                 }
             }
-            return r;
         }
 
         internal static Vector3 Interpolate(RemeshNative.IndexedMesh proxy, int face, Vector3 bary)

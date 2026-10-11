@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using UnityEngine;
 
@@ -56,20 +57,14 @@ namespace SashaRX.UnityMeshLab
                 throw new InvalidOperationException("Empty or malformed foliage proxy.");
             }
 
-            foreach (var p in mesh.positions)
+            if (mesh.positions.Any(p => !FoliageTargetSnapshot.Finite(p)))
             {
-                if (!FoliageTargetSnapshot.Finite(p))
-                {
-                    throw new InvalidOperationException("Proxy has non-finite positions.");
-                }
+                throw new InvalidOperationException("Proxy has non-finite positions.");
             }
 
-            foreach (int i in mesh.indices)
+            if (mesh.indices.Any(i => i < 0 || i >= mesh.positions.Length))
             {
-                if (i < 0 || i >= mesh.positions.Length)
-                {
-                    throw new InvalidOperationException("Invalid proxy indices.");
-                }
+                throw new InvalidOperationException("Invalid proxy indices.");
             }
 
             var topology = RemeshTopology.Inspect(mesh.positions, mesh.indices, token);
@@ -78,6 +73,17 @@ namespace SashaRX.UnityMeshLab
                 throw new InvalidOperationException("Proxy must be closed and manifold: " + topology.Description);
             }
             // A disconnected component must also be outward. A positive total could hide one inverted sphere.
+            var volumes = ComponentVolumes(mesh, topology);
+            if (volumes.Values.Any(volume => Math.Abs(volume) < 1e-30 || double.IsNaN(volume) || double.IsInfinity(volume)))
+            {
+                throw new InvalidOperationException("Proxy component has no finite enclosed volume.");
+            }
+            OrientComponents(mesh, topology, volumes, orient);
+            return topology;
+        }
+
+        static Dictionary<int, double> ComponentVolumes(RemeshNative.IndexedMesh mesh, RemeshTopology.Snapshot topology)
+        {
             var volumes = new Dictionary<int, double>();
             var origin = mesh.positions[0];
             for (int f = 0; f < mesh.TriangleCount; f++)
@@ -86,14 +92,11 @@ namespace SashaRX.UnityMeshLab
                 volumes.TryGetValue(root, out double volume);
                 volumes[root] = volume + FaceVolume(mesh.positions, mesh.indices, f * 3, origin);
             }
-            foreach (var volume in volumes.Values)
-            {
-                if (Math.Abs(volume) < 1e-30 || double.IsNaN(volume) || double.IsInfinity(volume))
-                {
-                    throw new InvalidOperationException("Proxy component has no finite enclosed volume.");
-                }
-            }
+            return volumes;
+        }
 
+        static void OrientComponents(RemeshNative.IndexedMesh mesh, RemeshTopology.Snapshot topology, Dictionary<int, double> volumes, bool orient)
+        {
             for (int f = 0; f < mesh.TriangleCount; f++)
             {
                 if (volumes[ComponentRoot(topology.components, f)] < 0)
@@ -107,8 +110,6 @@ namespace SashaRX.UnityMeshLab
                     (mesh.indices[k + 1], mesh.indices[k + 2]) = (mesh.indices[k + 2], mesh.indices[k + 1]);
                 }
             }
-
-            return topology;
         }
 
         static int ComponentRoot(int[] parents, int x)

@@ -51,11 +51,7 @@ namespace SashaRX.UnityMeshLab
             Mesh readable = MeshAccess.Readable(source, out bool owned);
             try
             {
-                // MeshAccess's rare unreadable-skin fallback cannot preserve these streams: refuse rather than strip them.
-                if (owned && (source.blendShapeCount > 0 || source.HasVertexAttribute(VertexAttribute.BlendWeight)))
-                {
-                    throw new InvalidOperationException("Unreadable meshes with skin/blend shape channels cannot be preserved; use a static readable mesh.");
-                }
+                ValidateReadableChannels(source, owned);
 
                 original = Object.Instantiate(readable);
                 original.hideFlags = HideFlags.HideAndDontSave;
@@ -93,10 +89,21 @@ namespace SashaRX.UnityMeshLab
                 }
             }
             catch { if (original) { Object.DestroyImmediate(original); } throw; }
-            finally { if (owned)
+            finally
+            {
+                if (owned)
                 {
                     Object.DestroyImmediate(readable);
                 }
+            }
+        }
+
+        static void ValidateReadableChannels(Mesh source, bool owned)
+        {
+            // MeshAccess's rare unreadable-skin fallback cannot preserve these streams: refuse rather than strip them.
+            if (owned && (source.blendShapeCount > 0 || source.HasVertexAttribute(VertexAttribute.BlendWeight)))
+            {
+                throw new InvalidOperationException("Unreadable meshes with skin/blend shape channels cannot be preserved; use a static readable mesh.");
             }
         }
 
@@ -107,6 +114,12 @@ namespace SashaRX.UnityMeshLab
 
         // Only immutable arrays/matrices, safe on a worker after main-thread mesh capture.
         internal void PrepareArrays(CancellationToken token)
+        {
+            TransformVertices(token);
+            MarkFaceUsage(token);
+        }
+
+        void TransformVertices(CancellationToken token)
         {
             for (int i = 0; i < positions.Length; i++)
             {
@@ -127,6 +140,10 @@ namespace SashaRX.UnityMeshLab
                     throw new InvalidOperationException("Invalid capture transform.");
                 }
             }
+        }
+
+        void MarkFaceUsage(CancellationToken token)
+        {
             int cursor = 0;
             for (int s = 0; s < indices.Length; s++)
             {
@@ -268,9 +285,28 @@ namespace SashaRX.UnityMeshLab
         internal Mesh BuildResult(Vector3[] normals, bool recalculateTangents, CancellationToken token, out int duplicates)
         {
             token.ThrowIfCancellationRequested();
+            var map = BoundaryMap(out var selectedMap, out duplicates);
+            var result = duplicates == 0 ? Object.Instantiate(original) : DuplicateChannels(original, map, token);
+            try
+            {
+                result.name = source.name + "_FoliageNormals";
+                result.hideFlags = HideFlags.HideAndDontSave;
+                if (duplicates > 0) { RemapSubmeshes(result, map.Count, selectedMap); }
+                WriteNormals(result, map, selectedMap, normals);
+                result.bounds = original.bounds;
+                if (recalculateTangents) { RecalculateSelectedTangents(result, map.Count); }
+                token.ThrowIfCancellationRequested();
+                VertexChannels.RaiseChanged(result);
+                return result;
+            }
+            catch { Object.DestroyImmediate(result); throw; }
+        }
+
+        List<int> BoundaryMap(out int[] selectedMap, out int duplicates)
+        {
             duplicates = 0;
             var map = new List<int>(localPositions.Length);
-            var selectedMap = new int[localPositions.Length];
+            selectedMap = new int[localPositions.Length];
             for (int i = 0; i < localPositions.Length; i++)
             {
                 map.Add(i);
@@ -286,79 +322,75 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
-            var result = duplicates == 0 ? Object.Instantiate(original) : DuplicateChannels(original, map, token);
-            try
+            return map;
+        }
+
+        void RemapSubmeshes(Mesh result, int vertexCount, int[] selectedMap)
+        {
+            result.indexFormat = vertexCount > 65535 ? IndexFormat.UInt32 : original.indexFormat;
+            result.subMeshCount = indices.Length;
+            for (int s = 0; s < indices.Length; s++)
             {
-                result.name = source.name + "_FoliageNormals";
-                result.hideFlags = HideFlags.HideAndDontSave;
-                if (duplicates > 0)
+                var remapped = (int[])indices[s].Clone();
+                if (selectedSubmeshes[s])
                 {
-                    result.indexFormat = map.Count > 65535 ? IndexFormat.UInt32 : original.indexFormat;
-                    result.subMeshCount = indices.Length;
-                    for (int s = 0; s < indices.Length; s++)
+                    for (int k = 0; k < remapped.Length; k++)
                     {
-                        var remapped = (int[])indices[s].Clone();
-                        if (selectedSubmeshes[s])
-                        {
-                            for (int k = 0; k < remapped.Length; k++)
-                            {
-                                remapped[k] = selectedMap[remapped[k]];
-                            }
-                        }
-
-                        result.SetIndices(remapped, topology[s], s, false);
-                        var desc = result.GetSubMesh(s);
-                        desc.bounds = original.GetSubMesh(s).bounds;
-                        result.SetSubMesh(s, desc);
-                    }
-                }
-                var output = new Vector3[map.Count];
-                for (int i = 0; i < map.Count; i++)
-                {
-                    output[i] = localNormals[map[i]];
-                }
-
-                for (int i = 0; i < selectedVertices.Length; i++)
-                {
-                    if (selectedVertices[i])
-                    {
-                        output[selectedMap[i]] = normals[i];
+                        remapped[k] = selectedMap[remapped[k]];
                     }
                 }
 
-                result.normals = output;
-                result.bounds = original.bounds;
-                if (recalculateTangents)
-                {
-                    if (HasValidUv0(result, selectedSubmeshes))
-                    {
-                        var before = result.tangents;
-                        result.RecalculateTangents();
-                        // Excluded faces also retain their tangent frame, even after boundary splitting.
-                        if (before.Length == map.Count)
-                        {
-                            var after = result.tangents;
-                            for (int i = 0; i < localPositions.Length; i++)
-                            {
-                                if (!selectedVertices[i] || excludedVertices[i])
-                                {
-                                    after[i] = before[i];
-                                }
-                            }
-
-                            result.tangents = after;
-                        }
-                    }
-                    else
-                    {
-                        UvtLog.Warn("[Foliage] UV0 is absent or degenerate; original tangents retained.");
-                    }
-                }
-                token.ThrowIfCancellationRequested();
-                VertexChannels.RaiseChanged(result);
-                return result;
+                result.SetIndices(remapped, topology[s], s, false);
+                var desc = result.GetSubMesh(s);
+                desc.bounds = original.GetSubMesh(s).bounds;
+                result.SetSubMesh(s, desc);
             }
-            catch { Object.DestroyImmediate(result); throw; }
+        }
+
+        void WriteNormals(Mesh result, List<int> map, int[] selectedMap, Vector3[] normals)
+        {
+            var output = new Vector3[map.Count];
+            for (int i = 0; i < map.Count; i++)
+            {
+                output[i] = localNormals[map[i]];
+            }
+
+            for (int i = 0; i < selectedVertices.Length; i++)
+            {
+                if (selectedVertices[i])
+                {
+                    output[selectedMap[i]] = normals[i];
+                }
+            }
+
+            result.normals = output;
+        }
+
+        void RecalculateSelectedTangents(Mesh result, int vertexCount)
+        {
+            if (HasValidUv0(result, selectedSubmeshes))
+            {
+                var before = result.tangents;
+                result.RecalculateTangents();
+                // Excluded faces also retain their tangent frame, even after boundary splitting.
+                if (before.Length == vertexCount)
+                {
+                    var after = result.tangents;
+                    for (int i = 0; i < localPositions.Length; i++)
+                    {
+                        if (!selectedVertices[i] || excludedVertices[i])
+                        {
+                            after[i] = before[i];
+                        }
+                    }
+
+                    result.tangents = after;
+                }
+            }
+            else
+            {
+                UvtLog.Warn("[Foliage] UV0 is absent or degenerate; original tangents retained.");
+            }
         }
 
         internal static bool HasValidUv0(Mesh mesh, bool[] selection = null)
@@ -383,27 +415,33 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 var t = mesh.GetIndices(s);
-                for (int i = 0; i < t.Length; i += 3)
-                {
-                    for (int corner = 0; corner < 3; corner++)
-                    {
-                        if (!Finite(uv[t[i + corner]].x) || !Finite(uv[t[i + corner]].y))
-                        {
-                            return false;
-                        }
-                    }
+                if (!ValidUvTriangles(uv, t)) { return false; }
+                area |= t.Length > 0;
+            }
+            return area;
+        }
 
-                    var a = uv[t[i + 1]] - uv[t[i]];
-                    var b = uv[t[i + 2]] - uv[t[i]];
-                    if (Math.Abs(a.x * b.y - a.y * b.x) <= 1e-20f)
+        static bool ValidUvTriangles(Vector2[] uv, int[] t)
+        {
+            for (int i = 0; i < t.Length; i += 3)
+            {
+                for (int corner = 0; corner < 3; corner++)
+                {
+                    if (!Finite(uv[t[i + corner]].x) || !Finite(uv[t[i + corner]].y))
                     {
                         return false;
                     }
-
-                    area = true;
                 }
+
+                var a = uv[t[i + 1]] - uv[t[i]];
+                var b = uv[t[i + 2]] - uv[t[i]];
+                if (Math.Abs(a.x * b.y - a.y * b.x) <= 1e-20f)
+                {
+                    return false;
+                }
+
             }
-            return area;
+            return true;
         }
 
         // Raw vertex-stream remapping retains every attribute, its dimension and storage format, including UV0–UV7/HDR colours.

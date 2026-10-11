@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using UnityEngine;
 
@@ -23,12 +24,47 @@ namespace SashaRX.UnityMeshLab
             var result = new Result { faces = t.Length / 3 };
             var slots = MeshGeometry.WeldPositions(p, out int count);
             var parent = new int[count];
-            for (int i = 0; i < count; i++)
-            {
-                parent[i] = i;
-            }
-
+            for (int i = 0; i < count; i++) { parent[i] = i; }
             var areas = new double[t.Length / 3];
+            var bounds = CaptureAreas(p, t, slots, parent, areas, result, token);
+            result.spacing = s.relativeSpacing ? s.sampleSpacing * bounds.size.magnitude : s.sampleSpacing;
+            if (!(result.spacing > 0) || !FoliageTargetSnapshot.Finite(result.spacing))
+            {
+                throw new InvalidOperationException("Invalid capture spacing.");
+            }
+            var groups = GroupFaces(t, slots, parent, areas);
+            result.islands = groups.Count;
+            if ((long)groups.Count * s.minimumSamplesPerIsland > s.maximumPrimitiveCount)
+            {
+                throw new InvalidOperationException("Primitive budget cannot cover every island's minimum samples. Raise budget or reduce the selection.");
+            }
+            var candidates = new List<Vector3>();
+            var candidateIslands = new List<int>();
+            var byIsland = new List<List<Vector3>>();
+            int candidateCount = 0;
+            for (int g = 0; g < groups.Count; g++)
+            {
+                token.ThrowIfCancellationRequested();
+                var points = IslandSamples((p, t, slots, areas), groups[g], result.spacing, s, g, candidateCount, token);
+                candidateCount += points.Count;
+                byIsland.Add(points);
+                // Reserve each island first, before the global spatial dedup.
+                AppendSamples(points, g, 0, s.minimumSamplesPerIsland, candidates, candidateIslands);
+            }
+            for (int g = 0; g < byIsland.Count; g++)
+            {
+                AppendSamples(byIsland[g], g, s.minimumSamplesPerIsland, byIsland[g].Count, candidates, candidateIslands);
+            }
+            result.generated = candidates.Count;
+            var unique = Deduplicate(candidates, candidateIslands, result.spacing * s.dedupSpacingFraction, token, out var ids);
+            result.deduplicated = unique.Count;
+            ApplyBudget(unique, ids, result, s);
+            MeasureNeighbours(result, token);
+            return result;
+        }
+
+        static Bounds CaptureAreas(Vector3[] p, int[] t, int[] slots, int[] parent, double[] areas, Result result, CancellationToken token)
+        {
             var bounds = new Bounds();
             bool haveBounds = false;
             for (int f = 0; f < areas.Length; f++)
@@ -38,27 +74,9 @@ namespace SashaRX.UnityMeshLab
                     token.ThrowIfCancellationRequested();
                 }
 
+                CaptureFace(p, t, f, slots, parent, areas, result);
+                if (areas[f] == 0) { continue; }
                 int a = t[f * 3], b = t[f * 3 + 1], c = t[f * 3 + 2];
-                if (a < 0 || b < 0 || c < 0 || a >= p.Length || b >= p.Length || c >= p.Length)
-                {
-                    throw new ArgumentException("Invalid scatter indices.");
-                }
-
-                if (!FoliageTargetSnapshot.Finite(p[a]) || !FoliageTargetSnapshot.Finite(p[b]) || !FoliageTargetSnapshot.Finite(p[c]))
-                {
-                    throw new ArgumentException("Non-finite scatter geometry.");
-                }
-
-                double area = .5 * Vector3.Cross(p[b] - p[a], p[c] - p[a]).magnitude;
-                if (!(area > 0) || double.IsInfinity(area))
-                {
-                    result.skippedDegenerate++;
-                    continue;
-                }
-                areas[f] = area;
-                result.area += area;
-                Union(parent, slots[a], slots[b]);
-                Union(parent, slots[a], slots[c]);
                 foreach (int v in new[] { a, b, c })
                 {
                     if (!haveBounds)
@@ -77,124 +95,144 @@ namespace SashaRX.UnityMeshLab
                 throw new InvalidOperationException("No non-degenerate foliage faces.");
             }
 
-            result.spacing = s.relativeSpacing ? s.sampleSpacing * bounds.size.magnitude : s.sampleSpacing;
-            if (!(result.spacing > 0) || !FoliageTargetSnapshot.Finite(result.spacing))
+            return bounds;
+        }
+
+        static void CaptureFace(Vector3[] p, int[] t, int f, int[] slots, int[] parent, double[] areas, Result result)
+        {
+            int a = t[f * 3], b = t[f * 3 + 1], c = t[f * 3 + 2];
+            if (a < 0 || b < 0 || c < 0 || a >= p.Length || b >= p.Length || c >= p.Length)
             {
-                throw new InvalidOperationException("Invalid capture spacing.");
+                throw new ArgumentException("Invalid scatter indices.");
             }
 
+            if (!FoliageTargetSnapshot.Finite(p[a]) || !FoliageTargetSnapshot.Finite(p[b]) || !FoliageTargetSnapshot.Finite(p[c]))
+            {
+                throw new ArgumentException("Non-finite scatter geometry.");
+            }
+
+            double area = .5 * Vector3.Cross(p[b] - p[a], p[c] - p[a]).magnitude;
+            if (!(area > 0) || double.IsInfinity(area))
+            {
+                result.skippedDegenerate++;
+                return;
+            }
+            areas[f] = area;
+            result.area += area;
+            Union(parent, slots[a], slots[b]);
+            Union(parent, slots[a], slots[c]);
+        }
+
+        static List<List<int>> GroupFaces(int[] t, int[] slots, int[] parent, double[] areas)
+        {
             var groups = new List<List<int>>();
             var lookup = new Dictionary<int, int>();
             for (int f = 0; f < areas.Length; f++)
             {
                 if (areas[f] > 0)
-            {
-                int root = Root(parent, slots[t[f * 3]]);
-                if (!lookup.TryGetValue(root, out int g))
                 {
-                    g = groups.Count;
-                    lookup.Add(root, g);
-                    groups.Add(new List<int>());
-                }
-                groups[g].Add(f);
-            }
-            }
-
-            result.islands = groups.Count;
-            if ((long)groups.Count * s.minimumSamplesPerIsland > s.maximumPrimitiveCount)
-            {
-                throw new InvalidOperationException("Primitive budget cannot cover every island's minimum samples. Raise budget or reduce the selection.");
-            }
-
-            var candidates = new List<Vector3>();
-            var candidateIslands = new List<int>();
-            var byIsland = new List<List<Vector3>>();
-            int candidateCount = 0;
-            for (int g = 0; g < groups.Count; g++)
-            {
-                token.ThrowIfCancellationRequested();
-                var faces = groups[g];
-                var cdf = new double[faces.Count];
-                double sum = 0;
-                for (int i = 0; i < faces.Count; i++)
-                {
-                    cdf[i] = sum += areas[faces[i]];
-                }
-
-                double desired = Math.Ceiling(sum / ((double)result.spacing * result.spacing));
-                if (desired > 1000000 || desired + candidateCount > 1000000)
-                {
-                    throw new InvalidOperationException("Scatter exceeds one million candidates. Increase spacing.");
-                }
-
-                int n = Math.Max(s.minimumSamplesPerIsland, (int)desired);
-                var points = new List<Vector3>(n);
-                var seen = new HashSet<int>();
-                uint seed = Hash(unchecked((uint)s.deterministicSeed) ^ (uint)g);
-                for (int i = 0; i < n; i++)
-                {
-                    if ((i & 1023) == 0)
+                    int root = Root(parent, slots[t[f * 3]]);
+                    if (!lookup.TryGetValue(root, out int g))
                     {
-                        token.ThrowIfCancellationRequested();
+                        g = groups.Count;
+                        lookup.Add(root, g);
+                        groups.Add(new List<int>());
                     }
-                    // Stratified area CDF + scrambled radical inverses: independent dimensions for face and barycentrics.
-                    double choose = (i + .5) / n * sum;
-                    int j = Array.BinarySearch(cdf, choose);
-                    if (j < 0)
-                    {
-                        j = ~j;
-                    }
-
-                    j = Math.Min(j, faces.Count - 1);
-                    int f = faces[j] * 3;
-                    points.Add(Inside(p[t[f]], p[t[f + 1]], p[t[f + 2]], RadicalInverse((uint)i ^ seed), RadicalInverse(Hash(seed) ^ (uint)i, 3)));
+                    groups[g].Add(f);
                 }
-                foreach (int face in faces)
+            }
+
+            return groups;
+        }
+
+        static List<Vector3> IslandSamples((Vector3[] positions, int[] indices, int[] slots, double[] areas) geometry, List<int> faces, float spacing, FoliageNormalsSettings s, int g, int candidateCount, CancellationToken token)
+        {
+            var (p, t, slots, areas) = geometry;
+            var cdf = new double[faces.Count];
+            double sum = 0;
+            for (int i = 0; i < faces.Count; i++)
+            {
+                cdf[i] = sum += areas[faces[i]];
+            }
+
+            double desired = Math.Ceiling(sum / ((double)spacing * spacing));
+            if (desired > 1000000 || desired + candidateCount > 1000000)
+            {
+                throw new InvalidOperationException("Scatter exceeds one million candidates. Increase spacing.");
+            }
+
+            int n = Math.Max(s.minimumSamplesPerIsland, (int)desired);
+            uint seed = Hash(unchecked((uint)s.deterministicSeed) ^ (uint)g);
+            var points = SurfaceSamples(p, t, faces, cdf, n, seed, token);
+            AddOptionalSamples(p, t, slots, faces, points, s, candidateCount);
+            return points;
+        }
+
+        static List<Vector3> SurfaceSamples(Vector3[] p, int[] t, List<int> faces, double[] cdf, int count, uint seed, CancellationToken token)
+        {
+            var points = new List<Vector3>(count);
+            for (int i = 0; i < count; i++)
+            {
+                if ((i & 1023) == 0)
                 {
-                    int f = face * 3;
-                    if (s.includeSourceVertices)
+                    token.ThrowIfCancellationRequested();
+                }
+                // Stratified area CDF + scrambled radical inverses: independent dimensions for face and barycentrics.
+                double choose = (i + .5) / count * cdf[cdf.Length - 1];
+                int j = Array.BinarySearch(cdf, choose);
+                if (j < 0)
+                {
+                    j = ~j;
+                }
+
+                j = Math.Min(j, faces.Count - 1);
+                int f = faces[j] * 3;
+                points.Add(Inside(p[t[f]], p[t[f + 1]], p[t[f + 2]], RadicalInverse((uint)i ^ seed), RadicalInverse(Hash(seed) ^ (uint)i, 3)));
+            }
+            return points;
+        }
+
+        static void AddOptionalSamples(Vector3[] p, int[] t, int[] slots, List<int> faces, List<Vector3> points, FoliageNormalsSettings s, int candidateCount)
+        {
+            var seen = new HashSet<int>();
+            foreach (int face in faces)
+            {
+                int f = face * 3;
+                if (s.includeSourceVertices)
+                {
+                    for (int k = 0; k < 3; k++)
                     {
-                        for (int k = 0; k < 3; k++)
+                        if (seen.Add(slots[t[f + k]]))
                         {
-                            if (seen.Add(slots[t[f + k]]))
-                            {
-                                points.Add(p[t[f + k]]);
-                            }
+                            points.Add(p[t[f + k]]);
                         }
                     }
-
-                    if (s.includeTriangleCentroids)
-                    {
-                        points.Add((p[t[f]] + p[t[f + 1]] + p[t[f + 2]]) / 3);
-                    }
-
-                    if (points.Count + candidateCount > 1000000)
-                    {
-                        throw new InvalidOperationException("Scatter candidate budget exceeded. Increase spacing or disable vertex/centroid samples.");
-                    }
                 }
-                candidateCount += points.Count;
-                byIsland.Add(points);
-                // Reserve each island first, before the global spatial dedup.
-                for (int i = 0; i < s.minimumSamplesPerIsland; i++)
+
+                if (s.includeTriangleCentroids)
                 {
-                    candidates.Add(points[i]);
-                    candidateIslands.Add(g);
+                    points.Add((p[t[f]] + p[t[f + 1]] + p[t[f + 2]]) / 3);
+                }
+
+                if (points.Count + candidateCount > 1000000)
+                {
+                    throw new InvalidOperationException("Scatter candidate budget exceeded. Increase spacing or disable vertex/centroid samples.");
                 }
             }
-            for (int g = 0; g < byIsland.Count; g++)
+        }
+
+        static void AppendSamples(List<Vector3> points, int island, int start, int end, List<Vector3> candidates, List<int> ids)
+        {
+            for (int i = start; i < end; i++)
             {
-                for (int i = s.minimumSamplesPerIsland; i < byIsland[g].Count; i++)
-                {
-                    candidates.Add(byIsland[g][i]);
-                    candidateIslands.Add(g);
-                }
+                candidates.Add(points[i]);
+                ids.Add(island);
             }
+        }
 
-            result.generated = candidates.Count;
-            var unique = Deduplicate(candidates, candidateIslands, result.spacing * s.dedupSpacingFraction, token, out var ids);
-            result.deduplicated = unique.Count;
-            var counts = new int[groups.Count];
+        static void ApplyBudget(List<Vector3> unique, List<int> ids, Result result, FoliageNormalsSettings s)
+        {
+            var counts = new int[result.islands];
             foreach (int g in ids)
             {
                 counts[g]++;
@@ -236,8 +274,6 @@ namespace SashaRX.UnityMeshLab
                 result.samples[i] = unique[keep[i]];
                 result.sampleIslands[i] = ids[keep[i]];
             }
-            MeasureNeighbours(result, token);
-            return result;
         }
 
         internal static Vector3 Inside(Vector3 a, Vector3 b, Vector3 c, float u, float v)
@@ -303,27 +339,7 @@ namespace SashaRX.UnityMeshLab
 
                 var p = points[i];
                 var key = Cell(p, distance);
-                bool close = false;
-                for (int x = -1; x <= 1 && !close; x++)
-                {
-                    for (int y = -1; y <= 1 && !close; y++)
-                    {
-                        for (int z = -1; z <= 1 && !close; z++)
-                        {
-                            if (grid.TryGetValue((key.Item1 + x, key.Item2 + y, key.Item3 + z), out var list))
-                            {
-                                foreach (int j in list)
-                                {
-                                    if ((p - result[j]).sqrMagnitude < sq)
-                        {
-                            close = true;
-                            break;
-                        }
-                                }
-                            }
-                        }
-                    }
-                }
+                bool close = HasNearbySample(grid, result, p, key, sq);
 
                 if (close)
                 {
@@ -340,6 +356,25 @@ namespace SashaRX.UnityMeshLab
                 ids.Add(islands[i]);
             }
             return result;
+        }
+
+        static bool HasNearbySample(Dictionary<(long, long, long), List<int>> grid, List<Vector3> result, Vector3 point, (long, long, long) key, float sq)
+        {
+            for (int x = -1; x <= 1; x++)
+            {
+                for (int y = -1; y <= 1; y++)
+                {
+                    for (int z = -1; z <= 1; z++)
+                    {
+                        if (grid.TryGetValue((key.Item1 + x, key.Item2 + y, key.Item3 + z), out var list) &&
+                            list.Any(j => (point - result[j]).sqrMagnitude < sq))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            return false;
         }
 
         // Reuse the package BVH with point triangles, excluding each point's own face. No second spatial tree implementation.

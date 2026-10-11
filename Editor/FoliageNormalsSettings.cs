@@ -41,29 +41,43 @@ namespace SashaRX.UnityMeshLab
         {
             if (!Enum.IsDefined(typeof(FoliageNormalSource), normalSource)) throw new ArgumentException("Unknown normal source.");
             Range(maxTransferDistance, 0, 1e10f, nameof(maxTransferDistance)); Range(transferBlend, 0, 1, nameof(transferBlend));
-            if (normalSource != FoliageNormalSource.VoxelEnvelope) {
-                if (!FoliageTargetSnapshot.Finite(proxyCenter) || !FoliageTargetSnapshot.Finite(proxyRotation))
-                    throw new ArgumentException("Proxy center and rotation must be finite.");
-                Range(proxyRadius, 1e-6f, 1e6f, nameof(proxyRadius)); Range(proxyRadiusScale, .01f, 100, nameof(proxyRadiusScale));
-                if (proxySegments < 16 || proxySegments > 128 || proxySegments % 4 != 0)
-                    throw new ArgumentException("Proxy segments must be a multiple of four between 16 and 128.");
+            if (normalSource != FoliageNormalSource.VoxelEnvelope)
+            {
+                ValidateShape();
                 return;
             }
+            ValidateEnvelope();
+        }
+
+        void ValidateShape()
+        {
+            if (!FoliageTargetSnapshot.Finite(proxyCenter) || !FoliageTargetSnapshot.Finite(proxyRotation))
+                throw new ArgumentException("Proxy center and rotation must be finite.");
+            Range(proxyRadius, 1e-6f, 1e6f, nameof(proxyRadius)); Range(proxyRadiusScale, .01f, 100, nameof(proxyRadiusScale));
+            if (proxySegments < 16 || proxySegments > 128 || proxySegments % 4 != 0)
+                throw new ArgumentException("Proxy segments must be a multiple of four between 16 and 128.");
+        }
+
+        void ValidateEnvelope()
+        {
             Range(sampleSpacing, 1e-6f, 1e6f, nameof(sampleSpacing));
             Range(radiusMultiplier, .1f, 10, nameof(radiusMultiplier));
             Range(dedupSpacingFraction, .001f, 1, nameof(dedupSpacingFraction));
             Range(smoothingStrength, 0, 1, nameof(smoothingStrength));
             Range(lambda, .001f, .6f, nameof(lambda)); Range(mu, -.65f, -.001f, nameof(mu));
             if (-mu < lambda) throw new ArgumentException("Taubin compensation must be at least lambda in magnitude.");
-            if (remeshProxy) {
-                Range(remeshEdgeLength, 0, 1e6f, nameof(remeshEdgeLength)); Range(remeshRelaxation, 0, 1, nameof(remeshRelaxation));
-                if (remeshIterations < 1 || remeshIterations > 20 || maximumProxyTriangles < 4 || maximumProxyTriangles > 200000)
-                    throw new ArgumentException("Proxy remesh iterations must be 1–20 and triangle budget 4–200,000.");
-            }
+            if (remeshProxy) ValidateRemesh();
             if (minimumSamplesPerIsland < 1 || minimumSamplesPerIsland > 100 || maximumPrimitiveCount < 1 || maximumPrimitiveCount > HardPrimitiveCap)
                 throw new ArgumentException("Sample budgets must be positive; primitive hard cap is 50,000.");
             if (primitiveSubdivision < 0 || primitiveSubdivision > 1 || voxelResolution < 4 || voxelResolution > 256 || smoothingIterations < 0 || smoothingIterations > 100)
                 throw new ArgumentException("Subdivision must be 0–1, voxel resolution 4–256, smoothing iterations 0–100.");
+        }
+
+        void ValidateRemesh()
+        {
+            Range(remeshEdgeLength, 0, 1e6f, nameof(remeshEdgeLength)); Range(remeshRelaxation, 0, 1, nameof(remeshRelaxation));
+            if (remeshIterations < 1 || remeshIterations > 20 || maximumProxyTriangles < 4 || maximumProxyTriangles > 200000)
+                throw new ArgumentException("Proxy remesh iterations must be 1–20 and triangle budget 4–200,000.");
         }
 
         static void Range(float value, float min, float max, string name)

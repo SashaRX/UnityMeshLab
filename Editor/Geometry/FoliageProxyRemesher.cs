@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using UnityEngine;
 
@@ -77,12 +78,9 @@ namespace SashaRX.UnityMeshLab
             }
 
             result.normals = MeshGeometry.AveragedNormals(result.positions, result.indices, token);
-            foreach (var n in result.normals)
+            if (result.normals.Any(n => !FoliageTargetSnapshot.Finite(n) || Math.Abs(n.magnitude - 1) > .001f))
             {
-                if (!FoliageTargetSnapshot.Finite(n) || Math.Abs(n.magnitude - 1) > .001f)
-                {
-                    throw new InvalidOperationException("Proxy remeshing produced invalid normals.");
-                }
+                throw new InvalidOperationException("Proxy remeshing produced invalid normals.");
             }
 
             diagnostics.after = Measure(result, token);
@@ -145,7 +143,11 @@ namespace SashaRX.UnityMeshLab
                 this.b = b;
                 this.c = c;
             }
-            internal int Opposite(int u, int v) => a != u && a != v ? a : b != u && b != v ? b : c;
+            internal int Opposite(int u, int v)
+            {
+                if (a != u && a != v) { return a; }
+                return b != u && b != v ? b : c;
+            }
             internal bool Forward(int u, int v) => a == u && b == v || b == u && c == v || c == u && a == v;
             internal Face Replace(int from, int to) => new Face(a == from ? to : a, b == from ? to : b, c == from ? to : c);
         }
@@ -372,62 +374,66 @@ namespace SashaRX.UnityMeshLab
                 for (int i = 0; i < candidates.Count; i++)
                 {
                     Check(i);
-                    var key = candidates[i];
-                    if (!edges.TryGetValue(key, out var edge) || edge.second < 0 || LengthSq(key) <= highSq)
-                    {
-                        continue;
-                    }
-
-                    if (faces.Count + 2 > budget)
-                    {
-                        throw Budget(budget);
-                    }
-
-                    int u = key.Item1, v = key.Item2;
-                    if (!Project((vertices[u].position + vertices[v].position) * .5f, vertices[u].component, out var p))
-                    {
-                        diagnostics.rejected++;
-                        continue;
-                    }
-                    int m;
-                    if (freeVertices.Count > 0)
-                    {
-                        m = freeVertices.Pop();
-                        vertices[m].position = p;
-                        vertices[m].component = vertices[u].component;
-                    }
-                    else
-                    {
-                        m = vertices.Count;
-                        vertices.Add(new Vertex { position = p, component = vertices[u].component });
-                    }
-                    int f0 = edge.first, f1 = edge.second;
-                    var original = new[] { faces[f0], faces[f1] };
-                    var patch = new Face[4];
-                    bool valid = true;
-                    for (int side = 0; side < 2; side++)
-                    {
-                        var face = original[side];
-                        int a = face.Forward(u, v) ? u : v, b = a == u ? v : u, c = face.Opposite(u, v);
-                        patch[side * 2] = new Face(a, m, c);
-                        patch[side * 2 + 1] = new Face(m, b, c);
-                        valid &= Valid(face, patch[side * 2]) && Valid(face, patch[side * 2 + 1]);
-                    }
-                    if (!valid)
-                    {
-                        freeVertices.Push(m);
-                        diagnostics.rejected++;
-                        continue;
-                    }
-                    Remove(f0);
-                    Remove(f1);
-                    foreach (var f in patch)
-                    {
-                        Add(f);
-                    }
-
-                    diagnostics.splits++;
+                    SplitEdge(candidates[i]);
                 }
+            }
+
+            void SplitEdge((int, int) key)
+            {
+                if (!edges.TryGetValue(key, out var edge) || edge.second < 0 || LengthSq(key) <= highSq)
+                {
+                    return;
+                }
+
+                if (faces.Count + 2 > budget)
+                {
+                    throw Budget(budget);
+                }
+
+                int u = key.Item1, v = key.Item2;
+                if (!Project((vertices[u].position + vertices[v].position) * .5f, vertices[u].component, out var p))
+                {
+                    diagnostics.rejected++;
+                    return;
+                }
+                int m;
+                if (freeVertices.Count > 0)
+                {
+                    m = freeVertices.Pop();
+                    vertices[m].position = p;
+                    vertices[m].component = vertices[u].component;
+                }
+                else
+                {
+                    m = vertices.Count;
+                    vertices.Add(new Vertex { position = p, component = vertices[u].component });
+                }
+                int f0 = edge.first, f1 = edge.second;
+                var original = new[] { faces[f0], faces[f1] };
+                var patch = new Face[4];
+                bool valid = true;
+                for (int side = 0; side < 2; side++)
+                {
+                    var face = original[side];
+                    int a = face.Forward(u, v) ? u : v, b = a == u ? v : u, c = face.Opposite(u, v);
+                    patch[side * 2] = new Face(a, m, c);
+                    patch[side * 2 + 1] = new Face(m, b, c);
+                    valid &= Valid(face, patch[side * 2]) && Valid(face, patch[side * 2 + 1]);
+                }
+                if (!valid)
+                {
+                    freeVertices.Push(m);
+                    diagnostics.rejected++;
+                    return;
+                }
+                Remove(f0);
+                Remove(f1);
+                foreach (var f in patch)
+                {
+                    Add(f);
+                }
+
+                diagnostics.splits++;
             }
 
             internal void Collapse()
@@ -436,85 +442,80 @@ namespace SashaRX.UnityMeshLab
                 for (int i = 0; i < candidates.Count; i++)
                 {
                     Check(i);
-                    var key = candidates[i];
-                    if (!edges.TryGetValue(key, out var edge) || edge.second < 0 || LengthSq(key) >= lowSq)
-                    {
-                        continue;
-                    }
-
-                    int u = key.Item1, v = key.Item2, c = faces[edge.first].Opposite(u, v), d = faces[edge.second].Opposite(u, v);
-                    int common = 0;
-                    foreach (int neighbour in vertices[u].neighbours)
-                    {
-                        if (vertices[v].neighbours.Contains(neighbour))
-                        {
-                            common++;
-                        }
-                    }
-
-                    if (common != 2 || c == d)
-                    {
-                        diagnostics.rejected++;
-                        continue;
-                    }
-                    if (!Project((vertices[u].position + vertices[v].position) * .5f, vertices[u].component, out var p))
-                    {
-                        diagnostics.rejected++;
-                        continue;
-                    }
-                    var incident = Incident(u, v);
-                    var removed = new HashSet<int>(incident);
-                    var unique = new HashSet<(int, int, int)>();
-                    var patch = new List<Face>();
-                    bool valid = true;
-                    foreach (int f in incident)
-                    {
-                        if (f == edge.first || f == edge.second)
-                        {
-                            continue;
-                        }
-
-                        var old = faces[f];
-                        var next = old.Replace(v, u);
-                        var triangleKey = FaceKey(next.a, next.b, next.c);
-                        valid &= Valid(old, next, u, p) && unique.Add(triangleKey) && (!faceKeys.TryGetValue(triangleKey, out int existing) || removed.Contains(existing));
-                        patch.Add(next);
-                    }
-                    foreach (int neighbour in vertices[u].neighbours)
-                    {
-                        if (neighbour != v && (vertices[neighbour].position - p).sqrMagnitude > highSq)
-                        {
-                            valid = false;
-                        }
-                    }
-
-                    foreach (int neighbour in vertices[v].neighbours)
-                    {
-                        if (neighbour != u && (vertices[neighbour].position - p).sqrMagnitude > highSq)
-                        {
-                            valid = false;
-                        }
-                    }
-
-                    if (!valid)
-                    {
-                        diagnostics.rejected++;
-                        continue;
-                    }
-                    foreach (int f in incident)
-                    {
-                        Remove(f);
-                    }
-
-                    vertices[u].position = p;
-                    foreach (var f in patch)
-                    {
-                        Add(f);
-                    }
-
-                    freeVertices.Push(v);
-                    diagnostics.collapses++;
+                    CollapseEdge(candidates[i]);
                 }
+            }
+
+            void CollapseEdge((int, int) key)
+            {
+                if (!edges.TryGetValue(key, out var edge) || edge.second < 0 || LengthSq(key) >= lowSq)
+                {
+                    return;
+                }
+
+                int u = key.Item1, v = key.Item2, c = faces[edge.first].Opposite(u, v), d = faces[edge.second].Opposite(u, v);
+                int common = vertices[u].neighbours.Count(neighbour => vertices[v].neighbours.Contains(neighbour));
+
+                if (common != 2 || c == d)
+                {
+                    diagnostics.rejected++;
+                    return;
+                }
+                if (!Project((vertices[u].position + vertices[v].position) * .5f, vertices[u].component, out var p))
+                {
+                    diagnostics.rejected++;
+                    return;
+                }
+                var incident = Incident(u, v);
+                bool valid = CollapsePatch(incident, edge, u, v, p, out var patch);
+                valid &= NeighboursWithinLimit(u, v, p);
+                valid &= NeighboursWithinLimit(v, u, p);
+
+                if (!valid)
+                {
+                    diagnostics.rejected++;
+                    return;
+                }
+                foreach (int f in incident)
+                {
+                    Remove(f);
+                }
+
+                vertices[u].position = p;
+                foreach (var f in patch)
+                {
+                    Add(f);
+                }
+
+                freeVertices.Push(v);
+                diagnostics.collapses++;
+            }
+
+            bool CollapsePatch(int[] incident, Edge edge, int u, int v, Vector3 p, out List<Face> patch)
+            {
+                var removed = new HashSet<int>(incident);
+                var unique = new HashSet<(int, int, int)>();
+                patch = new List<Face>();
+                bool valid = true;
+                foreach (int f in incident)
+                {
+                    if (f == edge.first || f == edge.second)
+                    {
+                        continue;
+                    }
+
+                    var old = faces[f];
+                    var next = old.Replace(v, u);
+                    var triangleKey = FaceKey(next.a, next.b, next.c);
+                    valid &= Valid(old, next, u, p) && unique.Add(triangleKey) && (!faceKeys.TryGetValue(triangleKey, out int existing) || removed.Contains(existing));
+                    patch.Add(next);
+                }
+                return valid;
+            }
+
+            bool NeighboursWithinLimit(int node, int excluded, Vector3 p)
+            {
+                return vertices[node].neighbours.All(neighbour => neighbour == excluded || (vertices[neighbour].position - p).sqrMagnitude <= highSq);
             }
 
             internal void Flip()
@@ -523,94 +524,105 @@ namespace SashaRX.UnityMeshLab
                 for (int i = 0; i < candidates.Count; i++)
                 {
                     Check(i);
-                    var key = candidates[i];
-                    if (!edges.TryGetValue(key, out var edge) || edge.second < 0)
-                    {
-                        continue;
-                    }
-
-                    int f0 = edge.first, f1 = edge.second;
-                    var a = faces[f0];
-                    var b = faces[f1];
-                    int u = key.Item1, v = key.Item2;
-                    if (!a.Forward(u, v))
-                    {
-                        (u, v) = (v, u);
-                    }
-
-                    int c = a.Opposite(u, v), d = b.Opposite(u, v);
-                    if (c == d || edges.ContainsKey(EdgeKey(c, d)) || LengthSq(EdgeKey(c, d)) > highSq)
-                    {
-                        continue;
-                    }
-
-                    var x = new Face(c, d, v);
-                    var y = new Face(d, c, u);
-                    if (!Valid(a, x) || !Valid(b, y))
-                    {
-                        continue;
-                    }
-
-                    int Cost(int node, int change) => Math.Abs(vertices[node].neighbours.Count + change - 6);
-                    int before = Cost(u, 0) + Cost(v, 0) + Cost(c, 0) + Cost(d, 0), after = Cost(u, -1) + Cost(v, -1) + Cost(c, 1) + Cost(d, 1);
-                    double shapeBefore = Math.Min(Shape(a), Shape(b)), shapeAfter = Math.Min(Shape(x), Shape(y));
-                    if (after > before || after == before && shapeAfter <= shapeBefore + 1e-5 || shapeAfter < shapeBefore * .8)
-                    {
-                        continue;
-                    }
-
-                    Remove(f0);
-                    Remove(f1);
-                    Add(x);
-                    Add(y);
-                    diagnostics.flips++;
+                    FlipEdge(candidates[i]);
                 }
             }
-            double Shape(Face f) => TriangleShape(vertices[f.a].position, vertices[f.b].position, vertices[f.c].position);
 
-            internal void Relax(float strength)
+            void FlipEdge((int, int) key)
             {
-                if (strength <= 0)
+                if (!edges.TryGetValue(key, out var edge) || edge.second < 0)
                 {
                     return;
                 }
 
+                int f0 = edge.first, f1 = edge.second;
+                var a = faces[f0];
+                var b = faces[f1];
+                int u = key.Item1, v = key.Item2;
+                if (!a.Forward(u, v))
+                {
+                    (u, v) = (v, u);
+                }
+
+                int c = a.Opposite(u, v), d = b.Opposite(u, v);
+                if (c == d || edges.ContainsKey(EdgeKey(c, d)) || LengthSq(EdgeKey(c, d)) > highSq)
+                {
+                    return;
+                }
+
+                var x = new Face(c, d, v);
+                var y = new Face(d, c, u);
+                if (!Valid(a, x) || !Valid(b, y))
+                {
+                    return;
+                }
+
+                int Cost(int node, int change) => Math.Abs(vertices[node].neighbours.Count + change - 6);
+                int before = Cost(u, 0) + Cost(v, 0) + Cost(c, 0) + Cost(d, 0), after = Cost(u, -1) + Cost(v, -1) + Cost(c, 1) + Cost(d, 1);
+                double shapeBefore = Math.Min(Shape(a), Shape(b)), shapeAfter = Math.Min(Shape(x), Shape(y));
+                if (after > before || after == before && shapeAfter <= shapeBefore + 1e-5 || shapeAfter < shapeBefore * .8)
+                {
+                    return;
+                }
+
+                Remove(f0);
+                Remove(f1);
+                Add(x);
+                Add(y);
+                diagnostics.flips++;
+            }
+
+            double Shape(Face f) => TriangleShape(vertices[f.a].position, vertices[f.b].position, vertices[f.c].position);
+
+            internal void Relax(float strength)
+            {
+                if (strength <= 0) { return; }
                 var positions = new Vector3[vertices.Count];
                 for (int i = 0; i < vertices.Count; i++)
                 {
                     Check(i);
-                    var vertex = vertices[i];
-                    positions[i] = vertex.position;
-                    if (vertex.faces.Count == 0)
-                    {
-                        continue;
-                    }
-
-                    var incident = Incident(i);
-                    Vector3 normal = Vector3.zero;
-                    foreach (int f in incident)
-                    {
-                        normal += Normal(faces[f]);
-                    }
-
-                    normal = MeshGeometry.UnitDirection(normal);
-                    Vector3 sum = Vector3.zero;
-                    foreach (int v in Neighbours(i))
-                    {
-                        sum += vertices[v].position - vertex.position;
-                    }
-
-                    var delta = sum * (strength / vertex.neighbours.Count);
-                    delta -= normal * Vector3.Dot(delta, normal);
-                    if (Project(vertex.position + delta, vertex.component, out var projected))
-                    {
-                        positions[i] = projected;
-                    }
-                    else
-                    {
-                        diagnostics.rejected++;
-                    }
+                    positions[i] = RelaxPosition(i, strength);
                 }
+                ApplyRelaxedPositions(positions);
+            }
+
+            Vector3 RelaxPosition(int i, float strength)
+            {
+                var vertex = vertices[i];
+                if (vertex.faces.Count == 0)
+                {
+                    return vertex.position;
+                }
+
+                var incident = Incident(i);
+                Vector3 normal = Vector3.zero;
+                foreach (int f in incident)
+                {
+                    normal += Normal(faces[f]);
+                }
+
+                normal = MeshGeometry.UnitDirection(normal);
+                Vector3 sum = Vector3.zero;
+                foreach (int v in Neighbours(i))
+                {
+                    sum += vertices[v].position - vertex.position;
+                }
+
+                var delta = sum * (strength / vertex.neighbours.Count);
+                delta -= normal * Vector3.Dot(delta, normal);
+                if (Project(vertex.position + delta, vertex.component, out var projected))
+                {
+                    return projected;
+                }
+                else
+                {
+                    diagnostics.rejected++;
+                }
+                return vertex.position;
+            }
+
+            void ApplyRelaxedPositions(Vector3[] positions)
+            {
                 for (int i = 0; i < vertices.Count; i++)
                 {
                     Check(i);
@@ -619,15 +631,7 @@ namespace SashaRX.UnityMeshLab
                         continue;
                     }
 
-                    bool valid = true;
-                    foreach (int f in Incident(i))
-                    {
-                        if (!Valid(faces[f], faces[f], i, positions[i]))
-                    {
-                        valid = false;
-                        break;
-                    }
-                    }
+                    bool valid = Incident(i).All(f => Valid(faces[f], faces[f], i, positions[i]));
 
                     if (valid)
                     {
