@@ -617,7 +617,7 @@ namespace SashaRX.UnityMeshLab
                         saveCancellation.Token.ThrowIfCancellationRequested();
                         importTask = CommitOutputs(requests);
                     }
-                    finally { DiscardRequests(requests); }
+                    catch { DiscardRequests(requests); throw; }
                     committedRequests = requests;
                     return;
                 }
@@ -659,17 +659,20 @@ namespace SashaRX.UnityMeshLab
                 if (assetPath != null) imports.Add(new TexturePackingImports.Input
                     { path = assetPath, normal = request.isNormal, albedo = request.isAlbedo });
             }
-            // Installation stays in one editor tick, with imports deferred until rollback can no longer occur.
-            using (new AssetDatabase.AssetEditingScope())
+            // The independent queue owns installation, rollback and cleanup, even if this window closes.
+            return TexturePackingImports.Schedule(imports.ToArray(), () =>
             {
-                TexturePackingFiles.InstallBatch(files);
-                foreach (var request in requests)
+                try
                 {
-                    request.staged = null;
-                    UvtLog.Info("Saved texture: " + request.path);
+                    TexturePackingFiles.InstallBatch(files);
+                    foreach (var request in requests)
+                    {
+                        request.staged = null;
+                        UvtLog.Info("Saved texture: " + request.path);
+                    }
                 }
-            }
-            return TexturePackingImports.Schedule(imports.ToArray());
+                finally { DiscardRequests(requests); }
+            });
         }
 
         private static void DiscardRequests(List<SaveRequest> requests)

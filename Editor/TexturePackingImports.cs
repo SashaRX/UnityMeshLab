@@ -19,6 +19,8 @@ namespace SashaRX.UnityMeshLab
         {
             public Input[] inputs;
             public int index;
+            public Task installation;
+            public bool refreshBlocked;
             public readonly List<Exception> failures = new List<Exception>();
             public readonly TaskCompletionSource<bool> completion = new TaskCompletionSource<bool>();
         }
@@ -26,11 +28,32 @@ namespace SashaRX.UnityMeshLab
         private static readonly Queue<Batch> Pending = new Queue<Batch>();
 
         internal static Task Schedule(Input[] inputs)
+            => Schedule(inputs, null);
+
+        internal static Task Schedule(Input[] inputs, Action install)
         {
             var batch = new Batch { inputs = inputs };
-            if (Pending.Count == 0) Subscribe();
-            Pending.Enqueue(batch);
-            return batch.completion.Task;
+            try
+            {
+                if (install != null)
+                {
+                    // The static queue owns the refresh counter and worker even after its window closes.
+                    AssetDatabase.DisallowAutoRefresh();
+                    batch.refreshBlocked = true;
+                    batch.installation = Task.Run(install);
+                }
+                if (Pending.Count == 0) Subscribe();
+                Pending.Enqueue(batch);
+                return batch.completion.Task;
+            }
+            catch
+            {
+                ReleaseRefresh(batch);
+                if (Pending.Count == 0) Unsubscribe();
+                if (batch.installation != null)
+                    _ = batch.installation.ContinueWith(finished => { _ = finished.Exception; }, TaskScheduler.Default);
+                throw;
+            }
         }
 
         private static void Subscribe()
@@ -51,6 +74,22 @@ namespace SashaRX.UnityMeshLab
         {
             if (Pending.Count == 0) return;
             var batch = Pending.Peek();
+            if (batch.installation != null)
+            {
+                if (!batch.installation.IsCompleted) return;
+                try { batch.installation.GetAwaiter().GetResult(); }
+                catch (Exception exception)
+                {
+                    batch.failures.Add(exception);
+                    batch.index = batch.inputs.Length; // A failed transaction must never be imported.
+                    UvtLog.Error("Texture packer installation: " + exception.Message);
+                }
+                finally
+                {
+                    batch.installation = null;
+                    ReleaseRefresh(batch);
+                }
+            }
             if (batch.index < batch.inputs.Length)
             {
                 var input = batch.inputs[batch.index++];
@@ -71,7 +110,23 @@ namespace SashaRX.UnityMeshLab
         private static void Drain()
         {
             // Domain reload is already a blocking Unity phase. Never leave committed assets with default import settings.
-            while (Pending.Count > 0) Tick();
+            while (Pending.Count > 0)
+            {
+                var installation = Pending.Peek().installation;
+                if (installation != null && !installation.IsCompleted)
+                {
+                    try { installation.GetAwaiter().GetResult(); }
+                    catch (Exception) { _ = installation.Exception; } // Tick publishes transaction failures.
+                }
+                Tick();
+            }
+        }
+
+        private static void ReleaseRefresh(Batch batch)
+        {
+            if (!batch.refreshBlocked) return;
+            batch.refreshBlocked = false;
+            AssetDatabase.AllowAutoRefresh();
         }
 
         private static void Import(Input input)

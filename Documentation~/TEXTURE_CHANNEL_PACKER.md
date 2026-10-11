@@ -60,6 +60,10 @@ textures intact and their `.meta` GUIDs are retained. If an output appears or
 changes during packing, save is refused so its overwrite can be confirmed again.
 Existing outputs are hashed before confirmation and verified on a worker before
 installation; preserved file sizes and timestamps do not bypass this check.
+Installation verifies the displaced backup against that snapshot and rolls back
+on a mismatch. File installation and backup hashing run on a worker with Unity
+auto-refresh temporarily held; the independent queue releases it on the editor
+thread and then imports the outputs.
 A failure installing a later file restores earlier files in the same batch.
 Source collision and Assets destination checks
 resolve symbolic links and directory junctions; replacing a hard-linked destination detaches

@@ -102,6 +102,35 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        [UnityTest]
+        public IEnumerator FailedBackgroundInstallationDoesNotStrandImportQueue()
+        {
+            var queue = typeof(TextureChannelPackerWindow).Assembly.GetType("SashaRX.UnityMeshLab.TexturePackingImports");
+            var input = queue.GetNestedType("Input", BindingFlags.NonPublic);
+            var empty = Array.CreateInstance(input, 0);
+            var schedule = queue.GetMethod("Schedule", BindingFlags.NonPublic | BindingFlags.Static,
+                null, new[] { empty.GetType(), typeof(Action) }, null);
+            LogAssert.Expect(LogType.Error, "[MeshLab][General] Texture packer installation: Expected installation failure");
+            var task = (Task)schedule.Invoke(null, new object[] { empty, (Action)(() => throw new IOException("Expected installation failure")) });
+            double deadline = EditorApplication.timeSinceStartup + 30;
+            while (!task.IsCompleted)
+            {
+                Assert.Less(EditorApplication.timeSinceStartup, deadline);
+                yield return null;
+            }
+            Assert.IsTrue(task.IsFaulted);
+            Assert.IsInstanceOf<IOException>(task.Exception.InnerException);
+            bool ran = false;
+            var next = (Task)schedule.Invoke(null, new object[] { empty, (Action)(() => ran = true) });
+            while (!next.IsCompleted)
+            {
+                Assert.Less(EditorApplication.timeSinceStartup, deadline);
+                yield return null;
+            }
+            Assert.IsTrue(ran);
+            Assert.IsFalse(next.IsFaulted);
+        }
+
         private sealed class CountingStream : MemoryStream
         {
             public int BytesRead { get; private set; }

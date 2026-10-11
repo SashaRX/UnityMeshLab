@@ -123,14 +123,21 @@ namespace SashaRX.UnityMeshLab
                 else File.Move(Staged, Destination); // Fails rather than replacing a late-arriving file.
                 committed = true;
                 Dispose(); // The original is now the backup; release its lease before any rollback.
-                if (existed && Path.DirectorySeparatorChar == '\\')
+                if (existed && !BackupMatchesVerifiedSource())
+                    throw new IOException("Output changed during installation; batch will be restored: " + Destination);
+            }
+
+            private bool BackupMatchesVerifiedSource()
+            {
+                using (var original = new FileStream(backup, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
                 {
-                    using (var original = new FileStream(backup, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
+                    if (Path.DirectorySeparatorChar == '\\')
                     {
                         var identity = GetIdentity(original);
                         if (identity.volume != verifiedIdentity.volume || identity.low != verifiedIdentity.low || identity.high != verifiedIdentity.high)
-                            throw new IOException("Output replaced during installation; batch will be restored: " + Destination);
+                            return false;
                     }
+                    return original.Length == length && HashesEqual(contentHash, ContentHash(original, CancellationToken.None));
                 }
             }
 
