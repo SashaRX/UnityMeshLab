@@ -59,11 +59,14 @@ namespace SashaRX.UnityMeshLab
             return ImportStaged(document, staged, lines);
         }
 
-        internal static FbxScene ResolveExternal(FbxSourceDocument document, string scratch, string target)
+        internal static FbxScene ResolveExternal(FbxSourceDocument document, string scratch, string target, bool requireMedia)
         {
+            // Documents without media need no filename staging. Preserve their
+            // untouched layer values exactly, including binary double precision.
+            if (FbxUvSetNames.ReadMediaReferences(Path.Combine(scratch, "input.fbx")).Count == 0) return document.Scene;
             string staged = Path.Combine(scratch, "resolved.fbx");
             string[] lines = Stage(document, staged);
-            RebaseTextureBlocks(lines, scratch, document.SourceDirectory, Path.GetFullPath(target), SourcePaths(document, scratch), true);
+            RebaseTextureBlocks(lines, scratch, document.SourceDirectory, Path.GetFullPath(target), SourcePaths(document, scratch), requireMedia);
             return ImportStaged(document, staged, lines);
         }
 
@@ -210,9 +213,8 @@ namespace SashaRX.UnityMeshLab
         {
             string full = Path.GetFullPath(path), root = Path.GetPathRoot(full);
             string current = root.Length == 3 && root[1] == ':' ? root.ToUpperInvariant() : root;
-            foreach (string component in full.Substring(root.Length).Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+            foreach (string component in full.Substring(root.Length).Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries))
             {
-                if (component.Length == 0) continue;
                 string candidate = Path.Combine(current, component);
                 if (Directory.Exists(current) && (File.Exists(candidate) || Directory.Exists(candidate)))
                 {

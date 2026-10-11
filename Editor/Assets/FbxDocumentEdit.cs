@@ -130,8 +130,8 @@ namespace SashaRX.UnityMeshLab
                 // then let the SDK write the selected output container. Geometry stays
                 // in SDK scenes throughout; the temporary format is never a user output.
                 var scene = EmbedsMedia && !settings.EmbedTextures
-                    ? FbxExternalMedia.Prepare(this, scratch, path, createdMedia, createdFolders, referencedMedia) : Scene;
-                if (settings.EmbedTextures) scene = FbxExternalMedia.ResolveExternal(this, scratch, path);
+                    ? FbxExternalMedia.Prepare(this, scratch, path, createdMedia, createdFolders, referencedMedia)
+                    : FbxExternalMedia.ResolveExternal(this, scratch, path, settings.EmbedTextures);
                 io.SetBoolProp(Globals.EXP_FBX_EMBEDDED, settings.EmbedTextures);
                 if (atomic) FbxExport.ReplaceAtomically(path, temp => ExportScene(scene, Path.GetFullPath(temp), format, io), () => committed = true);
                 else { ExportScene(scene, path, format, io); committed = true; }

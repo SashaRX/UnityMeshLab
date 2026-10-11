@@ -204,6 +204,32 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(original, File.ReadAllBytes(extracted[0]));
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void ExternalSourceVariantKeepsOriginalMediaAfterScratchDisposal(bool binary)
+        {
+            string source = Source(binary, external: true), originalMap = Path.Combine(folder, "map.png");
+            byte[] bytes = File.ReadAllBytes(originalMap);
+            string relocated = Path.Combine(folder, "relocated"); Directory.CreateDirectory(Path.Combine(relocated, "missing"));
+            string map = Path.Combine(relocated, "missing", "map.png"); File.WriteAllBytes(map, bytes);
+            string relocatedSource = Path.Combine(relocated, "source.fbx"); File.Move(source, relocatedSource); File.Delete(originalMap);
+            string destination = Path.Combine(folder, "variant"); Directory.CreateDirectory(destination);
+            string output = Path.Combine(destination, "output.fbx");
+            using (var document = FbxSourceDocument.Load(relocatedSource)) document.SaveAtomic(output);
+            var references = FbxUvSetNames.ReadMediaReferences(output);
+            Assert.IsNotEmpty(references);
+            foreach (var reference in references)
+            {
+                if (!string.IsNullOrEmpty(reference.filename))
+                    Assert.AreEqual(Path.GetFullPath(map), Path.GetFullPath(reference.filename.Replace('/', Path.DirectorySeparatorChar)));
+                if (!string.IsNullOrEmpty(reference.relative))
+                    Assert.AreEqual(Path.GetFullPath(map), Path.GetFullPath(Path.Combine(destination, reference.relative.Replace('/', Path.DirectorySeparatorChar))));
+            }
+            using var saved = FbxSourceDocument.Load(output);
+            Assert.IsFalse(saved.EmbedsMedia); Assert.AreEqual(4, saved.Meshes[0].GetPolygonSize(0));
+            CollectionAssert.AreEqual(bytes, File.ReadAllBytes(map));
+        }
+
         [Test]
         public void MissingExternalMediaRefusesEmbeddingBeforeReplacingTheTarget()
         {
@@ -438,6 +464,21 @@ namespace SashaRX.UnityMeshLab.Tests
         public void FilenameRewriteMatchesExistingFilesystemCaseAliases()
         {
             string map = Path.Combine(folder, "Map.png"), alias = Path.Combine(folder.ToUpperInvariant(), "MAP.PNG");
+            File.WriteAllBytes(map, new byte[] { 1 });
+            if (!File.Exists(alias)) Assert.Ignore("This filesystem has no case alias for the fixture.");
+            string output = Path.Combine(folder, "out.png"), target = Path.Combine(folder, "output.fbx");
+            var paths = new Dictionary<string, string>(StringComparer.Ordinal) { [map] = output };
+            Assert.AreEqual("FileName: \"" + output.Replace('\\', '/') + "\"",
+                FbxExternalMedia.RewriteFilename("FileName: \"" + alias.Replace('\\', '/') + "\"", paths, folder, target));
+        }
+
+        [Test]
+        public void FilenameCaseAliasesWorkAcrossDeepDirectoryHierarchy()
+        {
+            string directory = folder;
+            for (int i = 0; i < 50; i++) directory = Path.Combine(directory, "d");
+            Directory.CreateDirectory(directory);
+            string map = Path.Combine(directory, "Map.png"), alias = Path.Combine(directory.ToUpperInvariant(), "MAP.PNG");
             File.WriteAllBytes(map, new byte[] { 1 });
             if (!File.Exists(alias)) Assert.Ignore("This filesystem has no case alias for the fixture.");
             string output = Path.Combine(folder, "out.png"), target = Path.Combine(folder, "output.fbx");
