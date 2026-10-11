@@ -42,6 +42,28 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
+        public IEnumerator DefaultScatterPreservesDenseLeafIslandsAndSourceMesh()
+        {
+            using var fixture = new FoliageNormalTransferTests.Fixture();
+            var (positions, indices) = FoliageSurfaceSamplerTests.DenseLeafGeometry();
+            fixture.mesh.Clear(); fixture.mesh.vertices = positions; fixture.mesh.triangles = indices;
+            fixture.mesh.RecalculateNormals(); fixture.mesh.RecalculateBounds();
+            var original = FoliageTargetSnapshot.ContentFingerprint(fixture.mesh);
+            using var pipeline = new FoliageNormalsPipeline(new TestProxy());
+            var settings = new FoliageNormalsSettings();
+            var task = pipeline.Run(fixture.root, settings, FoliageNormalsPipeline.Stage.Scatter);
+            yield return Await(task);
+            Assert.IsTrue(task.Result, pipeline.Status);
+            Assert.IsTrue(pipeline.Has(FoliageNormalsPipeline.Stage.Scatter));
+            Assert.AreEqual(3, pipeline.Samples.islands);
+            Assert.Greater(pipeline.Samples.retainedForIslandMinimum, 0);
+            CollectionAssert.AreEquivalent(new[] { 0, 1, 2 }, new HashSet<int>(pipeline.Samples.sampleIslands));
+            Assert.AreEqual(pipeline.Samples.samples.Length, pipeline.Primitives.Length);
+            Assert.AreSame(fixture.mesh, fixture.root.GetComponent<MeshFilter>().sharedMesh);
+            Assert.AreEqual(original, FoliageTargetSnapshot.ContentFingerprint(fixture.mesh));
+        }
+
+        [UnityTest]
         public IEnumerator InPlaceMeshEditsInvalidateCaptureAndCannotOverwriteCurrentData()
         {
             for (int channel = 0; channel < 7; channel++)

@@ -578,6 +578,8 @@ namespace SashaRX.UnityMeshLab
                 EditorGUILayout.LabelField($"{s.faces:N0} selected faces · area {s.area:G5} · {s.islands:N0} islands\n" +
                 $"{s.generated:N0} samples → {s.deduplicated:N0} dedup → {s.samples.Length:N0} primitives · {s.skippedDegenerate} degenerate\n" +
                 $"Neighbour min/mean/max: {s.minNeighbour:G4}/{s.meanNeighbour:G4}/{s.maxNeighbour:G4}", EditorStyles.wordWrappedMiniLabel);
+                if (s.retainedForIslandMinimum > 0)
+                    EditorGUILayout.LabelField($"{s.retainedForIslandMinimum:N0} close samples retained to preserve Minimum / island.", EditorStyles.wordWrappedMiniLabel);
             }
 
             if (pipeline.Envelope != null)

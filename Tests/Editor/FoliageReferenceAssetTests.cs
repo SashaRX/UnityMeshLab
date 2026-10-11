@@ -54,10 +54,17 @@ namespace SashaRX.UnityMeshLab.Tests
                 var transforms = root.GetComponentsInChildren<Transform>();
                 var positions = Array.ConvertAll(transforms, t => t.localPosition); var rotations = Array.ConvertAll(transforms, t => t.localRotation);
                 var scales = Array.ConvertAll(transforms, t => t.localScale); var worlds = Array.ConvertAll(transforms, t => t.localToWorldMatrix);
+                var defaults = new FoliageNormalsSettings { selection = FoliageFaceSelection.SelectedMaterials, materials = new[] { leaves } };
+                var task = pipeline.Run(root, defaults, FoliageNormalsPipeline.Stage.Scatter);
+                yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, pipeline.Status);
+                int defaultIslands = pipeline.Samples.islands, defaultPrimitives = pipeline.Primitives.Length;
+                int defaultRetained = pipeline.Samples.retainedForIslandMinimum;
+                Assert.AreEqual(defaultIslands, new HashSet<int>(pipeline.Samples.sampleIslands).Count);
+                Assert.LessOrEqual(defaultPrimitives, defaults.maximumPrimitiveCount);
                 var settings = new FoliageNormalsSettings { selection = FoliageFaceSelection.SelectedMaterials, materials = new[] {leaves},
                     sampleSpacing = .04f, radiusMultiplier = 1.6f, dedupSpacingFraction = .01f, voxelResolution = 64, smoothingIterations = 3, smoothingStrength = .5f,
                     gpuProjection = GpuBvh.Supported };
-                var task = pipeline.Run(root, settings, FoliageNormalsPipeline.Stage.Transfer);
+                task = pipeline.Run(root, settings, FoliageNormalsPipeline.Stage.Transfer);
                 yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, pipeline.Status); Assert.IsTrue(pipeline.CanApply);
                 Assert.AreEqual(1, pipeline.Targets.Count); var target = pipeline.Targets[0]; var result = target.working;
                 Assert.IsFalse(target.selectedSubmeshes[0]); Assert.IsTrue(target.selectedSubmeshes[1]);
@@ -145,6 +152,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     else Assert.AreEqual(normals[i], cpuNormals[i]);
                 }
                 File.WriteAllText(Path.Combine(output, "pine-metrics.txt"), $"Mesh {source.name}: {source.vertexCount} vertices, 2 submeshes; unreadable imported source.\n" +
+                    $"Default scatter: {defaultIslands} islands covered, {defaultPrimitives} primitives, {defaultRetained} close samples retained for island minima.\n" +
                     $"Slot 0: {wood.name}, {target.indices[0].Length/3} faces, {excluded} vertices with exact original normals.\n" +
                     $"Slot 1: {leaves.name}, {target.indices[1].Length/3} faces, {changed} changed vertex directions.\n" +
                     $"{pipeline.Samples.islands} foliage islands; {pipeline.Primitives.Length} primitives; {pipeline.ProxyComponents} proxy components.\n" +

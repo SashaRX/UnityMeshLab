@@ -130,8 +130,11 @@ p  = a*b0 + b*b1 + c*b2
 
 Optional source vertices and triangle centroids are added. A spatial hash removes
 samples closer than `h * dedupSpacingFraction`, checking neighbouring cells by
-actual Euclidean distance. Every island reserves its minimum first. If dedup
-prevents that minimum, the operation fails with an actionable error. After dedup,
+actual Euclidean distance. Every island reserves its minimum first. Minimum
+coverage takes priority over dedup distance: dense neighbouring cards and tiny
+islands retain their required samples even when those samples are close. Further
+samples still obey the global dedup distance. Diagnostics report how many close
+samples were retained for island coverage. After dedup,
 the primitive cap retains island minima plus a deterministic evenly distributed
 subset of the remaining samples. Counts, surface area, skipped degenerates and
 exact nearest-neighbour min/mean/max are reported. Neighbour diagnostics reuse
@@ -420,8 +423,8 @@ shader or alpha textures.
 
 The pine profile uses spacing at 4% of the selected bounds diagonal, radius
 multiplier 1.6, dedup fraction 0.01, voxel resolution 64 and three Taubin iterations
-at strength 0.5. A smaller dedup distance is needed for its densely adjacent
-islands. Finer profiles tested on this model produced invalid native topology
+at strength 0.5. This recorded profile uses a smaller dedup distance; island
+minima are now retained even for densely adjacent leaves. Finer profiles tested on this model produced invalid native topology
 (point/edge contacts); validation rejected them before Transfer. Increase
 primitive overlap or change voxel resolution when that diagnostic occurs.
 
