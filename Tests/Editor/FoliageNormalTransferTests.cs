@@ -7,6 +7,7 @@ using Unity.Collections;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.TestTools;
+using UnityEngine.Rendering;
 
 namespace SashaRX.UnityMeshLab.Tests
 {
@@ -32,6 +33,65 @@ namespace SashaRX.UnityMeshLab.Tests
             positions = new[] { new Vector3(-10,-10,0), new Vector3(10,-10,0), new Vector3(0,10,0) }, indices = new[] { 0,1,2 },
             normals = new[] { Vector3.up, Vector3.up, Vector3.up }
         };
+
+        [TestCase(false)] [TestCase(true)]
+        public void UnreadableCapturePreservesRawVertexFormatsStreamsAndExcludedChannels(bool splitBoundary)
+        {
+            using var fixture = new Fixture();
+            var mesh = new Mesh { name = "Packed foliage", indexFormat = IndexFormat.UInt16 };
+            Mesh result = null;
+            try
+            {
+                var positions = new[] { Vector3.zero, Vector3.right, Vector3.up, Vector3.one };
+                var normals = Array.ConvertAll(positions, _ => Vector3.forward);
+                var colors = new[] { new Color32(1, 2, 3, 4), new Color32(51, 102, 153, 204), new Color32(255, 0, 17, 34), new Color32(89, 90, 91, 92) };
+                var uv = new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.one };
+                mesh.SetVertexBufferParams(4,
+                    new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3, 0),
+                    new VertexAttributeDescriptor(VertexAttribute.Normal, VertexAttributeFormat.Float32, 3, 1),
+                    new VertexAttributeDescriptor(VertexAttribute.Color, VertexAttributeFormat.UNorm8, 4, 2),
+                    new VertexAttributeDescriptor(VertexAttribute.TexCoord0, VertexAttributeFormat.Float32, 2, 3));
+                mesh.SetVertexBufferData(positions, 0, 0, 4, 0); mesh.SetVertexBufferData(normals, 0, 0, 4, 1);
+                mesh.SetVertexBufferData(colors, 0, 0, 4, 2); mesh.SetVertexBufferData(uv, 0, 0, 4, 3);
+                mesh.subMeshCount = 2; mesh.SetTriangles(new[] { 0, 1, 2 }, 0); mesh.SetTriangles(new[] { 0, 2, 3 }, 1);
+                mesh.UploadMeshData(true);
+                fixture.root.GetComponent<MeshFilter>().sharedMesh = mesh;
+                var settings = FoliageSurfaceSamplerTests.Settings();
+                if (splitBoundary) { settings.selection = FoliageFaceSelection.SelectedSubmeshIndices; settings.submeshes = new[] { 0 }; }
+                using var target = new FoliageTargetSnapshot(fixture.renderer, Matrix4x4.identity, settings, CancellationToken.None);
+                Assert.IsFalse(mesh.isReadable);
+                CollectionAssert.AreEqual(mesh.GetVertexAttributes(), target.original.GetVertexAttributes());
+                using (var sourceData = MeshUtility.AcquireReadOnlyMeshData(mesh))
+                using (var captured = Mesh.AcquireReadOnlyMeshData(target.original))
+                {
+                    Assert.AreEqual(sourceData[0].vertexBufferCount, captured[0].vertexBufferCount);
+                    for (int stream = 0; stream < sourceData[0].vertexBufferCount; stream++)
+                    {
+                        CollectionAssert.AreEqual(sourceData[0].GetVertexData<byte>(stream).ToArray(), captured[0].GetVertexData<byte>(stream).ToArray());
+                    }
+                    CollectionAssert.AreEqual(sourceData[0].GetIndexData<byte>().ToArray(), captured[0].GetIndexData<byte>().ToArray());
+                    for (int submesh = 0; submesh < 2; submesh++) Assert.AreEqual(sourceData[0].GetSubMesh(submesh), captured[0].GetSubMesh(submesh));
+                }
+                result = target.BuildResult(Array.ConvertAll(positions, _ => Vector3.up), false, CancellationToken.None, out int duplicated);
+                Assert.AreEqual(splitBoundary ? 2 : 0, duplicated);
+                CollectionAssert.AreEqual(mesh.GetVertexAttributes(), result.GetVertexAttributes());
+                for (int vertex = 0; vertex < positions.Length; vertex++)
+                {
+                    Assert.AreEqual(positions[vertex], result.vertices[vertex]);
+                    Assert.AreEqual(colors[vertex], result.colors32[vertex]);
+                    Assert.AreEqual(uv[vertex], result.uv[vertex]);
+                    if (splitBoundary && target.excludedVertices[vertex]) Assert.AreEqual(normals[vertex], result.normals[vertex]);
+                }
+                if (splitBoundary) CollectionAssert.AreEqual(new[] { 0, 2, 3 }, result.GetIndices(1));
+                Assert.AreEqual(target.original.bounds, result.bounds);
+                Assert.AreSame(mesh, fixture.root.GetComponent<MeshFilter>().sharedMesh);
+            }
+            finally
+            {
+                if (result) UnityEngine.Object.DestroyImmediate(result);
+                UnityEngine.Object.DestroyImmediate(mesh);
+            }
+        }
 
         [TestCase(0f)] [TestCase(1f)]
         public void BarycentricBlendAndMissRetainOriginals(float blend)
@@ -208,6 +268,40 @@ namespace SashaRX.UnityMeshLab.Tests
                     Assert.AreEqual(fixture.mesh.colors[map[i]], result.colors[i]);
                 }
                 CollectionAssert.AreEqual(before, fixture.mesh.tangents);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(result); }
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void MissingTangentsStayZeroOnExcludedVerticesWhileSelectedFramesAreGenerated(bool sharedBoundary)
+        {
+            var positions = sharedBoundary ? null : new[] { Vector3.zero, Vector3.right, Vector3.up,
+                new Vector3(2,0,0), new Vector3(3,0,0), new Vector3(2,1,0) };
+            using var fixture = new Fixture(positions);
+            if (!sharedBoundary) fixture.mesh.SetTriangles(new[] { 3,4,5 }, 1);
+            fixture.mesh.uv = Array.ConvertAll(fixture.mesh.vertices, p => new Vector2(p.x, p.y));
+            fixture.mesh.colors = Array.ConvertAll(fixture.mesh.vertices, _ => Color.green);
+            Assert.IsFalse(fixture.mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent));
+            var settings = new FoliageNormalsSettings { selection = FoliageFaceSelection.SelectedSubmeshIndices, submeshes = new[] { 0 } };
+            using var target = new FoliageTargetSnapshot(fixture.renderer, Matrix4x4.identity, settings, CancellationToken.None);
+            var result = target.BuildResult(Array.ConvertAll(target.localNormals, _ => Vector3.up), true, CancellationToken.None, out int duplicates);
+            try
+            {
+                Assert.AreEqual(sharedBoundary ? 2 : 0, duplicates);
+                CollectionAssert.AreEqual(fixture.mesh.GetIndices(1), result.GetIndices(1));
+                foreach (int i in result.GetIndices(1))
+                {
+                    Assert.AreEqual(Vector3.forward, result.normals[i]); Assert.AreEqual(Vector4.zero, result.tangents[i]);
+                    Assert.AreEqual(fixture.mesh.vertices[i], result.vertices[i]);
+                    Assert.AreEqual(fixture.mesh.uv[i], result.uv[i]); Assert.AreEqual(fixture.mesh.colors[i], result.colors[i]);
+                }
+                foreach (int i in result.GetIndices(0))
+                {
+                    Assert.That(((Vector3)result.tangents[i]).magnitude, Is.EqualTo(1).Within(1e-5));
+                    Assert.That(Vector3.Dot((Vector3)result.tangents[i], result.normals[i]), Is.EqualTo(0).Within(1e-5));
+                    Assert.That(Math.Abs(result.tangents[i].w), Is.EqualTo(1));
+                }
+                Assert.IsFalse(fixture.mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent));
             }
             finally { UnityEngine.Object.DestroyImmediate(result); }
         }

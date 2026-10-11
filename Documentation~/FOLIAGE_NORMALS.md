@@ -64,9 +64,9 @@ distances are measured in capture units; a nonuniformly scaled root therefore
 deforms the displayed world-space envelope. This is intentional root-local metric
 behaviour, rather than a world-space isotropic sphere union.
 
-`MeshAccess` reads imported meshes with Read/Write disabled. Its existing rare
-Unity fallback temporarily enables Read/Write for a read and restores it; foliage
-does not change importer normals or write the model file. Unreadable deforming
+`MeshAccess` reads imported meshes with Read/Write disabled. Foliage uses its raw
+Editor MeshData capture to preserve attribute formats, vertex streams, index
+buffers and submesh descriptors without toggling the source importer. Unreadable deforming
 meshes whose full skin/blend shape streams cannot be preserved are rejected.
 Sources must contain finite positions and authored unit normals at every vertex.
 
@@ -254,7 +254,9 @@ Tangents are recalculated only if requested and UV0 exists, is finite and has
 nondegenerate UV triangles on the selected faces. Excluded UV degeneracy does not
 disable foliage tangent recalculation. Without valid selected UV0, original tangents are retained and
 a warning is emitted. Existing excluded tangent values are restored after
-recalculation. Target normals are never regenerated with RecalculateNormals.
+recalculation. If the source has no tangent attribute, newly generated frames are
+kept only on selected vertices; excluded vertices retain the zero default frame.
+Target normals are never regenerated with RecalculateNormals.
 
 ## Preview, apply and assets
 
@@ -268,7 +270,9 @@ preview.
 
 Apply checks captured Mesh references, a content fingerprint of all vertex streams
 and indices, bounds and import settings, matrices, material assignments and the
-current eligible renderer set. In-place mesh edits, Undo or reimports require
+current eligible renderer set. UI availability caches this expensive check until
+a pipeline, hierarchy, project, Undo or relevant vertex-channel change event;
+Apply and both Save actions always perform their own fresh check. In-place mesh edits, Undo or reimports require
 recapture before applying or saving. Renderers with additional vertex streams are
 refused before capture because those attributes can override the result or become
 incompatible with boundary copies. Apply creates scene-owned result clones and records renderer and
@@ -308,7 +312,15 @@ the variant to imported normals could otherwise change excluded shading. Use an
 FBX source with Normals = Import and recapture; standalone/generated meshes
 without an FBX source are also refused. Ambiguous corners, inconsistent edits of
 instances of one FBX mesh and incompatible submesh layouts fail explicitly.
+Shared FBX geometry requires every referencing source node to be captured with
+compatible shading. Node identity comes from the original model prefab, so
+disconnected copies or ambiguous source node names are refused for shared
+geometry. Capturing the same node from multiple model instances does not stand
+in for a missing source node. This prevents filtered-out FBX instances from
+receiving foliage shading through their shared mesh.
 Writes use the shared atomic temporary-file mechanism; failed outputs are removed.
+Either variant import failing aborts the save, including the second import after
+copying source settings. A written file alone cannot count as a successful export.
 Repeated saves choose unique filenames. FBX serialization can change headers and
 SDK metadata; this is semantic preservation of untouched scene/mesh data, not a
 byte-identical copy of the entire file.

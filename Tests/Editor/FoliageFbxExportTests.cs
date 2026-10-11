@@ -1,9 +1,11 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.TestTools;
 using Object = UnityEngine.Object;
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
 using System.Linq;
@@ -28,7 +30,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [TearDown]
         public void TearDown() => AssetDatabase.DeleteAsset(folder);
 
-        string Source(bool coincident, bool binary)
+        string Source(bool coincident, bool binary, bool instanced = false)
         {
             string path = folder + "/tree.fbx";
             using var manager = FbxManager.Create();
@@ -75,6 +77,7 @@ namespace SashaRX.UnityMeshLab.Tests
             node.AddMaterial(FbxSurfacePhong.Create(scene,"M_Trunk"));
             node.AddMaterial(FbxSurfacePhong.Create(scene,"M_Leaves"));
             group.AddChild(node);
+            if (instanced) AddInstance(scene, group, node);
             var helper = FbxNode.Create(scene, "KeepHelper");
             helper.LclTranslation.Set(new FbxDouble3(4,5,6));
             group.AddChild(helper);
@@ -88,6 +91,122 @@ namespace SashaRX.UnityMeshLab.Tests
             importer.preserveHierarchy = true; importer.generateSecondaryUV = false;
             importer.SaveAndReimport();
             return path;
+        }
+
+        static void AddInstance(FbxScene scene, FbxNode group, FbxNode source)
+        {
+            var instance = FbxNode.Create(scene, "TreeCopy_LOD0");
+            instance.LclTranslation.Set(new FbxDouble3(200, 0, 0));
+            instance.SetNodeAttribute(source.GetMesh());
+            for (int i = 0; i < source.GetMaterialCount(); i++) instance.AddMaterial(source.GetMaterial(i));
+            group.AddChild(instance);
+        }
+
+        static FoliageTargetSnapshot ShadingTarget(MeshRenderer renderer, Transform root)
+        {
+            var settings = new FoliageNormalsSettings { selection = FoliageFaceSelection.SelectedSubmeshIndices, submeshes = new[] { 1 } };
+            var target = new FoliageTargetSnapshot(renderer, root.worldToLocalMatrix, settings, CancellationToken.None);
+            try
+            {
+                var normals = (Vector3[])target.localNormals.Clone();
+                foreach (int i in Enumerable.Range(0, normals.Length).Where(i => target.selectedVertices[i]))
+                    normals[i] = new Vector3(.3f, .5f, .8f).normalized;
+                target.working = target.BuildResult(normals, true, CancellationToken.None, out _);
+                return target;
+            }
+            catch { target.Dispose(); throw; }
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void MissingInstancedFbxNodeIsRefusedEvenWhenCapturedTwice(bool duplicateFirst)
+        {
+            string source = Source(false, true, true);
+            using (var document = FbxSourceDocument.Load(source)) Assert.AreEqual(2, document.Meshes.Single().GetNodeCount());
+            var bytes = File.ReadAllBytes(source); var meta = File.ReadAllBytes(source + ".meta");
+            var model = AssetDatabase.LoadAssetAtPath<GameObject>(source);
+            var root = (GameObject)PrefabUtility.InstantiatePrefab(model);
+            var second = duplicateFirst ? (GameObject)PrefabUtility.InstantiatePrefab(model) : null;
+            var targets = new List<FoliageTargetSnapshot>();
+            try
+            {
+                targets.Add(ShadingTarget(root.GetComponentsInChildren<MeshRenderer>().Single(r => r.name == "Tree_LOD0"), root.transform));
+                if (second != null)
+                    targets.Add(ShadingTarget(second.GetComponentsInChildren<MeshRenderer>().Single(r => r.name == "Tree_LOD0"), second.transform));
+                ExpectInstanceRefusal(targets);
+                CollectionAssert.AreEqual(bytes, File.ReadAllBytes(source)); CollectionAssert.AreEqual(meta, File.ReadAllBytes(source + ".meta"));
+                Assert.AreEqual(1, Directory.GetFiles(folder, "*.fbx").Length);
+                Assert.IsFalse(AssetDatabase.IsValidFolder("Assets/__MeshLabTemp"));
+            }
+            finally
+            {
+                foreach (var target in targets) target.Dispose();
+                Object.DestroyImmediate(root); if (second != null) Object.DestroyImmediate(second);
+            }
+        }
+
+        void ExpectInstanceRefusal(IReadOnlyList<FoliageTargetSnapshot> targets)
+        {
+            LogAssert.Expect(LogType.Error, new System.Text.RegularExpressions.Regex(".*is instanced in the FBX.*Nothing was written.*"));
+            Assert.Throws<InvalidOperationException>(() => FoliageFbxExport.Save(targets, folder));
+        }
+
+        [TestCase(1)] [TestCase(2)]
+        public void FailedVariantImportCannotPublishAResultOrChangeTheSource(int failedImport)
+        {
+            string source = Source(false, true);
+            var bytes = File.ReadAllBytes(source); var meta = File.ReadAllBytes(source + ".meta");
+            var root = Object.Instantiate(AssetDatabase.LoadAssetAtPath<GameObject>(source));
+            try
+            {
+                using var target = ShadingTarget(root.GetComponentInChildren<MeshRenderer>(), root.transform);
+                int imports = 0;
+                LogAssert.Expect(LogType.Error, new System.Text.RegularExpressions.Regex(".*was not written: Injected variant import failure.*"));
+                Assert.Throws<InvalidOperationException>(() => FoliageFbxExport.Save(new[] { target }, folder, (path, options) =>
+                {
+                    if (++imports == failedImport) throw new InvalidOperationException("Injected variant import failure");
+                    AssetDatabase.ImportAsset(path, options);
+                }));
+                Assert.AreEqual(failedImport, imports);
+                CollectionAssert.AreEqual(bytes, File.ReadAllBytes(source));
+                CollectionAssert.AreEqual(meta, File.ReadAllBytes(source + ".meta"));
+                Assert.AreEqual(1, Directory.GetFiles(folder, "*.fbx").Length);
+                Assert.IsFalse(AssetDatabase.IsValidFolder("Assets/__MeshLabTemp"));
+                Assert.IsFalse(Uv2AssetPostprocessor.fbxOverwritePaths.Any(path => path.StartsWith(folder + "/", StringComparison.Ordinal)));
+            }
+            finally { Object.DestroyImmediate(root); }
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void InstancedFbxRequiresSourceNodeIdentityAndExportsCompatibleCompleteSelection(bool connected)
+        {
+            string source = Source(false, true, true);
+            var bytes = File.ReadAllBytes(source); var meta = File.ReadAllBytes(source + ".meta");
+            var model = AssetDatabase.LoadAssetAtPath<GameObject>(source);
+            var root = connected ? (GameObject)PrefabUtility.InstantiatePrefab(model) : Object.Instantiate(model);
+            var targets = new List<FoliageTargetSnapshot>();
+            try
+            {
+                foreach (var renderer in root.GetComponentsInChildren<MeshRenderer>()) targets.Add(ShadingTarget(renderer, root.transform));
+                Assert.AreEqual(2, targets.Count);
+                if (connected)
+                {
+                    string output = FoliageFbxExport.Save(targets, folder).Single();
+                    CheckDocuments(source, output);
+                    using var document = FbxSourceDocument.Load(output);
+                    Assert.AreEqual(2, document.Meshes.Single().GetNodeCount());
+                }
+                else
+                {
+                    ExpectInstanceRefusal(targets);
+                    Assert.AreEqual(1, Directory.GetFiles(folder, "*.fbx").Length);
+                }
+                CollectionAssert.AreEqual(bytes, File.ReadAllBytes(source)); CollectionAssert.AreEqual(meta, File.ReadAllBytes(source + ".meta"));
+            }
+            finally
+            {
+                foreach (var target in targets) { target.Dispose(); }
+                Object.DestroyImmediate(root);
+            }
         }
 
         [TestCase(false, true, ModelImporterTangents.Import)]

@@ -80,6 +80,50 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
+        public IEnumerator PreviewEligibilityIsCachedButActionsAndChannelEventsCheckCurrentData()
+        {
+            const string preference = "MeshLab.FoliageNormals.Settings";
+            string previous = EditorPrefs.HasKey(preference) ? EditorPrefs.GetString(preference) : null;
+            using var fixture = new FoliageNormalTransferTests.Fixture();
+            var tool = new FoliageNormalsTool();
+            try
+            {
+                tool.settings = FoliageSurfaceSamplerTests.Settings();
+                tool.settings.normalSource = FoliageNormalSource.Sphere;
+                tool.settings.recalculateTangents = false;
+                tool.SetRoot(fixture.root);
+                tool.OnActivate(null, null);
+                var task = tool.pipeline.Run(fixture.root, tool.settings, FoliageNormalsPipeline.Stage.Transfer);
+                yield return Await(task); Assert.IsTrue(task.Result, tool.pipeline.Status);
+                Assert.IsTrue(tool.CanApplyPreview);
+                fixture.mesh.colors = new[] { Color.red, Color.green, Color.blue, Color.white };
+                for (int draw = 0; draw < 20; draw++) Assert.IsTrue(tool.CanApplyPreview, "Drawing must reuse eligibility until an event invalidates it.");
+                Assert.Throws<InvalidOperationException>(() => tool.pipeline.Apply());
+                Assert.Throws<InvalidOperationException>(() => tool.pipeline.Save("Assets"));
+                Assert.Throws<InvalidOperationException>(() => tool.pipeline.SaveFbx("Assets"));
+                Assert.AreSame(fixture.mesh, fixture.root.GetComponent<MeshFilter>().sharedMesh);
+                VertexChannels.RaiseChanged(fixture.mesh);
+                Assert.IsFalse(tool.CanApplyPreview);
+                Assert.IsFalse(tool.pipeline.Has(FoliageNormalsPipeline.Stage.Capture));
+                var rebuilt = tool.pipeline.Run(fixture.root, tool.settings, FoliageNormalsPipeline.Stage.Transfer);
+                yield return Await(rebuilt); Assert.IsTrue(rebuilt.Result, tool.pipeline.Status);
+                Assert.IsTrue(tool.CanApplyPreview);
+                tool.pipeline.ClearFrom(FoliageNormalsPipeline.Stage.Capture);
+                Assert.IsFalse(tool.CanApplyPreview);
+                var repeated = tool.pipeline.Run(fixture.root, tool.settings, FoliageNormalsPipeline.Stage.Transfer);
+                yield return Await(repeated); Assert.IsTrue(repeated.Result, tool.pipeline.Status);
+                Assert.IsTrue(tool.CanApplyPreview);
+                tool.OnDeactivate();
+                Assert.IsFalse(tool.CanApplyPreview);
+            }
+            finally
+            {
+                tool.OnDeactivate();
+                if (previous == null) EditorPrefs.DeleteKey(preference); else EditorPrefs.SetString(preference, previous);
+            }
+        }
+
+        [UnityTest]
         public IEnumerator RemovedMeshInvalidatesCaptureWithoutHashingMissingData()
         {
             using var fixture = new FoliageNormalTransferTests.Fixture();

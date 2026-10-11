@@ -27,6 +27,16 @@ namespace SashaRX.UnityMeshLab
         internal GameObject root;
         Preview preview = Preview.TransferredNormals;
         bool advanced, showPrimitives, showProxyEdges = true, active;
+        bool? previewCanApply;
+        internal bool CanApplyPreview
+        {
+            get
+            {
+                if (pipeline.IsRunning || !pipeline.Has(FoliageNormalsPipeline.Stage.Transfer)) return false;
+                if (!previewCanApply.HasValue) previewCanApply = pipeline.CanApply;
+                return previewCanApply.Value;
+            }
+        }
         MeshRenderer[] availableRenderers = Array.Empty<MeshRenderer>();
         Material[] availableMaterials = Array.Empty<Material>();
         int submeshCount;
@@ -47,7 +57,13 @@ namespace SashaRX.UnityMeshLab
             settings.renderers = Array.Empty<MeshRenderer>();
             settings.materials = Array.Empty<Material>();
             settings.filterRenderers = false;
-            pipeline.Changed = () => { if (active) { RequestRepaint?.Invoke(); } };
+            pipeline.Changed = PipelineChanged;
+        }
+
+        void PipelineChanged()
+        {
+            previewCanApply = null;
+            if (active) RequestRepaint?.Invoke();
         }
 
         internal static FoliageNormalsSettings RestoreSettings(string json)
@@ -78,6 +94,9 @@ namespace SashaRX.UnityMeshLab
 
             AssemblyReloadEvents.beforeAssemblyReload += Clear;
             EditorApplication.hierarchyChanged += HierarchyChanged;
+            EditorApplication.projectChanged += OnRefresh;
+            SubscribeUndo(OnRefresh);
+            SubscribeSourceChanges(SourceChannelsChanged);
             SubscribeTick(Tick);
         }
         public void OnDeactivate()
@@ -85,6 +104,9 @@ namespace SashaRX.UnityMeshLab
             active = false;
             AssemblyReloadEvents.beforeAssemblyReload -= Clear;
             EditorApplication.hierarchyChanged -= HierarchyChanged;
+            EditorApplication.projectChanged -= OnRefresh;
+            UnsubscribeUndo(OnRefresh);
+            UnsubscribeSourceChanges(SourceChannelsChanged);
             UnsubscribeTick(Tick);
             Clear();
         }
@@ -96,6 +118,22 @@ namespace SashaRX.UnityMeshLab
         {
             EditorApplication.update -= tick;
         }
+        static void SubscribeSourceChanges(Action<Mesh> changed)
+        {
+            VertexChannels.Changed += changed;
+        }
+        static void UnsubscribeSourceChanges(Action<Mesh> changed)
+        {
+            VertexChannels.Changed -= changed;
+        }
+        static void SubscribeUndo(Undo.UndoRedoCallback refresh)
+        {
+            Undo.undoRedoPerformed += refresh;
+        }
+        static void UnsubscribeUndo(Undo.UndoRedoCallback refresh)
+        {
+            Undo.undoRedoPerformed -= refresh;
+        }
         void Tick()
         {
             if (pipeline.IsRunning)
@@ -105,11 +143,13 @@ namespace SashaRX.UnityMeshLab
         }
         void Clear()
         {
+            previewCanApply = null;
             EditorPrefs.SetString(Prefs, JsonUtility.ToJson(settings));
             pipeline.Dispose();
         }
         public void OnRefresh()
         {
+            previewCanApply = null;
             if (!pipeline.IsRunning)
             {
                 pipeline.InvalidateChanged(settings, root);
@@ -117,12 +157,18 @@ namespace SashaRX.UnityMeshLab
         }
         void HierarchyChanged()
         {
+            previewCanApply = null;
             if (!pipeline.IsRunning)
             {
                 RefreshFilters();
                 pipeline.InvalidateChanged(settings, root);
             }
             RequestRepaint?.Invoke();
+        }
+
+        void SourceChannelsChanged(Mesh mesh)
+        {
+            if (pipeline.Targets.Any(t => t.source == mesh || t.applied == mesh)) OnRefresh();
         }
 
         internal void SetRoot(GameObject source)
@@ -381,14 +427,14 @@ namespace SashaRX.UnityMeshLab
                 _ = Run(FoliageNormalsPipeline.Stage.Transfer);
             }
 
-            using (new EditorGUI.DisabledScope(!pipeline.CanApply))
+            using (new EditorGUI.DisabledScope(!CanApplyPreview))
             {
                 if (pipeline.InPrefabMode)
                 {
                     EditorGUILayout.HelpBox("Save a Mesh Asset or Separate FBX and assign the saved mesh in Prefab Mode.", MessageType.Info);
                 }
 
-                using (new EditorGUI.DisabledScope(!pipeline.CanApplyToScene))
+                using (new EditorGUI.DisabledScope(pipeline.InPrefabMode))
                 {
                     if (GUILayout.Button("Apply to Scene"))
                     {

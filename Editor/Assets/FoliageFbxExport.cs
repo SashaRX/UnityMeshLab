@@ -21,7 +21,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        internal static string[] Save(IReadOnlyList<FoliageTargetSnapshot> targets, string folder)
+        internal static string[] Save(IReadOnlyList<FoliageTargetSnapshot> targets, string folder, Action<string, ImportAssetOptions> importAsset = null)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             var groups = GroupSources(targets);
@@ -31,7 +31,7 @@ namespace SashaRX.UnityMeshLab
             UnityEditor.EditorApplication.LockReloadAssemblies();
             try
             {
-                foreach (var group in groups) SaveGroup(group.Key, group.Value, folder, paths);
+                foreach (var group in groups) SaveGroup(group.Key, group.Value, folder, paths, importAsset);
                 return paths.ToArray();
             }
             catch
@@ -73,7 +73,7 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Warn($"[Foliage] '{source}' uses lossy Mesh Compression. The FBX document preserves excluded normals, UVs and colours exactly; its copied Unity importer can quantize them on reimport. Disable Mesh Compression on the new FBX for uncompressed shading.");
         }
 
-        static void SaveGroup(string source, List<FoliageTargetSnapshot> targets, string folder, List<string> paths)
+        static void SaveGroup(string source, List<FoliageTargetSnapshot> targets, string folder, List<string> paths, Action<string, ImportAssetOptions> importAsset)
         {
             string candidate = Path.Combine(folder, Path.GetFileNameWithoutExtension(source) + "_FoliageNormals.fbx").Replace('\\', '/');
             string output = AssetDatabase.GenerateUniqueAssetPath(candidate);
@@ -81,16 +81,30 @@ namespace SashaRX.UnityMeshLab
                 throw new InvalidOperationException("Choose a separate FBX destination.");
             var entries = new List<MeshEntry>();
             var selection = new FbxExport.ShadingSelection();
+            if (importAsset != null) selection.importAsset = importAsset;
             foreach (var target in targets)
             {
                 if (selection.submeshes.TryGetValue(target.source.name, out var first) && !SameSelection(first, target.selectedSubmeshes))
                     throw new InvalidOperationException($"'{target.source.name}' is instanced with different foliage selections; export those instances separately.");
                 selection.submeshes[target.source.name] = (bool[])target.selectedSubmeshes.Clone();
+                CaptureSourceNode(source, target, selection);
                 entries.Add(new MeshEntry { fbxMesh = target.source, originalMesh = target.original, transferredMesh = target.working, include = true });
             }
             paths.Add(output);
             if (!FbxExport.WriteChannels(source, entries, FbxExportIntent.Normals | FbxExportIntent.Tangents, output, null, null, selection))
                 throw new InvalidOperationException($"FBX export failed for '{source}'. See the Mesh Lab log; no result was accepted.");
+        }
+
+        static void CaptureSourceNode(string source, FoliageTargetSnapshot target, FbxExport.ShadingSelection selection)
+        {
+            var node = PrefabUtility.GetCorrespondingObjectFromOriginalSource(target.renderer);
+            if (node == null || !string.Equals(AssetDatabase.GetAssetPath(node), source, StringComparison.OrdinalIgnoreCase)) return;
+            if (!selection.sourceNodes.TryGetValue(target.source.name, out var nodes))
+            {
+                nodes = new HashSet<string>(StringComparer.Ordinal);
+                selection.sourceNodes.Add(target.source.name, nodes);
+            }
+            nodes.Add(node.name);
         }
 
         static void RemoveFailedOutputs(List<string> paths)

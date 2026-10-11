@@ -28,6 +28,8 @@ namespace SashaRX.UnityMeshLab
         internal sealed class ShadingSelection
         {
             internal readonly Dictionary<string, bool[]> submeshes = new Dictionary<string, bool[]>(StringComparer.Ordinal);
+            internal readonly Dictionary<string, HashSet<string>> sourceNodes = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+            internal Action<string, ImportAssetOptions> importAsset = AssetDatabase.ImportAsset;
         }
 
         // ─────────────────────────────────────────────────────────────────

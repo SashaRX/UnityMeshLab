@@ -26,6 +26,34 @@ namespace SashaRX.UnityMeshLab.Tests
             return FoliageShapeProxyBuilder.Build(Array.Empty<Vector3>(), Array.Empty<int>(), default, settings, CancellationToken.None);
         }
 
+        [TestCase((int)FoliageNormalSource.Sphere, false)] [TestCase((int)FoliageNormalSource.Sphere, true)]
+        [TestCase((int)FoliageNormalSource.Hemisphere, false)] [TestCase((int)FoliageNormalSource.Hemisphere, true)]
+        public void InactiveRadiusDoesNotBlockShapeBuildAfterChangingFitMode(int sourceValue, bool autoFit)
+        {
+            var points = new[] { Vector3.left, Vector3.right, Vector3.up };
+            foreach (float invalid in new[] { 0f, -1f, float.NaN, float.PositiveInfinity })
+            {
+                var settings = new FoliageNormalsSettings { normalSource = (FoliageNormalSource)sourceValue,
+                    autoFitProxy = autoFit, proxyRadius = autoFit ? invalid : 2, proxyRadiusScale = autoFit ? 1 : invalid };
+                Assert.DoesNotThrow(settings.Validate);
+                var shape = FoliageShapeProxyBuilder.Build(points, new[] { 0,1,2 }, FoliageProxyBuilder.BoundsOf(points), settings, CancellationToken.None);
+                Assert.Greater(shape.radius, 0); Assert.IsTrue(FoliageTargetSnapshot.Finite(shape.radius));
+                foreach (var p in shape.mesh.positions) Assert.IsTrue(FoliageTargetSnapshot.Finite(p));
+            }
+        }
+
+        [TestCase((int)FoliageNormalSource.Sphere, false)] [TestCase((int)FoliageNormalSource.Sphere, true)]
+        [TestCase((int)FoliageNormalSource.Hemisphere, false)] [TestCase((int)FoliageNormalSource.Hemisphere, true)]
+        public void ActiveRadiusStillRejectsInvalidValues(int sourceValue, bool autoFit)
+        {
+            foreach (float invalid in new[] { 0f, -1f, float.NaN, float.PositiveInfinity })
+            {
+                var settings = new FoliageNormalsSettings { normalSource = (FoliageNormalSource)sourceValue,
+                    autoFitProxy = autoFit, proxyRadius = autoFit ? 1 : invalid, proxyRadiusScale = autoFit ? invalid : 1 };
+                Assert.Throws<ArgumentException>(settings.Validate);
+            }
+        }
+
         [TestCase((int)FoliageNormalSource.Sphere)] [TestCase((int)FoliageNormalSource.Hemisphere)]
         public void ShapeIsIndexedOutwardAndRadialWithOnlyExpectedBoundary(int sourceValue)
         {
@@ -83,7 +111,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [Test]
         public void InvalidShapeSettingsAndCancellationPublishNoMesh()
         {
-            var settings = new FoliageNormalsSettings { normalSource = FoliageNormalSource.Sphere };
+            var settings = new FoliageNormalsSettings { normalSource = FoliageNormalSource.Sphere, autoFitProxy = false };
             settings.proxyRadius = 0; Assert.Throws<ArgumentException>(() => settings.Validate());
             settings.proxyRadius = 1; settings.proxySegments = 17; Assert.Throws<ArgumentException>(() => settings.Validate());
             settings.proxySegments = 64; settings.proxyCenter = new Vector3(float.NaN,0,0); Assert.Throws<ArgumentException>(() => settings.Validate());

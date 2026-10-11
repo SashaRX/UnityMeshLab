@@ -22,11 +22,11 @@ namespace SashaRX.UnityMeshLab
         /// The mesh itself when it is readable, else a readable copy (HideAndDontSave,
         /// every attribute); <paramref name="isCopy"/> tells the caller what to destroy.
         /// </summary>
-        public static Mesh Readable(Mesh mesh, out bool isCopy)
+        public static Mesh Readable(Mesh mesh, out bool isCopy, bool preserveVertexLayout = false)
         {
             isCopy = false;
             if (mesh == null || mesh.isReadable) return mesh;
-            var copy = ReadableCopy(mesh);
+            var copy = preserveVertexLayout ? RawReadableCopy(mesh) : ReadableCopy(mesh);
             copy.name = mesh.name;
             copy.hideFlags = HideFlags.HideAndDontSave;
             isCopy = true;
@@ -42,6 +42,33 @@ namespace SashaRX.UnityMeshLab
                 UnityEngine.Object.DestroyImmediate(dst);
                 throw;
             }
+        }
+
+        // Static-mesh capture that keeps storage formats, streams, index buffers and
+        // submesh descriptors exactly, without toggling the source importer.
+        static Mesh RawReadableCopy(Mesh src)
+        {
+            var dst = new Mesh();
+            try
+            {
+                using var snapshot = MeshUtility.AcquireReadOnlyMeshData(src);
+                var data = snapshot[0];
+                dst.SetVertexBufferParams(data.vertexCount, src.GetVertexAttributes());
+                for (int stream = 0; stream < data.vertexBufferCount; stream++)
+                {
+                    var bytes = data.GetVertexData<byte>(stream);
+                    dst.SetVertexBufferData(bytes, 0, 0, bytes.Length, stream, MeshUpdateFlags.DontRecalculateBounds);
+                }
+                var indices = data.GetIndexData<byte>();
+                dst.SetIndexBufferParams(indices.Length / (data.indexFormat == IndexFormat.UInt16 ? 2 : 4), data.indexFormat);
+                dst.SetIndexBufferData(indices, 0, 0, indices.Length, MeshUpdateFlags.DontRecalculateBounds);
+                dst.subMeshCount = data.subMeshCount;
+                for (int s = 0; s < data.subMeshCount; s++) dst.SetSubMesh(s, data.GetSubMesh(s), MeshUpdateFlags.DontRecalculateBounds);
+                dst.bounds = src.bounds;
+                MeshUvState.SetDraft(dst, MeshUvState.IsDraft(src));
+                return dst;
+            }
+            catch { UnityEngine.Object.DestroyImmediate(dst); throw; }
         }
 
         static Mesh ReadableCopyCore(Mesh src, Mesh dst)

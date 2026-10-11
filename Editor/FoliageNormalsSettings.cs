@@ -53,7 +53,8 @@ namespace SashaRX.UnityMeshLab
         {
             if (!FoliageTargetSnapshot.Finite(proxyCenter) || !FoliageTargetSnapshot.Finite(proxyRotation))
                 throw new ArgumentException("Proxy center and rotation must be finite.");
-            Range(proxyRadius, 1e-6f, 1e6f, nameof(proxyRadius)); Range(proxyRadiusScale, .01f, 100, nameof(proxyRadiusScale));
+            if (autoFitProxy) Range(proxyRadiusScale, .01f, 100, nameof(proxyRadiusScale));
+            else Range(proxyRadius, 1e-6f, 1e6f, nameof(proxyRadius));
             if (proxySegments < 16 || proxySegments > 128 || proxySegments % 4 != 0)
                 throw new ArgumentException("Proxy segments must be a multiple of four between 16 and 128.");
         }

@@ -181,6 +181,7 @@ namespace SashaRX.UnityMeshLab
                 if (tag.ambiguous)
                     throw new FbxStructureRefusalException($"'{donor.name}': several meshes of '{Path.GetFileName(sourceFbxPath)}' import under that name; which one it is cannot be told");
                 var mesh = document.Meshes[tag.ordinal];
+                RequireSelectedInstances(mesh, donor.name, shadingSelection);
                 int corners = WriteMesh(mesh, donor, tag, swapUv, document.HasSmoothing(mesh.GetName()) == false, channelsWritten);
                 if (corners == 0) continue;
                 if (!written.Add(tag.ordinal))
@@ -237,7 +238,8 @@ namespace SashaRX.UnityMeshLab
             // remaps) that cannot be set (read-only metadata) fail the save: the file is still
             // imported, but the caller keeps the working copies unsaved, and a save once the
             // cause is fixed sets them. An import that fails (a third-party postprocessor) is
-            // reported, and the caller still finishes the save (sidecar, scene). The
+            // reported, and the caller still finishes the save (sidecar, scene). Partial
+            // foliage variants instead propagate import failures and remove the failed output. The
             // postprocessor consumes the overwrite marker; an import that throws before it runs
             // must not leave it for a later, unrelated import.
             bool configured = true;
@@ -251,7 +253,7 @@ namespace SashaRX.UnityMeshLab
                             if (uv1Written) KeepWrittenUv1(sourceFbxPath);
                             MapMaterials(sourceFbxPath, options.materialRemaps);
                         });
-                    AssetDatabase.ImportAsset(targetFbxPath, ImportAssetOptions.ForceUpdate);
+                    ImportWrittenAsset(targetFbxPath, shadingSelection);
                 }
                 finally { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); }
                 if (isVariant)
@@ -270,12 +272,13 @@ namespace SashaRX.UnityMeshLab
                             AssetDatabase.WriteImportSettingsIfDirty(targetFbxPath);
                         }
                     });
-                    if (configured) ReimportVariant(targetFbxPath, uv1Changed);
+                    if (configured) ReimportVariant(targetFbxPath, uv1Changed, shadingSelection);
                 }
                 else if (sceneRoot != null) FbxExport.RelinkSceneMeshReferences(sourceFbxPath, null, sceneRoot);
             }
             catch (Exception ex)
             {
+                if (shadingSelection != null) throw;
                 UvtLog.Error($"[FBX Export] '{targetFbxPath}' was written, but setting up or running its import failed: {ex.Message}. Reimport it once the cause is fixed.");
                 UvtLog.Verbose(ex.ToString());
             }
@@ -312,6 +315,15 @@ namespace SashaRX.UnityMeshLab
             public FbxExport.ShadingSelection shadingSelection;
             public Capture WithBake(bool bake) => new Capture
                 { intent = intent, generatedUv1 = generatedUv1, bakeUv1 = bake, fileNormals = fileNormals, fileTangents = fileTangents, shadingSelection = shadingSelection };
+        }
+
+        static void RequireSelectedInstances(Autodesk.Fbx.FbxMesh mesh, string name, FbxExport.ShadingSelection selection)
+        {
+            if (selection == null || mesh.GetNodeCount() <= 1) return;
+            var expected = Enumerable.Range(0, mesh.GetNodeCount()).Select(i => mesh.GetNode(i).GetName()).ToArray();
+            if (expected.Distinct(StringComparer.Ordinal).Count() != expected.Length ||
+                !selection.sourceNodes.TryGetValue(name, out var captured) || !expected.All(captured.Contains))
+                throw new InvalidOperationException($"'{name}' is instanced in the FBX. Capture every source-model node using this mesh with compatible foliage edits; excluded or unidentifiable instances cannot be changed. Nothing was written.");
         }
 
         static List<Donor> CaptureDonors(IEnumerable<MeshEntry> entries, Capture capture, ICollection<string> skip)
@@ -1128,10 +1140,16 @@ namespace SashaRX.UnityMeshLab
 
         // The variant imported with its source's settings; a sidecar at the variant's path must
         // not replay over a UV1 just written.
-        static void ReimportVariant(string variantFbxPath, bool uv1Changed)
+        static void ImportWrittenAsset(string path, FbxExport.ShadingSelection selection)
+        {
+            if (selection == null) AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
+            else selection.importAsset(path, ImportAssetOptions.ForceUpdate);
+        }
+
+        static void ReimportVariant(string variantFbxPath, bool uv1Changed, FbxExport.ShadingSelection selection)
         {
             if (uv1Changed) Uv2AssetPostprocessor.fbxOverwritePaths.Add(variantFbxPath);
-            try { AssetDatabase.ImportAsset(variantFbxPath, ImportAssetOptions.ForceUpdate); }
+            try { ImportWrittenAsset(variantFbxPath, selection); }
             finally { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(variantFbxPath); }
         }
     }

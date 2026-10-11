@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using Unity.Collections;
 using UnityEditor;
@@ -48,11 +49,10 @@ namespace SashaRX.UnityMeshLab
             captureToLocal = localToCapture.inverse;
             normalLocalToCapture = captureToLocal.transpose;
             normalCaptureToLocal = localToCapture.transpose;
-            Mesh readable = MeshAccess.Readable(source, out bool owned);
+            ValidateReadableChannels(source, !source.isReadable);
+            Mesh readable = MeshAccess.Readable(source, out bool owned, preserveVertexLayout: true);
             try
             {
-                ValidateReadableChannels(source, owned);
-
                 original = Object.Instantiate(readable);
                 original.hideFlags = HideFlags.HideAndDontSave;
                 original.name = source.name;
@@ -100,7 +100,7 @@ namespace SashaRX.UnityMeshLab
 
         static void ValidateReadableChannels(Mesh source, bool owned)
         {
-            // MeshAccess's rare unreadable-skin fallback cannot preserve these streams: refuse rather than strip them.
+            // Raw static capture does not reconstruct deforming channels: refuse rather than strip them.
             if (owned && (source.blendShapeCount > 0 || source.HasVertexAttribute(VertexAttribute.BlendWeight)))
             {
                 throw new InvalidOperationException("Unreadable meshes with skin/blend shape channels cannot be preserved; use a static readable mesh.");
@@ -373,19 +373,12 @@ namespace SashaRX.UnityMeshLab
                 var before = result.tangents;
                 result.RecalculateTangents();
                 // Excluded faces also retain their tangent frame, even after boundary splitting.
-                if (before.Length == vertexCount)
+                var after = result.tangents;
+                foreach (int i in Enumerable.Range(0, localPositions.Length).Where(i => !selectedVertices[i] || excludedVertices[i]))
                 {
-                    var after = result.tangents;
-                    for (int i = 0; i < localPositions.Length; i++)
-                    {
-                        if (!selectedVertices[i] || excludedVertices[i])
-                        {
-                            after[i] = before[i];
-                        }
-                    }
-
-                    result.tangents = after;
+                    after[i] = before.Length == vertexCount ? before[i] : Vector4.zero;
                 }
+                result.tangents = after;
             }
             else
             {
