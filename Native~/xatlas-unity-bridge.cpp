@@ -8,6 +8,7 @@
 #include <cstring>
 #include <cstdint>
 #include <vector>
+#include <cmath>
 
 #ifdef _WIN32
 #define EXPORT extern "C" __declspec(dllexport)
@@ -310,7 +311,7 @@ EXPORT int meshoptOptimize(
 //          4 = attributeCount too large
 // ══════════════════════════════════════════════════════════════════
 
-EXPORT int meshoptSimplify(
+static int simplifyMesh(
     const unsigned char* vertexData,
     uint32_t             vertexCount,
     uint32_t             vertexStride,
@@ -323,6 +324,7 @@ EXPORT int meshoptSimplify(
     float                targetRatio,
     float                targetError,
     uint32_t             options,
+    const unsigned char* vertexLocks,
     uint32_t*            outIndices,
     uint32_t*            outIndexCount,
     float*               outResultError)
@@ -351,7 +353,7 @@ EXPORT int meshoptSimplify(
     float resultError = 0.0f;
 
     size_t newIndexCount;
-    if (attributes && attributeWeights && attributeCount > 0) {
+    if (vertexLocks || (attributes && attributeWeights && attributeCount > 0)) {
         newIndexCount = meshopt_simplifyWithAttributes(
             outIndices,
             indices, indexCount,
@@ -359,7 +361,7 @@ EXPORT int meshoptSimplify(
             vertexCount, vertexStride,
             attributes, attributeStride,
             attributeWeights, attributeCount,
-            nullptr,  // vertex_lock — not used, border locking via options flag
+            vertexLocks,
             targetIndexCount, targetError,
             options,
             &resultError);
@@ -383,4 +385,56 @@ EXPORT int meshoptSimplify(
     *outIndexCount = (uint32_t)newIndexCount;
     if (outResultError) *outResultError = resultError;
     return 0;
+}
+
+// Keep the existing entry point/ABI for other callers and older packages.
+EXPORT int meshoptSimplify(
+    const unsigned char* vertices, uint32_t vertexCount, uint32_t vertexStride,
+    const uint32_t* indices, uint32_t indexCount,
+    const float* attributes, uint32_t attributeStride,
+    const float* weights, uint32_t attributeCount,
+    float ratio, float error, uint32_t options,
+    uint32_t* output, uint32_t* outputCount, float* outputError)
+{
+    return simplifyMesh(vertices, vertexCount, vertexStride, indices, indexCount,
+        attributes, attributeStride, weights, attributeCount, ratio, error, options,
+        nullptr, output, outputCount, outputError);
+}
+
+EXPORT int meshoptConstraintVersion() { return 1; }
+
+// One Lock/Protect byte per render vertex; positional wedges are tagged together
+// by the caller. Locks still apply when all attribute costs are zero.
+EXPORT int meshoptSimplifyConstrained(
+    const unsigned char* vertices, uint32_t vertexCount, uint32_t vertexStride,
+    const uint32_t* indices, uint32_t indexCount,
+    const float* attributes, uint32_t attributeStride,
+    const float* weights, uint32_t attributeCount,
+    const unsigned char* locks, uint32_t lockCount,
+    float ratio, float error, uint32_t options,
+    uint32_t* output, uint32_t* outputCount, float* outputError)
+{
+    if (!vertices || !indices || !output || !outputCount || !locks) return 1;
+    if (vertexStride < 12 || vertexStride > 256 || vertexStride % 4 != 0) return 2;
+    if (indexCount % 3 != 0) return 3;
+    if (attributeCount > 16 || (attributeCount && (!attributes || !weights ||
+        attributeStride < attributeCount * 4 || attributeStride > 256 || attributeStride % 4 != 0))) return 4;
+    if (lockCount != vertexCount) return 5;
+    for (uint32_t i = 0; i < vertexCount; ++i)
+        if (locks[i] & ~(meshopt_SimplifyVertex_Lock | meshopt_SimplifyVertex_Protect)) return 5;
+    for (uint32_t i = 0; i < indexCount; ++i)
+        if (indices[i] >= vertexCount) return 6;
+    // Accept only the flags exposed by our managed ABI, preventing native asserts.
+    if (!(ratio >= 0 && ratio <= 1) || !(error >= 0) || !std::isfinite(error) || (options & ~47u)) return 7;
+    for (uint32_t i = 0; i < vertexCount; ++i) {
+        const float* position = reinterpret_cast<const float*>(vertices + size_t(i) * vertexStride);
+        for (uint32_t k = 0; k < 3; ++k) if (!std::isfinite(position[k])) return 7;
+        for (uint32_t k = 0; k < attributeCount; ++k)
+            if (!std::isfinite(attributes[size_t(i) * (attributeStride / 4) + k])) return 7;
+    }
+    for (uint32_t k = 0; k < attributeCount; ++k)
+        if (!(weights[k] >= 0) || !std::isfinite(weights[k])) return 7;
+    return simplifyMesh(vertices, vertexCount, vertexStride, indices, indexCount,
+        attributes, attributeStride, weights, attributeCount, ratio, error, options,
+        locks, output, outputCount, outputError);
 }

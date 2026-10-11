@@ -70,6 +70,20 @@ namespace SashaRX.UnityMeshLab
             internal string note;
         }
 
+        internal static bool ScreenSafe(Mesh source,Mesh retained,bool colors,Matrix4x4 transform,float pixelsPerUnit,Func<bool> cancelled = null)
+        {
+            var size = source.bounds.size;
+            float bound = transform.MultiplyVector(new Vector3(size.x,0,0)).magnitude+
+                transform.MultiplyVector(new Vector3(0,size.y,0)).magnitude+transform.MultiplyVector(new Vector3(0,0,size.z)).magnitude;
+            float required = bound*pixelsPerUnit+8;
+            // Never shrink a removal probe and accidentally make a visible feature subpixel.
+            if (float.IsNaN(required) || float.IsInfinity(required) || pixelsPerUnit <= 0 || required > 1024) return false;
+            int resolution = Mathf.Max(32,Mathf.CeilToInt(required));
+            var screen = new LodScreenValidation(source,colors,cancelled,transform,pixelsPerUnit,resolution);
+            var measured = screen.Measure(retained,cancelled);
+            return (measured.detailViews == 0 || measured.detailAccepted) && (measured.colorViews == 0 || measured.colorAccepted);
+        }
+
         internal static Analysis Analyze(MeshEntry entry, Mesh mesh, Dictionary<string,object> imports,Func<bool> cancelled = null)
         {
             if (cancelled?.Invoke() == true) throw new OperationCanceledException("Small-part analysis cancelled.");

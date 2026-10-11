@@ -1,0 +1,3280 @@
+{
+  "models": [
+    {
+      "fixture": "university-bench-pot",
+      "mesh": "University_Bench_Planter_Arc_A_Pot_LOD0",
+      "sourcePath": "C:/LostInExtraction/fps-project/Assets/_LostInExtraction/Content/Models/Environment/Architecture/Level_Plan/Univer/Interior/Props/Benchs/University_Bench_Planter_Arc_A.fbx",
+      "sourceSha256": "b6912816d7978ba8a6faf9fa1d5ca7ae0b9d20f1c706b7cd4268e35933d4b0b2",
+      "submeshes": 1,
+      "colorMin": {
+        "x": 0.05882352963089943,
+        "y": 0.054901961237192154,
+        "z": 0.05098039284348488,
+        "w": 1.0
+      },
+      "colorMax": {
+        "x": 0.6274510025978088,
+        "y": 0.6274510025978088,
+        "z": 0.6274510025978088,
+        "w": 1.0
+      },
+      "triangles": {
+        "source": 673,
+        "authored-lod1": 209,
+        "authored-lod2": 114,
+        "native-lod1": 673,
+        "native-lod2": 673,
+        "far-lod1": 673,
+        "far-lod2": 74
+      },
+      "sourceVertices": 474,
+      "farVertices": 71,
+      "colorStorageRetained": true,
+      "uvDimensionsRetained": true,
+      "cpu64": {
+        "source": {
+          "views": 6,
+          "detailViews": 6,
+          "colorViews": 3,
+          "objectPixels": 64,
+          "resolution": 72,
+          "detailLoss": 0.0,
+          "colorLoss": 0.0,
+          "detailAccepted": true,
+          "colorAccepted": true,
+          "normalsEvaluated": true,
+          "rgbaEvaluated": true,
+          "silhouetteMean": 0.0,
+          "silhouetteMax": 0.0,
+          "normalRms": 0.0,
+          "rgbaRms": 0.0,
+          "rgbaChannelRms": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0,
+            "w": 0.0
+          },
+          "rgbaViewRms": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rgbaChannelViewRms": [
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            }
+          ],
+          "headlightRms": 0.0,
+          "colorBoundaryMean": 0.0,
+          "colorBoundaryViewLoss": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "normalViewRms": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "headlightViewRms": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "authored-lod1": {
+          "views": 6,
+          "detailViews": 6,
+          "colorViews": 3,
+          "objectPixels": 64,
+          "resolution": 72,
+          "detailLoss": 0.0,
+          "colorLoss": 0.6363636255264282,
+          "detailAccepted": true,
+          "colorAccepted": false,
+          "normalsEvaluated": true,
+          "rgbaEvaluated": true,
+          "silhouetteMean": 0.028579846024513245,
+          "silhouetteMax": 0.04470155015587807,
+          "normalRms": 19.07630729675293,
+          "rgbaRms": 0.03477686271071434,
+          "rgbaChannelRms": {
+            "x": 0.0400850772857666,
+            "y": 0.040156640112400055,
+            "z": 0.04022873938083649,
+            "w": 0.0
+          },
+          "rgbaViewRms": [
+            0.019155360758304596,
+            0.03477686271071434,
+            0.024423442780971527,
+            0.029135242104530334,
+            0.03402841091156006,
+            0.03173714131116867
+          ],
+          "rgbaChannelViewRms": [
+            {
+              "x": 0.02211870439350605,
+              "y": 0.02211870439350605,
+              "z": 0.02211870439350605,
+              "w": 0.0
+            },
+            {
+              "x": 0.0400850772857666,
+              "y": 0.040156640112400055,
+              "z": 0.04022873938083649,
+              "w": 0.0
+            },
+            {
+              "x": 0.028201760724186897,
+              "y": 0.028201760724186897,
+              "z": 0.028201760724186897,
+              "w": 0.0
+            },
+            {
+              "x": 0.03353297337889671,
+              "y": 0.03364210203289986,
+              "z": 0.03375200554728508,
+              "w": 0.0
+            },
+            {
+              "x": 0.03925575688481331,
+              "y": 0.03929249569773674,
+              "z": 0.03932958096265793,
+              "w": 0.0
+            },
+            {
+              "x": 0.0365779884159565,
+              "y": 0.03664667159318924,
+              "z": 0.03671588748693466,
+              "w": 0.0
+            }
+          ],
+          "headlightRms": 0.08165926486253738,
+          "colorBoundaryMean": 0.0633733868598938,
+          "colorBoundaryViewLoss": [
+            0.0,
+            0.0,
+            0.0,
+            0.08163265138864517,
+            0.037974681705236435,
+            0.07051282376050949
+          ],
+          "normalViewRms": [
+            6.4434895515441895,
+            19.07630729675293,
+            4.0228190422058105,
+            16.05962371826172,
+            15.589945793151855,
+            14.472594261169434
+          ],
+          "headlightViewRms": [
+            0.029426997527480125,
+            0.08165926486253738,
+            0.022556310519576073,
+            0.05641039088368416,
+            0.06318281590938568,
+            0.04761982709169388
+          ]
+        },
+        "authored-lod2": {
+          "views": 6,
+          "detailViews": 6,
+          "colorViews": 3,
+          "objectPixels": 64,
+          "resolution": 72,
+          "detailLoss": 0.02628755383193493,
+          "colorLoss": 0.8571428656578064,
+          "detailAccepted": true,
+          "colorAccepted": false,
+          "normalsEvaluated": true,
+          "rgbaEvaluated": true,
+          "silhouetteMean": 0.08572478592395782,
+          "silhouetteMax": 0.17035013437271118,
+          "normalRms": 32.0721549987793,
+          "rgbaRms": 0.07270705699920654,
+          "rgbaChannelRms": {
+            "x": 0.08391396701335907,
+            "y": 0.08395480364561081,
+            "z": 0.08399585634469986,
+            "w": 0.0
+          },
+          "rgbaViewRms": [
+            0.06289398670196533,
+            0.07270705699920654,
+            0.07161563634872437,
+            0.06798345595598221,
+            0.07138874381780624,
+            0.0664810761809349
+          ],
+          "rgbaChannelViewRms": [
+            {
+              "x": 0.07262371480464935,
+              "y": 0.07262371480464935,
+              "z": 0.07262371480464935,
+              "w": 0.0
+            },
+            {
+              "x": 0.08391396701335907,
+              "y": 0.08395480364561081,
+              "z": 0.08399585634469986,
+              "w": 0.0
+            },
+            {
+              "x": 0.08269461989402771,
+              "y": 0.08269461989402771,
+              "z": 0.08269461989402771,
+              "w": 0.0
+            },
+            {
+              "x": 0.07833664864301682,
+              "y": 0.07849995046854019,
+              "z": 0.07866464555263519,
+              "w": 0.0
+            },
+            {
+              "x": 0.08239049464464188,
+              "y": 0.08243247121572495,
+              "z": 0.08247486501932144,
+              "w": 0.0
+            },
+            {
+              "x": 0.07662747800350189,
+              "y": 0.076765276491642,
+              "z": 0.07690420746803284,
+              "w": 0.0
+            }
+          ],
+          "headlightRms": 0.19475282728672028,
+          "colorBoundaryMean": 0.16127316653728485,
+          "colorBoundaryViewLoss": [
+            0.0,
+            0.0,
+            0.0,
+            0.18367347121238708,
+            0.08860759437084198,
+            0.21153846383094788
+          ],
+          "normalViewRms": [
+            12.827141761779785,
+            32.0721549987793,
+            9.004656791687012,
+            29.55181121826172,
+            28.30884552001953,
+            28.33941650390625
+          ],
+          "headlightViewRms": [
+            0.046445589512586594,
+            0.19475282728672028,
+            0.04907321557402611,
+            0.1069994866847992,
+            0.11530012637376785,
+            0.09312941133975983
+          ]
+        },
+        "native-lod1": {
+          "views": 6,
+          "detailViews": 6,
+          "colorViews": 3,
+          "objectPixels": 64,
+          "resolution": 72,
+          "detailLoss": 0.0,
+          "colorLoss": 0.0,
+          "detailAccepted": true,
+          "colorAccepted": true,
+          "normalsEvaluated": true,
+          "rgbaEvaluated": true,
+          "silhouetteMean": 0.0,
+          "silhouetteMax": 0.0,
+          "normalRms": 0.0,
+          "rgbaRms": 0.0,
+          "rgbaChannelRms": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0,
+            "w": 0.0
+          },
+          "rgbaViewRms": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rgbaChannelViewRms": [
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            }
+          ],
+          "headlightRms": 0.0,
+          "colorBoundaryMean": 0.0,
+          "colorBoundaryViewLoss": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "normalViewRms": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "headlightViewRms": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "native-lod2": {
+          "views": 6,
+          "detailViews": 6,
+          "colorViews": 3,
+          "objectPixels": 64,
+          "resolution": 72,
+          "detailLoss": 0.0,
+          "colorLoss": 0.0,
+          "detailAccepted": true,
+          "colorAccepted": true,
+          "normalsEvaluated": true,
+          "rgbaEvaluated": true,
+          "silhouetteMean": 0.0,
+          "silhouetteMax": 0.0,
+          "normalRms": 0.0,
+          "rgbaRms": 0.0,
+          "rgbaChannelRms": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0,
+            "w": 0.0
+          },
+          "rgbaViewRms": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rgbaChannelViewRms": [
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            }
+          ],
+          "headlightRms": 0.0,
+          "colorBoundaryMean": 0.0,
+          "colorBoundaryViewLoss": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "normalViewRms": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "headlightViewRms": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "far-lod1": {
+          "views": 6,
+          "detailViews": 6,
+          "colorViews": 3,
+          "objectPixels": 64,
+          "resolution": 72,
+          "detailLoss": 0.0,
+          "colorLoss": 0.0,
+          "detailAccepted": true,
+          "colorAccepted": true,
+          "normalsEvaluated": true,
+          "rgbaEvaluated": true,
+          "silhouetteMean": 0.0,
+          "silhouetteMax": 0.0,
+          "normalRms": 0.0,
+          "rgbaRms": 0.0,
+          "rgbaChannelRms": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0,
+            "w": 0.0
+          },
+          "rgbaViewRms": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rgbaChannelViewRms": [
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            }
+          ],
+          "headlightRms": 0.0,
+          "colorBoundaryMean": 0.0,
+          "colorBoundaryViewLoss": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "normalViewRms": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "headlightViewRms": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "far-lod2": {
+          "views": 6,
+          "detailViews": 6,
+          "colorViews": 3,
+          "objectPixels": 64,
+          "resolution": 72,
+          "detailLoss": 0.015604681335389614,
+          "colorLoss": 0.95652174949646,
+          "detailAccepted": true,
+          "colorAccepted": false,
+          "normalsEvaluated": true,
+          "rgbaEvaluated": true,
+          "silhouetteMean": 0.07280241698026657,
+          "silhouetteMax": 0.12698014080524445,
+          "normalRms": 52.48040771484375,
+          "rgbaRms": 0.10084246844053268,
+          "rgbaChannelRms": {
+            "x": 0.11542996764183044,
+            "y": 0.11647766083478928,
+            "z": 0.1174124926328659,
+            "w": 0.0
+          },
+          "rgbaViewRms": [
+            0.019370300695300102,
+            0.10084246844053268,
+            0.02904627099633217,
+            0.06938927620649338,
+            0.0810154527425766,
+            0.06812572479248047
+          ],
+          "rgbaChannelViewRms": [
+            {
+              "x": 0.022367186844348907,
+              "y": 0.022366898134350777,
+              "z": 0.022366603836417198,
+              "w": 0.0
+            },
+            {
+              "x": 0.11542996764183044,
+              "y": 0.11647766083478928,
+              "z": 0.1174124926328659,
+              "w": 0.0
+            },
+            {
+              "x": 0.03353974595665932,
+              "y": 0.03353974595665932,
+              "z": 0.03353974595665932,
+              "w": 0.0
+            },
+            {
+              "x": 0.07958368957042694,
+              "y": 0.08015397936105728,
+              "z": 0.08063041418790817,
+              "w": 0.0
+            },
+            {
+              "x": 0.09280330687761307,
+              "y": 0.09357952326536179,
+              "z": 0.09425726532936096,
+              "w": 0.0
+            },
+            {
+              "x": 0.07800718396902084,
+              "y": 0.07867351174354553,
+              "z": 0.07930835336446762,
+              "w": 0.0
+            }
+          ],
+          "headlightRms": 0.14712244272232056,
+          "colorBoundaryMean": 0.3117350935935974,
+          "colorBoundaryViewLoss": [
+            0.0,
+            0.0,
+            0.0,
+            0.43877550959587097,
+            0.27848100662231445,
+            0.21794871985912323
+          ],
+          "normalViewRms": [
+            22.137313842773438,
+            52.48040771484375,
+            17.570167541503906,
+            35.502201080322266,
+            42.64445495605469,
+            38.34584045410156
+          ],
+          "headlightViewRms": [
+            0.13448289036750793,
+            0.14139766991138458,
+            0.14478294551372528,
+            0.14712244272232056,
+            0.11610926687717438,
+            0.14365482330322266
+          ]
+        }
+      },
+      "gpu64": [
+        {
+          "view": "front",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.05104129761457443,
+          "rgbaChannelRms": [
+            0.05893736332654953,
+            0.058937400579452515,
+            0.05893747881054878,
+            0.0
+          ],
+          "coverageError": 0.021142737939953804
+        },
+        {
+          "view": "front",
+          "variant": "far-lod2",
+          "rgbaRms": 0.03985954076051712,
+          "rgbaChannelRms": [
+            0.045879922807216644,
+            0.04602575674653053,
+            0.046171367168426514,
+            0.0
+          ],
+          "coverageError": 0.018908005207777023
+        },
+        {
+          "view": "oblique",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.05061686784029007,
+          "rgbaChannelRms": [
+            0.058412808924913406,
+            0.05844719335436821,
+            0.05848194658756256,
+            0.0
+          ],
+          "coverageError": 0.03961998224258423
+        },
+        {
+          "view": "oblique",
+          "variant": "far-lod2",
+          "rgbaRms": 0.04834389314055443,
+          "rgbaChannelRms": [
+            0.05550500750541687,
+            0.05583803728222847,
+            0.05612340196967125,
+            0.0
+          ],
+          "coverageError": 0.034939125180244446
+        },
+        {
+          "view": "field0",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.06316361576318741,
+          "rgbaChannelRms": [
+            0.07293503731489182,
+            0.0729350671172142,
+            0.072935089468956,
+            0.0
+          ],
+          "coverageError": 0.03480854630470276
+        },
+        {
+          "view": "field0",
+          "variant": "far-lod2",
+          "rgbaRms": 0.019287997856736183,
+          "rgbaChannelRms": [
+            0.022271841764450073,
+            0.022271886467933655,
+            0.022271858528256416,
+            0.0
+          ],
+          "coverageError": 0.034589726477861404
+        },
+        {
+          "view": "field1",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.07198196649551392,
+          "rgbaChannelRms": [
+            0.08308582752943039,
+            0.0831175222992897,
+            0.0831494927406311,
+            0.0
+          ],
+          "coverageError": 0.17075090110301971
+        },
+        {
+          "view": "field1",
+          "variant": "far-lod2",
+          "rgbaRms": 0.10033176094293594,
+          "rgbaChannelRms": [
+            0.11484481394290924,
+            0.11588560044765472,
+            0.1168205589056015,
+            0.0
+          ],
+          "coverageError": 0.12611733376979828
+        },
+        {
+          "view": "field2",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.07191788405179977,
+          "rgbaChannelRms": [
+            0.08304357528686523,
+            0.08304360508918762,
+            0.083043672144413,
+            0.0
+          ],
+          "coverageError": 0.021142737939953804
+        },
+        {
+          "view": "field2",
+          "variant": "far-lod2",
+          "rgbaRms": 0.028978317975997925,
+          "rgbaChannelRms": [
+            0.03346126154065132,
+            0.033461276441812515,
+            0.033461302518844604,
+            0.0
+          ],
+          "coverageError": 0.01889481209218502
+        },
+        {
+          "view": "field3",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.0673251673579216,
+          "rgbaChannelRms": [
+            0.07759686559438705,
+            0.07773979753255844,
+            0.07788430154323578,
+            0.0
+          ],
+          "coverageError": 0.12279027700424194
+        },
+        {
+          "view": "field3",
+          "variant": "far-lod2",
+          "rgbaRms": 0.06775914877653122,
+          "rgbaChannelRms": [
+            0.07772058248519897,
+            0.07827051728963852,
+            0.07873020321130753,
+            0.0
+          ],
+          "coverageError": 0.09132324904203415
+        },
+        {
+          "view": "field4",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.07116252928972244,
+          "rgbaChannelRms": [
+            0.08213145285844803,
+            0.08217115700244904,
+            0.08221159875392914,
+            0.0
+          ],
+          "coverageError": 0.08490969985723495
+        },
+        {
+          "view": "field4",
+          "variant": "far-lod2",
+          "rgbaRms": 0.08021973073482513,
+          "rgbaChannelRms": [
+            0.09189210832118988,
+            0.09265939146280289,
+            0.0933322012424469,
+            0.0
+          ],
+          "coverageError": 0.08214873820543289
+        },
+        {
+          "view": "field5",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.06531819701194763,
+          "rgbaChannelRms": [
+            0.07528887689113617,
+            0.0754222571849823,
+            0.07555750012397766,
+            0.0
+          ],
+          "coverageError": 0.0789240226149559
+        },
+        {
+          "view": "field5",
+          "variant": "far-lod2",
+          "rgbaRms": 0.06768564879894257,
+          "rgbaChannelRms": [
+            0.07750461250543594,
+            0.07816560566425323,
+            0.07879442721605301,
+            0.0
+          ],
+          "coverageError": 0.08607728034257889
+        },
+        {
+          "view": "field6",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.07687579840421677,
+          "rgbaChannelRms": [
+            0.08876848965883255,
+            0.08876851946115494,
+            0.08876856416463852,
+            0.0
+          ],
+          "coverageError": 0.03480854257941246
+        },
+        {
+          "view": "field6",
+          "variant": "far-lod2",
+          "rgbaRms": 0.02502654492855072,
+          "rgbaChannelRms": [
+            0.028898516669869423,
+            0.028898127377033234,
+            0.028897849842905998,
+            0.0
+          ],
+          "coverageError": 0.034589722752571106
+        },
+        {
+          "view": "field7",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.08043146878480911,
+          "rgbaChannelRms": [
+            0.09284663200378418,
+            0.0928741991519928,
+            0.09290193021297455,
+            0.0
+          ],
+          "coverageError": 0.17074888944625854
+        },
+        {
+          "view": "field7",
+          "variant": "far-lod2",
+          "rgbaRms": 0.090895876288414,
+          "rgbaChannelRms": [
+            0.10411500930786133,
+            0.10496462136507034,
+            0.10578624904155731,
+            0.0
+          ],
+          "coverageError": 0.12618382275104523
+        },
+        {
+          "view": "field8",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.05104129761457443,
+          "rgbaChannelRms": [
+            0.05893736332654953,
+            0.058937400579452515,
+            0.05893747881054878,
+            0.0
+          ],
+          "coverageError": 0.021142737939953804
+        },
+        {
+          "view": "field8",
+          "variant": "far-lod2",
+          "rgbaRms": 0.03985954076051712,
+          "rgbaChannelRms": [
+            0.045879922807216644,
+            0.04602575674653053,
+            0.046171367168426514,
+            0.0
+          ],
+          "coverageError": 0.018908005207777023
+        },
+        {
+          "view": "field9",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.06238388642668724,
+          "rgbaChannelRms": [
+            0.0720091238617897,
+            0.07203465700149536,
+            0.07206032425165176,
+            0.0
+          ],
+          "coverageError": 0.12279028445482254
+        },
+        {
+          "view": "field9",
+          "variant": "far-lod2",
+          "rgbaRms": 0.04856887832283974,
+          "rgbaChannelRms": [
+            0.055952321738004684,
+            0.056082092225551605,
+            0.056212812662124634,
+            0.0
+          ],
+          "coverageError": 0.09132325649261475
+        },
+        {
+          "view": "field10",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.075847327709198,
+          "rgbaChannelRms": [
+            0.08756086975336075,
+            0.0875808447599411,
+            0.08760112524032593,
+            0.0
+          ],
+          "coverageError": 0.08490969240665436
+        },
+        {
+          "view": "field10",
+          "variant": "far-lod2",
+          "rgbaRms": 0.0657886490225792,
+          "rgbaChannelRms": [
+            0.07542955875396729,
+            0.07596445828676224,
+            0.0765007808804512,
+            0.0
+          ],
+          "coverageError": 0.08214873820543289
+        },
+        {
+          "view": "field11",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.06720935553312302,
+          "rgbaChannelRms": [
+            0.0775880366563797,
+            0.07760661095380783,
+            0.07762539386749268,
+            0.0
+          ],
+          "coverageError": 0.0789240375161171
+        },
+        {
+          "view": "field11",
+          "variant": "far-lod2",
+          "rgbaRms": 0.0368543304502964,
+          "rgbaChannelRms": [
+            0.04251908138394356,
+            0.04255574196577072,
+            0.042592283338308334,
+            0.0
+          ],
+          "coverageError": 0.08607728779315948
+        }
+      ],
+      "attributeFit": {
+        "normalsAccepted": true,
+        "colorsAccepted": true,
+        "normalBlend": 1.0,
+        "colorBlend": 0.25,
+        "normalRmsBefore": 37.31194305419922,
+        "normalRmsAfter": 22.94717025756836,
+        "normalMaxBefore": 139.9200439453125,
+        "normalMaxAfter": 108.18018341064453,
+        "colorRmsBefore": {
+          "x": 0.06730525940656662,
+          "y": 0.06772851198911667,
+          "z": 0.06815280020236969,
+          "w": 2.758349992859621e-08
+        },
+        "colorRmsAfter": {
+          "x": 0.05850902944803238,
+          "y": 0.05891622230410576,
+          "z": 0.0593024380505085,
+          "w": 2.761800921291524e-08
+        },
+        "colorMaxBefore": {
+          "x": 0.4664427638053894,
+          "y": 0.4703018069267273,
+          "z": 0.4741608500480652,
+          "w": 5.960464477539063e-08
+        },
+        "colorMaxAfter": {
+          "x": 0.38764888048171997,
+          "y": 0.39150792360305786,
+          "z": 0.39536696672439575,
+          "w": 5.960464477539063e-08
+        },
+        "samples": 6723,
+        "trials": 37,
+        "smoothingRegions": 1,
+        "linkedNormalDuplicates": 24,
+        "mixedSmoothingFaces": 0,
+        "missingSmoothingRegions": 0,
+        "incompleteSmoothingRegions": 0,
+        "regionNormalsBefore": [
+          {
+            "region": 0,
+            "samples": 7470,
+            "unresolved": 0,
+            "rms": 37.31194305419922,
+            "maximum": 139.9200439453125
+          }
+        ],
+        "regionNormalsAfter": [
+          {
+            "region": 0,
+            "samples": 7470,
+            "unresolved": 0,
+            "rms": 22.94717025756836,
+            "maximum": 108.18018341064453
+          }
+        ],
+        "colorMethod": "least-squares",
+        "screenColorVerification": true,
+        "visibleColorSamples": 35759,
+        "visibleRgbaBefore": 0.11415595561265945,
+        "visibleRgbaAfter": 0.10084246844053268,
+        "visibleChannelsBefore": {
+          "x": 0.13075801730155945,
+          "y": 0.13181272149085999,
+          "z": 0.13286864757537842,
+          "w": 0.0
+        },
+        "visibleChannelsAfter": {
+          "x": 0.11542996764183044,
+          "y": 0.11647766083478928,
+          "z": 0.1174124926328659,
+          "w": 0.0
+        },
+        "visibleNormals": {
+          "accepted": false,
+          "samples": 0,
+          "trials": 0,
+          "method": "",
+          "blend": 0.0,
+          "normalBefore": 0.0,
+          "normalAfter": 0.0,
+          "headlightBefore": 0.0,
+          "headlightAfter": 0.0,
+          "normalViewsBefore": [],
+          "normalViewsAfter": [],
+          "headlightViewsBefore": [],
+          "headlightViewsAfter": [],
+          "regionsBefore": [],
+          "regionsAfter": []
+        },
+        "visibleColorBoundaries": {
+          "accepted": false,
+          "samples": 35759,
+          "trials": 6,
+          "verticesBefore": 71,
+          "verticesAfter": 71,
+          "polygonGroups": 0,
+          "activePolygonGroups": 0,
+          "viewColorRmsTolerance": 0.0,
+          "boundaryBefore": 0.3117350935935974,
+          "boundaryAfter": 0.3117350935935974,
+          "worstBefore": 0.95652174949646,
+          "worstAfter": 0.95652174949646,
+          "rgbaBefore": 0.10084246844053268,
+          "rgbaAfter": 0.10084246844053268,
+          "viewsBefore": [
+            0.0,
+            0.0,
+            0.0,
+            0.43877550959587097,
+            0.27848100662231445,
+            0.21794871985912323
+          ],
+          "viewsAfter": [
+            0.0,
+            0.0,
+            0.0,
+            0.43877550959587097,
+            0.27848100662231445,
+            0.21794871985912323
+          ],
+          "cornerSharing": {
+            "verticesBefore": 0,
+            "verticesAfter": 0,
+            "trials": 0,
+            "colorTolerance": 0.0,
+            "rgbaBefore": 0.0,
+            "rgbaAfter": 0.0,
+            "boundaryBefore": 0.0,
+            "boundaryAfter": 0.0
+          }
+        },
+        "polygonColorBoundaries": {
+          "accepted": false,
+          "samples": 35759,
+          "trials": 30,
+          "verticesBefore": 71,
+          "verticesAfter": 71,
+          "polygonGroups": 5,
+          "activePolygonGroups": 5,
+          "viewColorRmsTolerance": 0.003921568859368563,
+          "boundaryBefore": 0.3117350935935974,
+          "boundaryAfter": 0.3117350935935974,
+          "worstBefore": 0.95652174949646,
+          "worstAfter": 0.95652174949646,
+          "rgbaBefore": 0.10084246844053268,
+          "rgbaAfter": 0.10084246844053268,
+          "viewsBefore": [
+            0.0,
+            0.0,
+            0.0,
+            0.43877550959587097,
+            0.27848100662231445,
+            0.21794871985912323
+          ],
+          "viewsAfter": [
+            0.0,
+            0.0,
+            0.0,
+            0.43877550959587097,
+            0.27848100662231445,
+            0.21794871985912323
+          ],
+          "cornerSharing": {
+            "verticesBefore": 0,
+            "verticesAfter": 0,
+            "trials": 0,
+            "colorTolerance": 0.0,
+            "rgbaBefore": 0.0,
+            "rgbaAfter": 0.0,
+            "boundaryBefore": 0.0,
+            "boundaryAfter": 0.0
+          }
+        },
+        "paintRetriangulation": {
+          "accepted": false,
+          "pairs": 0,
+          "trials": 0,
+          "flips": 0,
+          "verticesBefore": 71,
+          "verticesAfter": 71,
+          "intersectionRejected": 0,
+          "screenRejected": 0,
+          "uvRejected": 0,
+          "boundaryBefore": 0.3117350935935974,
+          "boundaryAfter": 0.3117350935935974,
+          "uvBefore": 0.05069824308156967,
+          "uvAfter": 0.05069824308156967,
+          "distanceBefore": 0.009914375841617584,
+          "distanceAfter": 0.009914375841617584,
+          "uvViewRmsTolerance": 1.9999999494757503e-05,
+          "uvViewsBefore": [
+            0.14178214967250824,
+            0.03591218218207359,
+            0.014122799038887024,
+            0.058177344501018524,
+            0.07991211116313934,
+            0.07071246951818466,
+            0.0792868435382843,
+            0.038593851029872894,
+            0.14590351283550262,
+            0.07343035191297531,
+            0.046433329582214355,
+            0.0843658521771431
+          ],
+          "uvViewsAfter": [
+            0.14178214967250824,
+            0.03591218218207359,
+            0.014122799038887024,
+            0.058177344501018524,
+            0.07991211116313934,
+            0.07071246951818466,
+            0.0792868435382843,
+            0.038593851029872894,
+            0.14590351283550262,
+            0.07343035191297531,
+            0.046433329582214355,
+            0.0843658521771431
+          ],
+          "probes": []
+        },
+        "sharedLightmapUv": {
+          "accepted": false,
+          "charts": 0,
+          "assignedFaces": 0,
+          "unresolvedFaces": 0,
+          "verticesBefore": 0,
+          "verticesAfter": 0,
+          "uvRmsBefore": 0.0,
+          "uvRmsAfter": 0.0,
+          "bakedField": false,
+          "visibleSamples": 0
+        },
+        "note": "Surface attribute fit: normals improved, RGBA improved via least-squares (6723 samples, 37 verification trials). Far RGBA uses 35759 paired visible samples; all four screen-channel RMS values and local paint loss must not increase. Surface RGBA errors remain diagnostic. Smoothing: 1 source regions, 24 linked normal duplicates, 0 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase."
+      },
+      "farCornerOwnership": {
+        "sharedRenderCorners": 61,
+        "geometricInteriorEdges": 102,
+        "isolatedSixCornerPairs": 0
+      },
+      "nearBudgetReached": false,
+      "farGenerateMs": 21180.983
+    },
+    {
+      "fixture": "small-bench",
+      "mesh": "SmallBench_01_LOD0",
+      "sourcePath": "C:/LostInExtraction/fps-project/Assets/_LostInExtraction/Content/Models/Environment/Interior/Apartments/SmallBench_01.fbx",
+      "sourceSha256": "221c5a62fa4c8d3470e6ec45318727205a27bfb4e1b70d3af1aa4b10c04d7a41",
+      "submeshes": 2,
+      "colorMin": {
+        "x": 0.3019607961177826,
+        "y": 0.29411765933036804,
+        "z": 0.25882354378700256,
+        "w": 0.22745098173618317
+      },
+      "colorMax": {
+        "x": 1.0,
+        "y": 1.0,
+        "z": 1.0,
+        "w": 1.0
+      },
+      "triangles": {
+        "source": 708,
+        "authored-lod1": 266,
+        "authored-lod2": 144,
+        "native-lod1": 500,
+        "native-lod2": 422,
+        "far-lod1": 500,
+        "far-lod2": 77
+      },
+      "sourceVertices": 792,
+      "farVertices": 125,
+      "colorStorageRetained": true,
+      "uvDimensionsRetained": true,
+      "cpu64": {
+        "source": {
+          "views": 6,
+          "detailViews": 6,
+          "colorViews": 3,
+          "objectPixels": 64,
+          "resolution": 72,
+          "detailLoss": 0.0,
+          "colorLoss": 0.0,
+          "detailAccepted": true,
+          "colorAccepted": true,
+          "normalsEvaluated": true,
+          "rgbaEvaluated": true,
+          "silhouetteMean": 0.0,
+          "silhouetteMax": 0.0,
+          "normalRms": 0.0,
+          "rgbaRms": 0.0,
+          "rgbaChannelRms": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0,
+            "w": 0.0
+          },
+          "rgbaViewRms": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "rgbaChannelViewRms": [
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            {
+              "x": 0.0,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            }
+          ],
+          "headlightRms": 0.0,
+          "colorBoundaryMean": 0.0,
+          "colorBoundaryViewLoss": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "normalViewRms": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "headlightViewRms": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "authored-lod1": {
+          "views": 6,
+          "detailViews": 6,
+          "colorViews": 3,
+          "objectPixels": 64,
+          "resolution": 72,
+          "detailLoss": 0.0,
+          "colorLoss": 1.0,
+          "detailAccepted": true,
+          "colorAccepted": false,
+          "normalsEvaluated": true,
+          "rgbaEvaluated": true,
+          "silhouetteMean": 0.008393358439207077,
+          "silhouetteMax": 0.020418940111994743,
+          "normalRms": 14.59128475189209,
+          "rgbaRms": 0.019594233483076096,
+          "rgbaChannelRms": {
+            "x": 0.019267378374934196,
+            "y": 0.019483866170048714,
+            "z": 0.020458059385418892,
+            "w": 0.022579601034522057
+          },
+          "rgbaViewRms": [
+            0.011313140392303467,
+            0.019594233483076096,
+            0.01310773380100727,
+            0.005874408408999443,
+            0.006811360828578472,
+            0.008358505554497242
+          ],
+          "rgbaChannelViewRms": [
+            {
+              "x": 0.0007923582452349365,
+              "y": 0.0007923582452349365,
+              "z": 0.0009244227549061179,
+              "w": 0.022579601034522057
+            },
+            {
+              "x": 0.019267378374934196,
+              "y": 0.019483866170048714,
+              "z": 0.020458059385418892,
+              "w": 0.019140295684337616
+            },
+            {
+              "x": 0.008139044046401978,
+              "y": 0.008233682252466679,
+              "z": 0.008612234145402908,
+              "w": 0.02188704162836075
+            },
+            {
+              "x": 0.00021353505144361407,
+              "y": 0.00021353505144361407,
+              "z": 0.0002491234918124974,
+              "w": 0.011742292903363705
+            },
+            {
+              "x": 0.0004064195672981441,
+              "y": 0.0004064195672981441,
+              "z": 0.00047415573499165475,
+              "w": 0.013602329418063164
+            },
+            {
+              "x": 0.00048259980394504964,
+              "y": 0.00048259980394504964,
+              "z": 0.0005630356608889997,
+              "w": 0.016693580895662308
+            }
+          ],
+          "headlightRms": 0.07325676083564758,
+          "colorBoundaryMean": 0.33974358439445496,
+          "colorBoundaryViewLoss": [
+            0.01923076994717121,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "normalViewRms": [
+            14.59128475189209,
+            0.8986640572547913,
+            12.923731803894043,
+            6.465923309326172,
+            5.388030052185059,
+            6.486549377441406
+          ],
+          "headlightViewRms": [
+            0.07325676083564758,
+            0.00219685398042202,
+            0.06776674091815948,
+            0.048947881907224655,
+            0.03138097748160362,
+            0.03892048820853233
+          ]
+        },
+        "authored-lod2": {
+          "views": 6,
+          "detailViews": 6,
+          "colorViews": 3,
+          "objectPixels": 64,
+          "resolution": 72,
+          "detailLoss": 0.0,
+          "colorLoss": 1.0,
+          "detailAccepted": true,
+          "colorAccepted": false,
+          "normalsEvaluated": true,
+          "rgbaEvaluated": true,
+          "silhouetteMean": 0.022612597793340683,
+          "silhouetteMax": 0.05592469498515129,
+          "normalRms": 18.851428985595703,
+          "rgbaRms": 0.019610049203038216,
+          "rgbaChannelRms": {
+            "x": 0.01928207464516163,
+            "y": 0.019498726353049278,
+            "z": 0.02047366462647915,
+            "w": 0.022373780608177185
+          },
+          "rgbaViewRms": [
+            0.011209595948457718,
+            0.019610049203038216,
+            0.012662289664149284,
+            0.007954434491693974,
+            0.006720285397022963,
+            0.010142507962882519
+          ],
+          "rgbaChannelViewRms": [
+            {
+              "x": 0.0007779393927194178,
+              "y": 0.0007779393927194178,
+              "z": 0.0009076001588255167,
+              "w": 0.022373780608177185
+            },
+            {
+              "x": 0.01928207464516163,
+              "y": 0.019498726353049278,
+              "z": 0.02047366462647915,
+              "w": 0.019158456474542618
+            },
+            {
+              "x": 0.008167635649442673,
+              "y": 0.008262606337666512,
+              "z": 0.008642490953207016,
+              "w": 0.020776446908712387
+            },
+            {
+              "x": 0.00036355157499201596,
+              "y": 0.00036355157499201596,
+              "z": 0.0004241436836309731,
+              "w": 0.015894901007413864
+            },
+            {
+              "x": 0.0004129706940148026,
+              "y": 0.0004129706940148026,
+              "z": 0.0004817984881810844,
+              "w": 0.013419229537248611
+            },
+            {
+              "x": 0.0007148510194383562,
+              "y": 0.0007148510194383562,
+              "z": 0.0008339941268786788,
+              "w": 0.020242637023329735
+            }
+          ],
+          "headlightRms": 0.08571922034025192,
+          "colorBoundaryMean": 0.33974358439445496,
+          "colorBoundaryViewLoss": [
+            0.01923076994717121,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "normalViewRms": [
+            18.851428985595703,
+            0.9908871054649353,
+            17.547321319580078,
+            8.946452140808105,
+            8.631192207336426,
+            9.7073335647583
+          ],
+          "headlightViewRms": [
+            0.08571922034025192,
+            0.0026283960323780775,
+            0.08385171741247177,
+            0.05128174647688866,
+            0.03960379213094711,
+            0.04256560653448105
+          ]
+        },
+        "native-lod1": {
+          "views": 6,
+          "detailViews": 6,
+          "colorViews": 3,
+          "objectPixels": 64,
+          "resolution": 72,
+          "detailLoss": 0.0,
+          "colorLoss": 0.0,
+          "detailAccepted": true,
+          "colorAccepted": true,
+          "normalsEvaluated": true,
+          "rgbaEvaluated": true,
+          "silhouetteMean": 0.0018992334371432662,
+          "silhouetteMax": 0.004777415655553341,
+          "normalRms": 6.4556193351745605,
+          "rgbaRms": 0.0037407861091196537,
+          "rgbaChannelRms": {
+            "x": 0.000950846413616091,
+            "y": 0.000950846413616091,
+            "z": 0.00109975750092417,
+            "w": 0.00727710360661149
+          },
+          "rgbaViewRms": [
+            0.0037407861091196537,
+            0.0005277212476357818,
+            0.0015831678174436092,
+            0.0015544886700809002,
+            0.0013315274845808744,
+            0.002395974937826395
+          ],
+          "rgbaChannelViewRms": [
+            {
+              "x": 0.000950846413616091,
+              "y": 0.000950846413616091,
+              "z": 0.00109975750092417,
+              "w": 0.00727710360661149
+            },
+            {
+              "x": 1.8881190044339746e-05,
+              "y": 1.8881190044339746e-05,
+              "z": 1.8881190044339746e-05,
+              "w": 0.0010549357393756509
+            },
+            {
+              "x": 5.1496219384716824e-05,
+              "y": 5.1496219384716824e-05,
+              "z": 5.1496219384716824e-05,
+              "w": 0.0031650790479034185
+            },
+            {
+              "x": 0.0001883465301943943,
+              "y": 0.0001883465301943943,
+              "z": 0.00021094133262522519,
+              "w": 0.0030903553124517202
+            },
+            {
+              "x": 0.00044477975461632013,
+              "y": 0.00044477975461632013,
+              "z": 0.0005155974067747593,
+              "w": 0.0025358160492032766
+            },
+            {
+              "x": 0.0007999995723366737,
+              "y": 0.0007999995723366737,
+              "z": 0.0009326535509899259,
+              "w": 0.004562120418995619
+            }
+          ],
+          "headlightRms": 0.04791224002838135,
+          "colorBoundaryMean": 0.0,
+          "colorBoundaryViewLoss": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "normalViewRms": [
+            4.889505863189697,
+            0.8655787110328674,
+            6.4556193351745605,
+            2.9408459663391113,
+            2.017350673675537,
+            4.232787609100342
+          ],
+          "headlightViewRms": [
+            0.034540217369794846,
+            0.004517586436122656,
+            0.04791224002838135,
+            0.01875961385667324,
+            0.006218812428414822,
+            0.016701631247997284
+          ]
+        },
+        "native-lod2": {
+          "views": 6,
+          "detailViews": 6,
+          "colorViews": 3,
+          "objectPixels": 64,
+          "resolution": 72,
+          "detailLoss": 0.016949152573943138,
+          "colorLoss": 0.0,
+          "detailAccepted": true,
+          "colorAccepted": true,
+          "normalsEvaluated": true,
+          "rgbaEvaluated": true,
+          "silhouetteMean": 0.014932217076420784,
+          "silhouetteMax": 0.058241117745637894,
+          "normalRms": 16.336326599121094,
+          "rgbaRms": 0.016336236149072647,
+          "rgbaChannelRms": {
+            "x": 0.008793210610747337,
+            "y": 0.008886273950338364,
+            "z": 0.009395904839038849,
+            "w": 0.03256295993924141
+          },
+          "rgbaViewRms": [
+            0.016336236149072647,
+            0.0011352604487910867,
+            0.013318419456481934,
+            0.007850131019949913,
+            0.005965431686490774,
+            0.006025009788572788
+          ],
+          "rgbaChannelViewRms": [
+            {
+              "x": 0.0014892903855070472,
+              "y": 0.0014892903855070472,
+              "z": 0.0016456283628940582,
+              "w": 0.03256295993924141
+            },
+            {
+              "x": 7.308100612135604e-05,
+              "y": 7.308100612135604e-05,
+              "z": 8.985430758912116e-05,
+              "w": 0.002266386989504099
+            },
+            {
+              "x": 0.008793210610747337,
+              "y": 0.008886273950338364,
+              "z": 0.009395904839038849,
+              "w": 0.021562740206718445
+            },
+            {
+              "x": 0.0011865597916767001,
+              "y": 0.0011865597916767001,
+              "z": 0.001395388157106936,
+              "w": 0.015547838062047958
+            },
+            {
+              "x": 0.0009550071554258466,
+              "y": 0.0009550071554258466,
+              "z": 0.0011249332455918193,
+              "w": 0.0118006756529212
+            },
+            {
+              "x": 0.0016103204106912017,
+              "y": 0.0016103204106912017,
+              "z": 0.0018480742583051324,
+              "w": 0.011687656864523888
+            }
+          ],
+          "headlightRms": 0.08259420841932297,
+          "colorBoundaryMean": 0.006410256493836641,
+          "colorBoundaryViewLoss": [
+            0.01923076994717121,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "normalViewRms": [
+            16.336326599121094,
+            2.60005521774292,
+            11.14406681060791,
+            8.433091163635254,
+            5.899168968200684,
+            7.3585615158081055
+          ],
+          "headlightViewRms": [
+            0.08259420841932297,
+            0.00801489595323801,
+            0.0787620097398758,
+            0.05070314556360245,
+            0.022411134093999863,
+            0.04083110764622688
+          ]
+        },
+        "far-lod1": {
+          "views": 6,
+          "detailViews": 6,
+          "colorViews": 3,
+          "objectPixels": 64,
+          "resolution": 72,
+          "detailLoss": 0.0,
+          "colorLoss": 0.0,
+          "detailAccepted": true,
+          "colorAccepted": true,
+          "normalsEvaluated": true,
+          "rgbaEvaluated": true,
+          "silhouetteMean": 0.0018992334371432662,
+          "silhouetteMax": 0.004777415655553341,
+          "normalRms": 6.4556193351745605,
+          "rgbaRms": 0.0037407861091196537,
+          "rgbaChannelRms": {
+            "x": 0.000950846413616091,
+            "y": 0.000950846413616091,
+            "z": 0.00109975750092417,
+            "w": 0.00727710360661149
+          },
+          "rgbaViewRms": [
+            0.0037407861091196537,
+            0.0005277212476357818,
+            0.0015831678174436092,
+            0.0015544886700809002,
+            0.0013315274845808744,
+            0.002395974937826395
+          ],
+          "rgbaChannelViewRms": [
+            {
+              "x": 0.000950846413616091,
+              "y": 0.000950846413616091,
+              "z": 0.00109975750092417,
+              "w": 0.00727710360661149
+            },
+            {
+              "x": 1.8881190044339746e-05,
+              "y": 1.8881190044339746e-05,
+              "z": 1.8881190044339746e-05,
+              "w": 0.0010549357393756509
+            },
+            {
+              "x": 5.1496219384716824e-05,
+              "y": 5.1496219384716824e-05,
+              "z": 5.1496219384716824e-05,
+              "w": 0.0031650790479034185
+            },
+            {
+              "x": 0.0001883465301943943,
+              "y": 0.0001883465301943943,
+              "z": 0.00021094133262522519,
+              "w": 0.0030903553124517202
+            },
+            {
+              "x": 0.00044477975461632013,
+              "y": 0.00044477975461632013,
+              "z": 0.0005155974067747593,
+              "w": 0.0025358160492032766
+            },
+            {
+              "x": 0.0007999995723366737,
+              "y": 0.0007999995723366737,
+              "z": 0.0009326535509899259,
+              "w": 0.004562120418995619
+            }
+          ],
+          "headlightRms": 0.04791224002838135,
+          "colorBoundaryMean": 0.0,
+          "colorBoundaryViewLoss": [
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "normalViewRms": [
+            4.889505863189697,
+            0.8655787110328674,
+            6.4556193351745605,
+            2.9408459663391113,
+            2.017350673675537,
+            4.232787609100342
+          ],
+          "headlightViewRms": [
+            0.034540217369794846,
+            0.004517586436122656,
+            0.04791224002838135,
+            0.01875961385667324,
+            0.006218812428414822,
+            0.016701631247997284
+          ]
+        },
+        "far-lod2": {
+          "views": 6,
+          "detailViews": 6,
+          "colorViews": 3,
+          "objectPixels": 64,
+          "resolution": 72,
+          "detailLoss": 0.09830781817436218,
+          "colorLoss": 1.0,
+          "detailAccepted": true,
+          "colorAccepted": false,
+          "normalsEvaluated": true,
+          "rgbaEvaluated": true,
+          "silhouetteMean": 0.09766974300146103,
+          "silhouetteMax": 0.23452769219875336,
+          "normalRms": 41.408470153808594,
+          "rgbaRms": 0.04076668247580528,
+          "rgbaChannelRms": {
+            "x": 0.03799077495932579,
+            "y": 0.03842465206980705,
+            "z": 0.04021744802594185,
+            "w": 0.06050099432468414
+          },
+          "rgbaViewRms": [
+            0.04076668247580528,
+            0.019611191004514694,
+            0.03891497477889061,
+            0.015794916078448296,
+            0.011392843909561634,
+            0.02694161795079708
+          ],
+          "rgbaChannelViewRms": [
+            {
+              "x": 0.030831901356577873,
+              "y": 0.031198278069496155,
+              "z": 0.03260951116681099,
+              "w": 0.06050099432468414
+            },
+            {
+              "x": 0.019300827756524086,
+              "y": 0.0195176899433136,
+              "z": 0.020493576303124428,
+              "w": 0.019103573635220528
+            },
+            {
+              "x": 0.03799077495932579,
+              "y": 0.03842465206980705,
+              "z": 0.04021744802594185,
+              "w": 0.038991089910268784
+            },
+            {
+              "x": 0.0019069293048232794,
+              "y": 0.0019069293048232794,
+              "z": 0.002169945975765586,
+              "w": 0.031399622559547424
+            },
+            {
+              "x": 0.0014618330169469118,
+              "y": 0.0014618330169469118,
+              "z": 0.0017075411742553115,
+              "w": 0.022627372294664383
+            },
+            {
+              "x": 0.002745956415310502,
+              "y": 0.002745956415310502,
+              "z": 0.0031780304852873087,
+              "w": 0.053649067878723145
+            }
+          ],
+          "headlightRms": 0.28820285201072693,
+          "colorBoundaryMean": 0.7269230484962463,
+          "colorBoundaryViewLoss": [
+            0.9807692170143127,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.20000000298023224
+          ],
+          "normalViewRms": [
+            41.408470153808594,
+            28.851837158203125,
+            32.79509735107422,
+            37.93895721435547,
+            39.82232666015625,
+            33.44404220581055
+          ],
+          "headlightViewRms": [
+            0.28820285201072693,
+            0.19931605458259583,
+            0.23428122699260712,
+            0.12662741541862488,
+            0.21431304514408112,
+            0.15506848692893982
+          ]
+        }
+      },
+      "gpu64": [
+        {
+          "view": "front",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.010784265585243702,
+          "rgbaChannelRms": [
+            0.0020549523178488016,
+            0.002077046548947692,
+            0.002190411789342761,
+            0.021257156506180763
+          ],
+          "coverageError": 0.0030776839703321457
+        },
+        {
+          "view": "front",
+          "variant": "far-lod2",
+          "rgbaRms": 0.15575191378593445,
+          "rgbaChannelRms": [
+            0.17326578497886658,
+            0.17530015110969543,
+            0.18661782145500183,
+            0.03817387670278549
+          ],
+          "coverageError": 0.16181522607803345
+        },
+        {
+          "view": "oblique",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.007491801865398884,
+          "rgbaChannelRms": [
+            0.0005899631069041789,
+            0.0005899700336158276,
+            0.000686302431859076,
+            0.014944605529308319
+          ],
+          "coverageError": 0.02750348672270775
+        },
+        {
+          "view": "oblique",
+          "variant": "far-lod2",
+          "rgbaRms": 0.02218419499695301,
+          "rgbaChannelRms": [
+            0.0029952663462609053,
+            0.002995392307639122,
+            0.0034815750550478697,
+            0.04402827098965645
+          ],
+          "coverageError": 0.11527600139379501
+        },
+        {
+          "view": "field0",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.01076039019972086,
+          "rgbaChannelRms": [
+            0.0009347557788714767,
+            0.0009347558952867985,
+            0.001087369630113244,
+            0.02145260013639927
+          ],
+          "coverageError": 0.009075194597244263
+        },
+        {
+          "view": "field0",
+          "variant": "far-lod2",
+          "rgbaRms": 0.04271053895354271,
+          "rgbaChannelRms": [
+            0.03400828689336777,
+            0.03441401198506355,
+            0.03597206994891167,
+            0.06051349267363548
+          ],
+          "coverageError": 0.23880596458911896
+        },
+        {
+          "view": "field1",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.028697043657302856,
+          "rgbaChannelRms": [
+            0.027497246861457825,
+            0.02780473604798317,
+            0.02919098734855652,
+            0.03021201118826866
+          ],
+          "coverageError": 0.020883973687887192
+        },
+        {
+          "view": "field1",
+          "variant": "far-lod2",
+          "rgbaRms": 0.011924881488084793,
+          "rgbaChannelRms": [
+            0.009633389301598072,
+            0.009737817570567131,
+            0.010235370136797428,
+            0.016625918447971344
+          ],
+          "coverageError": 0.008530369959771633
+        },
+        {
+          "view": "field2",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.010326813906431198,
+          "rgbaChannelRms": [
+            0.0020549523178488016,
+            0.002077046548947692,
+            0.002190411789342761,
+            0.02032824419438839
+          ],
+          "coverageError": 0.0030776839703321457
+        },
+        {
+          "view": "field2",
+          "variant": "far-lod2",
+          "rgbaRms": 0.035659290850162506,
+          "rgbaChannelRms": [
+            0.03426755964756012,
+            0.034650444984436035,
+            0.03627127781510353,
+            0.03736060857772827
+          ],
+          "coverageError": 0.16187021136283875
+        },
+        {
+          "view": "field3",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.007780599407851696,
+          "rgbaChannelRms": [
+            0.0003970750840380788,
+            0.0003970430698245764,
+            0.00046182781807146966,
+            0.015544204972684383
+          ],
+          "coverageError": 0.026960989460349083
+        },
+        {
+          "view": "field3",
+          "variant": "far-lod2",
+          "rgbaRms": 0.014994628727436066,
+          "rgbaChannelRms": [
+            0.0018798158271238208,
+            0.0018799282843247056,
+            0.002138835843652487,
+            0.029794514179229736
+          ],
+          "coverageError": 0.07917729020118713
+        },
+        {
+          "view": "field4",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.004486465826630592,
+          "rgbaChannelRms": [
+            0.0002596709528006613,
+            0.0002596675476524979,
+            0.000302059663226828,
+            0.008960324339568615
+          ],
+          "coverageError": 0.014506342820823193
+        },
+        {
+          "view": "field4",
+          "variant": "far-lod2",
+          "rgbaRms": 0.009287063963711262,
+          "rgbaChannelRms": [
+            0.0013539240462705493,
+            0.0013540307991206646,
+            0.0015786102740094066,
+            0.01840760000050068
+          ],
+          "coverageError": 0.03636765480041504
+        },
+        {
+          "view": "field5",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.008918617852032185,
+          "rgbaChannelRms": [
+            0.0002886112197302282,
+            0.00028862772160209715,
+            0.00033577336580492556,
+            0.017829403281211853
+          ],
+          "coverageError": 0.028244623914361
+        },
+        {
+          "view": "field5",
+          "variant": "far-lod2",
+          "rgbaRms": 0.025971751660108566,
+          "rgbaChannelRms": [
+            0.002639751648530364,
+            0.002639812882989645,
+            0.0030620377510786057,
+            0.051718611270189285
+          ],
+          "coverageError": 0.06708275526762009
+        },
+        {
+          "view": "field6",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.012459673918783665,
+          "rgbaChannelRms": [
+            0.0012238825438544154,
+            0.0012238826602697372,
+            0.0014237003633752465,
+            0.024818364530801773
+          ],
+          "coverageError": 0.009075194597244263
+        },
+        {
+          "view": "field6",
+          "variant": "far-lod2",
+          "rgbaRms": 0.045785460621118546,
+          "rgbaChannelRms": [
+            0.032512880861759186,
+            0.032899968326091766,
+            0.03439943492412567,
+            0.07115066796541214
+          ],
+          "coverageError": 0.23880596458911896
+        },
+        {
+          "view": "field7",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.008641618303954601,
+          "rgbaChannelRms": [
+            0.0007960855145938694,
+            0.0007960873190313578,
+            0.0009260630467906594,
+            0.01722164824604988
+          ],
+          "coverageError": 0.020863860845565796
+        },
+        {
+          "view": "field7",
+          "variant": "far-lod2",
+          "rgbaRms": 0.021037084981799126,
+          "rgbaChannelRms": [
+            0.013266569003462791,
+            0.013417001813650131,
+            0.013769090175628662,
+            0.03499471768736839
+          ],
+          "coverageError": 0.008509691804647446
+        },
+        {
+          "view": "field8",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.010784265585243702,
+          "rgbaChannelRms": [
+            0.0020549523178488016,
+            0.002077046548947692,
+            0.002190411789342761,
+            0.021257156506180763
+          ],
+          "coverageError": 0.0030776839703321457
+        },
+        {
+          "view": "field8",
+          "variant": "far-lod2",
+          "rgbaRms": 0.15575191378593445,
+          "rgbaChannelRms": [
+            0.17326578497886658,
+            0.17530015110969543,
+            0.18661782145500183,
+            0.03817387670278549
+          ],
+          "coverageError": 0.16181522607803345
+        },
+        {
+          "view": "field9",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.02380324900150299,
+          "rgbaChannelRms": [
+            0.021097781136631966,
+            0.021333662793040276,
+            0.022397911176085472,
+            0.029401883482933044
+          ],
+          "coverageError": 0.02689937688410282
+        },
+        {
+          "view": "field9",
+          "variant": "far-lod2",
+          "rgbaRms": 0.11535895615816116,
+          "rgbaChannelRms": [
+            0.07751044631004333,
+            0.07841603457927704,
+            0.08355055749416351,
+            0.1846432089805603
+          ],
+          "coverageError": 0.07968605309724808
+        },
+        {
+          "view": "field10",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.019511422142386436,
+          "rgbaChannelRms": [
+            0.016265815123915672,
+            0.01644892245531082,
+            0.01725698448717594,
+            0.02626471407711506
+          ],
+          "coverageError": 0.014750187285244465
+        },
+        {
+          "view": "field10",
+          "variant": "far-lod2",
+          "rgbaRms": 0.0818357914686203,
+          "rgbaChannelRms": [
+            0.03453376144170761,
+            0.034922320395708084,
+            0.0372420996427536,
+            0.15162210166454315
+          ],
+          "coverageError": 0.036130089312791824
+        },
+        {
+          "view": "field11",
+          "variant": "authored-lod2",
+          "rgbaRms": 0.02246856316924095,
+          "rgbaChannelRms": [
+            0.02096221223473549,
+            0.021197013556957245,
+            0.022249948233366013,
+            0.025210263207554817
+          ],
+          "coverageError": 0.02824462577700615
+        },
+        {
+          "view": "field11",
+          "variant": "far-lod2",
+          "rgbaRms": 0.10134304314851761,
+          "rgbaChannelRms": [
+            0.07797344774007797,
+            0.07888418436050415,
+            0.08390159904956818,
+            0.14744354784488678
+          ],
+          "coverageError": 0.06704440712928772
+        }
+      ],
+      "attributeFit": {
+        "normalsAccepted": false,
+        "colorsAccepted": true,
+        "normalBlend": 0.0,
+        "colorBlend": 0.5,
+        "normalRmsBefore": 37.642269134521484,
+        "normalRmsAfter": 37.642269134521484,
+        "normalMaxBefore": 179.44223022460938,
+        "normalMaxAfter": 179.44223022460938,
+        "colorRmsBefore": {
+          "x": 0.06386198103427887,
+          "y": 0.06460203975439072,
+          "z": 0.06759899854660034,
+          "w": 0.04452677071094513
+        },
+        "colorRmsAfter": {
+          "x": 0.07633121311664581,
+          "y": 0.07722247391939163,
+          "z": 0.08151347190141678,
+          "w": 0.04176224395632744
+        },
+        "colorMaxBefore": {
+          "x": 0.698039174079895,
+          "y": 0.7058823108673096,
+          "z": 0.7411764860153198,
+          "w": 0.772549033164978
+        },
+        "colorMaxAfter": {
+          "x": 0.698039174079895,
+          "y": 0.7058823108673096,
+          "z": 0.7411764860153198,
+          "w": 0.7529411911964417
+        },
+        "samples": 7065,
+        "trials": 44,
+        "smoothingRegions": 54,
+        "linkedNormalDuplicates": 12,
+        "mixedSmoothingFaces": 2,
+        "missingSmoothingRegions": 29,
+        "incompleteSmoothingRegions": 0,
+        "regionNormalsBefore": [
+          {
+            "region": 0,
+            "samples": 180,
+            "unresolved": 0,
+            "rms": 81.30411529541016,
+            "maximum": 179.44186401367188
+          },
+          {
+            "region": 1,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 2,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 3,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 4,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 5,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 6,
+            "samples": 210,
+            "unresolved": 0,
+            "rms": 47.04179000854492,
+            "maximum": 180.0
+          },
+          {
+            "region": 7,
+            "samples": 240,
+            "unresolved": 0,
+            "rms": 24.77545166015625,
+            "maximum": 44.63280487060547
+          },
+          {
+            "region": 8,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 9,
+            "samples": 240,
+            "unresolved": 0,
+            "rms": 22.477739334106445,
+            "maximum": 41.71642303466797
+          },
+          {
+            "region": 10,
+            "samples": 240,
+            "unresolved": 0,
+            "rms": 22.478517532348633,
+            "maximum": 41.71684646606445
+          },
+          {
+            "region": 11,
+            "samples": 240,
+            "unresolved": 0,
+            "rms": 24.77593994140625,
+            "maximum": 44.633296966552734
+          },
+          {
+            "region": 12,
+            "samples": 220,
+            "unresolved": 0,
+            "rms": 29.213964462280273,
+            "maximum": 155.85447692871094
+          },
+          {
+            "region": 13,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 14,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 15,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 16,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 17,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 18,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 19,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 20,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 21,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 22,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 23,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 24,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 25,
+            "samples": 40,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 26,
+            "samples": 40,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 27,
+            "samples": 150,
+            "unresolved": 0,
+            "rms": 41.2216796875,
+            "maximum": 90.0
+          },
+          {
+            "region": 28,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 29,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 30,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 31,
+            "samples": 70,
+            "unresolved": 0,
+            "rms": 10.758302688598633,
+            "maximum": 18.244606018066406
+          },
+          {
+            "region": 32,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 33,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 34,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 35,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 36,
+            "samples": 50,
+            "unresolved": 0,
+            "rms": 0.03402138128876686,
+            "maximum": 0.06255725771188736
+          },
+          {
+            "region": 37,
+            "samples": 170,
+            "unresolved": 0,
+            "rms": 36.00461959838867,
+            "maximum": 90.0
+          },
+          {
+            "region": 38,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 39,
+            "samples": 80,
+            "unresolved": 0,
+            "rms": 8.174654960632324,
+            "maximum": 12.925339698791504
+          },
+          {
+            "region": 40,
+            "samples": 70,
+            "unresolved": 0,
+            "rms": 0.02368701621890068,
+            "maximum": 0.044234659522771835
+          },
+          {
+            "region": 41,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 42,
+            "samples": 50,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 43,
+            "samples": 260,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 44,
+            "samples": 260,
+            "unresolved": 0,
+            "rms": 90.00021362304688,
+            "maximum": 90.00537872314453
+          },
+          {
+            "region": 45,
+            "samples": 230,
+            "unresolved": 0,
+            "rms": 24.77009391784668,
+            "maximum": 90.0
+          },
+          {
+            "region": 46,
+            "samples": 230,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 47,
+            "samples": 250,
+            "unresolved": 0,
+            "rms": 24.99247169494629,
+            "maximum": 90.0
+          },
+          {
+            "region": 48,
+            "samples": 250,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 49,
+            "samples": 50,
+            "unresolved": 0,
+            "rms": 52.86484146118164,
+            "maximum": 90.0
+          },
+          {
+            "region": 50,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 51,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 52,
+            "samples": 120,
+            "unresolved": 0,
+            "rms": 0.11414764821529388,
+            "maximum": 0.22728194296360016
+          },
+          {
+            "region": 53,
+            "samples": 30,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          }
+        ],
+        "regionNormalsAfter": [
+          {
+            "region": 0,
+            "samples": 180,
+            "unresolved": 0,
+            "rms": 81.30411529541016,
+            "maximum": 179.44186401367188
+          },
+          {
+            "region": 1,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 2,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 3,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 4,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 5,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 6,
+            "samples": 210,
+            "unresolved": 0,
+            "rms": 47.04179000854492,
+            "maximum": 180.0
+          },
+          {
+            "region": 7,
+            "samples": 240,
+            "unresolved": 0,
+            "rms": 24.77545166015625,
+            "maximum": 44.63280487060547
+          },
+          {
+            "region": 8,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 9,
+            "samples": 240,
+            "unresolved": 0,
+            "rms": 22.477739334106445,
+            "maximum": 41.71642303466797
+          },
+          {
+            "region": 10,
+            "samples": 240,
+            "unresolved": 0,
+            "rms": 22.478517532348633,
+            "maximum": 41.71684646606445
+          },
+          {
+            "region": 11,
+            "samples": 240,
+            "unresolved": 0,
+            "rms": 24.77593994140625,
+            "maximum": 44.633296966552734
+          },
+          {
+            "region": 12,
+            "samples": 220,
+            "unresolved": 0,
+            "rms": 29.213964462280273,
+            "maximum": 155.85447692871094
+          },
+          {
+            "region": 13,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 14,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 15,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 16,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 17,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 18,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 19,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 20,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 21,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 22,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 23,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 24,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 25,
+            "samples": 40,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 26,
+            "samples": 40,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 27,
+            "samples": 150,
+            "unresolved": 0,
+            "rms": 41.2216796875,
+            "maximum": 90.0
+          },
+          {
+            "region": 28,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 29,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 30,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 31,
+            "samples": 70,
+            "unresolved": 0,
+            "rms": 10.758302688598633,
+            "maximum": 18.244606018066406
+          },
+          {
+            "region": 32,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 33,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 34,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 35,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 36,
+            "samples": 50,
+            "unresolved": 0,
+            "rms": 0.03402138128876686,
+            "maximum": 0.06255725771188736
+          },
+          {
+            "region": 37,
+            "samples": 170,
+            "unresolved": 0,
+            "rms": 36.00461959838867,
+            "maximum": 90.0
+          },
+          {
+            "region": 38,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 39,
+            "samples": 80,
+            "unresolved": 0,
+            "rms": 8.174654960632324,
+            "maximum": 12.925339698791504
+          },
+          {
+            "region": 40,
+            "samples": 70,
+            "unresolved": 0,
+            "rms": 0.02368701621890068,
+            "maximum": 0.044234659522771835
+          },
+          {
+            "region": 41,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 42,
+            "samples": 50,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 43,
+            "samples": 260,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 44,
+            "samples": 260,
+            "unresolved": 0,
+            "rms": 90.00021362304688,
+            "maximum": 90.00537872314453
+          },
+          {
+            "region": 45,
+            "samples": 230,
+            "unresolved": 0,
+            "rms": 24.77009391784668,
+            "maximum": 90.0
+          },
+          {
+            "region": 46,
+            "samples": 230,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 47,
+            "samples": 250,
+            "unresolved": 0,
+            "rms": 24.99247169494629,
+            "maximum": 90.0
+          },
+          {
+            "region": 48,
+            "samples": 250,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 49,
+            "samples": 50,
+            "unresolved": 0,
+            "rms": 52.86484146118164,
+            "maximum": 90.0
+          },
+          {
+            "region": 50,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 51,
+            "samples": 0,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          },
+          {
+            "region": 52,
+            "samples": 120,
+            "unresolved": 0,
+            "rms": 0.11414764821529388,
+            "maximum": 0.22728194296360016
+          },
+          {
+            "region": 53,
+            "samples": 30,
+            "unresolved": 0,
+            "rms": 0.0,
+            "maximum": 0.0
+          }
+        ],
+        "colorMethod": "visible-pixel weak-prior fit channel 3",
+        "screenColorVerification": true,
+        "visibleColorSamples": 27084,
+        "visibleRgbaBefore": 0.0490858294069767,
+        "visibleRgbaAfter": 0.04076668247580528,
+        "visibleChannelsBefore": {
+          "x": 0.03835761919617653,
+          "y": 0.03880167752504349,
+          "z": 0.040607109665870667,
+          "w": 0.07925212383270264
+        },
+        "visibleChannelsAfter": {
+          "x": 0.03799077495932579,
+          "y": 0.03842465206980705,
+          "z": 0.04021744802594185,
+          "w": 0.06050099432468414
+        },
+        "visibleNormals": {
+          "accepted": false,
+          "samples": 0,
+          "trials": 0,
+          "method": "",
+          "blend": 0.0,
+          "normalBefore": 0.0,
+          "normalAfter": 0.0,
+          "headlightBefore": 0.0,
+          "headlightAfter": 0.0,
+          "normalViewsBefore": [],
+          "normalViewsAfter": [],
+          "headlightViewsBefore": [],
+          "headlightViewsAfter": [],
+          "regionsBefore": [],
+          "regionsAfter": []
+        },
+        "visibleColorBoundaries": {
+          "accepted": false,
+          "samples": 27084,
+          "trials": 6,
+          "verticesBefore": 125,
+          "verticesAfter": 125,
+          "polygonGroups": 0,
+          "activePolygonGroups": 0,
+          "viewColorRmsTolerance": 0.0,
+          "boundaryBefore": 0.7269230484962463,
+          "boundaryAfter": 0.7269230484962463,
+          "worstBefore": 1.0,
+          "worstAfter": 1.0,
+          "rgbaBefore": 0.04076668247580528,
+          "rgbaAfter": 0.04076668247580528,
+          "viewsBefore": [
+            0.9807692170143127,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.20000000298023224
+          ],
+          "viewsAfter": [
+            0.9807692170143127,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.20000000298023224
+          ],
+          "cornerSharing": {
+            "verticesBefore": 0,
+            "verticesAfter": 0,
+            "trials": 0,
+            "colorTolerance": 0.0,
+            "rgbaBefore": 0.0,
+            "rgbaAfter": 0.0,
+            "boundaryBefore": 0.0,
+            "boundaryAfter": 0.0
+          }
+        },
+        "polygonColorBoundaries": {
+          "accepted": false,
+          "samples": 0,
+          "trials": 0,
+          "verticesBefore": 125,
+          "verticesAfter": 125,
+          "polygonGroups": 0,
+          "activePolygonGroups": 0,
+          "viewColorRmsTolerance": 0.0,
+          "boundaryBefore": 0.0,
+          "boundaryAfter": 0.0,
+          "worstBefore": 0.0,
+          "worstAfter": 0.0,
+          "rgbaBefore": 0.0,
+          "rgbaAfter": 0.0,
+          "viewsBefore": [],
+          "viewsAfter": [],
+          "cornerSharing": {
+            "verticesBefore": 0,
+            "verticesAfter": 0,
+            "trials": 0,
+            "colorTolerance": 0.0,
+            "rgbaBefore": 0.0,
+            "rgbaAfter": 0.0,
+            "boundaryBefore": 0.0,
+            "boundaryAfter": 0.0
+          }
+        },
+        "paintRetriangulation": {
+          "accepted": false,
+          "pairs": 0,
+          "trials": 0,
+          "flips": 0,
+          "verticesBefore": 125,
+          "verticesAfter": 125,
+          "intersectionRejected": 0,
+          "screenRejected": 0,
+          "uvRejected": 0,
+          "boundaryBefore": 0.0,
+          "boundaryAfter": 0.0,
+          "uvBefore": 0.0,
+          "uvAfter": 0.0,
+          "distanceBefore": 0.0,
+          "distanceAfter": 0.0,
+          "uvViewRmsTolerance": 1.9999999494757503e-05,
+          "uvViewsBefore": [],
+          "uvViewsAfter": [],
+          "probes": []
+        },
+        "sharedLightmapUv": {
+          "accepted": false,
+          "charts": 0,
+          "assignedFaces": 0,
+          "unresolvedFaces": 0,
+          "verticesBefore": 0,
+          "verticesAfter": 0,
+          "uvRmsBefore": 0.0,
+          "uvRmsAfter": 0.0,
+          "bakedField": false,
+          "visibleSamples": 0
+        },
+        "note": "Surface attribute fit: normals kept, RGBA improved via visible-pixel weak-prior fit channel 3 (7065 samples, 44 verification trials). Far RGBA uses 27084 paired visible samples; all four screen-channel RMS values and local paint loss must not increase. Surface RGBA errors remain diagnostic. Smoothing: 54 source regions, 12 linked normal duplicates, 2 mixed/unmapped faces pinned, 29 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase."
+      },
+      "farCornerOwnership": {
+        "sharedRenderCorners": 72,
+        "geometricInteriorEdges": 94,
+        "isolatedSixCornerPairs": 0
+      },
+      "nearBudgetReached": false,
+      "farGenerateMs": 37520.998100000004
+    }
+  ],
+  "tests": {
+    "total": "57",
+    "passed": "57",
+    "failed": "0",
+    "skipped": "0",
+    "duration": "118,3926013"
+  },
+  "raw": "_results~\\lod-university-benches-20261010\\final-views",
+  "dataset": "_results~\\lod-university-benches-20261010\\cases.json",
+  "unity": "6000.2.6f2",
+  "gpu": "NVIDIA GeForce GTX 980 Ti",
+  "limits": "Different authored/generated triangle budgets. Diagnostic vertex RGBA only: no original materials, full assembly, baked lightmap or LOD transition test. Passing tests record fidelity; they do not certify color acceptance. CPU and GPU raster guides are distinct."
+}

@@ -1,0 +1,1020 @@
+{
+  "baselineCommit": "9c47d01",
+  "tests": {
+    "total": "226",
+    "passed": "226",
+    "failed": "0",
+    "skipped": "0"
+  },
+  "footprint": "64px maximum source extent with 4px padding; actual Unity GPU diagnostic vertex RGBA.",
+  "limits": "No original materials or categorical paint labels. Sharp boundaries use all four linear RGBA channels, contrast .15, tolerance .1, one-pixel correspondence, minimum four pairs.",
+  "models": [
+    {
+      "fixture": "bench-colored",
+      "sourceSha256": "313fe7429853f372f1b01a15c47145f266fc1c1e39d1e80c42a8563179077471",
+      "sourceTriangles": 9334,
+      "beforeTriangles": 1032,
+      "afterTriangles": 1032,
+      "targetTriangles": 1038,
+      "before64": {
+        "views": 6,
+        "detailViews": 6,
+        "colorViews": 6,
+        "objectPixels": 64,
+        "resolution": 72,
+        "detailLoss": 0.00917431153357029,
+        "colorLoss": 0.25581395626068115,
+        "detailAccepted": true,
+        "colorAccepted": false,
+        "normalsEvaluated": true,
+        "rgbaEvaluated": true,
+        "silhouetteMean": 0.04144153743982315,
+        "silhouetteMax": 0.1421583592891693,
+        "normalRms": 29.994327545166016,
+        "rgbaRms": 0.03436630219221115,
+        "rgbaChannelRms": {
+          "x": 0.0687326043844223,
+          "y": 0.0,
+          "z": 0.0,
+          "w": 0.0
+        },
+        "headlightRms": 0.18467573821544647,
+        "normalViewRms": [
+          29.994327545166016,
+          4.444789409637451,
+          4.407556056976318,
+          10.436997413635254,
+          11.919475555419922,
+          11.434340476989746
+        ],
+        "headlightViewRms": [
+          0.18467573821544647,
+          0.021484309807419777,
+          0.02808205783367157,
+          0.03700344264507294,
+          0.042377591133117676,
+          0.05435467138886452
+        ]
+      },
+      "after64": {
+        "views": 6,
+        "detailViews": 6,
+        "colorViews": 6,
+        "objectPixels": 64,
+        "resolution": 72,
+        "detailLoss": 0.00917431153357029,
+        "colorLoss": 0.25,
+        "detailAccepted": true,
+        "colorAccepted": true,
+        "normalsEvaluated": true,
+        "rgbaEvaluated": true,
+        "silhouetteMean": 0.04144153743982315,
+        "silhouetteMax": 0.1421583592891693,
+        "normalRms": 29.994327545166016,
+        "rgbaRms": 0.02605082094669342,
+        "rgbaChannelRms": {
+          "x": 0.05210164189338684,
+          "y": 0.0,
+          "z": 0.0,
+          "w": 0.0
+        },
+        "headlightRms": 0.18467573821544647,
+        "colorBoundaryMean": 0.03928929194808006,
+        "colorBoundaryViewLoss": [
+          0.2222222238779068,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.013513513840734959
+        ],
+        "normalViewRms": [
+          29.994327545166016,
+          4.444789409637451,
+          4.407556056976318,
+          10.436997413635254,
+          11.919475555419922,
+          11.434340476989746
+        ],
+        "headlightViewRms": [
+          0.18467573821544647,
+          0.021484309807419777,
+          0.02808205783367157,
+          0.03700344264507294,
+          0.042377591133117676,
+          0.05435467138886452
+        ]
+      },
+      "fit": {
+        "colorsAccepted": true,
+        "colorMethod": "verified visible boundary corners",
+        "screenColorVerification": true,
+        "visibleColorSamples": 30252,
+        "visibleRgbaBefore": 0.038565292954444885,
+        "visibleRgbaAfter": 0.02605082094669342,
+        "visibleChannelsBefore": {
+          "x": 0.07713058590888977,
+          "y": 0.0,
+          "z": 0.0,
+          "w": 0.0
+        },
+        "visibleChannelsAfter": {
+          "x": 0.05210164189338684,
+          "y": 0.0,
+          "z": 0.0,
+          "w": 0.0
+        },
+        "visibleColorBoundaries": {
+          "accepted": true,
+          "samples": 30252,
+          "trials": 6,
+          "verticesBefore": 1064,
+          "verticesAfter": 3096,
+          "boundaryBefore": 0.05280117690563202,
+          "boundaryAfter": 0.03928929194808006,
+          "worstBefore": 0.27906978130340576,
+          "worstAfter": 0.25,
+          "rgbaBefore": 0.03848959505558014,
+          "rgbaAfter": 0.02605082094669342,
+          "viewsBefore": [
+            0.2698412835597992,
+            0.0,
+            0.0,
+            0.006493506487458944,
+            0.020202020183205605,
+            0.020270269364118576
+          ],
+          "viewsAfter": [
+            0.2222222238779068,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.013513513840734959
+          ]
+        },
+        "colorRmsBefore": {
+          "x": 0.05309724807739258,
+          "y": 3.202633536147914e-08,
+          "z": 3.202633536147914e-08,
+          "w": 3.202633536147914e-08
+        },
+        "colorRmsAfter": {
+          "x": 0.049235906451940536,
+          "y": 3.212488053350171e-08,
+          "z": 3.212488053350171e-08,
+          "w": 3.212488053350171e-08
+        },
+        "colorMaxBefore": {
+          "x": 0.7042050361633301,
+          "y": 5.960464477539063e-08,
+          "z": 5.960464477539063e-08,
+          "w": 5.960464477539063e-08
+        },
+        "colorMaxAfter": {
+          "x": 0.7081266641616821,
+          "y": 5.960464477539063e-08,
+          "z": 5.960464477539063e-08,
+          "w": 5.960464477539063e-08
+        },
+        "note": "Surface attribute fit: normals improved, RGBA improved via area-resampled (93294 samples, 32 verification trials). Far RGBA uses 30252 paired visible samples; all four screen-channel RMS values and local paint loss must not increase. Surface RGBA errors remain diagnostic. Smoothing: 103 source regions, 133 linked normal duplicates, 88 mixed/unmapped faces pinned, 2 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Far color-boundary corner fit accepted; mean paint loss 5,3% -> 3,9%, all views/channels retain or improve. Triangle geometry, normals, tangents and UVs retained; render vertices 1064 -> 3096."
+      },
+      "selection": "Triangle budget prioritized; selected RGBA from 3 quality candidates (18 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. CPU screen guide adds worst visible detail/RGBA boundary loss (0,9%/25,0%) at a 64px object extent; budget and density rules still take precedence. Far screen budget ranks silhouette, visible normal RMS 30,0\u0412\u00b0 and RGBA RMS 0,0261; exact crease/face belts are relaxed. Lock Border setting and material slots are retained. Over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape. Selected native Target Error=0,3, UV/Normal/Color weights=5/0,25/1. Surface attribute fit: normals improved, RGBA improved via area-resampled (93294 samples, 32 verification trials). Far RGBA uses 30252 paired visible samples; all four screen-channel RMS values and local paint loss must not increase. Surface RGBA errors remain diagnostic. Smoothing: 103 source regions, 133 linked normal duplicates, 88 mixed/unmapped faces pinned, 2 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Far color-boundary corner fit accepted; mean paint loss 5,3% -> 3,9%, all views/channels retain or improve. Triangle geometry, normals, tangents and UVs retained; render vertices 1064 -> 3096. Varying-RGBA far candidates are corrected before final quality ranking; the three-variant profile includes an RGBA cost variant. RGBA error 0,708 exceeds requested 0,1. Normal error 180,0\u0412\u00b0 exceeds requested 30,0\u0412\u00b0. Hard-edge coverage: 43/640; protected faces 1227, ambiguous edges 0, patch interfaces 29/1149. Far screen budget: exact crease/face coverage is diagnostic; silhouette, normals and RGBA are ranked at the object footprint.",
+      "beforeMs": 322806.4755,
+      "afterMs": 344387.2014,
+      "candidates": [
+        {
+          "variant": 1,
+          "triangles": 1036,
+          "nativeProbes": 6,
+          "name": "balanced",
+          "score": 2.631899356842041,
+          "distanceRms": 0.0007092177984304726,
+          "normalRms": 12.390846252441406,
+          "colorRms": 0.07850503921508789,
+          "uvRms": 0.06034174934029579,
+          "silhouetteMean": 0.028841204941272736,
+          "silhouetteMax": 0.10134923458099365,
+          "screenQuality": {
+            "views": 6,
+            "detailViews": 6,
+            "colorViews": 6,
+            "objectPixels": 64,
+            "resolution": 72,
+            "detailLoss": 0.0,
+            "colorLoss": 1.0,
+            "detailAccepted": true,
+            "colorAccepted": false,
+            "normalsEvaluated": true,
+            "rgbaEvaluated": true,
+            "silhouetteMean": 0.028841204941272736,
+            "silhouetteMax": 0.10134923458099365,
+            "normalRms": 26.803693771362305,
+            "rgbaRms": 0.03610134869813919,
+            "rgbaChannelRms": {
+              "x": 0.07220269739627838,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            "headlightRms": 0.13983558118343353,
+            "colorBoundaryMean": 0.41383013129234314,
+            "colorBoundaryViewLoss": [
+              0.30158731341362,
+              0.27074235677719116,
+              0.8307692408561707,
+              0.4285714328289032,
+              0.21212121844291687,
+              0.43918919563293457
+            ],
+            "normalViewRms": [
+              26.803693771362305,
+              5.512762069702148,
+              5.675854206085205,
+              9.061676979064941,
+              11.118230819702148,
+              10.891317367553711
+            ],
+            "headlightViewRms": [
+              0.13983558118343353,
+              0.03479858487844467,
+              0.03812049701809883,
+              0.037763919681310654,
+              0.0498027503490448,
+              0.05042070150375366
+            ]
+          }
+        },
+        {
+          "variant": 2,
+          "triangles": 1037,
+          "nativeProbes": 6,
+          "name": "shape",
+          "score": 2.623612403869629,
+          "distanceRms": 0.0008381991065107286,
+          "normalRms": 15.573139190673828,
+          "colorRms": 0.08727484196424484,
+          "uvRms": 0.12006550282239914,
+          "silhouetteMean": 0.026029109954833984,
+          "silhouetteMax": 0.08790860325098038,
+          "screenQuality": {
+            "views": 6,
+            "detailViews": 6,
+            "colorViews": 6,
+            "objectPixels": 64,
+            "resolution": 72,
+            "detailLoss": 0.01834862306714058,
+            "colorLoss": 1.0,
+            "detailAccepted": true,
+            "colorAccepted": false,
+            "normalsEvaluated": true,
+            "rgbaEvaluated": true,
+            "silhouetteMean": 0.026029109954833984,
+            "silhouetteMax": 0.08790860325098038,
+            "normalRms": 27.806941986083984,
+            "rgbaRms": 0.045292928814888,
+            "rgbaChannelRms": {
+              "x": 0.090585857629776,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            "headlightRms": 0.17352983355522156,
+            "colorBoundaryMean": 0.4299362599849701,
+            "colorBoundaryViewLoss": [
+              0.2857142984867096,
+              0.27074235677719116,
+              0.9230769276618958,
+              0.4285714328289032,
+              0.23232322931289673,
+              0.43918919563293457
+            ],
+            "normalViewRms": [
+              27.806941986083984,
+              8.662280082702637,
+              7.133688449859619,
+              12.245586395263672,
+              14.59017276763916,
+              14.281006813049316
+            ],
+            "headlightViewRms": [
+              0.17352983355522156,
+              0.0458441823720932,
+              0.05212685838341713,
+              0.06008772552013397,
+              0.07714900374412537,
+              0.061454951763153076
+            ]
+          }
+        },
+        {
+          "variant": 3,
+          "triangles": 1032,
+          "nativeProbes": 6,
+          "name": "RGBA",
+          "score": 2.4681718349456787,
+          "distanceRms": 0.0010408080415800214,
+          "normalRms": 13.92301082611084,
+          "colorRms": 0.05230838060379028,
+          "uvRms": 0.07836678624153137,
+          "silhouetteMean": 0.04144153743982315,
+          "silhouetteMax": 0.1421583592891693,
+          "screenQuality": {
+            "views": 6,
+            "detailViews": 6,
+            "colorViews": 6,
+            "objectPixels": 64,
+            "resolution": 72,
+            "detailLoss": 0.00917431153357029,
+            "colorLoss": 0.27906978130340576,
+            "detailAccepted": true,
+            "colorAccepted": false,
+            "normalsEvaluated": true,
+            "rgbaEvaluated": true,
+            "silhouetteMean": 0.04144153743982315,
+            "silhouetteMax": 0.1421583592891693,
+            "normalRms": 29.994327545166016,
+            "rgbaRms": 0.03848959505558014,
+            "rgbaChannelRms": {
+              "x": 0.07697919011116028,
+              "y": 0.0,
+              "z": 0.0,
+              "w": 0.0
+            },
+            "headlightRms": 0.18467573821544647,
+            "colorBoundaryMean": 0.05280117690563202,
+            "colorBoundaryViewLoss": [
+              0.2698412835597992,
+              0.0,
+              0.0,
+              0.006493506487458944,
+              0.020202020183205605,
+              0.020270269364118576
+            ],
+            "normalViewRms": [
+              29.994327545166016,
+              4.444789409637451,
+              4.407556056976318,
+              10.436997413635254,
+              11.919475555419922,
+              11.434340476989746
+            ],
+            "headlightViewRms": [
+              0.18467573821544647,
+              0.021484309807419777,
+              0.02808205783367157,
+              0.03700344264507294,
+              0.042377591133117676,
+              0.05435467138886452
+            ]
+          }
+        }
+      ],
+      "unchangedControls": {
+        "bench-colored-source-front-color.rgba": "abf9786a49a6373d7894e493743f8e6d5d73f017703a18d220fb0a377f0697c5",
+        "bench-colored-source-front-coverage.rgba": "857cf8a77dcd38271e6a382e0fd9334009c340ce1bf3bf725ac49ff32763589c",
+        "bench-colored-source-front-shaded.rgba": "81a3c1a275c5af11b187c615b738aa47e9be0678e014af1878e649937db1a1c5",
+        "bench-colored-native-lod1-front-color.rgba": "583b3548f590efab0a38a17678527abe1df444bdae623fe7f9a032a9bcb30f94",
+        "bench-colored-native-lod1-front-coverage.rgba": "857cf8a77dcd38271e6a382e0fd9334009c340ce1bf3bf725ac49ff32763589c",
+        "bench-colored-native-lod1-front-shaded.rgba": "55b45f8e6b0a1a8f763b8f8c443367d9df48c8f027b820b9bc91fbd47d54b174",
+        "bench-colored-native-lod2-front-color.rgba": "8e83884351d4aa07b664506db13ee9eea6d443ed481633ad4e43f3aa58c6adb0",
+        "bench-colored-native-lod2-front-coverage.rgba": "de228a225e4567d4b0492be723851080c1138866175f1fce6403e7b5ecbb6b46",
+        "bench-colored-native-lod2-front-shaded.rgba": "898cd3962c1bd7920ab334b061b26118efb8ae30f375d9ef70024e811473c33d",
+        "bench-colored-far-lod1-front-color.rgba": "583b3548f590efab0a38a17678527abe1df444bdae623fe7f9a032a9bcb30f94",
+        "bench-colored-far-lod1-front-coverage.rgba": "857cf8a77dcd38271e6a382e0fd9334009c340ce1bf3bf725ac49ff32763589c",
+        "bench-colored-far-lod1-front-shaded.rgba": "55b45f8e6b0a1a8f763b8f8c443367d9df48c8f027b820b9bc91fbd47d54b174",
+        "bench-colored-source-oblique-color.rgba": "d75e438ea856b0315a2c18d7ac7787ca6f104f468409c46111dcf462278b706f",
+        "bench-colored-source-oblique-coverage.rgba": "455e2b1cf87d0f1a16cf5e8acd455725d9670fde4766b585fc24a32b9b84758d",
+        "bench-colored-source-oblique-shaded.rgba": "bf3ecf889d84653a36c66691190ece711f9fb5f6c745df3e34393c618bbbb6bf",
+        "bench-colored-native-lod1-oblique-color.rgba": "47f2ee3b5cf4568f4200ff0369ab682a5b8388fba4025fb72ac695f1e0abcc06",
+        "bench-colored-native-lod1-oblique-coverage.rgba": "88266ebae00e0a6aadf62175e97f360aa17594f17d4f26b3f8e4ddc93f6dcb08",
+        "bench-colored-native-lod1-oblique-shaded.rgba": "544619a5fd8cc86e13fef8f2a8ad448d00a140e6d6432094c52ad9956b9e18b8",
+        "bench-colored-native-lod2-oblique-color.rgba": "c1d0c798a3c230611a3fb986fb81afead67df07c18f2e639d3e722b70c599c35",
+        "bench-colored-native-lod2-oblique-coverage.rgba": "627a5038d21d737601e64e91191042693ad0b30cae3faaea24ae736f41763838",
+        "bench-colored-native-lod2-oblique-shaded.rgba": "28b5285d753e297b9db5b469403d07bda2609b29f95f998162bb4c817d821ff9",
+        "bench-colored-far-lod1-oblique-color.rgba": "47f2ee3b5cf4568f4200ff0369ab682a5b8388fba4025fb72ac695f1e0abcc06",
+        "bench-colored-far-lod1-oblique-coverage.rgba": "88266ebae00e0a6aadf62175e97f360aa17594f17d4f26b3f8e4ddc93f6dcb08",
+        "bench-colored-far-lod1-oblique-shaded.rgba": "544619a5fd8cc86e13fef8f2a8ad448d00a140e6d6432094c52ad9956b9e18b8"
+      },
+      "unchangedFarGeometryShading": {
+        "bench-colored-far-lod2-front-coverage.rgba": "5df9bb1ad9d999c76a9739ece4d784a8db01c862d7720ace54e418ddf1c50dff",
+        "bench-colored-far-lod2-front-shaded.rgba": "18335d4d4234da9ca230b2a431edf8406f8f3a00edf093b1a9748aafc76517c3",
+        "bench-colored-far-lod2-front-wire.rgba": "3813c2a720818d9227ff492f670e53d03df1ef07b8631ae8dfbc819e8a981cc6",
+        "bench-colored-far-lod2-oblique-coverage.rgba": "1f1954ddcb1368d504131cecb77f05019f5e0b7ad213f2bbe7d890f21b838f45",
+        "bench-colored-far-lod2-oblique-shaded.rgba": "84cb655620266ec401b11c13de44f34231a1422beccef5f8ba350de75c406eb8",
+        "bench-colored-far-lod2-oblique-wire.rgba": "b8154f13470093b69eec7fa6374efc80a02129baf2e31bdaf3073bfcadcbbafe"
+      },
+      "gpu64": [
+        {
+          "view": "front",
+          "before": {
+            "coverageError": 0.00803767703473568,
+            "rgbaRms": 0.015828812494874,
+            "rgbaChannelRms": [
+              0.031657624989748,
+              6.244144969969057e-07,
+              9.365192568111524e-07,
+              0.0
+            ],
+            "shadingRms": 0.02589351497590542
+          },
+          "after": {
+            "coverageError": 0.00803767703473568,
+            "rgbaRms": 0.013564049266278744,
+            "rgbaChannelRms": [
+              0.027128098532557487,
+              6.244144969969057e-07,
+              9.365192568111524e-07,
+              0.0
+            ],
+            "shadingRms": 0.02589351497590542
+          }
+        },
+        {
+          "view": "oblique",
+          "before": {
+            "coverageError": 0.03183440864086151,
+            "rgbaRms": 0.016024257987737656,
+            "rgbaChannelRms": [
+              0.03204851597547531,
+              3.872713023156393e-06,
+              5.808652986161178e-06,
+              0.0
+            ],
+            "shadingRms": 0.024989722296595573
+          },
+          "after": {
+            "coverageError": 0.03183440864086151,
+            "rgbaRms": 0.014207420870661736,
+            "rgbaChannelRms": [
+              0.02841484174132347,
+              3.872713023156393e-06,
+              5.808652986161178e-06,
+              0.0
+            ],
+            "shadingRms": 0.024989722296595573
+          }
+        }
+      ],
+      "boundaries64": [
+        {
+          "view": "front",
+          "before": {
+            "sharpPairs": 10,
+            "lostPairs": 1,
+            "regions": 1,
+            "worstRegionLoss": 0.16666666666666663,
+            "boundaryLoss": 0.1,
+            "evaluated": true,
+            "accepted": true,
+            "rawSha256": "e7ffa352d2730a89329d8b88490d4b4a887dac5f55da85df1fdd7c88d6cd683b"
+          },
+          "after": {
+            "sharpPairs": 10,
+            "lostPairs": 0,
+            "regions": 1,
+            "worstRegionLoss": 0.0,
+            "boundaryLoss": 0.0,
+            "evaluated": true,
+            "accepted": true,
+            "rawSha256": "1ecbfaaeef7c130fc063c6045302edda68892c9a513209c78213c6ea4d5b8450"
+          }
+        },
+        {
+          "view": "oblique",
+          "before": {
+            "sharpPairs": 38,
+            "lostPairs": 0,
+            "regions": 4,
+            "worstRegionLoss": 0.0,
+            "boundaryLoss": 0.0,
+            "evaluated": true,
+            "accepted": true,
+            "rawSha256": "e5fb9ca559be519676925fea231cf025c46e0d136af3f4a9b2ac733b5ef92767"
+          },
+          "after": {
+            "sharpPairs": 38,
+            "lostPairs": 0,
+            "regions": 4,
+            "worstRegionLoss": 0.0,
+            "boundaryLoss": 0.0,
+            "evaluated": true,
+            "accepted": true,
+            "rawSha256": "1f508b0f2ab90dcdcfcb88f33031f2689418342a00419b2bef3dec72436a8b60"
+          }
+        }
+      ]
+    },
+    {
+      "fixture": "tent-colored",
+      "sourceSha256": "a4aafe5dc9b4bc31200f31d1a0549a93b729aa7d657bcb7501acdd310e616839",
+      "sourceTriangles": 560,
+      "beforeTriangles": 62,
+      "afterTriangles": 62,
+      "targetTriangles": 63,
+      "before64": {
+        "views": 6,
+        "detailViews": 6,
+        "colorViews": 2,
+        "objectPixels": 64,
+        "resolution": 72,
+        "detailLoss": 0.008928571827709675,
+        "colorLoss": 1.0,
+        "detailAccepted": true,
+        "colorAccepted": false,
+        "normalsEvaluated": true,
+        "rgbaEvaluated": true,
+        "silhouetteMean": 0.07748622447252274,
+        "silhouetteMax": 0.16323165595531464,
+        "normalRms": 43.54130554199219,
+        "rgbaRms": 0.06451869755983353,
+        "rgbaChannelRms": {
+          "x": 0.09762625396251678,
+          "y": 0.04972648620605469,
+          "z": 0.06816919147968292,
+          "w": 0.0
+        },
+        "headlightRms": 0.13581117987632751,
+        "normalViewRms": [
+          41.06999206542969,
+          35.39237594604492,
+          43.54130554199219,
+          34.31654739379883,
+          34.41410827636719,
+          35.3907585144043
+        ],
+        "headlightViewRms": [
+          0.13581117987632751,
+          0.014297758229076862,
+          0.05481752008199692,
+          0.05059787258505821,
+          0.03841301053762436,
+          0.07640059292316437
+        ]
+      },
+      "after64": {
+        "views": 6,
+        "detailViews": 6,
+        "colorViews": 2,
+        "objectPixels": 64,
+        "resolution": 72,
+        "detailLoss": 0.008928571827709675,
+        "colorLoss": 1.0,
+        "detailAccepted": true,
+        "colorAccepted": false,
+        "normalsEvaluated": true,
+        "rgbaEvaluated": true,
+        "silhouetteMean": 0.07748622447252274,
+        "silhouetteMax": 0.16323165595531464,
+        "normalRms": 43.54130554199219,
+        "rgbaRms": 0.03251459822058678,
+        "rgbaChannelRms": {
+          "x": 0.05132179334759712,
+          "y": 0.02652057632803917,
+          "z": 0.03421281278133392,
+          "w": 0.0
+        },
+        "headlightRms": 0.13581117987632751,
+        "colorBoundaryMean": 0.5008960962295532,
+        "colorBoundaryViewLoss": [
+          0.6129032373428345,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.3888888955116272
+        ],
+        "normalViewRms": [
+          41.06999206542969,
+          35.39237594604492,
+          43.54130554199219,
+          34.31654739379883,
+          34.41410827636719,
+          35.3907585144043
+        ],
+        "headlightViewRms": [
+          0.13581117987632751,
+          0.014297758229076862,
+          0.05481752008199692,
+          0.05059787258505821,
+          0.03841301053762436,
+          0.07640059292316437
+        ]
+      },
+      "fit": {
+        "colorsAccepted": true,
+        "colorMethod": "verified visible boundary corners",
+        "screenColorVerification": true,
+        "visibleColorSamples": 13764,
+        "visibleRgbaBefore": 0.07066025584936142,
+        "visibleRgbaAfter": 0.03251459822058678,
+        "visibleChannelsBefore": {
+          "x": 0.10624971240758896,
+          "y": 0.05907607451081276,
+          "z": 0.0720590278506279,
+          "w": 0.0
+        },
+        "visibleChannelsAfter": {
+          "x": 0.05132179334759712,
+          "y": 0.02652057632803917,
+          "z": 0.03421281278133392,
+          "w": 0.0
+        },
+        "visibleColorBoundaries": {
+          "accepted": true,
+          "samples": 13764,
+          "trials": 6,
+          "verticesBefore": 48,
+          "verticesAfter": 186,
+          "boundaryBefore": 0.8611111044883728,
+          "boundaryAfter": 0.5008960962295532,
+          "worstBefore": 1.0,
+          "worstAfter": 1.0,
+          "rgbaBefore": 0.06451869755983353,
+          "rgbaAfter": 0.03251459822058678,
+          "viewsBefore": [
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.7222222089767456
+          ],
+          "viewsAfter": [
+            0.6129032373428345,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.3888888955116272
+          ]
+        },
+        "colorRmsBefore": {
+          "x": 0.07609103620052338,
+          "y": 0.04124113544821739,
+          "z": 0.04950321465730667,
+          "w": 3.123644276570303e-08
+        },
+        "colorRmsAfter": {
+          "x": 0.04514629393815994,
+          "y": 0.02592257782816887,
+          "z": 0.02349664270877838,
+          "w": 3.263543746356845e-08
+        },
+        "colorMaxBefore": {
+          "x": 0.80567866563797,
+          "y": 0.36669543385505676,
+          "z": 0.4633137285709381,
+          "w": 5.960464477539063e-08
+        },
+        "colorMaxAfter": {
+          "x": 0.8156862854957581,
+          "y": 0.37663352489471436,
+          "z": 0.4706343412399292,
+          "w": 5.960464477539063e-08
+        },
+        "note": "Surface attribute fit: normals improved, RGBA improved via visible-pixel least-squares (5598 samples, 35 verification trials). Far RGBA uses 13764 paired visible samples; all four screen-channel RMS values and local paint loss must not increase. Surface RGBA errors remain diagnostic. Smoothing: 9 source regions, 5 linked normal duplicates, 0 mixed/unmapped faces pinned, 7 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Far color-boundary corner fit accepted; mean paint loss 86,1% -> 50,1%, all views/channels retain or improve. Triangle geometry, normals, tangents and UVs retained; render vertices 48 -> 186."
+      },
+      "selection": "Triangle budget prioritized; selected RGBA from 3 quality candidates (18 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. CPU screen guide adds worst visible detail/RGBA boundary loss (0,9%/100,0%) at a 64px object extent; budget and density rules still take precedence. Far screen budget ranks silhouette, visible normal RMS 43,5\u0412\u00b0 and RGBA RMS 0,0325; exact crease/face belts are relaxed. Lock Border setting and material slots are retained. Over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape. Native costs/error relaxed; Lock Border retained. Attribute seam collapses allowed. Selected native Target Error=1, UV/Normal/Color weights=0,5/0,025/0,1. Surface attribute fit: normals improved, RGBA improved via visible-pixel least-squares (5598 samples, 35 verification trials). Far RGBA uses 13764 paired visible samples; all four screen-channel RMS values and local paint loss must not increase. Surface RGBA errors remain diagnostic. Smoothing: 9 source regions, 5 linked normal duplicates, 0 mixed/unmapped faces pinned, 7 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Far color-boundary corner fit accepted; mean paint loss 86,1% -> 50,1%, all views/channels retain or improve. Triangle geometry, normals, tangents and UVs retained; render vertices 48 -> 186. Varying-RGBA far candidates are corrected before final quality ranking; the three-variant profile includes an RGBA cost variant. RGBA error 0,816 exceeds requested 0,1. Normal error 155,4\u0412\u00b0 exceeds requested 30,0\u0412\u00b0. Hard-edge coverage: 0/87; protected faces 152, ambiguous edges 0, patch interfaces 0/138. Far screen budget: exact crease/face coverage is diagnostic; silhouette, normals and RGBA are ranked at the object footprint.",
+      "beforeMs": 13068.867,
+      "afterMs": 13677.7873,
+      "candidates": [
+        {
+          "variant": 1,
+          "triangles": 62,
+          "nativeProbes": 6,
+          "name": "balanced",
+          "score": 4.451503276824951,
+          "distanceRms": 0.0033916353713721037,
+          "normalRms": 25.926708221435547,
+          "colorRms": 0.0853617787361145,
+          "uvRms": 0.018756551668047905,
+          "silhouetteMean": 0.06464346498250961,
+          "silhouetteMax": 0.15077424049377441,
+          "screenQuality": {
+            "views": 6,
+            "detailViews": 6,
+            "colorViews": 2,
+            "objectPixels": 64,
+            "resolution": 72,
+            "detailLoss": 0.0,
+            "colorLoss": 1.0,
+            "detailAccepted": true,
+            "colorAccepted": false,
+            "normalsEvaluated": true,
+            "rgbaEvaluated": true,
+            "silhouetteMean": 0.06464346498250961,
+            "silhouetteMax": 0.15077424049377441,
+            "normalRms": 68.98550415039062,
+            "rgbaRms": 0.08029535412788391,
+            "rgbaChannelRms": {
+              "x": 0.12402442842721939,
+              "y": 0.06760488450527191,
+              "z": 0.07639957964420319,
+              "w": 0.0
+            },
+            "headlightRms": 0.19849976897239685,
+            "colorBoundaryMean": 0.8333333730697632,
+            "colorBoundaryViewLoss": [
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.6666666865348816
+            ],
+            "normalViewRms": [
+              55.666072845458984,
+              57.502532958984375,
+              68.98550415039062,
+              58.85863494873047,
+              57.69260025024414,
+              62.20927047729492
+            ],
+            "headlightViewRms": [
+              0.19849976897239685,
+              0.1360015571117401,
+              0.0647938922047615,
+              0.11948653310537338,
+              0.16676557064056396,
+              0.12361256778240204
+            ]
+          }
+        },
+        {
+          "variant": 2,
+          "triangles": 62,
+          "nativeProbes": 6,
+          "name": "shape",
+          "score": 4.953095436096191,
+          "distanceRms": 0.003933385480195284,
+          "normalRms": 15.873819351196289,
+          "colorRms": 0.08375342935323715,
+          "uvRms": 0.015635522082448006,
+          "silhouetteMean": 0.06465678662061691,
+          "silhouetteMax": 0.13563606142997742,
+          "screenQuality": {
+            "views": 6,
+            "detailViews": 6,
+            "colorViews": 2,
+            "objectPixels": 64,
+            "resolution": 72,
+            "detailLoss": 0.0063492064364254475,
+            "colorLoss": 1.0,
+            "detailAccepted": true,
+            "colorAccepted": false,
+            "normalsEvaluated": true,
+            "rgbaEvaluated": true,
+            "silhouetteMean": 0.06465678662061691,
+            "silhouetteMax": 0.13563606142997742,
+            "normalRms": 101.69915008544922,
+            "rgbaRms": 0.07938500493764877,
+            "rgbaChannelRms": {
+              "x": 0.12071789801120758,
+              "y": 0.0659390240907669,
+              "z": 0.07929155975580215,
+              "w": 0.0
+            },
+            "headlightRms": 0.13652241230010986,
+            "colorBoundaryMean": 0.7777777910232544,
+            "colorBoundaryViewLoss": [
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.5555555820465088
+            ],
+            "normalViewRms": [
+              88.11958312988281,
+              101.53787231445312,
+              57.86403274536133,
+              101.49066162109375,
+              101.69915008544922,
+              94.86637878417969
+            ],
+            "headlightViewRms": [
+              0.13652241230010986,
+              0.022739533334970474,
+              0.057520315051078796,
+              0.06206992641091347,
+              0.050576649606227875,
+              0.061007335782051086
+            ]
+          }
+        },
+        {
+          "variant": 3,
+          "triangles": 62,
+          "nativeProbes": 6,
+          "name": "RGBA",
+          "score": 4.3578972816467285,
+          "distanceRms": 0.004332191776484251,
+          "normalRms": 17.032146453857422,
+          "colorRms": 0.07552466541528702,
+          "uvRms": 0.01597752794623375,
+          "silhouetteMean": 0.07748622447252274,
+          "silhouetteMax": 0.16323165595531464,
+          "screenQuality": {
+            "views": 6,
+            "detailViews": 6,
+            "colorViews": 2,
+            "objectPixels": 64,
+            "resolution": 72,
+            "detailLoss": 0.008928571827709675,
+            "colorLoss": 1.0,
+            "detailAccepted": true,
+            "colorAccepted": false,
+            "normalsEvaluated": true,
+            "rgbaEvaluated": true,
+            "silhouetteMean": 0.07748622447252274,
+            "silhouetteMax": 0.16323165595531464,
+            "normalRms": 43.54130554199219,
+            "rgbaRms": 0.06451869755983353,
+            "rgbaChannelRms": {
+              "x": 0.09762625396251678,
+              "y": 0.04972648620605469,
+              "z": 0.06816919147968292,
+              "w": 0.0
+            },
+            "headlightRms": 0.13581117987632751,
+            "colorBoundaryMean": 0.8611111044883728,
+            "colorBoundaryViewLoss": [
+              1.0,
+              0.0,
+              0.0,
+              0.0,
+              0.0,
+              0.7222222089767456
+            ],
+            "normalViewRms": [
+              41.06999206542969,
+              35.39237594604492,
+              43.54130554199219,
+              34.31654739379883,
+              34.41410827636719,
+              35.3907585144043
+            ],
+            "headlightViewRms": [
+              0.13581117987632751,
+              0.014297758229076862,
+              0.05481752008199692,
+              0.05059787258505821,
+              0.03841301053762436,
+              0.07640059292316437
+            ]
+          }
+        }
+      ],
+      "unchangedControls": {
+        "tent-colored-source-front-color.rgba": "a4cd31941c3408e1517fa5743b95e89f67e6622275ddead845edd138d95f8658",
+        "tent-colored-source-front-coverage.rgba": "eb6b407d28fc29b58710d991b776a92dae3305dbb4073ff03d3b0ac5acb7a5d6",
+        "tent-colored-source-front-shaded.rgba": "5aeafd86dbc73ff16ca95f16a2032e514808462b223b44b46533753e21353de4",
+        "tent-colored-native-lod1-front-color.rgba": "45b054563ae24ddc83106218b0972bcbde1abb9a0041e63e196638dc5887ef27",
+        "tent-colored-native-lod1-front-coverage.rgba": "eb6b407d28fc29b58710d991b776a92dae3305dbb4073ff03d3b0ac5acb7a5d6",
+        "tent-colored-native-lod1-front-shaded.rgba": "4a14464dbe907499fa6f2bbba3d506ce22a8149b20bafb310f240cfd59c8ecff",
+        "tent-colored-native-lod2-front-color.rgba": "a81cbb71897d911216a23b24f2b5a47d3d78513fff611e9de56f381c2daff7cc",
+        "tent-colored-native-lod2-front-coverage.rgba": "eb6b407d28fc29b58710d991b776a92dae3305dbb4073ff03d3b0ac5acb7a5d6",
+        "tent-colored-native-lod2-front-shaded.rgba": "f78270b565d4d08e952501b2efbede95a6c4ee964383d701d0e70b58a39dbb01",
+        "tent-colored-far-lod1-front-color.rgba": "45b054563ae24ddc83106218b0972bcbde1abb9a0041e63e196638dc5887ef27",
+        "tent-colored-far-lod1-front-coverage.rgba": "eb6b407d28fc29b58710d991b776a92dae3305dbb4073ff03d3b0ac5acb7a5d6",
+        "tent-colored-far-lod1-front-shaded.rgba": "4a14464dbe907499fa6f2bbba3d506ce22a8149b20bafb310f240cfd59c8ecff",
+        "tent-colored-source-oblique-color.rgba": "e86c61d210edb5c28e60866025836c8d5326114889b60cf4ced08b39efc6b309",
+        "tent-colored-source-oblique-coverage.rgba": "eddad1f4d19918688ed77dbfd1a6b0992fee46b942d45c942802ce477220802d",
+        "tent-colored-source-oblique-shaded.rgba": "d5e5b423e2d6e91707fe516d3c3164b26503816f5253d77c1b161e343d1b1c74",
+        "tent-colored-native-lod1-oblique-color.rgba": "664a5a29bcae0a62b153ffc9cfe178d1fb09965543f4cff545f4e705fd315702",
+        "tent-colored-native-lod1-oblique-coverage.rgba": "b4d855c762d1a45000b00c47fdc2252405fb33a0ff92432df131df7ffdcbdedc",
+        "tent-colored-native-lod1-oblique-shaded.rgba": "00b09bebe4eac5cffa74bc8f9a9240d5481b74332a511e615068b368a9acd620",
+        "tent-colored-native-lod2-oblique-color.rgba": "5f668dfe282ee552d22147d3ea4eb97ab3e95fefaa0ce938ffe0be6d0ba4bf15",
+        "tent-colored-native-lod2-oblique-coverage.rgba": "b4d855c762d1a45000b00c47fdc2252405fb33a0ff92432df131df7ffdcbdedc",
+        "tent-colored-native-lod2-oblique-shaded.rgba": "93b2aaec446ba9e6fa24a49035615f8f4908beca08f421f24a99f29771496eaf",
+        "tent-colored-far-lod1-oblique-color.rgba": "664a5a29bcae0a62b153ffc9cfe178d1fb09965543f4cff545f4e705fd315702",
+        "tent-colored-far-lod1-oblique-coverage.rgba": "b4d855c762d1a45000b00c47fdc2252405fb33a0ff92432df131df7ffdcbdedc",
+        "tent-colored-far-lod1-oblique-shaded.rgba": "00b09bebe4eac5cffa74bc8f9a9240d5481b74332a511e615068b368a9acd620"
+      },
+      "unchangedFarGeometryShading": {
+        "tent-colored-far-lod2-front-coverage.rgba": "3017fe8985bbe7779501ade39e12a03ef7dd18ce3e63133013ed5848ef16cc48",
+        "tent-colored-far-lod2-front-shaded.rgba": "30f11c09d7455d4c38bc42b2275581ec6f183db019b8d8e9bb0d1fd5f89ca1c3",
+        "tent-colored-far-lod2-front-wire.rgba": "5631385335b4ff6408d40d4e346821dd4d55734e9e6598fabfd619a5df1b6bbe",
+        "tent-colored-far-lod2-oblique-coverage.rgba": "8ab8e383579217aa225bb8245af1bbd13261dd79e2561cfb434f5b0cf4080c06",
+        "tent-colored-far-lod2-oblique-shaded.rgba": "21f505666c84c23e2c5db3025688f0e3a8fa2b221dc0a257d81e9d093af60d48",
+        "tent-colored-far-lod2-oblique-wire.rgba": "e343fe71c05f230dd888656bb4ed9b01941d42d37c453b1403a753b6828fb27f"
+      },
+      "gpu64": [
+        {
+          "view": "front",
+          "before": {
+            "coverageError": 0.021572580561041832,
+            "rgbaRms": 0.01588183082640171,
+            "rgbaChannelRms": [
+              0.02062544971704483,
+              0.017942529171705246,
+              0.016173643991351128,
+              0.0
+            ],
+            "shadingRms": 0.01404462568461895
+          },
+          "after": {
+            "coverageError": 0.021572580561041832,
+            "rgbaRms": 0.00861318875104189,
+            "rgbaChannelRms": [
+              0.009696255438029766,
+              0.009530024603009224,
+              0.010578721761703491,
+              0.0
+            ],
+            "shadingRms": 0.01404462568461895
+          }
+        },
+        {
+          "view": "oblique",
+          "before": {
+            "coverageError": 0.04756629467010498,
+            "rgbaRms": 0.02823602966964245,
+            "rgbaChannelRms": [
+              0.04235205054283142,
+              0.024432502686977386,
+              0.028256863355636597,
+              0.0
+            ],
+            "shadingRms": 0.03258658945560455
+          },
+          "after": {
+            "coverageError": 0.04756629467010498,
+            "rgbaRms": 0.013254798948764801,
+            "rgbaChannelRms": [
+              0.019584743306040764,
+              0.012765799649059772,
+              0.01249923836439848,
+              0.0
+            ],
+            "shadingRms": 0.03258658945560455
+          }
+        }
+      ],
+      "boundaries64": [
+        {
+          "view": "front",
+          "before": {
+            "sharpPairs": 0,
+            "lostPairs": 0,
+            "regions": 0,
+            "worstRegionLoss": 0,
+            "boundaryLoss": 0.0,
+            "evaluated": false,
+            "accepted": false,
+            "rawSha256": "2d1aedb8de7d2ace45dd445ccfea2245cddb89c9bd6e2c1fbc8d579e3608a732"
+          },
+          "after": {
+            "sharpPairs": 0,
+            "lostPairs": 0,
+            "regions": 0,
+            "worstRegionLoss": 0,
+            "boundaryLoss": 0.0,
+            "evaluated": false,
+            "accepted": false,
+            "rawSha256": "1aac5948445b197705df7231c9977b568640e007812dda63ef6b1db5345e78bb"
+          }
+        },
+        {
+          "view": "oblique",
+          "before": {
+            "sharpPairs": 0,
+            "lostPairs": 0,
+            "regions": 0,
+            "worstRegionLoss": 0,
+            "boundaryLoss": 0.0,
+            "evaluated": false,
+            "accepted": false,
+            "rawSha256": "d669f64594102884bcafe55a98398ad38d400104d1738144351f47f1e33217f0"
+          },
+          "after": {
+            "sharpPairs": 0,
+            "lostPairs": 0,
+            "regions": 0,
+            "worstRegionLoss": 0,
+            "boundaryLoss": 0.0,
+            "evaluated": false,
+            "accepted": false,
+            "rawSha256": "6988b0217370303a321d90ef0c2d83287154d26811723daef1f4c60f39dfafe8"
+          }
+        }
+      ]
+    }
+  ],
+  "additionalOppositeSide": {
+    "testsPassed": "31",
+    "lineage": "Fresh opposite-side Generate capture. All existing final fields and front/oblique raw captures match the complete run exactly. Previous iteration did not capture this side.",
+    "sourceRawSha256": "f5f6967365934a35592f615ab138c4dfcdd3e62e34e957579cae8c4635ebcd61",
+    "afterRawSha256": "e225743bc8df4d6761d853de865b849036d11de80311dbfc764fd644bf3bd6be",
+    "afterBoundary": {
+      "sharpPairs": 0,
+      "lostPairs": 0,
+      "regions": 0,
+      "worstRegionLoss": 0,
+      "boundaryLoss": 0.0,
+      "evaluated": false,
+      "accepted": false
+    }
+  }
+}
