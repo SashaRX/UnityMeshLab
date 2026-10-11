@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using UnityEditor;
 using UnityEngine;
@@ -291,11 +292,84 @@ namespace SashaRX.UnityMeshLab
             return hash;
         }
 
-        static byte[] EncodeDetails(object details)
+        internal static byte[] EncodeDetails(object details,long maxBytes = TransferMeshSnapshot.MaxFileBytes)
         {
+            // JsonUtility cannot stream. Bound its field graph before either the
+            // UTF-16 JSON string or the UTF-8 byte array can be materialized.
+            new DetailSizeBudget(maxBytes).Check(details);
             byte[] bytes = System.Text.Encoding.UTF8.GetBytes(JsonUtility.ToJson(details, false));
-            if (bytes.LongLength > TransferMeshSnapshot.MaxFileBytes) throw new InvalidDataException("Transfer diagnostic payload exceeds the size limit.");
+            if (bytes.LongLength > maxBytes) throw new InvalidDataException("Transfer diagnostic payload exceeds the size limit.");
             return bytes;
+        }
+
+        sealed class DetailSizeBudget
+        {
+            readonly long limit;
+            long used;
+            readonly Dictionary<Type,FieldInfo[]> fields=new Dictionary<Type,FieldInfo[]>();
+            readonly Dictionary<Type,long> fixedSizes=new Dictionary<Type,long>();
+            readonly HashSet<object> visiting=new HashSet<object>();
+
+            internal DetailSizeBudget(long limit) { this.limit=limit; }
+            void Add(long bytes)
+            {
+                if (bytes>limit-used) throw new InvalidDataException("Transfer diagnostic payload exceeds the size limit before JSON allocation.");
+                used+=bytes;
+            }
+            FieldInfo[] Fields(Type type)
+            {
+                if (fields.TryGetValue(type,out var result)) return result;
+                var members=new List<FieldInfo>();
+                for (var current=type;current!=null;current=current.BaseType)
+                    members.AddRange(current.GetFields(BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.DeclaredOnly)
+                        .Where(f=>!f.IsDefined(typeof(NonSerializedAttribute),true) &&
+                            (f.IsPublic || f.IsDefined(typeof(SerializeField),true) || f.IsDefined(typeof(SerializeReference),true))));
+                result=members.ToArray(); fields.Add(type,result); return result;
+            }
+            long FixedSize(Type type)
+            {
+                if (type==typeof(bool)) return 5;
+                if (type==typeof(char)) return 8;
+                if (type==typeof(float)) return 64;
+                if (type==typeof(double)) return 384;
+                if (type==typeof(decimal)) return 128;
+                if (type.IsPrimitive || type.IsEnum) return 24;
+                if (fixedSizes.TryGetValue(type,out long size)) return size;
+                if (!type.IsValueType) return 0;
+                var underlying=Nullable.GetUnderlyingType(type);
+                if (underlying!=null) {long inner=FixedSize(underlying);return inner>0 ? Math.Max(4,inner) : 0;}
+                size=2;
+                foreach (var field in Fields(type)) {
+                    long member=FixedSize(field.FieldType);
+                    if (member==0) {size=0;break;}
+                    size+=6L*field.Name.Length+6+member;
+                }
+                fixedSizes.Add(type,size); return size;
+            }
+            internal void Check(object value,int depth=0)
+            {
+                if (depth>64) throw new InvalidDataException("Transfer diagnostic payload exceeds the supported JSON depth.");
+                if (value==null) {Add(4);return;}
+                if (value is ISerializationCallbackReceiver) throw new InvalidDataException("Transfer diagnostic payload cannot run serialization callbacks after its size preflight.");
+                if (value is string text) {Add(2+6L*text.Length);return;}
+                if (value is UnityEngine.Object) {Add(64);return;}
+                var type=value.GetType(); long size=FixedSize(type);
+                if (size>0) {Add(size);return;}
+                if (!visiting.Add(value)) throw new InvalidDataException("Transfer diagnostic payload contains a cyclic reference.");
+                try {
+                    if (value is System.Collections.IList list) {
+                        var element=type.IsArray ? type.GetElementType() : type.IsGenericType ? type.GetGenericArguments()[0] : null;
+                        long item=element==null ? 0 : FixedSize(element);
+                        if (item>0) Add(2+(long)list.Count*(item+1));
+                        else {Add(2+list.Count);foreach (var child in list) Check(child,depth+1);}
+                    }
+                    else {
+                        Add(2);
+                        foreach (var field in Fields(type)) {Add(6L*field.Name.Length+6);Check(field.GetValue(value),depth+1);}
+                    }
+                }
+                finally {visiting.Remove(value);}
+            }
         }
 
         internal static T ReadDetails<T>(string root, string hash)

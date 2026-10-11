@@ -143,3 +143,16 @@ skips on Unity 6000.2.6f2 / DX11: transfer capture, mesh access, FBX export, pre
 LOD switches and the 3D viewport. The added regressions verify Float16 UV0 formats
 and raw bytes through readable/unreadable copies and native repack/transfer, and
 replay pair payloads exceeding 64 MiB in aggregate with a compact summary report.
+
+Detail encoding now checks a conservative upper bound on the serialized field
+graph before allocating JSON or UTF-8 bytes. Fixed numeric arrays are bounded by
+their length without visiting every item. Oversized graphs, cycles, excessive depth
+and serialization callbacks are refused; accepted captures keep the existing JSON
+format and checksums. The conservative estimate may reject a payload whose actual
+JSON would fit the byte limit.
+
+Captured source quality uses its own renderer transform, including nonuniform
+scale. Legacy inputs without that transform retain the identity-frame behavior.
+Lightmap preview skips meshes without complete UV2 and releases the rejected
+temporary copy. A valid preview maps UV2 through the renderer's lightmap scale and
+offset without changing source UV0.

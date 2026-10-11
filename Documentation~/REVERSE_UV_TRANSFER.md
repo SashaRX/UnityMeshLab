@@ -279,3 +279,10 @@ triangle area is only 7.34–8.37% of the 512 square at 32 texels/unit. Better s
 chart packing remains separate work. The complete Kitchen seed and the two
 Kamaz frame-0 cases still refuse publication. In ordinary forward logs, vertex
 coverage measures matched vertices; it does not certify nondegenerate UVs.
+
+New-surface welding is scoped to each input renderer. Coincident surfaces from
+different inputs retain independent unwrap topology; the overlap policy does not
+permit accidental new-chart overlap. The regression checks both policies, no
+intrinsic rescue on coincident quads, chart gutters and unchanged source meshes.
+If a donor-seam trial loses a source face, protection stops and the already
+validated baseline is retained instead of throwing while indexing missing pieces.

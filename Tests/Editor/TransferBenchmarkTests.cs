@@ -80,6 +80,25 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
+        public IEnumerator CapturedSourceQualityUsesItsOwnScaleAndRetainsLegacyIdentity()
+        {
+            string current=Capture(2),legacy=Capture(1);
+            foreach (string capture in new[] {current,legacy}) {
+                var manifest=JsonUtility.FromJson<TransferCaseCapture.Manifest>(File.ReadAllText(capture));
+                manifest.pairs[0].sourceLocalToWorld=Matrix4x4.Scale(new Vector3(3,1,1));
+                manifest.pairs[0].hasSourceTransform=capture==current;
+                File.WriteAllText(capture,JsonUtility.ToJson(manifest));
+            }
+            var task=TransferBenchmark.Run(new TransferBenchmark.Config {outputRoot=root,repetitions=2,warmup=0,includeSynthetic=false,
+                captures=new[] {current,legacy},methods=new[] {"uv0-nearest"}});
+            while (!task.IsCompleted) yield return null;
+            var report=task.GetAwaiter().GetResult();
+            Assert.IsTrue(report.complete); Assert.AreEqual(2,report.rows.Count);
+            Assert.AreEqual(3,report.rows[0].sourceQuality.areaWeightedAnisotropy,1e-5);
+            Assert.AreEqual(1,report.rows[1].sourceQuality.areaWeightedAnisotropy,1e-5);
+        }
+
+        [UnityTest]
         public IEnumerator MissingAtlasDimensionsAreReportedAsUnavailable()
         {
             string capture = Capture(2);

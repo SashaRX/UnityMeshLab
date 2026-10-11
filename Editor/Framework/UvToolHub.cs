@@ -2103,13 +2103,14 @@ namespace SashaRX.UnityMeshLab
                 if (shader == null) return;
                 lightmapPreviewMat = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
             }
+            Mesh tempMesh = CreateLightmapPreviewMesh(ctx.DMesh(e), e.renderer.lightmapScaleOffset);
+            if (tempMesh == null) return;
             var mat = new Material(lightmapPreviewMat) { hideFlags = HideFlags.HideAndDontSave };
             mat.mainTexture = lmData.lightmapColor;
             mat.mainTextureScale = Vector2.one;
             mat.mainTextureOffset = Vector2.zero;
 
             var mf = e.renderer.GetComponent<MeshFilter>();
-            Mesh tempMesh = CreateLightmapPreviewMesh(ctx.DMesh(e), e.renderer.lightmapScaleOffset);
             lightmapBackups.Add(new LightmapBackup
             {
                 renderer = e.renderer,
@@ -2133,13 +2134,15 @@ namespace SashaRX.UnityMeshLab
             tempMesh.hideFlags = HideFlags.HideAndDontSave;
             var uv1 = new List<Vector2>();
             tempMesh.GetUVs(1, uv1);
-            if (uv1.Count == tempMesh.vertexCount)
+            if (uv1.Count==0 || uv1.Count!=tempMesh.vertexCount)
             {
-                var lmUvs = new Vector2[uv1.Count];
-                for (int i = 0; i < uv1.Count; i++)
-                    lmUvs[i] = new Vector2(uv1[i].x * so.x + so.z, uv1[i].y * so.y + so.w);
-                tempMesh.uv = lmUvs;
+                DestroyImmediate(tempMesh);
+                return null;
             }
+            var lmUvs = new Vector2[uv1.Count];
+            for (int i = 0; i < uv1.Count; i++)
+                lmUvs[i] = new Vector2(uv1[i].x * so.x + so.z, uv1[i].y * so.y + so.w);
+            tempMesh.uv = lmUvs;
             return tempMesh;
         }
 

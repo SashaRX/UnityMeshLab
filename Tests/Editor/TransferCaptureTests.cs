@@ -13,6 +13,31 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class TransferCaptureTests
     {
+        [Serializable] sealed class DetailPayload
+        {
+            public float[] values;
+            public string text;
+            [SerializeField] int privateValue=17;
+            public int PrivateValue => privateValue;
+        }
+        [Serializable] sealed class CyclicPayload { public CyclicPayload child; }
+
+        [Test]
+        public void DetailPreflightRejectsOversizedArraysAndCyclesBeforeEncodingAndPreservesSmallPayloads()
+        {
+            var oversized=new DetailPayload {values=new float[64]};
+            Assert.Greater(System.Text.Encoding.UTF8.GetByteCount(JsonUtility.ToJson(oversized)),64);
+            StringAssert.Contains("before JSON allocation",Assert.Throws<InvalidDataException>(()=>TransferCaseCapture.EncodeDetails(oversized,64)).Message);
+            var cyclic=new CyclicPayload(); cyclic.child=cyclic;
+            StringAssert.Contains("cyclic",Assert.Throws<InvalidDataException>(()=>TransferCaseCapture.EncodeDetails(cyclic,4096)).Message);
+            var small=new DetailPayload {values=new[] {float.MaxValue,float.Epsilon,-.25f},text="quoted \" value\n \u03bb"};
+            byte[] bytes=TransferCaseCapture.EncodeDetails(small,4096);
+            CollectionAssert.AreEqual(System.Text.Encoding.UTF8.GetBytes(JsonUtility.ToJson(small)),bytes);
+            var restored=JsonUtility.FromJson<DetailPayload>(System.Text.Encoding.UTF8.GetString(bytes));
+            CollectionAssert.AreEqual(small.values,restored.values); Assert.AreEqual(small.text,restored.text);
+            Assert.AreEqual(17,restored.PrivateValue);
+        }
+
         static Mesh Quad()
         {
             var mesh = new Mesh { name = "Rectangular texture UV" };

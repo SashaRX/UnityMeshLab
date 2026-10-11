@@ -235,7 +235,8 @@ namespace SashaRX.UnityMeshLab
                 input.sourceHash = TransferMeshSnapshot.Hash(sourceBytes); input.targetHash = TransferMeshSnapshot.Hash(targetBytes);
                 await StoreMesh(report.folder, input.sourceHash, sourceBytes); await StoreMesh(report.folder, input.targetHash, targetBytes);
                 await FreezeInput(input, report);
-                var sourceQuality = Quality.From(TransferUvQuality.Measure(input.source, input.source.uv2, Vector2.one, Matrix4x4.identity));
+                var sourceQuality = Quality.From(TransferUvQuality.Measure(input.source, input.source.uv2, Vector2.one,
+                    input.hasSourceTransform ? input.sourceLocalToWorld : Matrix4x4.identity));
                 foreach (string method in config.methods) {
                     if (UvProgress.CancelRequested) break;
                     var row = MakeRow(input, method, sourceQuality); report.rows.Add(row);

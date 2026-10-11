@@ -21,6 +21,28 @@ namespace SashaRX.UnityMeshLab.Tests
 
     public class PreviewLodSwitchTests
     {
+        [Test]
+        public void LightmapCopyRequiresUv2AndPreservesSourceUvAndMeshLifetime()
+        {
+            var source=new Mesh {vertices=new[] {Vector3.zero,Vector3.right,Vector3.up},triangles=new[] {0,1,2},
+                uv=new[] {Vector2.zero,Vector2.right,Vector2.up}};
+            var original=(Vector2[])source.uv.Clone();
+            var create=typeof(UvToolHub).GetMethod("CreateLightmapPreviewMesh",BindingFlags.Static|BindingFlags.NonPublic);
+            int meshes=Resources.FindObjectsOfTypeAll<Mesh>().Length;
+            Mesh preview=null;
+            try {
+                Assert.IsNull(create.Invoke(null,new object[] {source,new Vector4(.5f,.5f,.25f,.25f)}));
+                Assert.AreEqual(meshes,Resources.FindObjectsOfTypeAll<Mesh>().Length);
+                CollectionAssert.AreEqual(original,source.uv);
+                source.uv2=new[] {Vector2.up,Vector2.zero,Vector2.right};
+                preview=(Mesh)create.Invoke(null,new object[] {source,new Vector4(.5f,.5f,.25f,.25f)});
+                Assert.NotNull(preview);
+                CollectionAssert.AreEqual(source.uv2.Select(v=>v*.5f+Vector2.one*.25f).ToArray(),preview.uv);
+                CollectionAssert.AreEqual(original,source.uv);
+            }
+            finally {if (preview) Object.DestroyImmediate(preview);Object.DestroyImmediate(source);}
+        }
+
         const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
         readonly List<Object> owned = new List<Object>();
         UvToolHub hub;

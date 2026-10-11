@@ -63,7 +63,9 @@ namespace SashaRX.UnityMeshLab
                 for (int f = 0; f < a.faces.Length; ++f)
                 {
                     token.ThrowIfCancellationRequested(); var face = a.faces[f];
-                    if (!face.inherited || ReverseUvJunctionTrial.Covered(a, f, b, pieces[a.sourceFaces[f]].Where(p => b.faces[p].inherited), token)) continue;
+                    if (!face.inherited) continue;
+                    if (!pieces.TryGetValue(a.sourceFaces[f],out var descendants)) return false;
+                    if (ReverseUvJunctionTrial.Covered(a, f, b, descendants.Where(p => b.faces[p].inherited), token)) continue;
                     var parent = before.nodes.Where(p => p.lod == face.parentLod).ElementAt(face.parentMesh);
                     if (parent.seed) continue;
                     var key = (face.parentLod, face.parentMesh);

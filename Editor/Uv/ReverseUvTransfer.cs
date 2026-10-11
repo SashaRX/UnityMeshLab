@@ -611,13 +611,14 @@ namespace SashaRX.UnityMeshLab
             var mesh = new Mesh { indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
             try
             {
-                // Weld geometry-only positions for the unwrap. Donor UV0 seams must
-                // not fragment this new surface parameterization.
-                var unique = new Dictionary<Vector3, int>(); var vertices = new List<Vector3>();
+                // Weld geometry within each input. Coincident independent renderers
+                // must retain separate topology and separately padded UV charts.
+                var unique = new Dictionary<(Surface,Vector3), int>(); var vertices = new List<Vector3>();
                 var indices = new int[positions.Count];
                 for (int i = 0; i < indices.Length; ++i)
                 {
-                    if (!unique.TryGetValue(positions[i], out int v)) { v = vertices.Count; unique.Add(positions[i], v); vertices.Add(positions[i]); }
+                    var key=(refs[i/3].s,positions[i]);
+                    if (!unique.TryGetValue(key, out int v)) { v = vertices.Count; unique.Add(key, v); vertices.Add(positions[i]); }
                     indices[i] = v;
                 }
                 mesh.SetVertices(vertices); mesh.triangles = indices;

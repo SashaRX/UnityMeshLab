@@ -40,6 +40,51 @@ namespace SashaRX.UnityMeshLab.Tests
         static ReverseUvTransfer.Result Build(ReverseUvTransfer.Options options, params ReverseUvTransfer.Level[] levels)
             => ReverseUvTransfer.Build(levels, options).GetAwaiter().GetResult();
 
+        [TestCase(false)] [TestCase(true)]
+        public void NewCoincidentRendererSurfacesRetainIndependentTopologyAndPadding(bool overlap)
+        {
+            var seed=Quad(); var first=Quad(3); var second=Quad(3);
+            var savedFirst=TransferMeshSnapshot.Capture(first); var savedSecond=TransferMeshSnapshot.Capture(second);
+            var options=Options(overlap); options.splitDonorSeams=false;
+            using var result=Build(options,Level(1,seed),Level(0,first,second));
+            Assert.AreEqual(4,result.report.newFaces);
+            Assert.AreEqual(2,result.report.nodes[1].newFaces); Assert.AreEqual(2,result.report.nodes[2].newFaces);
+            Assert.AreEqual(0,result.report.nodes[1].localFallbackFaces); Assert.AreEqual(0,result.report.nodes[2].localFallbackFaces);
+            foreach (var mesh in result.meshes[1]) Clean(mesh);
+            var combined=Combine(result.meshes[1]);
+            var uv=combined.uv2; var triangles=combined.triangles;
+            var labels=Enumerable.Range(0,uv.Length).Select(i=>i<result.meshes[1][0].vertexCount ? 0 : 1).ToArray();
+            var atlas=UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {uv=uv,indices=triangles,charts=labels},default);
+            Assert.IsTrue(atlas.complete); Assert.AreEqual(0,atlas.pairs); Assert.AreEqual(0,atlas.degenerateFaces);
+            float padding=(options.padding-.01f)/result.report.atlasSize;
+            var a=result.meshes[1][0]; var b=result.meshes[1][1];
+            // Unity can split a planar quad into two packed charts. Their boxes
+            // may interleave even though each pair retains the pixel gutter.
+            for (int f=0;f<a.triangles.Length;f+=3)
+                for (int g=0;g<b.triangles.Length;g+=3) {
+                    var auv=Enumerable.Range(0,3).Select(k=>a.uv2[a.triangles[f+k]]).ToArray();
+                    var buv=Enumerable.Range(0,3).Select(k=>b.uv2[b.triangles[g+k]]).ToArray();
+                    var amin=auv.Aggregate(Vector2.Min); var amax=auv.Aggregate(Vector2.Max);
+                    var bmin=buv.Aggregate(Vector2.Min); var bmax=buv.Aggregate(Vector2.Max);
+                    Assert.IsTrue(bmin.x-amax.x>=padding || amin.x-bmax.x>=padding || bmin.y-amax.y>=padding || amin.y-bmax.y>=padding,
+                        $"Faces {f/3}/{g/3}: A {amin}/{amax}; B {bmin}/{bmax}; padding {padding}");
+                }
+            CollectionAssert.AreEqual(savedFirst,TransferMeshSnapshot.Capture(first));
+            CollectionAssert.AreEqual(savedSecond,TransferMeshSnapshot.Capture(second));
+        }
+
+        [Test]
+        public void MissingRefinementPiecesStopProtectionAndRetainTheBaseline()
+        {
+            var before=new ReverseUvTransfer.Report(); var after=new ReverseUvTransfer.Report();
+            before.nodes.Add(new ReverseUvTransfer.NodeReport {faces=new[] {new ReverseUvTransfer.Face {inherited=true}},sourceFaces=new[] {23}});
+            after.nodes.Add(new ReverseUvTransfer.NodeReport {faces=Array.Empty<ReverseUvTransfer.Face>(),sourceFaces=Array.Empty<int>()});
+            var trial=Options();
+            var protect=typeof(ReverseUvTransfer).GetMethod("ProtectDonorAncestors",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Static);
+            Assert.IsFalse((bool)protect.Invoke(null,new object[] {before,after,trial,default(CancellationToken)}));
+            Assert.IsNull(trial.seamCutExclusions);
+        }
+
         [Test]
         public void CleanupPreservesSourceAttributesAndMaterialSlotsAndTracksFaceIdentity()
         {
