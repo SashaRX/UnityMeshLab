@@ -264,7 +264,8 @@ namespace SashaRX.UnityMeshLab
                         {
                             var variant = (ModelImporter)AssetImporter.GetAtPath(targetFbxPath);
                             variant.importNormals = ModelImporterNormals.Import;
-                            if (channelsWritten.Contains("tangents")) variant.importTangents = ModelImporterTangents.Import;
+                            // A partial shading export must keep the source tangent calculation
+                            // mode. Importing stored frames instead would change excluded shading.
                             EditorUtility.SetDirty(variant);
                             AssetDatabase.WriteImportSettingsIfDirty(targetFbxPath);
                         }

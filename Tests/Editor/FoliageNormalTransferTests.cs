@@ -174,6 +174,65 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void ExcludedDegenerateUvDoesNotSuppressFoliageTangents()
+        {
+            using var fixture = new Fixture();
+            // Selected triangle 0 has valid UVs. Excluded triangle 1 is UV-degenerate
+            // and shares two vertices, which must retain their original trunk frame.
+            fixture.mesh.uv = new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.zero };
+            fixture.mesh.colors = new[] { Color.red, Color.green, Color.blue, Color.white };
+            var before = new[] { new Vector4(0,1,0,-1), new Vector4(0,1,0,-1), new Vector4(0,1,0,-1), new Vector4(0,1,0,-1) };
+            fixture.mesh.tangents = before;
+            var settings = new FoliageNormalsSettings { selection = FoliageFaceSelection.SelectedSubmeshIndices, submeshes = new[] { 0 } };
+            using var target = new FoliageTargetSnapshot(fixture.renderer, Matrix4x4.identity, settings, CancellationToken.None);
+            var result = target.BuildResult(new[] { Vector3.up, Vector3.up, Vector3.up, Vector3.forward }, true, CancellationToken.None, out int duplicates);
+            try
+            {
+                Assert.AreEqual(2, duplicates);
+                CollectionAssert.AreEqual(fixture.mesh.GetIndices(1), result.GetIndices(1));
+                foreach (int v in result.GetIndices(1))
+                {
+                    Assert.AreEqual(Vector3.forward, result.normals[v]);
+                    Assert.AreEqual(before[v], result.tangents[v]);
+                }
+                foreach (int v in result.GetIndices(0))
+                {
+                    Assert.That(((Vector3)result.tangents[v]).magnitude, Is.EqualTo(1).Within(1e-5));
+                    Assert.That(Vector3.Dot((Vector3)result.tangents[v], result.normals[v]), Is.EqualTo(0).Within(1e-5));
+                }
+                int[] map = { 0,1,2,3,0,2 };
+                for (int i = 0; i < map.Length; i++)
+                {
+                    Assert.AreEqual(fixture.mesh.vertices[map[i]], result.vertices[i]);
+                    Assert.AreEqual(fixture.mesh.uv[map[i]], result.uv[i]);
+                    Assert.AreEqual(fixture.mesh.colors[map[i]], result.colors[i]);
+                }
+                CollectionAssert.AreEqual(before, fixture.mesh.tangents);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(result); }
+        }
+
+        [Test]
+        public void AdditionalVertexStreamsAreRefusedAndInvalidateExistingCapture()
+        {
+            using var fixture = new Fixture();
+            var stream = UnityEngine.Object.Instantiate(fixture.mesh);
+            try
+            {
+                using var target = new FoliageTargetSnapshot(fixture.renderer, Matrix4x4.identity, new FoliageNormalsSettings(), CancellationToken.None);
+                Assert.IsTrue(target.IsCurrent(Matrix4x4.identity));
+                fixture.renderer.additionalVertexStreams = stream;
+                Assert.IsFalse(target.IsCurrent(Matrix4x4.identity));
+                var error = Assert.Throws<InvalidOperationException>(() => new FoliageTargetSnapshot(fixture.renderer, Matrix4x4.identity, new FoliageNormalsSettings(), CancellationToken.None));
+                Assert.That(error.Message, Does.Contain("Additional vertex streams"));
+                Assert.AreSame(fixture.mesh, fixture.root.GetComponent<MeshFilter>().sharedMesh);
+                Assert.AreSame(stream, fixture.renderer.additionalVertexStreams);
+                Assert.IsNull(target.working);
+            }
+            finally { fixture.renderer.additionalVertexStreams = null; UnityEngine.Object.DestroyImmediate(stream); }
+        }
+
+        [Test]
         public void MissingUvRetainsTangentsAndInvalidHitsRetainUnitOriginals()
         {
             using var fixture = new Fixture(new[] {Vector3.zero,Vector3.right,Vector3.up});

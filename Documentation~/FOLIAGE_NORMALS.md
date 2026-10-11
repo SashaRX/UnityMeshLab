@@ -251,7 +251,8 @@ are copied separately. Materials, submesh topology, face order and bounds remain
 Any unsupported capture or copy fails rather than modifying trunk normals.
 
 Tangents are recalculated only if requested and UV0 exists, is finite and has
-nondegenerate UV triangles. Without valid UV0, original tangents are retained and
+nondegenerate UV triangles on the selected faces. Excluded UV degeneracy does not
+disable foliage tangent recalculation. Without valid selected UV0, original tangents are retained and
 a warning is emitted. Existing excluded tangent values are restored after
 recalculation. Target normals are never regenerated with RecalculateNormals.
 
@@ -265,13 +266,20 @@ frame. **Show proxy edges** uses the viewport's cached wire drawing for the thre
 proxy previews. Transient meshes use HideAndDontSave and never replace scene meshes during
 preview.
 
-Apply checks that captured Mesh references, matrices and material assignments are
-still current, then creates scene-owned result clones and records renderer and
+Apply checks captured Mesh references, a content fingerprint of all vertex streams
+and indices, bounds and import settings, matrices, material assignments and the
+current eligible renderer set. In-place mesh edits, Undo or reimports require
+recapture before applying or saving. Renderers with additional vertex streams are
+refused before capture because those attributes can override the result or become
+incompatible with boundary copies. Apply creates scene-owned result clones and records renderer and
 MeshFilter changes in one Undo group. Prefab instance overrides are recorded.
 Clearing previews or rebuilding cannot destroy applied meshes; Undo/Redo owns
 their scene lifetime. The hub restores only its owned temporary mesh swaps, so
 Undo/Redo, switching selection and closing Mesh Lab preserve applied scene meshes.
-**Save Mesh Asset** writes unique separate `_FoliageNormals.asset` meshes under an
+Apply is disabled in Prefab Mode: save a persistent Mesh Asset or Separate FBX and
+assign that asset to the prefab instead. This prevents saving a transient mesh
+reference in a prefab. **Save Mesh Asset** reserves unique output paths before its
+asset-editing batch, including when several renderers share one source mesh, and writes separate `_FoliageNormals.asset` meshes under an
 Assets folder. **Save Separate FBX** writes one unique `_FoliageNormals.fbx` per
 source model into the chosen Assets folder. It requires Unity FBX Exporter
 (`com.unity.formats.fbx`); the button is disabled with an installation hint when
@@ -292,7 +300,9 @@ are inherited from the source document. New normal/tangent elements, if absent,
 must cover every corner and use the unchanged original shading on excluded faces.
 
 The new FBX inherits source import settings and material remaps, with **Normals =
-Import** and **Tangents = Import** when a tangent frame was written. Only the new
+Import**. The source tangent mode is retained: authored tangents remain imported;
+MikkTSpace and legacy calculations remain calculated. It never switches excluded
+faces from calculated shading to a stored FBX frame. Only the new
 importer is configured. A source using calculated normals is refused: switching
 the variant to imported normals could otherwise change excluded shading. Use an
 FBX source with Normals = Import and recapture; standalone/generated meshes

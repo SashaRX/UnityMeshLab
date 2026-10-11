@@ -5,6 +5,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+- Foliage Normals refuses stale mesh data, changes to the eligible renderer set and additional vertex streams; Prefab Mode requires a persistent saved output before assignment. Multi-renderer mesh saves reserve distinct asset paths. Foliage tangent recalculation ignores excluded UV degeneracy, and partial FBX export retains the source tangent import/calculation mode. Gating Sonar findings in the foliage pipeline are fixed without suppressions.
+
 ### Added
 - Far Screen Budget distinguishes continuous vertex-color gradients from sharp paint boundaries and verifies reverse-view color/UV correspondence. Bounded silhouette correction checks contacts and source distance at 64px and 128px; the real SmallBench keeps 77/708 triangles and 125 vertices while worst 64px GPU coverage error improves from 23.9% to 18.1%. University Pot and the tent retain their previous meshes. The unsuccessful 78-triangle component-allocation prototype is archived outside the generator; this fixture-tuning series is closed with remaining thin-detail, protected LOD1, generation-time and shared-lightmap limits documented.
 - Actual vertex-color LOD evaluation can select an exact mesh in a multi-mesh FBX, retain author LOD1/LOD2 controls and capture twelve additional GPU field views. Fresh university/SmallBench comparisons reach the 1/9 LOD2 budgets and pass 57 selected tests; shared-corner limits, missed protected LOD1 budgets and SmallBench RGB/alpha/coverage regressions remain explicit in the portable report.

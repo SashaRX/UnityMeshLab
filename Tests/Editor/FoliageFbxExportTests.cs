@@ -90,12 +90,19 @@ namespace SashaRX.UnityMeshLab.Tests
             return path;
         }
 
-        [TestCase(false, true)]
-        [TestCase(false, false)]
-        [TestCase(true, true)]
-        public void SeparateFbxPreservesSourceDocumentAndExcludedNormalsAfterReimport(bool coincident, bool binary)
+        [TestCase(false, true, ModelImporterTangents.Import)]
+        [TestCase(false, false, ModelImporterTangents.Import)]
+        [TestCase(true, true, ModelImporterTangents.Import)]
+        [TestCase(false, true, ModelImporterTangents.CalculateMikk)]
+        [TestCase(false, true, ModelImporterTangents.CalculateLegacy)]
+        public void SeparateFbxPreservesSourceDocumentAndExcludedNormalsAfterReimport(bool coincident, bool binary, ModelImporterTangents tangentMode)
         {
             string source = Source(coincident, binary);
+            if (tangentMode != ModelImporterTangents.Import)
+            {
+                var settings = (ModelImporter)AssetImporter.GetAtPath(source);
+                settings.importTangents = tangentMode; settings.SaveAndReimport();
+            }
             var bytes = File.ReadAllBytes(source); var meta = File.ReadAllBytes(source + ".meta");
             var root = Object.Instantiate(AssetDatabase.LoadAssetAtPath<GameObject>(source));
             root.transform.localScale = new Vector3(.01f,.02f,-.03f);
@@ -114,7 +121,9 @@ namespace SashaRX.UnityMeshLab.Tests
                 var desired = new Vector3(.3f,.5f,.8f).normalized;
                 for (int i = 0; i < normals.Length; i++) if (target.selectedVertices[i]) normals[i] = desired;
                 target.working = target.BuildResult(normals, true, CancellationToken.None, out int duplicates);
-                Assert.Greater(duplicates,0,"Fixture must exercise selected/excluded vertex splitting.");
+                if (tangentMode == ModelImporterTangents.CalculateLegacy)
+                    Assert.AreEqual(0, duplicates, "Legacy tangents already split this material boundary during import.");
+                else Assert.Greater(duplicates,0,"Fixture must exercise selected/excluded vertex splitting.");
                 string output = FoliageFbxExport.Save(new[] {target}, folder).Single();
                 Assert.That(output, Does.EndWith("_FoliageNormals.fbx")); Assert.AreNotEqual(source, output);
                 CheckDocuments(source, output);
@@ -122,14 +131,18 @@ namespace SashaRX.UnityMeshLab.Tests
                 var resultTag = FbxChannelWrite.ImportTagged(output, false, out _)[target.source.name];
                 CollectionAssert.AreEqual(sourceTag.cornerPositions, resultTag.cornerPositions);
                 foreach (int corner in sourceTag.submeshCorners[0])
+                {
                     Assert.That(Vector3.Dot(sourceTag.normals[corner],resultTag.normals[corner]), Is.GreaterThan(.999999f));
+                    Assert.That(Vector3.Dot((Vector3)sourceTag.tangents[corner],(Vector3)resultTag.tangents[corner]), Is.GreaterThan(.999999f));
+                    Assert.AreEqual(sourceTag.tangents[corner].w, resultTag.tangents[corner].w);
+                }
                 foreach (int corner in sourceTag.submeshCorners[1])
                     Assert.That(Vector3.Dot(desired,resultTag.normals[corner]), Is.GreaterThan(.999999f));
                 for (int ch = 0; ch < 8; ch++) CollectionAssert.AreEqual(sourceTag.uvs[ch], resultTag.uvs[ch]);
                 CollectionAssert.AreEqual(sourceTag.colors, resultTag.colors);
                 var variantImporter = (ModelImporter)AssetImporter.GetAtPath(output);
                 Assert.AreEqual(ModelImporterNormals.Import, variantImporter.importNormals);
-                Assert.AreEqual(ModelImporterTangents.Import, variantImporter.importTangents);
+                Assert.AreEqual(tangentMode, variantImporter.importTangents);
                 CollectionAssert.AreEqual(bytes,File.ReadAllBytes(source)); CollectionAssert.AreEqual(meta,File.ReadAllBytes(source+".meta"));
                 Assert.AreEqual(originalReference,renderer.GetComponent<MeshFilter>().sharedMesh);
                 CollectionAssert.AreEqual(materialReferences,renderer.sharedMaterials);

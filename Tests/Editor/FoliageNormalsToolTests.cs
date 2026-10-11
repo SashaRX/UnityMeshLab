@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.TestTools;
 using Object = UnityEngine.Object;
@@ -38,6 +39,168 @@ namespace SashaRX.UnityMeshLab.Tests
             double end = EditorApplication.timeSinceStartup + 90;
             while (!task.IsCompleted && EditorApplication.timeSinceStartup < end) yield return null;
             Assert.IsTrue(task.IsCompleted,"Task did not finish while Unity kept ticking."); Assert.IsFalse(task.IsFaulted,task.Exception?.ToString());
+        }
+
+        [UnityTest]
+        public IEnumerator InPlaceMeshEditsInvalidateCaptureAndCannotOverwriteCurrentData()
+        {
+            for (int channel = 0; channel < 7; channel++)
+            {
+                using var fixture = new FoliageNormalTransferTests.Fixture();
+                fixture.mesh.uv = new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.one };
+                fixture.mesh.colors = new[] { Color.red, Color.green, Color.blue, Color.white };
+                fixture.mesh.tangents = Array.ConvertAll(fixture.mesh.vertices, _ => new Vector4(1,0,0,1));
+                using var pipeline = new FoliageNormalsPipeline(new TestProxy());
+                var settings = FoliageSurfaceSamplerTests.Settings(); settings.recalculateTangents = false;
+                var task = pipeline.Run(fixture.root, settings, FoliageNormalsPipeline.Stage.Transfer);
+                yield return Await(task); Assert.IsTrue(task.Result, pipeline.Status);
+                Assert.IsTrue(pipeline.CanApply);
+                switch (channel)
+                {
+                    case 0: var positions = fixture.mesh.vertices; positions[0] += Vector3.right * .1f; fixture.mesh.vertices = positions; break;
+                    case 1: fixture.mesh.SetTriangles(new[] { 2,1,0 }, 0); break;
+                    case 2: var uv = fixture.mesh.uv; uv[0] = Vector2.one; fixture.mesh.uv = uv; break;
+                    case 3: var colors = fixture.mesh.colors; colors[0] = Color.black; fixture.mesh.colors = colors; break;
+                    case 4: var normals = fixture.mesh.normals; normals[0] = Vector3.up; fixture.mesh.normals = normals; break;
+                    case 5: var tangents = fixture.mesh.tangents; tangents[0] = new Vector4(0,1,0,-1); fixture.mesh.tangents = tangents; break;
+                    default: fixture.mesh.bounds = new Bounds(Vector3.zero, Vector3.one * 20); break;
+                }
+                var current = FoliageTargetSnapshot.ContentFingerprint(fixture.mesh);
+                Assert.IsFalse(pipeline.CaptureCurrent(), "Edited channel " + channel);
+                Assert.IsFalse(pipeline.CanApply);
+                Assert.Throws<InvalidOperationException>(() => pipeline.Apply());
+                Assert.Throws<InvalidOperationException>(() => pipeline.Save("Assets"));
+                Assert.Throws<InvalidOperationException>(() => pipeline.SaveFbx("Assets"));
+                Assert.AreSame(fixture.mesh, fixture.root.GetComponent<MeshFilter>().sharedMesh);
+                Assert.AreEqual(current, FoliageTargetSnapshot.ContentFingerprint(fixture.mesh));
+                pipeline.InvalidateChanged(settings, fixture.root);
+                Assert.IsFalse(pipeline.Has(FoliageNormalsPipeline.Stage.Capture));
+                Assert.AreEqual(0, pipeline.Targets.Count);
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator RemovedMeshInvalidatesCaptureWithoutHashingMissingData()
+        {
+            using var fixture = new FoliageNormalTransferTests.Fixture();
+            using var pipeline = new FoliageNormalsPipeline(new TestProxy());
+            var settings = FoliageSurfaceSamplerTests.Settings();
+            var task = pipeline.Run(fixture.root, settings, FoliageNormalsPipeline.Stage.Transfer);
+            yield return Await(task);
+            Assert.IsTrue(task.Result, pipeline.Status);
+            var filter = fixture.root.GetComponent<MeshFilter>();
+            filter.sharedMesh = null;
+            Assert.IsFalse(pipeline.CaptureCurrent());
+            Assert.IsFalse(pipeline.CanApply);
+            pipeline.InvalidateChanged(settings, fixture.root);
+            Assert.IsFalse(pipeline.Has(FoliageNormalsPipeline.Stage.Capture));
+            Assert.IsNull(filter.sharedMesh);
+        }
+
+        [UnityTest]
+        public IEnumerator ChangedEligibleRendererSetInvalidatesCapture()
+        {
+            for (int change = 0; change < 3; change++)
+            {
+                using var fixture = new FoliageNormalTransferTests.Fixture();
+                var child = new GameObject("New leaves"); child.transform.SetParent(fixture.root.transform, false);
+                child.AddComponent<MeshFilter>().sharedMesh = fixture.mesh;
+                var renderer = child.AddComponent<MeshRenderer>(); renderer.enabled = false;
+                var leaf = new Material(Shader.Find("Standard")); var trunk = new Material(Shader.Find("Standard"));
+                using var pipeline = new FoliageNormalsPipeline(new TestProxy());
+                try
+                {
+                    var settings = FoliageSurfaceSamplerTests.Settings(); settings.recalculateTangents = false;
+                    if (change == 2)
+                    {
+                        settings.selection = FoliageFaceSelection.SelectedMaterials; settings.materials = new[] { leaf };
+                        fixture.renderer.sharedMaterials = new[] { leaf, leaf };
+                        renderer.sharedMaterials = new[] { trunk, trunk }; renderer.enabled = true;
+                    }
+                    var task = pipeline.Run(fixture.root, settings, FoliageNormalsPipeline.Stage.Transfer);
+                    yield return Await(task); Assert.IsTrue(task.Result, pipeline.Status); Assert.IsTrue(pipeline.CanApply);
+                    Assert.AreEqual(1, pipeline.Targets.Count);
+                    if (change == 0) Object.DestroyImmediate(child);
+                    if (change == 0)
+                    {
+                        child = new GameObject("Added leaves"); child.transform.SetParent(fixture.root.transform, false);
+                        child.AddComponent<MeshFilter>().sharedMesh = fixture.mesh; child.AddComponent<MeshRenderer>();
+                    }
+                    else if (change == 1) renderer.enabled = true;
+                    else renderer.sharedMaterials = new[] { leaf, leaf };
+                    Assert.IsFalse(pipeline.CaptureCurrent(), "Renderer change " + change);
+                    Assert.IsFalse(pipeline.CanApply); Assert.Throws<InvalidOperationException>(() => pipeline.Apply());
+                    pipeline.InvalidateChanged(settings, fixture.root);
+                    Assert.IsFalse(pipeline.Has(FoliageNormalsPipeline.Stage.Capture));
+                }
+                finally { Object.DestroyImmediate(leaf); Object.DestroyImmediate(trunk); }
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator IgnoredNewRendererDoesNotInvalidateExplicitSelection()
+        {
+            using var fixture = new FoliageNormalTransferTests.Fixture();
+            using var pipeline = new FoliageNormalsPipeline(new TestProxy());
+            var settings = FoliageSurfaceSamplerTests.Settings(); settings.filterRenderers = true; settings.renderers = new[] { fixture.renderer };
+            var task = pipeline.Run(fixture.root, settings, FoliageNormalsPipeline.Stage.Transfer);
+            yield return Await(task); Assert.IsTrue(task.Result, pipeline.Status);
+            var child = new GameObject("Ignored"); child.transform.SetParent(fixture.root.transform, false);
+            child.AddComponent<MeshFilter>().sharedMesh = fixture.mesh; child.AddComponent<MeshRenderer>();
+            Assert.IsTrue(pipeline.CanApply);
+        }
+
+        [UnityTest]
+        public IEnumerator SharedSourceMeshesSaveToDistinctPersistentAssets()
+        {
+            string folder = "Assets/FoliageSave_" + Guid.NewGuid().ToString("N");
+            using var fixture = new FoliageNormalTransferTests.Fixture();
+            var child = new GameObject("Second leaves"); child.transform.SetParent(fixture.root.transform, false);
+            child.transform.localPosition = Vector3.right * .5f;
+            child.AddComponent<MeshFilter>().sharedMesh = fixture.mesh; child.AddComponent<MeshRenderer>();
+            using var pipeline = new FoliageNormalsPipeline(new TestProxy());
+            try
+            {
+                var task = pipeline.Run(fixture.root, FoliageSurfaceSamplerTests.Settings(), FoliageNormalsPipeline.Stage.Transfer);
+                yield return Await(task); Assert.IsTrue(task.Result, pipeline.Status); Assert.AreEqual(2, pipeline.Targets.Count);
+                var paths = pipeline.Save(folder);
+                Assert.AreEqual(2, paths.Length); Assert.AreNotEqual(paths[0], paths[1]);
+                for (int i = 0; i < paths.Length; i++)
+                {
+                    var saved = AssetDatabase.LoadAssetAtPath<Mesh>(paths[i]); Assert.IsTrue(saved);
+                    CollectionAssert.AreEqual(pipeline.Targets[i].working.normals, saved.normals);
+                    CollectionAssert.AreEqual(fixture.mesh.vertices, saved.vertices);
+                }
+                var again = pipeline.Save(folder);
+                Assert.AreNotEqual(again[0], again[1]);
+                foreach (string path in again) CollectionAssert.DoesNotContain(paths, path);
+                Assert.AreEqual(4, AssetDatabase.FindAssets("t:Mesh", new[] { folder }).Length);
+            }
+            finally { AssetDatabase.DeleteAsset(folder); }
+        }
+
+        [UnityTest]
+        public IEnumerator PrefabModeApplyIsBlockedWhilePersistentSaveRemainsAvailable()
+        {
+            string folder = "Assets/FoliagePrefab_" + Guid.NewGuid().ToString("N");
+            using var fixture = new FoliageNormalTransferTests.Fixture();
+            using var pipeline = new FoliageNormalsPipeline(new TestProxy());
+            try
+            {
+                MeshAssetOperations.EnsureOutputFolder(folder);
+                var savedSource = Object.Instantiate(fixture.mesh); AssetDatabase.CreateAsset(savedSource, folder + "/Source.asset");
+                fixture.root.GetComponent<MeshFilter>().sharedMesh = savedSource;
+                string prefab = folder + "/Tree.prefab"; PrefabUtility.SaveAsPrefabAsset(fixture.root, prefab);
+                var stage = PrefabStageUtility.OpenPrefab(prefab); Assert.IsNotNull(stage);
+                var root = stage.prefabContentsRoot; var source = root.GetComponent<MeshFilter>().sharedMesh;
+                var task = pipeline.Run(root, FoliageSurfaceSamplerTests.Settings(), FoliageNormalsPipeline.Stage.Transfer);
+                yield return Await(task); Assert.IsTrue(task.Result, pipeline.Status);
+                Assert.IsTrue(pipeline.CanApply); Assert.IsTrue(pipeline.InPrefabMode); Assert.IsFalse(pipeline.CanApplyToScene);
+                Assert.Throws<InvalidOperationException>(() => pipeline.Apply());
+                Assert.AreSame(source, root.GetComponent<MeshFilter>().sharedMesh);
+                var paths = pipeline.Save(folder); Assert.IsTrue(EditorUtility.IsPersistent(AssetDatabase.LoadAssetAtPath<Mesh>(paths[0])));
+            }
+            finally { pipeline.Dispose(); StageUtility.GoToMainStage(); Undo.ClearAll(); AssetDatabase.DeleteAsset(folder); }
         }
 
         [UnityTest]
