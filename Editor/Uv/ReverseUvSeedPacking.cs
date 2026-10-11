@@ -27,7 +27,7 @@ namespace SashaRX.UnityMeshLab
 
         internal static Vector2[] Prepare(Vector3[] positions, Vector2[] uv, float density,
             bool fixedDensity, ReverseUvTransfer.Options options, CancellationToken token, out int side, bool compact = true, int[] regions = null,
-            (double length,double x,double y)[] frames=null)
+            (double length,double x,double y)[] frames=null, Action<bool[]> preparedFallback=null)
         {
             var fallback = ReverseUvNewCharts.Classify(positions, uv, options, token,frames,compact?regions:null);
             side = options.seedResolution;
@@ -132,7 +132,9 @@ namespace SashaRX.UnityMeshLab
                     comparisonBudget:options.comparisonBudget);
                 if(!scan.complete || scan.pairs>0 || scan.degenerateFaces>0)
                     throw new InvalidOperationException("Normalized seed layout contains overlaps or collapsed UV faces.");
+                if(compact) options.seedDensity=density*scale;
                 UvtLog.Info(UvtLog.Category.Repack, $"[ReverseUV] Prepared seed: {charts.Length} charts, {fallback.Count(f => f)} repaired faces, {side}², {density * scale:G6} tex/m; {(compact ? "compact" : "original")} packing, rotation {(compact && options.rotateCharts ? "on" : "off")}.");
+                preparedFallback?.Invoke(fallback);
                 return pixels;
             }
             throw new InvalidOperationException("Reverse seed repair did not converge.");
@@ -228,7 +230,10 @@ namespace SashaRX.UnityMeshLab
                 indices[i] = v;
             }
             var uv = coordinates.ToArray();
-            var regions = options.cutNarrowJunctions && !rescue ? UvJunctionCuts.Find(uv, indices, token).regions : new int[faces.Length];
+            // Explicit subdivision domains already encode the accepted seams.
+            // Cutting them again along tessellation edges defeats protected
+            // donor regions and can fragment an otherwise compact strip.
+            var regions = options.cutNarrowJunctions && !rescue && !strips ? UvJunctionCuts.Find(uv, indices, token).regions : new int[faces.Length];
             foreach (var group in Enumerable.Range(0, faces.Length).GroupBy(f => regions[f]))
             {
                 var part = group.ToArray();

@@ -114,6 +114,28 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void NativeFamilyEnvelopeKeepsOverlaidTrianglesInOneRigidTransform()
+        {
+            var under=Rectangle(0,0,12,4);
+            var source=new[] {under.Concat(Rectangle(2,1,3,2)).ToArray(),Rectangle(30,10,6,9),Rectangle(50,20,8,3)};
+            var snapshots=source.Select(p=>p.ToArray()).ToArray();
+            var result=ReverseUvNativeFamilyPacking.TryPack(source,128,new ReverseUvTransfer.Options {padding=2},default,
+                (g,p,s)=>p.All(v=>v.x>=0 && v.y>=0 && v.x<=s && v.y<=s),out float scale,out int side,allowLargerCanvas:true);
+            Assert.IsNotNull(result,"The installed native packer must preserve one connected family envelope.");
+            for(int g=0;g<source.Length;++g)
+                for(int p=0;p<source[g].Length;++p)
+                    Assert.AreEqual((source[g][p]-source[g][0]).magnitude*scale,(result[g][p]-result[g][0]).magnitude,.001);
+            Assert.Greater(scale,1);
+            for(int g=0;g<source.Length;++g) CollectionAssert.AreEqual(snapshots[g],source[g]);
+            // Independent families remain disjoint; overlaps inside a family
+            // retain their relative coordinates rather than becoming new items.
+            var boxes=result.Select(p=>p.Take(6)).SelectMany(p=>p).ToArray();
+            var audit=UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {uv=boxes.Select(p=>p/side).ToArray(),
+                indices=Enumerable.Range(0,boxes.Length).ToArray(),charts=new int[boxes.Length]},default);
+            Assert.IsTrue(audit.complete);Assert.AreEqual(0,audit.pairs);
+        }
+
+        [Test]
         public void CancelledFootprintSearchDoesNotMutateTheRetainedCoordinates()
         {
             var source=new[] {Rectangle(0,0,8,2)};var before=source[0].ToArray();

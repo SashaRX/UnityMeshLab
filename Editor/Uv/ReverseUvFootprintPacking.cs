@@ -14,7 +14,8 @@ namespace SashaRX.UnityMeshLab
         internal sealed class Diagnostics
         {
             internal long tighteningWork, repackingWork, validations;
-            internal int tightenedFamilies, completedOrders;
+            internal int tightenedFamilies, completedOrders, retainedFamilies;
+            internal bool nativePacked;
             internal List<string> refusedOrders=new List<string>();
         }
 
@@ -27,21 +28,22 @@ namespace SashaRX.UnityMeshLab
 
         internal static Vector2[][] Improve(Vector2[][] source, Vector2[][] baseline, int side, float scale,
             ReverseUvTransfer.Options options, CancellationToken token, Func<int,Vector2[],int,bool> validate,
-            out float finalScale, out bool improved, Diagnostics diagnostics=null)
+            out float finalScale, out bool improved, Diagnostics diagnostics=null,Action<int> preparedSide=null)
         {
             finalScale=scale; improved=false;
-            var masks=source.Select((points,id)=>Enumerable.Range(0,options.rotateCharts?4:1)
-                .Select(turn=>Raster(points,id,turn,scale,options.padding,token)).ToArray()).ToArray();
-            var orders=new[] {
-                masks.OrderBy(m=>ReverseUvFamilyPacking.MinimumAltitude(source[m[0].id])<.0001?0:1)
+            Mask[][] Masks(float density) => source.Select((points,id)=>Enumerable.Range(0,options.rotateCharts?4:1)
+                .Select(turn=>Raster(points,id,turn,density,options.padding,token)).ToArray()).ToArray();
+            Mask[][][] Orders(Mask[][] variants) => new[] {
+                variants.OrderBy(m=>ReverseUvFamilyPacking.MinimumAltitude(source[m[0].id])<.0001?0:1)
                     .ThenBy(m=>ReverseUvFamilyPacking.MinimumAltitude(source[m[0].id])<.0001
                         ?ReverseUvFamilyPacking.MinimumAltitude(source[m[0].id]):0)
                     .ThenByDescending(m=>Math.Max(m[0].width,m[0].height)).ThenBy(m=>m[0].id).ToArray(),
-                masks.OrderByDescending(m=>Math.Max(m[0].width,m[0].height)).ThenBy(m=>m[0].id).ToArray(),
-                masks.OrderByDescending((Mask[] m)=>m[0].rows.Sum((List<(int start,int end)> r)=>
+                variants.OrderByDescending(m=>Math.Max(m[0].width,m[0].height)).ThenBy(m=>m[0].id).ToArray(),
+                variants.OrderByDescending((Mask[] m)=>m[0].rows.Sum((List<(int start,int end)> r)=>
                     r.Sum(((int start,int end) span)=>span.end-span.start))).ThenBy(m=>m[0].id).ToArray()
             };
-            var best=baseline; double bestArea=BoundsArea(best);
+            var masks=Masks(scale);
+            var best=baseline; float bestScale=scale; double bestCost=BoundsArea(best)/(scale*(double)scale);
             long work=0,validations=0;
             var tightened=Tighten(baseline,masks,side,options,token,validate,ref work,ref validations);
             if(diagnostics!=null)
@@ -50,23 +52,45 @@ namespace SashaRX.UnityMeshLab
                 diagnostics.tightenedFamilies=tightened==null?0:Enumerable.Range(0,baseline.Length)
                     .Count(g=>!baseline[g].SequenceEqual(tightened[g]));
             }
-            if(tightened!=null && BoundsArea(tightened)<bestArea)
-            {best=tightened;bestArea=BoundsArea(best);improved=true;}
-            foreach(var order in orders.GroupBy(o=>string.Join(",",o.Select(m=>m[0].id))).Select(g=>g.First()))
+            if(tightened!=null && BoundsArea(tightened)/(scale*(double)scale)<bestCost)
+            {best=tightened;bestCost=BoundsArea(best)/(scale*(double)scale);improved=true;}
+            bool nativePacked=false;
+            if(source.Length>256 && options.fillFinalAtlas)
             {
-                token.ThrowIfCancellationRequested();
-                // Each alternative starts a new search. The preliminary local
-                // tightening must not consume the entire fresh packing budget.
-                long packingWork=0,packingValidations=0;
-                var packed=TryPack(order,side,options,token,validate,ref packingWork,ref packingValidations,diagnostics);
-                work+=packingWork;validations+=packingValidations;
-                if(packed==null) continue;
-                if(diagnostics!=null) ++diagnostics.completedOrders;
-                double area=BoundsArea(packed);
-                if(area>=bestArea) continue;
-                bestArea=area;best=packed;improved=true;
+                var native=ReverseUvNativeFamilyPacking.TryPack(source,side,options,token,validate,out float nativeScale,out int nativeSide,
+                    allowLargerCanvas:preparedSide!=null);
+                if(native!=null) UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Native family bbox cost {BoundsArea(native)/(nativeScale*(double)nativeScale):G6}; retained cost {bestCost:G6}; scale {nativeScale:G6}.");
+                if(native!=null && BoundsArea(native)/(nativeScale*(double)nativeScale)<bestCost)
+                {best=native;bestScale=nativeScale;bestCost=BoundsArea(native)/(nativeScale*(double)nativeScale);
+                    improved=true;nativePacked=true;side=nativeSide;}
+            }
+            if(diagnostics!=null && nativePacked) {diagnostics.nativePacked=true;++diagnostics.completedOrders;}
+            // A rectangle capacity scale can leave no room for conservative
+            // triangle masks. Repack also at requested density, then uniformly
+            // fill the completed placement. Compare bbox cost per unit density;
+            // merely shrinking islands cannot win this comparison.
+            var scales=nativePacked?Array.Empty<float>():options.fillFinalAtlas && scale>1
+                ?new[] {scale,1f}:new[] {scale};
+            foreach(float packingScale in scales.Distinct())
+            {
+                var variants=packingScale==scale?masks:Masks(packingScale);
+                foreach(var order in Orders(variants).GroupBy(o=>string.Join(",",o.Select(m=>m[0].id))).Select(g=>g.First()))
+                {
+                    token.ThrowIfCancellationRequested();
+                    // Every order is an independent bounded search.
+                    long packingWork=0,packingValidations=0;
+                    var packed=TryPack(order,side,options,token,validate,ref packingWork,ref packingValidations,diagnostics,packingScale==scale?baseline:null);
+                    work+=packingWork;validations+=packingValidations;
+                    if(packed==null) continue;
+                    if(diagnostics!=null) ++diagnostics.completedOrders;
+                    double cost=BoundsArea(packed)/(packingScale*(double)packingScale);
+                    if(cost>=bestCost) continue;
+                    bestCost=cost;best=packed;bestScale=packingScale;improved=true;
+                }
             }
             if(diagnostics!=null) {diagnostics.repackingWork=work-diagnostics.tighteningWork;diagnostics.validations=validations;}
+            finalScale=bestScale;
+            preparedSide?.Invoke(side);
             if(!improved || !options.fillFinalAtlas) return best;
             var pointsAll=best.SelectMany(p=>p).ToArray();var min=pointsAll.Aggregate(Vector2.Min);var max=pointsAll.Aggregate(Vector2.Max);
             double fit=(side-options.padding*2)/Math.Max((double)max.x-min.x,(double)max.y-min.y);
@@ -75,7 +99,7 @@ namespace SashaRX.UnityMeshLab
                 (float)(((double)p.y-min.y)*fit+options.padding))).ToArray()).ToArray();
             for(int group=0;group<filled.Length;++group)
                 if(validate!=null && !validate(group,filled[group],side)) return best;
-            finalScale=(float)(scale*fit);
+            finalScale=(float)(bestScale*fit);
             return filled;
         }
 
@@ -211,39 +235,66 @@ namespace SashaRX.UnityMeshLab
         }
 
         static Vector2[][] TryPack(Mask[][] order,int side,ReverseUvTransfer.Options options,CancellationToken token,
-            Func<int,Vector2[],int,bool> validate,ref long work,ref long validations,Diagnostics diagnostics)
+            Func<int,Vector2[],int,bool> validate,ref long work,ref long validations,Diagnostics diagnostics,Vector2[][] baseline=null)
         {
-            var rows=Enumerable.Range(0,side).Select(_=>new List<(int start,int end)>()).ToArray();
-            var output=new Vector2[order.Length][];
-            foreach(var variants in order)
+            var retained=new HashSet<int>();
+            for(int attempt=0;attempt<=Math.Min(64,order.Length);++attempt)
             {
-                token.ThrowIfCancellationRequested();
-                Mask selected=null;Vector2[] placed=null;int left=0,bottom=0,best=int.MaxValue;
-                foreach(var mask in variants)
+                var rows=Enumerable.Range(0,side).Select(_=>new List<(int start,int end)>()).ToArray();
+                var output=new Vector2[order.Length][];
+                foreach(int id in retained)
                 {
-                    if(!Find(mask,rows,options,token,validate,ref work,ref validations,
-                        Math.Max(8192,order.Length*8L),out int x,out int y,out var points)) continue;
-                    int score=Math.Max(x+mask.width,y+mask.height);
-                    if(score>=best) continue;
-                    selected=mask;placed=points;left=x;bottom=y;best=score;
+                    var points=baseline[id];var min=points.Aggregate(Vector2.Min);
+                    var mask=Raster(points,id,0,1,options.padding,token);
+                    int x=(int)Math.Floor(min.x)-options.padding,y=(int)Math.Floor(min.y)-options.padding;
+                    output[id]=points;
+                    for(int r=0;r<mask.height;++r)
+                        if(y+r>=0 && y+r<side)
+                            foreach(var span in mask.rows[r]) Reserve(rows[y+r],Math.Max(0,x+span.start),Math.Min(side,x+span.end));
                 }
-                if(selected==null)
+                int failed=-1;
+                foreach(var variants in order)
                 {
-                    diagnostics?.refusedOrders.Add($"family {variants[0].id}, work {work}, validations {validations}");
+                    token.ThrowIfCancellationRequested();
+                    if(retained.Contains(variants[0].id)) continue;
+                    Mask selected=null;Vector2[] placed=null;int left=0,bottom=0,best=int.MaxValue;
+                    foreach(var mask in variants)
+                    {
+                        if(!Find(mask,rows,options,token,validate,ref work,ref validations,
+                            Math.Max(8192,order.Length*8L),out int x,out int y,out var points,optimizeExtent:order.Length<=256)) continue;
+                        int score=Math.Max(x+mask.width,y+mask.height);
+                        if(score>=best) continue;
+                        selected=mask;placed=points;left=x;bottom=y;best=score;
+                    }
+                    if(selected==null) {failed=variants[0].id;break;}
+                    output[selected.id]=placed;
+                    for(int r=0;r<selected.height;++r)
+                        foreach(var span in selected.rows[r]) Reserve(rows[bottom+r],left+span.start,left+span.end);
+                }
+                if(failed<0)
+                {
+                    if(diagnostics!=null) diagnostics.retainedFamilies=Math.Max(diagnostics.retainedFamilies,retained.Count);
+                    return output;
+                }
+                // One precision-sensitive family must not cancel a complete
+                // placement. Reserve its audited baseline and repack the rest.
+                // Keep the same common scale and stop on exhausted work budgets.
+                if(baseline==null || work>=128000000 || validations>=Math.Max(8192,order.Length*8L)
+                    || (validate!=null && !validate(failed,baseline[failed],side)) || !retained.Add(failed))
+                {
+                    diagnostics?.refusedOrders.Add($"family {failed}, retained {retained.Count}, work {work}, validations {validations}");
                     return null;
                 }
-                output[selected.id]=placed;
-                for(int r=0;r<selected.height;++r)
-                    foreach(var span in selected.rows[r]) Reserve(rows[bottom+r],left+span.start,left+span.end);
             }
-            return output;
+            diagnostics?.refusedOrders.Add($"local retention limit, retained {retained.Count}, work {work}, validations {validations}");
+            return null;
         }
 
         static bool Find(Mask mask,List<(int start,int end)>[] rows,ReverseUvTransfer.Options options,CancellationToken token,
             Func<int,Vector2[],int,bool> validate,ref long work,ref long validations,long validationBudget,
-            out int left,out int bottom,out Vector2[] placed)
+            out int left,out int bottom,out Vector2[] placed,bool optimizeExtent=true)
         {
-            placed=null;left=bottom=0;int best=int.MaxValue,localValidations=0;
+            placed=null;left=bottom=0;int localValidations=0,best=int.MaxValue;
             for(int y=0;y+mask.height<=rows.Length;++y)
             {
                 token.ThrowIfCancellationRequested();
@@ -277,9 +328,14 @@ namespace SashaRX.UnityMeshLab
                             var points=mask.local.Select(p=>p+new Vector2(x+offset,y+offset)).ToArray();
                             if(points.Any(p=>p.x<options.padding || p.y<options.padding || p.x>rows.Length-options.padding || p.y>rows.Length-options.padding)
                                 || (validate!=null && !validate(mask.id,points,rows.Length))) continue;
-                            if(score<best) {left=x;bottom=y;placed=points;best=score;}
-                            // A later X on this row cannot improve its extent.
-                            break;
+                            // Bottom-left placement is deterministic. Searching
+                            // every later free row for this one family exhausted
+                            // the order before thousands of small charts were
+                            // placed. Rotation and complete packing orders still
+                            // compete using the final bbox cost.
+                            left=x;bottom=y;placed=points;
+                            if(!optimizeExtent) return true;
+                            best=score;break;
                         }
                         if(best==Math.Max(mask.width,mask.height)) return true;
                     }

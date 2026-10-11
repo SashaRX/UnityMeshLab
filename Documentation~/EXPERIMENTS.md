@@ -40,6 +40,59 @@
 
 ## Progressive reverse atlas — 2026-10-09
 
+### Stable donor charts, local cut retention and native family envelopes — 2026-10-11
+
+Continuation of the same PR225 experiment, baseline `160d976a`, with main
+`9ab555c9` merged in `8459785`. New finer-LOD parameterization is prepared on
+the complete detached input, using authored charts, local ARAP and planar
+lightmap-only joins across texture seams. Retries interpolate that immutable
+parameterization instead of re-unwrapping whichever faces projection leaves
+unsupported. UV0, mesh streams, source geometry and source FBXs are preserved.
+
+Strip subdivision recreates face records, so ordered overlap references are
+rebuilt against the current records before chart allocation. Intrinsic rescue
+flags reflect actual packing repairs, including valid local triangles whose
+altitude disappears after Float32 translation. Previously explicit strip
+regions are not subdivided a second time by the legacy junction finder.
+
+Refinement protects the complete donor/recipient patch and donor ancestors,
+keeps baseline overlay ordering, and prioritizes protected inheritance during
+the first contact arbitration. If a patch retry cannot advance, optional cuts
+are retained for that input and its immediate donor; unrelated inputs can
+still keep their cuts. Publication retains coverage, stretch and contact gates.
+
+Repeated overlap audits now start from the original projection layer, rather
+than the rank assigned by the previous arbitration. Removing or recutting a
+neighbour cannot accumulate stale overlay ranks. Seam copies retain this
+scratch state; existing serialized ancestry fields are unchanged.
+Compact seed preparation propagates the actual packed density to finer charts.
+Current-LOD underlay rollback rebuilds support flags from surviving projections,
+so refused details cannot leave orphaned support in the contact audit. These
+address the two Reverse findings in review `5484582384`.
+
+Final packing additionally tests xatlas's existing PreserveShape UV packing on
+the actual triangle union of each ancestry family. Disconnected pieces receive
+short connecting proxy triangles for native chart discovery; a bounded search
+can fall back to a conservative envelope. Precision-sensitive families can be
+packed in a low-coordinate header without an intermediate Float32 rescale. No
+proxy triangle is exported. All descendants and ordered overlays receive the
+same quarter turn, common scale and translation. Native normalized output is
+converted back using its actual width/height, and a larger common canvas is
+accepted only under the atlas limit and a lower bbox cost per unit density.
+Sub-ULP phase retries occur before Float32 rounding; complete family contacts
+and actual exported triangle metrics still gate every result. Additional proxy
+connectors can reserve part of a concavity. The native candidate is optional
+and wins only when its bbox cost improves; valid existing shells are retained
+otherwise. Triangle-footprint compaction and ring controls remain in place.
+Packing also tests twice the common pixel density in a larger canvas, with the
+same two-pixel gutter. It accepts this only at a lower bbox cost per unit
+density. This reduces the gutter overhead of thousands of small charts without
+stretching, shrinking, or independently moving inherited family members.
+
+Artifacts: `_results~/reverse-cuts-pack-20261011/`. The complete fresh model
+comparison and test counts are recorded in
+[FORWARD_REVERSE_COMPARISON.md](FORWARD_REVERSE_COMPARISON.md).
+
 ### Authored-chart seed preparation by default — 2026-10-11
 
 Continuation of the same progressive Reverse experiment on PR225, baseline

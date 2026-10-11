@@ -30,7 +30,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         internal static Vector2[][] Pack(Vector2[][] coordinates, ReverseUvTransfer.Options options,
-            CancellationToken token, out int side, out float scale, Func<int,Vector2[],int,bool> validate=null)
+            CancellationToken token, out int side, out float scale, Func<int,Vector2[],int,bool> validate=null,double initialScale=1)
         {
             token.ThrowIfCancellationRequested();
             if(coordinates==null || coordinates.Length==0 || coordinates.Any(points=>points==null || points.Length==0 || points.Length%3!=0
@@ -49,24 +49,25 @@ namespace SashaRX.UnityMeshLab
                 boxes.OrderByDescending(b=>b.width*b.height).ThenBy(b=>b.id).ToArray(),
                 boxes.OrderByDescending(b=>Math.Min(b.width,b.height)).ThenByDescending(b=>Math.Max(b.width,b.height)).ThenBy(b=>b.id).ToArray()
             };
-            double area=boxes.Sum(b=>(Math.Ceiling(b.width)+options.padding)*(Math.Ceiling(b.height)+options.padding));
+            if(!Finite(initialScale) || initialScale<=0) throw new ArgumentException("Invalid initial family scale.");
+            double area=boxes.Sum(b=>(Math.Ceiling(b.width*initialScale)+options.padding)*(Math.Ceiling(b.height*initialScale)+options.padding));
             if (!Finite(area) || Math.Sqrt(area)+options.padding*2>options.maxAtlasSize)
                 throw new InvalidOperationException("Complete reverse atlas exceeds its size limit.");
             side=Math.Max(16,Mathf.NextPowerOfTwo((int)Math.Ceiling(Math.Sqrt(area)+options.padding*2)));
             Placement[] placements;
-            while (!TryOrders(orders,side,options,1,token,validate,out placements))
+            while (!TryOrders(orders,side,options,initialScale,token,validate,out placements))
             {
                 side*=2;
                 if (side>options.maxAtlasSize) throw new InvalidOperationException("Complete reverse atlas exceeds its size limit.");
             }
-            double chosenScale=1;
+            double chosenScale=initialScale;
             if (options.fillFinalAtlas)
             {
                 // Capacity is monotone; Float32 representability is not. Find
                 // the geometric capacity first, then test descending scales.
                 // Treating one rounding refusal as an upper capacity bound
                 // stranded otherwise valid families at their initial density.
-                double low=1, high=2;
+                double low=initialScale, high=initialScale*2;
                 Placement[] geometric=placements;
                 while (TryOrders(orders,side,options,high,token,null,out var larger))
                 { low=high; geometric=larger; high*=2; }

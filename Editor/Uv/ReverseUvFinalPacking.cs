@@ -153,11 +153,25 @@ namespace SashaRX.UnityMeshLab
                 if(BoundsCost(packed,scale)>BoundsCost(coordinates,1)
                     && Enumerable.Range(0,coordinates.Length).All(g=>Valid(g,coordinates[g],previousSide)))
                 {packed=coordinates;side=previousSide;scale=1;}
+                // Thousands of short charts can spend most of a small canvas
+                // on two-pixel gutters. Test higher common pixel density in a
+                // larger canvas; never squeeze charts or reduce their gutter.
+                if(options.fillFinalAtlas && coordinates.Length>256 && side<=options.maxAtlasSize/2)
+                    try
+                    {
+                        var larger=ReverseUvFamilyPacking.Pack(coordinates,options,token,out int largerSide,
+                            out float largerScale,Valid,initialScale:scale*2);
+                        if(BoundsCost(larger,largerScale)<BoundsCost(packed,scale))
+                        {packed=larger;side=largerSide;scale=largerScale;}
+                    }
+                    catch(InvalidOperationException) { /* Retain the already audited placement. */ }
                 if(logTiming) UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Family rectangles: {timing.ElapsedMilliseconds} ms. Test triangle footprints.");
                 var search=new ReverseUvFootprintPacking.Diagnostics();
+                int completedSide=side;
                 packed = ReverseUvFootprintPacking.Improve(coordinates,packed,side,scale,options,token,Valid,
-                    out scale,out bool footprintImproved,search);
-                if(logTiming) UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Final family packing: {timing.ElapsedMilliseconds} ms, footprint improvement {footprintImproved}; moved {search.tightenedFamilies}; completed orders {search.completedOrders}; search work {search.tighteningWork}/{search.repackingWork}; validations {search.validations}.");
+                    out scale,out bool footprintImproved,search,resized=>completedSide=resized);
+                side=completedSide;
+                if(logTiming) UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Final family packing: {timing.ElapsedMilliseconds} ms, footprint improvement {footprintImproved}; native {search.nativePacked}; moved {search.tightenedFamilies}; completed orders {search.completedOrders}; search work {search.tighteningWork}/{search.repackingWork}; validations {search.validations}.");
                 if(logTiming && search.refusedOrders.Count>0) UvtLog.Info(UvtLog.Category.Repack,"[ReverseUV] Footprint trials: "+string.Join("; ",search.refusedOrders));
                 var replacements = surfaces.ToDictionary(s => s,s => new Vector2[s.pixels.Length]);
                 for (int g = 0; g < groups.Length; ++g)
@@ -183,6 +197,7 @@ namespace SashaRX.UnityMeshLab
                 report.finalPackingFamilies=groups.Length;
                 report.finalPackingScale=scale;
                 report.finalPackingFootprints=footprintImproved;
+                report.finalPackingNative=search.nativePacked;
                 return side;
             }
             catch (InvalidOperationException error)

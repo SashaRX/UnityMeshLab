@@ -456,6 +456,67 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [TestCase(false)] [TestCase(true)]
+        public void NewlyCoveredChartDoesNotEvictEstablishedInheritance(bool overlap)
+        {
+            ReverseUvTransfer.Surface Triangle(int node,int chart,int layer,float depth) => new ReverseUvTransfer.Surface {
+                lod=0,node=node,input=new ReverseUvTransfer.Input(),sourceFaces=new[] {0},
+                positions=new[] {new Vector3(0,0,depth),new Vector3(1,0,depth),new Vector3(0,1,depth)},
+                indices=new[] {0,1,2},pixels=new[] {Vector2.zero,Vector2.right,Vector2.up},
+                faces=new[] {new ReverseUvTransfer.Face {inherited=true,chart=chart,layer=layer}}
+            };
+            var established=Triangle(0,7,0,0);var newlyCovered=Triangle(1,9,0,.02f);
+            var options=Options(overlap);
+            options.inheritedPriority=new HashSet<(int,int,int)> {(0,0,0)};
+            typeof(ReverseUvTransfer).GetMethod("ResolveOverlaps",System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic)
+                .Invoke(null,new object[] {new[] {established,newlyCovered},options,default(System.Threading.CancellationToken)});
+            Assert.IsTrue(established.faces[0].inherited,"A donor cut must preserve the already inherited region on this donor layer.");
+            Assert.IsFalse(newlyCovered.faces[0].inherited,"Unrelated donor charts cannot acquire an intentional overlap.");
+        }
+
+        [Test]
+        public void OverlapRebuildDoesNotAccumulatePreviousArbitrationLayers()
+        {
+            ReverseUvTransfer.Surface Triangle(int node,float depth) => new ReverseUvTransfer.Surface {
+                lod=0,node=node,input=new ReverseUvTransfer.Input(),sourceFaces=new[] {0},
+                positions=new[] {new Vector3(0,0,depth),new Vector3(1,0,depth),new Vector3(0,1,depth)},
+                indices=new[] {0,1,2},pixels=new[] {Vector2.zero,Vector2.right,Vector2.up},
+                faces=new[] {new ReverseUvTransfer.Face {inherited=true,chart=7,layer=0,distance=node}}
+            };
+            var temporary=Triangle(0,0);var under=Triangle(1,.02f);var detail=Triangle(2,.04f);
+            var resolve=typeof(ReverseUvTransfer).GetMethod("ResolveOverlaps",System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic);
+            void Rebuild(ReverseUvTransfer.Surface[] surfaces)=>resolve.Invoke(null,new object[] {surfaces,Options(true),default(System.Threading.CancellationToken)});
+            Rebuild(new[] {temporary,under,detail});
+            Assert.AreEqual(1,under.faces[0].layer);Assert.AreEqual(2,detail.faces[0].layer);
+            Rebuild(new[] {under,detail});
+            Assert.AreEqual(0,under.faces[0].layer);Assert.AreEqual(1,detail.faces[0].layer);
+            Assert.IsTrue(ReverseUvTransfer.IsOrderedOverlap(under.faces[0],detail.faces[0]));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void NewStripCutsRetainInheritedOverlapGraphInTheSameMesh(bool overlap)
+        {
+            var points=new[] {new Vector2(0,0),new Vector2(5,0),new Vector2(5,1),new Vector2(3,1),
+                new Vector2(3,5),new Vector2(2,5),new Vector2(2,1),new Vector2(0,1)};
+            var strip=new Mesh {name="New T",vertices=points.Select(p=>new Vector3(p.x+3,p.y,0)).ToArray(),
+                uv=points,triangles=new[] {0,1,3,1,2,3,0,3,6,0,6,7,3,4,5,3,5,6}};
+            strip.RecalculateNormals();owned.Add(strip);
+            var fine=Combine(Quad(),Quad(.25f,.02f,.25f),strip);
+            var snapshot=TransferMeshSnapshot.Capture(fine);
+            var options=Options(overlap);options.cutNarrowJunctions=true;options.splitDonorSeams=false;
+            options.repackFinalAtlas=true;options.fillFinalAtlas=true;
+            var levels=new[] {Level(1,Quad()),Level(0,fine)};
+            using var result=Build(options,levels);
+            var node=result.report.nodes[1];
+            Assert.Greater(node.faces.Length,fine.triangles.Length/3,"The new T must actually acquire interior cuts.");
+            Assert.AreEqual(overlap?2:0,node.overlapFaces);
+            foreach(var relation in result.report.overlaps)
+                Assert.IsTrue(ReverseUvTransfer.IsOrderedOverlap(node.faces[relation.underFace],node.faces[relation.overFace]),
+                    "Contacts must refer to the face records after strip subdivision.");
+            Assert.DoesNotThrow(()=>ReverseUvAudit.Write(result,levels));
+            CollectionAssert.AreEqual(snapshot,TransferMeshSnapshot.Capture(fine));
+        }
+
+        [TestCase(false)] [TestCase(true)]
         public void NewDetailProjectsOntoNewSameLodUnderlayBeforeFinalPacking(bool overlap)
         {
             var seed=Quad(); var underlay=Quad(3); var detail=Quad(3.25f,.02f,.25f);
@@ -1174,6 +1235,37 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(baseline,guarded);
         }
 
+        [Test]
+        public void ValidNewChartPromotesLocalRescueWhenTranslatedAltitudeCollapses()
+        {
+            var positions=new[] {Vector3.zero,Vector3.right,new Vector3(1,1e-8f,0)};
+            var pixels=new[] {Vector2.zero,Vector2.right*32,new Vector2(32,3.2e-7f)};
+            var occupied=new ReverseUvTransfer.Surface {pixels=new[] {Vector2.zero,new Vector2(256,0),new Vector2(256,128),
+                Vector2.zero,new Vector2(256,128),new Vector2(0,128)},
+                faces=new[] {new ReverseUvTransfer.Face {inherited=true},new ReverseUvTransfer.Face {inherited=true}}};
+            var original=occupied.pixels.ToArray();var flags=new[] {false};
+            var output=ReverseUvAtlasPlacement.Place(positions,pixels,new List<ReverseUvTransfer.Surface[]> {new[] {occupied}},
+                Array.Empty<ReverseUvTransfer.Surface>(),Options(),256,256,default,flags,32);
+            Assert.IsTrue(flags[0],"The local chart was healthy before translation; actual placement must identify its new rounding failure.");
+            Assert.LessOrEqual(ReverseUvTransfer.TriangleAnisotropy(positions[0],positions[1],positions[2],output[0],output[1],output[2]),4);
+            CollectionAssert.AreEqual(original,occupied.pixels);
+        }
+
+        [Test]
+        public void NewCoplanarPatchCrossesTextureSeamsWithoutChangingSourceUv0()
+        {
+            var source=new Mesh {name="Texture seam",vertices=new[] {Vector3.zero,Vector3.right,Vector3.one-Vector3.forward,
+                Vector3.zero,Vector3.one-Vector3.forward,Vector3.up},triangles=Enumerable.Range(0,6).ToArray(),
+                uv=new[] {Vector2.zero,Vector2.right,Vector2.one,new Vector2(10,10),new Vector2(11,11),new Vector2(10,11)}};
+            source.RecalculateNormals();owned.Add(source);var snapshot=TransferMeshSnapshot.Capture(source);
+            using var result=Build(Options(),Level(1,Quad(3)),Level(0,source));
+            var node=result.report.nodes[1];var mesh=result.meshes[1][0];
+            Assert.AreEqual(1,node.faces.Select(f=>f.chart).Distinct().Count(),"A texture seam need not fragment a new planar lightmap patch.");
+            foreach(var group in Enumerable.Range(0,mesh.vertexCount).GroupBy(i=>mesh.vertices[i]))
+                Assert.AreEqual(1,group.Select(i=>mesh.uv2[i]).Distinct().Count());
+            Clean(mesh);CollectionAssert.AreEqual(snapshot,TransferMeshSnapshot.Capture(source));
+        }
+
         [TestCase(10)] [TestCase(32)]
         public void SeedPackingRetainsCapturedKitchenThinFaceBeforeLargeCharts(int density)
         {
@@ -1279,12 +1371,14 @@ namespace SashaRX.UnityMeshLab.Tests
                     uv.Add(q == 3 ? new Vector2(100,100) : p * (q + 1) * 7 + new Vector2(q * 30, 0));
                 }
             var original = uv.ToArray();
+            var options=new ReverseUvTransfer.Options {seedResolution=128,padding=2};
             var pixels = ReverseUvSeedPacking.Prepare(positions.ToArray(), uv.ToArray(), 32, fixedDensity,
-                new ReverseUvTransfer.Options { seedResolution = 128, padding = 2 }, default, out int side);
+                options, default, out int side);
             var scan = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry { uv = pixels,
                 indices = Enumerable.Range(0,pixels.Length).ToArray(), charts = new int[pixels.Length] }, default);
             Assert.IsTrue(scan.complete); Assert.AreEqual(0,scan.pairs); Assert.AreEqual(0,scan.degenerateFaces);
             float density = (pixels[1] - pixels[0]).magnitude;
+            Assert.AreEqual(density,options.seedDensity,1e-3,"Finer charts must inherit the actual compact seed density.");
             if (fixedDensity) Assert.AreEqual(32,density,1e-3);
             else { Assert.AreEqual(128,side); Assert.Greater(density,32); }
             for (int t = 0; t < pixels.Length; t += 3)

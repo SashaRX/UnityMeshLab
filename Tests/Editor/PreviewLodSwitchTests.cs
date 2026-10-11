@@ -550,21 +550,20 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        public void TextureAoPreviewUsesModelSpaceAndPreservesExportPlacement()
+        public void TextureAoPreviewUsesCapturedRootLocalGeometry()
         {
             var panel = new TextureAoBakePanel();
             var resultType = typeof(TextureAoBakePanel).GetNestedType("Result", BindingFlags.NonPublic);
             var result = System.Activator.CreateInstance(resultType, true);
             var mesh = Quad("AO preview", true);
-            var placement = Matrix4x4.TRS(new Vector3(20, -30, 40), Quaternion.Euler(15, 30, 5), new Vector3(2, 3, 4));
+            var snapshot=TransferMeshSnapshot.Capture(mesh);
             resultType.GetField("mesh", Private).SetValue(result, mesh);
-            resultType.GetField("placement", Private).SetValue(result, placement);
             ((System.Collections.IList)typeof(TextureAoBakePanel).GetField("results", Private).GetValue(panel)).Add(result);
             var items = new List<MeshViewport3D.Item>();
             Assert.IsTrue(panel.Get3DContent(items));
             Assert.That(items[0].matrix.MultiplyPoint3x4(Vector3.zero), Is.EqualTo(Vector3.zero));
             Assert.That(items[0].matrix.MultiplyVector(Vector3.one), Is.EqualTo(Vector3.one));
-            Assert.That(resultType.GetField("placement", Private).GetValue(result), Is.EqualTo(placement));
+            CollectionAssert.AreEqual(snapshot,TransferMeshSnapshot.Capture(mesh));
         }
 
         [TestCase(.001f)]

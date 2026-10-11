@@ -24,6 +24,8 @@ namespace SashaRX.UnityMeshLab
             var states = new byte[refs.Length];
             var original=refs.Select(p=>(face:p.s.faces[p.f].Copy(),pixels:Enumerable.Range(0,3).Select(k=>p.s.pixels[p.f*3+k]).ToArray())).ToArray();
             var moved=new HashSet<int>();
+            var supportByProjection=new Dictionary<int,int[]>();
+            long supportEntries=0;
             var rolledBack=new HashSet<int>();
             var byFace=Enumerable.Range(0,refs.Length).ToDictionary(i=>(refs[i].s.node,refs[i].f),i=>i);
             var byChart=Enumerable.Range(0,refs.Length).GroupBy(i=>refs[i].s.faces[refs[i].f].chart)
@@ -111,13 +113,16 @@ namespace SashaRX.UnityMeshLab
                     layers = support.Select(p => p.p.s.faces[p.p.f].layer).ToArray() };
                 if (!CoveredByParentLayer(chart, parentFace.layer, pixels, 0, options, ref comparisons, token))
                 { states[index] = 2; return true; }
+                var dependencies=support.Select(p=>p.i).Concat(selected.Select(h=>h.triangleIndex)).Distinct().ToArray();
+                if(supportEntries+dependencies.Length>options.comparisonBudget) {states[index]=2;return true;}
+                supportEntries+=dependencies.Length;supportByProjection[index]=dependencies;
                 byChart[face.chart].Remove(index);byChart[parentFace.chart].Add(index);
                 for (int k = 0; k < 3; ++k) surface.pixels[faceIndex * 3 + k] = pixels[k];
                 moved.Add(index);
                 face.inherited = true; face.ambiguous = false; face.rejection = null;
                 face.localFallback = false; face.chart = parentFace.chart;
                 face.parentLod = surface.lod; face.parentMesh = parentSurface.node; face.parentFace = parentFaceIndex;
-                face.distance = Mathf.Sqrt(selected.Max(h => h.distSq)); face.layer = parentFace.layer + 1;
+                face.distance = Mathf.Sqrt(selected.Max(h => h.distSq)); face.layer = face.projectionLayer = parentFace.layer + 1;
                 foreach (var hit in selected)
                 {
                     var parent = refs[hit.triangleIndex];
@@ -128,8 +133,17 @@ namespace SashaRX.UnityMeshLab
                 foreach (var item in support) item.p.s.faces[item.p.f].projectionSupport = true;
                 states[index] = 2; return true;
             }
+            void RebuildSupport()
+            {
+                for(int i=0;i<refs.Length;++i) refs[i].s.faces[refs[i].f].projectionSupport=original[i].face.projectionSupport;
+                foreach(int index in moved)
+                    if(refs[index].s.faces[refs[index].f].inherited)
+                        foreach(int support in supportByProjection[index])
+                            refs[support].s.faces[refs[support].f].projectionSupport=true;
+            }
             for (int f = 0; f < refs.Length; ++f) if (!refs[f].s.faces[refs[f].f].inherited) Resolve(f);
             SnapContinuousCorners(surfaces, options);
+            RebuildSupport();
             ResolveOverlaps(surfaces, options, token);
             // A refused optional projection retains its independently allocated
             // UVs. Do not leave rejected faces sitting on a former underlay.
@@ -147,7 +161,7 @@ namespace SashaRX.UnityMeshLab
                     for(int k=0;k<3;++k) s.pixels[f*3+k]=original[i].pixels[k];
                     moved.Remove(i);rolledBack.Add(i);changed=true;
                 }
-                if(changed) ResolveOverlaps(surfaces,options,token);
+                if(changed) {RebuildSupport();ResolveOverlaps(surfaces,options,token);}
             } while(changed);
             if(Enumerable.Range(0,refs.Length).Any(i=>original[i].face.inherited && !refs[i].s.faces[refs[i].f].inherited))
             {

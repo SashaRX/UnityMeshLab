@@ -39,6 +39,21 @@ namespace SashaRX.UnityMeshLab.Tests
             =>Math.Abs(((double)b.x-a.x)*(c.y-a.y)-((double)b.y-a.y)*(c.x-a.x))*.5;
 
         [Test]
+        public void ProtectedDonorChartDoesNotCancelCutsInAnIndependentChart()
+        {
+            var first=Grid("#####/..#../..#../..#../..#..");
+            var uv=first.uv.Concat(first.uv.Select(p=>p+Vector2.right*10)).ToArray();
+            var triangles=first.triangles.Concat(first.triangles.Select(v=>v+first.uv.Length)).ToArray();
+            var result=UvStripSubdivision.Build(uv,triangles,protectedFaces:new HashSet<int> {0});
+            int firstFaces=first.triangles.Length/3;
+            var retained=Enumerable.Range(0,result.sourceFaces.Length).Where(f=>result.sourceFaces[f]<firstFaces).ToArray();
+            Assert.AreEqual(firstFaces,retained.Length);
+            Assert.AreEqual(1,retained.Select(f=>result.regions[f]).Distinct().Count(),"The protected chart's seam domain must remain whole.");
+            Assert.Greater(result.regions.Skip(retained.Length).Distinct().Count(),1,"Unrelated charts must still be cut.");
+            Assert.Greater(result.cuts,0);
+        }
+
+        [Test]
         public void CurvedSurfaceDoesNotAcquireFlatFrameCuts()
         {
             var data=Grid("#####/#..../#..../####./#..../#..../#####");

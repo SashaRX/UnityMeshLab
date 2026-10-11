@@ -30,18 +30,37 @@ namespace SashaRX.UnityMeshLab
                 // A different valid rescue placement can change the next LOD's
                 // correspondence. Preserve every already successful layout.
                 bool valid = true;
-                for (int f = 0; f < fallback.Length && valid; ++f)
+                for (int f = 0; f < fallback.Length; ++f)
                 {
                     int t = f * 3;
-                    if (fallback[f]) valid = ReverseUvTransfer.TriangleAnisotropy(ReverseUvNewCharts.Frame(positions,t,frames),
+                    bool fits=ReverseUvTransfer.TriangleAnisotropy(ReverseUvNewCharts.Frame(positions,t,frames),
                         baseline[t], baseline[t+1], baseline[t+2]) <= options.maxAnisotropy;
+                    // A valid local chart can lose its tiny altitude after a
+                    // large Float32 translation. Promote that face to an
+                    // intrinsic rescue and retry placement, rather than publish
+                    // stretched UVs or reject every new chart in the level.
+                    if(!fits) {fallback[f]=true;valid=false;}
                 }
                 if (valid) return baseline;
             }
             else if (baseline != null) return baseline;
-            var repaired = fallback != null && fallback.Any(f => f)
-                ? TryPlace(positions, pixels, previous, current, options, width, height, token, fallback, density,frames) : null;
-            return repaired ?? throw new InvalidOperationException("New reverse UV charts cannot fit within the configured atlas limit.");
+            if(fallback!=null && fallback.Any(f=>f))
+                for(int attempt=0;attempt<=fallback.Length;++attempt)
+                {
+                    var repaired=TryPlace(positions,pixels,previous,current,options,width,height,token,fallback,density,frames);
+                    if(repaired==null) break;
+                    bool valid=true,extended=false;
+                    for(int f=0;f<fallback.Length;++f)
+                    {
+                        int t=f*3;
+                        if(ReverseUvTransfer.TriangleAnisotropy(ReverseUvNewCharts.Frame(positions,t,frames),
+                            repaired[t],repaired[t+1],repaired[t+2])<=options.maxAnisotropy) continue;
+                        valid=false;extended|=!fallback[f];fallback[f]=true;
+                    }
+                    if(valid) return repaired;
+                    if(!extended) break;
+                }
+            throw new InvalidOperationException("New reverse UV charts cannot fit within the configured atlas limit.");
         }
 
         static Vector2[] TryPlace(Vector3[] positions, Vector2[] pixels, List<ReverseUvTransfer.Surface[]> previous,

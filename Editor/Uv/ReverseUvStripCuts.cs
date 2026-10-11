@@ -20,8 +20,17 @@ namespace SashaRX.UnityMeshLab
                 if(!unique.TryGetValue(key,out int v)) {v=vertices.Count;vertices.Add(uv[i]);world.Add(positions[i]);unique.Add(key,v);}
                 indices[i]=v;
             }
+            var protectedFaces=new HashSet<int>();
+            for(int i=0;i<refs.Count;++i)
+            {
+                var (surface,face)=refs[i];
+                if(options.seamCutExclusions==null || !options.seamCutExclusions.TryGetValue((surface.lod,surface.node),out var excluded)) continue;
+                int source=surface.sourceFaces[face];
+                if(surface.input.sourceFaces!=null) source=surface.input.sourceFaces[source];
+                if(excluded.Contains(source)) protectedFaces.Add(i);
+            }
             var plan=UvStripSubdivision.Build(vertices.ToArray(),indices,token,world.ToArray(),
-                options.maxAtlasSize*1.1920928955078125e-7*8/density);
+                options.maxAtlasSize*1.1920928955078125e-7*8/density,protectedFaces);
             if(plan.cuts==0) return null;
             var selected=Enumerable.Range(0,plan.sourceFaces.Length).GroupBy(f=>plan.sourceFaces[f]).ToDictionary(g=>g.Key,g=>g.ToArray());
             var newRefs=new List<(Surface,int)>();var newPositions=new List<Vector3>();

@@ -33,6 +33,9 @@ namespace SashaRX.UnityMeshLab
             public bool splitDonorSeams = true, fillAtlasVacancies = true;
             public long comparisonBudget = 2000000;
             internal Dictionary<(int lod, int node), HashSet<int>> seamCutExclusions;
+            internal Dictionary<(int lod,int node,int source),int> overlapPriority;
+            internal Dictionary<Input,Vector2[]> newChartParameterizations;
+            internal HashSet<(int lod,int node,int source)> inheritedPriority;
         }
 
         internal sealed class Input
@@ -62,6 +65,7 @@ namespace SashaRX.UnityMeshLab
             public string rejection;
             public string cutRefusal;
             internal bool protectedInheritance;
+            internal int projectionLayer = -1;
             internal HashSet<Face> overlapParents;
             internal Face Copy() => (Face)MemberwiseClone();
         }
@@ -94,6 +98,7 @@ namespace SashaRX.UnityMeshLab
             public string seedPacking, seedPackingRefusal;
             public string seedPreparation;
             public bool finalPackingFootprints;
+            public bool finalPackingNative;
             public bool seedChartRotation;
             public string finalPacking, finalPackingRefusal;
             public string finalPackingRectangleRefusal;
@@ -128,6 +133,7 @@ namespace SashaRX.UnityMeshLab
             internal int[] indices;
             internal Vector3[] sourcePositions;
             internal int[] sourceIndices;
+            internal Vector2[] sourceUvCorners;
             internal Vector2[] pixels;
             internal Face[] faces;
             internal int lod, node;
@@ -172,6 +178,20 @@ namespace SashaRX.UnityMeshLab
                 {
                     token.ThrowIfCancellationRequested();
                     var targets = Capture(levels[level], origin);
+                    if(options.newChartParameterizations==null) options.newChartParameterizations=new Dictionary<Input,Vector2[]>();
+                    foreach(var target in targets)
+                    {
+                        if(!options.newChartParameterizations.TryGetValue(target.input,out var uv))
+                        {
+                            var sourceUv=target.input.mesh.uv;
+                            uv=target.indices.Select(i=>sourceUv.Length==target.positions.Length?sourceUv[i]:Vector2.zero).ToArray();
+                            for(int i=0;i<uv.Length;++i) if(!Finite(uv[i].x)||!Finite(uv[i].y)) uv[i]=Vector2.zero;
+                            uv=ReverseUvSeed.RepairAuthoredCharts(target.indices.Select(i=>target.positions[i]).ToArray(),uv,
+                                new int[uv.Length],token,out _,joinPlanar:true);
+                            options.newChartParameterizations.Add(target.input,uv);
+                        }
+                        target.sourceUvCorners=uv;
+                    }
                     var donor = all[level - 1];
                     if (useAsync)
                         await Task.Run(() => Project(donor, targets, options, token), token);
@@ -492,12 +512,16 @@ namespace SashaRX.UnityMeshLab
         {
             var charts = Charts(donor);
             long queries = 0;
+            foreach(var target in targets)
+                if(options.seamCutExclusions!=null && options.seamCutExclusions.TryGetValue((target.lod,target.node),out var protectedSources))
+                    for(int f=0;f<target.faces.Length;++f)
+                        target.faces[f].protectedInheritance=protectedSources.Contains(target.input.sourceFaces==null?f:target.input.sourceFaces[f]);
             ProjectFaces(donor, targets, charts, options, ref queries, token);
             SnapContinuousCorners(targets, options);
             ResolveOverlaps(targets, options, token);
             if (options.splitDonorSeams)
             {
-                foreach (var s in targets) foreach (var face in s.faces) face.protectedInheritance = face.inherited;
+                foreach (var s in targets) foreach (var face in s.faces) face.protectedInheritance |= face.inherited;
                 RefineAtDonorSeams(donor, targets, options, token);
                 if (targets.Any(s => s.sourceBarycentrics != null))
                     ProjectFaces(donor, targets.Where(s => s.sourceBarycentrics != null).ToArray(), charts, options, ref queries, token);
@@ -568,7 +592,7 @@ namespace SashaRX.UnityMeshLab
                     record.inherited = true; record.chart = winner.id; record.distance = Mathf.Sqrt(maxDistance);
                     record.ambiguous = false; record.rejection = null;
                     record.parentLod = donor[0].lod; record.parentMesh = winner.nodes[best.triangleIndex];
-                    record.parentFace = winner.faces[best.triangleIndex]; record.layer = winner.layers[best.triangleIndex];
+                    record.parentFace = winner.faces[best.triangleIndex]; record.layer = record.projectionLayer = winner.layers[best.triangleIndex];
                 }
         }
 
@@ -679,6 +703,10 @@ namespace SashaRX.UnityMeshLab
                 {
                     face.intentionalOverlap = false; face.overlayMesh = face.overlayFace = -1;
                     face.overlapParents = null;
+                    // Arbitration is rebuilt after cuts and optional underlay
+                    // rollbacks. Its previous rank is not a new donor layer.
+                    if(face.projectionLayer<0) face.projectionLayer=face.layer;
+                    face.layer=face.projectionLayer;
                 }
             var geometry = Atlas(surfaces, inheritedOnly: true);
             var scan = UvAtlasDiagnostics.Measure(geometry, token, comparisonBudget: options.comparisonBudget, collectConflicts: true);
@@ -695,6 +723,8 @@ namespace SashaRX.UnityMeshLab
             }
             var accepted = new bool[refs.Count];
             foreach (int i in Enumerable.Range(0, refs.Count).OrderBy(i => refs[i].s.faces[refs[i].f].layer)
+                .ThenBy(i=>OverlapPriority(refs[i].s,refs[i].f,options))
+                .ThenByDescending(i=>WasInherited(refs[i].s,refs[i].f,options))
                 .ThenByDescending(i => refs[i].s.faces[refs[i].f].protectedInheritance)
                 .ThenBy(i => refs[i].s.faces[refs[i].f].distance).ThenBy(i => i))
             {
@@ -719,6 +749,20 @@ namespace SashaRX.UnityMeshLab
                     }
                 accepted[i] = face.inherited || face.projectionSupport;
             }
+        }
+
+        static int OverlapPriority(Surface surface,int face,Options options)
+        {
+            int source=surface.sourceFaces[face];
+            if(surface.input.sourceFaces!=null) source=surface.input.sourceFaces[source];
+            return options.overlapPriority!=null && options.overlapPriority.TryGetValue((surface.lod,surface.node,source),out int layer)?layer:0;
+        }
+
+        static bool WasInherited(Surface surface,int face,Options options)
+        {
+            int source=surface.sourceFaces[face];
+            if(surface.input.sourceFaces!=null) source=surface.input.sourceFaces[source];
+            return options.inheritedPriority!=null && options.inheritedPriority.Contains((surface.lod,surface.node,source));
         }
 
         internal static bool IsOrderedOverlap(Face a, Face b)
@@ -770,33 +814,43 @@ namespace SashaRX.UnityMeshLab
                     }
             if (refs.Count == 0) return;
             token.ThrowIfCancellationRequested();
-            var mesh = new Mesh { indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
-            try
             {
-                // Weld geometry within each input. Coincident independent renderers
-                // must retain separate topology and separately padded UV charts.
-                var unique = new Dictionary<(Surface,Vector3), int>(); var vertices = new List<Vector3>();
-                var indices = new int[positions.Count];
-                for (int i = 0; i < indices.Length; ++i)
+                // Unsupported finer geometry retains its own authored seam
+                // domains and receives the same local metric repair as the seed.
+                // Do not create thousands of fresh Unity charts from fragments
+                // left between inherited faces.
+                var uv=new Vector2[positions.Count];
+                for(int i=0;i<refs.Count;++i)
                 {
-                    var key=(refs[i/3].s,positions[i]);
-                    if (!unique.TryGetValue(key, out int v)) { v = vertices.Count; unique.Add(key, v); vertices.Add(positions[i]); }
-                    indices[i] = v;
+                    var (surface,face)=refs[i];var sourceUv=surface.sourceUvCorners;
+                    int source=surface.sourceFaces[face]*3;
+                    for(int k=0;k<3;++k)
+                    {
+                        var bary=surface.sourceBarycentrics==null?(k==0?Vector3.right:k==1?Vector3.up:Vector3.forward)
+                            :surface.sourceBarycentrics[face*3+k];
+                        var p=sourceUv[source]*bary.x+sourceUv[source+1]*bary.y+sourceUv[source+2]*bary.z;
+                        uv[i*3+k]=Finite(p.x)&&Finite(p.y)?p:Vector2.zero;
+                    }
                 }
-                mesh.SetVertices(vertices); mesh.triangles = indices;
-                UnwrapParam.SetDefaults(out var settings);
-                settings.packMargin = .02f;
-                var uv = Unwrapping.GeneratePerTriangleUV(mesh, settings);
-                if (uv.Length != positions.Count) throw new InvalidOperationException("New reverse UV surfaces could not be unwrapped.");
-                var regions=options.cutNarrowJunctions?CutNewStrips(ref refs,ref positions,ref uv,options,density,token):null;
+                var regions=ReverseUvSeed.AuthoredRegions(positions.ToArray(),uv,
+                    refs.SelectMany(p=>Enumerable.Repeat(p.s.node,3)).ToArray(),token);
+                var strips=options.cutNarrowJunctions?CutNewStrips(ref refs,ref positions,ref uv,options,density,token):null;
+                if(strips!=null)
+                {
+                    regions=strips;
+                    // Subdivision copies inherited records too. Their old
+                    // intentional contact graph refers to replaced objects.
+                    ResolveOverlaps(surfaces,options,token);
+                }
                 var frames=refs.Select(p=>p.s.metricFrames[p.f]).ToArray();
                 bool[] fallback;
                 Vector2[] pixels;
                 if(regions==null) pixels=ReverseUvNewCharts.Prepare(positions.ToArray(),uv,density,options,token,out fallback,frames);
                 else
                 {
-                    fallback=ReverseUvNewCharts.Classify(positions.ToArray(),uv,options,token,frames);
-                    pixels=ReverseUvSeedPacking.Prepare(positions.ToArray(),uv,density,true,options,token,out _,regions:regions,frames:frames);
+                    fallback=ReverseUvNewCharts.Classify(positions.ToArray(),uv,options,token,frames,regions);
+                    pixels=ReverseUvSeedPacking.Prepare(positions.ToArray(),uv,density,true,options,token,out _,regions:regions,frames:frames,
+                        preparedFallback:repaired=>fallback=repaired);
                 }
                 var min = pixels[0]; var max = min;
                 foreach (var p in pixels) { min = Vector2.Min(min, p); max = Vector2.Max(max, p); }
@@ -811,7 +865,7 @@ namespace SashaRX.UnityMeshLab
                     var (s, f) = refs[i];
                     var face = s.faces[f];
                     face.parentLod = face.parentMesh = face.parentFace = -1;
-                    face.overlayMesh = face.overlayFace = -1; face.layer = 0; face.intentionalOverlap = false;
+                    face.overlayMesh = face.overlayFace = -1; face.layer = face.projectionLayer = 0; face.intentionalOverlap = false;
                     face.localFallback = fallback[i];
                     for (int k = 0; k < 3; ++k) s.pixels[f * 3 + k] = placed[i * 3 + k];
                     if (Anisotropy(s, f) > options.maxAnisotropy)
@@ -819,31 +873,21 @@ namespace SashaRX.UnityMeshLab
                             + $"Density {density:G9}; positions {s.positions[s.indices[f*3]].ToString(coordinateFormat)} / {s.positions[s.indices[f*3+1]].ToString(coordinateFormat)} / {s.positions[s.indices[f*3+2]].ToString(coordinateFormat)}; "
                             + $"pixels {placed[i*3].ToString(coordinateFormat)} / {placed[i*3+1].ToString(coordinateFormat)} / {placed[i*3+2].ToString(coordinateFormat)}.");
                 }
-                if(regions==null)
-                    foreach (var s in surfaces)
-                        AssignCharts(s, Enumerable.Range(0, s.faces.Length).Where(f => !s.faces[f].inherited).ToArray(), ref nextChart);
-                else
-                {
-                    var ids=new Dictionary<(Surface,int),int>();
-                    for(int i=0;i<refs.Count;++i)
-                    {
-                        var (s,f)=refs[i];var key=(s,regions[i]);
-                        if(!ids.TryGetValue(key,out int id)) {id=nextChart++;ids.Add(key,id);}
-                        s.faces[f].chart=id;
-                    }
-                }
+                foreach(var s in surfaces)
+                    AssignCharts(s,Enumerable.Range(0,s.faces.Length).Where(f=>!s.faces[f].inherited).ToArray(),ref nextChart);
                 var quality = UvAtlasDiagnostics.Measure(Atlas(surfaces), token, comparisonBudget: options.comparisonBudget, collectConflicts: true);
                 if (!quality.complete || quality.degenerateFaces > 0 || quality.invalidFaces > 0
                     || (!options.preserveProjectedOverlap && quality.pairs > 0))
                     throw new InvalidOperationException("Expanded reverse UV atlas failed validation.");
-                var faceRefs = new List<Face>();
-                foreach (var surface in surfaces) faceRefs.AddRange(surface.faces);
+                var faceRefs = new List<(Surface surface,int face)>();
+                foreach (var surface in surfaces)
+                    for(int f=0;f<surface.faces.Length;++f) faceRefs.Add((surface,f));
                 foreach (var (a, b) in quality.conflicts)
-                    if (!IsOrderedOverlap(faceRefs[a],faceRefs[b]))
-                        throw new InvalidOperationException("Expanded reverse UV atlas contains an unclassified overlap.");
+                    if (!IsOrderedOverlap(faceRefs[a].surface.faces[faceRefs[a].face],faceRefs[b].surface.faces[faceRefs[b].face]))
+                        throw new InvalidOperationException($"Expanded reverse UV atlas contains an unclassified overlap: LOD{surfaces[0].lod} "
+                            +$"node {faceRefs[a].surface.node}/face {faceRefs[a].face} / node {faceRefs[b].surface.node}/face {faceRefs[b].face}.");
                 foreach (var p in placed) { width = Math.Max(width, p.x + options.padding); height = Math.Max(height, p.y + options.padding); }
             }
-            finally { UnityEngine.Object.DestroyImmediate(mesh); }
         }
 
         static void AssignCharts(Surface surface, int[] faces, ref int nextChart)

@@ -72,7 +72,7 @@ namespace SashaRX.UnityMeshLab
         static double Area(Point a,Point b,Point c)=>(b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x);
 
         internal static Result Build(Vector2[] uv,int[] triangles,CancellationToken token=default,Vector3[] positions=null,
-            double minimumAltitude=0)
+            double minimumAltitude=0, HashSet<int> protectedFaces=null)
         {
             var connected=new DisjointSet(triangles.Length/3);var edges=new Dictionary<long,Edge>();
             for(int f=0;f<triangles.Length/3;++f)
@@ -96,7 +96,8 @@ namespace SashaRX.UnityMeshLab
                 // This decomposition targets flat frame/branch charts. Cutting a
                 // curved strip changes donor domains without improving its surface
                 // parameterization; leave it to the curved-chart preparation.
-                var lines=faces.Length<=8192 && (positions==null || Planar(positions,triangles,faces,token))
+                var lines=faces.Length<=8192 && (protectedFaces==null || !faces.Any(protectedFaces.Contains))
+                    && (positions==null || Planar(positions,triangles,faces,token))
                     ?Propose(uv,triangles,faces,componentEdges[group.Key],token):Array.Empty<Line>();
                 if(positions!=null && minimumAltitude>0)
                     lines=lines.Where(line=>RepresentableLine(line,uv,triangles,faces,positions,minimumAltitude,token)).ToArray();

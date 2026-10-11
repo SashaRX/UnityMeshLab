@@ -149,20 +149,14 @@ namespace SashaRX.UnityMeshLab
                     var p=textureUv[node].Length==inputs[node].mesh.vertexCount?textureUv[node][vertex]:Vector2.zero;
                     uv[offset++]=float.IsNaN(p.x)||float.IsNaN(p.y)||float.IsInfinity(p.x)||float.IsInfinity(p.y)?Vector2.zero:p;
                 }
-            var connected=new DisjointSet(corners.Count/3);
-            var edges=new Dictionary<(int,(Vector3,Vector2),(Vector3,Vector2)),int>();
-            for(int f=0;f<corners.Count/3;++f)
-            {
-                token.ThrowIfCancellationRequested();
-                for(int k=0;k<3;++k)
-                {
-                    int a=f*3+k,b=f*3+(k+1)%3;
-                    var x=(corners[a],uv[a]);var y=(corners[b],uv[b]);
-                    if(edges.TryGetValue((owners[a],x,y),out int other)||edges.TryGetValue((owners[a],y,x),out other)) connected.Union(f,other);
-                    else edges.Add((owners[a],x,y),f);
-                }
-            }
-            regions=Enumerable.Range(0,corners.Count/3).Select(connected.Find).ToArray();
+            return RepairAuthoredCharts(corners.ToArray(),uv,owners.ToArray(),token,out regions);
+        }
+
+        internal static Vector2[] RepairAuthoredCharts(Vector3[] corners, Vector2[] uv, int[] owners,
+            CancellationToken token, out int[] regions, bool joinPlanar=false)
+        {
+            if(joinPlanar) JoinPlanarCorners(corners,uv,owners,token);
+            regions=AuthoredRegions(corners,uv,owners,token);
             var unique=new Dictionary<(int,Vector3,Vector2),int>();
             var positions=new List<Vector3>();var coordinates=new List<Vector2>();var indices=new int[uv.Length];
             for(int i=0;i<uv.Length;++i)
@@ -179,6 +173,64 @@ namespace SashaRX.UnityMeshLab
             for(int i=0;i<uv.Length;++i) uv[i]=new Vector2(flat[indices[i]*2],flat[indices[i]*2+1]);
             UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Preserved source UV charts: {shells.Count}; local ARAP repair; Unity Unwrapping off.");
             return uv;
+        }
+
+        internal static int[] AuthoredRegions(Vector3[] corners,Vector2[] uv,int[] owners,CancellationToken token)
+        {
+            var connected=new DisjointSet(corners.Length/3);
+            var edges=new Dictionary<(int,(Vector3,Vector2),(Vector3,Vector2)),int>();
+            for(int f=0;f<corners.Length/3;++f)
+            {
+                token.ThrowIfCancellationRequested();
+                for(int k=0;k<3;++k)
+                {
+                    int a=f*3+k,b=f*3+(k+1)%3;
+                    var x=(corners[a],uv[a]);var y=(corners[b],uv[b]);
+                    if(edges.TryGetValue((owners[a],x,y),out int other)||edges.TryGetValue((owners[a],y,x),out other)) connected.Union(f,other);
+                    else edges.Add((owners[a],x,y),f);
+                }
+            }
+            return Enumerable.Range(0,corners.Length/3).Select(connected.Find).ToArray();
+        }
+
+        // New lightmap-only patches can cross texture seams. Join geometry
+        // edges inside one renderer only when the complete patch is planar;
+        // curved patches retain authored parameterization and local ARAP repair.
+        static void JoinPlanarCorners(Vector3[] corners,Vector2[] uv,int[] owners,CancellationToken token)
+        {
+            var union=new DisjointSet(corners.Length/3);
+            var edges=new Dictionary<(int,(Vector3,Vector3)),List<int>>();
+            var normals=new Vector3[corners.Length/3];
+            for(int f=0;f<normals.Length;++f)
+            {
+                token.ThrowIfCancellationRequested();int t=f*3;
+                normals[f]=MeshGeometry.UnitDirection(Vector3.Cross(corners[t+1]-corners[t],corners[t+2]-corners[t]));
+                for(int k=0;k<3;++k)
+                {
+                    var key=(owners[t],ReverseUvCorrespondenceGraph.Key(corners[t+k],corners[t+(k+1)%3]));
+                    if(!edges.TryGetValue(key,out var uses)) {uses=new List<int>();edges.Add(key,uses);}
+                    uses.Add(f);
+                }
+            }
+            foreach(var uses in edges.Values)
+                if(uses.Count==2 && Vector3.Dot(normals[uses[0]],normals[uses[1]])>=.9999f) union.Union(uses[0],uses[1]);
+            foreach(var group in Enumerable.Range(0,normals.Length).GroupBy(union.Find))
+            {
+                token.ThrowIfCancellationRequested();var faces=group.ToArray();
+                if(faces.Length<2) continue;
+                var origin=corners[faces[0]*3];var normal=normals[faces[0]];
+                var all=faces.SelectMany(f=>Enumerable.Range(f*3,3)).ToArray();
+                double span=all.Max(i=>(corners[i]-origin).magnitude);
+                if(span<=0 || all.Any(i=>Math.Abs(Vector3.Dot(corners[i]-origin,normal))>span*.001)) continue;
+                var tangent=MeshGeometry.UnitDirection(corners[faces[0]*3+1]-origin);
+                var bitangent=Vector3.Cross(normal,tangent);
+                foreach(int i in all)
+                {
+                    double x=(double)corners[i].x-origin.x,y=(double)corners[i].y-origin.y,z=(double)corners[i].z-origin.z;
+                    uv[i]=new Vector2((float)(x*tangent.x+y*tangent.y+z*tangent.z),
+                        (float)(x*bitangent.x+y*bitangent.y+z*bitangent.z));
+                }
+            }
         }
     }
 }

@@ -1,6 +1,70 @@
 # Forward and Reverse UV: paired model comparison, 2026-10-11
 
-## Authored-chart default seed
+## Current: stable charts, local cuts and shared family packing
+
+Fresh final-source artifacts:
+`_results~/reverse-cuts-pack-20261011/accepted-models/paired/`.
+The baseline is `160d976a`; main `9ab555c9` was merged in `8459785`.
+Both overlap policies complete on Cafe_Table_A_01, Modern_Kitchen_A and Kamaz
+Typhoon. These are complete Unity pipeline runs from detached original meshes,
+not additional packing replays. Input keys, stream hashes and transforms match
+the authored-seed comparison below. All original input snapshots stay unchanged.
+
+LOD0 measurements, minimum requested density 32 tex/m and padding 2 pixels:
+
+| Model | Forward bbox fill / P95 stretch | Reverse exclusive bbox fill / P95 stretch | Reverse overlap bbox fill / P95 stretch | Reverse atlas side, exclusive / overlap |
+|---|---:|---:|---:|---:|
+| Cafe_Table_A_01 | 40.2% / 1.210 | 49.5% / 1.000 | 55.3% / 1.000 | 128 / 128 |
+| Modern_Kitchen_A | 39.4% / 1.100 | 60.6% / 1.003 | 63.1% / 1.006 | 512 / 512 |
+| Kamaz Typhoon | 57.5% / 1.064 | 59.5% / 1.219 | 57.8% / 1.224 | 2048 / 2048 |
+
+All sixteen Reverse LOD quality reports have zero invalid or collapsed UV
+faces, zero zero-area geometry faces, and zero unexpected overlap pairs.
+LOD0 records 38 allowed overlap pairs for Cafe, 882 for Kitchen and 3,335 for
+Kamaz in overlap mode. Exclusive mode records none. Seed packing, global seam
+refinement and final packing have no refusal in these six chains. Optional
+local cut protection can still retain a donor patch; zero global refusal does
+not mean every possible junction was cut.
+
+The defect was partly before packing: unsupported finer faces were unwrapped
+again after each projection/cut attempt, changing the parameterization of a
+shell. A full finer-input parameterization is now prepared once, then reused.
+Explicit strip regions are not split a second time. Recreated face records
+receive a rebuilt overlap graph, and repeated arbitration starts from the
+projection layer rather than a stale previously assigned rank. Whole donor
+patches and ancestors are protected locally when a cut cannot keep their
+coverage; independent patches still retain their accepted cuts.
+
+Final packing moves connected ancestry/overlay families with one quarter turn,
+common scale and translation. It additionally tests higher common pixel
+density in a larger canvas to reduce the relative cost of gutters between
+thousands of small charts. The realized LOD0 densities are 38.7/41.4 tex/m for
+Cafe, 100.2/102.5 for Kitchen and 109.0/109.6 for Kamaz. Therefore these fill
+gains do not claim unchanged atlas size or exactly 32 tex/m. The optional native
+family-envelope candidate did not win any of these six fresh comparisons;
+the accepted layouts use the managed shared-family and footprint searches.
+
+The full final graphics-enabled Unity EditMode run records 377 cases:
+349 passed, zero failed and 28 optional-fixture skips. It includes all six
+completed-chain packing replays, actual Float32 metric/contact checks and
+ancestry/overlay rigid-motion checks. Both FBX reference-compile variants pass.
+All thirty Forward mesh layout JSON exports match the earlier authored-seed
+baseline after parsing every field. Kitchen's pre-existing 54 collapsed
+Forward UV faces remain; this Reverse change does not fix ordinary Transfer.
+The two Reverse findings in review `5484582384` are also addressed: compact
+seed density propagates to finer allocation, and rejected underlay projections
+cannot leave orphaned support flags.
+
+The actual UV images are `Modern_Kitchen_A-all-lods.png`,
+`kamaz_Off-all-lods.png` and `Cafe_Table_A_01-all-lods.png` in the artifact root;
+the corresponding `*-lod0.png` files show all three transfer modes side by side.
+These plots use exported triangles, not reconstructed packing rectangles.
+Remaining limitations are visible: Kitchen still has 1,584/1,356 rigid packing
+families and Kamaz 5,003/4,510. Kamaz retains many tiny charts, empty regions and
+higher P95 stretch than Forward. This is a verified defect/packing improvement,
+not a claim that Reverse quality or fragmentation is fully solved.
+
+## Historical: authored-chart default seed
 
 Baseline `81e9fb59`, fresh full-pipeline artifacts:
 `_results~/source-seed-default-20261011/paired/`. Reverse starts from detached
@@ -35,7 +99,7 @@ graphics device active. Source seam/material/tangent/colour preservation and
 the explicit Unity option are covered by new controls. Visuals show actual
 last-LOD and LOD0 UV exports for ordinary Forward and both Reverse policies.
 
-## Current continuation: connected families and independent packing searches
+## Historical: connected families and independent packing searches
 
 Latest fresh paired artifacts: `_results~/finalpack-20261011/regression/paired/`.
 Baseline is `a51de228`; the older texel-policy captures below have identical

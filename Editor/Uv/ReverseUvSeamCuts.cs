@@ -276,7 +276,7 @@ namespace SashaRX.UnityMeshLab
                     {
                         var face = s.faces[plan.face];
                         faces.Add(new Face { inherited = face.inherited, chart = face.chart, parentLod = face.parentLod,
-                            parentMesh = face.parentMesh, parentFace = face.parentFace, layer = face.layer, distance = face.distance,
+                            parentMesh = face.parentMesh, parentFace = face.parentFace, layer = face.layer, projectionLayer = face.projectionLayer, distance = face.distance,
                             ambiguous = !altered && face.ambiguous, rejection = altered ? null : face.rejection, cutRefusal = face.cutRefusal,
                             intentionalOverlap = face.intentionalOverlap, overlayMesh = face.overlayMesh, overlayFace = face.overlayFace,
                             protectedInheritance = face.protectedInheritance, projectionSupport = face.projectionSupport });
