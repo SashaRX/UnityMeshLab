@@ -57,6 +57,27 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [TestCase(false)] [TestCase(true)]
+        public void NearlyCoincidentDonorRimsKeepTheValidSplit(bool overlap)
+        {
+            var donor=new Mesh {name="Donor rims two float steps apart",vertices=new[] {Vector3.zero,new Vector3(.5f,0,0),new Vector3(.5f,1,0),Vector3.up,
+                new Vector3(.50000012f,0,0),Vector3.right,new Vector3(1,1,0),new Vector3(.50000012f,1,0)},
+                triangles=new[] {0,1,2,0,2,3,4,5,6,4,6,7},
+                uv2=new[] {new Vector2(.1f,.1f),new Vector2(.25f,.1f),new Vector2(.25f,.4f),new Vector2(.1f,.4f),
+                    new Vector2(.6f,.1f),new Vector2(.75f,.1f),new Vector2(.75f,.4f),new Vector2(.6f,.4f)}};
+            owned.Add(donor);var target=Quad();var before=TransferMeshSnapshot.Capture(target);
+            using var result=ReverseUvTransfer.Build(new[] {Level(1,donor),Level(0,target)},
+                new ReverseUvTransfer.Options {seedResolution=128,preserveProjectedOverlap=overlap}).GetAwaiter().GetResult();
+            var report=result.report.nodes[1];
+            Assert.Greater(report.splitSourceFaces,0);
+            Assert.AreEqual(0,report.newFaces);
+            Assert.IsNull(result.report.refinementRefusal);
+            Assert.AreEqual(Area(target),Area(result.meshes[1][0]),1e-6);
+            var quality=TransferUvQuality.Measure(result.meshes[1][0],result.meshes[1][0].uv2,Vector2.one,Matrix4x4.identity);
+            Assert.Less(quality.worstAnisotropy,1.01);Assert.AreEqual(0,quality.degenerateFaces);Assert.AreEqual(0,quality.overlapPairs);
+            CollectionAssert.AreEqual(before,TransferMeshSnapshot.Capture(target));
+        }
+
+        [TestCase(false)] [TestCase(true)]
         public void CrossingFacesInheritBothChartsAndKeepSurfaceAndAttributes(bool overlap)
         {
             var donor = Donor(); var target = Quad(); target.triangles = new[] { 0, 1, 3, 1, 2, 3 };
@@ -351,6 +372,13 @@ namespace SashaRX.UnityMeshLab.Tests
                                 if(!trial.accepted) regressions.Add(path+", overlap="+overlap+": "+trial.error);
                                 else if(!finalPacking && (trial.inheritedAreaFraction<baseline.inheritedAreaFraction-1e-5 || trial.atlas>baseline.atlas))
                                     regressions.Add(path+", overlap="+overlap+": inherited area or atlas regressed");
+                                else
+                                {
+                                    var previousAudit=JsonUtility.FromJson<ReverseUvAudit.Audit>(File.ReadAllText(baseline.audit));
+                                    var currentAudit=JsonUtility.FromJson<ReverseUvAudit.Audit>(File.ReadAllText(trial.audit));
+                                    if(previousAudit.report.nodes.Any(n=>n.splitSourceFaces>0) && !currentAudit.report.nodes.Any(n=>n.splitSourceFaces>0))
+                                        regressions.Add(path+", overlap="+overlap+": previously successful donor seam cuts disappeared");
+                                }
                             }
                             File.WriteAllText(Path.Combine(directory,"asset-trials.json"),JsonUtility.ToJson(trials,true));
                         }

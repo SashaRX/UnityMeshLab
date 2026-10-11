@@ -64,7 +64,50 @@ namespace SashaRX.UnityMeshLab
 
         internal static async Task<(Mesh mesh,int[] sources)> PrepareForwardSeamsAsync(Mesh source,Mesh target,
             Vector2[] legacyUv,int[] legacySources,int resolution,bool useAsync,CancellationToken token=default,
-            HashSet<int> protectedFaces=null,int attempt=0)
+            HashSet<int> protectedFaces=null,int attempt=0,TransferMatchTrace trace=null)
+        {
+            var stable=await PrepareForwardSeamsCore(source,target,legacyUv,legacySources,resolution,useAsync,token,
+                protectedFaces,attempt,trace,false,false);
+            if (stable.mesh && TransferUvQuality.Measure(stable.mesh,stable.mesh.uv2,Vector2.one,Matrix4x4.identity).worstAnisotropy<=4)
+                return stable;
+            foreach(bool existingAtlasOnly in new[] {false,true})
+            {
+                Mesh candidate=null;
+                try
+                {
+                    var incremental=await PrepareForwardSeamsCore(source,target,legacyUv,legacySources,resolution,useAsync,token,
+                        protectedFaces,attempt,trace,true,existingAtlasOnly);
+                    candidate=incremental.mesh;
+                    if (!candidate) continue;
+                    var after=TransferUvQuality.Measure(candidate,candidate.uv2,Vector2.one,Matrix4x4.identity);
+                    var before=TransferUvQuality.Measure(stable.mesh?stable.mesh:target,stable.mesh?stable.mesh.uv2:legacyUv,Vector2.one,Matrix4x4.identity);
+                    if (after.overlapScanComplete && after.invalidFaces<=before.invalidFaces && after.degenerateFaces<=before.degenerateFaces
+                        && after.outOfBoundsVertices<=before.outOfBoundsVertices && after.overlapPairArea<=before.overlapPairArea*1.001+1e-14
+                        && after.worstAnisotropy<=before.worstAnisotropy*1.001
+                        && (after.degenerateFaces<before.degenerateFaces || after.areaWeightedAnisotropy<before.areaWeightedAnisotropy*.999999))
+                    {
+                        if (stable.mesh) UnityEngine.Object.DestroyImmediate(stable.mesh);
+                        candidate=null;stable=incremental;
+                        if(after.worstAnisotropy<=4) return stable;
+                    }
+                }
+                catch (InvalidOperationException error)
+                {
+                    if (trace!=null) trace.forwardSeamRefusal="Incremental seam trial: "+error.Message;
+                }
+                catch
+                {
+                    if (stable.mesh) UnityEngine.Object.DestroyImmediate(stable.mesh);
+                    throw;
+                }
+                finally {if(candidate) UnityEngine.Object.DestroyImmediate(candidate);}
+            }
+            return stable;
+        }
+
+        static async Task<(Mesh mesh,int[] sources)> PrepareForwardSeamsCore(Mesh source,Mesh target,
+            Vector2[] legacyUv,int[] legacySources,int resolution,bool useAsync,CancellationToken token,
+            HashSet<int> protectedFaces,int attempt,TransferMatchTrace trace,bool incrementalCuts,bool existingAtlasOnly)
         {
             using var inputs=ReverseUvInputs.Prepare(new[] {new Level {lod=1,inputs=new[] {new Input {mesh=source,key=source.name}}},
                 new Level {lod=0,inputs=new[] {new Input {mesh=target,key=target.name}}}},token);
@@ -90,7 +133,8 @@ namespace SashaRX.UnityMeshLab
                 }
                 var targets=Capture(inputs.levels[1],Vector3.zero);
                 var options=new Options {seedResolution=resolution,maxAtlasSize=resolution,projectionReach=.05f,
-                    splitDonorSeams=true,preserveProjectedOverlap=false,comparisonBudget=20000000};
+                    splitDonorSeams=true,preserveProjectedOverlap=false,comparisonBudget=20000000,
+                    validateCutsIncrementally=incrementalCuts,projectExistingAtlasOnly=existingAtlasOnly};
                 if (protectedFaces != null)
                     options.seamCutExclusions = new Dictionary<(int,int),HashSet<int>> {[(0,0)] = protectedFaces};
                 if(useAsync)
@@ -126,6 +170,16 @@ namespace SashaRX.UnityMeshLab
                         originalPositions[originalIndices[old+2]],legacyUv[originalIndices[old]],legacyUv[originalIndices[old+1]],legacyUv[originalIndices[old+2]]);
                     double metric=TriangleAnisotropy(surface.positions[surface.indices[start]],surface.positions[surface.indices[start+1]],
                         surface.positions[surface.indices[start+2]],surface.pixels[start],surface.pixels[start+1],surface.pixels[start+2]);
+                    if (trace != null && oldMetric > 4)
+                    {
+                        if (trace.forwardFaces.Count < 4096)
+                            trace.forwardFaces.Add(new TransferMatchTrace.ForwardFace {sourceFace=originalFace,piece=f,attempt=attempt,
+                                parentFace=surface.faces[f].parentFace,inherited=surface.faces[f].inherited,incrementalCuts=incrementalCuts,
+                                existingAtlasOnly=existingAtlasOnly,
+                                legacyAnisotropy=oldMetric,projectedAnisotropy=metric,
+                                rejection=surface.faces[f].rejection,cutRefusal=surface.faces[f].cutRefusal});
+                        else trace.truncated = true;
+                    }
                     if (metric>oldMetric*1.001+.001) surface.faces[f].inherited=false;
                     if(surface.faces[f].inherited) projectedFaces.Add(f);
                     for(int k=0;k<3;++k)
@@ -171,7 +225,7 @@ namespace SashaRX.UnityMeshLab
                         bool extended = false;
                         foreach(int face in legacyContacts) extended |= protectedFaces.Add(originalFaces[face]);
                         if (!extended) return (null,null);
-                        return await PrepareForwardSeamsAsync(source,target,legacyUv,legacySources,resolution,useAsync,token,protectedFaces,attempt+1);
+                        return await PrepareForwardSeamsCore(source,target,legacyUv,legacySources,resolution,useAsync,token,protectedFaces,attempt+1,trace,incrementalCuts,existingAtlasOnly);
                     }
                     for(int f=0;f<surface.faces.Length;++f)
                         if(refused.Contains(f))
@@ -202,7 +256,7 @@ namespace SashaRX.UnityMeshLab
                     bool extended=false;
                     foreach(int face in metricFailures) extended |= protectedFaces.Add(face);
                     if(!extended) return (null,null);
-                    return await PrepareForwardSeamsAsync(source,target,legacyUv,legacySources,resolution,useAsync,token,protectedFaces,attempt+1);
+                    return await PrepareForwardSeamsCore(source,target,legacyUv,legacySources,resolution,useAsync,token,protectedFaces,attempt+1,trace,incrementalCuts,existingAtlasOnly);
                 }
                 var vertexSources=new List<int>();
                 var barycentrics=surface.sourceBarycentrics ?? Enumerable.Range(0,cornerUv.Length)

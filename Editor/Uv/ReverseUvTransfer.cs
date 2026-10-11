@@ -16,6 +16,8 @@ namespace SashaRX.UnityMeshLab
         {
             public int seedResolution = 256, padding = 2, maxAtlasSize = 8192;
             public float projectionReach = .05f, normalDot = .5f, maxAnisotropy = 4;
+            internal bool validateCutsIncrementally;
+            internal bool projectExistingAtlasOnly;
             public bool preserveProjectedOverlap;
             public bool cutNarrowJunctions;
             public bool rotateCharts = true, rotateChartsToAxis;

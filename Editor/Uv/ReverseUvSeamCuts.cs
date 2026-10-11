@@ -23,6 +23,7 @@ namespace SashaRX.UnityMeshLab
             internal List<List<CutPoint>> polygons;
             internal bool split;
             internal bool locked;
+            internal string precisionRefusal;
         }
 
         static readonly CutPoint[] WholeTriangle = { new CutPoint(0, 0), new CutPoint(1, 0), new CutPoint(0, 1) };
@@ -40,7 +41,12 @@ namespace SashaRX.UnityMeshLab
             { edgePositions[i * 3] = seams[i].a; edgePositions[i * 3 + 1] = edgePositions[i * 3 + 2] = seams[i].b; }
             var bvh = new TriangleBvh(edgePositions, Enumerable.Range(0, edgePositions.Length).ToArray());
             var plans = new List<CutFace>(); long work = 0;
+            var unpropagatedEdges=new Dictionary<(Vector3,Vector3),SortedSet<double>>();
             float density = Density(donor);
+            // Reverse UV must also unwrap unsupported pieces into new charts.
+            // Forward recovery retains their old UVs and validates actual mapped
+            // Float32 triangles, so the future-new-chart altitude bound does not apply.
+            double minimumPixelAltitude=options.projectExistingAtlasOnly?0:options.maxAtlasSize*1.1920928955078125e-7*8;
             foreach (var s in targets)
                 for (int f = 0; f < s.faces.Length; ++f)
                 {
@@ -76,6 +82,14 @@ namespace SashaRX.UnityMeshLab
                         // Optional refinement is bounded per input face. Keep the
                         // original complete face if its local arrangement explodes.
                         if (divided.Count > 128) { plan.polygons = new List<List<CutPoint>> { WholeTriangle.ToList() }; break; }
+                        // Nearly coincident donor rims can make a later line
+                        // create an unrepresentable sliver. Keep the earlier
+                        // valid partition and refuse only this optional line.
+                        if (options.validateCutsIncrementally)
+                        {
+                            var trial = new CutFace {surface=s,face=f,polygons=divided,split=divided.Count>1};
+                            if (!ValidPlan(trial,unpropagatedEdges,density,minimumPixelAltitude,options.maxAnisotropy)) continue;
+                        }
                         plan.polygons = divided;
                     }
                     plan.split = plan.polygons.Count > 1;
@@ -89,15 +103,20 @@ namespace SashaRX.UnityMeshLab
                 foreach (var plan in plans.Where(p => p.split))
                     foreach (var point in plan.polygons.SelectMany(p => p)) CollectEdgePoint(plan, point, edgePoints);
                 var invalid = plans.Where(p => (p.locked && PlanEdges(p).Any(edgePoints.ContainsKey))
-                    || !ValidPlan(p, edgePoints, density, options.maxAtlasSize, options.maxAnisotropy)).ToArray();
+                    || !ValidPlan(p, edgePoints, density, minimumPixelAltitude, options.maxAnisotropy)).ToArray();
                 if (invalid.Length == 0) break;
                 var refusedEdges = new HashSet<(Vector3, Vector3)>(invalid.SelectMany(PlanEdges));
+                var reasons=new Dictionary<(Vector3,Vector3),string>();
+                foreach(var failed in invalid)
+                    foreach(var edge in PlanEdges(failed))
+                        if(!reasons.ContainsKey(edge)) reasons.Add(edge,$"LOD{failed.surface.lod}/node{failed.surface.node}/face{failed.face}:{failed.precisionRefusal??"locked-face"}");
                 var refused = plans.Where(p => p.split && (invalid.Contains(p) || PlanEdges(p).Any(refusedEdges.Contains))).ToArray();
                 if (refused.Length == 0) throw new InvalidOperationException("Reverse UV uncut surface cannot be represented at float precision.");
                 foreach (var plan in refused)
                 {
                     plan.polygons = new List<List<CutPoint>> { WholeTriangle.ToList() }; plan.split = false;
-                    plan.surface.faces[plan.face].cutRefusal = "seam-precision";
+                    plan.surface.faces[plan.face].cutRefusal = "seam-precision:"+
+                        (plan.precisionRefusal??PlanEdges(plan).Where(reasons.ContainsKey).Select(edge=>reasons[edge]).FirstOrDefault());
                 }
             }
             foreach (var surface in targets)
@@ -119,9 +138,11 @@ namespace SashaRX.UnityMeshLab
             return triangles;
         }
 
-        static bool ValidPlan(CutFace plan, Dictionary<(Vector3, Vector3), SortedSet<double>> edgePoints, float density, int maxAtlasSize, float maxAnisotropy)
+        static bool ValidPlan(CutFace plan, Dictionary<(Vector3, Vector3), SortedSet<double>> edgePoints, float density, double minimumPixelAltitude, float maxAnisotropy)
         {
             var s = plan.surface; int start = plan.face * 3; double area = 0;
+            plan.precisionRefusal=null;
+            bool Refuse(string reason) {plan.precisionRefusal=reason;return false;}
             foreach (var polygon in plan.polygons)
             {
                 var expanded = InsertEdgePoints(s, start, polygon, edgePoints);
@@ -136,7 +157,7 @@ namespace SashaRX.UnityMeshLab
                         var b = triangles[t + k].Bary;
                         p[k] = s.positions[s.indices[start]] * b.x + s.positions[s.indices[start + 1]] * b.y + s.positions[s.indices[start + 2]] * b.z;
                     }
-                    if (!MeshGeometry.HasArea(p[0], p[1], p[2])) return false;
+                    if (!MeshGeometry.HasArea(p[0], p[1], p[2])) return Refuse("zero-area-geometry");
                     if (altered)
                     {
                         var frame = TriangleFrame(p[0], p[1], p[2]);
@@ -144,7 +165,7 @@ namespace SashaRX.UnityMeshLab
                         // A new altitude needs several representable texels at
                         // the largest allowed pixel coordinate. Never remove a
                         // thin original face to meet this optional-cut criterion.
-                        if (frame.length * frame.y / longest * density < maxAtlasSize * 1.1920928955078125e-7 * 8) return false;
+                        if (frame.length * frame.y / longest * density < minimumPixelAltitude) return Refuse("subpixel-altitude");
                         if (s.faces[plan.face].inherited)
                         {
                             var uv = new Vector2[3];
@@ -153,12 +174,12 @@ namespace SashaRX.UnityMeshLab
                                 var b = triangles[t + k].Bary;
                                 uv[k] = s.pixels[start] * b.x + s.pixels[start + 1] * b.y + s.pixels[start + 2] * b.z;
                             }
-                            if (TriangleAnisotropy(p[0], p[1], p[2], uv[0], uv[1], uv[2]) > maxAnisotropy) return false;
+                            if (TriangleAnisotropy(p[0], p[1], p[2], uv[0], uv[1], uv[2]) > maxAnisotropy) return Refuse("inherited-uv-metric");
                         }
                     }
                 }
             }
-            return Math.Abs(area - .5) < 1e-7;
+            return Math.Abs(area - .5) < 1e-7 || Refuse("incomplete-partition");
         }
 
         static CutPoint InTargetPlane(Vector3 p, Vector3 a, Vector3 b, Vector3 c)

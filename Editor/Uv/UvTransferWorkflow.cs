@@ -2417,7 +2417,7 @@ namespace SashaRX.UnityMeshLab
                 try
                 {
                     var projection=await ReverseUvTransfer.PrepareForwardSeamsAsync(srcMesh,tgtMesh,tr.uv2,tr.vertexToSourceShell,
-                        Mathf.Max(16,(int)Math.Max(srcEntry.repackedAtlasWidth,srcEntry.repackedAtlasHeight)),useAsync);
+                        Mathf.Max(16,(int)Math.Max(srcEntry.repackedAtlasWidth,srcEntry.repackedAtlasHeight)),useAsync,trace:pair?.trace);
                     prepared=projection.mesh;var projectedSources=projection.sources;
                     if (prepared)
                     {

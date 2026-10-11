@@ -42,6 +42,15 @@ namespace SashaRX.UnityMeshLab
             public UnityEngine.Vector2[] uv;
         }
 
+        [Serializable]
+        internal sealed class ForwardFace
+        {
+            public int sourceFace, piece, parentFace, attempt;
+            public double legacyAnisotropy, projectedAnisotropy;
+            public bool inherited, incrementalCuts, existingAtlasOnly;
+            public string rejection, cutRefusal;
+        }
+
         public List<Shell> shells = new List<Shell>();
         public float[] sourceTransformResiduals;
         public bool[] sourceMirrored;
@@ -49,6 +58,7 @@ namespace SashaRX.UnityMeshLab
         public bool sourceAtlasRecoveryAllowed;
         public TransferUvQuality projectedSeamQuality;
         public string forwardSeamRefusal;
+        public List<ForwardFace> forwardFaces = new List<ForwardFace>();
         int recordedVertices;
 
         internal void RecordProjection(Shell shell, string method, int source,

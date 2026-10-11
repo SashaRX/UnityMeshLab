@@ -64,13 +64,24 @@ when cuts lose inherited/intentional-overlap coverage or worsen local distortion
 Other seams remain eligible. The inheritance, density and distortion gates are
 unchanged; a protected face records `preserved-inheritance-or-metric`.
 
+Final continuation verification: `release5/tests.xml` has 345 passed, zero
+failures and five optional skips. `release4` separately verifies all 18 corpus
+trials (16 accepted, both Kitchen modes still refused), preserved successful
+Shelf/Park cuts, and both policies in the difficult Kamaz frame 3. Only forward
+variant selection and additive trace fields changed after those reverse tests.
+The full earlier `release2` replay accepts frames 1/2/3 in both modes and refuses
+frame 0's real shared-frame geometry collapse. Reference compilation passes
+with/without the FBX exporter define; CS0103 and diff checks are clean.
+
 Private replay fixtures: Cafe_Table_A_01, Modern_Kitchen_A and uncompressed
 `kamaz_Off.fbx`, plus the frozen Kamaz transform frames. Current forward controls
 at 10 tex/m, 2 px padding and junction cuts:
 
 - Cafe source / LOD1 worst anisotropy: 1.45490 / 1.53571, no overlaps or collapsed
-  UV faces. LOD2 has no collapsed UV faces after subdivision, but still has a
-  severely distorted unsupported region (worst 3,465,807.85; weighted 7,914.83).
+  UV faces. Initial LOD2 subdivision retained a severely distorted unsupported
+  region (worst 3,465,807.85; weighted 7,914.83). The existing-atlas-only trial
+  reduces these to 2,027.82 / 6.02527, with zero collapsed faces or overlaps.
+  One unsupported region remains; this is not a complete distortion repair.
 - Kamaz main LOD1: 156 collapsed faces / 574 contact pairs, weighted anisotropy
   1,129.43. LOD2: 104 / 99, weighted 527.43. These are partial improvements,
   **not** a clean-transfer certificate.
@@ -79,6 +90,31 @@ at 10 tex/m, 2 px padding and junction cuts:
   Float32 sliver. Origin anchoring and oblique rescue trials did not solve the
   complete model and were removed; the metric gate was not weakened and the
   face was not silently deleted.
+
+Nearly coincident donor rims (a 0.00000012-unit gap in the control) can make one
+optional line invalidate earlier valid cuts. Incremental validation retains the
+earlier partition and skips the unusable line. Forward recovery compares both
+incremental variants with the original method and keeps only an improvement without increased
+collapsed-face counts or overlap area. It reuses a fixed donor atlas and retains
+legacy UVs for unsupported pieces, so the preflight altitude estimate for future
+new charts is inapplicable there. Actual Float32 geometry, mapped UV metrics,
+coverage, contacts and final publication guards still apply.
+The conservative variant is still needed for coincident rims: dropping its
+new-chart preflight globally regressed that control. An unsafe cut at an already
+inherited corner retains complete triangles and the prior metric; the control
+does not claim that this unsupported region has been repaired.
+
+Replacing reverse refinement with that trial regressed previously successful
+Shelf/Park cuts. The replacement was rejected. Reverse now tries the original
+method first and retains successful cuts; the incremental variant retries an
+accepted layout with no cuts and recorded precision refusals, under the same
+chain comparison. Full-chain inheritance/density/metric failures retain the
+original result rather than repeat an unsuccessful expensive search.
+The corpus benchmark checks that previously successful seam cuts do not all
+disappear. Per-piece forward diagnostics record the original face, candidate
+metric, projection rejection and the adjacent face responsible for a precision
+refusal. Snapping cut intersections to nearby vertices did not repair the real
+Cafe case and was removed.
 
 Regression controls include hidden local stretch, planar donor coverage/holes,
 cross-chart target subdivision, collision rollback, immutable input snapshots,

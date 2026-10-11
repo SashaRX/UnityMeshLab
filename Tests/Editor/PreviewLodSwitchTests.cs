@@ -1062,7 +1062,11 @@ namespace SashaRX.UnityMeshLab.Tests
                     Assert.AreEqual(0,quality.overlapPairs);
                     Assert.AreEqual(0,quality.degenerateFaces);
                     if(entry.lodIndex<2) Assert.Less(quality.worstAnisotropy,1.6);
-                    else Assert.Less(quality.areaWeightedAnisotropy,8000);
+                    else
+                    {
+                        Assert.Less(quality.areaWeightedAnisotropy,7);
+                        Assert.Less(quality.worstAnisotropy,2500);
+                    }
                 }
                 if(entry.fbxMesh.name=="Kamaz_Typhoon_LOD1")
                 {

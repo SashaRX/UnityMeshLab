@@ -49,27 +49,43 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsNull(PlanarTransferRecovery.Project(target,indices,positions,missing,indices,positions,sourceUv));
         }
 
-        [Test]
-        public void ForwardRecoveryCutsAcrossSeparatedDonorChartsWithoutMovingTheDonor()
+        [TestCase(0f,false)]
+        [TestCase(.00000012f,false)]
+        [TestCase(0f,true)]
+        public void ForwardRecoveryKeepsValidSeamCutsAndRefusesUnsafeCornerCuts(float seamGap,bool nearCorner)
         {
             var source=new Mesh {vertices=new[] {Vector3.zero,new Vector3(.5f,0,0),new Vector3(.5f,1,0),Vector3.up,
-                new Vector3(.5f,0,0),Vector3.right,new Vector3(1,1,0),new Vector3(.5f,1,0)},
+                new Vector3(.5f+seamGap,0,0),Vector3.right,new Vector3(1,1,0),new Vector3(.5f+seamGap,1,0)},
                 triangles=new[] {0,1,2,0,2,3,4,5,6,4,6,7}};
             var target=new Mesh {vertices=new[] {Vector3.zero,Vector3.right,new Vector3(1,1,0),Vector3.up},triangles=new[] {0,1,2,0,2,3},
                 uv=new[] {Vector2.zero,Vector2.right,Vector2.one,Vector2.up}};
             Mesh recovered=null;
             try
             {
+                if (nearCorner)
+                {
+                    var positions=target.vertices;positions[0]=new Vector3(.49999988f,0,0);target.vertices=positions;
+                }
                 source.uv=new[] {Vector2.zero,Vector2.right,Vector2.one,Vector2.up,Vector2.zero,Vector2.right,Vector2.one,Vector2.up};
                 source.uv2=new[] {new Vector2(.1f,.1f),new Vector2(.25f,.1f),new Vector2(.25f,.4f),new Vector2(.1f,.4f),
                     new Vector2(.6f,.1f),new Vector2(.75f,.1f),new Vector2(.75f,.4f),new Vector2(.6f,.4f)};
                 var sourceBefore=TransferMeshSnapshot.Capture(source);var targetBefore=TransferMeshSnapshot.Capture(target);
                 var legacy=new[] {new Vector2(.1f,.1f),new Vector2(.25f,.1f),new Vector2(.25f,.101f),new Vector2(.1f,.101f)};
                 recovered=ReverseUvTransfer.PrepareForwardSeams(source,target,legacy,new[] {0,0,0,0},128,out var sources);
-                Assert.IsNotNull(recovered);Assert.Greater(recovered.triangles.Length,target.triangles.Length);
+                Assert.IsNotNull(recovered);
+                if(nearCorner) Assert.AreEqual(target.triangles.Length,recovered.triangles.Length,"An inherited corner collapses under this cut; keep its complete triangles.");
+                else Assert.Greater(recovered.triangles.Length,target.triangles.Length);
                 Assert.AreEqual(recovered.vertexCount,sources.Length);
                 var quality=TransferUvQuality.Measure(recovered,recovered.uv2,Vector2.one,Matrix4x4.identity);
-                Assert.Less(quality.worstAnisotropy,1.01);Assert.AreEqual(0,quality.overlapPairs);Assert.AreEqual(0,quality.degenerateFaces);
+                if(nearCorner)
+                {
+                    var previous=TransferUvQuality.Measure(target,legacy,Vector2.one,Matrix4x4.identity);
+                    Assert.LessOrEqual(quality.worstAnisotropy,previous.worstAnisotropy);
+                    for(int i=0;i<target.triangles.Length;++i)
+                        Assert.AreEqual(target.vertices[target.triangles[i]],recovered.vertices[recovered.triangles[i]],"Refusing the cut must preserve the complete surface.");
+                }
+                else Assert.Less(quality.worstAnisotropy,1.01);
+                Assert.AreEqual(0,quality.overlapPairs);Assert.AreEqual(0,quality.degenerateFaces);
                 CollectionAssert.AreEqual(sourceBefore,TransferMeshSnapshot.Capture(source));
                 CollectionAssert.AreEqual(targetBefore,TransferMeshSnapshot.Capture(target));
             }

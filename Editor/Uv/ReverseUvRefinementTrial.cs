@@ -16,25 +16,59 @@ namespace SashaRX.UnityMeshLab
         {
             Validate(levels, options);
             if (!options.splitDonorSeams) return await BuildCore(levels, options, useAsync, token);
-            Result baseline = null, candidate = null;
+            Result baseline = null, candidate = null, incrementalCandidate=null;
             try
             {
                 try { baseline = await BuildCore(levels, TrialOptions(options, false), useAsync, token); }
                 catch (InvalidOperationException) { return await BuildCore(levels, options, useAsync, token); }
-                var trial = TrialOptions(options, true); string refusal = null;
-                for (int attempt = 0; attempt < 8; ++attempt)
+                var stable=await TryRefinement(levels,options,baseline,false,useAsync,token);
+                candidate=stable.result;
+                if (candidate!=null && (candidate.report.nodes.Any(n=>n.splitSourceFaces>0)
+                    || !candidate.report.nodes.Any(n=>n.faces.Any(f=>f.cutRefusal!=null
+                        && f.cutRefusal.StartsWith("seam-precision:",StringComparison.Ordinal)))))
+                {
+                    baseline.Dispose();baseline=null;
+                    var accepted=candidate;candidate=null;return accepted;
+                }
+                if (candidate==null)
+                {
+                    baseline.report.refinementRefusal=stable.refusal;
+                    UvtLog.Warn(UvtLog.Category.Repack,"[ReverseUV] Donor seam trial retained continuous baseline charts: "+stable.refusal);
+                    var retained=baseline;baseline=null;return retained;
+                }
+                var incremental=await TryRefinement(levels,options,baseline,true,useAsync,token);
+                incrementalCandidate=incremental.result;
+                if (incrementalCandidate!=null)
+                {
+                    if (ReverseUvJunctionTrial.Compare(candidate,incrementalCandidate,levels,token)==null)
+                    {
+                        candidate?.Dispose();candidate=null;baseline.Dispose();baseline=null;
+                        var accepted=incrementalCandidate;incrementalCandidate=null;return accepted;
+                    }
+                }
+                candidate.report.refinementRefusal=incremental.refusal;
+                baseline.Dispose();baseline=null;
+                var continuous=candidate;candidate=null;return continuous;
+            }
+            finally { incrementalCandidate?.Dispose();candidate?.Dispose();baseline?.Dispose(); }
+        }
+
+        static async Task<(Result result,string refusal)> TryRefinement(Level[] levels,Options options,Result baseline,
+            bool incremental,bool useAsync,CancellationToken token)
+        {
+            var trial=TrialOptions(options,true);trial.validateCutsIncrementally=incremental;
+            string refusal=null;Result candidate=null;
+            try
+            {
+                for(int attempt=0;attempt<8;++attempt)
                 {
                     token.ThrowIfCancellationRequested();
-                    try { candidate = await BuildCore(levels, trial, useAsync, token); }
-                    catch (InvalidOperationException error) { refusal = error.Message; break; }
-                    try { refusal = ReverseUvJunctionTrial.Compare(baseline, candidate, levels, token); }
-                    catch (InvalidOperationException error) { refusal = error.Message; break; }
-                    if (refusal == null)
-                    {
-                        baseline.Dispose(); baseline = null;
-                        var accepted = candidate; candidate = null; return accepted;
-                    }
-                    bool extended = ProtectDonorAncestors(baseline.report, candidate.report, trial, token);
+                    try {candidate=await BuildCore(levels,trial,useAsync,token);}
+                    catch(InvalidOperationException error) {refusal=error.Message;break;}
+                    try {refusal=ReverseUvJunctionTrial.Compare(baseline,candidate,levels,token);}
+                    catch(InvalidOperationException error) {refusal=error.Message;break;}
+                    if(refusal==null) {var accepted=candidate;candidate=null;return (accepted,null);}
+                    bool extended=ProtectDonorAncestors(baseline.report,candidate.report,trial,token);
                     foreach (var failure in ReverseUvJunctionTrial.DistortionFailures(baseline,candidate,levels,token))
                     {
                         var node=baseline.report.nodes[failure.node];
@@ -46,11 +80,9 @@ namespace SashaRX.UnityMeshLab
                     candidate.Dispose(); candidate = null;
                     if (!extended) break;
                 }
-                baseline.report.refinementRefusal = refusal;
-                UvtLog.Warn(UvtLog.Category.Repack, "[ReverseUV] Donor seam trial retained continuous baseline charts: " + refusal);
-                var retained = baseline; baseline = null; return retained;
+                return (null,refusal);
             }
-            finally { candidate?.Dispose(); baseline?.Dispose(); }
+            finally {candidate?.Dispose();}
         }
 
         static Options TrialOptions(Options options, bool split) => new Options {
