@@ -199,15 +199,6 @@ namespace SashaRX.UnityMeshLab
 
                 return (a, b, c);
             }
-            static int Root(int[] parents, int i)
-            {
-                while (parents[i] != i)
-                {
-                    i = parents[i];
-                }
-
-                return i;
-            }
             readonly List<Vertex> vertices = new List<Vertex>();
             readonly Dictionary<int, Face> faces = new Dictionary<int, Face>();
             readonly Dictionary<(int, int), Edge> edges = new Dictionary<(int, int), Edge>();
@@ -239,7 +230,7 @@ namespace SashaRX.UnityMeshLab
                 for (int f = 0; f < input.TriangleCount; f++)
                 {
                     Check(f);
-                    int k = f * 3, component = Root(topology.components, f);
+                    int k = f * 3, component = topology.components.Find(f);
                     referenceComponents[f] = component;
                     componentOrigins[component] = input.positions[input.indices[component * 3]];
                     int a = input.indices[k], b = input.indices[k + 1], c = input.indices[k + 2];

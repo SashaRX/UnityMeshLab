@@ -96,7 +96,7 @@ namespace SashaRX.UnityMeshLab
             var volumes = new Dictionary<int, double>();
             for (int f = 0; f < mesh.TriangleCount; f++)
             {
-                int root = ComponentRoot(topology.components, f);
+                int root = topology.components.Find(f);
                 volumes.TryGetValue(root, out double volume);
                 var origin = mesh.positions[mesh.indices[root * 3]];
                 volumes[root] = volume + FaceVolume(mesh.positions, mesh.indices, f * 3, origin);
@@ -108,7 +108,7 @@ namespace SashaRX.UnityMeshLab
         {
             for (int f = 0; f < mesh.TriangleCount; f++)
             {
-                if (volumes[ComponentRoot(topology.components, f)] < 0)
+                if (volumes[topology.components.Find(f)] < 0)
                 {
                     if (!orient)
                     {
@@ -121,15 +121,6 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static int ComponentRoot(int[] parents, int x)
-        {
-            while (parents[x] != x)
-            {
-                x = parents[x];
-            }
-
-            return x;
-        }
         internal static double SignedVolume(Vector3[] p, int[] t)
         {
             double volume = 0;

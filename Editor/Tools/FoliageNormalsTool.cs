@@ -8,7 +8,7 @@ using UnityEngine;
 namespace SashaRX.UnityMeshLab
 {
     [MeshLabTool("foliage_normals", MeshLabLibraries.Geometry, MeshLabLibraries.Remesh, MeshLabLibraries.VertexChannels, MeshLabLibraries.Assets)]
-    public sealed class FoliageNormalsTool : IUvTool, IUvTool3D, IUvTool3DFrameContext
+    public sealed class FoliageNormalsTool : IUvTool, IUvTool3D
     {
         enum Preview
         {
@@ -21,7 +21,6 @@ namespace SashaRX.UnityMeshLab
         {
             private get; set;
         }
-        object IUvTool3DFrameContext.FrameContext => root;
         internal readonly FoliageNormalsPipeline pipeline = new FoliageNormalsPipeline();
         internal FoliageNormalsSettings settings = new FoliageNormalsSettings();
         internal GameObject root;
