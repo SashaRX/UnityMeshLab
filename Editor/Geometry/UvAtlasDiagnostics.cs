@@ -259,7 +259,7 @@ namespace SashaRX.UnityMeshLab
                 return IntersectionArea(a,b,bufferA,bufferB)>Math.Max(1e-16,Math.Min(a.area,b.area)*1e-8);
             }
 
-            internal bool Degenerate(RemeshNative.Geometry g,int face) => FromFace(g,face).area<=1e-16;
+            internal static bool Degenerate(RemeshNative.Geometry g,int face) => FromFace(g,face).area<=1e-16;
 
             static Triangle FromFace(RemeshNative.Geometry g, int face)
             {

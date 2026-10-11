@@ -121,7 +121,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 var g=Geometry(uv,new[] {0,1,2,3,4,5},new int[6]);
                 var report=UvAtlasDiagnostics.Measure(g,default);
                 Assert.AreEqual(report.pairs>0,scratch.OverlapsInAtlas(g,0,1));
-                Assert.AreEqual(report.degenerateFaces>0,scratch.Degenerate(g,0)||scratch.Degenerate(g,1));
+                Assert.AreEqual(report.degenerateFaces>0,UvAtlasDiagnostics.IntersectionTest.Degenerate(g,0)||UvAtlasDiagnostics.IntersectionTest.Degenerate(g,1));
             }
         }
 

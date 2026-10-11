@@ -82,7 +82,7 @@ namespace SashaRX.UnityMeshLab
                             long comparisons=0;
                             for(int a=0;a<faceIds.Length;++a)
                             {
-                                if(intersection.Degenerate(geometry,a)) return false;
+                                if(UvAtlasDiagnostics.IntersectionTest.Degenerate(geometry,a)) return false;
                                 for(int b=a+1;b<faceIds.Length;++b)
                                 {
                                     if(options.comparisonBudget>=0 && ++comparisons>options.comparisonBudget) return false;
