@@ -72,6 +72,7 @@ namespace SashaRX.UnityMeshLab
         void PipelineChanged()
         {
             previewCanApply = null;
+            ValidateComparisonPreview();
             bool captured = pipeline.Has(FoliageNormalsPipeline.Stage.Capture);
             if (captured != previewCaptured || pipeline.CapturedRoot != previewCapturedRoot)
             {
@@ -80,6 +81,13 @@ namespace SashaRX.UnityMeshLab
                 if (active) RefreshSourcePreview();
             }
             if (active) RequestRepaint?.Invoke();
+        }
+
+        void ValidateComparisonPreview()
+        {
+            if (preview != Preview.BeforeAfter || pipeline.Has(FoliageNormalsPipeline.Stage.Transfer)) return;
+            preview = Preview.TransferredNormals;
+            afterNormals = false;
         }
 
         internal static FoliageNormalsSettings RestoreSettings(string json)
@@ -212,16 +220,13 @@ namespace SashaRX.UnityMeshLab
             var selected = Selection.activeGameObject;
             if (selected == lastSelection) return;
             lastSelection = selected;
+            hasPendingRoot = false;
+            pendingRoot = null;
             if (!selected || EditorUtility.IsPersistent(selected)) return;
             var group = selected.GetComponentInParent<LODGroup>();
             var next = group ? group.gameObject : selected;
             if (!next.GetComponentInChildren<MeshRenderer>()) return;
-            if (next == root)
-            {
-                hasPendingRoot = false;
-                pendingRoot = null;
-                return;
-            }
+            if (next == root) return;
             if (pipeline.IsRunning)
             {
                 pendingRoot = next;
@@ -502,11 +507,15 @@ namespace SashaRX.UnityMeshLab
 
         void DrawShapeSettings()
         {
-            settings.autoFitProxy = EditorGUILayout.Toggle("Auto fit selected foliage", settings.autoFitProxy);
+            settings.autoFitProxy = EditorGUILayout.Toggle("Auto fit", settings.autoFitProxy);
+            if (settings.autoFitProxy)
+                settings.proxyFit = (FoliageProxyFit)EditorGUILayout.EnumPopup("Fit to", settings.proxyFit);
             settings.proxyCenter = EditorGUILayout.Vector3Field(settings.autoFitProxy ? "Center offset (root local)" : "Center (root local)", settings.proxyCenter);
             if (settings.autoFitProxy)
             {
-                settings.proxyRadiusScale = EditorGUILayout.Slider("Radius multiplier", settings.proxyRadiusScale, .01f, 4);
+                settings.proxyRadiusScale = EditorGUILayout.Slider("Size multiplier", settings.proxyRadiusScale, .01f, 4);
+                if (settings.proxyFit == FoliageProxyFit.ObjectBoundingBox)
+                    EditorGUILayout.HelpBox("Fits each axis to the full bounding box of the meshes used to build the proxy, including excluded submeshes. Other renderers and transfer-only LODs do not enlarge it. Transfer still changes only selected faces.", MessageType.Info);
             }
             else
             {
@@ -516,10 +525,10 @@ namespace SashaRX.UnityMeshLab
             if (settings.normalSource == FoliageNormalSource.Hemisphere)
             {
                 settings.proxyRotation = EditorGUILayout.Vector3Field("Rotation (root local)", settings.proxyRotation);
-                EditorGUILayout.HelpBox("Open hemisphere, no base cap. Default axis: root +Y. Auto fit places its base at the lowest selected point along that axis.", MessageType.Info);
+                EditorGUILayout.HelpBox("Open hemisphere, no base cap. Default axis: root +Y. Auto fit places its base at the bottom of the chosen fit bounds along that axis.", MessageType.Info);
             }
             settings.proxySegments = (EditorGUILayout.IntSlider("Segments", settings.proxySegments, 16, 128) + 2) / 4 * 4;
-            EditorGUILayout.HelpBox("Sphere and hemisphere use smooth radial normals and the same nearest-triangle transfer. Scatter, voxelization, smoothing and remeshing are skipped.", MessageType.Info);
+            EditorGUILayout.HelpBox("Sphere and hemisphere use smooth surface normals and the same nearest-triangle transfer. Bounding-box fitting stretches the shape along each axis. Scatter, voxelization, smoothing and remeshing are skipped.", MessageType.Info);
             StageButton("Build Proxy", FoliageNormalsPipeline.Stage.Envelope);
         }
 
@@ -695,7 +704,7 @@ namespace SashaRX.UnityMeshLab
 
             if (pipeline.ShapeProxy != null)
             {
-                EditorGUILayout.LabelField($"{pipeline.ProxyName}\nCenter {pipeline.ShapeProxy.center} · radius {pipeline.ShapeProxy.radius:G5} · axis {pipeline.ShapeProxy.axis}", EditorStyles.wordWrappedMiniLabel);
+                EditorGUILayout.LabelField($"{pipeline.ProxyName}\nCenter {pipeline.ShapeProxy.center} · radii {pipeline.ShapeProxy.radii} · axis {pipeline.ShapeProxy.axis}", EditorStyles.wordWrappedMiniLabel);
             }
 
             if (pipeline.SmoothDiagnostics != null)
@@ -716,6 +725,7 @@ namespace SashaRX.UnityMeshLab
 
         public bool Get3DContent(List<MeshViewport3D.Item> items)
         {
+            ValidateComparisonPreview();
             var proxy = PreviewProxy();
             if (proxy && preview != Preview.ProxyAndMesh)
             {

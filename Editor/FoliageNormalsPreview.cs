@@ -142,10 +142,11 @@ namespace SashaRX.UnityMeshLab
             if (input.normals.Length != input.positions.Length) return Array.Empty<Vector3>();
             var lines = new List<Vector3>();
             var normalMatrix = input.matrix.inverse.transpose;
-            int stride = Math.Max(1, (selected.Length + 255) / 256);
-            for (int i = 0; i < selected.Length; i += stride)
+            var vertices = Enumerable.Range(0, selected.Length).Where(i => selected[i]).ToArray();
+            int stride = Math.Max(1, (vertices.Length + 255) / 256);
+            for (int v = 0; v < vertices.Length; v += stride)
             {
-                if (!selected[i]) continue;
+                int i = vertices[v];
                 var direction = MeshGeometry.UnitDirection(normalMatrix.MultiplyVector(input.normals[i]));
                 if (!MeshGeometry.UsableNormal(direction)) continue;
                 var point = input.matrix.MultiplyPoint3x4(input.positions[i]);

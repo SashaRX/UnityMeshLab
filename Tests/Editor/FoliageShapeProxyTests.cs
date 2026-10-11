@@ -119,6 +119,151 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.Throws<OperationCanceledException>(() => FoliageShapeProxyBuilder.Build(Array.Empty<Vector3>(), Array.Empty<int>(), default, settings, cancellation.Token));
         }
 
+        static Vector3[] BoxCorners(Bounds bounds, Quaternion rotation)
+        {
+            var points = new Vector3[8];
+            for (int i = 0; i < points.Length; i++)
+                points[i] = rotation * new Vector3((i & 1) == 0 ? bounds.min.x : bounds.max.x,
+                    (i & 2) == 0 ? bounds.min.y : bounds.max.y, (i & 4) == 0 ? bounds.min.z : bounds.max.z);
+            return points;
+        }
+
+        [TestCase((int)FoliageNormalSource.Sphere, 0)]
+        [TestCase((int)FoliageNormalSource.Hemisphere, 0)]
+        [TestCase((int)FoliageNormalSource.Hemisphere, 90)]
+        [TestCase((int)FoliageNormalSource.Hemisphere, 35)]
+        public void BoundingBoxFitsEachAxisWithOutwardEllipsoidNormalsAndAnOpenHemisphere(int sourceValue, int angle)
+        {
+            var source = (FoliageNormalSource)sourceValue;
+            var rotation = Quaternion.Euler(angle, 0, 0);
+            var bounds = new Bounds(new Vector3(10, 20, -5), new Vector3(4, 6, 8));
+            var points = BoxCorners(bounds, rotation);
+            var settings = new FoliageNormalsSettings { normalSource = source, proxyFit = FoliageProxyFit.ObjectBoundingBox,
+                proxyRotation = new Vector3(angle, 0, 0) };
+            var shape = FoliageShapeProxyBuilder.Build(points, new[] { 0, 1, 2 }, default, settings, CancellationToken.None);
+            var expectedRadii = new Vector3(2, source == FoliageNormalSource.Hemisphere ? 6 : 3, 4);
+            var expectedCenter = rotation * (bounds.center + (source == FoliageNormalSource.Hemisphere ? Vector3.down * 3 : Vector3.zero));
+            Assert.Less((shape.radii - expectedRadii).magnitude, 1e-4);
+            Assert.Less((shape.center - expectedCenter).magnitude, 1e-4);
+            var inverse = Quaternion.Inverse(rotation);
+            var hits = FoliageNormalTransfer.QueryCpu(new TriangleBvh(shape.mesh.positions, shape.mesh.indices), shape.mesh.positions, 1, CancellationToken.None);
+            for (int i = 0; i < shape.mesh.positions.Length; i++)
+            {
+                var p = inverse * (shape.mesh.positions[i] - shape.center);
+                Assert.That(p.x * p.x / 4 + p.y * p.y / (expectedRadii.y * expectedRadii.y) + p.z * p.z / 16, Is.EqualTo(1).Within(1e-4));
+                var expected = rotation * new Vector3(p.x / 4, p.y / (expectedRadii.y * expectedRadii.y), p.z / 16).normalized;
+                Assert.Greater(Vector3.Dot(expected, shape.mesh.normals[i]), .99999f);
+                Assert.Greater(Vector3.Dot(expected, FoliageNormalTransfer.Interpolate(shape.mesh, hits[i].triangleIndex, hits[i].barycentric)), .9999f);
+                if (source == FoliageNormalSource.Hemisphere) Assert.GreaterOrEqual(p.y, -1e-4);
+            }
+            var proxyBounds = FoliageProxyBuilder.BoundsOf(Array.ConvertAll(shape.mesh.positions, p => inverse * p));
+            Assert.Less((proxyBounds.center - bounds.center).magnitude, 1e-4);
+            Assert.Less((proxyBounds.size - bounds.size).magnitude, 1e-4);
+            var topology = RemeshTopology.Inspect(shape.mesh.positions, shape.mesh.indices);
+            Assert.IsTrue(topology.Valid, topology.Description);
+            Assert.AreEqual(source == FoliageNormalSource.Hemisphere ? settings.proxySegments : 0, topology.boundary.Count);
+        }
+
+        [TestCase((int)FoliageNormalSource.Sphere)] [TestCase((int)FoliageNormalSource.Hemisphere)]
+        public void BoundingBoxSizeMultiplierAndCenterOffsetPreserveTheFittedAxes(int sourceValue)
+        {
+            var points = BoxCorners(new Bounds(new Vector3(1, 3, 2), new Vector3(4, 6, 8)), Quaternion.identity);
+            var settings = new FoliageNormalsSettings { normalSource = (FoliageNormalSource)sourceValue, proxyFit = FoliageProxyFit.ObjectBoundingBox };
+            var original = FoliageShapeProxyBuilder.Build(points, new[] { 0, 1, 2 }, default, settings, CancellationToken.None);
+            settings.proxyRadiusScale = 1.5f; settings.proxyCenter = new Vector3(3, 4, 5);
+            var moved = FoliageShapeProxyBuilder.Build(points, new[] { 4, 5, 6 }, default, settings.Snapshot(), CancellationToken.None);
+            Assert.AreEqual(original.radii * 1.5f, moved.radii);
+            Assert.AreEqual(original.center + settings.proxyCenter, moved.center);
+        }
+
+        [TestCase((int)FoliageNormalSource.Sphere)] [TestCase((int)FoliageNormalSource.Hemisphere)]
+        public void BoundingBoxSupportsPlanarCardsButRejectsEmptyOrPointBounds(int sourceValue)
+        {
+            var settings = new FoliageNormalsSettings { normalSource = (FoliageNormalSource)sourceValue, proxyFit = FoliageProxyFit.ObjectBoundingBox };
+            var shape = FoliageShapeProxyBuilder.Build(new[] { Vector3.zero, Vector3.right, Vector3.up }, new[] { 0, 1, 2 }, default, settings, CancellationToken.None);
+            Assert.Greater(shape.radii.z, 0);
+            Assert.IsTrue(RemeshTopology.Inspect(shape.mesh.positions, shape.mesh.indices).Valid);
+            Assert.Throws<ArgumentException>(() => FoliageShapeProxyBuilder.Build(Array.Empty<Vector3>(), Array.Empty<int>(), default, settings, CancellationToken.None));
+            Assert.Throws<InvalidOperationException>(() => FoliageShapeProxyBuilder.Build(new[] { Vector3.one }, new[] { 0 }, default, settings, CancellationToken.None));
+        }
+
+        [Test]
+        public void FitModeSurvivesSettingsSnapshotsAndJsonWhileOldSettingsKeepSelectedFit()
+        {
+            var settings = new FoliageNormalsSettings { normalSource = FoliageNormalSource.Sphere, proxyFit = FoliageProxyFit.ObjectBoundingBox };
+            Assert.AreEqual(settings.proxyFit, settings.Snapshot().proxyFit);
+            Assert.AreEqual(settings.proxyFit, JsonUtility.FromJson<FoliageNormalsSettings>(JsonUtility.ToJson(settings)).proxyFit);
+            Assert.AreEqual(FoliageProxyFit.SelectedFoliage, JsonUtility.FromJson<FoliageNormalsSettings>("{\"normalSource\":1,\"autoFitProxy\":true}").proxyFit);
+            settings.proxyFit = (FoliageProxyFit)99; Assert.Throws<ArgumentException>(settings.Validate);
+            settings.autoFitProxy = false; Assert.DoesNotThrow(settings.Validate);
+        }
+
+        [UnityTest]
+        public IEnumerator BoundingBoxIncludesExcludedSubmeshesButOnlyTransfersSelectedFacesOnEveryLod()
+        {
+            foreach (var source in new[] { FoliageNormalSource.Sphere, FoliageNormalSource.Hemisphere })
+            {
+                var box = new Bounds(new Vector3(1, 3, 2), new Vector3(4, 6, 8));
+                using var lod0 = new FoliageNormalTransferTests.Fixture(BoxCorners(box, Quaternion.identity));
+                var recipientPoints = BoxCorners(box, Quaternion.identity); recipientPoints[3] = Vector3.one * 200;
+                using var lod1 = new FoliageNormalTransferTests.Fixture(recipientPoints);
+                using var other = new FoliageNormalTransferTests.Fixture(BoxCorners(new Bounds(Vector3.one * 1000, Vector3.one * 1000), Quaternion.identity));
+                var parent = new GameObject("BBox LOD tree");
+                var leafMaterial = new Material(Shader.Find("Standard"));
+                var excludedMaterial = new Material(Shader.Find("Standard"));
+                using var pipeline = new FoliageNormalsPipeline(new CountingVoxelBackend());
+                try
+                {
+                    lod0.renderer.sharedMaterials = new[] { leafMaterial, excludedMaterial };
+                    lod1.renderer.sharedMaterials = new[] { leafMaterial, excludedMaterial };
+                    lod0.root.name = lod0.mesh.name = "Tree_LOD0"; lod1.root.name = lod1.mesh.name = "Tree_LOD1";
+                    lod0.root.transform.SetParent(parent.transform, false); lod1.root.transform.SetParent(parent.transform, false);
+                    other.root.transform.SetParent(parent.transform, false);
+                    parent.AddComponent<LODGroup>().SetLODs(new[] { new LOD(.6f, new Renderer[] { lod0.renderer }), new LOD(.2f, new Renderer[] { lod1.renderer }) });
+                    lod0.root.transform.localRotation = Quaternion.Euler(0, 90, 0); lod0.root.transform.localScale = new Vector3(-2, 3, .5f);
+                    lod0.root.transform.localPosition = new Vector3(7, 8, 9);
+                    lod1.root.transform.localPosition = lod0.root.transform.localPosition;
+                    lod1.root.transform.localRotation = lod0.root.transform.localRotation;
+                    lod1.root.transform.localScale = lod0.root.transform.localScale;
+                    parent.transform.localScale = new Vector3(-.01f, .02f, .03f); parent.transform.localRotation = Quaternion.Euler(20, 30, 40);
+                    var matrix = parent.transform.worldToLocalMatrix * lod0.renderer.localToWorldMatrix;
+                    var expected = FoliageProxyBuilder.BoundsOf(Array.ConvertAll(lod0.mesh.vertices, matrix.MultiplyPoint3x4));
+                    lod0.mesh.UploadMeshData(true);
+                    var before = FoliageTargetSnapshot.ContentFingerprint(lod0.mesh);
+                    var settings = new FoliageNormalsSettings { normalSource = source, proxyFit = FoliageProxyFit.ObjectBoundingBox,
+                        selection = FoliageFaceSelection.SelectedSubmeshIndices, submeshes = new[] { 0 },
+                        filterRenderers = true, renderers = new[] { lod0.renderer }, gpuProjection = false, recalculateTangents = false };
+                    var task = pipeline.Run(parent, settings, FoliageNormalsPipeline.Stage.Transfer); yield return FoliageNormalsToolTests.Await(task);
+                    Assert.IsTrue(task.Result, pipeline.Status); Assert.AreEqual(2, pipeline.Targets.Count); Assert.AreEqual(1, pipeline.CaptureSourceCount);
+                    Assert.AreEqual(6, pipeline.TransferDiagnostics.transferred); Assert.AreEqual(0, pipeline.TransferDiagnostics.misses);
+                    Assert.Less((pipeline.EnvelopeMesh.bounds.center - expected.center).magnitude, 1e-4);
+                    Assert.Less((pipeline.EnvelopeMesh.bounds.size - expected.size).magnitude, 1e-4);
+                    foreach (var target in pipeline.Targets)
+                    {
+                        bool changed = false;
+                        var transferred = target.working.GetIndices(0); var normals = target.working.normals;
+                        for (int i = 0; i < transferred.Length; i++)
+                            if (Vector3.Dot(target.localNormals[target.indices[0][i]], normals[transferred[i]]) < .99f) changed = true;
+                        Assert.IsTrue(changed, "Each selected LOD receives the fitted proxy normals.");
+                        CollectionAssert.AreEqual(target.indices[1], target.working.GetIndices(1));
+                        foreach (int i in target.indices[1]) Assert.AreEqual(target.localNormals[i], target.working.normals[i]);
+                        Assert.AreSame(target.source, target.filter.sharedMesh);
+                    }
+                    Assert.AreEqual(before, FoliageTargetSnapshot.ContentFingerprint(lod0.mesh));
+                    Assert.AreSame(other.mesh, other.renderer.GetComponent<MeshFilter>().sharedMesh);
+                    var shape = pipeline.EnvelopeMesh; var captured = pipeline.Targets[0];
+                    settings.proxyFit = FoliageProxyFit.SelectedFoliage; pipeline.InvalidateChanged(settings, parent);
+                    Assert.IsTrue(pipeline.Has(FoliageNormalsPipeline.Stage.Capture)); Assert.AreSame(captured, pipeline.Targets[0]); Assert.IsFalse(shape);
+                }
+                finally
+                {
+                    pipeline.Dispose(); lod0.root.transform.SetParent(null, false); lod1.root.transform.SetParent(null, false); other.root.transform.SetParent(null, false);
+                    Object.DestroyImmediate(parent);
+                    Object.DestroyImmediate(leafMaterial); Object.DestroyImmediate(excludedMaterial);
+                }
+            }
+        }
+
         [UnityTest]
         public IEnumerator ShapeModesBypassVoxelPreserveExcludedFacesAndSupportUndoRedo()
         {
@@ -250,7 +395,11 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             if (!GpuBvh.Supported) Assert.Ignore("GPU nearest queries unsupported on this device.");
             foreach (var source in new[] {FoliageNormalSource.Sphere, FoliageNormalSource.Hemisphere}) {
-                var shape = Shape(source); var mesh = shape.mesh; var bvh = new TriangleBvh(mesh.positions, mesh.indices);
+              foreach (var fit in new[] { FoliageProxyFit.SelectedFoliage, FoliageProxyFit.ObjectBoundingBox }) {
+                var settings = new FoliageNormalsSettings { normalSource = source, proxyFit = fit };
+                var shape = fit == FoliageProxyFit.SelectedFoliage ? Shape(source) : FoliageShapeProxyBuilder.Build(
+                    BoxCorners(new Bounds(Vector3.zero, new Vector3(4, 6, 8)), Quaternion.identity), new[] { 0, 1, 2 }, default, settings, CancellationToken.None);
+                var mesh = shape.mesh; var bvh = new TriangleBvh(mesh.positions, mesh.indices);
                 using var gpu = GpuBvh.TryCreate(bvh); Assert.IsNotNull(gpu);
                 var points = new Vector3[100];
                 for (int i = 0; i < points.Length; i++) points[i] = mesh.positions[i * (mesh.positions.Length - 1) / (points.Length - 1)] + mesh.normals[i * (mesh.positions.Length - 1) / (points.Length - 1)] * (i % 2 == 0 ? .1f : 3);
@@ -263,6 +412,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     Assert.Less((cpu[i].barycentric - hits[i].barycentric).magnitude, 1e-4);
                     Assert.Greater(Vector3.Dot(FoliageNormalTransfer.Interpolate(mesh, cpu[i].triangleIndex, cpu[i].barycentric), FoliageNormalTransfer.Interpolate(mesh, hits[i].triangleIndex, hits[i].barycentric)), .9999f);
                 }
+              }
             }
         }
     }

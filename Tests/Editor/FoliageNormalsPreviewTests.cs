@@ -134,6 +134,72 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
+        public IEnumerator IneligibleLatestSelectionCancelsTheQueuedTreeReplacement()
+        {
+            using var first = new FoliageNormalTransferTests.Fixture();
+            using var second = new FoliageNormalTransferTests.Fixture();
+            using var fixture = new ToolFixture();
+            var light = new GameObject("Light"); var camera = new GameObject("Camera"); var empty = new GameObject("Empty");
+            try
+            {
+                light.AddComponent<Light>(); camera.AddComponent<Camera>();
+                Selection.activeGameObject = first.root; fixture.tool.OnActivate(null, null);
+                foreach (var selection in new Object[] { light, camera, empty, first.mesh, null })
+                {
+                    Selection.activeGameObject = first.root; fixture.tool.FollowSelection();
+                    fixture.tool.pipeline.ClearFrom(FoliageNormalsPipeline.Stage.Capture);
+                    var task = fixture.tool.pipeline.Run(first.root, fixture.tool.settings, FoliageNormalsPipeline.Stage.Transfer);
+                    Assert.IsTrue(fixture.tool.pipeline.IsRunning);
+                    Selection.activeGameObject = second.root; fixture.tool.FollowSelection();
+                    Selection.activeObject = selection; fixture.tool.FollowSelection();
+                    yield return FoliageNormalsToolTests.Await(task); Assert.IsFalse(task.Result, selection ? selection.name : "empty selection");
+                    for (int frame = 0; frame < 5; frame++) yield return null;
+                    Assert.AreSame(first.root, fixture.tool.root, "An ineligible latest selection keeps the current tree.");
+                }
+            }
+            finally { Object.DestroyImmediate(light); Object.DestroyImmediate(camera); Object.DestroyImmediate(empty); }
+        }
+
+        [UnityTest]
+        public IEnumerator PreCaptureNormalArrowsSampleSelectedVerticesBeforeApplyingTheLimit()
+        {
+            var positions = Enumerable.Range(0, 512).Select(i => new Vector3(i % 32, i / 32, 0)).ToArray();
+            using var leaf = new FoliageNormalTransferTests.Fixture(positions);
+            leaf.mesh.SetTriangles(new[] { 0, 2, 4 }, 0);
+            leaf.mesh.SetTriangles(Enumerable.Range(0, 255).Select(i => i * 2 + 1).ToArray(), 1);
+            var settings = new FoliageNormalsSettings { selection = FoliageFaceSelection.SelectedSubmeshIndices, submeshes = new[] { 1 } };
+            using var preview = new FoliageNormalsPreview(); using var pipeline = new FoliageNormalsPipeline();
+            preview.Refresh(leaf.root, settings, pipeline);
+            yield return AwaitPreview(preview);
+            var lines = new List<Vector3>();
+            FoliageNormalsPreview.AppendSourceNormalLines(preview.Sources(0).Single(), .1f, lines);
+            Assert.AreEqual(510, lines.Count, "Every selected odd-indexed vertex fits within the 256-arrow limit.");
+            for (int i = 0; i < lines.Count; i += 2)
+            {
+                int vertex = Array.FindIndex(positions, p => p == lines[i]);
+                Assert.AreEqual(1, vertex % 2); Assert.AreEqual(Vector3.forward * .1f, lines[i + 1] - lines[i]);
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator InvalidatedOrClearedTransferNeverShowsAnAfterCopyOfTheOriginal()
+        {
+            using var leaf = new FoliageNormalTransferTests.Fixture(); using var fixture = new ToolFixture();
+            var tool = fixture.tool; tool.SetRoot(leaf.root); yield return AwaitPreview(tool.sourcePreview);
+            var task = tool.pipeline.Run(leaf.root, tool.settings, FoliageNormalsPipeline.Stage.Transfer);
+            yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, tool.pipeline.Status);
+            tool.preview = FoliageNormalsTool.Preview.BeforeAfter;
+            tool.settings.proxyFit = FoliageProxyFit.ObjectBoundingBox; tool.pipeline.InvalidateChanged(tool.settings, leaf.root);
+            var items = new List<MeshViewport3D.Item>(); tool.Get3DContent(items);
+            Assert.AreEqual(1, items.Count); Assert.AreEqual(tool.pipeline.Targets[0].localToCapture, items[0].matrix);
+            Assert.AreSame(tool.pipeline.Targets[0].original, items[0].mesh); Assert.IsFalse(tool.afterNormals);
+            tool.pipeline.ClearFrom(FoliageNormalsPipeline.Stage.Capture);
+            tool.preview = FoliageNormalsTool.Preview.BeforeAfter; items.Clear(); tool.Get3DContent(items);
+            Assert.AreEqual(1, items.Count); Assert.AreEqual(Matrix4x4.identity, items[0].matrix);
+            Assert.AreEqual(FoliageNormalsTool.Preview.TransferredNormals, tool.preview);
+        }
+
+        [UnityTest]
         public IEnumerator MaskSeparatesSelectedCornersAndPreservesUnreadableSource()
         {
             for (int unreadable = 0; unreadable < 2; unreadable++)

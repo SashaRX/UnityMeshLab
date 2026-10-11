@@ -16,27 +16,43 @@ only after a successful transfer with at least one transferred vertex.
 **Proxy shape** chooses the source surface for the same nearest-triangle normal
 transfer. **Voxel Envelope** scatters overlapping spheres, voxelizes their union
 and applies Taubin smoothing followed by isotropic surface remeshing as described below. **Sphere** and **Hemisphere**
-directly generate an indexed surface with smooth radial vertex normals; scatter,
+directly generate an indexed surface with smooth surface vertex normals; scatter,
 native voxelization, geometry smoothing and isotropic remeshing are skipped. They require no native
 remesher, and CPU/GPU projection, blend, distance limits, boundary splits,
 preview, Undo and asset saving use the common transfer/output stages.
 
-By default **Auto fit selected foliage** uses only selected triangle vertices.
+Enable **Auto fit** and choose **Fit to**. **Selected Foliage** (the default, also
+retained by older saved settings) uses only selected triangle vertices.
 A sphere is centered on their capture bounds and its radius is the greatest
 distance from that center to a selected vertex. A hemisphere's axis defaults to
 root-local +Y; its center lies on the lowest selected point's plane along that
 axis, with radius equal to the greatest selected distance from that center.
+
+**Object Bounding Box** fits the shape to the full vertex bounds of the meshes
+used to build the proxy, including their excluded submeshes. Renderer filters
+still choose those meshes; unrelated renderers and transfer-only LODs do not
+enlarge the box. With LOD0-only construction, all selected LODs receive normals
+from that same fitted proxy. The transfer mask still changes only selected faces.
+The sphere is stretched to the box's half-size on each axis (an ellipsoid); the
+hemisphere uses the full box height and puts its open equator on the box's bottom
+plane. Bounds are measured in root-local space, or along the rotated hemisphere's
+axes. Its normals follow the curved surface's inverse axis scale, rather than
+using the radial direction of a round sphere. Planar cards receive a small
+thickness (0.01% of the largest box dimension, at least 0.000001 capture units)
+to keep the transfer surface valid; a zero-size box is rejected.
+
 **Rotation (root local)** rotates the hemisphere and its fitting axis. It has an
 open equator, with **no flat base cap**, so bottom faces cannot supply downward
 cap normals. This intentional boundary is validated separately from the closed
 voxel envelope. Points below the equator project to the curved surface or rim.
 
-**Center offset** moves the automatic center before radius fitting;
-**Radius multiplier** scales the fitted radius. Disable auto fit to enter an
+**Center offset** moves the automatic center before selected-vertex radius
+fitting; for object-bounds fitting it translates the already fitted shape.
+**Size multiplier** scales the fitted radii. Disable auto fit to enter an
 absolute root-local center and radius in capture units. **Segments** controls
 surface resolution (16–128 in multiples of four, default 64). Spheres have one
 vertex per pole and shared ring vertices; hemispheres share their equator ring.
-Normals are radial, then interpolated at the nearest proxy triangle like all
+Normals are smooth surface normals, then interpolated at the nearest proxy triangle like all
 other source modes; the final normal is not calculated directly from the target
 position. Manual sphere/hemisphere settings affect Envelope and downstream
 stages; changing source mode clears Scatter and downstream while keeping Capture.
