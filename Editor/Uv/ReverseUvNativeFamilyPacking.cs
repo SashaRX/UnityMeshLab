@@ -14,65 +14,78 @@ namespace SashaRX.UnityMeshLab
         internal static Vector2[][] TryPack(Vector2[][] source,int side,ReverseUvTransfer.Options options,
             CancellationToken token,Func<int,Vector2[],int,bool> validate,out float scale,out int packedSide,bool allowLargerCanvas=false)
         {
-            var direct=TryPackCore(source,side,options,token,validate,out scale,out packedSide,allowLargerCanvas);
-            if(direct!=null) return direct;
-            var fragile=Enumerable.Range(0,source.Length).Where(g=>ReverseUvFamilyPacking.MinimumAltitude(source[g])<.001).ToArray();
-            var regular=Enumerable.Range(0,source.Length).Except(fragile).ToArray();
-            if(fragile.Length==0 || regular.Length==0)
-                return null;
-            // Sub-texel altitudes need the finer Float32 spacing near an atlas
-            // edge. Pack those few complete families in a header first; native
-            // area ordering would otherwise put them in the canvas interior.
-            var native=TryPackCore(regular.Select(g=>source[g]).ToArray(),side,options,token,null,out scale,out packedSide,allowLargerCanvas);
-            if(native==null) return null;
-            float commonScale=scale;
-            var small=fragile.Select(g=>source[g]).ToArray();
-            int nativeCanvas=packedSide;
-            Vector2[][] header;
-            try
+            scale=1;packedSide=side;
+            var precision=new HashSet<int>();
+            for(int attempt=0;attempt<8;++attempt)
             {
-                header=ReverseUvFamilyPacking.Pack(small,new ReverseUvTransfer.Options {padding=options.padding,
-                    maxAtlasSize=allowLargerCanvas?options.maxAtlasSize:side,rotateCharts=options.rotateCharts},token,
-                    out _,out _,(g,p,s)=>validate==null || validate(fragile[g],p,Math.Max(nativeCanvas,s)),initialScale:commonScale);
-            }
-            catch(InvalidOperationException error) {return Refused($"precision header ({fragile.Length} families): {error.Message}");}
-            double shift=header.SelectMany(p=>p).Max(p=>p.y)+options.padding*2-native.SelectMany(p=>p).Min(p=>p.y);
-            var output=new Vector2[source.Length][];
-            for(int g=0;g<header.Length;++g) output[fragile[g]]=header[g];
-            double required=Math.Max(header.SelectMany(p=>p).Max(p=>p.x),
-                Math.Max(native.SelectMany(p=>p).Max(p=>p.x),native.SelectMany(p=>p).Max(p=>p.y)+shift))+options.padding;
-            int canvas=Math.Max(side,Mathf.NextPowerOfTwo((int)Math.Ceiling(required)));
-            if(canvas>(allowLargerCanvas?options.maxAtlasSize:side)) return Refused("precision header canvas");
-            for(int i=0;i<regular.Length;++i)
-            {
-                token.ThrowIfCancellationRequested();int g=regular[i];
-                var min=source[g].Aggregate(Vector2.Min);
-                var targetMin=native[i].Aggregate(Vector2.Min);
-                int edge=Enumerable.Range(1,source[g].Length-1).OrderByDescending(k=>(source[g][k]-source[g][0]).sqrMagnitude).First();
-                int turn=Enumerable.Range(0,4).OrderBy(t=>(Transform(source[g][edge]-source[g][0],t,commonScale,Vector2.zero)
-                    -(native[i][edge]-native[i][0])).sqrMagnitude).First();
-                var local=source[g].Select(p=>Transform(p-min,turn,1,Vector2.zero)).ToArray();
-                var localMin=local.Aggregate(Vector2.Min);
-                Vector2[] Place(double dx,double dy)=>local.Select(p=>new Vector2(
-                    (float)(targetMin.x+((double)p.x-localMin.x)*commonScale+dx),
-                    (float)(targetMin.y+shift+((double)p.y-localMin.y)*commonScale+dy))).ToArray();
-                bool Fits(Vector2[] p)=>validate==null || validate(g,p,canvas);
-                output[g]=Place(0,0);if(Fits(output[g])) continue;
-                double magnitude=output[g].Max(p=>Math.Max(Math.Abs(p.x),Math.Abs(p.y)));
-                double spacing=Math.Pow(2,Math.Floor(Math.Log(Math.Max(1,magnitude),2))-23);bool rescued=false;
-                for(int x=0;x<8 && !rescued;++x) for(int y=0;y<8;++y)
+                token.ThrowIfCancellationRequested();
+                var regular=Enumerable.Range(0,source.Length).Where(g=>!precision.Contains(g)).ToArray();
+                if(regular.Length==0) return null;
+                var refused=new List<int>();
+                bool ValidRegular(int g,Vector2[] p,int canvas)=>validate==null || validate(regular[g],p,canvas);
+                var native=TryPackCore(regular.Select(g=>source[g]).ToArray(),side,options,token,ValidRegular,
+                    out scale,out packedSide,allowLargerCanvas,refused);
+                if(native==null) return null;
+                if(refused.Count>0)
                 {
-                    token.ThrowIfCancellationRequested();var candidate=Place(x*spacing/8,y*spacing/8);
-                    if(!Fits(candidate)) continue;output[g]=candidate;rescued=true;break;
+                    foreach(int g in refused) precision.Add(regular[g]);
+                    continue;
                 }
-                if(!rescued) return Refused($"family {g} after precision header");
+                if(precision.Count==0) return native;
+                // Only families that actually failed placement need a precision
+                // strip. A blanket altitude threshold sent hundreds of otherwise
+                // movable islands into a separate square and wasted its interior.
+                var fragile=precision.OrderBy(g=>g).ToArray();
+                float commonScale=scale;int nativeCanvas=packedSide;
+                Vector2[][] header;
+                try
+                {
+                    header=ReverseUvFamilyPacking.Pack(fragile.Select(g=>source[g]).ToArray(),
+                        new ReverseUvTransfer.Options {padding=options.padding,
+                            maxAtlasSize=allowLargerCanvas?options.maxAtlasSize:side,rotateCharts=options.rotateCharts},token,
+                        out _,out _,(g,p,c)=>validate==null || validate(fragile[g],p,Math.Max(nativeCanvas,c)),initialScale:commonScale);
+                }
+                catch(InvalidOperationException error) {return Refused($"precision strip ({fragile.Length} families): {error.Message}");}
+                double shift=header.SelectMany(p=>p).Max(p=>p.y)+options.padding*2-native.SelectMany(p=>p).Min(p=>p.y);
+                var output=new Vector2[source.Length][];
+                for(int g=0;g<header.Length;++g) output[fragile[g]]=header[g];
+                double required=Math.Max(header.SelectMany(p=>p).Max(p=>p.x),
+                    Math.Max(native.SelectMany(p=>p).Max(p=>p.x),native.SelectMany(p=>p).Max(p=>p.y)+shift))+options.padding;
+                int canvas=Math.Max(side,Mathf.NextPowerOfTwo((int)Math.Ceiling(required)));
+                if(canvas>(allowLargerCanvas?options.maxAtlasSize:side)) return Refused("precision strip canvas");
+                bool retry=false;
+                for(int i=0;i<regular.Length;++i)
+                {
+                    token.ThrowIfCancellationRequested();int g=regular[i];
+                    var min=source[g].Aggregate(Vector2.Min);var targetMin=native[i].Aggregate(Vector2.Min);
+                    int edge=Enumerable.Range(1,source[g].Length-1).OrderByDescending(k=>(source[g][k]-source[g][0]).sqrMagnitude).First();
+                    int turn=Enumerable.Range(0,4).OrderBy(t=>(Transform(source[g][edge]-source[g][0],t,commonScale,Vector2.zero)
+                        -(native[i][edge]-native[i][0])).sqrMagnitude).First();
+                    var local=source[g].Select(p=>Transform(p-min,turn,1,Vector2.zero)).ToArray();var localMin=local.Aggregate(Vector2.Min);
+                    Vector2[] Place(double dx,double dy)=>local.Select(p=>new Vector2(
+                        (float)(targetMin.x+((double)p.x-localMin.x)*commonScale+dx),
+                        (float)(targetMin.y+shift+((double)p.y-localMin.y)*commonScale+dy))).ToArray();
+                    bool Fits(Vector2[] p)=>validate==null || validate(g,p,canvas);
+                    output[g]=Place(0,0);if(Fits(output[g])) continue;
+                    double magnitude=output[g].Max(p=>Math.Max(Math.Abs(p.x),Math.Abs(p.y)));
+                    double spacing=Math.Pow(2,Math.Floor(Math.Log(Math.Max(1,magnitude),2))-23);bool rescued=false;
+                    for(int x=0;x<8 && !rescued;++x) for(int y=0;y<8;++y)
+                    {
+                        token.ThrowIfCancellationRequested();var candidate=Place(x*spacing/8,y*spacing/8);
+                        if(!Fits(candidate)) continue;output[g]=candidate;rescued=true;break;
+                    }
+                    if(!rescued) {precision.Add(g);retry=true;}
+                }
+                if(retry) continue;
+                if(output.Any(p=>p.Any(v=>v.x<0 || v.y<0 || v.x>canvas || v.y>canvas))) return Refused("precision output bounds");
+                UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Native family packing retained {precision.Count} precision families; {regular.Length} packed by footprint.");
+                packedSide=canvas;return output;
             }
-            if(output.Any(p=>p.Any(v=>v.x<0 || v.y<0 || v.x>canvas || v.y>canvas))) return Refused("header output bounds");
-            packedSide=canvas;return output;
+            return Refused($"precision placement did not converge ({precision.Count} families)");
         }
 
         static Vector2[][] TryPackCore(Vector2[][] source,int side,ReverseUvTransfer.Options options,
-            CancellationToken token,Func<int,Vector2[],int,bool> validate,out float scale,out int packedSide,bool allowLargerCanvas)
+            CancellationToken token,Func<int,Vector2[],int,bool> validate,out float scale,out int packedSide,bool allowLargerCanvas,List<int> refusedFamilies=null)
         {
             scale=1;packedSide=side;
             if(!XatlasRepack.TryAcquireNativeSession()) return null;
@@ -163,7 +176,11 @@ namespace SashaRX.UnityMeshLab
                         if(!Fits(candidate)) continue;
                         output[g]=candidate;rescued=true;break;
                     }
-                    if(!rescued) return Refused($"family {g} metric/contact audit");
+                    if(!rescued)
+                    {
+                        if(refusedFamilies==null) return Refused($"family {g} metric/contact audit");
+                        refusedFamilies.Add(g);
+                    }
                 }
                 scale=(float)density;packedSide=canvas;return output;
             }

@@ -49,6 +49,8 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
             }
+            if(options.regroupPreparedAtlas)
+                JoinPreparedCorrespondence(surfaces,offsets,families,previousSide,options,token);
             var byLod=levels.ToDictionary(l=>l[0].lod);
             foreach(var surface in surfaces)
                 for(int f=0;f<surface.faces.Length;++f)
@@ -205,6 +207,31 @@ namespace SashaRX.UnityMeshLab
                 report.finalPackingRefusal = error.Message;
                 UvtLog.Warn(UvtLog.Category.Repack,"[ReverseUV] Final chart packing failed; no final atlas was published: "+error.Message);
                 return previousSide;
+            }
+        }
+
+        // Ordinary Transfer already placed every LOD in one common UV frame.
+        // Projection acceptance describes individual triangles, not all of that
+        // existing island correspondence. Retain cross-LOD footprint matches in
+        // the same mesh group even when the reverse proposal was ambiguous.
+        static void JoinPreparedCorrespondence(ReverseUvTransfer.Surface[] surfaces,
+            Dictionary<ReverseUvTransfer.Surface,int> offsets,DisjointSet families,int side,
+            ReverseUvTransfer.Options options,CancellationToken token)
+        {
+            foreach(var part in surfaces.GroupBy(s=>UvToolContext.ExtractGroupKey(s.input.key)))
+            {
+                if(part.Select(s=>s.lod).Distinct().Count()<2) continue;
+                var faces=part.SelectMany(s=>Enumerable.Range(0,s.faces.Length).Select(f=>(s,f))).ToArray();
+                var geometry=new RemeshNative.Geometry {
+                    uv=faces.SelectMany(x=>Enumerable.Range(0,3).Select(k=>x.s.pixels[x.f*3+k]/side)).ToArray(),
+                    indices=Enumerable.Range(0,faces.Length*3).ToArray(),charts=new int[faces.Length*3]};
+                var scan=UvAtlasDiagnostics.Measure(geometry,token,comparisonBudget:options.comparisonBudget,collectConflicts:true);
+                if(!scan.complete) throw new InvalidOperationException("Prepared cross-LOD footprint audit exceeded its budget.");
+                foreach(var (a,b) in scan.conflicts)
+                {
+                    var x=faces[a];var y=faces[b];
+                    if(x.s.lod!=y.s.lod) families.Union(offsets[x.s]+x.f,offsets[y.s]+y.f);
+                }
             }
         }
 

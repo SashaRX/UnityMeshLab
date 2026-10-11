@@ -950,6 +950,55 @@ Validation for this continuation (Unity 6000.2.6f2, private frozen fixtures):
 Artifacts: `_results~/reverse-chart-groups-20261012/density-models/` contains all-LOD
 and LOD0 UV comparisons, paired JSON audits and `island-preservation.json`.
 
+#### Preserve the shared Forward footprint during final packing — 2026-10-12
+
+The previous graph retained only explicit per-face reverse acceptance. Ordinary
+Transfer had already aligned additional islands across LODs, but ambiguous reverse
+proposals dropped those links. Final packing then allocated separate space to the
+same prepared UV footprint. This was a correspondence loss, not a missing call to
+repack. A rectangle-only experiment confirmed that replacing the rectangle search
+could not recover that duplicated reservation and was discarded.
+
+For `regroupPreparedAtlas`, final packing now joins positive-area UV intersections
+across different LODs of the same `ExtractGroupKey` before building rigid families.
+The precondition is the existing shared ordinary Transfer atlas; this rule does
+not apply to arbitrary independently unwrapped LODs. Same-LOD overlaps are never
+whitelisted by this relation, and projection/overlay provenance is not fabricated.
+The prepared island and every explicit ancestry/overlay link remain indivisible.
+
+Large family sets additionally search a 1024-cell occupancy grid at several common
+scales. The grid reserves conservative padded footprints; emitted corners are
+rebuilt from the original coordinates in double precision and pass the existing
+metric/contact audit. The search is not a quantization of UVs. Native precision
+rescue now isolates only families that actually fail a placement, instead of all
+families below a blanket minimum-altitude threshold. All complete candidate layouts
+compete on occupied bbox area divided by their common scale squared.
+
+Regression coverage includes ambiguous reverse proposals with valid shared Forward
+footprints in both overlap policies, mesh-group isolation, intact prepared islands,
+precision exceptions and existing padding/contact/cancellation checks. Private
+fixtures are run through the real ordinary preparation plus reverse workflow; a
+post-packing replay alone cannot restore relationships already lost by an old run.
+
+Validation (Unity 6000.2.6f2, frozen private models, 32 tex/m, 2 px padding):
+
+- 368 EditMode tests passed, zero failures; 34 optional fixture cases skipped.
+- All six complete reverse runs and all 16 LOD quality audits completed with zero
+  invalid/collapsed faces or unexpected overlap. Input FBX snapshots are unchanged;
+  every ordinary Forward layout is identical to the previous benchmark output.
+- LOD0 bbox fill, previous exclusive / new exclusive / previous overlap / new
+  overlap: Cafe 53.8 / 81.3 / 64.9 / 81.0 percent; Kitchen 41.0 / 61.9 / 42.4 / 62.9;
+  Kamaz 56.0 / 72.0 / 54.7 / 78.4.
+- 6546 healthy prepared islands were checked independently in each overlap policy.
+  Maximum similarity residual is 1.60e-7 normalized UV; no new triangle splits.
+  Input repairs (Cafe 14, Kitchen 515, Kamaz 873 faces) remain unchanged and are
+  excluded from the healthy-island assertion. They are not disguised as packing.
+- Final families exclusive / overlap: Cafe 122 / 122, Kitchen 1243 / 989, Kamaz
+  3025 / 2884. P95 stretch remains 1.210 / 1.100 / 1.064 respectively.
+- Artifacts: `_results~/reverse-shared-footprints-20261012/models/` contains paired
+  audits, all-LOD plots and before/after UV comparisons. Kitchen still has packing
+  headroom; the result does not claim an optimal layout.
+
 ### Reverse precision and frozen regression gate — 2026-10-09
 
 Continuation of the same experiment at baseline `a72e06f`; legacy solvers remain

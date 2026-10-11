@@ -156,6 +156,32 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(seed.pixels,overlay.pixels);
         }
 
+        [TestCase(false,false)] [TestCase(false,true)]
+        [TestCase(true,false)] [TestCase(true,true)]
+        public void PreparedFootprintsRetainForwardCorrespondenceWithoutReverseFaceAcceptance(bool overlap,bool otherMeshGroup)
+        {
+            ReverseUvTransfer.Surface Surface(int lod,string name)
+            {
+                var uv=Rectangle(20,8,new Vector2(40,60));
+                return new ReverseUvTransfer.Surface {lod=lod,node=0,pixels=uv,
+                    input=new ReverseUvTransfer.Input {key=name+"_LOD"+lod},
+                    positions=uv.Select(p=>new Vector3(p.x,p.y,lod*.01f)).ToArray(),
+                    indices=Enumerable.Range(0,uv.Length).ToArray(),preparedRegions=new[] {0,0},
+                    faces=new[] {new ReverseUvTransfer.Face {chart=lod,ambiguous=true},new ReverseUvTransfer.Face {chart=lod,ambiguous=true}}};
+            }
+            var coarse=Surface(1,"Panel");var fine=Surface(0,otherMeshGroup?"Handle":"Panel");
+            var report=new ReverseUvTransfer.Report {texelsPerUnit=1};
+            ReverseUvFinalPacking.Pack(new List<ReverseUvTransfer.Surface[]> {new[] {coarse},new[] {fine}},
+                new ReverseUvTransfer.Options {regroupPreparedAtlas=true,preserveProjectedOverlap=overlap,fillFinalAtlas=true},
+                report,128,default);
+            Assert.IsNull(report.finalPackingRefusal);
+            Assert.AreEqual(otherMeshGroup?2:1,report.finalPackingFamilies);
+            if(!otherMeshGroup) CollectionAssert.AreEqual(coarse.pixels,fine.pixels,
+                "An ambiguous reverse proposal cannot disconnect a valid shared Forward footprint.");
+            Assert.IsFalse(fine.faces.Any(f=>f.inherited || f.intentionalOverlap),
+                "Packing correspondence does not invent projection or same-LOD overlap provenance.");
+        }
+
         [Test]
         public void CancelledPackingNeverModifiesItsInput()
         {

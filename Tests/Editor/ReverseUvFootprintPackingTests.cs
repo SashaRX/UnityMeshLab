@@ -164,6 +164,29 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void NativePrecisionRescueKeepsOtherThinFamiliesInTheFootprintPacking()
+        {
+            var source=Enumerable.Range(0,320).Select(i=>Rectangle(0,0,2+i%7,.0002f)).ToArray();
+            var options=new ReverseUvTransfer.Options {padding=2};
+            var unrestricted=ReverseUvNativeFamilyPacking.TryPack(source,512,options,default,null,
+                out float referenceScale,out _,allowLargerCanvas:true);
+            Assert.IsNotNull(unrestricted);
+            int sensitive=Enumerable.Range(0,source.Length).OrderByDescending(g=>unrestricted[g].Min(p=>p.y)).First();
+            bool Valid(int group,Vector2[] points,int side)=>group!=sensitive || points.Max(p=>p.y)<8;
+            var packed=ReverseUvNativeFamilyPacking.TryPack(source,512,options,default,Valid,
+                out float scale,out int side,allowLargerCanvas:true);
+            Assert.IsNotNull(packed,"Only the failed family needs a placement near the origin.");
+            Assert.IsTrue(Valid(sensitive,packed[sensitive],side));
+            double Cost(Vector2[][] groups,float density)
+            {
+                var points=groups.SelectMany(p=>p).ToArray();var min=points.Aggregate(Vector2.Min);var max=points.Aggregate(Vector2.Max);
+                return ((double)max.x-min.x)*(max.y-min.y)/(density*(double)density);
+            }
+            Assert.Less(Cost(packed,scale),Cost(unrestricted,referenceScale)*1.3,
+                "One precision exception must not reserve a separate square for every thin family.");
+        }
+
+        [Test]
         public void CancelledFootprintSearchDoesNotMutateTheRetainedCoordinates()
         {
             var source=new[] {Rectangle(0,0,8,2)};var before=source[0].ToArray();

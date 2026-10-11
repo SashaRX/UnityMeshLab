@@ -41,7 +41,7 @@ namespace SashaRX.UnityMeshLab.Tests
             if(string.IsNullOrEmpty(root) || string.IsNullOrEmpty(output)) Assert.Ignore("Optional private final-packing replay is not configured.");
             string directory=Path.Combine(root,model,"32",mode);
             var report=JsonUtility.FromJson<ReverseUvTransfer.Report>(File.ReadAllText(Path.Combine(directory,"report.json")));
-            int previousSide=report.atlasSize;
+            int previousSide=report.atlasSize,previousFamilies=report.finalPackingFamilies;
             var layouts=report.nodes.Select(n=>JsonUtility.FromJson<Layout>(File.ReadAllText(Path.Combine(directory,n.key+".layout.json")))).ToArray();
             var surfaces=report.nodes.Select((node,n)=>{
                 var l=layouts[n];
@@ -51,9 +51,26 @@ namespace SashaRX.UnityMeshLab.Tests
                         l.metricPositions[l.indices[f*3]],l.metricPositions[l.indices[f*3+1]],l.metricPositions[l.indices[f*3+2]],l.metricToWorld)).ToArray()};
             }).GroupBy(s=>s.lod).OrderByDescending(g=>g.Key).Select(g=>g.ToArray()).ToList();
             for(int l=0;l<surfaces.Count;++l) for(int n=0;n<surfaces[l].Length;++n) surfaces[l][n].node=n;
+            // Frozen prepared chains already contain intact islands. Reconstruct
+            // their edge connectivity without projection chart labels, which may
+            // change on only part of an island after correspondence.
+            foreach(var s in surfaces.SelectMany(level=>level))
+            {
+                var union=new DisjointSet(s.faces.Length);
+                var edges=new Dictionary<((Vector3,Vector2),(Vector3,Vector2)),int>();
+                for(int f=0;f<s.faces.Length;++f) for(int k=0;k<3;++k)
+                {
+                    int a=f*3+k,b=f*3+(k+1)%3;
+                    var x=(s.positions[s.indices[a]],s.pixels[a]);var y=(s.positions[s.indices[b]],s.pixels[b]);
+                    if(edges.TryGetValue((x,y),out int other) || edges.TryGetValue((y,x),out other)) union.Union(f,other);
+                    else edges.Add((x,y),f);
+                }
+                s.preparedRegions=Enumerable.Range(0,s.faces.Length).Select(union.Find).ToArray();
+            }
             var before=surfaces.SelectMany(l=>l).ToDictionary(s=>s,s=>s.pixels.ToArray());
-            int side=ReverseUvFinalPacking.Pack(surfaces,new ReverseUvTransfer.Options {padding=2,fillFinalAtlas=true},report,previousSide,default);
+            int side=ReverseUvFinalPacking.Pack(surfaces,new ReverseUvTransfer.Options {padding=2,fillFinalAtlas=true,regroupPreparedAtlas=true},report,previousSide,default);
             Assert.IsTrue(string.IsNullOrEmpty(report.finalPackingRefusal),report.finalPackingRefusal);
+            Assert.LessOrEqual(report.finalPackingFamilies,previousFamilies,"Packing cannot improve fill by splitting existing chart families.");
             report.atlasSize=side;
             string target=Path.Combine(output,model,"32",mode);Directory.CreateDirectory(target);
             File.WriteAllText(Path.Combine(target,"report.json"),JsonUtility.ToJson(report,true));
@@ -93,6 +110,9 @@ namespace SashaRX.UnityMeshLab.Tests
                     if(face.inherited && face.parentLod>child.lod)
                         Check(byLod[face.parentLod][face.parentMesh],face.parentFace,child,f);
                 }
+            foreach(var s in levels.SelectMany(level=>level))
+                foreach(var island in Enumerable.Range(0,s.faces.Length).GroupBy(f=>s.preparedRegions[f]))
+                    foreach(int f in island) Check(s,island.First(),s,f);
             foreach(var r in report.overlaps)
                 Check(byLod[r.lod][r.underMesh],r.underFace,byLod[r.lod][r.overMesh],r.overFace);
             return result;

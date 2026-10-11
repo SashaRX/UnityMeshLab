@@ -22,7 +22,27 @@ namespace SashaRX.UnityMeshLab
         sealed class Mask
         {
             internal int id, width, height;
-            internal Vector2[] local;
+            internal Vector2[] source;
+            internal Vector2 minimum;
+            internal double sourceWidth,sourceHeight,density;
+            internal int turn;
+            internal float unit=1;
+
+            internal Vector2[] Place(int left,int bottom,float phase)
+            {
+                var result=new Vector2[source.Length];
+                for(int i=0;i<result.Length;++i)
+                {
+                    double x=(double)source[i].x-minimum.x,y=(double)source[i].y-minimum.y,old=x;
+                    if(turn==1) {x=sourceHeight-y;y=old;}
+                    else if(turn==2) {x=sourceWidth-x;y=sourceHeight-y;}
+                    else if(turn==3) {x=y;y=sourceWidth-old;}
+                    result[i]=new Vector2((float)((x*density+left+phase+padding)*unit),
+                        (float)((y*density+bottom+phase+padding)*unit));
+                }
+                return result;
+            }
+            internal int padding;
             internal List<(int start,int end)>[] rows;
         }
 
@@ -59,7 +79,34 @@ namespace SashaRX.UnityMeshLab
             // triangle masks. Repack also at requested density, then uniformly
             // fill the completed placement. Compare bbox cost per unit density;
             // merely shrinking islands cannot win this comparison.
-            var scales=nativePacked?Array.Empty<float>():options.fillFinalAtlas && scale>1
+            bool completedFootprints=nativePacked;
+            if(source.Length>256 && side>1024 && options.fillFinalAtlas)
+            {
+                float cell=side/1024f;
+                var rasterOptions=new ReverseUvTransfer.Options {padding=(int)Math.Ceiling(options.padding/cell),rotateCharts=options.rotateCharts};
+                foreach(float candidateScale in new[] {scale,scale*.85f,scale*.65f})
+                {
+                    var coarse=source.Select((points,id)=>Enumerable.Range(0,options.rotateCharts?4:1)
+                        .Select(turn=>Raster(points,id,turn,candidateScale/cell,rasterOptions.padding,token,cell)).ToArray()).ToArray();
+                    // Work in a bounded occupancy grid; actual output corners
+                    // are always rebuilt from the originals in double precision.
+                    var order=coarse.OrderBy(m=>ReverseUvFamilyPacking.MinimumAltitude(source[m[0].id])<.001?0:1)
+                        .ThenBy(m=>ReverseUvFamilyPacking.MinimumAltitude(source[m[0].id])<.001
+                            ?ReverseUvFamilyPacking.MinimumAltitude(source[m[0].id]):0)
+                        .ThenByDescending(m=>Math.Max(m[0].width,m[0].height)).ThenBy(m=>m[0].id).ToArray();
+                    long packingWork=0,packingValidations=0;
+                    var packed=TryPack(order,1024,rasterOptions,token,validate,ref packingWork,ref packingValidations,diagnostics);
+                    work+=packingWork;validations+=packingValidations;
+                    if(packed==null) continue;
+                    if(diagnostics!=null) ++diagnostics.completedOrders;
+                    double cost=BoundsArea(packed)/(candidateScale*(double)candidateScale);
+                    UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Coarse-grid family cost {cost:G6}; retained {bestCost:G6}.");
+                    if(cost>=bestCost) continue;
+                    best=packed;bestScale=candidateScale;bestCost=cost;improved=true;completedFootprints=true;
+                    if(diagnostics!=null) diagnostics.nativePacked=false;
+                }
+            }
+            var scales=completedFootprints?Array.Empty<float>():options.fillFinalAtlas && scale>1
                 ?new[] {scale,1f}:new[] {scale};
             foreach(float packingScale in scales.Distinct())
             {
@@ -210,7 +257,7 @@ namespace SashaRX.UnityMeshLab
             return ((double)max.x-min.x)*((double)max.y-min.y);
         }
 
-        static Mask Raster(Vector2[] points,int id,int turn,double scale,int padding,CancellationToken token)
+        static Mask Raster(Vector2[] points,int id,int turn,double scale,int padding,CancellationToken token,float unit=1)
         {
             var min=points.Aggregate(Vector2.Min);var max=points.Aggregate(Vector2.Max);
             double width=(double)max.x-min.x,height=(double)max.y-min.y;
@@ -252,7 +299,8 @@ namespace SashaRX.UnityMeshLab
                     if(left<=right) Reserve(rows[y],Math.Max(0,(int)Math.Floor(left-radius)),Math.Min(w,(int)Math.Ceiling(right+radius)));
                 }
             }
-            return new Mask {id=id,width=w,height=h,local=local,rows=rows};
+            return new Mask {id=id,width=w,height=h,rows=rows,source=points,minimum=min,
+                sourceWidth=width,sourceHeight=height,turn=turn,density=scale,padding=padding,unit=unit};
         }
 
         static Vector2[][] TryPack(Mask[][] order,int side,ReverseUvTransfer.Options options,CancellationToken token,
@@ -346,9 +394,10 @@ namespace SashaRX.UnityMeshLab
                             // changes. Keep the offset inside that reserve even
                             // when the requested gutter is large.
                             float offset=phase;
-                            var points=mask.local.Select(p=>p+new Vector2(x+offset,y+offset)).ToArray();
-                            if(points.Any(p=>p.x<options.padding || p.y<options.padding || p.x>rows.Length-options.padding || p.y>rows.Length-options.padding)
-                                || (validate!=null && !validate(mask.id,points,rows.Length))) continue;
+                            var points=mask.Place(x,y,offset);
+                            int canvas=(int)(rows.Length*mask.unit);float gutter=options.padding*mask.unit;
+                            if(points.Any(p=>p.x<gutter || p.y<gutter || p.x>canvas-gutter || p.y>canvas-gutter)
+                                || (validate!=null && !validate(mask.id,points,canvas))) continue;
                             // Bottom-left placement is deterministic. Searching
                             // every later free row for this one family exhausted
                             // the order before thousands of small charts were
