@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Fixed
+- Wire-only proxy overlays no longer intercept mesh inspection or UV spot picking. Foliage source preview copies retain original mesh names; regression checks cover mesh-named LOD chains before and after transfer for readable and unreadable sources.
 - Foliage preview drops a queued tree replacement when the latest selection is ineligible, samples normal arrows from the selected vertex set, and clears side-by-side comparisons when the transfer result is invalidated.
 - Foliage Normals follows Hierarchy selection, resolves LOD children to their group, and replaces stale previews after cancelling a running calculation. Preview displays the newly selected tree before Capture, with a switch to keep a manually assigned root.
 - Foliage surface sampling preserves the minimum sample count for every leaf island before global dedup and primitive budgeting. Dense adjacent cards and tiny islands no longer fail Scatter at the default dedup distance; diagnostics report close samples retained for island coverage.

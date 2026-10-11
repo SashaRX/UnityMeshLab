@@ -266,6 +266,48 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
+        public IEnumerator MeshNamedLodChainsKeepNamesAndDisplayOnlyTheSelectedLevel()
+        {
+            foreach (bool unreadable in new[] { false, true })
+            {
+                using var first = new FoliageNormalTransferTests.Fixture();
+                using var second = new FoliageNormalTransferTests.Fixture();
+                using var fixture = new ToolFixture(); var root = new GameObject("Mesh-named tree");
+                try {
+                    var levels = new[] { first, second };
+                    for (int lod = 0; lod < levels.Length; lod++) {
+                        levels[lod].root.name = "Generic renderer";
+                        levels[lod].mesh.name = "Leaves_LOD" + lod;
+                        levels[lod].root.transform.SetParent(root.transform, false);
+                        if (unreadable) levels[lod].mesh.UploadMeshData(true);
+                    }
+                    var tool = fixture.tool; tool.SetRoot(root); tool.OnRefresh();
+                    yield return AwaitPreview(tool.sourcePreview);
+                    CollectionAssert.AreEqual(new[] { 0, 1 }, tool.sourcePreview.Levels);
+                    for (int lod = 0; lod < levels.Length; lod++) {
+                        var source = tool.sourcePreview.Sources(lod).Single();
+                        Assert.AreSame(levels[lod].renderer, source.renderer);
+                        Assert.AreEqual(levels[lod].mesh.name, source.mesh.name);
+                        Assert.AreNotSame(levels[lod].mesh, source.mesh);
+                    }
+                    var task = tool.pipeline.Run(root, tool.settings, FoliageNormalsPipeline.Stage.Transfer);
+                    yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, tool.pipeline.Status);
+                    tool.OnRefresh(); yield return AwaitPreview(tool.sourcePreview);
+                    tool.SetNormalComparison(true);
+                    for (int lod = 0; lod < levels.Length; lod++) {
+                        tool.previewLod = lod;
+                        var items = new List<MeshViewport3D.Item>(); tool.Get3DContent(items);
+                        Assert.AreEqual(1, items.Count);
+                        Assert.AreSame(tool.pipeline.Targets.Single(t => t.renderer == levels[lod].renderer).working, items[0].mesh);
+                        Assert.AreSame(levels[lod].mesh, levels[lod].root.GetComponent<MeshFilter>().sharedMesh);
+                        Assert.AreEqual(!unreadable, levels[lod].mesh.isReadable);
+                    }
+                }
+                finally { fixture.tool.OnDeactivate(); Object.DestroyImmediate(root); }
+            }
+        }
+
+        [UnityTest]
         public IEnumerator BeforeAfterKeepsPlacementAndProxyWireDoesNotReplaceTheMesh()
         {
             using var leaf = new FoliageNormalTransferTests.Fixture(); using var trunk = new FoliageNormalTransferTests.Fixture();

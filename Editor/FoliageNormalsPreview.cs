@@ -85,6 +85,7 @@ namespace SashaRX.UnityMeshLab
                         readable = UnityEngine.Object.Instantiate(readable);
                         readable.hideFlags = HideFlags.HideAndDontSave;
                     }
+                    readable.name = mesh.name;
                     owned.Add(readable);
                     var target = plan.FirstOrDefault(t => t.renderer == renderer);
                     var matrix = root.transform.worldToLocalMatrix * renderer.localToWorldMatrix;

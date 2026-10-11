@@ -270,6 +270,38 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
+        public IEnumerator WireOnlyOverlaysDoNotInterceptSpotPickingOrQueueTopology()
+        {
+            var source = PreviewMesh(); var proxy = PreviewMesh();
+            var ctx = new UvToolContext { PreviewUvChannel = 0 }; var canvas = new UvCanvasView();
+            using var viewport = new MeshViewport3D { ViewProjection = MeshViewport3D.Projection.XY };
+            using var layer = new UvLayer3D();
+            try {
+                long sourceKey = (long)source.GetInstanceID() << 8, proxyKey = (long)proxy.GetInstanceID() << 8;
+                canvas.GetPreviewShellCache(ctx, source, 0);
+                yield return Drain(canvas, () => ctx.PreviewShellDataCache.ContainsKey(sourceKey));
+                viewport.Frame(new Bounds(new Vector3(.5f, .5f, 0), new Vector3(1, 1, .1f)));
+                typeof(MeshViewport3D).GetField("currentRect", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
+                    .SetValue(viewport, new Rect(0, 0, 100, 100));
+                var entries = new[] { new MeshEntry { originalMesh = source }, new MeshEntry { originalMesh = proxy } };
+                var items = new[] { new MeshViewport3D.Item(source, Matrix4x4.identity),
+                    new MeshViewport3D.Item(proxy, Matrix4x4.Translate(Vector3.back)) { WireOnly = true } };
+                var pointer = new Vector2(45, 55);
+                Assert.IsTrue(layer.Pick(viewport, canvas, ctx, pointer, items, entries, out var hit, out _, out var world));
+                Assert.AreSame(entries[0], hit.meshEntry); Assert.That(world.z, Is.EqualTo(0).Within(1e-5f));
+                Assert.IsFalse(ctx.PreviewShellDataCache.ContainsKey(proxyKey), "Wire overlays must not queue shell work or block a ready source.");
+                canvas.GetPreviewShellCache(ctx, proxy, 0);
+                yield return Drain(canvas, () => ctx.PreviewShellDataCache.ContainsKey(proxyKey));
+                Assert.IsTrue(layer.Pick(viewport, canvas, ctx, pointer, items, entries, out hit, out _, out world));
+                Assert.AreSame(entries[0], hit.meshEntry);
+                items[1].WireOnly = false;
+                Assert.IsTrue(layer.Pick(viewport, canvas, ctx, pointer, items, entries, out hit, out _, out world));
+                Assert.AreSame(entries[1], hit.meshEntry); Assert.That(world.z, Is.EqualTo(-1).Within(1e-5f));
+            }
+            finally { canvas.Cleanup(); Object.DestroyImmediate(source); Object.DestroyImmediate(proxy); }
+        }
+
+        [UnityTest]
         public IEnumerator ThreeDSpotWaitsForWorkerThenReturnsTheActualIslandAndWorldPoint()
         {
             var mesh = PreviewMesh(); var ctx = new UvToolContext { PreviewUvChannel = 0 };
