@@ -28,9 +28,8 @@ namespace SashaRX.UnityMeshLab
                     "Optional replacement of all coarsest-LOD islands using Unity geometry unwrapping. Disabled by default; never used as an automatic fallback."), reverseRebuildSeedWithUnity);
             reversePreserveOverlap = EditorGUILayout.ToggleLeft(new GUIContent("Allow projected detail overlap",
                 "Details can inherit the light under them. Overlap ancestry is saved; ordered baking is not implemented yet."), reversePreserveOverlap);
-            using (new EditorGUI.DisabledScope(!reversePrepareSeed))
-                reverseFillAtlas = EditorGUILayout.ToggleLeft(new GUIContent("Fill final atlas uniformly",
-                    "Pack all LOD chart families together, then increase their common scale to fit the square. Preserves proportions and correspondence; actual texel density can exceed the requested minimum."),reverseFillAtlas);
+            reverseFillAtlas = EditorGUILayout.ToggleLeft(new GUIContent("Fill final atlas uniformly",
+                "All LOD chart families are always repacked together on an empty canvas. This option additionally increases their common scale to fit the square; actual texel density can exceed the requested minimum."),reverseFillAtlas);
             reverseReach = EditorGUILayout.FloatField(new GUIContent("Projection reach (world units)"), reverseReach);
             using (new EditorGUI.DisabledScope(!ctx.LodGroup || ctx.MeshEntries.Where(e => e.include).Select(e => e.lodIndex).Distinct().Count() < 2))
                 if (GUILayout.Button("Run Reverse UV", GUILayout.Height(24)))
@@ -61,7 +60,7 @@ namespace SashaRX.UnityMeshLab
                 var sources = groups.Select((List<MeshEntry> g, int level) => new ReverseUvTransfer.Level {
                     lod = g[0].lodIndex,
                     inputs = g.Select((MeshEntry e) => new ReverseUvTransfer.Input {
-                        mesh = level == 0 && !reversePrepareSeed ? e.repackedMesh ?? e.originalMesh : e.originalMesh,
+                        mesh = level == 0 && !reversePrepareSeed ? e.repackedMesh ?? e.transferredMesh ?? e.originalMesh : e.originalMesh,
                         toWorld = e.renderer ? e.renderer.localToWorldMatrix : Matrix4x4.identity,
                         key = e.fbxMesh ? e.fbxMesh.name : e.originalMesh.name
                     }).ToArray()
@@ -75,7 +74,7 @@ namespace SashaRX.UnityMeshLab
                     padding = SanitizePadding(ctx.ShellPaddingPx), projectionReach = reverseReach,
                     preserveProjectedOverlap = reversePreserveOverlap, cutNarrowJunctions = ctx.CutNarrowUvJunctions,
                     rotateCharts = ctx.XatlasRotateCharts, rotateChartsToAxis = ctx.XatlasRotateChartsToAxis,
-                    repackFinalAtlas = reversePrepareSeed, fillFinalAtlas = reverseFillAtlas,
+                    repackFinalAtlas = true, fillFinalAtlas = reverseFillAtlas,
                     rebuildSeedWithUnity = reverseRebuildSeedWithUnity
                 };
                 UvProgress.Report(.15f, "Project and expand atlas");
@@ -112,7 +111,7 @@ namespace SashaRX.UnityMeshLab
                 ctx.ClearAllCaches();
                 reverseSummary = $"Atlas {result.report.atlasSize}² · inherited {result.report.inheritedFaces} · new {result.report.newFaces}"
                     + $" · overlap {result.report.overlapFaces} · ambiguous {result.report.ambiguousFaces} · split source faces {result.report.splitSourceFaces} · removed zero-area {removed}";
-                reverseSummary += $" · {result.report.texelsPerUnit:G4} tex/m";
+                reverseSummary += $" · {result.report.texelsPerUnit:G4} tex/m · fully repacked";
                 if (result.report.finalPackingRefusal != null) reverseSummary += " · " + result.report.finalPackingRefusal;
                 if (prepared.refusal != null) reverseSummary += " · retained safer layout: " + prepared.refusal;
                 if (result.report.refinementRefusal != null) reverseSummary += " · donor seam cuts skipped: " + result.report.refinementRefusal;

@@ -255,7 +255,9 @@ namespace SashaRX.UnityMeshLab
             int previousSide=result.report.atlasSize;
             int side=useAsync?await Task.Run(()=>ReverseUvFinalPacking.Pack(result.surfaces,options,result.report,previousSide,token),token)
                 :ReverseUvFinalPacking.Pack(result.surfaces,options,result.report,previousSide,token);
-            if(result.report.finalPacking==null) return;
+            if(result.report.finalPacking==null)
+                throw new InvalidOperationException("Reverse UV final atlas packing failed; no result was published: "
+                    +result.report.finalPackingRefusal);
             using var replacement=new Result();
             foreach(var level in result.surfaces)
             {

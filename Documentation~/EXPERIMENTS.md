@@ -40,6 +40,35 @@
 
 ## Progressive reverse atlas — 2026-10-09
 
+### Mandatory final packing independent of seed preparation — 2026-10-11
+
+Same PR225 experiment, continuation from `6f3f66d0`. The editor workflow always
+requests final shared-family packing, including when it consumes an existing
+coarsest-LOD UV2 layout from Repack or Transfer. Optional uniform filling controls only the common scale;
+it no longer depends on seed preparation. Intermediate vacancy placement remains
+part of projection, but cannot become a successful final atlas by itself.
+
+The final pack no longer adopts the entire intermediate coordinate array when
+rectangle packing fails or a fresh placement has a higher bbox cost. A rectangle
+refusal tries complete triangle-footprint packing on an empty canvas instead,
+with no old family placements pinned. Further optional improvement starts from
+that completed fresh pack. An unsuccessful required final pack is reported as
+failure before publishing any mesh, preserving the previous editor result.
+All ancestry/overlay families retain one rigid move and all LOD audits still
+gate publication. Controls cover preparation/filling independently, actual donor
+movement, projected detail ancestry, empty-canvas ring nesting and final-packing
+failure without intermediate publication.
+
+Verification: 358 EditMode cases pass, zero fail, and 28 optional fixture cases
+are skipped; the last donor-selection/status edits pass five additional focused
+controls. Twelve actual FBX Reverse chains complete across three models, both
+overlap policies and both seed paths, with zero collapsed/invalid faces and zero
+unexpected overlap pairs. All 30 Forward exports match the preceding baseline.
+Both FBX reference-compile variants pass. Kamaz fragmentation and visible empty
+regions remain; these checks certify completed packing, not optimal density.
+
+Artifacts: `_results~/reverse-full-repack-20261011/`.
+
 ### Stable donor charts, local cut retention and native family envelopes — 2026-10-11
 
 Continuation of the same PR225 experiment, baseline `160d976a`, with main

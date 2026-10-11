@@ -43,6 +43,48 @@ namespace SashaRX.UnityMeshLab.Tests
         static ReverseUvTransfer.Result Build(ReverseUvTransfer.Options options, params ReverseUvTransfer.Level[] levels)
             => ReverseUvTransfer.Build(levels, options).GetAwaiter().GetResult();
 
+        [TestCase(false,false)] [TestCase(false,true)] [TestCase(true,false)] [TestCase(true,true)]
+        public void ExistingSeedRepackingMovesDonorsAndRetainsProjectedDetailAncestry(bool overlap,bool fillAtlas)
+        {
+            var seed=Combine(Quad(),Quad(3));
+            seed.uv2=Enumerable.Range(0,seed.vertexCount).Select(i=>seed.uv[i]*.15f
+                +Vector2.one*(i<4?.05f:.75f)).ToArray();
+            var fine=Combine(seed,Quad(.25f,.02f,.25f),Quad(6));
+            var seedSnapshot=TransferMeshSnapshot.Capture(seed);var fineSnapshot=TransferMeshSnapshot.Capture(fine);
+            var options=Options(overlap);options.repackFinalAtlas=true;options.fillFinalAtlas=fillAtlas;
+            using var state=ReverseUvJunctionTrial.Build(new[] {Level(1,seed),Level(0,fine)},options,false,0).GetAwaiter().GetResult();
+            var result=state.result;var report=result.report;
+            Assert.AreEqual("existing-uv2",report.seedPreparation);
+            Assert.AreEqual("shared-chart-families",report.finalPacking,report.finalPackingRefusal);
+            Assert.IsTrue(string.IsNullOrEmpty(report.finalPackingRefusal));
+            Assert.GreaterOrEqual(report.inheritedFaces,4);
+            Assert.AreEqual(overlap,report.overlapFaces>0);
+            Assert.GreaterOrEqual(report.newFaces,2);
+            var donor=result.meshes[0][0];var target=result.meshes[1][0];
+            Assert.IsTrue(donor.vertices.Select((p,i)=>
+                (donor.uv2[i]-seed.uv2[Array.IndexOf(seed.vertices,p)]).magnitude).Any(d=>d>.03f),
+                "Final packing must move the existing seed as well as allocate new charts.");
+            foreach(var vertex in seed.vertices)
+            {
+                var a=donor.uv2[Array.IndexOf(donor.vertices,vertex)];
+                var b=target.uv2[Array.IndexOf(target.vertices,vertex)];
+                Assert.Less((a-b).magnitude,.0001f,"Inherited recipient corners follow their donor's final move.");
+            }
+            Assert.DoesNotThrow(()=>ReverseUvAudit.Write(result,state.inputs.levels));
+            CollectionAssert.AreEqual(seedSnapshot,TransferMeshSnapshot.Capture(seed));
+            CollectionAssert.AreEqual(fineSnapshot,TransferMeshSnapshot.Capture(fine));
+        }
+
+        [Test]
+        public void RequestedFinalPackingFailureCannotPublishTheIntermediateAtlas()
+        {
+            var seed=Quad();var fine=Quad();var before=TransferMeshSnapshot.Capture(seed);
+            var options=Options();options.padding=64;options.maxAtlasSize=128;options.repackFinalAtlas=true;
+            var error=Assert.Throws<InvalidOperationException>(()=>Build(options,Level(1,seed),Level(0,fine)));
+            StringAssert.Contains("final atlas packing failed; no result was published",error.Message);
+            CollectionAssert.AreEqual(before,TransferMeshSnapshot.Capture(seed));
+        }
+
         [TestCase(false)] [TestCase(true)]
         public void NewCoincidentRendererSurfacesRetainIndependentTopologyAndPadding(bool overlap)
         {

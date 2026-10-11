@@ -13,6 +13,33 @@ namespace SashaRX.UnityMeshLab.Tests
                 new Vector2(x,y),new Vector2(x+width,y+height),new Vector2(x,y+height)};
 
         [TestCase(false)] [TestCase(true)]
+        public void FreshFootprintPackingNestsFamiliesWithoutRetainingTheirOldPlacements(bool overlay)
+        {
+            var frame=Rectangle(100,100,24,2).Concat(Rectangle(100,122,24,2)).Concat(Rectangle(100,102,2,20))
+                .Concat(Rectangle(122,102,2,20)).ToArray();
+            if(overlay) frame=frame.Concat(Rectangle(100,100,24,2)).ToArray();
+            var source=new[] {frame,Rectangle(200,200,8,8)};var original=source.Select(p=>p.ToArray()).ToArray();
+            var output=ReverseUvFootprintPacking.PackFresh(source,32,new ReverseUvTransfer.Options {padding=2,maxAtlasSize=32},
+                default,null,out int side);
+            Assert.AreEqual(32,side);
+            var min=output[0].Aggregate(Vector2.Min);var max=output[0].Aggregate(Vector2.Max);
+            Assert.IsTrue(output[1].All(p=>p.x>min.x+2 && p.y>min.y+2 && p.x<max.x-2 && p.y<max.y-2));
+            if(overlay) CollectionAssert.AreEqual(output[0].Take(6),output[0].Skip(24));
+            for(int f=0;f<source.Length;++f)
+            {
+                CollectionAssert.AreEqual(original[f],source[f]);
+                Assert.IsTrue(output[f].All(p=>p.x>=2 && p.y>=2 && p.x<=side-2 && p.y<=side-2));
+                for(int i=1;i<source[f].Length;++i)
+                    Assert.AreEqual((source[f][i]-source[f][0]).magnitude,(output[f][i]-output[f][0]).magnitude,.0001);
+            }
+            var points=output.SelectMany(p=>p).ToArray();
+            var scan=UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {uv=points,indices=Enumerable.Range(0,points.Length).ToArray(),
+                charts=new int[points.Length]},default,collectConflicts:true);
+            Assert.IsTrue(scan.complete);Assert.AreEqual(0,scan.degenerateFaces);
+            foreach(var pair in scan.conflicts) Assert.IsTrue(overlay && pair.a<frame.Length/3 && pair.b<frame.Length/3);
+        }
+
+        [TestCase(false)] [TestCase(true)]
         public void RingInteriorAcceptsAnotherFamilyWithoutMovingItsOverlayIndependently(bool overlay)
         {
             var frame=Rectangle(0,0,24,2).Concat(Rectangle(0,22,24,2)).Concat(Rectangle(0,2,2,20))
@@ -92,7 +119,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        public void RectangleRefusalStillRetainsTheValidatedFootprintLayout()
+        public void RectangleRefusalBuildsACompleteFreshFootprintLayout()
         {
             var frame=Rectangle(2,2,24,2).Concat(Rectangle(2,24,24,2)).Concat(Rectangle(2,4,2,20))
                 .Concat(Rectangle(24,4,2,20)).ToArray();
@@ -107,6 +134,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 new ReverseUvTransfer.Options {padding=2,seedResolution=32,maxAtlasSize=32},report,32,default);
             Assert.AreEqual(32,side);Assert.IsNotEmpty(report.finalPackingRectangleRefusal);
             Assert.IsNotEmpty(report.finalPacking);Assert.IsNull(report.finalPackingRefusal);
+            Assert.IsTrue(report.finalPackingFootprints);
             var corners=surfaces.SelectMany(s=>s.pixels).ToArray();
             var scan=UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {uv=corners,
                 indices=Enumerable.Range(0,corners.Length).ToArray(),charts=new int[corners.Length]},default);

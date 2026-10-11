@@ -13,6 +13,9 @@ namespace SashaRX.UnityMeshLab
         internal static int Pack(List<ReverseUvTransfer.Surface[]> levels, ReverseUvTransfer.Options options,
             ReverseUvTransfer.Report report, int previousSide, CancellationToken token)
         {
+            report.finalPacking=null;report.finalPackingRefusal=null;report.finalPackingRectangleRefusal=null;
+            report.finalPackingFootprints=false;report.finalPackingNative=false;
+            report.finalPackingFamilies=0;report.finalPackingScale=0;
             var surfaces = levels.SelectMany(l => l).ToArray();
             // A region label can survive independent placement/rescue of its
             // disconnected pieces. It is not a rigid packing item: using that
@@ -138,21 +141,15 @@ namespace SashaRX.UnityMeshLab
                     return true;
                 }
                 int side;float scale;
-                Vector2[][] packed;
+                Vector2[][] packed;bool freshFootprints=false;
                 try {packed=ReverseUvFamilyPacking.Pack(coordinates,options,token,out side,out scale,Valid);}
                 catch(InvalidOperationException error)
                 {
-                    if(!Enumerable.Range(0,coordinates.Length).All(g=>Valid(g,coordinates[g],previousSide))) throw;
                     report.finalPackingRectangleRefusal=error.Message;
-                    side=previousSide;scale=1;packed=coordinates;
-                    UvtLog.Info(UvtLog.Category.Repack,"[ReverseUV] Rectangle trial refused; compact validated family footprints: "+error.Message);
+                    packed=ReverseUvFootprintPacking.PackFresh(coordinates,previousSide,options,token,Valid,out side);
+                    scale=1;freshFootprints=true;
+                    UvtLog.Info(UvtLog.Category.Repack,"[ReverseUV] Rectangle trial refused; packed family footprints on an empty canvas: "+error.Message);
                 }
-                // A representable placement in a larger canvas is not a packing
-                // improvement. Compare bbox cost at the same density before
-                // replacing the validated projection layout.
-                if(BoundsCost(packed,scale)>BoundsCost(coordinates,1)
-                    && Enumerable.Range(0,coordinates.Length).All(g=>Valid(g,coordinates[g],previousSide)))
-                {packed=coordinates;side=previousSide;scale=1;}
                 // Thousands of short charts can spend most of a small canvas
                 // on two-pixel gutters. Test higher common pixel density in a
                 // larger canvas; never squeeze charts or reduce their gutter.
@@ -196,14 +193,14 @@ namespace SashaRX.UnityMeshLab
                 report.finalPacking = "shared-chart-families";
                 report.finalPackingFamilies=groups.Length;
                 report.finalPackingScale=scale;
-                report.finalPackingFootprints=footprintImproved;
+                report.finalPackingFootprints=freshFootprints || footprintImproved;
                 report.finalPackingNative=search.nativePacked;
                 return side;
             }
             catch (InvalidOperationException error)
             {
                 report.finalPackingRefusal = error.Message;
-                UvtLog.Warn(UvtLog.Category.Repack,"[ReverseUV] Final chart packing retained validated coordinates: "+error.Message);
+                UvtLog.Warn(UvtLog.Category.Repack,"[ReverseUV] Final chart packing failed; no final atlas was published: "+error.Message);
                 return previousSide;
             }
         }

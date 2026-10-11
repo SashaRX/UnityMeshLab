@@ -960,22 +960,30 @@ namespace SashaRX.UnityMeshLab.Tests
             AssertFreshPreview(ctx, target, UvCanvasView.PreviewMode.Checker);
         }
 
-        [TestCase(false)] [TestCase(true)]
-        public void ReverseTransferPublishesTheWholeChainAndKeepsCheckerAndCamera(bool prepareSeed)
+        [TestCase(false,false)] [TestCase(false,true)] [TestCase(true,false)] [TestCase(true,true)]
+        public void ReverseTransferPublishesTheWholeChainAndKeepsCheckerAndCamera(bool prepareSeed,bool fillAtlas)
         {
             var ctx = Open(Group(true, out var fineRenderer, out var coarseRenderer));
             var workflow = hub.DiagnosticWorkflow;
             typeof(UvTransferWorkflow).GetField("reversePrepareSeed",Private).SetValue(workflow,prepareSeed);
+            typeof(UvTransferWorkflow).GetField("reverseFillAtlas",Private).SetValue(workflow,fillAtlas);
             var oldSource = ctx.SourceLodIndex;
             ctx.RepackResolutionMode = ResolutionMode.Manual; ctx.AtlasResolution = 128;
             var coarse = ctx.MeshEntries.Find(e => e.renderer == coarseRenderer);
             var fine = ctx.MeshEntries.Find(e => e.renderer == fineRenderer);
             // This fixture's third corner has Z=1: make it planar to establish an isotropic seed.
             coarse.originalMesh.vertices = fine.originalMesh.vertices = new[] {Vector3.zero, Vector3.right, new Vector3(1,1,0), Vector3.up};
+            coarse.originalMesh.uv2 = ShiftedUvs(.7f);
+            var originalSeedUvs=coarse.originalMesh.uv2;
             var originalCoarseIndices = coarse.originalMesh.triangles.Concat(new[] { 0, 0, 0 }).ToArray();
             var originalFineIndices = fine.originalMesh.triangles.Concat(new[] { 0, 0, 0 }).ToArray();
             coarse.originalMesh.triangles = originalCoarseIndices;
             fine.originalMesh.triangles = originalFineIndices;
+            var existingCoarse=coarse.transferredMesh=Object.Instantiate(coarse.originalMesh);
+            // A valid current working layout must be consumed even if the raw
+            // donor UV2 is unusable. Preparation still uses original UV0.
+            coarse.originalMesh.uv2=Enumerable.Repeat(Vector2.one*.7f,coarse.originalMesh.vertexCount).ToArray();
+            originalSeedUvs=coarse.originalMesh.uv2;
             var prior = fine.transferredMesh = Object.Instantiate(fine.originalMesh);
             var previousDirectory = BenchmarkRecorder.OutputDirectoryOverride;
             string directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(),"MeshLabReversePreview_"+System.Guid.NewGuid().ToString("N"));
@@ -984,9 +992,19 @@ namespace SashaRX.UnityMeshLab.Tests
                 BenchmarkRecorder.OutputDirectoryOverride = directory;
                 Call(hub,"CollectCanvasEntries"); SetPreviewFrame(); Call(hub,"ApplyPreviewMode",UvCanvasView.PreviewMode.Checker);
                 workflow.RunReverseTransfer(false).GetAwaiter().GetResult();
-                Assert.IsTrue(prior == null); Assert.AreEqual(oldSource,ctx.SourceLodIndex);
+                Assert.IsTrue(prior == null);Assert.IsTrue(existingCoarse==null); Assert.AreEqual(oldSource,ctx.SourceLodIndex);
                 Assert.IsTrue(ctx.HasRepack); Assert.IsTrue(ctx.HasTransfer);
                 Assert.IsNotNull(coarse.repackedMesh); Assert.IsNotNull(fine.transferredMesh);
+                var finalMin=coarse.repackedMesh.uv2.Aggregate(Vector2.Min);
+                Assert.Greater((finalMin-originalSeedUvs.Aggregate(Vector2.Min)).magnitude,.1f,
+                    "The complete seed must move even when preparation or optional uniform filling is disabled.");
+                foreach(var vertex in coarse.repackedMesh.vertices.Distinct())
+                {
+                    var a=coarse.repackedMesh.uv2[System.Array.IndexOf(coarse.repackedMesh.vertices,vertex)];
+                    var b=fine.transferredMesh.uv2[System.Array.IndexOf(fine.transferredMesh.vertices,vertex)];
+                    Assert.Less((a-b).magnitude,.0001f,"The final donor move must propagate to its recipient.");
+                }
+                CollectionAssert.AreEqual(originalSeedUvs,coarse.originalMesh.uv2);
                 Assert.AreEqual(coarse.repackedAtlasWidth,fine.repackedAtlasWidth);
                 Assert.IsNotEmpty(fine.reverseTransferJson);
                 Assert.AreSame(coarse.repackedMesh, ctx.DMesh(coarse));
@@ -1221,20 +1239,44 @@ namespace SashaRX.UnityMeshLab.Tests
                 forward.completed = true;
                 forward.atlasWidth = (int)entries.Max(e => e.repackedAtlasWidth);
                 forward.atlasHeight = (int)entries.Max(e => e.repackedAtlasHeight);
+                bool includeExisting=System.Environment.GetEnvironmentVariable("MESHLAB_PAIRED_EXISTING_SEED")=="1";
+                foreach(bool prepareSeed in includeExisting?new[] {true,false}:new[] {true})
                 foreach (bool overlap in new[] {false, true})
                 {
-                    var reverse = new PairedTransferMode {mode = overlap ? "reverse-overlap" : "reverse-exclusive"}; comparison.modes.Add(reverse);
+                    var reverse = new PairedTransferMode {mode = (prepareSeed?"reverse-":"reverse-existing-")
+                        +(overlap?"overlap":"exclusive")}; comparison.modes.Add(reverse);
                     BenchmarkRecorder.OutputDirectoryOverride = System.IO.Path.Combine(directory, reverse.mode);
                     try
                     {
-                        using var prepared = ReverseUvJunctionTrial.Build(levels, new ReverseUvTransfer.Options {
+                        var options = new ReverseUvTransfer.Options {
                             seedResolution = 256, padding = 2, boundaryToleranceTexels = tolerance,
                             preserveProjectedOverlap = overlap, projectionReach = .05f, cutNarrowJunctions = true,
                             rotateCharts = true, rotateChartsToAxis = true, splitDonorSeams = true,
                             fillAtlasVacancies = true, repackFinalAtlas = true, fillFinalAtlas = true
-                        }, true, density).GetAwaiter().GetResult();
+                        };
+                        // Model the editor's existing repacked working seed on
+                        // detached inputs. Reverse must consume it unchanged and
+                        // still repack every LOD after projection.
+                        using var existing=prepareSeed?null:ReverseUvInputs.Prepare(levels);
+                        if(existing!=null)
+                        {
+                            options.seedResolution=existing.PrepareSeed(256,2,density,default,
+                                rotateCharts:true,rotateChartsToAxis:true);
+                            options.seedDensity=existing.seedDensity;
+                        }
+                        var existingSnapshots=existing?.levels.SelectMany(l=>l.inputs)
+                            .Select(i=>TransferMeshSnapshot.Capture(i.mesh)).ToArray();
+                        using var prepared = ReverseUvJunctionTrial.Build(existing?.levels??levels, options,
+                            prepareSeed, density).GetAwaiter().GetResult();
                         TransferBenchmarkExport.Reverse(BenchmarkRecorder.OutputDirectoryOverride, prepared.result, prepared.inputs.levels);
                         ReverseUvAudit.Write(prepared.result, prepared.inputs.levels);
+                        Assert.AreEqual("shared-chart-families",prepared.result.report.finalPacking,prepared.result.report.finalPackingRefusal);
+                        if(existing!=null)
+                        {
+                            var retained=existing.levels.SelectMany(l=>l.inputs).ToArray();
+                            for(int i=0;i<retained.Length;++i)
+                                CollectionAssert.AreEqual(existingSnapshots[i],TransferMeshSnapshot.Capture(retained[i].mesh));
+                        }
                         reverse.atlasWidth = reverse.atlasHeight = prepared.result.report.atlasSize;
                         reverse.completed = true;
                     }

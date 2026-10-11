@@ -31,17 +31,7 @@ namespace SashaRX.UnityMeshLab
             out float finalScale, out bool improved, Diagnostics diagnostics=null,Action<int> preparedSide=null)
         {
             finalScale=scale; improved=false;
-            Mask[][] Masks(float density) => source.Select((points,id)=>Enumerable.Range(0,options.rotateCharts?4:1)
-                .Select(turn=>Raster(points,id,turn,density,options.padding,token)).ToArray()).ToArray();
-            Mask[][][] Orders(Mask[][] variants) => new[] {
-                variants.OrderBy(m=>ReverseUvFamilyPacking.MinimumAltitude(source[m[0].id])<.0001?0:1)
-                    .ThenBy(m=>ReverseUvFamilyPacking.MinimumAltitude(source[m[0].id])<.0001
-                        ?ReverseUvFamilyPacking.MinimumAltitude(source[m[0].id]):0)
-                    .ThenByDescending(m=>Math.Max(m[0].width,m[0].height)).ThenBy(m=>m[0].id).ToArray(),
-                variants.OrderByDescending(m=>Math.Max(m[0].width,m[0].height)).ThenBy(m=>m[0].id).ToArray(),
-                variants.OrderByDescending((Mask[] m)=>m[0].rows.Sum((List<(int start,int end)> r)=>
-                    r.Sum(((int start,int end) span)=>span.end-span.start))).ThenBy(m=>m[0].id).ToArray()
-            };
+            Mask[][] Masks(float density) => PackingMasks(source,options,density,token);
             var masks=Masks(scale);
             var best=baseline; float bestScale=scale; double bestCost=BoundsArea(best)/(scale*(double)scale);
             long work=0,validations=0;
@@ -74,7 +64,7 @@ namespace SashaRX.UnityMeshLab
             foreach(float packingScale in scales.Distinct())
             {
                 var variants=packingScale==scale?masks:Masks(packingScale);
-                foreach(var order in Orders(variants).GroupBy(o=>string.Join(",",o.Select(m=>m[0].id))).Select(g=>g.First()))
+                foreach(var order in PackingOrders(source,variants).GroupBy(o=>string.Join(",",o.Select(m=>m[0].id))).Select(g=>g.First()))
                 {
                     token.ThrowIfCancellationRequested();
                     // Every order is an independent bounded search.
@@ -102,6 +92,37 @@ namespace SashaRX.UnityMeshLab
             finalScale=(float)(bestScale*fit);
             return filled;
         }
+
+        // Used only when rectangle reservations fail. There is no projection
+        // layout to pin here: each order places every family on an empty canvas.
+        internal static Vector2[][] PackFresh(Vector2[][] source,int initialSide,ReverseUvTransfer.Options options,
+            CancellationToken token,Func<int,Vector2[],int,bool> validate,out int side)
+        {
+            var masks=PackingMasks(source,options,1,token);
+            var orders=PackingOrders(source,masks);
+            for(side=Math.Max(16,initialSide);side<=options.maxAtlasSize;side*=2)
+                foreach(var order in orders)
+                {
+                    token.ThrowIfCancellationRequested();long work=0,validations=0;
+                    var packed=TryPack(order,side,options,token,validate,ref work,ref validations,null);
+                    if(packed!=null) return packed;
+                }
+            throw new InvalidOperationException("Complete family footprints cannot be packed on an empty canvas within the atlas limit.");
+        }
+
+        static Mask[][] PackingMasks(Vector2[][] source,ReverseUvTransfer.Options options,float density,CancellationToken token)
+            =>source.Select((points,id)=>Enumerable.Range(0,options.rotateCharts?4:1)
+                .Select(turn=>Raster(points,id,turn,density,options.padding,token)).ToArray()).ToArray();
+
+        static Mask[][][] PackingOrders(Vector2[][] source,Mask[][] variants) => new[] {
+                variants.OrderBy(m=>ReverseUvFamilyPacking.MinimumAltitude(source[m[0].id])<.0001?0:1)
+                    .ThenBy(m=>ReverseUvFamilyPacking.MinimumAltitude(source[m[0].id])<.0001
+                        ?ReverseUvFamilyPacking.MinimumAltitude(source[m[0].id]):0)
+                    .ThenByDescending(m=>Math.Max(m[0].width,m[0].height)).ThenBy(m=>m[0].id).ToArray(),
+                variants.OrderByDescending(m=>Math.Max(m[0].width,m[0].height)).ThenBy(m=>m[0].id).ToArray(),
+                variants.OrderByDescending((Mask[] m)=>m[0].rows.Sum((List<(int start,int end)> r)=>
+                    r.Sum(((int start,int end) span)=>span.end-span.start))).ThenBy(m=>m[0].id).ToArray()
+            };
 
         // Start from the already validated family placement. A failed move of
         // one thin family must not discard the compaction of every other family.

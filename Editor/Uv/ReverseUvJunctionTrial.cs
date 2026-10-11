@@ -63,7 +63,7 @@ namespace SashaRX.UnityMeshLab
                     comparisonBudget = options.comparisonBudget, cutNarrowJunctions = cuts,
                     splitDonorSeams = options.splitDonorSeams, fillAtlasVacancies = options.fillAtlasVacancies,
                     rotateCharts = options.rotateCharts, rotateChartsToAxis = options.rotateChartsToAxis,
-                    repackFinalAtlas = prepareSeed && options.repackFinalAtlas, fillFinalAtlas = options.fillFinalAtlas,
+                    repackFinalAtlas = options.repackFinalAtlas, fillFinalAtlas = options.fillFinalAtlas,
                     seedDensity=prepareSeed?state.inputs.seedDensity:options.seedDensity };
                 if(UvProgress.IsActive) UvProgress.Report(.25f,cuts?"Project with junction cuts":"Validate packing across the LOD chain");
                 state.result = await ReverseUvTransfer.Build(state.inputs.levels, trial, useAsync, token);

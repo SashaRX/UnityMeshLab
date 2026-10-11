@@ -1,6 +1,66 @@
 # Forward and Reverse UV: paired model comparison, 2026-10-11
 
-## Current: stable charts, local cuts and shared family packing
+## Current: required full repack with prepared or existing donor UV
+
+Continuation from `6f3f66d0`, fresh artifacts:
+`_results~/reverse-full-repack-20261011/models/paired/`.
+The editor always requests complete shared-family packing after projection.
+Coarsest-LOD preparation and optional common-scale filling are independent:
+disabling either does not leave the seed fixed while only adding new charts.
+Existing seed selection also accepts the current Transfer result, rather than
+falling back to an unusable original UV2 when no Repack result exists.
+
+Rectangle packing no longer adopts the entire intermediate placement as its
+fallback or on a higher bbox cost. Its fallback performs complete triangle-mask
+packing on an empty canvas. Optional compaction starts from a completed fresh
+pack. If required final packing fails, no intermediate result is published;
+the previous editor meshes remain owned and displayed.
+
+Twelve real Reverse chains complete: each of Cafe_Table_A_01,
+Modern_Kitchen_A and Kamaz Typhoon, both overlap policies, with preparation
+inside Reverse or consumption of an existing normalized working seed. The
+existing seed is prepared separately on detached copies before invoking the
+unprepared path; these rows do not feed defective original UV2 into Reverse.
+All 32 Reverse LOD quality reports have zero invalid/collapsed UV faces,
+zero zero-area geometry faces and zero unexpected overlap pairs. All twelve
+reports record completed shared-family packing without global seed, refinement
+or final-packing refusal. Input hashes/transforms match the preceding comparison,
+original mesh snapshots stay unchanged, and all 30 Forward layout JSON exports
+match the preceding accepted baseline after parsing every field.
+
+LOD0 bbox fill and P95 stretch with an existing donor UV, minimum density
+32 tex/m and padding 2 pixels:
+
+| Model | Exclusive fill / P95 stretch | Overlap fill / P95 stretch | Atlas side, exclusive / overlap |
+|---|---:|---:|---:|
+| Cafe_Table_A_01 | 49.5% / 1.000 | 55.3% / 1.000 | 128 / 128 |
+| Modern_Kitchen_A | 60.2% / 1.002 | 62.4% / 1.002 | 512 / 512 |
+| Kamaz Typhoon | 60.5% / 1.214 | 59.3% / 1.224 | 2048 / 2048 |
+
+In the normal preparation mode, LOD0 fills remain 49.5/55.3% for Cafe,
+60.6/63.1% for Kitchen and 59.5/57.8% for Kamaz, as measured below.
+Existing-seed overlap records 38, 683 and 3,351 allowed LOD0 overlap pairs
+respectively. Final common filling raises actual density to 38.7/41.4,
+99.9/101.5 and 108.9/111.4 tex/m. These results do not establish better chart
+stitching or optimal packing: Kamaz still has 4,880/4,390 packing families,
+visible empty regions and higher P95 stretch than Forward.
+
+The broad graphics-enabled Unity EditMode run passes 358 of 386 cases,
+with zero failures and 28 optional-fixture skips. It covers actual donor motion
+in all four preparation/filling combinations, inherited/overlay motion, six
+completed-chain replays, empty-canvas ring nesting and refusal without
+intermediate publication. After the last narrow working-donor selection and
+footprint-status changes, the four editor publication controls and the fresh
+rectangle-refusal control pass all five cases separately, with zero failures.
+Both final FBX reference-compile
+variants pass. The model benchmark also executes the additional existing-seed
+comparison branches against all three actual FBX fixtures.
+
+`*-prepared-vs-existing.png` in the artifact root compares actual LOD0 triangles
+for Forward, prepared Reverse and existing-seed Reverse in both overlap modes.
+The `*-all-lods.png` files retain every LOD for the normal preparation mode.
+
+## Historical: stable charts, local cuts and shared family packing
 
 Fresh final-source artifacts:
 `_results~/reverse-cuts-pack-20261011/accepted-models/paired/`.
