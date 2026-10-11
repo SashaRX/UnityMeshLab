@@ -134,6 +134,62 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
+        public IEnumerator IneligibleLodChildrenKeepTreeAndDoNotCancelAnActiveCapture()
+        {
+            using var first = new FoliageNormalTransferTests.Fixture();
+            using var member = new FoliageNormalTransferTests.Fixture();
+            using var collision = new FoliageNormalTransferTests.Fixture();
+            using var disabled = new FoliageNormalTransferTests.Fixture();
+            using var noFilter = new FoliageNormalTransferTests.Fixture();
+            using var standalone = new FoliageNormalTransferTests.Fixture();
+            using var fixture = new ToolFixture();
+            var group = new GameObject("Other tree"); var parent = new GameObject("LOD container");
+            var light = new GameObject("Light"); var empty = new GameObject("Helper");
+            try
+            {
+                parent.transform.SetParent(group.transform, false); member.root.transform.SetParent(parent.transform, false);
+                foreach (var child in new[] { collision.root, disabled.root, noFilter.root, standalone.root, light, empty })
+                    child.transform.SetParent(group.transform, false);
+                light.AddComponent<Light>(); collision.root.name = "Tree_COL"; disabled.renderer.enabled = false;
+                Object.DestroyImmediate(noFilter.root.GetComponent<MeshFilter>());
+                group.AddComponent<LODGroup>().SetLODs(new[] { new LOD(.5f, new Renderer[] { member.renderer }) });
+                var tool = fixture.tool; Selection.activeGameObject = first.root; tool.OnActivate(null, null);
+                var unsupported = new[] { light, empty, collision.root, disabled.root, noFilter.root };
+                foreach (var child in unsupported)
+                {
+                    Selection.activeGameObject = child; tool.FollowSelection();
+                    Assert.AreSame(first.root, tool.root, child.name);
+                }
+                Selection.activeGameObject = first.root; tool.FollowSelection();
+                var task = tool.pipeline.Run(first.root, tool.settings, FoliageNormalsPipeline.Stage.Transfer);
+                Assert.IsTrue(tool.pipeline.IsRunning);
+                foreach (var child in unsupported)
+                {
+                    Selection.activeGameObject = child; tool.FollowSelection();
+                    Assert.AreSame(first.root, tool.root, child.name);
+                }
+                yield return FoliageNormalsToolTests.Await(task);
+                Assert.IsTrue(task.Result, "Unsupported LOD children must not cancel an active calculation: " + tool.pipeline.Status);
+                tool.pipeline.ClearFrom(FoliageNormalsPipeline.Stage.Capture);
+                task = tool.pipeline.Run(first.root, tool.settings, FoliageNormalsPipeline.Stage.Transfer);
+                Selection.activeGameObject = member.root; tool.FollowSelection();
+                Selection.activeGameObject = light; tool.FollowSelection();
+                yield return FoliageNormalsToolTests.Await(task); Assert.IsFalse(task.Result);
+                for (int frame = 0; frame < 5; frame++) yield return null;
+                Assert.AreSame(first.root, tool.root, "An unsupported latest LOD child clears a queued replacement.");
+                Selection.activeGameObject = standalone.root; tool.FollowSelection();
+                Assert.AreSame(standalone.root, tool.root, "An eligible nonmember is followed without promoting unrelated LOD renderers.");
+                Selection.activeGameObject = member.root; tool.FollowSelection(); Assert.AreSame(group, tool.root);
+                Assert.AreSame(group, FoliageLodSelection.SelectionRoot(parent), "A mesh-less parent containing an eligible LOD member is supported.");
+                Assert.AreSame(group, FoliageLodSelection.SelectionRoot(group));
+                Assert.AreSame(first.mesh, first.root.GetComponent<MeshFilter>().sharedMesh);
+                Assert.AreSame(member.mesh, member.root.GetComponent<MeshFilter>().sharedMesh);
+                yield return AwaitPreview(tool.sourcePreview);
+            }
+            finally { fixture.tool.OnDeactivate(); Object.DestroyImmediate(group); }
+        }
+
+        [UnityTest]
         public IEnumerator IneligibleLatestSelectionCancelsTheQueuedTreeReplacement()
         {
             using var first = new FoliageNormalTransferTests.Fixture();
@@ -329,6 +385,47 @@ namespace SashaRX.UnityMeshLab.Tests
                 }
                 finally { fixture.tool.OnDeactivate(); Object.DestroyImmediate(root); }
             }
+        }
+
+        [UnityTest]
+        public IEnumerator NormalDirectionsOnlyDescribeRenderersInTheVisibleLod()
+        {
+            using var captured = new FoliageNormalTransferTests.Fixture();
+            using var excluded = new FoliageNormalTransferTests.Fixture();
+            using var fixture = new ToolFixture(); var root = new GameObject("Tree");
+            try
+            {
+                captured.root.name = "Leaves_LOD0"; excluded.root.name = "Trunk_LOD1";
+                captured.root.transform.SetParent(root.transform, false); excluded.root.transform.SetParent(root.transform, false);
+                excluded.root.transform.localPosition = Vector3.right * 10;
+                var tool = fixture.tool; tool.SetRoot(root);
+                tool.settings.filterRenderers = true; tool.settings.renderers = new[] { captured.renderer };
+                tool.OnRefresh(); yield return AwaitPreview(tool.sourcePreview);
+                var task = tool.pipeline.Run(root, tool.settings, FoliageNormalsPipeline.Stage.Transfer);
+                yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, tool.pipeline.Status);
+                tool.OnRefresh(); yield return AwaitPreview(tool.sourcePreview);
+                CollectionAssert.AreEqual(new[] { 0, 1 }, tool.sourcePreview.Levels);
+                CollectionAssert.AreEqual(new[] { 0 }, tool.pipeline.LodLevels);
+                var before = new List<Vector3>(); var after = new List<Vector3>(); var items = new List<MeshViewport3D.Item>();
+                foreach (var mode in new[] { FoliageNormalsTool.Preview.TransferredNormals, FoliageNormalsTool.Preview.BeforeAfter })
+                    foreach (bool result in new[] { false, true })
+                    {
+                        tool.preview = mode; tool.afterNormals = result; tool.previewLod = 1;
+                        items.Clear(); tool.Get3DContent(items);
+                        Assert.AreEqual(mode == FoliageNormalsTool.Preview.BeforeAfter ? 2 : 1, items.Count);
+                        Assert.AreSame(tool.sourcePreview.Sources(1).Single().mesh, items[0].mesh);
+                        before.Clear(); after.Clear(); tool.AppendPreviewNormalLines(before, after);
+                        Assert.IsEmpty(before, "A visible uncaptured LOD cannot borrow another LOD's before arrows.");
+                        Assert.IsEmpty(after, "A visible uncaptured LOD cannot borrow another LOD's after arrows.");
+                        tool.previewLod = 0; tool.AppendPreviewNormalLines(before, after);
+                        Assert.Greater(before.Count + after.Count, 0, "Captured arrows remain visible on their own LOD.");
+                        if (mode == FoliageNormalsTool.Preview.BeforeAfter) { Assert.IsNotEmpty(before); Assert.IsNotEmpty(after); }
+                        else { Assert.AreEqual(result, after.Count > 0); Assert.AreEqual(!result, before.Count > 0); }
+                    }
+                Assert.AreSame(captured.mesh, captured.root.GetComponent<MeshFilter>().sharedMesh);
+                Assert.AreSame(excluded.mesh, excluded.root.GetComponent<MeshFilter>().sharedMesh);
+            }
+            finally { fixture.tool.OnDeactivate(); Object.DestroyImmediate(root); }
         }
 
         [UnityTest]

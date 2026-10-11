@@ -62,6 +62,15 @@ namespace SashaRX.UnityMeshLab
         internal static bool HasEligibleRenderer(GameObject root) => root && root.GetComponentsInChildren<MeshRenderer>()
             .Any(renderer => Eligible(renderer, SharedMesh(renderer)));
 
+        internal static GameObject SelectionRoot(GameObject selected)
+        {
+            if (!HasEligibleRenderer(selected)) return null;
+            var group = selected.GetComponentsInParent<LODGroup>().FirstOrDefault(g => g.gameObject == selected ||
+                g.GetLODs().SelectMany(lod => lod.renderers).OfType<MeshRenderer>().Any(renderer =>
+                    Eligible(renderer, SharedMesh(renderer)) && renderer.transform.IsChildOf(selected.transform)));
+            return group ? group.gameObject : selected;
+        }
+
         internal static Mesh SharedMesh(MeshRenderer renderer)
         {
             var filter = renderer ? renderer.GetComponent<MeshFilter>() : null;

@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Fixed
+- Foliage selection validates the selected subtree before promoting actual LOD members to their group. Normal directions use the same visible renderers as the mesh preview, so an uncaptured LOD cannot display another level's arrows.
 - Captured Before/After normal arrows sample the selected vertex sequence rather than the complete mesh buffer, preserving sparse submesh visibility and boundary-copy indexing under the 256-arrow limit.
 - Foliage selection following rejects collision meshes, disabled or inactive renderers, and missing mesh filters or meshes using the same eligibility predicate as capture/LOD resolution, keeping the current tree and cancelling queued replacements for unsupported selections.
 - Wire-only proxy overlays no longer intercept mesh inspection or UV spot picking. Foliage source preview copies retain original mesh names; regression checks cover mesh-named LOD chains before and after transfer for readable and unreadable sources.

@@ -223,9 +223,8 @@ namespace SashaRX.UnityMeshLab
             hasPendingRoot = false;
             pendingRoot = null;
             if (!selected || EditorUtility.IsPersistent(selected)) return;
-            var group = selected.GetComponentInParent<LODGroup>();
-            var next = group ? group.gameObject : selected;
-            if (!FoliageLodSelection.HasEligibleRenderer(next)) return;
+            var next = FoliageLodSelection.SelectionRoot(selected);
+            if (!next) return;
             if (next == root) return;
             if (pipeline.IsRunning)
             {
@@ -797,22 +796,32 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
 
-            float offset = preview == Preview.BeforeAfter ? pipeline.CaptureBounds.size.x * .65f : 0;
-            float length = (pipeline.Has(FoliageNormalsPipeline.Stage.Capture) ? pipeline.CaptureBounds : sourcePreview.Bounds(previewLod)).size.magnitude * normalLength;
             var before = new List<Vector3>();
             var after = new List<Vector3>();
+            AppendPreviewNormalLines(before, after);
+            view.DrawLines(before, Matrix4x4.identity, Color.cyan);
+            view.DrawLines(after, Matrix4x4.identity, Color.yellow);
+        }
+
+        internal void AppendPreviewNormalLines(List<Vector3> before, List<Vector3> after)
+        {
+            float offset = preview == Preview.BeforeAfter ? pipeline.CaptureBounds.size.x * .65f : 0;
+            float length = (pipeline.Has(FoliageNormalsPipeline.Stage.Capture) ? pipeline.CaptureBounds : sourcePreview.Bounds(previewLod)).size.magnitude * normalLength;
             bool resultNormals = afterNormals && (preview == Preview.TransferredNormals || preview == Preview.ProxyAndMesh);
-            foreach (var t in pipeline.PreviewTargets(previewLod))
+            foreach (var source in sourcePreview.Sources(previewLod))
             {
+                var t = pipeline.Targets.FirstOrDefault(target => target.renderer == source.renderer);
+                if (t == null)
+                {
+                    if (!pipeline.Has(FoliageNormalsPipeline.Stage.Capture))
+                        FoliageNormalsPreview.AppendSourceNormalLines(source, length, before);
+                    continue;
+                }
                 if (preview == Preview.BeforeAfter || !resultNormals)
                     FoliageNormalsPreview.AppendNormalLines(t, false, Vector3.left * offset, length, before);
                 if (preview == Preview.BeforeAfter || resultNormals)
                     FoliageNormalsPreview.AppendNormalLines(t, true, Vector3.right * offset, length, after);
             }
-            if (!pipeline.Has(FoliageNormalsPipeline.Stage.Capture))
-                foreach (var source in sourcePreview.Sources(previewLod)) FoliageNormalsPreview.AppendSourceNormalLines(source, length, before);
-            view.DrawLines(before, Matrix4x4.identity, Color.cyan);
-            view.DrawLines(after, Matrix4x4.identity, Color.yellow);
         }
         void DrawSamples(MeshViewport3D view)
         {
