@@ -43,7 +43,8 @@ writable folder (registry/package-cache models may need a different destination)
 Source reads and TGA decoding run on workers; PNG/JPEG decoding uses Unity's
 asynchronous texture downloader with local file URLs, without mipmaps. TGA reads
 only its header and pixel payload from a stream. Read leases and file identity
-checks reject source rewrites or replacements during decoding. Pixel copies are sliced
+checks on Windows, or background content hashes on Unix, reject source rewrites
+or replacements during decoding. Pixel copies are sliced
 across editor updates. At most two source decoders run at once, and repeated
 assignments of one file share one load. Full-resolution resizing and RLE encoding
 run in the background. Resize parallelizes rows with at most four workers,

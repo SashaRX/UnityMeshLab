@@ -132,6 +132,38 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsFalse(next.IsFaulted);
         }
 
+        [Test]
+        public void UnixSourceLeaseRejectsReplacementWithMatchingMetadata()
+        {
+            if (Path.DirectorySeparatorChar == '\\') Assert.Ignore("Unix content guard.");
+            string folder = Path.Combine(Path.GetTempPath(), "MeshLabUnixLease-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(folder);
+            string path = Path.Combine(folder, "source.tga");
+            string replacement = Path.Combine(folder, "replacement.tga");
+            IDisposable lease = null;
+            try
+            {
+                File.WriteAllBytes(path, new byte[] { 1, 2, 3, 4 });
+                var sourceType = typeof(TexturePackingLoad).GetNestedType("SourceLease", BindingFlags.NonPublic);
+                lease = (IDisposable)Activator.CreateInstance(sourceType, new object[] { path, default(System.Threading.CancellationToken) });
+                var input = (Stream)sourceType.GetProperty("Input").GetValue(lease);
+                Assert.AreEqual(0, input.Position);
+                Assert.AreEqual(1, input.ReadByte());
+                DateTime written = File.GetLastWriteTimeUtc(path);
+                File.WriteAllBytes(replacement, new byte[] { 5, 6, 7, 8 });
+                File.SetLastWriteTimeUtc(replacement, written);
+                File.Replace(replacement, path, null);
+                // Unix may expose ctime as creation time. Match it to isolate the content guard.
+                sourceType.GetField("created", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(lease, File.GetCreationTimeUtc(path));
+                var failure = Assert.Throws<TargetInvocationException>(() => sourceType.GetMethod("Validate").Invoke(lease,
+                    new object[] { default(System.Threading.CancellationToken) }));
+                Assert.IsInstanceOf<IOException>(failure.InnerException);
+                StringAssert.StartsWith("Source content changed", failure.InnerException.Message);
+                Assert.AreEqual(1, input.Position);
+            }
+            finally { lease?.Dispose(); Directory.Delete(folder, true); }
+        }
+
         private sealed class CountingStream : MemoryStream
         {
             public int BytesRead { get; private set; }

@@ -66,6 +66,7 @@ namespace SashaRX.UnityMeshLab
             private readonly DateTime written;
             private readonly DateTime created;
             private readonly TexturePackingFiles.FileIdentity identity;
+            private readonly byte[] contentHash;
 
             public SourceLease(string path, CancellationToken token)
             {
@@ -80,6 +81,12 @@ namespace SashaRX.UnityMeshLab
                     created = info.CreationTimeUtc;
                     resolved = TexturePackingFiles.ResolveExistingFile(path);
                     if (Path.DirectorySeparatorChar == '\\') identity = TexturePackingFiles.GetIdentity(Input);
+                    else
+                    {
+                        long position = Input.Position;
+                        try { contentHash = TexturePackingFiles.ContentHash(Input, token); }
+                        finally { Input.Position = position; }
+                    }
                     Validate(token);
                 }
                 catch { Input.Dispose(); throw; }
@@ -102,6 +109,8 @@ namespace SashaRX.UnityMeshLab
                             throw new IOException("Source replaced while loading; load it again: " + path);
                     }
                 }
+                else if (!System.Linq.Enumerable.SequenceEqual(contentHash, TexturePackingFiles.ContentHash(path, token)))
+                    throw new IOException("Source content changed while loading; load it again: " + path);
             }
 
             public void Dispose() => Input.Dispose();

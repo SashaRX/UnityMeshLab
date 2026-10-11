@@ -187,7 +187,7 @@ namespace SashaRX.UnityMeshLab
                 return ContentHash(stream, cancellation);
         }
 
-        private static byte[] ContentHash(Stream stream, CancellationToken cancellation)
+        internal static byte[] ContentHash(Stream stream, CancellationToken cancellation)
         {
             using (var hash = SHA256.Create())
             {
