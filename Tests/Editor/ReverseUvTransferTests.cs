@@ -43,6 +43,58 @@ namespace SashaRX.UnityMeshLab.Tests
         static ReverseUvTransfer.Result Build(ReverseUvTransfer.Options options, params ReverseUvTransfer.Level[] levels)
             => ReverseUvTransfer.Build(levels, options).GetAwaiter().GetResult();
 
+        [Test]
+        public void PreparedAtlasOversamplingDoesNotChangeBakeToleranceOrFinalLayout()
+        {
+            var seed=Quad();var fine=Quad();fine.uv2=fine.uv2.Select(p=>p+Vector2.one*.001f).ToArray();
+            var levels=new[] {Level(1,seed),Level(0,fine)};
+            foreach(var input in levels.SelectMany(l=>l.inputs)) input.usePreparedUv2=true;
+            Vector2[] baseline=null;
+            foreach(int resolution in new[] {128,1024})
+            {
+                var options=Options();options.seedResolution=resolution;options.seedDensity=32;
+                options.regroupPreparedAtlas=options.repackFinalAtlas=true;options.fillFinalAtlas=false;
+                using var result=Build(options,levels);
+                Assert.AreEqual(2,result.report.inheritedFaces);
+                Assert.AreEqual(32,result.report.texelsPerUnit,.001f);
+                var uv=result.meshes[1][0].uv2;
+                if(baseline!=null) CollectionAssert.AreEqual(baseline,uv);
+                baseline=uv;
+            }
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void RegroupingOrdinaryTransferKeepsPartiallyMatchedIslandIntact(bool overlap)
+        {
+            var seed=Quad();seed.triangles=new[] {0,1,2};var fine=Quad();
+            var levels=new[] {Level(1,seed),Level(0,fine)};
+            foreach(var input in levels.SelectMany(l=>l.inputs)) input.usePreparedUv2=true;
+            var options=Options(overlap);options.regroupPreparedAtlas=options.repackFinalAtlas=true;
+            var snapshot=TransferMeshSnapshot.Capture(fine);
+            using var result=Build(options,levels);
+            var node=result.report.nodes.Single(n=>n.lod==0);var output=result.meshes[1][0];
+            Assert.AreEqual(1,node.inheritedFaces,"The matched half is recorded without cutting off the unmatched half.");
+            Assert.AreEqual(2,node.faces.Length);Assert.AreEqual(0,node.splitSourceFaces);
+            Assert.AreEqual(1,UvShellExtractor.Extract(output.uv2,output.triangles).Count);
+            Assert.Less(TransferUvQuality.Measure(output,output.uv2,Vector2.one,Matrix4x4.identity).worstAnisotropy,1.001);
+            CollectionAssert.AreEqual(snapshot,TransferMeshSnapshot.Capture(fine));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void RegroupingMovesTheWholeDetailOntoItsUnderlayOnlyWhenOverlapIsAllowed(bool overlap)
+        {
+            var seed=Quad();var fine=Quad();var detail=Quad(.25f,.02f,.25f);
+            detail.uv2=detail.uv.Select(p=>p*.05f+Vector2.one*.05f).ToArray();
+            var levels=new[] {Level(1,seed),Level(0,fine,detail)};
+            foreach(var input in levels.SelectMany(l=>l.inputs)) input.usePreparedUv2=true;
+            var options=Options(overlap);options.regroupPreparedAtlas=options.repackFinalAtlas=true;
+            using var result=Build(options,levels);
+            var node=result.report.nodes.Single(n=>n.lod==0 && n.key==detail.name+1);
+            Assert.AreEqual(overlap?2:0,node.overlapFaces);
+            Assert.AreEqual(0,node.splitSourceFaces);Assert.AreEqual(2,node.faces.Length);
+            Assert.DoesNotThrow(()=>ReverseUvAudit.Write(result,levels));
+        }
+
         [TestCase(false,false)] [TestCase(false,true)] [TestCase(true,false)] [TestCase(true,true)]
         public void ExistingSeedRepackingMovesDonorsAndRetainsProjectedDetailAncestry(bool overlap,bool fillAtlas)
         {

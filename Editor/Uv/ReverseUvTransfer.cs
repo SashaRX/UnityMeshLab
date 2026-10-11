@@ -26,6 +26,7 @@ namespace SashaRX.UnityMeshLab
             public bool preserveProjectedOverlap;
             public bool rebuildSeedWithUnity;
             public bool cutNarrowJunctions;
+            internal bool regroupPreparedAtlas;
             public bool rotateCharts = true, rotateChartsToAxis;
             internal float seedDensity;
             internal bool repackFinalAtlas;
@@ -43,6 +44,7 @@ namespace SashaRX.UnityMeshLab
             internal Mesh mesh;
             internal Matrix4x4 toWorld = Matrix4x4.identity;
             internal string key;
+            internal bool usePreparedUv2;
             internal int[] sourceFaces, removedSourceFaces;
             internal Vector3[] sourceBarycentrics;
             internal int splitSourceFaces;
@@ -134,6 +136,7 @@ namespace SashaRX.UnityMeshLab
             internal Vector3[] sourcePositions;
             internal int[] sourceIndices;
             internal Vector2[] sourceUvCorners;
+            internal int[] preparedRegions;
             internal Vector2[] pixels;
             internal Face[] faces;
             internal int lod, node;
@@ -169,15 +172,25 @@ namespace SashaRX.UnityMeshLab
             try
             {
                 token.ThrowIfCancellationRequested();
-                var seed = Capture(levels[0], origin);
-                InitializeSeed(seed, options, ref nextChart, token);
+                var preparedChain=options.regroupPreparedAtlas?levels.Select(l=>Capture(l,origin)).ToArray():null;
+                if(preparedChain!=null) InitializePreparedChain(preparedChain,options,ref nextChart,ref width,ref height,token);
+                var seed = preparedChain==null?Capture(levels[0], origin):preparedChain[0];
+                if(preparedChain==null) InitializeSeed(seed, options, ref nextChart, token);
                 float density = options.seedDensity>0?options.seedDensity:Density(seed);
                 result.report.texelsPerUnit = density;
                 all.Add(seed);
                 for (int level = 1; level < levels.Length; ++level)
                 {
                     token.ThrowIfCancellationRequested();
-                    var targets = Capture(levels[level], origin);
+                    var targets = preparedChain==null?Capture(levels[level], origin):preparedChain[level];
+                    if(preparedChain!=null)
+                    {
+                        if(useAsync) await Task.Run(()=>ProjectPreparedChain(all[level-1],targets,options,token),token);
+                        else ProjectPreparedChain(all[level-1],targets,options,token);
+                        RecordOverlapRelations(targets,result.report,options,token);
+                        all.Add(targets);
+                        continue;
+                    }
                     if(options.newChartParameterizations==null) options.newChartParameterizations=new Dictionary<Input,Vector2[]>();
                     foreach(var target in targets)
                     {
@@ -680,7 +693,7 @@ namespace SashaRX.UnityMeshLab
         {
             var scan = UvAtlasDiagnostics.Measure(Atlas(surfaces), token, comparisonBudget: options.comparisonBudget, collectConflicts:true);
             if(!scan.complete || scan.invalidFaces>0 || scan.degenerateFaces>0)
-                throw new InvalidOperationException("Reverse UV level failed its complete final validation.");
+                throw new InvalidOperationException($"Reverse UV level failed its complete final validation (LOD{surfaces[0].lod}, complete {scan.complete}, invalid {scan.invalidFaces}, collapsed {scan.degenerateFaces}).");
             var refs = new List<(Surface s,int f)>();
             foreach(var s in surfaces) for(int f=0;f<s.faces.Length;++f) refs.Add((s,f));
             foreach(var (a,b) in scan.conflicts)

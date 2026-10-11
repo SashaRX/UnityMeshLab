@@ -23,6 +23,7 @@ namespace SashaRX.UnityMeshLab
             ReverseUvTransfer.Options options, bool prepareSeed, float density, bool useAsync = false,
             CancellationToken token = default)
         {
+            if(options.regroupPreparedAtlas) return await BuildOne(sources,options,false,density,false,useAsync,token,false);
             if (!prepareSeed) return await BuildOne(sources,options,false,density,false,useAsync,token,false);
             // Seed charts have not yet been published. Choose their topology
             // before projecting; newly exposed regions are legitimate new charts.
@@ -53,7 +54,7 @@ namespace SashaRX.UnityMeshLab
             {
                 if(UvProgress.IsActive) UvProgress.Report(.12f,compact?"Normalize seed and test compact packing":"Normalize and repair coarsest LOD");
                 state.inputs = ReverseUvInputs.Prepare(sources, token);
-                int size = prepareSeed ? state.inputs.PrepareSeed(options.seedResolution, options.padding, density, token, cuts,
+                int size = prepareSeed && !options.regroupPreparedAtlas ? state.inputs.PrepareSeed(options.seedResolution, options.padding, density, token, cuts,
                     options.rotateCharts, options.rotateChartsToAxis, compact, options.rebuildSeedWithUnity)
                     : options.seedResolution;
                 var trial = new ReverseUvTransfer.Options { seedResolution = size, padding = options.padding,
@@ -61,14 +62,15 @@ namespace SashaRX.UnityMeshLab
                     maxAnisotropy = options.maxAnisotropy, preserveProjectedOverlap = options.preserveProjectedOverlap,
                     boundaryToleranceTexels = options.boundaryToleranceTexels, relativeStretchTolerance = options.relativeStretchTolerance,
                     comparisonBudget = options.comparisonBudget, cutNarrowJunctions = cuts,
+                    regroupPreparedAtlas=options.regroupPreparedAtlas,
                     splitDonorSeams = options.splitDonorSeams, fillAtlasVacancies = options.fillAtlasVacancies,
                     rotateCharts = options.rotateCharts, rotateChartsToAxis = options.rotateChartsToAxis,
                     repackFinalAtlas = options.repackFinalAtlas, fillFinalAtlas = options.fillFinalAtlas,
-                    seedDensity=prepareSeed?state.inputs.seedDensity:options.seedDensity };
+                    seedDensity=options.regroupPreparedAtlas?density:prepareSeed?state.inputs.seedDensity:options.seedDensity };
                 if(UvProgress.IsActive) UvProgress.Report(.25f,cuts?"Project with junction cuts":"Validate packing across the LOD chain");
                 state.result = await ReverseUvTransfer.Build(state.inputs.levels, trial, useAsync, token);
                 state.result.report.seedPacking=prepareSeed?(compact?"compact":"normalized-original"):"existing";
-                state.result.report.seedPreparation=prepareSeed?(options.rebuildSeedWithUnity?"unity-unwrapping":"source-charts-local-repair"):"existing-uv2";
+                state.result.report.seedPreparation=options.regroupPreparedAtlas?"ordinary-transfer-charts":prepareSeed?(options.rebuildSeedWithUnity?"unity-unwrapping":"source-charts-local-repair"):"existing-uv2";
                 state.result.report.seedChartRotation=prepareSeed && compact && options.rotateCharts;
                 for(int level=0;level<state.result.meshes.Count;++level)
                     for(int node=0;node<state.result.meshes[level].Length;++node)

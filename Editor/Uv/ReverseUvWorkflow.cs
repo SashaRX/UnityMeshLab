@@ -12,6 +12,7 @@ namespace SashaRX.UnityMeshLab
     {
         bool reversePrepareSeed = true, reversePreserveOverlap;
         bool reverseFillAtlas = true;
+        bool reverseUseForwardCharts = true;
         bool reverseRebuildSeedWithUnity;
         float reverseReach = .05f;
         string reverseSummary;
@@ -20,12 +21,9 @@ namespace SashaRX.UnityMeshLab
         {
             EditorGUILayout.Space(6);
             EditorGUILayout.LabelField("Reverse UV — coarse → fine (experimental)", EditorStyles.boldLabel);
-            EditorGUILayout.HelpBox("Standalone alternative to forward Transfer. Starts at the last included LOD; a prior forward Transfer is not required.", MessageType.None);
-            reversePrepareSeed = EditorGUILayout.ToggleLeft(new GUIContent("Normalize and repair coarsest LOD",
-                "Preserve source UV0 islands, repair stretched charts locally, normalize density and repack before projection. Uses the Repack rotation and narrow-junction settings."), reversePrepareSeed);
-            using (new EditorGUI.DisabledScope(!reversePrepareSeed))
-                reverseRebuildSeedWithUnity = EditorGUILayout.ToggleLeft(new GUIContent("Rebuild seed with Unity Unwrapping",
-                    "Optional replacement of all coarsest-LOD islands using Unity geometry unwrapping. Disabled by default; never used as an automatic fallback."), reverseRebuildSeedWithUnity);
+            EditorGUILayout.HelpBox("Prepare ordinary Transfer charts once, then regroup from coarse to fine and repack all LODs together. Complete islands stay intact during reverse correspondence.", MessageType.None);
+            reversePrepareSeed = EditorGUILayout.ToggleLeft(new GUIContent("Prepare with ordinary Transfer",
+                "Run Analyze / Weld / Symmetry / Repack / Transfer on detached copies. Uses the Repack junction-cut settings. Disable to regroup an existing forward result."), reversePrepareSeed);
             reversePreserveOverlap = EditorGUILayout.ToggleLeft(new GUIContent("Allow projected detail overlap",
                 "Details can inherit the light under them. Overlap ancestry is saved; ordered baking is not implemented yet."), reversePreserveOverlap);
             reverseFillAtlas = EditorGUILayout.ToggleLeft(new GUIContent("Fill final atlas uniformly",
@@ -41,10 +39,15 @@ namespace SashaRX.UnityMeshLab
         // reverse-generated meshes that are still owned by their entries.
         void ClearReverseSummary() => reverseSummary = null;
 
-        /// <summary>Standalone progressive mode. Existing Analyze/Weld can be run
-        /// explicitly beforehand; no target shell matching is used here.</summary>
+        /// <summary>Prepare ordinary islands on detached copies, then regroup and
+        /// repack the complete chain before publishing any result.</summary>
         internal async Task RunReverseTransfer(bool useAsync)
         {
+            if(float.IsNaN(reverseReach) || float.IsInfinity(reverseReach) || reverseReach<=0)
+                throw new ArgumentException("Projection reach must be finite and positive.");
+            // Precision preparation needs the imported asset paths, before the
+            // ordinary pipeline receives detached in-memory copies.
+            if(reverseUseForwardCharts && reversePrepareSeed) PrepareTransferInputs();
             using var previewChange = PreservePreviewDuringMeshChange();
             var groups = ctx.MeshEntries.Where(e => e.include && e.originalMesh)
                 .GroupBy(e => e.lodIndex).OrderByDescending(g => g.Key).Select(g => g.ToList()).ToList();
@@ -57,7 +60,10 @@ namespace SashaRX.UnityMeshLab
             try
             {
                 UvProgress.Report(0, "Clean detached working copies");
-                var sources = groups.Select((List<MeshEntry> g, int level) => new ReverseUvTransfer.Level {
+                using var forward = reverseUseForwardCharts
+                    ? await PrepareForwardReverseInputs(reversePrepareSeed, useAsync, cancellation.Token) : null;
+                if (!UvProgress.IsActive) UvProgress.Begin("Reverse UV: regroup prepared islands", cancelable: true);
+                var sources = forward?.levels ?? groups.Select((List<MeshEntry> g, int level) => new ReverseUvTransfer.Level {
                     lod = g[0].lodIndex,
                     inputs = g.Select((MeshEntry e) => new ReverseUvTransfer.Input {
                         mesh = level == 0 && !reversePrepareSeed ? e.repackedMesh ?? e.transferredMesh ?? e.originalMesh : e.originalMesh,
@@ -66,8 +72,8 @@ namespace SashaRX.UnityMeshLab
                     }).ToArray()
                 }).ToArray();
                 int seedSize = groups[0].Max(e => (int)e.repackedAtlasWidth);
-                if (reversePrepareSeed)
-                    seedSize = SanitizeAtlasResolution(ctx.AtlasResolution);
+                if (forward != null) seedSize = forward.atlasSize;
+                else if (reversePrepareSeed) seedSize = SanitizeAtlasResolution(ctx.AtlasResolution);
                 PollCancel(); cancellation.Token.ThrowIfCancellationRequested();
                 var options = new ReverseUvTransfer.Options {
                     seedResolution = seedSize > 0 ? seedSize : SanitizeAtlasResolution(ctx.AtlasResolution),
@@ -75,6 +81,7 @@ namespace SashaRX.UnityMeshLab
                     preserveProjectedOverlap = reversePreserveOverlap, cutNarrowJunctions = ctx.CutNarrowUvJunctions,
                     rotateCharts = ctx.XatlasRotateCharts, rotateChartsToAxis = ctx.XatlasRotateChartsToAxis,
                     repackFinalAtlas = true, fillFinalAtlas = reverseFillAtlas,
+                    regroupPreparedAtlas = forward != null,
                     rebuildSeedWithUnity = reverseRebuildSeedWithUnity
                 };
                 UvProgress.Report(.15f, "Project and expand atlas");

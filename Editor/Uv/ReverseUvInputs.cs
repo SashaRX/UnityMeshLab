@@ -81,7 +81,7 @@ namespace SashaRX.UnityMeshLab
             copy.bounds = source.mesh.bounds;
             MeshUvState.SetDraft(copy, MeshUvState.IsDraft(source.mesh));
             return new ReverseUvTransfer.Input { mesh = copy, key = source.key, toWorld = source.toWorld,
-                sourceFaces = retained.ToArray(), removedSourceFaces = removed.ToArray() };
+                usePreparedUv2=source.usePreparedUv2, sourceFaces = retained.ToArray(), removedSourceFaces = removed.ToArray() };
         }
 
         internal float seedDensity;

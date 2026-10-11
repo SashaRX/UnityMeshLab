@@ -30,7 +30,7 @@ namespace SashaRX.UnityMeshLab
         {
             Validate(levels, options);
             options.newChartParameterizations=new Dictionary<Input,UnityEngine.Vector2[]>();
-            if (!options.splitDonorSeams) return await BuildCore(levels, options, useAsync, token);
+            if (!options.splitDonorSeams || options.regroupPreparedAtlas) return await BuildCore(levels, options, useAsync, token);
             Result baseline = null, candidate = null, incrementalCandidate=null;
             try
             {

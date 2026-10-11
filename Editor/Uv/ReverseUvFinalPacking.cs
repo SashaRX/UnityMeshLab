@@ -28,6 +28,9 @@ namespace SashaRX.UnityMeshLab
             var families = new DisjointSet(count);
             foreach(var surface in surfaces)
             {
+                if(options.regroupPreparedAtlas)
+                    foreach(var group in Enumerable.Range(0,surface.faces.Length).GroupBy(f=>surface.preparedRegions[f]))
+                        foreach(int f in group) families.Union(offsets[surface]+group.First(),offsets[surface]+f);
                 // Retain corner-connected pieces of a region too (including
                 // T-junction boundaries). Separate placements have no shared
                 // geometric/UV corner and remain separate packing components.

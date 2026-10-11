@@ -220,6 +220,42 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { if (copy) Object.DestroyImmediate(copy); Object.DestroyImmediate(mesh); }
         }
 
+        [TestCase("#######/...#.../...#.../...#.../...#...")]
+        [TestCase("#.....#/#.....#/#######/#.....#/#.....#")]
+        [TestCase("#....../#....../#....../#######")]
+        [TestCase("#######/#.....#/#.....#/#.....#/#######")]
+        public void ReverseRegroupsOrdinaryJunctionCutsWithoutAdditionalFragments(string pattern)
+        {
+            var mesh=Grid(pattern); Mesh cut=null;
+            try
+            {
+                cut=UvJunctionCuts.CopyForRepack(mesh,Vector2.one);
+                Assert.NotNull(cut);
+                var pack=RepackOptions.Default;pack.resolution=128;pack.bruteForce=false;
+                Assert.IsTrue(XatlasRepack.RepackSingle(cut,pack).ok);
+                int charts=UvShellExtractor.Extract(cut.uv2,cut.triangles).Count;
+                Assert.Greater(charts,1);
+                var snapshot=TransferMeshSnapshot.Capture(cut);
+                var levels=new[] {1,0}.Select(l=>new ReverseUvTransfer.Level {lod=l,inputs=new[] {
+                    new ReverseUvTransfer.Input {mesh=cut,key="junction",usePreparedUv2=true}}}).ToArray();
+                foreach(bool overlap in new[] {false,true})
+                {
+                    using var result=ReverseUvTransfer.Build(levels,new ReverseUvTransfer.Options {
+                        seedResolution=128,regroupPreparedAtlas=true,repackFinalAtlas=true,
+                        preserveProjectedOverlap=overlap }).GetAwaiter().GetResult();
+                    foreach(var output in result.meshes.SelectMany(l=>l))
+                    {
+                        Assert.AreEqual(cut.triangles.Length,output.triangles.Length);
+                        Assert.AreEqual(charts,UvShellExtractor.Extract(output.uv2,output.triangles).Count);
+                    }
+                    Assert.AreEqual(cut.triangles.Length/3,result.report.inheritedFaces);
+                    Assert.AreEqual(0,result.report.splitSourceFaces);
+                    CollectionAssert.AreEqual(snapshot,TransferMeshSnapshot.Capture(cut));
+                }
+            }
+            finally {if(cut) Object.DestroyImmediate(cut);Object.DestroyImmediate(mesh);}
+        }
+
         [TestCase(false)] [TestCase(true)]
         public void ReverseTrialRetainsEveryInheritedFaceAndOriginalMesh(bool overlap)
         {

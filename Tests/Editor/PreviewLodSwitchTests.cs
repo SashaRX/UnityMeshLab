@@ -965,6 +965,7 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             var ctx = Open(Group(true, out var fineRenderer, out var coarseRenderer));
             var workflow = hub.DiagnosticWorkflow;
+            typeof(UvTransferWorkflow).GetField("reverseUseForwardCharts",Private).SetValue(workflow,false);
             typeof(UvTransferWorkflow).GetField("reversePrepareSeed",Private).SetValue(workflow,prepareSeed);
             typeof(UvTransferWorkflow).GetField("reverseFillAtlas",Private).SetValue(workflow,fillAtlas);
             var oldSource = ctx.SourceLodIndex;
@@ -1212,7 +1213,8 @@ namespace SashaRX.UnityMeshLab.Tests
             var entries = ctx.MeshEntries.Where(e => e.include).ToArray();
             var originals = entries.Select(e => PairedSnapshot(e.fbxMesh)).ToArray();
             // Freeze the same precise initial working meshes before forward Analyze/Weld
-            // changes its working copies. Reverse never consumes the forward result.
+            // changes its working copies. The legacy diagnostic can still use
+            // these inputs; the default comparison regroups the forward result.
             var levels = entries.GroupBy(e => e.lodIndex).OrderByDescending(g => g.Key).Select(g => new ReverseUvTransfer.Level {
                 lod = g.Key, inputs = g.Select(e => {
                     var copy = MeshAccess.ReadableCopy(e.originalMesh); copy.name = e.fbxMesh.name; owned.Add(copy);
@@ -1240,6 +1242,21 @@ namespace SashaRX.UnityMeshLab.Tests
                 forward.atlasWidth = (int)entries.Max(e => e.repackedAtlasWidth);
                 forward.atlasHeight = (int)entries.Max(e => e.repackedAtlasHeight);
                 bool includeExisting=System.Environment.GetEnvironmentVariable("MESHLAB_PAIRED_EXISTING_SEED")=="1";
+                bool useForward=System.Environment.GetEnvironmentVariable("MESHLAB_REVERSE_FROM_FORWARD")!="0";
+                using var detached=useForward?hub.DiagnosticWorkflow.PrepareForwardReverseInputs(true,false,default).GetAwaiter().GetResult():null;
+                var reverseSources=levels;
+                if(useForward)
+                {
+                    reverseSources=detached.levels;
+                    Assert.AreEqual(forward.atlasWidth,detached.atlasSize);
+                    foreach(var level in reverseSources)
+                        foreach(var input in level.inputs)
+                        {
+                            var entry=entries.Single(e=>e.lodIndex==level.lod && e.fbxMesh.name==input.key);
+                            CollectionAssert.AreEqual(TransferMeshSnapshot.Capture(ctx.Assets.GetResultMesh(entry)),
+                                TransferMeshSnapshot.Capture(input.mesh),"Detached preparation must equal the ordinary pipeline.");
+                        }
+                }
                 foreach(bool prepareSeed in includeExisting?new[] {true,false}:new[] {true})
                 foreach (bool overlap in new[] {false, true})
                 {
@@ -1249,15 +1266,16 @@ namespace SashaRX.UnityMeshLab.Tests
                     try
                     {
                         var options = new ReverseUvTransfer.Options {
-                            seedResolution = 256, padding = 2, boundaryToleranceTexels = tolerance,
+                            seedResolution = useForward ? forward.atlasWidth : 256, padding = 2, boundaryToleranceTexels = tolerance,
                             preserveProjectedOverlap = overlap, projectionReach = .05f, cutNarrowJunctions = true,
                             rotateCharts = true, rotateChartsToAxis = true, splitDonorSeams = true,
                             fillAtlasVacancies = true, repackFinalAtlas = true, fillFinalAtlas = true
+                            , regroupPreparedAtlas=useForward
                         };
                         // Model the editor's existing repacked working seed on
                         // detached inputs. Reverse must consume it unchanged and
                         // still repack every LOD after projection.
-                        using var existing=prepareSeed?null:ReverseUvInputs.Prepare(levels);
+                        using var existing=prepareSeed?null:ReverseUvInputs.Prepare(reverseSources);
                         if(existing!=null)
                         {
                             options.seedResolution=existing.PrepareSeed(256,2,density,default,
@@ -1266,7 +1284,7 @@ namespace SashaRX.UnityMeshLab.Tests
                         }
                         var existingSnapshots=existing?.levels.SelectMany(l=>l.inputs)
                             .Select(i=>TransferMeshSnapshot.Capture(i.mesh)).ToArray();
-                        using var prepared = ReverseUvJunctionTrial.Build(existing?.levels??levels, options,
+                        using var prepared = ReverseUvJunctionTrial.Build(existing?.levels??reverseSources, options,
                             prepareSeed, density).GetAwaiter().GetResult();
                         TransferBenchmarkExport.Reverse(BenchmarkRecorder.OutputDirectoryOverride, prepared.result, prepared.inputs.levels);
                         ReverseUvAudit.Write(prepared.result, prepared.inputs.levels);
@@ -1291,6 +1309,8 @@ namespace SashaRX.UnityMeshLab.Tests
                 BenchmarkRecorder.OutputDirectoryOverride = previousOutput;
                 System.IO.File.WriteAllText(System.IO.Path.Combine(directory, "comparison.json"), JsonUtility.ToJson(comparison, true));
             }
+            Assert.IsTrue(comparison.modes.All(m=>m.completed),string.Join("\n",
+                comparison.modes.Where(m=>!m.completed).Select(m=>m.mode+": "+m.error)));
         }
 
         [Test]
@@ -1345,6 +1365,35 @@ namespace SashaRX.UnityMeshLab.Tests
             var previous = entry.transferredMesh = Object.Instantiate(entry.fbxMesh); entry.reverseTransferJson = "ancestry";
             ((System.Threading.Tasks.Task)CallWorkflow("ExecTransferLodImpl",99,false)).GetAwaiter().GetResult();
             Assert.AreSame(previous,entry.transferredMesh); Assert.AreEqual("ancestry",entry.reverseTransferJson);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void RegroupReversePublishesFromDetachedForwardOrExistingForward(bool prepare)
+        {
+            var ctx=Open(Group(true,out _,out _));
+            ctx.AtlasResolution=128;ctx.RepackResolutionMode=ResolutionMode.Manual;ctx.RepackPerMesh=false;
+            foreach(var entry in ctx.MeshEntries)
+                entry.originalMesh.vertices=new[] {Vector3.zero,Vector3.right,new Vector3(1,1,0),Vector3.up};
+            var originals=ctx.MeshEntries.Select(e=>TransferMeshSnapshot.Capture(e.fbxMesh)).ToArray();
+            if(!prepare) ((System.Threading.Tasks.Task)CallWorkflow("ExecFullPipelineImpl","prepare-forward",false)).GetAwaiter().GetResult();
+            var workflow=hub.DiagnosticWorkflow;
+            typeof(UvTransferWorkflow).GetField("reversePrepareSeed",Private).SetValue(workflow,prepare);
+            Call(hub,"CollectCanvasEntries");SetPreviewFrame();
+            Call(hub,"ApplyPreviewMode",UvCanvasView.PreviewMode.Checker);
+            workflow.RunReverseTransfer(false).GetAwaiter().GetResult();
+            Assert.AreEqual(0,ctx.SourceLodIndex);
+            Call(hub,"CollectCanvasEntries");
+            AssertPreviewFrame();
+            AssertFreshPreview(ctx,ctx.MeshEntries.First(e=>e.lodIndex==0),UvCanvasView.PreviewMode.Checker);
+            for(int i=0;i<ctx.MeshEntries.Count;++i)
+            {
+                var entry=ctx.MeshEntries[i];
+                CollectionAssert.AreEqual(originals[i],TransferMeshSnapshot.Capture(entry.fbxMesh));
+                Assert.IsNotEmpty(entry.reverseTransferJson);
+                var output=ctx.Assets.GetResultMesh(entry);
+                Assert.AreEqual(entry.fbxMesh.triangles.Length,output.triangles.Length);
+                Assert.AreEqual(1,UvShellExtractor.Extract(output.uv2,output.triangles).Count);
+            }
         }
 
         [Test] public void FailedReverseTransferKeepsThePreviousChainAndProvenance()

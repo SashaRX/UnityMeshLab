@@ -893,6 +893,63 @@ See [REVERSE_UV_TRANSFER.md](REVERSE_UV_TRANSFER.md).
   clipped inherited pieces; intrinsic rescue fragments islands; no global compact
   packing, guaranteed uniform per-face density or production overlap bake queue.
 
+### Reverse regrouping of ordinary Transfer charts — 2026-10-12
+
+Continuation of PR225, requested after the fragmented reverse results. The default
+Reverse action now prepares the same ordinary Analyze/Weld/Symmetry/Repack/Transfer
+chain on detached working entries. Repack performs the configured T/H/L/O and other
+junction cuts once. Imported precision preparation precedes the detached copies;
+the source FBX geometry is not overwritten. The original forward source selection
+is retained. Disabling preparation consumes an already completed shared forward
+atlas, and refuses independent per-mesh atlases or previous reverse provenance.
+
+The source of the fragmentation was per-face acceptance followed by unwrapping and
+cutting the rejected subset. The new path retains the prepared island even when
+only some of its faces obtain correspondence. Existing matching UV coordinates are
+kept; projected detail may move only as a complete fitted island, and every face
+must pass coverage, metric and ordered-contact checks. A failed proposal restores
+the complete island. Final packing unions each prepared island with its validated
+LOD ancestry and overlays, then repacks all families on an empty canvas. No donor
+seam refinement or unmatched-face junction cutting runs in this path.
+
+Actual input defects are a separate exception: collapsed/stretched faces and
+measured UV contacts in the ordinary result are repaired before grouping. These
+repairs are explicitly logged and retain source-face identity; they are not
+triggered by ambiguous projection. This does not claim that every authored island
+can be kept intact when its input UVs already overlap or collapse. Strict overlap
+and absolute distortion audits remain in place. Unity Unwrapping is not used.
+
+The paired benchmark additionally checks that detached preparation is byte-identical
+to the ordinary pipeline, including vertex streams and topology, and retains the
+actual forward atlas dimensions instead of assuming 256 pixels. It now fails if
+any requested reverse mode fails, while still saving the comparison JSON.
+
+Validation for this continuation (Unity 6000.2.6f2, private frozen fixtures):
+
+- 363 individual EditMode tests passed across the regression suite and the focused
+  preview rerun; 34 optional fixture cases skipped. Both compile-check FBX define
+  variants pass; metadata and whitespace checks pass.
+- Cafe_Table_A_01, Modern_Kitchen_A and kamaz_Off completed both overlap policies
+  from ordinary prepared inputs, at a requested minimum of 32 tex/m and 2 px padding.
+  All 16 reverse LOD quality reports have zero collapsed faces, invalid faces and
+  unexpected overlaps. `splitSourceFaces` is zero in all six chains.
+- Similarity fitting against ordinary output checked 319 Cafe, 1238 Kitchen and
+  4989 Kamaz healthy islands in each policy. Maximum UV residual was 1.51e-7;
+  islands containing input repairs were explicitly excluded from this assertion.
+- Input repairs across the chain: Cafe 14 faces, Kitchen 515, Kamaz 873. This remains
+  a separate limitation of the ordinary input rather than a projection-fragment
+  repair policy. Original FBX snapshots remained unchanged.
+- LOD0 bbox fill, ordinary / exclusive / overlap: Cafe 40.2 / 53.8 / 64.9 percent;
+  Kitchen 39.4 / 41.0 / 42.4; Kamaz 57.5 / 56.0 / 54.7. Packing quality on Kamaz
+  remains below ordinary Forward and is not claimed solved by this change.
+- Intermediate coordinates are scaled together by an exact binary factor before
+  correspondence so forward oversampling does not tighten the bake-space tolerance.
+  The oversampling regression checks identical final layout at 128 and 1024 input
+  dimensions with uniform final filling disabled.
+
+Artifacts: `_results~/reverse-chart-groups-20261012/density-models/` contains all-LOD
+and LOD0 UV comparisons, paired JSON audits and `island-preservation.json`.
+
 ### Reverse precision and frozen regression gate — 2026-10-09
 
 Continuation of the same experiment at baseline `a72e06f`; legacy solvers remain
