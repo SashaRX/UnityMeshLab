@@ -764,7 +764,7 @@ namespace SashaRX.UnityMeshLab
         {
             var original = target?.original ? target.original : source.mesh;
             var result = target?.working ? target.working : original;
-            float offset = pipeline.CaptureBounds.size.x * .65f;
+            float offset = ComparisonOffset();
             if (preview == Preview.BeforeAfter)
             {
                 items.Add(new MeshViewport3D.Item(original, Matrix4x4.Translate(Vector3.left * offset) * source.matrix, source.materials));
@@ -805,7 +805,7 @@ namespace SashaRX.UnityMeshLab
 
         internal void AppendPreviewNormalLines(List<Vector3> before, List<Vector3> after)
         {
-            float offset = preview == Preview.BeforeAfter ? pipeline.CaptureBounds.size.x * .65f : 0;
+            float offset = preview == Preview.BeforeAfter ? ComparisonOffset() : 0;
             float length = (pipeline.Has(FoliageNormalsPipeline.Stage.Capture) ? pipeline.CaptureBounds : sourcePreview.Bounds(previewLod)).size.magnitude * normalLength;
             bool resultNormals = afterNormals && (preview == Preview.TransferredNormals || preview == Preview.ProxyAndMesh);
             foreach (var source in sourcePreview.Sources(previewLod))
@@ -823,6 +823,13 @@ namespace SashaRX.UnityMeshLab
                     FoliageNormalsPreview.AppendNormalLines(t, true, Vector3.right * offset, length, after);
             }
         }
+
+        float ComparisonOffset()
+        {
+            var size = pipeline.CaptureBounds.size;
+            return (size.x > 0 ? size.x : size.magnitude) * .65f;
+        }
+
         void DrawSamples(MeshViewport3D view)
         {
             var p = pipeline.Samples.samples;

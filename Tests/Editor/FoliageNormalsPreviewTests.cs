@@ -456,6 +456,26 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreSame(leaf.mesh, leaf.root.GetComponent<MeshFilter>().sharedMesh);
         }
 
+        [UnityTest]
+        public IEnumerator FlatYzMeshesHaveSeparatedBeforeAfterViewsAndAlignedArrows()
+        {
+            using var leaf = new FoliageNormalTransferTests.Fixture(new[] { Vector3.zero, Vector3.up, Vector3.forward, Vector3.up + Vector3.forward });
+            using var fixture = new ToolFixture(); var tool = fixture.tool;
+            tool.SetRoot(leaf.root); tool.OnRefresh(); yield return AwaitPreview(tool.sourcePreview);
+            var task = tool.pipeline.Run(leaf.root, tool.settings, FoliageNormalsPipeline.Stage.Transfer);
+            yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, tool.pipeline.Status);
+            Assert.AreEqual(0, tool.pipeline.CaptureBounds.size.x);
+            tool.preview = FoliageNormalsTool.Preview.BeforeAfter;
+            var items = new List<MeshViewport3D.Item>(); tool.Get3DContent(items); Assert.AreEqual(2, items.Count);
+            Assert.Less(items[0].matrix.m03, 0); Assert.Greater(items[1].matrix.m03, 0);
+            var before = new List<Vector3>(); var after = new List<Vector3>(); tool.AppendPreviewNormalLines(before, after);
+            Assert.IsNotEmpty(before); Assert.IsNotEmpty(after);
+            var vertex = leaf.mesh.vertices[0];
+            Assert.Less(Vector3.Distance(items[0].matrix.MultiplyPoint3x4(vertex), before[0]), 1e-6f);
+            Assert.Less(Vector3.Distance(items[1].matrix.MultiplyPoint3x4(vertex), after[0]), 1e-6f);
+            Assert.AreSame(leaf.mesh, leaf.root.GetComponent<MeshFilter>().sharedMesh);
+        }
+
         [TestCase(255)]
         [TestCase(600)]
         public void CapturedArrowsSampleSelectedVerticesAndKeepSkippedBoundaryCopiesAligned(int selectedCount)
