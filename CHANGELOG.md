@@ -32,6 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 - Collision sidecars retain separate hierarchy instances of a shared source mesh; document export, normalized rebuild and sidecar occluder lookup use the matching source node instead of replacing or misplacing an instance. Regeneration prunes missing scoped source paths and preserves cleanup identities for obsolete managed collider nodes, including legacy mesh-only entries and nested rebuild nodes.
+- FBX document saves validate scoped collider source paths before skipping unchanged geometry, refusing stale paths after a source rename or reparent before modifying the document.
 
 - CPU LOD color/paint raster checks consistently assign a shared triangle edge to one face, avoiding boundary errors caused by triangle draw ordering.
 - Far LOD vertex-color correction can retain sharper RGB/alpha boundaries through independently fitted render corners, without adding triangles or changing positions, normals, tangents or UVs. Per-view boundary gates reject regressions. At 64px, the actual colored bench/tent retain 1032/9334 and 62/560 triangles while worst RGBA RMS improves 24%/50%; 226 selected EditMode tests pass. Extra render vertices and the tent's remaining lost boundary region are documented.

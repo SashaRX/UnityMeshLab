@@ -417,6 +417,12 @@ namespace SashaRX.UnityMeshLab
                 RequireLodSibling(scene, Ref(lod.sourceName), lod.name, preserveHierarchy);
                 RequirePlaceable(Ref(lod.sourceName), lod.mesh, lod.name);
             }
+            // Identical geometry does not make a persisted source path valid: a
+            // renamed or moved renderer must be regenerated before a document save.
+            foreach (var collision in plan.collisions)
+                if (plan.collisionSources.TryGetValue(collision.key, out var metadata) &&
+                    !string.IsNullOrEmpty(metadata?.sourceMeshName) && !string.IsNullOrEmpty(metadata.sourceHierarchyPath))
+                    CollisionRef(collision.key);
             var collisions = plan.collisions.Where(c => !CollisionUnchanged(c, tagged)).ToList();
             foreach (var (key, meshes, _) in collisions)
             {

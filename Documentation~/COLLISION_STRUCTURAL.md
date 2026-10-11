@@ -47,6 +47,9 @@ Regeneration prunes missing source paths within the current hierarchy scope,
 retaining valid excluded nodes and other scopes. Superseded keys remain as cleanup
 metadata so document saves remove old legacy or moved-instance collision nodes.
 Cleanup refuses a managed collision container that contains unrelated children.
+Document saves validate every scoped source path even when collider geometry is
+unchanged; a stale path refuses the save before any document changes. Regenerate
+collision results after renaming or reparenting their source nodes.
 
 On the packed Park_Bench_A LOD0 (3,832 source triangles), the Structural preset
 produces two boxes for seat/back and six profiles for the side structures. The

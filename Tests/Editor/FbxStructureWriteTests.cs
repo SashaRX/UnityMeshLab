@@ -455,6 +455,56 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        [TestCase(0)]
+        [TestCase(1)]
+        [TestCase(2)]
+        public void Structure_UnchangedCollisionStillChecksItsSourcePath(int sourceEdit)
+        {
+            using var document = FbxSourceDocument.Load(WriteSource());
+            var scene = document.Scene;
+            var source = FbxStructureEdit.FindNodes(scene, "Rock_LOD0").Single();
+            var collision = FbxStructureEdit.FindNodes(scene, "Rock_LOD0_COL").Single();
+            var (positions, triangles) = SimulatedImport(document.Meshes[0]);
+            var tagged = new Dictionary<string, FbxChannelWrite.Tagged> {
+                ["Rock_LOD0"] = new FbxChannelWrite.Tagged {
+                    ordinal = 0, cornerPositions = positions, submeshCorners = new[] { triangles }, submeshFaceSizes = new[] { 3 }
+                },
+                ["Rock_LOD0_COL"] = new FbxChannelWrite.Tagged {
+                    cornerPositions = positions, submeshCorners = new[] { triangles.Take(3).ToArray() }, submeshFaceSizes = new[] { 3 }
+                }
+            };
+            using var plan = new FbxStructurePlan();
+            var mesh = new UnityEngine.Mesh();
+            var vertices = new UnityEngine.Vector3[positions.Length / 3];
+            for (int i = 0; i < vertices.Length; i++)
+                vertices[i] = new UnityEngine.Vector3(positions[i*3], positions[i*3+1], positions[i*3+2]);
+            mesh.vertices = vertices; mesh.triangles = triangles.Take(3).ToArray();
+            plan.collisions.Add(("Rock_LOD0", new List<UnityEngine.Mesh> { mesh }, false));
+            plan.collisionSources["Rock_LOD0"] = new CollisionMeshEntry {
+                sourceMeshName = "Rock_LOD0", sourceHierarchyPath = "Group[0]/Rock_LOD0[0]"
+            };
+            if (sourceEdit == 1) source.SetName("RenamedRock");
+            if (sourceEdit == 2)
+            {
+                var parent = FbxNode.Create(scene, "OtherGroup");
+                scene.GetRootNode().AddChild(parent);
+                source.GetParent().RemoveChild(source);
+                parent.AddChild(source);
+            }
+            var log = new List<string>();
+            if (sourceEdit == 0)
+                Assert.AreEqual(0, FbxStructureWrite.Apply(document, tagged, plan,
+                    new FbxStructureWrite.Options { preserveHierarchy = true }, log));
+            else
+            {
+                var error = Assert.Throws<FbxStructureRefusalException>(() => FbxStructureWrite.Apply(document, tagged, plan,
+                    new FbxStructureWrite.Options { preserveHierarchy = true }, log));
+                StringAssert.Contains("has no source node", error.Message);
+            }
+            Assert.IsEmpty(log, "source validation happens before document changes");
+            Assert.AreEqual(collision, FbxStructureEdit.FindNodes(scene, "Rock_LOD0_COL").Single());
+        }
+
         [Test]
         public void Structure_MigrationRefusesUnrelatedChildrenBeforeRemovingOldCollision()
         {
