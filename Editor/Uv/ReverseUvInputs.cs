@@ -87,7 +87,7 @@ namespace SashaRX.UnityMeshLab
         internal float seedDensity;
 
         internal int PrepareSeed(int resolution, int padding, float density, CancellationToken token, bool cutNarrowJunctions = false,
-            bool rotateCharts = true, bool rotateChartsToAxis = false, bool compact = true)
+            bool rotateCharts = true, bool rotateChartsToAxis = false, bool compact = true, bool rebuildWithUnity = false)
         {
             var inputs = levels[0].inputs;
             var meshes = ReverseUvSeed.Prepare(inputs, resolution, padding, density, token, out int size, cutNarrowJunctions, rotateCharts, rotateChartsToAxis,compact,
@@ -99,7 +99,7 @@ namespace SashaRX.UnityMeshLab
                     var count=new Dictionary<int,int>();
                     foreach(int f in faces) {count.TryGetValue(f,out int n);count[f]=n+1;}
                     foreach(int n in count.Values) if(n>1) ++input.splitSourceFaces;
-                });
+                },rebuildWithUnity:rebuildWithUnity);
             owned.AddRange(meshes);
             for (int i = 0; i < meshes.Length; ++i) inputs[i].mesh = meshes[i];
             return size;

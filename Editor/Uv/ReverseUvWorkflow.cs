@@ -12,6 +12,7 @@ namespace SashaRX.UnityMeshLab
     {
         bool reversePrepareSeed = true, reversePreserveOverlap;
         bool reverseFillAtlas = true;
+        bool reverseRebuildSeedWithUnity;
         float reverseReach = .05f;
         string reverseSummary;
 
@@ -21,7 +22,10 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.LabelField("Reverse UV — coarse → fine (experimental)", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox("Standalone alternative to forward Transfer. Starts at the last included LOD; a prior forward Transfer is not required.", MessageType.None);
             reversePrepareSeed = EditorGUILayout.ToggleLeft(new GUIContent("Normalize and repair coarsest LOD",
-                "Unwrap from geometry, repair invalid UV faces, normalize density per chart and repack before projecting the next LOD. Uses the Repack rotation and narrow-junction settings."), reversePrepareSeed);
+                "Preserve source UV0 islands, repair stretched charts locally, normalize density and repack before projection. Uses the Repack rotation and narrow-junction settings."), reversePrepareSeed);
+            using (new EditorGUI.DisabledScope(!reversePrepareSeed))
+                reverseRebuildSeedWithUnity = EditorGUILayout.ToggleLeft(new GUIContent("Rebuild seed with Unity Unwrapping",
+                    "Optional replacement of all coarsest-LOD islands using Unity geometry unwrapping. Disabled by default; never used as an automatic fallback."), reverseRebuildSeedWithUnity);
             reversePreserveOverlap = EditorGUILayout.ToggleLeft(new GUIContent("Allow projected detail overlap",
                 "Details can inherit the light under them. Overlap ancestry is saved; ordered baking is not implemented yet."), reversePreserveOverlap);
             using (new EditorGUI.DisabledScope(!reversePrepareSeed))
@@ -71,7 +75,8 @@ namespace SashaRX.UnityMeshLab
                     padding = SanitizePadding(ctx.ShellPaddingPx), projectionReach = reverseReach,
                     preserveProjectedOverlap = reversePreserveOverlap, cutNarrowJunctions = ctx.CutNarrowUvJunctions,
                     rotateCharts = ctx.XatlasRotateCharts, rotateChartsToAxis = ctx.XatlasRotateChartsToAxis,
-                    repackFinalAtlas = reversePrepareSeed, fillFinalAtlas = reverseFillAtlas
+                    repackFinalAtlas = reversePrepareSeed, fillFinalAtlas = reverseFillAtlas,
+                    rebuildSeedWithUnity = reverseRebuildSeedWithUnity
                 };
                 UvProgress.Report(.15f, "Project and expand atlas");
                 using var prepared = await ReverseUvJunctionTrial.Build(sources, options, reversePrepareSeed,

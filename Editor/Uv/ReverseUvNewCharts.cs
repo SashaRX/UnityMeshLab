@@ -58,7 +58,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         internal static bool[] Classify(Vector3[] corners, Vector2[] uv, ReverseUvTransfer.Options options, CancellationToken token,
-            (double length,double x,double y)[] frames=null)
+            (double length,double x,double y)[] frames=null, int[] regions=null)
         {
             var fallback = new bool[corners.Length / 3];
             for (int f = 0; f < fallback.Length; ++f)
@@ -66,11 +66,23 @@ namespace SashaRX.UnityMeshLab
                 int t = f * 3;
                 fallback[f] = ReverseUvTransfer.TriangleAnisotropy(Frame(corners,t,frames),uv[t],uv[t+1],uv[t+2]) > options.maxAnisotropy;
             }
-            var scan = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry { uv = uv,
-                indices = Enumerable.Range(0, uv.Length).ToArray(), charts = new int[uv.Length] }, token,
-                comparisonBudget: options.comparisonBudget, collectConflicts:true);
-            if (!scan.complete) throw new InvalidOperationException("New reverse chart validation exceeded its budget.");
-            foreach (var (a,b) in scan.conflicts) { fallback[a]=true; fallback[b]=true; }
+            // Authored islands may intentionally share UV0. Only self contacts
+            // inside one domain require repair before independent seed packing.
+            // The packed output still receives a complete cross-chart audit.
+            var groups=Enumerable.Range(0,fallback.Length).GroupBy(f=>regions==null?0:regions[f]);
+            long remaining=options.comparisonBudget;
+            foreach(var group in groups)
+            {
+                token.ThrowIfCancellationRequested();
+                var faces=group.ToArray();
+                var coordinates=faces.SelectMany(f=>Enumerable.Range(0,3).Select(k=>uv[f*3+k])).ToArray();
+                var scan = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry { uv = coordinates,
+                    indices = Enumerable.Range(0, coordinates.Length).ToArray(), charts = new int[coordinates.Length] }, token,
+                    comparisonBudget: remaining, collectConflicts:true);
+                remaining-=scan.comparisons;
+                if (!scan.complete) throw new InvalidOperationException("New reverse chart validation exceeded its budget.");
+                foreach (var (a,b) in scan.conflicts) { fallback[faces[a]]=true; fallback[faces[b]]=true; }
+            }
             return fallback;
         }
         /// <summary>Reconstruct only failed independent rescue triangles at their

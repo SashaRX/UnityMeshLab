@@ -1223,6 +1223,51 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [TestCase(false)] [TestCase(true)]
+        public void DefaultSeedPreservesAuthoredSeamsAndVertexStreams(bool overlap)
+        {
+            var source=new Mesh {name="AuthoredSeed"};owned.Add(source);
+            source.vertices=new[] {Vector3.zero,Vector3.right,new Vector3(1,1,0),
+                Vector3.zero,new Vector3(1,1,0),Vector3.up};
+            source.triangles=Enumerable.Range(0,6).ToArray();
+            source.uv=new[] {Vector2.zero,Vector2.right,Vector2.one,
+                new Vector2(2,0),new Vector2(3,1),new Vector2(2,1)};
+            source.uv2=Enumerable.Repeat(Vector2.zero,6).ToArray();
+            source.tangents=Enumerable.Range(0,6).Select(i=>new Vector4(1,0,0,i<3?1:-1)).ToArray();
+            source.colors=Enumerable.Range(0,6).Select(i=>new Color(i/6f,1,0)).ToArray();
+            source.subMeshCount=2;source.SetTriangles(new[] {0,1,2},0);source.SetTriangles(new[] {3,4,5},1);
+            var before=TransferMeshSnapshot.Capture(source);
+            var options=Options(overlap);options.repackFinalAtlas=true;
+            Assert.IsFalse(options.rebuildSeedWithUnity);
+            using var state=ReverseUvJunctionTrial.Build(new[] {Level(1,source),Level(0,source)},options,true,32).GetAwaiter().GetResult();
+            Assert.AreEqual("source-charts-local-repair",state.result.report.seedPreparation);
+            var mesh=state.result.meshes[0][0];var indices=mesh.triangles;var uv=mesh.uv2;
+            Assert.Greater((uv[indices[0]]-uv[indices[3]]).magnitude,1f/state.result.report.atlasSize,
+                "The authored seam must survive seed preparation and final family packing.");
+            Assert.AreEqual(2,mesh.subMeshCount);Assert.AreEqual(2,state.result.report.inheritedFaces);
+            for(int i=0;i<indices.Length;++i)
+            {
+                Assert.AreEqual(source.vertices[i],mesh.vertices[indices[i]]);
+                Assert.AreEqual(source.tangents[i],mesh.tangents[indices[i]]);
+                Assert.AreEqual(source.colors[i],mesh.colors[indices[i]]);
+                Assert.AreEqual(source.uv[i],mesh.uv[indices[i]]);
+            }
+            CollectionAssert.AreEqual(before,TransferMeshSnapshot.Capture(source));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void SeedChartingModeIsExplicitAndMissingTextureUvGetsLocalRepair(bool rebuildWithUnity)
+        {
+            var source=Quad();source.uv=Array.Empty<Vector2>();
+            var before=TransferMeshSnapshot.Capture(source);
+            var options=Options();options.rebuildSeedWithUnity=rebuildWithUnity;
+            using var state=ReverseUvJunctionTrial.Build(new[] {Level(1,source),Level(0,source)},options,true,32).GetAwaiter().GetResult();
+            Assert.AreEqual(rebuildWithUnity?"unity-unwrapping":"source-charts-local-repair",state.result.report.seedPreparation);
+            foreach(var level in state.result.meshes) foreach(var mesh in level) Clean(mesh);
+            Assert.AreEqual(2,state.result.report.inheritedFaces);
+            CollectionAssert.AreEqual(before,TransferMeshSnapshot.Capture(source));
+        }
+
+        [TestCase(false)] [TestCase(true)]
         public void SeedPackingNormalizesEachChartAndRepairsInvalidFaces(bool fixedDensity)
         {
             var positions = new List<Vector3>(); var uv = new List<Vector2>();

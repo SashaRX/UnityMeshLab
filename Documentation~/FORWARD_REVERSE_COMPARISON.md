@@ -1,5 +1,40 @@
 # Forward and Reverse UV: paired model comparison, 2026-10-11
 
+## Authored-chart default seed
+
+Baseline `81e9fb59`, fresh full-pipeline artifacts:
+`_results~/source-seed-default-20261011/paired/`. Reverse starts from detached
+original coarsest meshes, retaining UV0 chart domains, applying the ordinary
+Repack ARAP metric repair, then seed normalization and local intrinsic rescue.
+No prior forward Transfer is required. Unity seed charting is now opt-in.
+
+All six Reverse chains complete at 32 tex/m and padding 2. All LOD quality
+reports contain zero collapsed UV faces and unexpected overlap pairs; original
+input snapshots remain unchanged. Thirty ordinary Forward mesh layout exports
+are byte-identical to the preceding comparison. LOD0 measurements:
+
+| Model | Exclusive bbox fill / P95 stretch | Overlap bbox fill / P95 stretch | Allowed overlap pairs |
+|---|---:|---:|---:|
+| Cafe_Table_A_01 | 52.7% / 1.000 | 55.4% / 1.000 | 38 |
+| Modern_Kitchen_A | 36.4% / 1.072 | 40.5% / 1.055 | 683 |
+| Kamaz Typhoon | 53.3% / 1.209 | 43.9% / 1.223 | 3531 |
+
+This changes the seed policy, not a claim of uniformly improved packing.
+Kitchen and Kamaz overlap retain the audited seed trial without optional
+junction cuts after the cut chain introduces an unclassified contact. Cafe
+overlap retains baseline donor faces after a contact refusal; both Kamaz modes
+retain baseline donor faces where a seam trial loses inheritance. Final family
+packing completes in all six modes. These refusals remain in the report and
+never trigger Unity seed charting automatically. Finer unsupported surface
+charting remains a separate path.
+
+The final graphics-enabled EditMode run passes 331 cases with 34 optional skips
+and zero failures. Both FBX reference-compile variants pass. A preliminary
+no-graphics run had two lightmap texture-readback failures; both pass with the
+graphics device active. Source seam/material/tangent/colour preservation and
+the explicit Unity option are covered by new controls. Visuals show actual
+last-LOD and LOD0 UV exports for ordinary Forward and both Reverse policies.
+
 ## Current continuation: connected families and independent packing searches
 
 Latest fresh paired artifacts: `_results~/finalpack-20261011/regression/paired/`.

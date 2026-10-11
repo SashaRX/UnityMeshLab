@@ -29,7 +29,7 @@ namespace SashaRX.UnityMeshLab
             bool fixedDensity, ReverseUvTransfer.Options options, CancellationToken token, out int side, bool compact = true, int[] regions = null,
             (double length,double x,double y)[] frames=null)
         {
-            var fallback = ReverseUvNewCharts.Classify(positions, uv, options, token,frames);
+            var fallback = ReverseUvNewCharts.Classify(positions, uv, options, token,frames,compact?regions:null);
             side = options.seedResolution;
             for (int attempt = 0; attempt < 3; ++attempt)
             {

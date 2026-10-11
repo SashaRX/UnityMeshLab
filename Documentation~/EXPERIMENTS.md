@@ -40,6 +40,35 @@
 
 ## Progressive reverse atlas — 2026-10-09
 
+### Authored-chart seed preparation by default — 2026-10-11
+
+Continuation of the same progressive Reverse experiment on PR225, baseline
+`81e9fb59`. Coarsest-LOD preparation now retains authored UV0 chart domains,
+uses the ordinary Repack ARAP repair in world metric, and applies the existing
+per-chart normalization, intrinsic-face rescue and audited seed packing.
+Matching 3D/UV edges weld only chart scratch topology. Source mesh attributes,
+material slots and original face identity stay detached and preserved.
+Independent renderers and point contacts keep separate domains. UV0 overlaps
+between different domains are resolved by packing; self contacts still trigger
+local repair, and packed UV2 receives the full cross-chart contact audit.
+
+Unity seed charting is an explicit disabled-by-default option, never an implicit
+fallback. Existing seed cut, barycentric ancestry, projection and final family
+packing checks remain active. The shared Repack ARAP implementation is exposed
+internally with cancellation; its ordinary Transfer callers retain their
+previous settings and behaviour. Local unsupported finer-LOD charting is a
+separate path. Benchmark and regression evidence is recorded in
+`_results~/source-seed-default-20261011/`.
+
+Fresh full-pipeline runs complete all six Cafe/Kitchen/Kamaz policies at
+32 tex/m with no collapsed UV faces or unexpected contacts in any LOD.
+Thirty Forward mesh exports are byte-identical to the previous baseline.
+The final graphics-enabled run passes 331 tests, skips 34 optional cases and
+has no failures; both FBX reference compilation variants pass. Some donor and
+seed junction trials still refuse and retain an audited uncut layout. Packing
+is not uniformly better than the Unity seed. See the authored-chart section
+of [FORWARD_REVERSE_COMPARISON.md](FORWARD_REVERSE_COMPARISON.md) for measurements.
+
 ### Actual UV components before shared-family packing — 2026-10-11
 
 Same progressive Reverse experiment on PR225; baseline `a51de228`. A completed

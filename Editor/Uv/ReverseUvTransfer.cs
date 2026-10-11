@@ -24,6 +24,7 @@ namespace SashaRX.UnityMeshLab
             internal float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels;
             internal float relativeStretchTolerance = UvTransferTolerance.RelativeStretch;
             public bool preserveProjectedOverlap;
+            public bool rebuildSeedWithUnity;
             public bool cutNarrowJunctions;
             public bool rotateCharts = true, rotateChartsToAxis;
             internal float seedDensity;
@@ -91,6 +92,7 @@ namespace SashaRX.UnityMeshLab
             public List<ReverseUvCorrespondenceGraph.Edge> edges = new List<ReverseUvCorrespondenceGraph.Edge>();
             public string refinementRefusal;
             public string seedPacking, seedPackingRefusal;
+            public string seedPreparation;
             public bool finalPackingFootprints;
             public bool seedChartRotation;
             public string finalPacking, finalPackingRefusal;

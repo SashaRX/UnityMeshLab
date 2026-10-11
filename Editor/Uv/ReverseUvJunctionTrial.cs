@@ -54,7 +54,7 @@ namespace SashaRX.UnityMeshLab
                 if(UvProgress.IsActive) UvProgress.Report(.12f,compact?"Normalize seed and test compact packing":"Normalize and repair coarsest LOD");
                 state.inputs = ReverseUvInputs.Prepare(sources, token);
                 int size = prepareSeed ? state.inputs.PrepareSeed(options.seedResolution, options.padding, density, token, cuts,
-                    options.rotateCharts, options.rotateChartsToAxis, compact)
+                    options.rotateCharts, options.rotateChartsToAxis, compact, options.rebuildSeedWithUnity)
                     : options.seedResolution;
                 var trial = new ReverseUvTransfer.Options { seedResolution = size, padding = options.padding,
                     maxAtlasSize = options.maxAtlasSize, projectionReach = options.projectionReach, normalDot = options.normalDot,
@@ -68,6 +68,7 @@ namespace SashaRX.UnityMeshLab
                 if(UvProgress.IsActive) UvProgress.Report(.25f,cuts?"Project with junction cuts":"Validate packing across the LOD chain");
                 state.result = await ReverseUvTransfer.Build(state.inputs.levels, trial, useAsync, token);
                 state.result.report.seedPacking=prepareSeed?(compact?"compact":"normalized-original"):"existing";
+                state.result.report.seedPreparation=prepareSeed?(options.rebuildSeedWithUnity?"unity-unwrapping":"source-charts-local-repair"):"existing-uv2";
                 state.result.report.seedChartRotation=prepareSeed && compact && options.rotateCharts;
                 for(int level=0;level<state.result.meshes.Count;++level)
                     for(int node=0;node<state.result.meshes[level].Length;++node)

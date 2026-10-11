@@ -1330,12 +1330,14 @@ namespace SashaRX.UnityMeshLab
             return indices;
         }
 
-        static void ReparameterizeStretchedShells(RepackOptions opts, List<UvShell> shells, int[] tris, Vector3[] positions, float[] uvFlat)
+        internal static void ReparameterizeStretchedShells(RepackOptions opts, List<UvShell> shells, int[] tris, Vector3[] positions, float[] uvFlat,
+            System.Threading.CancellationToken token = default)
         {
             int stretchedFound = 0, converged = 0, skipped = 0;
             float[] candidate = null;
             for (int si = 0; si < shells.Count; si++)
             {
+                token.ThrowIfCancellationRequested();
                 var shell = shells[si];
                 if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3) continue;
                 float l2 = ShellQuality.ComputeL2Stretch(shell, tris, positions, uvFlat);
