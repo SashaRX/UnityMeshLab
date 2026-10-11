@@ -38,13 +38,10 @@ namespace SashaRX.UnityMeshLab
                 }
                 var incremental=await TryRefinement(levels,options,baseline,true,useAsync,token);
                 incrementalCandidate=incremental.result;
-                if (incrementalCandidate!=null)
+                if (incrementalCandidate!=null && ReverseUvJunctionTrial.Compare(candidate,incrementalCandidate,levels,token)==null)
                 {
-                    if (ReverseUvJunctionTrial.Compare(candidate,incrementalCandidate,levels,token)==null)
-                    {
-                        candidate?.Dispose();candidate=null;baseline.Dispose();baseline=null;
-                        var accepted=incrementalCandidate;incrementalCandidate=null;return accepted;
-                    }
+                    candidate?.Dispose();candidate=null;baseline.Dispose();baseline=null;
+                    var accepted=incrementalCandidate;incrementalCandidate=null;return accepted;
                 }
                 candidate.report.refinementRefusal=incremental.refusal;
                 baseline.Dispose();baseline=null;

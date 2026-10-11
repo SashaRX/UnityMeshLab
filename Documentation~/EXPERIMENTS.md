@@ -125,7 +125,7 @@ texture-aspect resolution through those materials. Artifacts are under
 `_results~/transfer-quality-20261011/`; native binaries and live projects were not
 modified.
 
-Final local verification: 342 EditMode passes, zero failures, four optional
+Initial local verification: 342 EditMode passes, zero failures, four optional
 fixture skips; reference compilation passes with and without FBX Exporter.
 The seven-asset reverse control set retains 12/14 accepted runs; both refusals
 remain Kitchen. Frozen Kamaz frames 1/2/3 accept both overlap policies, with
