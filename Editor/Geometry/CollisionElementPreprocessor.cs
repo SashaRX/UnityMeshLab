@@ -195,7 +195,7 @@ namespace SashaRX.UnityMeshLab
             return Math.Abs(volume) / 6;
         }
 
-        static RemeshNative.IndexedMesh Box(MeshGeometry.OrientedBounds bounds)
+        internal static RemeshNative.IndexedMesh Box(MeshGeometry.OrientedBounds bounds)
         {
             var p = new Vector3[8];
             var min = bounds.min; var max = bounds.max;
