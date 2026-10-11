@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using Microsoft.Win32.SafeHandles;
 
 namespace SashaRX.UnityMeshLab
 {
@@ -22,7 +23,7 @@ namespace SashaRX.UnityMeshLab
                     FileShare.ReadWrite | FileShare.Delete))
                 {
                     var buffer = new StringBuilder(32768);
-                    uint count = GetFinalPathNameByHandle(file.SafeFileHandle.DangerousGetHandle(), buffer,
+                    uint count = GetFinalPathNameByHandle(file.SafeFileHandle, buffer,
                         (uint)buffer.Capacity, 0);
                     if (count == 0 || count >= buffer.Capacity) throw new Win32Exception(Marshal.GetLastWin32Error());
                     string resolved = buffer.ToString();
@@ -75,7 +76,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        private static extern uint GetFinalPathNameByHandle(IntPtr file, StringBuilder path, uint length, uint flags);
+        private static extern uint GetFinalPathNameByHandle(SafeFileHandle file, StringBuilder path, uint length, uint flags);
 
         [DllImport("libc", EntryPoint = "realpath", SetLastError = true)]
         private static extern IntPtr RealPath([MarshalAs(UnmanagedType.LPUTF8Str)] string path, IntPtr buffer);
