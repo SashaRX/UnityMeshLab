@@ -240,6 +240,62 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void ReusedExternalizedMapsAreImportedWithoutBecomingRollbackOwned()
+        {
+            string source = Source(true, embedded: true), seed = Path.Combine(folder, "seed.fbx");
+            using (var document = FbxSourceDocument.Load(source)) document.Save(seed);
+            string name = "MeshLabMediaReuse_" + Guid.NewGuid().ToString("N"), assets = "Assets/" + name;
+            UnityEditor.AssetDatabase.CreateFolder("Assets", name);
+            UnityEditor.AssetDatabase.DisallowAutoRefresh();
+            try
+            {
+                string output = Path.GetFullPath(assets + "/output.fbx"), media = Path.GetFullPath(assets + "/output.fbm");
+                string seedMedia = Path.Combine(folder, "seed.fbm");
+                var existing = new Dictionary<string, byte[]>();
+                foreach (string map in Directory.GetFiles(seedMedia, "*.png", SearchOption.AllDirectories))
+                {
+                    string path = Path.Combine(media, Path.GetRelativePath(seedMedia, map));
+                    Directory.CreateDirectory(Path.GetDirectoryName(path));
+                    File.WriteAllBytes(path, File.ReadAllBytes(map)); existing[path] = File.ReadAllBytes(path);
+                    Assert.IsNull(UnityEditor.AssetDatabase.LoadAssetAtPath<Texture2D>("Assets/" + Path.GetRelativePath(Application.dataPath, path).Replace('\\', '/')));
+                }
+                using (var document = FbxSourceDocument.Load(source)) document.SaveAtomic(output);
+                Assert.IsNotEmpty(existing);
+                foreach (var pair in existing)
+                {
+                    string asset = "Assets/" + Path.GetRelativePath(Application.dataPath, pair.Key).Replace('\\', '/');
+                    Assert.IsNotNull(UnityEditor.AssetDatabase.LoadAssetAtPath<Texture2D>(asset), "reused maps also need an explicit import");
+                    CollectionAssert.AreEqual(pair.Value, File.ReadAllBytes(pair.Key));
+                }
+                if (Application.platform == RuntimePlatform.WindowsEditor)
+                {
+                    using var document = FbxSourceDocument.Load(source);
+                    using var locked = new FileStream(output, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    Assert.Throws<IOException>(() => document.SaveAtomic(output));
+                    foreach (var pair in existing) CollectionAssert.AreEqual(pair.Value, File.ReadAllBytes(pair.Key));
+                }
+            }
+            finally { UnityEditor.AssetDatabase.AllowAutoRefresh(); UnityEditor.AssetDatabase.DeleteAsset(assets); }
+        }
+
+        [Test]
+        [Platform("Win")]
+        public void DeepOutputPathsUseBoundedMediaNames()
+        {
+            string source = Source(true, embedded: true);
+            string directory = Path.Combine(folder, new string('d', 190 - folder.Length - 1));
+            Directory.CreateDirectory(directory);
+            string output = Path.Combine(directory, "output.fbx"), media = Path.Combine(directory, "output.fbm");
+            Assert.Less(output.Length, 240, "the target FBX itself is a valid Windows path");
+            Assert.Greater(Path.Combine(media, new string('h', 64), "map.png").Length, 260, "the old media layout exceeds MAX_PATH");
+            using (var document = FbxSourceDocument.Load(source)) document.SaveAtomic(output);
+            string[] maps = Directory.GetFiles(media, "*.png", SearchOption.AllDirectories);
+            Assert.AreEqual(1, maps.Length); Assert.Less(maps[0].Length, 250);
+            using var saved = FbxSourceDocument.Load(output);
+            Assert.IsFalse(saved.EmbedsMedia); Assert.AreEqual(4, saved.Meshes[0].GetPolygonSize(0));
+        }
+
+        [Test]
         public void LocalPackageRollbackDeletesImportedMediaAndItsMeta()
         {
             var package = UnityEditor.PackageManager.PackageInfo.FindForAssetPath("Packages/com.sasharx.unitymeshlab");

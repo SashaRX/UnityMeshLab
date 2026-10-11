@@ -21,7 +21,7 @@ namespace SashaRX.UnityMeshLab
         static readonly StringComparison PathComparison = Path.DirectorySeparatorChar == '\\'
             ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
-        internal static FbxScene Prepare(FbxSourceDocument document, string scratch, string targetPath, List<string> created, List<string> createdFolders)
+        internal static FbxScene Prepare(FbxSourceDocument document, string scratch, string targetPath, List<string> created, List<string> createdFolders, List<string> referenced)
         {
             string media = Path.Combine(scratch, "input.fbm");
             string target = Path.GetFullPath(targetPath);
@@ -31,8 +31,9 @@ namespace SashaRX.UnityMeshLab
             {
                 // Content-addressed subfolders avoid overwriting authored external maps,
                 // including an earlier export of a different map with the same filename.
+                // A 128-bit prefix bounds path overhead; reuse still verifies the full hash.
                 string hash = Hash(file);
-                string output = Path.Combine(destination, hash, Path.GetFileName(file));
+                string output = Path.Combine(destination, hash.Substring(0, 32), Path.GetFileName(file));
                 if (File.Exists(output))
                 {
                     if (Hash(output) != hash) throw new IOException("An external FBX media file has changed: " + output);
@@ -48,6 +49,7 @@ namespace SashaRX.UnityMeshLab
                         input.CopyTo(saved);
                     }
                 }
+                referenced.Add(output);
                 paths[Path.GetFullPath(file)] = output;
             }
 
@@ -177,7 +179,7 @@ namespace SashaRX.UnityMeshLab
             else File.Delete(file);
         }
 
-        internal static void ImportCreated(IEnumerable<string> files)
+        internal static void ImportMedia(IEnumerable<string> files)
         {
             var assets = files.Select(AssetPath).Where(path => path != null).Distinct().ToArray();
             if (assets.Length == 0) return;

@@ -239,7 +239,8 @@ Before merging any code that writes FBX:
     A source's embedded media is extracted into content-addressed subfolders of
     `<output>.fbm` when embedding is off, so texture references survive temporary
     SDK document disposal. Existing external maps are never overwritten.
-    Newly externalized project/package maps are imported before the model;
+    Media subfolders use a 32-character SHA256 prefix; reuse checks the full hash.
+    Externalized project/package maps, including reused files, are imported before the model;
     rollback uses AssetDatabase for project/package resources. Explicit
     embedding resolves external maps against the original FBX directory and
     refuses a missing map before replacing the target file.
