@@ -35,6 +35,14 @@ namespace SashaRX.UnityMeshLab
                         var accepted = candidate; candidate = null; return accepted;
                     }
                     bool extended = ProtectDonorAncestors(baseline.report, candidate.report, trial, token);
+                    foreach (var failure in ReverseUvJunctionTrial.DistortionFailures(baseline,candidate,levels,token))
+                    {
+                        var node=baseline.report.nodes[failure.node];
+                        int mesh=baseline.report.nodes.Take(failure.node).Count(p=>p.lod==node.lod);
+                        extended |= ProtectFace(trial,(node.lod,mesh),failure.source);
+                        foreach (int f in Enumerable.Range(0,node.faces.Length).Where(f=>node.sourceFaces[f]==failure.source))
+                            extended |= ProtectParent(baseline.report,node.faces[f],trial);
+                    }
                     candidate.Dispose(); candidate = null;
                     if (!extended) break;
                 }
@@ -64,18 +72,32 @@ namespace SashaRX.UnityMeshLab
                 for (int f = 0; f < a.faces.Length; ++f)
                 {
                     token.ThrowIfCancellationRequested(); var face = a.faces[f];
-                    if (!face.inherited) continue;
+                    if (!face.inherited && !face.intentionalOverlap) continue;
                     if (!pieces.TryGetValue(a.sourceFaces[f],out var descendants)) return false;
-                    if (ReverseUvJunctionTrial.Covered(a, f, b, descendants.Where(p => b.faces[p].inherited), token)) continue;
-                    var parent = before.nodes.Where(p => p.lod == face.parentLod).ElementAt(face.parentMesh);
-                    if (parent.seed) continue;
-                    var key = (face.parentLod, face.parentMesh);
-                    if (!trial.seamCutExclusions.TryGetValue(key, out var excluded))
-                    { excluded = new HashSet<int>(); trial.seamCutExclusions.Add(key, excluded); }
-                    extended |= excluded.Add(parent.sourceFaces[face.parentFace]);
+                    bool inheritedCovered=!face.inherited || ReverseUvJunctionTrial.Covered(a,f,b,descendants.Where(p=>b.faces[p].inherited),token);
+                    bool overlapCovered=!face.intentionalOverlap || ReverseUvJunctionTrial.Covered(a,f,b,descendants.Where(p=>b.faces[p].intentionalOverlap),token);
+                    if (inheritedCovered && overlapCovered) continue;
+                    int mesh=before.nodes.Take(n).Count(p=>p.lod==a.lod);
+                    extended |= ProtectFace(trial,(a.lod,mesh),a.sourceFaces[f]);
+                    extended |= ProtectParent(before,face,trial);
                 }
             }
             return extended;
+        }
+
+        static bool ProtectParent(Report before,Face face,Options trial)
+        {
+            if (!face.inherited) return false;
+            var parent=before.nodes.Where(p=>p.lod==face.parentLod).ElementAt(face.parentMesh);
+            return !parent.seed && ProtectFace(trial,(face.parentLod,face.parentMesh),parent.sourceFaces[face.parentFace]);
+        }
+
+        static bool ProtectFace(Options trial,(int lod,int node) key,int source)
+        {
+            if (trial.seamCutExclusions==null) trial.seamCutExclusions=new Dictionary<(int,int),HashSet<int>>();
+            if (!trial.seamCutExclusions.TryGetValue(key,out var excluded))
+            { excluded=new HashSet<int>(); trial.seamCutExclusions.Add(key,excluded); }
+            return excluded.Add(source);
         }
     }
 }

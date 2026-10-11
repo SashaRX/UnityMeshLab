@@ -49,7 +49,7 @@ namespace SashaRX.UnityMeshLab
                     plans.Add(plan);
                     int sourceFace = s.input.sourceFaces == null ? f : s.input.sourceFaces[f];
                     plan.locked = options.seamCutExclusions != null && options.seamCutExclusions.TryGetValue((s.lod, s.node), out var excluded) && excluded.Contains(sourceFace);
-                    if (plan.locked) { s.faces[f].cutRefusal = "preserved-finer-inheritance"; continue; }
+                    if (plan.locked) { s.faces[f].cutRefusal = "preserved-inheritance-or-metric"; continue; }
                     if (s.faces[f].inherited || s.faces[f].rejection == "overlap") continue;
                     int t = f * 3;
                     var a = s.positions[s.indices[t]]; var b = s.positions[s.indices[t + 1]]; var c = s.positions[s.indices[t + 2]];

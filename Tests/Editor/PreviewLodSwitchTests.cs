@@ -997,6 +997,7 @@ namespace SashaRX.UnityMeshLab.Tests
             hub.DiagnosticWorkflow.SymmetrySplitMode = SymmetrySplitShells.ThresholdMode.Adaptive;
             var oldOutput = BenchmarkRecorder.OutputDirectoryOverride;
             string output = System.Environment.GetEnvironmentVariable("MESHLAB_JUNCTION_OUTPUT");
+            if(!string.IsNullOrEmpty(output)) System.IO.Directory.CreateDirectory(output);
             try
             {
                 BenchmarkRecorder.OutputDirectoryOverride = output;
@@ -1022,6 +1023,61 @@ namespace SashaRX.UnityMeshLab.Tests
                 }
             }
             finally { BenchmarkRecorder.OutputDirectoryOverride = oldOutput; }
+        }
+
+        [TestCase("Assets/JunctionFixtures/Cafe_Table_A_01.fbx")]
+        [TestCase("Assets/TransferBenchmarkInputs/Modern_Kitchen_A.fbx")]
+        [TestCase("Assets/KamazFixtures/kamaz_Off.fbx")]
+        public void FrozenForwardModelQualityCapture(string asset)
+        {
+            string output=System.Environment.GetEnvironmentVariable("MESHLAB_FORWARD_QUALITY_OUTPUT");
+            if (string.IsNullOrEmpty(output)) Assert.Ignore("Optional private forward quality fixtures are not configured.");
+            var prefab=UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(asset); Assert.NotNull(prefab,asset);
+            var instance=Object.Instantiate(prefab); owned.Add(instance);
+            var group=instance.GetComponent<LODGroup>() ?? instance.AddComponent<LODGroup>();
+            var renderers=instance.GetComponentsInChildren<Renderer>(true).Where(r=>r.GetComponent<MeshFilter>() && r.GetComponent<MeshFilter>().sharedMesh).ToArray();
+            var levels=renderers.Select(r=>(renderer:r,match:System.Text.RegularExpressions.Regex.Match(r.GetComponent<MeshFilter>().sharedMesh.name,@"_LOD(\d+)",System.Text.RegularExpressions.RegexOptions.IgnoreCase)))
+                .Where(p=>p.match.Success).GroupBy(p=>int.Parse(p.match.Groups[1].Value)).OrderBy(g=>g.Key).ToArray();
+            Assert.GreaterOrEqual(levels.Length,2);
+            group.SetLODs(levels.Select(g=>new LOD(.6f/(g.Key+1),g.Select(p=>p.renderer).ToArray())).ToArray());
+            var ctx=Open(group); ctx.SourceLodIndex=0; ctx.LightmapDensity=10; ctx.CutNarrowUvJunctions=true;
+            ctx.RepackResolutionMode=ResolutionMode.AutoFromTexelDensity; ctx.ShellPaddingPx=2; ctx.BorderPaddingPx=0;
+            ctx.CaptureNextTransfer=true;
+            hub.DiagnosticWorkflow.SymmetrySplitMode=SymmetrySplitShells.ThresholdMode.Adaptive;
+            string directory=System.IO.Path.Combine(output,System.IO.Path.GetFileNameWithoutExtension(asset));
+            System.IO.Directory.CreateDirectory(directory);
+            ((System.Threading.Tasks.Task)CallWorkflow("ExecFullPipelineImpl","forward-quality",false)).GetAwaiter().GetResult();
+            Assert.IsTrue(ctx.HasRepack && ctx.HasTransfer);
+            foreach (var entry in ctx.MeshEntries)
+            {
+                var result=ctx.Assets.GetResultMesh(entry);
+                var quality=TransferUvQuality.Measure(result,result.uv2,Vector2.one,Matrix4x4.identity);
+                System.IO.File.WriteAllText(System.IO.Path.Combine(directory,entry.fbxMesh.name+".json"),JsonUtility.ToJson(quality,true));
+                System.IO.File.WriteAllBytes(System.IO.Path.Combine(directory,entry.fbxMesh.name+".bin"),TransferMeshSnapshot.Capture(result));
+                Assert.AreEqual(0,quality.invalidFaces,entry.fbxMesh.name);
+                Assert.AreEqual(0,quality.outOfBoundsVertices,entry.fbxMesh.name);
+                Assert.IsTrue(quality.overlapScanComplete,entry.fbxMesh.name);
+                if(entry.fbxMesh.name.StartsWith("Cafe_Table_A_01"))
+                {
+                    Assert.AreEqual(0,quality.overlapPairs);
+                    Assert.AreEqual(0,quality.degenerateFaces);
+                    if(entry.lodIndex<2) Assert.Less(quality.worstAnisotropy,1.6);
+                    else Assert.Less(quality.areaWeightedAnisotropy,8000);
+                }
+                if(entry.fbxMesh.name=="Kamaz_Typhoon_LOD1")
+                {
+                    Assert.Less(quality.areaWeightedAnisotropy,1200);
+                    Assert.LessOrEqual(quality.degenerateFaces,160);
+                    Assert.LessOrEqual(quality.overlapPairs,600);
+                }
+                if(entry.fbxMesh.name=="Kamaz_Typhoon_LOD2")
+                {
+                    Assert.Less(quality.areaWeightedAnisotropy,600);
+                    Assert.LessOrEqual(quality.degenerateFaces,110);
+                    Assert.LessOrEqual(quality.overlapPairs,110);
+                }
+            }
+            System.IO.File.WriteAllText(System.IO.Path.Combine(directory,"capture.txt"),TransferCaseCapture.LastManifest);
         }
 
         [Test]

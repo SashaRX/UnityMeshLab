@@ -131,14 +131,10 @@ namespace SashaRX.UnityMeshLab
         internal TransferCaseCapture DiagnosticCapture;
 
         /// <summary>
-        /// Auto-reparameterize shells whose UV0 stretch (Sander L² metric) exceeds
-        /// <see cref="StretchThreshold"/>. Replaces the previous IsRibbon-based
-        /// trigger — now driven by an actual UV quality metric. ARAP local-global
-        /// solver redistributes vertices to minimize per-triangle isometric
-        /// distortion. Off by default (opt-in safety), but recommended ON for most
-        /// assets — stretched ribbons, twisted strips, and any high-distortion
-        /// shells get cleaned up at the parameterization level instead of via
-        /// downstream affine hacks.
+        /// Reparameterize shells whose mean Sander L² exceeds
+        /// <see cref="StretchThreshold"/>, or whose local triangle anisotropy
+        /// exceeds 1.25. Enabled by default. The detached ARAP candidate must
+        /// improve the metric without increasing collapsed faces or contacts.
         /// </summary>
         public bool ReparameterizeStretchedShells = true;  // DEFAULT ON
 

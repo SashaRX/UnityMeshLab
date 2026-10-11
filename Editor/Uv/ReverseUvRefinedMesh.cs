@@ -22,7 +22,7 @@ namespace SashaRX.UnityMeshLab
             internal int Exact => weights.Equals(Vector3.right) ? a : weights.Equals(Vector3.up) ? b : weights.Equals(Vector3.forward) ? c : -1;
         }
 
-        internal static Mesh Copy(Mesh source, int[] sourceFaces, Vector3[] barycentrics, Vector2[] uv)
+        internal static Mesh Copy(Mesh source, int[] sourceFaces, Vector3[] barycentrics, Vector2[] uv, Action<int,int> onVertexCreated=null)
         {
             if (barycentrics.Length != sourceFaces.Length * 3 || uv.Length != barycentrics.Length)
                 throw new ArgumentException("Refined reverse corners do not match their source face map.");
@@ -36,7 +36,7 @@ namespace SashaRX.UnityMeshLab
                 var key = sample.Exact >= 0 ? (sample.Exact, -1, -1, Vector3.right, uv[i])
                     : (sample.a, sample.b, sample.c, sample.weights, uv[i]);
                 if (!remap.TryGetValue(key, out int vertex))
-                { vertex = samples.Count; remap.Add(key, vertex); samples.Add(sample); pixels.Add(uv[i]); }
+                { vertex = samples.Count; remap.Add(key, vertex); samples.Add(sample); pixels.Add(uv[i]); onVertexCreated?.Invoke(vertex,i); }
                 indices[i] = vertex;
             }
             var output = new Mesh { name = source.name + "_reverseSplit", hideFlags = HideFlags.HideAndDontSave,

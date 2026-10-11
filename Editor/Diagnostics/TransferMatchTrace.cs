@@ -47,6 +47,8 @@ namespace SashaRX.UnityMeshLab
         public bool[] sourceMirrored;
         public bool truncated;
         public bool sourceAtlasRecoveryAllowed;
+        public TransferUvQuality projectedSeamQuality;
+        public string forwardSeamRefusal;
         int recordedVertices;
 
         internal void RecordProjection(Shell shell, string method, int source,

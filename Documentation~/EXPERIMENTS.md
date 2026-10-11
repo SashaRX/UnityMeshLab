@@ -40,6 +40,64 @@
 
 ## Progressive reverse atlas — 2026-10-09
 
+### Forward stretch and local donor-seam protection — 2026-10-11
+
+Continuation of the transfer work explicitly requested on PR225; baseline
+`2820d0a`. A mean Sander L² below 1.5 can hide severely distorted individual
+faces. ARAP now also tests local anisotropy above 1.25, on a detached buffer,
+and retains only candidates that improve the shell metric without introducing
+collapsed faces or UV contacts. Grouped and single-mesh repack share this pass.
+
+A coarse target UV0 shell can span several independently packed donor charts.
+Forward recovery uses the existing donor correspondence/seam subdivision on a
+working copy. The donor atlas stays fixed. Unsupported regions retain their
+previous UVs; projection is rolled back per conflicting piece. Original faces
+whose subdivision introduces Float32 contacts or worsens their metric are
+protected locally, including incident edges. Final publication still requires
+an improved whole-mesh metric and no increase in overlap area. Splitting an
+existing contact can increase its triangle-pair count, so contact identity is
+audited against original face pairs, rather than judged by that count alone.
+Output classifications are rebuilt for the changed topology.
+
+Reverse refinement now protects all affected original faces and donor ancestors
+when cuts lose inherited/intentional-overlap coverage or worsen local distortion.
+Other seams remain eligible. The inheritance, density and distortion gates are
+unchanged; a protected face records `preserved-inheritance-or-metric`.
+
+Private replay fixtures: Cafe_Table_A_01, Modern_Kitchen_A and uncompressed
+`kamaz_Off.fbx`, plus the frozen Kamaz transform frames. Current forward controls
+at 10 tex/m, 2 px padding and junction cuts:
+
+- Cafe source / LOD1 worst anisotropy: 1.45490 / 1.53571, no overlaps or collapsed
+  UV faces. LOD2 has no collapsed UV faces after subdivision, but still has a
+  severely distorted unsupported region (worst 3,465,807.85; weighted 7,914.83).
+- Kamaz main LOD1: 156 collapsed faces / 574 contact pairs, weighted anisotropy
+  1,129.43. LOD2: 104 / 99, weighted 527.43. These are partial improvements,
+  **not** a clean-transfer certificate.
+- Kitchen remains defective: main LOD1 retains 238 contact pairs and six
+  collapsed faces. Reverse seed preparation still refuses a positive-area
+  Float32 sliver. Origin anchoring and oblique rescue trials did not solve the
+  complete model and were removed; the metric gate was not weakened and the
+  face was not silently deleted.
+
+Regression controls include hidden local stretch, planar donor coverage/holes,
+cross-chart target subdivision, collision rollback, immutable input snapshots,
+both reverse overlap policies and forward-after-reverse reproducibility. Private
+model tests assert numeric bounds, in addition to writing snapshots and quality
+reports. These fixtures omit external material textures; this run does not certify
+texture-aspect resolution through those materials. Artifacts are under
+`_results~/transfer-quality-20261011/`; native binaries and live projects were not
+modified.
+
+Final local verification: 342 EditMode passes, zero failures, four optional
+fixture skips; reference compilation passes with and without FBX Exporter.
+The seven-asset reverse control set retains 12/14 accepted runs; both refusals
+remain Kitchen. Frozen Kamaz frames 1/2/3 accept both overlap policies, with
+frame 0 still refusing an actual shared-frame geometric collapse. Kamaz overlap
+can still retain the unsplit baseline when donor seams lose inheritance.
+An additional whole-node ancestry retry did not remove that real-model refusal
+and was discarded. No clean-UV claim is made for these accepted but unsplit runs.
+
 ### Metric-aware rescue vacancies — 2026-10-11
 
 Continuation on PR225, baseline `5ffec80`. The supplied Kamaz log refuses a

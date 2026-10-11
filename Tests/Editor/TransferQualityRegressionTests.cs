@@ -7,6 +7,91 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class TransferQualityRegressionTests
     {
+        [Test]
+        public void RepackRepairsLocalStretchHiddenByTheAreaAverage()
+        {
+            var mesh=new Mesh {vertices=new[] {Vector3.zero,new Vector3(10,0),new Vector3(10,1),new Vector3(0,.01f)},
+                triangles=new[] {0,1,2,0,2,3},uv=new[] {Vector2.zero,new Vector2(10,0),new Vector2(10,1),new Vector2(0,.05f)}};
+            try
+            {
+                var uv=mesh.uv; var flat=new float[uv.Length*2];
+                for(int i=0;i<uv.Length;++i) {flat[i*2]=uv[i].x;flat[i*2+1]=uv[i].y;}
+                var shells=UvShellExtractor.Extract(uv,mesh.triangles);
+                Assert.Less(ShellQuality.ComputeL2Stretch(shells[0],mesh.triangles,mesh.vertices,flat),1.5);
+                var before=TransferMeshSnapshot.Capture(mesh);
+                var repair=typeof(XatlasRepack).GetMethod("ReparameterizeStretchedShells",BindingFlags.Static|BindingFlags.NonPublic);
+                repair.Invoke(null,new object[] {RepackOptions.Default,shells,mesh.triangles,mesh.vertices,flat});
+                var coordinates=new Dictionary<int,Vector2>();
+                for(int i=0;i<uv.Length;++i) coordinates.Add(i,new Vector2(flat[i*2],flat[i*2+1]));
+                var quality=TransferCandidateQuality.Measure(shells[0],mesh.triangles,mesh.vertices,coordinates);
+                Assert.Less(quality.worstAnisotropy,1.01); Assert.AreEqual(0,quality.overlapPairs);
+                CollectionAssert.AreEqual(before,TransferMeshSnapshot.Capture(mesh));
+            }
+            finally {Object.DestroyImmediate(mesh);}
+        }
+
+        [Test]
+        public void PlanarRecoveryUsesGeometryAndRefusesAnUncoveredRegion()
+        {
+            var indices=new[] {0,1,2,0,2,3};
+            var positions=new[] {Vector3.zero,Vector3.right,Vector3.one,Vector3.up};
+            // Keep the source planar in XY; Vector3.one also has a Z component.
+            positions[2]=new Vector3(1,1,0);
+            var sourceUv=new[] {Vector2.zero,Vector2.right,Vector2.one,Vector2.up};
+            var source=UvShellExtractor.Extract(sourceUv,indices)[0];
+            var target=UvShellExtractor.Extract(new[] {Vector2.zero,Vector2.right,Vector2.one*2,Vector2.up*7},indices)[0];
+            var result=PlanarTransferRecovery.Project(target,indices,positions,source,indices,positions,sourceUv);
+            Assert.IsNotNull(result);
+            Assert.Less(TransferCandidateQuality.Measure(target,indices,positions,result).worstAnisotropy,1.001);
+            var outside=(Vector3[])positions.Clone(); outside[2]=new Vector3(1.2f,1.2f,0);
+            Assert.IsNull(PlanarTransferRecovery.Project(target,indices,outside,source,indices,positions,sourceUv));
+            var missing=new UvShell {faceIndices=new List<int> {0},vertexIndices=new HashSet<int> {0,1,2}};
+            Assert.IsNull(PlanarTransferRecovery.Project(target,indices,positions,missing,indices,positions,sourceUv));
+        }
+
+        [Test]
+        public void ForwardRecoveryCutsAcrossSeparatedDonorChartsWithoutMovingTheDonor()
+        {
+            var source=new Mesh {vertices=new[] {Vector3.zero,new Vector3(.5f,0,0),new Vector3(.5f,1,0),Vector3.up,
+                new Vector3(.5f,0,0),Vector3.right,new Vector3(1,1,0),new Vector3(.5f,1,0)},
+                triangles=new[] {0,1,2,0,2,3,4,5,6,4,6,7}};
+            var target=new Mesh {vertices=new[] {Vector3.zero,Vector3.right,new Vector3(1,1,0),Vector3.up},triangles=new[] {0,1,2,0,2,3},
+                uv=new[] {Vector2.zero,Vector2.right,Vector2.one,Vector2.up}};
+            Mesh recovered=null;
+            try
+            {
+                source.uv=new[] {Vector2.zero,Vector2.right,Vector2.one,Vector2.up,Vector2.zero,Vector2.right,Vector2.one,Vector2.up};
+                source.uv2=new[] {new Vector2(.1f,.1f),new Vector2(.25f,.1f),new Vector2(.25f,.4f),new Vector2(.1f,.4f),
+                    new Vector2(.6f,.1f),new Vector2(.75f,.1f),new Vector2(.75f,.4f),new Vector2(.6f,.4f)};
+                var sourceBefore=TransferMeshSnapshot.Capture(source);var targetBefore=TransferMeshSnapshot.Capture(target);
+                var legacy=new[] {new Vector2(.1f,.1f),new Vector2(.25f,.1f),new Vector2(.25f,.101f),new Vector2(.1f,.101f)};
+                recovered=ReverseUvTransfer.PrepareForwardSeams(source,target,legacy,new[] {0,0,0,0},128,out var sources);
+                Assert.IsNotNull(recovered);Assert.Greater(recovered.triangles.Length,target.triangles.Length);
+                Assert.AreEqual(recovered.vertexCount,sources.Length);
+                var quality=TransferUvQuality.Measure(recovered,recovered.uv2,Vector2.one,Matrix4x4.identity);
+                Assert.Less(quality.worstAnisotropy,1.01);Assert.AreEqual(0,quality.overlapPairs);Assert.AreEqual(0,quality.degenerateFaces);
+                CollectionAssert.AreEqual(sourceBefore,TransferMeshSnapshot.Capture(source));
+                CollectionAssert.AreEqual(targetBefore,TransferMeshSnapshot.Capture(target));
+            }
+            finally {if(recovered) Object.DestroyImmediate(recovered);Object.DestroyImmediate(source);Object.DestroyImmediate(target);}
+        }
+
+        [Test]
+        public void PlanarRecoveryDoesNotCreateAContactWithAnotherTargetChart()
+        {
+            var quad=new[] {Vector3.zero,Vector3.right,new Vector3(1,1,0),Vector3.up};
+            var positions=new Vector3[8];quad.CopyTo(positions,0);quad.CopyTo(positions,4);
+            var sourceIndices=new[] {0,1,2,0,2,3};var indices=new[] {0,1,2,0,2,3,4,5,6,4,6,7};
+            var uv=new[] {new Vector2(.1f,.1f),new Vector2(.4f,.1f),new Vector2(.4f,.101f),new Vector2(.1f,.101f),
+                new Vector2(.1f,.2f),new Vector2(.4f,.2f),new Vector2(.4f,.5f),new Vector2(.1f,.5f)};
+            var sourceUv=new[] {new Vector2(.1f,.1f),new Vector2(.4f,.1f),new Vector2(.4f,.4f),new Vector2(.1f,.4f)};
+            var result=new GroupedShellTransfer.TransferResult {uv2=(Vector2[])uv.Clone(),targetShellToSourceShell=new[] {0,0},
+                targetShellStatus=new GroupedShellTransfer.ShellStatus[2],faceToTargetShell=new[] {0,0,1,1}};
+            int changed=PlanarTransferRecovery.Apply(result,UvShellExtractor.Extract(uv,indices),indices,positions,
+                UvShellExtractor.Extract(sourceUv,sourceIndices),sourceIndices,quad,sourceUv,null);
+            Assert.AreEqual(0,changed);CollectionAssert.AreEqual(uv,result.uv2);
+        }
+
         [TestCase(-1f, 8)]
         [TestCase(1f, 6)]
         [TestCase(0f, 6)]

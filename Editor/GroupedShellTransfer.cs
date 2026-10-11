@@ -3863,6 +3863,14 @@ namespace SashaRX.UnityMeshLab
             result.topologyFixed      = LastTopologyFixed;
             result.topologyCapHit     = LastTopologyCapHit;
 
+            int planarRecovered = PlanarTransferRecovery.Apply(result,tgtShells,tgtTris,tVerts,
+                srcShells,srcTris,srcVerts,srcUv2,trace);
+            if (planarRecovered>0)
+            {
+                result.shellsGeometryFallback+=planarRecovered;
+                UvtLog.Info($"[GroupedTransfer] Recovered {planarRecovered} planar charts in the donor's world metric.");
+            }
+
             // ── Classify all shells ──
             int statusAccepted = 0, statusDegraded = 0, statusPoor = 0, statusRejected = 0, statusUnmatched = 0;
             for (int tsi = 0; tsi < tgtShells.Count; tsi++)

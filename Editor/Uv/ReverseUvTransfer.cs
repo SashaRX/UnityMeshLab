@@ -450,7 +450,7 @@ namespace SashaRX.UnityMeshLab
         // Interior probes alone miss holes between probes. Parent faces in one
         // layer have disjoint UV interiors, so their clipped areas measure exact
         // coverage without counting overlapping detail layers twice.
-        static bool CoveredByParentLayer(Chart parent, int layer, Vector2[] pixels, int start,
+        internal static bool CoveredByParentLayer(Chart parent, int layer, Vector2[] pixels, int start,
             Options options, ref long comparisons, CancellationToken token)
         {
             var triangle = new[] { pixels[start], pixels[start + 1], pixels[start + 2] };

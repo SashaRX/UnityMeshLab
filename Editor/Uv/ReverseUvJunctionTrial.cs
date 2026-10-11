@@ -34,7 +34,11 @@ namespace SashaRX.UnityMeshLab
             PreparedResult fallback;
             try { fallback = await BuildOne(sources,options,true,density,false,useAsync,token,options.cutNarrowJunctions); }
             catch (InvalidOperationException)
-            { fallback = await BuildOne(sources,options,true,density,false,useAsync,token,false); }
+            {
+                try { fallback = await BuildOne(sources,options,true,density,false,useAsync,token,false); }
+                catch (InvalidOperationException error)
+                { throw new InvalidOperationException("Requested reverse seed failed: "+refusal+" Audited fallback failed: "+error.Message,error); }
+            }
             fallback.refusal = fallback.result.report.seedPackingRefusal = refusal;
             UvtLog.Warn(UvtLog.Category.Repack,"[ReverseUV] Requested seed preparation failed; retained audited fallback: "+refusal);
             return fallback;
@@ -103,7 +107,16 @@ namespace SashaRX.UnityMeshLab
                         return $"LOD{a.lod} '{a.key}' face {f} loses its projected overlap";
                 }
             }
-            if (baseline.meshes.Count == 0) return null;
+            foreach (var failure in DistortionFailures(baseline,candidate,levels,token))
+                return $"LOD{after.nodes[failure.node].lod} face {failure.face} increases distortion";
+            return null;
+        }
+
+        internal static IEnumerable<(int node,int face,int source)> DistortionFailures(ReverseUvTransfer.Result baseline,
+            ReverseUvTransfer.Result candidate,ReverseUvTransfer.Level[] levels,CancellationToken token)
+        {
+            if (baseline.meshes.Count == 0) yield break;
+            var before=baseline.report; var after=candidate.report;
             var origin = levels[0].inputs[0].toWorld.GetColumn(3);
             int reportNode = 0;
             for (int l = 0; l < baseline.meshes.Count; ++l)
@@ -133,10 +146,9 @@ namespace SashaRX.UnityMeshLab
                         double newStretch = ReverseUvTransfer.TriangleAnisotropy(otherPositions[otherIndices[t]], otherPositions[otherIndices[t + 1]],
                             otherPositions[otherIndices[t + 2]], otherUv[otherIndices[t]], otherUv[otherIndices[t + 1]], otherUv[otherIndices[t + 2]]);
                         if (newStretch > oldStretch * 1.0001 + .0001)
-                            return $"LOD{levels[l].lod} face {t / 3} increases distortion";
+                            yield return (reportNode-1,t/3,newNode.sourceFaces[t/3]);
                     }
                 }
-            return null;
         }
 
         static Vector2[] Region(ReverseUvTransfer.NodeReport node, int face)

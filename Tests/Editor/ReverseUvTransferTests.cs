@@ -308,7 +308,10 @@ namespace SashaRX.UnityMeshLab.Tests
                         {
                             trial.stage = "workflow";
                             var layout = ReverseUvJunctionTrial.Build(levels, new ReverseUvTransfer.Options {
-                                seedResolution = resolution, preserveProjectedOverlap = overlap, projectionReach = .05f }, true, density, true);
+                                seedResolution = resolution, preserveProjectedOverlap = overlap, projectionReach = .05f,
+                                cutNarrowJunctions = Environment.GetEnvironmentVariable("MESHLAB_REVERSE_JUNCTION_CUTS") == "1",
+                                splitDonorSeams = Environment.GetEnvironmentVariable("MESHLAB_REVERSE_JUNCTION_CUTS") == "1",
+                                repackFinalAtlas = Environment.GetEnvironmentVariable("MESHLAB_REVERSE_REPACK_FINAL") == "1" }, true, density, true);
                             while (!layout.IsCompleted) yield return null;
                             if (layout.IsFaulted) { trial.error = layout.Exception.GetBaseException().Message; continue; }
                             using var state = layout.Result;

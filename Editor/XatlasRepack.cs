@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using UnityEditor;
 using UnityEngine;
@@ -62,11 +63,10 @@ namespace SashaRX.UnityMeshLab
         public bool normalizeTexelDensity;
 
         /// <summary>
-        /// Auto-reparameterize shells whose UV0 stretch (Sander L² metric) exceeds
-        /// <see cref="stretchThreshold"/>. Replaces the previous IsRibbon-based
-        /// trigger — now driven by an actual UV quality metric. ARAP local-global
-        /// solver redistributes vertices to minimize per-triangle isometric
-        /// distortion.
+        /// Reparameterize shells above the mean Sander L²
+        /// <see cref="stretchThreshold"/> or local triangle anisotropy 1.25.
+        /// Accept only detached ARAP candidates that improve the metric without
+        /// introducing collapsed faces or contacts.
         /// </summary>
         public bool reparameterizeStretchedShells;
 
@@ -1333,29 +1333,48 @@ namespace SashaRX.UnityMeshLab
         static void ReparameterizeStretchedShells(RepackOptions opts, List<UvShell> shells, int[] tris, Vector3[] positions, float[] uvFlat)
         {
             int stretchedFound = 0, converged = 0, skipped = 0;
+            float[] candidate = null;
             for (int si = 0; si < shells.Count; si++)
             {
                 var shell = shells[si];
                 if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3) continue;
                 float l2 = ShellQuality.ComputeL2Stretch(shell, tris, positions, uvFlat);
-                if (float.IsNaN(l2) || l2 < opts.stretchThreshold) continue;
+                Dictionary<int, Vector2> Coordinates(float[] values) => shell.vertexIndices.ToDictionary(v => v,
+                    v => new Vector2(values[v * 2], values[v * 2 + 1]));
+                var before = TransferCandidateQuality.Measure(shell, tris, positions, Coordinates(uvFlat), false);
+                if ((float.IsNaN(l2) || l2 < opts.stretchThreshold) && !before.NeedsRecovery
+                    && before.worstAnisotropy <= 1.25) continue;
                 stretchedFound++;
                 var shellTriIndices = shell.faceIndices?.ToArray() ?? new int[0];
                 if (shellTriIndices.Length == 0) { skipped++; continue; }
+                if (candidate == null) candidate = (float[])uvFlat.Clone();
+                foreach (int v in shell.vertexIndices)
+                { candidate[v * 2] = uvFlat[v * 2]; candidate[v * 2 + 1] = uvFlat[v * 2 + 1]; }
                 if (ArapParameterization.Reparameterize(
                         positions, tris, shellTriIndices, shell.vertexIndices,
-                        uvFlat, opts.arapIterations, out _))
+                        candidate, opts.arapIterations, out _))
                 {
-                    converged++;
-                    UvtLog.Verbose(UvtLog.Category.Repack,
-                        $"[Repack] ARAP: shell {si} L²={l2:F2} (>{opts.stretchThreshold:F2}) → reparameterized");
+                    before = TransferCandidateQuality.Measure(shell, tris, positions, Coordinates(uvFlat));
+                    var after = TransferCandidateQuality.Measure(shell, tris, positions, Coordinates(candidate));
+                    // These are unpacked chart coordinates. Bounds are chosen by
+                    // the packer; only metric and local contacts constrain ARAP.
+                    before.outOfBoundsVertices = after.outOfBoundsVertices = 0;
+                    if (after.Improves(before))
+                    {
+                        foreach (int v in shell.vertexIndices)
+                        { uvFlat[v * 2] = candidate[v * 2]; uvFlat[v * 2 + 1] = candidate[v * 2 + 1]; }
+                        converged++;
+                        UvtLog.Verbose(UvtLog.Category.Repack,
+                            $"[Repack] ARAP: shell {si} L²={l2:F2}, worst stretch {before.worstAnisotropy:G5} → {after.worstAnisotropy:G5}");
+                    }
+                    else skipped++;
                 }
                 else
                     skipped++;
             }
             if (stretchedFound > 0)
                 UvtLog.Info(UvtLog.Category.Repack,
-                    $"[Repack] ARAP: reparameterized {converged}/{stretchedFound} stretched shells (L²>{opts.stretchThreshold:F2}, skipped {skipped})");
+                    $"[Repack] ARAP: reparameterized {converged}/{stretchedFound} stretched shells (L²>{opts.stretchThreshold:F2} or local metric failure, skipped {skipped})");
         }
 
         static void ReadSingleRepackOutput(Mesh mesh, RepackOptions opts, ref RepackResult result,
@@ -1581,30 +1600,7 @@ namespace SashaRX.UnityMeshLab
                     //   2. Texel density (per-shell uniform scale).
                     if (opts.reparameterizeStretchedShells)
                     {
-                        int stretchedFoundM = 0, convergedM = 0, skippedM = 0;
-                        for (int si = 0; si < allShells[m].Count; si++)
-                        {
-                            var shell = allShells[m][si];
-                            if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3) continue;
-                            float l2 = ShellQuality.ComputeL2Stretch(shell, allTris[m], allPositions[m], uvFlat);
-                            if (float.IsNaN(l2) || l2 < opts.stretchThreshold) continue;
-                            stretchedFoundM++;
-                            var shellTriIndices = shell.faceIndices?.ToArray() ?? new int[0];
-                            if (shellTriIndices.Length == 0) { skippedM++; continue; }
-                            if (ArapParameterization.Reparameterize(
-                                    allPositions[m], allTris[m], shellTriIndices, shell.vertexIndices,
-                                    uvFlat, opts.arapIterations, out int _initFlippedM))
-                            {
-                                convergedM++;
-                                UvtLog.Verbose(UvtLog.Category.Repack,
-                                    $"[Repack] ARAP mesh {m}: shell {si} L²={l2:F2} (>{opts.stretchThreshold:F2}) → reparameterized");
-                            }
-                            else
-                                skippedM++;
-                        }
-                        if (stretchedFoundM > 0)
-                            UvtLog.Info(UvtLog.Category.Repack,
-                                $"[Repack] ARAP mesh {m}: reparameterized {convergedM}/{stretchedFoundM} stretched shells (L²>{opts.stretchThreshold:F2}, skipped {skippedM})");
+                        ReparameterizeStretchedShells(opts, allShells[m], allTris[m], allPositions[m], uvFlat);
                     }
 
                 }

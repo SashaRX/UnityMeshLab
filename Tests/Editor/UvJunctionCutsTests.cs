@@ -23,6 +23,50 @@ namespace SashaRX.UnityMeshLab.Tests
             public int[] faceCharts;
         }
 
+        [Serializable] sealed class StretchTrial
+        {
+            public string mesh;
+            public int shell, faces;
+            public float l2;
+            public bool arap;
+            public TransferCandidateQuality before, after;
+        }
+        [Serializable] sealed class StretchTrials { public List<StretchTrial> trials = new List<StretchTrial>(); }
+
+        [Test]
+        public void FrozenForwardShellStretchDiagnostics()
+        {
+            string paths = Environment.GetEnvironmentVariable("MESHLAB_STRETCH_ASSETS");
+            if (string.IsNullOrEmpty(paths)) Assert.Ignore("Optional private stretch fixtures are not configured.");
+            var report = new StretchTrials();
+            foreach (string path in paths.Split(';'))
+                foreach (var original in AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>())
+                {
+                    using var prepared = ReverseUvInputs.Prepare(new[] {new ReverseUvTransfer.Level {lod=0,
+                        inputs=new[] {new ReverseUvTransfer.Input {mesh=original,key=original.name}}}});
+                    var mesh=prepared.levels[0].inputs[0].mesh;
+                    var snapshot = TransferMeshSnapshot.Capture(mesh);
+                    var positions = mesh.vertices; var indices = mesh.triangles; var uv = mesh.uv;
+                    if (uv.Length != positions.Length) continue;
+                    var flat = uv.SelectMany(p => new[] {p.x,p.y}).ToArray();
+                    foreach (var shell in UvShellExtractor.Extract(uv,indices))
+                    {
+                        var candidate = (float[])flat.Clone();
+                        Dictionary<int,Vector2> Coordinates(float[] data) => shell.vertexIndices.ToDictionary(v=>v,v=>new Vector2(data[v*2],data[v*2+1]));
+                        var trial = new StretchTrial {mesh=mesh.name,shell=shell.shellId,faces=shell.faceIndices.Count,
+                            l2=ShellQuality.ComputeL2Stretch(shell,indices,positions,flat),
+                            before=TransferCandidateQuality.Measure(shell,indices,positions,Coordinates(flat))};
+                        trial.arap=ArapParameterization.Reparameterize(positions,indices,shell.faceIndices.ToArray(),shell.vertexIndices,candidate,50,out _);
+                        trial.after=TransferCandidateQuality.Measure(shell,indices,positions,Coordinates(candidate));
+                        if (trial.before.worstAnisotropy>4) report.trials.Add(trial);
+                    }
+                    CollectionAssert.AreEqual(snapshot,TransferMeshSnapshot.Capture(mesh));
+                }
+            string output = Environment.GetEnvironmentVariable("MESHLAB_JUNCTION_OUTPUT");
+            Assert.IsNotEmpty(output); Directory.CreateDirectory(output);
+            File.WriteAllText(Path.Combine(output,"shell-stretch.json"),JsonUtility.ToJson(report,true));
+        }
+
         static Mesh Grid(string pattern, int subdivisions = 1)
         {
             var rows = pattern.Split('/'); var vertices = new List<Vector3>();

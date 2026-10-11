@@ -1137,8 +1137,8 @@ namespace SashaRX.UnityMeshLab
                 EditorGUI.indentLevel++;
                 ctx.ReparameterizeStretchedShells = EditorGUILayout.ToggleLeft(
                     new GUIContent("Auto-fix stretched shells (ARAP)",
-                        "Measure Sander L² stretch per shell; re-parameterize via ARAP local-global "
-                        + "for shells above the threshold."),
+                        "Test ARAP when mean Sander L² exceeds the threshold or local triangle anisotropy exceeds 1.25. "
+                        + "Keep candidates only when they improve quality without adding collapsed faces or overlaps."),
                     ctx.ReparameterizeStretchedShells);
                 using (new EditorGUI.DisabledScope(!ctx.ReparameterizeStretchedShells))
                 {
@@ -2408,6 +2408,49 @@ namespace SashaRX.UnityMeshLab
             if (tr.uv2 == null) {
                 ctx.DiagnosticCapture?.AfterPair(pair, tgt, tr);
                 UvtLog.Warn($"[Transfer] Failed for '{tgt.renderer.name}'"); return;
+            }
+
+            var beforeQuality=TransferUvQuality.Measure(tgtMesh,tr.uv2,Vector2.one,Matrix4x4.identity);
+            if (beforeQuality.worstAnisotropy>4 || beforeQuality.overlapPairs>0 || beforeQuality.degenerateFaces>0)
+            {
+                Mesh prepared=null;
+                try
+                {
+                    var projection=await ReverseUvTransfer.PrepareForwardSeamsAsync(srcMesh,tgtMesh,tr.uv2,tr.vertexToSourceShell,
+                        Mathf.Max(16,(int)Math.Max(srcEntry.repackedAtlasWidth,srcEntry.repackedAtlasHeight)),useAsync);
+                    prepared=projection.mesh;var projectedSources=projection.sources;
+                    if (prepared)
+                    {
+                        var quality=TransferUvQuality.Measure(prepared,prepared.uv2,Vector2.one,Matrix4x4.identity);
+                        bool Improves(TransferUvQuality after,TransferUvQuality before)=>after.overlapScanComplete && after.invalidFaces<=before.invalidFaces
+                            && after.degenerateFaces<=before.degenerateFaces && after.outOfBoundsVertices<=before.outOfBoundsVertices
+                            // Preparation audits original face-pair identities.
+                            // Subdivision can multiply the number of contacts
+                            // inside an existing pair without adding an overlap.
+                            && after.overlapPairArea<=before.overlapPairArea*1.001+1e-14
+                            && after.worstAnisotropy<=before.worstAnisotropy*1.001
+                            && (after.degenerateFaces<before.degenerateFaces || after.invalidFaces<before.invalidFaces
+                                || after.areaWeightedAnisotropy<before.areaWeightedAnisotropy*.99);
+                        if(pair?.trace!=null) pair.trace.projectedSeamQuality=quality;
+                        if (Improves(quality,beforeQuality))
+                        {
+                            ctx.DiagnosticCapture?.AfterPair(pair,tgt,tr);
+                            DestroyWorkingMesh(ref tgt.originalMesh);tgt.originalMesh=prepared;prepared=null;
+                            tgtMesh=tgt.originalMesh;tr=ReverseUvTransfer.DescribeForwardProjection(tgtMesh,srcMesh,projectedSources);
+                            hintState.overlapHints.Clear();hintState.matchHints.Clear();
+                            pair=ctx.DiagnosticCapture?.BeforePair(srcEntry,tgt,srcMesh,tgtMesh,null,null);
+                            UvtLog.Info($"[Transfer] '{tgt.renderer.name}': donor seam subdivision reduced average stretch {beforeQuality.areaWeightedAnisotropy:G5} → {quality.areaWeightedAnisotropy:G5}.");
+                        }
+                        else if(pair?.trace!=null) pair.trace.forwardSeamRefusal="Whole-mesh quality did not improve without regressions.";
+                    }
+                    else if(pair?.trace!=null) pair.trace.forwardSeamRefusal="No supported donor projection.";
+                }
+                catch(InvalidOperationException error)
+                {
+                    if(pair?.trace!=null) pair.trace.forwardSeamRefusal=error.Message;
+                    UvtLog.Warn($"[Transfer] '{tgt.renderer.name}': retained existing topology after donor seam trial: {error.Message}");
+                }
+                finally {if(prepared) UnityEngine.Object.DestroyImmediate(prepared);}
             }
 
             // Accumulate overlap hints for subsequent LODs
