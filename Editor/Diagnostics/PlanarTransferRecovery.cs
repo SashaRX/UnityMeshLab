@@ -24,10 +24,11 @@ namespace SashaRX.UnityMeshLab
             if (!(det>0)) return null;
             var origin=sourceUv[sourceIndices[start]];
             var u=sourceUv[sourceIndices[start+1]]-origin; var v=sourceUv[sourceIndices[start+2]]-origin;
-            var normal=Vector3.Cross(e,d).normalized;
+            var normal=MeshGeometry.UnitDirection(Vector3.Cross(e,d));
+            if(normal==Vector3.zero) return null;
             float span=source.vertexIndices.Max(i=>(sourcePositions[i]-a).magnitude);
             double planeTolerance=Math.Max(1e-7,span*1e-5);
-            double uvDensity=Math.Sqrt(Math.Abs((double)u.x*v.y-(double)u.y*v.x)/Vector3.Cross(e,d).magnitude);
+            double uvDensity=Math.Sqrt(Math.Abs((double)u.x*v.y-(double)u.y*v.x)/Math.Sqrt(det));
             if(atlasResolution>0 && uvDensity>0)
                 planeTolerance=Math.Max(planeTolerance,boundaryToleranceTexels/(uvDensity*atlasResolution));
             Vector2 Map(Vector3 position)

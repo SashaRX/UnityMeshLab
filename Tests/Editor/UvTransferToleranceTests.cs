@@ -104,13 +104,15 @@ namespace SashaRX.UnityMeshLab.Tests
             if(expected) Assert.IsNull(refusal);else StringAssert.Contains("cuts reduce texel density",refusal);
         }
 
-        [TestCase(.001f,true)] [TestCase(.01f,false)]
-        public void PlanarRecoveryUsesTexelSizedPlaneTolerance(float height,bool expected)
+        [TestCase(.001f,true,1f)] [TestCase(.01f,false,1f)]
+        [TestCase(.001f,true,.001f)] [TestCase(.01f,false,.001f)]
+        public void PlanarRecoveryUsesTexelSizedPlaneTolerance(float height,bool expected,float scale)
         {
             var uv=new[] {Vector2.zero,Vector2.right,Vector2.one,Vector2.up};
             var indices=new[] {0,1,2,0,2,3};var positions=new[] {Vector3.zero,Vector3.right,new Vector3(1,1,0),Vector3.up};
             var shell=UvShellExtractor.Extract(uv,indices)[0];
-            var target=positions.Select(p=>p+Vector3.forward*height).ToArray();
+            positions=positions.Select(p=>p*scale).ToArray();
+            var target=positions.Select(p=>p+Vector3.forward*height*scale).ToArray();
             var recovered=PlanarTransferRecovery.Project(shell,indices,target,shell,indices,positions,uv,128,.25f);
             Assert.AreEqual(expected,recovered!=null);
         }

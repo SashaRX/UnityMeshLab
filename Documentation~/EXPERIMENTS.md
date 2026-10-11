@@ -74,8 +74,8 @@ default remains 0.25 texel. Neither the cut-retention test nor the UV audits
 are relaxed. Independent controls exercise the band in pixel and normalized
 units, internal holes, duplicate donors, acute corners, work/cancellation limits,
 one-percent metric/density bounds and uniform-fit padding.
-Final isolated Unity 6000.2.6f2 replay: 371 cases, 368 passed, 0 failed, 3 optional
-skips, including 21 new controls. Both FBX define reference builds, identifier
+Final isolated Unity 6000.2.6f2 replay: 373 cases, 370 passed, 0 failed, 3 optional
+skips, including 23 new controls. Both FBX define reference builds, identifier
 and dependency gates pass. Nine-model reverse corpus: 16 accepted / 18 trials,
 with both Kitchen seed failures retained; Cafe and frozen Kamaz frame 3 pass
 both overlap policies. Final Park cuts 251 faces in each policy; Shelf cuts 18.
@@ -84,6 +84,9 @@ Their contact counts fall from 238/574/99 to 226/510/96. Strong legacy stretch
 and Kitchen's Float32 seed face 53 remain unresolved. Captures and complete
 metrics: `_results~/transfer-tolerance-20261011/REPORT.md` (local, ignored).
 Native plugins, original FBXs and live Unity projects are unchanged.
+PR review follow-up: planar recovery uses a scale-independent unit direction
+and refuses a zero normal. Millimetre-scale donors retain the same texel-sized
+plane test; an off-plane target cannot pass because Unity zeroed the area normal.
 
 ### Forward stretch and local donor-seam protection — 2026-10-11
 
