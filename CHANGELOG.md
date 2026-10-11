@@ -5,6 +5,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+- Forward donor-seam trials compare distortion using the target renderer's scale throughout projection, cut validation and final acceptance; transform translation does not reduce edge precision.
+- Viewer frames the first model once and preserves subsequent camera edits. Translucent surfaces share material-channel albedo lookup and keep opaque base-map alpha out of opacity. UV material channels render retained Quads, and both UV/3D views draw excess material slots on the final submesh.
+
 ### Added
 - Shared Viewer UV quality badge with bbox occupancy, large-void detection, geometric stretch, density variation, defect and LOD0 correspondence scores. Cancellable background evaluation refreshes with preview data; explicit ordered Reverse overlap ancestry is reported separately from accidental intersections. Critical defects and weak packing/correspondence limit the overall grade. [Measurements and limits](Documentation~/LIGHTMAP_UV_QUALITY.md).
 - Reverse UV records geometry adjacency, donor chart seams and overlap layers, subdivides eligible target faces with interpolated vertex streams, and protects inherited regions across the complete LOD chain. New islands use vacant atlas texels before growing the square; independent reports include inherited area and source-face partitions.

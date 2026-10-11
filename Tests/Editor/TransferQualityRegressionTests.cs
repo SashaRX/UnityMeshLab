@@ -7,6 +7,40 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class TransferQualityRegressionTests
     {
+        [TestCase(false)]
+        [TestCase(true)]
+        public void ForwardSeamRecoveryJudgesStretchInTheRenderedTargetFrame(bool projectedLayoutImproves)
+        {
+            var source = new Mesh { vertices = new[] { Vector3.zero, new Vector3(.5f, 0, 0), new Vector3(.5f, 1, 0), Vector3.up,
+                new Vector3(.5f, 0, 0), Vector3.right, new Vector3(1, 1, 0), new Vector3(.5f, 1, 0) },
+                triangles = new[] { 0,1,2, 0,2,3, 4,5,6, 4,6,7 },
+                uv = new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up, Vector2.zero, Vector2.right, Vector2.one, Vector2.up } };
+            var target = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, new Vector3(1, 1, 0), Vector3.up },
+                triangles = new[] { 0,1,2, 0,2,3 }, uv = new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up } };
+            var frame = Matrix4x4.TRS(new Vector3(500, -200, 100), Quaternion.Euler(15, 30, 20), new Vector3(8, 1, 2));
+            float width = projectedLayoutImproves ? .4f : .1f, height = projectedLayoutImproves ? .1f : .2f;
+            source.uv2 = new[] { new Vector2(.05f, .05f), new Vector2(.05f + width, .05f), new Vector2(.05f + width, .05f + height), new Vector2(.05f, .05f + height),
+                new Vector2(.55f, .05f), new Vector2(.55f + width, .05f), new Vector2(.55f + width, .05f + height), new Vector2(.55f, .05f + height) };
+            var legacy = projectedLayoutImproves ? new[] { new Vector2(.05f, .05f), new Vector2(.25f, .05f), new Vector2(.25f, .25f), new Vector2(.05f, .25f) }
+                : new[] { new Vector2(.05f, .05f), new Vector2(.85f, .05f), new Vector2(.85f, .15f), new Vector2(.05f, .15f) };
+            var sourceBefore = TransferMeshSnapshot.Capture(source); var targetBefore = TransferMeshSnapshot.Capture(target);
+            Mesh recovered = null;
+            try {
+                var before = TransferUvQuality.Measure(target, legacy, Vector2.one, frame);
+                Assert.That(before.worstAnisotropy, Is.EqualTo(projectedLayoutImproves ? 8 : 1).Within(.001));
+                recovered = ReverseUvTransfer.PrepareForwardSeams(source, target, legacy, new[] { 0,0,0,0 }, 128, out _, frame);
+                if (projectedLayoutImproves) {
+                    Assert.IsNotNull(recovered, "A locally stretched donor becomes isotropic at the renderer's scale");
+                    Assert.Greater(recovered.triangles.Length, target.triangles.Length);
+                    Assert.Less(TransferUvQuality.Measure(recovered, recovered.uv2, Vector2.one, frame).worstAnisotropy, 1.01);
+                }
+                else if (recovered) Assert.LessOrEqual(TransferUvQuality.Measure(recovered, recovered.uv2, Vector2.one, frame).worstAnisotropy, before.worstAnisotropy * 1.01);
+                CollectionAssert.AreEqual(sourceBefore, TransferMeshSnapshot.Capture(source));
+                CollectionAssert.AreEqual(targetBefore, TransferMeshSnapshot.Capture(target));
+            }
+            finally { if (recovered) Object.DestroyImmediate(recovered); Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
         [Test]
         public void RepackRepairsLocalStretchHiddenByTheAreaAverage()
         {

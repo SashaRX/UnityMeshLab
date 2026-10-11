@@ -910,9 +910,12 @@ namespace SashaRX.UnityMeshLab
             if (materials == null && entry?.renderer) materials = UvToolHub.OriginalPreviewMaterials(entry.renderer);
             var sourceUv = RdUvCached(mesh, 0);
             var colors = mesh.HasVertexAttribute(VertexAttribute.Color) ? mesh.colors : null;
-            for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
-                if (mesh.GetTopology(sub) != MeshTopology.Triangles) continue;
-                var source = materials != null && sub < materials.Length ? materials[sub] : null;
+            int slots = MaterialChannelPreview.DrawSlotCount(mesh.subMeshCount, materials);
+            for (int slot = 0; slot < slots; ++slot) {
+                int sub = Mathf.Min(slot, mesh.subMeshCount - 1);
+                var topology = mesh.GetTopology(sub);
+                if (topology != MeshTopology.Triangles && topology != MeshTopology.Quads) continue;
+                var source = materials != null && slot < materials.Length ? materials[slot] : null;
                 var data = MaterialChannelPreview.Read(source, InspectionShading);
                 if (!source && InspectionShading == MeshViewport3D.Shading.Albedo && entry?.previewTexture) {
                     data.texture = entry.previewTexture; data.tint = Color.white;
@@ -920,13 +923,21 @@ namespace SashaRX.UnityMeshLab
                 data.Apply(channelPreview);
                 if (!channelPreview.SetPass(0)) continue;
                 GL.Begin(GL.TRIANGLES);
-                foreach (int vertex in mesh.GetTriangles(sub)) {
-                    if (vertex < 0 || vertex >= layout.Length) continue;
+                void Emit(int vertex) {
+                    if (vertex < 0 || vertex >= layout.Length) return;
                     var uv = sourceUv != null && vertex < sourceUv.Length ? sourceUv[vertex] : Vector2.zero;
                     GL.Color(colors != null && vertex < colors.Length ? colors[vertex] : Color.white);
                     GL.TexCoord2(uv.x, uv.y);
                     GL.Vertex3(ox + layout[vertex].x * sz, oy + (1 - layout[vertex].y) * sz, 0);
                 }
+                var indices = mesh.GetIndices(sub);
+                if (topology == MeshTopology.Quads) {
+                    for (int q = 0; q + 3 < indices.Length; q += 4) {
+                        Emit(indices[q]); Emit(indices[q + 1]); Emit(indices[q + 2]);
+                        Emit(indices[q]); Emit(indices[q + 2]); Emit(indices[q + 3]);
+                    }
+                }
+                else foreach (int vertex in indices) Emit(vertex);
                 GL.End();
             }
             GlMat.SetPass(0);

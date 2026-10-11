@@ -7,6 +7,7 @@ Shader "Hidden/MeshLab/ViewportOverlay"
         _Color ("Tint", Color) = (1,1,1,1)
         _UseVertexColor ("Vertex colours", Float) = 0
         _UseTexture ("Texture", Float) = 0
+        _UseTextureAlpha ("Transparent material alpha", Float) = 0
         _Lit ("Headlight", Float) = 0
         [Enum(UnityEngine.Rendering.CompareFunction)] _ZTest ("Depth test", Float) = 4
     }
@@ -27,7 +28,7 @@ Shader "Hidden/MeshLab/ViewportOverlay"
             sampler2D _MainTex;
             float4 _Color;
             float4 _UvScaleOffset;
-            float _UseVertexColor, _UseTexture, _Lit;
+            float _UseVertexColor, _UseTexture, _UseTextureAlpha, _Lit;
             struct appdata { float4 vertex : POSITION; float3 normal : NORMAL; float2 uv : TEXCOORD0; float4 color : COLOR; };
             struct v2f { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; float4 color : COLOR; float3 normal : TEXCOORD1; float3 view : TEXCOORD2; };
             v2f vert(appdata v)
@@ -44,7 +45,11 @@ Shader "Hidden/MeshLab/ViewportOverlay"
             float4 frag(v2f i) : SV_Target
             {
                 float4 color = i.color;
-                if (_UseTexture > .5) color *= tex2D(_MainTex, i.uv);
+                if (_UseTexture > .5) {
+                    float4 sampled = tex2D(_MainTex, i.uv);
+                    color.rgb *= sampled.rgb;
+                    if (_UseTextureAlpha > .5) color.a *= sampled.a;
+                }
                 if (_Lit > .5) color.rgb *= .35 + .65 * abs(dot(normalize(i.normal), normalize(i.view)));
                 return color;
             }

@@ -164,6 +164,7 @@ namespace SashaRX.UnityMeshLab.Tests
 
         static void ChooseCameraFrame(MeshViewport3D viewport)
         {
+            viewport.Frame(new Bounds(Vector3.zero, Vector3.one));
             Set(viewport, "pivot", new Vector3(3, 4, 5));
             Set(viewport, "orbit", new Vector2(25, -15));
             Set(viewport, "distance", 2f);
@@ -566,32 +567,36 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(resultType.GetField("placement", Private).GetValue(result), Is.EqualTo(placement));
         }
 
-        [Test]
-        public void ContentIsFramedOnlyOnAnExplicitRequest()
+        [TestCase(.001f)]
+        [TestCase(1f)]
+        [TestCase(1000f)]
+        public void FirstContentIsFramedThenOnlyExplicitRequestsReframe(float size)
         {
             using (var viewport = new MeshViewport3D())
             {
-                var bounds = new Bounds(new Vector3(20, 0, 0), new Vector3(4, 3, 1));
-                Call(viewport, "FrameIfRequested", bounds, true);
+                var bounds = new Bounds(new Vector3(20, 0, 0), new Vector3(4, 3, 1) * size);
+                Call(viewport, "FrameIfRequested", bounds, false);
                 Assert.That(Get<Vector3>(viewport, "pivot"), Is.EqualTo(Vector3.zero));
                 Assert.That(Get<float>(viewport, "distance"), Is.EqualTo(5f));
-
-                viewport.FrameContent();
-                Call(viewport, "FrameIfRequested", bounds, false);
-                Assert.That(Get<Vector3>(viewport, "pivot"), Is.EqualTo(Vector3.zero), "an empty view waits for content");
                 Call(viewport, "FrameIfRequested", bounds, true);
                 Assert.That(Get<Vector3>(viewport, "pivot"), Is.EqualTo(bounds.center));
+                Assert.Greater(Get<float>(viewport, "distance"), bounds.extents.magnitude);
 
                 ChooseCameraFrame(viewport);
                 Call(viewport, "FrameIfRequested", bounds, true);
                 AssertCameraFrame(viewport);
+                viewport.FrameContent();
+                Call(viewport, "FrameIfRequested", bounds, false);
+                AssertCameraFrame(viewport);
+                Call(viewport, "FrameIfRequested", bounds, true);
+                Assert.That(Get<Vector3>(viewport, "pivot"), Is.EqualTo(bounds.center));
             }
         }
 
         [Test]
         public void ContentSizeRefreshesZoomBoundsWithoutReframing([Values(.001f, 1000f)] float size)
         {
-            using var view = new MeshViewport3D(); ChooseCameraFrame(view);
+            using var view = new MeshViewport3D(); view.Frame(new Bounds(Vector3.zero, Vector3.one)); ChooseCameraFrame(view);
             var bounds = new Bounds(new Vector3(40, -20, 10), Vector3.one * size);
             Call(view, "FrameIfRequested", bounds, true);
             AssertCameraFrame(view);
@@ -607,6 +612,7 @@ namespace SashaRX.UnityMeshLab.Tests
             material.SetColor("_Color", Color.red);
             var items = new[] { new MeshViewport3D.Item(mesh, Matrix4x4.Translate(Vector3.forward * 20), new[] { material }) };
             using var view = new MeshViewport3D { ViewProjection = MeshViewport3D.Projection.XY, ShowAxes = false, ShowGrid = false };
+            view.Frame(mesh.bounds);
             Set(view, "pivot", new Vector3(.5f, .5f, 0)); Set(view, "distance", 2f);
             var window = OpenSpotInputWindow(); int redPixels = 0;
             try {
@@ -1053,7 +1059,7 @@ namespace SashaRX.UnityMeshLab.Tests
             foreach (var entry in ctx.MeshEntries)
             {
                 var result=ctx.Assets.GetResultMesh(entry);
-                var quality=TransferUvQuality.Measure(result,result.uv2,Vector2.one,Matrix4x4.identity);
+                var quality=TransferUvQuality.Measure(result,result.uv2,Vector2.one,entry.renderer.localToWorldMatrix);
                 System.IO.File.WriteAllText(System.IO.Path.Combine(directory,entry.fbxMesh.name+".json"),JsonUtility.ToJson(quality,true));
                 System.IO.File.WriteAllBytes(System.IO.Path.Combine(directory,entry.fbxMesh.name+".bin"),TransferMeshSnapshot.Capture(result));
                 Assert.AreEqual(0,quality.invalidFaces,entry.fbxMesh.name);

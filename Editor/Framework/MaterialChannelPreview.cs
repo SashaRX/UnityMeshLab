@@ -11,6 +11,19 @@ namespace SashaRX.UnityMeshLab
         const string ColorProperty = "_Color";
         const string MetallicGlossProperty = "_MetallicGlossMap";
         const string MaskProperty = "_MaskMap";
+
+        // Unity draws excess renderer material slots over the final submesh.
+        internal static int DrawSlotCount(int submeshCount, Material[] materials)
+            => submeshCount == 0 ? 0 : Mathf.Max(submeshCount, materials?.Length ?? 0);
+
+        internal static bool UsesSurfaceAlpha(Material material)
+        {
+            if (!material) return false;
+            if (material.HasProperty("_Surface")) return material.GetFloat("_Surface") > .5f;
+            if (material.HasProperty("_SurfaceType")) return material.GetFloat("_SurfaceType") > .5f;
+            if (material.HasProperty("_Mode")) return material.GetFloat("_Mode") >= 2;
+            return material.GetTag("RenderType", false, "") == "Transparent";
+        }
         internal struct Data
         {
             internal Texture texture;

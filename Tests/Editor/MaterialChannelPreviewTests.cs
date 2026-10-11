@@ -36,6 +36,135 @@ namespace SashaRX.UnityMeshLab.Tests
             return texture;
         }
 
+        [TestCase("_BaseColorMap")]
+        [TestCase("_AlbedoMap")]
+        [TestCase("_Albedo")]
+        public void TranslucentSurfaceUsesTheSameAlbedoPropertyAndTransform(string property)
+        {
+            var material = new Material(Shader.Find("Hidden/MeshLab/Tests/ViewerAlbedoProperties")); owned.Add(material);
+            foreach (string name in new[] { "_BaseColorMap", "_AlbedoMap", "_Albedo" }) material.SetTexture(name, null);
+            var texture = Pixels(Color.red); material.SetTexture(property, texture);
+            material.SetTextureScale(property, new Vector2(2, 3)); material.SetTextureOffset(property, new Vector2(.2f, .3f));
+            var block = new MaterialPropertyBlock();
+            Assert.AreSame(texture, MeshViewport3D.BindSurfaceTexture(material, block));
+            Assert.AreEqual(new Vector4(2, 3, .2f, .3f), block.GetVector("_UvScaleOffset"));
+            Assert.AreSame(texture, block.GetTexture("_MainTex"));
+            Assert.AreSame(texture, material.GetTexture(property));
+        }
+
+        [UnityTest]
+        public IEnumerator OpaqueTextureAlphaDoesNotHideGhostSurfaceButTransparentAlphaStillApplies()
+        {
+            RequireGraphics();
+            var mesh = Quad(); var material = Standard();
+            material.SetTexture("_MainTex", Pixels(new Color(1, 0, 0, .2f)));
+            using var view = new MeshViewport3D { ViewProjection = MeshViewport3D.Projection.XY, ShowAxes = false,
+                ShowGrid = false, Lit = false, SurfaceOpacity = .5f, Background = Color.black };
+            var items = new[] { new MeshViewport3D.Item(mesh, Matrix4x4.identity, new[] { material }) };
+            var window = ScriptableObject.CreateInstance<ViewportSpotInputWindow>(); window.Show();
+            try {
+                Color opaque = Color.clear, transparent = Color.clear;
+                yield return Capture(window, view, items, value => opaque = value);
+                AssertColor(opaque, Color.red * .5f, .015f, "Opaque albedo alpha stores data; opacity is the Viewer setting");
+                material.SetFloat("_Mode", 3); material.SetColor("_Color", new Color(1, 1, 1, .5f));
+                yield return Capture(window, view, items, value => transparent = value);
+                AssertColor(transparent, Color.red * .05f, .015f, "Transparent authored alpha multiplies Viewer opacity");
+            }
+            finally { window.Input = null; window.Close(); Object.DestroyImmediate(window); }
+        }
+
+        [UnityTest]
+        public IEnumerator ExtraMaterialSlotsRenderOnTheFinalSubmeshInOrder()
+        {
+            RequireGraphics();
+            var mesh = Quad(); var red = Standard(); var green = Standard();
+            red.SetTexture("_MainTex", Pixels(Color.red)); green.SetTexture("_MainTex", Pixels(Color.green));
+            using var view = new MeshViewport3D { Mode = MeshViewport3D.Shading.Albedo,
+                ViewProjection = MeshViewport3D.Projection.XY, ShowGrid = false, ShowAxes = false };
+            var items = new[] { new MeshViewport3D.Item(mesh, Matrix4x4.identity, new[] { red, green }) };
+            var window = ScriptableObject.CreateInstance<ViewportSpotInputWindow>(); window.Show();
+            try {
+                Color pixel = Color.clear;
+                for (int repeat = 0; repeat < 6; ++repeat) {
+                    items[0] = new MeshViewport3D.Item(mesh, Matrix4x4.identity, repeat % 2 == 0 ? new[] { red, green } : new[] { green, red });
+                    yield return Capture(window, view, items, value => pixel = value);
+                    AssertColor(pixel, repeat % 2 == 0 ? Color.green : Color.red, .015f, "Extra slots must draw in order after changing materials");
+                }
+                items[0] = new MeshViewport3D.Item(mesh, Matrix4x4.identity, new[] { red, green });
+                view.SurfaceOpacity = .5f; view.Background = Color.black;
+                yield return Capture(window, view, items, value => pixel = value);
+                AssertColor(pixel, new Color(.25f, .5f, 0), .015f, "Translucent extra slots must composite in their material order");
+                yield return Capture(window, view, items, value => pixel = value,
+                    preview => preview.DrawHighlightMesh(mesh, Matrix4x4.identity, Color.blue));
+                AssertColor(pixel, Color.blue, .015f, "Topology highlights must remain above the extra translucent slots");
+                view.XRay = true;
+                yield return Capture(window, view, items, value => pixel = value,
+                    preview => preview.DrawHighlightMesh(mesh, Matrix4x4.identity, Color.blue));
+                AssertColor(pixel, Color.blue, .015f, "X-ray highlights must retain their later overlay priority");
+                view.XRay = false;
+                view.SurfaceOpacity = 1;
+                items[0] = new MeshViewport3D.Item(mesh, Matrix4x4.identity, new[] { green });
+                yield return Capture(window, view, items, value => pixel = value);
+                AssertColor(pixel, Color.green, .015f, "Returning to one material must hide the previous layered renderer");
+                var entry = new MeshEntry { originalMesh = mesh, include = true };
+                var canvas = new UvCanvasView { InspectionShading = MeshViewport3D.Shading.Albedo, FillHidden = true, ShowBorder = false };
+                canvas.DisplayMaterials[entry] = new[] { red, green }; RenderTexture layer = null;
+                try {
+                    canvas.Init(); layer = canvas.RenderUvLayer(new UvToolContext { PreviewUvChannel = 0 }, mesh, entry, null, 64, false);
+                    var pixels = Read(layer);
+                    try { AssertColor(pixels.GetPixel(32, 32), Color.green, .015f, "UV view must use the same slot order"); }
+                    finally { Object.DestroyImmediate(pixels); }
+                }
+                finally { canvas.Cleanup(); if (layer) { layer.Release(); Object.DestroyImmediate(layer); } }
+                var cached = (System.Collections.IDictionary)typeof(MeshViewport3D).GetField("materialLayerMaterials", Private).GetValue(view);
+                var copies = new List<Material>(); foreach (Material copy in cached.Values) copies.Add(copy);
+                Assert.Greater(copies.Count, 0);
+                view.Dispose();
+                foreach (var copy in copies) Assert.IsFalse(copy, "Viewport disposal must release layered preview materials");
+            }
+            finally { window.Input = null; window.Close(); Object.DestroyImmediate(window); }
+        }
+
+        [TestCase(0, false)]
+        [TestCase(3, false)]
+        [TestCase(0, true)]
+        [TestCase(3, true)]
+        public void UvMaterialChannelsRenderQuadsAndMixedTopologyWithoutChangingMesh(int baseVertex, bool mixed)
+        {
+            RequireGraphics();
+            var mesh = new Mesh(); owned.Add(mesh);
+            var vertices = new Vector3[baseVertex + (mixed ? 7 : 4)];
+            var layout = new Vector2[vertices.Length];
+            var corners = new[] { Vector2.zero, new Vector2(.45f, 0), new Vector2(.45f, 1), Vector2.up,
+                new Vector2(.55f, 0), Vector2.right, new Vector2(.75f, 1) };
+            for (int i = 0; i < vertices.Length - baseVertex; ++i) { layout[baseVertex + i] = corners[i]; vertices[baseVertex + i] = corners[i]; }
+            mesh.vertices = vertices; mesh.uv = layout; mesh.uv2 = layout; mesh.subMeshCount = mixed ? 2 : 1;
+            mesh.SetIndices(new[] { 0, 1, 2, 3 }, MeshTopology.Quads, 0, true, baseVertex);
+            if (mixed) mesh.SetIndices(new[] { 4, 5, 6 }, MeshTopology.Triangles, 1, true, baseVertex);
+            var before = TransferMeshSnapshot.Capture(mesh);
+            var material = Standard(); material.SetTexture("_MainTex", Pixels(Color.green));
+            var entry = new MeshEntry { originalMesh = mesh, include = true };
+            var canvas = new UvCanvasView { FillHidden = true, ShowBorder = false };
+            canvas.DisplayMaterials[entry] = new[] { material, material }; RenderTexture layer = null;
+            try {
+                canvas.Init();
+                foreach (var mode in new[] { MeshViewport3D.Shading.Albedo, MeshViewport3D.Shading.NormalMap,
+                    MeshViewport3D.Shading.Gloss, MeshViewport3D.Shading.Metalness, MeshViewport3D.Shading.AO }) {
+                    canvas.InspectionShading = mode;
+                    layer = canvas.RenderUvLayer(new UvToolContext { PreviewUvChannel = 1 }, mesh, entry, layer, 64, false);
+                    var pixels = Read(layer);
+                    try {
+                        Assert.Greater(pixels.GetPixel(8, 48).a, .95f, mode + " must draw both quad triangles");
+                        Assert.Greater(pixels.GetPixel(20, 16).a, .95f, mode + " must draw both quad triangles");
+                        if (mixed) Assert.Greater(pixels.GetPixel(48, 32).a, .95f, mode + " must retain triangle submeshes");
+                    }
+                    finally { Object.DestroyImmediate(pixels); }
+                }
+                CollectionAssert.AreEqual(before, TransferMeshSnapshot.Capture(mesh));
+            }
+            finally { canvas.Cleanup(); if (layer) { layer.Release(); Object.DestroyImmediate(layer); } }
+        }
+
         [Test]
         public void MissingMapsUseMaterialScalarsAndNeutralNormals()
         {
@@ -242,12 +371,13 @@ namespace SashaRX.UnityMeshLab.Tests
             mesh.RecalculateNormals(); owned.Add(mesh); return mesh;
         }
 
-        static IEnumerator Capture(ViewportSpotInputWindow window, MeshViewport3D view, IReadOnlyList<MeshViewport3D.Item> items, Action<Color> result)
+        static IEnumerator Capture(ViewportSpotInputWindow window, MeshViewport3D view, IReadOnlyList<MeshViewport3D.Item> items, Action<Color> result,
+            Action<MeshViewport3D> overlay = null)
         {
             bool captured = false;
             window.Input = current => {
                 if (current.type != EventType.Repaint) return;
-                view.Draw(new Rect(0, 0, 128, 128), items, null);
+                view.Draw(new Rect(0, 0, 128, 128), items, overlay);
                 var pixels = Read(view);
                 try { result(pixels.GetPixel(64, 64)); captured = true; }
                 finally { Object.DestroyImmediate(pixels); }

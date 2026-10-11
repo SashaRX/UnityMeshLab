@@ -88,7 +88,7 @@ namespace SashaRX.UnityMeshLab
                         if (options.validateCutsIncrementally)
                         {
                             var trial = new CutFace {surface=s,face=f,polygons=divided,split=divided.Count>1};
-                            if (!ValidPlan(trial,unpropagatedEdges,density,minimumPixelAltitude,options.maxAnisotropy)) continue;
+                            if (!ValidPlan(trial,unpropagatedEdges,density,minimumPixelAltitude,options.maxAnisotropy,options.stretchFrame)) continue;
                         }
                         plan.polygons = divided;
                     }
@@ -103,7 +103,7 @@ namespace SashaRX.UnityMeshLab
                 foreach (var plan in plans.Where(p => p.split))
                     foreach (var point in plan.polygons.SelectMany(p => p)) CollectEdgePoint(plan, point, edgePoints);
                 var invalid = plans.Where(p => (p.locked && PlanEdges(p).Any(edgePoints.ContainsKey))
-                    || !ValidPlan(p, edgePoints, density, minimumPixelAltitude, options.maxAnisotropy)).ToArray();
+                    || !ValidPlan(p, edgePoints, density, minimumPixelAltitude, options.maxAnisotropy,options.stretchFrame)).ToArray();
                 if (invalid.Length == 0) break;
                 var refusedEdges = new HashSet<(Vector3, Vector3)>(invalid.SelectMany(PlanEdges));
                 var reasons=new Dictionary<(Vector3,Vector3),string>();
@@ -138,7 +138,8 @@ namespace SashaRX.UnityMeshLab
             return triangles;
         }
 
-        static bool ValidPlan(CutFace plan, Dictionary<(Vector3, Vector3), SortedSet<double>> edgePoints, float density, double minimumPixelAltitude, float maxAnisotropy)
+        static bool ValidPlan(CutFace plan, Dictionary<(Vector3, Vector3), SortedSet<double>> edgePoints, float density, double minimumPixelAltitude,
+            float maxAnisotropy, Matrix4x4 stretchFrame)
         {
             var s = plan.surface; int start = plan.face * 3; double area = 0;
             plan.precisionRefusal=null;
@@ -174,7 +175,7 @@ namespace SashaRX.UnityMeshLab
                                 var b = triangles[t + k].Bary;
                                 uv[k] = s.pixels[start] * b.x + s.pixels[start + 1] * b.y + s.pixels[start + 2] * b.z;
                             }
-                            if (TriangleAnisotropy(p[0], p[1], p[2], uv[0], uv[1], uv[2]) > maxAnisotropy) return Refuse("inherited-uv-metric");
+                            if (TriangleAnisotropy(p[0], p[1], p[2], uv[0], uv[1], uv[2],stretchFrame) > maxAnisotropy) return Refuse("inherited-uv-metric");
                         }
                     }
                 }

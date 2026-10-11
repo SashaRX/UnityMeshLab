@@ -90,6 +90,30 @@ plane test; an off-plane target cannot pass because Unity zeroed the area normal
 
 ### Forward stretch and local donor-seam protection — 2026-10-11
 
+Review continuation on PR225, baseline `2642445`: forward seam trials now use
+the target renderer's local-to-world linear transform for every stretch gate,
+including donor eligibility, projection, snapped corners, proposed cuts,
+per-face rollback, incremental selection and workflow publication. Projection
+positions and donor atlas coordinates remain in the existing shared local
+frame. Double-precision transformed edges exclude translation. Reverse inputs
+already contain world positions, so their additional stretch transform remains
+identity; projection reach, overlap policy and tolerances are unchanged.
+
+Two analytic controls use an 8:1 renderer scale: locally isotropic projection
+must not replace a visibly isotropic legacy layout with 8x stretch; a locally
+8x-stretched donor must remain eligible when it becomes visibly isotropic.
+Both fail on the baseline and pass with the rendered metric. Source snapshots
+must remain byte-identical. Broader fresh model results are recorded in the
+private review replay report.
+
+Review replay: 441/445 EditMode cases pass, zero failures, four optional skips.
+Fresh Cafe_Table_A_01 / Modern_Kitchen_A / Kamaz forward outputs match all 30
+pre-fix snapshots. Reverse completes 16/18 corpus trials with both policies;
+Kitchen retains its two known seed-metric refusals, and difficult Kamaz frame
+3 completes with overlap off/on. Final Viewer priority/lifecycle verification
+adds 190 passing cases with zero failures. This fixes rendered-space trial
+ranking; it does not certify the existing distorted layouts as clean.
+
 Continuation of the transfer work explicitly requested on PR225; baseline
 `2820d0a`. A mean Sander L² below 1.5 can hide severely distorted individual
 faces. ARAP now also tests local anisotropy above 1.25, on a detached buffer,

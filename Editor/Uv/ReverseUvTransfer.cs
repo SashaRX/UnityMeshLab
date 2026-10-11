@@ -18,6 +18,9 @@ namespace SashaRX.UnityMeshLab
             public float projectionReach = .05f, normalDot = .5f, maxAnisotropy = 4;
             internal bool validateCutsIncrementally;
             internal bool projectExistingAtlasOnly;
+            // Reverse captures already use world positions. Forward seam trials
+            // keep their shared local projection frame and supply its render scale.
+            internal Matrix4x4 stretchFrame = Matrix4x4.identity;
             internal float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels;
             internal float relativeStretchTolerance = UvTransferTolerance.RelativeStretch;
             public bool preserveProjectedOverlap;
@@ -433,7 +436,7 @@ namespace SashaRX.UnityMeshLab
                     int expectedSign = Math.Sign(Cross(winner.pixels[donorCorner + 1] - winner.pixels[donorCorner],
                         winner.pixels[donorCorner + 2] - winner.pixels[donorCorner])) * winner.orientations[best.triangleIndex];
                     int actualSign = Math.Sign(Cross(target.pixels[t + 1] - target.pixels[t], target.pixels[t + 2] - target.pixels[t])) * target.orientation;
-                    if (!valid || actualSign != expectedSign || Anisotropy(target, f) > options.maxAnisotropy)
+                    if (!valid || actualSign != expectedSign || Anisotropy(target, f, options.stretchFrame) > options.maxAnisotropy)
                     { record.ambiguous = true; record.rejection = "corner-or-metric"; continue; }
                     float span = Math.Max((target.pixels[t + 1] - target.pixels[t]).magnitude, (target.pixels[t + 2] - target.pixels[t]).magnitude);
                     foreach (var bary in Interior)
@@ -522,7 +525,7 @@ namespace SashaRX.UnityMeshLab
                         }
                         else canonical.Add(key, s.pixels[t]);
                     }
-                    if (Anisotropy(s, f) > options.maxAnisotropy)
+                    if (Anisotropy(s, f, options.stretchFrame) > options.maxAnisotropy)
                     { face.inherited = false; face.ambiguous = true; face.rejection = "snap-metric"; }
                 }
         }
@@ -733,16 +736,33 @@ namespace SashaRX.UnityMeshLab
                 s.positions[s.indices[t + 2]] - s.positions[s.indices[t]]) * s.orientation);
         }
 
-        static double Anisotropy(Surface s, int f)
+        static double Anisotropy(Surface s, int f, Matrix4x4? stretchFrame = null)
         {
             int t = f * 3;
             return TriangleAnisotropy(s.positions[s.indices[t]], s.positions[s.indices[t+1]], s.positions[s.indices[t+2]],
-                s.pixels[t], s.pixels[t+1], s.pixels[t+2]);
+                s.pixels[t], s.pixels[t+1], s.pixels[t+2], stretchFrame ?? Matrix4x4.identity);
         }
 
         internal static double TriangleAnisotropy(Vector3 p, Vector3 q, Vector3 r, Vector2 aUv, Vector2 bUv, Vector2 cUv)
+            => TriangleAnisotropy(TriangleFrame(p, q, r), aUv, bUv, cUv);
+
+        internal static double TriangleAnisotropy(Vector3 p, Vector3 q, Vector3 r, Vector2 aUv, Vector2 bUv, Vector2 cUv, Matrix4x4 frame)
         {
-            var (length, x, y) = TriangleFrame(p, q, r);
+            double ex = (double)q.x - p.x, ey = (double)q.y - p.y, ez = (double)q.z - p.z;
+            double dx = (double)r.x - p.x, dy = (double)r.y - p.y, dz = (double)r.z - p.z;
+            var transformed = TriangleFrame(
+                frame.m00 * ex + frame.m01 * ey + frame.m02 * ez,
+                frame.m10 * ex + frame.m11 * ey + frame.m12 * ez,
+                frame.m20 * ex + frame.m21 * ey + frame.m22 * ez,
+                frame.m00 * dx + frame.m01 * dy + frame.m02 * dz,
+                frame.m10 * dx + frame.m11 * dy + frame.m12 * dz,
+                frame.m20 * dx + frame.m21 * dy + frame.m22 * dz);
+            return TriangleAnisotropy(transformed, aUv, bUv, cUv);
+        }
+
+        static double TriangleAnisotropy((double length, double x, double y) frame, Vector2 aUv, Vector2 bUv, Vector2 cUv)
+        {
+            var (length, x, y) = frame;
             // Promote before subtraction: float edge/dot arithmetic introduces
             // order-dependent shear on nearly collinear captured triangles.
             double ux = (double)bUv.x - aUv.x, uy = (double)bUv.y - aUv.y;
@@ -760,6 +780,11 @@ namespace SashaRX.UnityMeshLab
         {
             double ex = (double)q.x - p.x, ey = (double)q.y - p.y, ez = (double)q.z - p.z;
             double dx = (double)r.x - p.x, dy = (double)r.y - p.y, dz = (double)r.z - p.z;
+            return TriangleFrame(ex, ey, ez, dx, dy, dz);
+        }
+
+        static (double length, double x, double y) TriangleFrame(double ex, double ey, double ez, double dx, double dy, double dz)
+        {
             double length = Math.Sqrt(ex * ex + ey * ey + ez * ez);
             double cx = ey * dz - ez * dy, cy = ez * dx - ex * dz, cz = ex * dy - ey * dx;
             return (length, (ex * dx + ey * dy + ez * dz) / length,
