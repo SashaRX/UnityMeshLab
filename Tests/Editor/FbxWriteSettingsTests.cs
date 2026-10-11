@@ -298,6 +298,74 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        [Test]
+        public void MissingForeignAbsoluteMediaReferencesRemainAuthored()
+        {
+            string source = Path.Combine(folder, "source"), scratch = Path.Combine(folder, "scratch");
+            string target = Path.Combine(folder, "variant", "output.fbx");
+            Directory.CreateDirectory(source); Directory.CreateDirectory(scratch);
+            string[] foreign = Path.DirectorySeparatorChar == '/' ? new[] { @"C:\maps\albedo.png", "D:/maps/albedo.png", @"\\server\share\albedo.png", "//server/share/albedo.png" }
+                : new[] { "/Volumes/maps/albedo.png", "/home/author/maps/albedo.png" };
+            var originalMethod = typeof(FbxExternalMedia).GetMethod("SourcePaths", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+            var resolveMethod = typeof(FbxExternalMedia).GetMethod("ResolveBinaryPaths", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+            foreach (string authored in foreign)
+            {
+                var references = new List<(string, string)> { (authored, null) };
+                var original = (Dictionary<string, string>)originalMethod.Invoke(null, new object[] { references, source });
+                var resolved = (IReadOnlyDictionary<string, string>)resolveMethod.Invoke(null,
+                    new object[] { (authored, (string)null), scratch, source, new Dictionary<string, string>(), original, false });
+                foreach (string field in new[] { "FileName", "RelativeFilename", "Path", "RelPath" })
+                {
+                    string prefix = field == "Path" || field == "RelPath" ? "P: \"" + field + "\", \"KString\", \"XRefUrl\", \"\", \"" : field + ": \"";
+                    string line = prefix + authored + "\"";
+                    Assert.AreEqual(line, FbxExternalMedia.RewriteFilename(line, resolved, scratch, target));
+                }
+                var exception = Assert.Throws<System.Reflection.TargetInvocationException>(() => resolveMethod.Invoke(null,
+                    new object[] { (authored, (string)null), scratch, source, new Dictionary<string, string>(), original, true }));
+                Assert.IsInstanceOf<IOException>(exception.InnerException);
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void BinaryForeignMediaRewriteKeepsTheAuthoredRoot(bool wide)
+        {
+            string input = Path.Combine(folder, "foreign-stage.fbx"), output = Path.Combine(folder, "foreign-rewrite.fbx");
+            using (var file = File.Create(input)) WriteLargeBinaryMediaFixture(file, wide, 0);
+            string foreign = Path.DirectorySeparatorChar == '/' ? @"C:\maps\albedo.png" : "/Volumes/maps/albedo.png";
+            var paths = new List<IReadOnlyDictionary<string, string>>();
+            foreach (string name in new[] { "map", "video" })
+                paths.Add(new Dictionary<string, string> {
+                    [Path.Combine(folder, "authoring", name + ".png")] = foreign,
+                    [Path.Combine(folder, "maps", name + ".png")] = foreign });
+            using (var source = File.OpenRead(input))
+            using (var saved = File.Create(output)) FbxExternalMedia.RewriteBinary(source, saved, paths, folder, output);
+            foreach (var reference in FbxUvSetNames.ReadMediaReferences(output))
+            {
+                Assert.AreEqual(foreign, reference.filename);
+                Assert.AreEqual(foreign, reference.relative);
+            }
+        }
+
+        [Test]
+        public void SdkSaveKeepsAnUnavailableForeignAbsoluteTextureReference()
+        {
+            string source = Source(false, external: true);
+            string foreign = Path.DirectorySeparatorChar == '/' ? @"C:\maps\albedo.png" : "/Volumes/maps/albedo.png";
+            string quoted = "\"" + foreign + "\"";
+            string text = Regex.Replace(File.ReadAllText(source), "\"[^\"]*map\\.png\"", _ => quoted);
+            File.WriteAllText(source, text);
+            var before = FbxUvSetNames.ReadMediaReferences(source);
+            Assert.IsNotEmpty(before);
+            foreach (var reference in before) Assert.AreEqual(foreign, reference.filename);
+            string destination = Path.Combine(folder, "variant"); Directory.CreateDirectory(destination);
+            string output = Path.Combine(destination, "foreign-output.fbx");
+            using (var document = FbxSourceDocument.Load(source)) document.SaveAtomic(output);
+            var after = FbxUvSetNames.ReadMediaReferences(output);
+            Assert.IsNotEmpty(after);
+            foreach (var reference in after) Assert.AreEqual(foreign, reference.filename);
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void BinaryFilenameRewriteStreamsOpaqueGeometryAndUpdatesOffsets(bool wide)

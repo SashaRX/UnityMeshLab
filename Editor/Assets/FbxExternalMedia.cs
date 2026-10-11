@@ -230,7 +230,7 @@ namespace SashaRX.UnityMeshLab
                 long tail = reader.BaseStream.Position;
                 string replaced = value;
                 if (paths.TryGetValue(MediaPath(value, scratch), out string output))
-                    replaced = (relative ? Path.GetRelativePath(Path.GetDirectoryName(target), output) : output).Replace('\\', '/');
+                    replaced = MediaFilename(output, relative, target);
                 reader.BaseStream.Position = start; Copy(valueStart - start);
                 byte[] encoded = Encoding.UTF8.GetBytes(replaced);
                 writer.Write((byte)'S'); writer.Write(encoded.Length); writer.Write(encoded);
@@ -276,7 +276,9 @@ namespace SashaRX.UnityMeshLab
             {
                 string absolute = string.IsNullOrEmpty(reference.filename) ? null : MediaPath(reference.filename, source);
                 string relative = string.IsNullOrEmpty(reference.relative) ? null : MediaPath(reference.relative, source);
-                string resolved = absolute != null && File.Exists(absolute) ? absolute : relative ?? absolute;
+                string resolved = MediaExists(absolute) ? absolute : MediaExists(relative) ? relative
+                    : !string.IsNullOrEmpty(reference.filename) && IsForeignAbsolute(reference.filename) ? reference.filename
+                    : relative ?? absolute;
                 if (resolved == null) continue;
                 // A missing source-relative map still has an authored location.
                 // Keep it so restoring that map also restores save-as variants.
@@ -381,12 +383,12 @@ namespace SashaRX.UnityMeshLab
         {
             var paths = new Dictionary<string, string>(PathComparer);
             var mapped = names.Select(name => originalPaths.TryGetValue(MediaPath(name, source), out string path) ? path : null).Where(path => path != null).ToArray();
-            string resolved = names.Select(name => MediaPath(name, scratch)).FirstOrDefault(File.Exists)
-                ?? mapped.FirstOrDefault(File.Exists)
-                ?? names.Where(name => !Path.IsPathRooted(name.Replace('\\', Path.DirectorySeparatorChar)))
-                    .Select(name => MediaPath(name, source)).FirstOrDefault(File.Exists)
+            string resolved = names.Select(name => MediaPath(name, scratch)).FirstOrDefault(MediaExists)
+                ?? mapped.FirstOrDefault(MediaExists)
+                ?? names.Where(name => !IsForeignAbsolute(name) && !Path.IsPathRooted(name.Replace('\\', Path.DirectorySeparatorChar)))
+                    .Select(name => MediaPath(name, source)).FirstOrDefault(MediaExists)
                 ?? mapped.FirstOrDefault();
-            if (requireMedia && names.Count > 0 && (resolved == null || !File.Exists(resolved)))
+            if (requireMedia && names.Count > 0 && !MediaExists(resolved))
                 throw new IOException("Cannot embed missing FBX media: " + names[0]);
             if (resolved == null)
             {
@@ -398,20 +400,43 @@ namespace SashaRX.UnityMeshLab
 
         static string MediaPath(string name, string directory)
         {
+            // FBX metadata may come from another host. Foreign roots are stable
+            // lookup keys, never paths relative to this source or scratch folder.
+            if (IsForeignAbsolute(name)) return name.Replace('\\', '/');
             string stored = name.Replace('\\', Path.DirectorySeparatorChar);
             return CanonicalPath(Path.IsPathRooted(stored) ? stored : Path.Combine(directory, stored));
+        }
+
+        static bool IsForeignAbsolute(string name)
+        {
+            string portable = name.Replace('\\', '/');
+            bool windowsRoot = portable.StartsWith("//", StringComparison.Ordinal)
+                || (portable.Length >= 3 && (portable[0] is >= 'A' and <= 'Z' or >= 'a' and <= 'z') && portable[1] == ':' && portable[2] == '/');
+            return Path.DirectorySeparatorChar == '/' ? windowsRoot
+                : portable.StartsWith("/", StringComparison.Ordinal) && !windowsRoot;
+        }
+
+        static bool MediaExists(string path)
+        {
+            return path != null && !IsForeignAbsolute(path) && File.Exists(path);
+        }
+
+        static string MediaFilename(string output, bool relative, string target)
+        {
+            // A foreign reference with no available local companion must remain
+            // authored metadata. GetRelativePath cannot represent its other root.
+            if (IsForeignAbsolute(output)) return output;
+            return (relative ? Path.GetRelativePath(Path.GetDirectoryName(target), output) : output).Replace('\\', '/');
         }
 
         internal static string RewriteFilename(string line, IReadOnlyDictionary<string, string> paths, string scratch, string target)
         {
             var match = FilenameLine.Match(line);
             if (!match.Success || string.IsNullOrEmpty(match.Groups[2].Value)) return line;
-            string stored = match.Groups[2].Value.Replace('\\', Path.DirectorySeparatorChar);
-            string absolute = CanonicalPath(Path.IsPathRooted(stored) ? stored : Path.Combine(scratch, stored));
+            string absolute = MediaPath(match.Groups[2].Value, scratch);
             if (!paths.TryGetValue(absolute, out string output)) return line;
             bool relative = match.Groups[1].Value.Contains("RelativeFilename") || match.Groups[1].Value.Contains("\"RelPath\"");
-            string filename = relative ? Path.GetRelativePath(Path.GetDirectoryName(target), output) : output;
-            return match.Groups[1].Value + filename.Replace('\\', '/') + match.Groups[3].Value;
+            return match.Groups[1].Value + MediaFilename(output, relative, target) + match.Groups[3].Value;
         }
 
         internal static void DeleteCreated(string file)

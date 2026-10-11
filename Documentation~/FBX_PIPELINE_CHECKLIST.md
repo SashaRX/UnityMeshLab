@@ -248,6 +248,11 @@ Before merging any code that writes FBX:
     refuses a missing map before replacing the target file.
     With embedding off, existing external texture references are also rebased
     from the original FBX directory when writing a variant to another folder.
+    Unavailable absolute references from another platform (Windows drive/UNC
+    paths on Unix, or Unix roots on Windows) retain their authored spelling;
+    they are never treated as paths relative to the source or output directory.
+    An available local relative companion is still preferred; explicit embedding
+    refuses a foreign reference without an available local map.
 
 If the tool produces a file that flags ANY category in
 `patch_fbx_materials --report-file`, the tool is wrong, not the
