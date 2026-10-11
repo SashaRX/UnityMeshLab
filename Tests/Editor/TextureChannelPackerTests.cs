@@ -1,9 +1,12 @@
 using System;
 using System.IO;
 using System.Reflection;
+using System.Collections;
+using System.Threading;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.TestTools;
 
 namespace SashaRX.UnityMeshLab.Tests
 {
@@ -156,8 +159,8 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { AssetDatabase.DeleteAsset(assetPath); }
         }
 
-        [Test]
-        public void WindowSavesThreeNamedOutputsAndImportsOnlyResults()
+        [UnityTest]
+        public IEnumerator WindowSavesThreeNamedOutputsAndImportsOnlyResults()
         {
             string id = Guid.NewGuid().ToString("N");
             string sourcePath = Path.Combine(Path.GetTempPath(), "MeshLabSource-" + id + ".tga");
@@ -183,6 +186,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     InvokePrivate(window, "Assign", output, rgb, sourcePath);
                 }
                 InvokePrivate(window, "SaveEnabled");
+                while (GetPrivate(window, "saveTask") != null) yield return null;
                 Assert.IsEmpty((string)GetPrivate(window, "error"));
                 foreach (string suffix in new[] { "Albedo", "MRCA", "Normal" })
                 {
@@ -201,6 +205,28 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsFalse(File.Exists(sourcePath + ".meta"));
                 CollectionAssert.AreEqual(original, File.ReadAllBytes(sourcePath));
                 Assert.AreEqual(3, Directory.GetFiles(assetFolder, "*.tga").Length);
+
+                // Change naming suffixes without changing the semantic output blocks.
+                SetPrivate(window, "textureName", "Renamed");
+                string[] fields = { "albedo", "mrca", "normal" };
+                int[] suffixes = { 2, 1, 0 };
+                string[] names = { "MRCA", "Normal", "Albedo" };
+                for (int i = 0; i < fields.Length; i++)
+                {
+                    object output = GetPrivate(window, fields[i]);
+                    output.GetType().GetField("suffix").SetValue(output, suffixes[i]);
+                }
+                InvokePrivate(window, "SaveEnabled");
+                while (GetPrivate(window, "saveTask") != null) yield return null;
+                Assert.IsEmpty((string)GetPrivate(window, "error"));
+                for (int i = 0; i < fields.Length; i++)
+                {
+                    var importer = (TextureImporter)AssetImporter.GetAtPath(assetFolder + "/T_Renamed_" + names[i] + ".tga");
+                    Assert.IsNotNull(importer);
+                    Assert.AreEqual(i == 2 ? TextureImporterType.NormalMap : TextureImporterType.Default, importer.textureType);
+                    if (i != 2) Assert.AreEqual(i == 0, importer.sRGBTexture);
+                    Assert.AreEqual(i == 0, importer.alphaIsTransparency);
+                }
             }
             finally
             {
@@ -208,6 +234,86 @@ namespace SashaRX.UnityMeshLab.Tests
                 AssetDatabase.DeleteAsset(assetFolder);
                 File.Delete(sourcePath);
             }
+        }
+
+        [Test]
+        public void FailedEncodingLeavesTheExistingFileUntouched()
+        {
+            string path = Path.Combine(Path.GetTempPath(), "MeshLabAtomic-" + Guid.NewGuid().ToString("N") + ".tga");
+            byte[] original = { 1, 2, 3, 4 };
+            File.WriteAllBytes(path, original);
+            try
+            {
+                Assert.Throws<IOException>(() => TexturePackingFiles.Stage(path, stream =>
+                {
+                    stream.WriteByte(99);
+                    throw new IOException("Simulated encoding failure.");
+                }));
+                CollectionAssert.AreEqual(original, File.ReadAllBytes(path));
+            }
+            finally { File.Delete(path); }
+        }
+
+        [Test]
+        public void SuccessfulAtomicReplacementPreservesAssetMetadata()
+        {
+            string path = Path.Combine(Path.GetTempPath(), "MeshLabAtomic-" + Guid.NewGuid().ToString("N") + ".tga");
+            string staged = null;
+            try
+            {
+                File.WriteAllBytes(path, new byte[] { 1, 2 });
+                File.WriteAllText(path + ".meta", "existing-guid");
+                staged = TexturePackingFiles.Stage(path, stream => stream.WriteByte(42));
+                TexturePackingFiles.Commit(staged, path);
+                CollectionAssert.AreEqual(new byte[] { 42 }, File.ReadAllBytes(path));
+                Assert.AreEqual("existing-guid", File.ReadAllText(path + ".meta"));
+                Assert.IsFalse(File.Exists(staged));
+            }
+            finally
+            {
+                TexturePackingFiles.Discard(staged);
+                File.Delete(path);
+                File.Delete(path + ".meta");
+            }
+        }
+
+        [Test]
+        public void PackingAndEncodingSupportCancellation()
+        {
+            using (var cancellation = new CancellationTokenSource())
+            using (var stream = new MemoryStream())
+            {
+                cancellation.Cancel();
+                var image = new TexturePackingImage(1, 1, new[] { new Color32(1, 2, 3, 4) });
+                Assert.Throws<OperationCanceledException>(() => image.WriteTgaRle(stream, cancellation.Token));
+                Assert.Throws<OperationCanceledException>(() => TexturePackingImage.Compose(64, 64, image,
+                    new TexturePackingImage[4], new int[4], new byte[4], true, cancellation.Token));
+            }
+        }
+
+        [Test]
+        public void AssetContainmentUsesFilesystemPathCaseRules()
+        {
+            string original = Path.Combine(Application.dataPath, "Texture.tga");
+            Assert.AreEqual("Assets/Texture.tga", InvokeAssetPath(original));
+            string differentCase = Path.Combine(Path.GetDirectoryName(Application.dataPath), "assets", "Texture.tga");
+            Assert.AreEqual(Path.DirectorySeparatorChar == '\\' ? "Assets/Texture.tga" : null, InvokeAssetPath(differentCase));
+        }
+
+        [Test]
+        public void IgnoredAssetFoldersFailBeforeExport()
+        {
+            string ignored = Path.Combine(Application.dataPath, "Textures~", "Texture.tga");
+            var failure = Assert.Throws<TargetInvocationException>(() => typeof(TextureChannelPackerWindow)
+                .GetMethod("ValidateAssetDestination", BindingFlags.NonPublic | BindingFlags.Static)
+                .Invoke(null, new object[] { ignored }));
+            Assert.IsInstanceOf<InvalidOperationException>(failure.InnerException);
+        }
+
+        private static object InvokeAssetPath(string path)
+        {
+            return typeof(TextureChannelPackerWindow).GetMethod("AssetPath", BindingFlags.NonPublic | BindingFlags.Static)
+                .Invoke(null, new object[] { path });
         }
 
         private static object GetPrivate(object instance, string name)

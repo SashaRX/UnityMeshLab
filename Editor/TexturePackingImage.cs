@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading;
 using UnityEngine;
 
 namespace SashaRX.UnityMeshLab
@@ -77,16 +78,19 @@ namespace SashaRX.UnityMeshLab
         }
 
         public static TexturePackingImage Compose(int width, int height, TexturePackingImage rgb,
-            TexturePackingImage[] sources, int[] channels, byte[] defaults, bool sourceAlpha)
+            TexturePackingImage[] sources, int[] channels, byte[] defaults, bool sourceAlpha,
+            CancellationToken cancellation = default)
         {
             if (width < 1 || height < 1 || width > 8192 || height > 8192)
                 throw new ArgumentOutOfRangeException(nameof(width));
             if (sources == null || sources.Length != 4 || channels == null || channels.Length != 4 ||
                 defaults == null || defaults.Length != 4)
                 throw new ArgumentException("Four output channel bindings are required.");
+            cancellation.ThrowIfCancellationRequested();
             var pixels = new Color32[checked(width * height)];
             for (int y = 0; y < height; y++)
             {
+                cancellation.ThrowIfCancellationRequested();
                 for (int x = 0; x < width; x++)
                 {
                     Color32 pixel = rgb != null ? rgb.Sample(x, y, width, height) :
@@ -111,7 +115,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>32-bit BGRA, type 10, bottom-left origin, eight alpha bits.</summary>
-        public void WriteTgaRle(Stream stream)
+        public void WriteTgaRle(Stream stream, CancellationToken cancellation = default)
         {
             using (var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, true))
             {
@@ -126,7 +130,10 @@ namespace SashaRX.UnityMeshLab
                 writer.Write(header);
                 // Keep packets within scanlines for compatibility with strict TGA readers.
                 for (int row = 0; row < Height; row++)
+                {
+                    cancellation.ThrowIfCancellationRequested();
                     WriteRow(writer, row * Width, (row + 1) * Width);
+                }
             }
         }
 

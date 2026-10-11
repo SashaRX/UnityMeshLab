@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using UnityEditor;
 using UnityEngine;
 
@@ -54,6 +56,17 @@ namespace SashaRX.UnityMeshLab
         private Vector2 scroll;
         private string error = "";
         private string status = "";
+        private Task<List<SaveRequest>> saveTask;
+        private CancellationTokenSource saveCancellation;
+
+        private sealed class SaveRequest
+        {
+            public string path;
+            public string staged;
+            public Func<CancellationToken, TexturePackingImage> build;
+            public bool isNormal;
+            public bool isAlbedo;
+        }
 
         [MenuItem("Tools/Mesh Lab/Texture Channel Packer", priority = 80)]
         public static void Open()
@@ -64,7 +77,7 @@ namespace SashaRX.UnityMeshLab
 
         private void OnEnable()
         {
-            Selection.selectionChanged += OnSelectionChanged;
+            SubscribeSelection(OnSelectionChanged);
             if (string.IsNullOrEmpty(outputFolder)) outputFolder = Application.dataPath;
             ReloadSources();
             OnSelectionChanged();
@@ -72,7 +85,9 @@ namespace SashaRX.UnityMeshLab
 
         private void OnDisable()
         {
-            Selection.selectionChanged -= OnSelectionChanged;
+            UnsubscribeSelection(OnSelectionChanged);
+            UnsubscribeSave(TickSave);
+            CancelSaveOnClose();
             ClearPreviews();
             foreach (var source in loaded.Values) DestroyImmediate(source.thumbnail);
             loaded.Clear();
@@ -80,7 +95,7 @@ namespace SashaRX.UnityMeshLab
 
         private void OnSelectionChanged()
         {
-            if (!followFbx) return;
+            if (!followFbx || saveTask != null) return;
             string path = AssetDatabase.GetAssetPath(Selection.activeObject);
             if (string.IsNullOrEmpty(path) && Selection.activeGameObject != null)
             {
@@ -92,6 +107,11 @@ namespace SashaRX.UnityMeshLab
             outputFolder = Path.GetDirectoryName(Path.GetFullPath(path));
             Repaint();
         }
+
+        private static void SubscribeSelection(Action callback) => Selection.selectionChanged += callback;
+        private static void UnsubscribeSelection(Action callback) => Selection.selectionChanged -= callback;
+        private static void SubscribeSave(EditorApplication.CallbackFunction callback) => EditorApplication.update += callback;
+        private static void UnsubscribeSave(EditorApplication.CallbackFunction callback) => EditorApplication.update -= callback;
 
         public static string ModelBaseName(string path)
         {
@@ -105,13 +125,16 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.LabelField("Texture Channel Packer", EditorStyles.boldLabel);
             EditorGUILayout.HelpBox("Drop PNG, JPG or TGA files from Explorer / Finder or the Project window. " +
                 "Sources stay on disk and are never copied into the project. Full-image bilinear resize; no cropping.", MessageType.Info);
-            DrawSettings();
-            DrawOutput(albedo, "Albedo", false);
-            DrawOutput(mrca, "MRCA", false);
-            DrawOutput(normal, "Normal", true);
+            using (new EditorGUI.DisabledScope(saveTask != null))
+            {
+                DrawSettings();
+                DrawOutput(albedo, "Albedo", false);
+                DrawOutput(mrca, "MRCA", false);
+                DrawOutput(normal, "Normal", true);
+            }
             if (!string.IsNullOrEmpty(error)) EditorGUILayout.HelpBox(error, MessageType.Error);
             if (!string.IsNullOrEmpty(status)) EditorGUILayout.HelpBox(status, MessageType.Info);
-            using (new EditorGUI.DisabledScope(!albedo.enabled && !mrca.enabled && !normal.enabled))
+            using (new EditorGUI.DisabledScope(saveTask != null || (!albedo.enabled && !mrca.enabled && !normal.enabled)))
                 if (GUILayout.Button("Save enabled textures — TGA RLE", GUILayout.Height(30)))
                     SaveEnabled();
             EditorGUILayout.EndScrollView();
@@ -230,6 +253,7 @@ namespace SashaRX.UnityMeshLab
 
         private void HandleDrop(Rect rect, Output output, Slot slot)
         {
+            if (!GUI.enabled) return;
             Event evt = Event.current;
             if (!rect.Contains(evt.mousePosition) ||
                 (evt.type != EventType.DragUpdated && evt.type != EventType.DragPerform)) return;
@@ -319,6 +343,11 @@ namespace SashaRX.UnityMeshLab
 
         private TexturePackingImage Build(Output output, int width, int height)
         {
+            return PrepareBuild(output, width, height)(CancellationToken.None);
+        }
+
+        private Func<CancellationToken, TexturePackingImage> PrepareBuild(Output output, int width, int height)
+        {
             var sources = new TexturePackingImage[4];
             var channels = new int[4];
             var defaults = new byte[4];
@@ -328,8 +357,10 @@ namespace SashaRX.UnityMeshLab
                 channels[i] = output.slots[i].channel;
                 if (output != normal && (output.split || i == 3)) sources[i] = Source(output.slots[i]);
             }
-            return TexturePackingImage.Compose(width, height, output.split ? null : Source(output.rgb),
-                sources, channels, defaults, !output.split && output.sourceAlpha);
+            TexturePackingImage rgb = output.split ? null : Source(output.rgb);
+            bool sourceAlpha = !output.split && output.sourceAlpha;
+            return cancellation => TexturePackingImage.Compose(width, height, rgb,
+                sources, channels, defaults, sourceAlpha, cancellation);
         }
 
         private void BuildPreview(Output output)
@@ -373,70 +404,169 @@ namespace SashaRX.UnityMeshLab
 
         private void SaveOutputs(IList<Output> outputs)
         {
+            if (saveTask != null) throw new InvalidOperationException("An export is already running.");
             if (string.IsNullOrWhiteSpace(textureName) || textureName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
                 textureName.Trim() == "." || textureName.Trim() == "..")
                 throw new InvalidOperationException("Enter a valid texture base name without a path.");
             if (!Directory.Exists(outputFolder)) throw new DirectoryNotFoundException("Choose an existing output folder.");
-            var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var paths = new HashSet<string>(TexturePackingFiles.PathComparison == StringComparison.Ordinal ?
+                StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
             var overwrite = new List<string>();
+            var requests = new List<SaveRequest>();
             foreach (var output in outputs)
             {
                 if (!HasInput(output)) throw new InvalidOperationException("An enabled texture has no source images.");
                 string path = Path.Combine(Path.GetFullPath(outputFolder), FileName(output));
                 if (!paths.Add(path)) throw new InvalidOperationException("Choose distinct suffixes for each output.");
                 foreach (string sourcePath in loaded.Keys)
-                    if (string.Equals(sourcePath, path, StringComparison.OrdinalIgnoreCase))
+                    if (TexturePackingFiles.SameSource(sourcePath, path))
                         throw new InvalidOperationException("An output would overwrite a source texture: " + path);
                 if (File.Exists(path)) overwrite.Add(Path.GetFileName(path));
                 // Validate every referenced source before writing any output.
                 if (!output.split) Source(output.rgb);
                 for (int i = output.split ? 0 : 3; i < 4; i++)
                     if (output != normal) Source(output.slots[i]);
+                ValidateAssetDestination(path);
+                requests.Add(new SaveRequest { path = path, build = PrepareBuild(output, Sizes[widthIndex], Sizes[heightIndex]),
+                    isNormal = output == normal, isAlbedo = output == albedo });
             }
             if (overwrite.Count > 0 && !EditorUtility.DisplayDialog("Overwrite textures?",
                 string.Join("\n", overwrite), "Overwrite", "Cancel")) return;
+            saveCancellation = new CancellationTokenSource();
+            var token = saveCancellation.Token;
+            saveTask = Task.Run(() => StageOutputs(requests, token), token);
+            SubscribeSave(TickSave);
+        }
+
+        private static List<SaveRequest> StageOutputs(List<SaveRequest> requests, CancellationToken token)
+        {
             try
             {
-                using (new AssetDatabase.AssetEditingScope())
+                foreach (var request in requests)
                 {
-                    foreach (var output in outputs)
-                    {
-                        EditorUtility.DisplayProgressBar("Texture packing", FileName(output), 0.5f);
-                        var image = Build(output, Sizes[widthIndex], Sizes[heightIndex]);
-                        string path = Path.Combine(Path.GetFullPath(outputFolder), FileName(output));
-                        using (var stream = File.Create(path)) image.WriteTgaRle(stream);
-                        string assetPath = AssetPath(path);
-                        if (assetPath != null) AssetDatabase.ImportAsset(assetPath);
-                        UvtLog.Info("Saved texture: " + path);
-                    }
+                    token.ThrowIfCancellationRequested();
+                    var image = request.build(token);
+                    request.staged = TexturePackingFiles.Stage(request.path, stream => image.WriteTgaRle(stream, token));
                 }
-                // Importers are queried only after pending imports have completed.
-                var importers = new List<TextureImporter>();
-                foreach (var output in outputs)
-                {
-                    string path = AssetPath(Path.Combine(Path.GetFullPath(outputFolder), FileName(output)));
-                    if (path == null) continue;
-                    var importer = AssetImporter.GetAtPath(path) as TextureImporter;
-                    if (importer == null) continue;
-                    importer.textureType = output.suffix == 1 ? TextureImporterType.NormalMap : TextureImporterType.Default;
-                    importer.sRGBTexture = output.suffix == 0;
-                    importer.alphaSource = TextureImporterAlphaSource.FromInput;
-                    importer.alphaIsTransparency = output.suffix == 0;
-                    importer.maxTextureSize = 8192;
-                    importer.npotScale = TextureImporterNPOTScale.None;
-                    importers.Add(importer);
-                }
-                using (new AssetDatabase.AssetEditingScope())
-                    foreach (var importer in importers) importer.SaveAndReimport();
-                status = "Saved " + outputs.Count + " texture(s) to " + outputFolder;
+                token.ThrowIfCancellationRequested();
+                return requests;
             }
-            finally { EditorUtility.ClearProgressBar(); }
+            catch
+            {
+                DiscardRequests(requests);
+                throw;
+            }
+        }
+
+        private void TickSave()
+        {
+            if (saveTask == null) return;
+            if (!saveTask.IsCompleted)
+            {
+                if (EditorUtility.DisplayCancelableProgressBar("Texture packing", "Resizing and encoding textures…", 0.5f))
+                    saveCancellation.Cancel();
+                return;
+            }
+            var finished = saveTask;
+            saveTask = null;
+            UnsubscribeSave(TickSave);
+            try
+            {
+                var requests = finished.GetAwaiter().GetResult();
+                try
+                {
+                    saveCancellation.Token.ThrowIfCancellationRequested();
+                    CommitOutputs(requests);
+                    status = "Saved " + requests.Count + " texture(s) to " + Path.GetDirectoryName(requests[0].path);
+                }
+                finally { DiscardRequests(requests); }
+            }
+            catch (OperationCanceledException) { status = "Export cancelled; outputs were not changed."; }
+            catch (Exception exception)
+            {
+                error = exception.Message;
+                UvtLog.Error("Texture packer: " + exception.Message);
+            }
+            finally
+            {
+                saveCancellation.Dispose();
+                saveCancellation = null;
+                EditorUtility.ClearProgressBar();
+                Repaint();
+            }
+        }
+
+        private static void CommitOutputs(List<SaveRequest> requests)
+        {
+            using (new AssetDatabase.AssetEditingScope())
+            {
+                foreach (var request in requests)
+                {
+                    TexturePackingFiles.Commit(request.staged, request.path);
+                    request.staged = null;
+                    string assetPath = AssetPath(request.path);
+                    if (assetPath != null) AssetDatabase.ImportAsset(assetPath);
+                    UvtLog.Info("Saved texture: " + request.path);
+                }
+            }
+            // Importers are queried only after pending imports have completed.
+            var importers = new List<TextureImporter>();
+            foreach (var request in requests)
+            {
+                string path = AssetPath(request.path);
+                if (path == null) continue;
+                var importer = AssetImporter.GetAtPath(path) as TextureImporter;
+                if (importer == null) throw new InvalidOperationException("Unity did not create a texture importer: " + path);
+                importer.textureType = request.isNormal ? TextureImporterType.NormalMap : TextureImporterType.Default;
+                importer.sRGBTexture = request.isAlbedo;
+                importer.alphaSource = TextureImporterAlphaSource.FromInput;
+                importer.alphaIsTransparency = request.isAlbedo;
+                importer.maxTextureSize = 8192;
+                importer.npotScale = TextureImporterNPOTScale.None;
+                importers.Add(importer);
+            }
+            using (new AssetDatabase.AssetEditingScope())
+                foreach (var importer in importers) importer.SaveAndReimport();
+        }
+
+        private static void DiscardRequests(List<SaveRequest> requests)
+        {
+            foreach (var request in requests) TexturePackingFiles.Discard(request.staged);
+        }
+
+        private void CancelSaveOnClose()
+        {
+            if (saveTask == null) return;
+            var cancellation = saveCancellation;
+            cancellation.Cancel();
+            _ = saveTask.ContinueWith(task =>
+            {
+                try
+                {
+                    if (task.Status == TaskStatus.RanToCompletion) DiscardRequests(task.Result);
+                    else _ = task.Exception;
+                }
+                finally { cancellation.Dispose(); }
+            }, TaskScheduler.Default);
+            saveTask = null;
+            saveCancellation = null;
+            EditorUtility.ClearProgressBar();
+        }
+
+        private static void ValidateAssetDestination(string path)
+        {
+            string assetPath = AssetPath(path);
+            if (assetPath == null) return;
+            foreach (string segment in assetPath.Split('/'))
+                if (segment.StartsWith(".", StringComparison.Ordinal) || segment.EndsWith("~", StringComparison.Ordinal))
+                    throw new InvalidOperationException("Unity ignores this output folder; choose an importable folder: " + assetPath);
         }
 
         private static string AssetPath(string path)
         {
+            path = Path.GetFullPath(path);
             string assets = Path.GetFullPath(Application.dataPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            return path.StartsWith(assets, StringComparison.OrdinalIgnoreCase) ?
+            return path.StartsWith(assets, TexturePackingFiles.PathComparison) ?
                 "Assets/" + path.Substring(assets.Length).Replace('\\', '/') : null;
         }
 
