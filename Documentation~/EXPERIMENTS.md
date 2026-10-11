@@ -40,6 +40,51 @@
 
 ## Progressive reverse atlas — 2026-10-09
 
+### Texel-sized correspondence tolerance — 2026-10-11
+
+Requested continuation on PR225, baseline `719cce0`. Local inherited metric
+comparison permits 1% relative change. Refinement may spend up to 1% of the
+density gained by uniform final-atlas filling; the requested minimum remains
+audited. Projection and inheritance comparison
+try 0.25/0.5 actual texels, rather than a percentage of a potentially very large
+face. A failed existing coverage check subtracts the union of donor triangles
+dilated by an inscribed octagon: the allowance stays within the Euclidean band
+even at acute corners, and duplicate donors never count coverage twice.
+Comparison uses the original face's final atlas pixels; barycentric area is
+not interpreted as texels. Missing entire inherited faces still fail.
+
+Planar forward recovery converts the same band into distance using the donor
+chart's density and the known atlas resolution. With no resolution it retains
+the prior exact footprint check. Forward and reverse retain zero-area geometry,
+final UV degeneracy, real contact and intentional-overlap ancestry audits.
+Clip predicates and Float32 representability preflights are unchanged.
+Private fixtures can select the tested band via `MESHLAB_TRANSFER_BOUNDARY_TEXELS`;
+runtime code does not read test environment variables.
+
+Final packing fits the completed layout uniformly after integer rectangle
+placement. This fills the residual outer strip without decreasing gaps or
+changing an individual chart's proportions. Cafe's overlap/10-texel extent
+regression is repaired without weakening its existing 0.93 extent assertion.
+The restored Tire trial cuts 13 source faces in both policies (previously 6),
+at 184.222 tex/unit versus the uncut filled layout's 185.597 (0.74% difference).
+
+The 0.5-texel trial improves Kamaz's forward degeneracy count further, but loses
+Park overlap's previously accepted donor cuts. It is rejected; the shipping
+default remains 0.25 texel. Neither the cut-retention test nor the UV audits
+are relaxed. Independent controls exercise the band in pixel and normalized
+units, internal holes, duplicate donors, acute corners, work/cancellation limits,
+one-percent metric/density bounds and uniform-fit padding.
+Final isolated Unity 6000.2.6f2 replay: 371 cases, 368 passed, 0 failed, 3 optional
+skips, including 21 new controls. Both FBX define reference builds, identifier
+and dependency gates pass. Nine-model reverse corpus: 16 accepted / 18 trials,
+with both Kitchen seed failures retained; Cafe and frozen Kamaz frame 3 pass
+both overlap policies. Final Park cuts 251 faces in each policy; Shelf cuts 18.
+Forward Kitchen Main LOD1 degenerates: 6 -> 0; Kamaz LOD1/2: 156/104 -> 131/94.
+Their contact counts fall from 238/574/99 to 226/510/96. Strong legacy stretch
+and Kitchen's Float32 seed face 53 remain unresolved. Captures and complete
+metrics: `_results~/transfer-tolerance-20261011/REPORT.md` (local, ignored).
+Native plugins, original FBXs and live Unity projects are unchanged.
+
 ### Forward stretch and local donor-seam protection — 2026-10-11
 
 Continuation of the transfer work explicitly requested on PR225; baseline

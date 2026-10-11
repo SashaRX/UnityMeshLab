@@ -65,7 +65,7 @@ namespace SashaRX.UnityMeshLab
                     try {refusal=ReverseUvJunctionTrial.Compare(baseline,candidate,levels,token);}
                     catch(InvalidOperationException error) {refusal=error.Message;break;}
                     if(refusal==null) {var accepted=candidate;candidate=null;return (accepted,null);}
-                    bool extended=ProtectDonorAncestors(baseline.report,candidate.report,trial,token);
+                    bool extended=ProtectDonorAncestors(baseline,candidate,trial,token);
                     foreach (var failure in ReverseUvJunctionTrial.DistortionFailures(baseline,candidate,levels,token))
                     {
                         var node=baseline.report.nodes[failure.node];
@@ -85,26 +85,30 @@ namespace SashaRX.UnityMeshLab
         static Options TrialOptions(Options options, bool split) => new Options {
             seedResolution = options.seedResolution, padding = options.padding, maxAtlasSize = options.maxAtlasSize,
             projectionReach = options.projectionReach, normalDot = options.normalDot, maxAnisotropy = options.maxAnisotropy,
+            boundaryToleranceTexels = options.boundaryToleranceTexels, relativeStretchTolerance = options.relativeStretchTolerance,
             preserveProjectedOverlap = options.preserveProjectedOverlap, cutNarrowJunctions = options.cutNarrowJunctions,
             fillAtlasVacancies = options.fillAtlasVacancies, splitDonorSeams = split, comparisonBudget = options.comparisonBudget,
             repackFinalAtlas = options.repackFinalAtlas, fillFinalAtlas = options.fillFinalAtlas,
                 rotateCharts = options.rotateCharts, rotateChartsToAxis = options.rotateChartsToAxis,seedDensity=options.seedDensity,
             seamCutExclusions = new Dictionary<(int, int), HashSet<int>>() };
 
-        static bool ProtectDonorAncestors(Report before, Report after, Options trial, CancellationToken token)
+        static bool ProtectDonorAncestors(Result baseline, Result candidate, Options trial, CancellationToken token)
         {
+            var before=baseline.report;var after=candidate.report;
+            var meshes=baseline.meshes.SelectMany(m=>m).ToArray();
             bool extended = false;
             for (int n = 0; n < before.nodes.Count; ++n)
             {
                 var a = before.nodes[n]; var b = after.nodes[n]; if (a.seed) continue;
+                var coverage=new ReverseUvJunctionTrial.CoverageContext(a,meshes.ElementAtOrDefault(n),before.atlasSize,trial.boundaryToleranceTexels);
                 var pieces = Enumerable.Range(0, b.faces.Length).GroupBy(f => b.sourceFaces[f]).ToDictionary(g => g.Key, g => g.ToArray());
                 for (int f = 0; f < a.faces.Length; ++f)
                 {
                     token.ThrowIfCancellationRequested(); var face = a.faces[f];
                     if (!face.inherited && !face.intentionalOverlap) continue;
                     if (!pieces.TryGetValue(a.sourceFaces[f],out var descendants)) return false;
-                    bool inheritedCovered = !face.inherited || ReverseUvJunctionTrial.Covered(a,f,b,descendants.Where(p=>b.faces[p].inherited),token);
-                    bool overlapCovered = !face.intentionalOverlap || ReverseUvJunctionTrial.Covered(a,f,b,descendants.Where(p=>b.faces[p].intentionalOverlap),token);
+                    bool inheritedCovered = !face.inherited || coverage.Covers(f,b,descendants.Where(p=>b.faces[p].inherited),token);
+                    bool overlapCovered = !face.intentionalOverlap || coverage.Covers(f,b,descendants.Where(p=>b.faces[p].intentionalOverlap),token);
                     if (inheritedCovered && overlapCovered) continue;
                     int mesh=before.nodes.Take(n).Count(p=>p.lod==a.lod);
                     extended |= ProtectFace(trial,(a.lod,mesh),a.sourceFaces[f]);

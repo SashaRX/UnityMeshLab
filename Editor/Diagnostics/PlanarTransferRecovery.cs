@@ -11,7 +11,8 @@ namespace SashaRX.UnityMeshLab
     internal static class PlanarTransferRecovery
     {
         internal static Dictionary<int,Vector2> Project(UvShell target,int[] targetIndices,Vector3[] targetPositions,
-            UvShell source,int[] sourceIndices,Vector3[] sourcePositions,Vector2[] sourceUv)
+            UvShell source,int[] sourceIndices,Vector3[] sourcePositions,Vector2[] sourceUv,
+            int atlasResolution=0,float boundaryToleranceTexels=UvTransferTolerance.BoundaryTexels)
         {
             int basis=source.faceIndices.OrderByDescending(f=>Vector3.Cross(sourcePositions[sourceIndices[f*3+1]]-sourcePositions[sourceIndices[f*3]],
                 sourcePositions[sourceIndices[f*3+2]]-sourcePositions[sourceIndices[f*3]]).sqrMagnitude).First();
@@ -26,6 +27,9 @@ namespace SashaRX.UnityMeshLab
             var normal=Vector3.Cross(e,d).normalized;
             float span=source.vertexIndices.Max(i=>(sourcePositions[i]-a).magnitude);
             double planeTolerance=Math.Max(1e-7,span*1e-5);
+            double uvDensity=Math.Sqrt(Math.Abs((double)u.x*v.y-(double)u.y*v.x)/Vector3.Cross(e,d).magnitude);
+            if(atlasResolution>0 && uvDensity>0)
+                planeTolerance=Math.Max(planeTolerance,boundaryToleranceTexels/(uvDensity*atlasResolution));
             Vector2 Map(Vector3 position)
             {
                 var p=position-a;
@@ -47,7 +51,8 @@ namespace SashaRX.UnityMeshLab
             var chart=new ReverseUvTransfer.Chart {pixels=source.faceIndices.SelectMany(f=>Enumerable.Range(0,3).Select(k=>sourceUv[sourceIndices[f*3+k]])).ToArray(),
                 layers=new int[source.faceIndices.Count]};
             var coordinates=target.faceIndices.SelectMany(f=>Enumerable.Range(0,3).Select(k=>candidate[targetIndices[f*3+k]])).ToArray();
-            long comparisons=0; var options=new ReverseUvTransfer.Options {comparisonBudget=200000};
+            long comparisons=0; var options=new ReverseUvTransfer.Options {comparisonBudget=200000,
+                boundaryToleranceTexels=atlasResolution>0?boundaryToleranceTexels/atlasResolution:0};
             try
             {
                 for(int t=0;t<coordinates.Length;t+=3)
@@ -59,7 +64,7 @@ namespace SashaRX.UnityMeshLab
 
         internal static int Apply(GroupedShellTransfer.TransferResult result,List<UvShell> targets,int[] targetIndices,
             Vector3[] targetPositions,List<UvShell> sources,int[] sourceIndices,Vector3[] sourcePositions,Vector2[] sourceUv,
-            TransferMatchTrace trace)
+            TransferMatchTrace trace,int atlasResolution=0,float boundaryToleranceTexels=UvTransferTolerance.BoundaryTexels)
         {
             var previous=new Dictionary<int,Dictionary<int,Vector2>>();
             foreach(var target in targets)
@@ -70,7 +75,8 @@ namespace SashaRX.UnityMeshLab
                 var old=target.vertexIndices.ToDictionary(i=>i,i=>result.uv2[i]);
                 var before=TransferCandidateQuality.Measure(target,targetIndices,targetPositions,old,false);
                 if (!before.NeedsRecovery) continue;
-                var candidate=Project(target,targetIndices,targetPositions,sources[source],sourceIndices,sourcePositions,sourceUv);
+                var candidate=Project(target,targetIndices,targetPositions,sources[source],sourceIndices,sourcePositions,sourceUv,
+                    atlasResolution,boundaryToleranceTexels);
                 if (candidate==null) continue;
                 before=TransferCandidateQuality.Measure(target,targetIndices,targetPositions,old);
                 var after=TransferCandidateQuality.Measure(target,targetIndices,targetPositions,candidate);

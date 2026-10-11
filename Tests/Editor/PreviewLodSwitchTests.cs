@@ -1043,6 +1043,8 @@ namespace SashaRX.UnityMeshLab.Tests
             var ctx=Open(group); ctx.SourceLodIndex=0; ctx.LightmapDensity=10; ctx.CutNarrowUvJunctions=true;
             ctx.RepackResolutionMode=ResolutionMode.AutoFromTexelDensity; ctx.ShellPaddingPx=2; ctx.BorderPaddingPx=0;
             ctx.CaptureNextTransfer=true;
+            if(float.TryParse(System.Environment.GetEnvironmentVariable("MESHLAB_TRANSFER_BOUNDARY_TEXELS"),System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,out var tolerance)) hub.DiagnosticWorkflow.TransferBoundaryToleranceTexels=tolerance;
             hub.DiagnosticWorkflow.SymmetrySplitMode=SymmetrySplitShells.ThresholdMode.Adaptive;
             string directory=System.IO.Path.Combine(output,System.IO.Path.GetFileNameWithoutExtension(asset));
             System.IO.Directory.CreateDirectory(directory);

@@ -18,6 +18,8 @@ namespace SashaRX.UnityMeshLab
             public float projectionReach = .05f, normalDot = .5f, maxAnisotropy = 4;
             internal bool validateCutsIncrementally;
             internal bool projectExistingAtlasOnly;
+            internal float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels;
+            internal float relativeStretchTolerance = UvTransferTolerance.RelativeStretch;
             public bool preserveProjectedOverlap;
             public bool cutNarrowJunctions;
             public bool rotateCharts = true, rotateChartsToAxis;
@@ -75,6 +77,7 @@ namespace SashaRX.UnityMeshLab
             public int schema = 2, seedResolution, atlasSize, inheritedFaces, newFaces, overlapFaces, ambiguousFaces, localFallbackFaces;
             public int splitSourceFaces;
             public float texelsPerUnit;
+            public float boundaryToleranceTexels, relativeStretchTolerance;
             public bool preservesOverlap;
             public List<NodeReport> nodes = new List<NodeReport>();
             public List<OverlapRelation> overlaps = new List<OverlapRelation>();
@@ -132,7 +135,8 @@ namespace SashaRX.UnityMeshLab
         {
             Validate(levels, options);
             var result = new Result { report = new Report { seedResolution = options.seedResolution,
-                preservesOverlap = options.preserveProjectedOverlap } };
+                preservesOverlap = options.preserveProjectedOverlap, boundaryToleranceTexels = options.boundaryToleranceTexels,
+                relativeStretchTolerance = options.relativeStretchTolerance } };
             var all = new List<Surface[]>();
             int nextChart = 0;
             float width = options.seedResolution, height = width;
@@ -209,7 +213,9 @@ namespace SashaRX.UnityMeshLab
             if (options.seedResolution < 16 || options.seedResolution > options.maxAtlasSize || options.padding < 0
                 || options.maxAtlasSize > 16384 || options.projectionReach <= 0 || !Finite(options.projectionReach)
                 || options.normalDot <= 0 || options.normalDot > 1 || !Finite(options.normalDot) || options.maxAnisotropy < 1
-                || !Finite(options.maxAnisotropy) || options.comparisonBudget <= 0)
+                || !Finite(options.maxAnisotropy) || options.comparisonBudget <= 0
+                || !Finite(options.boundaryToleranceTexels) || options.boundaryToleranceTexels<0 || options.boundaryToleranceTexels>.5f
+                || !Finite(options.relativeStretchTolerance) || options.relativeStretchTolerance<0 || options.relativeStretchTolerance>.01f)
                 throw new ArgumentException("Invalid reverse UV settings.");
             for (int i = 0; i < levels.Length; ++i)
             {
@@ -491,7 +497,11 @@ namespace SashaRX.UnityMeshLab
                     clippedArea += Cross(polygon[k] - polygon[0], polygon[k + 1] - polygon[0]);
                 covered += Math.Abs(clippedArea);
             }
-            return area > 0 && covered >= area * (1 - 1e-5);
+            if(area > 0 && covered >= area * (1 - 1e-5)) return true;
+            var regions=Enumerable.Range(0,parent.layers.Length).Where(f=>parent.layers[f]==layer)
+                .Select(f=>new[] {parent.pixels[f*3],parent.pixels[f*3+1],parent.pixels[f*3+2]});
+            return UvTransferTolerance.Covers(triangle,regions,options.boundaryToleranceTexels,
+                ref comparisons,options.comparisonBudget,token);
         }
 
         static void SnapContinuousCorners(Surface[] targets, Options options)

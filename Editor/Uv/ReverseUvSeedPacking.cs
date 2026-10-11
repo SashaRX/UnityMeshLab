@@ -56,6 +56,19 @@ namespace SashaRX.UnityMeshLab
                 scale = low;
             }
             var lower = packed.Aggregate(Vector2.Min);
+            if (options.fillFinalAtlas)
+            {
+                // Integer rectangle footprints can leave a sub-rectangle strip
+                // after the scale search. Fit the completed layout uniformly;
+                // every inter-chart gap grows with it, preserving pixel padding.
+                var span = packed.Aggregate(Vector2.Max)-lower;
+                float fit = (side-options.padding*2)/Math.Max(span.x,span.y);
+                if (fit>1)
+                {
+                    for (int i=0;i<packed.Length;++i) packed[i]=lower+(packed[i]-lower)*fit;
+                    scale *= fit;
+                }
+            }
             var output = new Vector2[coordinates.Length][]; offset = 0;
             for (int i = 0; i < output.Length; ++i)
             {

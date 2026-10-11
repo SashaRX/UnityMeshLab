@@ -14,6 +14,9 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public sealed class ReverseUvTransferTests
     {
+        static float BoundaryTolerance() => float.TryParse(Environment.GetEnvironmentVariable("MESHLAB_TRANSFER_BOUNDARY_TEXELS"),
+            System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out var value)?value:UvTransferTolerance.BoundaryTexels;
+
         readonly List<Mesh> owned = new List<Mesh>();
         [TearDown] public void Cleanup() { foreach (var m in owned) if (m) Object.DestroyImmediate(m); owned.Clear(); }
 
@@ -35,7 +38,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
         static ReverseUvTransfer.Level Level(int lod, params Mesh[] meshes) => new ReverseUvTransfer.Level {
             lod = lod, inputs = meshes.Select((m, i) => new ReverseUvTransfer.Input { mesh = m, key = m.name + i }).ToArray() };
-        static ReverseUvTransfer.Options Options(bool overlap = false) => new ReverseUvTransfer.Options {
+        static ReverseUvTransfer.Options Options(bool overlap = false) => new ReverseUvTransfer.Options {boundaryToleranceTexels=BoundaryTolerance(),
             seedResolution = 128, projectionReach = .1f, preserveProjectedOverlap = overlap };
         static ReverseUvTransfer.Result Build(ReverseUvTransfer.Options options, params ReverseUvTransfer.Level[] levels)
             => ReverseUvTransfer.Build(levels, options).GetAwaiter().GetResult();
@@ -100,9 +103,10 @@ namespace SashaRX.UnityMeshLab.Tests
         [Test]
         public void MissingRefinementPiecesStopProtectionAndRetainTheBaseline()
         {
-            var before=new ReverseUvTransfer.Report(); var after=new ReverseUvTransfer.Report();
-            before.nodes.Add(new ReverseUvTransfer.NodeReport {faces=new[] {new ReverseUvTransfer.Face {inherited=true}},sourceFaces=new[] {23}});
-            after.nodes.Add(new ReverseUvTransfer.NodeReport {faces=Array.Empty<ReverseUvTransfer.Face>(),sourceFaces=Array.Empty<int>()});
+            using var before=new ReverseUvTransfer.Result {report=new ReverseUvTransfer.Report()};
+            using var after=new ReverseUvTransfer.Result {report=new ReverseUvTransfer.Report()};
+            before.report.nodes.Add(new ReverseUvTransfer.NodeReport {faces=new[] {new ReverseUvTransfer.Face {inherited=true}},sourceFaces=new[] {23}});
+            after.report.nodes.Add(new ReverseUvTransfer.NodeReport {faces=Array.Empty<ReverseUvTransfer.Face>(),sourceFaces=Array.Empty<int>()});
             var trial=Options();
             var protect=typeof(ReverseUvTransfer).GetMethod("ProtectDonorAncestors",System.Reflection.BindingFlags.NonPublic|System.Reflection.BindingFlags.Static);
             Assert.IsFalse((bool)protect.Invoke(null,new object[] {before,after,trial,default(CancellationToken)}));
@@ -307,7 +311,7 @@ namespace SashaRX.UnityMeshLab.Tests
                         if (workflow)
                         {
                             trial.stage = "workflow";
-                            var layout = ReverseUvJunctionTrial.Build(levels, new ReverseUvTransfer.Options {
+                            var layout = ReverseUvJunctionTrial.Build(levels, new ReverseUvTransfer.Options {boundaryToleranceTexels=BoundaryTolerance(),
                                 seedResolution = resolution, preserveProjectedOverlap = overlap, projectionReach = .05f,
                                 cutNarrowJunctions = Environment.GetEnvironmentVariable("MESHLAB_REVERSE_JUNCTION_CUTS") == "1",
                                 splitDonorSeams = Environment.GetEnvironmentVariable("MESHLAB_REVERSE_JUNCTION_CUTS") == "1",
@@ -326,7 +330,7 @@ namespace SashaRX.UnityMeshLab.Tests
                         catch (Exception ex) { trial.error = ex.Message; }
                         if (trial.error != null) continue;
                         trial.stage = "projection";
-                        var task = ReverseUvTransfer.Build(prepared.levels, new ReverseUvTransfer.Options {
+                        var task = ReverseUvTransfer.Build(prepared.levels, new ReverseUvTransfer.Options {boundaryToleranceTexels=BoundaryTolerance(),
                             seedResolution = size, preserveProjectedOverlap = overlap, projectionReach = .05f,
                             seedDensity = density > 0 ? prepared.seedDensity : 0 }, true);
                         while (!task.IsCompleted) yield return null;
@@ -1082,7 +1086,7 @@ namespace SashaRX.UnityMeshLab.Tests
             owned.AddRange(outputs);
             var levels=new[] {new ReverseUvTransfer.Level {lod=1,inputs=inputs.Select((input,i)=>new ReverseUvTransfer.Input {mesh=outputs[i],toWorld=transform}).ToArray()},
                 new ReverseUvTransfer.Level {lod=0,inputs=inputs}};
-            using var result=Build(new ReverseUvTransfer.Options {seedResolution=side,projectionReach=.1f},levels);
+            using var result=Build(new ReverseUvTransfer.Options {boundaryToleranceTexels=BoundaryTolerance(),seedResolution=side,projectionReach=.1f},levels);
             Assert.AreEqual(4,result.report.inheritedFaces); Assert.AreEqual(0,result.report.newFaces);
             foreach(var mesh in outputs)
             {
@@ -1139,7 +1143,7 @@ namespace SashaRX.UnityMeshLab.Tests
             foreach (bool rotate in new[] {false,true})
             {
                 var pixels = ReverseUvSeedPacking.Prepare(positions.ToArray(),uv.ToArray(),1,true,
-                    new ReverseUvTransfer.Options {seedResolution=16,padding=0,rotateCharts=rotate,rotateChartsToAxis=false},default,out int side);
+                    new ReverseUvTransfer.Options {boundaryToleranceTexels=BoundaryTolerance(),seedResolution=16,padding=0,rotateCharts=rotate,rotateChartsToAxis=false},default,out int side);
                 Assert.AreEqual(rotate?16:32,side);
                 for (int t=0;t<pixels.Length;t+=3)
                 {
@@ -1156,7 +1160,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 new Vector3(20,0,0),new Vector3(23,0,0),new Vector3(20,.0001f,0)};
             var uv=new[] {Vector2.zero,new Vector2(10,0),new Vector2(0,10),
                 new Vector2(257,123.45f),new Vector2(260,123.45f),new Vector2(257,123.4501f)};
-            var options=new ReverseUvTransfer.Options {seedResolution=512,padding=2};
+            var options=new ReverseUvTransfer.Options {boundaryToleranceTexels=BoundaryTolerance(),seedResolution=512,padding=2};
             var old=ReverseUvNewCharts.Prepare(positions,uv,1,options,default,out var fallback);
             Assert.IsTrue(fallback.All(f=>!f));
             var min=old.Aggregate(Vector2.Min);
@@ -1172,7 +1176,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 new Vector3(20,0,0),new Vector3(23,0,0),new Vector3(19.3f,.04f,0)};
             var uv=new[] {Vector2.zero,new Vector2(10,0),new Vector2(0,10),
                 Vector2.zero,Vector2.zero,Vector2.zero};
-            var options=new ReverseUvTransfer.Options {seedResolution=128,padding=2};
+            var options=new ReverseUvTransfer.Options {boundaryToleranceTexels=BoundaryTolerance(),seedResolution=128,padding=2};
             var repaired=ReverseUvNewCharts.Prepare(positions,uv,1,options,default,out var fallback);
             Assert.IsTrue(fallback[1]);
             var min=repaired.Aggregate(Vector2.Min);

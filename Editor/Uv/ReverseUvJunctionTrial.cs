@@ -59,6 +59,7 @@ namespace SashaRX.UnityMeshLab
                 var trial = new ReverseUvTransfer.Options { seedResolution = size, padding = options.padding,
                     maxAtlasSize = options.maxAtlasSize, projectionReach = options.projectionReach, normalDot = options.normalDot,
                     maxAnisotropy = options.maxAnisotropy, preserveProjectedOverlap = options.preserveProjectedOverlap,
+                    boundaryToleranceTexels = options.boundaryToleranceTexels, relativeStretchTolerance = options.relativeStretchTolerance,
                     comparisonBudget = options.comparisonBudget, cutNarrowJunctions = cuts,
                     splitDonorSeams = options.splitDonorSeams, fillAtlasVacancies = options.fillAtlasVacancies,
                     rotateCharts = options.rotateCharts, rotateChartsToAxis = options.rotateChartsToAxis,
@@ -89,11 +90,16 @@ namespace SashaRX.UnityMeshLab
             ReverseUvTransfer.Level[] levels, CancellationToken token = default)
         {
             var before = baseline.report; var after = candidate.report;
-            if (after.texelsPerUnit < before.texelsPerUnit * .9999f) return "cuts reduce texel density";
+            var meshes=baseline.meshes.SelectMany(m=>m).ToArray();
+            // Refinement may spend a small part of the density gained by final
+            // atlas filling. The requested seed density is still audited.
+            if (after.texelsPerUnit < before.texelsPerUnit * (1-Math.Max(.0001f,after.relativeStretchTolerance)))
+                return $"cuts reduce texel density ({after.texelsPerUnit:G6} versus {before.texelsPerUnit:G6})";
             if (before.nodes.Count != after.nodes.Count) return "cuts change the input node count";
             for (int n = 0; n < before.nodes.Count; ++n)
             {
                 var a = before.nodes[n]; var b = after.nodes[n];
+                var coverage=new CoverageContext(a,meshes.ElementAtOrDefault(n),before.atlasSize,after.boundaryToleranceTexels);
                 var descendants = Enumerable.Range(0, b.faces.Length).GroupBy(f => b.sourceFaces == null ? f : b.sourceFaces[f])
                     .ToDictionary(g => g.Key, g => g.ToArray());
                 for (int f = 0; f < a.faces.Length; ++f)
@@ -101,9 +107,9 @@ namespace SashaRX.UnityMeshLab
                     token.ThrowIfCancellationRequested();
                     int source = a.sourceFaces == null ? f : a.sourceFaces[f];
                     if (!descendants.TryGetValue(source, out var pieces)) return "cuts lose a source face";
-                    if (a.faces[f].inherited && !Covered(a, f, b, pieces.Where(p => b.faces[p].inherited), token))
+                    if (a.faces[f].inherited && !coverage.Covers(f, b, pieces.Where(p => b.faces[p].inherited), token))
                         return $"LOD{a.lod} '{a.key}' face {f} loses inheritance across a new seam";
-                    if (a.faces[f].intentionalOverlap && !Covered(a, f, b, pieces.Where(p => b.faces[p].intentionalOverlap), token))
+                    if (a.faces[f].intentionalOverlap && !coverage.Covers(f, b, pieces.Where(p => b.faces[p].intentionalOverlap), token))
                         return $"LOD{a.lod} '{a.key}' face {f} loses its projected overlap";
                 }
             }
@@ -146,7 +152,7 @@ namespace SashaRX.UnityMeshLab
                         if (!oldStretchBySource.TryGetValue(newNode.sourceFaces[t / 3], out double oldStretch)) continue;
                         double newStretch = ReverseUvTransfer.TriangleAnisotropy(otherPositions[otherIndices[t]], otherPositions[otherIndices[t + 1]],
                             otherPositions[otherIndices[t + 2]], otherUv[otherIndices[t]], otherUv[otherIndices[t + 1]], otherUv[otherIndices[t + 2]]);
-                        if (newStretch > oldStretch * 1.0001 + .0001)
+                        if (!UvTransferTolerance.MetricFits(newStretch,oldStretch,after.relativeStretchTolerance))
                             yield return (reportNode-1,t/3,newNode.sourceFaces[t/3]);
                     }
                 }
@@ -156,6 +162,40 @@ namespace SashaRX.UnityMeshLab
         {
             if (node.sourceBarycentrics == null) return new[] { Vector2.zero, Vector2.right, Vector2.up };
             return Enumerable.Range(face * 3, 3).Select(i => new Vector2(node.sourceBarycentrics[i].y, node.sourceBarycentrics[i].z)).ToArray();
+        }
+
+        internal sealed class CoverageContext
+        {
+            readonly ReverseUvTransfer.NodeReport before;
+            readonly Vector2[] pixels;
+            readonly int[] indices;
+            readonly float tolerance;
+            long work;
+
+            internal CoverageContext(ReverseUvTransfer.NodeReport before,Mesh mesh,int side,float tolerance)
+            {
+                this.before=before;this.tolerance=tolerance;
+                if(mesh) {pixels=mesh.uv2.Select(p=>p*side).ToArray();indices=mesh.triangles;}
+            }
+
+            internal bool Covers(int face,ReverseUvTransfer.NodeReport after,IEnumerable<int> pieces,CancellationToken token)
+            {
+                var selected=pieces.ToArray();
+                if(Covered(before,face,after,selected,token)) return true;
+                if(tolerance<=0 || selected.Length==0 || pixels==null) return false;
+                var region=Region(before,face);int start=face*3;
+                var triangle=new[] {pixels[indices[start]],pixels[indices[start+1]],pixels[indices[start+2]]};
+                double det=Cross(region[0],region[1],region[2]);
+                if(det==0) return false;
+                Vector2 Map(Vector2 p)
+                {
+                    double x=Cross(region[0],p,region[2])/det,y=Cross(region[0],region[1],p)/det;
+                    return new Vector2((float)(triangle[0].x+x*(triangle[1].x-triangle[0].x)+y*(triangle[2].x-triangle[0].x)),
+                        (float)(triangle[0].y+x*(triangle[1].y-triangle[0].y)+y*(triangle[2].y-triangle[0].y)));
+                }
+                var donors=selected.Select(f=>Region(after,f).Select(Map).ToArray());
+                return UvTransferTolerance.Covers(triangle,donors,tolerance,ref work,2000000,token);
+            }
         }
 
         internal static bool Covered(ReverseUvTransfer.NodeReport before, int face, ReverseUvTransfer.NodeReport after,

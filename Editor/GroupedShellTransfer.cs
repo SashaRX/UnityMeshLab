@@ -909,7 +909,8 @@ namespace SashaRX.UnityMeshLab
 
         internal static TransferResult TransferWithDiagnostics(Mesh targetMesh, Mesh sourceMesh,
             List<OverlapSourceHint> previousLodHints, List<CrossLodMatchHint> previousLodMatchHints,
-            int sourceAtlasWidth, int sourceAtlasHeight, TransferMatchTrace trace)
+            int sourceAtlasWidth, int sourceAtlasHeight, TransferMatchTrace trace,
+            float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels)
         {
             ExtractMeshData(targetMesh, sourceMesh,
                 out var srcVerts, out var srcTris, out var srcUv0, out var srcUv2, out var srcNormals, out var sourceMeshName,
@@ -918,7 +919,7 @@ namespace SashaRX.UnityMeshLab
                 srcVerts, srcTris, srcUv0, srcUv2, srcNormals, sourceMeshName,
                 tVerts, tNormals, tUv0, tgtTris, vertCount, targetMeshName,
                 previousLodHints, previousLodMatchHints,
-                sourceAtlasWidth, sourceAtlasHeight, trace);
+                sourceAtlasWidth, sourceAtlasHeight, trace, boundaryToleranceTexels);
         }
 
         /// <summary>
@@ -941,7 +942,8 @@ namespace SashaRX.UnityMeshLab
 
         internal static Task<TransferResult> TransferAsyncWithDiagnostics(Mesh targetMesh, Mesh sourceMesh,
             List<OverlapSourceHint> previousLodHints, List<CrossLodMatchHint> previousLodMatchHints,
-            int sourceAtlasWidth, int sourceAtlasHeight, TransferMatchTrace trace)
+            int sourceAtlasWidth, int sourceAtlasHeight, TransferMatchTrace trace,
+            float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels)
         {
             ExtractMeshData(targetMesh, sourceMesh,
                 out var srcVerts, out var srcTris, out var srcUv0, out var srcUv2, out var srcNormals, out var sourceMeshName,
@@ -950,7 +952,7 @@ namespace SashaRX.UnityMeshLab
                 srcVerts, srcTris, srcUv0, srcUv2, srcNormals, sourceMeshName,
                 tVerts, tNormals, tUv0, tgtTris, vertCount, targetMeshName,
                 previousLodHints, previousLodMatchHints,
-                sourceAtlasWidth, sourceAtlasHeight, trace));
+                sourceAtlasWidth, sourceAtlasHeight, trace, boundaryToleranceTexels));
         }
 
         // Main-thread mesh read — splits Mesh API access (Mesh.vertices etc.
@@ -993,7 +995,8 @@ namespace SashaRX.UnityMeshLab
             int vertCount, string targetMeshName,
             List<OverlapSourceHint> previousLodHints,
             List<CrossLodMatchHint> previousLodMatchHints,
-            int sourceAtlasWidth, int sourceAtlasHeight, TransferMatchTrace trace)
+            int sourceAtlasWidth, int sourceAtlasHeight, TransferMatchTrace trace,
+            float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels)
         {
             var result = new TransferResult { matchTrace = trace };
             float uv2OobMargin = ComputeUv2PixelMargin(sourceAtlasWidth, sourceAtlasHeight, 1.25f, 0.005f);
@@ -3864,7 +3867,7 @@ namespace SashaRX.UnityMeshLab
             result.topologyCapHit     = LastTopologyCapHit;
 
             int planarRecovered = PlanarTransferRecovery.Apply(result,tgtShells,tgtTris,tVerts,
-                srcShells,srcTris,srcVerts,srcUv2,trace);
+                srcShells,srcTris,srcVerts,srcUv2,trace,System.Math.Max(sourceAtlasWidth,sourceAtlasHeight),boundaryToleranceTexels);
             if (planarRecovered>0)
             {
                 result.shellsGeometryFallback+=planarRecovered;

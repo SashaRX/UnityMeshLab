@@ -2343,14 +2343,16 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        internal float TransferBoundaryToleranceTexels = UvTransferTolerance.BoundaryTexels;
+
         static Task<GroupedShellTransfer.TransferResult> TransferMesh(Mesh target, Mesh source,
             List<GroupedShellTransfer.OverlapSourceHint> overlapHints,
             List<GroupedShellTransfer.CrossLodMatchHint> matchHints, int atlasWidth, int atlasHeight, bool useAsync,
-            TransferMatchTrace trace)
+            TransferMatchTrace trace,float boundaryToleranceTexels)
         {
             if (useAsync)
-                return GroupedShellTransfer.TransferAsyncWithDiagnostics(target, source, overlapHints, matchHints, atlasWidth, atlasHeight, trace);
-            return Task.FromResult(GroupedShellTransfer.TransferWithDiagnostics(target, source, overlapHints, matchHints, atlasWidth, atlasHeight, trace));
+                return GroupedShellTransfer.TransferAsyncWithDiagnostics(target, source, overlapHints, matchHints, atlasWidth, atlasHeight, trace,boundaryToleranceTexels);
+            return Task.FromResult(GroupedShellTransfer.TransferWithDiagnostics(target, source, overlapHints, matchHints, atlasWidth, atlasHeight, trace,boundaryToleranceTexels));
         }
 
         async Task ExecTransferLodImpl(int tLod, bool useAsync)
@@ -2404,7 +2406,7 @@ namespace SashaRX.UnityMeshLab
                 hintState.overlapHints.Count > 0 ? hintState.overlapHints : null,
                 hintState.matchHints.Count > 0 ? hintState.matchHints : null,
                 srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
-                srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0, useAsync, pair?.trace);
+                srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0, useAsync, pair?.trace,TransferBoundaryToleranceTexels);
             if (tr.uv2 == null) {
                 ctx.DiagnosticCapture?.AfterPair(pair, tgt, tr);
                 UvtLog.Warn($"[Transfer] Failed for '{tgt.renderer.name}'"); return;
@@ -2417,7 +2419,7 @@ namespace SashaRX.UnityMeshLab
                 try
                 {
                     var projection=await ReverseUvTransfer.PrepareForwardSeamsAsync(srcMesh,tgtMesh,tr.uv2,tr.vertexToSourceShell,
-                        Mathf.Max(16,(int)Math.Max(srcEntry.repackedAtlasWidth,srcEntry.repackedAtlasHeight)),useAsync,trace:pair?.trace);
+                        Mathf.Max(16,(int)Math.Max(srcEntry.repackedAtlasWidth,srcEntry.repackedAtlasHeight)),useAsync,trace:pair?.trace,boundaryToleranceTexels:TransferBoundaryToleranceTexels);
                     prepared=projection.mesh;var projectedSources=projection.sources;
                     if (prepared)
                     {
@@ -2428,7 +2430,7 @@ namespace SashaRX.UnityMeshLab
                             // Subdivision can multiply the number of contacts
                             // inside an existing pair without adding an overlap.
                             && after.overlapPairArea<=before.overlapPairArea*1.001+1e-14
-                            && after.worstAnisotropy<=before.worstAnisotropy*1.001
+                            && UvTransferTolerance.MetricFits(after.worstAnisotropy,before.worstAnisotropy)
                             && (after.degenerateFaces<before.degenerateFaces || after.invalidFaces<before.invalidFaces
                                 || after.areaWeightedAnisotropy<before.areaWeightedAnisotropy*.99);
                         if(pair?.trace!=null) pair.trace.projectedSeamQuality=quality;

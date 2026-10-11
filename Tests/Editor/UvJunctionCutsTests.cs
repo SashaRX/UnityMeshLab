@@ -346,6 +346,9 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             string directory = Environment.GetEnvironmentVariable("MESHLAB_JUNCTION_FIXTURES");
             if (string.IsNullOrEmpty(directory)) Assert.Ignore("Optional private FBX fixtures are not configured.");
+            float tolerance=float.TryParse(Environment.GetEnvironmentVariable("MESHLAB_TRANSFER_BOUNDARY_TEXELS"),
+                System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out var configured)
+                ?configured:UvTransferTolerance.BoundaryTexels;
             var root = AssetDatabase.LoadAssetAtPath<GameObject>(directory + "/Cafe_Table_A_01.fbx");
             Assert.IsNotNull(root);
             var filters = root.GetComponentsInChildren<MeshFilter>(true).Where(f => f.sharedMesh).ToArray();
@@ -361,7 +364,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 int seedCharts = 0;
                 foreach (bool cuts in new[] { false, true })
                 {
-                    using var prepared = ReverseUvJunctionTrial.Build(levels, new ReverseUvTransfer.Options {
+                    using var prepared = ReverseUvJunctionTrial.Build(levels, new ReverseUvTransfer.Options {boundaryToleranceTexels=tolerance,
                         seedResolution = density == 10 ? 64 : 128, padding = 2, projectionReach = .05f, cutNarrowJunctions = cuts,
                         preserveProjectedOverlap = overlap, repackFinalAtlas = true, fillFinalAtlas = true }, true, density).GetAwaiter().GetResult();
                     var result = prepared.result;

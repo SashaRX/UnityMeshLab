@@ -15,6 +15,9 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public sealed class ReverseUvSeamTests
     {
+        static float BoundaryTolerance() => float.TryParse(Environment.GetEnvironmentVariable("MESHLAB_TRANSFER_BOUNDARY_TEXELS"),
+            System.Globalization.NumberStyles.Float,System.Globalization.CultureInfo.InvariantCulture,out var value)?value:UvTransferTolerance.BoundaryTexels;
+
         readonly List<Mesh> owned = new List<Mesh>();
         [TearDown] public void Cleanup() { foreach (var mesh in owned) if (mesh) Object.DestroyImmediate(mesh); owned.Clear(); }
 
@@ -66,7 +69,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     new Vector2(.6f,.1f),new Vector2(.75f,.1f),new Vector2(.75f,.4f),new Vector2(.6f,.4f)}};
             owned.Add(donor);var target=Quad();var before=TransferMeshSnapshot.Capture(target);
             using var result=ReverseUvTransfer.Build(new[] {Level(1,donor),Level(0,target)},
-                new ReverseUvTransfer.Options {seedResolution=128,preserveProjectedOverlap=overlap}).GetAwaiter().GetResult();
+                new ReverseUvTransfer.Options {boundaryToleranceTexels=BoundaryTolerance(),seedResolution=128,preserveProjectedOverlap=overlap}).GetAwaiter().GetResult();
             var report=result.report.nodes[1];
             Assert.Greater(report.splitSourceFaces,0);
             Assert.AreEqual(0,report.newFaces);
@@ -217,7 +220,7 @@ namespace SashaRX.UnityMeshLab.Tests
             {
                 foreach (bool improved in new[] {false,true})
                 {
-                    using var prepared = ReverseUvJunctionTrial.Build(seed.levels,new ReverseUvTransfer.Options {seedResolution=seedSide,
+                    using var prepared = ReverseUvJunctionTrial.Build(seed.levels,new ReverseUvTransfer.Options {boundaryToleranceTexels=BoundaryTolerance(),seedResolution=seedSide,
                         seedDensity=seed.seedDensity,preserveProjectedOverlap=overlap,splitDonorSeams=improved,fillAtlasVacancies=improved},false,32).GetAwaiter().GetResult();
                     string output = Environment.GetEnvironmentVariable("MESHLAB_JUNCTION_OUTPUT");
                     BenchmarkRecorder.OutputDirectoryOverride = string.IsNullOrEmpty(output)?null:Path.Combine(output,
@@ -286,7 +289,7 @@ namespace SashaRX.UnityMeshLab.Tests
                             File.WriteAllText(Path.Combine(directory,input.key+"-geometry.json"),JsonUtility.ToJson(new WoodenInputDump {
                                 key=input.key,lod=level.lod,positions=ReverseUvTransfer.RelativePositions(input,origin),indices=input.mesh.triangles},true));
                     var trial=new AssetTrial {asset=path,overlap=overlap,improved=true,stage="projection"}; trials.trials.Add(trial);
-                    var task=ReverseUvJunctionTrial.Build(levels,new ReverseUvTransfer.Options {seedResolution=256,preserveProjectedOverlap=overlap,
+                    var task=ReverseUvJunctionTrial.Build(levels,new ReverseUvTransfer.Options {boundaryToleranceTexels=BoundaryTolerance(),seedResolution=256,preserveProjectedOverlap=overlap,
                         cutNarrowJunctions=Environment.GetEnvironmentVariable("MESHLAB_REVERSE_JUNCTION_CUTS")=="1"},true,32,true);
                     while(!task.IsCompleted) yield return null;
                     if(task.IsFaulted) trial.error=task.Exception.GetBaseException().Message;
@@ -345,7 +348,7 @@ namespace SashaRX.UnityMeshLab.Tests
                             trial.stage="seed/projection";
                             {
                                 trial.stage="projection";
-                                var task=ReverseUvJunctionTrial.Build(levels,new ReverseUvTransfer.Options {seedResolution=256,
+                                var task=ReverseUvJunctionTrial.Build(levels,new ReverseUvTransfer.Options {boundaryToleranceTexels=BoundaryTolerance(),seedResolution=256,
                                     splitDonorSeams=improved,fillAtlasVacancies=improved,preserveProjectedOverlap=overlap,
                                     repackFinalAtlas=finalPacking,fillFinalAtlas=finalPacking,
                                     cutNarrowJunctions=improved && Environment.GetEnvironmentVariable("MESHLAB_REVERSE_JUNCTION_CUTS")=="1"},true,0,true);
