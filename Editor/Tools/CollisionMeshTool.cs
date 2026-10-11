@@ -673,7 +673,15 @@ namespace SashaRX.UnityMeshLab
                 {
                     paths[result.sourceTransform] = path;
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-                    documentPaths[result.sourceTransform] = FbxStructureWrite.ImportedCollisionDocumentPath(document, path);
+                    try
+                    {
+                        documentPaths[result.sourceTransform] = FbxStructureWrite.ImportedCollisionDocumentPath(document, path);
+                    }
+                    catch (FbxStructureRefusalException e)
+                    {
+                        UvtLog.Warn($"[Collision] {e.Message}; sidecar was not changed.");
+                        return;
+                    }
 #endif
                 }
             }

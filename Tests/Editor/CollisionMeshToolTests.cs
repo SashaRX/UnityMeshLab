@@ -639,6 +639,73 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { foreach (var mesh in sink) if (mesh) Object.DestroyImmediate(mesh); }
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void InvalidDocumentSourceWarnsBeforeCreatingOrChangingSidecar(bool existingSidecar)
+        {
+            var source = Prepare(true);
+            var ctx = Field<UvToolContext>(tool, "ctx");
+            source.gameObject.AddComponent<MeshFilter>().sharedMesh = ctx.MeshEntries[0].originalMesh;
+            if (!AssetDatabase.IsValidFolder("Assets/UnityMeshLab")) AssetDatabase.CreateFolder("Assets", "UnityMeshLab");
+            string fbxPath = "Assets/UnityMeshLab/CollisionRefusal-" + Guid.NewGuid().ToString("N") + ".fbx";
+            string sidecarPath = SidecarStore.PathFor(fbxPath);
+            assets.Add(fbxPath);
+            assets.Add(sidecarPath);
+            var exportRoot = Object.Instantiate(root);
+            owned.Add(exportRoot);
+            FbxExport.Write(fbxPath, exportRoot);
+            AssetDatabase.ImportAsset(fbxPath, ImportAssetOptions.ForceSynchronousImport);
+            ctx.MeshEntries[0].fbxMesh = AssetDatabase.LoadAllAssetsAtPath(fbxPath).OfType<Mesh>().First();
+            if (existingSidecar) Call(tool, "SaveToSidecar");
+            var before = SidecarStore.Load(fbxPath);
+            string beforeJson = before != null ? EditorJsonUtility.ToJson(before) : null;
+            byte[] beforeBytes = before != null ? System.IO.File.ReadAllBytes(sidecarPath) : null;
+            var logLevel = UvtLog.Current;
+            var logCategories = UvtLog.EnabledCategories;
+            var warnings = new List<string>();
+            Application.LogCallback capture = (message, stack, type) =>
+            {
+                if (type == LogType.Warning) warnings.Add(message);
+            };
+            AssetDatabase.DisallowAutoRefresh();
+            try
+            {
+                // The on-disk source changed before Unity reimported it. The cached
+                // imported hierarchy still resolves, but the FBX document refuses it.
+                using (var document = FbxSourceDocument.Load(fbxPath))
+                {
+                    document.Meshes[0].GetNode(0).SetName("MovedSource");
+                    document.Save(fbxPath);
+                }
+                byte[] sourceBytes = System.IO.File.ReadAllBytes(fbxPath);
+                UvtLog.Current = UvtLog.Level.Warning;
+                UvtLog.EnabledCategories |= UvtLog.Category.General;
+                Application.logMessageReceived += capture;
+                Assert.DoesNotThrow(() => Call(tool, "SaveToSidecar"));
+                Assert.AreEqual(1, warnings.Count);
+                StringAssert.Contains("has no source node in the FBX; sidecar was not changed.", warnings[0]);
+                CollectionAssert.AreEqual(sourceBytes, System.IO.File.ReadAllBytes(fbxPath));
+                if (existingSidecar)
+                {
+                    Assert.AreSame(before, SidecarStore.Load(fbxPath));
+                    Assert.AreEqual(beforeJson, EditorJsonUtility.ToJson(before));
+                    CollectionAssert.AreEqual(beforeBytes, System.IO.File.ReadAllBytes(sidecarPath));
+                }
+                else
+                {
+                    Assert.IsNull(SidecarStore.Load(fbxPath));
+                    Assert.IsFalse(System.IO.File.Exists(sidecarPath));
+                }
+            }
+            finally
+            {
+                Application.logMessageReceived -= capture;
+                UvtLog.Current = logLevel;
+                UvtLog.EnabledCategories = logCategories;
+                AssetDatabase.AllowAutoRefresh();
+            }
+        }
+
         [TestCase(false, 0, true, false)]
         [TestCase(true, 0, false, false)]
         [TestCase(true, 2, false, false)]
