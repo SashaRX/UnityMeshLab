@@ -5,6 +5,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+
+- All isolated 3D previews use model coordinates with identity root position/rotation and unit scale. LOD/UV tools, collision surfaces and wire overlays, Remesh source/results/cages, Texture AO and Prefab Builder overlays ignore scene root/ancestor transforms while preserving authored child placement. Scene visualization and exported transforms are unchanged.
+
 ### Added
 - Collision Structural mode analyzes the selected source hierarchy, keeps renderer nodes independent, and chooses final oriented boxes or convex profiles extruded from one principal projection before falling back to 3D decomposition. Profile splitting checks sampled gaps and surface distance; supporting-edge reduction preserves the outline instead of cutting away contact points. The new UI default uses 8 shapes and a 7.5% group-relative fit tolerance. Apply uses BoxCollider where the transform supports it, with exact mesh proxies for sheared transforms, preview, sidecar and FBX. Hierarchy / Shape Analysis reports each choice and fallback reason.
 - Far Screen Budget distinguishes continuous vertex-color gradients from sharp paint boundaries and verifies reverse-view color/UV correspondence. Bounded silhouette correction checks contacts and source distance at 64px and 128px; the real SmallBench keeps 77/708 triangles and 125 vertices while worst 64px GPU coverage error improves from 23.9% to 18.1%. University Pot and the tent retain their previous meshes. The unsuccessful 78-triangle component-allocation prototype is archived outside the generator; this fixture-tuning series is closed with remaining thin-detail, protected LOD1, generation-time and shared-lightmap limits documented.

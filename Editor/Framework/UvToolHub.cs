@@ -1093,7 +1093,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 Mesh mesh = ctx.DMesh(e);
                 if (mesh == null) continue;
-                var matrix = e.renderer != null ? e.renderer.localToWorldMatrix : Matrix4x4.identity;
+                var matrix = ctx.PreviewMatrix(e.renderer ? e.renderer.transform : null);
                 viewportItems.Add(new MeshViewport3D.Item(mesh, matrix, e.renderer != null ? e.renderer.sharedMaterials : null));
                 viewportEntries.Add(e);
             }

@@ -78,12 +78,10 @@ namespace SashaRX.UnityMeshLab
         public Vector3 RootScale { get; private set; } = Vector3.one;
         /// <summary>The source root's world rotation at capture time; the save carries it.</summary>
         public Quaternion RootRotation { get; private set; } = Quaternion.identity;
-        Matrix4x4 previewWorldToFrame = Matrix4x4.identity;
-        internal Matrix4x4 PreviewSpaceToWorld => Primary is Node node ? previewWorldToFrame * node.spaceToWorld : Matrix4x4.identity;
-        // Remove the scene root's position/rotation from display only. Scale and
-        // child transforms still match capture space; export uses the original TRS.
-        internal static Matrix4x4 PreviewRootFrameInverse(Transform root) =>
-            Matrix4x4.TRS(root.position, root.rotation, Vector3.one).inverse;
+        // Captured child placements belong to the model; scene root TRS belongs
+        // only to baking/export. A merged/root node displays with exact identity.
+        internal Matrix4x4 PreviewSpaceToWorld => hierarchy && Primary is Node node
+            ? Matrix4x4.TRS(node.localPosition, node.localRotation, node.localScale) : Matrix4x4.identity;
         public Action Changed;
 
         public Node Primary
@@ -236,7 +234,6 @@ namespace SashaRX.UnityMeshLab
             ResultName = root.name;
             RootScale = root.transform.lossyScale;
             RootRotation = root.transform.rotation;
-            previewWorldToFrame = PreviewRootFrameInverse(root.transform);
             var rootToWorld = root.transform.localToWorldMatrix;
             var worldToRoot = root.transform.worldToLocalMatrix;
             var captures = new List<Node>();
@@ -252,7 +249,9 @@ namespace SashaRX.UnityMeshLab
                     var renderer = renderers[i];
                     token.ThrowIfCancellationRequested();
                     Report($"Reading {renderer.name} ({i + 1}/{renderers.Count})…");
-                    var toRoot = worldToRoot * renderer.transform.localToWorldMatrix;
+                    // Build the authored relative placement directly. Cancelling
+                    // world matrices leaks roundoff into an otherwise identity root.
+                    var toRoot = PreviewSpace.LocalToRoot(renderer.transform, root.transform);
                     var node = new Node { name = renderer.name, localPosition = toRoot.GetColumn(3),
                         localRotation = toRoot.rotation, localScale = toRoot.lossyScale };
                     node.spaceToWorld = rootToWorld * Matrix4x4.TRS(node.localPosition, node.localRotation, node.localScale);
