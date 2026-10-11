@@ -298,6 +298,48 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        [TestCase(false)]
+        [TestCase(true)]
+        public void BinaryFilenameRewriteStreamsOpaqueGeometryAndUpdatesOffsets(bool wide)
+        {
+            const int payload = 20 * 1024 * 1024;
+            string input = Path.Combine(folder, "stage.fbx"), output = Path.Combine(folder, "rewrite.fbx");
+            long geometryStart = 27 + 2 * (wide ? 25 : 13) + "Objects".Length + "Geometry".Length;
+            using (var file = File.Create(input))
+            {
+                WriteLargeBinaryMediaFixture(file, wide, payload);
+                file.Position = geometryStart + payload - 20;
+                file.Write(new byte[] { 3, 5, 7, 11 }, 0, 4);
+            }
+            var paths = new List<IReadOnlyDictionary<string, string>>();
+            var expected = new List<(string, string)>();
+            foreach (string name in new[] { "map", "video" })
+            {
+                string destination = Path.Combine(folder, "durable", name + "-a-longer-filename.png");
+                paths.Add(new Dictionary<string, string> {
+                    [Path.Combine(folder, "authoring", name + ".png")] = destination,
+                    [Path.Combine(folder, "maps", name + ".png")] = destination });
+                expected.Add((destination.Replace('\\', '/'), Path.GetRelativePath(folder, destination).Replace('\\', '/')));
+            }
+            using (var source = new BoundedReadStream(File.OpenRead(input)))
+            using (var saved = File.Create(output)) FbxExternalMedia.RewriteBinary(source, saved, paths, folder, output);
+            CollectionAssert.AreEqual(expected, FbxUvSetNames.ReadMediaReferences(output));
+            CollectionAssert.AreEqual(PayloadHash(input, geometryStart, payload), PayloadHash(output, geometryStart, payload));
+        }
+
+        static byte[] PayloadHash(string path, long offset, int length)
+        {
+            using var hash = System.Security.Cryptography.SHA256.Create();
+            using var stream = File.OpenRead(path); stream.Position = offset;
+            var buffer = new byte[4096];
+            while (length > 0)
+            {
+                int read = stream.Read(buffer, 0, Math.Min(length, buffer.Length));
+                Assert.Greater(read, 0); hash.TransformBlock(buffer, 0, read, buffer, 0); length -= read;
+            }
+            hash.TransformFinalBlock(Array.Empty<byte>(), 0, 0); return hash.Hash;
+        }
+
         sealed class StreamingOnlyReader : StringReader
         {
             internal StreamingOnlyReader(string value) : base(value) { }
@@ -455,6 +497,63 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(original, File.ReadAllBytes(extracted[0]));
         }
 
+        [TestCase(false, false)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public void MediaSaveKeepsGeometryDoublesBitForBit(bool embedded, bool probe)
+        {
+            string source = Source(true, embedded: embedded, external: !embedded);
+            string output = Path.Combine(folder, "exact.fbx");
+            using var document = FbxSourceDocument.Load(source);
+            var mesh = document.Meshes[0];
+            double precise = BitConverter.Int64BitsToDouble(BitConverter.DoubleToInt64Bits(.234567890123456) + 1);
+            mesh.SetControlPointAt(new FbxVector4(precise, precise, precise), 0);
+            var topology = new FbxLayerChannels.Topology(mesh);
+            FbxLayerChannels.WriteUv(mesh, 0, topology, Enumerable.Repeat(precise, 8).ToArray(), Enumerable.Repeat(true, 4).ToArray());
+            FbxLayerChannels.WriteColor(mesh, topology, Enumerable.Repeat(precise, 16).ToArray(), Enumerable.Repeat(true, 4).ToArray());
+            long[] before = GeometryBits(mesh);
+            if (probe) document.SaveForImport(output); else document.SaveAtomic(output);
+            using var saved = FbxSourceDocument.Load(output);
+            CollectionAssert.AreEqual(before, GeometryBits(saved.Meshes[0]));
+            Assert.AreEqual(embedded && probe, saved.EmbedsMedia);
+        }
+
+        static long[] GeometryBits(FbxMesh mesh)
+        {
+            var values = new List<double>();
+            for (int i = 0; i < mesh.GetControlPointsCount(); i++)
+            {
+                var point = mesh.GetControlPointAt(i); values.Add(point.X); values.Add(point.Y); values.Add(point.Z);
+            }
+            var topology = new FbxLayerChannels.Topology(mesh);
+            foreach (var element in FbxLayerChannels.UvElements(mesh)) values.AddRange(FbxLayerChannels.ReadUv(element, topology));
+            values.AddRange(FbxLayerChannels.ReadColor(FbxLayerChannels.ColorElement(mesh), topology));
+            return values.Select(BitConverter.DoubleToInt64Bits).ToArray();
+        }
+
+        [Test]
+        public void TemporaryProbeKeepsAvailableEmbeddedMediaDespiteStaleExternalMap()
+        {
+            string source = Source(true, embedded: true), mixed = Path.Combine(folder, "mixed.fbx");
+            using (var document = FbxSourceDocument.Load(source))
+            {
+                document.Scene.GetRootNode().GetChild(0).AddMaterial(FbxStructureEdit.NewMaterial(document.Scene,
+                    "M_Missing", 1, 1, 1, "T_Missing", Path.Combine(folder, "missing.png"), "missing.png", null));
+                document.Manager.GetIOSettings().SetBoolProp(Globals.EXP_FBX_EMBEDDED, true);
+                document.ExportScene(document.Scene, mixed, new FbxWriteSettings(true, true).WriterFormat(document.Manager), document.Manager.GetIOSettings());
+            }
+            File.Delete(Path.Combine(folder, "map.png"));
+            using var loaded = FbxSourceDocument.Load(mixed);
+            Assert.IsTrue(loaded.EmbedsMedia);
+            string probe = Path.Combine(folder, "probe.fbx");
+            Assert.DoesNotThrow(() => loaded.SaveForImport(probe));
+            using (var saved = FbxSourceDocument.Load(probe)) Assert.IsTrue(saved.EmbedsMedia);
+            byte[] original = { 2, 3, 5 }; string output = Path.Combine(folder, "unchanged.fbx"); File.WriteAllBytes(output, original);
+            MeshLabProjectSettings.Instance.embedFbxTextures = true;
+            Assert.Throws<IOException>(() => loaded.SaveAtomic(output), "explicit final embedding still refuses a missing map");
+            CollectionAssert.AreEqual(original, File.ReadAllBytes(output));
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void ExternalSourceVariantKeepsOriginalMediaAfterScratchDisposal(bool binary)
@@ -554,7 +653,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     throw new IOException("Injected texture import failure after the import batch.");
                 };
                 var exception = Assert.Throws<System.Reflection.TargetInvocationException>(() => method.Invoke(document,
-                    new object[] { output, FbxWriteSettings.FromProject(), atomic, failingImport }));
+                    new object[] { output, FbxWriteSettings.FromProject(), atomic, failingImport, null }));
                 Assert.IsInstanceOf<IOException>(exception.InnerException);
                 Assert.IsTrue(imported);
                 CollectionAssert.AreEqual(original, File.ReadAllBytes(output));
@@ -697,6 +796,9 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             var package = UnityEditor.PackageManager.PackageInfo.FindForAssetPath("Packages/com.sasharx.unitymeshlab");
             Assert.IsNotNull(package);
+            if (package.source != UnityEditor.PackageManager.PackageSource.Local
+                && package.source != UnityEditor.PackageManager.PackageSource.Embedded)
+                Assert.Ignore("Rollback fixture needs a writable local or embedded package.");
             string name = "MeshLabMediaRollback_" + Guid.NewGuid().ToString("N"), asset = package.assetPath + "/" + name;
             UnityEditor.AssetDatabase.CreateFolder(package.assetPath, name);
             var texture = new Texture2D(2, 2);

@@ -117,9 +117,9 @@ namespace SashaRX.UnityMeshLab
         // Corner-tag copies are import probes, not user exports: retain the source's
         // container and media so the probe's imported data keeps the same context.
         internal void SaveForImport(string path)
-            => SaveWithSettings(path, new FbxWriteSettings(Binary, EmbedsMedia), false);
+            => SaveWithSettings(path, new FbxWriteSettings(Binary, EmbedsMedia), false, requireMedia: false);
 
-        void SaveWithSettings(string path, FbxWriteSettings settings, bool atomic, Action<IEnumerable<string>> importMedia = null)
+        void SaveWithSettings(string path, FbxWriteSettings settings, bool atomic, Action<IEnumerable<string>> importMedia = null, bool? requireMedia = null)
         {
             var io = Manager.GetIOSettings();
             int format = settings.WriterFormat(Manager);
@@ -131,12 +131,12 @@ namespace SashaRX.UnityMeshLab
             try
             {
                 // The wrapper cannot downcast an imported FbxObject to FbxFileTexture.
-                // Use a temporary SDK ASCII document to relocate only media filenames,
+                // Use a temporary SDK Binary document to relocate only media filenames,
                 // then let the SDK write the selected output container. Geometry stays
                 // in SDK scenes throughout; the temporary format is never a user output.
                 prepared = EmbedsMedia && !settings.EmbedTextures
                     ? FbxExternalMedia.Prepare(this, scratch, path, createdMedia, createdFolders, referencedMedia)
-                    : FbxExternalMedia.ResolveExternal(this, scratch, path, settings.EmbedTextures);
+                    : FbxExternalMedia.ResolveExternal(this, scratch, path, requireMedia ?? settings.EmbedTextures);
                 // Drain the media import batch before writing the FBX. A texture
                 // postprocessor failure then leaves the old document untouched,
                 // and newly externalized assets remain eligible for rollback.

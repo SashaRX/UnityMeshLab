@@ -86,16 +86,19 @@ namespace SashaRX.UnityMeshLab
         {
             var io = document.Manager.GetIOSettings();
             io.SetBoolProp(Globals.EXP_FBX_EMBEDDED, false);
-            document.ExportScene(document.Scene, staged, new FbxWriteSettings(false, false).WriterFormat(document.Manager), io);
+            document.ExportScene(document.Scene, staged, new FbxWriteSettings(true, false).WriterFormat(document.Manager), io);
         }
 
         static FbxScene RewriteAndImport(FbxSourceDocument document, string staged, string scratch, string target, IReadOnlyDictionary<string, string> extractedPaths, bool requireMedia)
         {
             Stage(document, staged);
             string rewritten = Path.Combine(scratch, "media-paths.fbx");
-            using (var reader = new StreamReader(staged))
-            using (var writer = new StreamWriter(rewritten))
-                RewriteAscii(reader, writer, scratch, document.SourceDirectory, target, extractedPaths, SourcePaths(document.MediaReferences, document.SourceDirectory), requireMedia);
+            var originalPaths = SourcePaths(document.MediaReferences, document.SourceDirectory);
+            var mediaPaths = FbxUvSetNames.ReadMediaReferences(staged)
+                .Select(reference => ResolveBinaryPaths(reference, scratch, document.SourceDirectory, extractedPaths, originalPaths, requireMedia)).ToArray();
+            using (var reader = File.OpenRead(staged))
+            using (var writer = File.Create(rewritten))
+                RewriteBinary(reader, writer, mediaPaths, scratch, target);
             var scene = FbxScene.Create(document.Manager, "MeshLabExternalMedia");
             using var importer = FbxImporter.Create(document.Manager, "MeshLabExternalMediaImport");
             if (!importer.Initialize(rewritten, -1, document.Manager.GetIOSettings()) || !importer.Import(scene))
@@ -104,6 +107,151 @@ namespace SashaRX.UnityMeshLab
                 throw new IOException("FBX SDK cannot read the external-media document.");
             }
             return scene;
+        }
+
+        static IReadOnlyDictionary<string, string> ResolveBinaryPaths((string filename, string relative) reference, string scratch, string source,
+            IReadOnlyDictionary<string, string> extracted, IReadOnlyDictionary<string, string> original, bool requireMedia)
+        {
+            var names = new[] { reference.filename, reference.relative }.Where(name => !string.IsNullOrEmpty(name)).ToArray();
+            var mapped = names.Select(name => extracted.TryGetValue(MediaPath(name, scratch), out string path) ? path : name).ToList();
+            var resolved = ResolveBlockPaths(mapped, scratch, source, original, requireMedia);
+            string output = resolved.Values.FirstOrDefault();
+            var paths = new Dictionary<string, string>(PathComparer);
+            if (output != null) foreach (string name in names) paths[MediaPath(name, scratch)] = output;
+            return paths;
+        }
+
+        // Only media string properties change. Copy all other property payloads,
+        // including compressed geometry arrays, with a bounded buffer. Recompute
+        // absolute node offsets because filename strings can change length.
+        internal static void RewriteBinary(Stream input, Stream output, IReadOnlyList<IReadOnlyDictionary<string, string>> mediaPaths, string scratch, string target)
+            => new BinaryMediaRewrite(input, output, mediaPaths, scratch, target).Run();
+
+        sealed class BinaryMediaRewrite
+        {
+            readonly BinaryReader reader;
+            readonly BinaryWriter writer;
+            readonly IReadOnlyList<IReadOnlyDictionary<string, string>> mediaPaths;
+            readonly string scratch, target;
+            readonly byte[] buffer = new byte[4096];
+            bool wide;
+            int mediaIndex;
+
+            internal BinaryMediaRewrite(Stream input, Stream output, IReadOnlyList<IReadOnlyDictionary<string, string>> mediaPaths, string scratch, string target)
+            {
+                reader = new BinaryReader(input, Encoding.UTF8, true);
+                writer = new BinaryWriter(output, Encoding.UTF8, true);
+                this.mediaPaths = mediaPaths; this.scratch = scratch; this.target = target;
+            }
+
+            internal void Run()
+            {
+                byte[] header = reader.ReadBytes(27);
+                if (header.Length != 27 || Encoding.ASCII.GetString(header, 0, 18) != "Kaydara FBX Binary")
+                    throw new IOException("The SDK media stage is not a Binary FBX.");
+                wide = BitConverter.ToUInt32(header, 23) >= 7500;
+                writer.Write(header);
+                while (reader.BaseStream.Position < reader.BaseStream.Length)
+                    if (!Node(reader.BaseStream.Length, null, null, 0)) break;
+                Copy(reader.BaseStream.Length - reader.BaseStream.Position);
+                if (mediaIndex != mediaPaths.Count) throw new IOException("FBX media record count changed during filename rewriting.");
+                writer.Flush();
+            }
+
+            bool Node(long parentEnd, string parent, IReadOnlyDictionary<string, string> paths, int depth)
+            {
+                if (depth > 256) throw new IOException("FBX record nesting is too deep.");
+                int headerSize = wide ? 25 : 13;
+                long start = writer.BaseStream.Position;
+                if (parentEnd - reader.BaseStream.Position < headerSize) { Copy(parentEnd - reader.BaseStream.Position); return false; }
+                long end = Offset(), count = Offset(), length = Offset();
+                byte nameLength = reader.ReadByte();
+                if (end == 0) { writer.Write(new byte[headerSize]); return false; }
+                long properties = reader.BaseStream.Position + nameLength;
+                if (end > parentEnd || count < 0 || length < 0 || properties > end || length > end - properties)
+                    throw new IOException("Invalid Binary FBX node bounds.");
+                byte[] nameBytes = reader.ReadBytes(nameLength);
+                string name = Encoding.ASCII.GetString(nameBytes);
+                if (parent == "Objects" && (name == "Texture" || name == "Video"))
+                {
+                    if (mediaIndex >= mediaPaths.Count) throw new IOException("Unexpected FBX media record.");
+                    paths = mediaPaths[mediaIndex++];
+                }
+                writer.Write(new byte[headerSize - 1]); writer.Write(nameLength); writer.Write(nameBytes);
+                long outputProperties = writer.BaseStream.Position;
+                Properties(properties + length, count, name, parent, paths);
+                long propertyLength = writer.BaseStream.Position - outputProperties;
+                while (reader.BaseStream.Position < end)
+                    if (!Node(end, name, paths, depth + 1)) break;
+                Copy(end - reader.BaseStream.Position);
+                long outputEnd = writer.BaseStream.Position;
+                writer.BaseStream.Position = start;
+                WriteOffset(outputEnd); WriteOffset(count); WriteOffset(propertyLength);
+                writer.BaseStream.Position = outputEnd;
+                return true;
+            }
+
+            void Properties(long end, long count, string name, string parent, IReadOnlyDictionary<string, string> paths)
+            {
+                long start = reader.BaseStream.Position;
+                int index = -1;
+                bool relative = false;
+                if (paths != null && (parent == "Texture" || parent == "Video"))
+                {
+                    if (name == "FileName" || name == "Filename") index = 0;
+                    if (name == "RelativeFilename") { index = 0; relative = true; }
+                }
+                if (paths != null && parent == "Properties70" && name == "P")
+                {
+                    string property = String(end);
+                    if (property == "Path" || property == "RelPath") { index = 4; relative = property == "RelPath"; }
+                    reader.BaseStream.Position = start;
+                }
+                if (index < 0 || count <= index) { Copy(end - start); return; }
+                long valueStart = start;
+                string value = null;
+                for (int i = 0; i <= index; i++)
+                {
+                    valueStart = reader.BaseStream.Position;
+                    value = String(end);
+                    if (value == null) { reader.BaseStream.Position = start; Copy(end - start); return; }
+                }
+                long tail = reader.BaseStream.Position;
+                string replaced = value;
+                if (paths.TryGetValue(MediaPath(value, scratch), out string output))
+                    replaced = (relative ? Path.GetRelativePath(Path.GetDirectoryName(target), output) : output).Replace('\\', '/');
+                reader.BaseStream.Position = start; Copy(valueStart - start);
+                byte[] encoded = Encoding.UTF8.GetBytes(replaced);
+                writer.Write((byte)'S'); writer.Write(encoded.Length); writer.Write(encoded);
+                reader.BaseStream.Position = tail; Copy(end - tail);
+            }
+
+            string String(long end)
+            {
+                if (end - reader.BaseStream.Position < 5 || reader.ReadByte() != 'S') return null;
+                uint length = reader.ReadUInt32();
+                if (length > end - reader.BaseStream.Position || length > 65536) throw new IOException("Invalid FBX media string length.");
+                return Encoding.UTF8.GetString(reader.ReadBytes((int)length));
+            }
+
+            long Offset() => wide ? reader.ReadInt64() : reader.ReadUInt32();
+            void WriteOffset(long value)
+            {
+                if (wide) writer.Write(value);
+                else if (value <= uint.MaxValue) writer.Write((uint)value);
+                else throw new IOException("Rewritten FBX exceeds its 32-bit record offset limit.");
+            }
+
+            void Copy(long count)
+            {
+                if (count < 0) throw new IOException("Invalid FBX copy bounds.");
+                while (count > 0)
+                {
+                    int read = reader.Read(buffer, 0, (int)Math.Min(count, buffer.Length));
+                    if (read == 0) throw new EndOfStreamException("Incomplete Binary FBX record.");
+                    writer.Write(buffer, 0, read); count -= read;
+                }
+            }
         }
 
         // SDK ASCII texture/video objects contain paired absolute and relative

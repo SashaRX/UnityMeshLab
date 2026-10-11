@@ -291,9 +291,10 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   On Windows, long media paths use a compact hash filename directly inside
   `<output>.fbm`, preserving the extension and checking the full content hash
   before reuse. An output directory that cannot fit this compact name is
-  refused before creating that file. Temporary ASCII filename rewriting
-  streams geometry and spools media blocks on disk instead of loading the
-  entire expanded document into managed memory.
+  refused before creating that file. Temporary filename rewriting uses Binary
+  FBX: only media string properties change, all other property payloads are
+  copied with a bounded buffer, and node offsets are recomputed for the changed
+  string lengths. Geometry does not pass through an intermediate ASCII format.
   Original media-reference discovery also streams ASCII records and seeks
   past Binary geometry payloads using 32- or 64-bit record offsets. The
   source document caches the discovered references across repeated saves.
@@ -301,7 +302,9 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   filename records are absent, so those sources retain working external
   references in variants and can be embedded explicitly.
   Temporary corner-matching probes preserve the source format and embedding
-  through `SaveForImport`; these probes are not the final output.
+  through `SaveForImport`; these probes are not the final output. A probe keeps
+  available embedded media without refusing stale missing external references;
+  explicit embedding in a final export still refuses missing maps.
   Polygons (quads, n-gons), control points, smoothing,
   materials, nodes, properties and every other layer element are never
   rebuilt.
