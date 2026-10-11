@@ -180,6 +180,67 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { UnityEngine.Object.DestroyImmediate(mesh); }
         }
 
+        static Mesh QuadQualityMesh(bool mixed, int baseVertex)
+        {
+            var positions = Enumerable.Repeat(new Vector3(100, 100, 0), baseVertex).ToList();
+            positions.AddRange(new[] { Vector3.zero, new Vector3(2, 0, 0), new Vector3(2, 1, 0), Vector3.up });
+            if (mixed) positions.AddRange(new[] { new Vector3(2, 0, 0), new Vector3(4, 0, 0),
+                new Vector3(4, 1, 0), new Vector3(2, 1, 0) });
+            positions.Add(new Vector3(100, 100, 0));
+            var mesh = new Mesh { name = "KeepQuads", vertices = positions.ToArray(),
+                uv = positions.Select(p => new Vector2(p.x, p.y) * .1f).ToArray() };
+            mesh.uv2 = mesh.uv;
+            mesh.subMeshCount = mixed ? 4 : 3;
+            mesh.SetIndices(new[] { 0, 1, 2, 3 }, MeshTopology.Quads, 0, false, baseVertex);
+            if (mixed) mesh.SetIndices(new[] { 4, 5, 6, 4, 6, 7 }, MeshTopology.Triangles, 1, false, baseVertex);
+            int last = positions.Count - baseVertex - 1;
+            mesh.SetIndices(new[] { 0, last }, MeshTopology.Lines, mixed ? 2 : 1, false, baseVertex);
+            mesh.SetIndices(new[] { last }, MeshTopology.Points, mixed ? 3 : 2, false, baseVertex);
+            mesh.RecalculateBounds();
+            return mesh;
+        }
+
+        [TestCase(false, 0)] [TestCase(true, 0)]
+        [TestCase(false, 3)] [TestCase(true, 3)]
+        public void CaptureMeasuresQuadSurfacesAndMixedSubmeshesWithoutChangingSource(bool mixed, int baseVertex)
+        {
+            var mesh = QuadQualityMesh(mixed, baseVertex);
+            try {
+                var before = TransferMeshSnapshot.Capture(mesh);
+                var transform = Matrix4x4.TRS(new Vector3(7, -2, 3), Quaternion.Euler(70, 9, 0), Vector3.one * 3);
+                var part = UvToolHub.CaptureQualityPart(mesh, null, transform, 1);
+                var report = LightmapUvQuality.Measure(new[] { part });
+                Assert.AreEqual(mixed ? 4 : 2, report.faces, "Every surface face participates, including Keep Quads.");
+                Assert.AreEqual(100, report.score);
+                Assert.AreEqual(1, report.worstStretch, 1e-5);
+                Assert.AreEqual(1, report.fill);
+                Assert.AreEqual(new Vector2(mixed ? .4f : .2f, .1f), report.bboxMax,
+                    "Lines, points and unused base vertices do not expand the surface UV bbox.");
+                CollectionAssert.AreEqual(before, TransferMeshSnapshot.Capture(mesh));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void CaptureFindsStretchOnQuadsEvenWhenTriangleSubmeshesAreHealthy(bool mixed)
+        {
+            var mesh = QuadQualityMesh(mixed, 0);
+            try {
+                var uv = mesh.uv;
+                for (int i = 0; i < 4; ++i) uv[i].x *= 8;
+                mesh.uv = uv;
+                var before = TransferMeshSnapshot.Capture(mesh);
+                var part = UvToolHub.CaptureQualityPart(mesh, null, Matrix4x4.identity, 0);
+                var report = LightmapUvQuality.Measure(new[] { part });
+                Assert.AreEqual(mixed ? 4 : 2, report.faces);
+                Assert.AreEqual(8, report.worstStretch, 1e-5);
+                Assert.Less(report.stretchScore, 20);
+                Assert.LessOrEqual(report.score, 69);
+                CollectionAssert.AreEqual(before, TransferMeshSnapshot.Capture(mesh));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
         [UnityTest]
         public IEnumerator ViewerRecomputesAfterInPlaceUvChangeAndReleasesItsTexture()
         {
@@ -213,6 +274,43 @@ namespace SashaRX.UnityMeshLab.Tests
             }
             finally { UnityEngine.Object.DestroyImmediate(hub); UnityEngine.Object.DestroyImmediate(mesh); }
             Assert.IsFalse(texture, "Closing the Viewer releases diagnostic textures and cancels pending work.");
+        }
+
+        [UnityTest]
+        public IEnumerator ViewerMeasuresTriangleLodAgainstKeepQuadsLod0WithoutChangingSources()
+        {
+            var donor = QuadQualityMesh(false, 3);
+            var target = UnityEngine.Object.Instantiate(donor);
+            target.SetIndices(new[] { 0, 1, 3, 1, 2, 3 }, MeshTopology.Triangles, 0, false, 3);
+            var donorBefore = TransferMeshSnapshot.Capture(donor);
+            var targetBefore = TransferMeshSnapshot.Capture(target);
+            var hub = ScriptableObject.CreateInstance<UvToolHub>();
+            const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+            object Field(string name) => typeof(UvToolHub).GetField(name, flags).GetValue(hub);
+            void Tick() => typeof(UvToolHub).GetMethod("OnInspectorUpdate", flags).Invoke(hub, null);
+            try {
+                var reference = new MeshEntry { originalMesh = donor, fbxMesh = donor, meshGroupKey = "panel", lodIndex = 0 };
+                var entry = new MeshEntry { originalMesh = target, fbxMesh = target, meshGroupKey = "panel", lodIndex = 1 };
+                ((List<MeshViewport3D.Item>)Field("viewportItems")).Add(new MeshViewport3D.Item(target, Matrix4x4.identity));
+                ((List<MeshEntry>)Field("viewportEntries")).Add(entry);
+                hub.DiagnosticContext.MeshEntries.Add(reference);
+                hub.DiagnosticContext.MeshEntries.Add(entry);
+                hub.DiagnosticContext.PreviewLod = 1;
+                Tick();
+                for (int i = 0; i < 200 && Field("uvQualityReport") == null; ++i) { yield return null; Tick(); }
+                var report = (LightmapUvQuality.Report)Field("uvQualityReport");
+                Assert.NotNull(report);
+                Assert.AreEqual(100, report.score);
+                Assert.AreEqual(100, report.lodScore, "Keep Quads LOD0 must contribute a measurable donor surface.");
+                Assert.AreEqual(1, report.lodCoverage, 1e-6);
+                CollectionAssert.AreEqual(donorBefore, TransferMeshSnapshot.Capture(donor));
+                CollectionAssert.AreEqual(targetBefore, TransferMeshSnapshot.Capture(target));
+            }
+            finally {
+                UnityEngine.Object.DestroyImmediate(hub);
+                UnityEngine.Object.DestroyImmediate(target);
+                UnityEngine.Object.DestroyImmediate(donor);
+            }
         }
 
         [Test]

@@ -58,6 +58,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- Viewer UV quality includes Keep Quads surface submeshes in both the displayed mesh and LOD0 reference, without changing source topology. Mixed triangle/quad meshes retain their complete surface measurements; lines and points remain excluded.
+
 - Reverse UV reconstructs failed intrinsic rescue triangles at their final reserved texel footprint to avoid Float32 translation shear. Wooden_Box_Long now passes both overlap policies without deleting thin faces; fixed nominal density, inherited placements and final metric/overlap gates remain. Forward logs explicitly label matched vertex coverage.
 
 - Final Remesh regularization can retriangulate float-roundoff faces using a healthy adjoining normal while preserving source features and topology/surface audits; UV refusal reports include exact scan counters and private replays retain the Simplify input.

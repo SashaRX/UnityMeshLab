@@ -7,6 +7,11 @@ worker and refreshes after mesh/cache changes, LOD/channel changes and renderer
 transform changes. **Recheck** explicitly refreshes an in-place edit made by an
 external tool which did not emit a mesh-change notification.
 
+Keep Quads surface submeshes are triangulated on the captured index arrays,
+using the same diagonal as the topology preview. Both displayed meshes and
+the LOD0 reference include their quad surfaces; lines and points are excluded.
+The original topology, indices and vertex streams remain unchanged.
+
 The score is an approximate diagnostic, not a transfer acceptance gate or proof
 that the model will bake correctly. It does not modify the mesh, its source FBX,
 the transfer solver or the packer.

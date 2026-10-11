@@ -99,8 +99,18 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < positions.Length; ++i) positions[i] = transform.MultiplyPoint3x4(positions[i]);
             var coordinates = new List<Vector2>(); mesh.GetUVs(channel, coordinates);
             var indices = new List<int>();
-            for (int s = 0; s < mesh.subMeshCount; ++s)
-                if (mesh.GetTopology(s) == MeshTopology.Triangles) indices.AddRange(mesh.GetTriangles(s));
+            for (int s = 0; s < mesh.subMeshCount; ++s) {
+                var topology = mesh.GetTopology(s);
+                if (topology == MeshTopology.Triangles) indices.AddRange(mesh.GetIndices(s));
+                else if (topology == MeshTopology.Quads) {
+                    var quads = mesh.GetIndices(s);
+                    if (quads.Length % 4 != 0) throw new InvalidOperationException("Quad submesh has incomplete faces.");
+                    for (int q = 0; q < quads.Length; q += 4) {
+                        indices.Add(quads[q]); indices.Add(quads[q + 1]); indices.Add(quads[q + 2]);
+                        indices.Add(quads[q]); indices.Add(quads[q + 2]); indices.Add(quads[q + 3]);
+                    }
+                }
+            }
             ReverseUvAudit.ProvenanceEntry provenance = null;
             if (channel == 1 && !string.IsNullOrEmpty(entry?.reverseTransferJson))
                 provenance = JsonUtility.FromJson<ReverseUvAudit.ProvenanceEntry>(entry.reverseTransferJson);
