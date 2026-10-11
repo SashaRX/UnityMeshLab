@@ -512,7 +512,7 @@ async function sonarRequest(path, { method = 'GET', params = {} } = {}) {
 
 // All OPEN/CONFIRMED issues of a project. `components` + `issueStatuses` are the
 // current parameter names; an older server that answers 400 gets the legacy pair.
-async function fetchOpenIssues(project) {
+async function fetchOpenIssues(project, inNewCodePeriod = false) {
   const variants = [
     { components: project, issueStatuses: 'OPEN,CONFIRMED' },
     { componentKeys: project, statuses: 'OPEN,CONFIRMED,REOPENED' },
@@ -521,7 +521,9 @@ async function fetchOpenIssues(project) {
     try {
       const issues = [];
       for (let page = 1; ; page += 1) {
-        const data = await sonarRequest('/api/issues/search', { params: { ...variants[v], ps: '500', p: String(page) } });
+        const data = await sonarRequest('/api/issues/search', { params: {
+          ...variants[v], ...(inNewCodePeriod ? { inNewCodePeriod: 'true' } : {}), ps: '500', p: String(page),
+        } });
         issues.push(...(data.issues ?? []));
         const total = data.paging?.total ?? data.total ?? 0;
         if ((data.issues ?? []).length === 0 || issues.length >= total || page * 500 >= 10_000) {
@@ -726,6 +728,15 @@ async function cmdReport(opts) {
   mkdirSync(opts['out-dir'], { recursive: true });
   for (const project of opts.project) {
     const findings = sortFindings((await fetchOpenIssues(project)).map((i) => normalizeIssue(i, files)));
+    const newFindings = sortFindings((await fetchOpenIssues(project, true)).map((i) => normalizeIssue(i, files)));
+    const gate = await sonarRequest('/api/qualitygates/project_status', { params: { projectKey: project } });
+    writeFileSync(join(opts['out-dir'], `${project}.new-issues.json`), JSON.stringify(newFindings, null, 2) + '\n');
+    writeFileSync(join(opts['out-dir'], `${project}.quality-gate.json`), JSON.stringify(gate, null, 2) + '\n');
+    const measures = await sonarRequest('/api/measures/component_tree', { params: {
+      component: project, qualifiers: 'FIL', ps: '500',
+      metricKeys: 'new_lines_to_cover,new_uncovered_lines,new_conditions_to_cover,new_uncovered_conditions',
+    } });
+    writeFileSync(join(opts['out-dir'], `${project}.new-coverage.json`), JSON.stringify(measures, null, 2) + '\n');
     let hotspots = null;
     try {
       hotspots = await fetchHotspots(project, files);
