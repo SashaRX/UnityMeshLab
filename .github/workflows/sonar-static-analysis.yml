@@ -250,7 +250,7 @@ jobs:
   scan:
     name: ${{ matrix.label }}
     needs: [plan, coverage]
-    if: always() && needs.plan.outputs.has-token == 'true' && needs.plan.result == 'success'
+    if: ${{ !cancelled() && needs.plan.outputs.has-token == 'true' && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
