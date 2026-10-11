@@ -24,6 +24,14 @@ namespace SashaRX.UnityMeshLab
         const string MetaExtension = ".meta";
         const string RelinkUndoLabel = "Relink Mesh";
 
+        /// <summary>Explicit shading edits on selected submeshes of a new FBX variant.</summary>
+        internal sealed class ShadingSelection
+        {
+            internal readonly Dictionary<string, bool[]> submeshes = new Dictionary<string, bool[]>(StringComparer.Ordinal);
+            internal readonly Dictionary<string, HashSet<string>> sourceNodes = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+            internal Action<string, ImportAssetOptions> importAsset = AssetDatabase.ImportAsset;
+        }
+
         // ─────────────────────────────────────────────────────────────────
         // Names
         // ─────────────────────────────────────────────────────────────────
@@ -595,7 +603,8 @@ namespace SashaRX.UnityMeshLab
             FbxExportIntent intent,
             string outputFbxPath,
             Material collisionMaterial,
-            LODGroup sceneRoot)
+            LODGroup sceneRoot,
+            ShadingSelection shadingSelection = null)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             if (string.IsNullOrEmpty(sourceFbxPath) || entries == null) return false;
@@ -604,7 +613,7 @@ namespace SashaRX.UnityMeshLab
             // else in the file is rebuilt (see FbxChannelWrite).
             if (FbxChannelWrite.Handles(intent))
             {
-                try { return FbxChannelWrite.Write(sourceFbxPath, entries, intent, outputFbxPath, sceneRoot); }
+                try { return FbxChannelWrite.Write(sourceFbxPath, entries, intent, outputFbxPath, sceneRoot, shadingSelection: shadingSelection); }
                 catch (Exception ex)
                 {
                     UvtLog.Error($"[FBX Export] '{sourceFbxPath}' was not written: {ex.Message}");
