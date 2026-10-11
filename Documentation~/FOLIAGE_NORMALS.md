@@ -82,10 +82,25 @@ Sources must contain finite positions and authored unit normals at every vertex.
 
 The three face filters are all triangle submeshes, selected material references,
 and selected submesh numbers. Disabled/inactive renderers, collision names from
-`MeshNaming`, non-triangle submeshes and (with LOD0 Only) higher named LODs and
-LODGroup levels are excluded. Higher LODs may be selected when LOD0 Only is off.
-With Choose renderers disabled, all eligible renderers are used. When enabled,
+`MeshNaming` and non-triangle submeshes are excluded. Selecting a renderer also
+selects its corresponding mesh in every LOD of the same LODGroup, or its named
+LOD siblings under the same parent. Other mesh families remain untouched, even
+when renderer arrays have different ordering between LOD levels. Selecting an
+individual LOD object as Root also includes its corresponding sibling levels.
+With Choose renderers disabled, all eligible mesh families are used. When enabled,
 an empty selection is an error and cannot silently process all renderers.
+**LOD0 proxy source** limits proxy construction to the lowest available LOD of
+each selected family; normal transfer, Apply and both Save actions include every
+matching LOD. Turning it off also includes the other LODs in proxy construction.
+Selected submesh numbers refer to the lowest selected renderer in each family.
+Their material references identify the corresponding submeshes in other LODs,
+so reordered material slots do not change excluded geometry. A missing selected
+material leaves that LOD untouched. Ambiguous mesh names or selected/excluded
+submeshes sharing a material are rejected rather than widening the selection.
+Separate one-submesh LOD meshes and instances sharing the exact same source mesh
+can retain the selected index without material matching.
+**Preview LOD** displays one level at a time; switching it does not limit Apply or
+Save, which always use the complete captured selection across all matching LODs.
 SkinnedMeshRenderer is not a write-back target.
 
 ## Surface sampling

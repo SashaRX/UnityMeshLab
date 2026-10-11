@@ -26,6 +26,7 @@ namespace SashaRX.UnityMeshLab
         internal FoliageNormalsSettings settings = new FoliageNormalsSettings();
         internal GameObject root;
         Preview preview = Preview.TransferredNormals;
+        internal int previewLod;
         bool advanced, showPrimitives, showProxyEdges = true, active;
         bool? previewCanApply;
         internal bool CanApplyPreview
@@ -228,10 +229,20 @@ namespace SashaRX.UnityMeshLab
             }
 
             preview = (Preview)EditorGUILayout.EnumPopup("Preview", preview);
+            DrawLodPreview();
             showProxyEdges = EditorGUILayout.Toggle("Show proxy edges", showProxyEdges);
             EditorGUILayout.HelpBox("Use the shared 3D canvas. Before/after: original on left, transferred on right; cyan/yellow normal vectors. Samples display at most 4,096 points.", MessageType.Info);
             DrawDiagnostics();
             EditorGUILayout.LabelField(pipeline.Status, EditorStyles.wordWrappedMiniLabel);
+        }
+
+        void DrawLodPreview()
+        {
+            var levels = pipeline.LodLevels;
+            if (levels.Length == 0) return;
+            int index = Math.Max(0, Array.IndexOf(levels, previewLod));
+            previewLod = levels[EditorGUILayout.Popup("Preview LOD", index, Array.ConvertAll(levels, level => "LOD" + level))];
+            EditorGUILayout.LabelField($"{pipeline.Targets.Count} meshes in all LODs · {pipeline.CaptureSourceCount} proxy sources", EditorStyles.wordWrappedMiniLabel);
         }
 
         void DrawSourceSettings()
@@ -243,10 +254,11 @@ namespace SashaRX.UnityMeshLab
                 SetRoot(selectedRoot);
             }
 
-            settings.lod0Only = EditorGUILayout.Toggle("LOD0 Only", settings.lod0Only);
+            settings.lod0Only = EditorGUILayout.Toggle("LOD0 proxy source", settings.lod0Only);
             settings.selection = (FoliageFaceSelection)EditorGUILayout.EnumPopup("Foliage faces", settings.selection);
             DrawRendererSelection();
             DrawFaceSelection();
+            EditorGUILayout.HelpBox("Normals are transferred to the selected mesh family in every LOD. The proxy uses the lowest available LOD when LOD0 proxy source is enabled. Selected submesh numbers follow their materials across LODs.", MessageType.Info);
             StageButton("Capture", FoliageNormalsPipeline.Stage.Capture);
             EditorGUILayout.Space();
         }
@@ -603,7 +615,7 @@ namespace SashaRX.UnityMeshLab
                 return true;
             }
             float offset = pipeline.CaptureBounds.size.x * .65f;
-            foreach (var t in pipeline.Targets)
+            foreach (var t in pipeline.PreviewTargets(previewLod))
             {
                 AddTargetPreview(items, t, offset);
             }
@@ -659,7 +671,7 @@ namespace SashaRX.UnityMeshLab
             float offset = pipeline.CaptureBounds.size.x * .65f, length = pipeline.CaptureBounds.size.magnitude * .025f;
             var before = new List<Vector3>();
             var after = new List<Vector3>();
-            foreach (var t in pipeline.Targets)
+            foreach (var t in pipeline.PreviewTargets(previewLod))
             {
                 AppendNormalLines(t, offset, length, before, after);
             }

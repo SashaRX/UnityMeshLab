@@ -468,7 +468,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
-        public IEnumerator FiltersExcludeCollisionHigherLodDisabledAndNonTriangleSubmeshes()
+        public IEnumerator FiltersExcludeCollisionDisabledAndNonTriangleSubmeshesButIncludeLodTargets()
         {
             var root = new GameObject("Filters"); var children = new List<FoliageNormalTransferTests.Fixture>();
             using var pipeline = new FoliageNormalsPipeline(); var s = FoliageSurfaceSamplerTests.Settings();
@@ -478,8 +478,8 @@ namespace SashaRX.UnityMeshLab.Tests
                     if (name == "Disabled") f.renderer.enabled = false;
                     if (name == "Lines") { f.mesh.subMeshCount = 1; f.mesh.SetIndices(new[] {0,1},MeshTopology.Lines,0); }
                 }
-                var task = pipeline.Run(root,s,FoliageNormalsPipeline.Stage.Capture); yield return Await(task); Assert.IsTrue(task.Result,pipeline.Status); Assert.AreEqual(1,pipeline.Targets.Count);
-                s.lod0Only = false; task = pipeline.Run(root,s,FoliageNormalsPipeline.Stage.Capture); yield return Await(task); Assert.IsTrue(task.Result); Assert.AreEqual(2,pipeline.Targets.Count);
+                var task = pipeline.Run(root,s,FoliageNormalsPipeline.Stage.Capture); yield return Await(task); Assert.IsTrue(task.Result,pipeline.Status); Assert.AreEqual(2,pipeline.Targets.Count); Assert.AreEqual(1,pipeline.CaptureSourceCount);
+                s.lod0Only = false; task = pipeline.Run(root,s,FoliageNormalsPipeline.Stage.Capture); yield return Await(task); Assert.IsTrue(task.Result); Assert.AreEqual(2,pipeline.Targets.Count); Assert.AreEqual(2,pipeline.CaptureSourceCount);
                 root.SetActive(false);
                 LogAssert.Expect(LogType.Error,new System.Text.RegularExpressions.Regex("No selected static foliage triangles"));
                 task = pipeline.Run(root,s,FoliageNormalsPipeline.Stage.Capture); yield return Await(task);

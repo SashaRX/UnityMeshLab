@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading;
@@ -30,7 +31,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [TearDown]
         public void TearDown() => AssetDatabase.DeleteAsset(folder);
 
-        string Source(bool coincident, bool binary, bool instanced = false)
+        string Source(bool coincident, bool binary, bool instanced = false, bool lods = false)
         {
             string path = folder + "/tree.fbx";
             using var manager = FbxManager.Create();
@@ -78,6 +79,7 @@ namespace SashaRX.UnityMeshLab.Tests
             node.AddMaterial(FbxSurfacePhong.Create(scene,"M_Leaves"));
             group.AddChild(node);
             if (instanced) AddInstance(scene, group, node);
+            if (lods) AddLods(scene, group, node, data);
             var helper = FbxNode.Create(scene, "KeepHelper");
             helper.LclTranslation.Set(new FbxDouble3(4,5,6));
             group.AddChild(helper);
@@ -91,6 +93,52 @@ namespace SashaRX.UnityMeshLab.Tests
             importer.preserveHierarchy = true; importer.generateSecondaryUV = false;
             importer.SaveAndReimport();
             return path;
+        }
+
+        static void AddLods(FbxScene scene, FbxNode group, FbxNode source, FbxMeshData data)
+        {
+            for (int level = 1; level < 3; level++)
+            {
+                string name = "Tree_LOD" + level;
+                var node = FbxNode.Create(scene, name);
+                node.LclTranslation.Set(source.LclTranslation.Get());
+                node.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, name, data));
+                for (int i = 0; i < source.GetMaterialCount(); i++) node.AddMaterial(source.GetMaterial(i));
+                group.AddChild(node);
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator SeparateFbxIncludesSelectedSubmeshNormalsInAllLodsAndPreservesSource()
+        {
+            string source = Source(false, true, lods: true);
+            var bytes = File.ReadAllBytes(source); var meta = File.ReadAllBytes(source + ".meta");
+            var model = AssetDatabase.LoadAssetAtPath<GameObject>(source);
+            var root = (GameObject)PrefabUtility.InstantiatePrefab(model);
+            using var pipeline = new FoliageNormalsPipeline();
+            try
+            {
+                var renderer = root.GetComponentsInChildren<MeshRenderer>().Single(r => r.name == "Tree_LOD0");
+                var settings = new FoliageNormalsSettings { filterRenderers = true, renderers = new[] { renderer },
+                    selection = FoliageFaceSelection.SelectedSubmeshIndices, submeshes = new[] { 1 },
+                    normalSource = FoliageNormalSource.Sphere, proxySegments = 16, gpuProjection = false, recalculateTangents = true };
+                var task = pipeline.Run(root, settings, FoliageNormalsPipeline.Stage.Transfer);
+                yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, pipeline.Status);
+                Assert.AreEqual(3, pipeline.Targets.Count); Assert.AreEqual(1, pipeline.CaptureSourceCount);
+                string output = pipeline.SaveFbx(folder).Single(); CheckDocuments(source, output);
+                using var before = FbxSourceDocument.Load(source); using var after = FbxSourceDocument.Load(output);
+                foreach (var mesh in before.Meshes)
+                {
+                    var result = after.Meshes.Single(m => m.GetName() == mesh.GetName());
+                    var a = new FbxLayerChannels.Topology(mesh); var b = new FbxLayerChannels.Topology(result);
+                    var originalNormals = FbxLayerChannels.ReadVectors(FbxLayerChannels.NormalElement(mesh), a);
+                    var resultNormals = FbxLayerChannels.ReadVectors(FbxLayerChannels.NormalElement(result), b);
+                    Assert.IsFalse(originalNormals.SequenceEqual(resultNormals), mesh.GetName() + " must receive the selected foliage normals.");
+                }
+                CollectionAssert.AreEqual(bytes, File.ReadAllBytes(source)); CollectionAssert.AreEqual(meta, File.ReadAllBytes(source + ".meta"));
+                foreach (var target in pipeline.Targets) Assert.AreSame(target.source, target.filter.sharedMesh);
+            }
+            finally { pipeline.Dispose(); Object.DestroyImmediate(root); }
         }
 
         static void AddInstance(FbxScene scene, FbxNode group, FbxNode source)

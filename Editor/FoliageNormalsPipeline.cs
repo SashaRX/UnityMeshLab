@@ -19,6 +19,7 @@ namespace SashaRX.UnityMeshLab
             Capture, Scatter, Envelope, Smooth, Remesh, Transfer
         }
         readonly List<FoliageTargetSnapshot> targets = new List<FoliageTargetSnapshot>();
+        readonly List<FoliageLodSelection.Target> capturePlan = new List<FoliageLodSelection.Target>();
         readonly string[] keys = new string[6];
         CancellationTokenSource cancellation;
         int running;
@@ -30,6 +31,14 @@ namespace SashaRX.UnityMeshLab
         Stopwatch runClock;
         double elapsedSeconds;
         internal IReadOnlyList<FoliageTargetSnapshot> Targets => targets;
+        internal int CaptureSourceCount => capturePlan.Count(t => t.proxySource);
+        internal int[] LodLevels { get; private set; } = Array.Empty<int>();
+        internal IEnumerable<FoliageTargetSnapshot> PreviewTargets(int lodLevel)
+        {
+            if (LodLevels.Length > 0 && Array.IndexOf(LodLevels, lodLevel) < 0) lodLevel = LodLevels[0];
+            for (int i = 0; i < targets.Count; i++)
+                if (capturePlan[i].lodLevel < 0 || capturePlan[i].lodLevel == lodLevel) yield return targets[i];
+        }
         internal FoliageSurfaceSampler.Result Samples
         {
             get; private set;
@@ -127,7 +136,12 @@ namespace SashaRX.UnityMeshLab
                 return false;
             }
 
-            var current = EligibleRenderers(CapturedRoot, captureSettings, CancellationToken.None);
+            List<FoliageLodSelection.Target> current;
+            try
+            {
+                current = FoliageLodSelection.Resolve(CapturedRoot, captureSettings, CancellationToken.None, MeshForSelection);
+            }
+            catch (InvalidOperationException) { return false; }
             if (current.Count != targets.Count)
             {
                 return false;
@@ -135,13 +149,21 @@ namespace SashaRX.UnityMeshLab
 
             for (int i = 0; i < targets.Count; i++)
             {
-                if (current[i] != targets[i].renderer)
+                if (current[i].renderer != targets[i].renderer || current[i].proxySource != capturePlan[i].proxySource || current[i].lodLevel != capturePlan[i].lodLevel ||
+                    !current[i].submeshes.SequenceEqual(targets[i].selectedSubmeshes))
                 {
                     return false;
                 }
             }
 
             return targets.Count > 0;
+        }
+
+        Mesh MeshForSelection(MeshRenderer renderer)
+        {
+            var mesh = renderer.GetComponent<MeshFilter>()?.sharedMesh;
+            var snapshot = targets.FirstOrDefault(t => t.renderer == renderer);
+            return snapshot != null && mesh == snapshot.applied ? snapshot.source : mesh;
         }
 
         internal static string Key(Stage stage, FoliageNormalsSettings s, GameObject root)
@@ -379,40 +401,16 @@ namespace SashaRX.UnityMeshLab
             }
 
             captureSettings = options.Snapshot();
-            foreach (var renderer in EligibleRenderers(root, options, token))
+            capturePlan.AddRange(FoliageLodSelection.Resolve(root, options, token));
+            LodLevels = capturePlan.Select(t => t.lodLevel).Where(level => level >= 0).Distinct().OrderBy(level => level).ToArray();
+            foreach (var target in capturePlan)
             {
                 token.ThrowIfCancellationRequested();
-                var snapshot = new FoliageTargetSnapshot(renderer, root.transform.worldToLocalMatrix, options, token, true);
+                var snapshot = new FoliageTargetSnapshot(target.renderer, root.transform.worldToLocalMatrix, target.settings, token, true);
                 targets.Add(snapshot);
                 await Task.Run(() => snapshot.PrepareArrays(token), token);
             }
-            var geometry = await Task.Run(() =>
-            {
-                var p = new List<Vector3>();
-                var t = new List<int>();
-                foreach (var snapshot in targets)
-                {
-                    token.ThrowIfCancellationRequested();
-                    int offset = p.Count;
-                    p.AddRange(snapshot.positions);
-                    foreach (int v in snapshot.selectedIndices)
-                    {
-                        t.Add(v + offset);
-                    }
-                }
-                if (t.Count == 0)
-                {
-                    throw new InvalidOperationException("No selected static foliage triangles. Check renderer/material/submesh filters.");
-                }
-
-                var points = new Vector3[t.Count];
-                for (int i = 0; i < points.Length; i++)
-                {
-                    points[i] = p[t[i]];
-                }
-
-                return (positions: p.ToArray(), indices: t.ToArray(), bounds: FoliageProxyBuilder.BoundsOf(points));
-            }, token);
+            var geometry = await Task.Run(() => CaptureGeometry(token), token);
             capturePositions = geometry.positions;
             captureIndices = geometry.indices;
             CaptureBounds = geometry.bounds;
@@ -423,74 +421,34 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static List<MeshRenderer> EligibleRenderers(GameObject root, FoliageNormalsSettings options, CancellationToken token)
+        (Vector3[] positions, int[] indices, Bounds bounds) CaptureGeometry(CancellationToken token)
         {
-            var result = new List<MeshRenderer>();
-            var excluded = ExcludedLodRenderers(root, options.lod0Only);
-            foreach (var renderer in root.GetComponentsInChildren<MeshRenderer>())
+            var p = new List<Vector3>();
+            var t = new List<int>();
+            for (int i = 0; i < targets.Count; i++)
             {
                 token.ThrowIfCancellationRequested();
-                if (IsEligible(renderer, excluded, options))
+                if (!capturePlan[i].proxySource) continue;
+                var snapshot = targets[i];
+                int offset = p.Count;
+                p.AddRange(snapshot.positions);
+                foreach (int v in snapshot.selectedIndices)
                 {
-                    result.Add(renderer);
+                    t.Add(v + offset);
                 }
             }
-            return result;
-        }
+            if (t.Count == 0)
+            {
+                throw new InvalidOperationException("No selected static foliage triangles. Check renderer/material/submesh filters.");
+            }
 
-        static HashSet<Renderer> ExcludedLodRenderers(GameObject root, bool lod0Only)
-        {
-            var excluded = new HashSet<Renderer>();
-            if (!lod0Only)
+            var points = new Vector3[t.Count];
+            for (int i = 0; i < points.Length; i++)
             {
-                return excluded;
+                points[i] = p[t[i]];
             }
-            foreach (var group in root.GetComponentsInChildren<LODGroup>())
-            {
-                var lods = group.GetLODs();
-                var first = new HashSet<Renderer>(lods.Length > 0 ? lods[0].renderers : Array.Empty<Renderer>());
-                for (int i = 1; i < lods.Length; i++)
-                {
-                    foreach (var renderer in lods[i].renderers.Where(renderer => !first.Contains(renderer)))
-                    {
-                        excluded.Add(renderer);
-                    }
-                }
-            }
-            return excluded;
-        }
 
-        static bool IsEligible(MeshRenderer renderer, HashSet<Renderer> excluded, FoliageNormalsSettings options)
-        {
-            if (!renderer.enabled || !renderer.gameObject.activeInHierarchy || excluded.Contains(renderer) ||
-                (options.filterRenderers || options.renderers.Length > 0) && Array.IndexOf(options.renderers, renderer) < 0)
-            {
-                return false;
-            }
-            var filter = renderer.GetComponent<MeshFilter>();
-            if (!filter || !filter.sharedMesh)
-            {
-                return false;
-            }
-            if (MeshNaming.IsCollision(renderer.name) || MeshNaming.IsCollision(filter.sharedMesh.name) || options.lod0Only &&
-                (MeshNaming.LodIndex(renderer.name) > 0 || MeshNaming.LodIndex(filter.sharedMesh.name) > 0))
-            {
-                return false;
-            }
-            return HasSelectedTriangles(filter.sharedMesh, renderer.sharedMaterials, options);
-        }
-
-        static bool HasSelectedTriangles(Mesh mesh, Material[] materials, FoliageNormalsSettings options)
-        {
-            for (int submesh = 0; submesh < mesh.subMeshCount; submesh++)
-            {
-                if (mesh.GetTopology(submesh) == MeshTopology.Triangles && mesh.GetIndexCount(submesh) > 0 &&
-                    FoliageTargetSnapshot.SelectsSubmesh(submesh, materials, options))
-                {
-                    return true;
-                }
-            }
-            return false;
+            return (p.ToArray(), t.ToArray(), FoliageProxyBuilder.BoundsOf(points));
         }
 
         async Task Transfer(FoliageNormalsSettings options, CancellationToken token)
@@ -743,6 +701,8 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 targets.Clear();
+                capturePlan.Clear();
+                LodLevels = Array.Empty<int>();
                 capturePositions = null;
                 captureIndices = null;
                 CapturedRoot = null;
