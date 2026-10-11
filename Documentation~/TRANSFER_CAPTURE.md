@@ -150,9 +150,19 @@ their length without visiting every item. Oversized graphs, cycles, excessive de
 and serialization callbacks are refused; accepted captures keep the existing JSON
 format and checksums. The conservative estimate may reject a payload whose actual
 JSON would fit the byte limit.
+Private serialized scalar fields are bounded from Unity's field metadata without
+reading private values. Variable-sized private fields are refused before encoding.
 
 Captured source quality uses its own renderer transform, including nonuniform
 scale. Legacy inputs without that transform retain the identity-frame behavior.
 Lightmap preview skips meshes without complete UV2 and releases the rejected
 temporary copy. A valid preview maps UV2 through the renderer's lightmap scale and
 offset without changing source UV0.
+Context refresh and preview restoration preserve intentional renderer mesh
+replacements. They restore only the tracked working/preview mesh still assigned
+to the renderer, release obsolete copies, and adopt the replacement as the next
+context baseline. The DX11 regression suite covers all preview modes, standalone
+and LODGroup refresh, model switching and existing camera/UV frame behavior.
+The combined 2026-10-11 DX11 review suite passed 332 tests with zero failures;
+six optional private reverse inputs were not configured. Both FBX define compile
+variants passed, and the identifier guard reported no findings.

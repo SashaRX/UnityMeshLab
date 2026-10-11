@@ -177,8 +177,8 @@ namespace SashaRX.UnityMeshLab
             {
                 var b = backups[i];
                 if (b.renderer != null) b.renderer.sharedMaterials = b.origMaterials;
-                if (b.meshFilter != null) b.meshFilter.sharedMesh = b.origMeshFilterMesh;
-                if (b.skinnedRenderer != null) b.skinnedRenderer.sharedMesh = b.origSkinnedMesh;
+                if (b.meshFilter != null && b.meshFilter.sharedMesh == b.tempMesh) b.meshFilter.sharedMesh = b.origMeshFilterMesh;
+                if (b.skinnedRenderer != null && b.skinnedRenderer.sharedMesh == b.tempMesh) b.skinnedRenderer.sharedMesh = b.origSkinnedMesh;
                 if (b.tempMesh != null) Object.DestroyImmediate(b.tempMesh);
             }
 

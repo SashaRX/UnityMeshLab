@@ -43,6 +43,41 @@ namespace SashaRX.UnityMeshLab.Tests
             finally {if (preview) Object.DestroyImmediate(preview);Object.DestroyImmediate(source);}
         }
 
+        [Test]
+        public void ContextRefreshKeepsIntentionalReplacementAndReleasesOldWorkingCopies(
+            [Values(false,true)] bool standalone,
+            [Values(UvCanvasView.PreviewMode.Off,UvCanvasView.PreviewMode.Checker,UvCanvasView.PreviewMode.Shells3D,UvCanvasView.PreviewMode.Lightmap)] UvCanvasView.PreviewMode mode)
+        {
+            var group=Group(true,out var renderer,out _); var ctx=Open(group);
+            if (standalone) ctx.RefreshStandalone(renderer);
+            var entry=ctx.MeshEntries.Find(e=>e.renderer==renderer); var source=entry.fbxMesh;
+            var sourceBytes=TransferMeshSnapshot.Capture(source);
+            var original=Object.Instantiate(source); var repacked=Object.Instantiate(source); var transferred=Object.Instantiate(source);
+            owned.Add(original); owned.Add(repacked); owned.Add(transferred);
+            entry.originalMesh=original; entry.repackedMesh=repacked; entry.transferredMesh=transferred;
+            renderer.GetComponent<MeshFilter>().sharedMesh=original;
+            var replacement=Object.Instantiate(source); owned.Add(replacement);
+            replacement.vertices=source.vertices.Select(v=>v*3).ToArray(); replacement.RecalculateBounds();
+            var replacementBytes=TransferMeshSnapshot.Capture(replacement);
+            var previousLightmaps=LightmapSettings.lightmaps;
+            try {
+                if (mode==UvCanvasView.PreviewMode.Lightmap) AssignLightmap(renderer);
+                Call(hub,"ApplyPreviewMode",mode);
+                renderer.GetComponent<MeshFilter>().sharedMesh=replacement;
+                if (standalone) ctx.RefreshStandalone(renderer); else ctx.Refresh(group);
+                Assert.AreSame(replacement,renderer.GetComponent<MeshFilter>().sharedMesh);
+                Assert.AreSame(replacement,ctx.MeshEntries.Find(e=>e.renderer==renderer).fbxMesh);
+                Assert.IsFalse(original); Assert.IsFalse(repacked); Assert.IsFalse(transferred);
+                CollectionAssert.AreEqual(sourceBytes,TransferMeshSnapshot.Capture(source));
+                CollectionAssert.AreEqual(replacementBytes,TransferMeshSnapshot.Capture(replacement));
+                Assert.AreEqual(mode,Get<UvCanvasView>(hub,"canvas").CurrentPreviewMode);
+                ctx.Refresh(Group(true,out _,out _));
+                Assert.AreSame(replacement,renderer.GetComponent<MeshFilter>().sharedMesh);
+                CollectionAssert.AreEqual(replacementBytes,TransferMeshSnapshot.Capture(replacement));
+            }
+            finally {LightmapSettings.lightmaps=previousLightmaps;}
+        }
+
         const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
         readonly List<Object> owned = new List<Object>();
         UvToolHub hub;

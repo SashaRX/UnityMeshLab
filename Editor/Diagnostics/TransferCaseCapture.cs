@@ -309,6 +309,10 @@ namespace SashaRX.UnityMeshLab
             readonly Dictionary<Type,FieldInfo[]> fields=new Dictionary<Type,FieldInfo[]>();
             readonly Dictionary<Type,long> fixedSizes=new Dictionary<Type,long>();
             readonly HashSet<object> visiting=new HashSet<object>();
+            readonly Dictionary<Type,FieldInfo[]> serializedPrivateFields=TypeCache.GetFieldsWithAttribute<SerializeField>()
+                .Concat(TypeCache.GetFieldsWithAttribute<SerializeReference>()).Distinct()
+                .Where(f=>!f.IsPublic && !f.IsStatic && !f.IsDefined(typeof(NonSerializedAttribute),true))
+                .GroupBy(f=>f.DeclaringType).ToDictionary(g=>g.Key,g=>g.ToArray());
 
             internal DetailSizeBudget(long limit) { this.limit=limit; }
             void Add(long bytes)
@@ -321,13 +325,20 @@ namespace SashaRX.UnityMeshLab
                 if (fields.TryGetValue(type,out var result)) return result;
                 var members=new List<FieldInfo>();
                 for (var current=type;current!=null;current=current.BaseType)
-                    members.AddRange(current.GetFields(BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic|BindingFlags.DeclaredOnly)
-                        .Where(f=>!f.IsDefined(typeof(NonSerializedAttribute),true) &&
-                            (f.IsPublic || f.IsDefined(typeof(SerializeField),true) || f.IsDefined(typeof(SerializeReference),true))));
+                    members.AddRange(current.GetFields(BindingFlags.Instance|BindingFlags.Public|BindingFlags.DeclaredOnly)
+                        .Where(f=>!f.IsDefined(typeof(NonSerializedAttribute),true)));
                 result=members.ToArray(); fields.Add(type,result); return result;
+            }
+            IEnumerable<FieldInfo> PrivateFieldMetadata(Type type)
+            {
+                for (var current=type;current!=null;current=current.BaseType)
+                    if (serializedPrivateFields.TryGetValue(current,out var members))
+                        foreach (var field in members) yield return field;
             }
             long FixedSize(Type type)
             {
+                if (typeof(ISerializationCallbackReceiver).IsAssignableFrom(type))
+                    throw new InvalidDataException("Transfer diagnostic payload cannot run serialization callbacks after its size preflight.");
                 if (type==typeof(bool)) return 5;
                 if (type==typeof(char)) return 8;
                 if (type==typeof(float)) return 64;
@@ -339,7 +350,7 @@ namespace SashaRX.UnityMeshLab
                 var underlying=Nullable.GetUnderlyingType(type);
                 if (underlying!=null) {long inner=FixedSize(underlying);return inner>0 ? Math.Max(4,inner) : 0;}
                 size=2;
-                foreach (var field in Fields(type)) {
+                foreach (var field in Fields(type).Concat(PrivateFieldMetadata(type))) {
                     long member=FixedSize(field.FieldType);
                     if (member==0) {size=0;break;}
                     size+=6L*field.Name.Length+6+member;
@@ -365,6 +376,13 @@ namespace SashaRX.UnityMeshLab
                     }
                     else {
                         Add(2);
+                        // Metadata can bound private scalar fields without reading
+                        // their values. Variable-sized private data has no safe bound.
+                        foreach (var field in PrivateFieldMetadata(type)) {
+                            long member=FixedSize(field.FieldType);
+                            if (member==0) throw new InvalidDataException("Transfer diagnostic payload contains variable-sized private serialized data.");
+                            Add(6L*field.Name.Length+6+member);
+                        }
                         foreach (var field in Fields(type)) {Add(6L*field.Name.Length+6);Check(field.GetValue(value),depth+1);}
                     }
                 }

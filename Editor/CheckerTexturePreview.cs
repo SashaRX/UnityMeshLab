@@ -113,6 +113,7 @@ namespace SashaRX.UnityMeshLab
             public Material[] origMaterials;
             public MeshFilter meshFilter;    // null for SkinnedMeshRenderer
             public Mesh origMesh;            // original mesh to restore
+            public Mesh previewMesh;         // restore only while this override is still assigned
         }
         static List<RendererBackup> backups = new List<RendererBackup>();
         static bool isActive;
@@ -178,6 +179,7 @@ namespace SashaRX.UnityMeshLab
                     {
                         backup.meshFilter = mf;
                         backup.origMesh = mf.sharedMesh;
+                        backup.previewMesh = uvMesh;
                         mf.sharedMesh = uvMesh;
                     }
                 }
@@ -200,7 +202,7 @@ namespace SashaRX.UnityMeshLab
             {
                 if (b.renderer != null)
                     b.renderer.sharedMaterials = b.origMaterials;
-                if (b.meshFilter != null && b.origMesh != null)
+                if (b.meshFilter != null && b.origMesh != null && b.meshFilter.sharedMesh == b.previewMesh)
                     b.meshFilter.sharedMesh = b.origMesh;
             }
             backups.Clear();

@@ -21,6 +21,18 @@ namespace SashaRX.UnityMeshLab.Tests
             public int PrivateValue => privateValue;
         }
         [Serializable] sealed class CyclicPayload { public CyclicPayload child; }
+        [Serializable] sealed class PrivateArrayPayload
+        {
+            [SerializeField] float[] values=new float[64];
+            public int Count => values.Length;
+        }
+        [Serializable] struct CallbackPayload : ISerializationCallbackReceiver
+        {
+            public int value;
+            public void OnBeforeSerialize() { value=1; }
+            public void OnAfterDeserialize() { }
+        }
+        [Serializable] sealed class CallbackArrayPayload { public CallbackPayload[] values=new CallbackPayload[1]; }
 
         [Test]
         public void DetailPreflightRejectsOversizedArraysAndCyclesBeforeEncodingAndPreservesSmallPayloads()
@@ -36,6 +48,14 @@ namespace SashaRX.UnityMeshLab.Tests
             var restored=JsonUtility.FromJson<DetailPayload>(System.Text.Encoding.UTF8.GetString(bytes));
             CollectionAssert.AreEqual(small.values,restored.values); Assert.AreEqual(small.text,restored.text);
             Assert.AreEqual(17,restored.PrivateValue);
+        }
+
+        [Test]
+        public void DetailPreflightRefusesVariablePrivateDataAndCallbacksInsideFixedArrays()
+        {
+            var privateArray=new PrivateArrayPayload(); Assert.AreEqual(64,privateArray.Count);
+            StringAssert.Contains("variable-sized private",Assert.Throws<InvalidDataException>(()=>TransferCaseCapture.EncodeDetails(privateArray,4096)).Message);
+            StringAssert.Contains("serialization callbacks",Assert.Throws<InvalidDataException>(()=>TransferCaseCapture.EncodeDetails(new CallbackArrayPayload(),4096)).Message);
         }
 
         static Mesh Quad()

@@ -225,7 +225,8 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
-        /// Restore fbxMesh on MeshFilter and destroy temporary working meshes.
+        /// Restore owned working meshes and release them. Preserve intentional
+        /// replacements assigned by another tool before a context refresh.
         /// Must be called before clearing or switching MeshEntries.
         /// </summary>
         void RestoreWorkingMeshes()
@@ -233,7 +234,9 @@ namespace SashaRX.UnityMeshLab
             if (ctx?.MeshEntries == null) return;
             foreach (var e in ctx.MeshEntries)
             {
-                if (e.meshFilter != null && e.fbxMesh != null)
+                Mesh assigned = e.meshFilter != null ? e.meshFilter.sharedMesh : null;
+                if (assigned != null && e.fbxMesh != null &&
+                    (assigned == e.originalMesh || assigned == e.repackedMesh || assigned == e.transferredMesh))
                     e.meshFilter.sharedMesh = e.fbxMesh;
                 if (e.transferredMesh != null) { DestroyImmediate(e.transferredMesh); e.transferredMesh = null; }
                 if (e.repackedMesh != null) { DestroyImmediate(e.repackedMesh); e.repackedMesh = null; }
@@ -2153,7 +2156,8 @@ namespace SashaRX.UnityMeshLab
             foreach (var b in lightmapBackups)
             {
                 if (b.renderer != null) b.renderer.sharedMaterials = b.origMaterials;
-                if (b.meshFilter != null && b.origMesh != null) b.meshFilter.sharedMesh = b.origMesh;
+                if (b.meshFilter != null && b.origMesh != null && b.meshFilter.sharedMesh == b.tempMesh)
+                    b.meshFilter.sharedMesh = b.origMesh;
                 if (b.tempMesh != null) DestroyImmediate(b.tempMesh);
                 if (b.tempMat != null) DestroyImmediate(b.tempMat);
             }
