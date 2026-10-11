@@ -137,7 +137,9 @@ namespace SashaRX.UnityMeshLab
         {
             if (Array.IndexOf(members, anchor) >= 0) return anchor;
             string rendererKey = UvToolContext.ExtractGroupKey(anchor.name);
-            var match = Unique(members.OfType<MeshRenderer>().Where(r => Eligible(r, meshFor(r)) &&
+            bool uniqueRendererKey = origin.Count(r => string.Equals(rendererKey,
+                UvToolContext.ExtractGroupKey(r.name), StringComparison.OrdinalIgnoreCase)) == 1;
+            var match = Unique(members.OfType<MeshRenderer>().Where(r => uniqueRendererKey && Eligible(r, meshFor(r)) &&
                 string.Equals(rendererKey, UvToolContext.ExtractGroupKey(r.name), StringComparison.OrdinalIgnoreCase)), anchor);
             if (match) return match;
             string meshKey = UvToolContext.ExtractGroupKey(meshFor(anchor).name);

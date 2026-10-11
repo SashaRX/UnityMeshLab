@@ -87,6 +87,9 @@ selects its corresponding mesh in every LOD of the same LODGroup, or its named
 LOD siblings under the same parent. Other mesh families remain untouched, even
 when renderer arrays have different ordering between LOD levels. Selecting an
 individual LOD object as Root also includes its corresponding sibling levels.
+Renderer names identify a mesh family only when they are unique within the
+selected level. If those names repeat, distinct source mesh names can identify
+the matching parts without including a neighbouring mesh.
 With Choose renderers disabled, all eligible mesh families are used. When enabled,
 an empty selection is an error and cannot silently process all renderers.
 **LOD0 proxy source** limits proxy construction to the lowest available LOD of
@@ -174,7 +177,8 @@ lambda and negative mu Laplacian passes. Defaults are lambda=0.5, mu=-0.53,
 strength=1 and five iterations. Topology/indices remain unchanged. Finite geometry,
 degeneracy, closed topology and outward component volume are validated afterward.
 The operation fails if any connected component's volume drops below half its
-original volume, even when a larger component keeps the total volume stable.
+original volume or grows above 150% of it, even when a larger component keeps the
+total volume stable.
 Relative total volume change over 15% is reported as a warning. Bounds and signed volumes before/after
 are retained in diagnostics. This is shrink-compensated smoothing, not an exact
 volume constraint or a self-intersection solver.
@@ -337,8 +341,11 @@ must cover every corner and use the unchanged original shading on excluded faces
 The new FBX inherits source import settings and material remaps, with **Normals =
 Import**. The source tangent mode is retained: authored tangents remain imported;
 MikkTSpace and legacy calculations remain calculated. It never switches excluded
-faces from calculated shading to a stored FBX frame. Only the new
-importer is configured. A source using calculated normals is refused: switching
+faces from calculated shading to a stored FBX frame. **Tangents = None** remains
+supported for normal-only results. A result containing regenerated tangents is
+refused with that source setting because the new importer would discard them;
+disable **Recalculate tangents** and rebuild, or enable source tangent import and
+recapture. Only the new importer is configured. A source using calculated normals is refused: switching
 the variant to imported normals could otherwise change excluded shading. Use an
 FBX source with Normals = Import and recapture; standalone/generated meshes
 without an FBX source are also refused. Ambiguous corners, inconsistent edits of

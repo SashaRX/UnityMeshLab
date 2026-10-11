@@ -322,6 +322,43 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { target?.Dispose(); Object.DestroyImmediate(root); }
         }
 
+        [TestCase(false)] [TestCase(true)]
+        public void TangentsNoneAllowsNormalsOnlyAndRejectsDiscardingRegeneratedFrames(bool regenerate)
+        {
+            string source = Source(false, true);
+            var importer = (ModelImporter)AssetImporter.GetAtPath(source);
+            importer.importTangents = ModelImporterTangents.None; importer.SaveAndReimport();
+            var bytes = File.ReadAllBytes(source); var meta = File.ReadAllBytes(source + ".meta");
+            var root = Object.Instantiate(AssetDatabase.LoadAssetAtPath<GameObject>(source));
+            var renderer = root.GetComponentInChildren<MeshRenderer>();
+            var original = renderer.GetComponent<MeshFilter>().sharedMesh;
+            FoliageTargetSnapshot target = null;
+            try
+            {
+                var settings = new FoliageNormalsSettings { selection = FoliageFaceSelection.SelectedSubmeshIndices, submeshes = new[] { 1 } };
+                target = new FoliageTargetSnapshot(renderer, root.transform.worldToLocalMatrix, settings, CancellationToken.None);
+                Assert.IsFalse(target.original.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent));
+                target.working = target.BuildResult(target.localNormals, regenerate, CancellationToken.None, out _);
+                Assert.AreEqual(regenerate, target.working.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent));
+                if (regenerate)
+                {
+                    var error = Assert.Throws<InvalidOperationException>(() => FoliageFbxExport.Save(new[] { target }, folder));
+                    StringAssert.Contains("Tangents = None", error.Message);
+                    Assert.AreEqual(1, Directory.GetFiles(folder, "*.fbx").Length);
+                }
+                else
+                {
+                    string output = FoliageFbxExport.Save(new[] { target }, folder).Single();
+                    Assert.AreEqual(ModelImporterTangents.None, ((ModelImporter)AssetImporter.GetAtPath(output)).importTangents);
+                    Assert.IsFalse(AssetDatabase.LoadAllAssetsAtPath(output).OfType<Mesh>().Single().HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent));
+                    CheckDocuments(source, output);
+                }
+                CollectionAssert.AreEqual(bytes, File.ReadAllBytes(source)); CollectionAssert.AreEqual(meta, File.ReadAllBytes(source + ".meta"));
+                Assert.AreSame(original, renderer.GetComponent<MeshFilter>().sharedMesh);
+            }
+            finally { target?.Dispose(); Object.DestroyImmediate(root); }
+        }
+
         internal static void CheckDocuments(string source, string output)
         {
             using var before = FbxSourceDocument.Load(source);

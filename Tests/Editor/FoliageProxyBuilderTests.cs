@@ -103,6 +103,26 @@ namespace SashaRX.UnityMeshLab.Tests
             foreach (var component in before) Assert.That(after[component.Key] / component.Value, Is.InRange(.7, 1.3));
         }
 
+        [TestCase(false, -.25f)] [TestCase(true, -.25f)]
+        [TestCase(false, -.65f)] [TestCase(true, -.65f)]
+        public void SmoothingRejectsComponentExpansionIncludingSmallShellsHiddenByAggregateVolume(bool smallFirst, float compensation)
+        {
+            var large = FoliagePrimitiveBuilder.Build(new[] { new FoliagePrimitive { radius = 10 } }, 1, CancellationToken.None);
+            var offset = Vector3.right * 30;
+            var small = new RemeshNative.IndexedMesh {
+                positions = new[] { offset, offset + Vector3.right * .25f, offset + Vector3.up * .25f, offset + Vector3.forward * .25f },
+                indices = new[] { 0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3 }
+            };
+            var input = smallFirst ? Join(small, large) : Join(large, small);
+            var positions = (Vector3[])input.positions.Clone(); var indices = (int[])input.indices.Clone();
+            var settings = new FoliageNormalsSettings { smoothingIterations = 1, lambda = .001f, mu = compensation };
+            FoliageProxySmoother.Diagnostics diagnostics = null;
+            var error = Assert.Throws<InvalidOperationException>(() => FoliageProxySmoother.Smooth(input, settings, CancellationToken.None, out diagnostics));
+            StringAssert.Contains("component grew more than half", error.Message);
+            if (compensation == -.25f) Assert.Less(diagnostics.VolumeChange, .15, "Aggregate warning must not hide an expanded small shell.");
+            CollectionAssert.AreEqual(positions, input.positions); CollectionAssert.AreEqual(indices, input.indices);
+        }
+
         [TestCase(false)] [TestCase(true)]
         public void SmoothingEnforcesTriangleBudgetWithRemeshEnabledOrDisabled(bool remesh)
         {

@@ -39,8 +39,11 @@ namespace SashaRX.UnityMeshLab
             var afterVolumes = FoliageProxyBuilder.ComponentVolumes(result, topology);
             foreach (var component in beforeVolumes)
             {
-                if (afterVolumes[component.Key] / component.Value < .5)
+                double volumeRatio = afterVolumes[component.Key] / component.Value;
+                if (volumeRatio < .5)
                     throw new InvalidOperationException("Proxy component lost more than half its volume. Reduce smoothing strength/iterations.");
+                if (volumeRatio > 1.5)
+                    throw new InvalidOperationException("Proxy component grew more than half its volume. Reduce smoothing strength/iterations.");
             }
             result.normals = MeshGeometry.AveragedNormals(p, t, token);
             if (result.normals.Any(n => !FoliageTargetSnapshot.Finite(n) || Math.Abs(n.magnitude - 1) > .001f))

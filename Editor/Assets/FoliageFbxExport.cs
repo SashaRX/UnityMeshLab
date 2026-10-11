@@ -69,6 +69,8 @@ namespace SashaRX.UnityMeshLab
                 throw new InvalidOperationException($"'{target.source.name}' is not an imported FBX mesh. Preserving its original FBX data requires an FBX source.");
             if (importer.importNormals != ModelImporterNormals.Import)
                 throw new InvalidOperationException($"'{source}' calculates normals on import. Separate FBX export requires source Normals = Import to preserve excluded shading; recapture after changing that setting.");
+            if (importer.importTangents == ModelImporterTangents.None && target.working.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent))
+                throw new InvalidOperationException($"'{source}' uses Tangents = None and would discard the result's tangent frame. Disable Recalculate tangents and rebuild, or enable source tangent import and recapture before saving a separate FBX.");
             if (importer.meshCompression != ModelImporterMeshCompression.Off)
                 UvtLog.Warn($"[Foliage] '{source}' uses lossy Mesh Compression. The FBX document preserves excluded normals, UVs and colours exactly; its copied Unity importer can quantize them on reimport. Disable Mesh Compression on the new FBX for uncompressed shading.");
         }

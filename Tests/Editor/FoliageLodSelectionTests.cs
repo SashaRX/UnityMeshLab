@@ -190,6 +190,19 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [TestCase(false)] [TestCase(true)]
+        public void DuplicateOriginRendererNamesUseDistinctMeshNamesToPreserveTheSelectedPart(bool selectLeaves)
+        {
+            using var tree = new Tree();
+            tree.leaves[0].name = "Part_LOD0"; tree.trunks[0].name = "Part_LOD0";
+            var selected = selectLeaves ? tree.leaves : tree.trunks;
+            var excluded = selectLeaves ? tree.trunks : tree.leaves;
+            excluded[1].name = "Part_LOD1";
+            var targets = FoliageLodSelection.Resolve(tree.root, Settings(selected[0]), CancellationToken.None);
+            CollectionAssert.AreEqual(selected, targets.Select(t => t.renderer));
+            Assert.IsFalse(targets.Any(t => excluded.Contains(t.renderer)));
+        }
+
+        [TestCase(false)] [TestCase(true)]
         public void MissingSelectedMaterialLeavesThatLodUntouched(bool byIndex)
         {
             using var tree = new Tree(true);
