@@ -110,7 +110,8 @@ namespace SashaRX.UnityMeshLab.Tests
             var empty = Array.CreateInstance(input, 0);
             var schedule = queue.GetMethod("Schedule", BindingFlags.NonPublic | BindingFlags.Static,
                 null, new[] { empty.GetType(), typeof(Action) }, null);
-            LogAssert.Expect(LogType.Error, "[MeshLab][General] Texture packer installation: Expected installation failure");
+            LogAssert.Expect(LogType.Error, new System.Text.RegularExpressions.Regex(
+                System.Text.RegularExpressions.Regex.Escape("[MeshLab][General] Texture packer installation: Expected installation failure")));
             var task = (Task)schedule.Invoke(null, new object[] { empty, (Action)(() => throw new IOException("Expected installation failure")) });
             double deadline = EditorApplication.timeSinceStartup + 30;
             while (!task.IsCompleted)
