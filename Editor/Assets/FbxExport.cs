@@ -1235,6 +1235,8 @@ namespace SashaRX.UnityMeshLab
             {
                 var mesh = filter.sharedMesh;
                 if (!mesh || MeshNaming.IsCollision(filter.name)) continue;
+                string path = CollisionHierarchyAnalyzer.RelativePath(root.transform, filter.transform);
+                frames["hierarchy:" + path] = recenter * filter.transform.localToWorldMatrix;
                 string key = mesh.name;
                 if (ambiguous.Contains(key)) continue;
                 var frame = recenter * filter.transform.localToWorldMatrix;
@@ -1251,7 +1253,8 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Adds owned sidecar meshes as collision children, optionally converting
         /// source-local geometry with frames captured before normalization.</summary>
         internal static int InjectCollisionMeshes(GameObject tempRoot, List<(string meshName, List<Mesh> meshes, bool isConvex)> collisionData,
-            List<Mesh> tempSink, Dictionary<string, Matrix4x4> sourceFrames = null)
+            List<Mesh> tempSink, Dictionary<string, Matrix4x4> sourceFrames = null,
+            Dictionary<string, CollisionMeshEntry> collisionSources = null)
         {
             if (tempSink == null) throw new ArgumentNullException(nameof(tempSink));
             if (collisionData == null || collisionData.Count == 0) return 0;
@@ -1259,10 +1262,12 @@ namespace SashaRX.UnityMeshLab
             // entry fails before the remaining entries are visited.
             foreach (var collision in collisionData) tempSink.AddRange(collision.meshes);
 
-            for (int ci = tempRoot.transform.childCount - 1; ci >= 0; ci--)
+            RemoveManagedCollisionNodes(tempRoot, collisionData, collisionSources);
+            // Preserve the rebuild's existing replacement of top-level collision.
+            for (int i = tempRoot.transform.childCount - 1; i >= 0; i--)
             {
-                var ch = tempRoot.transform.GetChild(ci);
-                if (MeshNaming.IsCollision(ch.name)) Object.DestroyImmediate(ch.gameObject);
+                var child = tempRoot.transform.GetChild(i);
+                if (MeshNaming.IsCollision(child.name)) Object.DestroyImmediate(child.gameObject);
             }
 
             int count = 0;
@@ -1270,11 +1275,18 @@ namespace SashaRX.UnityMeshLab
             {
                 if (sourceFrames != null)
                 {
-                    if (!sourceFrames.TryGetValue(colMeshName, out var frame))
+                    CollisionMeshEntry metadata = null;
+                    collisionSources?.TryGetValue(colMeshName, out metadata);
+                    string sourceName = string.IsNullOrEmpty(metadata?.sourceMeshName) ? colMeshName : metadata.sourceMeshName;
+                    string frameKey = !string.IsNullOrEmpty(metadata?.sourceMeshName) && !string.IsNullOrEmpty(metadata.sourceHierarchyPath)
+                        ? "hierarchy:" + metadata.sourceHierarchyPath : sourceName;
+                    if (!sourceFrames.TryGetValue(frameKey, out var frame))
                     {
+                        if (frameKey != sourceName)
+                            throw new InvalidOperationException($"Cannot place collision '{colMeshName}': source hierarchy path '{metadata.sourceHierarchyPath}' no longer exists");
                         int matches = 0;
                         foreach (var pair in sourceFrames)
-                            if (MeshNaming.GroupKey(pair.Key) == colMeshName && MeshNaming.LodIndex(pair.Key) <= 0)
+                            if (!pair.Key.StartsWith("hierarchy:", StringComparison.Ordinal) && MeshNaming.GroupKey(pair.Key) == sourceName && MeshNaming.LodIndex(pair.Key) <= 0)
                             { frame = pair.Value; ++matches; }
                         if (matches != 1)
                             throw new InvalidOperationException($"Cannot place collision '{colMeshName}': no unique source mesh frame in the FBX hierarchy");
@@ -1304,6 +1316,44 @@ namespace SashaRX.UnityMeshLab
             }
             if (count > 0) UvtLog.Verbose($"[FBX Export] Added {count} collision mesh(es) from sidecar");
             return count;
+        }
+
+        static void RemoveManagedCollisionNodes(GameObject root, List<(string meshName, List<Mesh> meshes, bool isConvex)> data,
+            Dictionary<string, CollisionMeshEntry> sources)
+        {
+            var keys = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var collision in data) keys.Add(collision.meshName);
+            foreach (var collision in data)
+                if (sources != null && sources.TryGetValue(collision.meshName, out var entry) && entry.replacedMeshGroupKeys != null)
+                    foreach (string key in entry.replacedMeshGroupKeys)
+                        if (!string.IsNullOrEmpty(key)) keys.Add(key);
+            var removed = new List<GameObject>();
+            for (int i = 0; i < root.transform.childCount; i++)
+                CollectManagedCollisionNodes(root.transform.GetChild(i), keys, removed);
+            foreach (var node in removed) Object.DestroyImmediate(node);
+        }
+
+        static void CollectManagedCollisionNodes(Transform node, HashSet<string> keys, List<GameObject> removed)
+        {
+            foreach (string key in keys)
+            {
+                if (!MeshNaming.IsCollisionOf(node.name, key)) continue;
+                RequireManagedCollisionChildren(node, key);
+                removed.Add(node.gameObject);
+                return;
+            }
+            for (int i = 0; i < node.childCount; i++) CollectManagedCollisionNodes(node.GetChild(i), keys, removed);
+        }
+
+        static void RequireManagedCollisionChildren(Transform node, string key)
+        {
+            for (int i = 0; i < node.childCount; i++)
+            {
+                var child = node.GetChild(i);
+                if (!MeshNaming.IsCollisionOf(child.name, key))
+                    throw new InvalidOperationException($"Cannot replace collision '{node.name}': unrelated child '{child.name}'");
+                RequireManagedCollisionChildren(child, key);
+            }
         }
 
         /// <summary>

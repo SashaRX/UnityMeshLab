@@ -31,23 +31,25 @@ namespace SashaRX.UnityMeshLab
         float simplifyTargetError = 0.5f;
 
         // ── Convex decomposition settings ──
-        int   convexMaxHulls        = 16;
+        int   convexMaxHulls        = 8;
         int   convexResolution      = 100000;
-        int   convexMaxVertsPerHull = 64;
+        int   convexMaxVertsPerHull = 16;
         int   convexMaxRecursionDepth = 10;
         bool  convexShrinkWrap      = true;
         int   convexFillMode        = 0; // 0=FloodFill, 1=SurfaceOnly, 2=RaycastFill
         int   convexMinEdgeLength   = 2;
         bool  convexFindBestPlane   = false;
-        float convexVolumeError     = 1f;
-        bool  convexGroupParts;
+        float convexVolumeError     = 85f;
+        bool  convexGroupParts = true;
         float convexPartGap         = .02f;
         float convexPartAngle       = 50f;
-        bool convexPrepareElements;
+        bool convexPrepareElements = true;
         float convexBoxFill = .9f;
         float convexElementFit = .02f;
         int convexElementResolution = 32;
         int convexElementTriangles = 64;
+        bool convexSimpleShapes = true;
+        float convexShapeFit = .075f, convexProjectionThickness = .25f;
         bool showElementSettings, showElementDetails;
 
         // ── Results ──
@@ -67,6 +69,8 @@ namespace SashaRX.UnityMeshLab
             public int hullCount;
             public int partGroupCount;
             public List<CollisionMeshBuilder.ElementReport> elementReports;
+            public List<CollisionMeshBuilder.ShapeReport> shapeReports;
+            public string hierarchyPath;
             public float resultError;
             public Transform sourceTransform; // renderer transform for correct placement
         }
@@ -167,13 +171,23 @@ namespace SashaRX.UnityMeshLab
                             EditorStyles.miniLabel);
                         if (r.elementReports != null && r.elementReports.Count > 0)
                             EditorGUILayout.LabelField("  " + ElementSummary(r.elementReports), EditorStyles.miniLabel);
+                        if (r.shapeReports != null)
+                        {
+                            EditorGUILayout.LabelField(new GUIContent("  " + ShapeSummary(r.shapeReports), r.hierarchyPath), EditorStyles.miniLabel);
+                        }
                     }
                 }
-                if (lastResults.Any(r => r.elementReports != null && r.elementReports.Count > 0))
+                if (lastResults.Any(r => r.elementReports != null && r.elementReports.Count > 0 || r.shapeReports != null))
                 {
-                    showElementDetails = EditorGUILayout.Foldout(showElementDetails, "Element Analysis", true);
+                    showElementDetails = EditorGUILayout.Foldout(showElementDetails, "Hierarchy / Shape Analysis", true);
                     if (showElementDetails)
                         foreach (var r in lastResults)
+                        {
+                            EditorGUILayout.LabelField(r.hierarchyPath ?? r.meshName, EditorStyles.miniLabel);
+                            if (r.shapeReports != null) foreach (var shape in r.shapeReports) {
+                                string fit = shape.sampledError >= 0 ? $"{shape.sampledError:P1}" : "n/a";
+                                EditorGUILayout.LabelField(new GUIContent($"  G{shape.groupIndex}: {shape.kind}, fit {fit}", shape.detail), EditorStyles.miniLabel);
+                            }
                             if (r.elementReports != null)
                                 foreach (var element in r.elementReports)
                                 {
@@ -182,6 +196,7 @@ namespace SashaRX.UnityMeshLab
                                         $"  G{element.groupIndex} E{element.elementIndex}: fill {fill}, {element.preparation}, {element.sourceTriangles} -> {element.preparedTriangles} tris",
                                         $"Principal size: {element.principalSize}. Sampled fit error: {element.sampledError:P2}. {element.detail}"), EditorStyles.miniLabel);
                                 }
+                        }
                 }
 
                 EditorGUILayout.Space(4);
@@ -230,7 +245,7 @@ namespace SashaRX.UnityMeshLab
                         var mc = go.GetComponent<MeshCollider>();
                         string info = mc != null && mc.sharedMesh != null
                             ? $"{mc.sharedMesh.triangles.Length / 3} tris, convex={mc.convex}"
-                            : "no mesh";
+                            : go.GetComponent<BoxCollider>() != null ? "BoxCollider" : "container";
                         EditorGUILayout.LabelField($"  {go.name} ({info})", EditorStyles.miniLabel);
                     }
                 }
@@ -252,13 +267,21 @@ namespace SashaRX.UnityMeshLab
 
         void DrawConvexSettings()
         {
-            EditorGUILayout.HelpBox("For dynamic/kinematic objects. Creates compound convex MeshColliders.", MessageType.None);
+            EditorGUILayout.HelpBox("For dynamic/kinematic objects. Preserves source hierarchy boundaries; fits boxes, projected profiles or 3D convex meshes.", MessageType.None);
             EditorGUILayout.BeginHorizontal();
             if (GUILayout.Button(new GUIContent("Detailed", "Restore the original whole-mesh decomposition settings.")))
                 ApplyConvexPreset(CollisionMeshBuilder.ConvexDecompSettings.Default);
             if (GUILayout.Button(new GUIContent("Coarse Parts", "Group nearby similarly oriented pieces, close small gaps, and preserve independent structures. Start with 8 hulls and 16 vertices per hull.")))
                 ApplyConvexPreset(CollisionMeshBuilder.ConvexDecompSettings.CoarseParts);
             EditorGUILayout.EndHorizontal();
+            if (GUILayout.Button(new GUIContent("Structural: Boxes + Profiles", "Analyze hierarchy nodes and geometry groups. Keep fitted boxes as final colliders; extrude thin convex profiles and split only where projected gaps are too large. Use 3D decomposition for other shapes.")))
+                ApplyConvexPreset(CollisionMeshBuilder.ConvexDecompSettings.Structural);
+            convexSimpleShapes = EditorGUILayout.Toggle(new GUIContent("Prefer Simple Shapes", "Fit final shapes before remeshing. Boxes become BoxColliders when the transform supports them; the preview and FBX use matching mesh proxies."), convexSimpleShapes);
+            if (convexSimpleShapes)
+            {
+                convexShapeFit = EditorGUILayout.Slider(new GUIContent("Shape Fit (%)", "Sampled surface and projected-gap tolerance, relative to each group's oriented bounds diagonal."), convexShapeFit * 100, .01f, 10) / 100;
+                convexProjectionThickness = EditorGUILayout.Slider(new GUIContent("Projection Thickness (%)", "Maximum thickness divided by the smaller in-plane extent for profile extrusion."), convexProjectionThickness * 100, 1, 100) / 100;
+            }
             convexGroupParts = EditorGUILayout.Toggle(
                 new GUIContent("Group Nearby Parts", "Decompose groups independently. Principal planes keep differently oriented structures separate; the hull budget is shared between all groups."), convexGroupParts);
             if (convexGroupParts)
@@ -286,7 +309,7 @@ namespace SashaRX.UnityMeshLab
             convexVolumeError = EditorGUILayout.Slider(
                 new GUIContent("Volume Error (%)", "Allowed difference between hull and occupied voxel volume, relative to occupied volume. Higher values stop splitting earlier and close more detail; this is not a minimum hull size."), convexVolumeError, .1f, 100f);
             convexMaxHulls = EditorGUILayout.IntSlider(
-                new GUIContent("Max Hulls", "Maximum number of convex hulls to produce. More hulls = better shape approximation, higher cost."),
+                new GUIContent("Max Hulls", "Maximum shapes per source mesh, shared between its geometry groups. More shapes can retain more detail at higher cost."),
                 convexMaxHulls, 1, 64);
             convexResolution = EditorGUILayout.IntField(
                 new GUIContent("Resolution", "Voxel grid resolution. Higher = more precise decomposition, slower computation. (10K\u20131M)"),
@@ -335,6 +358,9 @@ namespace SashaRX.UnityMeshLab
             convexElementFit = settings.elementFitError;
             convexElementResolution = settings.elementRemeshResolution;
             convexElementTriangles = settings.elementTargetTriangles;
+            convexSimpleShapes = settings.preferSimpleShapes;
+            convexShapeFit = settings.shapeFitError;
+            convexProjectionThickness = settings.projectionThicknessRatio;
         }
 
         void ExecuteGenerate()
@@ -342,25 +368,25 @@ namespace SashaRX.UnityMeshLab
             DestroyGeneratedMeshes();
             generatedMode = mode;
 
-            var sourceMeshEntries = ctx.MeshEntries
-                .Where(e => e.lodIndex == ctx.SourceLodIndex && e.include)
-                .ToList();
+            var sources = CollisionHierarchyAnalyzer.Analyze(ctx.LodGroup != null ? ctx.LodGroup.transform : null,
+                ctx.MeshEntries, ctx.SourceLodIndex);
 
-            if (sourceMeshEntries.Count == 0)
+            if (sources.Count == 0)
             {
                 UvtLog.Warn("No source meshes found for collision generation.");
                 return;
             }
 
-            foreach (var entry in sourceMeshEntries)
+            foreach (var source in sources)
             {
+                var entry = source.entry;
                 Mesh sourceMesh = entry.originalMesh ?? entry.fbxMesh;
                 if (sourceMesh == null) continue;
 
                 if (mode == CollisionMode.Simplified)
                     GenerateSimplified(entry, sourceMesh);
                 else
-                    GenerateConvex(entry, sourceMesh);
+                    GenerateConvex(entry, sourceMesh, source.path);
             }
 
             if (lastResults.Count > 0)
@@ -395,7 +421,7 @@ namespace SashaRX.UnityMeshLab
             });
         }
 
-        void GenerateConvex(MeshEntry entry, Mesh sourceMesh)
+        void GenerateConvex(MeshEntry entry, Mesh sourceMesh, string hierarchyPath)
         {
             var settings = new CollisionMeshBuilder.ConvexDecompSettings
             {
@@ -415,7 +441,10 @@ namespace SashaRX.UnityMeshLab
                 boxFillThreshold  = convexBoxFill,
                 elementFitError   = convexElementFit,
                 elementRemeshResolution = convexElementResolution,
-                elementTargetTriangles = convexElementTriangles
+                elementTargetTriangles = convexElementTriangles,
+                preferSimpleShapes = convexSimpleShapes,
+                shapeFitError = convexShapeFit,
+                projectionThicknessRatio = convexProjectionThickness
             };
 
             var result = CollisionMeshBuilder.BuildConvexDecomposition(sourceMesh, settings);
@@ -428,6 +457,7 @@ namespace SashaRX.UnityMeshLab
 
             if (result.elementReports != null && result.elementReports.Count > 0)
                 UvtLog.Info($"Collision elements for {sourceMesh.name}: {ElementSummary(result.elementReports)}");
+            if (result.shapeReports != null) UvtLog.Info($"Collision shapes for {hierarchyPath ?? sourceMesh.name}: {ShapeSummary(result.shapeReports)}");
             int totalTris = 0;
             foreach (var hull in result.hulls)
             {
@@ -443,6 +473,8 @@ namespace SashaRX.UnityMeshLab
                 hullCount       = result.hulls.Count,
                 partGroupCount  = result.partGroupCount,
                 elementReports  = result.elementReports,
+                shapeReports    = result.shapeReports,
+                hierarchyPath   = hierarchyPath,
                 sourceTransform = entry.renderer != null ? entry.renderer.transform : null
             });
         }
@@ -461,6 +493,11 @@ namespace SashaRX.UnityMeshLab
             $"{reports.Count(e => e.preparation == CollisionMeshBuilder.ElementPreparation.Decimate)} decimate, " +
             $"{reports.Count(e => e.preparation == CollisionMeshBuilder.ElementPreparation.Source)} original; " +
             $"{reports.Sum(e => e.sourceTriangles):N0} -> {reports.Sum(e => e.preparedTriangles):N0} input tris";
+
+        static string ShapeSummary(List<CollisionMeshBuilder.ShapeReport> reports) =>
+            $"{reports.Count(s => s.kind == CollisionMeshBuilder.ShapeKind.Box)} boxes, " +
+            $"{reports.Count(s => s.kind == CollisionMeshBuilder.ShapeKind.Projected)} projected profiles, " +
+            $"{reports.Count(s => s.kind == CollisionMeshBuilder.ShapeKind.ConvexMesh)} 3D hulls";
 
         // ── Apply / Remove ──
 
@@ -500,6 +537,9 @@ namespace SashaRX.UnityMeshLab
                         {
                             var go = generatedMode == CollisionMode.Simplified ? container :
                                 CreateCollisionObject($"{baseName}_COL_Hull{h}", container.transform);
+                            if (r.shapeReports != null && h < r.shapeReports.Count &&
+                                r.shapeReports[h].kind == CollisionMeshBuilder.ShapeKind.Box &&
+                                TryApplyBox(go, r.shapeReports[h], toRoot, root.localToWorldMatrix)) continue;
                             var mc = Undo.AddComponent<MeshCollider>(go);
                             Undo.RecordObject(mc, "Configure Collision Mesh");
                             mc.convex = generatedMode == CollisionMode.ConvexDecomposition;
@@ -512,6 +552,37 @@ namespace SashaRX.UnityMeshLab
             }
             finally { Undo.CollapseUndoOperations(undoGroup); }
             UvtLog.Info("Collision meshes applied to scene.");
+        }
+
+        internal static bool TryApplyBox(GameObject go, CollisionMeshBuilder.ShapeReport shape, Matrix4x4 toRoot, Matrix4x4 rootToWorld)
+        {
+            var local = toRoot * Matrix4x4.TRS(shape.center, shape.rotation, shape.size);
+            // A BoxCollider cannot represent shear, including shear introduced by
+            // its scaled parent. Keep the exact transformed mesh proxy in that case.
+            if (!BoxFrame(local, out var rotation, out var size) || !BoxFrame(rootToWorld * local, out _, out _)) return false;
+            Undo.RecordObject(go.transform, "Place Box Collider");
+            go.transform.localPosition = local.GetColumn(3);
+            go.transform.localRotation = rotation;
+            go.transform.localScale = Vector3.one;
+            PrefabUtility.RecordPrefabInstancePropertyModifications(go.transform);
+            var box = Undo.AddComponent<BoxCollider>(go);
+            Undo.RecordObject(box, "Configure Box Collider");
+            box.center = Vector3.zero;
+            box.size = size;
+            PrefabUtility.RecordPrefabInstancePropertyModifications(box);
+            return true;
+        }
+
+        static bool BoxFrame(Matrix4x4 matrix, out Quaternion rotation, out Vector3 size)
+        {
+            rotation = Quaternion.identity;
+            Vector3 x = matrix.GetColumn(0), y = matrix.GetColumn(1), z = matrix.GetColumn(2);
+            size = new Vector3(x.magnitude, y.magnitude, z.magnitude);
+            if (size.x <= 0 || size.y <= 0 || size.z <= 0 || !float.IsFinite(size.sqrMagnitude)) return false;
+            x /= size.x; y /= size.y; z /= size.z;
+            if (Mathf.Abs(Vector3.Dot(x,y)) > .0001f || Mathf.Abs(Vector3.Dot(x,z)) > .0001f || Mathf.Abs(Vector3.Dot(y,z)) > .0001f) return false;
+            rotation = Quaternion.LookRotation(z, y);
+            return true;
         }
 
         static GameObject CreateCollisionObject(string name, Transform parent)
@@ -585,8 +656,45 @@ namespace SashaRX.UnityMeshLab
 
             // Build CollisionMeshEntry and save to sidecar
             string sidecarPath = SidecarStore.PathFor(fbxPath);
+            var model = AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath);
+            var paths = new Dictionary<Transform, string>();
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+            using var document = model != null ? FbxSourceDocument.Load(fbxPath) : null;
+            var documentPaths = new Dictionary<Transform, string>();
+#endif
+            foreach (var result in lastResults)
+            {
+                if (!TryResolveSidecarPath(model, fbxPath, result.sourceTransform, result.meshName, out var path))
+                {
+                    UvtLog.Warn($"[Collision] Cannot identify source instance '{result.meshName}' in the imported FBX; sidecar was not changed.");
+                    return;
+                }
+                if (result.sourceTransform != null)
+                {
+                    paths[result.sourceTransform] = path;
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+                    try
+                    {
+                        documentPaths[result.sourceTransform] = FbxStructureWrite.ImportedCollisionDocumentPath(document, path);
+                    }
+                    catch (FbxStructureRefusalException e)
+                    {
+                        UvtLog.Warn($"[Collision] {e.Message}; sidecar was not changed.");
+                        return;
+                    }
+#endif
+                }
+            }
+            foreach (var result in lastResults)
+                if (result.sourceTransform != null && string.IsNullOrEmpty(paths[result.sourceTransform]) &&
+                    lastResults.Count(r => r.meshName == result.meshName) > 1)
+                {
+                    UvtLog.Warn($"[Collision] Multiple scene instances of '{result.meshName}' have no unique FBX hierarchy identity; sidecar was not changed.");
+                    return;
+                }
             var data = SidecarStore.LoadOrCreate(fbxPath);
             Undo.RecordObject(data, "Save Collision Sidecar");
+            var obsoleteKeys = PruneMissingCollisionSources(data, model, fbxPath);
 
             // Build flattened collision entry per source mesh
             int meshIdx = 0;
@@ -596,6 +704,7 @@ namespace SashaRX.UnityMeshLab
                 MeshFingerprint fp = null;
                 var srcEntry = ctx.MeshEntries.FirstOrDefault(
                     e => e.lodIndex == ctx.SourceLodIndex && e.include &&
+                    (r.sourceTransform == null || e.renderer?.transform == r.sourceTransform) &&
                     (e.fbxMesh != null ? e.fbxMesh.name : e.originalMesh?.name) == r.meshName);
                 if (srcEntry != null && srcEntry.fbxMesh != null)
                     fp = MeshFingerprint.Compute(srcEntry.fbxMesh);
@@ -623,9 +732,10 @@ namespace SashaRX.UnityMeshLab
                     allTri.AddRange(localTris);
                 }
 
+                string sourcePath = r.sourceTransform != null ? paths[r.sourceTransform] : null;
                 var entry = new CollisionMeshEntry
                 {
-                    meshGroupKey      = r.meshName,
+                    meshGroupKey      = CollisionHierarchyAnalyzer.InstanceKey(r.meshName, sourcePath),
                     mode              = (int)generatedMode,
                     sourceFingerprint = fp,
                     allPositions      = allPos.ToArray(),
@@ -637,15 +747,123 @@ namespace SashaRX.UnityMeshLab
                     maxHulls          = convexMaxHulls,
                     resolution        = convexResolution,
                     maxVertsPerHull   = convexMaxVertsPerHull,
+                    shapes            = r.shapeReports?.ToArray(),
+                    sourceHierarchyPath = sourcePath,
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+                    sourceDocumentHierarchyPath = r.sourceTransform != null ? documentPaths[r.sourceTransform] : null,
+#endif
+                    sourceMeshName    = r.meshName,
+                    preferSimpleShapes = convexSimpleShapes,
+                    shapeFitError     = convexShapeFit,
+                    projectionThicknessRatio = convexProjectionThickness,
                 };
 
-                // Replace existing entry for same meshGroupKey
-                data.collisionEntries.RemoveAll(c => c.meshGroupKey == entry.meshGroupKey);
+                // Replace this instance and the old unscoped mesh entry, retaining others.
+                var replaced = data.collisionEntries.Where(c => c != null && (c.meshGroupKey == entry.meshGroupKey ||
+                    (!string.IsNullOrEmpty(sourcePath) && c.sourceHierarchyPath == sourcePath) ||
+                    (string.IsNullOrEmpty(sourcePath) && c.sourceMeshName == r.meshName) ||
+                    (string.IsNullOrEmpty(c.sourceHierarchyPath) && c.meshGroupKey == r.meshName))).ToList();
+                foreach (var old in replaced)
+                {
+                    CollectReplacedCollisionKeys(old, obsoleteKeys);
+                    data.collisionEntries.Remove(old);
+                }
+                obsoleteKeys.Remove(entry.meshGroupKey);
+                entry.replacedMeshGroupKeys = obsoleteKeys.ToArray();
+                obsoleteKeys.Clear();
                 data.collisionEntries.Add(entry);
             }
 
             SidecarStore.Save(data);
             UvtLog.Info($"[Collision] Saved to sidecar: {sidecarPath} ({data.collisionEntries.Count} collision entries)");
+        }
+
+        bool TryResolveSidecarPath(GameObject model, string fbxPath, Transform source, string meshName, out string path)
+        {
+            path = null;
+            if (model == null) return false;
+            var original = source != null ? PrefabUtility.GetCorrespondingObjectFromOriginalSource(source) : null;
+            if (original != null && AssetDatabase.GetAssetPath(original) == fbxPath)
+                path = CollisionHierarchyAnalyzer.RelativePath(original.root, original);
+            else if (source != null)
+            {
+                var candidate = CollisionHierarchyAnalyzer.RelativePath(ctx.LodGroup.transform, source);
+                foreach (var renderer in model.GetComponentsInChildren<Renderer>(true))
+                    if (SourceMeshName(renderer) == meshName && CollisionHierarchyAnalyzer.RelativePath(model.transform, renderer.transform) == candidate)
+                    { path = candidate; break; }
+            }
+            if (!string.IsNullOrEmpty(path)) return true;
+            // A manually assembled scene can use a unique mesh without sharing
+            // the imported model's hierarchy. It retains legacy mesh-name lookup.
+            int matches = 0;
+            foreach (var renderer in model.GetComponentsInChildren<Renderer>(true))
+                if (SourceMeshName(renderer) == meshName) matches++;
+            return matches == 1;
+        }
+
+        string SourceMeshName(Renderer renderer)
+        {
+            var entry = ctx.MeshEntries.FirstOrDefault(e => e.renderer == renderer);
+            if (entry?.fbxMesh != null) return entry.fbxMesh.name;
+            var mesh = renderer is SkinnedMeshRenderer skinned ? skinned.sharedMesh : renderer.GetComponent<MeshFilter>()?.sharedMesh;
+            return mesh != null ? mesh.name : null;
+        }
+
+        bool MatchesWholeModel(GameObject model)
+        {
+            if (model == null) return false;
+            var sources = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var renderer in model.GetComponentsInChildren<Renderer>(true))
+                if (!MeshNaming.IsCollision(renderer.name))
+                    sources[CollisionHierarchyAnalyzer.RelativePath(model.transform, renderer.transform)] = SourceMeshName(renderer);
+            int count = 0;
+            foreach (var renderer in ctx.LodGroup.GetComponentsInChildren<Renderer>(true))
+            {
+                if (MeshNaming.IsCollision(renderer.name)) continue;
+                string path = CollisionHierarchyAnalyzer.RelativePath(ctx.LodGroup.transform, renderer.transform);
+                if (!sources.TryGetValue(path, out var name) || name != SourceMeshName(renderer)) return false;
+                count++;
+            }
+            return count == sources.Count;
+        }
+
+        HashSet<string> PruneMissingCollisionSources(Uv2DataAsset data, GameObject model, string fbxPath)
+        {
+            var root = ctx.LodGroup.transform;
+            var importedRoot = PrefabUtility.GetCorrespondingObjectFromOriginalSource(root);
+            var obsolete = new HashSet<string>(StringComparer.Ordinal);
+            bool knownRoot = importedRoot != null && AssetDatabase.GetAssetPath(importedRoot) == fbxPath;
+            // A partial manual hierarchy cannot own all the asset's sidecar entries.
+            if (!knownRoot && !MatchesWholeModel(model)) return obsolete;
+            string scope = knownRoot ? CollisionHierarchyAnalyzer.RelativePath(importedRoot.root, importedRoot) : ".";
+            var livePaths = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var renderer in root.GetComponentsInChildren<Renderer>(true))
+            {
+                if (MeshNaming.IsCollision(renderer.name)) continue;
+                var node = renderer.transform;
+                var original = PrefabUtility.GetCorrespondingObjectFromOriginalSource(node);
+                string path = original != null ? CollisionHierarchyAnalyzer.RelativePath(original.root, original)
+                    : CollisionHierarchyAnalyzer.RelativePath(root, node);
+                if (!string.IsNullOrEmpty(path)) livePaths.Add(path);
+            }
+            for (int i = data.collisionEntries.Count - 1; i >= 0; i--)
+            {
+                var entry = data.collisionEntries[i];
+                if (entry == null || string.IsNullOrEmpty(entry.sourceMeshName) || string.IsNullOrEmpty(entry.sourceHierarchyPath)) continue;
+                bool inScope = scope == "." || entry.sourceHierarchyPath == scope || entry.sourceHierarchyPath.StartsWith(scope + "/", StringComparison.Ordinal);
+                if (!inScope || livePaths.Contains(entry.sourceHierarchyPath)) continue;
+                CollectReplacedCollisionKeys(entry, obsolete);
+                data.collisionEntries.RemoveAt(i);
+            }
+            return obsolete;
+        }
+
+        static void CollectReplacedCollisionKeys(CollisionMeshEntry entry, HashSet<string> keys)
+        {
+            if (!string.IsNullOrEmpty(entry.meshGroupKey)) keys.Add(entry.meshGroupKey);
+            if (entry.replacedMeshGroupKeys == null) return;
+            foreach (string key in entry.replacedMeshGroupKeys)
+                if (!string.IsNullOrEmpty(key)) keys.Add(key);
         }
 
         /// <summary>

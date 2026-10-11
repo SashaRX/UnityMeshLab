@@ -74,6 +74,17 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public static bool IsCollision(string name) => !string.IsNullOrEmpty(name) && CollisionSuffix.IsMatch(name);
 
+        /// <summary>A generated collision container or hull owned by one exact sidecar key.</summary>
+        internal static bool IsCollisionOf(string name, string key)
+        {
+            if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(key)) return false;
+            if (name == key + "_COL") return true;
+            string prefix = key + "_COL_Hull";
+            return name.StartsWith(prefix, StringComparison.Ordinal) &&
+                int.TryParse(name.Substring(prefix.Length), System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out int hull) && hull >= 0;
+        }
+
         /// <summary>The name without its collision suffix, or the name itself.</summary>
         public static string StripCollision(string name)
             => string.IsNullOrEmpty(name) ? name : CollisionSuffix.Replace(name, "");
