@@ -107,15 +107,16 @@ namespace SashaRX.UnityMeshLab
 
         static void RebaseTextureBlocks(string[] lines, string scratch, string source, string target, IReadOnlyDictionary<string, string> originalPaths, bool requireMedia)
         {
-            for (int start = 0; start < lines.Length; start++)
+            int start = 0;
+            while (start < lines.Length)
             {
                 string header = lines[start].TrimStart();
-                if (!header.StartsWith("Texture:", StringComparison.Ordinal) && !header.StartsWith("Video:", StringComparison.Ordinal)) continue;
+                if (!header.StartsWith("Texture:", StringComparison.Ordinal) && !header.StartsWith("Video:", StringComparison.Ordinal)) { start++; continue; }
                 string closing = lines[start].Substring(0, lines[start].Length - header.Length) + "}";
                 int end = start + 1;
                 while (end < lines.Length && lines[end].TrimEnd() != closing) end++;
                 RebaseTextureBlock(lines, start + 1, end, scratch, source, target, originalPaths, requireMedia);
-                start = end;
+                start = end + 1;
             }
         }
 
