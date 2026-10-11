@@ -38,8 +38,8 @@ namespace SashaRX.UnityMeshLab
         FbxSourceDocument(string path)
         {
             // The importer extracts embedded media next to the file it reads; reading a
-            // copy in a scratch folder keeps the project clean and lets the writer embed
-            // the same media again.
+            // copy in a scratch folder keeps the project clean. The writer embeds the
+            // media again or copies it to durable external files per project settings.
             scratch = Path.Combine(Path.GetTempPath(), "meshlab-fbx-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(scratch);
             try

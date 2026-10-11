@@ -262,20 +262,26 @@ A re-save mutates ONLY the per-vertex channels listed in the
 caller's `FbxExportIntent`. Everything else — node names,
 hierarchy, transforms, material assignments, untouched UV
 channels, vertex colors, normals, tangents — is inherited
-byte-identical from the source FBX clone (modulo what the
-Unity FBX Exporter itself rewrites at the FBX-document level;
-see §9).
+from the source FBX clone. SDK / Unity FBX Exporter document
+serialization may differ (see §9); output container format and
+texture embedding follow the shared project settings in §11.
 
 ### Channel re-save in the FBX document (UV sets, vertex colours, normals, tangents)
 
 An intent made only of `UV0`…`UV7` and `VertexColors` does not go through
 Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
 
-* The source file is loaded with the FBX SDK and saved back in its own
-  container format (binary/ASCII) and file version, with embedded media
-  re-embedded. Two exceptions: a file older than FBX 7.1 is saved as 7.1
-  (the oldest version the SDK writes), and the SDK rewrites the header's
-  creator string and timestamps. Polygons (quads, n-gons), control points, smoothing,
+* The source file is loaded with the FBX SDK and saved in the project's
+  selected container format (Binary by default, or ASCII), preserving its
+  file version. A file older than FBX 7.1 is saved as 7.1 (the oldest version
+  the SDK writes), and the SDK rewrites the header's creator string and
+  timestamps. Source embedded media is re-embedded only when Binary output
+  and texture embedding are selected; otherwise it is copied into
+  content-addressed subfolders of `<output>.fbm`, with texture paths updated
+  to those durable files. Existing external maps are never overwritten.
+  Temporary corner-matching probes preserve the source format and embedding
+  through `SaveForImport`; these probes are not the final output.
+  Polygons (quads, n-gons), control points, smoothing,
   materials, nodes, properties and every other layer element are never
   rebuilt.
 * Inside a written channel only the corners whose value changed are

@@ -2,9 +2,11 @@
 // colours, and for the hub's save normals and tangents). The FBX document is edited
 // through the FBX SDK: only the layer elements of the channels the tool changed are
 // touched, and within them only the corners whose value changed. Polygons (quads,
-// n-gons), control points, smoothing, the other channels, materials, nodes, the file
-// format and version come through as the source file has them. Unity's FBX Exporter is
-// not involved, so nothing is triangulated, welded, re-packed or quantised. Normals and
+// n-gons), control points, smoothing, the other channels, materials and nodes come
+// through from the source. Output format and embedding follow project settings;
+// the source file version is preserved, subject to the SDK's supported versions.
+// Unity's FBX Exporter is not involved, so nothing is triangulated, welded, re-packed
+// or quantised. Normals and
 // tangents are directions in the mesh's space, so they go back through the map fitted
 // to the mesh's import (FbxSpaceFit).
 //
