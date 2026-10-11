@@ -28,39 +28,93 @@ namespace SashaRX.UnityMeshLab
         // relative references against the temporary import directory.
         internal static List<(string filename, string relative)> ReadMediaReferences(string path)
         {
-            var bytes = File.ReadAllBytes(path);
+            using var stream = File.OpenRead(path);
+            return ReadMediaReferences(stream);
+        }
+
+        internal static List<(string filename, string relative)> ReadMediaReferences(Stream stream)
+        {
+            using var reader = new BinaryReader(stream, Encoding.UTF8, true);
+            stream.Position = 0;
+            byte[] header = reader.ReadBytes(27);
             var result = new List<(string, string)>();
-            if (bytes.Length > 27 && Encoding.ASCII.GetString(bytes, 0, BinaryMagic.Length) == BinaryMagic)
+            if (header.Length == 27 && Encoding.ASCII.GetString(header, 0, BinaryMagic.Length) == BinaryMagic)
             {
-                bool wide = BitConverter.ToUInt32(bytes, 23) >= 7500;
-                foreach (var objects in Nodes(bytes, 27, bytes.Length, wide))
+                bool wide = BitConverter.ToUInt32(header, 23) >= 7500;
+                foreach (var objects in MediaNodes(reader, 27, stream.Length, wide))
                     if (objects.name == "Objects")
-                        foreach (var media in Nodes(bytes, objects.children, objects.end, wide))
+                        foreach (var media in MediaNodes(reader, objects.children, objects.end, wide))
                         {
                             if (media.name != "Texture" && media.name != "Video") continue;
                             string filename = null, relative = null;
-                            foreach (var child in Nodes(bytes, media.children, media.end, wide))
+                            foreach (var child in MediaNodes(reader, media.children, media.end, wide))
                             {
-                                if (child.name == "FileName" || child.name == "Filename") filename = Property(bytes, child, 0) as string;
-                                if (child.name == "RelativeFilename") relative = Property(bytes, child, 0) as string;
+                                if (child.name == "FileName" || child.name == "Filename") filename = MediaString(reader, child);
+                                if (child.name == "RelativeFilename") relative = MediaString(reader, child);
                             }
                             result.Add((filename, relative));
                         }
             }
-            else ReadAsciiMedia(Encoding.UTF8.GetString(bytes), result);
+            else
+            {
+                stream.Position = 0;
+                using var text = new StreamReader(stream, Encoding.UTF8, true, 4096, true);
+                ReadAsciiMedia(text, result);
+            }
             return result;
         }
 
-        static void ReadAsciiMedia(string text, List<(string filename, string relative)> result)
+        readonly struct MediaNode
+        {
+            internal readonly string name;
+            internal readonly long properties, count, children, end;
+            internal MediaNode(string name, long properties, long count, long children, long end)
+            {
+                this.name = name; this.properties = properties; this.count = count; this.children = children; this.end = end;
+            }
+        }
+
+        // Seek over geometry, raw media and compressed arrays without reading
+        // their payloads. Keep offsets as long for FBX 7.5+ files beyond 2 GiB.
+        static IEnumerable<MediaNode> MediaNodes(BinaryReader reader, long at, long end, bool wide)
+        {
+            int head = wide ? 25 : 13;
+            while (end - at >= head)
+            {
+                reader.BaseStream.Position = at;
+                long nodeEnd = wide ? reader.ReadInt64() : reader.ReadUInt32();
+                if (nodeEnd == 0) yield break;
+                long count = wide ? reader.ReadInt64() : reader.ReadUInt32();
+                long length = wide ? reader.ReadInt64() : reader.ReadUInt32();
+                int nameLength = reader.ReadByte();
+                long properties = at + head + nameLength;
+                if (nodeEnd <= at || nodeEnd > end || count < 0 || length < 0 || properties > nodeEnd || length > nodeEnd - properties) yield break;
+                string name = Encoding.ASCII.GetString(reader.ReadBytes(nameLength));
+                yield return new MediaNode(name, properties, count, properties + length, nodeEnd);
+                at = nodeEnd;
+            }
+        }
+
+        static string MediaString(BinaryReader reader, MediaNode node)
+        {
+            if (node.count == 0 || node.children - node.properties < 5) return null;
+            reader.BaseStream.Position = node.properties;
+            if (reader.ReadByte() != 'S') return null;
+            uint length = reader.ReadUInt32();
+            if (length > node.children - reader.BaseStream.Position) return null;
+            if (length > 65536) throw new IOException("An FBX media filename is too long.");
+            return Encoding.UTF8.GetString(reader.ReadBytes((int)length));
+        }
+
+        internal static void ReadAsciiMedia(TextReader text, List<(string filename, string relative)> result)
         {
             int depth = 0, mediaDepth = -1;
             string filename = null, relative = null;
-            foreach (string raw in text.Split('\n'))
+            string line;
+            while ((line = ReadMediaLine(text, mediaDepth >= 0 && depth == mediaDepth + 1, out int balance, out char last)) != null)
             {
-                string line = raw.Trim();
-                if (line.Length == 0 || line[0] == ';') continue;
                 if (mediaDepth < 0 && (line.StartsWith("Texture:", StringComparison.Ordinal) || line.StartsWith("Video:", StringComparison.Ordinal))
-                    && line.EndsWith("{", StringComparison.Ordinal))
+                    && last == '{')
                 {
                     mediaDepth = depth; filename = null; relative = null;
                 }
@@ -69,9 +123,45 @@ namespace SashaRX.UnityMeshLab
                     if (line.StartsWith("FileName:", StringComparison.Ordinal) || line.StartsWith("Filename:", StringComparison.Ordinal)) filename = FirstQuoted(line);
                     if (line.StartsWith("RelativeFilename:", StringComparison.Ordinal)) relative = FirstQuoted(line);
                 }
-                depth += BraceBalance(line);
+                depth += balance;
                 if (mediaDepth >= 0 && depth <= mediaDepth) { result.Add((filename, relative)); mediaDepth = -1; }
             }
+        }
+
+        // Retain only a short prefix of opaque records while counting braces
+        // outside strings/comments. Filename records have an explicit size cap.
+        static string ReadMediaLine(TextReader reader, bool capturePaths, out int balance, out char last)
+        {
+            balance = 0; last = '\0';
+            var prefix = new StringBuilder(256);
+            bool quoted = false, comment = false, started = false, filename = false, any = false;
+            int value;
+            while ((value = reader.Read()) >= 0)
+            {
+                any = true;
+                char c = (char)value;
+                if (c == '\n') break;
+                if (!started && char.IsWhiteSpace(c)) continue;
+                started = true;
+                if (prefix.Length < 256 || filename)
+                {
+                    if (prefix.Length >= 65536) throw new IOException("An FBX media filename record is too long.");
+                    prefix.Append(c);
+                    if (capturePaths && prefix.Length == 256)
+                    {
+                        string beginning = prefix.ToString();
+                        filename = beginning.StartsWith("FileName:", StringComparison.Ordinal) || beginning.StartsWith("Filename:", StringComparison.Ordinal)
+                            || beginning.StartsWith("RelativeFilename:", StringComparison.Ordinal);
+                    }
+                }
+                if (comment) continue;
+                if (c == '"') quoted = !quoted;
+                else if (!quoted && c == ';') { comment = true; continue; }
+                else if (!quoted && c == '{') balance++;
+                else if (!quoted && c == '}') balance--;
+                if (!char.IsWhiteSpace(c)) last = c;
+            }
+            return any ? prefix.ToString() : null;
         }
 
         /// <summary>

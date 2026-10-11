@@ -84,6 +84,170 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void BinaryMediaDiscoverySkipsLargeGeometryPayloads(bool wide)
+        {
+            string path = Path.Combine(folder, "large-binary.fbx");
+            using (var file = File.Create(path))
+                WriteLargeBinaryMediaFixture(file, wide, 20 * 1024 * 1024);
+            using var stream = new BoundedReadStream(File.OpenRead(path));
+            AssertBinaryMediaDiscovery(stream);
+        }
+
+        [Test]
+        public void BinaryMediaDiscoveryUses64BitOffsetsBeyondTwoGiB()
+        {
+            using var fixture = new VirtualFixtureStream();
+            WriteLargeBinaryMediaFixture(fixture, true, 3L * 1024 * 1024 * 1024);
+            using var stream = new BoundedReadStream(fixture);
+            AssertBinaryMediaDiscovery(stream);
+            Assert.Greater(stream.Length, int.MaxValue);
+        }
+
+        static void WriteLargeBinaryMediaFixture(Stream file, bool wide, long payload)
+        {
+            using (var writer = new System.IO.BinaryWriter(file, System.Text.Encoding.UTF8, true))
+            {
+                writer.Write(System.Text.Encoding.ASCII.GetBytes("Kaydara FBX Binary  \0\x1a\0"));
+                writer.Write(wide ? 7500 : 7400);
+                long objects = BeginMediaFixtureNode(writer, "Objects", wide);
+                long geometry = BeginMediaFixtureNode(writer, "Geometry", wide, payload);
+                file.Position += payload;
+                FinishMediaFixtureNode(writer, geometry, wide);
+                long texture = BeginMediaFixtureNode(writer, "Texture", wide);
+                WriteMediaFixtureProperty(writer, "FileName", "authoring/map.png", wide);
+                WriteMediaFixtureProperty(writer, "RelativeFilename", "maps/map.png", wide);
+                FinishMediaFixtureNode(writer, texture, wide);
+                long video = BeginMediaFixtureNode(writer, "Video", wide);
+                WriteMediaFixtureProperty(writer, "Filename", "authoring/video.png", wide);
+                WriteMediaFixtureProperty(writer, "RelativeFilename", "maps/video.png", wide);
+                FinishMediaFixtureNode(writer, video, wide);
+                FinishMediaFixtureNode(writer, objects, wide);
+            }
+        }
+
+        static long BeginMediaFixtureNode(System.IO.BinaryWriter writer, string name, bool wide, long propertiesLength = 0)
+        {
+            long start = writer.BaseStream.Position;
+            if (wide) { writer.Write(0L); writer.Write(propertiesLength == 0 ? 0L : 1L); writer.Write(propertiesLength); }
+            else { writer.Write(0U); writer.Write(propertiesLength == 0 ? 0U : 1U); writer.Write((uint)propertiesLength); }
+            writer.Write((byte)name.Length); writer.Write(System.Text.Encoding.ASCII.GetBytes(name));
+            return start;
+        }
+
+        static void FinishMediaFixtureNode(System.IO.BinaryWriter writer, long start, bool wide)
+        {
+            long end = writer.BaseStream.Position;
+            writer.BaseStream.Position = start;
+            if (wide) writer.Write(end); else writer.Write((uint)end);
+            writer.BaseStream.Position = end;
+        }
+
+        static void WriteMediaFixtureProperty(System.IO.BinaryWriter writer, string name, string value, bool wide)
+        {
+            byte[] bytes = System.Text.Encoding.UTF8.GetBytes(value);
+            long start = BeginMediaFixtureNode(writer, name, wide, 5 + bytes.Length);
+            writer.Write((byte)'S'); writer.Write(bytes.Length); writer.Write(bytes);
+            FinishMediaFixtureNode(writer, start, wide);
+        }
+
+        [Test]
+        public void AsciiMediaDiscoveryStreamsLongGeometryAndQuotedBraces()
+        {
+            string path = Path.Combine(folder, "large-ascii.fbx");
+            using (var writer = new StreamWriter(path))
+            {
+                writer.Write("Objects: {\nGeometry: 1, \"Geometry::mesh {quoted}\", \"Mesh\" {\nVertices: *10000000 {\na: ");
+                string chunk = new string('7', 4096);
+                for (int i = 0; i < 5120; i++) writer.Write(chunk);
+                writer.Write("\n}\n}\n; Comment with ignored braces } {\nTexture: 2, \"Texture::map\", \"\" {\nFileName: \"authoring/map.png\"\nRelativeFilename: \"maps/map.png\"\n}\n");
+                writer.Write("Video: 3, \"Video::map\", \"Clip\" {\nFilename: \"authoring/video.png\"\nRelativeFilename: \"maps/video.png\"\n}\n}\n");
+            }
+            AssertBoundedMediaDiscovery(path);
+            using var reader = new StreamingOnlyFileReader(path);
+            var references = new List<(string filename, string relative)>();
+            FbxUvSetNames.ReadAsciiMedia(reader, references);
+            Assert.AreEqual(2, references.Count);
+        }
+
+        static void AssertBoundedMediaDiscovery(string path)
+        {
+            using var stream = new BoundedReadStream(File.OpenRead(path));
+            var references = FbxUvSetNames.ReadMediaReferences(stream);
+            CollectionAssert.AreEqual(new[] { ("authoring/map.png", "maps/map.png"), ("authoring/video.png", "maps/video.png") }, references);
+        }
+
+        static void AssertBinaryMediaDiscovery(BoundedReadStream stream)
+        {
+            var references = FbxUvSetNames.ReadMediaReferences(stream);
+            CollectionAssert.AreEqual(new[] { ("authoring/map.png", "maps/map.png"), ("authoring/video.png", "maps/video.png") }, references);
+            Assert.Less(stream.BytesRead, 4096, "Binary geometry payloads must be skipped by their record offsets.");
+        }
+
+        sealed class VirtualFixtureStream : Stream
+        {
+            readonly Dictionary<long, byte[]> records = new Dictionary<long, byte[]>();
+            long length;
+            public override bool CanRead => true;
+            public override bool CanWrite => true;
+            public override bool CanSeek => true;
+            public override long Length => length;
+            public override long Position { get; set; }
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                int read = (int)Math.Min(count, Math.Max(0, length - Position));
+                Array.Clear(buffer, offset, read);
+                foreach (var record in records)
+                {
+                    long start = Math.Max(Position, record.Key), end = Math.Min(Position + read, record.Key + record.Value.Length);
+                    if (end > start) Array.Copy(record.Value, (int)(start - record.Key), buffer, offset + (int)(start - Position), (int)(end - start));
+                }
+                Position += read; return read;
+            }
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                var copy = new byte[count]; Array.Copy(buffer, offset, copy, 0, count);
+                records[Position] = copy; Position += count; length = Math.Max(length, Position);
+            }
+            public override long Seek(long offset, SeekOrigin origin)
+            {
+                Position = (origin == SeekOrigin.Begin ? 0 : origin == SeekOrigin.Current ? Position : length) + offset;
+                return Position;
+            }
+            public override void Flush() { }
+            public override void SetLength(long value) { length = value; }
+        }
+
+        sealed class StreamingOnlyFileReader : StreamReader
+        {
+            internal StreamingOnlyFileReader(string path) : base(path) { }
+            public override string ReadLine() => throw new InvalidOperationException("Giant geometry lines must not be read as strings.");
+            public override string ReadToEnd() => throw new InvalidOperationException("The entire source must not be read as a string.");
+        }
+
+        sealed class BoundedReadStream : Stream
+        {
+            readonly Stream source;
+            internal long BytesRead;
+            internal BoundedReadStream(Stream source) { this.source = source; }
+            public override bool CanRead => true;
+            public override bool CanWrite => false;
+            public override bool CanSeek => true;
+            public override long Length => source.Length;
+            public override long Position { get => source.Position; set => source.Position = value; }
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                Assert.LessOrEqual(count, 4096, "Read requests must stay bounded regardless of source length.");
+                int read = source.Read(buffer, offset, count); BytesRead += read; return read;
+            }
+            public override long Seek(long offset, SeekOrigin origin) => source.Seek(offset, origin);
+            public override void Flush() { }
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+            protected override void Dispose(bool disposing) { if (disposing) source.Dispose(); base.Dispose(disposing); }
+        }
+
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
         sealed class StreamingOnlyReader : StringReader
         {
@@ -541,7 +705,8 @@ namespace SashaRX.UnityMeshLab.Tests
                 "\tTexture: 1, \"Texture::A\", \"\" {\n\t\tFileName: \"" + staleFirst.Replace('\\', '/') + "\"\n\t\tRelativeFilename: \"A.png\"\n\t}\n" +
                 "\tTexture: 2, \"Texture::a\", \"\" {\n\t\tFileName: \"" + staleSecond.Replace('\\', '/') + "\"\n\t\tRelativeFilename: \"a.png\"\n\t}\n}\n");
             var method = typeof(FbxExternalMedia).GetMethod("SourcePaths", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
-            var paths = (Dictionary<string, string>)method.Invoke(null, new object[] { document, scratch });
+            var references = FbxUvSetNames.ReadMediaReferences(Path.Combine(scratch, "input.fbx"));
+            var paths = (Dictionary<string, string>)method.Invoke(null, new object[] { references, document.SourceDirectory });
             Assert.AreEqual(2, paths.Count);
             Assert.AreEqual(first, paths[staleFirst]); Assert.AreEqual(second, paths[staleSecond]);
         }

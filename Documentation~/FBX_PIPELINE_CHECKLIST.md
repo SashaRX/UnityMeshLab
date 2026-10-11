@@ -292,6 +292,9 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   refused before creating that file. Temporary ASCII filename rewriting
   streams geometry and spools media blocks on disk instead of loading the
   entire expanded document into managed memory.
+  Original media-reference discovery also streams ASCII records and seeks
+  past Binary geometry payloads using 32- or 64-bit record offsets. The
+  source document caches the discovered references across repeated saves.
   Temporary corner-matching probes preserve the source format and embedding
   through `SaveForImport`; these probes are not the final output.
   Polygons (quads, n-gons), control points, smoothing,

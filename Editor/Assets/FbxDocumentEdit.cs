@@ -77,6 +77,10 @@ namespace SashaRX.UnityMeshLab
 
         Dictionary<string, List<string>> uvSetNames;
         Dictionary<string, bool> smoothing;
+        List<(string filename, string relative)> mediaReferences;
+
+        internal IReadOnlyList<(string filename, string relative)> MediaReferences
+            => mediaReferences ??= FbxUvSetNames.ReadMediaReferences(Path.Combine(scratch, "input.fbx"));
 
         void ReadLayers()
         {

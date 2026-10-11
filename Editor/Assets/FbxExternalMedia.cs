@@ -65,7 +65,7 @@ namespace SashaRX.UnityMeshLab
         {
             // Documents without media need no filename staging. Preserve their
             // untouched layer values exactly, including binary double precision.
-            if (FbxUvSetNames.ReadMediaReferences(Path.Combine(scratch, "input.fbx")).Count == 0) return document.Scene;
+            if (document.MediaReferences.Count == 0) return document.Scene;
             string staged = Path.Combine(scratch, "resolved.fbx");
             return RewriteAndImport(document, staged, scratch, Path.GetFullPath(target), new Dictionary<string, string>(PathComparer), requireMedia);
         }
@@ -95,7 +95,7 @@ namespace SashaRX.UnityMeshLab
             string rewritten = Path.Combine(scratch, "media-paths.fbx");
             using (var reader = new StreamReader(staged))
             using (var writer = new StreamWriter(rewritten))
-                RewriteAscii(reader, writer, scratch, document.SourceDirectory, target, extractedPaths, SourcePaths(document, scratch), requireMedia);
+                RewriteAscii(reader, writer, scratch, document.SourceDirectory, target, extractedPaths, SourcePaths(document.MediaReferences, document.SourceDirectory), requireMedia);
             var scene = FbxScene.Create(document.Manager, "MeshLabExternalMedia");
             using var importer = FbxImporter.Create(document.Manager, "MeshLabExternalMediaImport");
             if (!importer.Initialize(rewritten, -1, document.Manager.GetIOSettings()) || !importer.Import(scene))
@@ -109,14 +109,14 @@ namespace SashaRX.UnityMeshLab
         // SDK ASCII texture/video objects contain paired absolute and relative
         // filename records. Resolve each object independently to avoid mixing maps
         // with identical basenames in different source folders.
-        static Dictionary<string, string> SourcePaths(FbxSourceDocument document, string scratch)
+        static Dictionary<string, string> SourcePaths(IReadOnlyList<(string filename, string relative)> references, string source)
         {
             var paths = new Dictionary<string, string>(PathComparer);
             var ambiguous = new HashSet<string>(PathComparer);
-            foreach (var reference in FbxUvSetNames.ReadMediaReferences(Path.Combine(scratch, "input.fbx")))
+            foreach (var reference in references)
             {
-                string absolute = string.IsNullOrEmpty(reference.filename) ? null : MediaPath(reference.filename, document.SourceDirectory);
-                string relative = string.IsNullOrEmpty(reference.relative) ? null : MediaPath(reference.relative, document.SourceDirectory);
+                string absolute = string.IsNullOrEmpty(reference.filename) ? null : MediaPath(reference.filename, source);
+                string relative = string.IsNullOrEmpty(reference.relative) ? null : MediaPath(reference.relative, source);
                 string resolved = absolute != null && File.Exists(absolute) ? absolute : relative;
                 if (resolved == null || !File.Exists(resolved)) continue;
                 if (absolute == null) continue;
