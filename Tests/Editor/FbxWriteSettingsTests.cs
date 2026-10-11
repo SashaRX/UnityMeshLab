@@ -713,6 +713,59 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        [Platform("Win")]
+        public void MediaRollbackContinuesAfterLockedFileAndRetainsTheSaveError()
+        {
+            string source = Source(true, embedded: true), mixed = Path.Combine(folder, "two-maps.fbx");
+            string second = Path.Combine(folder, "second.png");
+            var texture = new Texture2D(2, 2);
+            try
+            {
+                texture.SetPixels(Enumerable.Repeat(Color.red, 4).ToArray()); texture.Apply();
+                File.WriteAllBytes(second, texture.EncodeToPNG());
+            }
+            finally { UnityEngine.Object.DestroyImmediate(texture); }
+            using (var document = FbxSourceDocument.Load(source))
+            {
+                document.Scene.GetRootNode().GetChild(0).AddMaterial(FbxStructureEdit.NewMaterial(document.Scene,
+                    "M_Second", 1, 1, 1, "T_Second", second, "second.png", null));
+                document.Manager.GetIOSettings().SetBoolProp(Globals.EXP_FBX_EMBEDDED, true);
+                document.ExportScene(document.Scene, mixed, new FbxWriteSettings(true, true).WriterFormat(document.Manager), document.Manager.GetIOSettings());
+            }
+            string output = Path.Combine(folder, "rollback.fbx"), metadata = output + ".meta";
+            byte[] original = File.ReadAllBytes(source); File.WriteAllBytes(output, original);
+            File.WriteAllText(metadata, "original metadata");
+            string[] maps = null;
+            FileStream locked = null;
+            var originalError = new IOException("Injected save failure before the FBX commit.");
+            try
+            {
+                using var document = FbxSourceDocument.Load(mixed);
+                Action<IEnumerable<string>> failingImport = files =>
+                {
+                    maps = files.ToArray(); Assert.AreEqual(2, maps.Length);
+                    Assert.AreNotEqual(Path.GetDirectoryName(maps[0]), Path.GetDirectoryName(maps[1]));
+                    locked = new FileStream(maps[0], FileMode.Open, FileAccess.Read, FileShare.Read);
+                    throw originalError;
+                };
+                var method = typeof(FbxSourceDocument).GetMethod("SaveWithSettings", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                var exception = Assert.Throws<System.Reflection.TargetInvocationException>(() => method.Invoke(document,
+                    new object[] { output, FbxWriteSettings.FromProject(), true, failingImport, null }));
+                Assert.IsInstanceOf<AggregateException>(exception.InnerException);
+                var errors = ((AggregateException)exception.InnerException).InnerExceptions;
+                Assert.AreSame(originalError, errors[0]);
+                Assert.AreEqual(2, errors.Count, "retain the original save error and the actual locked-file deletion error");
+                Assert.IsInstanceOf<IOException>(errors[1]);
+                Assert.IsTrue(File.Exists(maps[0]), "the failed resource remains available for manual recovery");
+                Assert.IsFalse(File.Exists(maps[1]), "a deletion error must not abort cleanup of subsequent resources");
+                Assert.IsFalse(Directory.Exists(Path.GetDirectoryName(maps[1])), "later empty folders must also be removed");
+                CollectionAssert.AreEqual(original, File.ReadAllBytes(output));
+                Assert.AreEqual("original metadata", File.ReadAllText(metadata));
+            }
+            finally { locked?.Dispose(); }
+        }
+
+        [Test]
         public void ExternalizedMapsAreImportedBeforeTheSavedModel()
         {
             string source = Source(true, embedded: true);

@@ -145,20 +145,42 @@ namespace SashaRX.UnityMeshLab
                 if (atomic) FbxExport.ReplaceAtomically(path, temp => ExportScene(prepared, Path.GetFullPath(temp), format, io), () => committed = true);
                 else { ExportScene(prepared, path, format, io); committed = true; }
             }
-            catch
+            catch (Exception original)
             {
                 // A post-rename error must not delete files referenced by the new FBX.
                 if (committed) throw;
-                foreach (string file in createdMedia) FbxExternalMedia.DeleteCreated(file);
-                for (int i = createdFolders.Count - 1; i >= 0; i--)
-                    if (Directory.Exists(createdFolders[i]) && Directory.GetFileSystemEntries(createdFolders[i]).Length == 0)
-                        FbxExternalMedia.DeleteCreated(createdFolders[i]);
+                var cleanup = RollbackMedia(createdMedia, createdFolders);
+                if (cleanup.Count > 0)
+                {
+                    cleanup.Insert(0, original);
+                    throw new AggregateException(original.Message + " Media rollback was incomplete.", cleanup);
+                }
                 throw;
             }
             finally
             {
                 if (prepared != null && prepared != Scene) prepared.Destroy();
             }
+        }
+
+        static List<Exception> RollbackMedia(List<string> files, List<string> folders)
+        {
+            var errors = new List<Exception>();
+            foreach (string file in files)
+            {
+                try { FbxExternalMedia.DeleteCreated(file); }
+                catch (Exception error) { errors.Add(error); }
+            }
+            for (int i = folders.Count - 1; i >= 0; i--)
+            {
+                try
+                {
+                    if (Directory.Exists(folders[i]) && Directory.GetFileSystemEntries(folders[i]).Length == 0)
+                        FbxExternalMedia.DeleteCreated(folders[i]);
+                }
+                catch (Exception error) { errors.Add(error); }
+            }
+            return errors;
         }
 
         internal void ExportScene(FbxScene scene, string path, int format, FbxIOSettings io)

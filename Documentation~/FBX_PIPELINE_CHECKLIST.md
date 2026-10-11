@@ -81,7 +81,7 @@ exists to catch what slipped through.
 | `FbxDocumentInfo` populated: `Original_ApplicationName/Vendor` AND `LastSaved_ApplicationName/Vendor` | Empty SceneInfo is the strongest signal a metadata-stripping tool re-saved the file. `--detect-modified` flags this |
 | Scene unit = meters (or call `FbxSystemUnit::m.ConvertScene` at export) | Unity Scale Factor 0.01 breaks physics, prefab overrides, lightmap-scale, batching |
 | After `ConvertScene`: bake the compensating LclScaling into mesh CPs | SDK puts `0.01` on root child — Unity sees it but downstream batching / physics doesn't |
-| **Embed Media OFF** | Unity duplicates extracted textures into a temp dir on every reimport |
+| **Embed Media OFF by default**; explicit Binary embedding is supported through Project Settings > Mesh Lab > FBX Export. ASCII never embeds media. | External textures avoid repeated extraction on Unity reimport; enable embedding only when deliberately requested. |
 | No `FbxAnimStack`/`FbxAnimLayer` on static meshes | Max FBX exporter ships a default "Take 001" with zero-curve layers — pure overhead |
 | No orphan vertices (CPs not referenced by any polygon) | They bloat the count, push the AABB outward, break Unity bounds + lightmap-scale heuristics |
 | No degenerate polygons | Lighting glitches, lightmap artifacts |
