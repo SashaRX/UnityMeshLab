@@ -35,7 +35,10 @@ namespace SashaRX.UnityMeshLab.Tests
             public int nativeProbes;
             public int hardEdges, missingHardEdges, protectedTriangles, missingProtectedTriangles;
             public int patchInterfaces, missingPatchInterfaces, ambiguousFeatureEdges;
+            public int coarsenedFeaturePoints, coarsenedFeatureTriangles;
             public bool hardEdgeSourceFallback;
+            public bool screenBudgetRelaxed;
+            public bool nativeCreaseConstraints, lockedChainRetry, nativeBeltFallback;
             public bool normalsCorrected, colorsCorrected;
             public string correctionNote;
             public float normalRmsBefore, authoredNormalMaxBefore, authoredNormalMaxAfter;
@@ -43,6 +46,10 @@ namespace SashaRX.UnityMeshLab.Tests
             public int smoothingRegions, linkedNormalDuplicates, mixedSmoothingFaces, missingSmoothingRegions, incompleteSmoothingRegions;
             public List<RegionNormalError> regionNormalsBefore, regionNormalsAfter;
             public List<BudgetCandidate> budgetCandidates;
+            [SerializeField] internal List<LodScreenAcceptance.Report> screenAcceptance;
+            [SerializeField] internal LodScreenValidation.Report screenQuality;
+            [SerializeField] internal LodScreenValidation.Report farComparison;
+            [SerializeField] internal LodAttributeCorrection.Report attributeFit;
             public int removedParts, removedPartTris;
             public float removedPartAreaFraction, removedPartMaxPixels;
         }
@@ -56,6 +63,7 @@ namespace SashaRX.UnityMeshLab.Tests
             public int variant, triangles, nativeProbes;
             public string name;
             public float score, distanceRms, normalRms, colorRms, uvRms, silhouetteMean, silhouetteMax;
+            [SerializeField] internal LodScreenValidation.Report screenQuality;
         }
         [Serializable]
         public sealed class Report
@@ -277,7 +285,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 utility.camera.transform.position = view == "front" ? new Vector3(0,0,-3) : new Vector3(1.5f,.8f,-3);
                 utility.camera.transform.LookAt(Vector3.zero,Vector3.up);
             }
-            internal Color[] Draw(Mesh mesh, Mode mode, Matrix4x4? displayTransform = null, Texture albedo = null)
+            internal Color[] Draw(Mesh mesh, Mode mode, Matrix4x4? displayTransform = null, Texture albedo = null, Material overrideMaterial = null)
             {
                 var matrix = displayTransform ?? Matrix4x4.identity;
                 material.SetColor("_Color",mode == Mode.Wire || mode == Mode.Shaded ? new Color(.65f,.72f,.8f,1) : Color.white);
@@ -306,16 +314,19 @@ namespace SashaRX.UnityMeshLab.Tests
                         }
                         wire = PreviewLines.Build(mesh.vertices,edges.ToArray(),null).Upload();
                     }
-                    utility.BeginPreview(new Rect(0,0,Size,Size),GUIStyle.none);
+                    float previewPoints = Size/EditorGUIUtility.pixelsPerPoint;
+                    utility.BeginPreview(new Rect(0,0,previewPoints,previewPoints),GUIStyle.none);
                     // PreviewRenderUtility scales its target with editor DPI. The
                     // ribbon shader works in actual target pixels, not GUI points.
                     var previewTarget = utility.camera.targetTexture;
+                    Assert.That(previewTarget.width,Is.EqualTo(Size),"GPU measurement width must be independent of editor DPI.");
+                    Assert.That(previewTarget.height,Is.EqualTo(Size),"GPU measurement height must be independent of editor DPI.");
                     lines.SetVector("_ViewportSize",new Vector4(previewTarget.width,previewTarget.height,0,0));
                     lines.SetFloat("_LineWidth",1.25f*previewTarget.width/Size);
                     Texture image;
                     try
                     {
-                        for (int s = 0; s < mesh.subMeshCount; s++) utility.DrawMesh(alphaMesh ? alphaMesh : mesh,matrix,material,s);
+                        for (int s = 0; s < mesh.subMeshCount; s++) utility.DrawMesh(alphaMesh ? alphaMesh : mesh,matrix,overrideMaterial ? overrideMaterial : material,s);
                         // Only the diagnostic overlay is offset to avoid coplanar
                         // depth rejection; measurements use untouched geometry.
                         if (wire) utility.DrawMesh(wire,Matrix4x4.Translate(-utility.camera.transform.forward*.002f)*matrix,lines,0);

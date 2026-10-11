@@ -1,0 +1,361 @@
+{
+  "fixture": "FairStall_Tent_Ranbow",
+  "sourceSha256": "a4aafe5dc9b4bc31200f31d1a0549a93b729aa7d657bcb7501acdd310e616839",
+  "sourceTriangles": 560,
+  "triangles": 62,
+  "verticesBefore": 154,
+  "verticesAfter": 154,
+  "fieldsUnchanged": {
+    "positions": true,
+    "normals": true,
+    "tangents": true,
+    "slots": true,
+    "uvs": true
+  },
+  "before64": {
+    "views": 6,
+    "detailViews": 6,
+    "colorViews": 2,
+    "objectPixels": 64,
+    "resolution": 72,
+    "detailLoss": 0.008928571827709675,
+    "colorLoss": 1.0,
+    "detailAccepted": true,
+    "colorAccepted": false,
+    "normalsEvaluated": true,
+    "rgbaEvaluated": true,
+    "silhouetteMean": 0.07748622447252274,
+    "silhouetteMax": 0.16323165595531464,
+    "normalRms": 43.54130554199219,
+    "rgbaRms": 0.03251459822058678,
+    "rgbaChannelRms": {
+      "x": 0.05132179334759712,
+      "y": 0.02652057632803917,
+      "z": 0.03421281278133392,
+      "w": 0.0
+    },
+    "headlightRms": 0.13581117987632751,
+    "colorBoundaryMean": 0.5008960962295532,
+    "colorBoundaryViewLoss": [
+      0.6129032373428345,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.3888888955116272
+    ],
+    "normalViewRms": [
+      41.06999206542969,
+      35.39237594604492,
+      43.54130554199219,
+      34.31654739379883,
+      34.41410827636719,
+      35.3907585144043
+    ],
+    "headlightViewRms": [
+      0.13581117987632751,
+      0.014297758229076862,
+      0.05481752008199692,
+      0.05059787258505821,
+      0.03841301053762436,
+      0.07640059292316437
+    ]
+  },
+  "after64": {
+    "views": 6,
+    "detailViews": 6,
+    "colorViews": 2,
+    "objectPixels": 64,
+    "resolution": 72,
+    "detailLoss": 0.008928571827709675,
+    "colorLoss": 1.0,
+    "detailAccepted": true,
+    "colorAccepted": false,
+    "normalsEvaluated": true,
+    "rgbaEvaluated": true,
+    "silhouetteMean": 0.07748622447252274,
+    "silhouetteMax": 0.16323165595531464,
+    "normalRms": 43.54130554199219,
+    "rgbaRms": 0.03225806728005409,
+    "rgbaChannelRms": {
+      "x": 0.050805214792490005,
+      "y": 0.02652057632803917,
+      "z": 0.03421281278133392,
+      "w": 0.0
+    },
+    "rgbaViewRms": [
+      0.03225806728005409,
+      0.006788983009755611,
+      0.0271652452647686,
+      0.008585159666836262,
+      0.008435985073447227,
+      0.020311331376433372
+    ],
+    "rgbaChannelViewRms": [
+      {
+        "x": 0.050805214792490005,
+        "y": 0.02629855088889599,
+        "z": 0.029825283214449883,
+        "w": 0.0
+      },
+      {
+        "x": 0.005507555324584246,
+        "y": 0.009594393894076347,
+        "z": 0.00787245761603117,
+        "w": 0.0
+      },
+      {
+        "x": 0.032832071185112,
+        "y": 0.02652057632803917,
+        "z": 0.03421281278133392,
+        "w": 0.0
+      },
+      {
+        "x": 0.010426524095237255,
+        "y": 0.011393636465072632,
+        "z": 0.007502834778279066,
+        "w": 0.0
+      },
+      {
+        "x": 0.009102566167712212,
+        "y": 0.009729837998747826,
+        "z": 0.010350695811212063,
+        "w": 0.0
+      },
+      {
+        "x": 0.03265909105539322,
+        "y": 0.017621809616684914,
+        "z": 0.01652442291378975,
+        "w": 0.0
+      }
+    ],
+    "headlightRms": 0.13581117987632751,
+    "colorBoundaryMean": 0.44086021184921265,
+    "colorBoundaryViewLoss": [
+      0.5483871102333069,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.3333333432674408
+    ],
+    "normalViewRms": [
+      41.06999206542969,
+      35.39237594604492,
+      43.54130554199219,
+      34.31654739379883,
+      34.41410827636719,
+      35.3907585144043
+    ],
+    "headlightViewRms": [
+      0.13581117987632751,
+      0.014297758229076862,
+      0.05481752008199692,
+      0.05059787258505821,
+      0.03841301053762436,
+      0.07640059292316437
+    ]
+  },
+  "polygonCorrection": {
+    "accepted": true,
+    "samples": 13764,
+    "trials": 156,
+    "verticesBefore": 154,
+    "verticesAfter": 154,
+    "polygonGroups": 38,
+    "activePolygonGroups": 26,
+    "viewColorRmsTolerance": 0.003921568859368563,
+    "boundaryBefore": 0.5008960962295532,
+    "boundaryAfter": 0.44086021184921265,
+    "worstBefore": 1.0,
+    "worstAfter": 1.0,
+    "rgbaBefore": 0.03251459822058678,
+    "rgbaAfter": 0.03225806728005409,
+    "viewsBefore": [
+      0.6129032373428345,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.3888888955116272
+    ],
+    "viewsAfter": [
+      0.5483871102333069,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.3333333432674408
+    ],
+    "cornerSharing": {
+      "verticesBefore": 0,
+      "verticesAfter": 0,
+      "trials": 0,
+      "colorTolerance": 0.0,
+      "rgbaBefore": 0.0,
+      "rgbaAfter": 0.0,
+      "boundaryBefore": 0.0,
+      "boundaryAfter": 0.0
+    }
+  },
+  "gpu64": [
+    {
+      "view": "front",
+      "before": {
+        "coverageError": 0.021572580561041832,
+        "rgbaRms": 0.00861318875104189,
+        "rgbaChannelRms": [
+          0.009696255438029766,
+          0.009530024603009224,
+          0.010578721761703491,
+          0.0
+        ],
+        "shadingRms": 0.01404462568461895
+      },
+      "after": {
+        "coverageError": 0.021572580561041832,
+        "rgbaRms": 0.008800249546766281,
+        "rgbaChannelRms": [
+          0.010318486019968987,
+          0.00950851384550333,
+          0.010625186376273632,
+          0.0
+        ],
+        "shadingRms": 0.01404462568461895
+      }
+    },
+    {
+      "view": "oblique",
+      "before": {
+        "coverageError": 0.04756629467010498,
+        "rgbaRms": 0.013254798948764801,
+        "rgbaChannelRms": [
+          0.019584743306040764,
+          0.012765799649059772,
+          0.01249923836439848,
+          0.0
+        ],
+        "shadingRms": 0.03258658945560455
+      },
+      "after": {
+        "coverageError": 0.04756629467010498,
+        "rgbaRms": 0.013156222179532051,
+        "rgbaChannelRms": [
+          0.019419973716139793,
+          0.012751772068440914,
+          0.012353206053376198,
+          0.0
+        ],
+        "shadingRms": 0.03258658945560455
+      }
+    }
+  ],
+  "paintGpu64": [
+    {
+      "view": "paint-edge",
+      "variant": "paint-before",
+      "rgbaRms": 0.03099989704787731,
+      "rgbaChannelRms": [
+        0.049348052591085434,
+        0.02435588650405407,
+        0.02855757437646389,
+        0.0
+      ],
+      "coverageError": 0.1580740064382553
+    },
+    {
+      "view": "paint-edge",
+      "variant": "far-lod2",
+      "rgbaRms": 0.030410146340727806,
+      "rgbaChannelRms": [
+        0.04814977943897247,
+        0.02438986487686634,
+        0.028032856062054634,
+        0.0
+      ],
+      "coverageError": 0.1580740064382553
+    },
+    {
+      "view": "paint-angle",
+      "variant": "paint-before",
+      "rgbaRms": 0.019990593194961548,
+      "rgbaChannelRms": [
+        0.033138494938611984,
+        0.01654110848903656,
+        0.015057467855513096,
+        0.0
+      ],
+      "coverageError": 0.08656195551156998
+    },
+    {
+      "view": "paint-angle",
+      "variant": "far-lod2",
+      "rgbaRms": 0.020036816596984863,
+      "rgbaChannelRms": [
+        0.033341195434331894,
+        0.016442300751805305,
+        0.014963671565055847,
+        0.0
+      ],
+      "coverageError": 0.08656195551156998
+    },
+    {
+      "view": "front",
+      "variant": "paint-before",
+      "rgbaRms": 0.00861318875104189,
+      "rgbaChannelRms": [
+        0.009696255438029766,
+        0.009530024603009224,
+        0.010578721761703491,
+        0.0
+      ],
+      "coverageError": 0.021572580561041832
+    },
+    {
+      "view": "front",
+      "variant": "far-lod2",
+      "rgbaRms": 0.008800249546766281,
+      "rgbaChannelRms": [
+        0.010318486019968987,
+        0.00950851384550333,
+        0.010625186376273632,
+        0.0
+      ],
+      "coverageError": 0.021572580561041832
+    },
+    {
+      "view": "oblique",
+      "variant": "paint-before",
+      "rgbaRms": 0.013254798948764801,
+      "rgbaChannelRms": [
+        0.019584743306040764,
+        0.012765799649059772,
+        0.01249923836439848,
+        0.0
+      ],
+      "coverageError": 0.04756629467010498
+    },
+    {
+      "view": "oblique",
+      "variant": "far-lod2",
+      "rgbaRms": 0.013156222179532051,
+      "rgbaChannelRms": [
+        0.019419973716139793,
+        0.012751772068440914,
+        0.012353206053376198,
+        0.0
+      ],
+      "coverageError": 0.04756629467010498
+    }
+  ],
+  "tests": {
+    "total": "239",
+    "passed": "239",
+    "failed": "0",
+    "skipped": "0",
+    "duration": "93,7844038"
+  },
+  "raw": "_results~\\lod-tent-paint-20261010\\final-complete",
+  "baselineRaw": "_results~\\lod-tent-paint-20261010\\diagnostic",
+  "limits": "Diagnostic vertex RGBA; original materials/assembly/transition and semantic paint labels unverified. CPU guide acceptance remains explicit."
+}

@@ -45,6 +45,102 @@ namespace SashaRX.UnityMeshLab.Tests
                 targetRatio = ratio,targetError = 1,uvChannel = 1,preserveHardEdges = preserve,allowAttributeSeamCollapse = true });
             Assert.That(result.ok,Is.True,result.error); return Track(result.simplifiedMesh);
         }
+        MeshSimplifier.SimplifyResult ReduceNative(Mesh source,float ratio = 1f/9)
+        {
+            var result = MeshSimplifier.Simplify(source,new MeshSimplifier.SimplifySettings {
+                targetRatio = ratio,targetError = 1,uvChannel = 1,preserveHardEdges = true,
+                nativeHardEdgeConstraints = true,allowAttributeSeamCollapse = true });
+            if (result.simplifiedMesh) Track(result.simplifiedMesh);
+            Assert.That(result.ok,Is.True,result.error); return result;
+        }
+        [TestCase(false)] [TestCase(true)]
+        public void FarScreenBudgetRelaxesFaceBeltButHonorsExplicitBorderLocks(bool lockBorder)
+        {
+            var source = Fold(true,true,true); var original = source.vertices; var normals = source.normals;
+            var root = new GameObject("FarCreaseBudget");
+            try
+            {
+                root.AddComponent<MeshFilter>().sharedMesh = source; root.AddComponent<MeshRenderer>();
+                var ctx = new UvToolContext(); ctx.Refresh(LodGenerationTool.CreateLodGroupFromRenderers(root));
+                var result = LodPipelineOps.Generate(ctx,1,new LodPipelineOps.Options {
+                    count = 2,ratios = new[] {1f/3,1f/9},targetError = .3f,candidateCount = 3,
+                    reductionMode = LodReductionMode.Triangles,prioritizeTriangleBudget = true,
+                    preserveHardEdges = true,farScreenBudget = true,normalWeight = .5f,lockBorder = lockBorder });
+                foreach (var go in result.generatedObjects) Track(go.GetComponent<MeshFilter>().sharedMesh);
+                Assert.That(result.ok,Is.True,result.error);
+                Assert.That(result.perLod[0].hardEdges.Valid,Is.True);
+                var far = result.perLod[1];
+                Assert.That(far.hardEdges.screenBudgetRelaxed,Is.True); Assert.That(far.hardEdges.sourceFallback,Is.False);
+                Assert.That(far.screenQuality.objectPixels,Is.EqualTo(64)); Assert.That(far.screenQuality.normalsEvaluated,Is.True);
+                Assert.That(result.generatedObjects[1].GetComponent<MeshFilter>().sharedMesh.subMeshCount,Is.EqualTo(2));
+                if (lockBorder) Assert.That(far.targetNotReached,Is.True,"An explicit border lock is never silently removed to force the count.");
+                else
+                {
+                    Assert.That(far.simplifiedTris,Is.LessThanOrEqualTo(far.targetTris));
+                    Assert.That(far.hardEdges.missingFaces,Is.GreaterThan(0),"Exact face-belt coverage must not restore the source.");
+                }
+                CollectionAssert.AreEqual(original,source.vertices); CollectionAssert.AreEqual(normals,source.normals);
+            }
+            finally { Object.DestroyImmediate(root); }
+        }
+        [Test] public void NativeConstraintsReleaseIncidentBeltAndPreserveBothShadingSides()
+        {
+            var source = Fold(true,true); var original = source.vertices; var indices = source.triangles;
+            var strict = Reduce(source,true); var result = ReduceNative(source);
+            Assert.That(result.hardEdges.Valid,Is.True); Assert.That(result.hardEdges.nativeConstraints,Is.True);
+            Assert.That(result.hardEdges.sourceFallback,Is.False);
+            Assert.That(result.simplifiedTriCount,Is.LessThan(LodMeshData.TriangleCount(strict)));
+            Assert.That(new LodHardEdges(source).MeasureNative(result.simplifiedMesh).Valid,Is.True);
+            Assert.That(new LodHardEdges(source).Measure(result.simplifiedMesh).missingFaces,Is.GreaterThan(0),"Control: neighboring faces are now free to retriangulate.");
+            CollectionAssert.AreEqual(original,source.vertices); CollectionAssert.AreEqual(indices,source.triangles);
+        }
+        [Test] public void NativeCurvedCreaseRetriesWithLockedChainInsteadOfLosingCoverage()
+        {
+            var source = Fold(true); var p = source.vertices;
+            for (int i = 0; i < p.Length; i++) p[i].z += p[i].y*p[i].y*.1f;
+            source.vertices = p;
+            var result = ReduceNative(source);
+            Assert.That(result.hardEdges.Valid,Is.True); Assert.That(result.hardEdges.sourceFallback,Is.False);
+            Assert.That(new LodHardEdges(source).MeasureNative(result.simplifiedMesh).Valid,Is.True);
+            Assert.That(result.hardEdges.lockedChainRetry,Is.True);
+        }
+        [Test] public void NativeFlagsLockEndpointsMaterialBordersAndTagUnusedVerticesSafely()
+        {
+            var source = Fold(true,true,true); var originalNormals = source.normals;
+            source.vertices = source.vertices.Concat(new[] { Vector3.one*10 }).ToArray();
+            source.normals = originalNormals.Concat(new[] { Vector3.up }).ToArray();
+            var flags = new LodHardEdges(source).VertexLocks(false); var positions = source.vertices;
+            Assert.That(flags.Last(),Is.Zero);
+            for (int i = 0; i < positions.Length-1; i++)
+                if (positions[i].x == 0 && positions[i].z == 0) Assert.That(flags[i],Is.EqualTo(MeshoptNative.VertexLock));
+            var result = ReduceNative(source);
+            Assert.That(result.hardEdges.Valid,Is.True); Assert.That(result.hardEdges.sourceFallback,Is.False);
+            Assert.That(result.simplifiedMesh.subMeshCount,Is.EqualTo(2));
+        }
+        [Test] public void NativeAmbiguousFaceOccurrencesStayProtected()
+        {
+            var source = Track(new Mesh { vertices = new[] { Vector3.zero,Vector3.right,Vector3.up,Vector3.zero,Vector3.up,Vector3.forward },
+                normals = new[] { Vector3.forward,Vector3.forward,Vector3.forward,Vector3.right,Vector3.right,Vector3.right },
+                triangles = new[] { 0,1,2,3,4,5,0,1,2 } });
+            var result = ReduceNative(source);
+            Assert.That(result.hardEdges.Valid,Is.True); Assert.That(result.hardEdges.protectedTriangles,Is.EqualTo(3));
+            var target = Track(Object.Instantiate(source)); target.triangles = target.triangles.Take(6).ToArray();
+            Assert.That(new LodHardEdges(source).MeasureNative(target).missingFaces,Is.EqualTo(1));
+        }
+        [Test] public void NativeCoverageRejectsSmoothedCreaseAfterCorrection()
+        {
+            var source = Fold(true); var result = ReduceNative(source);
+            result.simplifiedMesh.normals = Enumerable.Repeat(new Vector3(1,0,1).normalized,result.simplifiedMesh.vertexCount).ToArray();
+            Assert.That(new LodHardEdges(source).MeasureNative(result.simplifiedMesh).missingEdges,Is.GreaterThan(0));
+        }
+        [Test] public void NativeCoincidentDisconnectedFansHaveConsistentLockedWedges()
+        {
+            var source = Track(new Mesh { vertices = new[] { Vector3.zero,Vector3.right,Vector3.up,Vector3.zero,Vector3.left,Vector3.back },
+                normals = new[] { Vector3.forward,Vector3.forward,Vector3.forward,Vector3.up,Vector3.up,Vector3.up }, triangles = new[] { 0,1,2,3,4,5 } });
+            var flags = new LodHardEdges(source).VertexLocks(false);
+            Assert.That(flags[0],Is.EqualTo(MeshoptNative.VertexLock)); Assert.That(flags[3],Is.EqualTo(flags[0]));
+            Assert.That(flags[1],Is.Zero); Assert.That(flags[2],Is.Zero);
+        }
         [Test] public void AuthoredCreaseSurvivesPermissiveZeroWeightBudgetProbe()
         {
             var source = Fold(true,true); var original = source.vertices; var indices = source.triangles;
@@ -54,6 +150,122 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(LodMeshData.TriangleCount(result),Is.LessThan(LodMeshData.TriangleCount(source)));
             Assert.That(features.Measure(Reduce(source,false)).missingEdges,Is.GreaterThan(0),"Positive control must erase an authored crease segment.");
             CollectionAssert.AreEqual(original,source.vertices); CollectionAssert.AreEqual(indices,source.triangles);
+        }
+        [Test] public void StraightCreaseCoarseningPreservesBothSidesAndSource()
+        {
+            var source = Fold(true,true,true); var original = source.vertices; var indices = source.GetIndices(0);
+            var colors = original.Select(p => new Color(p.y,2*p.y,-p.y,.3f+p.y*.1f)).ToArray(); source.colors = colors;
+            var result = LodFeatureChains.Coarsen(source); if (result.mesh) Track(result.mesh);
+            Assert.That(result.removedPoints,Is.GreaterThan(0),result.Note); Assert.That(result.mesh,Is.Not.Null);
+            var report = new LodHardEdges(source).MeasureCoarsened(result.mesh,new LodHardEdges(result.mesh).Measure(result.mesh));
+            Assert.That(report.Valid,Is.True); Assert.That(new LodHardEdges(source).Measure(result.mesh).missingEdges,Is.GreaterThan(0));
+            Assert.That(LodMeshData.TriangleCount(result.mesh),Is.EqualTo(LodMeshData.TriangleCount(source)-result.removedTriangles));
+            Assert.That(result.mesh.subMeshCount,Is.EqualTo(2)); CollectionAssert.AreEqual(original,source.vertices);
+            CollectionAssert.AreEqual(indices,source.GetIndices(0)); CollectionAssert.AreEqual(colors,source.colors);
+        }
+        [Test] public void NonlinearRgbaFieldBlocksStraightCreaseCollapse()
+        {
+            var source = Fold(true); source.colors = source.vertices.Select(p => new Color(p.y*p.y,0,0,1)).ToArray();
+            var result = LodFeatureChains.Coarsen(source); if (result.mesh) Track(result.mesh);
+            Assert.That(result.removedPoints,Is.Zero); Assert.That(result.mesh,Is.Null);
+        }
+        [Test] public void CornerContactFansDoNotBlockIndependentCreaseChains()
+        {
+            var first = Fold(true); var second = Fold(true);
+            var source = Track(new Mesh { vertices = first.vertices.Concat(second.vertices.Select(p => p+new Vector3(1,1,0))).ToArray(),
+                normals = first.normals.Concat(second.normals).ToArray(),
+                triangles = first.triangles.Concat(second.triangles.Select(i => i+first.vertexCount)).ToArray() });
+            var result = LodFeatureChains.Coarsen(source); if (result.mesh) Track(result.mesh);
+            Assert.That(result.separatedContacts,Is.GreaterThan(0)); Assert.That(result.refusedComponents,Is.Zero,result.Note);
+            Assert.That(result.removedPoints,Is.EqualTo(14));
+            Assert.That(new LodHardEdges(source).MeasureCoarsened(result.mesh,new LodHardEdges(result.mesh).Measure(result.mesh)).Valid,Is.True);
+            Assert.That(result.mesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.TexCoord0),Is.False);
+        }
+        [Test] public void DegenerateIslandDoesNotBlockValidComponentOrDisappear()
+        {
+            var fold = Fold(true); int offset = fold.vertexCount;
+            var source = Track(new Mesh { vertices = fold.vertices.Concat(new[] { Vector3.one*10,Vector3.one*11 }).ToArray(),
+                normals = fold.normals.Concat(new[] { Vector3.forward,Vector3.forward }).ToArray(),
+                triangles = fold.triangles.Concat(new[] { offset,offset+1,offset }).ToArray() });
+            var result = LodFeatureChains.Coarsen(source); if (result.mesh) Track(result.mesh);
+            Assert.That(result.removedPoints,Is.EqualTo(7)); Assert.That(result.refusedComponents,Is.GreaterThan(0));
+            var p = result.mesh.vertices; var indices = result.mesh.triangles;
+            Assert.That(Enumerable.Range(0,indices.Length/3).Count(i => p[indices[i*3]].Equals(p[indices[i*3+2]])),Is.EqualTo(1));
+        }
+        [Test] public void MaterialJunctionOnCreaseRetainsItsNode()
+        {
+            var source = Fold(true); var original = source.triangles; var p = source.vertices; var n = source.normals;
+            var slots = new[] { new List<int>(),new List<int>(),new List<int>() };
+            for (int i = 0; i < original.Length; i += 3)
+            {
+                int slot = n[original[i]].Equals(Vector3.forward) ? 0 : (p[original[i]].y+p[original[i+1]].y+p[original[i+2]].y)/3 < .5f ? 1 : 2;
+                slots[slot].AddRange(original.Skip(i).Take(3));
+            }
+            source.subMeshCount = 3; for (int i = 0; i < 3; i++) source.SetTriangles(slots[i],i);
+            var result = LodFeatureChains.Coarsen(source); if (result.mesh) Track(result.mesh);
+            Assert.That(result.removedPoints,Is.GreaterThan(0)); Assert.That(result.mesh.vertices.Contains(new Vector3(0,.5f,0)),Is.True);
+            Assert.That(new LodHardEdges(source).MeasureCoarsened(result.mesh,result.Configure(new LodHardEdges(result.mesh).Measure(result.mesh))).Valid,Is.True);
+        }
+        [Test] public void BentCreaseIsNotTreatedAsStraight()
+        {
+            var source = Fold(true); var p = source.vertices;
+            for (int i = 0; i < p.Length; i++) p[i].z += p[i].y*p[i].y*.1f;
+            source.vertices = p;
+            var result = LodFeatureChains.Coarsen(source); if (result.mesh) Track(result.mesh);
+            Assert.That(result.removedPoints,Is.Zero);
+        }
+        [Test] public void FeatureCoarseningCancellationLeavesSourceIntact()
+        {
+            var source = Fold(true); var p = source.vertices; var indices = source.triangles;
+            Assert.Throws<System.OperationCanceledException>(() => LodFeatureChains.Coarsen(source,() => true));
+            CollectionAssert.AreEqual(p,source.vertices); CollectionAssert.AreEqual(indices,source.triangles);
+        }
+        [Test] public void BoundedCoarseningTracksOriginalCurvedPolyline()
+        {
+            var p = new List<Vector3>(); var n = new List<Vector3>(); var triangles = new List<int>();
+            for (int side = 0; side < 2; side++)
+            {
+                int offset = p.Count;
+                for (int i = 0; i <= 8; i++) { float y = i/8f; p.Add(new Vector3(0,y,y*y*.1f)); n.Add(side == 0 ? Vector3.forward : Vector3.right); }
+                p.Add(side == 0 ? new Vector3(1,.5f,0) : new Vector3(0,.5f,1)); n.Add(side == 0 ? Vector3.forward : Vector3.right);
+                for (int i = 0; i < 8; i++) triangles.AddRange(side == 0 ? new[] { offset+i,offset+9,offset+i+1 } : new[] { offset+i,offset+i+1,offset+9 });
+            }
+            var source = Track(new Mesh()); source.SetVertices(p); source.SetNormals(n); source.SetTriangles(triangles,0);
+            var settings = new LodFeatureChains.Settings { relativeDeviation = .005f,normalAngle = 5,uvError = .001f };
+            var result = LodFeatureChains.Coarsen(source,settings:settings); if (result.mesh) Track(result.mesh);
+            Assert.That(result.removedPoints,Is.GreaterThan(0),result.Note);
+            var report = new LodHardEdges(source).MeasureCoarsened(result.mesh,result.Configure(new LodHardEdges(result.mesh).Measure(result.mesh)));
+            Assert.That(report.Valid,Is.True,result.Note); Assert.That(new LodHardEdges(source).Measure(result.mesh).missingEdges,Is.GreaterThan(0));
+            Assert.That(result.removedPoints,Is.LessThan(7),"A long chord exceeding the original curve tolerance must be rejected.");
+        }
+        [Test] public void CoarsenedCoverageDoesNotAcceptSmoothedAwayCrease()
+        {
+            var source = Fold(true); var result = LodFeatureChains.Coarsen(source); Track(result.mesh);
+            var reference = result.Configure(new LodHardEdges(result.mesh).Measure(result.mesh)); reference.featureNormalAngle = 180;
+            result.mesh.normals = Enumerable.Repeat(new Vector3(1,0,1).normalized,result.mesh.vertexCount).ToArray();
+            Assert.That(new LodHardEdges(source).MeasureCoarsened(result.mesh,reference).missingEdges,Is.GreaterThan(0));
+        }
+        [Test] public void CoarsenedCoverageRejectsLostSideAndChangedNormal()
+        {
+            var source = Fold(true,true,true); var result = LodFeatureChains.Coarsen(source); if (result.mesh) Track(result.mesh);
+            Assert.That(result.mesh,Is.Not.Null); var reference = new LodHardEdges(result.mesh);
+            var normals = result.mesh.normals;
+            for (int i = 0; i < normals.Length; i++) if (normals[i].Equals(Vector3.forward)) normals[i] = Vector3.up;
+            result.mesh.normals = normals;
+            Assert.That(new LodHardEdges(source).MeasureCoarsened(result.mesh,reference.Measure(result.mesh)).missingEdges,Is.GreaterThan(0));
+        }
+        [Test] public void BudgetCandidatesAndCorrectionUseOriginalSourceAfterCoarsening()
+        {
+            var source = Fold(true,true,true);
+            var settings = new MeshSimplifier.SimplifySettings { targetRatio = .1f,targetError = .2f,normalWeight = 1,colorWeight = 1,uvChannel = 1,preserveHardEdges = true };
+            var options = new LodPipelineOps.Options { coarsenHardEdgeChains = true,correctSurfaceAttributes = true,candidateCount = 3,
+                prioritizeTriangleBudget = true,maxNormalAngle = 15,maxColorError = .02f };
+            var result = LodBudgetTriangleSimplifier.Simplify(source,settings,options,out var diagnostics,out string note,null);
+            if (result.simplifiedMesh) Track(result.simplifiedMesh);
+            Assert.That(result.ok,Is.True,result.error); Assert.That(result.hardEdges.Valid,Is.True,note);
+            Assert.That(result.hardEdges.coarsenedPoints,Is.GreaterThan(0)); Assert.That(result.originalTriCount,Is.EqualTo(LodMeshData.TriangleCount(source)));
+            Assert.That(diagnostics.metrics.distance,Is.LessThan(1e-5f));
+            Assert.That(new LodHardEdges(source).MeasureCoarsened(result.simplifiedMesh,result.hardEdges).Valid,Is.True);
         }
         [Test] public void SmoothUvSplitDoesNotCreateProtectedBelt()
         {

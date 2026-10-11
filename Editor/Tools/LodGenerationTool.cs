@@ -30,6 +30,12 @@ namespace SashaRX.UnityMeshLab
         bool generateBudgetPriority = true;
         bool generateCorrectAttributes = true;
         bool generatePreserveHardEdges = true;
+        bool generateCoarsenHardEdgeChains;
+        bool generateNativeHardEdgeConstraints;
+        bool generateScreenGuidedSelection;
+        bool generateFarScreenBudget = true;
+        int generateFarScreenPixels = 64;
+        float generateFeatureChainError = .005f;
         float generateReductionStep = 3;
         float generateTargetError = 0.2f;
         float generateUv2Weight = 20f;
@@ -78,6 +84,7 @@ namespace SashaRX.UnityMeshLab
             public int nativeProbes;
             public float sourceDistanceRms, normalRms, silhouetteMean, silhouetteMax, selectionScore;
             public LodAttributeCorrection.Report attributeCorrection;
+            public LodScreenValidation.Report screenQuality;
             public string reductionNote;
             public float allowedColorError, targetError;
             public int removedParts, removedPartTris;
@@ -400,7 +407,23 @@ namespace SashaRX.UnityMeshLab
             generateColorWeight = EditorGUILayout.Slider("Color Weight", generateColorWeight, 0f, 10f);
             generateLockBorder = EditorGUILayout.Toggle("Lock Border", generateLockBorder);
             generatePreserveHardEdges = EditorGUILayout.Toggle(new GUIContent("Preserve Hard Edges", "Keep authored normal creases and their incident triangles; lock boundaries of the remaining patches. This strict constraint can prevent reaching the triangle budget."),generatePreserveHardEdges);
+            using (new EditorGUI.DisabledScope(!generatePreserveHardEdges || !generateBudgetPriority || generateReductionMode != LodReductionMode.Triangles))
+            {
+                generateNativeHardEdgeConstraints = EditorGUILayout.Toggle(new GUIContent("Native Crease Constraints", "Experimental: constrain crease vertices directly and simplify neighboring triangles. Requires the rebuilt native plugin. Invalid seam collapses retry with locked crease points."),generateNativeHardEdgeConstraints);
+                generateCoarsenHardEdgeChains = EditorGUILayout.Toggle(new GUIContent("Coarsen Crease Chains", "Experimental: remove intermediate crease points while preserving topology, endpoints, junctions and separate shading sides. Available in Triangles with Prioritize Triangle Budget."),generateCoarsenHardEdgeChains);
+                if (generateCoarsenHardEdgeChains)
+                    generateFeatureChainError = EditorGUILayout.Slider(new GUIContent("Crease Deviation", "Maximum original polyline deviation as a fraction of the source diagonal. Zero permits straight chains with affine fields only. Bounded mode permits up to 5 degrees of crease normal error, 0.001 UV error and the level's RGBA guide before source validation."),generateFeatureChainError,0,.01f);
+            }
             generateValidateColors = EditorGUILayout.Toggle("Validate Vertex Colors", generateValidateColors);
+            using (new EditorGUI.DisabledScope(!generateBudgetPriority || generateReductionMode != LodReductionMode.Triangles))
+            {
+                generateScreenGuidedSelection = EditorGUILayout.Toggle(new GUIContent("Screen Quality Guide", "Experimental: rank candidates by visible thin-detail and RGBA boundary loss, prevent correction from worsening these losses, and guard small-part removal at the estimated LOD entry size."),generateScreenGuidedSelection);
+                generateFarScreenBudget = EditorGUILayout.Toggle(new GUIContent("LOD2 Screen Budget", "Prioritize the requested far triangle budget. Exact crease/face preservation is relaxed from LOD2; compare silhouette, authored normals and RGBA at the configured object size. LOD1 keeps its protection settings."),generateFarScreenBudget);
+                if (generateScreenGuidedSelection || generateFarScreenBudget)
+                    generateFarScreenPixels = EditorGUILayout.IntSlider(new GUIContent("LOD2+ Object Pixels", "Maximum projected object extent for far-LOD quality checks. Preserves aspect ratio; this is the object's size, not the display resolution or LODGroup transition setting."),generateFarScreenPixels,16,248);
+                if (generateFarScreenBudget && generateBudgetPriority && generateReductionMode == LodReductionMode.Triangles)
+                    EditorGUILayout.HelpBox("LOD2 and later can lose exact hard edges to reach their triangle target. Far candidates can adjust vertex positions to improve silhouette; attribute correction optimizes visible colors at the selected screen size. Lock Border and material slots retain their settings.",MessageType.Info);
+            }
             if (generateValidateColors)
                 generateMaxColorError = EditorGUILayout.Slider("Max Color Error", generateMaxColorError, 0.001f, 1f);
             if (generateReductionMode != LodReductionMode.Triangles || generateValidateColors || generateBudgetPriority)
@@ -465,6 +488,15 @@ namespace SashaRX.UnityMeshLab
                         EditorGUILayout.LabelField($"      measured distance {r.sourceDistance:P3}, normal {r.normalError:F1}°",EditorStyles.miniLabel);
                         EditorGUILayout.LabelField($"      area RMS distance {r.sourceDistanceRms:P3}, normal {r.normalRms:F1}°; silhouette mean/max {r.silhouetteMean:P1}/{r.silhouetteMax:P1}",EditorStyles.miniLabel);
                         EditorGUILayout.LabelField($"      relative selection score {r.selectionScore:G4}; native probes {r.nativeProbes}",EditorStyles.miniLabel);
+                        if (r.screenQuality != null)
+                        {
+                            EditorGUILayout.LabelField($"      screen guide {r.screenQuality.objectPixels}px: detail loss {r.screenQuality.detailLoss:P1}; RGBA boundary loss " +
+                                (r.screenQuality.colorViews > 0 ? r.screenQuality.colorLoss.ToString("P1") : "n/a"),EditorStyles.miniLabel);
+                            if (r.screenQuality.normalsEvaluated || r.screenQuality.rgbaEvaluated)
+                                EditorGUILayout.LabelField($"      screen silhouette mean/max {r.screenQuality.silhouetteMean:P1}/{r.screenQuality.silhouetteMax:P1}; normal RMS " +
+                                    (r.screenQuality.normalsEvaluated ? r.screenQuality.normalRms.ToString("F1")+"°" : "n/a")+"; RGBA RMS "+
+                                    (r.screenQuality.rgbaEvaluated ? r.screenQuality.rgbaRms.ToString("G3") : "n/a"),EditorStyles.miniLabel);
+                        }
                         if (r.attributeCorrection != null)
                         {
                             EditorGUILayout.LabelField($"      correction: normals {(r.attributeCorrection.normalsAccepted ? "improved" : "kept")}, RGBA {(r.attributeCorrection.colorsAccepted ? "improved" : "kept")}",EditorStyles.miniLabel);
@@ -558,6 +590,7 @@ namespace SashaRX.UnityMeshLab
                     nativeProbes = info.nativeProbes,sourceDistanceRms = info.sourceDistanceRms,normalRms = info.normalRms,
                     silhouetteMean = info.silhouetteMean,silhouetteMax = info.silhouetteMax,selectionScore = info.selectionScore,
                     attributeCorrection = info.attributeCorrection,
+                    screenQuality = info.screenQuality,
                     reductionNote = info.reductionNote,
                     allowedColorError = info.allowedColorError, targetError = info.targetError,
                     removedParts = info.removedParts, removedPartTris = info.removedPartTris,
@@ -588,7 +621,12 @@ namespace SashaRX.UnityMeshLab
                 smallParts = PartSettings(),
                 prioritizeTriangleBudget = generateBudgetPriority && generateReductionMode != LodReductionMode.FullLoops,
                 correctSurfaceAttributes = generateCorrectAttributes && generateBudgetPriority && generateReductionMode != LodReductionMode.FullLoops,
-                preserveHardEdges = generatePreserveHardEdges
+                preserveHardEdges = generatePreserveHardEdges,
+                coarsenHardEdgeChains = generateCoarsenHardEdgeChains && generateBudgetPriority && generateReductionMode == LodReductionMode.Triangles,
+                nativeHardEdgeConstraints = generateNativeHardEdgeConstraints && generateBudgetPriority && generateReductionMode == LodReductionMode.Triangles,
+                screenGuidedSelection = generateScreenGuidedSelection && generateBudgetPriority && generateReductionMode == LodReductionMode.Triangles,
+                farScreenBudget = generateFarScreenBudget && generateBudgetPriority && generateReductionMode == LodReductionMode.Triangles,
+                featureChainError = generateFeatureChainError
             };
             if (generateRelaxFarLods)
                 opts = LodPipelineOps.RelaxFarLods(opts,startLod,generateRelaxFromLod,new LodPipelineOps.LevelQuality {
@@ -596,7 +634,7 @@ namespace SashaRX.UnityMeshLab
                     maxColorError = generateFarMaxColorError, normalWeight = generateNormalWeight*generateFarNormalWeightScale,
                     colorWeight = generateColorWeight*generateFarColorWeightScale
                 });
-            return opts;
+            return LodPipelineOps.WithScreenFootprints(opts,startLod,generateFarScreenPixels);
         }
 
         internal static float[] SteppedRatios(float sourceRatio,float reduction,int count)
