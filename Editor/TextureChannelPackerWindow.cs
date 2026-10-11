@@ -702,7 +702,8 @@ namespace SashaRX.UnityMeshLab
                         {
                             // DeleteAsset ignores orphan metadata when the data file is already absent.
                             // A same-scope placeholder makes Unity remove both without importing it.
-                            using (new FileStream(request.path, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+                            using (var placeholder = new FileStream(request.path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                                placeholder.SetLength(0);
                             if (!AssetDatabase.DeleteAsset(request.assetPath))
                                 throw new IOException("Could not remove rolled-back asset metadata: " + request.assetPath);
                         }
