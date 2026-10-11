@@ -6,9 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Fixed
+- Foliage bbox fits clamp planar thickness after scaling and account for float precision at the fitted center. Preview refreshes cancel and serialize active paint work; named LOD siblings refresh on source-channel changes, and Before/After spacing includes all visible context geometry.
 - Object-bounds sphere/hemisphere fitting derives automatic transfer reach from both selected capture bounds and the fitted proxy, so large excluded geometry cannot prevent transfer at the default distance. Positive distance limits retain their exact meaning.
 - Foliage Before/After uses a shared nonzero offset for meshes and normal arrows when source bounds have zero X width, keeping YZ-plane cards separated and their arrows aligned.
-- Foliage selection validates the selected subtree before promoting actual LOD members to their group. Normal directions use the same visible renderers as the mesh preview, so an uncaptured LOD cannot display another level's arrows.
+- Foliage selection validates the selected subtree before promoting actual LOD members to their group. Normal directions use the same visible renderers as the mesh preview, so an uncaptured LOD cannot display another level's arrows. Source traversal and captured-arrow painting are separated to meet the Sonar complexity limit.
 - Captured Before/After normal arrows sample the selected vertex sequence rather than the complete mesh buffer, preserving sparse submesh visibility and boundary-copy indexing under the 256-arrow limit.
 - Foliage selection following rejects collision meshes, disabled or inactive renderers, and missing mesh filters or meshes using the same eligibility predicate as capture/LOD resolution, keeping the current tree and cancelling queued replacements for unsupported selections.
 - Wire-only proxy overlays no longer intercept mesh inspection or UV spot picking. Foliage source preview copies retain original mesh names; regression checks cover mesh-named LOD chains before and after transfer for readable and unreadable sources.

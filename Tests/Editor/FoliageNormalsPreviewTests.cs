@@ -476,6 +476,89 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreSame(leaf.mesh, leaf.root.GetComponent<MeshFilter>().sharedMesh);
         }
 
+        [UnityTest]
+        public IEnumerator BeforeAfterSeparatesWideExcludedContextAndKeepsArrowsAligned()
+        {
+            using var leaf = new FoliageNormalTransferTests.Fixture();
+            using var trunk = new FoliageNormalTransferTests.Fixture(new[] { Vector3.left * 100, Vector3.right * 100, Vector3.up, Vector3.forward });
+            using var fixture = new ToolFixture(); var tool = fixture.tool;
+            trunk.root.transform.SetParent(leaf.root.transform, false);
+            tool.SetRoot(leaf.root); tool.settings.filterRenderers = true; tool.settings.renderers = new[] { leaf.renderer };
+            tool.OnRefresh(); yield return AwaitPreview(tool.sourcePreview);
+            var task = tool.pipeline.Run(leaf.root, tool.settings, FoliageNormalsPipeline.Stage.Transfer);
+            yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, tool.pipeline.Status);
+            tool.preview = FoliageNormalsTool.Preview.BeforeAfter;
+            var items = new List<MeshViewport3D.Item>(); tool.Get3DContent(items); Assert.AreEqual(4, items.Count);
+            var beforeBounds = MeshGeometry.TransformBounds(items[0].mesh.bounds, items[0].matrix);
+            beforeBounds.Encapsulate(MeshGeometry.TransformBounds(items[2].mesh.bounds, items[2].matrix));
+            var afterBounds = MeshGeometry.TransformBounds(items[1].mesh.bounds, items[1].matrix);
+            afterBounds.Encapsulate(MeshGeometry.TransformBounds(items[3].mesh.bounds, items[3].matrix));
+            Assert.Less(beforeBounds.max.x, afterBounds.min.x);
+            var before = new List<Vector3>(); var after = new List<Vector3>(); tool.AppendPreviewNormalLines(before, after);
+            Assert.Less(Vector3.Distance(items[0].matrix.MultiplyPoint3x4(leaf.mesh.vertices[0]), before[0]), 1e-6f);
+            Assert.Less(Vector3.Distance(items[1].matrix.MultiplyPoint3x4(leaf.mesh.vertices[0]), after[0]), 1e-6f);
+            Assert.AreSame(trunk.mesh, trunk.root.GetComponent<MeshFilter>().sharedMesh);
+        }
+
+        [UnityTest]
+        public IEnumerator NamedLodSiblingChannelChangesRefreshBeforeCapture()
+        {
+            using var first = new FoliageNormalTransferTests.Fixture();
+            using var second = new FoliageNormalTransferTests.Fixture();
+            using var fixture = new ToolFixture(); var parent = new GameObject("Named LOD family");
+            try
+            {
+                first.mesh.name = "Leaves_LOD0"; second.mesh.name = "Leaves_LOD1";
+                first.root.transform.SetParent(parent.transform, false); second.root.transform.SetParent(parent.transform, false);
+                Selection.activeGameObject = first.root; fixture.tool.OnActivate(null, null);
+                var tool = fixture.tool; yield return AwaitPreview(tool.sourcePreview);
+                Assert.AreSame(first.root, tool.root); Assert.IsEmpty(tool.pipeline.Targets);
+                var previous = tool.sourcePreview.Sources(1).Single(); var oldCopy = previous.mesh; var oldMask = previous.mask;
+                second.mesh.normals = Enumerable.Repeat(Vector3.up, second.mesh.vertexCount).ToArray();
+                second.mesh.vertices = second.mesh.vertices.Select(p => p + Vector3.right * 5).ToArray(); second.mesh.RecalculateBounds();
+                VertexChannels.RaiseChanged(second.mesh);
+                yield return AwaitPreview(tool.sourcePreview);
+                Assert.IsFalse(oldCopy); Assert.IsFalse(oldMask);
+                var refreshed = tool.sourcePreview.Sources(1).Single();
+                CollectionAssert.AreEqual(second.mesh.vertices, refreshed.mesh.vertices);
+                CollectionAssert.AreEqual(second.mesh.normals, refreshed.mesh.normals);
+                Assert.IsNotEmpty(refreshed.normalLines);
+                Assert.Less(Vector3.Distance(refreshed.normalLines[1] - refreshed.normalLines[0], Vector3.up), 1e-6f);
+                Assert.AreSame(second.mesh, second.root.GetComponent<MeshFilter>().sharedMesh);
+            }
+            finally { fixture.tool.OnDeactivate(); Object.DestroyImmediate(parent); }
+        }
+
+        static Func<Func<CancellationToken, T>> BlockingPreview<T>(ManualResetEventSlim started, ManualResetEventSlim release)
+            => () => token => { started.Set(); release.Wait(); token.ThrowIfCancellationRequested(); return default; };
+
+        [UnityTest]
+        public IEnumerator RefreshWaitsForCancelledPaintBeforePreparingTheLatestSource()
+        {
+            using var first = new FoliageNormalTransferTests.Fixture(); using var latest = new FoliageNormalTransferTests.Fixture();
+            using var preview = new FoliageNormalsPreview(); using var pipeline = new FoliageNormalsPipeline();
+            using var started = new ManualResetEventSlim(); using var release = new ManualResetEventSlim();
+            var worker = typeof(FoliageNormalsPreview).GetField("work", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(preview);
+            var resultType = worker.GetType().GetGenericArguments()[0];
+            var prepare = typeof(FoliageNormalsPreviewTests).GetMethod(nameof(BlockingPreview), BindingFlags.Static | BindingFlags.NonPublic)
+                .MakeGenericMethod(resultType).Invoke(null, new object[] { started, release });
+            worker.GetType().GetMethod("Enqueue").Invoke(worker, new[] { prepare, null });
+            try
+            {
+                double end = EditorApplication.timeSinceStartup + 5;
+                while (!started.IsSet && EditorApplication.timeSinceStartup < end) yield return null;
+                Assert.IsTrue(started.IsSet);
+                var settings = new FoliageNormalsSettings();
+                preview.Refresh(first.root, settings, pipeline); preview.Refresh(latest.root, settings, pipeline);
+                for (int i = 0; i < 3; i++) yield return null;
+                Assert.IsTrue(preview.IsPending); Assert.IsEmpty(preview.Sources(0), "A replacement must wait for the cancelled worker to finish.");
+                release.Set(); yield return AwaitPreview(preview);
+                Assert.AreSame(latest.renderer, preview.Sources(0).Single().renderer);
+                Assert.IsNull(preview.Error); Assert.IsTrue(preview.Sources(0).Single().mask);
+            }
+            finally { release.Set(); }
+        }
+
         [TestCase(255)]
         [TestCase(600)]
         public void CapturedArrowsSampleSelectedVerticesAndKeepSkippedBoundaryCopiesAligned(int selectedCount)

@@ -58,9 +58,10 @@ namespace SashaRX.UnityMeshLab
             if (hemisphere) localCenter.y = bounds.min.y;
             center += origin + rotation * localCenter;
             // Planar leaf cards still need a non-degenerate surface for nearest-triangle transfer.
-            float minimum = Mathf.Max(largest * .0001f, .000001f);
-            return new Vector3(Mathf.Max(size.x * .5f, minimum),
-                Mathf.Max(size.y * (hemisphere ? 1 : .5f), minimum), Mathf.Max(size.z * .5f, minimum)) * scale;
+            float coordinate = Mathf.Max(Mathf.Abs(center.x), Mathf.Abs(center.y), Mathf.Abs(center.z));
+            float minimum = Mathf.Max(largest * .0001f, .000001f, coordinate * .000001f);
+            return new Vector3(Mathf.Max(size.x * .5f * scale, minimum),
+                Mathf.Max(size.y * (hemisphere ? 1 : .5f) * scale, minimum), Mathf.Max(size.z * .5f * scale, minimum));
         }
 
         static void Fit(Vector3[] positions, int[] selectedIndices, Bounds bounds, bool hemisphere,

@@ -198,6 +198,29 @@ namespace SashaRX.UnityMeshLab.Tests
             settings.autoFitProxy = false; Assert.DoesNotThrow(settings.Validate);
         }
 
+        [TestCase((int)FoliageNormalSource.Sphere, 32)]
+        [TestCase((int)FoliageNormalSource.Hemisphere, 32)]
+        [TestCase((int)FoliageNormalSource.Sphere, 16384)]
+        [TestCase((int)FoliageNormalSource.Hemisphere, 16384)]
+        public void SmallScaledPlanarFitsKeepDistinctSidesAtTranslatedCenters(int sourceValue, float coordinate)
+        {
+            var points = new[] { new Vector3(0, 0, coordinate), new Vector3(1, 0, coordinate), new Vector3(0, 1, coordinate) };
+            var original = (Vector3[])points.Clone();
+            var settings = new FoliageNormalsSettings { normalSource = (FoliageNormalSource)sourceValue,
+                proxyFit = FoliageProxyFit.ObjectBoundingBox, proxyRadiusScale = .01f, proxySegments = 16 };
+            var shape = FoliageShapeProxyBuilder.Build(points, new[] { 0, 1, 2 }, default, settings, CancellationToken.None);
+            var bounds = FoliageProxyBuilder.BoundsOf(shape.mesh.positions);
+            Assert.GreaterOrEqual(shape.radii.z, .0001f);
+            Assert.Less(bounds.min.z, shape.center.z); Assert.Greater(bounds.max.z, shape.center.z);
+            Assert.IsTrue(RemeshTopology.Inspect(shape.mesh.positions, shape.mesh.indices).Valid);
+            var bvh = new TriangleBvh(shape.mesh.positions, shape.mesh.indices);
+            var query = new[] { shape.center + Vector3.forward * shape.radii.z, shape.center - Vector3.forward * shape.radii.z };
+            var hits = FoliageNormalTransfer.QueryCpu(bvh, query, 1, CancellationToken.None);
+            Assert.Greater(Vector3.Dot(Vector3.forward, FoliageNormalTransfer.Interpolate(shape.mesh, hits[0].triangleIndex, hits[0].barycentric)), .99f);
+            Assert.Greater(Vector3.Dot(Vector3.back, FoliageNormalTransfer.Interpolate(shape.mesh, hits[1].triangleIndex, hits[1].barycentric)), .99f);
+            CollectionAssert.AreEqual(original, points);
+        }
+
         [UnityTest]
         public IEnumerator BoundingBoxIncludesExcludedSubmeshesButOnlyTransfersSelectedFacesOnEveryLod()
         {

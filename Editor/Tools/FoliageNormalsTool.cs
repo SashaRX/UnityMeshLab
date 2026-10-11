@@ -205,7 +205,8 @@ namespace SashaRX.UnityMeshLab
         void SourceChannelsChanged(Mesh mesh)
         {
             if (pipeline.Targets.Any(t => t.source == mesh || t.applied == mesh) ||
-                availableRenderers.Any(r => r && FoliageLodSelection.SharedMesh(r) == mesh)) OnRefresh();
+                availableRenderers.Any(r => r && FoliageLodSelection.SharedMesh(r) == mesh) ||
+                sourcePreview.ContainsSource(mesh)) OnRefresh();
         }
 
         static void FollowSelectionChanges(Action handler, bool follow)
@@ -807,7 +808,6 @@ namespace SashaRX.UnityMeshLab
         {
             float offset = preview == Preview.BeforeAfter ? ComparisonOffset() : 0;
             float length = (pipeline.Has(FoliageNormalsPipeline.Stage.Capture) ? pipeline.CaptureBounds : sourcePreview.Bounds(previewLod)).size.magnitude * normalLength;
-            bool resultNormals = afterNormals && (preview == Preview.TransferredNormals || preview == Preview.ProxyAndMesh);
             foreach (var source in sourcePreview.Sources(previewLod))
             {
                 var t = pipeline.Targets.FirstOrDefault(target => target.renderer == source.renderer);
@@ -817,16 +817,24 @@ namespace SashaRX.UnityMeshLab
                         FoliageNormalsPreview.AppendSourceNormalLines(source, length, before);
                     continue;
                 }
-                if (preview == Preview.BeforeAfter || !resultNormals)
-                    FoliageNormalsPreview.AppendNormalLines(t, false, Vector3.left * offset, length, before);
-                if (preview == Preview.BeforeAfter || resultNormals)
-                    FoliageNormalsPreview.AppendNormalLines(t, true, Vector3.right * offset, length, after);
+                AppendTargetNormalLines(t, offset, length, before, after);
             }
+        }
+
+        void AppendTargetNormalLines(FoliageTargetSnapshot target, float offset, float length, List<Vector3> before, List<Vector3> after)
+        {
+            bool resultNormals = afterNormals && (preview == Preview.TransferredNormals || preview == Preview.ProxyAndMesh);
+            if (preview == Preview.BeforeAfter || !resultNormals)
+                FoliageNormalsPreview.AppendNormalLines(target, false, Vector3.left * offset, length, before);
+            if (preview == Preview.BeforeAfter || resultNormals)
+                FoliageNormalsPreview.AppendNormalLines(target, true, Vector3.right * offset, length, after);
         }
 
         float ComparisonOffset()
         {
-            var size = pipeline.CaptureBounds.size;
+            var bounds = pipeline.CaptureBounds;
+            if (sourcePreview.Sources(previewLod).Any()) bounds.Encapsulate(sourcePreview.Bounds(previewLod));
+            var size = bounds.size;
             return (size.x > 0 ? size.x : size.magnitude) * .65f;
         }
 

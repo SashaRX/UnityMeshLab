@@ -38,8 +38,10 @@ hemisphere uses the full box height and puts its open equator on the box's botto
 plane. Bounds are measured in root-local space, or along the rotated hemisphere's
 axes. Its normals follow the curved surface's inverse axis scale, rather than
 using the radial direction of a round sphere. Planar cards receive a small
-thickness (0.01% of the largest box dimension, at least 0.000001 capture units)
-to keep the transfer surface valid; a zero-size box is rejected.
+thickness after the size multiplier is applied (0.01% of the largest box
+dimension, at least 0.000001 capture units, increased when the fitted center
+requires more float precision) to keep the transfer surface valid; a zero-size
+box is rejected.
 
 **Rotation (root local)** rotates the hemisphere and its fitting axis. It has an
 open equator, with **no flat base cap**, so bottom faces cannot supply downward

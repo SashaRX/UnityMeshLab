@@ -54,12 +54,14 @@ namespace SashaRX.UnityMeshLab
 
         internal void Refresh(GameObject root, FoliageNormalsSettings settings, FoliageNormalsPipeline pipeline)
         {
-            Dispose();
+            ClearMeshes();
             Error = null;
-            if (!root) return;
             var options = settings.Snapshot();
             work.Enqueue(() => Prepare(root, options, pipeline), Upload);
         }
+
+        internal bool ContainsSource(Mesh mesh) => sources.Any(source =>
+            source.renderer && FoliageLodSelection.SharedMesh(source.renderer) == mesh);
 
         Func<CancellationToken, List<Paint>> Prepare(GameObject root, FoliageNormalsSettings options, FoliageNormalsPipeline pipeline)
         {
@@ -125,7 +127,7 @@ namespace SashaRX.UnityMeshLab
                 if (input.topology[sub] != MeshTopology.Triangles) continue;
                 AppendFaceCorners(input, sub, positions, colors, selectedVertices, token);
             }
-            return new Paint { positions = positions.ToArray(), colors = colors.ToArray(), normalLines = SourceNormalLines(input, selectedVertices) };
+            return new Paint { positions = positions.ToArray(), colors = colors.ToArray(), normalLines = SourceNormalLines(input, selectedVertices, token) };
         }
 
         static void AppendFaceCorners(Input input, int sub, List<Vector3> positions, List<Color32> colors,
@@ -144,15 +146,21 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static Vector3[] SourceNormalLines(Input input, bool[] selected)
+        static Vector3[] SourceNormalLines(Input input, bool[] selected, CancellationToken token)
         {
             if (input.normals.Length != input.positions.Length) return Array.Empty<Vector3>();
             var lines = new List<Vector3>();
             var normalMatrix = input.matrix.inverse.transpose;
-            var vertices = Enumerable.Range(0, selected.Length).Where(i => selected[i]).ToArray();
-            int stride = Math.Max(1, (vertices.Length + 255) / 256);
-            for (int v = 0; v < vertices.Length; v += stride)
+            var vertices = new List<int>();
+            for (int i = 0; i < selected.Length; i++)
             {
+                if ((i & 4095) == 0) token.ThrowIfCancellationRequested();
+                if (selected[i]) vertices.Add(i);
+            }
+            int stride = Math.Max(1, (vertices.Count + 255) / 256);
+            for (int v = 0; v < vertices.Count; v += stride)
+            {
+                token.ThrowIfCancellationRequested();
                 int i = vertices[v];
                 var direction = MeshGeometry.UnitDirection(normalMatrix.MultiplyVector(input.normals[i]));
                 if (!MeshGeometry.UsableNormal(direction)) continue;
