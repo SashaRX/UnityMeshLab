@@ -37,6 +37,7 @@ namespace SashaRX.UnityMeshLab
             this.renderer = renderer;
             filter = renderer.GetComponent<MeshFilter>();
             source = filter.sharedMesh;
+            ValidateReadableChannels(source, !source.isReadable, settings.recalculateTangents);
             sourceContent = ContentFingerprint(source);
             materials = renderer.sharedMaterials;
             localToWorld = renderer.localToWorldMatrix;
@@ -49,7 +50,6 @@ namespace SashaRX.UnityMeshLab
             captureToLocal = localToCapture.inverse;
             normalLocalToCapture = captureToLocal.transpose;
             normalCaptureToLocal = localToCapture.transpose;
-            ValidateReadableChannels(source, !source.isReadable);
             Mesh readable = MeshAccess.Readable(source, out bool owned, preserveVertexLayout: true);
             try
             {
@@ -98,8 +98,18 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static void ValidateReadableChannels(Mesh source, bool owned)
+        static void ValidateReadableChannels(Mesh source, bool owned, bool recalculateTangents)
         {
+            if (source.HasVertexAttribute(VertexAttribute.Normal) &&
+                (source.GetVertexAttributeFormat(VertexAttribute.Normal) != VertexAttributeFormat.Float32 || source.GetVertexAttributeDimension(VertexAttribute.Normal) != 3))
+            {
+                throw new InvalidOperationException("Foliage transfer requires Float32 normals with three components. Packed or nonstandard normal layouts cannot be preserved.");
+            }
+            if (recalculateTangents && source.HasVertexAttribute(VertexAttribute.Tangent) &&
+                (source.GetVertexAttributeFormat(VertexAttribute.Tangent) != VertexAttributeFormat.Float32 || source.GetVertexAttributeDimension(VertexAttribute.Tangent) != 4))
+            {
+                throw new InvalidOperationException("Tangent regeneration requires Float32 tangents with four components. Disable Recalculate tangents to retain a packed tangent channel.");
+            }
             // Raw static capture does not reconstruct deforming channels: refuse rather than strip them.
             if (owned && (source.blendShapeCount > 0 || source.HasVertexAttribute(VertexAttribute.BlendWeight)))
             {
@@ -285,6 +295,7 @@ namespace SashaRX.UnityMeshLab
         internal Mesh BuildResult(Vector3[] normals, bool recalculateTangents, CancellationToken token, out int duplicates)
         {
             token.ThrowIfCancellationRequested();
+            ValidateReadableChannels(original, false, recalculateTangents);
             var map = BoundaryMap(out var selectedMap, out duplicates);
             var result = duplicates == 0 ? Object.Instantiate(original) : DuplicateChannels(original, map, token);
             try
@@ -371,9 +382,8 @@ namespace SashaRX.UnityMeshLab
             if (HasValidUv0(result, selectedSubmeshes))
             {
                 var before = result.tangents;
-                result.RecalculateTangents();
                 // Excluded faces also retain their tangent frame, even after boundary splitting.
-                var after = result.tangents;
+                var after = RecalculatedTangents(result);
                 foreach (int i in Enumerable.Range(0, localPositions.Length).Where(i => !selectedVertices[i] || excludedVertices[i]))
                 {
                     after[i] = before.Length == vertexCount ? before[i] : Vector4.zero;
@@ -384,6 +394,15 @@ namespace SashaRX.UnityMeshLab
             {
                 UvtLog.Warn("[Foliage] UV0 is absent or degenerate; original tangents retained.");
             }
+        }
+
+        static Vector4[] RecalculatedTangents(Mesh mesh)
+        {
+            // Unity can convert positions/normals/UV0 to Float32 during tangent
+            // regeneration. Keep those layout changes on an owned scratch mesh.
+            var scratch = Object.Instantiate(mesh);
+            try { scratch.RecalculateTangents(); return scratch.tangents; }
+            finally { Object.DestroyImmediate(scratch); }
         }
 
         internal static bool HasValidUv0(Mesh mesh, bool[] selection = null)

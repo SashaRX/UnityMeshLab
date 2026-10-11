@@ -93,6 +93,133 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        [TestCase(VertexAttributeFormat.Float16, false)] [TestCase(VertexAttributeFormat.Float16, true)]
+        [TestCase(VertexAttributeFormat.SNorm16, false)] [TestCase(VertexAttributeFormat.SNorm16, true)]
+        [TestCase(VertexAttributeFormat.Float32, false)] [TestCase(VertexAttributeFormat.Float32, true)]
+        public void PackedOrFourComponentNormalsAreRejectedBeforeCapture(VertexAttributeFormat format, bool unreadable)
+        {
+            using var fixture = new Fixture();
+            var mesh = new Mesh { name = "Unsupported normal layout" };
+            try
+            {
+                mesh.SetVertexBufferParams(4,
+                    new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3, 0),
+                    new VertexAttributeDescriptor(VertexAttribute.Normal, format, 4, 1));
+                mesh.SetVertexBufferData(fixture.mesh.vertices, 0, 0, 4, 0);
+                int size = format == VertexAttributeFormat.Float32 ? 4 : 2;
+                var bytes = new byte[4 * 4 * size];
+                uint one = format switch { VertexAttributeFormat.Float32 => 0x3f800000u, VertexAttributeFormat.Float16 => 0x3c00u, _ => 0x7fffu };
+                for (int vertex = 0; vertex < 4; vertex++)
+                    for (int b = 0; b < size; b++) bytes[(vertex * 4 + 2) * size + b] = (byte)(one >> (b * 8));
+                mesh.SetVertexBufferData(bytes, 0, 0, bytes.Length, 1);
+                mesh.SetTriangles(new[] { 0, 1, 2, 0, 2, 3 }, 0);
+                if (unreadable) mesh.UploadMeshData(true);
+                fixture.root.GetComponent<MeshFilter>().sharedMesh = mesh;
+                int before = Resources.FindObjectsOfTypeAll<Mesh>().Length;
+                var error = Assert.Throws<InvalidOperationException>(() =>
+                {
+                    using var target = new FoliageTargetSnapshot(fixture.renderer, Matrix4x4.identity, FoliageSurfaceSamplerTests.Settings(), CancellationToken.None);
+                });
+                StringAssert.Contains("Float32 normals with three components", error.Message);
+                Assert.AreEqual(before, Resources.FindObjectsOfTypeAll<Mesh>().Length);
+                Assert.AreSame(mesh, fixture.root.GetComponent<MeshFilter>().sharedMesh);
+                Assert.AreEqual(format, mesh.GetVertexAttributeFormat(VertexAttribute.Normal));
+                using var data = MeshUtility.AcquireReadOnlyMeshData(mesh);
+                CollectionAssert.AreEqual(bytes, data[0].GetVertexData<byte>(1).ToArray());
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
+        static Mesh MeshWithPackedUvAndTangents(Fixture fixture, VertexAttributeFormat tangentFormat, bool unreadable)
+        {
+            var mesh = new Mesh { name = "Packed shading channels" };
+            mesh.SetVertexBufferParams(4,
+                new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3, 0),
+                new VertexAttributeDescriptor(VertexAttribute.Normal, VertexAttributeFormat.Float32, 3, 1),
+                new VertexAttributeDescriptor(VertexAttribute.Tangent, tangentFormat, 4, 2),
+                new VertexAttributeDescriptor(VertexAttribute.TexCoord0, VertexAttributeFormat.Float16, 2, 3));
+            mesh.SetVertexBufferData(fixture.mesh.vertices, 0, 0, 4, 0);
+            mesh.SetVertexBufferData(Array.ConvertAll(fixture.mesh.vertices, _ => Vector3.forward), 0, 0, 4, 1);
+            if (tangentFormat == VertexAttributeFormat.Float32)
+                mesh.SetVertexBufferData(Array.ConvertAll(fixture.mesh.vertices, _ => new Vector4(1, 0, 0, -1)), 0, 0, 4, 2);
+            else
+                mesh.SetVertexBufferData(new ushort[] { 0x3c00, 0, 0, 0xbc00, 0x3c00, 0, 0, 0xbc00, 0x3c00, 0, 0, 0xbc00, 0x3c00, 0, 0, 0xbc00 }, 0, 0, 16, 2);
+            mesh.SetVertexBufferData(new ushort[] { 0, 0, 0x3c00, 0, 0, 0x3c00, 0x3c00, 0x3c00 }, 0, 0, 8, 3);
+            mesh.subMeshCount = 2; mesh.SetTriangles(new[] { 0, 1, 2 }, 0); mesh.SetTriangles(new[] { 0, 2, 3 }, 1);
+            if (unreadable) mesh.UploadMeshData(true);
+            fixture.root.GetComponent<MeshFilter>().sharedMesh = mesh;
+            return mesh;
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void PackedTangentsRequireDisabledRegenerationAndRemainByteExact(bool unreadable)
+        {
+            using var fixture = new Fixture();
+            var mesh = MeshWithPackedUvAndTangents(fixture, VertexAttributeFormat.Float16, unreadable);
+            Mesh result = null;
+            try
+            {
+                var settings = FoliageSurfaceSamplerTests.Settings(); settings.recalculateTangents = true;
+                var error = Assert.Throws<InvalidOperationException>(() =>
+                {
+                    using var rejected = new FoliageTargetSnapshot(fixture.renderer, Matrix4x4.identity, settings, CancellationToken.None);
+                });
+                StringAssert.Contains("Float32 tangents with four components", error.Message);
+                settings.recalculateTangents = false;
+                using var target = new FoliageTargetSnapshot(fixture.renderer, Matrix4x4.identity, settings, CancellationToken.None);
+                int before = Resources.FindObjectsOfTypeAll<Mesh>().Length;
+                var normals = Array.ConvertAll(target.localNormals, _ => Vector3.up);
+                var changedSettingError = Assert.Throws<InvalidOperationException>(() =>
+                {
+                    var unsupported = target.BuildResult(normals, true, CancellationToken.None, out _);
+                    UnityEngine.Object.DestroyImmediate(unsupported);
+                });
+                StringAssert.Contains("Float32 tangents with four components", changedSettingError.Message);
+                Assert.AreEqual(before, Resources.FindObjectsOfTypeAll<Mesh>().Length);
+                result = target.BuildResult(Array.ConvertAll(target.localNormals, _ => Vector3.up), false, CancellationToken.None, out _);
+                CollectionAssert.AreEqual(mesh.GetVertexAttributes(), result.GetVertexAttributes());
+                using var sourceData = MeshUtility.AcquireReadOnlyMeshData(mesh);
+                using var resultData = Mesh.AcquireReadOnlyMeshData(result);
+                CollectionAssert.AreEqual(sourceData[0].GetVertexData<byte>(2).ToArray(), resultData[0].GetVertexData<byte>(2).ToArray());
+                CollectionAssert.AreEqual(sourceData[0].GetVertexData<byte>(3).ToArray(), resultData[0].GetVertexData<byte>(3).ToArray());
+                Assert.AreSame(mesh, fixture.root.GetComponent<MeshFilter>().sharedMesh);
+            }
+            finally { if (result) UnityEngine.Object.DestroyImmediate(result); UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void TangentRegenerationPreservesPackedUvLayoutAndExcludedFrames(bool splitBoundary)
+        {
+            using var fixture = new Fixture();
+            var mesh = MeshWithPackedUvAndTangents(fixture, VertexAttributeFormat.Float32, true);
+            Mesh result = null;
+            try
+            {
+                var settings = FoliageSurfaceSamplerTests.Settings(); settings.recalculateTangents = true;
+                if (splitBoundary) { settings.selection = FoliageFaceSelection.SelectedSubmeshIndices; settings.submeshes = new[] { 0 }; }
+                using var target = new FoliageTargetSnapshot(fixture.renderer, Matrix4x4.identity, settings, CancellationToken.None);
+                int before = Resources.FindObjectsOfTypeAll<Mesh>().Length;
+                result = target.BuildResult(Array.ConvertAll(target.localNormals, _ => Vector3.up), true, CancellationToken.None, out int duplicates);
+                Assert.AreEqual(splitBoundary ? 2 : 0, duplicates);
+                Assert.AreEqual(before + 1, Resources.FindObjectsOfTypeAll<Mesh>().Length, "The tangent scratch mesh must be released.");
+                CollectionAssert.AreEqual(mesh.GetVertexAttributes(), result.GetVertexAttributes());
+                using var sourceData = MeshUtility.AcquireReadOnlyMeshData(mesh);
+                using var resultData = Mesh.AcquireReadOnlyMeshData(result);
+                var sourceUv = sourceData[0].GetVertexData<byte>(3);
+                var resultUv = resultData[0].GetVertexData<byte>(3);
+                var map = splitBoundary ? new[] { 0, 1, 2, 3, 0, 2 } : new[] { 0, 1, 2, 3 };
+                for (int vertex = 0; vertex < result.vertexCount; vertex++)
+                {
+                    int originalVertex = map[vertex];
+                    for (int b = 0; b < 4; b++) Assert.AreEqual(sourceUv[originalVertex * 4 + b], resultUv[vertex * 4 + b]);
+                }
+                if (splitBoundary)
+                    foreach (int vertex in new[] { 0, 2, 3 }) Assert.AreEqual(new Vector4(1, 0, 0, -1), result.tangents[vertex]);
+                Assert.AreSame(mesh, fixture.root.GetComponent<MeshFilter>().sharedMesh);
+            }
+            finally { if (result) UnityEngine.Object.DestroyImmediate(result); UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
         [TestCase(0f)] [TestCase(1f)]
         public void BarycentricBlendAndMissRetainOriginals(float blend)
         {

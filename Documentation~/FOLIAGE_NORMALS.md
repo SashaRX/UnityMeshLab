@@ -72,6 +72,12 @@ behaviour, rather than a world-space isotropic sphere union.
 Editor MeshData capture to preserve attribute formats, vertex streams, index
 buffers and submesh descriptors without toggling the source importer. Unreadable deforming
 meshes whose full skin/blend shape streams cannot be preserved are rejected.
+Normals must use Float32 with three components; packed normal formats and other
+normal dimensions are rejected before capture so Apply/Save cannot silently
+change their storage layout. Tangent regeneration requires any existing tangent
+channel to use Float32 with four components. Disable **Recalculate tangents** to
+retain a packed tangent channel. Regeneration runs on an owned scratch mesh,
+preserving packed positions/UV0 and other raw streams in the result.
 Sources must contain finite positions and authored unit normals at every vertex.
 
 The three face filters are all triangle submeshes, selected material references,
