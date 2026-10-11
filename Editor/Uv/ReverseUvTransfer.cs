@@ -89,6 +89,8 @@ namespace SashaRX.UnityMeshLab
             public string seedPacking, seedPackingRefusal;
             public bool seedChartRotation;
             public string finalPacking, finalPackingRefusal;
+            public int finalPackingFamilies;
+            public float finalPackingScale;
         }
 
         [Serializable] internal sealed class OverlapRelation
@@ -100,12 +102,14 @@ namespace SashaRX.UnityMeshLab
         {
             internal Report report;
             internal readonly List<Mesh[]> meshes = new List<Mesh[]>();
+            internal List<Surface[]> surfaces;
             public void Dispose()
             {
                 foreach (var level in meshes)
                     foreach (var mesh in level)
                         if (mesh) UnityEngine.Object.DestroyImmediate(mesh);
                 meshes.Clear();
+                surfaces=null;
             }
         }
 
@@ -121,6 +125,7 @@ namespace SashaRX.UnityMeshLab
             internal int[] sourceFaces;
             internal Vector3[] sourceBarycentrics;
             internal int splitSourceFaces;
+            internal Vector3[] packingEdges;
         }
 
         internal sealed class Chart
@@ -168,7 +173,6 @@ namespace SashaRX.UnityMeshLab
                 }
                 int side = Mathf.NextPowerOfTwo(Mathf.CeilToInt(Math.Max(width, height)));
                 if (side > options.maxAtlasSize) throw new InvalidOperationException("Reverse UV square atlas exceeds the size limit.");
-                if (options.repackFinalAtlas) side = ReverseUvFinalPacking.Pack(all,options,result.report,side,token);
                 result.report.atlasSize = side;
                 foreach (var level in all)
                 {
@@ -204,9 +208,55 @@ namespace SashaRX.UnityMeshLab
                         result.report.splitSourceFaces += node.splitSourceFaces;
                     }
                 }
+                result.surfaces=all;
                 return result;
             }
             catch { result.Dispose(); throw; }
+        }
+
+        static async Task FinalizePacking(Result result,Options options,bool useAsync,CancellationToken token)
+        {
+            if(!options.repackFinalAtlas) return;
+            CapturePackingEdges(result,token);
+            int previousSide=result.report.atlasSize;
+            int side=useAsync?await Task.Run(()=>ReverseUvFinalPacking.Pack(result.surfaces,options,result.report,previousSide,token),token)
+                :ReverseUvFinalPacking.Pack(result.surfaces,options,result.report,previousSide,token);
+            if(result.report.finalPacking==null) return;
+            using var replacement=new Result();
+            foreach(var level in result.surfaces)
+            {
+                token.ThrowIfCancellationRequested();
+                var outputs=new Mesh[level.Length];replacement.meshes.Add(outputs);
+                foreach(var surface in level)
+                {
+                    var normalized=surface.pixels.Select(p=>p/side).ToArray();
+                    outputs[surface.node]=surface.sourceBarycentrics==null
+                        ?ReverseUvMesh.Copy(surface.input.mesh,surface.indices,normalized)
+                        :ReverseUvRefinedMesh.Copy(surface.input.mesh,surface.sourceFaces,surface.sourceBarycentrics,normalized);
+                }
+            }
+            foreach(var level in result.meshes)
+                foreach(var mesh in level) if(mesh) UnityEngine.Object.DestroyImmediate(mesh);
+            result.meshes.Clear();result.meshes.AddRange(replacement.meshes);replacement.meshes.Clear();
+            result.report.atlasSize=side;
+        }
+
+        static void CapturePackingEdges(Result result,CancellationToken token)
+        {
+            for(int level=0;level<result.surfaces.Count;++level)
+                foreach(var surface in result.surfaces[level])
+                {
+                    token.ThrowIfCancellationRequested();
+                    var mesh=result.meshes[level][surface.node];
+                    var positions=mesh.vertices;var indices=mesh.triangles;
+                    surface.packingEdges=new Vector3[surface.faces.Length*2];
+                    for(int f=0;f<surface.faces.Length;++f)
+                    {
+                        int t=f*3;var a=positions[indices[t]];
+                        surface.packingEdges[f*2]=surface.input.toWorld.MultiplyVector(positions[indices[t+1]]-a);
+                        surface.packingEdges[f*2+1]=surface.input.toWorld.MultiplyVector(positions[indices[t+2]]-a);
+                    }
+                }
         }
 
         static void Validate(Level[] levels, Options options)
@@ -227,9 +277,22 @@ namespace SashaRX.UnityMeshLab
                     throw new ArgumentException("Levels must be nonempty and ordered from coarsest to finest.");
                 foreach (var input in levels[i].inputs)
                     if (input == null || !input.mesh || !input.mesh.isReadable
-                        || !Finite(input.toWorld.determinant) || Math.Abs(input.toWorld.determinant) < 1e-12f)
+                        || !Nonsingular(input.toWorld))
                         throw new ArgumentException("Reverse UV inputs require readable meshes and nonsingular transforms.");
             }
+        }
+
+        static double LinearDeterminant(Matrix4x4 m)
+            => (double)m.m00*((double)m.m11*m.m22-(double)m.m12*m.m21)
+                -(double)m.m01*((double)m.m10*m.m22-(double)m.m12*m.m20)
+                +(double)m.m02*((double)m.m10*m.m21-(double)m.m11*m.m20);
+
+        static bool Nonsingular(Matrix4x4 m)
+        {
+            for(int i=0;i<16;++i) if(!Finite(m[i])) return false;
+            // Scale magnitude reflects units, not singularity. No inverse is
+            // used here; transformed-face validation detects actual collapse.
+            return LinearDeterminant(m)!=0;
         }
 
         // One translated world frame for the entire chain. Subtract translation
@@ -275,7 +338,7 @@ namespace SashaRX.UnityMeshLab
                 surfaces[node] = new Surface { input = input, indices = indices, positions = positions,
                     pixels = new Vector2[indices.Length], faces = Enumerable.Range(0, indices.Length / 3).Select(_ => new Face()).ToArray(),
                     sourceFaces = Enumerable.Range(0, indices.Length / 3).ToArray(),
-                    lod = level.lod, node = node, orientation = Math.Sign(input.toWorld.determinant) };
+                    lod = level.lod, node = node, orientation = Math.Sign(LinearDeterminant(input.toWorld)) };
             }
             return surfaces;
         }

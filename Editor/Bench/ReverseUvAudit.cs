@@ -128,7 +128,8 @@ namespace SashaRX.UnityMeshLab
                     else ++measurement.unexpectedOverlapPairs;
                 }
                 if (!scan.complete || measurement.unexpectedOverlapPairs > 0 || scan.degenerateFaces > 0 || scan.invalidFaces > 0 || scan.outOfBoundsVertices > 0)
-                    throw new InvalidOperationException("Final reverse UV audit failed; no result was published.");
+                    throw new InvalidOperationException($"Final reverse UV audit failed for LOD{measurement.lod}: complete={scan.complete}, unexpected overlaps={measurement.unexpectedOverlapPairs}, "
+                        + $"collapsed={scan.degenerateFaces}, invalid={scan.invalidFaces}, outside={scan.outOfBoundsVertices}; {string.Join("; ",scan.samples)}. No result was published.");
                 audit.levels.Add(measurement);
             }
             string directory = BenchmarkRecorder.OutputDirectoryOverride

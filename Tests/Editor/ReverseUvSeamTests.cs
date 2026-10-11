@@ -106,6 +106,24 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [TestCase(false)] [TestCase(true)]
+        public void FinalFillRunsAfterDonorSeamSelection(bool overlap)
+        {
+            var donor=Donor();var target=Quad();target.triangles=new[] {0,1,3,1,2,3};
+            var levels=new[] {Level(1,donor),Level(0,target)};
+            using var baseline=ReverseUvTransfer.Build(levels,new ReverseUvTransfer.Options {
+                seedResolution=128,preserveProjectedOverlap=overlap}).GetAwaiter().GetResult();
+            using var packed=ReverseUvTransfer.Build(levels,new ReverseUvTransfer.Options {
+                seedResolution=128,preserveProjectedOverlap=overlap,repackFinalAtlas=true,fillFinalAtlas=true}).GetAwaiter().GetResult();
+            Assert.AreEqual(2,packed.report.splitSourceFaces);
+            Assert.AreEqual(baseline.report.splitSourceFaces,packed.report.splitSourceFaces);
+            Assert.IsNull(packed.report.refinementRefusal);
+            Assert.AreEqual("shared-chart-families",packed.report.finalPacking,packed.report.finalPackingRefusal);
+            Assert.GreaterOrEqual(packed.report.texelsPerUnit,baseline.report.texelsPerUnit);
+            Assert.AreEqual(Area(target),Area(packed.meshes[1][0]),1e-6);
+            Assert.DoesNotThrow(()=>ReverseUvAudit.Write(packed,levels));
+        }
+
+        [TestCase(false)] [TestCase(true)]
         public void NewSmallIslandUsesSeedVacancyWithoutGrowingOrMovingInheritedUv(bool overlap)
         {
             var seed = Quad(); var matching = Quad(); var detail = Quad(3, size: .1f);

@@ -177,11 +177,11 @@ namespace SashaRX.UnityMeshLab
             // Normalize for scale-invariant numerical predicates; occupancy always uses original bbox.
             double span = Math.Max((double)report.bboxMax.x - report.bboxMin.x, (double)report.bboxMax.y - report.bboxMin.y);
             if (!(span > 0)) return;
-            var normalized = new Vector2[uv.Length];
-            for (int i = 0; i < uv.Length; ++i) normalized[i] = new Vector2(
-                (float)(((double)uv[i].x - report.bboxMin.x) / span), (float)(((double)uv[i].y - report.bboxMin.y) / span));
-            var scan = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry { uv = normalized,
-                indices = indices, charts = new int[uv.Length] }, token, comparisonBudget: budget, collectConflicts: true);
+            // Keep normalization in double inside the predicates. Rounding a
+            // new Float32 atlas here can make disjoint near-collinear rims cross.
+            var scan = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry { uv = uv,
+                indices = indices, charts = new int[uv.Length] }, token, comparisonBudget: budget, collectConflicts: true,
+                coordinateOrigin:report.bboxMin,coordinateScale:1/span);
             report.complete &= scan.complete;
             if (!scan.complete) report.limitation = "Overlap scan incomplete; counts are lower bounds";
             var allowed = AllowedPairs(parts, token);

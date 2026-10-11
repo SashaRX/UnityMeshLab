@@ -21,6 +21,7 @@ namespace SashaRX.UnityMeshLab.Tests
         internal static void Reverse(string directory, ReverseUvTransfer.Result result, ReverseUvTransfer.Level[] inputs)
         {
             Directory.CreateDirectory(directory);
+            File.WriteAllText(Path.Combine(directory,"report.json"),JsonUtility.ToJson(result.report,true));
             var provenance = ReverseUvAudit.Provenance(result.report)
                 .Select(JsonUtility.FromJson<ReverseUvAudit.ProvenanceEntry>).ToArray();
             var parts = inputs.Select((level, l) => level.inputs.Select((input, n) => {
@@ -36,6 +37,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     inputs[l].lod == 0 || reference < 0 ? null : parts[reference]);
                 Assert.IsTrue(report.complete, "Kamaz Viewer quality scan must complete.");
                 Assert.AreEqual(0, report.invalidFaces + report.collapsedFaces);
+                Assert.AreEqual(0,report.unexpectedOverlapPairs,"Viewer must not manufacture intersections in an audited reverse atlas.");
             }
         }
 

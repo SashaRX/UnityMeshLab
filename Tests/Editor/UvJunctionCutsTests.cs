@@ -276,6 +276,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var source=seed.pixels.ToArray(); var geometry=seed.positions.ToArray();
             var report=new ReverseUvTransfer.Report {texelsPerUnit=1};
             report.overlaps.Add(new ReverseUvTransfer.OverlapRelation {lod=0,underMesh=0,underFace=0,overMesh=1,overFace=0});
+            report.overlaps.Add(new ReverseUvTransfer.OverlapRelation {lod=0,underMesh=0,underFace=1,overMesh=1,overFace=1});
             int side=ReverseUvFinalPacking.Pack(new List<ReverseUvTransfer.Surface[]> {new[] {seed},new[] {fine,overlay}},
                 new ReverseUvTransfer.Options {padding=2,fillFinalAtlas=fill},report,64,default);
             Assert.AreEqual("shared-chart-families",report.finalPacking,report.finalPackingRefusal);

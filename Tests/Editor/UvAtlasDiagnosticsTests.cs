@@ -96,6 +96,36 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void DoubleNormalizationDoesNotTurnPartialSharedEdgesIntoOverlaps()
+        {
+            var uv=new[] {Vector2.zero,Vector2.right,Vector2.up,new Vector2(.3f,.7f),new Vector2(.7f,.3f),Vector2.one};
+            var g=Geometry(uv,new[] {0,1,2,3,4,5},new int[6]);
+            var origin=new Vector2(-.6394268274307251f,-.02501075528562069f);double scale=1/1.6225557327270508;
+            var rounded=Geometry(Array.ConvertAll(uv,p=>new Vector2((float)(((double)p.x-origin.x)*scale),
+                (float)(((double)p.y-origin.y)*scale))),g.indices,g.charts);
+            Assert.AreEqual(1,UvAtlasDiagnostics.Measure(rounded,default).pairs,"Control reproduces Float32 normalization damage.");
+            Assert.AreEqual(0,UvAtlasDiagnostics.Measure(g,default,coordinateOrigin:origin,coordinateScale:scale).pairs);
+            g.uv[3]=new Vector2(.29f,.69f);
+            Assert.AreEqual(1,UvAtlasDiagnostics.Measure(g,default,coordinateOrigin:origin,coordinateScale:scale).pairs,
+                "Real positive-area intersections must still be detected.");
+        }
+
+        [Test]
+        public void ReusableSmallFamilyPredicatesAgreeWithTheAtlasScan()
+        {
+            var scratch=new UvAtlasDiagnostics.IntersectionTest();var random=new System.Random(319);
+            for(int trial=0;trial<200;++trial)
+            {
+                var uv=new Vector2[6];
+                for(int i=0;i<6;++i) uv[i]=new Vector2((float)random.NextDouble(),(float)random.NextDouble());
+                var g=Geometry(uv,new[] {0,1,2,3,4,5},new int[6]);
+                var report=UvAtlasDiagnostics.Measure(g,default);
+                Assert.AreEqual(report.pairs>0,scratch.OverlapsInAtlas(g,0,1));
+                Assert.AreEqual(report.degenerateFaces>0,scratch.Degenerate(g,0)||scratch.Degenerate(g,1));
+            }
+        }
+
+        [Test]
         public void QualityFailure_ExplainsMeanLimitAndUnchangedFragmentation()
         {
             var baseline = new UvChartQuality(80, 10, 1, 3, true);

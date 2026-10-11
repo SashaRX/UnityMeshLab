@@ -88,7 +88,59 @@ new UV, and intentional projected detail faces.
   area 1.785e-16. Its allowed count changes from 3530 to 3528 as well. This is
   a diagnostic precision defect, separate from the saved atlas and raw audit.
 
-The next solver work should isolate seam failures to individual regions while
-retaining successful cuts and ancestry, and provide a scalable deterministic
-family packer. Forward collapse recovery needs its own Kamaz regression gate;
-an area-weighted average or P95 alone hides tiny broken details.
+## Shared-family packing continuation, 2026-10-11
+
+The scalable packer replaces the final packing work-budget refusal. It joins
+donor ancestry and ordered overlap relations across the entire chain, preserves
+each complete family's footprint, and applies one rigid quarter turn and move
+per family plus a common uniform scale. Disjoint guillotine cells, shelf rows,
+four deterministic orders and rectangular compaction retain shell gutters.
+Float32 validity is checked separately from geometric packing capacity; all four
+quarter turns and padded fractional origins remain available for thin triangles.
+
+Donor cuts are selected at the requested density before the final fill. Candidate
+placements use the already constructed output geometry and the exported-mesh
+audit's edge arithmetic. Output publication remains detached and atomic. The
+Viewer's bbox normalization now stays in double, avoiding a second Float32
+rounding step that created false triangle contacts.
+
+With automatic final fill enabled, the setting is a minimum density; the final
+common density is recorded in the report. These measurements use LOD0's actual
+bbox, not an assumption that the full atlas square must be occupied:
+
+| Setting | Overlap | Atlas | Final tex/m | Bbox fill before -> after | Largest empty rectangle after |
+|---|---|---|---|---|---|
+| 10 | Off | 512 | 22.1025 | 10.3% -> 39.2% | 6.3% |
+| 10 | On | 512 | 22.0553 | 10.8% -> 37.3% | 8.1% |
+| 32 | Off | 1024 | 47.8381 | 35.0% -> 52.8% | 2.5% |
+| 32 | On | 1024 | 39.7344 | 35.4% -> 48.3% | 4.5% |
+
+Both complete three-LOD chains pass the independent raw atlas audit and the
+Viewer check: no invalid/collapsed UV faces, outside vertices or unexpected
+positive-area intersections. Intentional detail contacts remain explicit.
+Exclusive mode retains 178 LOD1 and 468 LOD0 source-face splits. Overlap mode
+still rolls refinement back for LOD1 face 7920 losing inheritance; its successful
+final packing must not be described as successful seam refinement.
+At 32 tex/m, both modes retain continuous baseline faces after separate LOD0
+inheritance/overlap refusals, then complete final packing. Their Viewer grades
+are 90/89 with zero unexpected intersections; the same checks pass at 10 tex/m
+with grades 86/84. The stricter Kamaz test requires shared-family packing and
+preservation of the requested minimum density, rather than only a clean sparse
+fallback. Its additional 32 tex/m run passes both overlap policies.
+
+The full local run passes **583 EditMode tests**, with four fixture/URP
+skips. The nine imported-model corpus retains 16 accepted cases and the same two
+Modern_Kitchen_A seed refusals. Wooden_Box_Long retains useful donor cuts and
+increases inherited coverage after correcting the trial/packing order. All
+30 ordinary forward snapshots for Cafe, Kitchen and Kamaz are byte-identical
+to the preceding reviewed baseline. Both reference compile variants pass.
+An additional complete Cafe_Table_A_01 chain passes both overlap policies:
+32 source faces split in each improved trial, successful shared-family packing,
+unchanged source snapshots and complete independent audits. The comparison
+controls with donor splitting disabled also pass.
+
+Remaining work: isolate seam failures to individual regions while retaining
+successful cuts and ancestry, and consider polygon footprints to reduce the
+empty space reserved by rigid family rectangles. The two Kitchen seed defects
+and ordinary forward collapse recovery need their own regression gates; an
+area-weighted average or P95 alone hides tiny broken details.

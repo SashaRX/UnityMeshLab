@@ -52,6 +52,8 @@ namespace SashaRX.UnityMeshLab
         {
             internal double x, y;
             internal Point(Vector2 p) { x = p.x; y = p.y; }
+            internal Point(Vector2 p,Vector2 origin,double scale)
+            { x=((double)p.x-origin.x)*scale;y=((double)p.y-origin.y)*scale; }
         }
 
         struct Triangle
@@ -69,7 +71,8 @@ namespace SashaRX.UnityMeshLab
         /// more than <see cref="MaxConflicts"/> overlapping pairs, reports <c>complete = false</c>
         /// and its counts are lower bounds.</summary>
         internal static Report Measure(RemeshNative.Geometry g, CancellationToken token,
-            bool sameChartOnly = false, long comparisonBudget = -1, bool collectConflicts = false)
+            bool sameChartOnly = false, long comparisonBudget = -1, bool collectConflicts = false,
+            Vector2 coordinateOrigin=default,double coordinateScale=1)
         {
             token.ThrowIfCancellationRequested();
             var report = new Report();
@@ -83,11 +86,10 @@ namespace SashaRX.UnityMeshLab
                 int i = g.indices[f * 3], j = g.indices[f * 3 + 1], k = g.indices[f * 3 + 2];
                 var a = g.uv[i]; var b = g.uv[j]; var c = g.uv[k];
                 if (!Finite(a) || !Finite(b) || !Finite(c)) { ++report.invalidFaces; continue; }
-                var t = new Triangle {
-                    face = f, chart = g.charts[i], a = new Point(a), b = new Point(b), c = new Point(c),
-                    minX = Math.Min(a.x, Math.Min(b.x, c.x)), maxX = Math.Max(a.x, Math.Max(b.x, c.x)),
-                    minY = Math.Min(a.y, Math.Min(b.y, c.y)), maxY = Math.Max(a.y, Math.Max(b.y, c.y))
-                };
+                var t = new Triangle {face=f,chart=g.charts[i],a=new Point(a,coordinateOrigin,coordinateScale),
+                    b=new Point(b,coordinateOrigin,coordinateScale),c=new Point(c,coordinateOrigin,coordinateScale)};
+                t.minX=Math.Min(t.a.x,Math.Min(t.b.x,t.c.x));t.maxX=Math.Max(t.a.x,Math.Max(t.b.x,t.c.x));
+                t.minY=Math.Min(t.a.y,Math.Min(t.b.y,t.c.y));t.maxY=Math.Max(t.a.y,Math.Max(t.b.y,t.c.y));
                 t.area = Math.Abs(Cross(t.a, t.b, t.c)) * .5;
                 if (t.area <= 1e-16) { ++report.degenerateFaces; continue; }
                 triangles.Add(t);
@@ -248,6 +250,17 @@ namespace SashaRX.UnityMeshLab
                 return IntersectionArea(a, b, bufferA, bufferB) > Math.Max(1e-16, Math.Min(a.area, b.area) * 1e-8);
             }
 
+            // Same predicates as the atlas scan, without constructing a grid
+            // for each placement trial of a small reverse-transfer family.
+            internal bool OverlapsInAtlas(RemeshNative.Geometry g, int faceA, int faceB)
+            {
+                var a=FromFace(g,faceA);var b=FromFace(g,faceB);
+                if(b.minX>=a.maxX || a.minX>=b.maxX || b.minY>=a.maxY || a.minY>=b.maxY || Separated(a,b)) return false;
+                return IntersectionArea(a,b,bufferA,bufferB)>Math.Max(1e-16,Math.Min(a.area,b.area)*1e-8);
+            }
+
+            internal bool Degenerate(RemeshNative.Geometry g,int face) => FromFace(g,face).area<=1e-16;
+
             static Triangle FromFace(RemeshNative.Geometry g, int face)
             {
                 var t = new Triangle {
@@ -256,6 +269,8 @@ namespace SashaRX.UnityMeshLab
                     c = new Point(g.uv[g.indices[face * 3 + 2]])
                 };
                 t.area = Math.Abs(Cross(t.a, t.b, t.c)) * .5;
+                t.minX=Math.Min(t.a.x,Math.Min(t.b.x,t.c.x));t.maxX=Math.Max(t.a.x,Math.Max(t.b.x,t.c.x));
+                t.minY=Math.Min(t.a.y,Math.Min(t.b.y,t.c.y));t.maxY=Math.Max(t.a.y,Math.Max(t.b.y,t.c.y));
                 return t;
             }
         }

@@ -14,6 +14,20 @@ namespace SashaRX.UnityMeshLab
         /// complete previously inherited regions.</summary>
         internal static async Task<Result> Build(Level[] levels, Options options, bool useAsync = false, CancellationToken token = default)
         {
+            var result=await BuildRefined(levels,options,useAsync,token);
+            try
+            {
+                // Compare donor cuts at their requested density. Filling the
+                // atlas first gives the uncut trial an unrelated packing bonus
+                // and can reject an otherwise valid refined topology.
+                await FinalizePacking(result,options,useAsync,token);
+                return result;
+            }
+            catch {result.Dispose();throw;}
+        }
+
+        static async Task<Result> BuildRefined(Level[] levels, Options options, bool useAsync, CancellationToken token)
+        {
             Validate(levels, options);
             if (!options.splitDonorSeams) return await BuildCore(levels, options, useAsync, token);
             Result baseline = null, candidate = null, incrementalCandidate=null;

@@ -322,8 +322,14 @@ namespace SashaRX.UnityMeshLab.Tests
                             using var state = layout.Result;
                             trial.stage = "audit";
                             try {
-                                trial.audit = ReverseUvAudit.Write(state.result, state.inputs.levels);
                                 TransferBenchmarkExport.Reverse(System.IO.Path.Combine(output, "kamaz-frame" + frame + "-" + (overlap ? "overlap" : "exclusive")), state.result, state.inputs.levels);
+                                trial.audit = ReverseUvAudit.Write(state.result, state.inputs.levels);
+                                if(Environment.GetEnvironmentVariable("MESHLAB_REVERSE_REPACK_FINAL")=="1")
+                                {
+                                    Assert.AreEqual("shared-chart-families",state.result.report.finalPacking,state.result.report.finalPackingRefusal);
+                                    Assert.Greater(state.result.report.finalPackingFamilies,0);
+                                    Assert.GreaterOrEqual(state.result.report.texelsPerUnit,density*(1-state.result.report.relativeStretchTolerance));
+                                }
                                 trial.accepted = true;
                             }
                             catch (Exception ex) { trial.error = ex.Message; }
@@ -625,6 +631,20 @@ namespace SashaRX.UnityMeshLab.Tests
             using var result = Build(Options(), levels);
             Assert.AreEqual(2,result.report.inheritedFaces); Assert.AreEqual(32f,result.report.texelsPerUnit,.001f);
             CollectionAssert.AreEqual(seed.uv2, result.meshes[1][0].uv2);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void SmallNonzeroTransformScaleDoesNotImplySingularity(bool thinUnusedAxis)
+        {
+            var seed=Quad();var target=Quad();var levels=new[] {Level(1,seed),Level(0,target)};
+            var transform=Matrix4x4.Scale(thinUnusedAxis?new Vector3(1,1,1e-15f):Vector3.one*1e-5f);
+            foreach(var level in levels) level.inputs[0].toWorld=transform;
+            var snapshot=TransferMeshSnapshot.Capture(seed);
+            using var result=Build(Options(),levels);
+            Assert.AreEqual(2,result.report.nodes[1].faces.Length);Clean(result.meshes[1][0]);
+            CollectionAssert.AreEqual(snapshot,TransferMeshSnapshot.Capture(seed));
+            foreach(var level in levels) level.inputs[0].toWorld=Matrix4x4.Scale(new Vector3(1,1,0));
+            Assert.Throws<ArgumentException>(()=>{using var refused=Build(Options(),levels);});
         }
 
         [Test] public void RepeatedBuildsAreDeterministic()

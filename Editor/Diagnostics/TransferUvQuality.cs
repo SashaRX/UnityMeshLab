@@ -68,5 +68,22 @@ namespace SashaRX.UnityMeshLab
         }
 
         static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+
+        // The final packer must test the same Float32 edge arithmetic as the
+        // exported-mesh audit, including barycentrically created vertices.
+        internal static double TriangleAnisotropy(Vector3 e1, Vector3 e2, Vector2 a, Vector2 b, Vector2 c)
+        {
+            double length=e1.magnitude, cross=Vector3.Cross(e1,e2).magnitude;
+            if(!Finite(length) || !Finite(cross) || length<1e-12 || cross<1e-18) return double.PositiveInfinity;
+            double x=Vector3.Dot(e1,e2)/length, y=cross/length;
+            var u=b-a;var v=c-a;
+            double j00=u.x/length,j10=u.y/length;
+            double j01=(v.x-u.x*x/length)/y,j11=(v.y-u.y*x/length)/y;
+            double aa=j00*j00+j10*j10,bb=j01*j01+j11*j11,ab=j00*j01+j10*j11;
+            double determinant=j00*j11-j01*j10;
+            double max=(aa+bb+Math.Sqrt(Math.Max(0,(aa-bb)*(aa-bb)+4*ab*ab)))*.5;
+            double min=max>0?determinant*determinant/max:0;
+            return Finite(max) && Finite(min) && min>=1e-30?Math.Sqrt(max/min):double.PositiveInfinity;
+        }
     }
 }

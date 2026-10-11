@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Fixed
+- Reverse UV packs shared chart families across the completed LOD chain after donor seam selection, preserving inherited and intentional overlap placements. Scalable rectangle packing, quarter turns and uniform filling replace the work-budget fallback; exported geometry and Float32 contacts validate every placement. Viewer bbox overlap checks avoid a second Float32 rounding step, and nonsingular small-scale transforms no longer fail an absolute determinant cutoff. Kamaz and imported-model regression results are recorded in the transfer benchmark.
 - Forward donor-seam trials compare distortion using the target renderer's scale throughout projection, cut validation and final acceptance; transform translation does not reduce edge precision.
 - Viewer frames the first model once and preserves subsequent camera edits. Translucent surfaces share material-channel albedo lookup and keep opaque base-map alpha out of opacity. UV material channels render retained Quads, and both UV/3D views draw excess material slots on the final submesh.
 

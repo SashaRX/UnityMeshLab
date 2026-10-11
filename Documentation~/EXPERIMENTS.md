@@ -40,6 +40,70 @@
 
 ## Progressive reverse atlas — 2026-10-09
 
+### Scalable shared-family final packing — 2026-10-11
+
+Continuation on PR225, baseline `30f2fd94`. The completed Kamaz chain exceeded
+the previous rectangle packer's 16-million-work limit and retained the sparse
+projection layout in both overlap policies. Final packing now joins explicit
+donor ancestry and intentional overlap edges, then reserves each family's
+complete footprint across all LODs. Every family receives one rigid quarter
+turn, translation and the same global scale; neither LOD0 nor another member is
+packed independently.
+
+Disjoint guillotine cells and shelf rows replace overlapping MaxRects cells and
+repeated containment pruning. Geometric capacity is searched separately from
+Float32 placement validity, which is not monotone in scale. Thin families can
+use all four quarter turns and padded fractional origins. A positive origin
+phase belongs to its allocated cell; requested two-pixel gutters are preserved
+rather than doubled. At the selected scale, shorter canvases in both axes can
+reduce large internal empty rectangles without requiring a full square bbox.
+Uniform final filling remains optional and records the actual resulting density.
+
+Donor seam selection now finishes before final filling. Comparing two already
+filled trials gave the uncut topology an unrelated density bonus and discarded
+useful cuts on Wooden_Box_Long. The existing requested-density, inherited-region
+and distortion gates still select the topology; one final family pack runs on
+the chosen chain. It checks the actual Float32 output vertices and transformed
+edges, including barycentrically created corners, with the exported-mesh audit's
+arithmetic. Temporary output replacement remains atomic and detached from FBX.
+
+Output rounding is checked against the existing world-space anisotropy limit,
+the shared 1% relative metric allowance, normalized triangle area and all
+same-LOD contacts. Only explicit ordered detail contacts are allowed. Invalid
+placements are retried; failure retains the audited input coordinates. Scratch
+intersection predicates for small families match the atlas scan; larger families
+retain its grid and completeness/budget checks. The managed final pack runs in
+the existing asynchronous path so the Editor can respond to cancellation.
+
+The Viewer formerly rounded a second bbox-normalized Float32 atlas before
+intersection checks. This could report contacts absent from the saved UVs.
+Normalization now stays in double inside the same predicates. A partial shared
+edge control reproduces the former false overlap and still detects a deliberate
+intersection. Small nonzero transform scales no longer fail an absolute
+determinant cutoff; finite-matrix, genuine singularity and transformed-face
+collapse checks remain active.
+
+The final 10 tex/m run passes 583 EditMode cases with four fixture/URP skips.
+All 30 ordinary Transfer snapshots for Cafe, Kitchen and Kamaz remain byte
+identical to the preceding reviewed baseline. The nine-model Reverse corpus
+retains 16 accepted cases and the same two Kitchen seed refusals; inherited
+surface coverage improves in every accepted case. Wooden keeps 72 source-face
+splits in each policy (previously 73), with higher inherited coverage and no
+refinement refusal. Kamaz packs 4,621/4,089 families into 512 square and raises
+LOD0 bbox fill from 10.3/10.8% to 39.2/37.3%, with zero unexpected contacts in
+both the raw audit and Viewer. Its overlap seam trial still refuses one inherited
+region; final packing does not resolve that separate topology limitation.
+At 32 tex/m, both completed chains also pass the raw/Viewer audits and the
+explicit final-packing assertion: 1024 square, final densities 47.8381/39.7344,
+LOD0 bbox fill 52.8/48.3%, and grades 90/89. The two separate LOD0 seam refusals
+remain reported; successful packing does not waive them.
+
+Latest main (`f9aad54c`, package 1.1.41) is merged. Its Foliage component lookup
+uses the common topology disjoint set, and its preview follows this branch's
+manual camera lifecycle. FBX helper refactoring retains PR225's corner-count and
+polygon seam-split protection. Measurements and validation for this continuation
+are recorded in [KAMAZ_TRANSFER_BENCHMARK.md](KAMAZ_TRANSFER_BENCHMARK.md).
+
 ### Texel-sized correspondence tolerance — 2026-10-11
 
 Requested continuation on PR225, baseline `719cce0`. Local inherited metric
