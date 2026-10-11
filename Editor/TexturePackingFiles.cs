@@ -99,6 +99,13 @@ namespace SashaRX.UnityMeshLab
                 catch { stream.Dispose(); throw; }
             }
 
+            private static bool HashesEqual(byte[] left, byte[] right)
+            {
+                if (left == null || right == null || left.Length != right.Length) return false;
+                for (int i = 0; i < left.Length; i++) if (left[i] != right[i]) return false;
+                return true;
+            }
+
             public void Dispose()
             {
                 verifiedSource?.Dispose();
@@ -116,6 +123,15 @@ namespace SashaRX.UnityMeshLab
                 else File.Move(Staged, Destination); // Fails rather than replacing a late-arriving file.
                 committed = true;
                 Dispose(); // The original is now the backup; release its lease before any rollback.
+                if (existed && Path.DirectorySeparatorChar == '\\')
+                {
+                    using (var original = new FileStream(backup, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
+                    {
+                        var identity = GetIdentity(original);
+                        if (identity.volume != verifiedIdentity.volume || identity.low != verifiedIdentity.low || identity.high != verifiedIdentity.high)
+                            throw new IOException("Output replaced during installation; batch will be restored: " + Destination);
+                    }
+                }
             }
 
             public void Rollback()
@@ -179,13 +195,6 @@ namespace SashaRX.UnityMeshLab
                 hash.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
                 return hash.Hash;
             }
-        }
-
-        private static bool HashesEqual(byte[] left, byte[] right)
-        {
-            if (left == null || right == null || left.Length != right.Length) return false;
-            for (int i = 0; i < left.Length; i++) if (left[i] != right[i]) return false;
-            return true;
         }
 
         [StructLayout(LayoutKind.Sequential)]
