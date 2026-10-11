@@ -35,8 +35,11 @@ namespace SashaRX.UnityMeshLab
                 {
                     token.ThrowIfCancellationRequested();
                     if(!local.TryGetValue(f,out int original)) Add(f,new[] {Vector3.right,Vector3.up,Vector3.forward},-1);
-                    else foreach(int output in selected[original])
-                        Add(f,Enumerable.Range(0,3).Select(k=>plan.barycentrics[output*3+k]).ToArray(),output);
+                    else
+                    {
+                        foreach(int output in selected[original])
+                            Add(f,Enumerable.Range(0,3).Select(k=>plan.barycentrics[output*3+k]).ToArray(),output);
+                    }
                 }
                 void Add(int f,Vector3[] weights,int output)
                 {

@@ -166,6 +166,33 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [TestCase(false)] [TestCase(true)]
+        public void DisconnectedRegionPiecesPackSeparatelyWithTheirDescendantsAndOverlays(bool overlay)
+        {
+            ReverseUvTransfer.Surface Surface(int lod,int chart)
+            {
+                var pixels=Rectangle(8,4,new Vector2(40,60)).Concat(Rectangle(8,4,new Vector2(240,160))).ToArray();
+                return new ReverseUvTransfer.Surface {lod=lod,node=0,pixels=pixels,
+                    input=new ReverseUvTransfer.Input {key="disconnected region"},
+                    positions=pixels.Select(p=>new Vector3(p.x,p.y)).ToArray(),indices=Enumerable.Range(0,pixels.Length).ToArray(),
+                    faces=Enumerable.Range(0,4).Select(f=>new ReverseUvTransfer.Face {chart=chart,
+                        inherited=lod<2,parentLod=lod<2?lod+1:-1,parentMesh=0,parentFace=f}).ToArray()};
+            }
+            var seed=Surface(2,0);var middle=Surface(1,5);var fine=Surface(0,9);var detail=Surface(0,15);
+            foreach(var face in detail.faces) {face.inherited=false;face.intentionalOverlap=true;face.parentLod=-1;}
+            var report=new ReverseUvTransfer.Report {texelsPerUnit=1};
+            if(overlay) for(int f=0;f<4;++f) report.overlaps.Add(new ReverseUvTransfer.OverlapRelation {
+                lod=0,underMesh=0,underFace=f,overMesh=1,overFace=f});
+            var fineLevel=overlay?new[] {fine,detail}:new[] {fine};
+            int side=ReverseUvFinalPacking.Pack(new List<ReverseUvTransfer.Surface[]> {new[] {seed},new[] {middle},fineLevel},
+                new ReverseUvTransfer.Options {fillFinalAtlas=true},report,512,default);
+            Assert.AreEqual(2,report.finalPackingFamilies,"A reused chart label cannot pin disconnected islands to their original gaps.");
+            Assert.AreEqual("shared-chart-families",report.finalPacking,report.finalPackingRefusal);
+            Assert.Less(side,64,"The empty 200-texel gap must not be reserved as part of either island.");
+            CollectionAssert.AreEqual(seed.pixels,middle.pixels);CollectionAssert.AreEqual(seed.pixels,fine.pixels);
+            if(overlay) CollectionAssert.AreEqual(seed.pixels,detail.pixels);
+        }
+
+        [TestCase(false)] [TestCase(true)]
         public void InvalidTrianglesCannotEnterTheCapacitySearch(bool nonfinite)
         {
             var points=new[] {Vector2.zero,Vector2.right,nonfinite?new Vector2(float.NaN,1):Vector2.right*2};

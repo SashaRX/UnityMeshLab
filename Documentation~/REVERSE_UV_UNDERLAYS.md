@@ -35,6 +35,10 @@ transfer workflow; a preceding ordinary forward Transfer is not required.
 - Coplanar independent renderers are not invented as detail/underlay layers.
 - Every inherited family, its descendants and its explicit overlays receive
   one rigid transform and one common scale during final packing.
+- A retained region/chart number is not itself a packing family. Independent
+  placements of disconnected region pieces must first be separated by actual
+  geometric/UV corner connectivity within each surface. Explicit donor and
+  ordered-overlay edges then join those components across the LOD chain.
 - Only existing ordered overlap relations may survive packing. Intentional
   overlap must remain at its underlay coordinates, not merely somewhere inside
   the underlay's bounding box.
@@ -80,6 +84,11 @@ below the configured texel boundary tolerance allow Float32 relative metric
 drift; the absolute stretch limit, positive-area and overlap checks still
 apply. Resolved triangles retain the 1% no-regression derivative gate. This
 policy does not authorize a new overlap or an independent detail placement.
+
+Alternative footprint orders have independent work and validation budgets;
+preliminary tightening cannot consume their budgets before they start. Search
+diagnostics record moved families, completed orders and exhausted work rather
+than presenting a retained layout as successful footprint compaction.
 
 The footprint pass currently improves an already valid rectangle placement at
 the selected atlas size. It is not a proof of globally optimal packing. Projection

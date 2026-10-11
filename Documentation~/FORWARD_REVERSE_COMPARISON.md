@@ -1,8 +1,57 @@
 # Forward and Reverse UV: paired model comparison, 2026-10-11
 
-## Current continuation: source-local metrics and family compaction
+## Current continuation: connected families and independent packing searches
 
-Latest paired artifacts: `_results~/reverse-model-repair-20261011/texel-policy/paired/`.
+Latest fresh paired artifacts: `_results~/finalpack-20261011/regression/paired/`.
+Baseline is `a51de228`; the older texel-policy captures below have identical
+input hashes and transforms. All exported positions, indices, metric frames
+and face correspondence records also match. This isolates the result to final
+UV placement, rather than accepting a change of geometry or donor selection.
+
+LOD0 bbox fill at 32 tex/m, padding 2:
+
+| Model | Forward | Reverse exclusive before / after | Reverse overlap before / after |
+|---|---:|---:|---:|
+| Cafe_Table_A_01 | 40.2% | 59.5% / 59.5% | 61.5% / 61.5% |
+| Modern_Kitchen_A | 39.4% | 40.9% / 40.9% | 45.6% / 45.6% |
+| Kamaz Typhoon | 57.5% | 34.1% / 52.6% | 50.1% / 50.1% |
+
+Kamaz exclusive at 10 tex/m improves from 10.0% to 38.9%; overlap stays at
+40.4%. Atlas sizes do not change: Kamaz 512/1024, Cafe 64/128 and Kitchen 256
+at 32 tex/m. All completed Reverse chains retain zero collapsed faces and
+unexpected overlap pairs. Original mesh snapshots remain unchanged.
+
+The old final pack treated a retained region label as a rigid family even
+after its disconnected pieces had been placed separately. It reserved the
+empty space between those pieces. Packing now starts with geometric/UV
+corner-connected components and joins their recorded donor/overlay links.
+Preliminary tightening no longer pre-exhausts every fresh footprint order.
+
+The affected Unity run recorded 380 tests: 372 passed, 7 optional skips and
+one fixture failure. The fixture marked faces inherited without recording
+their parent LOD/face, relying on coincident chart numbers to join surfaces.
+It now supplies explicit ancestry and additionally asserts one shared family;
+the original UV, density, geometry and overlay assertions remain.
+The final-source focused repeat passes 206 tests with zero failures and five
+optional skips, including the corrected fixture and all six packing replays.
+Both FBX reference-compilation variants pass. These are separate runs, not one
+fresh all-green 380-test run.
+
+Six separate completed-chain replays audit every recorded ancestry and ordered
+overlay relation against one quarter-turn, scale and translation. The largest
+motion error is below 0.00014 pixel. These replays start from already packed
+outputs and can choose another atlas size/density; their additional fill gains
+are not substituted for the fresh pipeline measurements above.
+
+The nine-asset inherited-area regression gate retains its frozen thresholds
+in both policies: eight assets complete, Kitchen retains its existing seed
+refusal at the corpus density. The current fix does not resolve Kitchen's
+packing, excess Kamaz fragmentation, ordinary Forward target defects or the
+previous semantic overlap-coordinate witnesses described below.
+
+## Historical continuation: source-local metrics and family compaction
+
+Paired artifacts: `_results~/reverse-model-repair-20261011/texel-policy/paired/`.
 These supersede the older paired2 measurements below. Both runs use the same
 frozen inputs, settings and source-preservation checks. The comparison PNGs
 contain every LOD, with Forward, Reverse exclusive and Reverse overlap columns.

@@ -14,27 +14,57 @@ namespace SashaRX.UnityMeshLab
             ReverseUvTransfer.Report report, int previousSide, CancellationToken token)
         {
             var surfaces = levels.SelectMany(l => l).ToArray();
-            int count = surfaces.SelectMany(s => s.faces).Max(f => f.chart) + 1;
+            // A region label can survive independent placement/rescue of its
+            // disconnected pieces. It is not a rigid packing item: using that
+            // label reserves the empty space between unrelated UV islands.
+            // First find actual UV components, then join explicit ancestry and
+            // ordered overlays across the chain.
+            int count=0;
+            var offsets=new Dictionary<ReverseUvTransfer.Surface,int>();
+            foreach(var surface in surfaces) {offsets.Add(surface,count);count+=surface.faces.Length;}
             var families = new DisjointSet(count);
+            foreach(var surface in surfaces)
+            {
+                // Retain corner-connected pieces of a region too (including
+                // T-junction boundaries). Separate placements have no shared
+                // geometric/UV corner and remain separate packing components.
+                var vertices=new Dictionary<(int chart,Vector3 position,Vector2 uv),int>();
+                for(int f=0;f<surface.faces.Length;++f)
+                {
+                    token.ThrowIfCancellationRequested();
+                    int face=offsets[surface]+f,chart=surface.faces[f].chart;
+                    for(int k=0;k<3;++k)
+                    {
+                        int corner=f*3+k;
+                        var vertex=(chart,surface.positions[surface.indices[corner]],surface.pixels[corner]);
+                        if(vertices.TryGetValue(vertex,out int other))
+                            families.Union(face,other);
+                        else vertices.Add(vertex,face);
+                    }
+                }
+            }
             var byLod=levels.ToDictionary(l=>l[0].lod);
             foreach(var surface in surfaces)
-                foreach(var face in surface.faces)
+                for(int f=0;f<surface.faces.Length;++f)
+                {
+                    var face=surface.faces[f];
                     if(face.inherited && face.parentLod>surface.lod)
                     {
                         token.ThrowIfCancellationRequested();
-                        var parent=byLod[face.parentLod][face.parentMesh].faces[face.parentFace];
-                        families.Union(face.chart,parent.chart);
+                        var parent=byLod[face.parentLod][face.parentMesh];
+                        families.Union(offsets[surface]+f,offsets[parent]+face.parentFace);
                     }
+                }
             foreach (var level in levels)
                 foreach (var relation in report.overlaps.Where(r => r.lod == level[0].lod))
-                    families.Union(level[relation.underMesh].faces[relation.underFace].chart,
-                        level[relation.overMesh].faces[relation.overFace].chart);
+                    families.Union(offsets[level[relation.underMesh]]+relation.underFace,
+                        offsets[level[relation.overMesh]]+relation.overFace);
             var corners = new SortedDictionary<int,List<(ReverseUvTransfer.Surface surface,int corner)>>();
             foreach (var surface in surfaces)
                 for (int f = 0; f < surface.faces.Length; ++f)
                 {
                     token.ThrowIfCancellationRequested();
-                    int family = families.Find(surface.faces[f].chart);
+                    int family = families.Find(offsets[surface]+f);
                     if (!corners.TryGetValue(family,out var list))
                     { list = new List<(ReverseUvTransfer.Surface,int)>(); corners.Add(family,list); }
                     for (int k = 0; k < 3; ++k) list.Add((surface,f*3+k));
@@ -107,8 +137,8 @@ namespace SashaRX.UnityMeshLab
                     }
                     return true;
                 }
-                int side=previousSide;float scale=1;
-                var packed=coordinates;
+                int side;float scale;
+                Vector2[][] packed;
                 try {packed=ReverseUvFamilyPacking.Pack(coordinates,options,token,out side,out scale,Valid);}
                 catch(InvalidOperationException error)
                 {
@@ -124,9 +154,11 @@ namespace SashaRX.UnityMeshLab
                     && Enumerable.Range(0,coordinates.Length).All(g=>Valid(g,coordinates[g],previousSide)))
                 {packed=coordinates;side=previousSide;scale=1;}
                 if(logTiming) UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Family rectangles: {timing.ElapsedMilliseconds} ms. Test triangle footprints.");
+                var search=new ReverseUvFootprintPacking.Diagnostics();
                 packed = ReverseUvFootprintPacking.Improve(coordinates,packed,side,scale,options,token,Valid,
-                    out scale,out bool footprintImproved);
-                if(logTiming) UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Final family packing: {timing.ElapsedMilliseconds} ms, footprint improvement {footprintImproved}.");
+                    out scale,out bool footprintImproved,search);
+                if(logTiming) UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Final family packing: {timing.ElapsedMilliseconds} ms, footprint improvement {footprintImproved}; moved {search.tightenedFamilies}; completed orders {search.completedOrders}; search work {search.tighteningWork}/{search.repackingWork}; validations {search.validations}.");
+                if(logTiming && search.refusedOrders.Count>0) UvtLog.Info(UvtLog.Category.Repack,"[ReverseUV] Footprint trials: "+string.Join("; ",search.refusedOrders));
                 var replacements = surfaces.ToDictionary(s => s,s => new Vector2[s.pixels.Length]);
                 for (int g = 0; g < groups.Length; ++g)
                     for (int c = 0; c < groups[g].Count; ++c)

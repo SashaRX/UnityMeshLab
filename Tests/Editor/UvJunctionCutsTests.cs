@@ -268,7 +268,8 @@ namespace SashaRX.UnityMeshLab.Tests
                 var uv = new[] {shift,shift+Vector2.right*10,shift+new Vector2(10,1),shift,shift+new Vector2(10,1),shift+Vector2.up};
                 return new ReverseUvTransfer.Surface {lod=lod,node=0,pixels=uv,
                     positions=uv.Select(p=>new Vector3(p.x,p.y)).ToArray(),indices=Enumerable.Range(0,6).ToArray(),
-                    faces=new[] {new ReverseUvTransfer.Face {chart=chart,inherited=lod==0},new ReverseUvTransfer.Face {chart=chart,inherited=lod==0}}};
+                    faces=Enumerable.Range(0,2).Select(f=>new ReverseUvTransfer.Face {chart=chart,
+                        inherited=lod==0,parentLod=lod==0?1:-1,parentMesh=0,parentFace=f}).ToArray()};
             }
             var seed=Surface(1,0,new Vector2(2,30)); var fine=Surface(0,0,new Vector2(2,30));
             var overlay=Surface(0,1,new Vector2(2,30)); overlay.node=1;
@@ -280,6 +281,7 @@ namespace SashaRX.UnityMeshLab.Tests
             int side=ReverseUvFinalPacking.Pack(new List<ReverseUvTransfer.Surface[]> {new[] {seed},new[] {fine,overlay}},
                 new ReverseUvTransfer.Options {padding=2,fillFinalAtlas=fill},report,64,default);
             Assert.AreEqual("shared-chart-families",report.finalPacking,report.finalPackingRefusal);
+            Assert.AreEqual(1,report.finalPackingFamilies,"Recorded inheritance must join the seed, fine surface and ordered overlay.");
             CollectionAssert.AreEqual(seed.pixels,fine.pixels); CollectionAssert.AreEqual(fine.pixels,overlay.pixels);
             CollectionAssert.AreEqual(geometry,seed.positions);
             Assert.LessOrEqual(side,64);

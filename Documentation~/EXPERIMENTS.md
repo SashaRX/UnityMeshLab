@@ -40,6 +40,28 @@
 
 ## Progressive reverse atlas — 2026-10-09
 
+### Actual UV components before shared-family packing — 2026-10-11
+
+Same progressive Reverse experiment on PR225; baseline `a51de228`. A completed
+Kamaz exclusive atlas retained region labels across independent placement of
+disconnected UV pieces. Grouping by those labels reserved 18.35 million pixels
+of rectangles in a 1.05-million-pixel canvas. Actual component families need
+approximately 0.45 million padded rectangle pixels at the same density. Final
+packing now finds geometric/UV corner-connected components within each surface,
+then joins explicit donor ancestry and ordered overlays. Corner-connected
+region pieces, including the ring control's T-junction boundaries, retain one
+motion. A reused label cannot pin separated islands to their original gaps.
+
+Preliminary tightening also exhausted the budget shared with every fresh
+footprint order. The orders now have independent bounded budgets, and their
+work/refusal diagnostics are retained. This does not remove precision, stretch,
+positive-area, overlap or gutter requirements. Frozen completed-chain replays
+check every donor/descendant and underlay/detail relation against a common
+quarter-turn, scale and translation, separately from the full pipeline runs.
+Source geometry and UV0 are unchanged. Artifacts: `_results~/finalpack-20261011/`.
+The completed model and regression results are recorded in
+[FORWARD_REVERSE_COMPARISON.md](FORWARD_REVERSE_COMPARISON.md).
+
 ### Current-LOD underlays and triangulation-independent strips — 2026-10-11
 
 Same progressive Reverse experiment on PR225, baseline `eccca7d1`. The attached

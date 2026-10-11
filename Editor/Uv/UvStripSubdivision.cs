@@ -203,8 +203,10 @@ namespace SashaRX.UnityMeshLab
             foreach(int f in faces)
             {
                 int t=f*3;double area=Cross(uv[triangles[t+1]]-uv[triangles[t]],uv[triangles[t+2]]-uv[triangles[t]]);
-                if(double.IsNaN(area)||double.IsInfinity(area)||area==0) return Array.Empty<Line>();
-                int current=Math.Sign(area);if(sign!=0 && sign!=current) return Array.Empty<Line>();sign=current;
+                if(double.IsNaN(area)||double.IsInfinity(area)||Math.Abs(area)<double.Epsilon) return Array.Empty<Line>();
+                int current=Math.Sign(area);
+                if(sign!=0 && sign!=current) return Array.Empty<Line>();
+                sign=current;
             }
             foreach(var edge in edges)
             {
@@ -237,7 +239,7 @@ namespace SashaRX.UnityMeshLab
                     }
                 if(nearest==double.MaxValue) continue;
                 var end=uv[v]+direction*(float)nearest;
-                if(direction.x<0 || (direction.x==0 && direction.y<0)) direction=-direction;
+                if(direction.x<0 || (Math.Abs(direction.x)<float.Epsilon && direction.y<0)) direction=-direction;
                 bool duplicate=lines.Any(l=>Math.Abs(Cross(l.direction,direction))<1e-5
                     && Math.Abs(Cross(l.direction,uv[v]-l.start))<=span*4e-6
                     && ((l.start-uv[v]).magnitude+(l.end-end).magnitude<=span*8e-6
@@ -328,7 +330,9 @@ namespace SashaRX.UnityMeshLab
             for(int i=output.Count-1;i>=0 && output.Count>1;--i)
             {
                 var a=output[i];var b=output[(i+1)%output.Count];
-                if(a.x==b.x && a.y==b.y) output.RemoveAt(i);
+                // Coordinate identity, rather than geometric proximity: distinct
+                // corners of a tiny positive-area face must remain distinct.
+                if((a.x,a.y).Equals((b.x,b.y))) output.RemoveAt(i);
             }
             return output;
         }

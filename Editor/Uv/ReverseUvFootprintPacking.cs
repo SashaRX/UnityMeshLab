@@ -11,6 +11,13 @@ namespace SashaRX.UnityMeshLab
     /// overlays never become independent packing items.</summary>
     internal static class ReverseUvFootprintPacking
     {
+        internal sealed class Diagnostics
+        {
+            internal long tighteningWork, repackingWork, validations;
+            internal int tightenedFamilies, completedOrders;
+            internal List<string> refusedOrders=new List<string>();
+        }
+
         sealed class Mask
         {
             internal int id, width, height;
@@ -20,7 +27,7 @@ namespace SashaRX.UnityMeshLab
 
         internal static Vector2[][] Improve(Vector2[][] source, Vector2[][] baseline, int side, float scale,
             ReverseUvTransfer.Options options, CancellationToken token, Func<int,Vector2[],int,bool> validate,
-            out float finalScale, out bool improved)
+            out float finalScale, out bool improved, Diagnostics diagnostics=null)
         {
             finalScale=scale; improved=false;
             var masks=source.Select((points,id)=>Enumerable.Range(0,options.rotateCharts?4:1)
@@ -31,22 +38,35 @@ namespace SashaRX.UnityMeshLab
                         ?ReverseUvFamilyPacking.MinimumAltitude(source[m[0].id]):0)
                     .ThenByDescending(m=>Math.Max(m[0].width,m[0].height)).ThenBy(m=>m[0].id).ToArray(),
                 masks.OrderByDescending(m=>Math.Max(m[0].width,m[0].height)).ThenBy(m=>m[0].id).ToArray(),
-                masks.OrderByDescending(m=>m[0].rows.Sum(r=>r.Sum(span=>span.end-span.start))).ThenBy(m=>m[0].id).ToArray()
+                masks.OrderByDescending((Mask[] m)=>m[0].rows.Sum((List<(int start,int end)> r)=>
+                    r.Sum(((int start,int end) span)=>span.end-span.start))).ThenBy(m=>m[0].id).ToArray()
             };
             var best=baseline; double bestArea=BoundsArea(best);
             long work=0,validations=0;
             var tightened=Tighten(baseline,masks,side,options,token,validate,ref work,ref validations);
+            if(diagnostics!=null)
+            {
+                diagnostics.tighteningWork=work;
+                diagnostics.tightenedFamilies=tightened==null?0:Enumerable.Range(0,baseline.Length)
+                    .Count(g=>!baseline[g].SequenceEqual(tightened[g]));
+            }
             if(tightened!=null && BoundsArea(tightened)<bestArea)
             {best=tightened;bestArea=BoundsArea(best);improved=true;}
             foreach(var order in orders.GroupBy(o=>string.Join(",",o.Select(m=>m[0].id))).Select(g=>g.First()))
             {
                 token.ThrowIfCancellationRequested();
-                var packed=TryPack(order,side,options,token,validate,ref work,ref validations);
+                // Each alternative starts a new search. The preliminary local
+                // tightening must not consume the entire fresh packing budget.
+                long packingWork=0,packingValidations=0;
+                var packed=TryPack(order,side,options,token,validate,ref packingWork,ref packingValidations,diagnostics);
+                work+=packingWork;validations+=packingValidations;
                 if(packed==null) continue;
+                if(diagnostics!=null) ++diagnostics.completedOrders;
                 double area=BoundsArea(packed);
                 if(area>=bestArea) continue;
                 bestArea=area;best=packed;improved=true;
             }
+            if(diagnostics!=null) {diagnostics.repackingWork=work-diagnostics.tighteningWork;diagnostics.validations=validations;}
             if(!improved || !options.fillFinalAtlas) return best;
             var pointsAll=best.SelectMany(p=>p).ToArray();var min=pointsAll.Aggregate(Vector2.Min);var max=pointsAll.Aggregate(Vector2.Max);
             double fit=(side-options.padding*2)/Math.Max((double)max.x-min.x,(double)max.y-min.y);
@@ -191,7 +211,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         static Vector2[][] TryPack(Mask[][] order,int side,ReverseUvTransfer.Options options,CancellationToken token,
-            Func<int,Vector2[],int,bool> validate,ref long work,ref long validations)
+            Func<int,Vector2[],int,bool> validate,ref long work,ref long validations,Diagnostics diagnostics)
         {
             var rows=Enumerable.Range(0,side).Select(_=>new List<(int start,int end)>()).ToArray();
             var output=new Vector2[order.Length][];
@@ -207,7 +227,11 @@ namespace SashaRX.UnityMeshLab
                     if(score>=best) continue;
                     selected=mask;placed=points;left=x;bottom=y;best=score;
                 }
-                if(selected==null) return null;
+                if(selected==null)
+                {
+                    diagnostics?.refusedOrders.Add($"family {variants[0].id}, work {work}, validations {validations}");
+                    return null;
+                }
                 output[selected.id]=placed;
                 for(int r=0;r<selected.height;++r)
                     foreach(var span in selected.rows[r]) Reserve(rows[bottom+r],left+span.start,left+span.end);

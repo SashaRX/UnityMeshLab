@@ -65,7 +65,6 @@ namespace SashaRX.UnityMeshLab
                 states[index] = 1;
                 var choices = Hits(index, centers[index]).OrderBy(h => h.distSq).ThenBy(h => h.triangleIndex).ToArray();
                 if (choices.Length == 0) { states[index] = 2; return true; }
-                int start = faceIndex * 3;
                 var probes = new List<Vector3> { positions[index * 3], positions[index * 3 + 1], positions[index * 3 + 2] };
                 probes.AddRange(Interior.Select(b => positions[index * 3] * b.x + positions[index * 3 + 1] * b.y + positions[index * 3 + 2] * b.z));
                 var samples = probes.Select(point => Hits(index, point)).ToArray();
@@ -113,7 +112,7 @@ namespace SashaRX.UnityMeshLab
                 if (!CoveredByParentLayer(chart, parentFace.layer, pixels, 0, options, ref comparisons, token))
                 { states[index] = 2; return true; }
                 byChart[face.chart].Remove(index);byChart[parentFace.chart].Add(index);
-                for (int k = 0; k < 3; ++k) surface.pixels[start + k] = pixels[k];
+                for (int k = 0; k < 3; ++k) surface.pixels[faceIndex * 3 + k] = pixels[k];
                 moved.Add(index);
                 face.inherited = true; face.ambiguous = false; face.rejection = null;
                 face.localFallback = false; face.chart = parentFace.chart;
