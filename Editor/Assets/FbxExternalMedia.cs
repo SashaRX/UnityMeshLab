@@ -16,10 +16,9 @@ namespace SashaRX.UnityMeshLab
             "^(\\s*(?:(?:FileName|Filename|RelativeFilename)\\s*:\\s*|P:\\s*\"(?:Path|RelPath)\"(?:,\\s*\"[^\"]*\"){3},\\s*)\")([^\"]*)(\".*)$",
             RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
-        static readonly StringComparer PathComparer = Path.DirectorySeparatorChar == '\\'
-            ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
-        static readonly StringComparison PathComparison = Path.DirectorySeparatorChar == '\\'
-            ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        // Existing path components are canonicalized from directory entries, so
+        // exact keys preserve distinct files on any case-sensitive directory.
+        static readonly StringComparer PathComparer = StringComparer.Ordinal;
 
         internal static FbxScene Prepare(FbxSourceDocument document, string scratch, string targetPath, List<string> created, List<string> createdFolders, List<string> referenced)
         {
@@ -50,7 +49,7 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
                 referenced.Add(output);
-                paths[Path.GetFullPath(file)] = output;
+                paths[CanonicalPath(file)] = output;
             }
 
             string staged = Path.Combine(scratch, "external.fbx");
@@ -147,7 +146,7 @@ namespace SashaRX.UnityMeshLab
         static string MediaPath(string name, string directory)
         {
             string stored = name.Replace('\\', Path.DirectorySeparatorChar);
-            return Path.GetFullPath(Path.IsPathRooted(stored) ? stored : Path.Combine(directory, stored));
+            return CanonicalPath(Path.IsPathRooted(stored) ? stored : Path.Combine(directory, stored));
         }
 
         internal static string RewriteFilename(string line, IReadOnlyDictionary<string, string> paths, string scratch, string target)
@@ -155,7 +154,7 @@ namespace SashaRX.UnityMeshLab
             var match = FilenameLine.Match(line);
             if (!match.Success || string.IsNullOrEmpty(match.Groups[2].Value)) return line;
             string stored = match.Groups[2].Value.Replace('\\', Path.DirectorySeparatorChar);
-            string absolute = Path.GetFullPath(Path.IsPathRooted(stored) ? stored : Path.Combine(scratch, stored));
+            string absolute = CanonicalPath(Path.IsPathRooted(stored) ? stored : Path.Combine(scratch, stored));
             if (!paths.TryGetValue(absolute, out string output)) return line;
             bool relative = match.Groups[1].Value.Contains("RelativeFilename") || match.Groups[1].Value.Contains("\"RelPath\"");
             string filename = relative ? Path.GetRelativePath(Path.GetDirectoryName(target), output) : output;
@@ -194,17 +193,40 @@ namespace SashaRX.UnityMeshLab
 
         internal static string AssetPath(string file)
         {
-            string full = Path.GetFullPath(file);
-            string assets = Path.GetFullPath(UnityEngine.Application.dataPath) + Path.DirectorySeparatorChar;
-            if (full.StartsWith(assets, PathComparison)) return "Assets/" + full.Substring(assets.Length).Replace('\\', '/');
-            string packages = Path.GetFullPath(Path.Combine(UnityEngine.Application.dataPath, "../Packages")) + Path.DirectorySeparatorChar;
-            if (full.StartsWith(packages, PathComparison)) return "Packages/" + full.Substring(packages.Length).Replace('\\', '/');
+            string full = CanonicalPath(file);
+            string assets = CanonicalPath(UnityEngine.Application.dataPath) + Path.DirectorySeparatorChar;
+            if (full.StartsWith(assets, StringComparison.Ordinal)) return "Assets/" + full.Substring(assets.Length).Replace('\\', '/');
+            string packages = CanonicalPath(Path.Combine(UnityEngine.Application.dataPath, "../Packages")) + Path.DirectorySeparatorChar;
+            if (full.StartsWith(packages, StringComparison.Ordinal)) return "Packages/" + full.Substring(packages.Length).Replace('\\', '/');
             foreach (var package in UnityEditor.PackageManager.PackageInfo.GetAllRegisteredPackages())
             {
-                string root = Path.GetFullPath(package.resolvedPath) + Path.DirectorySeparatorChar;
-                if (full.StartsWith(root, PathComparison)) return package.assetPath + "/" + full.Substring(root.Length).Replace('\\', '/');
+                string root = CanonicalPath(package.resolvedPath) + Path.DirectorySeparatorChar;
+                if (full.StartsWith(root, StringComparison.Ordinal)) return package.assetPath + "/" + full.Substring(root.Length).Replace('\\', '/');
             }
             return null;
+        }
+
+        static string CanonicalPath(string path)
+        {
+            string full = Path.GetFullPath(path), root = Path.GetPathRoot(full);
+            string current = root.Length == 3 && root[1] == ':' ? root.ToUpperInvariant() : root;
+            foreach (string component in full.Substring(root.Length).Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+            {
+                if (component.Length == 0) continue;
+                string candidate = Path.Combine(current, component);
+                if (Directory.Exists(current) && (File.Exists(candidate) || Directory.Exists(candidate)))
+                {
+                    string[] entries = Directory.GetFileSystemEntries(current);
+                    // Prefer the exact entry even if another entry differs only in case.
+                    string exact = entries.FirstOrDefault(entry => Path.GetFileName(entry) == component);
+                    string[] aliases = exact == null ? entries.Where(entry => string.Equals(Path.GetFileName(entry), component, StringComparison.OrdinalIgnoreCase)).ToArray() : Array.Empty<string>();
+                    if (exact != null) candidate = exact;
+                    else if (aliases.Length == 1) candidate = aliases[0];
+                    else if (aliases.Length > 1) throw new IOException("Ambiguous FBX media path: " + candidate);
+                }
+                current = candidate;
+            }
+            return current;
         }
 
         static void CreateFolder(string path, List<string> created)

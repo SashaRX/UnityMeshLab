@@ -407,6 +407,45 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { UnityEngine.Object.DestroyImmediate(texture); UnityEditor.AssetDatabase.DeleteAsset(assetFolder); }
         }
 
+        [Test]
+        [Platform("Win")]
+        public void OriginalMediaMappingKeepsDistinctCaseSensitiveWindowsFiles()
+        {
+            var info = new System.Diagnostics.ProcessStartInfo("fsutil.exe", "file setCaseSensitiveInfo \"" + folder + "\" enable") {
+                UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true
+            };
+            using (var process = System.Diagnostics.Process.Start(info))
+            {
+                process.WaitForExit();
+                if (process.ExitCode != 0) Assert.Ignore("Host cannot enable per-directory case sensitivity.");
+            }
+            string first = Path.Combine(folder, "A.png"), second = Path.Combine(folder, "a.png");
+            File.WriteAllBytes(first, new byte[] { 1 }); File.WriteAllBytes(second, new byte[] { 2 });
+            Assert.AreEqual(2, Directory.GetFiles(folder, "*.png").Length, "real case-sensitive Windows directory");
+            using var document = FbxSourceDocument.Load(Source(false));
+            string scratch = Path.Combine(folder, "mapping"); Directory.CreateDirectory(scratch);
+            string staleFirst = Path.Combine(folder, "missing", "A.png"), staleSecond = Path.Combine(folder, "missing", "a.png");
+            File.WriteAllText(Path.Combine(scratch, "input.fbx"), "Objects: {\n" +
+                "\tTexture: 1, \"Texture::A\", \"\" {\n\t\tFileName: \"" + staleFirst.Replace('\\', '/') + "\"\n\t\tRelativeFilename: \"A.png\"\n\t}\n" +
+                "\tTexture: 2, \"Texture::a\", \"\" {\n\t\tFileName: \"" + staleSecond.Replace('\\', '/') + "\"\n\t\tRelativeFilename: \"a.png\"\n\t}\n}\n");
+            var method = typeof(FbxExternalMedia).GetMethod("SourcePaths", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+            var paths = (Dictionary<string, string>)method.Invoke(null, new object[] { document, scratch });
+            Assert.AreEqual(2, paths.Count);
+            Assert.AreEqual(first, paths[staleFirst]); Assert.AreEqual(second, paths[staleSecond]);
+        }
+
+        [Test]
+        public void FilenameRewriteMatchesExistingFilesystemCaseAliases()
+        {
+            string map = Path.Combine(folder, "Map.png"), alias = Path.Combine(folder.ToUpperInvariant(), "MAP.PNG");
+            File.WriteAllBytes(map, new byte[] { 1 });
+            if (!File.Exists(alias)) Assert.Ignore("This filesystem has no case alias for the fixture.");
+            string output = Path.Combine(folder, "out.png"), target = Path.Combine(folder, "output.fbx");
+            var paths = new Dictionary<string, string>(StringComparer.Ordinal) { [map] = output };
+            Assert.AreEqual("FileName: \"" + output.Replace('\\', '/') + "\"",
+                FbxExternalMedia.RewriteFilename("FileName: \"" + alias.Replace('\\', '/') + "\"", paths, folder, target));
+        }
+
         [TestCase("FileName", false)]
         [TestCase("Filename", false)]
         [TestCase("RelativeFilename", true)]
