@@ -20,6 +20,15 @@ namespace SashaRX.UnityMeshLab
         // Existing path components are canonicalized from directory entries, so
         // exact keys preserve distinct files on any case-sensitive directory.
         static readonly StringComparer PathComparer = StringComparer.Ordinal;
+        // Externalization must not turn an FBX attachment into a Unity script,
+        // plugin or importer configuration. This gates importer dispatch by file
+        // extension; it does not claim to validate native image/video decoders.
+        static readonly HashSet<string> PassiveMediaExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ".bmp", ".dds", ".exr", ".gif", ".hdr", ".iff", ".jpeg", ".jpg", ".ktx", ".ktx2",
+            ".pic", ".pict", ".png", ".psb", ".psd", ".tga", ".tif", ".tiff", ".webp",
+            ".avi", ".mov", ".mp4", ".mpeg", ".mpg", ".ogv", ".webm"
+        };
         static readonly Regex FilenamePrefix = new Regex(
             "^\\s*(?:(?:FileName|Filename|RelativeFilename)\\s*:|P:\\s*\"(?:Path|RelPath)\")",
             RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
@@ -32,6 +41,8 @@ namespace SashaRX.UnityMeshLab
             var paths = new Dictionary<string, string>(PathComparer);
             foreach (string file in Directory.GetFiles(media, "*", SearchOption.AllDirectories))
             {
+                if (!PassiveMediaExtensions.Contains(Path.GetExtension(file)))
+                    throw new IOException("Unsupported embedded FBX media extension: " + Path.GetExtension(file));
                 // Content-addressed subfolders avoid overwriting authored external maps,
                 // including an earlier export of a different map with the same filename.
                 // A 128-bit prefix bounds path overhead; reuse still verifies the full hash.
@@ -265,11 +276,13 @@ namespace SashaRX.UnityMeshLab
             {
                 string absolute = string.IsNullOrEmpty(reference.filename) ? null : MediaPath(reference.filename, source);
                 string relative = string.IsNullOrEmpty(reference.relative) ? null : MediaPath(reference.relative, source);
-                string resolved = absolute != null && File.Exists(absolute) ? absolute : relative;
-                if (resolved == null || !File.Exists(resolved)) continue;
-                if (absolute == null) continue;
-                if (paths.TryGetValue(absolute, out string previous) && !PathComparer.Equals(previous, resolved)) ambiguous.Add(absolute);
-                else paths[absolute] = resolved;
+                string resolved = absolute != null && File.Exists(absolute) ? absolute : relative ?? absolute;
+                if (resolved == null) continue;
+                // A missing source-relative map still has an authored location.
+                // Keep it so restoring that map also restores save-as variants.
+                string key = absolute ?? relative;
+                if (paths.TryGetValue(key, out string previous) && !PathComparer.Equals(previous, resolved)) ambiguous.Add(key);
+                else paths[key] = resolved;
             }
             foreach (string key in ambiguous) paths.Remove(key);
             return paths;
@@ -367,13 +380,16 @@ namespace SashaRX.UnityMeshLab
             IReadOnlyDictionary<string, string> originalPaths, bool requireMedia)
         {
             var paths = new Dictionary<string, string>(PathComparer);
+            var mapped = names.Select(name => originalPaths.TryGetValue(MediaPath(name, source), out string path) ? path : null).Where(path => path != null).ToArray();
             string resolved = names.Select(name => MediaPath(name, scratch)).FirstOrDefault(File.Exists)
-                ?? names.Select(name => originalPaths.TryGetValue(MediaPath(name, source), out string mapped) ? mapped : null).FirstOrDefault(path => path != null)
+                ?? mapped.FirstOrDefault(File.Exists)
                 ?? names.Where(name => !Path.IsPathRooted(name.Replace('\\', Path.DirectorySeparatorChar)))
-                    .Select(name => MediaPath(name, source)).FirstOrDefault(File.Exists);
+                    .Select(name => MediaPath(name, source)).FirstOrDefault(File.Exists)
+                ?? mapped.FirstOrDefault();
+            if (requireMedia && names.Count > 0 && (resolved == null || !File.Exists(resolved)))
+                throw new IOException("Cannot embed missing FBX media: " + names[0]);
             if (resolved == null)
             {
-                if (requireMedia && names.Count > 0) throw new IOException("Cannot embed missing FBX media: " + names[0]);
                 return paths;
             }
             foreach (string name in names) paths[MediaPath(name, scratch)] = resolved;

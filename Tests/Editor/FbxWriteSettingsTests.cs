@@ -594,6 +594,54 @@ namespace SashaRX.UnityMeshLab.Tests
 
         [TestCase(false)]
         [TestCase(true)]
+        public void MissingExternalVariantKeepsReferenceToOriginalDirectory(bool binary)
+        {
+            string source = Source(binary, external: true), originalMap = Path.Combine(folder, "map.png");
+            byte[] bytes = File.ReadAllBytes(originalMap);
+            string relocated = Path.Combine(folder, "relocated"); Directory.CreateDirectory(relocated);
+            string moved = Path.Combine(relocated, "source.fbx"); File.Move(source, moved); File.Delete(originalMap);
+            string map = Path.Combine(relocated, "missing", "map.png");
+            string destination = Path.Combine(folder, "variant"); Directory.CreateDirectory(destination);
+            string output = Path.Combine(destination, "output.fbx");
+            using (var document = FbxSourceDocument.Load(moved)) document.SaveAtomic(output);
+            Assert.IsFalse(File.Exists(map), "the texture is absent during save-as");
+            var references = FbxUvSetNames.ReadMediaReferences(output);
+            Assert.IsNotEmpty(references);
+            foreach (var reference in references)
+            {
+                if (!string.IsNullOrEmpty(reference.filename))
+                    Assert.AreEqual(Path.GetFullPath(map), Path.GetFullPath(reference.filename.Replace('/', Path.DirectorySeparatorChar)));
+                if (!string.IsNullOrEmpty(reference.relative))
+                    Assert.AreEqual(Path.GetFullPath(map), Path.GetFullPath(Path.Combine(destination, reference.relative.Replace('/', Path.DirectorySeparatorChar))));
+            }
+            Directory.CreateDirectory(Path.GetDirectoryName(map)); File.WriteAllBytes(map, bytes);
+            foreach (var reference in references)
+                if (!string.IsNullOrEmpty(reference.filename)) CollectionAssert.AreEqual(bytes, File.ReadAllBytes(reference.filename));
+        }
+
+        [Test]
+        public void EmbeddedActiveFileIsRefusedBeforeExternalization()
+        {
+            string payload = Path.Combine(folder, "map.cs"), embedded = Path.Combine(folder, "active.fbx");
+            File.WriteAllText(payload, "// inert test fixture; no executable declarations\n");
+            using (var document = FbxSourceDocument.Load(Source(true)))
+            {
+                document.Scene.GetRootNode().GetChild(0).AddMaterial(FbxStructureEdit.NewMaterial(document.Scene,
+                    "M_Active", 1, 1, 1, "T_Active", payload, "map.cs", null));
+                document.Manager.GetIOSettings().SetBoolProp(Globals.EXP_FBX_EMBEDDED, true);
+                document.ExportScene(document.Scene, embedded, new FbxWriteSettings(true, true).WriterFormat(document.Manager), document.Manager.GetIOSettings());
+            }
+            File.Delete(payload);
+            using var loaded = FbxSourceDocument.Load(embedded);
+            Assert.IsTrue(loaded.EmbedsMedia, "SDK accepts an inert .cs file as embedded texture content");
+            string output = Path.Combine(folder, "output.fbx"); byte[] before = { 2, 3, 5 }; File.WriteAllBytes(output, before);
+            Assert.Throws<IOException>(() => loaded.SaveAtomic(output));
+            CollectionAssert.AreEqual(before, File.ReadAllBytes(output));
+            Assert.IsFalse(Directory.Exists(Path.Combine(folder, "output.fbm")), "no importable media is created");
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
         public void PathOnlyExternalMediaSurvivesVariantSave(bool embed)
         {
             string source = Source(false, external: true);

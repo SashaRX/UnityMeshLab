@@ -291,7 +291,11 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   On Windows, long media paths use a compact hash filename directly inside
   `<output>.fbm`, preserving the extension and checking the full content hash
   before reuse. An output directory that cannot fit this compact name is
-  refused before creating that file. Temporary filename rewriting uses Binary
+  refused before creating that file. Extracted attachments must have an allowed
+  image or video extension before durable media files are created or imported;
+  scripts, plugins and importer configuration files are refused. This controls
+  Unity importer selection, not native decoder safety or content validity.
+  Temporary filename rewriting uses Binary
   FBX: only media string properties change, all other property payloads are
   copied with a bounded buffer, and node offsets are recomputed for the changed
   string lengths. Geometry does not pass through an intermediate ASCII format.
@@ -301,6 +305,9 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   Discovery includes `Properties70` `Path` / `RelPath` pairs when direct
   filename records are absent, so those sources retain working external
   references in variants and can be embedded explicitly.
+  A temporarily missing external map retains its original source-relative
+  location in a save-as variant, so restoring it beside the source restores
+  that variant's reference. Explicit embedding still requires the map to exist.
   Temporary corner-matching probes preserve the source format and embedding
   through `SaveForImport`; these probes are not the final output. A probe keeps
   available embedded media without refusing stale missing external references;
