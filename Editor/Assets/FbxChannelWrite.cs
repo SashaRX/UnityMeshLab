@@ -68,6 +68,9 @@ namespace SashaRX.UnityMeshLab
             /// on the new normals.
             /// </summary>
             public bool keepFileTangents;
+            public bool[] shadingSubmeshes, selectedCorners;
+            public int[] cornerSubmeshes;
+            public HashSet<int>[] submeshVertices;
             public bool HasValues => colors != null || normals != null || tangents != null || uvs.Any(uv => uv != null);
             public Color32[] colors32;
             public Color[] colors;
@@ -116,11 +119,14 @@ namespace SashaRX.UnityMeshLab
         /// it was. Returns true when a file was written and the import settings it needs were set.
         /// </summary>
         internal static bool Write(string sourceFbxPath, IEnumerable<MeshEntry> entries, FbxExportIntent intent,
-            string outputFbxPath, LODGroup sceneRoot, FbxStructurePlan structure = null)
+            string outputFbxPath, LODGroup sceneRoot, FbxStructurePlan structure = null, FbxExport.ShadingSelection shadingSelection = null)
         {
             string targetFbxPath = string.IsNullOrEmpty(outputFbxPath) ? sourceFbxPath : outputFbxPath;
             bool isVariant = !string.Equals(targetFbxPath, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
             bool hasStructure = structure != null && !structure.IsEmpty;
+            if (shadingSelection != null && (!isVariant || hasStructure ||
+                (intent & ~(FbxExportIntent.Normals | FbxExportIntent.Tangents)) != 0))
+                throw new InvalidOperationException("Selected shading can only be saved into a separate FBX, with normals/tangents intent and no structure edits.");
             // A changed material reaches Unity through the written file's importer remap; a file
             // written outside the project has no importer, so its slots would carry a name only.
             bool inProject = targetFbxPath.StartsWith("Assets/", StringComparison.Ordinal) || targetFbxPath.StartsWith("Packages/", StringComparison.Ordinal);
@@ -137,8 +143,9 @@ namespace SashaRX.UnityMeshLab
             var capture = new Capture
             {
                 intent = intent, generatedUv1 = generatedUv1,
-                fileNormals = fileNormals,
-                fileTangents = fileNormals && importer.importTangents == ModelImporterTangents.Import,
+                fileNormals = shadingSelection != null || fileNormals,
+                fileTangents = shadingSelection != null || (fileNormals && importer.importTangents == ModelImporterTangents.Import),
+                shadingSelection = shadingSelection,
             };
             var donors = CaptureDonors(entries, capture, skip);
             // Writing UV1 switches 'Generate Lightmap UVs' off for the whole model, so every
@@ -162,6 +169,8 @@ namespace SashaRX.UnityMeshLab
             {
                 if (!tagged.TryGetValue(donor.name, out var tag))
                 {
+                    if (shadingSelection != null)
+                        throw new InvalidOperationException($"'{donor.name}': no exact FBX corner mapping was found; foliage export was refused.");
                     if (importedNames.Contains(donor.name))
                         throw new InvalidOperationException(
                             $"'{donor.name}': the corner tags did not survive the import (is Mesh Compression on for '{sourceFbxPath}'? " +
@@ -172,6 +181,7 @@ namespace SashaRX.UnityMeshLab
                 if (tag.ambiguous)
                     throw new FbxStructureRefusalException($"'{donor.name}': several meshes of '{Path.GetFileName(sourceFbxPath)}' import under that name; which one it is cannot be told");
                 var mesh = document.Meshes[tag.ordinal];
+                RequireSelectedInstances(mesh, donor.name, shadingSelection);
                 int corners = WriteMesh(mesh, donor, tag, swapUv, document.HasSmoothing(mesh.GetName()) == false, channelsWritten);
                 if (corners == 0) continue;
                 if (!written.Add(tag.ordinal))
@@ -199,7 +209,7 @@ namespace SashaRX.UnityMeshLab
             int structural = hasStructure ? FbxStructureWrite.Apply(document, tagged, structure, options, structureLog) : 0;
             bool uv1Written = channelsWritten.Contains("UV1") || (options.uv1Written && structural > 0);
 
-            if (meshesWritten == 0 && structural == 0)
+            if (meshesWritten == 0 && structural == 0 && shadingSelection == null)
             {
                 UvtLog.Info($"[FBX Export] '{Path.GetFileName(sourceFbxPath)}': nothing changed; file left as is.");
                 return false;
@@ -228,7 +238,8 @@ namespace SashaRX.UnityMeshLab
             // remaps) that cannot be set (read-only metadata) fail the save: the file is still
             // imported, but the caller keeps the working copies unsaved, and a save once the
             // cause is fixed sets them. An import that fails (a third-party postprocessor) is
-            // reported, and the caller still finishes the save (sidecar, scene). The
+            // reported, and the caller still finishes the save (sidecar, scene). Partial
+            // foliage variants instead propagate import failures and remove the failed output. The
             // postprocessor consumes the overwrite marker; an import that throws before it runs
             // must not leave it for a later, unrelated import.
             bool configured = true;
@@ -242,19 +253,32 @@ namespace SashaRX.UnityMeshLab
                             if (uv1Written) KeepWrittenUv1(sourceFbxPath);
                             MapMaterials(sourceFbxPath, options.materialRemaps);
                         });
-                    AssetDatabase.ImportAsset(targetFbxPath, ImportAssetOptions.ForceUpdate);
+                    ImportWrittenAsset(targetFbxPath, shadingSelection);
                 }
                 finally { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); }
                 if (isVariant)
                 {
                     // A new file has an importer only once imported: its settings follow the first import.
-                    configured = SetImportSettings(targetFbxPath, () => ConfigureLikeSource(sourceFbxPath, targetFbxPath, uv1Changed, options.materialRemaps));
-                    if (configured) ReimportVariant(targetFbxPath, uv1Changed);
+                    configured = SetImportSettings(targetFbxPath, () =>
+                    {
+                        ConfigureLikeSource(sourceFbxPath, targetFbxPath, uv1Changed, options.materialRemaps);
+                        if (shadingSelection != null)
+                        {
+                            var variant = (ModelImporter)AssetImporter.GetAtPath(targetFbxPath);
+                            variant.importNormals = ModelImporterNormals.Import;
+                            // A partial shading export must keep the source tangent calculation
+                            // mode. Importing stored frames instead would change excluded shading.
+                            EditorUtility.SetDirty(variant);
+                            AssetDatabase.WriteImportSettingsIfDirty(targetFbxPath);
+                        }
+                    });
+                    if (configured) ReimportVariant(targetFbxPath, uv1Changed, shadingSelection);
                 }
                 else if (sceneRoot != null) FbxExport.RelinkSceneMeshReferences(sourceFbxPath, null, sceneRoot);
             }
             catch (Exception ex)
             {
+                if (shadingSelection != null) throw;
                 UvtLog.Error($"[FBX Export] '{targetFbxPath}' was written, but setting up or running its import failed: {ex.Message}. Reimport it once the cause is fixed.");
                 UvtLog.Verbose(ex.ToString());
             }
@@ -288,8 +312,18 @@ namespace SashaRX.UnityMeshLab
             /// <summary>The importer reads normals / tangents from the file; otherwise Unity computes them and a changed set is no edit of it.</summary>
             public bool fileNormals, fileTangents;
 
+            public FbxExport.ShadingSelection shadingSelection;
             public Capture WithBake(bool bake) => new Capture
-                { intent = intent, generatedUv1 = generatedUv1, bakeUv1 = bake, fileNormals = fileNormals, fileTangents = fileTangents };
+                { intent = intent, generatedUv1 = generatedUv1, bakeUv1 = bake, fileNormals = fileNormals, fileTangents = fileTangents, shadingSelection = shadingSelection };
+        }
+
+        static void RequireSelectedInstances(Autodesk.Fbx.FbxMesh mesh, string name, FbxExport.ShadingSelection selection)
+        {
+            if (selection == null || mesh.GetNodeCount() <= 1) return;
+            var expected = Enumerable.Range(0, mesh.GetNodeCount()).Select(i => mesh.GetNode(i).GetName()).ToArray();
+            if (expected.Distinct(StringComparer.Ordinal).Count() != expected.Length ||
+                !selection.sourceNodes.TryGetValue(name, out var captured) || !expected.All(captured.Contains))
+                throw new InvalidOperationException($"'{name}' is instanced in the FBX. Capture every source-model node using this mesh with compatible foliage edits; excluded or unidentifiable instances cannot be changed. Nothing was written.");
         }
 
         static List<Donor> CaptureDonors(IEnumerable<MeshEntry> entries, Capture capture, ICollection<string> skip)
@@ -336,6 +370,13 @@ namespace SashaRX.UnityMeshLab
             var intent = capture.intent;
             bool generatedUv1 = capture.generatedUv1, bakeUv1 = capture.bakeUv1;
             var donor = new Donor { name = name };
+            if (capture.shadingSelection != null)
+            {
+                if (!capture.shadingSelection.submeshes.TryGetValue(name, out donor.shadingSubmeshes) || donor.shadingSubmeshes.Length != mesh.subMeshCount)
+                    throw new InvalidOperationException($"'{name}': the foliage submesh selection no longer matches the mesh.");
+                donor.submeshVertices = new HashSet<int>[mesh.subMeshCount];
+                for (int s = 0; s < mesh.subMeshCount; s++) donor.submeshVertices[s] = new HashSet<int>(mesh.GetIndices(s));
+            }
             // A channel the working copy holds exactly as the current import does was not
             // edited here (e.g. lightmap UVs Unity generates on import): leave it out. A
             // mesh edited in place (the working copy is the asset mesh) cannot be told
@@ -429,7 +470,7 @@ namespace SashaRX.UnityMeshLab
                 {
                     var normals = mesh.normals;
                     // An unrenumbered copy compares by index; a renumbered one goes on to the per-corner comparison.
-                    bool unchanged = imported != null && imported.normals.SequenceEqual(normals);
+                    bool unchanged = capture.shadingSelection == null && imported != null && imported.normals.SequenceEqual(normals);
                     if (unchanged) { /* nothing to write */ }
                     else if (capture.fileNormals) { donor.normals = normals; any = true; }
                     else if (imported != null)
@@ -547,7 +588,7 @@ namespace SashaRX.UnityMeshLab
 
         // ── Tagged import ──
 
-        internal static Dictionary<string, Tagged> ImportTagged(string sourceFbxPath, bool swapUv, out HashSet<string> importedNames)
+        internal static Dictionary<string, Tagged> ImportTagged(string sourceFbxPath, bool swapUv, out HashSet<string> importedNames, bool uncompressed = false)
         {
             importedNames = new HashSet<string>(StringComparer.Ordinal);
             if (!AssetDatabase.IsValidFolder(TempFolder)) AssetDatabase.CreateFolder("Assets", TempFolder.Substring("Assets/".Length));
@@ -561,14 +602,7 @@ namespace SashaRX.UnityMeshLab
             {
                 using (var tagDocument = FbxSourceDocument.Load(Path.GetFullPath(sourceFbxPath)))
                 {
-                    for (int i = 0; i < tagDocument.Meshes.Count; i++)
-                    {
-                        var mesh = tagDocument.Meshes[i];
-                        var sets = FbxLayerChannels.UvElements(mesh);
-                        if (sets.Count >= FbxLayerChannels.MaxUnityUvChannels)
-                            takenSets[i] = FbxLayerChannels.ReadUv(sets[FbxLayerChannels.MaxUnityUvChannels - 1], new FbxLayerChannels.Topology(mesh));
-                        tagChannels[i] = FbxUvSet(FbxLayerChannels.AddCornerTag(mesh, i), swapUv);
-                    }
+                    AddCornerTags(tagDocument, swapUv, tagChannels, takenSets);
                     tagDocument.Save(Path.GetFullPath(tempPath));
                 }
 
@@ -579,6 +613,7 @@ namespace SashaRX.UnityMeshLab
                 // Same settings as the source so vertices land where the working meshes'
                 // are; nothing else is needed from this import.
                 if (source != null) new Preset(source).ApplyTo(importer);
+                if (uncompressed) importer.meshCompression = ModelImporterMeshCompression.Off;
                 importer.isReadable = true;
                 importer.generateSecondaryUV = false;
                 importer.importAnimation = false;
@@ -587,15 +622,7 @@ namespace SashaRX.UnityMeshLab
                 importer.SaveAndReimport();
 
                 var tagged = new Dictionary<string, Tagged>(StringComparer.Ordinal);
-                foreach (var mesh in AssetDatabase.LoadAllAssetsAtPath(tempPath).OfType<Mesh>())
-                {
-                    importedNames.Add(mesh.name);
-                    var tag = ReadTags(mesh, tagChannels);
-                    if (tag == null) continue;
-                    if (tagged.TryGetValue(mesh.name, out var first)) { first.ambiguous = true; continue; }
-                    if (takenSets.TryGetValue(tag.ordinal, out var values)) tag.uvs[tagChannels[tag.ordinal]] = PerCornerUvs(values, tag.cornerPositions.Length / 3);
-                    tagged[mesh.name] = tag;
-                }
+                ReadImportedTags(tempPath, tagChannels, takenSets, importedNames, tagged);
                 return tagged;
             }
             finally
@@ -609,6 +636,32 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (AssetDatabase.IsValidFolder(TempFolder) && AssetDatabase.FindAssets(string.Empty, new[] { TempFolder }).Length == 0)
                     AssetDatabase.DeleteAsset(TempFolder);
+            }
+        }
+
+        static void AddCornerTags(FbxSourceDocument document, bool swapUv, Dictionary<int, int> channels, Dictionary<int, double[]> takenSets)
+        {
+            for (int i = 0; i < document.Meshes.Count; i++)
+            {
+                var mesh = document.Meshes[i];
+                var sets = FbxLayerChannels.UvElements(mesh);
+                if (sets.Count >= FbxLayerChannels.MaxUnityUvChannels)
+                    takenSets[i] = FbxLayerChannels.ReadUv(sets[FbxLayerChannels.MaxUnityUvChannels - 1], new FbxLayerChannels.Topology(mesh));
+                channels[i] = FbxUvSet(FbxLayerChannels.AddCornerTag(mesh, i), swapUv);
+            }
+        }
+
+        static void ReadImportedTags(string path, Dictionary<int, int> tagChannels, Dictionary<int, double[]> takenSets,
+            HashSet<string> importedNames, Dictionary<string, Tagged> tagged)
+        {
+            foreach (var mesh in AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>())
+            {
+                importedNames.Add(mesh.name);
+                var tag = ReadTags(mesh, tagChannels);
+                if (tag == null) continue;
+                if (tagged.TryGetValue(mesh.name, out var first)) { first.ambiguous = true; continue; }
+                if (takenSets.TryGetValue(tag.ordinal, out var values)) tag.uvs[tagChannels[tag.ordinal]] = PerCornerUvs(values, tag.cornerPositions.Length / 3);
+                tagged[mesh.name] = tag;
             }
         }
 
@@ -749,6 +802,7 @@ namespace SashaRX.UnityMeshLab
         static int WriteValues(Autodesk.Fbx.FbxMesh mesh, Donor donor, Tagged tag, bool swapUv, bool unsmoothed, HashSet<string> channelsWritten)
         {
             var topology = new FbxLayerChannels.Topology(mesh);
+            PrepareShadingSelection(donor, tag, topology.CornerCount);
             var cornerToVertex = PairCorners(donor, tag, topology);
 
             int written = 0;
@@ -807,7 +861,7 @@ namespace SashaRX.UnityMeshLab
                 bool exists = FbxLayerChannels.NormalElement(mesh) != null;
                 bool comparable = exists && tag.normals != null;
                 int corners = WriteChannel(donor.name, "normals", topology, cornerToVertex, !exists, 3,
-                    (c, v) => comparable && tag.normals[c].Equals(donor.normals[v]),
+                    (c, v) => (exists && !SelectedShadingCorner(donor, c)) || (comparable && tag.normals[c].Equals(donor.normals[v])),
                     (v, values, at) =>
                     {
                         var n = donor.normals[v];
@@ -829,8 +883,8 @@ namespace SashaRX.UnityMeshLab
                 // Unity keeps a tangent and the bitangent's sign; the file keeps both vectors:
                 // binormal = cross(normal, tangent) · w, both mapped as directions.
                 int corners = WriteChannel(donor.name, "tangents", topology, cornerToVertex, !exists, 6,
-                    (c, v) => comparable && (keep || tag.tangents[c].Equals(donor.tangents[v]))
-                        && (donor.normals == null || (tag.normals != null && tag.normals[c].Equals(donor.frameNormals[v]))),
+                    (c, v) => (exists && !SelectedShadingCorner(donor, c)) || (comparable && (keep || tag.tangents[c].Equals(donor.tangents[v]))
+                        && (donor.normals == null || (tag.normals != null && tag.normals[c].Equals(donor.frameNormals[v])))),
                     (v, values, at) =>
                     {
                         var t = keep ? tag.tangents[at / 6] : donor.tangents[v];
@@ -860,6 +914,27 @@ namespace SashaRX.UnityMeshLab
         }
 
         // Every FBX corner's vertex in the working mesh; refuses what the file cannot hold.
+        static bool SelectedShadingCorner(Donor donor, int corner) => donor.selectedCorners == null || donor.selectedCorners[corner];
+
+        static void PrepareShadingSelection(Donor donor, Tagged tag, int corners)
+        {
+            if (donor.shadingSubmeshes == null) return;
+            if (tag.submeshCorners.Length != donor.shadingSubmeshes.Length)
+                throw new InvalidOperationException($"'{donor.name}': FBX material/submesh layout differs from the captured foliage selection.");
+            donor.selectedCorners = new bool[corners];
+            donor.cornerSubmeshes = Enumerable.Repeat(-1, corners).ToArray();
+            for (int s = 0; s < tag.submeshCorners.Length; s++)
+            {
+                foreach (int c in tag.submeshCorners[s])
+                {
+                    if (c < 0 || c >= corners || (donor.cornerSubmeshes[c] >= 0 && donor.cornerSubmeshes[c] != s))
+                        throw new InvalidOperationException($"'{donor.name}': ambiguous FBX material corner; nothing was written.");
+                    donor.cornerSubmeshes[c] = s;
+                    donor.selectedCorners[c] = donor.shadingSubmeshes[s];
+                }
+            }
+        }
+
         static int[] PairCorners(Donor donor, Tagged tag, in FbxLayerChannels.Topology topology)
         {
             var match = FbxCornerMatch.Match(topology.polygonSizes, CornerPositions(donor, tag, topology), donor.positions, donor.faces, donor.faceSizes,
@@ -936,6 +1011,8 @@ namespace SashaRX.UnityMeshLab
         // Attributes the write leaves alone must agree between the corner and the vertex.
         static bool SignatureMatches(Donor donor, Tagged tag, int corner, int vertex)
         {
+            if (donor.cornerSubmeshes != null && (donor.cornerSubmeshes[corner] < 0 ||
+                !donor.submeshVertices[donor.cornerSubmeshes[corner]].Contains(vertex))) return false;
             for (int ch = 0; ch < 8; ch++)
             {
                 if (donor.signatureUvs[ch] == null || tag.uvs[ch] == null) continue;
@@ -1063,10 +1140,16 @@ namespace SashaRX.UnityMeshLab
 
         // The variant imported with its source's settings; a sidecar at the variant's path must
         // not replay over a UV1 just written.
-        static void ReimportVariant(string variantFbxPath, bool uv1Changed)
+        static void ImportWrittenAsset(string path, FbxExport.ShadingSelection selection)
+        {
+            if (selection == null) AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
+            else selection.importAsset(path, ImportAssetOptions.ForceUpdate);
+        }
+
+        static void ReimportVariant(string variantFbxPath, bool uv1Changed, FbxExport.ShadingSelection selection)
         {
             if (uv1Changed) Uv2AssetPostprocessor.fbxOverwritePaths.Add(variantFbxPath);
-            try { AssetDatabase.ImportAsset(variantFbxPath, ImportAssetOptions.ForceUpdate); }
+            try { ImportWrittenAsset(variantFbxPath, selection); }
             finally { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(variantFbxPath); }
         }
     }
