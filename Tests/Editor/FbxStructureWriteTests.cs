@@ -458,6 +458,9 @@ namespace SashaRX.UnityMeshLab.Tests
         [TestCase(0)]
         [TestCase(1)]
         [TestCase(2)]
+        [TestCase(3)]
+        [TestCase(4)]
+        [TestCase(5)]
         public void Structure_UnchangedCollisionStillChecksItsSourcePath(int sourceEdit)
         {
             using var document = FbxSourceDocument.Load(WriteSource());
@@ -483,6 +486,16 @@ namespace SashaRX.UnityMeshLab.Tests
             plan.collisionSources["Rock_LOD0"] = new CollisionMeshEntry {
                 sourceMeshName = "Rock_LOD0", sourceHierarchyPath = "Group[0]/Rock_LOD0[0]"
             };
+            if (sourceEdit == 4 || sourceEdit == 5)
+            {
+                var wrapper = FbxNode.Create(scene, "ImportedWrapper");
+                var group = source.GetParent();
+                group.GetParent().RemoveChild(group);
+                wrapper.AddChild(group); scene.GetRootNode().AddChild(wrapper);
+                plan.collisionSources["Rock_LOD0"].sourceDocumentHierarchyPath =
+                    FbxStructureWrite.ImportedCollisionDocumentPath(document, "Group[0]/Rock_LOD0[0]");
+                Assert.AreEqual("ImportedWrapper[0]/Group[0]/Rock_LOD0[0]", plan.collisionSources["Rock_LOD0"].sourceDocumentHierarchyPath);
+            }
             if (sourceEdit == 1) source.SetName("RenamedRock");
             if (sourceEdit == 2)
             {
@@ -491,8 +504,16 @@ namespace SashaRX.UnityMeshLab.Tests
                 source.GetParent().RemoveChild(source);
                 parent.AddChild(source);
             }
+            if (sourceEdit == 3 || sourceEdit == 5)
+            {
+                var parent = FbxNode.Create(scene, "NewAncestor");
+                scene.GetRootNode().AddChild(parent);
+                var group = source.GetParent();
+                group.GetParent().RemoveChild(group);
+                parent.AddChild(group);
+            }
             var log = new List<string>();
-            if (sourceEdit == 0)
+            if (sourceEdit == 0 || sourceEdit == 4)
                 Assert.AreEqual(0, FbxStructureWrite.Apply(document, tagged, plan,
                     new FbxStructureWrite.Options { preserveHierarchy = true }, log));
             else

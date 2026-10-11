@@ -236,6 +236,8 @@ namespace SashaRX.UnityMeshLab
         // flattened geometry remains the portable proxy for FBX and reimport.
         public CollisionMeshBuilder.ShapeReport[] shapes;
         public string sourceHierarchyPath;
+        // Exact document path, including the FBX wrapper omitted by Unity's import.
+        public string sourceDocumentHierarchyPath;
         public string sourceMeshName;
         // Managed collision keys superseded by regeneration; document saves remove
         // their old nodes even though they no longer have a sidecar geometry entry.

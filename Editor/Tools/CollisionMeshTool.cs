@@ -656,9 +656,37 @@ namespace SashaRX.UnityMeshLab
 
             // Build CollisionMeshEntry and save to sidecar
             string sidecarPath = SidecarStore.PathFor(fbxPath);
+            var model = AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath);
+            var paths = new Dictionary<Transform, string>();
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+            using var document = model != null ? FbxSourceDocument.Load(fbxPath) : null;
+            var documentPaths = new Dictionary<Transform, string>();
+#endif
+            foreach (var result in lastResults)
+            {
+                if (!TryResolveSidecarPath(model, fbxPath, result.sourceTransform, result.meshName, out var path))
+                {
+                    UvtLog.Warn($"[Collision] Cannot identify source instance '{result.meshName}' in the imported FBX; sidecar was not changed.");
+                    return;
+                }
+                if (result.sourceTransform != null)
+                {
+                    paths[result.sourceTransform] = path;
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+                    documentPaths[result.sourceTransform] = FbxStructureWrite.ImportedCollisionDocumentPath(document, path);
+#endif
+                }
+            }
+            foreach (var result in lastResults)
+                if (result.sourceTransform != null && string.IsNullOrEmpty(paths[result.sourceTransform]) &&
+                    lastResults.Count(r => r.meshName == result.meshName) > 1)
+                {
+                    UvtLog.Warn($"[Collision] Multiple scene instances of '{result.meshName}' have no unique FBX hierarchy identity; sidecar was not changed.");
+                    return;
+                }
             var data = SidecarStore.LoadOrCreate(fbxPath);
             Undo.RecordObject(data, "Save Collision Sidecar");
-            var obsoleteKeys = PruneMissingCollisionSources(data);
+            var obsoleteKeys = PruneMissingCollisionSources(data, model, fbxPath);
 
             // Build flattened collision entry per source mesh
             int meshIdx = 0;
@@ -696,11 +724,7 @@ namespace SashaRX.UnityMeshLab
                     allTri.AddRange(localTris);
                 }
 
-                var importedSource = r.sourceTransform != null
-                    ? PrefabUtility.GetCorrespondingObjectFromOriginalSource(r.sourceTransform) : null;
-                string sourcePath = importedSource != null
-                    ? CollisionHierarchyAnalyzer.RelativePath(importedSource.root, importedSource)
-                    : CollisionHierarchyAnalyzer.RelativePath(ctx.LodGroup.transform, r.sourceTransform);
+                string sourcePath = r.sourceTransform != null ? paths[r.sourceTransform] : null;
                 var entry = new CollisionMeshEntry
                 {
                     meshGroupKey      = CollisionHierarchyAnalyzer.InstanceKey(r.meshName, sourcePath),
@@ -717,6 +741,9 @@ namespace SashaRX.UnityMeshLab
                     maxVertsPerHull   = convexMaxVertsPerHull,
                     shapes            = r.shapeReports?.ToArray(),
                     sourceHierarchyPath = sourcePath,
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+                    sourceDocumentHierarchyPath = r.sourceTransform != null ? documentPaths[r.sourceTransform] : null,
+#endif
                     sourceMeshName    = r.meshName,
                     preferSimpleShapes = convexSimpleShapes,
                     shapeFitError     = convexShapeFit,
@@ -725,7 +752,9 @@ namespace SashaRX.UnityMeshLab
 
                 // Replace this instance and the old unscoped mesh entry, retaining others.
                 var replaced = data.collisionEntries.Where(c => c != null && (c.meshGroupKey == entry.meshGroupKey ||
-                    (string.IsNullOrEmpty(c.sourceMeshName) && c.meshGroupKey == r.meshName))).ToList();
+                    (!string.IsNullOrEmpty(sourcePath) && c.sourceHierarchyPath == sourcePath) ||
+                    (string.IsNullOrEmpty(sourcePath) && c.sourceMeshName == r.meshName) ||
+                    (string.IsNullOrEmpty(c.sourceHierarchyPath) && c.meshGroupKey == r.meshName))).ToList();
                 foreach (var old in replaced)
                 {
                     CollectReplacedCollisionKeys(old, obsoleteKeys);
@@ -741,11 +770,64 @@ namespace SashaRX.UnityMeshLab
             UvtLog.Info($"[Collision] Saved to sidecar: {sidecarPath} ({data.collisionEntries.Count} collision entries)");
         }
 
-        HashSet<string> PruneMissingCollisionSources(Uv2DataAsset data)
+        bool TryResolveSidecarPath(GameObject model, string fbxPath, Transform source, string meshName, out string path)
+        {
+            path = null;
+            if (model == null) return false;
+            var original = source != null ? PrefabUtility.GetCorrespondingObjectFromOriginalSource(source) : null;
+            if (original != null && AssetDatabase.GetAssetPath(original) == fbxPath)
+                path = CollisionHierarchyAnalyzer.RelativePath(original.root, original);
+            else if (source != null)
+            {
+                var candidate = CollisionHierarchyAnalyzer.RelativePath(ctx.LodGroup.transform, source);
+                foreach (var renderer in model.GetComponentsInChildren<Renderer>(true))
+                    if (SourceMeshName(renderer) == meshName && CollisionHierarchyAnalyzer.RelativePath(model.transform, renderer.transform) == candidate)
+                    { path = candidate; break; }
+            }
+            if (!string.IsNullOrEmpty(path)) return true;
+            // A manually assembled scene can use a unique mesh without sharing
+            // the imported model's hierarchy. It retains legacy mesh-name lookup.
+            int matches = 0;
+            foreach (var renderer in model.GetComponentsInChildren<Renderer>(true))
+                if (SourceMeshName(renderer) == meshName) matches++;
+            return matches == 1;
+        }
+
+        string SourceMeshName(Renderer renderer)
+        {
+            var entry = ctx.MeshEntries.FirstOrDefault(e => e.renderer == renderer);
+            if (entry?.fbxMesh != null) return entry.fbxMesh.name;
+            var mesh = renderer is SkinnedMeshRenderer skinned ? skinned.sharedMesh : renderer.GetComponent<MeshFilter>()?.sharedMesh;
+            return mesh != null ? mesh.name : null;
+        }
+
+        bool MatchesWholeModel(GameObject model)
+        {
+            if (model == null) return false;
+            var sources = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var renderer in model.GetComponentsInChildren<Renderer>(true))
+                if (!MeshNaming.IsCollision(renderer.name))
+                    sources[CollisionHierarchyAnalyzer.RelativePath(model.transform, renderer.transform)] = SourceMeshName(renderer);
+            int count = 0;
+            foreach (var renderer in ctx.LodGroup.GetComponentsInChildren<Renderer>(true))
+            {
+                if (MeshNaming.IsCollision(renderer.name)) continue;
+                string path = CollisionHierarchyAnalyzer.RelativePath(ctx.LodGroup.transform, renderer.transform);
+                if (!sources.TryGetValue(path, out var name) || name != SourceMeshName(renderer)) return false;
+                count++;
+            }
+            return count == sources.Count;
+        }
+
+        HashSet<string> PruneMissingCollisionSources(Uv2DataAsset data, GameObject model, string fbxPath)
         {
             var root = ctx.LodGroup.transform;
             var importedRoot = PrefabUtility.GetCorrespondingObjectFromOriginalSource(root);
-            string scope = importedRoot != null ? CollisionHierarchyAnalyzer.RelativePath(importedRoot.root, importedRoot) : ".";
+            var obsolete = new HashSet<string>(StringComparer.Ordinal);
+            bool knownRoot = importedRoot != null && AssetDatabase.GetAssetPath(importedRoot) == fbxPath;
+            // A partial manual hierarchy cannot own all the asset's sidecar entries.
+            if (!knownRoot && !MatchesWholeModel(model)) return obsolete;
+            string scope = knownRoot ? CollisionHierarchyAnalyzer.RelativePath(importedRoot.root, importedRoot) : ".";
             var livePaths = new HashSet<string>(StringComparer.Ordinal);
             foreach (var renderer in root.GetComponentsInChildren<Renderer>(true))
             {
@@ -756,7 +838,6 @@ namespace SashaRX.UnityMeshLab
                     : CollisionHierarchyAnalyzer.RelativePath(root, node);
                 if (!string.IsNullOrEmpty(path)) livePaths.Add(path);
             }
-            var obsolete = new HashSet<string>(StringComparer.Ordinal);
             for (int i = data.collisionEntries.Count - 1; i >= 0; i--)
             {
                 var entry = data.collisionEntries[i];

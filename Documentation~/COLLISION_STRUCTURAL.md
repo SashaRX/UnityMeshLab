@@ -50,6 +50,15 @@ Cleanup refuses a managed collision container that contains unrelated children.
 Document saves validate every scoped source path even when collider geometry is
 unchanged; a stale path refuses the save before any document changes. Regenerate
 collision results after renaming or reparenting their source nodes.
+Scene-only hierarchies use scoped paths only when they match the imported model.
+A unique source mesh otherwise retains mesh-name lookup; unresolved multiple
+instances refuse the save before replacing any sidecar entries. Partial manual
+hierarchies cannot prune other model scopes. A mesh replacement at the same path
+replaces that instance's entry, including its old managed-node cleanup identity.
+Document metadata stores the exact FBX path, resolving an omitted outer wrapper
+once; later writes do not accept arbitrary new ancestor prefixes.
+Collision occlusion baking converts applied BoxColliders into temporary box
+meshes alongside mesh hulls and destroys those proxies after the bake batch.
 
 On the packed Park_Bench_A LOD0 (3,832 source triangles), the Structural preset
 produces two boxes for seat/back and six profiles for the side structures. The

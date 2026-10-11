@@ -1487,6 +1487,19 @@ namespace SashaRX.UnityMeshLab
             int added = 0;
             var candidates = new List<(GameObject go, Mesh mesh)>();
             CollectCollisionMeshCandidates(root.transform, candidates);
+            foreach (var box in root.GetComponentsInChildren<BoxCollider>(true))
+            {
+                if (!box.gameObject.activeInHierarchy || !EndsWithColSuffix(box.name)) continue;
+                if (candidates.Any(c => c.go == box.gameObject)) continue;
+                var data = CollisionElementPreprocessor.Box(new MeshGeometry.OrientedBounds {
+                    origin = box.center, axes = new[] { Vector3.right, Vector3.up, Vector3.forward },
+                    min = -box.size * .5f, max = box.size * .5f
+                });
+                var proxy = new Mesh { name = box.name };
+                batch.temporaryMeshesToDestroy.Add(proxy);
+                proxy.vertices = data.positions; proxy.triangles = data.indices; proxy.RecalculateBounds();
+                candidates.Add((box.gameObject, proxy));
+            }
             // CollectCollisionMeshCandidates already dedups per (GO, mesh);
             // don't dedup by mesh ID alone — instanced colliders (same
             // _COL asset at different world positions) must each contribute

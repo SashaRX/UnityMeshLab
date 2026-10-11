@@ -404,7 +404,8 @@ namespace SashaRX.UnityMeshLab
                 if (collisionReferences.TryGetValue(key, out var existing)) return existing;
                 plan.collisionSources.TryGetValue(key, out var metadata);
                 string sourceName = string.IsNullOrEmpty(metadata?.sourceMeshName) ? key : metadata.sourceMeshName;
-                string path = string.IsNullOrEmpty(metadata?.sourceMeshName) ? null : metadata.sourceHierarchyPath;
+                string path = string.IsNullOrEmpty(metadata?.sourceMeshName) ? null :
+                    !string.IsNullOrEmpty(metadata.sourceDocumentHierarchyPath) ? metadata.sourceDocumentHierarchyPath : metadata.sourceHierarchyPath;
                 var resolved = Resolve(document, tagged, CollisionSource(tagged, sourceName), path);
                 collisionReferences[key] = resolved;
                 return resolved;
@@ -671,14 +672,35 @@ namespace SashaRX.UnityMeshLab
             {
                 var node = mesh.GetNode(i);
                 string candidate = CollisionNodePath(node);
-                // The imported model root can omit the FBX's outer wrapper node.
-                bool matches = candidate == path || candidate.EndsWith("/" + path, StringComparison.Ordinal);
-                if (path == ".") matches = mesh.GetNodeCount() == 1;
+                bool matches = candidate == path;
                 if (!matches) continue;
                 if (found != null) throw new FbxStructureRefusalException($"collision path '{path}' matches multiple FBX nodes");
                 found = node;
             }
             return found ?? throw new FbxStructureRefusalException($"collision path '{path}' has no source node in the FBX");
+        }
+
+        // Resolve the import's omitted outer wrapper once, while saving metadata.
+        // Later document writes use the exact saved path; new ancestors cannot
+        // masquerade as an arbitrary wrapper through a suffix match.
+        internal static string ImportedCollisionDocumentPath(FbxSourceDocument document, string importedPath)
+        {
+            if (string.IsNullOrEmpty(importedPath)) return null;
+            var root = document.Scene.GetRootNode();
+            var wrapper = root.GetChildCount() == 1 ? root.GetChild(0) : null;
+            string wrappedPath = wrapper != null ? CollisionHierarchyAnalyzer.PathPart(wrapper.GetName(), 0) : null;
+            if (importedPath != "." && wrappedPath != null) wrappedPath += "/" + importedPath;
+            string found = null;
+            foreach (var mesh in document.Meshes)
+                for (int i = 0; i < mesh.GetNodeCount(); i++)
+                {
+                    string candidate = CollisionNodePath(mesh.GetNode(i));
+                    if (candidate != importedPath && candidate != wrappedPath) continue;
+                    if (found != null && found != candidate)
+                        throw new FbxStructureRefusalException($"collision import path '{importedPath}' matches multiple FBX nodes");
+                    found = candidate;
+                }
+            return found ?? throw new FbxStructureRefusalException($"collision import path '{importedPath}' has no source node in the FBX");
         }
 
         static string CollisionNodePath(FbxNode node)

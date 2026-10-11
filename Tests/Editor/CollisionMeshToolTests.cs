@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using NUnit.Framework;
 using UnityEditor;
@@ -473,10 +474,28 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        [Test]
+        public void ManualSubsetDoesNotPruneOtherSidecarScopes()
+        {
+            var source = Prepare(true);
+            source.gameObject.AddComponent<MeshFilter>().sharedMesh = Field<UvToolContext>(tool, "ctx").MeshEntries[0].originalMesh;
+            var model = new GameObject("ImportedModel"); owned.Add(model);
+            var renderer = new GameObject("OtherSource"); renderer.transform.SetParent(model.transform);
+            renderer.AddComponent<MeshRenderer>(); renderer.AddComponent<MeshFilter>().sharedMesh = Tetrahedron();
+            var data = ScriptableObject.CreateInstance<Uv2DataAsset>(); owned.Add(data);
+            var existing = new CollisionMeshEntry { meshGroupKey = "OtherInstance", sourceMeshName = "Chair_LOD0", sourceHierarchyPath = "OtherGroup[0]/Source[0]" };
+            data.collisionEntries.Add(existing);
+            var obsolete = (HashSet<string>)typeof(CollisionMeshTool).GetMethod("PruneMissingCollisionSources", Private)
+                .Invoke(tool, new object[] { data, model, "Assets/UnresolvedModel.fbx" });
+            Assert.IsEmpty(obsolete);
+            CollectionAssert.AreEqual(new[] { existing }, data.collisionEntries);
+        }
+
         [TestCase(0)]
         [TestCase(1)]
         [TestCase(2)]
         [TestCase(3)]
+        [TestCase(4)]
         public void SidecarRetainsSharedMeshInstancesAndRebuildUsesEachHierarchyFrame(int edit)
         {
             var first = Prepare(true, 2);
@@ -511,6 +530,10 @@ namespace SashaRX.UnityMeshLab.Tests
             AssetDatabase.ImportAsset(fbxPath, ImportAssetOptions.ForceSynchronousImport);
             var imported = Array.Find(AssetDatabase.LoadAllAssetsAtPath(fbxPath), a => a is Mesh) as Mesh;
             Assert.IsNotNull(imported);
+            string originalImportedName = imported.name;
+            var importedModel = AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath);
+            // The exporter makes node names globally unique in this fixture.
+            second.name = importedModel.GetComponentsInChildren<MeshRenderer>(true)[1].name;
             foreach (var entry in ctx.MeshEntries) entry.fbxMesh = imported;
             // The instance identity, not a different geometry name, distinguishes the entries.
             shared.name = imported.name;
@@ -529,6 +552,16 @@ namespace SashaRX.UnityMeshLab.Tests
             string oldFirstKey = saved.collisionEntries[0].meshGroupKey;
             if (edit == 1) first.name = "RenamedSource";
             if (edit == 2) first.SetParent(branch, false);
+            if (edit == 4)
+            {
+                // Metadata from a preceding model import used another mesh name
+                // for this same renderer path. The current import already changed it.
+                var old = saved.collisionEntries[0];
+                old.sourceMeshName = "PreviousMesh_LOD0";
+                old.meshGroupKey = CollisionHierarchyAnalyzer.InstanceKey(old.sourceMeshName, old.sourceHierarchyPath);
+                oldFirstKey = old.meshGroupKey;
+                SidecarStore.Save(saved);
+            }
             if (edit == 3)
             {
                 // A valid excluded instance keeps its saved geometry.
@@ -538,15 +571,37 @@ namespace SashaRX.UnityMeshLab.Tests
                 Object.DestroyImmediate(generated[1]);
                 generated.RemoveAt(1);
             }
+            if (edit == 1 || edit == 2)
+            {
+                // Persist the changed source model: these cases test FBX identities,
+                // rather than claiming scene-only overrides are document paths.
+                var changedRoot = Object.Instantiate(root); owned.Add(changedRoot);
+                FbxExport.Write(fbxPath, changedRoot);
+                AssetDatabase.ImportAsset(fbxPath, ImportAssetOptions.ForceSynchronousImport);
+                var changedModel = AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath);
+                for (int i = 0; i < ctx.MeshEntries.Count; i++)
+                {
+                    string path = CollisionHierarchyAnalyzer.RelativePath(root.transform, ctx.MeshEntries[i].renderer.transform);
+                    var importedRenderer = changedModel.GetComponentsInChildren<Renderer>(true).Single(v =>
+                        CollisionHierarchyAnalyzer.RelativePath(changedModel.transform, v.transform) == path);
+                    ctx.MeshEntries[i].fbxMesh = importedRenderer.GetComponent<MeshFilter>().sharedMesh;
+                    Assert.IsNotNull(ctx.MeshEntries[i].fbxMesh);
+                    string name = ctx.MeshEntries[i].fbxMesh.name;
+                    var result = results[i]; info.GetField("meshName").SetValue(result, name); results[i] = result;
+                }
+            }
             Call(tool, "SaveToSidecar");
-            Assert.AreEqual(2, saved.collisionEntries.Count);
+            var model = AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath);
+            string identities = string.Join(";", model.GetComponentsInChildren<Renderer>(true).Select(v =>
+                CollisionHierarchyAnalyzer.RelativePath(model.transform, v.transform) + ":" + v.GetComponent<MeshFilter>()?.sharedMesh?.name));
+            Assert.AreEqual(2, saved.collisionEntries.Count, identities + " saved=" + string.Join(";", saved.collisionEntries.Select(e => e.meshGroupKey + ":" + e.sourceHierarchyPath)));
             Assert.AreNotEqual(saved.collisionEntries[0].meshGroupKey, saved.collisionEntries[1].meshGroupKey);
             Assert.AreNotEqual(saved.collisionEntries[0].sourceHierarchyPath, saved.collisionEntries[1].sourceHierarchyPath);
             var firstPath = CollisionHierarchyAnalyzer.RelativePath(root.transform, first);
             var firstSaved = saved.collisionEntries.Find(e => e.sourceHierarchyPath == firstPath);
             Assert.IsNotNull(firstSaved);
-            CollectionAssert.Contains(firstSaved.replacedMeshGroupKeys, imported.name, "legacy node cleanup must survive repeated saves");
-            if (edit == 1 || edit == 2)
+            CollectionAssert.Contains(firstSaved.replacedMeshGroupKeys, originalImportedName, "legacy node cleanup must survive repeated saves");
+            if (edit == 1 || edit == 2 || edit == 4)
             {
                 Assert.IsFalse(saved.collisionEntries.Exists(e => e.meshGroupKey == oldFirstKey), "renamed/reparented instances must not leave stale sidecar entries");
                 CollectionAssert.Contains(firstSaved.replacedMeshGroupKeys, oldFirstKey);
@@ -554,9 +609,9 @@ namespace SashaRX.UnityMeshLab.Tests
             var frames = FbxExport.CollisionSourceFrames(root);
             var roundTrip = SidecarStore.CollisionMeshes(fbxPath);
             var sink = new List<Mesh>();
-            var legacy = new GameObject(imported.name + "_COL");
+            var legacy = new GameObject(originalImportedName + "_COL");
             legacy.transform.SetParent(exportRoot.transform.GetChild(0), false);
-            new GameObject(imported.name + "_COL_Hull0").transform.SetParent(legacy.transform, false);
+            new GameObject(originalImportedName + "_COL_Hull0").transform.SetParent(legacy.transform, false);
             GameObject moved = null;
             if (edit == 1 || edit == 2)
             {
@@ -584,11 +639,13 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { foreach (var mesh in sink) if (mesh) Object.DestroyImmediate(mesh); }
         }
 
-        [TestCase(false, 0, true)]
-        [TestCase(true, 0, false)]
-        [TestCase(true, 2, false)]
-        [TestCase(true, 2, true)]
-        public void SidecarKeepsSourceLocalGeometryAndRebuiltExportUsesCapturedFrames(bool workingCopy, int sourceLod, bool convex)
+        [TestCase(false, 0, true, false)]
+        [TestCase(true, 0, false, false)]
+        [TestCase(true, 2, false, false)]
+        [TestCase(true, 2, true, false)]
+        [TestCase(false, 0, true, true)]
+        [TestCase(true, 0, true, true)]
+        public void SidecarKeepsSourceLocalGeometryAndRebuiltExportUsesCapturedFrames(bool workingCopy, int sourceLod, bool convex, bool sceneOnlyPath)
         {
             var source = Prepare(true, 2);
             var ctx = Field<UvToolContext>(tool, "ctx");
@@ -626,11 +683,18 @@ namespace SashaRX.UnityMeshLab.Tests
             // The rebuilt FBX starts from the imported hierarchy, whose mesh names
             // do not carry the working-copy suffix introduced by Optimize / weld.
             source.GetComponent<MeshFilter>().sharedMesh = ctx.MeshEntries[0].fbxMesh;
+            if (sceneOnlyPath)
+            {
+                Call(tool, "SaveToSidecar");
+                source.name = "ManuallyAssembledSource";
+                source.SetParent(root.transform, true);
+            }
             var generated = Field<List<Mesh>>(tool, "generatedMeshes");
             var originalVertices = generated[0].vertices;
             Call(tool, "SaveToSidecar");
             var saved = SidecarStore.Load(fbxPath);
             Assert.AreEqual(sourceName, saved.collisionEntries[0].sourceMeshName);
+            if (sceneOnlyPath) Assert.IsTrue(string.IsNullOrEmpty(saved.collisionEntries[0].sourceHierarchyPath));
             Assert.AreEqual(CollisionHierarchyAnalyzer.InstanceKey(sourceName, saved.collisionEntries[0].sourceHierarchyPath), saved.collisionEntries[0].meshGroupKey);
             Assert.IsNotNull(saved.collisionEntries[0].sourceFingerprint);
             var roundTrip = SidecarStore.CollisionMeshes(fbxPath);

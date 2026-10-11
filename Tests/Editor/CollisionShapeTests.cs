@@ -26,6 +26,43 @@ namespace SashaRX.UnityMeshLab.Tests
             mesh.triangles = geometry.indices; mesh.RecalculateBounds(); return mesh;
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void NativeBoxOccludersAreCollectedAlongsideProfilesAndReleased(bool mixed)
+        {
+            var root = new GameObject("CollisionBake"); owned.Add(root);
+            root.transform.SetPositionAndRotation(new Vector3(3, 2, 1), Quaternion.Euler(12, 35, 6));
+            root.transform.localScale = new Vector3(2, 3, 1);
+            var node = new GameObject("Bench_COL_Hull0"); node.transform.SetParent(root.transform, false);
+            var box = node.AddComponent<BoxCollider>(); box.center = new Vector3(1, 2, 3); box.size = new Vector3(4, 2, 1);
+            if (mixed)
+            {
+                var profile = new GameObject("Bench_COL_Hull1"); profile.transform.SetParent(root.transform, false);
+                var mesh = new Mesh { name = profile.name }; owned.Add(mesh);
+                mesh.vertices = new[] { Vector3.zero, Vector3.right, Vector3.up }; mesh.triangles = new[] { 0, 1, 2 }; mesh.RecalculateBounds();
+                profile.AddComponent<MeshCollider>().sharedMesh = mesh;
+                profile.AddComponent<MeshFilter>().sharedMesh = mesh;
+            }
+            var type = typeof(VertexColorBakingTool);
+            var batchType = type.GetNestedType("LodBakeBatch", BindingFlags.NonPublic);
+            var batch = System.Activator.CreateInstance(batchType, true);
+            var tool = new VertexColorBakingTool();
+            var flags = BindingFlags.Instance | BindingFlags.NonPublic;
+            int count = (int)type.GetMethod("CollectLiveCollisionOccluders", flags).Invoke(tool, new object[] {
+                batch, root, new Bounds(root.transform.position, Vector3.one * 100), new List<Bounds>(), new List<Vector3>(), 100f
+            });
+            Assert.AreEqual(mixed ? 2 : 1, count);
+            var proxies = (List<Mesh>)batchType.GetField("temporaryMeshesToDestroy").GetValue(batch);
+            Assert.AreEqual(1, proxies.Count, "only the box needs owned temporary geometry");
+            var proxy = proxies[0];
+            Assert.AreEqual(8, proxy.vertexCount); Assert.AreEqual(36, proxy.triangles.Length);
+            Assert.AreEqual(box.center, proxy.bounds.center); Assert.AreEqual(box.size, proxy.bounds.size);
+            var occluders = (List<(Mesh mesh, Matrix4x4 matrix)>)batchType.GetField("occluderMeshes").GetValue(batch);
+            Assert.AreEqual(node.transform.localToWorldMatrix, occluders.Single(c => c.mesh == proxy).matrix);
+            type.GetMethod("DisposeBatchTemporaryMeshes", BindingFlags.Static | BindingFlags.NonPublic).Invoke(null, new[] { batch });
+            Assert.IsTrue(proxy == null); Assert.IsEmpty(proxies);
+        }
+
         void Own(CollisionMeshBuilder.ConvexDecompResult result) { if (result.hulls != null) owned.AddRange(result.hulls); }
 
         static List<Vector2> Rectangle(float x, float y) => new List<Vector2> {
