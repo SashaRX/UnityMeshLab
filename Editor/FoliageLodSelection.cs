@@ -66,7 +66,7 @@ namespace SashaRX.UnityMeshLab
             Enumerable.Range(0, mesh.subMeshCount).Select(s => mesh.GetTopology(s) == MeshTopology.Triangles &&
                 FoliageTargetSnapshot.SelectsSubmesh(s, materials, settings)).ToArray();
 
-        static int Level(MeshRenderer renderer, Mesh mesh)
+        internal static int Level(MeshRenderer renderer, Mesh mesh)
         {
             var group = Group(renderer);
             if (group)

@@ -29,7 +29,11 @@ namespace SashaRX.UnityMeshLab
             public Mesh mesh;
             public Matrix4x4 matrix;
             public Material[] materials;
-            public Item(Mesh mesh, Matrix4x4 matrix, Material[] materials = null) { this.mesh = mesh; this.matrix = matrix; this.materials = materials; }
+            // Tools can keep selection paint readable under attribute shading, or
+            // frame a proxy whose surface must not hide the source mesh.
+            public Shading? ShadingOverride { get; set; }
+            public bool WireOnly { get; set; }
+            public Item(Mesh mesh, Matrix4x4 matrix, Material[] materials = null) { this.mesh = mesh; this.matrix = matrix; this.materials = materials; ShadingOverride = null; WireOnly = false; }
         }
 
         public static readonly string[] ShadingNames = { "Surface", "Vertex colors", "Normals", "Tangents", "UV0", "UV1", "UV2", "UV3",
@@ -163,7 +167,7 @@ namespace SashaRX.UnityMeshLab
                     foreach (var item in items) {
                         if (!item.mesh) continue;
                         DrawItem(item);
-                        if (Wireframe) DrawWire(item.mesh, item.matrix, WireColor);
+                        if (Wireframe || item.WireOnly) DrawWire(item.mesh, item.matrix, item.WireOnly ? Color.cyan : WireColor);
                     }
                 overlay?.Invoke(this);
                 if (any) {
@@ -223,8 +227,10 @@ namespace SashaRX.UnityMeshLab
 
         void DrawItem(Item item)
         {
+            if (item.WireOnly) return;
             var mesh = item.mesh;
-            if (Mode == Shading.Shaded) {
+            var mode = item.ShadingOverride ?? Mode;
+            if (mode == Shading.Shaded) {
                 for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
                     var material = item.materials != null && sub < item.materials.Length ? item.materials[sub] : null;
                     if (material) utility.DrawMesh(mesh, item.matrix, material, sub);
@@ -232,7 +238,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 return;
             }
-            var encoded = Encoded(mesh, Mode);
+            var encoded = Encoded(mesh, mode);
             if (!encoded) {
                 // The mesh lacks the mode's data (a mesh without tangents next to ones that
                 // have them): draw it as the neutral grey Shaded uses, never let it vanish.

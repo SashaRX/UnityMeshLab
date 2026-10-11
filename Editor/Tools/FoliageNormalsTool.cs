@@ -10,9 +10,9 @@ namespace SashaRX.UnityMeshLab
     [MeshLabTool("foliage_normals", MeshLabLibraries.Geometry, MeshLabLibraries.Remesh, MeshLabLibraries.VertexChannels, MeshLabLibraries.Assets)]
     public sealed class FoliageNormalsTool : IUvTool, IUvTool3D, IUvTool3DFrameContext
     {
-        enum Preview
+        internal enum Preview
         {
-            SourceCards, PrimitiveSamples, SourceProxy, SmoothedProxy, TransferProxy, TransferredNormals, BeforeAfter
+            SourceCards, SelectionMask, PrimitiveSamples, SourceProxy, SmoothedProxy, TransferProxy, ProxyAndMesh, TransferredNormals, BeforeAfter
         }
         public string ToolName => "Foliage Normals";
         public string ToolId => "foliage_normals";
@@ -25,7 +25,15 @@ namespace SashaRX.UnityMeshLab
         internal readonly FoliageNormalsPipeline pipeline = new FoliageNormalsPipeline();
         internal FoliageNormalsSettings settings = new FoliageNormalsSettings();
         internal GameObject root;
-        Preview preview = Preview.TransferredNormals;
+        internal Preview preview = Preview.SelectionMask;
+        internal bool afterNormals = true, showNormalDirections;
+        internal bool followSelection = true;
+        internal readonly FoliageNormalsPreview sourcePreview = new FoliageNormalsPreview();
+        GameObject lastSelection, pendingRoot;
+        bool hasPendingRoot;
+        bool previewCaptured;
+        GameObject previewCapturedRoot;
+        float normalLength = .025f;
         internal int previewLod;
         bool advanced, showPrimitives, showProxyEdges = true, active;
         bool? previewCanApply;
@@ -64,6 +72,13 @@ namespace SashaRX.UnityMeshLab
         void PipelineChanged()
         {
             previewCanApply = null;
+            bool captured = pipeline.Has(FoliageNormalsPipeline.Stage.Capture);
+            if (captured != previewCaptured || pipeline.CapturedRoot != previewCapturedRoot)
+            {
+                previewCaptured = captured;
+                previewCapturedRoot = pipeline.CapturedRoot;
+                if (active) RefreshSourcePreview();
+            }
             if (active) RequestRepaint?.Invoke();
         }
 
@@ -88,11 +103,10 @@ namespace SashaRX.UnityMeshLab
         public void OnActivate(UvToolContext ctx, UvCanvasView canvas)
         {
             active = true;
-            if (!root)
-            {
-                SetRoot(Selection.activeGameObject);
-            }
-
+            sourcePreview.Repaint = () => RequestRepaint?.Invoke();
+            FollowSelection();
+            RefreshSourcePreview();
+            FollowSelectionChanges(FollowSelection, true);
             AssemblyReloadEvents.beforeAssemblyReload += Clear;
             EditorApplication.hierarchyChanged += HierarchyChanged;
             EditorApplication.projectChanged += OnRefresh;
@@ -103,6 +117,7 @@ namespace SashaRX.UnityMeshLab
         public void OnDeactivate()
         {
             active = false;
+            FollowSelectionChanges(FollowSelection, false);
             AssemblyReloadEvents.beforeAssemblyReload -= Clear;
             EditorApplication.hierarchyChanged -= HierarchyChanged;
             EditorApplication.projectChanged -= OnRefresh;
@@ -137,6 +152,13 @@ namespace SashaRX.UnityMeshLab
         }
         void Tick()
         {
+            if (hasPendingRoot && !pipeline.IsRunning)
+            {
+                var next = pendingRoot;
+                hasPendingRoot = false;
+                pendingRoot = null;
+                SetRoot(next);
+            }
             if (pipeline.IsRunning)
             {
                 RequestRepaint?.Invoke();
@@ -145,6 +167,9 @@ namespace SashaRX.UnityMeshLab
         void Clear()
         {
             previewCanApply = null;
+            hasPendingRoot = false;
+            pendingRoot = null;
+            sourcePreview.Dispose();
             EditorPrefs.SetString(Prefs, JsonUtility.ToJson(settings));
             pipeline.Dispose();
         }
@@ -155,6 +180,7 @@ namespace SashaRX.UnityMeshLab
             {
                 pipeline.InvalidateChanged(settings, root);
             }
+            RefreshSourcePreview();
         }
         void HierarchyChanged()
         {
@@ -163,14 +189,50 @@ namespace SashaRX.UnityMeshLab
             {
                 RefreshFilters();
                 pipeline.InvalidateChanged(settings, root);
+                RefreshSourcePreview();
             }
             RequestRepaint?.Invoke();
         }
 
         void SourceChannelsChanged(Mesh mesh)
         {
-            if (pipeline.Targets.Any(t => t.source == mesh || t.applied == mesh)) OnRefresh();
+            if (pipeline.Targets.Any(t => t.source == mesh || t.applied == mesh) ||
+                availableRenderers.Any(r => r && r.GetComponent<MeshFilter>()?.sharedMesh == mesh)) OnRefresh();
         }
+
+        static void FollowSelectionChanges(Action handler, bool follow)
+        {
+            Selection.selectionChanged -= handler;
+            if (follow) Selection.selectionChanged += handler;
+        }
+
+        internal void FollowSelection()
+        {
+            if (!followSelection) return;
+            var selected = Selection.activeGameObject;
+            if (selected == lastSelection) return;
+            lastSelection = selected;
+            if (!selected || EditorUtility.IsPersistent(selected)) return;
+            var group = selected.GetComponentInParent<LODGroup>();
+            var next = group ? group.gameObject : selected;
+            if (!next.GetComponentInChildren<MeshRenderer>()) return;
+            if (next == root)
+            {
+                hasPendingRoot = false;
+                pendingRoot = null;
+                return;
+            }
+            if (pipeline.IsRunning)
+            {
+                pendingRoot = next;
+                hasPendingRoot = true;
+                pipeline.Cancel();
+                return;
+            }
+            SetRoot(next);
+        }
+
+        void RefreshSourcePreview() => sourcePreview.Refresh(root, settings, pipeline);
 
         internal void SetRoot(GameObject source)
         {
@@ -183,8 +245,11 @@ namespace SashaRX.UnityMeshLab
             settings.renderers = Array.Empty<MeshRenderer>();
             settings.materials = Array.Empty<Material>();
             settings.filterRenderers = false;
+            previewLod = 0;
             pipeline.ClearFrom(FoliageNormalsPipeline.Stage.Capture);
             RefreshFilters();
+            RefreshSourcePreview();
+            RequestRepaint?.Invoke();
         }
 
         void RefreshFilters()
@@ -219,6 +284,7 @@ namespace SashaRX.UnityMeshLab
                 if (EditorGUI.EndChangeCheck())
                 {
                     pipeline.InvalidateChanged(settings, root);
+                    RefreshSourcePreview();
                     EditorPrefs.SetString(Prefs, JsonUtility.ToJson(settings));
                 }
                 DrawOutput();
@@ -229,25 +295,61 @@ namespace SashaRX.UnityMeshLab
             }
 
             preview = (Preview)EditorGUILayout.EnumPopup("Preview", preview);
+            DrawNormalComparison();
             DrawLodPreview();
             showProxyEdges = EditorGUILayout.Toggle("Show proxy edges", showProxyEdges);
-            EditorGUILayout.HelpBox("Use the shared 3D canvas. Before/after: original on left, transferred on right; cyan/yellow normal vectors. Samples display at most 4,096 points.", MessageType.Info);
+            EditorGUILayout.HelpBox("Selection Mask: green = proxy source, amber = transfer only in other LODs, grey = excluded. Proxy And Mesh overlays a cyan proxy wire. Before/After keeps the camera fixed; Side by side shows both. Normals shading is available in the 3D toolbar.", MessageType.Info);
+            if (!string.IsNullOrEmpty(sourcePreview.Error)) EditorGUILayout.HelpBox(sourcePreview.Error, MessageType.Warning);
             DrawDiagnostics();
             EditorGUILayout.LabelField(pipeline.Status, EditorStyles.wordWrappedMiniLabel);
         }
 
         void DrawLodPreview()
         {
-            var levels = pipeline.LodLevels;
+            var levels = sourcePreview.Levels.Length > 0 ? sourcePreview.Levels : pipeline.LodLevels;
             if (levels.Length == 0) return;
             int index = Math.Max(0, Array.IndexOf(levels, previewLod));
             previewLod = levels[EditorGUILayout.Popup("Preview LOD", index, Array.ConvertAll(levels, level => "LOD" + level))];
             EditorGUILayout.LabelField($"{pipeline.Targets.Count} meshes in all LODs · {pipeline.CaptureSourceCount} proxy sources", EditorStyles.wordWrappedMiniLabel);
         }
 
+        void DrawNormalComparison()
+        {
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                bool before = !afterNormals && preview != Preview.BeforeAfter;
+                bool after = afterNormals && preview != Preview.BeforeAfter;
+                if (GUILayout.Toggle(before, "Before", EditorStyles.miniButtonLeft) && !before)
+                    SetNormalComparison(false);
+                using (new EditorGUI.DisabledScope(!pipeline.Has(FoliageNormalsPipeline.Stage.Transfer)))
+                {
+                    if (GUILayout.Toggle(after, "After", EditorStyles.miniButtonMid) && !after)
+                        SetNormalComparison(true);
+                    if (GUILayout.Toggle(preview == Preview.BeforeAfter, "Side by side", EditorStyles.miniButtonRight) && preview != Preview.BeforeAfter)
+                        preview = Preview.BeforeAfter;
+                }
+            }
+            showNormalDirections = EditorGUILayout.Toggle("Normal directions", showNormalDirections);
+            if (showNormalDirections) normalLength = EditorGUILayout.Slider("Normal length / diagonal", normalLength, .001f, .1f);
+        }
+
+        internal void SetNormalComparison(bool after)
+        {
+            afterNormals = after;
+            if (preview != Preview.ProxyAndMesh) preview = Preview.TransferredNormals;
+            RequestRepaint?.Invoke();
+        }
+
         void DrawSourceSettings()
         {
             EditorGUILayout.LabelField("Source", EditorStyles.boldLabel);
+            bool follow = EditorGUILayout.Toggle("Follow selection", followSelection);
+            if (follow != followSelection)
+            {
+                followSelection = follow;
+                lastSelection = null;
+                if (follow) FollowSelection();
+            }
             var selectedRoot = (GameObject)EditorGUILayout.ObjectField("Root", root, typeof(GameObject), true);
             if (selectedRoot != root)
             {
@@ -500,12 +602,13 @@ namespace SashaRX.UnityMeshLab
         }
         async Task Run(FoliageNormalsPipeline.Stage to)
         {
-            if (await pipeline.Run(root, settings, to))
+            var runRoot = root;
+            if (await pipeline.Run(runRoot, settings, to) && runRoot == root && !hasPendingRoot)
             {
                 switch (to)
                 {
                     case FoliageNormalsPipeline.Stage.Capture:
-                        preview = Preview.SourceCards;
+                        preview = Preview.SelectionMask;
                         break;
                     case FoliageNormalsPipeline.Stage.Scatter:
                         preview = Preview.PrimitiveSamples;
@@ -521,6 +624,7 @@ namespace SashaRX.UnityMeshLab
                         break;
                     default:
                         preview = Preview.TransferredNormals;
+                        afterNormals = true;
                         break;
                 }
             }
@@ -611,16 +715,23 @@ namespace SashaRX.UnityMeshLab
         public bool Get3DContent(List<MeshViewport3D.Item> items)
         {
             var proxy = PreviewProxy();
-            if (proxy)
+            if (proxy && preview != Preview.ProxyAndMesh)
             {
                 items.Add(new MeshViewport3D.Item(proxy, Matrix4x4.identity));
                 return true;
             }
-            float offset = pipeline.CaptureBounds.size.x * .65f;
-            foreach (var t in pipeline.PreviewTargets(previewLod))
+            foreach (var source in sourcePreview.Sources(previewLod))
             {
-                AddTargetPreview(items, t, offset);
+                if (preview == Preview.SelectionMask && source.mask)
+                {
+                    items.Add(new MeshViewport3D.Item(source.mask, source.matrix) { ShadingOverride = MeshViewport3D.Shading.VertexColors });
+                    continue;
+                }
+                var target = pipeline.Targets.FirstOrDefault(t => t.renderer == source.renderer);
+                AddTargetPreview(items, source, target);
             }
+            if (preview == Preview.ProxyAndMesh && proxy)
+                items.Add(new MeshViewport3D.Item(proxy, Matrix4x4.identity) { WireOnly = true });
             return true;
         }
 
@@ -631,29 +742,33 @@ namespace SashaRX.UnityMeshLab
                 case Preview.SourceProxy: return pipeline.EnvelopeMesh;
                 case Preview.SmoothedProxy: return pipeline.SmoothedMesh;
                 case Preview.TransferProxy: return pipeline.RemeshedMesh;
+                case Preview.ProxyAndMesh:
+                    if (pipeline.RemeshedMesh) return pipeline.RemeshedMesh;
+                    return pipeline.SmoothedMesh ? pipeline.SmoothedMesh : pipeline.EnvelopeMesh;
                 default: return null;
             }
         }
 
-        void AddTargetPreview(List<MeshViewport3D.Item> items, FoliageTargetSnapshot t, float offset)
+        void AddTargetPreview(List<MeshViewport3D.Item> items, FoliageNormalsPreview.Source source, FoliageTargetSnapshot target)
         {
+            var original = target?.original ? target.original : source.mesh;
+            var result = target?.working ? target.working : original;
+            float offset = pipeline.CaptureBounds.size.x * .65f;
             if (preview == Preview.BeforeAfter)
             {
-                items.Add(new MeshViewport3D.Item(t.original, Matrix4x4.Translate(Vector3.left * offset) * t.localToCapture, t.materials));
-                if (t.working)
-                {
-                    items.Add(new MeshViewport3D.Item(t.working, Matrix4x4.Translate(Vector3.right * offset) * t.localToCapture, t.materials));
-                }
+                items.Add(new MeshViewport3D.Item(original, Matrix4x4.Translate(Vector3.left * offset) * source.matrix, source.materials));
+                items.Add(new MeshViewport3D.Item(result, Matrix4x4.Translate(Vector3.right * offset) * source.matrix, source.materials));
             }
             else
             {
-                items.Add(new MeshViewport3D.Item(preview == Preview.TransferredNormals && t.working ? t.working : t.original, t.localToCapture, t.materials));
+                bool after = (preview == Preview.TransferredNormals || preview == Preview.ProxyAndMesh) && afterNormals;
+                items.Add(new MeshViewport3D.Item(after ? result : original, source.matrix, source.materials));
             }
         }
 
         public void OnDraw3D(MeshViewport3D view)
         {
-            if (showProxyEdges && !view.Wireframe)
+            if (showProxyEdges && !view.Wireframe && preview != Preview.ProxyAndMesh)
             {
                 var proxy = PreviewProxy();
                 if (proxy)
@@ -665,18 +780,25 @@ namespace SashaRX.UnityMeshLab
             {
                 DrawSamples(view);
             }
-            if (preview != Preview.BeforeAfter)
+            if (!showNormalDirections && preview != Preview.BeforeAfter)
             {
                 return;
             }
 
-            float offset = pipeline.CaptureBounds.size.x * .65f, length = pipeline.CaptureBounds.size.magnitude * .025f;
+            float offset = preview == Preview.BeforeAfter ? pipeline.CaptureBounds.size.x * .65f : 0;
+            float length = (pipeline.Has(FoliageNormalsPipeline.Stage.Capture) ? pipeline.CaptureBounds : sourcePreview.Bounds(previewLod)).size.magnitude * normalLength;
             var before = new List<Vector3>();
             var after = new List<Vector3>();
+            bool resultNormals = afterNormals && (preview == Preview.TransferredNormals || preview == Preview.ProxyAndMesh);
             foreach (var t in pipeline.PreviewTargets(previewLod))
             {
-                AppendNormalLines(t, offset, length, before, after);
+                if (preview == Preview.BeforeAfter || !resultNormals)
+                    FoliageNormalsPreview.AppendNormalLines(t, false, Vector3.left * offset, length, before);
+                if (preview == Preview.BeforeAfter || resultNormals)
+                    FoliageNormalsPreview.AppendNormalLines(t, true, Vector3.right * offset, length, after);
             }
+            if (!pipeline.Has(FoliageNormalsPipeline.Stage.Capture))
+                foreach (var source in sourcePreview.Sources(previewLod)) FoliageNormalsPreview.AppendSourceNormalLines(source, length, before);
             view.DrawLines(before, Matrix4x4.identity, Color.cyan);
             view.DrawLines(after, Matrix4x4.identity, Color.yellow);
         }
@@ -693,30 +815,14 @@ namespace SashaRX.UnityMeshLab
             view.DrawPoints(subset, Matrix4x4.identity, Color.green, 4);
         }
 
-        static void AppendNormalLines(FoliageTargetSnapshot t, float offset, float length, List<Vector3> before, List<Vector3> after)
-        {
-            var normals = t.working ? t.working.normals : t.localNormals;
-            int stride = Math.Max(1, (t.positions.Length + 255) / 256), nextDuplicate = t.localPositions.Length;
-            for (int i = 0; i < t.positions.Length; i++)
-            {
-                // One linear scan tracks appended corners; no repeated prefix scans per drawn normal.
-                int v = t.selectedVertices[i] && t.excludedVertices[i] && t.working ? nextDuplicate++ : i;
-                if (i % stride != 0 || !t.selectedVertices[i])
-                {
-                    continue;
-                }
-
-                var a = t.positions[i] + Vector3.left * offset;
-                before.Add(a);
-                before.Add(a + t.captureNormals[i] * length);
-                var b = t.positions[i] + Vector3.right * offset;
-                after.Add(b);
-                after.Add(b + MeshGeometry.UnitDirection(t.normalLocalToCapture.MultiplyVector(normals[v])) * length);
-            }
-        }
-
         public void OnDrawToolbarExtra()
         {
+            if (GUILayout.Button("Proxy + mesh", EditorStyles.toolbarButton)) preview = Preview.ProxyAndMesh;
+            if (GUILayout.Button("Mask", EditorStyles.toolbarButton)) preview = Preview.SelectionMask;
+            if (GUILayout.Button("Before", EditorStyles.toolbarButton)) SetNormalComparison(false);
+            using (new EditorGUI.DisabledScope(!pipeline.Has(FoliageNormalsPipeline.Stage.Transfer)))
+                if (GUILayout.Button("After", EditorStyles.toolbarButton)) SetNormalComparison(true);
+            showNormalDirections = GUILayout.Toggle(showNormalDirections, "Normal directions", EditorStyles.toolbarButton);
         }
         public void OnDrawStatusBar() => GUILayout.Label($"{pipeline.RunningStage?.ToString() ?? "Foliage"} · {pipeline.NormalSource} · {pipeline.ElapsedSeconds:F1}s · {pipeline.Primitives?.Length ?? 0:N0} primitives · {(pipeline.Remeshed ?? pipeline.Smoothed ?? pipeline.Envelope)?.TriangleCount ?? 0:N0} proxy triangles / {pipeline.ProxyComponents} components · {pipeline.TransferDiagnostics?.transferred ?? 0:N0} transferred / {pipeline.TransferDiagnostics?.misses ?? 0:N0} missed");
         public void OnDrawCanvasOverlay(UvCanvasView canvas, float cx, float cy, float sz)

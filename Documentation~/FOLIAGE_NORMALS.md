@@ -298,13 +298,33 @@ Target normals are never regenerated with RecalculateNormals.
 
 ## Preview, apply and assets
 
-The shared `MeshViewport3D` supports source cards, primitive sample points, voxel
-proxy, smoothed proxy, remeshed transfer proxy, transferred cards and side-by-side before/after. Choose
-Normals shading for colour comparison. Before/after also draws cyan original and
-yellow transferred normal vectors. Primitive points are bounded to 4,096 per
-frame. **Show proxy edges** uses the viewport's cached wire drawing for the three
-proxy previews. Transient meshes use HideAndDontSave and never replace scene meshes during
-preview.
+**Follow selection** updates the Root and preview when a different tree is selected
+in the Hierarchy; choosing a LOD child resolves its LODGroup. Disable it to keep a
+manually assigned root. A source change cancels an active calculation, waits for
+its cleanup, and then displays the latest selected tree. Selecting a light, camera
+or project asset keeps the current tree. Preview works before Capture.
+
+**Selection Mask** paints the exact selected faces green when they supply the proxy,
+amber when they only receive transferred normals in another LOD, and grey when
+excluded. This includes excluded renderers for context; shared vertices on a
+selected/excluded submesh boundary do not blend the mask colours. Mask colours
+remain visible with any shared viewport shading mode. **Preview LOD** can inspect
+this selection before building the proxy.
+
+The shared `MeshViewport3D` also supports source cards, primitive sample points,
+voxel proxy, smoothed proxy, remeshed transfer proxy and transferred cards.
+**Proxy + mesh** overlays the latest available proxy as a cyan wire on the model,
+so its solid surface cannot hide the leaf cards. **Before** / **After** switch
+original and transferred normals in the same position without moving the camera;
+the proxy remains visible when switching in the combined mode. **Side by side**
+shows original on the left and transferred on the right. Choose **Normals** shading
+in the shared 3D toolbar for direction colours, or enable **Normal directions** for
+cyan original / yellow transferred arrows on selected vertices. Arrow length is
+adjustable; side-by-side mode draws both sets. Primitive points are bounded to
+4,096 per frame. **Show proxy edges** uses cached wire drawing for the three solid
+proxy previews. Source copies and selection paint are cached between changes,
+prepared outside GUI repaint, and released on source changes or deactivation.
+Transient meshes use HideAndDontSave and never replace scene meshes during preview.
 
 Apply checks captured Mesh references, a content fingerprint of all vertex streams
 and indices, bounds and import settings, matrices, material assignments and the

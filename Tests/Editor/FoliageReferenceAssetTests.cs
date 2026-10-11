@@ -106,6 +106,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 }
                 FoliageProxyBuilder.Validate(pipeline.Remeshed, CancellationToken.None, false);
                 Directory.CreateDirectory(output);
+                yield return FoliageNormalsPreviewTests.CapturePinePreview(root, settings, pipeline, output);
                 FoliageNormalsToolTests.RenderPreview(pipeline.RemeshedMesh, Matrix4x4.identity, Path.Combine(output, "pine-proxy-wire.png"), false, true);
                 FoliageNormalsToolTests.RenderPreview(target.original, target.localToCapture, Path.Combine(output, "pine-before-normals.png"), true);
                 FoliageNormalsToolTests.RenderPreview(result, target.localToCapture, Path.Combine(output, "pine-after-normals.png"), true);
