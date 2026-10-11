@@ -140,7 +140,7 @@ namespace SashaRX.UnityMeshLab
 
             return volume;
         }
-        static double FaceVolume(Vector3[] p, int[] t, int k, Vector3 origin)
+        internal static double FaceVolume(Vector3[] p, int[] t, int k, Vector3 origin)
         {
             var a = p[t[k]] - origin;
             var b = p[t[k + 1]] - origin;

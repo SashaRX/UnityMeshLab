@@ -59,6 +59,37 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.Less(result.diagnostics.maxReverseDistance, result.diagnostics.targetEdgeLength * .5f);
         }
 
+        [TestCase(false)] [TestCase(true)]
+        public void RemeshingRejectsSmallComponentVolumeLossHiddenByLargeComponent(bool smallFirst)
+        {
+            var large = new FoliagePrimitive { radius = 10 };
+            var small = new FoliagePrimitive { center = Vector3.right * 30, radius = .25f };
+            var input = FoliagePrimitiveBuilder.Build(smallFirst ? new[] { small, large } : new[] { large, small }, 1, CancellationToken.None);
+            var positions = (Vector3[])input.positions.Clone(); var indices = (int[])input.indices.Clone();
+            var settings = new FoliageNormalsSettings { remeshEdgeLength = 2, remeshRelaxation = 0 };
+            var error = Assert.Throws<InvalidOperationException>(() => new FoliageProxyRemesher().Remesh(input, settings, CancellationToken.None));
+            StringAssert.Contains("component volume", error.Message);
+            CollectionAssert.AreEqual(positions, input.positions); CollectionAssert.AreEqual(indices, input.indices);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void RemeshingPreservesEachDifferentSizedComponentAfterCompaction(bool smallFirst)
+        {
+            var large = new FoliagePrimitive { radius = 1 };
+            var small = new FoliagePrimitive { center = Vector3.right * 4, radius = .5f };
+            var input = FoliagePrimitiveBuilder.Build(smallFirst ? new[] { small, large } : new[] { large, small }, 1, CancellationToken.None);
+            var before = FoliageProxyBuilder.ComponentVolumes(input, FoliageProxyBuilder.Validate(input, CancellationToken.None, false));
+            var settings = new FoliageNormalsSettings { remeshEdgeLength = .35f, remeshIterations = 3 };
+            var result = new FoliageProxyRemesher().Remesh(input, settings, CancellationToken.None);
+            var after = FoliageProxyBuilder.ComponentVolumes(result.mesh, FoliageProxyBuilder.Validate(result.mesh, CancellationToken.None, false));
+            var beforeVolumes = new double[before.Count]; before.Values.CopyTo(beforeVolumes, 0); Array.Sort(beforeVolumes);
+            var afterVolumes = new double[after.Count]; after.Values.CopyTo(afterVolumes, 0); Array.Sort(afterVolumes);
+            Assert.AreEqual(2, afterVolumes.Length);
+            for (int i = 0; i < beforeVolumes.Length; i++) Assert.That(afterVolumes[i] / beforeVolumes[i], Is.InRange(.75, 1.25));
+            Assert.LessOrEqual(result.diagnostics.maximumComponentVolumeChange, .25);
+            Assert.Greater(result.diagnostics.splits, 0); Assert.Greater(result.diagnostics.collapses, 0);
+        }
+
         [Test]
         public void ExactPositionSplitsAreWeldedWithoutModifyingInput()
         {

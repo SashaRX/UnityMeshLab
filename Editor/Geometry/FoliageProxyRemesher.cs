@@ -25,8 +25,8 @@ namespace SashaRX.UnityMeshLab
             internal Quality before, after;
             internal float targetEdgeLength, maxSurfaceDistance, maxReverseDistance;
             internal int splits, collapses, flips, rejected, iterations;
-            internal double volumeChange;
-            public override string ToString() => FormattableString.Invariant($"Remesh: {before.triangles:N0} → {after.triangles:N0} triangles · target edge {targetEdgeLength:G4}\nEdge CV {before.edgeVariation:P1} → {after.edgeVariation:P1} · area CV {before.areaVariation:P1} → {after.areaVariation:P1}\nMinimum angle {before.minimumAngle:F1}° → {after.minimumAngle:F1}° · mean shape {before.meanShape:F3} → {after.meanShape:F3}\n{splits:N0} splits / {collapses:N0} collapses / {flips:N0} flips · {rejected:N0} constrained edits · {iterations} iterations\nSurface deviation {maxSurfaceDistance:G4} / reverse {maxReverseDistance:G4} · volume change {volumeChange:P1}");
+            internal double volumeChange, maximumComponentVolumeChange;
+            public override string ToString() => FormattableString.Invariant($"Remesh: {before.triangles:N0} → {after.triangles:N0} triangles · target edge {targetEdgeLength:G4}\nEdge CV {before.edgeVariation:P1} → {after.edgeVariation:P1} · area CV {before.areaVariation:P1} → {after.areaVariation:P1}\nMinimum angle {before.minimumAngle:F1}° → {after.minimumAngle:F1}° · mean shape {before.meanShape:F3} → {after.meanShape:F3}\n{splits:N0} splits / {collapses:N0} collapses / {flips:N0} flips · {rejected:N0} constrained edits · {iterations} iterations\nSurface deviation {maxSurfaceDistance:G4} / reverse {maxReverseDistance:G4} · volume change {volumeChange:P1} / worst component {maximumComponentVolumeChange:P1}");
         }
         internal sealed class Result
         {
@@ -42,6 +42,7 @@ namespace SashaRX.UnityMeshLab
             // vertices just as RemeshTopology does, without changing the input arrays.
             input = Weld(input, token);
             var topology = FoliageProxyBuilder.Validate(input, token, false);
+            var beforeVolumes = FoliageProxyBuilder.ComponentVolumes(input, topology);
             var before = Measure(input, token);
             float length = settings.remeshEdgeLength > 0 ? settings.remeshEdgeLength : (float)before.edgeMean;
             if (!FoliageTargetSnapshot.Finite(length) || length <= 0)
@@ -67,11 +68,17 @@ namespace SashaRX.UnityMeshLab
                 token.ThrowIfCancellationRequested();
                 diagnostics.iterations++;
             }
-            var result = state.Export();
+            var result = state.Export(out var afterVolumes);
             var afterTopology = FoliageProxyBuilder.Validate(result, token, false);
             if (!afterTopology.PreservesComponents(topology, false))
             {
                 throw new InvalidOperationException("Proxy remeshing changed components or Euler characteristics.");
+            }
+
+            diagnostics.maximumComponentVolumeChange = ComponentVolumeChange(beforeVolumes, afterVolumes);
+            if (diagnostics.maximumComponentVolumeChange > .25)
+            {
+                throw new InvalidOperationException("Proxy remesh component volume changed by more than 25%. Reduce target edge length or relaxation.");
             }
 
             result.normals = MeshGeometry.AveragedNormals(result.positions, result.indices, token);
@@ -90,6 +97,20 @@ namespace SashaRX.UnityMeshLab
             }
 
             return new Result { mesh = result, diagnostics = diagnostics };
+        }
+
+        static double ComponentVolumeChange(Dictionary<int, double> before, Dictionary<int, double> after)
+        {
+            double maximum = 0;
+            foreach (var component in before)
+            {
+                if (!after.TryGetValue(component.Key, out double volume))
+                {
+                    throw new InvalidOperationException("Proxy remeshing removed a source component.");
+                }
+                maximum = Math.Max(maximum, Math.Abs(volume / component.Value - 1));
+            }
+            return maximum;
         }
 
         static InvalidOperationException Budget(int limit) => new InvalidOperationException($"Proxy remesh triangle budget exceeded ({limit:N0}; working adjacency is approximately 1 KiB/triangle). Increase target edge length or reduce voxel resolution.");
@@ -195,6 +216,7 @@ namespace SashaRX.UnityMeshLab
             readonly Stack<int> freeVertices = new Stack<int>();
             int nextFace;
             readonly int[] referenceComponents;
+            readonly Dictionary<int, Vector3> componentOrigins = new Dictionary<int, Vector3>();
             internal readonly TriangleBvh reference;
             readonly float lowSq, highSq;
             readonly int budget;
@@ -219,6 +241,7 @@ namespace SashaRX.UnityMeshLab
                     Check(f);
                     int k = f * 3, component = Root(topology.components, f);
                     referenceComponents[f] = component;
+                    componentOrigins[component] = input.positions[input.indices[component * 3]];
                     int a = input.indices[k], b = input.indices[k + 1], c = input.indices[k + 2];
                     vertices[a].component = component;
                     vertices[b].component = component;
@@ -641,7 +664,7 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
-            internal RemeshNative.IndexedMesh Export()
+            internal RemeshNative.IndexedMesh Export(out Dictionary<int, double> componentVolumes)
             {
                 token.ThrowIfCancellationRequested();
                 var map = new int[vertices.Count];
@@ -657,7 +680,9 @@ namespace SashaRX.UnityMeshLab
                 }
                 var ids = new List<int>(faces.Keys);
                 ids.Sort();
+                var positions = points.ToArray();
                 var indices = new int[ids.Count * 3];
+                componentVolumes = new Dictionary<int, double>();
                 for (int i = 0; i < ids.Count; i++)
                 {
                     Check(i);
@@ -665,8 +690,13 @@ namespace SashaRX.UnityMeshLab
                     indices[i * 3] = map[f.a];
                     indices[i * 3 + 1] = map[f.b];
                     indices[i * 3 + 2] = map[f.c];
+                    // Vertex labels survive split/collapse/flip and compaction. Final
+                    // topology roots do not identify the corresponding input shells.
+                    int component = vertices[f.a].component;
+                    componentVolumes.TryGetValue(component, out double volume);
+                    componentVolumes[component] = volume + FoliageProxyBuilder.FaceVolume(positions, indices, i * 3, componentOrigins[component]);
                 }
-                return new RemeshNative.IndexedMesh { positions = points.ToArray(), indices = indices };
+                return new RemeshNative.IndexedMesh { positions = positions, indices = indices };
             }
         }
 
