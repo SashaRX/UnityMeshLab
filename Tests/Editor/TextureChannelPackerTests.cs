@@ -1,0 +1,228 @@
+using System;
+using System.IO;
+using System.Reflection;
+using NUnit.Framework;
+using UnityEditor;
+using UnityEngine;
+
+namespace SashaRX.UnityMeshLab.Tests
+{
+    public class TextureChannelPackerTests
+    {
+        [Test]
+        public void RleRoundTripPreservesChannelsAlphaAndRows()
+        {
+            var pixels = new Color32[260 * 2];
+            for (int i = 0; i < 260; i++) pixels[i] = new Color32(12, 34, 56, 78);
+            for (int i = 260; i < pixels.Length; i++)
+                pixels[i] = new Color32((byte)i, (byte)(i * 3), (byte)(i * 7), (byte)(i * 11));
+            var image = new TexturePackingImage(260, 2, pixels);
+            using (var stream = new MemoryStream())
+            {
+                image.WriteTgaRle(stream);
+                byte[] encoded = stream.ToArray();
+                Assert.AreEqual(10, encoded[2]);
+                Assert.AreEqual(32, encoded[16]);
+                Assert.AreEqual(8, encoded[17]);
+                Assert.AreEqual(255, encoded[18], "First packet repeats 128 pixels.");
+                Assert.Less(encoded.Length, 18 + pixels.Length * 4);
+                CollectionAssert.AreEqual(pixels, TexturePackingImage.DecodeTga(encoded).Pixels);
+            }
+        }
+
+        [TestCase(0)]
+        [TestCase(16)]
+        [TestCase(32)]
+        [TestCase(48)]
+        public void RawTgaRespectsBothOriginBits(int origin)
+        {
+            byte[] bytes = new byte[18 + 4 * 3];
+            bytes[2] = 2;
+            bytes[12] = bytes[14] = 2;
+            bytes[16] = 24;
+            bytes[17] = (byte)origin;
+            for (int i = 0; i < 4; i++) bytes[18 + i * 3 + 2] = (byte)(i + 1);
+            var image = TexturePackingImage.DecodeTga(bytes);
+            for (int i = 0; i < 4; i++)
+            {
+                int x = i % 2, y = i / 2;
+                if ((origin & 16) != 0) x = 1 - x;
+                if ((origin & 32) != 0) y = 1 - y;
+                Assert.AreEqual(i + 1, image.Pixels[y * 2 + x].r);
+                Assert.AreEqual(255, image.Pixels[y * 2 + x].a);
+            }
+        }
+
+        [Test]
+        public void TgaRejectsPacketsBeyondTheImageAndTruncatedData()
+        {
+            byte[] bytes = new byte[19];
+            bytes[2] = 10;
+            bytes[12] = bytes[14] = 1;
+            bytes[16] = 32;
+            bytes[18] = 129;
+            Assert.Throws<InvalidDataException>(() => TexturePackingImage.DecodeTga(bytes));
+            bytes[18] = 128;
+            Assert.Throws<EndOfStreamException>(() => TexturePackingImage.DecodeTga(bytes));
+        }
+
+        [Test]
+        public void WholeRgbCanTakeAlphaFromAnotherImagesRedChannel()
+        {
+            var rgb = new TexturePackingImage(1, 1, new[] { new Color32(10, 20, 30, 40) });
+            var alpha = new TexturePackingImage(1, 1, new[] { new Color32(99, 88, 77, 66) });
+            var sources = new TexturePackingImage[4];
+            sources[3] = alpha;
+            var result = TexturePackingImage.Compose(2, 3, rgb, sources,
+                new[] { 0, 1, 2, 0 }, new byte[] { 255, 255, 255, 255 }, true);
+            foreach (var pixel in result.Pixels) Assert.AreEqual(new Color32(10, 20, 30, 99), pixel);
+            sources[3] = null;
+            Assert.AreEqual(40, TexturePackingImage.Compose(1, 1, rgb, sources,
+                new[] { 0, 1, 2, 3 }, new byte[] { 0, 0, 0, 255 }, true).Pixels[0].a);
+        }
+
+        [Test]
+        public void SeparateChannelsUseAlphaAndDefaultsWithoutGammaConversion()
+        {
+            var image = new TexturePackingImage(1, 1, new[] { new Color32(10, 20, 30, 128) });
+            var result = TexturePackingImage.Compose(1, 1, null, new[] { image, null, image, image },
+                new[] { 3, 0, 0, 1 }, new byte[] { 0, 200, 0, 255 }, false);
+            Assert.AreEqual(new Color32(128, 200, 10, 20), result.Pixels[0]);
+        }
+
+        [Test]
+        public void BilinearResizeUsesTheWholeImageAndClampsEdges()
+        {
+            var image = new TexturePackingImage(2, 1,
+                new[] { new Color32(0, 0, 0, 0), new Color32(200, 100, 50, 240) });
+            Assert.AreEqual(new Color32(100, 50, 25, 120), image.Sample(0, 0, 1, 1));
+            Assert.AreEqual(image.Pixels[0], image.Sample(0, 0, 4, 3));
+            Assert.AreEqual(image.Pixels[1], image.Sample(3, 2, 4, 3));
+            Assert.AreEqual(50, image.Sample(1, 1, 4, 3).r);
+        }
+
+        [TestCase("Assets/Props/SM_Chair.fbx", "Chair")]
+        [TestCase("Assets/Props/Chair_SM_Back.fbx", "Chair_SM_Back")]
+        public void ModelNamingStripsOnlyTheLeadingPrefix(string path, string expected)
+        {
+            Assert.AreEqual(expected, TextureChannelPackerWindow.ModelBaseName(path));
+        }
+
+        [Test]
+        public void ExternalPngIsReadWithoutCreatingAProjectAsset()
+        {
+            string folder = Path.Combine(Path.GetTempPath(), "MeshLabTextureTest-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(folder);
+            string path = Path.Combine(folder, "source.png");
+            var texture = new Texture2D(1, 1, TextureFormat.RGBA32, false, true);
+            try
+            {
+                texture.SetPixels32(new[] { new Color32(10, 20, 30, 40) });
+                texture.Apply();
+                File.WriteAllBytes(path, ImageConversion.EncodeToPNG(texture));
+                Assert.AreEqual(new Color32(10, 20, 30, 40), TexturePackingImage.Load(path).Pixels[0]);
+                Assert.AreEqual(1, Directory.GetFiles(folder).Length);
+                Assert.IsFalse(File.Exists(path + ".meta"));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(texture);
+                File.Delete(path);
+                Directory.Delete(folder);
+            }
+        }
+
+        [Test]
+        public void UnityImporterReadsRleOutputWithCorrectOrientationAndAlpha()
+        {
+            string assetPath = "Assets/MeshLabTexturePackingTest-" + Guid.NewGuid().ToString("N") + ".tga";
+            var pixels = new[] { new Color32(10, 20, 30, 40), new Color32(10, 20, 30, 40),
+                new Color32(50, 60, 70, 80), new Color32(90, 100, 110, 120) };
+            try
+            {
+                using (var stream = File.Create(Path.GetFullPath(assetPath)))
+                    new TexturePackingImage(2, 2, pixels).WriteTgaRle(stream);
+                AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (TextureImporter)AssetImporter.GetAtPath(assetPath);
+                importer.isReadable = true;
+                importer.sRGBTexture = false;
+                importer.alphaIsTransparency = false;
+                importer.alphaSource = TextureImporterAlphaSource.FromInput;
+                importer.textureCompression = TextureImporterCompression.Uncompressed;
+                importer.SaveAndReimport();
+                var result = AssetDatabase.LoadAssetAtPath<Texture2D>(assetPath);
+                CollectionAssert.AreEqual(pixels, result.GetPixels32());
+            }
+            finally { AssetDatabase.DeleteAsset(assetPath); }
+        }
+
+        [Test]
+        public void WindowSavesThreeNamedOutputsAndImportsOnlyResults()
+        {
+            string id = Guid.NewGuid().ToString("N");
+            string sourcePath = Path.Combine(Path.GetTempPath(), "MeshLabSource-" + id + ".tga");
+            string assetFolder = "Assets/MeshLabPacking-" + id;
+            var window = ScriptableObject.CreateInstance<TextureChannelPackerWindow>();
+            var pixel = new Color32(12, 34, 56, 78);
+            try
+            {
+                using (var stream = File.Create(sourcePath))
+                    new TexturePackingImage(1, 1, new[] { pixel }).WriteTgaRle(stream);
+                byte[] original = File.ReadAllBytes(sourcePath);
+                AssetDatabase.CreateFolder("Assets", "MeshLabPacking-" + id);
+                SetPrivate(window, "followFbx", false);
+                SetPrivate(window, "textureName", "Chair");
+                SetPrivate(window, "outputFolder", Path.GetFullPath(assetFolder));
+                SetPrivate(window, "widthIndex", 0);
+                SetPrivate(window, "heightIndex", 0);
+                foreach (string field in new[] { "albedo", "mrca", "normal" })
+                {
+                    object output = GetPrivate(window, field);
+                    output.GetType().GetField("split").SetValue(output, false);
+                    object rgb = output.GetType().GetField("rgb").GetValue(output);
+                    InvokePrivate(window, "Assign", output, rgb, sourcePath);
+                }
+                InvokePrivate(window, "SaveEnabled");
+                Assert.IsEmpty((string)GetPrivate(window, "error"));
+                foreach (string suffix in new[] { "Albedo", "MRCA", "Normal" })
+                {
+                    string path = assetFolder + "/T_Chair_" + suffix + ".tga";
+                    Assert.IsTrue(File.Exists(path), path);
+                    var decoded = TexturePackingImage.DecodeTga(File.ReadAllBytes(path));
+                    Assert.AreEqual(64, decoded.Width);
+                    Assert.AreEqual(64, decoded.Height);
+                    Assert.AreEqual(pixel, decoded.Pixels[0]);
+                    var importer = (TextureImporter)AssetImporter.GetAtPath(path);
+                    Assert.IsNotNull(importer);
+                    Assert.AreEqual(suffix == "Normal" ? TextureImporterType.NormalMap : TextureImporterType.Default,
+                        importer.textureType);
+                    if (suffix != "Normal") Assert.AreEqual(suffix == "Albedo", importer.sRGBTexture);
+                }
+                Assert.IsFalse(File.Exists(sourcePath + ".meta"));
+                CollectionAssert.AreEqual(original, File.ReadAllBytes(sourcePath));
+                Assert.AreEqual(3, Directory.GetFiles(assetFolder, "*.tga").Length);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(window);
+                AssetDatabase.DeleteAsset(assetFolder);
+                File.Delete(sourcePath);
+            }
+        }
+
+        private static object GetPrivate(object instance, string name)
+        {
+            return instance.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance).GetValue(instance);
+        }
+
+        private static void SetPrivate(object instance, string name, object value)
+        {
+            instance.GetType().GetField(name, BindingFlags.NonPublic | BindingFlags.Instance).SetValue(instance, value);
+        }
+
+        private static void InvokePrivate(object instance, string name, params object[] arguments)
+        {
+            instance.GetType().GetMethod(name, BindingFlags.NonPublic | BindingFlags.Instance).Invoke(instance, arguments);
+        }
+    }
+}

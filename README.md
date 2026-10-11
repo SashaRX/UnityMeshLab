@@ -29,6 +29,16 @@ Every tab shares one canvas with a **UV | 3D** switch at its bottom centre (also
 * **3D** is an orbitable lit view of the same meshes (drag orbits, middle button / alt-drag pans, scroll zooms, `F` or a middle double-click frames) with *Shaded* (scene materials), *Vert Colors*, *Normals*, *Tangents* and *UV0–UV3* shading, offered only where a mesh carries the data, a wire overlay and a Lit toggle.
 * Tools feed the canvas: Remesh & Bake shows its stage result and cage there, Prefab Builder paints its edge classes and problem dots, and the result's UV layout is drawn on the model.
 
+## Texture Channel Packer
+
+Open **Tools → Mesh Lab → Texture Channel Packer** for a separate window that
+builds Albedo, MRCA and Normal textures from PNG/JPG/TGA files anywhere on disk.
+Sources are read without copying or importing them into the project. Choose whole
+RGB or individual source channels (including alpha), resize to shared X/Y dimensions
+with a default 1:1 lock, and save 32-bit TGA RLE. Naming supports an optional `T_`
+prefix, suffix dropdowns, and the selected FBX's name/folder with leading `SM_`
+removed. See [inputs, channel selection and export](Documentation~/TEXTURE_CHANNEL_PACKER.md).
+
 ## UV2 Transfer
 
 The UV2 pipeline preserves the existing UV0 shell structure and uses it as the basis for a new UV2 layout suitable for lightmapping.
