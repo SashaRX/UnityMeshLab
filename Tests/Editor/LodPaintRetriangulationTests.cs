@@ -114,6 +114,34 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(report.pairs,Is.Zero);
         }
 
+        [TestCase(.9999999f,true)]
+        [TestCase(.99f,false)]
+        [TestCase(-1f,false)]
+        [TestCase(float.NaN,false)]
+        [TestCase(float.PositiveInfinity,false)]
+        public void TangentHandednessNoiseDoesNotHideASeamOrInvalidField(float handedness,bool allowed)
+        {
+            var source=Panel(true); var reduced=Panel(false); var tangents=reduced.tangents;
+            for (int i=3; i<6; i++) tangents[i].w=handedness;
+            reduced.tangents=tangents; var indices=reduced.triangles;
+            var screen=new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            var result=Track(LodPaintRetriangulation.Correct(source,reduced,screen,Settings,out var report));
+            Assert.That(result!=null,Is.EqualTo(allowed),JsonUtility.ToJson(report));
+            CollectionAssert.AreEqual(tangents,reduced.tangents); CollectionAssert.AreEqual(indices,reduced.triangles);
+        }
+
+        [Test]
+        public void TangentDirectionSeamPinsOtherwiseEligiblePaintDiagonal()
+        {
+            var source=Panel(true); var reduced=Panel(false); var tangents=reduced.tangents;
+            for (int i=3; i<6; i++) tangents[i]=new Vector4(0,1,0,1);
+            reduced.tangents=tangents; var indices=reduced.triangles;
+            var screen=new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+            Assert.That(Track(LodPaintRetriangulation.Correct(source,reduced,screen,Settings,out var report)),Is.Null);
+            Assert.That(report.pairs,Is.Zero); CollectionAssert.AreEqual(tangents,reduced.tangents);
+            CollectionAssert.AreEqual(indices,reduced.triangles);
+        }
+
         [Test]
         public void ExactSourceRetainsItsTriangleLayout()
         {

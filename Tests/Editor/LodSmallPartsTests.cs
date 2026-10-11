@@ -214,5 +214,27 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(LodMeshData.TriangleCount(mesh),Is.EqualTo(34));
             CollectionAssert.AreEqual(positions,mesh.vertices);
         }
+
+        [Test]
+        public void CancellationInsidePartScreenValidationReleasesRetainedMesh()
+        {
+            var mesh=Model(true);
+            root=new GameObject("CancelledFarParts"); root.AddComponent<MeshFilter>().sharedMesh=mesh; root.AddComponent<MeshRenderer>();
+            var ctx=new UvToolContext(); ctx.Refresh(LodGenerationTool.CreateLodGroupFromRenderers(root));
+            var before=Resources.FindObjectsOfTypeAll<Mesh>().Select(m => m.GetInstanceID()).ToHashSet();
+            bool sawRetained=false;
+            var result=LodPipelineOps.Generate(ctx,2,new LodPipelineOps.Options {
+                count=1,ratios=new[] {1f},targetError=.2f,candidateCount=1,reductionMode=LodReductionMode.Triangles,
+                prioritizeTriangleBudget=true,screenGuidedSelection=true,skipColorValidation=true,smallParts=Settings()
+            },cancelled:() => {
+                sawRetained|=Resources.FindObjectsOfTypeAll<Mesh>().Any(m => !before.Contains(m.GetInstanceID()));
+                return sawRetained;
+            });
+            Assert.That(sawRetained,Is.True,"Cancel only once Retain has allocated the screen-check mesh.");
+            Assert.That(result.cancelled,Is.True); Assert.That(result.ok,Is.False);
+            Assert.That(Resources.FindObjectsOfTypeAll<Mesh>().Where(m => !before.Contains(m.GetInstanceID())),Is.Empty);
+            Assert.That(ctx.GeneratedLodObjects,Is.Empty); Assert.That(ctx.LodGroup.GetLODs(),Has.Length.EqualTo(1));
+            Assert.That(root.GetComponent<MeshFilter>().sharedMesh,Is.SameAs(mesh));
+        }
     }
 }

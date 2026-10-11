@@ -200,10 +200,13 @@ namespace SashaRX.UnityMeshLab
                 int x=a[k],y=b[1-k];
                 for (int ch=0; ch<8; ch++) if (data.uvs[ch]!=null && (data.uvs[ch][x]-data.uvs[ch][y]).sqrMagnitude>1e-12f) return false;
                 if (data.normals.Length==p.Length && Vector3.Dot(data.normals[x].normalized,data.normals[y].normalized)<.99f) return false;
-                // w is an authored handedness label; retain exact equality of
-                // finite labels rather than relaxing the seam with a tolerance.
-                if (data.tangents.Length==p.Length && (float.IsNaN(data.tangents[x].w) || float.IsNaN(data.tangents[y].w) ||
-                    !data.tangents[x].w.Equals(data.tangents[y].w))) return false;
+                if (data.tangents.Length==p.Length)
+                {
+                    // Pin authored tangent directions as well as handedness.
+                    // Negated range checks also reject NaN/infinite fields.
+                    var delta=data.tangents[x]-data.tangents[y];
+                    if (!(((Vector3)delta).sqrMagnitude<=1e-12f) || !(Mathf.Abs(delta.w)<=1e-6f)) return false;
+                }
             }
             for (int i=0; i<indices.Length; i++)
             {
