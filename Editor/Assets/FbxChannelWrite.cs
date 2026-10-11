@@ -3,9 +3,11 @@
 // through the FBX SDK: only the layer elements of the channels the tool changed are
 // touched, and within them only the corners whose value changed. A polygon with a new
 // internal seam is split using the import's triangles. Other polygons, control points,
-// smoothing, the other channels, materials, nodes, the file
-// format and version come through as the source file has them. Unity's FBX Exporter is
-// not involved, so nothing is welded, re-packed or quantised. Normals and
+// smoothing, the other channels, materials and nodes come through from the source.
+// Output format and embedding follow project settings;
+// the source file version is preserved, subject to the SDK's supported versions.
+// Unity's FBX Exporter is not involved, so nothing is welded, re-packed
+// or quantised. Normals and
 // tangents are directions in the mesh's space, so they go back through the map fitted
 // to the mesh's import (FbxSpaceFit).
 //
@@ -222,9 +224,9 @@ namespace SashaRX.UnityMeshLab
             // import brings a UV1 written (or removed) here; otherwise the sidecar still applies.
             bool uv1Changed = uv1Written || channelsWritten.Contains("UV1 (removed)");
             if (uv1Changed) Uv2AssetPostprocessor.fbxOverwritePaths.Add(targetFbxPath);
-            try { FbxExport.ReplaceAtomically(targetFbxPath, temp => document.Save(Path.GetFullPath(temp))); }
+            try { document.SaveAtomic(Path.GetFullPath(targetFbxPath), shadingSelection?.mediaOwnership); }
             catch { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); throw; }
-            string format = $"FBX {document.Major}.{document.Minor}, {(document.Binary ? "binary" : "ASCII")}";
+            string format = $"FBX {document.Major}.{document.Minor}, {FbxWriteSettings.FromProject().FormatName}";
             if (meshesWritten > 0)
                 UvtLog.Info($"[FBX Export] {meshesWritten} mesh(es), {cornersWritten} corner value(s) of {string.Join(", ", channelsWritten.OrderBy(c => c))} -> {targetFbxPath} " +
                     $"({format}; {splitPolygons} polygon(s) split at new internal seams; other channels retained)");
@@ -606,7 +608,7 @@ namespace SashaRX.UnityMeshLab
                 using (var tagDocument = FbxSourceDocument.Load(Path.GetFullPath(sourceFbxPath)))
                 {
                     AddCornerTags(tagDocument, swapUv, tagChannels, takenSets, cornerCounts);
-                    tagDocument.Save(Path.GetFullPath(tempPath));
+                    tagDocument.SaveForImport(Path.GetFullPath(tempPath));
                 }
 
                 AssetDatabase.ImportAsset(tempPath, ImportAssetOptions.ForceSynchronousImport);

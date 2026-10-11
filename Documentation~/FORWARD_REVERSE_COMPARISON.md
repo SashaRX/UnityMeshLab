@@ -62,6 +62,16 @@ immediate donor triangle, so semantic donor selection and other corners remain
 unproven. The witnesses must be traced before declaring overlay correspondence
 correct for every detail.
 
+Latest main `cd8d848d` (package 1.1.42) is integrated after those UV captures.
+It adds shared FBX format/embedding settings. Import probes retain their source
+policy, while internal polygon splitting still uses a Binary scratch document.
+All four Binary/ASCII input/output combinations retain audited UV seams and
+neighboring polygons. Same-format stored doubles remain exact; SDK Binary-to-ASCII
+conversion is allowed one double spacing in the stored-channel test. The source
+FBX and metadata byte-preservation checks remain exact. The post-merge FBX run
+passes 217 tests with zero failures and one optional skip; both reference compile
+variants also pass. It does not constitute a repeated UV-model capture.
+
 ## Historical paired2 baseline
 
 This compares the ordinary LOD0-to-coarse workflow against progressive

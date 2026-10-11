@@ -208,10 +208,9 @@ namespace SashaRX.UnityMeshLab
         // is unaffected.
         public bool vertexColorTint = true;
 
-        // Save (FBX): embed the baked maps into the binary FBX instead of
-        // linking them by absolute path. Portable, but the file grows by the
-        // map sizes — the float EXR emission map alone is 16 bytes per texel.
-        public bool embedFbxTextures = true;
+        // Legacy serialized preference retained for compatibility. FBX output now
+        // follows the project's Mesh Lab settings, including existing saved presets.
+        public bool embedFbxTextures;
 
         // Save: bake the source root's world rotation and scale into the saved geometry
         // so the model keeps its real size and orientation with an identity transform,

@@ -121,12 +121,25 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         string folder;
+        MeshLabFbxFormat previousFormat;
+        bool previousEmbed;
 
         [SetUp]
-        public void SetUp() => Directory.CreateDirectory(folder = Path.Combine(Path.GetTempPath(), "meshlab-channel-" + Guid.NewGuid().ToString("N")));
+        public void SetUp()
+        {
+            var settings = MeshLabProjectSettings.Instance;
+            previousFormat = settings.fbxFormat; previousEmbed = settings.embedFbxTextures;
+            settings.fbxFormat = MeshLabFbxFormat.Binary; settings.embedFbxTextures = false;
+            Directory.CreateDirectory(folder = Path.Combine(Path.GetTempPath(), "meshlab-channel-" + Guid.NewGuid().ToString("N")));
+        }
 
         [TearDown]
-        public void TearDown() { if (Directory.Exists(folder)) Directory.Delete(folder, true); }
+        public void TearDown()
+        {
+            var settings = MeshLabProjectSettings.Instance;
+            settings.fbxFormat = previousFormat; settings.embedFbxTextures = previousEmbed;
+            if (Directory.Exists(folder)) Directory.Delete(folder, true);
+        }
 
         // A quad and a pentagon sharing an edge, UV0 per corner with a seam, colours per corner at full precision.
         string WriteSource(bool binary, string version = "FBX201400")
@@ -170,13 +183,16 @@ namespace SashaRX.UnityMeshLab.Tests
             return path;
         }
 
-        [TestCase(true, FbxExportIntent.UV1)]
-        [TestCase(false, FbxExportIntent.UV1)]
-        [TestCase(true, FbxExportIntent.VertexColors)]
-        [TestCase(true, FbxExportIntent.Normals)]
-        [TestCase(true, FbxExportIntent.UV1 | FbxExportIntent.VertexColors | FbxExportIntent.Normals)]
-        public void ChannelWrite_SplitsOnlyThePolygonWithANewInternalSeam(bool binary, FbxExportIntent intent)
+        [TestCase(true, FbxExportIntent.UV1, true)]
+        [TestCase(false, FbxExportIntent.UV1, false)]
+        [TestCase(true, FbxExportIntent.UV1, false)]
+        [TestCase(false, FbxExportIntent.UV1, true)]
+        [TestCase(true, FbxExportIntent.VertexColors, true)]
+        [TestCase(true, FbxExportIntent.Normals, true)]
+        [TestCase(true, FbxExportIntent.UV1 | FbxExportIntent.VertexColors | FbxExportIntent.Normals, true)]
+        public void ChannelWrite_SplitsOnlyThePolygonWithANewInternalSeam(bool binary, FbxExportIntent intent, bool outputBinary)
         {
+            MeshLabProjectSettings.Instance.fbxFormat=outputBinary?MeshLabFbxFormat.Binary:MeshLabFbxFormat.ASCII;
             string assetFolder = "Assets/MeshLabPolygonSeam_" + Guid.NewGuid().ToString("N");
             AssetDatabase.CreateFolder("Assets", assetFolder.Substring("Assets/".Length));
             string sourcePath = assetFolder + "/source.fbx";
@@ -201,7 +217,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 CollectionAssert.AreEqual(metadata, File.ReadAllBytes(sourcePath + ".meta"));
                 using var source = FbxSourceDocument.Load(Path.GetFullPath(sourcePath));
                 using var result = FbxSourceDocument.Load(output);
-                Assert.AreEqual((source.Binary, source.Major, source.Minor), (result.Binary, result.Major, result.Minor));
+                Assert.AreEqual((outputBinary, source.Major, source.Minor), (result.Binary, result.Major, result.Minor));
                 var a = source.Meshes.Single(); var b = result.Meshes.Single();
                 CollectionAssert.AreEqual(FbxStructureEdit.ControlPoints(a), FbxStructureEdit.ControlPoints(b));
                 var original = new FbxLayerChannels.Topology(a); var split = new FbxLayerChannels.Topology(b);
@@ -211,13 +227,21 @@ namespace SashaRX.UnityMeshLab.Tests
                 var newUv = FbxLayerChannels.ReadUv(FbxLayerChannels.UvElements(b)[0], split);
                 var oldColor = FbxLayerChannels.ReadColor(FbxLayerChannels.ColorElement(a), original);
                 var newColor = FbxLayerChannels.ReadColor(FbxLayerChannels.ColorElement(b), split);
+                void Preserved(double expected,double actual)
+                {
+                    // SDK Binary-to-ASCII serialization can round the last
+                    // double digit once. All same-format channels stay exact.
+                    double tolerance=binary && !outputBinary
+                        ?Math.Abs(BitConverter.Int64BitsToDouble(BitConverter.DoubleToInt64Bits(expected)+1)-expected):0;
+                    Assert.AreEqual(expected,actual,tolerance);
+                }
                 for (int c = 0; c < split.CornerCount; c++)
                 {
                     int oldCorner = c < 6 ? Array.IndexOf(original.cornerControlPoint, split.cornerControlPoint[c], 0, 4) : c - 2;
-                    Assert.AreEqual(oldUv[oldCorner * 2], newUv[c * 2]);
-                    Assert.AreEqual(oldUv[oldCorner * 2 + 1], newUv[c * 2 + 1]);
+                    Preserved(oldUv[oldCorner * 2], newUv[c * 2]);
+                    Preserved(oldUv[oldCorner * 2 + 1], newUv[c * 2 + 1]);
                     if ((intent & FbxExportIntent.VertexColors) == 0)
-                        for (int k = 0; k < 4; k++) Assert.AreEqual(oldColor[oldCorner * 4 + k], newColor[c * 4 + k]);
+                        for (int k = 0; k < 4; k++) Preserved(oldColor[oldCorner * 4 + k], newColor[c * 4 + k]);
                 }
                 AssertWrittenSeams(b, split, working, intent);
             }
@@ -604,7 +628,7 @@ namespace SashaRX.UnityMeshLab.Tests
 
         [TestCase(true)]
         [TestCase(false)]
-        public void Edit_WritesOnlyTheChangedChannelAndKeepsPolygonsAndFormat(bool binary)
+        public void Edit_WritesOnlyTheChangedChannelAndKeepsPolygonsInBinaryOutput(bool binary)
         {
             string source = WriteSource(binary), edited = Path.Combine(folder, "edited.fbx");
             double[] uv0, colorsBefore;
@@ -634,7 +658,7 @@ namespace SashaRX.UnityMeshLab.Tests
 
             using (var document = FbxSourceDocument.Load(edited))
             {
-                Assert.AreEqual(binary, document.Binary, "container format");
+                Assert.IsTrue(document.Binary, "default output is binary even for an ASCII source");
                 Assert.AreEqual((7, 4), (document.Major, document.Minor), "file version");
                 var mesh = document.Meshes[0];
                 var topology = new FbxLayerChannels.Topology(mesh);

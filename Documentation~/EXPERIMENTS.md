@@ -138,6 +138,12 @@ gate now compares overlap area, with a subdivision-invariance control. A focused
 repeat passed 206 tests with 8 optional skips and no failures. Both FBX compile
 variants passed. See [FORWARD_REVERSE_COMPARISON.md](FORWARD_REVERSE_COMPARISON.md)
 for actual UV images, metrics, overlap-coordinate witnesses and limitations.
+Main `cd8d848d` / package 1.1.42 is integrated after these captures. The shared
+FBX export policy coexists with Binary polygon-split scratch documents and
+source-format import probes. Post-merge validation passes 217 FBX tests with
+one optional skip, including the four Binary/ASCII input/output combinations;
+both reference compile variants pass. These export checks are separate from
+the UV-model results above.
 
 Continuation on PR225, baseline `30f2fd94`. The completed Kamaz chain exceeded
 the previous rectangle packer's 16-million-work limit and retained the sparse

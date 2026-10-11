@@ -81,7 +81,7 @@ exists to catch what slipped through.
 | `FbxDocumentInfo` populated: `Original_ApplicationName/Vendor` AND `LastSaved_ApplicationName/Vendor` | Empty SceneInfo is the strongest signal a metadata-stripping tool re-saved the file. `--detect-modified` flags this |
 | Scene unit = meters (or call `FbxSystemUnit::m.ConvertScene` at export) | Unity Scale Factor 0.01 breaks physics, prefab overrides, lightmap-scale, batching |
 | After `ConvertScene`: bake the compensating LclScaling into mesh CPs | SDK puts `0.01` on root child — Unity sees it but downstream batching / physics doesn't |
-| **Embed Media OFF** | Unity duplicates extracted textures into a temp dir on every reimport |
+| **Embed Media OFF by default**; explicit Binary embedding is supported through Project Settings > Mesh Lab > FBX Export. ASCII never embeds media. | External textures avoid repeated extraction on Unity reimport; enable embedding only when deliberately requested. |
 | No `FbxAnimStack`/`FbxAnimLayer` on static meshes | Max FBX exporter ships a default "Take 001" with zero-curve layers — pure overhead |
 | No orphan vertices (CPs not referenced by any polygon) | They bloat the count, push the AABB outward, break Unity bounds + lightmap-scale heuristics |
 | No degenerate polygons | Lighting glitches, lightmap artifacts |
@@ -231,7 +231,34 @@ Before merging any code that writes FBX:
 7. Skin / blendshape integrity: run `mesh->GetDeformerCount()` test; if non-zero, do not call any CP-mutating op.
 8. Names: ASCII-only.
 9. No `Take 001` empty animation stacks on static exports.
-10. No `Embed Media`.
+10. No `Embed Media` by default. Project Settings > Mesh Lab > FBX Export selects
+    the shared output format (Binary by default) and texture embedding (off by
+    default). ASCII always disables embedding. This applies to document saves,
+    hierarchy rebuilds and Remesh; a source ASCII file is written as Binary with
+    the default settings, while its FBX version and authored polygons are kept.
+    A source's embedded media is extracted into content-addressed subfolders of
+    `<output>.fbm` when embedding is off, so texture references survive temporary
+    SDK document disposal. Existing external maps are never overwritten.
+    Media subfolders use a 32-character SHA256 prefix; reuse checks the full hash.
+    Referenced project/package maps, including authored external and reused files, are imported before
+    committing the FBX write and before importing the model. If the media import
+    fails, the existing FBX and its metadata remain untouched;
+    rollback uses AssetDatabase for project/package resources. Explicit
+    embedding resolves external maps against the original FBX directory and
+    refuses a missing map before replacing the target file.
+    With embedding off, existing external texture references are also rebased
+    from the original FBX directory when writing a variant to another folder.
+    Unavailable absolute references from another platform (Windows drive/UNC
+    paths on Unix, or Unix roots on Windows) retain their authored spelling;
+    they are never treated as paths relative to the source or output directory.
+    An available local relative companion is still preferred; explicit embedding
+    refuses a foreign reference without an available local map.
+    The same spelling rule applies when only RelativeFilename/RelPath is present.
+    Foliage variant export retains ownership of newly created media after the FBX
+    commit. If a later model import/configuration or source group fails, removal
+    of each failed variant also removes its new maps and empty folders through
+    AssetDatabase; reused and authored maps remain untouched. If the failed FBX
+    itself cannot be removed, its media stays with it and cleanup reports the error.
 
 If the tool produces a file that flags ANY category in
 `patch_fbx_materials --report-file`, the tool is wrong, not the
@@ -255,22 +282,51 @@ A re-save mutates ONLY the per-vertex channels listed in the
 caller's `FbxExportIntent`. Everything else — node names,
 hierarchy, transforms, material assignments, untouched UV
 channels, vertex colors, normals, tangents — is inherited
-byte-identical from the source FBX clone (modulo what the
-Unity FBX Exporter itself rewrites at the FBX-document level;
-see §9).
+from the source FBX clone. SDK / Unity FBX Exporter document
+serialization may differ (see §9); output container format and
+texture embedding follow the shared project settings in §11.
 
 ### Channel re-save in the FBX document (UV sets, vertex colours, normals, tangents)
 
 An intent made only of `UV0`…`UV7` and `VertexColors` does not go through
 Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
 
-* The source file is loaded with the FBX SDK and saved back in its own
-  container format (binary/ASCII) and file version, with embedded media
-  re-embedded. Two exceptions: a file older than FBX 7.1 is saved as 7.1
-  (the oldest version the SDK writes), and the SDK rewrites the header's
-  creator string and timestamps. Control points, materials, nodes and properties
-  are retained. Quads and n-gons remain intact unless a new value seam runs
-  inside them; only those polygons are split as described below.
+* The source file is loaded with the FBX SDK and saved in the project's
+  selected container format (Binary by default, or ASCII), preserving its
+  file version. A file older than FBX 7.1 is saved as 7.1 (the oldest version
+  the SDK writes), and the SDK rewrites the header's creator string and
+  timestamps. Source embedded media is re-embedded only when Binary output
+  and texture embedding are selected; otherwise it is copied into
+  content-addressed subfolders of `<output>.fbm`, with texture paths updated
+  to those durable files. Existing external maps are never overwritten.
+  On Windows, long media paths use a compact hash filename directly inside
+  `<output>.fbm`, preserving the extension and checking the full content hash
+  before reuse. An output directory that cannot fit this compact name is
+  refused before creating that file. Extracted attachments must have an allowed
+  image or video extension before durable media files are created or imported;
+  scripts, plugins and importer configuration files are refused. This controls
+  Unity importer selection, not native decoder safety or content validity.
+  Temporary filename rewriting uses Binary
+  FBX: only media string properties change, all other property payloads are
+  copied with a bounded buffer, and node offsets are recomputed for the changed
+  string lengths. Geometry does not pass through an intermediate ASCII format.
+  Original media-reference discovery also streams ASCII records and seeks
+  past Binary geometry payloads using 32- or 64-bit record offsets. The
+  source document caches the discovered references across repeated saves.
+  Discovery includes `Properties70` `Path` / `RelPath` pairs when direct
+  filename records are absent, so those sources retain working external
+  references in variants and can be embedded explicitly.
+  A temporarily missing external map retains its original source-relative
+  location in a save-as variant, so restoring it beside the source restores
+  that variant's reference. Explicit embedding still requires the map to exist.
+  Temporary corner-matching probes preserve the source format and embedding
+  through `SaveForImport`; these probes are not the final output. A probe keeps
+  available embedded media without refusing stale missing external references;
+  explicit embedding in a final export still refuses missing maps.
+  Control points, smoothing, materials, nodes and properties are preserved.
+  Quads and n-gons remain intact unless a new value seam runs inside them;
+  only those polygons are split as described below, through a Binary scratch
+  document independent of the final output format.
 * Inside a written channel only the corners whose value changed are
   written; unchanged corners keep their stored doubles bit for bit. A
   by-control-point set stays by-control-point when the change allows it;
