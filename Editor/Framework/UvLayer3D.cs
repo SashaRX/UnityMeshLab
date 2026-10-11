@@ -155,7 +155,7 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < items.Count && i < entries.Count; i++)
             {
                 var item = items[i];
-                if (!item.mesh || entries[i] == null || !MeshInspection.HasOnlyTriangles(item.mesh) || !UvTopology.HasUv(item.mesh, ctx.PreviewUvChannel)) continue;
+                if (!item.mesh || item.WireOnly || entries[i] == null || !MeshInspection.HasOnlyTriangles(item.mesh) || !UvTopology.HasUv(item.mesh, ctx.PreviewUvChannel)) continue;
                 var toLocal = item.matrix.inverse;
                 Vector3 localOrigin = toLocal.MultiplyPoint3x4(origin);
                 Vector3 localDir = toLocal.MultiplyVector(direction);

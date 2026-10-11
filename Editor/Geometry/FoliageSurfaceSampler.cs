@@ -13,6 +13,7 @@ namespace SashaRX.UnityMeshLab
             internal Vector3[] samples;
             internal int[] sampleIslands;
             internal int faces, islands, generated, deduplicated, skippedDegenerate;
+            internal int retainedForIslandMinimum;
             internal double area;
             internal float spacing, minNeighbour, meanNeighbour, maxNeighbour;
         }
@@ -48,7 +49,7 @@ namespace SashaRX.UnityMeshLab
                 var points = IslandSamples((p, t, slots, areas), groups[g], result.spacing, s, g, candidateCount, token);
                 candidateCount += points.Count;
                 byIsland.Add(points);
-                // Reserve each island first, before the global spatial dedup.
+                // Visit every island's minimum first so dedup cannot spend its quota on optional samples.
                 AppendSamples(points, g, 0, s.minimumSamplesPerIsland, candidates, candidateIslands);
             }
             for (int g = 0; g < byIsland.Count; g++)
@@ -56,7 +57,7 @@ namespace SashaRX.UnityMeshLab
                 AppendSamples(byIsland[g], g, s.minimumSamplesPerIsland, byIsland[g].Count, candidates, candidateIslands);
             }
             result.generated = candidates.Count;
-            var unique = Deduplicate(candidates, candidateIslands, result.spacing * s.dedupSpacingFraction, token, out var ids);
+            var unique = Deduplicate(candidates, candidateIslands, result, s, token, out var ids);
             result.deduplicated = unique.Count;
             ApplyBudget(unique, ids, result, s);
             MeasureNeighbours(result, token);
@@ -233,22 +234,9 @@ namespace SashaRX.UnityMeshLab
         static void ApplyBudget(List<Vector3> unique, List<int> ids, Result result, FoliageNormalsSettings s)
         {
             var counts = new int[result.islands];
-            foreach (int g in ids)
-            {
-                counts[g]++;
-            }
-
-            foreach (int n in counts)
-            {
-                if (n < s.minimumSamplesPerIsland)
-                {
-                    throw new InvalidOperationException("Dedup distance prevents the minimum samples per island. Reduce dedup distance or the island minimum.");
-                }
-            }
-
+            // Dedup already retained each island's minimum; the cap must keep the same reservation.
             var keep = new List<int>();
             var extra = new List<int>();
-            Array.Clear(counts, 0, counts.Length);
             for (int i = 0; i < ids.Count; i++)
             {
                 if (counts[ids[i]]++ < s.minimumSamplesPerIsland)
@@ -324,11 +312,13 @@ namespace SashaRX.UnityMeshLab
         }
 
         static (long, long, long) Cell(Vector3 p, float cell) => ((long)Math.Floor(p.x / cell), (long)Math.Floor(p.y / cell), (long)Math.Floor(p.z / cell));
-        static List<Vector3> Deduplicate(List<Vector3> points, List<int> islands, float distance, CancellationToken token, out List<int> ids)
+        static List<Vector3> Deduplicate(List<Vector3> points, List<int> islands, Result diagnostics, FoliageNormalsSettings settings, CancellationToken token, out List<int> ids)
         {
             var grid = new Dictionary<(long, long, long), List<int>>();
             var result = new List<Vector3>();
             ids = new List<int>();
+            var counts = new int[diagnostics.islands];
+            float distance = diagnostics.spacing * settings.dedupSpacingFraction;
             float sq = distance * distance;
             for (int i = 0; i < points.Count; i++)
             {
@@ -338,13 +328,17 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 var p = points[i];
+                int island = islands[i];
                 var key = Cell(p, distance);
                 bool close = HasNearbySample(grid, result, p, key, sq);
 
-                if (close)
+                if (close && counts[island] >= settings.minimumSamplesPerIsland)
                 {
                     continue;
                 }
+
+                // Dense neighbouring cards and tiny islands still need their own surface coverage.
+                if (close) diagnostics.retainedForIslandMinimum++;
 
                 if (!grid.TryGetValue(key, out var bucket))
                 {
@@ -353,7 +347,8 @@ namespace SashaRX.UnityMeshLab
 
                 bucket.Add(result.Count);
                 result.Add(p);
-                ids.Add(islands[i]);
+                ids.Add(island);
+                counts[island]++;
             }
             return result;
         }

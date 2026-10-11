@@ -268,15 +268,19 @@ namespace SashaRX.UnityMeshLab.Tests
                 tool.SetRoot(tree.root); tool.settings = Settings(tree.leaves[0]);
                 var task = tool.pipeline.Run(tree.root, tool.settings, FoliageNormalsPipeline.Stage.Transfer);
                 yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, tool.pipeline.Status);
+                tool.OnRefresh();
+                yield return FoliageNormalsPreviewTests.AwaitPreview(tool.sourcePreview);
+                tool.SetNormalComparison(true);
                 CollectionAssert.AreEqual(new[] { 0, 1, 2 }, tool.pipeline.LodLevels);
                 for (int level = 0; level < 3; level++)
                 {
                     tool.previewLod = level; var items = new List<MeshViewport3D.Item>(); Assert.IsTrue(tool.Get3DContent(items));
-                    Assert.AreEqual(1, items.Count); Assert.AreSame(tool.pipeline.Targets[level].working, items[0].mesh);
+                    Assert.AreEqual(2, items.Count, "Keep the excluded trunk visible as source context.");
+                    Assert.IsTrue(items.Any(item => item.mesh == tool.pipeline.Targets[level].working));
                     Assert.AreEqual(3, tool.pipeline.Targets.Count); Assert.IsTrue(tool.CanApplyPreview);
                 }
             }
-            finally { tool.pipeline.Dispose(); }
+            finally { tool.sourcePreview.Dispose(); tool.pipeline.Dispose(); }
         }
     }
 }

@@ -16,27 +16,45 @@ only after a successful transfer with at least one transferred vertex.
 **Proxy shape** chooses the source surface for the same nearest-triangle normal
 transfer. **Voxel Envelope** scatters overlapping spheres, voxelizes their union
 and applies Taubin smoothing followed by isotropic surface remeshing as described below. **Sphere** and **Hemisphere**
-directly generate an indexed surface with smooth radial vertex normals; scatter,
+directly generate an indexed surface with smooth surface vertex normals; scatter,
 native voxelization, geometry smoothing and isotropic remeshing are skipped. They require no native
 remesher, and CPU/GPU projection, blend, distance limits, boundary splits,
 preview, Undo and asset saving use the common transfer/output stages.
 
-By default **Auto fit selected foliage** uses only selected triangle vertices.
+Enable **Auto fit** and choose **Fit to**. **Selected Foliage** (the default, also
+retained by older saved settings) uses only selected triangle vertices.
 A sphere is centered on their capture bounds and its radius is the greatest
 distance from that center to a selected vertex. A hemisphere's axis defaults to
 root-local +Y; its center lies on the lowest selected point's plane along that
 axis, with radius equal to the greatest selected distance from that center.
+
+**Object Bounding Box** fits the shape to the full vertex bounds of the meshes
+used to build the proxy, including their excluded submeshes. Renderer filters
+still choose those meshes; unrelated renderers and transfer-only LODs do not
+enlarge the box. With LOD0-only construction, all selected LODs receive normals
+from that same fitted proxy. The transfer mask still changes only selected faces.
+The sphere is stretched to the box's half-size on each axis (an ellipsoid); the
+hemisphere uses the full box height and puts its open equator on the box's bottom
+plane. Bounds are measured in root-local space, or along the rotated hemisphere's
+axes. Its normals follow the curved surface's inverse axis scale, rather than
+using the radial direction of a round sphere. Planar cards receive a small
+thickness after the size multiplier is applied (0.01% of the largest box
+dimension, at least 0.000001 capture units, increased when the fitted center
+requires more float precision) to keep the transfer surface valid; a zero-size
+box is rejected.
+
 **Rotation (root local)** rotates the hemisphere and its fitting axis. It has an
 open equator, with **no flat base cap**, so bottom faces cannot supply downward
 cap normals. This intentional boundary is validated separately from the closed
 voxel envelope. Points below the equator project to the curved surface or rim.
 
-**Center offset** moves the automatic center before radius fitting;
-**Radius multiplier** scales the fitted radius. Disable auto fit to enter an
+**Center offset** moves the automatic center before selected-vertex radius
+fitting; for object-bounds fitting it translates the already fitted shape.
+**Size multiplier** scales the fitted radii. Disable auto fit to enter an
 absolute root-local center and radius in capture units. **Segments** controls
 surface resolution (16–128 in multiples of four, default 64). Spheres have one
 vertex per pole and shared ring vertices; hemispheres share their equator ring.
-Normals are radial, then interpolated at the nearest proxy triangle like all
+Normals are smooth surface normals, then interpolated at the nearest proxy triangle like all
 other source modes; the final normal is not calculated directly from the target
 position. Manual sphere/hemisphere settings affect Envelope and downstream
 stages; changing source mode clears Scatter and downstream while keeping Capture.
@@ -130,8 +148,11 @@ p  = a*b0 + b*b1 + c*b2
 
 Optional source vertices and triangle centroids are added. A spatial hash removes
 samples closer than `h * dedupSpacingFraction`, checking neighbouring cells by
-actual Euclidean distance. Every island reserves its minimum first. If dedup
-prevents that minimum, the operation fails with an actionable error. After dedup,
+actual Euclidean distance. Every island reserves its minimum first. Minimum
+coverage takes priority over dedup distance: dense neighbouring cards and tiny
+islands retain their required samples even when those samples are close. Further
+samples still obey the global dedup distance. Diagnostics report how many close
+samples were retained for island coverage. After dedup,
 the primitive cap retains island minima plus a deterministic evenly distributed
 subset of the remaining samples. Counts, surface area, skipped degenerates and
 exact nearest-neighbour min/mean/max are reported. Neighbour diagnostics reuse
@@ -272,8 +293,11 @@ localNormal = normalize(M.transpose.MultiplyVector(n))
 Hemisphere alignment defaults off, matching normal theft from the proxy. Blend
 defaults to 1. Blend 0 and projection misses retain the exact original local
 normal. A cancelling blend or invalid hit counts as a miss and never writes a zero
-normal. Max distance 0 means twice the selected capture diagonal; positive values
-are explicit capture-unit distances. Zero transferred vertices fail the pipeline.
+normal. Max distance 0 means twice the selected capture diagonal. Automatic
+Object Bounding Box fitting also includes the fitted proxy bounds in that diagonal,
+so excluded source geometry can enlarge the proxy without preventing transfer.
+Positive values are explicit capture-unit distances. Zero transferred vertices fail
+the pipeline.
 
 ## Selected/excluded boundary vertices
 
@@ -295,13 +319,33 @@ Target normals are never regenerated with RecalculateNormals.
 
 ## Preview, apply and assets
 
-The shared `MeshViewport3D` supports source cards, primitive sample points, voxel
-proxy, smoothed proxy, remeshed transfer proxy, transferred cards and side-by-side before/after. Choose
-Normals shading for colour comparison. Before/after also draws cyan original and
-yellow transferred normal vectors. Primitive points are bounded to 4,096 per
-frame. **Show proxy edges** uses the viewport's cached wire drawing for the three
-proxy previews. Transient meshes use HideAndDontSave and never replace scene meshes during
-preview.
+**Follow selection** updates the Root and preview when a different tree is selected
+in the Hierarchy; choosing a LOD child resolves its LODGroup. Disable it to keep a
+manually assigned root. A source change cancels an active calculation, waits for
+its cleanup, and then displays the latest selected tree. Selecting a light, camera
+or project asset keeps the current tree. Preview works before Capture.
+
+**Selection Mask** paints the exact selected faces green when they supply the proxy,
+amber when they only receive transferred normals in another LOD, and grey when
+excluded. This includes excluded renderers for context; shared vertices on a
+selected/excluded submesh boundary do not blend the mask colours. Mask colours
+remain visible with any shared viewport shading mode. **Preview LOD** can inspect
+this selection before building the proxy.
+
+The shared `MeshViewport3D` also supports source cards, primitive sample points,
+voxel proxy, smoothed proxy, remeshed transfer proxy and transferred cards.
+**Proxy + mesh** overlays the latest available proxy as a cyan wire on the model,
+so its solid surface cannot hide the leaf cards. **Before** / **After** switch
+original and transferred normals in the same position without moving the camera;
+the proxy remains visible when switching in the combined mode. **Side by side**
+shows original on the left and transferred on the right. Choose **Normals** shading
+in the shared 3D toolbar for direction colours, or enable **Normal directions** for
+cyan original / yellow transferred arrows on selected vertices. Arrow length is
+adjustable; side-by-side mode draws both sets. Primitive points are bounded to
+4,096 per frame. **Show proxy edges** uses cached wire drawing for the three solid
+proxy previews. Source copies and selection paint are cached between changes,
+prepared outside GUI repaint, and released on source changes or deactivation.
+Transient meshes use HideAndDontSave and never replace scene meshes during preview.
 
 Apply checks captured Mesh references, a content fingerprint of all vertex streams
 and indices, bounds and import settings, matrices, material assignments and the
@@ -420,8 +464,8 @@ shader or alpha textures.
 
 The pine profile uses spacing at 4% of the selected bounds diagonal, radius
 multiplier 1.6, dedup fraction 0.01, voxel resolution 64 and three Taubin iterations
-at strength 0.5. A smaller dedup distance is needed for its densely adjacent
-islands. Finer profiles tested on this model produced invalid native topology
+at strength 0.5. This recorded profile uses a smaller dedup distance; island
+minima are now retained even for densely adjacent leaves. Finer profiles tested on this model produced invalid native topology
 (point/edge contacts); validation rejected them before Transfer. Increase
 primitive overlap or change voxel resolution when that diagnostic occurs.
 

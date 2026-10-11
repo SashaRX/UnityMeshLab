@@ -5,14 +5,14 @@ using UnityEngine;
 
 namespace SashaRX.UnityMeshLab
 {
-    // Smooth radial vertex normals are transferred with the same triangle/barycentric
+    // Smooth surface vertex normals are transferred with the same triangle/barycentric
     // semantics as the voxel proxy. The hemisphere has no flat cap to steal normals from.
     internal static class FoliageShapeProxyBuilder
     {
         internal sealed class Result
         {
             internal RemeshNative.IndexedMesh mesh;
-            internal Vector3 center, axis;
+            internal Vector3 center, axis, radii;
             internal float radius;
         }
 
@@ -26,13 +26,42 @@ namespace SashaRX.UnityMeshLab
             var axis = rotation * Vector3.up;
             var center = settings.proxyCenter;
             float radius = settings.proxyRadius;
-            if (settings.autoFitProxy)
+            bool fitBounds = settings.autoFitProxy && settings.proxyFit == FoliageProxyFit.ObjectBoundingBox;
+            if (settings.autoFitProxy && !fitBounds)
                 Fit(positions, selectedIndices, bounds, hemisphere, axis, settings.proxyRadiusScale, token, ref center, ref radius);
-            if (!FoliageTargetSnapshot.Finite(center) || !FoliageTargetSnapshot.Finite(radius) || radius <= 0)
-                throw new InvalidOperationException("Proxy fit has no finite positive radius.");
-            var mesh = CreateMesh(settings.proxySegments, hemisphere, center, radius, rotation, token);
+            var radii = fitBounds ? FitBounds(positions, hemisphere, rotation, settings.proxyRadiusScale, token, ref center) : Vector3.one * radius;
+            if (!FoliageTargetSnapshot.Finite(center) || !FoliageTargetSnapshot.Finite(radii) || radii.x <= 0 || radii.y <= 0 || radii.z <= 0)
+                throw new InvalidOperationException("Proxy fit has no finite positive radii.");
+            var mesh = CreateMesh(settings.proxySegments, hemisphere, center, radii, rotation, token);
             Validate(mesh, hemisphere, settings.proxySegments, token);
-            return new Result { mesh = mesh, center = center, radius = radius, axis = axis };
+            return new Result { mesh = mesh, center = center, radius = Mathf.Max(radii.x, radii.y, radii.z), radii = radii, axis = axis };
+        }
+
+        static Vector3 FitBounds(Vector3[] positions, bool hemisphere, Quaternion rotation,
+            float scale, CancellationToken token, ref Vector3 center)
+        {
+            if (positions.Length == 0) throw new ArgumentException("No source mesh vertices to fit the object bounding box.");
+            var inverse = Quaternion.Inverse(rotation);
+            var origin = positions[0];
+            var bounds = new Bounds(Vector3.zero, Vector3.zero);
+            for (int i = 0; i < positions.Length; i++)
+            {
+                if ((i & 4095) == 0) token.ThrowIfCancellationRequested();
+                if (!FoliageTargetSnapshot.Finite(positions[i])) throw new InvalidOperationException("Object bounding box contains non-finite vertices.");
+                bounds.Encapsulate(inverse * (positions[i] - origin));
+            }
+            var size = bounds.size;
+            float largest = Mathf.Max(size.x, size.y, size.z);
+            if (!FoliageTargetSnapshot.Finite(largest) || largest <= 0)
+                throw new InvalidOperationException("Object bounding box must have a finite positive size.");
+            var localCenter = bounds.center;
+            if (hemisphere) localCenter.y = bounds.min.y;
+            center += origin + rotation * localCenter;
+            // Planar leaf cards still need a non-degenerate surface for nearest-triangle transfer.
+            float coordinate = Mathf.Max(Mathf.Abs(center.x), Mathf.Abs(center.y), Mathf.Abs(center.z));
+            float minimum = Mathf.Max(largest * .0001f, .000001f, coordinate * .000001f);
+            return new Vector3(Mathf.Max(size.x * .5f * scale, minimum),
+                Mathf.Max(size.y * (hemisphere ? 1 : .5f) * scale, minimum), Mathf.Max(size.z * .5f * scale, minimum));
         }
 
         static void Fit(Vector3[] positions, int[] selectedIndices, Bounds bounds, bool hemisphere,
@@ -61,7 +90,7 @@ namespace SashaRX.UnityMeshLab
             return lowest;
         }
 
-        static RemeshNative.IndexedMesh CreateMesh(int segments, bool hemisphere, Vector3 center, float radius, Quaternion rotation, CancellationToken token)
+        static RemeshNative.IndexedMesh CreateMesh(int segments, bool hemisphere, Vector3 center, Vector3 radii, Quaternion rotation, CancellationToken token)
         {
             int rings = segments / (hemisphere ? 4 : 2);
             int ringCount = hemisphere ? rings : rings - 1;
@@ -73,27 +102,27 @@ namespace SashaRX.UnityMeshLab
                 normals = new Vector3[vertexCount],
                 indices = new int[triangleCount * 3]
             };
-            Vertex(mesh, 0, Vector3.up, center, radius, rotation);
-            FillRings(mesh, segments, rings, ringCount, hemisphere, center, radius, rotation, token);
+            Vertex(mesh, 0, Vector3.up, center, radii, rotation);
+            FillRings(mesh, segments, rings, ringCount, hemisphere, center, radii, rotation, token);
             FillTriangles(mesh, segments, ringCount, token);
             if (!hemisphere)
             {
                 int bottom = vertexCount - 1, lastRing = bottom - segments;
-                Vertex(mesh, bottom, Vector3.down, center, radius, rotation);
+                Vertex(mesh, bottom, Vector3.down, center, radii, rotation);
                 int index = mesh.indices.Length - segments * 3;
                 for (int j = 0; j < segments; j++) Triangle(mesh, ref index, bottom, lastRing + j, lastRing + (j + 1) % segments);
             }
             return mesh;
         }
 
-        static void Vertex(RemeshNative.IndexedMesh mesh, int v, Vector3 direction, Vector3 center, float radius, Quaternion rotation)
+        static void Vertex(RemeshNative.IndexedMesh mesh, int v, Vector3 direction, Vector3 center, Vector3 radii, Quaternion rotation)
         {
-            var n = MeshGeometry.UnitDirection(rotation * direction);
-            mesh.positions[v] = center + n * radius; mesh.normals[v] = n;
+            mesh.positions[v] = center + rotation * Vector3.Scale(direction, radii);
+            mesh.normals[v] = MeshGeometry.UnitDirection(rotation * new Vector3(direction.x / radii.x, direction.y / radii.y, direction.z / radii.z));
         }
 
         static void FillRings(RemeshNative.IndexedMesh mesh, int segments, int rings, int ringCount, bool hemisphere,
-            Vector3 center, float radius, Quaternion rotation, CancellationToken token)
+            Vector3 center, Vector3 radii, Quaternion rotation, CancellationToken token)
         {
             for (int ring = 1; ring <= ringCount; ring++)
             {
@@ -103,7 +132,7 @@ namespace SashaRX.UnityMeshLab
                 for (int j = 0; j < segments; j++)
                 {
                     double phi = Math.PI * 2 * j / segments;
-                    Vertex(mesh, 1 + (ring - 1) * segments + j, new Vector3(r * (float)Math.Cos(phi), y, r * (float)Math.Sin(phi)), center, radius, rotation);
+                    Vertex(mesh, 1 + (ring - 1) * segments + j, new Vector3(r * (float)Math.Cos(phi), y, r * (float)Math.Sin(phi)), center, radii, rotation);
                 }
             }
         }
