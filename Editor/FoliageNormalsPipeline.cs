@@ -268,6 +268,12 @@ namespace SashaRX.UnityMeshLab
             AssetDatabase.SaveAssets(); return paths.ToArray();
         }
 
+        internal string[] SaveFbx(string folder)
+        {
+            if (!CanApply) throw new InvalidOperationException("Build and transfer a current result first.");
+            return FoliageFbxExport.Save(targets, folder);
+        }
+
         internal void ClearFrom(Stage stage) { if (IsRunning) throw new InvalidOperationException("Cancel and await the run before clearing."); ClearFromCore(stage); Changed?.Invoke(); }
         void ClearFromCore(Stage stage)
         {

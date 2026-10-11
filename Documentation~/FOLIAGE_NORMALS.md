@@ -271,9 +271,45 @@ MeshFilter changes in one Undo group. Prefab instance overrides are recorded.
 Clearing previews or rebuilding cannot destroy applied meshes; Undo/Redo owns
 their scene lifetime. The hub restores only its owned temporary mesh swaps, so
 Undo/Redo, switching selection and closing Mesh Lab preserve applied scene meshes.
-Save writes unique separate `_FoliageNormals.asset` meshes
-under an Assets folder via the existing asset-folder helper. FBX files are not
-overwritten and imported normals settings are not changed.
+**Save Mesh Asset** writes unique separate `_FoliageNormals.asset` meshes under an
+Assets folder. **Save Separate FBX** writes one unique `_FoliageNormals.fbx` per
+source model into the chosen Assets folder. It requires Unity FBX Exporter
+(`com.unity.formats.fbx`); the button is disabled with an installation hint when
+that optional package is absent. Original FBX files and their importer settings
+are never overwritten. Saving does not assign new meshes or change the scene.
+
+FBX saving delegates to the existing `FbxExport.WriteChannels` / `FbxChannelWrite`
+document writer with **Normals | Tangents** intent. The SDK loads the source
+document and edits only selected foliage polygon corners' normal/tangent/binormal
+elements, using the tagged import, `FbxCornerMatch` and `FbxSpaceFit` for exact
+corner correspondence and axis/unit/pivot conversions. The submesh mask protects
+excluded corners even where positions, UVs and colours coincide. Boundary copies
+in the working Unity mesh become independent FBX corner normals; source FBX
+control points and polygons are not split or rebuilt. Existing excluded normal
+values remain exact. UV sets (including names and precision), vertex colours,
+control points, polygons, material assignments, nodes, transforms and deformers
+are inherited from the source document. New normal/tangent elements, if absent,
+must cover every corner and use the unchanged original shading on excluded faces.
+
+The new FBX inherits source import settings and material remaps, with **Normals =
+Import** and **Tangents = Import** when a tangent frame was written. Only the new
+importer is configured. A source using calculated normals is refused: switching
+the variant to imported normals could otherwise change excluded shading. Use an
+FBX source with Normals = Import and recapture; standalone/generated meshes
+without an FBX source are also refused. Ambiguous corners, inconsistent edits of
+instances of one FBX mesh and incompatible submesh layouts fail explicitly.
+Writes use the shared atomic temporary-file mechanism; failed outputs are removed.
+Repeated saves choose unique filenames. FBX serialization can change headers and
+SDK metadata; this is semantic preservation of untouched scene/mesh data, not a
+byte-identical copy of the entire file.
+
+Source Mesh Compression settings are retained on the new importer. Unity's lossy
+compression can requantize normals/tangents after their range changes, even on
+excluded faces whose stored FBX values are unchanged. The tool reports this when
+the source uses compression. The reference pine uses Low compression; document
+checks verify exact excluded FBX normals and all untouched data, and uncompressed
+throwaway imports verify their exact Unity directions. Set Mesh Compression Off
+on the new FBX for uncompressed shading; this does not edit the source model.
 
 ## Stages, cancellation and diagnostics
 

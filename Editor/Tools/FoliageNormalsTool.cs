@@ -180,7 +180,13 @@ namespace SashaRX.UnityMeshLab
                 using (new EditorGUI.DisabledScope(!pipeline.CanApply)) {
                     if (GUILayout.Button("Apply to Scene")) { pipeline.Apply(); RequestRepaint?.Invoke(); }
                     if (GUILayout.Button("Save Mesh Asset")) Save();
+                    using (new EditorGUI.DisabledScope(!FoliageFbxExport.Available))
+                    {
+                        if (GUILayout.Button("Save Separate FBX")) SaveFbx();
+                    }
                 }
+                if (!FoliageFbxExport.Available)
+                    EditorGUILayout.HelpBox("Install Unity FBX Exporter (com.unity.formats.fbx) to save a separate FBX.", MessageType.Info);
                 if (GUILayout.Button("Clear Preview")) pipeline.ClearFrom(FoliageNormalsPipeline.Stage.Capture);
             }
             if (pipeline.IsRunning && GUILayout.Button("Cancel")) pipeline.Cancel();
@@ -214,6 +220,17 @@ namespace SashaRX.UnityMeshLab
             string folder = EditorUtility.OpenFolderPanel("Save foliage meshes", Application.dataPath, ""); if (string.IsNullOrEmpty(folder)) return;
             string path = FileUtil.GetProjectRelativePath(folder);
             try { var saved = pipeline.Save(path); UvtLog.Info("[Foliage] Saved " + string.Join(", ", saved)); }
+            catch (Exception e) { UvtLog.Error("[Foliage] " + e.Message); }
+        }
+        void SaveFbx()
+        {
+            string folder = EditorUtility.OpenFolderPanel("Save separate foliage FBX", Application.dataPath, "");
+            if (string.IsNullOrEmpty(folder)) return;
+            try
+            {
+                var saved = pipeline.SaveFbx(FileUtil.GetProjectRelativePath(folder));
+                UvtLog.Info("[Foliage] Saved separate FBX: " + string.Join(", ", saved));
+            }
             catch (Exception e) { UvtLog.Error("[Foliage] " + e.Message); }
         }
         void DrawDiagnostics()

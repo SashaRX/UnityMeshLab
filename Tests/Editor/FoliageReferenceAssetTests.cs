@@ -104,6 +104,32 @@ namespace SashaRX.UnityMeshLab.Tests
                 FoliageNormalsToolTests.RenderPreview(result, target.localToCapture, Path.Combine(output, "pine-after-normals.png"), true);
                 var paths = pipeline.Save(Output);
                 AssetDatabase.ExportPackage(paths, Path.Combine(output, "Forest_pine_03_Optimized_FoliageNormals.unitypackage"), ExportPackageOptions.Default);
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+                string exportedFbx = pipeline.SaveFbx(Output)[0];
+                FoliageFbxExportTests.CheckDocuments(modelPath, exportedFbx);
+                var sourceTags = FbxChannelWrite.ImportTagged(modelPath, false, out _)[source.name];
+                var resultTags = FbxChannelWrite.ImportTagged(exportedFbx, false, out _)[source.name];
+                CollectionAssert.AreEqual(sourceTags.cornerPositions, resultTags.cornerPositions);
+                // The real asset uses Mesh Compression Low. Validate file shading via
+                // uncompressed throwaway imports, while positions retain the exact
+                // source compression settings used by the transfer correspondence.
+                var sourceShading = FbxChannelWrite.ImportTagged(modelPath, false, out _, uncompressed: true)[source.name];
+                var resultShading = FbxChannelWrite.ImportTagged(exportedFbx, false, out _, uncompressed: true)[source.name];
+                foreach (int corner in sourceTags.submeshCorners[0])
+                    Assert.AreEqual(sourceShading.normals[corner],resultShading.normals[corner],"FBX export changed trunk/branch normals.");
+                var leafIndices = result.GetIndices(1);
+                var leafNormals = new Dictionary<Vector3,Vector3>();
+                foreach (int vertex in leafIndices) leafNormals[resultPositions[vertex]] = normals[vertex];
+                foreach (int corner in sourceTags.submeshCorners[1])
+                {
+                    int at = corner*3;
+                    var position = new Vector3(resultTags.cornerPositions[at],resultTags.cornerPositions[at+1],resultTags.cornerPositions[at+2]);
+                    Assert.Greater(Vector3.Dot(leafNormals[position].normalized,resultShading.normals[corner].normalized),.999999f,"Transferred leaf normal was not preserved in FBX.");
+                }
+                File.WriteAllBytes(Path.Combine(output,"Forest_pine_03_Optimized_FoliageNormals.fbx"),File.ReadAllBytes(exportedFbx));
+                CollectionAssert.AreEqual(sourceBytes,File.ReadAllBytes(modelPath));
+                CollectionAssert.AreEqual(sourceMeta,File.ReadAllBytes(modelPath+".meta"));
+#endif
                 string firstTransfer = pipeline.TransferDiagnostics.ToString(); int firstMisses = pipeline.TransferDiagnostics.misses;
                 var remeshed = pipeline.Remeshed; settings.gpuProjection = false;
                 task = pipeline.Run(root, settings, FoliageNormalsPipeline.Stage.Transfer);
