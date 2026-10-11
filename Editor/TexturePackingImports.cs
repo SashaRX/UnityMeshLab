@@ -15,11 +15,23 @@ namespace SashaRX.UnityMeshLab
             public bool albedo;
         }
 
+        internal sealed class Transaction
+        {
+            public Action install;
+            public Action verify;
+            public Action prepareRollback;
+            public Action rollback;
+            public Action restoreImports;
+            public Action<bool> complete;
+        }
+
         private sealed class Batch
         {
             public Input[] inputs;
             public int index;
-            public Task installation;
+            public Transaction transaction;
+            public Task verification;
+            public Exception failure;
             public bool refreshBlocked;
             public readonly List<Exception> failures = new List<Exception>();
             public readonly TaskCompletionSource<bool> completion = new TaskCompletionSource<bool>();
@@ -27,20 +39,22 @@ namespace SashaRX.UnityMeshLab
 
         private static readonly Queue<Batch> Pending = new Queue<Batch>();
 
-        internal static Task Schedule(Input[] inputs)
-            => Schedule(inputs, null);
-
+        internal static Task Schedule(Input[] inputs) => Schedule(inputs, (Transaction)null);
         internal static Task Schedule(Input[] inputs, Action install)
+            => Schedule(inputs, new Transaction { install = install });
+
+        internal static Task Schedule(Input[] inputs, Transaction transaction)
         {
-            var batch = new Batch { inputs = inputs };
+            var batch = new Batch { inputs = inputs, transaction = transaction };
             try
             {
-                if (install != null)
+                if (transaction != null)
                 {
-                    // The static queue owns the refresh counter and worker even after its window closes.
                     AssetDatabase.DisallowAutoRefresh();
                     batch.refreshBlocked = true;
-                    batch.installation = Task.Run(install);
+                    try { using (new AssetDatabase.AssetEditingScope()) transaction.install?.Invoke(); }
+                    catch (Exception exception) { batch.failure = exception; }
+                    batch.verification = Task.Run(() => Verify(batch));
                 }
                 if (Pending.Count == 0) Subscribe();
                 Pending.Enqueue(batch);
@@ -50,10 +64,20 @@ namespace SashaRX.UnityMeshLab
             {
                 ReleaseRefresh(batch);
                 if (Pending.Count == 0) Unsubscribe();
-                if (batch.installation != null)
-                    _ = batch.installation.ContinueWith(finished => { _ = finished.Exception; }, TaskScheduler.Default);
+                if (batch.verification != null)
+                    _ = batch.verification.ContinueWith(finished => { _ = finished.Exception; }, TaskScheduler.Default);
                 throw;
             }
+        }
+
+        private static void Verify(Batch batch)
+        {
+            if (batch.failure == null)
+            {
+                try { batch.transaction.verify?.Invoke(); }
+                catch (Exception exception) { batch.failure = exception; }
+            }
+            if (batch.failure != null) batch.transaction.prepareRollback?.Invoke();
         }
 
         private static void Subscribe()
@@ -74,21 +98,10 @@ namespace SashaRX.UnityMeshLab
         {
             if (Pending.Count == 0) return;
             var batch = Pending.Peek();
-            if (batch.installation != null)
+            if (batch.verification != null)
             {
-                if (!batch.installation.IsCompleted) return;
-                try { batch.installation.GetAwaiter().GetResult(); }
-                catch (Exception exception)
-                {
-                    batch.failures.Add(exception);
-                    batch.index = batch.inputs.Length; // A failed transaction must never be imported.
-                    UvtLog.Error("Texture packer installation: " + exception.Message);
-                }
-                finally
-                {
-                    batch.installation = null;
-                    ReleaseRefresh(batch);
-                }
+                if (!batch.verification.IsCompleted) return;
+                FinishTransaction(batch);
             }
             if (batch.index < batch.inputs.Length)
             {
@@ -107,16 +120,51 @@ namespace SashaRX.UnityMeshLab
             if (Pending.Count == 0) Unsubscribe();
         }
 
+        private static void FinishTransaction(Batch batch)
+        {
+            try
+            {
+                try { batch.verification.GetAwaiter().GetResult(); }
+                catch (Exception exception) { AddFailure(batch, exception); }
+                if (batch.failure != null)
+                {
+                    try { using (new AssetDatabase.AssetEditingScope()) batch.transaction.rollback?.Invoke(); }
+                    catch (Exception exception) { AddFailure(batch, exception); }
+                    try { batch.transaction.restoreImports?.Invoke(); }
+                    catch (Exception exception) { AddFailure(batch, exception); }
+                }
+                try { batch.transaction.complete?.Invoke(batch.failure == null); }
+                catch (Exception exception) { AddFailure(batch, exception); }
+                if (batch.failure != null)
+                {
+                    batch.failures.Add(batch.failure);
+                    batch.index = batch.inputs.Length;
+                    UvtLog.Error("Texture packer installation: " + batch.failure.Message);
+                }
+            }
+            finally
+            {
+                batch.verification = null;
+                batch.transaction = null;
+                ReleaseRefresh(batch);
+            }
+        }
+
+        private static void AddFailure(Batch batch, Exception exception)
+        {
+            batch.failure = batch.failure == null ? exception : new AggregateException(batch.failure, exception);
+        }
+
         private static void Drain()
         {
-            // Domain reload is already a blocking Unity phase. Never leave committed assets with default import settings.
+            // Unity reload/quit is already blocking; finish verification before unloading its callbacks.
             while (Pending.Count > 0)
             {
-                var installation = Pending.Peek().installation;
-                if (installation != null && !installation.IsCompleted)
+                var verification = Pending.Peek().verification;
+                if (verification != null && !verification.IsCompleted)
                 {
-                    try { installation.GetAwaiter().GetResult(); }
-                    catch (Exception) { _ = installation.Exception; } // Tick publishes transaction failures.
+                    try { verification.GetAwaiter().GetResult(); }
+                    catch (Exception) { _ = verification.Exception; }
                 }
                 Tick();
             }
@@ -135,6 +183,7 @@ namespace SashaRX.UnityMeshLab
             var importer = AssetImporter.GetAtPath(input.path) as TextureImporter;
             if (importer == null) throw new InvalidOperationException("Unity did not create a texture importer: " + input.path);
             importer.textureType = input.normal ? TextureImporterType.NormalMap : TextureImporterType.Default;
+            if (input.normal) importer.convertToNormalmap = false;
             importer.sRGBTexture = input.albedo;
             importer.alphaSource = TextureImporterAlphaSource.FromInput;
             importer.alphaIsTransparency = input.albedo;

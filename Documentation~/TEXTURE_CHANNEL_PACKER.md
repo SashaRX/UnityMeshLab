@@ -62,9 +62,10 @@ changes during packing, save is refused so its overwrite can be confirmed again.
 Existing outputs are hashed before confirmation and verified on a worker before
 installation; preserved file sizes and timestamps do not bypass this check.
 Installation verifies the displaced backup against that snapshot and rolls back
-on a mismatch. File installation and backup hashing run on a worker with Unity
-auto-refresh temporarily held; the independent queue releases it on the editor
-thread and then imports the outputs.
+on a mismatch. File installation and rollback use short, same-update asset editing scopes.
+Backup hashing runs on a worker with Unity auto-refresh temporarily held; the
+independent queue releases it on the editor thread and then imports the outputs.
+Rollback retains recovery backups when an output has been edited externally.
 A failure installing a later file restores earlier files in the same batch.
 Source collision and Assets destination checks
 resolve symbolic links and directory junctions; replacing a hard-linked destination detaches

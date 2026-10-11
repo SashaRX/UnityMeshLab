@@ -43,6 +43,17 @@ namespace SashaRX.UnityMeshLab
             private FileStream verifiedSource;
             private DateTime verifiedCreation;
             private FileIdentity verifiedIdentity;
+            private byte[] stagedHash;
+            private long stagedLength;
+            private FileIdentity stagedIdentity;
+            private DateTime installedModified;
+            private DateTime installedCreated;
+            private FileStream rollbackSource;
+            private DateTime rollbackModified;
+            private DateTime rollbackCreated;
+            private FileIdentity rollbackIdentity;
+            private bool rollbackPrepared;
+            private Exception rollbackConflict;
 
             public PendingFile(string staged, string destination, bool existed, long length, DateTime modified)
                 : this(staged, destination, existed, length, modified, null) { }
@@ -80,6 +91,15 @@ namespace SashaRX.UnityMeshLab
 
             public void VerifyContent(CancellationToken cancellation)
             {
+                if (stagedHash == null)
+                {
+                    using (var staged = new FileStream(Staged, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
+                    {
+                        stagedLength = staged.Length;
+                        stagedHash = ContentHash(staged, cancellation);
+                        if (Path.DirectorySeparatorChar == '\\') stagedIdentity = GetIdentity(staged);
+                    }
+                }
                 if (!existed) return;
                 if (verifiedSource != null) { ValidateUnchanged(); return; }
                 var stream = new FileStream(Destination, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
@@ -110,10 +130,24 @@ namespace SashaRX.UnityMeshLab
             {
                 verifiedSource?.Dispose();
                 verifiedSource = null;
+                rollbackSource?.Dispose();
+                rollbackSource = null;
             }
 
             public void Install()
             {
+                try
+                {
+                    VerifyContent(CancellationToken.None);
+                    InstallUnverified();
+                    VerifyInstalled();
+                }
+                finally { Dispose(); }
+            }
+
+            internal void InstallUnverified()
+            {
+                if (stagedHash == null) throw new InvalidOperationException("Verify staged content before installation.");
                 ValidateUnchanged();
                 if (existed)
                 {
@@ -122,7 +156,24 @@ namespace SashaRX.UnityMeshLab
                 }
                 else File.Move(Staged, Destination); // Fails rather than replacing a late-arriving file.
                 committed = true;
-                Dispose(); // The original is now the backup; release its lease before any rollback.
+                // Retain the original's lease while the worker checks its backup; no hash runs here.
+                var installed = new FileInfo(Destination);
+                if (installed.Length != stagedLength) throw new IOException("Installed output changed: " + Destination);
+                installedModified = installed.LastWriteTimeUtc;
+                installedCreated = installed.CreationTimeUtc;
+                if (Path.DirectorySeparatorChar == '\\')
+                {
+                    using (var stream = new FileStream(Destination, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
+                    {
+                        if (!SameIdentity(stagedIdentity, GetIdentity(stream)))
+                            throw new IOException("Installed output replaced: " + Destination);
+                    }
+                }
+            }
+
+            internal void VerifyInstalled()
+            {
+                if (!committed) return;
                 if (existed && !BackupMatchesVerifiedSource())
                     throw new IOException("Output changed during installation; batch will be restored: " + Destination);
             }
@@ -134,7 +185,7 @@ namespace SashaRX.UnityMeshLab
                     if (Path.DirectorySeparatorChar == '\\')
                     {
                         var identity = GetIdentity(original);
-                        if (identity.volume != verifiedIdentity.volume || identity.low != verifiedIdentity.low || identity.high != verifiedIdentity.high)
+                        if (!SameIdentity(identity, verifiedIdentity))
                             return false;
                     }
                     return original.Length == length && HashesEqual(contentHash, ContentHash(original, CancellationToken.None));
@@ -144,41 +195,142 @@ namespace SashaRX.UnityMeshLab
             public void Rollback()
             {
                 if (!committed) return;
+                try
+                {
+                    if (!rollbackPrepared) PrepareRollback();
+                    RollbackPrepared();
+                }
+                finally { Dispose(); }
+            }
+
+            internal void PrepareRollback()
+            {
+                if (!committed) return;
+                // The verified original is now the rollback source; ReplaceFile must be able to open it for writing.
+                verifiedSource?.Dispose();
+                verifiedSource = null;
+                rollbackPrepared = true;
+                rollbackConflict = null;
+                rollbackSource?.Dispose();
+                rollbackSource = null;
+                FileStream source = null;
+                try
+                {
+                    source = new FileStream(Destination, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+                    var before = new FileInfo(Destination);
+                    if (before.LastWriteTimeUtc != installedModified || before.CreationTimeUtc != installedCreated)
+                        throw new IOException("Installed output metadata was edited; rollback will preserve it: " + Destination);
+                    if (source.Length != stagedLength || !HashesEqual(stagedHash, ContentHash(source, CancellationToken.None)))
+                        throw new IOException("Installed output was edited; rollback will preserve it: " + Destination);
+                    var after = new FileInfo(Destination);
+                    if (before.Length != after.Length || before.LastWriteTimeUtc != after.LastWriteTimeUtc ||
+                        before.CreationTimeUtc != after.CreationTimeUtc)
+                        throw new IOException("Installed output changed while preparing rollback: " + Destination);
+                    rollbackModified = after.LastWriteTimeUtc;
+                    rollbackCreated = after.CreationTimeUtc;
+                    if (Path.DirectorySeparatorChar == '\\')
+                    {
+                        rollbackIdentity = GetIdentity(source);
+                        if (!SameIdentity(rollbackIdentity, stagedIdentity))
+                            throw new IOException("Installed output was replaced; rollback will preserve it: " + Destination);
+                    }
+                    rollbackSource = source;
+                    source = null;
+                }
+                catch (Exception exception) { rollbackConflict = exception; }
+                finally { source?.Dispose(); }
+            }
+
+            internal void RollbackPrepared()
+            {
+                if (!committed) return;
+                if (!rollbackPrepared) throw new InvalidOperationException("Prepare rollback content on a worker first.");
+                if (rollbackConflict != null)
+                    throw new IOException("Rollback conflict; current output preserved and recovery backup retained: " +
+                        Destination + "; backup: " + backup, rollbackConflict);
+                var current = new FileInfo(Destination);
+                if (!current.Exists || current.Length != stagedLength || current.LastWriteTimeUtc != rollbackModified ||
+                    current.CreationTimeUtc != rollbackCreated)
+                    throw new IOException("Output changed after rollback preparation; recovery backup retained: " + backup);
+                if (Path.DirectorySeparatorChar == '\\')
+                {
+                    using (var input = new FileStream(Destination, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete))
+                    {
+                        if (!SameIdentity(GetIdentity(input), rollbackIdentity))
+                            throw new IOException("Output replaced after rollback preparation; recovery backup retained: " + backup);
+                    }
+                }
                 if (existed) File.Replace(backup, Destination, null);
                 else File.Delete(Destination); // Newly installed file, before any AssetDatabase import.
                 committed = false;
             }
+
+            private static bool SameIdentity(FileIdentity left, FileIdentity right)
+                => left.volume == right.volume && left.low == right.low && left.high == right.high;
 
             public void DiscardBackup() => Discard(backup);
         }
 
         public static void InstallBatch(IList<PendingFile> files)
         {
-            try { InstallBatchCore(files); }
-            finally { foreach (var file in files) file.Dispose(); }
-        }
-
-        private static void InstallBatchCore(IList<PendingFile> files)
-        {
-            foreach (var file in files) file.ValidateUnchanged();
             try
             {
-                foreach (var file in files) file.Install();
+                foreach (var file in files) file.VerifyContent(CancellationToken.None);
+                InstallBatchUnverified(files);
+                VerifyInstalledBatch(files);
+                CompleteBatch(files);
             }
             catch (Exception failure)
             {
-                var failures = new List<Exception> { failure };
-                for (int i = files.Count - 1; i >= 0; i--)
+                PrepareRollbackBatch(files);
+                try { RollbackBatch(files); }
+                catch (Exception rollbackFailure)
                 {
-                    try { files[i].Rollback(); }
-                    catch (Exception rollbackFailure) { failures.Add(rollbackFailure); }
+                    throw new AggregateException("Texture batch rollback failed; recovery backups were retained.", failure, rollbackFailure);
                 }
-                // Preserve backups if rollback itself fails, so the originals remain recoverable.
-                if (failures.Count > 1) throw new AggregateException("Texture batch rollback failed; backups were retained.", failures);
-                DiscardBackups(files);
                 throw;
             }
+            finally { foreach (var file in files) file.Dispose(); }
+        }
+
+        internal static void InstallBatchUnverified(IList<PendingFile> files)
+        {
+            foreach (var file in files) file.ValidateUnchanged();
+            foreach (var file in files) file.InstallUnverified();
+        }
+
+        internal static void VerifyInstalledBatch(IList<PendingFile> files)
+        {
+            foreach (var file in files) file.VerifyInstalled();
+        }
+
+        internal static void PrepareRollbackBatch(IList<PendingFile> files)
+        {
+            foreach (var file in files) file.PrepareRollback();
+        }
+
+        internal static void RollbackBatch(IList<PendingFile> files)
+        {
+            var failures = new List<Exception>();
+            for (int i = files.Count - 1; i >= 0; i--)
+            {
+                try { files[i].RollbackPrepared(); }
+                catch (Exception exception) { failures.Add(exception); }
+            }
+            if (failures.Count > 0)
+                throw new AggregateException("Texture rollback conflicts; current outputs and recovery backups were retained.", failures);
+            CompleteBatch(files);
+        }
+
+        internal static void CompleteBatch(IList<PendingFile> files)
+        {
             DiscardBackups(files);
+            foreach (var file in files)
+            {
+                file.Dispose();
+                try { Discard(file.Staged); }
+                catch (Exception exception) { UvtLog.Warn("Texture stage cleanup: " + exception.Message); }
+            }
         }
 
         public static byte[] ContentHash(string path, CancellationToken cancellation = default)

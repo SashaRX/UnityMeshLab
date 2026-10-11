@@ -74,6 +74,7 @@ namespace SashaRX.UnityMeshLab
             public bool isNormal;
             public bool isAlbedo;
             public bool existed;
+            public bool metaExisted;
             public long length;
             public DateTime modified;
             public byte[] contentHash;
@@ -531,6 +532,7 @@ namespace SashaRX.UnityMeshLab
                 var existing = new FileInfo(path);
                 requests.Add(new SaveRequest { path = path, assetPath = assetPath, build = PrepareBuild(output, Sizes[widthIndex], Sizes[heightIndex]),
                     isNormal = output == normal, isAlbedo = output == albedo, existed = existing.Exists,
+                    metaExisted = File.Exists(path + ".meta"),
                     length = existing.Exists ? existing.Length : 0, modified = existing.Exists ? existing.LastWriteTimeUtc : default });
             }
             saveCancellation = new CancellationTokenSource();
@@ -659,20 +661,56 @@ namespace SashaRX.UnityMeshLab
                 if (assetPath != null) imports.Add(new TexturePackingImports.Input
                     { path = assetPath, normal = request.isNormal, albedo = request.isAlbedo });
             }
-            // The independent queue owns installation, rollback and cleanup, even if this window closes.
-            return TexturePackingImports.Schedule(imports.ToArray(), () =>
+            return TexturePackingImports.Schedule(imports.ToArray(), new TexturePackingImports.Transaction
             {
-                try
+                install = () => TexturePackingFiles.InstallBatchUnverified(files),
+                verify = () => TexturePackingFiles.VerifyInstalledBatch(files),
+                prepareRollback = () => TexturePackingFiles.PrepareRollbackBatch(files),
+                rollback = () => TexturePackingFiles.RollbackBatch(files),
+                restoreImports = () => RestoreImports(requests),
+                complete = success =>
                 {
-                    TexturePackingFiles.InstallBatch(files);
-                    foreach (var request in requests)
+                    try
                     {
-                        request.staged = null;
-                        UvtLog.Info("Saved texture: " + request.path);
+                        if (success)
+                        {
+                            TexturePackingFiles.CompleteBatch(files);
+                            foreach (var request in requests)
+                            {
+                                request.staged = null;
+                                UvtLog.Info("Saved texture: " + request.path);
+                            }
+                        }
                     }
+                    finally { DiscardRequests(requests); }
                 }
-                finally { DiscardRequests(requests); }
             });
+        }
+
+        private static void RestoreImports(List<SaveRequest> requests)
+        {
+            var failures = new List<Exception>();
+            using (new AssetDatabase.AssetEditingScope())
+            {
+                foreach (var request in requests)
+                {
+                    if (request.assetPath == null) continue;
+                    try
+                    {
+                        if (File.Exists(request.path)) AssetDatabase.ImportAsset(request.assetPath);
+                        else if (!request.existed && !request.metaExisted && File.Exists(request.path + ".meta"))
+                        {
+                            // DeleteAsset ignores orphan metadata when the data file is already absent.
+                            // A same-scope placeholder makes Unity remove both without importing it.
+                            using (new FileStream(request.path, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+                            if (!AssetDatabase.DeleteAsset(request.assetPath))
+                                throw new IOException("Could not remove rolled-back asset metadata: " + request.assetPath);
+                        }
+                    }
+                    catch (Exception exception) { failures.Add(exception); }
+                }
+            }
+            if (failures.Count > 0) throw new AggregateException("Rollback asset reconciliation failed.", failures);
         }
 
         private static void DiscardRequests(List<SaveRequest> requests)

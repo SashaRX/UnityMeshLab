@@ -103,7 +103,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
-        public IEnumerator FailedBackgroundInstallationDoesNotStrandImportQueue()
+        public IEnumerator FailedInstallationDoesNotStrandImportQueue()
         {
             var queue = typeof(TextureChannelPackerWindow).Assembly.GetType("SashaRX.UnityMeshLab.TexturePackingImports");
             var input = queue.GetNestedType("Input", BindingFlags.NonPublic);
@@ -162,6 +162,106 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.AreEqual(1, input.Position);
             }
             finally { lease?.Dispose(); Directory.Delete(folder, true); }
+        }
+
+        [UnityTest]
+        public IEnumerator PackedNormalsDisableExistingHeightmapConversion()
+        {
+            string name = "MeshLabNormalSetting-" + Guid.NewGuid().ToString("N");
+            string folder = "Assets/" + name;
+            string path = folder + "/normal.tga";
+            AssetDatabase.CreateFolder("Assets", name);
+            try
+            {
+                using (var stream = File.Create(path))
+                    new TexturePackingImage(1, 1, new[] { new Color32(128, 128, 255, 255) }).WriteTgaRle(stream);
+                AssetDatabase.ImportAsset(path);
+                var importer = (TextureImporter)AssetImporter.GetAtPath(path);
+                importer.textureType = TextureImporterType.NormalMap;
+                importer.convertToNormalmap = true;
+                importer.SaveAndReimport();
+                var queue = typeof(TextureChannelPackerWindow).Assembly.GetType("SashaRX.UnityMeshLab.TexturePackingImports");
+                var inputType = queue.GetNestedType("Input", BindingFlags.NonPublic);
+                var input = Activator.CreateInstance(inputType);
+                inputType.GetField("path").SetValue(input, path);
+                inputType.GetField("normal").SetValue(input, true);
+                var inputs = Array.CreateInstance(inputType, 1);
+                inputs.SetValue(input, 0);
+                var schedule = queue.GetMethod("Schedule", BindingFlags.NonPublic | BindingFlags.Static,
+                    null, new[] { inputs.GetType() }, null);
+                var task = (Task)schedule.Invoke(null, new object[] { inputs });
+                double deadline = EditorApplication.timeSinceStartup + 30;
+                while (!task.IsCompleted)
+                {
+                    Assert.Less(EditorApplication.timeSinceStartup, deadline);
+                    yield return null;
+                }
+                Assert.IsFalse(task.IsFaulted);
+                Assert.IsFalse(((TextureImporter)AssetImporter.GetAtPath(path)).convertToNormalmap);
+            }
+            finally { AssetDatabase.DeleteAsset(folder); }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void RollbackPreservesExternalEditAndExistingRecoveryBackup(bool existed)
+        {
+            string folder = Path.Combine(Path.GetTempPath(), "MeshLabRollbackConflict-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(folder);
+            string path = Path.Combine(folder, "output.tga");
+            string staged = Path.Combine(folder, "staged.tga");
+            try
+            {
+                if (existed) File.WriteAllBytes(path, new byte[] { 1, 2, 3 });
+                File.WriteAllBytes(staged, new byte[] { 4, 5, 6 });
+                var info = new FileInfo(path);
+                using (var pending = new TexturePackingFiles.PendingFile(staged, path, existed,
+                    existed ? info.Length : 0, existed ? info.LastWriteTimeUtc : DateTime.MinValue))
+                {
+                    pending.Install();
+                    DateTime timestamp = File.GetLastWriteTimeUtc(path);
+                    File.WriteAllBytes(path, new byte[] { 7, 8, 9 });
+                    File.SetLastWriteTimeUtc(path, timestamp);
+                    Assert.Throws<IOException>(() => pending.Rollback());
+                    CollectionAssert.AreEqual(new byte[] { 7, 8, 9 }, File.ReadAllBytes(path));
+                    if (existed)
+                    {
+                        string backup = (string)typeof(TexturePackingFiles.PendingFile).GetField("backup",
+                            BindingFlags.NonPublic | BindingFlags.Instance).GetValue(pending);
+                        CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, File.ReadAllBytes(backup));
+                    }
+                }
+            }
+            finally { Directory.Delete(folder, true); }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void RollbackReconciliationPreservesOnlyPreexistingMetadata(bool metaExisted)
+        {
+            string name = "MeshLabRollbackMeta-" + Guid.NewGuid().ToString("N");
+            string folder = "Assets/" + name;
+            string path = folder + "/output.tga";
+            AssetDatabase.CreateFolder("Assets", name);
+            try
+            {
+                using (var stream = File.Create(path))
+                    new TexturePackingImage(1, 1, new[] { new Color32(1, 2, 3, 4) }).WriteTgaRle(stream);
+                AssetDatabase.Refresh();
+                Assert.IsTrue(File.Exists(path + ".meta"));
+                File.Delete(path);
+                var requestType = typeof(TextureChannelPackerWindow).GetNestedType("SaveRequest", BindingFlags.NonPublic);
+                var request = Activator.CreateInstance(requestType);
+                requestType.GetField("path").SetValue(request, Path.GetFullPath(path));
+                requestType.GetField("assetPath").SetValue(request, path);
+                requestType.GetField("metaExisted").SetValue(request, metaExisted);
+                var listType = typeof(System.Collections.Generic.List<>).MakeGenericType(requestType);
+                var list = (IList)Activator.CreateInstance(listType);
+                list.Add(request);
+                typeof(TextureChannelPackerWindow).GetMethod("RestoreImports", BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, new object[] { list });
+                Assert.AreEqual(metaExisted, File.Exists(path + ".meta"));
+            }
+            finally { AssetDatabase.DeleteAsset(folder); }
         }
 
         private sealed class CountingStream : MemoryStream
