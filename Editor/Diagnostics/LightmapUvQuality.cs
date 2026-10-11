@@ -12,6 +12,8 @@ namespace SashaRX.UnityMeshLab
         internal sealed class Part
         {
             internal Vector3[] positions; // World space, captured on the editor thread.
+            internal Vector3[] metricPositions; // Stored mesh corners before world-space rounding.
+            internal Matrix4x4 metricToWorld = Matrix4x4.identity;
             internal Vector2[] uv;
             internal int[] triangles;
             internal string key;
@@ -79,14 +81,14 @@ namespace SashaRX.UnityMeshLab
                 indices.Add(uv.Count); uv.Add(part.uv[b]);
                 indices.Add(uv.Count); uv.Add(part.uv[c]);
                 owners.Add((owner, f));
-                var e = part.positions[b] - part.positions[a]; var d = part.positions[c] - part.positions[a];
-                double length = Math.Sqrt(Dot(e, e));
-                double cross = CrossLength(e, d);
+                var frame = MetricFrame(part, a, b, c);
+                double length = frame.length, cross = length * frame.y;
                 if (!(length > 0 && cross > 0)) { ++report.zeroGeometryFaces; continue; }
-                double worldArea = cross * .5, x = Dot(e, d) / length, y = cross / length;
-                var u = part.uv[b] - part.uv[a]; var v = part.uv[c] - part.uv[a];
-                double j00 = u.x / length, j10 = u.y / length;
-                double j01 = (v.x - u.x * x / length) / y, j11 = (v.y - u.y * x / length) / y;
+                double worldArea = cross * .5, x = frame.x, y = frame.y;
+                double ux = (double)part.uv[b].x - part.uv[a].x, uy = (double)part.uv[b].y - part.uv[a].y;
+                double vx = (double)part.uv[c].x - part.uv[a].x, vy = (double)part.uv[c].y - part.uv[a].y;
+                double j00 = ux / length, j10 = uy / length;
+                double j01 = (vx - ux * x / length) / y, j11 = (vy - uy * x / length) / y;
                 double aa = j00 * j00 + j10 * j10, bb = j01 * j01 + j11 * j11, ab = j00 * j01 + j10 * j11;
                 double determinant = j00 * j11 - j10 * j01;
                 double maximum = (aa + bb + Math.Sqrt(Math.Max(0, (aa - bb) * (aa - bb) + 4 * ab * ab))) * .5;
@@ -215,7 +217,7 @@ namespace SashaRX.UnityMeshLab
                     var lower = p.surface.faces; var upper = parts[over].provenance.surface.faces;
                     if ((uint)relation.underFace >= (uint)lower.Length || (uint)relation.overFace >= (uint)upper.Length) continue;
                     var a = lower[relation.underFace]; var b = upper[relation.overFace];
-                    if (a != null && b != null && a.inherited && b.inherited && b.intentionalOverlap
+                    if (a != null && b != null && (a.inherited || a.projectionSupport) && b.inherited && b.intentionalOverlap
                         && a.layer < b.layer && a.chart == b.chart)
                         allowed.Add((under, relation.underFace, over, relation.overFace));
                 }
@@ -252,7 +254,8 @@ namespace SashaRX.UnityMeshLab
                     if ((f & 1023) == 0) token.ThrowIfCancellationRequested();
                     int a = part.triangles[f], b = part.triangles[f + 1], c = part.triangles[f + 2];
                     if (!Index(a, part) || !Index(b, part) || !Index(c, part)) continue;
-                    double weight = CrossLength(part.positions[b] - part.positions[a], part.positions[c] - part.positions[a]) / 6;
+                    var frame = MetricFrame(part, a, b, c);
+                    double weight = frame.length * frame.y / 6;
                     if (!(weight > 0) || double.IsInfinity(weight)) continue;
                     // Interior samples avoid making every UV seam an arbitrary nearest-face tie.
                     for (int sample = 0; sample < 3; ++sample) {
@@ -288,7 +291,8 @@ namespace SashaRX.UnityMeshLab
             for (int f = 0; f < p.triangles.Length; f += 3) {
                 int a = p.triangles[f], b = p.triangles[f + 1], c = p.triangles[f + 2];
                 if (Index(a, p) && Index(b, p) && Index(c, p)) {
-                    double area = CrossLength(p.positions[b] - p.positions[a], p.positions[c] - p.positions[a]) * .5;
+                    var frame = MetricFrame(p, a, b, c);
+                    double area = frame.length * frame.y * .5;
                     if (!double.IsNaN(area) && !double.IsInfinity(area)) sum += area;
                 }
             }
@@ -330,13 +334,13 @@ namespace SashaRX.UnityMeshLab
         static bool Finite(Vector2 p) => Finite(p.x) && Finite(p.y);
         static bool Finite(Vector3 p) => Finite(p.x) && Finite(p.y) && Finite(p.z);
         static bool Finite(float x) => !float.IsNaN(x) && !float.IsInfinity(x);
-        static double Dot(Vector3 a, Vector3 b) => (double)a.x * b.x + (double)a.y * b.y + (double)a.z * b.z;
+        static (double length, double x, double y) MetricFrame(Part part, int a, int b, int c)
+        {
+            var positions = part.metricPositions ?? part.positions;
+            return TransferUvQuality.WorldFrame(positions[a], positions[b], positions[c],
+                part.metricPositions == null ? Matrix4x4.identity : part.metricToWorld);
+        }
         static double Cross(Vector2 origin, Vector2 edge, Vector2 point) => ((double)edge.x - origin.x) * ((double)point.y - origin.y)
             - ((double)edge.y - origin.y) * ((double)point.x - origin.x);
-        static double CrossLength(Vector3 a, Vector3 b)
-        {
-            double x = (double)a.y * b.z - (double)a.z * b.y, y = (double)a.z * b.x - (double)a.x * b.z, z = (double)a.x * b.y - (double)a.y * b.x;
-            return Math.Sqrt(x * x + y * y + z * z);
-        }
     }
 }

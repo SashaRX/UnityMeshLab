@@ -40,7 +40,104 @@
 
 ## Progressive reverse atlas — 2026-10-09
 
+### Current-LOD underlays and triangulation-independent strips — 2026-10-11
+
+Same progressive Reverse experiment on PR225, baseline `eccca7d1`. The attached
+raised-rim and new same-LOD underlay controls both reproduce failures in the old
+overlap path. New detail can now inherit UVs from newly introduced lower geometry
+in its own LOD. Lower dependencies are resolved geometrically before mapping;
+normal, ambiguity, metric and complete footprint checks remain active. Coplanar
+independent renderers remain separate. Optional projection refusal restores its
+allocated UVs and dependent detail instead of leaving an unclassified overlap.
+The additive `projectionSupport` provenance is understood by the independent
+audit and Viewer as well as the transfer's ordered contact graph.
+
+UV-plane subdivisions replace tessellation-dependent cuts on unpublished seed
+charts and newly unsupported finer geometry. Barycentric source maps compose
+through donor and junction cuts; original material order is retained. Neighbouring
+pieces may rejoin as a compact rectangle and new strips align to their compact
+axis when rotation is enabled. Inherited family members are not recut or moved
+independently. Ordinary source repacking retains its existing-edge cutting path;
+the interim attempt to share interior cuts with the legacy matcher regressed
+Kamaz's forward distortion and was removed before publication.
+
+The final packing improvement rasterizes the union of all triangles in each
+family across the LOD chain. A padded ring can admit an unrelated smaller family
+inside its hole; a duplicated overlay remains at the same transformed coordinates
+as its underlying faces. This is a same-size improvement of the valid rectangle
+placement, not a claim of optimal packing. Metric/contact validation still checks
+actual exported coordinates; placements unable to improve extent skip expensive
+geometry validation.
+
+Research, invariants and executable control details:
+[REVERSE_UV_UNDERLAYS.md](REVERSE_UV_UNDERLAYS.md). The 45-case control run passes,
+including compactness and source-area tests, sparse T triangulation, three scales,
+reflection, stacked underlays, renderer order and actual post-packing UV equality.
+The first long corpus attempt was cancelled after exposing repeated validation
+work; its partial passes are not reported as full regression validation.
+Final corpus results follow after the complete fresh run.
+
 ### Scalable shared-family final packing — 2026-10-11
+
+Continuation after the paired Forward/Reverse visual comparison rejected the
+Kamaz and Kitchen results. The seed, new-chart rescue, projection metric,
+refinement comparison and final export audit now use source-local triangle
+corners transformed in double precision. BVH positions still share the same
+relative world frame. Rounding those positions before measuring a nearly
+collinear face could change its intrinsic metric and make a valid working
+layout fail the exported-mesh audit. Neither positive-area faces nor vertex
+attributes are removed to hide this failure; the stretch limit remains 4.
+
+Independent rescue triangles test their actual placement before reserving a
+seed cell. Fragile charts have priority near the atlas origin. The footprint
+packer also starts from validated family coordinates and moves families
+individually, so one immovable family does not discard every other improvement.
+A refused optional density increase retains the tighter valid layout. Rectangle
+packing cannot replace an existing layout with worse bbox cost at equal density;
+a rectangle refusal still permits compaction of the validated triangle union.
+
+Private paired captures at 10/32 tex/m remain distinct from acceptance tests:
+they record a refused mode instead of calling it a successful Reverse result.
+The intermediate source-metric run completes both Kitchen policies at 32 tex/m
+with no collapsed faces or unexpected overlaps, but its 11.5/11.6% LOD0 bbox
+fills are still unacceptable. Kitchen at 10 tex/m still refuses a thin seed
+face. Final family fallback/compaction results and the frozen corpus gate must
+be checked before publishing this continuation.
+
+Refined source frames are reconstructed from editor-thread snapshots rather
+than reading Mesh accessors on the projection worker. Viewer assessment also
+retains the original local corners and transform: converting the whole mesh to
+Float32 world positions first manufactured stretch on the thin captured faces.
+Zero-length geometric edges keep the existing degenerate classification.
+
+Final family candidates are rigid transforms or one common scale. Their 1%
+relative derivative preservation gate now applies to texel-resolved triangles;
+when both old and new minimum altitudes fit the configured subpixel boundary
+tolerance, Float32 metric drift may pass the absolute stretch limit instead.
+Every positive-area, winding and ordered-overlap check still runs. This does
+not permit independently moving a detail away from its underlay or dropping
+tiny source faces. The private model and frozen corpus results must still
+validate this resolution-dependent placement policy.
+
+Completed continuation artifacts: `_results~/reverse-model-repair-20261011/texel-policy/`.
+Kitchen at 32 tex/m now fills 40.9/45.6% in exclusive/overlap modes, with zero
+collapsed faces or unexpected overlaps; Cafe retains its accepted result.
+Kamaz overlap fills 50.1%, but exclusive packing remains unacceptable at
+34.1% (10.0% at 10 tex/m), and a junction trial still loses inheritance. Kitchen
+at 10 tex/m retains a positive-area seed refusal. These are explicit remaining
+defects; this continuation does not complete arbitrary-model Transfer quality.
+
+Donor seam precision now reserves one Float32 spacing in the actual seed atlas
+rather than eight spacings in the maximum configured capacity. Local emitted
+geometry and composed barycentric mappings are audited before accepting cuts.
+The nine-asset inherited-area gate passed without relaxing its threshold;
+DressingTable recovered above its frozen acceptance threshold. The complete
+affected run had 632 passes, 4 skips and one pair-count failure. Subdivision
+changed that count while preserving the same overlap area. The frozen Forward
+gate now compares overlap area, with a subdivision-invariance control. A focused
+repeat passed 206 tests with 8 optional skips and no failures. Both FBX compile
+variants passed. See [FORWARD_REVERSE_COMPARISON.md](FORWARD_REVERSE_COMPARISON.md)
+for actual UV images, metrics, overlap-coordinate witnesses and limitations.
 
 Continuation on PR225, baseline `30f2fd94`. The completed Kamaz chain exceeded
 the previous rectangle packer's 16-million-work limit and retained the sparse

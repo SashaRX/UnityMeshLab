@@ -104,6 +104,22 @@ namespace SashaRX.UnityMeshLab.Tests
             => Assert.Throws<InvalidOperationException>(() => FbxPolygonSplit.Plan(new[] { 4 }, new[] { true, false, true, false }, triangles));
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        [TestCase(false)] [TestCase(true)]
+        public void SplitMaterialSelectionIncludesEveryExpandedCorner(bool keepQuads)
+        {
+            var tag=new FbxChannelWrite.Tagged {cornerPositions=new float[7*3],
+                submeshCorners=new[] {keepQuads?new[] {0,1,2,3}:new[] {0,1,2,0,2,3},new[] {4,5,6}},
+                submeshFaceSizes=new[] {keepQuads?4:3,3}};
+            var plan=FbxPolygonSplit.Plan(new[] {4,3},new[] {true,false,true,false,false,false,false},tag.TriangleCorners());
+            FbxChannelWrite.ExpandTag(tag,plan,7);
+            CollectionAssert.AreEquivalent(Enumerable.Range(0,6).ToArray(),tag.submeshCorners[0]);
+            CollectionAssert.AreEqual(new[] {6,7,8},tag.submeshCorners[1]);
+            Assert.IsTrue(tag.submeshFaceSizes.All(s=>s==3));
+            for(int s=0;s<tag.submeshCorners.Length;++s)
+                for(int i=0;i<tag.submeshCorners[s].Length;++i)
+                    Assert.That(plan.corners[tag.submeshCorners[s][i]],s==0?Is.LessThan(4):Is.GreaterThanOrEqualTo(4));
+        }
+
         string folder;
 
         [SetUp]

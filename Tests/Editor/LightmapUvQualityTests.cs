@@ -47,6 +47,27 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.Less(r.packingScore, 30); Assert.AreEqual(100, r.stretchScore);
         }
 
+        [TestCase(300f)] [TestCase(1000000f)]
+        public void CapturedViewerMetricMatchesExportAuditBeforeWorldRounding(float offset)
+        {
+            var mesh = new Mesh();
+            try {
+                mesh.vertices = new[] { new Vector3(40.123456f,23.23456f,1),
+                    new Vector3(40.234567f,23.45678f,1), new Vector3(40.34567f,23.67891f,1) };
+                mesh.triangles = new[] { 0,1,2 };
+                mesh.uv2 = new[] { new Vector2(.23f,.47f), new Vector2(.2303f,.4706f), new Vector2(.2306f,.47123f) };
+                var before = TransferMeshSnapshot.Capture(mesh);
+                var matrix = Matrix4x4.TRS(new Vector3(offset,offset,-offset),Quaternion.Euler(18,27,9),new Vector3(2,.3f,-1));
+                var part = UvToolHub.CaptureQualityPart(mesh,null,matrix,1);
+                var viewer = LightmapUvQuality.Measure(new[] { part });
+                var exported = TransferUvQuality.Measure(mesh,mesh.uv2,Vector2.one,matrix);
+                Assert.AreEqual(0,viewer.invalidFaces + viewer.collapsedFaces + viewer.zeroGeometryFaces);
+                Assert.AreEqual(exported.worstAnisotropy,viewer.worstStretch,1e-9);
+                CollectionAssert.AreEqual(before,TransferMeshSnapshot.Capture(mesh));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
         [TestCase(0)] [TestCase(1)]
         public void StretchDetectsEitherAxisAndDoesNotConfuseDensityWithShape(int axis)
         {
@@ -348,7 +369,8 @@ namespace SashaRX.UnityMeshLab.Tests
         [Serializable] sealed class FrozenLayout
         {
             public int lod; public string key;
-            public Vector3[] positions; public Vector2[] uv; public int[] indices;
+            public Vector3[] positions, metricPositions; public Matrix4x4 metricToWorld;
+            public Vector2[] uv; public int[] indices;
         }
 
         [TestCase(false)] [TestCase(true)]
@@ -362,7 +384,8 @@ namespace SashaRX.UnityMeshLab.Tests
             var provenance = ReverseUvAudit.Provenance(audit.report).Select(JsonUtility.FromJson<ReverseUvAudit.ProvenanceEntry>).ToArray();
             var parts = Directory.GetFiles(directory, "lod*.json").Select(path => {
                 var layout = JsonUtility.FromJson<FrozenLayout>(File.ReadAllText(path));
-                return new LightmapUvQuality.Part { positions = layout.positions, uv = layout.uv, triangles = layout.indices,
+                return new LightmapUvQuality.Part { positions = layout.positions, metricPositions = layout.metricPositions,
+                    metricToWorld = layout.metricToWorld, uv = layout.uv, triangles = layout.indices,
                     sourceKey = layout.key, key = UvToolContext.ExtractGroupKey(layout.key),
                     provenance = provenance.Single(p => p.surface.lod == layout.lod && p.surface.key == layout.key) };
             }).ToArray();

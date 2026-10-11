@@ -80,6 +80,43 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(before,TransferMeshSnapshot.Capture(target));
         }
 
+        [Test]
+        public void ForwardProjectionDoesNotCountFallbackVerticesAsInherited()
+        {
+            var source=Quad();var target=Quad();var before=Snapshot(target);
+            var report=ReverseUvTransfer.DescribeForwardProjection(target,source,new[] {0,-1,0,-1});
+            Assert.AreEqual(4,report.verticesTotal);
+            Assert.AreEqual(2,report.verticesTransferred);
+            CollectionAssert.AreEqual(new[] {0,-1,0,-1},report.vertexToSourceShell);
+            CollectionAssert.AreEqual(before,Snapshot(target));
+        }
+
+        [Test]
+        public void RaisingCapacityDoesNotRefuseRepresentableSeamsInTheWorkingAtlas()
+        {
+            var donor=new Mesh {name="Narrow donor rim",vertices=new[] {Vector3.zero,new Vector3(.0001f,0,0),
+                new Vector3(.0001f,1,0),Vector3.up,new Vector3(.0001f,0,0),Vector3.right,
+                new Vector3(1,1,0),new Vector3(.0001f,1,0)},triangles=new[] {0,1,2,0,2,3,4,5,6,4,6,7},
+                uv2=new[] {new Vector2(.1f,.1f),new Vector2(.10003f,.1f),new Vector2(.10003f,.4f),new Vector2(.1f,.4f),
+                    new Vector2(.6f,.1f),new Vector2(.89997f,.1f),new Vector2(.89997f,.4f),new Vector2(.6f,.4f)}};
+            owned.Add(donor);var target=Quad();var before=Snapshot(target);
+            Mesh previous=null;
+            foreach(int capacity in new[] {256,4096}) {
+                using var result=ReverseUvTransfer.Build(new[] {Level(1,donor),Level(0,target)},
+                    new ReverseUvTransfer.Options {seedResolution=128,maxAtlasSize=capacity}).GetAwaiter().GetResult();
+                Assert.Greater(result.report.splitSourceFaces,0);
+                Assert.AreEqual(1,Area(result.meshes[1][0]),1e-6);
+                var quality=TransferUvQuality.Measure(result.meshes[1][0],result.meshes[1][0].uv2,Vector2.one,Matrix4x4.identity);
+                Assert.AreEqual(0,quality.invalidFaces+quality.degenerateFaces+quality.overlapPairs);
+                if(previous) {
+                    CollectionAssert.AreEqual(previous.triangles,result.meshes[1][0].triangles);
+                    CollectionAssert.AreEqual(previous.uv2,result.meshes[1][0].uv2);
+                }
+                previous=Object.Instantiate(result.meshes[1][0]);owned.Add(previous);
+            }
+            CollectionAssert.AreEqual(before,Snapshot(target));
+        }
+
         [TestCase(false)] [TestCase(true)]
         public void CrossingFacesInheritBothChartsAndKeepSurfaceAndAttributes(bool overlap)
         {
@@ -380,6 +417,7 @@ namespace SashaRX.UnityMeshLab.Tests
                                     try
                                     {
                                         trial.audit=ReverseUvAudit.Write(result,prepared.inputs.levels);
+                                        TransferBenchmarkExport.Reverse(BenchmarkRecorder.OutputDirectoryOverride,result,prepared.inputs.levels);
                                         var audit=JsonUtility.FromJson<ReverseUvAudit.Audit>(File.ReadAllText(trial.audit));
                                         trial.inheritedAreaFraction=audit.levels.Last().inheritedAreaFraction;
                                         trial.atlas=result.report.atlasSize; trial.accepted=true;
@@ -391,6 +429,8 @@ namespace SashaRX.UnityMeshLab.Tests
                             else if(baseline.accepted)
                             {
                                 if(!trial.accepted) regressions.Add(path+", overlap="+overlap+": "+trial.error);
+                                else if(trial.inheritedAreaFraction<baseline.inheritedAreaFraction*.99-1e-5)
+                                    regressions.Add(path+", overlap="+overlap+": inherited area regressed beyond 1% of the baseline");
                                 else if(!finalPacking && (trial.inheritedAreaFraction<baseline.inheritedAreaFraction-1e-5 || trial.atlas>baseline.atlas))
                                     regressions.Add(path+", overlap="+overlap+": inherited area or atlas regressed");
                                 else

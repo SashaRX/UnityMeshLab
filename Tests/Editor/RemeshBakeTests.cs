@@ -1354,6 +1354,27 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreSame(original.lightmapRefs[0], combined.lightmapRefs[1]);
             Assert.AreEqual(rebased.positions[7], combined.positions[15]);
         }
+        [TestCase(1e-5f)] [TestCase(-1e-5f)]
+        public void HierarchyDonorAcceptsRepresentableSmallScales(float scale)
+        {
+            var original=SheetAndRod(10,false);
+            original.rendererLayer=new int[2];
+            original.uv2=new Vector2[original.positions.Length];
+            original.lightmapRefs=Array.Empty<RemeshSource.LightmapRef>();
+            for(int i=0;i<original.positions.Length;++i) {original.normals[i]=Vector3.forward;original.tangents[i]=new Vector4(1,0,0,1);}
+            var before=(Vector3[])original.positions.Clone();
+            var transform=Matrix4x4.Scale(Vector3.one*scale);
+            var rebased=original.InSpace(transform,1);
+            Assert.AreEqual(scale<0?-1:1,rebased.tangents[0].w);
+            for(int i=0;i<before.Length;++i) Assert.AreEqual(transform.MultiplyPoint3x4(before[i]),rebased.positions[i]);
+            var combined=RemeshSource.Combine(new[] {(original,transform)},Vector3.up);
+            CollectionAssert.AreEqual(rebased.positions,combined.positions);
+            CollectionAssert.AreEqual(before,original.positions);
+            Assert.Throws<InvalidOperationException>(()=>original.InSpace(Matrix4x4.Scale(new Vector3(0,1,1)),1));
+            var invalid=Matrix4x4.identity;invalid.m00=float.NaN;
+            Assert.Throws<InvalidOperationException>(()=>original.InSpace(invalid,1));
+        }
+
         static void Cube(out Vector3[] positions, out int[] indices, bool inverted)
         {
             positions = new[] { new Vector3(0,0,0), new Vector3(1,0,0), new Vector3(1,1,0), new Vector3(0,1,0),

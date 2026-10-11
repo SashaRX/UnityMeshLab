@@ -16,38 +16,39 @@ namespace SashaRX.UnityMeshLab
             internal Vector2 min, max;
             internal int rescueFace = -1;
             internal double rescueWidth, rescueHeight;
+            internal (double length,double x,double y) rescueFrame;
         }
 
         internal static Vector2[] Place(Vector3[] positions, Vector2[] pixels, List<ReverseUvTransfer.Surface[]> previous,
             ReverseUvTransfer.Surface[] current, ReverseUvTransfer.Options options, float width, float height, CancellationToken token,
-            bool[] fallback = null, float density = 0)
+            bool[] fallback = null, float density = 0,(double length,double x,double y)[] frames=null)
         {
-            var baseline = TryPlace(positions, pixels, previous, current, options, width, height, token, null, 0);
+            var baseline = TryPlace(positions, pixels, previous, current, options, width, height, token, null, 0,frames);
             if (baseline != null && fallback != null)
             {
-                ReverseUvNewCharts.Stabilize(positions, baseline, fallback, density, options.maxAnisotropy, token: token);
+                ReverseUvNewCharts.Stabilize(positions, baseline, fallback, density, options.maxAnisotropy, token: token,frames:frames);
                 // A different valid rescue placement can change the next LOD's
                 // correspondence. Preserve every already successful layout.
                 bool valid = true;
                 for (int f = 0; f < fallback.Length && valid; ++f)
                 {
                     int t = f * 3;
-                    if (fallback[f]) valid = ReverseUvTransfer.TriangleAnisotropy(positions[t], positions[t+1], positions[t+2],
+                    if (fallback[f]) valid = ReverseUvTransfer.TriangleAnisotropy(ReverseUvNewCharts.Frame(positions,t,frames),
                         baseline[t], baseline[t+1], baseline[t+2]) <= options.maxAnisotropy;
                 }
                 if (valid) return baseline;
             }
             else if (baseline != null) return baseline;
             var repaired = fallback != null && fallback.Any(f => f)
-                ? TryPlace(positions, pixels, previous, current, options, width, height, token, fallback, density) : null;
+                ? TryPlace(positions, pixels, previous, current, options, width, height, token, fallback, density,frames) : null;
             return repaired ?? throw new InvalidOperationException("New reverse UV charts cannot fit within the configured atlas limit.");
         }
 
         static Vector2[] TryPlace(Vector3[] positions, Vector2[] pixels, List<ReverseUvTransfer.Surface[]> previous,
             ReverseUvTransfer.Surface[] current, ReverseUvTransfer.Options options, float width, float height, CancellationToken token,
-            bool[] fallback, float density)
+            bool[] fallback, float density,(double length,double x,double y)[] frames)
         {
-            var islands = Islands(positions, pixels, fallback, density);
+            var islands = Islands(positions, pixels, fallback, density,frames);
             int side = Mathf.NextPowerOfTwo(Mathf.CeilToInt(Math.Max(width, height)));
             for (; side <= options.maxAtlasSize; side *= 2)
             {
@@ -65,7 +66,7 @@ namespace SashaRX.UnityMeshLab
                 {
                     if (island.rescueFace >= 0)
                     {
-                        if (!PlaceRescue(island, positions, output, rows, options, density, token, ref work))
+                        if (!PlaceRescue(island, output, rows, options, density, token, ref work))
                         { complete = false; break; }
                         continue;
                     }
@@ -91,7 +92,7 @@ namespace SashaRX.UnityMeshLab
             return null;
         }
 
-        static bool PlaceRescue(Island island, Vector3[] positions, Vector2[] output,
+        static bool PlaceRescue(Island island, Vector2[] output,
             List<(int start, int end)>[] rows, ReverseUvTransfer.Options options, float density,
             CancellationToken token, ref long work)
         {
@@ -102,7 +103,7 @@ namespace SashaRX.UnityMeshLab
                 int iw = turn == 0 ? innerWidth : innerHeight, ih = turn == 0 ? innerHeight : innerWidth;
                 int w = iw + options.padding * 2, h = ih + options.padding * 2;
                 Vector2[] selected = null;
-                bool Accept(int x, int y) => ReverseUvNewCharts.TryPlaceTriangle(positions, island.rescueFace * 3,
+                bool Accept(int x, int y) => ReverseUvNewCharts.TryPlaceTriangle(island.rescueFrame,
                     density, options.maxAnisotropy, new Vector2(x + options.padding, y + options.padding), iw, ih, out selected);
                 if (!Find(rows, w, h, options.padding, token, ref work, out int left, out int bottom, Accept)) continue;
                 Array.Copy(selected, 0, output, island.rescueFace * 3, 3);
@@ -112,7 +113,7 @@ namespace SashaRX.UnityMeshLab
             return false;
         }
 
-        static List<Island> Islands(Vector3[] positions, Vector2[] pixels, bool[] fallback, float density)
+        static List<Island> Islands(Vector3[] positions, Vector2[] pixels, bool[] fallback, float density,(double length,double x,double y)[] frames)
         {
             var union = new DisjointSet(pixels.Length / 3);
             var edges = new Dictionary<((Vector3, Vector2), (Vector3, Vector2)), int>();
@@ -139,13 +140,14 @@ namespace SashaRX.UnityMeshLab
                     if (fallback != null && fallback[f])
                     {
                         island.rescueFace = f;
-                        int t = f * 3, basis = 0; double longest = 0;
+                        island.rescueFrame=ReverseUvNewCharts.Frame(positions,f*3,frames);
+                        int basis = 0; double longest = 0;
                         for (int k = 0; k < 3; ++k)
                         {
-                            var candidate = ReverseUvTransfer.TriangleFrame(positions[t+k],positions[t+(k+1)%3],positions[t+(k+2)%3]);
+                            var candidate = ReverseUvNewCharts.CyclicFrame(island.rescueFrame,k);
                             if (candidate.length > longest) { longest = candidate.length; basis = k; }
                         }
-                        var frame = ReverseUvTransfer.TriangleFrame(positions[t+basis],positions[t+(basis+1)%3],positions[t+(basis+2)%3]);
+                        var frame = ReverseUvNewCharts.CyclicFrame(island.rescueFrame,basis);
                         island.rescueWidth = frame.length * density;
                         island.rescueHeight = frame.y * density;
                     }

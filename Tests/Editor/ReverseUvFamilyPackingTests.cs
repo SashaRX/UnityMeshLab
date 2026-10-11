@@ -184,12 +184,27 @@ namespace SashaRX.UnityMeshLab.Tests
                 mesh.uv2=new[] {new Vector2(.23f,.47f),new Vector2(.2303f,.4706f),new Vector2(.2306f,.47123f)};
                 var transform=Matrix4x4.TRS(new Vector3(300,30,-400),Quaternion.Euler(18,27,9),new Vector3(2,.3f,-1));
                 var p=mesh.vertices;var uv=mesh.uv2;
-                double packed=TransferUvQuality.TriangleAnisotropy(transform.MultiplyVector(p[1]-p[0]),transform.MultiplyVector(p[2]-p[0]),uv[0],uv[1],uv[2]);
+                double packed=ReverseUvTransfer.TriangleAnisotropy(p[0],p[1],p[2],uv[0],uv[1],uv[2],transform);
+                double rounded=TransferUvQuality.TriangleAnisotropy(transform.MultiplyVector(p[1]-p[0]),transform.MultiplyVector(p[2]-p[0]),uv[0],uv[1],uv[2]);
                 var measured=TransferUvQuality.Measure(mesh,uv,Vector2.one,transform);
                 Assert.AreEqual(0,measured.invalidFaces);Assert.AreEqual(0,measured.degenerateFaces);
                 Assert.AreEqual(measured.worstAnisotropy,packed);
+                Assert.That(Math.Abs(rounded-packed),Is.GreaterThan(.1),"Rounding transformed edges before the metric must remain detectable.");
             }
             finally {UnityEngine.Object.DestroyImmediate(mesh);}
+        }
+
+        [Test]
+        public void SubpixelFamilyMovesKeepAbsoluteStretchAndCollapseGuards()
+        {
+            var options=new ReverseUvTransfer.Options {boundaryToleranceTexels=.25f,relativeStretchTolerance=.01f,maxAnisotropy=4};
+            Assert.IsTrue(ReverseUvFinalPacking.MetricFits(1.05,1,.00001,.000011,options));
+            Assert.IsFalse(ReverseUvFinalPacking.MetricFits(1.05,1,1,1,options));
+            Assert.IsFalse(ReverseUvFinalPacking.MetricFits(4.1,1,.00001,.000011,options));
+            Assert.IsFalse(ReverseUvFinalPacking.MetricFits(double.PositiveInfinity,1,.00001,0,options));
+            Assert.IsFalse(ReverseUvFinalPacking.MetricFits(1.05,1,.00001,0,options));
+            options.boundaryToleranceTexels=0;
+            Assert.IsFalse(ReverseUvFinalPacking.MetricFits(1.05,1,.00001,.000011,options));
         }
     }
 }

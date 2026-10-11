@@ -16,7 +16,7 @@ namespace SashaRX.UnityMeshLab
             var donorPositions=source.vertices;
             var positions=target.vertices;var indices=target.triangles;var uv=target.uv2;
             var result=new GroupedShellTransfer.TransferResult {
-                uv2=uv,vertexToSourceShell=sources,verticesTotal=positions.Length,verticesTransferred=positions.Length,
+                uv2=uv,vertexToSourceShell=sources,verticesTotal=positions.Length,verticesTransferred=sources.Count(v=>v>=0),
                 targetShellToSourceShell=new int[shells.Count],targetShellMethod=new int[shells.Count],
                 targetShellCentroids=new Vector3[shells.Count],targetShellMatchDistSqr=new float[shells.Count],
                 targetShellStatus=new GroupedShellTransfer.ShellStatus[shells.Count],targetShellIssues=new int[shells.Count],

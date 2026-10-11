@@ -247,8 +247,7 @@ namespace SashaRX.UnityMeshLab
                             for (int i = 0; i < t.Length; ++i) t[i] = new Vector4(1, 0, 0, 1);
                         }
                         var transform = worldToSpace * renderer.localToWorldMatrix;
-                        if (Mathf.Abs(transform.determinant) < 1e-12f) throw new InvalidOperationException("Zero-scale source transform.");
-                        var normalTransform = transform.inverse.transpose;
+                        var normalTransform = NormalTransform(transform);
                         float sign = transform.determinant < 0 ? -1 : 1;
                         int first = positions.Count;
                         int rendererId = rendererToSpace.Count;
@@ -453,6 +452,19 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
+        static Matrix4x4 NormalTransform(Matrix4x4 transform)
+        {
+            for(int i=0;i<16;++i)
+                if(float.IsNaN(transform[i]) || float.IsInfinity(transform[i]))
+                    throw new InvalidOperationException("Nonfinite source transform.");
+            var inverse=transform.inverse;
+            if(inverse==Matrix4x4.zero) throw new InvalidOperationException("Singular source transform.");
+            for(int i=0;i<16;++i)
+                if(float.IsNaN(inverse[i]) || float.IsInfinity(inverse[i]))
+                    throw new InvalidOperationException("Source inverse is not representable.");
+            return inverse.transpose;
+        }
+
         // FilterSmallParts replaces streams rather than editing their elements.
         // A separate wrapper therefore preserves the pre-filter donor without
         // duplicating texture pixels or the unchanged vertex streams.
@@ -467,10 +479,8 @@ namespace SashaRX.UnityMeshLab
         /// Keep that node's diagonal so projection distances retain their meaning.</summary>
         internal RemeshSource InSpace(Matrix4x4 transform, float nodeDiagonal)
         {
-            if (Mathf.Abs(transform.determinant) < 1e-12f)
-                throw new InvalidOperationException("Zero-scale donor transform.");
             var copy = CopyForFiltering();
-            var normalTransform = transform.inverse.transpose;
+            var normalTransform = NormalTransform(transform);
             float sign = transform.determinant < 0 ? -1 : 1;
             copy.positions = new Vector3[positions.Length];
             copy.normals = new Vector3[normals.Length];

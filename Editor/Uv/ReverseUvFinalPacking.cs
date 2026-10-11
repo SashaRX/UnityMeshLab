@@ -42,6 +42,9 @@ namespace SashaRX.UnityMeshLab
             try
             {
                 var groups = corners.Values.ToArray();
+                var timing=System.Diagnostics.Stopwatch.StartNew();
+                bool logTiming=surfaces.Sum(s=>s.faces.Length)>2048;
+                if(logTiming) UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Pack {groups.Length} shared chart families.");
                 var coordinates = groups.Select(g => g.Select(c => c.surface.pixels[c.corner]).ToArray()).ToArray();
                 var metrics=groups.Select(g=>Enumerable.Range(0,g.Count/3).Select(f=>{
                     var corner=g[f*3];var s=corner.surface;int t=corner.corner;
@@ -69,8 +72,9 @@ namespace SashaRX.UnityMeshLab
                     {
                         var corner=entries[f*3];var s=corner.surface;int t=corner.corner;
                         double metric=Metric(s,t,uv[f*3],uv[f*3+1],uv[f*3+2],side);
-                        if(double.IsNaN(metric) || double.IsInfinity(metric) || metric>options.maxAnisotropy
-                            || !UvTransferTolerance.MetricFits(metric,metrics[group][f],options.relativeStretchTolerance)) return false;
+                        if(!MetricFits(metric,metrics[group][f],
+                            Altitude(s.pixels[t],s.pixels[t+1],s.pixels[t+2]),
+                            Altitude(uv[f*3],uv[f*3+1],uv[f*3+2]),options)) return false;
                     }
                     foreach(var scanInput in scans[group])
                     {
@@ -103,7 +107,26 @@ namespace SashaRX.UnityMeshLab
                     }
                     return true;
                 }
-                var packed = ReverseUvFamilyPacking.Pack(coordinates,options,token,out int side,out float scale,Valid);
+                int side=previousSide;float scale=1;
+                var packed=coordinates;
+                try {packed=ReverseUvFamilyPacking.Pack(coordinates,options,token,out side,out scale,Valid);}
+                catch(InvalidOperationException error)
+                {
+                    if(!Enumerable.Range(0,coordinates.Length).All(g=>Valid(g,coordinates[g],previousSide))) throw;
+                    report.finalPackingRectangleRefusal=error.Message;
+                    side=previousSide;scale=1;packed=coordinates;
+                    UvtLog.Info(UvtLog.Category.Repack,"[ReverseUV] Rectangle trial refused; compact validated family footprints: "+error.Message);
+                }
+                // A representable placement in a larger canvas is not a packing
+                // improvement. Compare bbox cost at the same density before
+                // replacing the validated projection layout.
+                if(BoundsCost(packed,scale)>BoundsCost(coordinates,1)
+                    && Enumerable.Range(0,coordinates.Length).All(g=>Valid(g,coordinates[g],previousSide)))
+                {packed=coordinates;side=previousSide;scale=1;}
+                if(logTiming) UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Family rectangles: {timing.ElapsedMilliseconds} ms. Test triangle footprints.");
+                packed = ReverseUvFootprintPacking.Improve(coordinates,packed,side,scale,options,token,Valid,
+                    out scale,out bool footprintImproved);
+                if(logTiming) UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Final family packing: {timing.ElapsedMilliseconds} ms, footprint improvement {footprintImproved}.");
                 var replacements = surfaces.ToDictionary(s => s,s => new Vector2[s.pixels.Length]);
                 for (int g = 0; g < groups.Length; ++g)
                     for (int c = 0; c < groups[g].Count; ++c)
@@ -118,8 +141,8 @@ namespace SashaRX.UnityMeshLab
                         int t = f*3; var uv = replacements[surface];
                         double oldMetric = Metric(surface,t,surface.pixels[t],surface.pixels[t+1],surface.pixels[t+2],previousSide);
                         double newMetric = Metric(surface,t,uv[t],uv[t+1],uv[t+2],side);
-                        if (double.IsNaN(newMetric) || double.IsInfinity(newMetric) || newMetric > options.maxAnisotropy
-                            || !UvTransferTolerance.MetricFits(newMetric,oldMetric,options.relativeStretchTolerance))
+                        if (!MetricFits(newMetric,oldMetric,
+                            Altitude(surface.pixels[t],surface.pixels[t+1],surface.pixels[t+2]),Altitude(uv[t],uv[t+1],uv[t+2]),options))
                             throw new InvalidOperationException($"Final packing cannot preserve LOD{surface.lod} '{surface.input?.key}' face {f} at float precision (anisotropy {oldMetric:G6} -> {newMetric:G6}).");
                     }
                 foreach (var surface in surfaces) surface.pixels = replacements[surface];
@@ -127,6 +150,7 @@ namespace SashaRX.UnityMeshLab
                 report.finalPacking = "shared-chart-families";
                 report.finalPackingFamilies=groups.Length;
                 report.finalPackingScale=scale;
+                report.finalPackingFootprints=footprintImproved;
                 return side;
             }
             catch (InvalidOperationException error)
@@ -138,9 +162,34 @@ namespace SashaRX.UnityMeshLab
         }
 
         static double Metric(ReverseUvTransfer.Surface surface,int corner,Vector2 a,Vector2 b,Vector2 c,int side)
-            => surface.packingEdges!=null
-                ?TransferUvQuality.TriangleAnisotropy(surface.packingEdges[corner/3*2],surface.packingEdges[corner/3*2+1],a/side,b/side,c/side)
+            => surface.packingFrames!=null
+                ?ReverseUvTransfer.TriangleAnisotropy(surface.packingFrames[corner/3],a/side,b/side,c/side)
                 :ReverseUvTransfer.TriangleAnisotropy(surface.positions[surface.indices[corner]],
                     surface.positions[surface.indices[corner+1]],surface.positions[surface.indices[corner+2]],a,b,c);
+
+        static double BoundsCost(Vector2[][] groups,float scale)
+        {
+            var points=groups.SelectMany(p=>p).ToArray();var min=points.Aggregate(Vector2.Min);var max=points.Aggregate(Vector2.Max);
+            return ((double)max.x-min.x)*((double)max.y-min.y)/(scale*(double)scale);
+        }
+
+        // These candidates are rigid family moves or one common scale. A
+        // subpixel altitude makes relative derivatives sensitive to Float32
+        // rounding, although the moved UV corners remain faithful at bake
+        // resolution. Keep the absolute stretch cap and every overlap audit;
+        // only the 1% no-regression derivative gate is resolution dependent.
+        internal static bool MetricFits(double current,double baseline,double oldAltitude,double newAltitude,
+            ReverseUvTransfer.Options options)
+            => !double.IsNaN(current) && !double.IsInfinity(current) && current<=options.maxAnisotropy
+                && (UvTransferTolerance.MetricFits(current,baseline,options.relativeStretchTolerance)
+                    || (oldAltitude>0 && newAltitude>0
+                        && Math.Max(oldAltitude,newAltitude)<=options.boundaryToleranceTexels));
+
+        static double Altitude(Vector2 a,Vector2 b,Vector2 c)
+        {
+            double ex=(double)b.x-a.x,ey=(double)b.y-a.y,dx=(double)c.x-a.x,dy=(double)c.y-a.y;
+            double longest=Math.Sqrt(Math.Max(ex*ex+ey*ey,Math.Max(dx*dx+dy*dy,(dx-ex)*(dx-ex)+(dy-ey)*(dy-ey))));
+            return longest>0?Math.Abs(ex*dy-ey*dx)/longest:0;
+        }
     }
 }

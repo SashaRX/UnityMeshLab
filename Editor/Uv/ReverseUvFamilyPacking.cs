@@ -176,7 +176,7 @@ namespace SashaRX.UnityMeshLab
             return (maxX-minX)*(maxY-minY);
         }
 
-        static double MinimumAltitude(Vector2[] points)
+        internal static double MinimumAltitude(Vector2[] points)
         {
             double minimum=double.MaxValue;
             for (int i=0;i<points.Length;i+=3)

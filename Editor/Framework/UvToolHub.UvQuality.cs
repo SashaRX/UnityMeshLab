@@ -95,7 +95,8 @@ namespace SashaRX.UnityMeshLab
 
         internal static LightmapUvQuality.Part CaptureQualityPart(Mesh mesh, MeshEntry entry, Matrix4x4 transform, int channel)
         {
-            var positions = mesh.vertices;
+            var metricPositions = mesh.vertices;
+            var positions = metricPositions.ToArray();
             for (int i = 0; i < positions.Length; ++i) positions[i] = transform.MultiplyPoint3x4(positions[i]);
             var coordinates = new List<Vector2>(); mesh.GetUVs(channel, coordinates);
             var indices = new List<int>();
@@ -114,7 +115,8 @@ namespace SashaRX.UnityMeshLab
             ReverseUvAudit.ProvenanceEntry provenance = null;
             if (channel == 1 && !string.IsNullOrEmpty(entry?.reverseTransferJson))
                 provenance = JsonUtility.FromJson<ReverseUvAudit.ProvenanceEntry>(entry.reverseTransferJson);
-            return new LightmapUvQuality.Part { positions = positions, uv = coordinates.ToArray(), triangles = indices.ToArray(),
+            return new LightmapUvQuality.Part { positions = positions, metricPositions = metricPositions, metricToWorld = transform,
+                uv = coordinates.ToArray(), triangles = indices.ToArray(),
                 key = entry?.meshGroupKey ?? mesh.name, sourceKey = entry?.fbxMesh ? entry.fbxMesh.name : mesh.name, provenance = provenance };
         }
 

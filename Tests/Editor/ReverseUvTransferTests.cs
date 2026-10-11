@@ -438,6 +438,64 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(allow, saved.overlaps.Length > 0);
         }
 
+        [TestCase(false)] [TestCase(true)]
+        public void AttachedRaisedDetailKeepsItsUnderlyingUvEvenWithSharedRim(bool overlap)
+        {
+            var detail = new Mesh {name="Attached detail", vertices=new[] {Vector3.zero, new Vector3(.5f,.5f,.02f),Vector3.up},
+                triangles=new[] {0,1,2},uv=new[] {Vector2.zero,new Vector2(.5f,.5f),Vector2.up}};
+            detail.RecalculateNormals(); owned.Add(detail);
+            using var result=Build(Options(overlap),Level(1,Quad()),Level(0,Quad(),detail));
+            var face=result.report.nodes[2].faces[0];
+            Assert.AreEqual(overlap,face.inherited,"A raised detail attached to the underlying rim is still a valid projection.");
+            Assert.AreEqual(overlap,face.intentionalOverlap);
+            if(!overlap) return;
+            var parent=result.meshes[1][0]; var output=result.meshes[1][1];
+            var origin=parent.uv2[0]; var u=parent.uv2[1]-origin; var v=parent.uv2[3]-origin;
+            for(int i=0;i<output.vertexCount;++i)
+                Assert.Less((output.uv2[i]-origin-u*output.vertices[i].x-v*output.vertices[i].y).magnitude,1e-6);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void NewDetailProjectsOntoNewSameLodUnderlayBeforeFinalPacking(bool overlap)
+        {
+            var seed=Quad(); var underlay=Quad(3); var detail=Quad(3.25f,.02f,.25f);
+            var settings=Options(overlap);settings.repackFinalAtlas=true;settings.fillFinalAtlas=true;
+            using var result=Build(settings,Level(1,seed),Level(0,underlay,detail));
+            var node=result.report.nodes[2];
+            Assert.AreEqual(overlap ? 2 : 0,node.overlapFaces);
+            Assert.AreEqual(overlap ? 0 : 2,node.newFaces);
+            if(!overlap) return;
+            Assert.IsTrue(node.faces.All(f=>f.inherited && f.parentLod==0 && f.parentMesh==0));
+            var parent=result.meshes[1][0];var output=result.meshes[1][1];
+            var origin=parent.uv2[0];var u=parent.uv2[1]-origin;var v=parent.uv2[3]-origin;
+            for(int i=0;i<output.vertexCount;++i)
+                Assert.Less((output.uv2[i]-origin-u*(output.vertices[i].x-3)-v*output.vertices[i].y).magnitude,1e-6,
+                    "Packing must move the detail and its underlay with the same rigid mapping.");
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void NewUnderlayLayersFollowGeometryWhenRendererOrderIsReversed(bool reverse)
+        {
+            var under=Quad(3);var middle=Quad(3.25f,.02f,.25f);var top=Quad(3.25f,.04f,.25f);
+            var parts=reverse?new[] {top,middle,under}:new[] {under,middle,top};
+            var saved=parts.Select(TransferMeshSnapshot.Capture).ToArray();
+            using var result=Build(Options(true),Level(1,Quad()),Level(0,parts));
+            var middleNode=result.report.nodes[2];var topNode=result.report.nodes[reverse?1:3];
+            Assert.IsTrue(middleNode.faces.All(f=>f.inherited && f.intentionalOverlap && f.layer==1));
+            Assert.IsTrue(topNode.faces.All(f=>f.inherited && f.intentionalOverlap && f.layer==2));
+            Assert.AreEqual(reverse?2:0,middleNode.faces[0].parentMesh);
+            Assert.AreEqual(1,topNode.faces[0].parentMesh);
+            for(int i=0;i<parts.Length;++i) CollectionAssert.AreEqual(saved[i],TransferMeshSnapshot.Capture(parts[i]));
+        }
+
+        [Test]
+        public void CoplanarNewRenderersAreNotInventedAsAnUnderlayRelation()
+        {
+            using var result=Build(Options(true),Level(1,Quad()),Level(0,Quad(3),Quad(3)));
+            Assert.AreEqual(4,result.report.newFaces);Assert.AreEqual(0,result.report.overlapFaces);
+            Assert.IsEmpty(result.report.overlaps);
+        }
+
         [Test] public void OverlapLayerSurvivesTheNextProjection()
         {
             var seed = Quad(); var middle = new[] { Quad(), Quad(.25f, .02f, .25f) };
@@ -660,6 +718,21 @@ namespace SashaRX.UnityMeshLab.Tests
             var task = ReverseUvTransfer.Build(new[] { Level(1,Quad()),Level(0,Quad()) }, Options(), true);
             while (!task.IsCompleted) yield return null;
             using var result = task.GetAwaiter().GetResult(); Assert.AreEqual(2,result.report.inheritedFaces); Clean(result.meshes[1][0]);
+        }
+
+        [Test] public void RefinedMetricUsesCapturedArraysOnTheProjectionWorker()
+        {
+            var surface = new ReverseUvTransfer.Surface {
+                input = new ReverseUvTransfer.Input {toWorld = Matrix4x4.identity},
+                sourcePositions = new[] {Vector3.zero,Vector3.right,Vector3.up}, sourceIndices = new[] {0,1,2},
+                sourceFaces = new[] {0,0}, faces = new[] {new ReverseUvTransfer.Face(),new ReverseUvTransfer.Face()},
+                sourceBarycentrics = new[] {Vector3.right,Vector3.up,new Vector3(.5f,0,.5f),
+                    new Vector3(.5f,0,.5f),Vector3.up,Vector3.forward}
+            };
+            System.Threading.Tasks.Task.Run(()=>ReverseUvTransfer.RefreshMetricFrames(surface)).GetAwaiter().GetResult();
+            Assert.AreEqual(2,surface.metricFrames.Length);
+            Assert.AreEqual(.5,surface.metricFrames[0].length*surface.metricFrames[0].y,1e-12);
+            Assert.AreEqual(.5,surface.metricFrames[1].length*surface.metricFrames[1].y,1e-12);
         }
 
         [UnityTest] public IEnumerator FrozenCapturesProduceIndependentReverseBenchReports()
@@ -1099,6 +1172,33 @@ namespace SashaRX.UnityMeshLab.Tests
             var baseline=ReverseUvAtlasPlacement.Place(positions,pixels,previous,current,options,128,128,default);
             var guarded=ReverseUvAtlasPlacement.Place(positions,pixels,previous,current,options,128,128,default,new[] {true,true},1);
             CollectionAssert.AreEqual(baseline,guarded);
+        }
+
+        [TestCase(10)] [TestCase(32)]
+        public void SeedPackingRetainsCapturedKitchenThinFaceBeforeLargeCharts(int density)
+        {
+            var positions=new List<Vector3> {
+                new Vector3(-.700723529f,.0639223382f,-.188836977f),
+                new Vector3(-.70027411f,.0639223307f,-.188836962f),
+                new Vector3(-.013632426f,.0639104322f,-.188823327f)};
+            var uv=new List<Vector2> {Vector2.zero,Vector2.zero,Vector2.zero};
+            for(int q=0;q<40;++q)
+                foreach(int k in new[] {0,1,2,0,2,3})
+                {
+                    var p=new[] {Vector2.zero,Vector2.right,Vector2.one,Vector2.up}[k];
+                    positions.Add(new Vector3(p.x+q*3,p.y,1));uv.Add(p+Vector2.right*(q*3+10));
+                }
+            var source=positions.ToArray();var original=uv.ToArray();
+            var pixels=ReverseUvSeedPacking.Prepare(source,original,density,true,
+                new ReverseUvTransfer.Options {padding=2,seedResolution=256},default,out int side);
+            Assert.AreEqual(source.Length,pixels.Length,"A positive-area sliver must not be silently discarded.");
+            Assert.IsTrue(MeshGeometry.HasArea(source[0],source[1],source[2]));
+            Assert.Less(ReverseUvTransfer.TriangleAnisotropy(source[0],source[1],source[2],pixels[0]/side,pixels[1]/side,pixels[2]/side),1.05);
+            var mesh=new Mesh {vertices=source.Take(3).ToArray(),triangles=new[] {0,1,2}};owned.Add(mesh);
+            var quality=TransferUvQuality.Measure(mesh,pixels.Take(3).Select(p=>p/side).ToArray(),Vector2.one,Matrix4x4.identity);
+            Assert.AreEqual(0,quality.degenerateFaces);Assert.Less(quality.worstAnisotropy,1.05,
+                "Export audit and placement must use the same geometry metric.");
+            CollectionAssert.AreEqual(positions,source);CollectionAssert.AreEqual(uv,original);
         }
 
         [TestCase(0)] [TestCase(32)]

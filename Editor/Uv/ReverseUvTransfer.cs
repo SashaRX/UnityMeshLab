@@ -40,6 +40,8 @@ namespace SashaRX.UnityMeshLab
             internal Matrix4x4 toWorld = Matrix4x4.identity;
             internal string key;
             internal int[] sourceFaces, removedSourceFaces;
+            internal Vector3[] sourceBarycentrics;
+            internal int splitSourceFaces;
         }
 
         internal sealed class Level
@@ -53,12 +55,14 @@ namespace SashaRX.UnityMeshLab
             public int chart, parentLod = -1, parentMesh = -1, parentFace = -1;
             public int overlayMesh = -1, overlayFace = -1, layer;
             public bool inherited, intentionalOverlap, ambiguous, localFallback;
+            public bool projectionSupport;
             public float distance;
             public int group;
             public string rejection;
             public string cutRefusal;
             internal bool protectedInheritance;
             internal HashSet<Face> overlapParents;
+            internal Face Copy() => (Face)MemberwiseClone();
         }
 
         [Serializable] internal sealed class NodeReport
@@ -87,8 +91,10 @@ namespace SashaRX.UnityMeshLab
             public List<ReverseUvCorrespondenceGraph.Edge> edges = new List<ReverseUvCorrespondenceGraph.Edge>();
             public string refinementRefusal;
             public string seedPacking, seedPackingRefusal;
+            public bool finalPackingFootprints;
             public bool seedChartRotation;
             public string finalPacking, finalPackingRefusal;
+            public string finalPackingRectangleRefusal;
             public int finalPackingFamilies;
             public float finalPackingScale;
         }
@@ -118,6 +124,8 @@ namespace SashaRX.UnityMeshLab
             internal Input input;
             internal Vector3[] positions;
             internal int[] indices;
+            internal Vector3[] sourcePositions;
+            internal int[] sourceIndices;
             internal Vector2[] pixels;
             internal Face[] faces;
             internal int lod, node;
@@ -125,7 +133,8 @@ namespace SashaRX.UnityMeshLab
             internal int[] sourceFaces;
             internal Vector3[] sourceBarycentrics;
             internal int splitSourceFaces;
-            internal Vector3[] packingEdges;
+            internal (double length,double x,double y)[] packingFrames;
+            internal (double length,double x,double y)[] metricFrames;
         }
 
         internal sealed class Chart
@@ -166,6 +175,9 @@ namespace SashaRX.UnityMeshLab
                         await Task.Run(() => Project(donor, targets, options, token), token);
                     else Project(donor, targets, options, token);
                     AppendNew(targets, all, density, options, ref width, ref height, ref nextChart, token);
+                    if (useAsync)
+                        await Task.Run(() => ProjectNewUnderlays(targets, options, token), token);
+                    else ProjectNewUnderlays(targets, options, token);
                     RecordOverlapRelations(targets, result.report, options, token);
                     if (Math.Max(width, height) > options.maxAtlasSize)
                         throw new InvalidOperationException("Reverse UV atlas exceeds the configured size limit; no result was published.");
@@ -188,8 +200,8 @@ namespace SashaRX.UnityMeshLab
                             : ReverseUvRefinedMesh.Copy(surface.input.mesh, surface.sourceFaces, surface.sourceBarycentrics, normalized);
                         var node = new NodeReport { lod = surface.lod, key = surface.input.key, faces = surface.faces,
                             sourceFaces = surface.sourceFaces.Select(f => surface.input.sourceFaces == null ? f : surface.input.sourceFaces[f]).ToArray(),
-                            removedSourceFaces = surface.input.removedSourceFaces, splitSourceFaces = surface.splitSourceFaces,
-                            sourceBarycentrics = surface.sourceBarycentrics,
+                            removedSourceFaces = surface.input.removedSourceFaces, splitSourceFaces = surface.splitSourceFaces + surface.input.splitSourceFaces,
+                            sourceBarycentrics = ReportBarycentrics(surface),
                             seed = surface.lod == levels[0].lod };
                         foreach (var face in surface.faces)
                         {
@@ -249,12 +261,11 @@ namespace SashaRX.UnityMeshLab
                     token.ThrowIfCancellationRequested();
                     var mesh=result.meshes[level][surface.node];
                     var positions=mesh.vertices;var indices=mesh.triangles;
-                    surface.packingEdges=new Vector3[surface.faces.Length*2];
+                    surface.packingFrames=new (double,double,double)[surface.faces.Length];
                     for(int f=0;f<surface.faces.Length;++f)
                     {
                         int t=f*3;var a=positions[indices[t]];
-                        surface.packingEdges[f*2]=surface.input.toWorld.MultiplyVector(positions[indices[t+1]]-a);
-                        surface.packingEdges[f*2+1]=surface.input.toWorld.MultiplyVector(positions[indices[t+2]]-a);
+                        surface.packingFrames[f]=TransferUvQuality.WorldFrame(a,positions[indices[t+1]],positions[indices[t+2]],surface.input.toWorld);
                     }
                 }
         }
@@ -297,6 +308,23 @@ namespace SashaRX.UnityMeshLab
 
         // One translated world frame for the entire chain. Subtract translation
         // in double before rounding positions to float for the BVH/unwrap.
+        static Vector3[] ReportBarycentrics(Surface surface)
+        {
+            var source=surface.input.sourceBarycentrics;
+            if(source==null) return surface.sourceBarycentrics;
+            var result=new Vector3[surface.faces.Length*3];
+            for(int f=0;f<surface.faces.Length;++f)
+                for(int k=0;k<3;++k)
+                {
+                    int t=surface.sourceFaces[f]*3;
+                    var b=surface.sourceBarycentrics==null
+                        ? (k==0?Vector3.right:k==1?Vector3.up:Vector3.forward)
+                        :surface.sourceBarycentrics[f*3+k];
+                    result[f*3+k]=source[t]*b.x+source[t+1]*b.y+source[t+2]*b.z;
+                }
+            return result;
+        }
+
         internal static Vector3[] RelativePositions(Input input, Vector3 origin, int lod = -1)
         {
             var local = input.mesh.vertices;
@@ -336,11 +364,32 @@ namespace SashaRX.UnityMeshLab
                     throw new InvalidOperationException("Reverse UV prototype supports 1–250000 triangles per input.");
                 var positions = RelativePositions(input, origin, level.lod);
                 surfaces[node] = new Surface { input = input, indices = indices, positions = positions,
+                    sourcePositions = input.mesh.vertices, sourceIndices = indices.ToArray(),
                     pixels = new Vector2[indices.Length], faces = Enumerable.Range(0, indices.Length / 3).Select(_ => new Face()).ToArray(),
                     sourceFaces = Enumerable.Range(0, indices.Length / 3).ToArray(),
                     lod = level.lod, node = node, orientation = Math.Sign(LinearDeterminant(input.toWorld)) };
+                RefreshMetricFrames(surfaces[node]);
             }
             return surfaces;
+        }
+
+        internal static void RefreshMetricFrames(Surface surface)
+        {
+            // Seam refinement also runs on the projection worker. Only use the
+            // source arrays captured on the editor thread, never Mesh accessors.
+            var vertices=surface.sourcePositions;var triangles=surface.sourceIndices;
+            surface.metricFrames=new (double,double,double)[surface.faces.Length];
+            var local=new Vector3[3];
+            for(int f=0;f<surface.faces.Length;++f)
+            {
+                int source=surface.sourceFaces[f]*3;
+                for(int k=0;k<3;++k)
+                {
+                    var b=surface.sourceBarycentrics==null?(k==0?Vector3.right:k==1?Vector3.up:Vector3.forward):surface.sourceBarycentrics[f*3+k];
+                    local[k]=vertices[triangles[source]]*b.x+vertices[triangles[source+1]]*b.y+vertices[triangles[source+2]]*b.z;
+                }
+                surface.metricFrames[f]=TransferUvQuality.WorldFrame(local[0],local[1],local[2],surface.input.toWorld);
+            }
         }
 
         static void InitializeSeed(Surface[] seed, Options options, ref int nextChart, CancellationToken token)
@@ -612,7 +661,9 @@ namespace SashaRX.UnityMeshLab
                 if(under.s.faces[under.f].layer>over.s.faces[over.f].layer) { var swap=under; under=over; over=swap; }
                 var parent=under.s.faces[under.f]; var detail=over.s.faces[over.f];
                 if(!options.preserveProjectedOverlap || !IsOrderedOverlap(parent,detail))
-                    throw new InvalidOperationException("Reverse UV overlap has no ordered intentional ancestry.");
+                    throw new InvalidOperationException($"Reverse UV overlap has no ordered intentional ancestry: LOD{under.s.lod} "
+                        +$"'{under.s.input.key}' face {under.f} (chart {parent.chart}, layer {parent.layer}, inherited {parent.inherited}, support {parent.projectionSupport}) / "
+                        +$"'{over.s.input.key}' face {over.f} (chart {detail.chart}, layer {detail.layer}, inherited {detail.inherited}, support {detail.projectionSupport}, rejection {detail.rejection}).");
                 report.overlaps.Add(new OverlapRelation {lod=under.s.lod,underMesh=under.s.node,underFace=under.f,overMesh=over.s.node,overFace=over.f});
             }
         }
@@ -646,14 +697,14 @@ namespace SashaRX.UnityMeshLab
                 .ThenBy(i => refs[i].s.faces[refs[i].f].distance).ThenBy(i => i))
             {
                 var (s, f) = refs[i]; var face = s.faces[f];
-                if (!face.inherited) continue;
+                if (!face.inherited && !face.projectionSupport) continue;
                 if (conflicts[i] != null)
                     foreach (int other in conflicts[i])
                     {
                         if (!accepted[other]) continue;
                         var (parent, pf) = refs[other];
                         var parentFace = parent.faces[pf];
-                        if (!options.preserveProjectedOverlap || face.chart != parentFace.chart || SharedEdge(s, f, parent, pf))
+                        if (!options.preserveProjectedOverlap || face.chart != parentFace.chart || SharedCoplanarEdge(s, f, parent, pf))
                         { face.inherited = false; face.ambiguous = true; face.rejection = "overlap"; break; }
                         if (face.overlapParents == null) face.overlapParents = new HashSet<Face>();
                         face.overlapParents.Add(parentFace);
@@ -664,7 +715,7 @@ namespace SashaRX.UnityMeshLab
                         face.intentionalOverlap = true;
                         face.layer = Math.Max(face.layer, parentFace.layer + 1);
                     }
-                accepted[i] = face.inherited;
+                accepted[i] = face.inherited || face.projectionSupport;
             }
         }
 
@@ -672,18 +723,21 @@ namespace SashaRX.UnityMeshLab
         {
             var under = a.layer < b.layer ? a : b;
             var over = a.layer < b.layer ? b : a;
-            return under.inherited && over.inherited && under.chart == over.chart
+            return (under.inherited || under.projectionSupport) && over.inherited && under.chart == over.chart
                 && under.layer < over.layer && over.intentionalOverlap
                 && over.overlapParents != null && over.overlapParents.Contains(under);
         }
 
-        static bool SharedEdge(Surface a, int fa, Surface b, int fb)
+        static bool SharedCoplanarEdge(Surface a, int fa, Surface b, int fb)
         {
             int shared = 0;
             for (int i = 0; i < 3; ++i)
                 for (int j = 0; j < 3; ++j)
                     if (a.positions[a.indices[fa * 3 + i]].Equals(b.positions[b.indices[fb * 3 + j]])) { ++shared; break; }
-            return shared >= 2;
+            if (shared < 2) return false;
+            var normal = Normal(a, fa); var origin = a.positions[a.indices[fa * 3]];
+            double span = Enumerable.Range(0,3).Max(k => (a.positions[a.indices[fa*3+k]]-origin).magnitude);
+            return Enumerable.Range(0,3).All(k => Math.Abs(Vector3.Dot(b.positions[b.indices[fb*3+k]]-origin,normal)) <= span*1e-6);
         }
 
         static RemeshNative.Geometry Atlas(Surface[] surfaces, bool inheritedOnly = false)
@@ -693,7 +747,7 @@ namespace SashaRX.UnityMeshLab
                 for (int f = 0; f < s.faces.Length; ++f)
                     for (int k = 0; k < 3; ++k)
                     {
-                        pixels.Add(inheritedOnly && !s.faces[f].inherited ? Vector2.zero : s.pixels[f * 3 + k]);
+                        pixels.Add(inheritedOnly && !s.faces[f].inherited && !s.faces[f].projectionSupport ? Vector2.zero : s.pixels[f * 3 + k]);
                         labels.Add(s.faces[f].chart);
                     }
             return new RemeshNative.Geometry { uv = pixels.ToArray(), charts = labels.ToArray(),
@@ -732,15 +786,24 @@ namespace SashaRX.UnityMeshLab
                 settings.packMargin = .02f;
                 var uv = Unwrapping.GeneratePerTriangleUV(mesh, settings);
                 if (uv.Length != positions.Count) throw new InvalidOperationException("New reverse UV surfaces could not be unwrapped.");
-                var pixels = ReverseUvNewCharts.Prepare(positions.ToArray(), uv, density, options, token, out var fallback);
+                var regions=options.cutNarrowJunctions?CutNewStrips(ref refs,ref positions,ref uv,options,density,token):null;
+                var frames=refs.Select(p=>p.s.metricFrames[p.f]).ToArray();
+                bool[] fallback;
+                Vector2[] pixels;
+                if(regions==null) pixels=ReverseUvNewCharts.Prepare(positions.ToArray(),uv,density,options,token,out fallback,frames);
+                else
+                {
+                    fallback=ReverseUvNewCharts.Classify(positions.ToArray(),uv,options,token,frames);
+                    pixels=ReverseUvSeedPacking.Prepare(positions.ToArray(),uv,density,true,options,token,out _,regions:regions,frames:frames);
+                }
                 var min = pixels[0]; var max = min;
                 foreach (var p in pixels) { min = Vector2.Min(min, p); max = Vector2.Max(max, p); }
                 var offset = new Vector2(width + options.padding, options.padding);
                 var placed = options.fillAtlasVacancies
                     ? ReverseUvAtlasPlacement.Place(positions.ToArray(), pixels, previousLevels, surfaces,
-                        options, width, height, token, fallback, density)
+                        options, width, height, token, fallback, density,frames)
                     : pixels.Select(p => p - min + offset).ToArray();
-                ReverseUvNewCharts.Stabilize(positions.ToArray(), placed, fallback, density, options.maxAnisotropy, token: token);
+                ReverseUvNewCharts.Stabilize(positions.ToArray(), placed, fallback, density, options.maxAnisotropy, token: token,frames:frames);
                 for (int i = 0; i < refs.Count; ++i)
                 {
                     var (s, f) = refs[i];
@@ -754,8 +817,19 @@ namespace SashaRX.UnityMeshLab
                             + $"Density {density:G9}; positions {s.positions[s.indices[f*3]].ToString(coordinateFormat)} / {s.positions[s.indices[f*3+1]].ToString(coordinateFormat)} / {s.positions[s.indices[f*3+2]].ToString(coordinateFormat)}; "
                             + $"pixels {placed[i*3].ToString(coordinateFormat)} / {placed[i*3+1].ToString(coordinateFormat)} / {placed[i*3+2].ToString(coordinateFormat)}.");
                 }
-                foreach (var s in surfaces)
-                    AssignCharts(s, Enumerable.Range(0, s.faces.Length).Where(f => !s.faces[f].inherited).ToArray(), ref nextChart);
+                if(regions==null)
+                    foreach (var s in surfaces)
+                        AssignCharts(s, Enumerable.Range(0, s.faces.Length).Where(f => !s.faces[f].inherited).ToArray(), ref nextChart);
+                else
+                {
+                    var ids=new Dictionary<(Surface,int),int>();
+                    for(int i=0;i<refs.Count;++i)
+                    {
+                        var (s,f)=refs[i];var key=(s,regions[i]);
+                        if(!ids.TryGetValue(key,out int id)) {id=nextChart++;ids.Add(key,id);}
+                        s.faces[f].chart=id;
+                    }
+                }
                 var quality = UvAtlasDiagnostics.Measure(Atlas(surfaces), token, comparisonBudget: options.comparisonBudget, collectConflicts: true);
                 if (!quality.complete || quality.degenerateFaces > 0 || quality.invalidFaces > 0
                     || (!options.preserveProjectedOverlap && quality.pairs > 0))
@@ -802,6 +876,8 @@ namespace SashaRX.UnityMeshLab
         static double Anisotropy(Surface s, int f, Matrix4x4? stretchFrame = null)
         {
             int t = f * 3;
+            if((!stretchFrame.HasValue || stretchFrame.Value==Matrix4x4.identity) && s.metricFrames!=null)
+                return TriangleAnisotropy(s.metricFrames[f],s.pixels[t],s.pixels[t+1],s.pixels[t+2]);
             return TriangleAnisotropy(s.positions[s.indices[t]], s.positions[s.indices[t+1]], s.positions[s.indices[t+2]],
                 s.pixels[t], s.pixels[t+1], s.pixels[t+2], stretchFrame ?? Matrix4x4.identity);
         }
@@ -823,7 +899,7 @@ namespace SashaRX.UnityMeshLab
             return TriangleAnisotropy(transformed, aUv, bUv, cUv);
         }
 
-        static double TriangleAnisotropy((double length, double x, double y) frame, Vector2 aUv, Vector2 bUv, Vector2 cUv)
+        internal static double TriangleAnisotropy((double length, double x, double y) frame, Vector2 aUv, Vector2 bUv, Vector2 cUv)
         {
             var (length, x, y) = frame;
             // Promote before subtraction: float edge/dot arithmetic introduces
@@ -846,7 +922,7 @@ namespace SashaRX.UnityMeshLab
             return TriangleFrame(ex, ey, ez, dx, dy, dz);
         }
 
-        static (double length, double x, double y) TriangleFrame(double ex, double ey, double ez, double dx, double dy, double dz)
+        internal static (double length, double x, double y) TriangleFrame(double ex, double ey, double ez, double dx, double dy, double dz)
         {
             double length = Math.Sqrt(ex * ex + ey * ey + ez * ez);
             double cx = ey * dz - ez * dy, cy = ez * dx - ex * dz, cz = ex * dy - ey * dx;

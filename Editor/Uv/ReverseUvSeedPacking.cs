@@ -16,6 +16,9 @@ namespace SashaRX.UnityMeshLab
             internal Vector2[] local;
             internal float width, height;
             internal Vector2 origin;
+            internal Vector3[] rescuePositions;
+            internal float density;
+            internal (double length,double x,double y) rescueFrame;
         }
 
         internal static Vector2[][] PackRigid(Vector2[][] coordinates, ReverseUvTransfer.Options options,
@@ -23,20 +26,21 @@ namespace SashaRX.UnityMeshLab
             => ReverseUvFamilyPacking.Pack(coordinates,options,token,out side,out scale);
 
         internal static Vector2[] Prepare(Vector3[] positions, Vector2[] uv, float density,
-            bool fixedDensity, ReverseUvTransfer.Options options, CancellationToken token, out int side, bool compact = true)
+            bool fixedDensity, ReverseUvTransfer.Options options, CancellationToken token, out int side, bool compact = true, int[] regions = null,
+            (double length,double x,double y)[] frames=null)
         {
-            var fallback = ReverseUvNewCharts.Classify(positions, uv, options, token);
+            var fallback = ReverseUvNewCharts.Classify(positions, uv, options, token,frames);
             side = options.seedResolution;
             for (int attempt = 0; attempt < 3; ++attempt)
             {
-                var charts = Charts(positions, uv, fallback, density, options, token, compact);
+                var charts = Charts(positions, uv, fallback, density, options, token, compact, regions,frames);
                 float scale = 1;
                 Vector2[] pixels;
                 if (!compact)
                 {
                     var oldPixels = ReverseUvNewCharts.Prepare(positions, uv, density,
                         new ReverseUvTransfer.Options {padding=options.padding,maxAnisotropy=options.maxAnisotropy,
-                            comparisonBudget=options.comparisonBudget},token,out _);
+                            comparisonBudget=options.comparisonBudget},token,out _,frames);
                     pixels = new Vector2[uv.Length];
                     foreach (var chart in charts)
                     {
@@ -46,7 +50,7 @@ namespace SashaRX.UnityMeshLab
                         foreach(int f in chart.faces)
                         {
                             int t=f*3;
-                            var frame=ReverseUvTransfer.TriangleFrame(positions[t],positions[t+1],positions[t+2]);
+                            var frame=ReverseUvNewCharts.Frame(positions,t,frames);
                             world+=frame.length*frame.y;
                             var a=oldPixels[t+1]-oldPixels[t];var b=oldPixels[t+2]-oldPixels[t];
                             area+=Math.Abs((double)a.x*b.y-(double)a.y*b.x);
@@ -78,7 +82,7 @@ namespace SashaRX.UnityMeshLab
                     // Keep the reference median for new-chart allocation.
                     // Per-chart corrections can reorder almost equal samples
                     // and shift the median by one Float32 step.
-                    options.seedDensity=ReferenceDensity(positions,oldPixels.Select(p=>(p-min)*scale+Vector2.one*options.padding).ToArray());
+                    options.seedDensity=ReferenceDensity(positions,oldPixels.Select(p=>(p-min)*scale+Vector2.one*options.padding).ToArray(),frames);
                     for(int i=0;i<pixels.Length;++i) pixels[i]=(pixels[i]-min)*scale+Vector2.one*options.padding;
                 }
                 else if (fixedDensity)
@@ -111,16 +115,15 @@ namespace SashaRX.UnityMeshLab
                     scale = lo;
                 }
                 ReverseUvNewCharts.Stabilize(positions, pixels, fallback, density * scale, options.maxAnisotropy, token: token,
-                    reserveCollapsedFootprint: true);
+                    reserveCollapsedFootprint: true,frames:frames);
                 bool retry = false;
                 for (int f = 0; f < fallback.Length; ++f)
                 {
                     int t = f * 3;
-                    double metric = ReverseUvTransfer.TriangleAnisotropy(positions[t], positions[t + 1], positions[t + 2],
-                        pixels[t], pixels[t + 1], pixels[t + 2]);
+                    double metric = ReverseUvTransfer.TriangleAnisotropy(ReverseUvNewCharts.Frame(positions,t,frames),pixels[t],pixels[t+1],pixels[t+2]);
                     if (metric <= options.maxAnisotropy) continue;
                     if (fallback[f] || attempt == 2)
-                        throw new InvalidOperationException($"Reverse seed face {f} cannot retain its UV metric at final Float32 placement (anisotropy {metric:G5}).");
+                        throw new InvalidOperationException($"Reverse seed face {f} cannot retain its UV metric at final Float32 placement (anisotropy {metric:G5}; world {positions[t].ToString("G9")} / {positions[t+1].ToString("G9")} / {positions[t+2].ToString("G9")}; pixels {pixels[t].ToString("G9")} / {pixels[t+1].ToString("G9")} / {pixels[t+2].ToString("G9")}).");
                     fallback[f] = true; retry = true;
                 }
                 if (retry) continue;
@@ -136,13 +139,20 @@ namespace SashaRX.UnityMeshLab
         }
 
         static Chart[] Charts(Vector3[] positions, Vector2[] uv, bool[] fallback, float density,
-            ReverseUvTransfer.Options options, CancellationToken token, bool compact)
+            ReverseUvTransfer.Options options, CancellationToken token, bool compact, int[] regions,(double length,double x,double y)[] frames)
         {
             var union = new DisjointSet(fallback.Length);
             var edges = new Dictionary<((Vector3, Vector2), (Vector3, Vector2)), int>();
+            var regionFaces = new Dictionary<int,int>();
             for (int f = 0; f < fallback.Length; ++f)
             {
                 if (fallback[f]) continue;
+                if(regions != null)
+                {
+                    if(regionFaces.TryGetValue(regions[f],out int otherFace)) union.Union(f,otherFace);
+                    else regionFaces.Add(regions[f],f);
+                    continue;
+                }
                 for (int k = 0; k < 3; ++k)
                 {
                     int a = f * 3 + k, b = f * 3 + (k + 1) % 3;
@@ -160,7 +170,7 @@ namespace SashaRX.UnityMeshLab
                 if (fallback[faces[0]])
                 {
                     int t = faces[0] * 3;
-                    var frame = ReverseUvTransfer.TriangleFrame(positions[t], positions[t + 1], positions[t + 2]);
+                    var frame = ReverseUvNewCharts.Frame(positions,t,frames);
                     local[1] = new Vector2((float)(frame.length * density), 0);
                     local[2] = new Vector2((float)(frame.x * density), (float)(frame.y * density));
                 }
@@ -171,7 +181,7 @@ namespace SashaRX.UnityMeshLab
                     for (int i = 0; i < faces.Length; ++i)
                     {
                         int t = faces[i] * 3;
-                        var frame = ReverseUvTransfer.TriangleFrame(positions[t], positions[t + 1], positions[t + 2]);
+                        var frame = ReverseUvNewCharts.Frame(positions,t,frames);
                         world += frame.length * frame.y;
                         var a = uv[t + 1] - uv[t]; var b = uv[t + 2] - uv[t];
                         area += Math.Abs((double)a.x * b.y - (double)a.y * b.x);
@@ -181,18 +191,22 @@ namespace SashaRX.UnityMeshLab
                     for (int i = 0; i < local.Length; ++i)
                         local[i] = new Vector2((float)(local[i].x * scale), (float)(local[i].y * scale));
                 }
-                AddPieces(charts, positions, faces, local, fallback[faces[0]], options, token, compact);
+                AddPieces(charts, positions, faces, local, fallback[faces[0]], density, options, token, compact, regions!=null,frames);
             }
-            return charts.OrderByDescending(c => Math.Max(c.width, c.height))
+            return charts.OrderBy(c=>c.rescuePositions!=null && ReverseUvFamilyPacking.MinimumAltitude(c.local)<.0001?0:1)
+                .ThenBy(c=>c.rescuePositions!=null && ReverseUvFamilyPacking.MinimumAltitude(c.local)<.0001
+                    ?ReverseUvFamilyPacking.MinimumAltitude(c.local):0)
+                .ThenByDescending(c => Math.Max(c.width, c.height))
                 .ThenByDescending(c => (double)c.width * c.height).ThenBy(c => c.faces[0]).ToArray();
         }
 
-        static float ReferenceDensity(Vector3[] positions,Vector2[] pixels)
+        static float ReferenceDensity(Vector3[] positions,Vector2[] pixels,(double length,double x,double y)[] frames)
         {
             var samples=new List<double>();
             for(int t=0;t<positions.Length;t+=3)
             {
-                double world=Vector3.Cross(positions[t+1]-positions[t],positions[t+2]-positions[t]).magnitude;
+                var frame=ReverseUvNewCharts.Frame(positions,t,frames);
+                double world=frame.length*frame.y;
                 var a=pixels[t+1]-pixels[t];var b=pixels[t+2]-pixels[t];
                 samples.Add(Math.Sqrt(Math.Abs((double)a.x*b.y-(double)a.y*b.x)/world));
             }
@@ -202,7 +216,8 @@ namespace SashaRX.UnityMeshLab
         }
 
         static void AddPieces(List<Chart> charts, Vector3[] positions, int[] faces, Vector2[] pixels,
-            bool rescue, ReverseUvTransfer.Options options, CancellationToken token, bool compact)
+            bool rescue, float density, ReverseUvTransfer.Options options, CancellationToken token, bool compact, bool strips,
+            (double length,double x,double y)[] frames)
         {
             var indices = new int[pixels.Length]; var unique = new Dictionary<(Vector3, Vector2), int>();
             var coordinates = new List<Vector2>();
@@ -219,11 +234,13 @@ namespace SashaRX.UnityMeshLab
                 var part = group.ToArray();
                 // Rescue triangles keep their intrinsic basis. Arbitrary angle
                 // rotation can destroy a sub-ULP altitude before stabilization.
-                var box = compact && options.rotateCharts && options.rotateChartsToAxis && !rescue
+                var box = compact && options.rotateCharts && (options.rotateChartsToAxis || strips) && !rescue
                     ? UvJunctionCuts.BestBox(uv, indices, part, token) : UvJunctionCuts.AxisBox(uv, indices, part);
                 charts.Add(new Chart { faces = part.Select(f => faces[f]).ToArray(),
                     local = part.SelectMany(f => Enumerable.Range(0, 3).Select(k => box.Project(pixels[f * 3 + k]) - box.min)).ToArray(),
-                    width = box.max.x - box.min.x, height = box.max.y - box.min.y });
+                    width = box.max.x - box.min.x, height = box.max.y - box.min.y,
+                    rescuePositions=rescue?Enumerable.Range(faces[0]*3,3).Select(i=>positions[i]).ToArray():null,
+                    density=density,rescueFrame=rescue?ReverseUvNewCharts.Frame(positions,faces[0]*3,frames):default });
             }
         }
 
@@ -240,23 +257,36 @@ namespace SashaRX.UnityMeshLab
                 int width = Mathf.CeilToInt(chart.width * scale) + options.padding * 2;
                 int height = Mathf.CeilToInt(chart.height * scale) + options.padding * 2;
                 int best = int.MaxValue, waste = int.MaxValue; RectInt selected = default; bool turn = false, found = false;
+                Vector2[] rescued=null;
+                bool hasCapacity=false;
                 foreach (var rectangle in free)
                     for (int rotation = 0; rotation < (options.rotateCharts ? 2 : 1); ++rotation)
                     {
                         if (++work > 16000000) throw new InvalidOperationException("Reverse seed rectangle packing exceeded its work budget.");
                         int w = rotation == 0 ? width : height, h = rotation == 0 ? height : width;
                         if (w > rectangle.width || h > rectangle.height) continue;
+                        hasCapacity=true;
                         int score = Math.Min(rectangle.width - w, rectangle.height - h);
                         int other = Math.Max(rectangle.width - w, rectangle.height - h);
                         if (found && (score > best || (score == best && other >= waste))) continue;
+                        Vector2[] candidate=null;
+                        if(chart.rescuePositions!=null && !ReverseUvNewCharts.TryPlaceTriangle(chart.rescueFrame,
+                            chart.density*scale,options.maxAnisotropy,new Vector2(rectangle.x+options.padding,rectangle.y+options.padding),
+                            w-options.padding*2,h-options.padding*2,out candidate)) continue;
                         best = score; waste = other; selected = new RectInt(rectangle.x, rectangle.y, w, h); turn = rotation != 0; found = true;
+                        rescued=candidate;
                     }
-                if (!found) { output = null; return false; }
+                if (!found)
+                {
+                    if(hasCapacity && chart.rescuePositions!=null)
+                        throw new InvalidOperationException($"Reverse seed face {chart.faces[0]} has no representable placement in the free cells at {chart.density*scale:G6} tex/m (altitude {ReverseUvFamilyPacking.MinimumAltitude(chart.local):G9}).");
+                    output = null; return false;
+                }
                 for (int i = 0; i < chart.local.Length; ++i)
                 {
                     var p = chart.local[i] * scale;
                     if (turn) p = new Vector2(chart.height * scale - p.y, p.x);
-                    output[chart.faces[i / 3] * 3 + i % 3] = p + new Vector2(selected.x + options.padding, selected.y + options.padding);
+                    output[chart.faces[i / 3] * 3 + i % 3] = rescued==null?p + new Vector2(selected.x + options.padding, selected.y + options.padding):rescued[i];
                 }
                 SplitFree(free, selected, ref work);
             }

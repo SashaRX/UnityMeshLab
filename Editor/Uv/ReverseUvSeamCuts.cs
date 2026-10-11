@@ -46,7 +46,7 @@ namespace SashaRX.UnityMeshLab
             // Reverse UV must also unwrap unsupported pieces into new charts.
             // Forward recovery retains their old UVs and validates actual mapped
             // Float32 triangles, so the future-new-chart altitude bound does not apply.
-            double minimumPixelAltitude=options.projectExistingAtlasOnly?0:options.maxAtlasSize*1.1920928955078125e-7*8;
+            double minimumPixelAltitude=options.projectExistingAtlasOnly?0:options.seedResolution*1.1920928955078125e-7;
             foreach (var s in targets)
                 for (int f = 0; f < s.faces.Length; ++f)
                 {
@@ -156,16 +156,21 @@ namespace SashaRX.UnityMeshLab
                     for (int k = 0; k < 3; ++k)
                     {
                         var b = triangles[t + k].Bary;
-                        p[k] = s.positions[s.indices[start]] * b.x + s.positions[s.indices[start + 1]] * b.y + s.positions[s.indices[start + 2]] * b.z;
+                        if(s.sourceBarycentrics!=null)
+                            b=s.sourceBarycentrics[start]*b.x+s.sourceBarycentrics[start+1]*b.y+s.sourceBarycentrics[start+2]*b.z;
+                        int source=s.sourceFaces[plan.face]*3;
+                        p[k]=s.sourcePositions[s.sourceIndices[source]]*b.x
+                            +s.sourcePositions[s.sourceIndices[source+1]]*b.y+s.sourcePositions[s.sourceIndices[source+2]]*b.z;
                     }
                     if (!MeshGeometry.HasArea(p[0], p[1], p[2])) return Refuse("zero-area-geometry");
                     if (altered)
                     {
-                        var frame = TriangleFrame(p[0], p[1], p[2]);
-                        double longest = Math.Max(frame.length, Math.Max((p[2] - p[0]).magnitude, (p[2] - p[1]).magnitude));
-                        // A new altitude needs several representable texels at
-                        // the largest allowed pixel coordinate. Never remove a
-                        // thin original face to meet this optional-cut criterion.
+                        var frame = TransferUvQuality.WorldFrame(p[0],p[1],p[2],s.input.toWorld);
+                        double longest = Math.Max(frame.length,Math.Max(Math.Sqrt(frame.x*frame.x+frame.y*frame.y),
+                            Math.Sqrt((frame.x-frame.length)*(frame.x-frame.length)+frame.y*frame.y)));
+                        // Reserve one Float32 spacing in the actual donor atlas.
+                        // Output placement still audits its real coordinates if
+                        // later LODs require a larger canvas. Never drop a face.
                         if (frame.length * frame.y / longest * density < minimumPixelAltitude) return Refuse("subpixel-altitude");
                         if (s.faces[plan.face].inherited)
                         {
@@ -175,7 +180,7 @@ namespace SashaRX.UnityMeshLab
                                 var b = triangles[t + k].Bary;
                                 uv[k] = s.pixels[start] * b.x + s.pixels[start + 1] * b.y + s.pixels[start + 2] * b.z;
                             }
-                            if (TriangleAnisotropy(p[0], p[1], p[2], uv[0], uv[1], uv[2],stretchFrame) > maxAnisotropy) return Refuse("inherited-uv-metric");
+                            if (TriangleAnisotropy(p[0], p[1], p[2], uv[0], uv[1], uv[2],stretchFrame*s.input.toWorld) > maxAnisotropy) return Refuse("inherited-uv-metric");
                         }
                     }
                 }
@@ -274,12 +279,13 @@ namespace SashaRX.UnityMeshLab
                             parentMesh = face.parentMesh, parentFace = face.parentFace, layer = face.layer, distance = face.distance,
                             ambiguous = !altered && face.ambiguous, rejection = altered ? null : face.rejection, cutRefusal = face.cutRefusal,
                             intentionalOverlap = face.intentionalOverlap, overlayMesh = face.overlayMesh, overlayFace = face.overlayFace,
-                            protectedInheritance = face.protectedInheritance });
+                            protectedInheritance = face.protectedInheritance, projectionSupport = face.projectionSupport });
                         sourceFaces.Add(s.sourceFaces[plan.face]);
                         for (int k = 0; k < 3; ++k)
                         {
                             var bary = triangles[t + k].Bary;
-                            barycentrics.Add(bary);
+                            barycentrics.Add(s.sourceBarycentrics==null?bary:
+                                s.sourceBarycentrics[start]*bary.x+s.sourceBarycentrics[start+1]*bary.y+s.sourceBarycentrics[start+2]*bary.z);
                             positions.Add(s.positions[s.indices[start]] * bary.x + s.positions[s.indices[start + 1]] * bary.y + s.positions[s.indices[start + 2]] * bary.z);
                             pixels.Add(s.pixels[start] * bary.x + s.pixels[start + 1] * bary.y + s.pixels[start + 2] * bary.z);
                         }
@@ -294,6 +300,7 @@ namespace SashaRX.UnityMeshLab
             s.positions = positions.ToArray(); s.indices = Enumerable.Range(0, positions.Count).ToArray();
             s.pixels = pixels.ToArray(); s.faces = faces.ToArray(); s.sourceFaces = sourceFaces.ToArray();
             s.sourceBarycentrics = barycentrics.ToArray(); s.splitSourceFaces = changed;
+            RefreshMetricFrames(s);
         }
 
         static List<CutPoint> InsertEdgePoints(Surface s, int start, List<CutPoint> polygon, Dictionary<(Vector3, Vector3), SortedSet<double>> points)

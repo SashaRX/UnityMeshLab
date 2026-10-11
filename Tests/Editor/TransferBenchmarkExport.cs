@@ -14,6 +14,8 @@ namespace SashaRX.UnityMeshLab.Tests
             public int lod;
             public string key;
             public Vector3[] positions;
+            public Vector3[] metricPositions;
+            public Matrix4x4 metricToWorld;
             public Vector2[] uv;
             public int[] indices;
         }
@@ -69,7 +71,8 @@ namespace SashaRX.UnityMeshLab.Tests
 
         static void WriteLayout(string directory, int lod, string key, LightmapUvQuality.Part part)
             => File.WriteAllText(Path.Combine(directory, key + ".layout.json"), JsonUtility.ToJson(new Layout {
-                lod = lod, key = key, positions = part.positions, uv = part.uv, indices = part.triangles
+                lod = lod, key = key, positions = part.positions, metricPositions = part.metricPositions,
+                metricToWorld = part.metricToWorld, uv = part.uv, indices = part.triangles
             }));
 
         static LightmapUvQuality.Report WriteQuality(string directory, int lod,

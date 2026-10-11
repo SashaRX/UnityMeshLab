@@ -91,7 +91,15 @@ namespace SashaRX.UnityMeshLab
         {
             var inputs = levels[0].inputs;
             var meshes = ReverseUvSeed.Prepare(inputs, resolution, padding, density, token, out int size, cutNarrowJunctions, rotateCharts, rotateChartsToAxis,compact,
-                preparedDensity:value=>seedDensity=value);
+                preparedDensity:value=>seedDensity=value,
+                preparedTopology:(node,faces,bary)=>{
+                    var input=inputs[node];var previous=input.sourceFaces;
+                    input.sourceFaces=Array.ConvertAll(faces,f=>previous[f]);
+                    input.sourceBarycentrics=bary;
+                    var count=new Dictionary<int,int>();
+                    foreach(int f in faces) {count.TryGetValue(f,out int n);count[f]=n+1;}
+                    foreach(int n in count.Values) if(n>1) ++input.splitSourceFaces;
+                });
             owned.AddRange(meshes);
             for (int i = 0; i < meshes.Length; ++i) inputs[i].mesh = meshes[i];
             return size;

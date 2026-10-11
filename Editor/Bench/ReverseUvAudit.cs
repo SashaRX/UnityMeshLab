@@ -122,7 +122,7 @@ namespace SashaRX.UnityMeshLab
                 {
                     int under = faces[a].layer < faces[b].layer ? a : b;
                     int over = faces[a].layer < faces[b].layer ? b : a;
-                    if (faces[under].inherited && faces[over].inherited && faces[under].chart == faces[over].chart
+                    if ((faces[under].inherited || faces[under].projectionSupport) && faces[over].inherited && faces[under].chart == faces[over].chart
                         && faces[under].layer < faces[over].layer && faces[over].intentionalOverlap
                         && allowed.Contains((faceKeys[under],faceKeys[over]))) ++measurement.allowedOverlapPairs;
                     else ++measurement.unexpectedOverlapPairs;

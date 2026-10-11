@@ -12,16 +12,17 @@ namespace SashaRX.UnityMeshLab
         /// get their exact intrinsic triangle metric in separate padded shelves.
         /// This rescue never relocates inherited UVs or squashes a triangle to fit.</summary>
         internal static Vector2[] Prepare(Vector3[] corners, Vector2[] uv, float density,
-            ReverseUvTransfer.Options options, CancellationToken token, out bool[] fallback)
+            ReverseUvTransfer.Options options, CancellationToken token, out bool[] fallback,
+            (double length,double x,double y)[] frames=null)
         {
-            fallback = Classify(corners, uv, options, token);
+            fallback = Classify(corners, uv, options, token,frames);
             double worldArea = 0, uvArea = 0;
             var min = new Vector2(float.MaxValue,float.MaxValue); var max = -min;
             for (int f = 0; f < fallback.Length; ++f)
             {
                 if (fallback[f]) continue;
                 int t=f*3;
-                var frame=ReverseUvTransfer.TriangleFrame(corners[t],corners[t+1],corners[t+2]);
+                var frame=Frame(corners,t,frames);
                 worldArea+=frame.length*frame.y;
                 uvArea+=Math.Abs(Cross(uv[t+1]-uv[t],uv[t+2]-uv[t]));
                 for(int k=0;k<3;++k) { min=Vector2.Min(min,uv[t+k]); max=Vector2.Max(max,uv[t+k]); }
@@ -37,7 +38,7 @@ namespace SashaRX.UnityMeshLab
             {
                 if(!fallback[f]) continue;
                 int t=f*3;
-                var frame=ReverseUvTransfer.TriangleFrame(corners[t],corners[t+1],corners[t+2]);
+                var frame=Frame(corners,t,frames);
                 var b=new Vector2((float)(frame.length*density),0);
                 var c=new Vector2((float)(frame.x*density),(float)(frame.y*density));
                 float minX=Math.Min(0,c.x),width=Math.Max(b.x,c.x)-minX;
@@ -56,13 +57,14 @@ namespace SashaRX.UnityMeshLab
                 options.rotateCharts && options.rotateChartsToAxis) : output;
         }
 
-        internal static bool[] Classify(Vector3[] corners, Vector2[] uv, ReverseUvTransfer.Options options, CancellationToken token)
+        internal static bool[] Classify(Vector3[] corners, Vector2[] uv, ReverseUvTransfer.Options options, CancellationToken token,
+            (double length,double x,double y)[] frames=null)
         {
             var fallback = new bool[corners.Length / 3];
             for (int f = 0; f < fallback.Length; ++f)
             {
                 int t = f * 3;
-                fallback[f] = ReverseUvTransfer.TriangleAnisotropy(corners[t],corners[t+1],corners[t+2],uv[t],uv[t+1],uv[t+2]) > options.maxAnisotropy;
+                fallback[f] = ReverseUvTransfer.TriangleAnisotropy(Frame(corners,t,frames),uv[t],uv[t+1],uv[t+2]) > options.maxAnisotropy;
             }
             var scan = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry { uv = uv,
                 indices = Enumerable.Range(0, uv.Length).ToArray(), charts = new int[uv.Length] }, token,
@@ -77,20 +79,20 @@ namespace SashaRX.UnityMeshLab
         /// Geometry, density, inherited UVs and the stretch limit stay fixed.</summary>
         internal static void Stabilize(Vector3[] corners, Vector2[] pixels, bool[] fallback,
             float density, float maxAnisotropy, float texel = 1, CancellationToken token = default,
-            bool reserveCollapsedFootprint = false)
+            bool reserveCollapsedFootprint = false,(double length,double x,double y)[] frames=null)
         {
             for(int f=0;f<fallback.Length;++f)
             {
                 token.ThrowIfCancellationRequested();
                 int t=f*3;
-                if(!fallback[f] || Metric(corners,pixels,t)<=maxAnisotropy) continue;
+                if(!fallback[f] || ReverseUvTransfer.TriangleAnisotropy(Frame(corners,t,frames),pixels[t],pixels[t+1],pixels[t+2])<=maxAnisotropy) continue;
                 var min=Vector2.Min(pixels[t],Vector2.Min(pixels[t+1],pixels[t+2]));
                 var max=Vector2.Max(pixels[t],Vector2.Max(pixels[t+1],pixels[t+2]));
                 double width=Math.Ceiling(((double)max.x-min.x)/texel)*texel;
                 double height=Math.Ceiling(((double)max.y-min.y)/texel)*texel;
                 if(reserveCollapsedFootprint) {width=Math.Max(texel,width);height=Math.Max(texel,height);}
                 double spacing=Math.Pow(2,Math.Floor(Math.Log(Math.Max(1,Math.Max(Math.Abs(max.x),Math.Abs(max.y))),2))-23);
-                if(TryPlaceTriangle(corners,t,density,maxAnisotropy,min,width,height,out var selected,spacing))
+                if(TryPlaceTriangle(Frame(corners,t,frames),density,maxAnisotropy,min,width,height,out var selected,spacing))
                     Array.Copy(selected,0,pixels,t,3);
             }
         }
@@ -99,6 +101,10 @@ namespace SashaRX.UnityMeshLab
         /// reserved. A rejected placement must remain available for other charts.</summary>
         internal static bool TryPlaceTriangle(Vector3[] corners,int t,float density,float maxAnisotropy,
             Vector2 min,double width,double height,out Vector2[] selected,double spacing=0)
+            =>TryPlaceTriangle(Frame(corners,t,null),density,maxAnisotropy,min,width,height,out selected,spacing);
+
+        internal static bool TryPlaceTriangle((double length,double x,double y) intrinsic,float density,float maxAnisotropy,
+            Vector2 min,double width,double height,out Vector2[] selected,double spacing=0)
         {
             // Search less than one Float32 spacing at the largest coordinate.
             double coordinate=Math.Max(Math.Abs(min.x)+width,Math.Abs(min.y)+height);
@@ -106,7 +112,7 @@ namespace SashaRX.UnityMeshLab
             double best=maxAnisotropy; selected=null;
             for(int basis=0;basis<3;++basis)
             {
-                var frame=ReverseUvTransfer.TriangleFrame(corners[t+basis],corners[t+(basis+1)%3],corners[t+(basis+2)%3]);
+                var frame=CyclicFrame(intrinsic,basis);
                 var local=new (double x,double y)[3];
                 local[(basis+1)%3]=(frame.length*density,0);
                 local[(basis+2)%3]=(frame.x*density,frame.y*density);
@@ -128,7 +134,7 @@ namespace SashaRX.UnityMeshLab
                                 || candidate[k].y<min.y || candidate[k].y>min.y+height) fits=false;
                         }
                         if(!fits) continue;
-                        double quality=ReverseUvTransfer.TriangleAnisotropy(corners[t],corners[t+1],corners[t+2],candidate[0],candidate[1],candidate[2]);
+                        double quality=ReverseUvTransfer.TriangleAnisotropy(intrinsic,candidate[0],candidate[1],candidate[2]);
                         if(quality>maxAnisotropy || (selected!=null && quality>=best)) continue;
                         best=quality; selected=candidate;
                     }
@@ -137,8 +143,17 @@ namespace SashaRX.UnityMeshLab
             return selected!=null;
         }
 
-        static double Metric(Vector3[] corners,Vector2[] pixels,int t)=>ReverseUvTransfer.TriangleAnisotropy(
-            corners[t],corners[t+1],corners[t+2],pixels[t],pixels[t+1],pixels[t+2]);
+        internal static (double length,double x,double y) Frame(Vector3[] corners,int t,(double length,double x,double y)[] frames)
+            =>frames==null?ReverseUvTransfer.TriangleFrame(corners[t],corners[t+1],corners[t+2]):frames[t/3];
+
+        internal static (double length,double x,double y) CyclicFrame((double length,double x,double y) frame,int basis)
+        {
+            if(basis==0) return frame;
+            double dx=basis==1?frame.x-frame.length:-frame.x,dy=basis==1?frame.y:-frame.y;
+            double ex=basis==1?-frame.length:frame.length-frame.x,ey=basis==1?0:-frame.y;
+            double length=Math.Sqrt(dx*dx+dy*dy);
+            return (length,(dx*ex+dy*ey)/length,frame.length*frame.y/length);
+        }
 
         static double Cross(Vector2 a,Vector2 b)=>(double)a.x*b.y-(double)a.y*b.x;
     }

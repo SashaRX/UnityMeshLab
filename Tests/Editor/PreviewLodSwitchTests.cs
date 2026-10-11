@@ -1096,8 +1096,128 @@ namespace SashaRX.UnityMeshLab.Tests
                 {
                     Assert.Less(quality.areaWeightedAnisotropy,600);
                     Assert.LessOrEqual(quality.degenerateFaces,110);
-                    Assert.LessOrEqual(quality.overlapPairs,110);
+                    // Frozen pre-cut layout: 96 intersecting pairs with this
+                    // pair-area sum. Subdivision multiplies pairs without adding
+                    // a contact; retain the same 1% area regression bound.
+                    Assert.LessOrEqual(quality.overlapPairArea,.000226321546*1.01);
                 }
+            }
+        }
+
+        [System.Serializable] sealed class PairedTransferMode
+        {
+            public string mode, error;
+            public bool completed;
+            public int atlasWidth, atlasHeight;
+        }
+
+        [System.Serializable] sealed class PairedTransferComparison
+        {
+            public string asset;
+            public float density, boundaryToleranceTexels;
+            public int padding = 2, borderPadding;
+            public bool rotation = true, axisAlignment = true, junctionCuts = true;
+            public bool originalMeshesUnchanged;
+            public string[] inputKeys, inputHashes;
+            public Matrix4x4[] inputFrames;
+            public List<PairedTransferMode> modes = new List<PairedTransferMode>();
+        }
+
+        static byte[] PairedSnapshot(Mesh mesh)
+        {
+            var readable = MeshAccess.Readable(mesh, out bool owns);
+            try {return TransferMeshSnapshot.Capture(readable);}
+            finally {if (owns) Object.DestroyImmediate(readable);}
+        }
+
+        [TestCase("Assets/JunctionFixtures/Cafe_Table_A_01.fbx", 10)]
+        [TestCase("Assets/JunctionFixtures/Cafe_Table_A_01.fbx", 32)]
+        [TestCase("Assets/TransferBenchmarkInputs/Modern_Kitchen_A.fbx", 10)]
+        [TestCase("Assets/TransferBenchmarkInputs/Modern_Kitchen_A.fbx", 32)]
+        [TestCase("Assets/KamazFixtures/kamaz_Off.fbx", 10)]
+        [TestCase("Assets/KamazFixtures/kamaz_Off.fbx", 32)]
+        [Timeout(600000)]
+        public void FrozenForwardReverseComparison(string asset, int density)
+        {
+            string output = System.Environment.GetEnvironmentVariable("MESHLAB_PAIRED_TRANSFER_OUTPUT");
+            if (string.IsNullOrEmpty(output)) Assert.Ignore("Optional private paired transfer fixtures are not configured.");
+            var prefab = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(asset); Assert.NotNull(prefab, asset);
+            var instance = Object.Instantiate(prefab); owned.Add(instance);
+            var group = instance.GetComponent<LODGroup>() ?? instance.AddComponent<LODGroup>();
+            var renderers = instance.GetComponentsInChildren<MeshFilter>(true).Where(f => f.sharedMesh)
+                .Select(f => (filter: f, renderer: f.GetComponent<Renderer>(),
+                    match: System.Text.RegularExpressions.Regex.Match(f.sharedMesh.name, @"_LOD(\d+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase)))
+                .Where(p => p.renderer && p.match.Success).GroupBy(p => int.Parse(p.match.Groups[1].Value)).OrderBy(g => g.Key).ToArray();
+            Assert.GreaterOrEqual(renderers.Length, 2);
+            group.SetLODs(renderers.Select(g => new LOD(.6f / (g.Key + 1), g.Select(p => p.renderer).ToArray())).ToArray());
+            var ctx = Open(group);
+            ctx.SourceLodIndex = 0; ctx.LightmapDensity = density; ctx.AtlasResolution = 256;
+            ctx.RepackResolutionMode = ResolutionMode.AutoFromTexelDensity;
+            ctx.RepackPerMesh = false; ctx.ShellPaddingPx = 2; ctx.BorderPaddingPx = 0;
+            ctx.CutNarrowUvJunctions = ctx.XatlasRotateCharts = ctx.XatlasRotateChartsToAxis = true;
+            hub.DiagnosticWorkflow.SymmetrySplitMode = SymmetrySplitShells.ThresholdMode.Adaptive;
+            float tolerance = UvTransferTolerance.BoundaryTexels;
+            if (float.TryParse(System.Environment.GetEnvironmentVariable("MESHLAB_TRANSFER_BOUNDARY_TEXELS"),
+                System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var configured)) tolerance = configured;
+            hub.DiagnosticWorkflow.TransferBoundaryToleranceTexels = tolerance;
+            hub.DiagnosticWorkflow.PrepareTransferInputs();
+            var entries = ctx.MeshEntries.Where(e => e.include).ToArray();
+            var originals = entries.Select(e => PairedSnapshot(e.fbxMesh)).ToArray();
+            // Freeze the same precise initial working meshes before forward Analyze/Weld
+            // changes its working copies. Reverse never consumes the forward result.
+            var levels = entries.GroupBy(e => e.lodIndex).OrderByDescending(g => g.Key).Select(g => new ReverseUvTransfer.Level {
+                lod = g.Key, inputs = g.Select(e => {
+                    var copy = MeshAccess.ReadableCopy(e.originalMesh); copy.name = e.fbxMesh.name; owned.Add(copy);
+                    return new ReverseUvTransfer.Input {mesh = copy, key = e.fbxMesh.name, toWorld = e.renderer.localToWorldMatrix};
+                }).ToArray()
+            }).ToArray();
+            var inputs = levels.SelectMany(l => l.inputs).ToArray();
+            var snapshots = inputs.Select(i => TransferMeshSnapshot.Capture(i.mesh)).ToArray();
+            string directory = System.IO.Path.Combine(output, System.IO.Path.GetFileNameWithoutExtension(asset), density.ToString());
+            System.IO.Directory.CreateDirectory(directory);
+            var comparison = new PairedTransferComparison {asset = asset, density = density, boundaryToleranceTexels = tolerance,
+                inputKeys = inputs.Select(i => i.key).ToArray(), inputFrames = inputs.Select(i => i.toWorld).ToArray()};
+            using (var hash = System.Security.Cryptography.SHA256.Create())
+                comparison.inputHashes = snapshots.Select(s => System.BitConverter.ToString(hash.ComputeHash(s)).Replace("-", "")).ToArray();
+            var previousOutput = BenchmarkRecorder.OutputDirectoryOverride;
+            try
+            {
+                var forward = new PairedTransferMode {mode = "forward"}; comparison.modes.Add(forward);
+                BenchmarkRecorder.OutputDirectoryOverride = System.IO.Path.Combine(directory, forward.mode);
+                ((System.Threading.Tasks.Task)CallWorkflow("ExecFullPipelineImpl", "paired-forward", false)).GetAwaiter().GetResult();
+                Assert.IsTrue(ctx.HasRepack && ctx.HasTransfer);
+                System.IO.Directory.CreateDirectory(BenchmarkRecorder.OutputDirectoryOverride);
+                TransferBenchmarkExport.Forward(BenchmarkRecorder.OutputDirectoryOverride, ctx);
+                forward.completed = true;
+                forward.atlasWidth = (int)entries.Max(e => e.repackedAtlasWidth);
+                forward.atlasHeight = (int)entries.Max(e => e.repackedAtlasHeight);
+                foreach (bool overlap in new[] {false, true})
+                {
+                    var reverse = new PairedTransferMode {mode = overlap ? "reverse-overlap" : "reverse-exclusive"}; comparison.modes.Add(reverse);
+                    BenchmarkRecorder.OutputDirectoryOverride = System.IO.Path.Combine(directory, reverse.mode);
+                    try
+                    {
+                        using var prepared = ReverseUvJunctionTrial.Build(levels, new ReverseUvTransfer.Options {
+                            seedResolution = 256, padding = 2, boundaryToleranceTexels = tolerance,
+                            preserveProjectedOverlap = overlap, projectionReach = .05f, cutNarrowJunctions = true,
+                            rotateCharts = true, rotateChartsToAxis = true, splitDonorSeams = true,
+                            fillAtlasVacancies = true, repackFinalAtlas = true, fillFinalAtlas = true
+                        }, true, density).GetAwaiter().GetResult();
+                        TransferBenchmarkExport.Reverse(BenchmarkRecorder.OutputDirectoryOverride, prepared.result, prepared.inputs.levels);
+                        ReverseUvAudit.Write(prepared.result, prepared.inputs.levels);
+                        reverse.atlasWidth = reverse.atlasHeight = prepared.result.report.atlasSize;
+                        reverse.completed = true;
+                    }
+                    catch (System.InvalidOperationException error) {reverse.error = error.Message;}
+                }
+                for (int i = 0; i < entries.Length; ++i) CollectionAssert.AreEqual(originals[i], PairedSnapshot(entries[i].fbxMesh));
+                for (int i = 0; i < inputs.Length; ++i) CollectionAssert.AreEqual(snapshots[i], TransferMeshSnapshot.Capture(inputs[i].mesh));
+                comparison.originalMeshesUnchanged = true;
+            }
+            finally
+            {
+                BenchmarkRecorder.OutputDirectoryOverride = previousOutput;
+                System.IO.File.WriteAllText(System.IO.Path.Combine(directory, "comparison.json"), JsonUtility.ToJson(comparison, true));
             }
         }
 

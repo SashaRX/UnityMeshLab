@@ -124,7 +124,6 @@ namespace SashaRX.UnityMeshLab
         {
             if (baseline.meshes.Count == 0) yield break;
             var before=baseline.report; var after=candidate.report;
-            var origin = levels[0].inputs[0].toWorld.GetColumn(3);
             int reportNode = 0;
             for (int l = 0; l < baseline.meshes.Count; ++l)
                 for (int n = 0; n < baseline.meshes[l].Length; ++n)
@@ -132,26 +131,26 @@ namespace SashaRX.UnityMeshLab
                     var a = baseline.meshes[l][n]; var b = candidate.meshes[l][n];
                     var oldNode = before.nodes[reportNode]; var newNode = after.nodes[reportNode++];
                     var matrix = levels[l].inputs[n].toWorld;
-                    var positions = ReverseUvTransfer.RelativePositions(new ReverseUvTransfer.Input { mesh = a, toWorld = matrix }, origin);
+                    var positions = a.vertices;
                     var indices = a.triangles; var otherIndices = b.triangles; var uv = a.uv2; var otherUv = b.uv2;
                     var oldStretchBySource = new Dictionary<int, double>();
                     for (int t = 0; t < indices.Length; t += 3)
                     {
                         token.ThrowIfCancellationRequested();
                         var p = positions[indices[t]]; var q = positions[indices[t + 1]]; var r = positions[indices[t + 2]];
-                        double oldStretch = ReverseUvTransfer.TriangleAnisotropy(p, q, r, uv[indices[t]], uv[indices[t + 1]], uv[indices[t + 2]]);
+                        double oldStretch = ReverseUvTransfer.TriangleAnisotropy(p, q, r, uv[indices[t]], uv[indices[t + 1]], uv[indices[t + 2]],matrix);
                         if (!oldNode.seed && !oldNode.faces[t / 3].inherited) continue;
                         int source = oldNode.sourceFaces[t / 3];
                         oldStretchBySource.TryGetValue(source, out double previous);
                         oldStretchBySource[source] = Math.Max(previous, oldStretch);
                     }
-                    var otherPositions = ReverseUvTransfer.RelativePositions(new ReverseUvTransfer.Input { mesh = b, toWorld = matrix }, origin);
+                    var otherPositions = b.vertices;
                     for (int t = 0; t < otherIndices.Length; t += 3)
                     {
                         token.ThrowIfCancellationRequested();
                         if (!oldStretchBySource.TryGetValue(newNode.sourceFaces[t / 3], out double oldStretch)) continue;
                         double newStretch = ReverseUvTransfer.TriangleAnisotropy(otherPositions[otherIndices[t]], otherPositions[otherIndices[t + 1]],
-                            otherPositions[otherIndices[t + 2]], otherUv[otherIndices[t]], otherUv[otherIndices[t + 1]], otherUv[otherIndices[t + 2]]);
+                            otherPositions[otherIndices[t + 2]], otherUv[otherIndices[t]], otherUv[otherIndices[t + 1]], otherUv[otherIndices[t + 2]],matrix);
                         if (!UvTransferTolerance.MetricFits(newStretch,oldStretch,after.relativeStretchTolerance))
                             yield return (reportNode-1,t/3,newNode.sourceFaces[t/3]);
                     }

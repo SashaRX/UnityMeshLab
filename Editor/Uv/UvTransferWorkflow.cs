@@ -2439,7 +2439,8 @@ namespace SashaRX.UnityMeshLab
                         if (Improves(quality,beforeQuality))
                         {
                             ctx.DiagnosticCapture?.AfterPair(pair,tgt,tr);
-                            DestroyWorkingMesh(ref tgt.originalMesh);tgt.originalMesh=prepared;prepared=null;
+                            if(tgt.originalMesh!=tgt.fbxMesh) DestroyWorkingMesh(ref tgt.originalMesh);
+                            tgt.originalMesh=prepared;prepared=null;
                             tgtMesh=tgt.originalMesh;tr=ReverseUvTransfer.DescribeForwardProjection(tgtMesh,srcMesh,projectedSources);
                             hintState.overlapHints.Clear();hintState.matchHints.Clear();
                             pair=ctx.DiagnosticCapture?.BeforePair(srcEntry,tgt,srcMesh,tgtMesh,null,null);

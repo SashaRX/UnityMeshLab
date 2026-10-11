@@ -986,7 +986,7 @@ namespace SashaRX.UnityMeshLab
             return plans.Values.Sum(p => p.splitCount);
         }
 
-        static void ExpandTag(Tagged tag, FbxPolygonSplit plan, int cornerCount)
+        internal static void ExpandTag(Tagged tag, FbxPolygonSplit plan, int cornerCount)
         {
             var positions = Enumerable.Repeat(float.NaN, cornerCount * 3).ToArray();
             Array.Copy(tag.cornerPositions, positions, tag.cornerPositions.Length);
@@ -998,8 +998,33 @@ namespace SashaRX.UnityMeshLab
             Array.Fill(firstCopy, -1);
             for (int c = 0; c < plan.corners.Length; c++)
                 if (firstCopy[plan.corners[c]] < 0) firstCopy[plan.corners[c]] = c;
+            var splitTriangles=new Dictionary<(int,int,int),int[]>();int offset=0;
+            foreach(int size in plan.sizes)
+            {
+                if(size==3)
+                {
+                    var triangle=Enumerable.Range(offset,3).ToArray();
+                    var old=triangle.Select(c=>plan.corners[c]).OrderBy(c=>c).ToArray();
+                    splitTriangles.Add((old[0],old[1],old[2]),triangle);
+                }
+                offset+=size;
+            }
             for (int s = 0; s < tag.submeshCorners.Length; s++)
-                tag.submeshCorners[s] = tag.submeshCorners[s].Select(c => c < 0 ? c : firstCopy[c]).ToArray();
+            {
+                var original=tag.submeshCorners[s];
+                var triangles=tag.submeshFaceSizes[s]==4
+                    ?Enumerable.Range(0,original.Length/4).SelectMany(f=>new[] {original[f*4],original[f*4+1],original[f*4+2],
+                        original[f*4],original[f*4+2],original[f*4+3]}).ToArray():original;
+                var mapped=new int[triangles.Length];
+                for(int t=0;t<triangles.Length;t+=3)
+                {
+                    var old=new[] {triangles[t],triangles[t+1],triangles[t+2]};var sorted=old.OrderBy(c=>c).ToArray();
+                    if(splitTriangles.TryGetValue((sorted[0],sorted[1],sorted[2]),out var triangle))
+                        for(int k=0;k<3;++k) mapped[t+k]=triangle.Single(c=>plan.corners[c]==old[k]);
+                    else for(int k=0;k<3;++k) mapped[t+k]=old[k]<0?old[k]:firstCopy[old[k]];
+                }
+                tag.submeshCorners[s]=mapped;tag.submeshFaceSizes[s]=3;
+            }
         }
 
         static FbxCornerMatch.Result MatchCorners(Donor donor, Tagged tag, in FbxLayerChannels.Topology topology)

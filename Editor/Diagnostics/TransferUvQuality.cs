@@ -44,16 +44,17 @@ namespace SashaRX.UnityMeshLab
             Vector2 metric, Matrix4x4 localToWorld, ref double weighted, ref double totalArea)
         {
             int a = triangles[f * 3], b = triangles[f * 3 + 1], c = triangles[f * 3 + 2];
-            var e1 = localToWorld.MultiplyVector(positions[b] - positions[a]);
-            var e2 = localToWorld.MultiplyVector(positions[c] - positions[a]);
-            double length = e1.magnitude, cross = Vector3.Cross(e1, e2).magnitude;
-            if (!Finite(length) || !Finite(cross)) { ++report.invalidFaces; return; }
-            if (length < 1e-12 || cross < 1e-18) { ++report.degenerateFaces; return; }
-            double x = Vector3.Dot(e1, e2) / length, y = cross / length;
-            var u = Vector2.Scale(uv[b] - uv[a], metric);
-            var v = Vector2.Scale(uv[c] - uv[a], metric);
-            double j00 = u.x / length, j10 = u.y / length;
-            double j01 = (v.x - u.x * x / length) / y, j11 = (v.y - u.y * x / length) / y;
+            var frame=WorldFrame(positions[a],positions[b],positions[c],localToWorld);
+            double length=frame.length;
+            if (!Finite(length)) { ++report.invalidFaces; return; }
+            if (length < 1e-12) { ++report.degenerateFaces; return; }
+            double cross=length*frame.y;
+            if (!Finite(cross)) { ++report.invalidFaces; return; }
+            if (cross < 1e-18) { ++report.degenerateFaces; return; }
+            double ux=((double)uv[b].x-uv[a].x)*metric.x,uy=((double)uv[b].y-uv[a].y)*metric.y;
+            double vx=((double)uv[c].x-uv[a].x)*metric.x,vy=((double)uv[c].y-uv[a].y)*metric.y;
+            double j00=ux/length,j10=uy/length;
+            double j01=(vx-ux*frame.x/length)/frame.y,j11=(vy-uy*frame.x/length)/frame.y;
             double aa = j00 * j00 + j10 * j10, bb = j01 * j01 + j11 * j11, ab = j00 * j01 + j10 * j11;
             double determinant = j00 * j11 - j01 * j10;
             double max = (aa + bb + Math.Sqrt(Math.Max(0, (aa - bb) * (aa - bb) + 4 * ab * ab))) * .5;
@@ -69,21 +70,25 @@ namespace SashaRX.UnityMeshLab
 
         static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
 
-        // The final packer must test the same Float32 edge arithmetic as the
-        // exported-mesh audit, including barycentrically created vertices.
+        // Promote stored Float32 corners before subtracting and transforming.
+        // Float32 dot products add false shear to nearly collinear triangles.
+        // The packer and exported-mesh audit use the same intrinsic frame.
+        internal static (double length,double x,double y) WorldFrame(Vector3 a,Vector3 b,Vector3 c,Matrix4x4 matrix)
+        {
+            double ex=(double)b.x-a.x,ey=(double)b.y-a.y,ez=(double)b.z-a.z;
+            double dx=(double)c.x-a.x,dy=(double)c.y-a.y,dz=(double)c.z-a.z;
+            return ReverseUvTransfer.TriangleFrame(matrix.m00*ex+matrix.m01*ey+matrix.m02*ez,
+                matrix.m10*ex+matrix.m11*ey+matrix.m12*ez,matrix.m20*ex+matrix.m21*ey+matrix.m22*ez,
+                matrix.m00*dx+matrix.m01*dy+matrix.m02*dz,matrix.m10*dx+matrix.m11*dy+matrix.m12*dz,
+                matrix.m20*dx+matrix.m21*dy+matrix.m22*dz);
+        }
+
         internal static double TriangleAnisotropy(Vector3 e1, Vector3 e2, Vector2 a, Vector2 b, Vector2 c)
         {
-            double length=e1.magnitude, cross=Vector3.Cross(e1,e2).magnitude;
-            if(!Finite(length) || !Finite(cross) || length<1e-12 || cross<1e-18) return double.PositiveInfinity;
-            double x=Vector3.Dot(e1,e2)/length, y=cross/length;
-            var u=b-a;var v=c-a;
-            double j00=u.x/length,j10=u.y/length;
-            double j01=(v.x-u.x*x/length)/y,j11=(v.y-u.y*x/length)/y;
-            double aa=j00*j00+j10*j10,bb=j01*j01+j11*j11,ab=j00*j01+j10*j11;
-            double determinant=j00*j11-j01*j10;
-            double max=(aa+bb+Math.Sqrt(Math.Max(0,(aa-bb)*(aa-bb)+4*ab*ab)))*.5;
-            double min=max>0?determinant*determinant/max:0;
-            return Finite(max) && Finite(min) && min>=1e-30?Math.Sqrt(max/min):double.PositiveInfinity;
+            var frame=ReverseUvTransfer.TriangleFrame(e1.x,e1.y,e1.z,e2.x,e2.y,e2.z);
+            if(!Finite(frame.length) || !Finite(frame.y) || frame.length<1e-12 || frame.length*frame.y<1e-18)
+                return double.PositiveInfinity;
+            return ReverseUvTransfer.TriangleAnisotropy(frame,a,b,c);
         }
     }
 }

@@ -7,6 +7,30 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class TransferQualityRegressionTests
     {
+        [Test]
+        public void OverlapAreaRetainsTheSameDefectWhenBothFacesAreSubdivided()
+        {
+            var source=new Mesh {vertices=new[] {Vector3.zero,Vector3.right,Vector3.up,
+                Vector3.forward,new Vector3(1,0,1),new Vector3(0,1,1)},triangles=new[] {0,1,2,3,4,5},
+                uv2=new[] {Vector2.zero,Vector2.right,Vector2.up,Vector2.zero,Vector2.right,Vector2.up}};
+            var refined=new Mesh {vertices=new[] {Vector3.zero,Vector3.right,Vector3.up,
+                Vector3.forward,new Vector3(1,0,1),new Vector3(0,1,1),new Vector3(.5f,.5f,0),new Vector3(.5f,.5f,1)},
+                triangles=new[] {0,1,6,0,6,2,3,4,7,3,7,5},
+                uv2=new[] {Vector2.zero,Vector2.right,Vector2.up,Vector2.zero,Vector2.right,Vector2.up,
+                    Vector2.one*.5f,Vector2.one*.5f}};
+            try {
+                var before=TransferUvQuality.Measure(source,source.uv2,Vector2.one,Matrix4x4.identity);
+                var after=TransferUvQuality.Measure(refined,refined.uv2,Vector2.one,Matrix4x4.identity);
+                Assert.IsTrue(before.overlapScanComplete && after.overlapScanComplete);
+                Assert.Greater(after.overlapPairs,before.overlapPairs);
+                Assert.AreEqual(.5,before.overlapPairArea,1e-12);
+                Assert.AreEqual(before.overlapPairArea,after.overlapPairArea,1e-12);
+                var uv=refined.uv2;uv[3]*=.5f;uv[4]*=.5f;uv[5]*=.5f;uv[7]*=.5f;refined.uv2=uv;
+                Assert.Less(TransferUvQuality.Measure(refined,uv,Vector2.one,Matrix4x4.identity).overlapPairArea,after.overlapPairArea);
+            }
+            finally {Object.DestroyImmediate(source);Object.DestroyImmediate(refined);}
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void ForwardSeamRecoveryJudgesStretchInTheRenderedTargetFrame(bool projectedLayoutImproves)
