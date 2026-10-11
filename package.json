@@ -30,6 +30,7 @@
   ],
   "license": "MIT",
   "dependencies": {
-    "com.unity.formats.fbx": "5.1.5"
+    "com.unity.formats.fbx": "5.1.5",
+    "com.unity.modules.unitywebrequesttexture": "1.0.0"
   }
 }

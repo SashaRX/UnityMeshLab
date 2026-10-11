@@ -40,9 +40,19 @@ importer regardless of the chosen filename suffix.
 Outside Assets, only the file is written. Saving next to a model requires a
 writable folder (registry/package-cache models may need a different destination).
 
-Full-resolution resizing and RLE encoding run on a worker while the editor stays
-responsive. Cancel in the progress dialog to discard staged outputs; closing the
-window also cancels the export. Files are staged beside their destinations and
+Source reads and TGA decoding run on workers; PNG/JPEG decoding uses Unity's
+asynchronous texture downloader with local file URLs. Pixel copies are sliced
+across editor updates. At most two source decoders run at once, and repeated
+assignments of one file share one load. Full-resolution resizing and RLE encoding
+run in the background. Resize parallelizes rows with at most four workers,
+leaving a processor available when possible; outputs are encoded sequentially
+to avoid retaining several large output buffers. Preview is bounded to 256 pixels.
+Cancel directly in the window to discard staged outputs; closing the
+window also cancels loading and export. Unity texture creation and AssetDatabase
+imports remain on the editor thread; Unity's own import phase can still pause
+the editor. Importing is limited to one output per editor update. After files
+commit, the import queue finishes their settings even if the window closes;
+assembly reload drains that queue before unloading. Files are staged beside their destinations and
 installed only after encoding completes, so an encoding failure leaves existing
 textures intact and their `.meta` GUIDs are retained. If an output appears or
 changes during packing, save is refused so its overwrite can be confirmed again.
@@ -58,3 +68,7 @@ FBX selection changes made during export are applied when the export finishes.
 Sources are cached for the open window; **Reload source files** picks up external
 edits. Paths and settings survive domain reload; temporary GPU textures are
 released when the window closes or reloads.
+Clearing or replacing a slot cancels unused loads, so stale results cannot
+recreate thumbnails. Failed cleanup attempts are reported and other staged files
+are still cleaned. TGA decoding rejects impossible payload sizes before allocating
+pixels, and supports cancellation between packets. No worker waits block the editor.

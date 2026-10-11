@@ -94,10 +94,23 @@ namespace SashaRX.UnityMeshLab
                 }
                 // Preserve backups if rollback itself fails, so the originals remain recoverable.
                 if (failures.Count > 1) throw new AggregateException("Texture batch rollback failed; backups were retained.", failures);
-                foreach (var file in files) file.DiscardBackup();
+                DiscardBackups(files);
                 throw;
             }
-            foreach (var file in files) file.DiscardBackup();
+            DiscardBackups(files);
+        }
+
+        private static void DiscardBackups(IList<PendingFile> files)
+        {
+            foreach (var file in files)
+            {
+                try { file.DiscardBackup(); }
+                catch (Exception exception)
+                {
+                    // Installation/rollback already succeeded. Continue cleanup and preserve import finalization.
+                    UvtLog.Warn("Texture backup cleanup: " + exception.Message);
+                }
+            }
         }
 
         public static string ResolveExistingFile(string path)

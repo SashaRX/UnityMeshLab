@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Threading;
+using System.Threading.Tasks;
 using UnityEngine;
 
 namespace SashaRX.UnityMeshLab
@@ -88,7 +89,7 @@ namespace SashaRX.UnityMeshLab
                 throw new ArgumentException("Four output channel bindings are required.");
             cancellation.ThrowIfCancellationRequested();
             var pixels = new Color32[checked(width * height)];
-            for (int y = 0; y < height; y++)
+            Action<int> composeRow = y =>
             {
                 cancellation.ThrowIfCancellationRequested();
                 for (int x = 0; x < width; x++)
@@ -110,7 +111,13 @@ namespace SashaRX.UnityMeshLab
                     }
                     pixels[y * width + x] = pixel;
                 }
-            }
+            };
+            // Parallelize disjoint rows of one output, rather than holding several full outputs in memory.
+            if ((long)width * height >= 262144)
+                Parallel.For(0, height, new ParallelOptions { CancellationToken = cancellation,
+                    MaxDegreeOfParallelism = Math.Max(1, Math.Min(4, Environment.ProcessorCount - 1)) }, composeRow);
+            else
+                for (int y = 0; y < height; y++) composeRow(y);
             return new TexturePackingImage(width, height, pixels);
         }
 
@@ -171,7 +178,7 @@ namespace SashaRX.UnityMeshLab
             writer.Write(pixel.a);
         }
 
-        public static TexturePackingImage DecodeTga(byte[] bytes)
+        public static TexturePackingImage DecodeTga(byte[] bytes, CancellationToken cancellation = default)
         {
             using (var reader = new BinaryReader(new MemoryStream(bytes, false)))
             {
@@ -190,10 +197,16 @@ namespace SashaRX.UnityMeshLab
                 if (width < 1 || height < 1 || width > 16384 || height > 16384)
                     throw new InvalidDataException("Invalid TGA dimensions.");
                 if (reader.ReadBytes(header[0]).Length != header[0]) throw new EndOfStreamException();
+                cancellation.ThrowIfCancellationRequested();
+                long countPixels = (long)width * height;
+                long minimum = rle ? ((countPixels + 127) / 128) * (1 + depth / 8) : countPixels * (depth / 8);
+                // Reject impossible payloads before allocating a potentially huge pixel buffer.
+                if (reader.BaseStream.Length - reader.BaseStream.Position < minimum) throw new EndOfStreamException();
                 var pixels = new Color32[checked(width * height)];
                 int index = 0;
                 while (index < pixels.Length)
                 {
+                    cancellation.ThrowIfCancellationRequested();
                     int packet = rle ? reader.ReadByte() : 0;
                     int count = rle ? (packet & 127) + 1 : 1;
                     if (count > pixels.Length - index) throw new InvalidDataException("TGA packet exceeds image size.");

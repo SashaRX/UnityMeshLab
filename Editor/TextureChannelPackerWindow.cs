@@ -53,10 +53,14 @@ namespace SashaRX.UnityMeshLab
         [SerializeField] private bool square = true;
         private readonly Dictionary<string, LoadedSource> loaded = new Dictionary<string, LoadedSource>();
         private readonly Dictionary<Output, Texture2D> previews = new Dictionary<Output, Texture2D>();
+        private readonly HashSet<string> pendingSources = new HashSet<string>();
+        private readonly Dictionary<string, TexturePackingLoad> activeLoads = new Dictionary<string, TexturePackingLoad>();
         private Vector2 scroll;
         private string error = "";
         private string status = "";
         private Task<List<SaveRequest>> saveTask;
+        private Task importTask;
+        private List<SaveRequest> committedRequests;
         private CancellationTokenSource saveCancellation;
         private bool selectionPending;
 
@@ -82,6 +86,7 @@ namespace SashaRX.UnityMeshLab
         private void OnEnable()
         {
             SubscribeSelection(OnSelectionChanged);
+            SubscribeSave(TickLoads);
             if (string.IsNullOrEmpty(outputFolder)) outputFolder = Application.dataPath;
             ReloadSources();
             OnSelectionChanged();
@@ -91,6 +96,8 @@ namespace SashaRX.UnityMeshLab
         {
             UnsubscribeSelection(OnSelectionChanged);
             UnsubscribeSave(TickSave);
+            UnsubscribeSave(TickLoads);
+            CancelLoads();
             CancelSaveOnClose();
             ClearPreviews();
             foreach (var source in loaded.Values) DestroyImmediate(source.thumbnail);
@@ -139,7 +146,18 @@ namespace SashaRX.UnityMeshLab
             }
             if (!string.IsNullOrEmpty(error)) EditorGUILayout.HelpBox(error, MessageType.Error);
             if (!string.IsNullOrEmpty(status)) EditorGUILayout.HelpBox(status, MessageType.Info);
-            using (new EditorGUI.DisabledScope(saveTask != null || (!albedo.enabled && !mrca.enabled && !normal.enabled)))
+            if (SourcesLoading())
+            {
+                EditorGUILayout.LabelField("Loading sources… " + pendingSources.Count + " remaining");
+                if (GUILayout.Button("Cancel loading")) CancelLoads();
+            }
+            if (saveTask != null)
+            {
+                EditorGUILayout.LabelField(importTask == null ? "Resizing and encoding textures in the background…" : "Importing saved textures…");
+                using (new EditorGUI.DisabledScope(importTask != null))
+                    if (GUILayout.Button("Cancel export")) saveCancellation.Cancel();
+            }
+            using (new EditorGUI.DisabledScope(saveTask != null || SourcesLoading() || (!albedo.enabled && !mrca.enabled && !normal.enabled)))
                 if (GUILayout.Button("Save enabled textures — TGA RLE", GUILayout.Height(30)))
                     SaveEnabled();
             EditorGUILayout.EndScrollView();
@@ -204,8 +222,9 @@ namespace SashaRX.UnityMeshLab
                 if (!isNormal) DrawSlot(output, output.slots[3], "A (override)", true);
                 using (new EditorGUILayout.HorizontalScope())
                 {
-                    if (GUILayout.Button("Preview")) RunAction(() => BuildPreview(output));
-                    using (new EditorGUI.DisabledScope(!HasInput(output)))
+                    using (new EditorGUI.DisabledScope(SourcesLoading()))
+                        if (GUILayout.Button("Preview")) RunAction(() => BuildPreview(output));
+                    using (new EditorGUI.DisabledScope(!HasInput(output) || SourcesLoading()))
                         if (GUILayout.Button("Save TGA RLE")) RunAction(() => SaveOutputs(new[] { output }));
                 }
                 if (previews.TryGetValue(output, out var preview))
@@ -231,6 +250,7 @@ namespace SashaRX.UnityMeshLab
                     EditorGUILayout.LabelField(new GUIContent(string.IsNullOrEmpty(slot.path) ? "Drop a texture here" :
                         Path.GetFileName(slot.path), slot.path));
                     if (source != null) EditorGUILayout.LabelField(source.image.Width + " × " + source.image.Height);
+                    else if (pendingSources.Contains(slot.path)) EditorGUILayout.LabelField("Loading…");
                     if (scalar)
                     {
                         EditorGUI.BeginChangeCheck();
@@ -288,8 +308,65 @@ namespace SashaRX.UnityMeshLab
 
         private void LoadSource(string path)
         {
-            if (loaded.ContainsKey(path)) return;
-            var image = TexturePackingImage.Load(path);
+            if (!loaded.ContainsKey(path)) pendingSources.Add(path);
+        }
+
+        private bool SourcesLoading() => pendingSources.Count != 0;
+
+        private void OnInspectorUpdate()
+        {
+            if (SourcesLoading() || saveTask != null) Repaint();
+        }
+
+        private void TickLoads()
+        {
+            // Bound concurrent decoders; assigning the same image to several slots schedules it once.
+            foreach (string path in pendingSources)
+            {
+                if (activeLoads.Count >= 2) break;
+                if (activeLoads.ContainsKey(path)) continue;
+                try { activeLoads.Add(path, new TexturePackingLoad(path)); }
+                catch (Exception exception)
+                {
+                    error += path + ": " + exception.Message + "\n";
+                    pendingSources.Remove(path);
+                    Repaint();
+                    return;
+                }
+            }
+            var completed = new List<string>();
+            foreach (var entry in activeLoads)
+            {
+                try
+                {
+                    if (!entry.Value.TryComplete(out var image)) continue;
+                    AddSource(entry.Key, image);
+                    completed.Add(entry.Key);
+                }
+                catch (Exception exception)
+                {
+                    error += entry.Key + ": " + exception.Message + "\n";
+                    completed.Add(entry.Key);
+                }
+            }
+            foreach (string path in completed)
+            {
+                activeLoads[path].Dispose();
+                activeLoads.Remove(path);
+                pendingSources.Remove(path);
+            }
+            if (completed.Count > 0) Repaint();
+        }
+
+        private void CancelLoads()
+        {
+            foreach (var load in activeLoads.Values) load.Dispose();
+            activeLoads.Clear();
+            pendingSources.Clear();
+        }
+
+        private void AddSource(string path, TexturePackingImage image)
+        {
             // Retain only a small GPU thumbnail; packing uses the original CPU pixels.
             int w = Math.Min(image.Width, 128), h = Math.Min(image.Height, 128);
             var pixels = new Color32[w * h];
@@ -303,23 +380,16 @@ namespace SashaRX.UnityMeshLab
         {
             error = "";
             status = "";
-            var failures = new List<string>();
+            CancelLoads();
             ClearPreviews();
             foreach (var source in loaded.Values) DestroyImmediate(source.thumbnail);
             loaded.Clear();
             foreach (var output in new[] { albedo, mrca, normal })
             {
-                ReloadSlot(output.rgb, failures);
-                foreach (var slot in output.slots) ReloadSlot(slot, failures);
+                if (!string.IsNullOrEmpty(output.rgb.path)) LoadSource(output.rgb.path);
+                foreach (var slot in output.slots)
+                    if (!string.IsNullOrEmpty(slot.path)) LoadSource(slot.path);
             }
-            error = string.Join("\n", failures);
-        }
-
-        private void ReloadSlot(Slot slot, List<string> failures)
-        {
-            if (string.IsNullOrEmpty(slot.path)) return;
-            try { LoadSource(slot.path); }
-            catch (Exception exception) { failures.Add(slot.path + ": " + exception.Message); }
         }
 
         private void PruneSources()
@@ -334,6 +404,11 @@ namespace SashaRX.UnityMeshLab
             foreach (var entry in loaded)
                 if (!used.Contains(entry.Key)) { DestroyImmediate(entry.Value.thumbnail); remove.Add(entry.Key); }
             foreach (string path in remove) loaded.Remove(path);
+            pendingSources.RemoveWhere(path => !used.Contains(path));
+            remove.Clear();
+            foreach (var entry in activeLoads)
+                if (!used.Contains(entry.Key)) { entry.Value.Dispose(); remove.Add(entry.Key); }
+            foreach (string path in remove) activeLoads.Remove(path);
         }
 
         private static bool HasInput(Output output)
@@ -379,17 +454,22 @@ namespace SashaRX.UnityMeshLab
             int w = Sizes[widthIndex], h = Sizes[heightIndex];
             float scale = Math.Min(1f, 256f / Math.Max(w, h));
             var image = Build(output, Mathf.RoundToInt(w * scale), Mathf.RoundToInt(h * scale));
+            var next = MakeTexture(image, output != albedo);
             if (previews.TryGetValue(output, out var previous)) DestroyImmediate(previous);
-            previews[output] = MakeTexture(image, output != albedo);
+            previews[output] = next;
         }
 
         private static Texture2D MakeTexture(TexturePackingImage image, bool linear = true)
         {
             var texture = new Texture2D(image.Width, image.Height, TextureFormat.RGBA32, false, linear)
             { hideFlags = HideFlags.HideAndDontSave };
-            texture.SetPixels32(image.Pixels);
-            texture.Apply(false, true);
-            return texture;
+            try
+            {
+                texture.SetPixels32(image.Pixels);
+                texture.Apply(false, true);
+                return texture;
+            }
+            catch { DestroyImmediate(texture); throw; }
         }
 
         private void ClearPreviews()
@@ -416,6 +496,7 @@ namespace SashaRX.UnityMeshLab
         private void SaveOutputs(IList<Output> outputs)
         {
             if (saveTask != null) throw new InvalidOperationException("An export is already running.");
+            if (SourcesLoading()) throw new InvalidOperationException("Wait for source loading to finish.");
             if (string.IsNullOrWhiteSpace(textureName) || textureName.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||
                 textureName.Trim() == "." || textureName.Trim() == "..")
                 throw new InvalidOperationException("Enter a valid texture base name without a path.");
@@ -460,6 +541,7 @@ namespace SashaRX.UnityMeshLab
                     token.ThrowIfCancellationRequested();
                     var image = request.build(token);
                     request.staged = TexturePackingFiles.Stage(request.path, stream => image.WriteTgaRle(stream, token));
+                    request.build = null;
                 }
                 token.ThrowIfCancellationRequested();
                 return requests;
@@ -474,25 +556,28 @@ namespace SashaRX.UnityMeshLab
         private void TickSave()
         {
             if (saveTask == null) return;
+            if (importTask != null && !importTask.IsCompleted) return;
             if (!saveTask.IsCompleted)
             {
-                if (EditorUtility.DisplayCancelableProgressBar("Texture packing", "Resizing and encoding textures…", 0.5f))
-                    saveCancellation.Cancel();
                 return;
             }
             var finished = saveTask;
-            saveTask = null;
-            UnsubscribeSave(TickSave);
             try
             {
-                var requests = finished.GetAwaiter().GetResult();
-                try
+                if (importTask == null)
                 {
-                    saveCancellation.Token.ThrowIfCancellationRequested();
-                    CommitOutputs(requests);
-                    status = "Saved " + requests.Count + " texture(s) to " + Path.GetDirectoryName(requests[0].path);
+                    var requests = finished.GetAwaiter().GetResult();
+                    try
+                    {
+                        saveCancellation.Token.ThrowIfCancellationRequested();
+                        importTask = CommitOutputs(requests);
+                    }
+                    finally { DiscardRequests(requests); }
+                    committedRequests = requests;
+                    return;
                 }
-                finally { DiscardRequests(requests); }
+                importTask.GetAwaiter().GetResult();
+                status = "Saved " + committedRequests.Count + " texture(s) to " + Path.GetDirectoryName(committedRequests[0].path);
             }
             catch (OperationCanceledException) { status = "Export cancelled; outputs were not changed."; }
             catch (Exception exception)
@@ -502,60 +587,72 @@ namespace SashaRX.UnityMeshLab
             }
             finally
             {
-                saveCancellation.Dispose();
-                saveCancellation = null;
-                EditorUtility.ClearProgressBar();
-                if (selectionPending) { selectionPending = false; OnSelectionChanged(); }
-                Repaint();
+                if (committedRequests == null || (importTask != null && importTask.IsCompleted))
+                {
+                    saveTask = null;
+                    importTask = null;
+                    committedRequests = null;
+                    UnsubscribeSave(TickSave);
+                    saveCancellation.Dispose();
+                    saveCancellation = null;
+                    if (selectionPending) { selectionPending = false; OnSelectionChanged(); }
+                    Repaint();
+                }
             }
         }
 
-        private static void CommitOutputs(List<SaveRequest> requests)
+        private static Task CommitOutputs(List<SaveRequest> requests)
         {
             var files = new List<TexturePackingFiles.PendingFile>();
             foreach (var request in requests)
                 files.Add(new TexturePackingFiles.PendingFile(request.staged, request.path,
                     request.existed, request.length, request.modified));
-            TexturePackingFiles.InstallBatch(files);
+            var imports = new List<TexturePackingImports.Input>();
+            foreach (var request in requests)
+            {
+                string assetPath = AssetPath(request.path);
+                if (assetPath != null) imports.Add(new TexturePackingImports.Input
+                    { path = assetPath, normal = request.isNormal, albedo = request.isAlbedo });
+            }
+            // Installation stays in one editor tick, with imports deferred until rollback can no longer occur.
             using (new AssetDatabase.AssetEditingScope())
             {
+                TexturePackingFiles.InstallBatch(files);
                 foreach (var request in requests)
                 {
                     request.staged = null;
-                    string assetPath = AssetPath(request.path);
-                    if (assetPath != null) AssetDatabase.ImportAsset(assetPath);
                     UvtLog.Info("Saved texture: " + request.path);
                 }
             }
-            // Importers are queried only after pending imports have completed.
-            var importers = new List<TextureImporter>();
-            foreach (var request in requests)
-            {
-                string path = AssetPath(request.path);
-                if (path == null) continue;
-                var importer = AssetImporter.GetAtPath(path) as TextureImporter;
-                if (importer == null) throw new InvalidOperationException("Unity did not create a texture importer: " + path);
-                importer.textureType = request.isNormal ? TextureImporterType.NormalMap : TextureImporterType.Default;
-                importer.sRGBTexture = request.isAlbedo;
-                importer.alphaSource = TextureImporterAlphaSource.FromInput;
-                importer.alphaIsTransparency = request.isAlbedo;
-                importer.maxTextureSize = 8192;
-                importer.npotScale = TextureImporterNPOTScale.None;
-                importers.Add(importer);
-            }
-            using (new AssetDatabase.AssetEditingScope())
-                foreach (var importer in importers) importer.SaveAndReimport();
+            return TexturePackingImports.Schedule(imports.ToArray());
         }
 
         private static void DiscardRequests(List<SaveRequest> requests)
         {
-            foreach (var request in requests) TexturePackingFiles.Discard(request.staged);
+            var failures = new List<Exception>();
+            foreach (var request in requests)
+            {
+                try { TexturePackingFiles.Discard(request.staged); }
+                catch (Exception exception) { failures.Add(exception); }
+            }
+            if (failures.Count > 0) throw new AggregateException("Some texture temporary files could not be removed.", failures);
         }
 
         private void CancelSaveOnClose()
         {
             if (saveTask == null) return;
             var cancellation = saveCancellation;
+            if (importTask != null)
+            {
+                // Files have committed. The independent importer queue owns their finalization.
+                _ = importTask.ContinueWith(task => { _ = task.Exception; }, TaskScheduler.Default);
+                importTask = null;
+                committedRequests = null;
+                saveTask = null;
+                saveCancellation = null;
+                cancellation.Dispose();
+                return;
+            }
             cancellation.Cancel();
             _ = saveTask.ContinueWith(task =>
             {
@@ -564,11 +661,12 @@ namespace SashaRX.UnityMeshLab
                     if (task.Status == TaskStatus.RanToCompletion) DiscardRequests(task.Result);
                     else _ = task.Exception;
                 }
+                // Observe cleanup failures too; never leave a faulted, discarded continuation.
+                catch (Exception exception) { UvtLog.Warn("Texture packer cleanup: " + exception); }
                 finally { cancellation.Dispose(); }
             }, TaskScheduler.Default);
             saveTask = null;
             saveCancellation = null;
-            EditorUtility.ClearProgressBar();
         }
 
         private static void ValidateAssetDestination(string path)

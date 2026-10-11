@@ -59,12 +59,13 @@ namespace SashaRX.UnityMeshLab.Tests
         [Test]
         public void TgaRejectsPacketsBeyondTheImageAndTruncatedData()
         {
-            byte[] bytes = new byte[19];
+            byte[] bytes = new byte[23];
             bytes[2] = 10;
             bytes[12] = bytes[14] = 1;
             bytes[16] = 32;
             bytes[18] = 129;
             Assert.Throws<InvalidDataException>(() => TexturePackingImage.DecodeTga(bytes));
+            Array.Resize(ref bytes, 19);
             bytes[18] = 128;
             Assert.Throws<EndOfStreamException>(() => TexturePackingImage.DecodeTga(bytes));
         }
@@ -185,11 +186,12 @@ namespace SashaRX.UnityMeshLab.Tests
                     object rgb = output.GetType().GetField("rgb").GetValue(output);
                     InvokePrivate(window, "Assign", output, rgb, sourcePath);
                 }
+                yield return WaitForSources(window);
                 InvokePrivate(window, "SaveEnabled");
                 SetPrivate(window, "followFbx", true);
                 InvokePrivate(window, "OnSelectionChanged");
                 Assert.IsTrue((bool)GetPrivate(window, "selectionPending"));
-                while (GetPrivate(window, "saveTask") != null) yield return null;
+                yield return WaitForExport(window);
                 Assert.IsFalse((bool)GetPrivate(window, "selectionPending"));
                 SetPrivate(window, "followFbx", false);
                 Assert.IsEmpty((string)GetPrivate(window, "error"));
@@ -222,7 +224,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     output.GetType().GetField("suffix").SetValue(output, suffixes[i]);
                 }
                 InvokePrivate(window, "SaveEnabled");
-                while (GetPrivate(window, "saveTask") != null) yield return null;
+                yield return WaitForExport(window);
                 Assert.IsEmpty((string)GetPrivate(window, "error"));
                 for (int i = 0; i < fields.Length; i++)
                 {
@@ -362,8 +364,8 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { TexturePackingFiles.Discard(staged); Directory.Delete(directory, true); }
         }
 
-        [Test]
-        public void ReloadRetainsEarlyFailuresWhenLaterSourcesAreValid()
+        [UnityTest]
+        public IEnumerator ReloadRetainsEarlyFailuresWhenLaterSourcesAreValid()
         {
             string valid = Path.Combine(Path.GetTempPath(), "MeshLabReload-" + Guid.NewGuid().ToString("N") + ".tga");
             var window = ScriptableObject.CreateInstance<TextureChannelPackerWindow>();
@@ -377,6 +379,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 missingSlot.GetType().GetField("path").SetValue(missingSlot, valid + ".missing.tga");
                 validSlot.GetType().GetField("path").SetValue(validSlot, valid);
                 InvokePrivate(window, "ReloadSources");
+                yield return WaitForSources(window);
                 StringAssert.Contains("missing.tga", (string)GetPrivate(window, "error"));
                 InvokePrivate(window, "BuildPreview", normalOutput);
             }
@@ -397,6 +400,245 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             return typeof(TextureChannelPackerWindow).GetMethod("AssetPath", BindingFlags.NonPublic | BindingFlags.Static)
                 .Invoke(null, new object[] { path });
+        }
+
+        private static void UnsubscribeUpdate(EditorApplication.CallbackFunction callback) => EditorApplication.update -= callback;
+
+        private static IEnumerator WaitForSources(TextureChannelPackerWindow window)
+        {
+            double deadline = EditorApplication.timeSinceStartup + 30;
+            var loading = typeof(TextureChannelPackerWindow).GetMethod("SourcesLoading", BindingFlags.NonPublic | BindingFlags.Instance);
+            while ((bool)loading.Invoke(window, null))
+            {
+                Assert.Less(EditorApplication.timeSinceStartup, deadline, "Source loading did not finish.");
+                yield return null;
+            }
+        }
+
+        private static IEnumerator WaitForExport(TextureChannelPackerWindow window)
+        {
+            double deadline = EditorApplication.timeSinceStartup + 30;
+            while (GetPrivate(window, "saveTask") != null)
+            {
+                Assert.Less(EditorApplication.timeSinceStartup, deadline, "Export did not finish.");
+                yield return null;
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator AsyncPngLoadPreservesBytesAndReleasesItsTexture()
+        {
+            string path = Path.Combine(Path.GetTempPath(), "MeshLabAsync-" + Guid.NewGuid().ToString("N") + ".png");
+            var source = new Texture2D(257, 257, TextureFormat.RGBA32, false, true);
+            var pixels = new Color32[257 * 257];
+            for (int i = 0; i < pixels.Length; i++) pixels[i] = new Color32((byte)i, 20, 128, (byte)(i % 251));
+            try
+            {
+                source.SetPixels32(pixels);
+                source.Apply();
+                File.WriteAllBytes(path, ImageConversion.EncodeToPNG(source));
+                using (var load = new TexturePackingLoad(path))
+                {
+                    double deadline = EditorApplication.timeSinceStartup + 30;
+                    TexturePackingImage image;
+                    int updates = 0;
+                    while (!load.TryComplete(out image))
+                    {
+                        updates++;
+                        Assert.Less(EditorApplication.timeSinceStartup, deadline);
+                        yield return null;
+                    }
+                    Assert.GreaterOrEqual(updates, 2, "Large pixel copies must yield to the editor.");
+                    CollectionAssert.AreEqual(pixels, image.Pixels);
+                    var decodedTexture = (Texture2D)GetPrivate(load, "texture");
+                    Assert.IsNotNull(decodedTexture);
+                    load.Dispose();
+                    Assert.IsTrue(decodedTexture == null, "Native decoder texture must be destroyed.");
+                    Assert.Throws<ObjectDisposedException>(() => load.TryComplete(out _));
+                }
+                Assert.IsFalse(File.Exists(path + ".meta"));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(source); File.Delete(path); }
+        }
+
+        [UnityTest]
+        public IEnumerator ClearingSlotCancelsPendingLoadWithoutRecreatingThumbnail()
+        {
+            string path = Path.Combine(Path.GetTempPath(), "MeshLabClear-" + Guid.NewGuid().ToString("N") + ".tga");
+            var window = ScriptableObject.CreateInstance<TextureChannelPackerWindow>();
+            try
+            {
+                using (var stream = File.Create(path))
+                    new TexturePackingImage(1, 1, new[] { new Color32(1, 2, 3, 4) }).WriteTgaRle(stream);
+                object output = GetPrivate(window, "albedo");
+                object slot = output.GetType().GetField("rgb").GetValue(output);
+                InvokePrivate(window, "Assign", output, slot, path);
+                InvokePrivate(window, "TickLoads");
+                slot.GetType().GetField("path").SetValue(slot, "");
+                InvokePrivate(window, "PruneSources");
+                yield return null;
+                InvokePrivate(window, "TickLoads");
+                Assert.AreEqual(0, ((IDictionary)GetPrivate(window, "loaded")).Count);
+                Assert.AreEqual(0, ((IDictionary)GetPrivate(window, "activeLoads")).Count);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(window); File.Delete(path); }
+        }
+
+        [Test]
+        public void TgaRejectsImpossibleHugePayloadBeforeAllocationAndSupportsCancellation()
+        {
+            byte[] header = new byte[18];
+            header[2] = 10;
+            header[13] = header[15] = 64;
+            header[16] = 32;
+            Assert.Throws<EndOfStreamException>(() => TexturePackingImage.DecodeTga(header));
+            using (var cancellation = new CancellationTokenSource())
+            {
+                cancellation.Cancel();
+                Assert.Throws<OperationCanceledException>(() => TexturePackingImage.DecodeTga(header, cancellation.Token));
+            }
+        }
+
+        [Test]
+        public void ParallelCompositionMatchesSerialSamplingAtEveryPixel()
+        {
+            var source = new TexturePackingImage(2, 2, new[] { new Color32(0, 30, 50, 70),
+                new Color32(20, 60, 80, 90), new Color32(110, 130, 150, 170), new Color32(220, 230, 240, 250) });
+            var packed = TexturePackingImage.Compose(512, 512, source, new TexturePackingImage[4],
+                new int[4], new byte[4], true);
+            for (int y = 0; y < 512; y++)
+                for (int x = 0; x < 512; x++) Assert.AreEqual(source.Sample(x, y, 512, 512), packed.Pixels[y * 512 + x]);
+        }
+
+        [UnityTest]
+        public IEnumerator ClosingWindowDuringExportCancelsAndRemovesStagedFiles()
+        {
+            string folder = Path.Combine(Path.GetTempPath(), "MeshLabClose-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(folder);
+            string path = Path.Combine(folder, "source.tga");
+            var window = ScriptableObject.CreateInstance<TextureChannelPackerWindow>();
+            try
+            {
+                using (var stream = File.Create(path))
+                    new TexturePackingImage(1, 1, new[] { new Color32(1, 2, 3, 4) }).WriteTgaRle(stream);
+                SetPrivate(window, "followFbx", false);
+                SetPrivate(window, "outputFolder", folder);
+                SetPrivate(window, "widthIndex", 6);
+                SetPrivate(window, "heightIndex", 6);
+                object output = GetPrivate(window, "albedo");
+                InvokePrivate(window, "Assign", output, output.GetType().GetField("rgb").GetValue(output), path);
+                yield return WaitForSources(window);
+                InvokePrivate(window, "SaveEnabled");
+                var task = (System.Threading.Tasks.Task)GetPrivate(window, "saveTask");
+                Assert.IsNotNull(task);
+                UnityEngine.Object.DestroyImmediate(window);
+                double deadline = EditorApplication.timeSinceStartup + 30;
+                while (!task.IsCompleted)
+                {
+                    Assert.Less(EditorApplication.timeSinceStartup, deadline);
+                    yield return null;
+                }
+                _ = task.Exception;
+                CollectionAssert.AreEquivalent(new[] { path }, Directory.GetFiles(folder));
+            }
+            finally
+            {
+                if (window != null) UnityEngine.Object.DestroyImmediate(window);
+                Directory.Delete(folder, true);
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator CancelAfterEncodingRemovesStagedOutputsBeforeCommit()
+        {
+            string folder = Path.Combine(Path.GetTempPath(), "MeshLabCancelStage-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(folder);
+            string path = Path.Combine(folder, "source.tga");
+            var window = ScriptableObject.CreateInstance<TextureChannelPackerWindow>();
+            try
+            {
+                using (var stream = File.Create(path))
+                    new TexturePackingImage(1, 1, new[] { new Color32(1, 2, 3, 4) }).WriteTgaRle(stream);
+                SetPrivate(window, "followFbx", false);
+                SetPrivate(window, "outputFolder", folder);
+                SetPrivate(window, "widthIndex", 0);
+                SetPrivate(window, "heightIndex", 0);
+                object output = GetPrivate(window, "albedo");
+                InvokePrivate(window, "Assign", output, output.GetType().GetField("rgb").GetValue(output), path);
+                yield return WaitForSources(window);
+                InvokePrivate(window, "SaveEnabled");
+                // Hold the main-thread commit boundary while the real encoder finishes asynchronously.
+                var callback = (EditorApplication.CallbackFunction)Delegate.CreateDelegate(typeof(EditorApplication.CallbackFunction),
+                    window, typeof(TextureChannelPackerWindow).GetMethod("TickSave", BindingFlags.NonPublic | BindingFlags.Instance));
+                UnsubscribeUpdate(callback);
+                var task = (System.Threading.Tasks.Task)GetPrivate(window, "saveTask");
+                double deadline = EditorApplication.timeSinceStartup + 30;
+                while (!task.IsCompleted)
+                {
+                    Assert.Less(EditorApplication.timeSinceStartup, deadline);
+                    yield return null;
+                }
+                Assert.AreEqual(1, Directory.GetFiles(folder, ".meshlab-texture-*").Length);
+                ((CancellationTokenSource)GetPrivate(window, "saveCancellation")).Cancel();
+                InvokePrivate(window, "TickSave");
+                Assert.IsNull(GetPrivate(window, "saveTask"));
+                CollectionAssert.AreEquivalent(new[] { path }, Directory.GetFiles(folder));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(window); Directory.Delete(folder, true); }
+        }
+
+        [UnityTest]
+        public IEnumerator ClosingAfterCommitStillFinishesAllImporterSettings()
+        {
+            string id = Guid.NewGuid().ToString("N");
+            string path = Path.Combine(Path.GetTempPath(), "MeshLabImportClose-" + id + ".tga");
+            string folder = "Assets/MeshLabImportClose-" + id;
+            var window = ScriptableObject.CreateInstance<TextureChannelPackerWindow>();
+            try
+            {
+                using (var stream = File.Create(path))
+                    new TexturePackingImage(1, 1, new[] { new Color32(1, 2, 3, 4) }).WriteTgaRle(stream);
+                AssetDatabase.CreateFolder("Assets", "MeshLabImportClose-" + id);
+                SetPrivate(window, "followFbx", false);
+                SetPrivate(window, "outputFolder", Path.GetFullPath(folder));
+                SetPrivate(window, "widthIndex", 0);
+                SetPrivate(window, "heightIndex", 0);
+                foreach (string field in new[] { "albedo", "mrca", "normal" })
+                {
+                    object output = GetPrivate(window, field);
+                    output.GetType().GetField("split").SetValue(output, false);
+                    InvokePrivate(window, "Assign", output, output.GetType().GetField("rgb").GetValue(output), path);
+                }
+                yield return WaitForSources(window);
+                InvokePrivate(window, "SaveEnabled");
+                double deadline = EditorApplication.timeSinceStartup + 30;
+                while (GetPrivate(window, "importTask") == null)
+                {
+                    Assert.IsNotNull(GetPrivate(window, "saveTask"), (string)GetPrivate(window, "error"));
+                    Assert.Less(EditorApplication.timeSinceStartup, deadline);
+                    yield return null;
+                }
+                var importing = (System.Threading.Tasks.Task)GetPrivate(window, "importTask");
+                UnityEngine.Object.DestroyImmediate(window);
+                while (!importing.IsCompleted)
+                {
+                    Assert.Less(EditorApplication.timeSinceStartup, deadline);
+                    yield return null;
+                }
+                importing.GetAwaiter().GetResult();
+                var normalImporter = (TextureImporter)AssetImporter.GetAtPath(folder + "/T_Texture_Normal.tga");
+                Assert.AreEqual(TextureImporterType.NormalMap, normalImporter.textureType);
+                var maskImporter = (TextureImporter)AssetImporter.GetAtPath(folder + "/T_Texture_MRCA.tga");
+                Assert.IsFalse(maskImporter.sRGBTexture);
+                var albedoImporter = (TextureImporter)AssetImporter.GetAtPath(folder + "/T_Texture_Albedo.tga");
+                Assert.IsTrue(albedoImporter.sRGBTexture);
+            }
+            finally
+            {
+                if (window != null) UnityEngine.Object.DestroyImmediate(window);
+                AssetDatabase.DeleteAsset(folder);
+                File.Delete(path);
+            }
         }
 
         private static object GetPrivate(object instance, string name)
