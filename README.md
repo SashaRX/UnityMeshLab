@@ -13,6 +13,7 @@ Open the window with **Tools → Mesh Lab → Open Mesh Lab**. The toolbar selec
 | **UV2 Transfer** | Build a UV2 lightmap layout by repacking the UV0 shells of LOD0, then transfer it to the other LODs; export to FBX or the sidecar |
 | **LOD Gen** | Generate LOD meshes with meshoptimizer simplification, UV2 preserved; create the LODGroup |
 | **Remesh & Bake** | Experimental: voxel remesh → simplify → new UV0 → bake materials or the lit scene onto a fresh low-poly model, saved as FBX / mesh + material + prefab + maps |
+| **Foliage Normals** | Build a smooth voxel envelope with uniform proxy triangles, or use a sphere/open hemisphere, then transfer normals to selected leaf cards; preview, Undo apply and separate mesh assets |
 | **Collision** | Collision meshes from any LOD: one simplified non-convex mesh, or a V-HACD convex decomposition |
 | **UV1 Hierarchy** | Per-mesh UV1 repack across a GameObject subtree, with or without a LODGroup |
 | **Prefab Builder** | Hierarchy, LOD levels, split / merge by material and collision of a prefab in one place, with edge and problem previews in the 3D view |
@@ -76,6 +77,12 @@ Build a new low-poly static model with fresh UV0 and reprojected maps from a hig
 * **Save** writes an FBX (or mesh asset) + material + prefab + BaseColor / Normal / MetallicSmoothness / Occlusion PNGs and an HDR Emission EXR into a new folder; Built-in and URP.
 
 Native remeshing comes from meshoptimizer v1.3 (pinned by commit) through the bridge in `Native~/`; the **Build Native Libraries** workflow builds and tests it on all three platforms and commits the binaries. See [workflow, limitations and validation](Documentation~/REMESH_AND_BAKE.md).
+
+## Foliage Normals
+
+Selected meshes and submesh/material regions are processed across all matching LODs in the same LODGroup or named sibling chain. **LOD0 proxy source** builds the proxy from the lowest available level while Apply and both Save actions include all matching levels. **Preview LOD** displays one level at a time; material references preserve the selection when submesh slots differ between LODs.
+
+Select a foliage root in the **Foliage Normals** tab, filter triangle submeshes or materials, choose **Voxel Envelope**, **Sphere** or **Hemisphere**, then **One Click: Build + Transfer**. The root-local pipeline captures renderer correspondence and transfers explicit normals from the proxy's nearest triangles. The voxel mode scatters spheres, extracts a closed envelope, smooths it with Taubin passes, then remeshes the surface into approximately uniform triangles before transfer. **Remesh Proxy** controls target edge length, iterations, tangential relaxation and triangle budget; diagnostics compare edge/area variation and surface deviation. Sphere and open hemisphere proxies have radial normals, automatic selected-geometry fitting or manual center/radius; the hemisphere also supports rotation. The shared 3D canvas shows cards, samples, smoothed/remeshed proxy with wire edges and before/after normals. Apply supports Undo; **Save Mesh Asset** creates separate `_FoliageNormals.asset` meshes, and **Save Separate FBX** creates `_FoliageNormals.fbx` variants through the existing document writer (requires Unity FBX Exporter and source Normals = Import). FBX saving writes only foliage normals and their tangent frames, preserving UVs, vertex colours, control points, original polygons, materials, hierarchy and excluded normals. Source geometry and transforms remain unchanged except for vertex duplication required to isolate selected faces in the working Unity mesh; the FBX keeps its original control points. See [workflow, spaces, diagnostics and limitations](Documentation~/FOLIAGE_NORMALS.md).
 
 ## Collision Mesh Generation
 
@@ -151,7 +158,7 @@ The **Diagnostics** tab (parameter sweep, multi-model benchmark, report rebuild,
 
 ## Architecture
 
-The editor assembly `SashaRX.UnityMeshLab.Editor` (namespace `SashaRX.UnityMeshLab`) is one hub, nine tabs and a set of libraries the tabs share:
+The editor assembly `SashaRX.UnityMeshLab.Editor` (namespace `SashaRX.UnityMeshLab`) is one hub, ten tabs and a set of libraries the tabs share:
 
 | Folder | Holds |
 |--------|-------|

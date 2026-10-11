@@ -226,8 +226,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
-        /// Restore owned working meshes and release them. Preserve intentional
-        /// replacements assigned by another tool before a context refresh.
+        /// Restore only this context's temporary swaps and destroy its working meshes.
         /// Must be called before clearing or switching MeshEntries.
         /// </summary>
         void RestoreWorkingMeshes()
@@ -235,10 +234,13 @@ namespace SashaRX.UnityMeshLab
             if (ctx?.MeshEntries == null) return;
             foreach (var e in ctx.MeshEntries)
             {
-                Mesh assigned = e.meshFilter != null ? e.meshFilter.sharedMesh : null;
-                if (assigned != null && e.fbxMesh != null &&
-                    (assigned == e.originalMesh || assigned == e.repackedMesh || assigned == e.transferredMesh))
-                    e.meshFilter.sharedMesh = e.fbxMesh;
+                if (e.meshFilter != null && e.fbxMesh != null) {
+                    var current = e.meshFilter.sharedMesh;
+                    bool ownedSwap = current != null && (current == e.transferredMesh || current == e.repackedMesh ||
+                        e.originalMesh != e.fbxMesh && current == e.originalMesh);
+                    // A scene result assigned by a tool/Undo must survive context refresh and window close.
+                    if (ownedSwap) e.meshFilter.sharedMesh = e.fbxMesh;
+                }
                 if (e.transferredMesh != null) { DestroyImmediate(e.transferredMesh); e.transferredMesh = null; }
                 if (e.repackedMesh != null) { DestroyImmediate(e.repackedMesh); e.repackedMesh = null; }
                 e.repackedAtlasWidth = 0;
@@ -2153,7 +2155,16 @@ namespace SashaRX.UnityMeshLab
             return tempMesh;
         }
 
-        internal void RestoreLightmapPreviewSafe() => RestoreLightmapPreview();
+        internal void RestoreLightmapPreviewSafe()
+        {
+            RestoreLightmapPreview();
+            if (canvas != null && canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Lightmap)
+            {
+                canvas.CurrentPreviewMode = UvCanvasView.PreviewMode.Off;
+                Repaint();
+                SceneView.RepaintAll();
+            }
+        }
 
         void RestoreLightmapPreview()
         {

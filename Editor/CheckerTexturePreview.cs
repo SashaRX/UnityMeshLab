@@ -67,7 +67,7 @@ namespace SashaRX.UnityMeshLab
             RestoreAll();
         }
 
-        static void RestoreAll()
+        internal static void RestoreAll()
         {
             if (CheckerTexturePreview.IsActive)
                 CheckerTexturePreview.Restore();
