@@ -31,9 +31,9 @@ namespace SashaRX.UnityMeshLab.Tests
         [TearDown]
         public void TearDown() => AssetDatabase.DeleteAsset(folder);
 
-        string Source(bool coincident, bool binary, bool instanced = false, bool lods = false)
+        string Source(bool coincident, bool binary, bool instanced = false, bool lods = false, string filename = "tree.fbx", bool embedded = false)
         {
-            string path = folder + "/tree.fbx";
+            string path = folder + "/" + filename;
             using var manager = FbxManager.Create();
             var io = FbxIOSettings.Create(manager, Globals.IOSROOT);
             manager.SetIOSettings(io);
@@ -77,6 +77,15 @@ namespace SashaRX.UnityMeshLab.Tests
             node.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, "Tree_LOD0", data));
             node.AddMaterial(FbxSurfacePhong.Create(scene,"M_Trunk"));
             node.AddMaterial(FbxSurfacePhong.Create(scene,"M_Leaves"));
+            if (embedded)
+            {
+                string map = folder + "/" + Path.GetFileNameWithoutExtension(filename) + ".png";
+                var texture = new Texture2D(2, 2);
+                try { File.WriteAllBytes(map, texture.EncodeToPNG()); }
+                finally { Object.DestroyImmediate(texture); }
+                node.AddMaterial(FbxStructureEdit.NewMaterial(scene, "M_Map", 1, 1, 1, "T_Map", Path.GetFullPath(map), Path.GetFileName(map), null));
+                io.SetBoolProp(Globals.EXP_FBX_EMBEDDED, true);
+            }
             group.AddChild(node);
             if (instanced) AddInstance(scene, group, node);
             if (lods) AddLods(scene, group, node, data);
@@ -224,6 +233,64 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { Object.DestroyImmediate(root); }
         }
 
+        [TestCase(1, false)] [TestCase(2, false)] [TestCase(3, false)] [TestCase(3, true)]
+        public void FailedFoliageVariantsRemoveOnlyTheirNewMedia(int failedImport, bool reuse)
+        {
+            var settings = MeshLabProjectSettings.Instance;
+            var previousFormat = settings.fbxFormat; bool previousEmbed = settings.embedFbxTextures;
+            settings.fbxFormat = MeshLabFbxFormat.Binary; settings.embedFbxTextures = false;
+            var roots = new List<GameObject>(); var targets = new List<FoliageTargetSnapshot>();
+            var sources = new Dictionary<string, byte[]>(); string reused = null; byte[] reusedMeta = null;
+            try
+            {
+                foreach (string filename in new[] { "first.fbx", "second.fbx" })
+                {
+                    string source = Source(false, true, filename: filename, embedded: true);
+                    using (var document = FbxSourceDocument.Load(source)) Assert.IsTrue(document.EmbedsMedia);
+                    sources[source] = File.ReadAllBytes(source); sources[source + ".meta"] = File.ReadAllBytes(source + ".meta");
+                    var root = Object.Instantiate(AssetDatabase.LoadAssetAtPath<GameObject>(source)); roots.Add(root);
+                    targets.Add(ShadingTarget(root.GetComponentInChildren<MeshRenderer>(), root.transform));
+                }
+                if (reuse)
+                {
+                    byte[] bytes = File.ReadAllBytes(folder + "/first.png");
+                    string hash;
+                    using (var sha = System.Security.Cryptography.SHA256.Create())
+                        hash = BitConverter.ToString(sha.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant().Substring(0, 32);
+                    AssetDatabase.CreateFolder(folder, "first_FoliageNormals.fbm");
+                    AssetDatabase.CreateFolder(folder + "/first_FoliageNormals.fbm", hash);
+                    reused = folder + "/first_FoliageNormals.fbm/" + hash + "/first.png";
+                    File.WriteAllBytes(reused, bytes); AssetDatabase.ImportAsset(reused, ImportAssetOptions.ForceSynchronousImport);
+                    reusedMeta = File.ReadAllBytes(reused + ".meta");
+                }
+                int imports = 0;
+                LogAssert.Expect(LogType.Error, new System.Text.RegularExpressions.Regex(".*was not written: Injected media variant failure.*"));
+                Assert.Throws<InvalidOperationException>(() => FoliageFbxExport.Save(targets, folder, (path, options) =>
+                {
+                    if (++imports == failedImport) throw new InvalidOperationException("Injected media variant failure");
+                    AssetDatabase.ImportAsset(path, options);
+                }));
+                Assert.AreEqual(failedImport, imports);
+                foreach (var source in sources) CollectionAssert.AreEqual(source.Value, File.ReadAllBytes(source.Key));
+                Assert.AreEqual(2, Directory.GetFiles(folder, "*.fbx").Length, "all committed failed variants are removed");
+                foreach (string media in Directory.GetDirectories(folder, "*_FoliageNormals.fbm"))
+                {
+                    Assert.IsTrue(reuse && media.Replace('\\', '/') == Path.GetDirectoryName(Path.GetDirectoryName(reused)).Replace('\\', '/'), "orphan media folder: " + media);
+                    CollectionAssert.AreEqual(new[] { Path.GetFullPath(reused) }, Directory.GetFiles(media, "*.png", SearchOption.AllDirectories).Select(Path.GetFullPath).ToArray());
+                }
+                if (reuse)
+                {
+                    Assert.IsNotNull(AssetDatabase.LoadAssetAtPath<Texture2D>(reused));
+                    CollectionAssert.AreEqual(reusedMeta, File.ReadAllBytes(reused + ".meta"));
+                }
+            }
+            finally
+            {
+                foreach (var target in targets) target.Dispose(); foreach (var root in roots) Object.DestroyImmediate(root);
+                settings.fbxFormat = previousFormat; settings.embedFbxTextures = previousEmbed;
+            }
+        }
+
         [TestCase(false)] [TestCase(true)]
         public void InstancedFbxRequiresSourceNodeIdentityAndExportsCompatibleCompleteSelection(bool connected)
         {
@@ -363,7 +430,7 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             using var before = FbxSourceDocument.Load(source);
             using var after = FbxSourceDocument.Load(output);
-            Assert.AreEqual(before.Binary,after.Binary); Assert.AreEqual(before.Major,after.Major); Assert.AreEqual(before.Minor,after.Minor);
+            Assert.AreEqual(FbxWriteSettings.FromProject().Binary,after.Binary); Assert.AreEqual(before.Major,after.Major); Assert.AreEqual(before.Minor,after.Minor);
             Assert.AreEqual(before.Meshes.Count,after.Meshes.Count);
             for (int i = 0; i < before.Meshes.Count; i++)
             {

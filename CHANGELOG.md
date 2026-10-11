@@ -34,6 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Tools declare required libraries through `MeshLabTool`; project settings control module availability without resetting unrelated active tools. CI checks tool dependency boundaries.
 
 ### Changed
+- FBX overwrite, export, hierarchy rebuild and Remesh saves share Project Settings > Mesh Lab > FBX Export. The default is binary without embedded textures; ASCII and binary texture embedding are explicit options. Removing source embedded media preserves the maps as external files next to the output. Legacy Remesh preferences no longer override the project policy.
 - Split shared UV setup/quality panels, pipeline auto-tune, Hier UV2 packing and FBX import/export into explicit stages. Preserve native session cleanup, cancellation, import replay, Undo ordering and allocation-free inspection loops.
 - Shared export, UV workflow and meshoptimizer simplification live in libraries independently of tool tabs. LOD generation batches the common simplifier; generated results are tracked by the context for export cleanup.
 - Removed the obsolete standalone Python/BAT sweep-gallery generator. It only understood the retired flat `BenchmarkReports/*_sweep_*.csv` + `{csvBase}_png/` layout; sweeps now generate their own `index.html` in the current nested run layout. Benchmark documentation and hierarchical-repack artefact descriptions now name the files the current code actually writes.

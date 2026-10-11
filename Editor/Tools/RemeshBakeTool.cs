@@ -535,10 +535,10 @@ namespace SashaRX.UnityMeshLab
                 "source's scale instead. Keep-hierarchy saves always carry the scale on the root."),
                 settings.normalizeSize);
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-            settings.embedFbxTextures = EditorGUILayout.Toggle(new GUIContent("Embed textures in FBX",
-                "Self-contained FBX that carries its maps — portable to other machines, but the file grows by the map sizes " +
-                "(the float EXR emission map alone is 16 bytes per texel). Off: the FBX links the exported maps by absolute path."),
-                settings.embedFbxTextures);
+            var fbxSettings = FbxWriteSettings.FromProject();
+            EditorGUILayout.LabelField("FBX output", fbxSettings.FormatName +
+                (fbxSettings.EmbedTextures ? ", embedded textures" : ", external textures"));
+            if (GUILayout.Button("FBX export settings…")) SettingsService.OpenProjectSettings("Project/Mesh Lab");
             string label = pipeline.IsHierarchy ? "Save meshes, maps & prefab…" : "Save FBX, maps & prefab…";
 #else
             string label = pipeline.IsHierarchy ? "Save meshes, maps & prefab…" : "Save mesh, maps & prefab…";

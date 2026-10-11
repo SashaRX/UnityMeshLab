@@ -1,6 +1,6 @@
 // FbxDocumentEdit.cs — edits an FBX file in place through the FBX SDK: load the
-// document, change one layer element of one mesh, save it back in the container
-// format and version it came in. Polygons, control points, smoothing, materials,
+// document, change one layer element of one mesh, save it with the project export
+// policy and the source version. Polygons, control points, smoothing, materials,
 // the other layer elements, nodes and properties are never rebuilt, so they come
 // through as the source file has them (n-gons stay n-gons, no vertex splitting).
 //
@@ -16,7 +16,7 @@ using Autodesk.Fbx;
 
 namespace SashaRX.UnityMeshLab
 {
-    /// <summary>An FBX file loaded into an SDK scene, written back as it was read.</summary>
+    /// <summary>An FBX file loaded into an SDK scene without rebuilding its geometry.</summary>
     internal sealed class FbxSourceDocument : IDisposable
     {
         // FBX SDK writer versions by the file version they write (FbxImporter.GetFileVersion).
@@ -27,6 +27,7 @@ namespace SashaRX.UnityMeshLab
         };
 
         readonly string scratch;
+        internal readonly string SourceDirectory;
         public readonly FbxManager Manager;
         public readonly FbxScene Scene;
         public readonly bool Binary;
@@ -37,9 +38,10 @@ namespace SashaRX.UnityMeshLab
 
         FbxSourceDocument(string path)
         {
+            SourceDirectory = Path.GetDirectoryName(Path.GetFullPath(path));
             // The importer extracts embedded media next to the file it reads; reading a
-            // copy in a scratch folder keeps the project clean and lets the writer embed
-            // the same media again.
+            // copy in a scratch folder keeps the project clean. The writer embeds the
+            // media again or copies it to durable external files per project settings.
             scratch = Path.Combine(Path.GetTempPath(), "meshlab-fbx-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(scratch);
             try
@@ -75,6 +77,10 @@ namespace SashaRX.UnityMeshLab
 
         Dictionary<string, List<string>> uvSetNames;
         Dictionary<string, bool> smoothing;
+        List<(string filename, string relative)> mediaReferences;
+
+        internal IReadOnlyList<(string filename, string relative)> MediaReferences
+            => mediaReferences ??= FbxUvSetNames.ReadMediaReferences(Path.Combine(scratch, "input.fbx"));
 
         void ReadLayers()
         {
@@ -101,20 +107,111 @@ namespace SashaRX.UnityMeshLab
             catch (DllNotFoundException ex) { throw new InvalidOperationException("FBX SDK native library unavailable.", ex); }
         }
 
-        /// <summary>Writes the document to <paramref name="path"/> in the source's container format and version.</summary>
+        /// <summary>Writes the document with project export settings and the source's file version.</summary>
         public void Save(string path)
+            => SaveWithSettings(path, FbxWriteSettings.FromProject(), false);
+
+        internal void SaveAtomic(string path, MediaOwnership ownership = null)
+            => SaveWithOwnership(path, FbxWriteSettings.FromProject(), true, null, null, ownership);
+
+        // A caller discarding a successfully committed variant must remove only
+        // the resources that save created, never reused or authored external maps.
+        internal sealed class MediaOwnership
+        {
+            internal readonly List<string> files = new List<string>();
+            internal readonly List<string> folders = new List<string>();
+            internal List<Exception> Rollback() => RollbackMedia(files, folders);
+        }
+
+        // Corner-tag copies are import probes, not user exports: retain the source's
+        // container and media so the probe's imported data keeps the same context.
+        internal void SaveForImport(string path)
+            => SaveWithSettings(path, new FbxWriteSettings(Binary, EmbedsMedia), false, requireMedia: false);
+
+        void SaveWithSettings(string path, FbxWriteSettings settings, bool atomic, Action<IEnumerable<string>> importMedia = null, bool? requireMedia = null)
+            => SaveWithOwnership(path, settings, atomic, importMedia, requireMedia, null);
+
+        void SaveWithOwnership(string path, FbxWriteSettings settings, bool atomic, Action<IEnumerable<string>> importMedia, bool? requireMedia, MediaOwnership ownership)
         {
             var io = Manager.GetIOSettings();
-            io.SetBoolProp(Globals.EXP_FBX_EMBEDDED, EmbedsMedia);
-            int format = Manager.GetIOPluginRegistry().FindWriterIDByDescription(Binary ? "FBX binary (*.fbx)" : "FBX ascii (*.fbx)");
-            if (format < 0) throw new IOException("FBX SDK has no writer for the source format.");
+            int format = settings.WriterFormat(Manager);
+            var createdMedia = new List<string>();
+            var createdFolders = new List<string>();
+            var referencedMedia = new List<string>();
+            bool committed = false;
+            FbxScene prepared = null;
+            try
+            {
+                // The wrapper cannot downcast an imported FbxObject to FbxFileTexture.
+                // Use a temporary SDK Binary document to relocate only media filenames,
+                // then let the SDK write the selected output container. Geometry stays
+                // in SDK scenes throughout; the temporary format is never a user output.
+                prepared = EmbedsMedia && !settings.EmbedTextures
+                    ? FbxExternalMedia.Prepare(this, scratch, path, createdMedia, createdFolders, referencedMedia)
+                    : FbxExternalMedia.ResolveExternal(this, scratch, path, requireMedia ?? settings.EmbedTextures, referencedMedia);
+                // Drain the media import batch before writing the FBX. A texture
+                // postprocessor failure then leaves the old document untouched,
+                // and newly externalized assets remain eligible for rollback.
+                (importMedia ?? FbxExternalMedia.ImportMedia)(referencedMedia);
+                io.SetBoolProp(Globals.EXP_FBX_EMBEDDED, settings.EmbedTextures);
+                if (atomic) FbxExport.ReplaceAtomically(path, temp => ExportScene(prepared, Path.GetFullPath(temp), format, io), MarkCommitted);
+                else { ExportScene(prepared, path, format, io); MarkCommitted(); }
+            }
+            catch (Exception original)
+            {
+                // A post-rename error must not delete files referenced by the new FBX.
+                if (committed) throw;
+                var cleanup = RollbackMedia(createdMedia, createdFolders);
+                if (cleanup.Count > 0)
+                {
+                    cleanup.Insert(0, original);
+                    throw new AggregateException(original.Message + " Media rollback was incomplete.", cleanup);
+                }
+                throw;
+            }
+            finally
+            {
+                if (prepared != null && prepared != Scene) prepared.Destroy();
+            }
+            void MarkCommitted()
+            {
+                committed = true;
+                ownership?.files.AddRange(createdMedia);
+                ownership?.folders.AddRange(createdFolders);
+            }
+        }
+
+        static List<Exception> RollbackMedia(List<string> files, List<string> folders)
+        {
+            var errors = new List<Exception>();
+            foreach (string file in files)
+            {
+                try { FbxExternalMedia.DeleteCreated(file); }
+                catch (Exception error) { errors.Add(error); }
+            }
+            for (int i = folders.Count - 1; i >= 0; i--)
+            {
+                try
+                {
+                    if (Directory.Exists(folders[i]) && Directory.GetFileSystemEntries(folders[i]).Length == 0)
+                        FbxExternalMedia.DeleteCreated(folders[i]);
+                }
+                catch (Exception error) { errors.Add(error); }
+            }
+            return errors;
+        }
+
+        internal void ExportScene(FbxScene scene, string path, int format, FbxIOSettings io)
+        {
             using var exporter = FbxExporter.Create(Manager, "MeshLabExport");
             if (!exporter.Initialize(path, format, io))
                 throw new IOException($"FBX SDK cannot write '{path}'.");
             if (!exporter.SetFileExportVersion(WriterVersion(Major, Minor)))
                 throw new IOException($"FBX SDK cannot write version {Major}.{Minor}.");
-            if (!exporter.Export(Scene))
+            if (!exporter.Export(scene))
                 throw new IOException($"FBX SDK failed to write '{path}'.");
+            var output = new FileInfo(path);
+            if (!output.Exists || output.Length == 0) throw new IOException($"FBX SDK produced no file at '{path}'.");
         }
 
         /// <summary>The writer for the file version, or the oldest one newer than it.</summary>

@@ -28,15 +28,16 @@ namespace SashaRX.UnityMeshLab
             if (groups.Count == 0) throw new InvalidOperationException("No foliage results to export.");
             if (!MeshAssetOperations.EnsureOutputFolder(folder)) throw new InvalidOperationException("Choose a writable folder under Assets.");
             var paths = new List<string>();
+            var ownership = new List<FbxSourceDocument.MediaOwnership>();
             UnityEditor.EditorApplication.LockReloadAssemblies();
             try
             {
-                foreach (var group in groups) SaveGroup(group.Key, group.Value, folder, paths, importAsset);
+                foreach (var group in groups) SaveGroup(group.Key, group.Value, folder, paths, ownership, importAsset);
                 return paths.ToArray();
             }
             catch
             {
-                RemoveFailedOutputs(paths);
+                RemoveFailedOutputs(paths, ownership);
                 throw;
             }
             finally { UnityEditor.EditorApplication.UnlockReloadAssemblies(); }
@@ -75,7 +76,7 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Warn($"[Foliage] '{source}' uses lossy Mesh Compression. The FBX document preserves excluded normals, UVs and colours exactly; its copied Unity importer can quantize them on reimport. Disable Mesh Compression on the new FBX for uncompressed shading.");
         }
 
-        static void SaveGroup(string source, List<FoliageTargetSnapshot> targets, string folder, List<string> paths, Action<string, ImportAssetOptions> importAsset)
+        static void SaveGroup(string source, List<FoliageTargetSnapshot> targets, string folder, List<string> paths, List<FbxSourceDocument.MediaOwnership> ownership, Action<string, ImportAssetOptions> importAsset)
         {
             string candidate = Path.Combine(folder, Path.GetFileNameWithoutExtension(source) + "_FoliageNormals.fbx").Replace('\\', '/');
             string output = AssetDatabase.GenerateUniqueAssetPath(candidate);
@@ -93,6 +94,7 @@ namespace SashaRX.UnityMeshLab
                 entries.Add(new MeshEntry { fbxMesh = target.source, originalMesh = target.original, transferredMesh = target.working, include = true });
             }
             paths.Add(output);
+            ownership.Add(selection.mediaOwnership);
             if (!FbxExport.WriteChannels(source, entries, FbxExportIntent.Normals | FbxExportIntent.Tangents, output, null, null, selection))
                 throw new InvalidOperationException($"FBX export failed for '{source}'. See the Mesh Lab log; no result was accepted.");
         }
@@ -109,11 +111,22 @@ namespace SashaRX.UnityMeshLab
             nodes.Add(node.name);
         }
 
-        static void RemoveFailedOutputs(List<string> paths)
+        static void RemoveFailedOutputs(List<string> paths, List<FbxSourceDocument.MediaOwnership> ownership)
         {
-            foreach (string path in paths.Where(path => !AssetDatabase.DeleteAsset(path) && File.Exists(path)))
+            for (int i = 0; i < paths.Count; i++)
             {
-                UvtLog.Error("[Foliage] Failed export could not be removed: " + path);
+                string path = paths[i];
+                try
+                {
+                    FbxExternalMedia.DeleteCreated(Path.GetFullPath(path));
+                }
+                catch (Exception error)
+                {
+                    UvtLog.Error("[Foliage] Failed export could not be removed: " + path + ". " + error.Message);
+                    continue; // Its committed FBX still owns its media.
+                }
+                foreach (var error in ownership[i].Rollback())
+                    UvtLog.Error("[Foliage] Failed export media could not be removed: " + error.Message);
             }
         }
 

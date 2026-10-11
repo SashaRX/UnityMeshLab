@@ -846,7 +846,7 @@ namespace SashaRX.UnityMeshLab
                 WriteHierarchyExport(exportPath, tempRoot);
                 written = true;
                 if (overwriteSource) batch.OverwrittenFbxPaths.Add(sourceFbxPath);
-                UvtLog.Info($"[FBX Export] Exported (binary) {entries.Count + collisions} mesh(es) -> {exportPath}");
+                UvtLog.Info($"[FBX Export] Exported ({FbxWriteSettings.FromProject().FormatName}) {entries.Count + collisions} mesh(es) -> {exportPath}");
             }
             catch (Exception ex) { UvtLog.Error("[FBX Export] Export failed: " + ex); failed = true; }
             finally
