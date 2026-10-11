@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Fixed
+- Object-bounds sphere/hemisphere fitting derives automatic transfer reach from both selected capture bounds and the fitted proxy, so large excluded geometry cannot prevent transfer at the default distance. Positive distance limits retain their exact meaning.
 - Foliage Before/After uses a shared nonzero offset for meshes and normal arrows when source bounds have zero X width, keeping YZ-plane cards separated and their arrows aligned.
 - Foliage selection validates the selected subtree before promoting actual LOD members to their group. Normal directions use the same visible renderers as the mesh preview, so an uncaptured LOD cannot display another level's arrows.
 - Captured Before/After normal arrows sample the selected vertex sequence rather than the complete mesh buffer, preserving sparse submesh visibility and boundary-copy indexing under the 256-arrow limit.

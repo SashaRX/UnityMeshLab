@@ -291,8 +291,11 @@ localNormal = normalize(M.transpose.MultiplyVector(n))
 Hemisphere alignment defaults off, matching normal theft from the proxy. Blend
 defaults to 1. Blend 0 and projection misses retain the exact original local
 normal. A cancelling blend or invalid hit counts as a miss and never writes a zero
-normal. Max distance 0 means twice the selected capture diagonal; positive values
-are explicit capture-unit distances. Zero transferred vertices fail the pipeline.
+normal. Max distance 0 means twice the selected capture diagonal. Automatic
+Object Bounding Box fitting also includes the fitted proxy bounds in that diagonal,
+so excluded source geometry can enlarge the proxy without preventing transfer.
+Positive values are explicit capture-unit distances. Zero transferred vertices fail
+the pipeline.
 
 ## Selected/excluded boundary vertices
 

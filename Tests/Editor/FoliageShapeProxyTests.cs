@@ -265,6 +265,38 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
+        public IEnumerator BoundingBoxAutoReachCoversFarProxyWhileExplicitDistanceRemainsLimited()
+        {
+            foreach (var source in new[] { FoliageNormalSource.Sphere, FoliageNormalSource.Hemisphere })
+                foreach (bool gpu in new[] { false, true })
+                {
+                    if (gpu && !GpuBvh.Supported) continue;
+                    var positions = new Vector3[11]; positions[1] = Vector3.right * .02f; positions[2] = Vector3.up * .02f;
+                    Array.Copy(BoxCorners(new Bounds(Vector3.zero, Vector3.one * 200), Quaternion.identity), 0, positions, 3, 8);
+                    using var leaf = new FoliageNormalTransferTests.Fixture(positions);
+                    leaf.mesh.SetTriangles(new[] { 3, 4, 5, 4, 6, 5, 7, 9, 8, 8, 9, 10 }, 1);
+                    using var pipeline = new FoliageNormalsPipeline(new CountingVoxelBackend());
+                    var settings = new FoliageNormalsSettings { normalSource = source, proxyFit = FoliageProxyFit.ObjectBoundingBox,
+                        selection = FoliageFaceSelection.SelectedSubmeshIndices, submeshes = new[] { 0 },
+                        gpuProjection = gpu, recalculateTangents = false };
+                    var task = pipeline.Run(leaf.root, settings, FoliageNormalsPipeline.Stage.Transfer);
+                    yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, pipeline.Status);
+                    Assert.Less(pipeline.CaptureBounds.size.magnitude * 2, 1, "The selected capture alone cannot reach the large proxy.");
+                    Assert.AreEqual(3, pipeline.TransferDiagnostics.transferred); Assert.AreEqual(0, pipeline.TransferDiagnostics.misses);
+                    Assert.AreEqual(gpu, pipeline.TransferDiagnostics.gpu);
+                    var target = pipeline.Targets[0]; CollectionAssert.AreEqual(positions, target.working.vertices);
+                    CollectionAssert.AreEqual(target.indices[1], target.working.GetIndices(1));
+                    foreach (int vertex in target.indices[1]) Assert.AreEqual(target.localNormals[vertex], target.working.normals[vertex]);
+                    settings.maxTransferDistance = .1f; pipeline.InvalidateChanged(settings, leaf.root);
+                    LogAssert.Expect(LogType.Error, new System.Text.RegularExpressions.Regex("No normals transferred"));
+                    task = pipeline.Run(leaf.root, settings, FoliageNormalsPipeline.Stage.Transfer);
+                    yield return FoliageNormalsToolTests.Await(task); Assert.IsFalse(task.Result);
+                    Assert.IsFalse(pipeline.Has(FoliageNormalsPipeline.Stage.Transfer)); Assert.IsFalse(target.working);
+                    Assert.AreSame(leaf.mesh, leaf.root.GetComponent<MeshFilter>().sharedMesh);
+                }
+        }
+
+        [UnityTest]
         public IEnumerator ShapeModesBypassVoxelPreserveExcludedFacesAndSupportUndoRedo()
         {
             foreach (var source in new[] {FoliageNormalSource.Sphere, FoliageNormalSource.Hemisphere}) {

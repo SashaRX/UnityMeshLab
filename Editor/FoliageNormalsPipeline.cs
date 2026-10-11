@@ -451,6 +451,16 @@ namespace SashaRX.UnityMeshLab
             return (p.ToArray(), t.ToArray(), FoliageProxyBuilder.BoundsOf(points));
         }
 
+        float TransferReach(FoliageNormalsSettings options)
+        {
+            if (options.maxTransferDistance > 0) return options.maxTransferDistance;
+            var bounds = CaptureBounds;
+            if (options.autoFitProxy && options.proxyFit == FoliageProxyFit.ObjectBoundingBox &&
+                options.normalSource != FoliageNormalSource.VoxelEnvelope)
+                bounds.Encapsulate(FoliageProxyBuilder.BoundsOf(Remeshed.positions));
+            return bounds.size.magnitude * 2;
+        }
+
         async Task Transfer(FoliageNormalsSettings options, CancellationToken token)
         {
             if (!CaptureCurrent())
@@ -470,7 +480,7 @@ namespace SashaRX.UnityMeshLab
                 var diagnostics = new FoliageNormalTransfer.Diagnostics();
                 try
                 {
-                    float reach = options.maxTransferDistance > 0 ? options.maxTransferDistance : CaptureBounds.size.magnitude * 2;
+                    float reach = TransferReach(options);
                     foreach (var target in targets)
                     {
                         token.ThrowIfCancellationRequested();
