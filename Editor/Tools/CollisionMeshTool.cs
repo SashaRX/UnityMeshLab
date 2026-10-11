@@ -620,6 +620,8 @@ namespace SashaRX.UnityMeshLab
         Matrix4x4 SourceMatrix(GeneratedCollisionInfo result) => result.sourceTransform != null
             ? result.sourceTransform.localToWorldMatrix : ctx.LodGroup.transform.localToWorldMatrix;
 
+        Matrix4x4 PreviewMatrix(GeneratedCollisionInfo result) => ctx.PreviewMatrix(result.sourceTransform);
+
         static void EnsureAppliedMeshFolderExists()
         {
             if (AssetDatabase.IsValidFolder("Assets/UnityMeshLab"))
@@ -943,7 +945,7 @@ namespace SashaRX.UnityMeshLab
                 foreach (var entry in ctx.MeshEntries)
                     if (entry.include && entry.lodIndex == ctx.SourceLodIndex)
                         items.Add(new MeshViewport3D.Item(entry.originalMesh ?? entry.fbxMesh,
-                            entry.renderer != null ? entry.renderer.localToWorldMatrix : ctx.LodGroup.transform.localToWorldMatrix,
+                            ctx.PreviewMatrix(entry.renderer ? entry.renderer.transform : null),
                             entry.renderer != null ? entry.renderer.sharedMaterials : null));
             }
             else
@@ -951,7 +953,7 @@ namespace SashaRX.UnityMeshLab
                 int i = 0;
                 foreach (var result in lastResults)
                     for (int h = 0; h < result.hullCount; ++h, ++i)
-                        items.Add(new MeshViewport3D.Item(previewMeshes[i], SourceMatrix(result)));
+                        items.Add(new MeshViewport3D.Item(previewMeshes[i], PreviewMatrix(result)));
             }
             return true;
         }
@@ -962,7 +964,7 @@ namespace SashaRX.UnityMeshLab
             int i = 0;
             foreach (var result in lastResults)
                 for (int h = 0; h < result.hullCount; ++h, ++i)
-                    view.DrawWire(generatedMeshes[i], SourceMatrix(result), UvCanvasView.pal[i % UvCanvasView.pal.Length]);
+                    view.DrawWire(generatedMeshes[i], PreviewMatrix(result), UvCanvasView.pal[i % UvCanvasView.pal.Length]);
         }
 
         public void OnSceneGUI(SceneView sv)

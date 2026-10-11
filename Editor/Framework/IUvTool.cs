@@ -81,10 +81,12 @@ namespace SashaRX.UnityMeshLab
         /// <summary>
         /// Fill items with what the 3D canvas should show while this tool is active and
         /// return true; return false to show the context's LOD meshes instead.
+        /// Matrices must be in isolated model space: root TRS is identity, while
+        /// child placements within the model remain intact. Do not pass scene matrices.
         /// </summary>
         bool Get3DContent(List<MeshViewport3D.Item> items);
 
-        /// <summary>Draw on top of the content (wire, lines, points) through the viewport's overlay API.</summary>
+        /// <summary>Draw on top of the content in the same isolated model space through the viewport's overlay API.</summary>
         void OnDraw3D(MeshViewport3D view);
     }
 

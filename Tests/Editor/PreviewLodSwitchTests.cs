@@ -503,7 +503,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        public void OriginPlacementPreservesHierarchyRotationScaleAndLodSwitch()
+        public void OriginPlacementPreservesChildPlacementAndLodSwitch()
         {
             var group = Group(lod1HasUv1: true, out var lod0, out var lod1);
             var offset = new Vector3(40, -10, 70);
@@ -522,7 +522,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 var item = Get<List<MeshViewport3D.Item>>(hub, "viewportItems")[0];
                 var renderer = lod == 0 ? lod0 : lod1;
                 foreach (var point in new[] { Vector3.zero, Vector3.one, new Vector3(-2, 3, 4) }) {
-                    var expected = renderer.transform.TransformPoint(point) - offset;
+                    var expected = Matrix4x4.TRS(renderer.transform.localPosition, renderer.transform.localRotation, renderer.transform.localScale).MultiplyPoint3x4(point);
                     Assert.That(Vector3.Distance(item.matrix.MultiplyPoint3x4(point), expected), Is.LessThan(1e-5f));
                 }
                 Call(viewport, "FrameIfRequested", PreviewBounds(new[] { item }), true);
@@ -545,12 +545,12 @@ namespace SashaRX.UnityMeshLab.Tests
             Call(hub, "CollectCanvasEntries");
             var item = Get<List<MeshViewport3D.Item>>(hub, "viewportItems")[0];
             Assert.That(item.matrix.MultiplyPoint3x4(Vector3.zero), Is.EqualTo(Vector3.zero));
-            Assert.That(Vector3.Distance(item.matrix.MultiplyVector(Vector3.one), original.MultiplyVector(Vector3.one)), Is.LessThan(1e-5f));
+            Assert.That(Vector3.Distance(item.matrix.MultiplyVector(Vector3.one), Vector3.one), Is.LessThan(1e-5f));
             Assert.That(renderer.localToWorldMatrix, Is.EqualTo(original));
         }
 
         [Test]
-        public void TextureAoPreviewRemovesRootTranslationButPreservesExportPlacement()
+        public void TextureAoPreviewUsesModelSpaceAndPreservesExportPlacement()
         {
             var panel = new TextureAoBakePanel();
             var resultType = typeof(TextureAoBakePanel).GetNestedType("Result", BindingFlags.NonPublic);
@@ -563,7 +563,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var items = new List<MeshViewport3D.Item>();
             Assert.IsTrue(panel.Get3DContent(items));
             Assert.That(items[0].matrix.MultiplyPoint3x4(Vector3.zero), Is.EqualTo(Vector3.zero));
-            Assert.That(items[0].matrix.MultiplyVector(Vector3.one), Is.EqualTo(placement.MultiplyVector(Vector3.one)));
+            Assert.That(items[0].matrix.MultiplyVector(Vector3.one), Is.EqualTo(Vector3.one));
             Assert.That(resultType.GetField("placement", Private).GetValue(result), Is.EqualTo(placement));
         }
 
@@ -631,6 +631,37 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.Greater(view.Camera.farClipPlane, 22f);
             }
             finally { window.Input = null; window.Close(); Object.DestroyImmediate(window); }
+        }
+
+        [TestCase("uv2_transfer")]
+        [TestCase("cleanup")]
+        [TestCase("prefab_builder")]
+        public void CanvasPlacementAndPickingIgnoreSceneRootAcrossToolsAndLods(string toolId)
+        {
+            var group = Group(true, out var lod0, out var lod1);
+            var ancestor = new GameObject("SceneAncestor"); owned.Add(ancestor);
+            group.transform.SetParent(ancestor.transform, false);
+            ancestor.transform.SetPositionAndRotation(new Vector3(50, -30, 40), Quaternion.Euler(20, 75, 30));
+            ancestor.transform.localScale = new Vector3(-2, 3, .5f);
+            group.transform.localPosition = new Vector3(9, 4, 2);
+            group.transform.localRotation = Quaternion.Euler(15, 35, 70);
+            group.transform.localScale = new Vector3(3, .2f, 4);
+            lod0.transform.localPosition = lod1.transform.localPosition = Vector3.right * 2;
+            Open(group);
+            Call(hub, "SelectToolById", toolId);
+            using (var inspection = new MeshInspection())
+            for (int lod = 0; lod < 2; ++lod) {
+                SwitchLod(lod);
+                var items = Get<List<MeshViewport3D.Item>>(hub, "viewportItems");
+                Assert.That(items.Count, Is.EqualTo(1));
+                Assert.AreEqual(Matrix4x4.Translate(Vector3.right * 2), items[0].matrix);
+                Assert.IsTrue(inspection.Pick(items, new Vector3(2.3f, .2f, -2), Vector3.forward, out int picked));
+                Assert.AreEqual(0, picked);
+                group.transform.localScale = Vector3.zero;
+            }
+            Assert.AreEqual(new Vector3(9, 4, 2), group.transform.localPosition, "preview must not edit scene transforms");
+            Assert.That(Quaternion.Angle(Quaternion.Euler(15, 35, 70), group.transform.localRotation), Is.LessThan(.01f));
+            Assert.AreEqual(new Vector3(-2, 3, .5f), ancestor.transform.localScale);
         }
 
         [Test]

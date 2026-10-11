@@ -11,6 +11,60 @@ namespace SashaRX.UnityMeshLab.Tests
         internal static FoliageNormalsSettings Settings() => new FoliageNormalsSettings { relativeSpacing = false, sampleSpacing = .1f,
             includeSourceVertices = false, includeTriangleCentroids = false, gpuProjection = false, recalculateTangents = false };
 
+        internal static (Vector3[] positions, int[] indices) DenseLeafGeometry() => (
+            new[] { Vector3.zero, Vector3.right * .001f, Vector3.up * .001f,
+                Vector3.forward * .0002f, new Vector3(.001f, 0, .0002f), new Vector3(0, .001f, .0002f),
+                Vector3.right * 4, Vector3.right * 5, new Vector3(4, 1, 0) },
+            new[] { 0, 1, 2, 3, 4, 5, 6, 7, 8 });
+
+        [TestCase(1, false, false)] [TestCase(1, true, true)]
+        [TestCase(3, false, true)] [TestCase(3, true, false)]
+        public void DenseLeafIslandsKeepTheirMinimumAtDefaultDedup(int minimum, bool relative, bool optional)
+        {
+            var (positions, indices) = DenseLeafGeometry();
+            var settings = new FoliageNormalsSettings { minimumSamplesPerIsland = minimum, relativeSpacing = relative,
+                includeSourceVertices = optional, includeTriangleCentroids = optional, maximumPrimitiveCount = minimum * 3 + 4 };
+            var result = FoliageSurfaceSampler.Sample(positions, indices, settings, CancellationToken.None);
+            Assert.AreEqual(3, result.islands);
+            Assert.AreEqual(settings.maximumPrimitiveCount, result.samples.Length);
+            for (int island = 0; island < result.islands; island++)
+                Assert.GreaterOrEqual(result.sampleIslands.Count(id => id == island), minimum);
+            Assert.Less(result.minNeighbour, result.spacing * settings.dedupSpacingFraction);
+            Assert.Greater(result.retainedForIslandMinimum, 0);
+            var repeated = FoliageSurfaceSampler.Sample(positions, indices, settings, CancellationToken.None);
+            CollectionAssert.AreEqual(result.samples, repeated.samples);
+            CollectionAssert.AreEqual(result.sampleIslands, repeated.sampleIslands);
+            Assert.AreEqual(result.retainedForIslandMinimum, repeated.retainedForIslandMinimum);
+            var surface = new TriangleBvh(positions, indices);
+            foreach (var point in result.samples)
+            {
+                Assert.IsTrue(FoliageTargetSnapshot.Finite(point));
+                Assert.Less(surface.FindNearest(point).distSq, 1e-10);
+            }
+        }
+
+        [TestCase(1)] [TestCase(3)]
+        public void IslandMinimumDoesNotDisableDedupForAdditionalSamples(int minimum)
+        {
+            var settings = Settings(); settings.minimumSamplesPerIsland = minimum;
+            settings.includeSourceVertices = true; settings.includeTriangleCentroids = true;
+            var result = FoliageSurfaceSampler.Sample(new[] { Vector3.zero, Vector3.right * .001f, Vector3.up * .001f },
+                new[] { 0, 1, 2 }, settings, CancellationToken.None);
+            Assert.Greater(result.generated, minimum);
+            Assert.AreEqual(minimum, result.deduplicated);
+            Assert.AreEqual(minimum, result.samples.Length);
+            Assert.AreEqual(minimum - 1, result.retainedForIslandMinimum);
+        }
+
+        [TestCase(1)] [TestCase(3)]
+        public void PrimitiveBudgetStillRejectsInsufficientIslandCoverage(int minimum)
+        {
+            var (positions, indices) = DenseLeafGeometry();
+            var settings = Settings(); settings.minimumSamplesPerIsland = minimum; settings.maximumPrimitiveCount = minimum * 3 - 1;
+            var error = Assert.Throws<InvalidOperationException>(() => FoliageSurfaceSampler.Sample(positions, indices, settings, CancellationToken.None));
+            StringAssert.Contains("Primitive budget cannot cover every island", error.Message);
+        }
+
         [TestCase(false)] [TestCase(true)]
         public void QuadWeldsAcrossSplitVerticesAndSamplingIsDeterministic(bool split)
         {

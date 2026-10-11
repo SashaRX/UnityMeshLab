@@ -30,7 +30,11 @@ namespace SashaRX.UnityMeshLab
             public Mesh mesh;
             public Matrix4x4 matrix;
             public Material[] materials;
-            public Item(Mesh mesh, Matrix4x4 matrix, Material[] materials = null) { this.mesh = mesh; this.matrix = matrix; this.materials = materials; }
+            // Tools can keep selection paint readable under attribute shading, or
+            // frame a proxy whose surface must not hide the source mesh.
+            public Shading? ShadingOverride { get; set; }
+            public bool WireOnly { get; set; }
+            public Item(Mesh mesh, Matrix4x4 matrix, Material[] materials = null) { this.mesh = mesh; this.matrix = matrix; this.materials = materials; ShadingOverride = null; WireOnly = false; }
         }
 
         public static readonly string[] ShadingNames = { "Surface", "Vertex colors", "Normals", "Tangents", "UV0", "UV1", "UV2", "UV3",
@@ -184,7 +188,7 @@ namespace SashaRX.UnityMeshLab
                     foreach (var item in items) {
                         if (!item.mesh) continue;
                         DrawItem(item);
-                        if (Wireframe) DrawWire(item.mesh, item.matrix, WireColor);
+                        if (Wireframe || item.WireOnly) DrawWire(item.mesh, item.matrix, item.WireOnly ? Color.cyan : WireColor);
                     }
                 overlay?.Invoke(this);
                 if (any) {
@@ -245,14 +249,16 @@ namespace SashaRX.UnityMeshLab
 
         void DrawItem(Item item)
         {
+            if (item.WireOnly) return;
             var mesh = item.mesh;
-            if (IsMaterialMode(Mode)) {
+            var mode = item.ShadingOverride ?? Mode;
+            if (IsMaterialMode(mode)) {
                 int slots = MaterialChannelPreview.DrawSlotCount(mesh.subMeshCount, item.materials);
                 for (int slot = 0; slot < slots; ++slot) {
                     int sub = Mathf.Min(slot, mesh.subMeshCount - 1);
                     var source = item.materials != null && slot < item.materials.Length ? item.materials[slot] : null;
                     var block = Block();
-                    MaterialChannelPreview.Read(source, Mode).Apply(block);
+                    MaterialChannelPreview.Read(source, mode).Apply(block);
                     block.SetFloat("_Opacity", Mathf.Clamp01(SurfaceOpacity));
                     var template = SurfaceOpacity < .999f ? translucentChannels : materialChannels;
                     int layer = Mathf.Max(0, slot - mesh.subMeshCount + 1);
@@ -261,36 +267,37 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
             if (SurfaceOpacity < .999f) {
-                var shown = Mode == Shading.Shaded ? mesh : Encoded(mesh, Mode);
+                var shown = mode == Shading.Shaded ? mesh : Encoded(mesh, mode);
                 if (!shown) shown = mesh;
-                int slots = Mode == Shading.Shaded ? MaterialChannelPreview.DrawSlotCount(shown.subMeshCount, item.materials) : shown.subMeshCount;
+                int slots = mode == Shading.Shaded ? MaterialChannelPreview.DrawSlotCount(shown.subMeshCount, item.materials) : shown.subMeshCount;
                 for (int slot = 0; slot < slots; ++slot) {
                     int sub = Mathf.Min(slot, shown.subMeshCount - 1);
                     var material = item.materials != null && slot < item.materials.Length ? item.materials[slot] : null;
-                    var block = SurfaceBlock(shown, Mode != Shading.Shaded);
+                    var block = SurfaceBlock(shown, mode != Shading.Shaded);
                     var albedo = MaterialChannelPreview.Read(material, Shading.Albedo);
-                    Color tint = Mode == Shading.Shaded ? albedo.tint : Color.white;
-                    tint.a = Mathf.Clamp01(SurfaceOpacity) * (Mode == Shading.Shaded && MaterialChannelPreview.UsesSurfaceAlpha(material) ? albedo.tint.a : 1);
+                    Color tint = mode == Shading.Shaded ? albedo.tint : Color.white;
+                    tint.a = Mathf.Clamp01(SurfaceOpacity) * (mode == Shading.Shaded && MaterialChannelPreview.UsesSurfaceAlpha(material) ? albedo.tint.a : 1);
                     block.SetColor(ColorId, tint);
-                    bool vertexColors = Mode != Shading.Shaded || (material && material.HasProperty("_UseVertexColor") && material.GetFloat("_UseVertexColor") > .5f);
+                    bool vertexColors = mode != Shading.Shaded || (material && material.HasProperty("_UseVertexColor") && material.GetFloat("_UseVertexColor") > .5f);
                     block.SetFloat(UseVertexColorId, vertexColors ? 1 : 0);
                     Texture texture = BindSurfaceTexture(material,block);
-                    block.SetFloat("_UseTexture", Mode == Shading.Shaded && texture ? 1 : 0);
+                    block.SetFloat("_UseTexture", mode == Shading.Shaded && texture ? 1 : 0);
                     utility.DrawMesh(shown, item.matrix, overlaySurface, sub, block);
                 }
                 return;
             }
-            if (Mode == Shading.Shaded) {
+            if (mode == Shading.Shaded) {
                 int slots = MaterialChannelPreview.DrawSlotCount(mesh.subMeshCount, item.materials);
                 for (int slot = 0; slot < slots; ++slot) {
                     int sub = Mathf.Min(slot, mesh.subMeshCount - 1);
                     var material = item.materials != null && slot < item.materials.Length ? item.materials[slot] : null;
+
                     if (material) utility.DrawMesh(mesh, item.matrix, material, sub);
                     else utility.DrawMesh(mesh, item.matrix, surface, sub, SurfaceBlock(mesh, false));
                 }
                 return;
             }
-            var encoded = Encoded(mesh, Mode);
+            var encoded = Encoded(mesh, mode);
             if (!encoded) {
                 // The mesh lacks the mode's data (a mesh without tangents next to ones that
                 // have them): draw it as the neutral grey Shaded uses, never let it vanish.
@@ -929,3 +936,4 @@ namespace SashaRX.UnityMeshLab
         }
     }
 }
+

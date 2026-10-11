@@ -149,7 +149,7 @@ namespace SashaRX.UnityMeshLab
             itemIndex = -1; float nearest = float.MaxValue;
             for (int i = 0; i < items.Count; ++i) {
                 var mesh = items[i].mesh;
-                if (!mesh || !HasOnlyTriangles(mesh)) continue;
+                if (!mesh || items[i].WireOnly || !HasOnlyTriangles(mesh)) continue;
                 int id = mesh.GetInstanceID();
                 ReadPickGeometry(mesh);
                 if (!bvhs.TryGetValue(id, out var data) || !SameValues(data.vertices, pickPositions) || !SameValues(data.triangles, pickTriangles))

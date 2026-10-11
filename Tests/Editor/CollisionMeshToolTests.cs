@@ -92,7 +92,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(2, items.Count);
             foreach (var item in items)
             {
-                Assert.AreEqual(source.localToWorldMatrix, item.matrix);
+                Assert.AreEqual(PreviewSpace.LocalToRoot(source, root.transform), item.matrix);
                 Assert.AreEqual(item.mesh.vertexCount, item.mesh.normals.Length);
             }
             Assert.IsEmpty(Field<List<Mesh>>(tool, "generatedMeshes")[0].normals, "preview normals must not enter collision data");
@@ -100,6 +100,28 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(items[0].mesh == null);
             items.Clear();
             Assert.IsFalse(tool.Get3DContent(items));
+        }
+
+        [Test]
+        public void CollisionAndSourcePreviewStayAlignedAfterRootPlacementChanges()
+        {
+            var source = Prepare(true, 2);
+            var items = new List<MeshViewport3D.Item>();
+            tool.Get3DContent(items);
+            var expected = items[0].matrix;
+            var ancestor = new GameObject("SceneParent"); owned.Add(ancestor);
+            root.transform.SetParent(ancestor.transform, false);
+            ancestor.transform.SetPositionAndRotation(new Vector3(100, -20, 30), Quaternion.Euler(70, 10, 20));
+            ancestor.transform.localScale = new Vector3(3, -2, .5f);
+            root.transform.localScale = Vector3.zero;
+            items.Clear(); tool.Get3DContent(items);
+            Assert.AreEqual(expected, items[0].matrix, "collision preview cannot inherit even a singular scene root");
+            typeof(CollisionMeshTool).GetField("previewSource", Private).SetValue(tool, true);
+            items.Clear(); tool.Get3DContent(items);
+            Assert.AreEqual(1, items.Count);
+            Assert.AreEqual(expected, items[0].matrix, "source and collision overlays share one model frame");
+            Assert.AreEqual(Vector3.zero, root.transform.localScale);
+            Assert.AreEqual(new Vector3(3, -2, .5f), ancestor.transform.localScale);
         }
 
         [UnityTest]

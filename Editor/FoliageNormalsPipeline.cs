@@ -161,7 +161,7 @@ namespace SashaRX.UnityMeshLab
 
         Mesh MeshForSelection(MeshRenderer renderer)
         {
-            var mesh = renderer.GetComponent<MeshFilter>()?.sharedMesh;
+            var mesh = FoliageLodSelection.SharedMesh(renderer);
             var snapshot = targets.FirstOrDefault(t => t.renderer == renderer);
             return snapshot != null && mesh == snapshot.applied ? snapshot.source : mesh;
         }
@@ -175,7 +175,7 @@ namespace SashaRX.UnityMeshLab
                 case Stage.Scatter:
                     return s.normalSource != FoliageNormalSource.VoxelEnvelope ? s.normalSource.ToString() : FormattableString.Invariant($"{s.normalSource}|{s.sampleSpacing:R}|{s.relativeSpacing}|{s.radiusMultiplier:R}|{s.dedupSpacingFraction:R}|{s.minimumSamplesPerIsland}|{s.deterministicSeed}|{s.maximumPrimitiveCount}|{s.includeSourceVertices}|{s.includeTriangleCentroids}");
                 case Stage.Envelope:
-                    return s.normalSource == FoliageNormalSource.VoxelEnvelope ? $"{s.normalSource}|{s.voxelResolution}|{s.primitiveSubdivision}|{s.maximumProxyTriangles}" : FormattableString.Invariant($"{s.normalSource}|{s.autoFitProxy}|{s.proxyCenter.x:R}|{s.proxyCenter.y:R}|{s.proxyCenter.z:R}|{s.proxyRotation.x:R}|{s.proxyRotation.y:R}|{s.proxyRotation.z:R}|{s.proxyRadius:R}|{s.proxyRadiusScale:R}|{s.proxySegments}");
+                    return s.normalSource == FoliageNormalSource.VoxelEnvelope ? $"{s.normalSource}|{s.voxelResolution}|{s.primitiveSubdivision}|{s.maximumProxyTriangles}" : FormattableString.Invariant($"{s.normalSource}|{s.autoFitProxy}|{s.proxyFit}|{s.proxyCenter.x:R}|{s.proxyCenter.y:R}|{s.proxyCenter.z:R}|{s.proxyRotation.x:R}|{s.proxyRotation.y:R}|{s.proxyRotation.z:R}|{s.proxyRadius:R}|{s.proxyRadiusScale:R}|{s.proxySegments}");
                 case Stage.Smooth:
                     return s.normalSource != FoliageNormalSource.VoxelEnvelope ? s.normalSource.ToString() : FormattableString.Invariant($"{s.smoothingIterations}|{s.smoothingStrength:R}|{s.lambda:R}|{s.mu:R}");
                 case Stage.Remesh:
@@ -451,6 +451,16 @@ namespace SashaRX.UnityMeshLab
             return (p.ToArray(), t.ToArray(), FoliageProxyBuilder.BoundsOf(points));
         }
 
+        float TransferReach(FoliageNormalsSettings options)
+        {
+            if (options.maxTransferDistance > 0) return options.maxTransferDistance;
+            var bounds = CaptureBounds;
+            if (options.autoFitProxy && options.proxyFit == FoliageProxyFit.ObjectBoundingBox &&
+                options.normalSource != FoliageNormalSource.VoxelEnvelope)
+                bounds.Encapsulate(FoliageProxyBuilder.BoundsOf(Remeshed.positions));
+            return bounds.size.magnitude * 2;
+        }
+
         async Task Transfer(FoliageNormalsSettings options, CancellationToken token)
         {
             if (!CaptureCurrent())
@@ -470,7 +480,7 @@ namespace SashaRX.UnityMeshLab
                 var diagnostics = new FoliageNormalTransfer.Diagnostics();
                 try
                 {
-                    float reach = options.maxTransferDistance > 0 ? options.maxTransferDistance : CaptureBounds.size.magnitude * 2;
+                    float reach = TransferReach(options);
                     foreach (var target in targets)
                     {
                         token.ThrowIfCancellationRequested();

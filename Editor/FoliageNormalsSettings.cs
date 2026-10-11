@@ -5,6 +5,7 @@ namespace SashaRX.UnityMeshLab
 {
     internal enum FoliageFaceSelection { AllTriangleSubmeshes, SelectedMaterials, SelectedSubmeshIndices }
     internal enum FoliageNormalSource { VoxelEnvelope, Sphere, Hemisphere }
+    internal enum FoliageProxyFit { SelectedFoliage, ObjectBoundingBox }
 
     [Serializable]
     internal sealed class FoliageNormalsSettings
@@ -18,6 +19,7 @@ namespace SashaRX.UnityMeshLab
         public bool filterRenderers; // when enabled, an empty renderer selection means none
         public FoliageNormalSource normalSource;
         public bool autoFitProxy = true;
+        public FoliageProxyFit proxyFit;
         public Vector3 proxyCenter, proxyRotation;
         public float proxyRadius = 1, proxyRadiusScale = 1;
         public int proxySegments = 64;
@@ -53,7 +55,11 @@ namespace SashaRX.UnityMeshLab
         {
             if (!FoliageTargetSnapshot.Finite(proxyCenter) || !FoliageTargetSnapshot.Finite(proxyRotation))
                 throw new ArgumentException("Proxy center and rotation must be finite.");
-            if (autoFitProxy) Range(proxyRadiusScale, .01f, 100, nameof(proxyRadiusScale));
+            if (autoFitProxy)
+            {
+                if (!Enum.IsDefined(typeof(FoliageProxyFit), proxyFit)) throw new ArgumentException("Unknown proxy fit mode.");
+                Range(proxyRadiusScale, .01f, 100, nameof(proxyRadiusScale));
+            }
             else Range(proxyRadius, 1e-6f, 1e6f, nameof(proxyRadius));
             if (proxySegments < 16 || proxySegments > 128 || proxySegments % 4 != 0)
                 throw new ArgumentException("Proxy segments must be a multiple of four between 16 and 128.");
@@ -92,7 +98,7 @@ namespace SashaRX.UnityMeshLab
         internal FoliageNormalsSettings Snapshot() => new FoliageNormalsSettings {
             lod0Only = lod0Only, selection = selection, materials = (Material[])materials.Clone(), submeshes = (int[])submeshes.Clone(),
             renderers = (MeshRenderer[])renderers.Clone(), filterRenderers = filterRenderers, sampleSpacing = sampleSpacing, relativeSpacing = relativeSpacing,
-            normalSource = normalSource, autoFitProxy = autoFitProxy, proxyCenter = proxyCenter, proxyRotation = proxyRotation,
+            normalSource = normalSource, autoFitProxy = autoFitProxy, proxyFit = proxyFit, proxyCenter = proxyCenter, proxyRotation = proxyRotation,
             proxyRadius = proxyRadius, proxyRadiusScale = proxyRadiusScale, proxySegments = proxySegments,
             radiusMultiplier = radiusMultiplier, dedupSpacingFraction = dedupSpacingFraction, minimumSamplesPerIsland = minimumSamplesPerIsland,
             deterministicSeed = deterministicSeed, maximumPrimitiveCount = maximumPrimitiveCount, includeSourceVertices = includeSourceVertices,

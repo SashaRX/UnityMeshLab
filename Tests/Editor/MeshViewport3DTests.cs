@@ -206,6 +206,29 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { Object.DestroyImmediate(mesh); }
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void WireOnlyOverlaysDoNotInterceptInspectionPicking(bool overlayFirst)
+        {
+            var mesh = Quad();
+            using var inspection = new MeshInspection();
+            try {
+                var source = new MeshViewport3D.Item(mesh, Matrix4x4.identity);
+                var overlay = new MeshViewport3D.Item(mesh, Matrix4x4.Translate(Vector3.back)) { WireOnly = true };
+                var items = overlayFirst ? new[] { overlay, source } : new[] { source, overlay };
+                int sourceIndex = overlayFirst ? 1 : 0, overlayIndex = 1 - sourceIndex;
+                var origin = new Vector3(.05f, .05f, -2);
+                Assert.IsTrue(inspection.Pick(items, origin, Vector3.forward, out int picked));
+                Assert.AreEqual(sourceIndex, picked, "Invisible proxy faces cannot hide the solid source.");
+                Assert.IsFalse(inspection.Pick(new[] { overlay }, origin, Vector3.forward, out picked));
+                Assert.AreEqual(-1, picked);
+                items[overlayIndex].WireOnly = false;
+                Assert.IsTrue(inspection.Pick(items, origin, Vector3.forward, out picked));
+                Assert.AreEqual(overlayIndex, picked, "Solid foreground meshes remain pickable.");
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
+
         [Test]
         public void InPlaceCompactionDropsTheCachedModelReport()
         {

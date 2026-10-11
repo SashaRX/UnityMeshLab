@@ -18,7 +18,6 @@ namespace SashaRX.UnityMeshLab
         {
             internal string name;
             internal RemeshNative.Geometry geometry;
-            internal Matrix4x4 placement;
             internal RemeshBaker.Maps maps;
             internal byte[] tga;
             internal Mesh mesh;
@@ -120,7 +119,7 @@ namespace SashaRX.UnityMeshLab
                 await Task.Yield(); token.ThrowIfCancellationRequested();
                 var options = JsonUtility.FromJson<RemeshSettings>(JsonUtility.ToJson(settings));
                 options.Validate();
-                Matrix4x4 worldToSource = root.transform.worldToLocalMatrix, placement = root.transform.localToWorldMatrix;
+                Matrix4x4 worldToSource = root.transform.worldToLocalMatrix;
                 var source = RemeshSource.Capture(worldToSource, RemeshSource.CollectRenderers(root, lod0Only), aoOnly: true, aoReadbackSettings: options);
                 await GpuReadback.AwaitReadbacks(source.TextureReadbacks, token);
                 for (int i = 0; i < entries.Length; ++i) {
@@ -132,7 +131,7 @@ namespace SashaRX.UnityMeshLab
                     var geometry = CaptureTarget(mesh, uvChannel);
                     Matrix4x4 toSource = worldToSource * entry.renderer.localToWorldMatrix;
                     await Task.Run(() => TransformTarget(geometry, toSource), token);
-                    var item = new Result { name = entry.renderer.name, geometry = geometry, placement = placement };
+                    var item = new Result { name = entry.renderer.name, geometry = geometry };
                     item.maps = await BakeMaps(source, geometry, options, token);
                     item.tga = await Task.Run(() => EncodeTgaRle(item.maps.ao, item.maps.size, item.maps.size, token), token);
                     completed.Add(item);
@@ -284,9 +283,9 @@ namespace SashaRX.UnityMeshLab
         {
             if (results.Count == 0) return false;
             var r = results[Mathf.Clamp(resultIndex, 0, results.Count - 1)];
-            var previewPlacement = r.placement;
-            previewPlacement.SetColumn(3, new Vector4(0, 0, 0, 1));
-            items.Add(new MeshViewport3D.Item(r.mesh, previewPlacement, r.material ? Enumerable.Repeat(r.material, r.mesh.subMeshCount).ToArray() : null));
+            // Target geometry was captured in root-local coordinates during baking.
+            items.Add(new MeshViewport3D.Item(r.mesh, Matrix4x4.identity, r.material ? Enumerable.Repeat(r.material, r.mesh.subMeshCount).ToArray() : null));
+
             return true;
         }
     }

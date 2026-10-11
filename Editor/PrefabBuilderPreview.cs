@@ -47,7 +47,7 @@ namespace SashaRX.UnityMeshLab
             public EdgeAnalyzer.EdgeFlag flags;
         }
 
-        List<(List<EdgeSegment> segments, Matrix4x4 localToWorld)> edgeOverlays;
+        List<(List<EdgeSegment> segments, Matrix4x4 localToWorld, Matrix4x4 localToPreview)> edgeOverlays;
 
         public bool HasEdgeOverlays => edgeOverlays != null && edgeOverlays.Count > 0;
 
@@ -58,6 +58,7 @@ namespace SashaRX.UnityMeshLab
             public Vector3[] positions;
             public bool[] mask;
             public Matrix4x4 localToWorld;
+            public Matrix4x4 localToPreview;
         }
 
         List<UnusedVertData> unusedVertOverlays;
@@ -322,7 +323,8 @@ namespace SashaRX.UnityMeshLab
                         {
                             positions = mesh.vertices,
                             mask = unusedMask,
-                            localToWorld = e.renderer.transform.localToWorldMatrix
+                            localToWorld = e.renderer.transform.localToWorldMatrix,
+                            localToPreview = ctx.PreviewMatrix(e.renderer.transform)
                         });
                     }
                 }
@@ -401,7 +403,7 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Build edge overlay data for all mesh entries (call once, draw every frame).</summary>
         public void BuildEdgeOverlays(UvToolContext ctx)
         {
-            edgeOverlays = new List<(List<EdgeSegment>, Matrix4x4)>();
+            edgeOverlays = new List<(List<EdgeSegment>, Matrix4x4, Matrix4x4)>();
             if (ctx?.MeshEntries == null) return;
 
             foreach (var e in ctx.MeshEntries)
@@ -440,7 +442,7 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 if (segments.Count > 0)
-                    edgeOverlays.Add((segments, e.renderer.transform.localToWorldMatrix));
+                    edgeOverlays.Add((segments, e.renderer.transform.localToWorldMatrix, ctx.PreviewMatrix(e.renderer.transform)));
             }
         }
 
@@ -449,7 +451,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (edgeOverlays == null) return;
 
-            foreach (var (segments, matrix) in edgeOverlays)
+            foreach (var (segments, matrix, _) in edgeOverlays)
             {
                 foreach (var seg in segments)
                 {
@@ -465,7 +467,7 @@ namespace SashaRX.UnityMeshLab
         public void DrawEdgeWireframe(MeshViewport3D view)
         {
             if (edgeOverlays == null) return;
-            foreach (var (segments, matrix) in edgeOverlays)
+            foreach (var (segments, _, matrix) in edgeOverlays)
             {
                 var pairs = new List<Vector3>(segments.Count * 2);
                 var colors = new List<Color>(segments.Count);
@@ -488,7 +490,7 @@ namespace SashaRX.UnityMeshLab
                 var points = new List<Vector3>();
                 for (int i = 0; i < data.mask.Length && i < data.positions.Length; i++)
                     if (data.mask[i]) points.Add(data.positions[i]);
-                view.DrawPoints(points, data.localToWorld, new Color(1f, 0.86f, 0.16f, 0.9f), 6f);
+                view.DrawPoints(points, data.localToPreview, new Color(1f, 0.86f, 0.16f, 0.9f), 6f);
             }
         }
 

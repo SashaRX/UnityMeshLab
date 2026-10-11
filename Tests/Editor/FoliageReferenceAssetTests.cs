@@ -54,10 +54,17 @@ namespace SashaRX.UnityMeshLab.Tests
                 var transforms = root.GetComponentsInChildren<Transform>();
                 var positions = Array.ConvertAll(transforms, t => t.localPosition); var rotations = Array.ConvertAll(transforms, t => t.localRotation);
                 var scales = Array.ConvertAll(transforms, t => t.localScale); var worlds = Array.ConvertAll(transforms, t => t.localToWorldMatrix);
+                var defaults = new FoliageNormalsSettings { selection = FoliageFaceSelection.SelectedMaterials, materials = new[] { leaves } };
+                var task = pipeline.Run(root, defaults, FoliageNormalsPipeline.Stage.Scatter);
+                yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, pipeline.Status);
+                int defaultIslands = pipeline.Samples.islands, defaultPrimitives = pipeline.Primitives.Length;
+                int defaultRetained = pipeline.Samples.retainedForIslandMinimum;
+                Assert.AreEqual(defaultIslands, new HashSet<int>(pipeline.Samples.sampleIslands).Count);
+                Assert.LessOrEqual(defaultPrimitives, defaults.maximumPrimitiveCount);
                 var settings = new FoliageNormalsSettings { selection = FoliageFaceSelection.SelectedMaterials, materials = new[] {leaves},
                     sampleSpacing = .04f, radiusMultiplier = 1.6f, dedupSpacingFraction = .01f, voxelResolution = 64, smoothingIterations = 3, smoothingStrength = .5f,
                     gpuProjection = GpuBvh.Supported };
-                var task = pipeline.Run(root, settings, FoliageNormalsPipeline.Stage.Transfer);
+                task = pipeline.Run(root, settings, FoliageNormalsPipeline.Stage.Transfer);
                 yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, pipeline.Status); Assert.IsTrue(pipeline.CanApply);
                 Assert.AreEqual(1, pipeline.Targets.Count); var target = pipeline.Targets[0]; var result = target.working;
                 Assert.IsFalse(target.selectedSubmeshes[0]); Assert.IsTrue(target.selectedSubmeshes[1]);
@@ -99,6 +106,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 }
                 FoliageProxyBuilder.Validate(pipeline.Remeshed, CancellationToken.None, false);
                 Directory.CreateDirectory(output);
+                yield return FoliageNormalsPreviewTests.CapturePinePreview(root, settings, pipeline, output);
                 FoliageNormalsToolTests.RenderPreview(pipeline.RemeshedMesh, Matrix4x4.identity, Path.Combine(output, "pine-proxy-wire.png"), false, true);
                 FoliageNormalsToolTests.RenderPreview(target.original, target.localToCapture, Path.Combine(output, "pine-before-normals.png"), true);
                 FoliageNormalsToolTests.RenderPreview(result, target.localToCapture, Path.Combine(output, "pine-after-normals.png"), true);
@@ -145,12 +153,14 @@ namespace SashaRX.UnityMeshLab.Tests
                     else Assert.AreEqual(normals[i], cpuNormals[i]);
                 }
                 File.WriteAllText(Path.Combine(output, "pine-metrics.txt"), $"Mesh {source.name}: {source.vertexCount} vertices, 2 submeshes; unreadable imported source.\n" +
+                    $"Default scatter: {defaultIslands} islands covered, {defaultPrimitives} primitives, {defaultRetained} close samples retained for island minima.\n" +
                     $"Slot 0: {wood.name}, {target.indices[0].Length/3} faces, {excluded} vertices with exact original normals.\n" +
                     $"Slot 1: {leaves.name}, {target.indices[1].Length/3} faces, {changed} changed vertex directions.\n" +
                     $"{pipeline.Samples.islands} foliage islands; {pipeline.Primitives.Length} primitives; {pipeline.ProxyComponents} proxy components.\n" +
                     $"Positions, UV0-UV7, colors, excluded indices/normals/tangents, material references and transforms preserved.\n" +
                     $"Spacing {pipeline.Samples.spacing:G5} (4% diagonal), radius multiplier 1.6, dedup fraction 0.01, voxel resolution 64, Taubin 3 iterations at strength 0.5.\n" +
                     $"{pipeline.RemeshDiagnostics}\n{firstTransfer}\n{pipeline.TransferDiagnostics}\nCPU/GPU minimum normal dot {minimumDot:G9}.\nSaved {string.Join(", ", paths)}\n");
+                yield return ValidateBoundingBoxShapes(root, settings, output);
                 pipeline.Apply(); Undo.FlushUndoRecordObjects(); applied = root.GetComponent<MeshFilter>().sharedMesh;
                 Assert.AreNotEqual(source, applied); Undo.PerformUndo(); Assert.AreEqual(source, root.GetComponent<MeshFilter>().sharedMesh);
                 Undo.PerformRedo(); applied = root.GetComponent<MeshFilter>().sharedMesh; Assert.IsTrue(applied); Assert.AreNotEqual(source, applied);
@@ -166,6 +176,46 @@ namespace SashaRX.UnityMeshLab.Tests
                 }
                 finally { AssetDatabase.StopAssetEditing(); }
             }
+        }
+
+        static IEnumerator ValidateBoundingBoxShapes(GameObject root, FoliageNormalsSettings options, string output)
+        {
+            using var shapes = new FoliageNormalsPipeline();
+            var settings = options.Snapshot(); settings.proxyFit = FoliageProxyFit.ObjectBoundingBox;
+            var metrics = new List<string>();
+            foreach (var source in new[] { FoliageNormalSource.Sphere, FoliageNormalSource.Hemisphere })
+            {
+                settings.normalSource = source; settings.gpuProjection = false;
+                var task = shapes.Run(root, settings, FoliageNormalsPipeline.Stage.Transfer);
+                yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, shapes.Status);
+                var target = shapes.Targets[0]; var expected = FoliageProxyBuilder.BoundsOf(target.positions);
+                Assert.Less((shapes.EnvelopeMesh.bounds.center - expected.center).magnitude, 1e-4);
+                Assert.Less((shapes.EnvelopeMesh.bounds.size - expected.size).magnitude, 1e-4);
+                Assert.AreEqual(0, shapes.TransferDiagnostics.misses);
+                Assert.AreEqual(shapes.TransferDiagnostics.selected, shapes.TransferDiagnostics.transferred);
+                var cpuNormals = target.working.normals; int excluded = 0;
+                for (int i = 0; i < target.excludedVertices.Length; i++)
+                    if (target.excludedVertices[i]) { Assert.AreEqual(target.localNormals[i], cpuNormals[i]); excluded++; }
+                Assert.IsTrue(shapes.CanApply);
+                metrics.Add($"{source}: center {shapes.ShapeProxy.center}, radii {shapes.ShapeProxy.radii}; {shapes.TransferDiagnostics}; {excluded} excluded normals exact.");
+                if (GpuBvh.Supported)
+                {
+                    settings.gpuProjection = true;
+                    task = shapes.Run(root, settings, FoliageNormalsPipeline.Stage.Transfer);
+                    yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, shapes.Status);
+                    Assert.AreEqual(0, shapes.TransferDiagnostics.misses);
+                    float minimumDot = 1; var gpuNormals = target.working.normals;
+                    for (int i = 0; i < cpuNormals.Length; i++)
+                    {
+                        float dot = Vector3.Dot(cpuNormals[i], gpuNormals[i]); minimumDot = Mathf.Min(minimumDot, dot);
+                        Assert.Greater(dot, .999f);
+                    }
+                    metrics.Add($"{source}: CPU/GPU minimum normal dot {minimumDot:G9}.");
+                }
+                string directory = Path.Combine(output, "bbox-" + source.ToString().ToLowerInvariant()); Directory.CreateDirectory(directory);
+                yield return FoliageNormalsPreviewTests.CapturePinePreview(root, settings, shapes, directory);
+            }
+            File.WriteAllLines(Path.Combine(output, "pine-bbox-metrics.txt"), metrics);
         }
 
         static Material MaterialAsset(string path, string name)

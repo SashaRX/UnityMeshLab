@@ -21,7 +21,7 @@ namespace SashaRX.UnityMeshLab
         internal static List<Target> Resolve(GameObject root, FoliageNormalsSettings settings, CancellationToken token,
             Func<MeshRenderer, Mesh> meshFor = null)
         {
-            meshFor ??= r => r.GetComponent<MeshFilter>()?.sharedMesh;
+            meshFor ??= SharedMesh;
             var seeds = root.GetComponentsInChildren<MeshRenderer>()
                 .Where(r => Eligible(r, meshFor(r)) && (!(settings.filterRenderers || settings.renderers.Length > 0) ||
                     Array.IndexOf(settings.renderers, r) >= 0))
@@ -52,21 +52,42 @@ namespace SashaRX.UnityMeshLab
                 if (!Eligible(renderer, mesh)) continue;
                 var selected = Remap(seed, renderer, settings, meshFor);
                 var mask = Mask(mesh, renderer.sharedMaterials, selected);
-                if (!Enumerable.Range(0, mask.Length).Any(s => mask[s] && mesh.GetIndexCount(s) > 0)) continue;
+                if (!HasTriangles(mesh, mask)) continue;
                 result.Add(new Target { renderer = renderer, settings = selected, submeshes = mask,
                     proxySource = result.Count == 0 || !settings.lod0Only, lodLevel = Level(renderer, mesh) });
             }
             return result;
         }
 
+        internal static bool HasEligibleRenderer(GameObject root) => root && root.GetComponentsInChildren<MeshRenderer>()
+            .Any(renderer => Eligible(renderer, SharedMesh(renderer)));
+
+        internal static GameObject SelectionRoot(GameObject selected)
+        {
+            if (!HasEligibleRenderer(selected)) return null;
+            var group = selected.GetComponentsInParent<LODGroup>().FirstOrDefault(g => g.gameObject == selected ||
+                g.GetLODs().SelectMany(lod => lod.renderers).OfType<MeshRenderer>().Any(renderer =>
+                    Eligible(renderer, SharedMesh(renderer)) && renderer.transform.IsChildOf(selected.transform)));
+            return group ? group.gameObject : selected;
+        }
+
+        internal static Mesh SharedMesh(MeshRenderer renderer)
+        {
+            var filter = renderer ? renderer.GetComponent<MeshFilter>() : null;
+            return filter ? filter.sharedMesh : null;
+        }
+
         static bool Eligible(MeshRenderer renderer, Mesh mesh) => renderer && renderer.enabled &&
-            renderer.gameObject.activeInHierarchy && mesh && !MeshNaming.IsCollision(renderer.name) && !MeshNaming.IsCollision(mesh.name);
+            renderer.gameObject.activeInHierarchy && mesh && !MeshNaming.IsCollision(renderer.name) && !MeshNaming.IsCollision(mesh.name) && HasTriangles(mesh);
+
+        static bool HasTriangles(Mesh mesh, bool[] mask = null) => Enumerable.Range(0, mesh.subMeshCount).Any(sub =>
+            mesh.GetTopology(sub) == MeshTopology.Triangles && mesh.GetIndexCount(sub) > 0 && (mask == null || mask[sub]));
 
         static bool[] Mask(Mesh mesh, Material[] materials, FoliageNormalsSettings settings) =>
             Enumerable.Range(0, mesh.subMeshCount).Select(s => mesh.GetTopology(s) == MeshTopology.Triangles &&
                 FoliageTargetSnapshot.SelectsSubmesh(s, materials, settings)).ToArray();
 
-        static int Level(MeshRenderer renderer, Mesh mesh)
+        internal static int Level(MeshRenderer renderer, Mesh mesh)
         {
             var group = Group(renderer);
             if (group)

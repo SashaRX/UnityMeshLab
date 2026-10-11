@@ -444,7 +444,7 @@ namespace SashaRX.UnityMeshLab
         {
             SyncPreviewData();
             if (previews.IsSource) {
-                var worldToFrame = previewSourceRoot ? RemeshPipeline.PreviewRootFrameInverse(previewSourceRoot.transform) : Matrix4x4.identity;
+                var worldToFrame = previewSourceRoot ? previewSourceRoot.transform.worldToLocalMatrix : Matrix4x4.identity;
                 if (highlightFilterPreview) {
                     EnsureHighlight();
                     if (highlight.FillPreview(items, worldToFrame)) return true;
@@ -452,7 +452,7 @@ namespace SashaRX.UnityMeshLab
                 for (int i = 0; i < sourceEntries.Count; ++i) {
                     var renderer = sourceRenderers[i];
                     if (renderer) items.Add(new MeshViewport3D.Item(sourceEntries[i].originalMesh,
-                        worldToFrame * renderer.localToWorldMatrix, renderer.sharedMaterials));
+                        PreviewSpace.LocalToRoot(renderer.transform, previewSourceRoot ? previewSourceRoot.transform : null), renderer.sharedMaterials));
                 }
                 return true;
             }

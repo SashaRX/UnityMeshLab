@@ -453,8 +453,7 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
                 for (int i = 0; i < entries.Count; ++i) Assert.AreSame(entries[i].originalMesh, items[i].mesh);
                 var index = items.FindIndex(item => item.mesh == mesh);
                 Assert.That(index, Is.GreaterThanOrEqualTo(0));
-                var expected = Matrix4x4.Scale(root.transform.localScale) *
-                    Matrix4x4.TRS(first.transform.localPosition, first.transform.localRotation, first.transform.localScale);
+                var expected = Matrix4x4.TRS(first.transform.localPosition, first.transform.localRotation, first.transform.localScale);
                 for (int k = 0; k < 16; ++k) Assert.That(items[index].matrix[k], Is.EqualTo(expected[k]).Within(1e-5f));
                 Assert.That(Quaternion.Angle(Quaternion.Euler(20, 70, -15), root.transform.rotation), Is.LessThan(.01f));
                 Assert.AreSame(mesh, first.GetComponent<MeshFilter>().sharedMesh);
@@ -535,8 +534,7 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
             child.transform.localPosition = new Vector3(1, 2, 3);
             child.transform.localRotation = Quaternion.Euler(10, 20, 30);
             child.transform.localScale = new Vector3(.5f, 1, 2);
-            var expected = Matrix4x4.Scale(root.transform.localScale) *
-                Matrix4x4.TRS(child.transform.localPosition, child.transform.localRotation, child.transform.localScale);
+            var expected = Matrix4x4.TRS(child.transform.localPosition, child.transform.localRotation, child.transform.localScale);
             using (var pipeline = new RemeshPipeline())
             try {
                 var settings = new RemeshSettings { keepHierarchy = true, sourceShape = RemeshShape.BoundingBox,
@@ -596,10 +594,11 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
                             preview.Show(stage);
                             var items = new List<MeshViewport3D.Item>();
                             Assert.IsTrue(preview.Fill3D(data, items), stage.ToString());
+                            Assert.AreEqual(Matrix4x4.identity, items[0].matrix, "the source renderer is the selected root");
                             Assert.That(Quaternion.Angle(Quaternion.identity, items[0].matrix.rotation), Is.LessThan(.01f));
                             var vertex = items[0].mesh.vertices[0];
                             Assert.That((items[0].matrix.MultiplyPoint3x4(vertex) -
-                                Vector3.Scale(source.transform.lossyScale, vertex)).magnitude, Is.LessThan(1e-5f));
+                                vertex).magnitude, Is.LessThan(1e-5f), "scene scale must not enter the isolated preview");
                         }
                         // Saving uses the captured transform even if the source changes later.
                         source.transform.rotation = Quaternion.identity;

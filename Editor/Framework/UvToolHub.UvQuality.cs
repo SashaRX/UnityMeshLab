@@ -83,12 +83,11 @@ namespace SashaRX.UnityMeshLab
         LightmapUvQuality.Part[] CaptureQualityLod0()
         {
             var parts = new List<LightmapUvQuality.Part>();
-            var transform = ContextWorldToPreview();
             foreach (var entry in ctx.MeshEntries.Where(e => e.include && e.lodIndex == 0)) {
                 var mesh = ctx.DMesh(entry);
                 if (!mesh) continue;
                 parts.Add(CaptureQualityPart(inspection.Readable(mesh), entry,
-                    entry.renderer ? transform * entry.renderer.localToWorldMatrix : Matrix4x4.identity, ctx.PreviewUvChannel));
+                    ctx.PreviewMatrix(entry.renderer ? entry.renderer.transform : null), ctx.PreviewUvChannel));
             }
             return parts.ToArray();
         }
