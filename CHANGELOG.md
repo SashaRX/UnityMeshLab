@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Fixed
+- Captured Before/After normal arrows sample the selected vertex sequence rather than the complete mesh buffer, preserving sparse submesh visibility and boundary-copy indexing under the 256-arrow limit.
+- Foliage selection following rejects collision meshes, disabled or inactive renderers, and missing mesh filters or meshes using the same eligibility predicate as capture/LOD resolution, keeping the current tree and cancelling queued replacements for unsupported selections.
 - Wire-only proxy overlays no longer intercept mesh inspection or UV spot picking. Foliage source preview copies retain original mesh names; regression checks cover mesh-named LOD chains before and after transfer for readable and unreadable sources.
 - Foliage preview drops a queued tree replacement when the latest selection is ineligible, samples normal arrows from the selected vertex set, and clears side-by-side comparisons when the transfer result is invalidated.
 - Foliage Normals follows Hierarchy selection, resolves LOD children to their group, and replaces stale previews after cancelling a running calculation. Preview displays the newly selected tree before Capture, with a switch to keep a manually assigned root.

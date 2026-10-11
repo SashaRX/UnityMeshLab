@@ -205,7 +205,7 @@ namespace SashaRX.UnityMeshLab
         void SourceChannelsChanged(Mesh mesh)
         {
             if (pipeline.Targets.Any(t => t.source == mesh || t.applied == mesh) ||
-                availableRenderers.Any(r => r && r.GetComponent<MeshFilter>()?.sharedMesh == mesh)) OnRefresh();
+                availableRenderers.Any(r => r && FoliageLodSelection.SharedMesh(r) == mesh)) OnRefresh();
         }
 
         static void FollowSelectionChanges(Action handler, bool follow)
@@ -225,7 +225,7 @@ namespace SashaRX.UnityMeshLab
             if (!selected || EditorUtility.IsPersistent(selected)) return;
             var group = selected.GetComponentInParent<LODGroup>();
             var next = group ? group.gameObject : selected;
-            if (!next.GetComponentInChildren<MeshRenderer>()) return;
+            if (!FoliageLodSelection.HasEligibleRenderer(next)) return;
             if (next == root) return;
             if (pipeline.IsRunning)
             {

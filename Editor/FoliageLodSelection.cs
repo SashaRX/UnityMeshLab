@@ -21,7 +21,7 @@ namespace SashaRX.UnityMeshLab
         internal static List<Target> Resolve(GameObject root, FoliageNormalsSettings settings, CancellationToken token,
             Func<MeshRenderer, Mesh> meshFor = null)
         {
-            meshFor ??= r => r.GetComponent<MeshFilter>()?.sharedMesh;
+            meshFor ??= SharedMesh;
             var seeds = root.GetComponentsInChildren<MeshRenderer>()
                 .Where(r => Eligible(r, meshFor(r)) && (!(settings.filterRenderers || settings.renderers.Length > 0) ||
                     Array.IndexOf(settings.renderers, r) >= 0))
@@ -57,6 +57,15 @@ namespace SashaRX.UnityMeshLab
                     proxySource = result.Count == 0 || !settings.lod0Only, lodLevel = Level(renderer, mesh) });
             }
             return result;
+        }
+
+        internal static bool HasEligibleRenderer(GameObject root) => root && root.GetComponentsInChildren<MeshRenderer>()
+            .Any(renderer => Eligible(renderer, SharedMesh(renderer)));
+
+        internal static Mesh SharedMesh(MeshRenderer renderer)
+        {
+            var filter = renderer ? renderer.GetComponent<MeshFilter>() : null;
+            return filter ? filter.sharedMesh : null;
         }
 
         static bool Eligible(MeshRenderer renderer, Mesh mesh) => renderer && renderer.enabled &&

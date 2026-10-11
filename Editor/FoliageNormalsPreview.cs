@@ -67,7 +67,7 @@ namespace SashaRX.UnityMeshLab
             if (!root) return _ => new List<Paint>();
             // A transferred/applied mesh never replaces the captured "before" view.
             Mesh MeshFor(MeshRenderer renderer) => pipeline.Targets.FirstOrDefault(t => t.renderer == renderer)?.original
-                ?? renderer.GetComponent<MeshFilter>()?.sharedMesh;
+                ?? FoliageLodSelection.SharedMesh(renderer);
             List<FoliageLodSelection.Target> plan;
             try { plan = FoliageLodSelection.Resolve(root, options, CancellationToken.None, MeshFor); }
             catch (InvalidOperationException e) { Error = e.Message; plan = new List<FoliageLodSelection.Target>(); }
@@ -223,11 +223,13 @@ namespace SashaRX.UnityMeshLab
         internal static void AppendNormalLines(FoliageTargetSnapshot target, bool after, Vector3 offset, float length, List<Vector3> lines)
         {
             var normals = after && target.working ? target.working.normals : target.localNormals;
-            int stride = Math.Max(1, (target.positions.Length + 255) / 256), nextDuplicate = target.localPositions.Length;
+            int stride = Math.Max(1, (target.selectedVertices.Count(selected => selected) + 255) / 256);
+            int nextDuplicate = target.localPositions.Length, selectedOrdinal = 0;
             for (int i = 0; i < target.positions.Length; i++)
             {
-                int v = target.selectedVertices[i] && target.excludedVertices[i] && target.working ? nextDuplicate++ : i;
-                if (i % stride != 0 || !target.selectedVertices[i]) continue;
+                if (!target.selectedVertices[i]) continue;
+                int v = target.excludedVertices[i] && target.working ? nextDuplicate++ : i;
+                if (selectedOrdinal++ % stride != 0) continue;
                 var start = target.positions[i] + offset;
                 var direction = after && target.working ? MeshGeometry.UnitDirection(target.normalLocalToCapture.MultiplyVector(normals[v]))
                     : target.captureNormals[i];

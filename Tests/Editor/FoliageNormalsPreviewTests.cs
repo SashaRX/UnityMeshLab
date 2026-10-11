@@ -139,13 +139,29 @@ namespace SashaRX.UnityMeshLab.Tests
             using var first = new FoliageNormalTransferTests.Fixture();
             using var second = new FoliageNormalTransferTests.Fixture();
             using var fixture = new ToolFixture();
+            using var collisionRenderer = new FoliageNormalTransferTests.Fixture();
+            using var collisionMesh = new FoliageNormalTransferTests.Fixture();
+            using var disabled = new FoliageNormalTransferTests.Fixture();
+            using var noFilter = new FoliageNormalTransferTests.Fixture();
+            using var noMesh = new FoliageNormalTransferTests.Fixture();
+            using var inactive = new FoliageNormalTransferTests.Fixture();
             var light = new GameObject("Light"); var camera = new GameObject("Camera"); var empty = new GameObject("Empty");
             try
             {
                 light.AddComponent<Light>(); camera.AddComponent<Camera>();
+                collisionRenderer.root.name = "Tree_COL"; collisionMesh.mesh.name = "Tree_COL";
+                disabled.renderer.enabled = false;
+                Object.DestroyImmediate(noFilter.root.GetComponent<MeshFilter>());
+                noFilter.root.transform.SetParent(first.root.transform, false);
+                noMesh.root.GetComponent<MeshFilter>().sharedMesh = null;
+                inactive.root.SetActive(false);
                 Selection.activeGameObject = first.root; fixture.tool.OnActivate(null, null);
-                foreach (var selection in new Object[] { light, camera, empty, first.mesh, null })
+                fixture.tool.settings.filterRenderers = true; fixture.tool.settings.renderers = new[] { first.renderer };
+                foreach (var selection in new Object[] { light, camera, empty, first.mesh, null,
+                    collisionRenderer.root, collisionMesh.root, disabled.root, noFilter.root, noMesh.root, inactive.root })
                 {
+                    Selection.activeObject = selection; fixture.tool.FollowSelection();
+                    Assert.AreSame(first.root, fixture.tool.root, "An unsupported selection cannot discard an idle tree.");
                     Selection.activeGameObject = first.root; fixture.tool.FollowSelection();
                     fixture.tool.pipeline.ClearFrom(FoliageNormalsPipeline.Stage.Capture);
                     var task = fixture.tool.pipeline.Run(first.root, fixture.tool.settings, FoliageNormalsPipeline.Stage.Transfer);
@@ -156,6 +172,14 @@ namespace SashaRX.UnityMeshLab.Tests
                     for (int frame = 0; frame < 5; frame++) yield return null;
                     Assert.AreSame(first.root, fixture.tool.root, "An ineligible latest selection keeps the current tree.");
                 }
+                Selection.activeGameObject = first.root; fixture.tool.FollowSelection();
+                var finalTask = fixture.tool.pipeline.Run(first.root, fixture.tool.settings, FoliageNormalsPipeline.Stage.Transfer);
+                yield return FoliageNormalsToolTests.Await(finalTask);
+                Assert.IsTrue(finalTask.Result, fixture.tool.pipeline.Status);
+                Assert.IsTrue(fixture.tool.pipeline.CanApply, "A mesh-less child must not invalidate a valid capture.");
+                fixture.tool.OnRefresh(); yield return AwaitPreview(fixture.tool.sourcePreview);
+                Assert.IsNull(fixture.tool.sourcePreview.Error);
+                Assert.AreEqual(1, fixture.tool.sourcePreview.Sources(0).Count(), "Renderers without meshes are omitted from source context.");
             }
             finally { Object.DestroyImmediate(light); Object.DestroyImmediate(camera); Object.DestroyImmediate(empty); }
         }
@@ -333,6 +357,37 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(4, items.Count); Assert.AreSame(target.original, items[0].mesh); Assert.AreSame(target.working, items[1].mesh);
             Assert.Less(items[0].matrix.m03, items[1].matrix.m03);
             Assert.AreSame(leaf.mesh, leaf.root.GetComponent<MeshFilter>().sharedMesh);
+        }
+
+        [TestCase(255)]
+        [TestCase(600)]
+        public void CapturedArrowsSampleSelectedVerticesAndKeepSkippedBoundaryCopiesAligned(int selectedCount)
+        {
+            var positions = Enumerable.Range(0, selectedCount * 2 + 2).Select(i => new Vector3(i % 2, i / 2 % 2, i / 4)).ToArray();
+            using var fixture = new FoliageNormalTransferTests.Fixture(positions);
+            var selected = Enumerable.Range(0, selectedCount).Select(i => i * 2 + 1).ToArray();
+            fixture.mesh.SetTriangles(new[] { 0, 2, 4 }.Concat(selected).ToArray(), 0);
+            fixture.mesh.SetTriangles(selected, 1);
+            var settings = new FoliageNormalsSettings { selection = FoliageFaceSelection.SelectedSubmeshIndices,
+                submeshes = new[] { 1 }, recalculateTangents = false };
+            using var target = new FoliageTargetSnapshot(fixture.renderer, Matrix4x4.identity, settings, CancellationToken.None);
+            var before = new List<Vector3>(); var after = new List<Vector3>();
+            var offset = new Vector3(.3f, -1, 7); const float length = .1f;
+            FoliageNormalsPreview.AppendNormalLines(target, false, offset, length, before);
+            target.working = target.BuildResult(Enumerable.Repeat(Vector3.up, positions.Length).ToArray(), false,
+                CancellationToken.None, out int duplicated);
+            Assert.AreEqual(selectedCount, duplicated);
+            FoliageNormalsPreview.AppendNormalLines(target, true, offset, length, after);
+            int stride = (selectedCount + 255) / 256;
+            Assert.AreEqual(2 * ((selectedCount + stride - 1) / stride), before.Count);
+            Assert.AreEqual(before.Count, after.Count); Assert.LessOrEqual(after.Count, 512);
+            for (int line = 0; line < after.Count; line += 2) {
+                Assert.AreEqual(positions[selected[line / 2 * stride]] + offset, before[line]);
+                Assert.AreEqual(before[line], after[line]);
+                Assert.That(Vector3.Distance(before[line + 1] - before[line], Vector3.forward * length), Is.LessThan(1e-5f));
+                Assert.That(Vector3.Distance(after[line + 1] - after[line], Vector3.up * length), Is.LessThan(1e-5f));
+            }
+            Assert.AreSame(fixture.mesh, fixture.root.GetComponent<MeshFilter>().sharedMesh);
         }
 
         [Test]

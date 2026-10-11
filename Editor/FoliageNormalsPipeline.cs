@@ -161,7 +161,7 @@ namespace SashaRX.UnityMeshLab
 
         Mesh MeshForSelection(MeshRenderer renderer)
         {
-            var mesh = renderer.GetComponent<MeshFilter>()?.sharedMesh;
+            var mesh = FoliageLodSelection.SharedMesh(renderer);
             var snapshot = targets.FirstOrDefault(t => t.renderer == renderer);
             return snapshot != null && mesh == snapshot.applied ? snapshot.source : mesh;
         }
