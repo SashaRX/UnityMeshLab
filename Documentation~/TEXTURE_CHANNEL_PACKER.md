@@ -44,11 +44,16 @@ Full-resolution resizing and RLE encoding run on a worker while the editor stays
 responsive. Cancel in the progress dialog to discard staged outputs; closing the
 window also cancels the export. Files are staged beside their destinations and
 installed only after encoding completes, so an encoding failure leaves existing
-textures intact and their `.meta` GUIDs are retained. Source collision checks
+textures intact and their `.meta` GUIDs are retained. If an output appears or
+changes during packing, save is refused so its overwrite can be confirmed again.
+A failure installing a later file restores earlier files in the same batch.
+Source collision checks
 resolve symbolic links and junctions; replacing a hard-linked destination detaches
 that link without modifying other links. Under Assets, ignored folders such as
 `Textures~` are rejected before export; a missing texture importer is reported as
-an error. Filesystem path checks preserve case sensitivity on Unix systems.
+an error. Filesystem path checks probe the destination's actual case rules,
+including case-insensitive macOS volumes and case-sensitive Windows directories.
+FBX selection changes made during export are applied when the export finishes.
 
 Sources are cached for the open window; **Reload source files** picks up external
 edits. Paths and settings survive domain reload; temporary GPU textures are

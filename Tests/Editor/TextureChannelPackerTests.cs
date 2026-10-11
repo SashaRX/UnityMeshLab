@@ -186,7 +186,12 @@ namespace SashaRX.UnityMeshLab.Tests
                     InvokePrivate(window, "Assign", output, rgb, sourcePath);
                 }
                 InvokePrivate(window, "SaveEnabled");
+                SetPrivate(window, "followFbx", true);
+                InvokePrivate(window, "OnSelectionChanged");
+                Assert.IsTrue((bool)GetPrivate(window, "selectionPending"));
                 while (GetPrivate(window, "saveTask") != null) yield return null;
+                Assert.IsFalse((bool)GetPrivate(window, "selectionPending"));
+                SetPrivate(window, "followFbx", false);
                 Assert.IsEmpty((string)GetPrivate(window, "error"));
                 foreach (string suffix in new[] { "Albedo", "MRCA", "Normal" })
                 {
@@ -264,7 +269,9 @@ namespace SashaRX.UnityMeshLab.Tests
                 File.WriteAllBytes(path, new byte[] { 1, 2 });
                 File.WriteAllText(path + ".meta", "existing-guid");
                 staged = TexturePackingFiles.Stage(path, stream => stream.WriteByte(42));
-                TexturePackingFiles.Commit(staged, path);
+                var original = new FileInfo(path);
+                TexturePackingFiles.InstallBatch(new[] { new TexturePackingFiles.PendingFile(staged, path,
+                    true, original.Length, original.LastWriteTimeUtc) });
                 CollectionAssert.AreEqual(new byte[] { 42 }, File.ReadAllBytes(path));
                 Assert.AreEqual("existing-guid", File.ReadAllText(path + ".meta"));
                 Assert.IsFalse(File.Exists(staged));
@@ -297,7 +304,83 @@ namespace SashaRX.UnityMeshLab.Tests
             string original = Path.Combine(Application.dataPath, "Texture.tga");
             Assert.AreEqual("Assets/Texture.tga", InvokeAssetPath(original));
             string differentCase = Path.Combine(Path.GetDirectoryName(Application.dataPath), "assets", "Texture.tga");
-            Assert.AreEqual(Path.DirectorySeparatorChar == '\\' ? "Assets/Texture.tga" : null, InvokeAssetPath(differentCase));
+            Assert.AreEqual(TexturePackingFiles.ComparisonForDirectory(Path.GetDirectoryName(Application.dataPath)) ==
+                StringComparison.OrdinalIgnoreCase ? "Assets/Texture.tga" : null, InvokeAssetPath(differentCase));
+        }
+
+        [TestCase(0, 255)]
+        [TestCase(8, 0)]
+        public void TgaPaddingIsOpaqueUnlessAlphaIsDeclared(int attributeBits, int expected)
+        {
+            byte[] bytes = new byte[22];
+            bytes[2] = 2;
+            bytes[12] = bytes[14] = 1;
+            bytes[16] = 32;
+            bytes[17] = (byte)attributeBits;
+            Assert.AreEqual(expected, TexturePackingImage.DecodeTga(bytes).Pixels[0].a);
+        }
+
+        [Test]
+        public void LateArrivingDestinationIsNotOverwritten()
+        {
+            string path = Path.Combine(Path.GetTempPath(), "MeshLabLate-" + Guid.NewGuid().ToString("N") + ".tga");
+            string staged = TexturePackingFiles.Stage(path, stream => stream.WriteByte(99));
+            try
+            {
+                var pending = new TexturePackingFiles.PendingFile(staged, path, false, 0, default);
+                File.WriteAllBytes(path, new byte[] { 42 });
+                Assert.Throws<IOException>(() => TexturePackingFiles.InstallBatch(new[] { pending }));
+                CollectionAssert.AreEqual(new byte[] { 42 }, File.ReadAllBytes(path));
+            }
+            finally { TexturePackingFiles.Discard(staged); File.Delete(path); }
+        }
+
+        [Test]
+        public void FailedSecondCommitRestoresTheFirstOutput()
+        {
+            string directory = Path.Combine(Path.GetTempPath(), "MeshLabBatch-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            string first = Path.Combine(directory, "first.tga"), second = Path.Combine(directory, "second.tga");
+            string staged = TexturePackingFiles.Stage(first, stream => stream.WriteByte(99));
+            try
+            {
+                File.WriteAllBytes(first, new byte[] { 1 });
+                File.WriteAllBytes(second, new byte[] { 2 });
+                var firstInfo = new FileInfo(first);
+                var secondInfo = new FileInfo(second);
+                var files = new[]
+                {
+                    new TexturePackingFiles.PendingFile(staged, first, true, firstInfo.Length, firstInfo.LastWriteTimeUtc),
+                    new TexturePackingFiles.PendingFile(Path.Combine(directory, "missing-stage"), second,
+                        true, secondInfo.Length, secondInfo.LastWriteTimeUtc)
+                };
+                Assert.Throws<FileNotFoundException>(() => TexturePackingFiles.InstallBatch(files));
+                CollectionAssert.AreEqual(new byte[] { 1 }, File.ReadAllBytes(first));
+                CollectionAssert.AreEqual(new byte[] { 2 }, File.ReadAllBytes(second));
+                Assert.AreEqual(2, Directory.GetFiles(directory).Length);
+            }
+            finally { TexturePackingFiles.Discard(staged); Directory.Delete(directory, true); }
+        }
+
+        [Test]
+        public void ReloadRetainsEarlyFailuresWhenLaterSourcesAreValid()
+        {
+            string valid = Path.Combine(Path.GetTempPath(), "MeshLabReload-" + Guid.NewGuid().ToString("N") + ".tga");
+            var window = ScriptableObject.CreateInstance<TextureChannelPackerWindow>();
+            try
+            {
+                using (var stream = File.Create(valid))
+                    new TexturePackingImage(1, 1, new[] { new Color32(1, 2, 3, 4) }).WriteTgaRle(stream);
+                object albedoOutput = GetPrivate(window, "albedo"), normalOutput = GetPrivate(window, "normal");
+                object missingSlot = albedoOutput.GetType().GetField("rgb").GetValue(albedoOutput);
+                object validSlot = normalOutput.GetType().GetField("rgb").GetValue(normalOutput);
+                missingSlot.GetType().GetField("path").SetValue(missingSlot, valid + ".missing.tga");
+                validSlot.GetType().GetField("path").SetValue(validSlot, valid);
+                InvokePrivate(window, "ReloadSources");
+                StringAssert.Contains("missing.tga", (string)GetPrivate(window, "error"));
+                InvokePrivate(window, "BuildPreview", normalOutput);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(window); File.Delete(valid); }
         }
 
         [Test]

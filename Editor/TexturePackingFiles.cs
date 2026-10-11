@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Collections.Generic;
 using Microsoft.Win32.SafeHandles;
 
 namespace SashaRX.UnityMeshLab
@@ -10,8 +11,93 @@ namespace SashaRX.UnityMeshLab
     /// <summary>Texture output staging and filesystem path checks; never changes asset metadata.</summary>
     public static class TexturePackingFiles
     {
-        public static StringComparison PathComparison => Path.DirectorySeparatorChar == '\\' ?
-            StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+        public static StringComparison ComparisonForDirectory(string directory)
+        {
+            directory = Path.GetFullPath(directory);
+            while (!Directory.Exists(directory)) directory = Path.GetDirectoryName(directory) ??
+                throw new DirectoryNotFoundException("Cannot inspect filesystem case rules.");
+            string name = ".meshlab-case-" + Guid.NewGuid().ToString("N");
+            string probe = Path.Combine(directory, name);
+            try
+            {
+                using (new FileStream(probe, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+                return File.Exists(Path.Combine(directory, name.ToUpperInvariant())) ?
+                    StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+            }
+            finally { Discard(probe); }
+        }
+
+        public sealed class PendingFile
+        {
+            public string Staged { get; }
+            public string Destination { get; }
+            private readonly bool existed;
+            private readonly long length;
+            private readonly DateTime modified;
+            private string backup;
+            private bool committed;
+
+            public PendingFile(string staged, string destination, bool existed, long length, DateTime modified)
+            {
+                Staged = staged;
+                Destination = destination;
+                this.existed = existed;
+                this.length = length;
+                this.modified = modified;
+            }
+
+            public void ValidateUnchanged()
+            {
+                var current = new FileInfo(Destination);
+                if (current.Exists != existed || (existed && (current.Length != length || current.LastWriteTimeUtc != modified)))
+                    throw new IOException("Output changed during export; save again to confirm overwrite: " + Destination);
+            }
+
+            public void Install()
+            {
+                ValidateUnchanged();
+                if (existed)
+                {
+                    backup = TemporaryPath(Destination);
+                    File.Replace(Staged, Destination, backup);
+                }
+                else File.Move(Staged, Destination); // Fails rather than replacing a late-arriving file.
+                committed = true;
+            }
+
+            public void Rollback()
+            {
+                if (!committed) return;
+                if (existed) File.Replace(backup, Destination, null);
+                else File.Delete(Destination); // Newly installed file, before any AssetDatabase import.
+                committed = false;
+            }
+
+            public void DiscardBackup() => Discard(backup);
+        }
+
+        public static void InstallBatch(IList<PendingFile> files)
+        {
+            foreach (var file in files) file.ValidateUnchanged();
+            try
+            {
+                foreach (var file in files) file.Install();
+            }
+            catch (Exception failure)
+            {
+                var failures = new List<Exception> { failure };
+                for (int i = files.Count - 1; i >= 0; i--)
+                {
+                    try { files[i].Rollback(); }
+                    catch (Exception rollbackFailure) { failures.Add(rollbackFailure); }
+                }
+                // Preserve backups if rollback itself fails, so the originals remain recoverable.
+                if (failures.Count > 1) throw new AggregateException("Texture batch rollback failed; backups were retained.", failures);
+                foreach (var file in files) file.DiscardBackup();
+                throw;
+            }
+            foreach (var file in files) file.DiscardBackup();
+        }
 
         public static string ResolveExistingFile(string path)
         {
@@ -39,14 +125,14 @@ namespace SashaRX.UnityMeshLab
 
         public static bool SameSource(string source, string destination)
         {
-            return string.Equals(ResolveExistingFile(source), ResolveExistingFile(destination), PathComparison);
+            return string.Equals(ResolveExistingFile(source), ResolveExistingFile(destination),
+                ComparisonForDirectory(Path.GetDirectoryName(Path.GetFullPath(destination))));
         }
 
         public static string Stage(string destination, Action<Stream> write)
         {
             // Dot-prefixed temporary files are ignored by Unity. They are not imported assets.
-            string temporary = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(destination)),
-                ".meshlab-texture-" + Guid.NewGuid().ToString("N") + ".tmp");
+            string temporary = TemporaryPath(destination);
             try
             {
                 using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
@@ -63,11 +149,10 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        public static void Commit(string temporary, string destination)
+        private static string TemporaryPath(string destination)
         {
-            // Replacement also detaches hard-linked destinations without changing other links.
-            if (File.Exists(destination)) File.Replace(temporary, destination, null);
-            else File.Move(temporary, destination);
+            return Path.Combine(Path.GetDirectoryName(Path.GetFullPath(destination)),
+                ".meshlab-texture-" + Guid.NewGuid().ToString("N") + ".tmp");
         }
 
         public static void Discard(string temporary)

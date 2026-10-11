@@ -58,6 +58,7 @@ namespace SashaRX.UnityMeshLab
         private string status = "";
         private Task<List<SaveRequest>> saveTask;
         private CancellationTokenSource saveCancellation;
+        private bool selectionPending;
 
         private sealed class SaveRequest
         {
@@ -66,6 +67,9 @@ namespace SashaRX.UnityMeshLab
             public Func<CancellationToken, TexturePackingImage> build;
             public bool isNormal;
             public bool isAlbedo;
+            public bool existed;
+            public long length;
+            public DateTime modified;
         }
 
         [MenuItem("Tools/Mesh Lab/Texture Channel Packer", priority = 80)]
@@ -95,7 +99,8 @@ namespace SashaRX.UnityMeshLab
 
         private void OnSelectionChanged()
         {
-            if (!followFbx || saveTask != null) return;
+            if (!followFbx) return;
+            if (saveTask != null) { selectionPending = true; return; }
             string path = AssetDatabase.GetAssetPath(Selection.activeObject);
             if (string.IsNullOrEmpty(path) && Selection.activeGameObject != null)
             {
@@ -296,19 +301,25 @@ namespace SashaRX.UnityMeshLab
 
         private void ReloadSources()
         {
+            error = "";
+            status = "";
+            var failures = new List<string>();
             ClearPreviews();
             foreach (var source in loaded.Values) DestroyImmediate(source.thumbnail);
             loaded.Clear();
             foreach (var output in new[] { albedo, mrca, normal })
             {
-                ReloadSlot(output.rgb);
-                foreach (var slot in output.slots) ReloadSlot(slot);
+                ReloadSlot(output.rgb, failures);
+                foreach (var slot in output.slots) ReloadSlot(slot, failures);
             }
+            error = string.Join("\n", failures);
         }
 
-        private void ReloadSlot(Slot slot)
+        private void ReloadSlot(Slot slot, List<string> failures)
         {
-            if (!string.IsNullOrEmpty(slot.path)) RunAction(() => LoadSource(slot.path));
+            if (string.IsNullOrEmpty(slot.path)) return;
+            try { LoadSource(slot.path); }
+            catch (Exception exception) { failures.Add(slot.path + ": " + exception.Message); }
         }
 
         private void PruneSources()
@@ -369,12 +380,12 @@ namespace SashaRX.UnityMeshLab
             float scale = Math.Min(1f, 256f / Math.Max(w, h));
             var image = Build(output, Mathf.RoundToInt(w * scale), Mathf.RoundToInt(h * scale));
             if (previews.TryGetValue(output, out var previous)) DestroyImmediate(previous);
-            previews[output] = MakeTexture(image);
+            previews[output] = MakeTexture(image, output != albedo);
         }
 
-        private static Texture2D MakeTexture(TexturePackingImage image)
+        private static Texture2D MakeTexture(TexturePackingImage image, bool linear = true)
         {
-            var texture = new Texture2D(image.Width, image.Height, TextureFormat.RGBA32, false, true)
+            var texture = new Texture2D(image.Width, image.Height, TextureFormat.RGBA32, false, linear)
             { hideFlags = HideFlags.HideAndDontSave };
             texture.SetPixels32(image.Pixels);
             texture.Apply(false, true);
@@ -409,7 +420,7 @@ namespace SashaRX.UnityMeshLab
                 textureName.Trim() == "." || textureName.Trim() == "..")
                 throw new InvalidOperationException("Enter a valid texture base name without a path.");
             if (!Directory.Exists(outputFolder)) throw new DirectoryNotFoundException("Choose an existing output folder.");
-            var paths = new HashSet<string>(TexturePackingFiles.PathComparison == StringComparison.Ordinal ?
+            var paths = new HashSet<string>(TexturePackingFiles.ComparisonForDirectory(outputFolder) == StringComparison.Ordinal ?
                 StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase);
             var overwrite = new List<string>();
             var requests = new List<SaveRequest>();
@@ -427,8 +438,10 @@ namespace SashaRX.UnityMeshLab
                 for (int i = output.split ? 0 : 3; i < 4; i++)
                     if (output != normal) Source(output.slots[i]);
                 ValidateAssetDestination(path);
+                var existing = new FileInfo(path);
                 requests.Add(new SaveRequest { path = path, build = PrepareBuild(output, Sizes[widthIndex], Sizes[heightIndex]),
-                    isNormal = output == normal, isAlbedo = output == albedo });
+                    isNormal = output == normal, isAlbedo = output == albedo, existed = existing.Exists,
+                    length = existing.Exists ? existing.Length : 0, modified = existing.Exists ? existing.LastWriteTimeUtc : default });
             }
             if (overwrite.Count > 0 && !EditorUtility.DisplayDialog("Overwrite textures?",
                 string.Join("\n", overwrite), "Overwrite", "Cancel")) return;
@@ -492,17 +505,22 @@ namespace SashaRX.UnityMeshLab
                 saveCancellation.Dispose();
                 saveCancellation = null;
                 EditorUtility.ClearProgressBar();
+                if (selectionPending) { selectionPending = false; OnSelectionChanged(); }
                 Repaint();
             }
         }
 
         private static void CommitOutputs(List<SaveRequest> requests)
         {
+            var files = new List<TexturePackingFiles.PendingFile>();
+            foreach (var request in requests)
+                files.Add(new TexturePackingFiles.PendingFile(request.staged, request.path,
+                    request.existed, request.length, request.modified));
+            TexturePackingFiles.InstallBatch(files);
             using (new AssetDatabase.AssetEditingScope())
             {
                 foreach (var request in requests)
                 {
-                    TexturePackingFiles.Commit(request.staged, request.path);
                     request.staged = null;
                     string assetPath = AssetPath(request.path);
                     if (assetPath != null) AssetDatabase.ImportAsset(assetPath);
@@ -566,7 +584,7 @@ namespace SashaRX.UnityMeshLab
         {
             path = Path.GetFullPath(path);
             string assets = Path.GetFullPath(Application.dataPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            return path.StartsWith(assets, TexturePackingFiles.PathComparison) ?
+            return path.StartsWith(assets, TexturePackingFiles.ComparisonForDirectory(Path.GetDirectoryName(path))) ?
                 "Assets/" + path.Substring(assets.Length).Replace('\\', '/') : null;
         }
 

@@ -180,6 +180,7 @@ namespace SashaRX.UnityMeshLab
                 int type = header[2], depth = header[16];
                 bool gray = type == 3 || type == 11;
                 bool rle = type == 10 || type == 11;
+                bool hasAlpha = (header[17] & 15) != 0;
                 if (header[1] != 0 || (header[17] & 0xC0) != 0 ||
                     !(type == 2 || type == 3 || type == 10 || type == 11) ||
                     (gray ? depth != 8 : depth != 24 && depth != 32))
@@ -197,10 +198,10 @@ namespace SashaRX.UnityMeshLab
                     int count = rle ? (packet & 127) + 1 : 1;
                     if (count > pixels.Length - index) throw new InvalidDataException("TGA packet exceeds image size.");
                     bool repeat = rle && (packet & 128) != 0;
-                    Color32 pixel = repeat ? ReadPixel(reader, depth, gray) : default;
+                    Color32 pixel = repeat ? ReadPixel(reader, depth, gray, hasAlpha) : default;
                     for (int i = 0; i < count; i++, index++)
                     {
-                        if (!repeat) pixel = ReadPixel(reader, depth, gray);
+                        if (!repeat) pixel = ReadPixel(reader, depth, gray, hasAlpha);
                         int x = index % width, y = index / width;
                         if ((header[17] & 0x10) != 0) x = width - 1 - x;
                         if ((header[17] & 0x20) != 0) y = height - 1 - y;
@@ -211,12 +212,13 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        private static Color32 ReadPixel(BinaryReader reader, int depth, bool gray)
+        private static Color32 ReadPixel(BinaryReader reader, int depth, bool gray, bool hasAlpha)
         {
             byte b = reader.ReadByte();
             if (gray) return new Color32(b, b, b, 255);
             byte g = reader.ReadByte(), r = reader.ReadByte();
-            return new Color32(r, g, b, depth == 32 ? reader.ReadByte() : (byte)255);
+            byte alpha = depth == 32 ? reader.ReadByte() : (byte)255;
+            return new Color32(r, g, b, hasAlpha ? alpha : (byte)255);
         }
     }
 }
