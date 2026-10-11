@@ -214,6 +214,7 @@ namespace SashaRX.UnityMeshLab
                 ctx.LodGroup.ForceLOD(-1);
 
             canvas?.Cleanup();
+            DisposeUvQuality();
             viewport?.Dispose(); viewport = null;
             uvLayer?.Dispose(); uvLayer = null;
             inspection?.Dispose(); inspection = null;
@@ -1069,6 +1070,7 @@ namespace SashaRX.UnityMeshLab
                 Repaint();
             }
             inspectMesh = GUILayout.Toggle(inspectMesh, "Inspect", EditorStyles.toolbarButton, GUILayout.Width(55));
+            DrawUvQualityButton();
             if (!canvas3D) planarProjection = EditorGUILayout.Popup(planarProjection, new[] { "UV layout", "XY", "XZ", "YZ" }, EditorStyles.toolbarPopup, GUILayout.Width(85));
             if (UseGeometry2D && !canvas3D && planarProjection == 0)
                 GUILayout.Label("UV layout unavailable · XY geometry", EditorStyles.miniLabel);
@@ -1079,6 +1081,7 @@ namespace SashaRX.UnityMeshLab
             GUILayout.FlexibleSpace();
             EditorGUILayout.EndHorizontal();
             if (canvas3D || UseGeometry2D) topologyPreview.Toolbar(viewportItems, viewport);
+            DrawUvQualityPanel();
             if (!inspectMesh || viewportItems.Count == 0) return;
             EditorGUILayout.BeginHorizontal(EditorStyles.toolbar);
             inspectedItem = Mathf.Clamp(inspectedItem, 0, viewportItems.Count - 1);
@@ -1294,6 +1297,7 @@ namespace SashaRX.UnityMeshLab
 
         void InvalidateViewportCaches(bool clearInspection = true)
         {
+            uvQualityHasKey = false;
             viewportSpotPointerValid = false; selectViewportSpotWhenReady = false;
             canvas?.ClearFrameCaches();
             uvLayer?.Invalidate();

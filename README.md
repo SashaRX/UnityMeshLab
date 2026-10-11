@@ -27,6 +27,7 @@ Every tab shares one canvas with a **UV | 3D** switch at its bottom centre (also
 * **UV** shows the preview LOD's UV layout: shells, wire, island borders, UDIM tiles, spot picking, a checker or texture background.
 * **3D** is an orbitable lit view of the same meshes (drag orbits, middle button / alt-drag pans, scroll zooms, `F` or a middle double-click frames) with *Shaded* (scene materials), *Vert Colors*, *Normals*, *Tangents* and *UV0–UV3* shading, offered only where a mesh carries the data, a wire overlay and a Lit toggle.
 * Tools feed the canvas: Remesh & Bake shows its stage result and cage there, Prefab Builder paints its edge classes and problem dots, and the result's UV layout is drawn on the model.
+* **UV quality** gives an approximate 0–100 lightmap assessment of the displayed UVs. Click for bbox packing, stretch, density spread, defects, LOD0 correspondence and an occupancy map. Ordered Reverse detail overlaps are listed separately. [Measurements and limits](Documentation~/LIGHTMAP_UV_QUALITY.md).
 
 ## UV2 Transfer
 
