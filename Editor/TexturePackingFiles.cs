@@ -20,7 +20,8 @@ namespace SashaRX.UnityMeshLab
             string probe = Path.Combine(directory, name);
             try
             {
-                using (new FileStream(probe, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+                using (var stream = new FileStream(probe, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    stream.WriteByte(0);
                 return File.Exists(Path.Combine(directory, name.ToUpperInvariant())) ?
                     StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
             }
