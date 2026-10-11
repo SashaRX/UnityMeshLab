@@ -246,6 +246,7 @@ namespace SashaRX.UnityMeshLab
             settings.materials = Array.Empty<Material>();
             settings.filterRenderers = false;
             previewLod = 0;
+            preview = Preview.SelectionMask;
             pipeline.ClearFrom(FoliageNormalsPipeline.Stage.Capture);
             RefreshFilters();
             RefreshSourcePreview();
@@ -317,8 +318,9 @@ namespace SashaRX.UnityMeshLab
         {
             using (new EditorGUILayout.HorizontalScope())
             {
-                bool before = !afterNormals && preview != Preview.BeforeAfter;
-                bool after = afterNormals && preview != Preview.BeforeAfter;
+                bool inPlace = preview == Preview.TransferredNormals || preview == Preview.ProxyAndMesh;
+                bool before = !afterNormals && inPlace;
+                bool after = afterNormals && inPlace;
                 if (GUILayout.Toggle(before, "Before", EditorStyles.miniButtonLeft) && !before)
                     SetNormalComparison(false);
                 using (new EditorGUI.DisabledScope(!pipeline.Has(FoliageNormalsPipeline.Stage.Transfer)))

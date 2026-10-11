@@ -54,9 +54,11 @@ namespace SashaRX.UnityMeshLab.Tests
             var previous = tool.sourcePreview.Sources(0).Single().mask;
             var task = tool.pipeline.Run(first.root, tool.settings, FoliageNormalsPipeline.Stage.Transfer);
             yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, tool.pipeline.Status);
+            tool.preview = FoliageNormalsTool.Preview.BeforeAfter;
             Selection.activeGameObject = second.root;
             for (int i = 0; i < 5 && tool.root != second.root; i++) yield return null;
             Assert.AreSame(second.root, tool.root);
+            Assert.AreEqual(FoliageNormalsTool.Preview.SelectionMask, tool.preview, "A new tree cannot retain a stale side-by-side result mode.");
             Assert.IsFalse(previous, "Old selection paint is destroyed when the source changes.");
             Assert.AreEqual(0, tool.pipeline.Targets.Count);
             yield return AwaitPreview(tool.sourcePreview);
