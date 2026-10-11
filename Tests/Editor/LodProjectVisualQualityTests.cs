@@ -18,7 +18,7 @@ namespace SashaRX.UnityMeshLab.Tests
     {
         [Serializable] public sealed class Case
         {
-            public string name, asset, sourcePath, sourceSha256, albedo;
+            public string name, asset, sourcePath, sourceSha256, albedo, meshName;
             public Vector3 rotation;
         }
         [Serializable] public sealed class Dataset { public Case[] cases; }
@@ -31,8 +31,12 @@ namespace SashaRX.UnityMeshLab.Tests
             public float targetError = .2f, uv2Weight = 20, normalWeight = 1, colorWeight = 1, maxColorError = .02f;
             public List<LodVisualQualityTests.Capture> captures = new List<LodVisualQualityTests.Capture>();
             public string partConnectivity;
+            public string featureChainProbe;
             public List<PartReport> parts = new List<PartReport>();
             public float partPixelLimit;
+            [SerializeField] internal LodScreenValidation.Report baselineFarGuide,baselineFarAllSidesGuide,farAllSidesGuide;
+            public int screenPartProposed, screenPartTris;
+            public bool screenPartAccepted;
         }
         [Serializable] public sealed class PartReport
         {
@@ -43,7 +47,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        [Timeout(600000)] // Opt-in eight-FBX comparison includes multiple full-surface fits and GPU captures.
+        [Timeout(1800000)] // Extended native + matched-count matrix includes full-surface fits and GPU captures.
         public void CopiedProjectModelsProduceActualGenerateCaptures()
         {
             string[] args = Environment.GetCommandLineArgs();
@@ -68,8 +72,11 @@ namespace SashaRX.UnityMeshLab.Tests
             var importer = AssetImporter.GetAtPath(model.asset) as ModelImporter;
             Assert.That(importer, Is.Not.Null, model.asset);
             if (!importer.isReadable) { importer.isReadable = true; importer.SaveAndReimport(); }
-            var source = AssetDatabase.LoadAllAssetsAtPath(model.asset).OfType<Mesh>()
-                .Where(m => !m.name.Contains("_COL") && !System.Text.RegularExpressions.Regex.IsMatch(m.name, @"_LOD[1-9]"))
+            var importedMeshes = AssetDatabase.LoadAllAssetsAtPath(model.asset).OfType<Mesh>().ToArray();
+            var source = importedMeshes
+                .Where(m => string.IsNullOrEmpty(model.meshName)
+                    ? !m.name.Contains("_COL") && !System.Text.RegularExpressions.Regex.IsMatch(m.name, @"_LOD[1-9]")
+                    : m.name == model.meshName)
                 .OrderByDescending(LodMeshData.TriangleCount).FirstOrDefault();
             Assert.That(source, Is.Not.Null, model.asset);
             var report = new Report { fixture = model.name, sourcePath = model.sourcePath, sourceSha256 = actualHash, importedAsset = model.asset,
@@ -86,7 +93,29 @@ namespace SashaRX.UnityMeshLab.Tests
                 { report.colorMin = Vector4.Min(report.colorMin,c); report.colorMax = Vector4.Max(report.colorMax,c); }
                 report.varyingVertexColors = (report.colorMax-report.colorMin).sqrMagnitude > 1e-8f;
             }
+            if (argsHave("-meshlabLodSnapshotOnly"))
+            {
+                LodColorBoundaryProjectTests.ExportMeshSnapshot(model.name,"source",source);
+                string key=UvToolContext.ExtractGroupKey(source.name);
+                foreach (int level in new[] { 1,2 })
+                {
+                    var authored=importedMeshes.SingleOrDefault(m => m.name==key+"_LOD"+level);
+                    if (authored) LodColorBoundaryProjectTests.ExportMeshSnapshot(model.name,"authored-lod"+level,authored);
+                }
+                SaveReport(report); return;
+            }
             var topologyImports = new Dictionary<string, object>();
+            var arguments=Environment.GetCommandLineArgs(); int baselineFlag=Array.IndexOf(arguments,"-meshlabLodGuideBaseline");
+            if (baselineFlag>=0 && baselineFlag+1<arguments.Length)
+            {
+                var previous=LodColorBoundaryProjectTests.ReadPaintMesh(Path.Combine(arguments[baselineFlag+1],model.name+"-far-lod2-mesh.json"));
+                try
+                {
+                    var guide=new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+                    report.baselineFarGuide=guide.Measure(previous); report.baselineFarAllSidesGuide=guide.WithAllSides(source).Measure(previous);
+                }
+                finally { Object.DestroyImmediate(previous); }
+            }
             bool loops = LodSourceTopology.TryLoad(new MeshEntry { fbxMesh = source },source,
                 topologyImports,out var topology,out string reason);
             report.loopStatus = loops ? "Original FBX polygons loaded" : reason;
@@ -104,10 +133,34 @@ namespace SashaRX.UnityMeshLab.Tests
                         areaFraction = (float)(part.area/parts.area), protectedReason = part.protectedReason,
                         pixelsLod2 = LodSmallParts.Pixels(part,Matrix4x4.identity,group.size,.25f,1080),
                         pixelsLod4 = LodSmallParts.Pixels(part,Matrix4x4.identity,group.size,.0625f,1080) });
+                if (argsHave("-meshlabLodScreenGuided"))
+                {
+                    var plan = LodSmallParts.Select(parts,new LodSmallParts.Settings { enabled = true,firstLod = 2,
+                        screenHeight = 1080,maxPixels = 8,maxAreaFraction = .02f,maxTriangleFraction = .2f },2,.25f,Matrix4x4.identity,group.size);
+                    report.screenPartProposed = plan.removed.Count; report.screenPartTris = plan.triangles;
+                    if (plan.removed.Count > 0)
+                    {
+                        var retained = LodSmallParts.Retain(parts,plan);
+                        try { report.screenPartAccepted = LodSmallParts.ScreenSafe(source,retained.data.source,true,Matrix4x4.identity,270/group.size); }
+                        finally { Object.DestroyImmediate(retained.data.source); }
+                    }
+                }
             }
             finally { Object.DestroyImmediate(probe); }
             SaveReport(report); // Preserve provenance even if a later generation fails.
             UvtLog.Info($"[LOD project visuals] {model.name}/{source.name}: {report.sourceTriangles} tris, varying colors={report.varyingVertexColors}, loops={report.loopStatus}");
+            if (argsHave("-meshlabLodFeatureProbe"))
+            {
+                var coarsened = LodFeatureChains.Coarsen(source,settings:new LodFeatureChains.Settings {
+                    relativeDeviation = .005f,normalAngle = 5,colorError = .02f,uvError = .001f });
+                try
+                {
+                    report.featureChainProbe = coarsened.Note;
+                    if (coarsened.mesh) Assert.That(new LodHardEdges(source).MeasureCoarsened(coarsened.mesh,coarsened.Configure(new LodHardEdges(coarsened.mesh).Measure(coarsened.mesh))).Valid,Is.True,model.name+": "+coarsened.Note);
+                    SaveReport(report); return;
+                }
+                finally { if (coarsened.mesh) Object.DestroyImmediate(coarsened.mesh); }
+            }
             if (argsHave("-meshlabQslimExport"))
             {
                 LodQslimComparison.Export(model,source,topologyImports);
@@ -117,16 +170,45 @@ namespace SashaRX.UnityMeshLab.Tests
             var generated = new List<Mesh>();
             var variants = new List<(string name, Mesh mesh, LodPipelineOps.LodInfo info, double ms)>
                 { ("source",source,default,0) };
+            if (argsHave("-meshlabLodAuthored"))
+            {
+                string key=UvToolContext.ExtractGroupKey(source.name);
+                foreach (int level in new[] { 1,2 })
+                {
+                    var authored=importedMeshes.SingleOrDefault(m => m.name==key+"_LOD"+level);
+                    if (authored) variants.Add(("authored-lod"+level,authored,default,0));
+                }
+            }
             try
             {
                 bool partsOnly = Environment.GetCommandLineArgs().Contains("-meshlabLodSmallParts");
                 bool budgetOnly = Environment.GetCommandLineArgs().Contains("-meshlabLodBudget");
                 if (budgetOnly)
                 {
-                    if (argsHave("-meshlabLodHardEdges"))
+                    if (argsHave("-meshlabLodFarBudget"))
+                    {
+                        Generate(source,LodReductionMode.Triangles,3,"native",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true,coarsenHardEdgeChains:true,nativeHardEdgeConstraints:true);
+                        Generate(source,LodReductionMode.Triangles,3,"far",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true,coarsenHardEdgeChains:true,nativeHardEdgeConstraints:true,screenGuided:true,farScreenBudget:true);
+                    }
+                    else if (argsHave("-meshlabLodScreenGuided"))
+                    {
+                        Generate(source,LodReductionMode.Triangles,3,"native",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true,coarsenHardEdgeChains:true,nativeHardEdgeConstraints:true);
+                        Generate(source,LodReductionMode.Triangles,3,"guided",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true,coarsenHardEdgeChains:true,nativeHardEdgeConstraints:true,screenGuided:true);
+                    }
+                    else if (argsHave("-meshlabLodHardEdges"))
                     {
                         Generate(source,LodReductionMode.Triangles,3,"unprotected",variants,generated,relaxedFar:true,correctAttributes:true);
                         Generate(source,LodReductionMode.Triangles,3,"hard",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true);
+                        if (argsHave("-meshlabLodFeatureChains"))
+                            Generate(source,LodReductionMode.Triangles,3,"chains",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true,coarsenHardEdgeChains:true);
+                        if (argsHave("-meshlabLodNativeFeatures"))
+                            Generate(source,LodReductionMode.Triangles,3,"native",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true,coarsenHardEdgeChains:true,nativeHardEdgeConstraints:true);
+                        if (argsHave("-meshlabLodMatchedFeatures"))
+                        {
+                            var chainCounts = variants.Where(v => v.name.StartsWith("chains-")).Select(v => (v.info.simplifiedTris-.25f)/report.sourceTriangles).ToArray();
+                            Assert.That(chainCounts.Length,Is.EqualTo(2),"Matched comparison requires the coarsened-belt controls.");
+                            Generate(source,LodReductionMode.Triangles,3,"matched",variants,generated,relaxedFar:true,correctAttributes:true,preserveHardEdges:true,coarsenHardEdgeChains:true,nativeHardEdgeConstraints:true,requestedRatios:chainCounts);
+                        }
                     }
                     else if (argsHave("-meshlabQslimCompare"))
                     {
@@ -175,9 +257,29 @@ namespace SashaRX.UnityMeshLab.Tests
                     if (report.varyingVertexColors) Generate(source,LodReductionMode.Triangles,1,"unchecked",variants,generated,true);
                 }
                 float scale = 1f / Mathf.Max(source.bounds.size.x,Mathf.Max(source.bounds.size.y,source.bounds.size.z));
+                if (argsHave("-meshlabLodPaintDiagnostics"))
+                    LodColorBoundaryProjectTests.ExportPaintDiagnostic(model.name,source,variants.Single(v => v.name == "far-lod2").mesh);
                 Matrix4x4 matrix = Matrix4x4.Rotate(Quaternion.Euler(model.rotation)) * Matrix4x4.Scale(Vector3.one*scale)
                     * Matrix4x4.Translate(-source.bounds.center);
                 Texture albedo = string.IsNullOrEmpty(model.albedo) ? null : AssetDatabase.LoadAssetAtPath<Texture>(model.albedo);
+                var farComparisons = new Dictionary<string,LodScreenValidation.Report>();
+                if (argsHave("-meshlabLodFarBudget"))
+                {
+                    var comparison = new LodScreenValidation(source,true,resolution:72,objectPixels:64,measureFields:true);
+                    foreach (var variant in variants) farComparisons[variant.name] = comparison.Measure(variant.mesh);
+                    report.farAllSidesGuide = comparison.WithAllSides(source).Measure(variants.Single(v => v.name == "far-lod2").mesh);
+                    if (argsHave("-meshlabLodSilhouetteRegression"))
+                    {
+                        Assert.That(report.baselineFarAllSidesGuide,Is.Not.Null,"Supply -meshlabLodGuideBaseline for this regression");
+                        var before = report.baselineFarAllSidesGuide; var after = report.farAllSidesGuide;
+                        Assert.That(after.silhouetteMean,Is.LessThanOrEqualTo(before.silhouetteMean+1e-6f),model.name);
+                        Assert.That(after.silhouetteMax,Is.LessThanOrEqualTo(before.silhouetteMax+1e-6f),model.name);
+                        Assert.That(after.detailLoss,Is.LessThanOrEqualTo(before.detailLoss+1e-6f),model.name);
+                        Assert.That(after.SilhouetteViewsDoNotWorsen(before),Is.True,model.name+": individual silhouette views must also be retained");
+                        Assert.That(after.ColorsDoNotWorsen(before),Is.True,model.name+": final correction must retain worst channels and paint in reverse views");
+                        Assert.That(after.ColorViewsWithin(before,1f/255),Is.True,model.name+": the original allowance cannot accumulate through later correction stages");
+                    }
+                }
                 using var renderer = new LodVisualQualityTests.Renderer();
                 foreach (string view in new[] { "front", "oblique" })
                 {
@@ -185,16 +287,27 @@ namespace SashaRX.UnityMeshLab.Tests
                     var original = renderer.Draw(source,RenderMode.Colors,matrix);
                     var coverage = renderer.Draw(source,RenderMode.Coverage,matrix);
                     var shading = renderer.Draw(source,RenderMode.Shaded,matrix);
+                    var screens = new List<LodScreenAcceptance>();
+                    foreach (int divisor in new[] { 1,2,4 })
+                    {
+                        var screenSettings = LodScreenAcceptance.Settings.Default; screenSettings.divisor = divisor;
+                        screenSettings.checkColorBoundaries = report.varyingVertexColors;
+                        screens.Add(new LodScreenAcceptance(original,coverage,LodVisualQualityTests.Size,LodVisualQualityTests.Size,screenSettings));
+                    }
                     foreach (var variant in variants)
                     {
                         var color = renderer.Draw(variant.mesh,RenderMode.Colors,matrix);
                         var mask = renderer.Draw(variant.mesh,RenderMode.Coverage,matrix);
                         var lit = renderer.Draw(variant.mesh,RenderMode.Shaded,matrix);
                         var capture = LodVisualQualityTests.Compare(original,color,coverage,mask,shading,lit);
+                        capture.screenAcceptance = new List<LodScreenAcceptance.Report>();
+                        foreach (var screen in screens) capture.screenAcceptance.Add(screen.Measure(color,mask));
                         capture.variant = variant.name; capture.view = view;
                         capture.triangles = LodMeshData.TriangleCount(variant.mesh);
                         capture.targetRatio = variant.name == "source" ? 1 : variant.info.targetRatio;
                         capture.targetTriangles = variant.name == "source" ? report.sourceTriangles : variant.info.targetTris;
+                        if (variant.name.StartsWith("authored-"))
+                            capture.targetTriangles = (int)Math.Ceiling(report.sourceTriangles/(variant.name.EndsWith("1") ? 3.0 : 9.0));
                         capture.budgetReached = capture.triangles <= capture.targetTriangles;
                         capture.selectedCandidate = variant.info.selectedCandidate; capture.candidateCount = variant.info.evaluatedCandidates;
                         capture.removedLoops = variant.info.removedLoops; capture.simplifyMs = variant.ms;
@@ -207,17 +320,24 @@ namespace SashaRX.UnityMeshLab.Tests
                         capture.sourceDistanceRms = variant.info.sourceDistanceRms; capture.normalRms = variant.info.normalRms; capture.uvRms = variant.info.uvRms;
                         capture.silhouetteMean = variant.info.silhouetteMean; capture.silhouetteMax = variant.info.silhouetteMax;
                         capture.selectionScore = variant.info.selectionScore; capture.nativeProbes = variant.info.nativeProbes;
+                        capture.screenQuality = variant.info.screenQuality;
+                        if (farComparisons.TryGetValue(variant.name,out var farComparison)) capture.farComparison = farComparison;
                         if (argsHave("-meshlabLodHardEdges"))
                         {
-                            var features = new LodHardEdges(source).Measure(variant.mesh);
+                            var features = variant.name.StartsWith("chains-") || variant.name.StartsWith("native-") || variant.name.StartsWith("matched-") || variant.name.StartsWith("guided-") || variant.name.StartsWith("far-") ? variant.info.hardEdges : new LodHardEdges(source).Measure(variant.mesh);
                             capture.hardEdges = features.edges; capture.missingHardEdges = features.missingEdges;
                             capture.protectedTriangles = features.protectedTriangles; capture.missingProtectedTriangles = features.missingFaces;
                             capture.patchInterfaces = features.interfaces; capture.missingPatchInterfaces = features.missingInterfaces;
                             capture.ambiguousFeatureEdges = features.ambiguousEdges;
                             capture.hardEdgeSourceFallback = variant.info.hardEdges?.sourceFallback ?? false;
-                            if (variant.name.StartsWith("hard-")) Assert.That(features.Valid,Is.True,model.name+"/"+variant.name+": hard features or patch interfaces changed");
+                            capture.screenBudgetRelaxed = variant.info.hardEdges?.screenBudgetRelaxed ?? false;
+                            capture.coarsenedFeaturePoints = features.coarsenedPoints; capture.coarsenedFeatureTriangles = features.coarsenedTriangles;
+                            capture.nativeCreaseConstraints = features.nativeConstraints; capture.lockedChainRetry = features.lockedChainRetry;
+                            capture.nativeBeltFallback = features.beltFallback;
+                            if (variant.name.StartsWith("hard-") || variant.name.StartsWith("chains-") || variant.name.StartsWith("native-") || variant.name.StartsWith("matched-") || variant.name.StartsWith("guided-")) Assert.That(features.Valid,Is.True,model.name+"/"+variant.name+": hard features or patch interfaces changed");
                         }
                         var correction = variant.info.attributeCorrection;
+                        capture.attributeFit = correction;
                         if (correction != null)
                         {
                             capture.correctionNote = correction.note; capture.normalsCorrected = correction.normalsAccepted; capture.colorsCorrected = correction.colorsAccepted;
@@ -228,14 +348,30 @@ namespace SashaRX.UnityMeshLab.Tests
                             capture.incompleteSmoothingRegions = correction.incompleteSmoothingRegions;
                             capture.regionNormalsBefore = correction.regionNormalsBefore?.Select(RegionError).ToList();
                             capture.regionNormalsAfter = correction.regionNormalsAfter?.Select(RegionError).ToList();
-                            if (correction.regionNormalsBefore != null)
+                            var visibleNormals = correction.visibleNormals;
+                            if (visibleNormals?.accepted == true)
+                            {
+                                Assert.That(variant.info.screenQuality.objectPixels,Is.LessThanOrEqualTo(128));
+                                Assert.That(visibleNormals.normalAfter,Is.LessThan(visibleNormals.normalBefore));
+                                Assert.That(visibleNormals.headlightAfter,Is.LessThan(visibleNormals.headlightBefore));
+                                Assert.That(visibleNormals.normalViewsAfter.Length,Is.EqualTo(6));
+                                for (int v = 0; v < 6; v++)
+                                {
+                                    Assert.That(visibleNormals.normalViewsAfter[v],Is.LessThanOrEqualTo(visibleNormals.normalViewsBefore[v]+1e-4f));
+                                    Assert.That(visibleNormals.headlightViewsAfter[v],Is.LessThanOrEqualTo(visibleNormals.headlightViewsBefore[v]+1e-6f));
+                                }
+                                // Cross-region far faces use the visible-field gate;
+                                // the measured region diagnostics still describe the final normals.
+                                Assert.That(correction.regionNormalsAfter,Is.EqualTo(visibleNormals.regionsAfter));
+                            }
+                            else if (correction.regionNormalsBefore != null)
                                 Assert.That(LodSmoothingRegions.NoRegression(correction.regionNormalsAfter,correction.regionNormalsBefore),Is.True,
                                     model.name+"/"+variant.name+": a smoothing region's normal error increased");
                         }
                         capture.budgetCandidates = variant.info.budgetCandidates?.Select(c => new LodVisualQualityTests.BudgetCandidate {
                             variant = c.variant,name = c.name,triangles = c.triangles,nativeProbes = c.nativeProbes,score = c.score,
                             distanceRms = c.distanceRms,normalRms = c.normalRms,colorRms = c.colorRms,uvRms = c.uvRms,
-                            silhouetteMean = c.silhouetteMean,silhouetteMax = c.silhouetteMax }).ToList();
+                            silhouetteMean = c.silhouetteMean,silhouetteMax = c.silhouetteMax,screenQuality = c.screenQuality }).ToList();
                         capture.removedParts = variant.info.removedParts; capture.removedPartTris = variant.info.removedPartTris;
                         capture.removedPartAreaFraction = variant.info.removedPartAreaFraction; capture.removedPartMaxPixels = variant.info.removedPartMaxPixels;
                         report.captures.Add(capture);
@@ -253,19 +389,58 @@ namespace SashaRX.UnityMeshLab.Tests
                     Assert.That(capture.surfaceColorMax.magnitude,Is.LessThan(.001f),"An unchanged fallback must validate against LOD0: "+model.name);
                 // Asset evaluation records fidelity, including regressions and missed budgets;
                 // it does not claim all production models satisfy synthetic-fixture thresholds.
+                if (argsHave("-meshlabLodFarBudget") && report.varyingVertexColors)
+                {
+                    renderer.SetView("front");
+                    var opposite = Matrix4x4.Rotate(Quaternion.Euler(0,180,0))*matrix;
+                    foreach (var variant in variants.Where(v => v.name == "source" || v.name == "far-lod2"))
+                        foreach (var mode in new[] { RenderMode.Colors,RenderMode.Coverage })
+                            LodVisualQualityTests.Save(model.name,variant.name,"paint-surface",mode == RenderMode.Colors ? "color" : "coverage",renderer.Draw(variant.mesh,mode,opposite));
+                }
+                if (argsHave("-meshlabLodAllColorViews"))
+                {
+                    renderer.SetView("front");
+                    var directions=new[] { Vector3.right,Vector3.up,Vector3.forward,
+                        new Vector3(1,1,1),new Vector3(1,2,-1),new Vector3(-2,1,1) };
+                    int viewIndex=0;
+                    foreach (var direction in directions.Concat(directions.Select(d => -d)))
+                    {
+                        var normal=direction.normalized;
+                        var horizontal=Vector3.Cross(normal,Mathf.Abs(normal.y)>.9f ? Vector3.forward : Vector3.up).normalized;
+                        var vertical=Vector3.Cross(horizontal,normal).normalized;
+                        var rotation=Matrix4x4.identity;
+                        rotation.SetRow(0,horizontal); rotation.SetRow(1,vertical); rotation.SetRow(2,-normal);
+                        var fieldMatrix=rotation*Matrix4x4.Scale(Vector3.one*scale)*Matrix4x4.Translate(-source.bounds.center);
+                        foreach (var variant in variants.Where(v => v.name=="source" || v.name=="authored-lod2" || v.name=="far-lod2"))
+                            foreach (var mode in new[] { RenderMode.Colors,RenderMode.Coverage,RenderMode.Wire })
+                                LodVisualQualityTests.Save(model.name,variant.name,"field"+viewIndex,
+                                    mode==RenderMode.Colors ? "color" : mode==RenderMode.Coverage ? "coverage" : "wire",
+                                    renderer.Draw(variant.mesh,mode,fieldMatrix));
+                        viewIndex++;
+                    }
+                }
+                LodSharedLightmapChecks.Evaluate(model.asset,source,variants,matrix);
+                if (argsHave("-meshlabLodPaintDiagnostics"))
+                    LodColorBoundaryProjectTests.CapturePaintEdges(model.name,source,variants.Single(v => v.name == "far-lod2").mesh,renderer);
                 Assert.That(report.captures.Count,Is.GreaterThanOrEqualTo(6));
                 Assert.That(LodMeshData.TriangleCount(source),Is.EqualTo(report.sourceTriangles),"Source asset changed");
             }
             finally { foreach (Mesh mesh in generated) if (mesh) Object.DestroyImmediate(mesh); }
         }
 
-        static void Generate(Mesh source,LodReductionMode mode,int candidates,string prefix,
-            List<(string name, Mesh mesh, LodPipelineOps.LodInfo info, double ms)> variants,List<Mesh> generated,bool uncheckedColors = false,bool relaxedFar = false,bool pruneParts = false,bool correctAttributes = false,bool preserveHardEdges = false)
+        internal static void Generate(Mesh source,LodReductionMode mode,int candidates,string prefix,
+            List<(string name, Mesh mesh, LodPipelineOps.LodInfo info, double ms)> variants,List<Mesh> generated,bool uncheckedColors = false,bool relaxedFar = false,bool pruneParts = false,bool correctAttributes = false,bool preserveHardEdges = false,bool coarsenHardEdgeChains = false,bool nativeHardEdgeConstraints = false,float[] requestedRatios = null,bool screenGuided = false,bool farScreenBudget = false,Renderer bakedReference = null)
         {
             var root = new GameObject("ProjectLODPreview");
             try
             {
-                root.AddComponent<MeshFilter>().sharedMesh = source; root.AddComponent<MeshRenderer>();
+                root.AddComponent<MeshFilter>().sharedMesh = source;
+                var renderer = root.AddComponent<MeshRenderer>();
+                if (bakedReference)
+                {
+                    renderer.lightmapIndex = bakedReference.lightmapIndex; renderer.lightmapScaleOffset = bakedReference.lightmapScaleOffset;
+                    root.transform.rotation = bakedReference.transform.rotation; root.transform.localScale = bakedReference.transform.lossyScale;
+                }
                 var context = new UvToolContext(); context.Refresh(LodGenerationTool.CreateLodGroupFromRenderers(root));
                 var options = new LodPipelineOps.Options { count = 2, ratios = new[] {.5f,.25f}, targetError = .2f,
                     uv2Weight = 20, normalWeight = 1, colorWeight = 1, maxNormalAngle = 15, maxColorError = .02f,
@@ -276,8 +451,14 @@ namespace SashaRX.UnityMeshLab.Tests
                 if (budgetOnly)
                 {
                     options.count = 2; options.ratios = LodGenerationTool.SteppedRatios(1,3,2); options.prioritizeTriangleBudget = true;
+                    if (requestedRatios != null) options.ratios = requestedRatios;
                     options.correctSurfaceAttributes = correctAttributes;
                     options.preserveHardEdges = preserveHardEdges;
+                    options.coarsenHardEdgeChains = coarsenHardEdgeChains;
+                    options.nativeHardEdgeConstraints = nativeHardEdgeConstraints;
+                    options.screenGuidedSelection = screenGuided;
+                    options.farScreenBudget = farScreenBudget;
+                    options.featureChainError = coarsenHardEdgeChains ? .005f : 0;
                 }
                 if (relaxedFar)
                     options = LodPipelineOps.RelaxFarLods(options,1,2,new LodPipelineOps.LevelQuality {
@@ -308,10 +489,10 @@ namespace SashaRX.UnityMeshLab.Tests
                     {
                         Assert.That(info.budgetPriority,Is.True);
                         if (info.hardEdges?.sourceFallback != true)
-                            Assert.That(info.evaluatedCandidates,Is.EqualTo(candidates+(info.budgetCandidates?.Any(c => c.name == "previous protected source candidate") == true ? 1 : 0)));
+                            Assert.That(info.evaluatedCandidates,Is.EqualTo(candidates+(info.budgetCandidates?.Count(c => c.variant > candidates) ?? 0)));
                         Assert.That(float.IsNaN(info.selectionScore) || float.IsInfinity(info.selectionScore),Is.False,
                             "Visible real project models require a finite quality ranking: "+source.name);
-                        if (!preserveHardEdges) Assert.That(info.simplifiedTris,Is.LessThanOrEqualTo(info.targetTris),$"{source.name}/LOD{info.lodLevel}: failed requested 3x budget");
+                        if (!preserveHardEdges || farScreenBudget && info.lodLevel >= 2) Assert.That(info.simplifiedTris,Is.LessThanOrEqualTo(info.targetTris),$"{source.name}/LOD{info.lodLevel}: failed requested 3x budget");
                         else
                         {
                             Assert.That(info.hardEdges.Valid,Is.True);

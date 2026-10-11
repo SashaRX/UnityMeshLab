@@ -10,7 +10,8 @@ namespace SashaRX.UnityMeshLab
     // attributes at vertices which meshoptimizer already retained from LOD0.
     internal static class LodAttributeCorrection
     {
-        [Serializable] internal sealed class Report
+        [Serializable]
+        internal sealed class Report
         {
             public bool normalsAccepted, colorsAccepted;
             public float normalBlend, colorBlend, normalRmsBefore, normalRmsAfter, normalMaxBefore, normalMaxAfter;
@@ -19,13 +20,502 @@ namespace SashaRX.UnityMeshLab
             public int smoothingRegions, linkedNormalDuplicates, mixedSmoothingFaces, missingSmoothingRegions, incompleteSmoothingRegions;
             public LodSmoothingRegions.Error[] regionNormalsBefore, regionNormalsAfter;
             public string colorMethod;
+            public bool screenColorVerification;
+            public int visibleColorSamples;
+            public float visibleRgbaBefore, visibleRgbaAfter;
+            public Vector4 visibleChannelsBefore, visibleChannelsAfter;
+            public VisibleNormalReport visibleNormals;
+            public VisibleColorBoundaryReport visibleColorBoundaries;
+            public VisibleColorBoundaryReport polygonColorBoundaries;
+            public LodPaintRetriangulation.Report paintRetriangulation;
+            public VisibleGradientReport visibleGradient;
+            public LodSharedUvTransfer.Report sharedLightmapUv;
             public string note;
         }
+
+        [Serializable]
+        internal sealed class VisibleColorBoundaryReport
+        {
+            public bool accepted;
+            public int samples, trials, verticesBefore, verticesAfter;
+            public int polygonGroups;
+            public int activePolygonGroups;
+            public float viewColorRmsTolerance;
+            public float boundaryBefore, boundaryAfter, worstBefore, worstAfter, rgbaBefore, rgbaAfter;
+            public float[] viewsBefore, viewsAfter;
+            public CornerSharingReport cornerSharing;
+        }
+
+        [Serializable]
+        internal sealed class CornerSharingReport
+        {
+            public int verticesBefore, verticesAfter, trials;
+            public float colorTolerance, rgbaBefore, rgbaAfter, boundaryBefore, boundaryAfter;
+        }
+
+        [Serializable]
+        internal sealed class VisibleGradientReport
+        {
+            public bool accepted;
+            public int samples, boundarySamples, trials, pinnedCorners;
+            public LodScreenValidation.Report before, after;
+            public List<GradientProbe> probes = new List<GradientProbe>();
+        }
+        [Serializable]
+        internal sealed class GradientProbe
+        {
+            public float prior, blend, rgba, boundary;
+            public bool boundaryWeighted;
+            public string refusal;
+        }
+
+        internal static Mesh CorrectVisibleGradient(Mesh source, Mesh reduced, LodScreenValidation screen,
+            out VisibleGradientReport report, Func<bool> cancelled = null)
+        {
+            report = new VisibleGradientReport();
+            if (GradientUnavailable(source, reduced, screen)) return null;
+            var before = screen.Measure(reduced, cancelled);
+            if (!before.rgbaEvaluated || before.objectPixels > 128) return null;
+            var allSides = screen.WithAllSides(source, cancelled);
+            report.before = report.after = allSides.Measure(reduced, cancelled);
+            var data = new LodMeshData(reduced);
+            var fit = new FieldFit(data.colors.Select(c => (Vector4)c).ToArray(), ColorOwners(data));
+            // Distinct RGBA copies and shared material interfaces stay pinned.
+            // Equal-color copies on independent sheets remain independent fit
+            // variables; they need not be frozen merely because their positions coincide.
+            PinSeams(data, null, fit, null, null);
+            // Keep the corners supporting source sharp pairs fixed while fitting
+            // the continuous field elsewhere. Shared color owners propagate pins.
+            report.samples = AddGradientSamples(allSides, reduced, fit, cancelled);
+            report.pinnedCorners = fit.pinned.Count(v => v);
+            if (report.samples == 0) return null;
+            Mesh trial = null, accepted = null; var best = before; var bestAll = report.before;
+            try
+            {
+                trial = UnityEngine.Object.Instantiate(reduced);
+                for (int method = 0; method < 3; method++)
+                {
+                    if (method == 2)
+                    {
+                        report.boundarySamples = allSides.AddVisibleBoundaryColorSamples(reduced, fit.Add, 2, cancelled);
+                        if (report.boundarySamples == 0) continue;
+                    }
+                    float prior = method == 0 ? .02f : .002f;
+                    var fitted = fit.Solve(prior, cancelled);
+                    report.pinnedCorners = fit.pinned.Count(v => v);
+                    VerifyGradientBlends(data, fitted, prior, method == 2, reduced, trial, screen, allSides, report, ref accepted, ref best, ref bestAll, cancelled);
+                }
+                report.after = bestAll; var result = accepted; accepted = null; return result;
+            }
+            finally
+            {
+                if (trial) UnityEngine.Object.DestroyImmediate(trial);
+                if (accepted) UnityEngine.Object.DestroyImmediate(accepted);
+            }
+        }
+
+        internal static Mesh ShareVisibleColorCorners(Mesh fitted, LodScreenValidation screen,
+            out CornerSharingReport report, Func<bool> cancelled = null)
+        {
+            report = new CornerSharingReport { verticesBefore = fitted.vertexCount, verticesAfter = fitted.vertexCount };
+            if (screen == null || fitted.blendShapeCount > 0 || fitted.HasVertexAttribute(VertexAttribute.BlendWeight)) return null;
+            var before = screen.Measure(fitted, cancelled);
+            report.rgbaBefore = report.rgbaAfter = before.rgbaRms;
+            report.boundaryBefore = report.boundaryAfter = before.colorBoundaryMean;
+            var data = new LodMeshData(fitted); Mesh accepted = null;
+            try
+            {
+                // Exact RGBA sharing retains the fitted field in every camera.
+                // Approximate sharing passed the CPU guide but slightly worsened
+                // real bench GPU captures, so it is not enabled for generation.
+                var tolerances = new[] { 0f };
+                foreach (float tolerance in tolerances)
+                {
+                    CheckCancellation(cancelled);
+                    Mesh candidate = data.ShareRenderCorners(tolerance, cancelled);
+                    try
+                    {
+                        if (!candidate || candidate.vertexCount >= report.verticesAfter) continue;
+                        UvProgress.Report(UvProgress.Current.fraction, $"{fitted.name}: verify shared far color corners");
+                        var measured = screen.Measure(candidate, cancelled); report.trials++;
+                        if (!measured.DoesNotWorsen(before, true)) continue;
+                        if (accepted) UnityEngine.Object.DestroyImmediate(accepted);
+                        accepted = candidate; candidate = null;
+                        report.verticesAfter = accepted.vertexCount; report.colorTolerance = tolerance;
+                        report.rgbaAfter = measured.rgbaRms; report.boundaryAfter = measured.colorBoundaryMean;
+                    }
+                    finally { if (candidate) UnityEngine.Object.DestroyImmediate(candidate); }
+                }
+                var result = accepted; accepted = null; return result;
+            }
+            finally { if (accepted) UnityEngine.Object.DestroyImmediate(accepted); }
+        }
+
+        // Color seams need independent render corners, not more triangles.
+        // Keep all geometry/other fields and require every measured paint view
+        // and RGBA channel to retain or improve its source correspondence.
+        internal static Mesh CorrectVisibleColorBoundaries(Mesh source, Mesh reduced, LodScreenValidation screen,
+            out VisibleColorBoundaryReport report, Func<bool> cancelled = null)
+        {
+            report = new VisibleColorBoundaryReport { verticesBefore = reduced.vertexCount, verticesAfter = reduced.vertexCount };
+            var sourceColors = source.colors; var reducedColors = reduced.colors;
+            if (screen == null || source.blendShapeCount > 0 || reduced.blendShapeCount > 0 ||
+                source.HasVertexAttribute(VertexAttribute.BlendWeight) || reduced.HasVertexAttribute(VertexAttribute.BlendWeight) ||
+                sourceColors.Length != source.vertexCount || reducedColors.Length != reduced.vertexCount ||
+                !sourceColors.Any(c => !c.Equals(sourceColors[0]))) return null;
+            var before = screen.Measure(reduced, cancelled);
+            if (!before.rgbaEvaluated || before.colorViews == 0 || before.colorBoundaryMean <= 0) return null;
+            report.boundaryBefore = report.boundaryAfter = before.colorBoundaryMean;
+            report.worstBefore = report.worstAfter = before.colorLoss; report.rgbaBefore = report.rgbaAfter = before.rgbaRms;
+            report.viewsBefore = report.viewsAfter = before.colorBoundaryViewLoss;
+            Mesh trial = null;
+            try
+            {
+                trial = new LodMeshData(reduced).ExpandTriangleCorners();
+                var original = trial.colors; var accepted = original; var best = before;
+                foreach (float weight in new[] { 1f, 8f })
+                {
+                    var fit = new FieldFit(original.Select(c => (Vector4)c).ToArray());
+                    report.samples = screen.AddVisibleBoundaryColorSamples(trial, fit.Add, weight, cancelled);
+                    if (report.samples == 0) continue;
+                    var values = fit.Solve(.002f, cancelled);
+                    foreach (float blend in new[] { 1f, .5f, .25f })
+                    {
+                        CheckCancellation(cancelled);
+                        SetColors(trial, original.Select((c, i) => (Color)Vector4.Lerp(c, values[i], blend)).ToArray(), reduced.GetVertexAttributeFormat(VertexAttribute.Color));
+                        UvProgress.Report(UvProgress.Current.fraction, $"{source.name}: verify far color boundary corners");
+                        CheckCancellation(cancelled);
+                        var local = screen.Measure(trial, cancelled); report.trials++;
+                        if (BoundaryRejected(local, best)) continue;
+                        accepted = trial.colors; best = local; report.accepted = true;
+                    }
+                }
+                if (!report.accepted) return null;
+                SetColors(trial, accepted, reduced.GetVertexAttributeFormat(VertexAttribute.Color));
+                var shared = ShareVisibleColorCorners(trial, screen, out report.cornerSharing, cancelled);
+                if (shared)
+                {
+                    UnityEngine.Object.DestroyImmediate(trial); trial = shared;
+                    best = screen.Measure(trial, cancelled);
+                }
+                report.boundaryAfter = best.colorBoundaryMean; report.worstAfter = best.colorLoss;
+                report.rgbaAfter = best.rgbaRms; report.viewsAfter = best.colorBoundaryViewLoss; report.verticesAfter = trial.vertexCount;
+                var result = trial; trial = null; return result;
+            }
+            finally { if (trial) UnityEngine.Object.DestroyImmediate(trial); }
+        }
+
+        // Replace stretched gradients on faces covering lost paint transitions.
+        // Existing shared corners stay one color variable, so flat replacements
+        // cannot expand the render buffer or change other authored fields.
+        internal static Mesh PaintFaceBoundaries(Mesh source, Mesh reduced, LodScreenValidation screen,
+            out VisibleColorBoundaryReport report, Func<bool> cancelled = null)
+        {
+            report = new VisibleColorBoundaryReport { verticesBefore = reduced.vertexCount, verticesAfter = reduced.vertexCount };
+            if (screen == null || source.vertexCount == 0 || reduced.vertexCount == 0 || source.colors.Length != source.vertexCount || reduced.colors.Length != reduced.vertexCount ||
+                source.subMeshCount != 1 || reduced.subMeshCount != 1 ||
+                source.blendShapeCount > 0 || reduced.blendShapeCount > 0 || source.HasVertexAttribute(VertexAttribute.BlendWeight) ||
+                reduced.HasVertexAttribute(VertexAttribute.BlendWeight) || LodMeshData.TriangleCount(reduced) > 128) return null;
+            var before = screen.Measure(reduced, cancelled); var best = before;
+            report.boundaryBefore = report.boundaryAfter = before.colorBoundaryMean;
+            report.worstBefore = report.worstAfter = before.colorLoss; report.rgbaBefore = report.rgbaAfter = before.rgbaRms;
+            report.viewsBefore = report.viewsAfter = before.colorBoundaryViewLoss;
+            if (!before.rgbaEvaluated || before.objectPixels > 128 || before.colorViews == 0 || before.colorBoundaryMean <= 0) return null;
+            var verification = screen.WithAllSides(source, cancelled); var allSidesBefore = verification.Measure(reduced, cancelled);
+            report.viewColorRmsTolerance = 1f / 255;
+            Mesh trial = null, accepted = null;
+            try
+            {
+                trial = UnityEngine.Object.Instantiate(reduced);
+                var indices = reduced.triangles;
+                var owners = FaceColorOwners(indices, reduced.vertexCount);
+                report.polygonGroups = owners.Distinct().Count();
+                var active = screen.LostPaintFaces(reduced, cancelled).Select(f => owners[f]).Distinct().OrderBy(f => f).ToArray();
+                report.activePolygonGroups = active.Length;
+                var original = reduced.colors;
+                foreach (float weight in new[] { 1f, 8f, 32f })
+                {
+                    var samples = new FacePaintSamples(owners);
+                    report.samples = samples.Collect(screen, trial, weight, cancelled);
+                    foreach (bool dominant in new[] { false, true }) foreach (int ownerToPaint in active)
+                    {
+                        VerifyFacePaint(source, reduced, trial, original, samples, indices, ownerToPaint, dominant, screen, verification, before, allSidesBefore,
+                            report, ref accepted, ref best, cancelled);
+                    }
+                }
+                if (!accepted) return null;
+                report.verticesAfter = accepted.vertexCount; report.boundaryAfter = best.colorBoundaryMean;
+                report.worstAfter = best.colorLoss; report.rgbaAfter = best.rgbaRms; report.viewsAfter = best.colorBoundaryViewLoss;
+                var result = accepted; accepted = null; return result;
+            }
+            finally
+            {
+                if (trial) UnityEngine.Object.DestroyImmediate(trial);
+                if (accepted) UnityEngine.Object.DestroyImmediate(accepted);
+            }
+        }
+
+        // A continuous variable per current UV2 wedge keeps atlas seams separate
+        // while fitting the original chart's visible field after retriangulation.
+        internal static void FitVisibleUv2(Mesh source, Mesh target, LodScreenValidation screen, Func<bool> cancelled = null)
+        {
+            if (!source.HasVertexAttribute(VertexAttribute.TexCoord1) || !target.HasVertexAttribute(VertexAttribute.TexCoord1) ||
+                source.GetVertexAttributeDimension(VertexAttribute.TexCoord1) != 2 || target.GetVertexAttributeDimension(VertexAttribute.TexCoord1) != 2) return;
+            var original = new LodMeshData(source); var data = new LodMeshData(target);
+            var sourceIndices = source.triangles; var targetIndices = target.triangles;
+            var representatives = new Dictionary<(Vector3, Vector4), int>();
+            var owners = Enumerable.Range(0, target.vertexCount).Select(v =>
+            {
+                var key = (data.positions[v], data.uvs[1][v]);
+                if (!representatives.TryGetValue(key, out int owner)) representatives[key] = owner = v;
+                return owner;
+            }).ToArray();
+            var fit = new FieldFit(data.uvs[1].ToArray(), owners);
+            int mismatches = 0;
+            screen.AddVisibleSurfaceSamples(target, (sf, sb, tf, tb, sn, tn, view, pixel) =>
+            {
+                var desired = original.uvs[1][sourceIndices[sf * 3]] * sb.x + original.uvs[1][sourceIndices[sf * 3 + 1]] * sb.y + original.uvs[1][sourceIndices[sf * 3 + 2]] * sb.z;
+                var current = data.uvs[1][targetIndices[tf * 3]] * tb.x + data.uvs[1][targetIndices[tf * 3 + 1]] * tb.y + data.uvs[1][targetIndices[tf * 3 + 2]] * tb.z;
+                // Opposite sheets / atlas islands cannot donate a distant UV.
+                float difference = (current - desired).sqrMagnitude;
+                if (difference <= .05f * .05f) { fit.Add(targetIndices, tf * 3, tb, desired, .25); if (difference > 1e-12f) mismatches++; }
+            }, cancelled);
+            if (mismatches == 0) return;
+            var values = fit.Solve(.02f, cancelled).Select(v => (Vector2)v).ToArray();
+            LodSharedUvTransfer.ProjectOriginalCharts(source, target, values, cancelled);
+            target.SetUVs(1, values.ToList());
+        }
+
+        [Serializable]
+        internal sealed class VisibleNormalReport
+        {
+            public bool accepted;
+            public int samples, trials;
+            public string method;
+            public float blend, normalBefore, normalAfter, headlightBefore, headlightAfter;
+            public float[] normalViewsBefore, normalViewsAfter, headlightViewsBefore, headlightViewsAfter;
+            public LodSmoothingRegions.Error[] regionsBefore, regionsAfter;
+        }
+
+        // Final attribute-only pass: it cannot change the selected triangle budget
+        // or silhouette. Far faces spanning several source regions can fit visible
+        // normals independently at retained render splits instead of staying stale.
+        internal static Mesh CorrectVisibleNormals(Mesh source, Mesh reduced, MeshSimplifier.SimplifySettings settings,
+            LodScreenValidation screen, out VisibleNormalReport report, out LodSurfaceValidation.Metrics metrics,
+            Func<bool> cancelled = null, LodSurfaceValidation.Metrics? baseline = null)
+        {
+            metrics = baseline ?? LodSurfaceValidation.MeasureMeshes(source, reduced, settings, cancelled, ignoreDegenerateFaces: true);
+            report = new VisibleNormalReport();
+            if (screen == null || source.blendShapeCount > 0 || source.HasVertexAttribute(VertexAttribute.BlendWeight) ||
+                reduced.blendShapeCount > 0 || reduced.HasVertexAttribute(VertexAttribute.BlendWeight) ||
+                source.normals.Length != source.vertexCount || reduced.normals.Length != reduced.vertexCount) return null;
+            var before = screen.Measure(reduced, cancelled);
+            if (!before.normalsEvaluated || before.objectPixels > 128 || LodMeshData.TriangleCount(reduced) > 512 || before.normalRms < 75) return null;
+            report.normalBefore = report.normalAfter = before.normalRms; report.headlightBefore = report.headlightAfter = before.headlightRms;
+            report.normalViewsBefore = report.normalViewsAfter = before.normalViewRms;
+            report.headlightViewsBefore = report.headlightViewsAfter = before.headlightViewRms;
+            var original = new LodMeshData(source); var target = new LodMeshData(reduced);
+            var smoothing = new LodSmoothingRegions(original, target, cancelled);
+            report.regionsBefore = report.regionsAfter = smoothing.Measure(target.normals, cancelled);
+            var fit = new FieldFit(target.normals.Select(n => (Vector4)n.normalized).ToArray(), smoothing.owners);
+            PinMaterialInterfaces(reduced, target.positions.Length, fit);
+            report.samples = screen.AddVisibleNormalSamples(reduced, fit.Add, cancelled);
+            if (report.samples == 0) return null;
+            var normalReport = report; var bestScreen = before; var bestMetrics = metrics;
+            Vector3[] accepted = target.normals;
+            Mesh trial = null;
+            try
+            {
+                trial = UnityEngine.Object.Instantiate(reduced); trial.name = reduced.name;
+                foreach (float prior in new[] { .1f, .02f, .002f }) VerifyNormalBlends(fit.Solve(prior, cancelled), "visible normal least-squares " + prior, source, trial, target, fit, settings, screen, normalReport,
+                    ref bestScreen, ref bestMetrics, ref accepted, cancelled);
+                VerifyNormalBlends(fit.Resample(cancelled), "visible normal mass-average", source, trial, target, fit, settings, screen, normalReport,
+                    ref bestScreen, ref bestMetrics, ref accepted, cancelled);
+                metrics = bestMetrics;
+                if (!report.accepted) return null;
+                report.regionsAfter = smoothing.Measure(accepted, cancelled);
+                trial.normals = accepted;
+                if (target.tangents.Length == target.positions.Length) trial.tangents = OrthogonalTangents(target.tangents, target.normals, accepted);
+                if (MeshUvState.IsDraft(reduced)) MeshUvState.SetDraft(trial, true);
+                var result = trial; trial = null; return result;
+            }
+            finally { if (trial) UnityEngine.Object.DestroyImmediate(trial); }
+        }
+        static void VerifyGradientBlends(LodMeshData data, Vector4[] fitted, float prior, bool boundaryWeighted, Mesh reduced, Mesh trial,
+            LodScreenValidation screen, LodScreenValidation allSides, VisibleGradientReport report, ref Mesh accepted,
+            ref LodScreenValidation.Report best, ref LodScreenValidation.Report bestAll, Func<bool> cancelled)
+        {
+            foreach (float blend in new[] { 1f, .5f, .25f, .125f, .0625f, .03125f })
+            {
+                CheckCancellation(cancelled);
+                var values = data.colors.Select((c, i) => (Color)Vector4.Lerp(c, fitted[i], blend)).ToArray();
+                SetColors(trial, values, reduced.GetVertexAttributeFormat(VertexAttribute.Color));
+                var local = screen.Measure(trial, cancelled); report.trials++;
+                var probe = new GradientProbe
+                {
+                    prior = prior,
+                    blend = blend,
+                    boundaryWeighted = boundaryWeighted,
+                    rgba = local.rgbaRms,
+                    boundary = local.colorBoundaryMean
+                }; report.probes.Add(probe);
+                if (!local.DoesNotWorsen(best, true) || local.rgbaRms >= best.rgbaRms - 1e-6f)
+                { probe.refusal = "primary fields/paint"; continue; }
+                var all = allSides.Measure(trial, cancelled);
+                if (!all.PaintViewsDoNotWorsen(bestAll) || !all.ColorViewsWithin(bestAll, 1f / 255) ||
+                    !all.PaintViewsDoNotWorsen(report.before) ||
+                    !all.ColorViewsWithin(report.before, 1f / 255) ||
+                    all.rgbaRms > bestAll.rgbaRms + 1e-6f) { probe.refusal = "reverse fields/paint"; continue; }
+                if (accepted) UnityEngine.Object.DestroyImmediate(accepted);
+                accepted = UnityEngine.Object.Instantiate(trial); best = local; bestAll = all; report.accepted = true;
+            }
+        }
+
+        static bool BoundaryRejected(LodScreenValidation.Report local, LodScreenValidation.Report best)
+            => !local.DoesNotWorsen(best, true) || local.colorBoundaryMean >= best.colorBoundaryMean - 1e-6f;
+
+        static void PinMaterialInterfaces(Mesh reduced, int vertexCount, FieldFit fit)
+        {
+            var slots = new HashSet<int>[vertexCount];
+            for (int i = 0; i < slots.Length; i++) slots[i] = new HashSet<int>();
+            for (int s = 0; s < reduced.subMeshCount; s++) foreach (int vertex in LodMeshData.Triangles(reduced, s)) slots[vertex].Add(s);
+            for (int i = 0; i < slots.Length; i++) if (slots[i].Count > 1) fit.pinned[i] = true;
+        }
+
+        static void VerifyNormalBlends(Vector4[] fitted, string method, Mesh source, Mesh trial, LodMeshData target, FieldFit fit,
+            MeshSimplifier.SimplifySettings settings, LodScreenValidation screen, VisibleNormalReport normalReport,
+            ref LodScreenValidation.Report bestScreen, ref LodSurfaceValidation.Metrics bestMetrics, ref Vector3[] accepted, Func<bool> cancelled)
+        {
+            foreach (float blend in new[] { 1f, .5f, .25f })
+            {
+                CheckCancellation(cancelled); var values = BlendedNormals(target, fit, fitted, blend);
+                if (values.SequenceEqual(accepted)) continue;
+                trial.normals = values;
+                UvProgress.Report(UvProgress.Current.fraction, $"{source.name}: verify far visible normals {method} {blend:P0}");
+                var local = screen.Measure(trial, cancelled); normalReport.trials++;
+                if (!local.DoesNotWorsen(bestScreen, true) || local.normalRms >= bestScreen.normalRms - 1e-4f ||
+                    local.headlightRms >= bestScreen.headlightRms - 1e-6f || !ViewsDoNotWorsen(local.normalViewRms, bestScreen.normalViewRms, 1e-4f) ||
+                    !ViewsDoNotWorsen(local.headlightViewRms, bestScreen.headlightViewRms, 1e-6f)) continue;
+                var measured = LodSurfaceValidation.MeasureMeshes(source, trial, settings, cancelled, ignoreDegenerateFaces: true);
+                if (!Finite(measured) || measured.NormalRms > bestMetrics.NormalRms + 1e-4f || measured.authoredNormalAngle > bestMetrics.authoredNormalAngle + 1e-4f) continue;
+                bestMetrics = measured; bestScreen = local; accepted = values; normalReport.accepted = true;
+                normalReport.method = method; normalReport.blend = blend; normalReport.normalAfter = local.normalRms; normalReport.headlightAfter = local.headlightRms;
+                normalReport.normalViewsAfter = local.normalViewRms; normalReport.headlightViewsAfter = local.headlightViewRms;
+            }
+        }
+
+        static Vector3[] BlendedNormals(LodMeshData target, FieldFit fit, Vector4[] fitted, float blend)
+        {
+            var values = new Vector3[target.positions.Length];
+            for (int i = 0; i < values.Length; i++)
+            {
+                var n = ((Vector3)fitted[i]).normalized;
+                values[i] = fit.pinned[i] || n.sqrMagnitude < .5f ? target.normals[i] : Vector3.Lerp(target.normals[i].normalized, n, blend).normalized;
+                if (values[i].sqrMagnitude < .5f) values[i] = target.normals[i];
+            }
+            return values;
+        }
+
+        static int[] FaceColorOwners(int[] indices, int vertexCount)
+        {
+            int faces = indices.Length / 3;
+            var owners = Enumerable.Range(0, faces).ToArray(); var first = Enumerable.Repeat(-1, vertexCount).ToArray();
+            int Owner(int face)
+            {
+                while (owners[face] != face) face = owners[face];
+                return face;
+            }
+            for (int f = 0; f < faces; f++) for (int k = 0; k < 3; k++)
+            {
+                int v = indices[f * 3 + k]; if (first[v] < 0) first[v] = f;
+                else owners[Owner(f)] = Owner(first[v]);
+            }
+            for (int f = 0; f < faces; f++) owners[f] = Owner(f);
+            return owners;
+        }
+
+        sealed class FacePaintSamples
+        {
+            readonly int[] owners;
+            readonly Vector4[] sums;
+            readonly double[] masses;
+            readonly List<(Vector4 sum, double mass)>[] clusters;
+            internal FacePaintSamples(int[] owners)
+            {
+                this.owners = owners;
+                sums = new Vector4[owners.Length]; masses = new double[owners.Length];
+                clusters = Enumerable.Range(0, owners.Length).Select(_ => new List<(Vector4 sum, double mass)>()).ToArray();
+            }
+            internal int Collect(LodScreenValidation screen, Mesh trial, float weight, Func<bool> cancelled)
+            {
+                return screen.AddVisibleBoundaryColorSamples(trial, (indices, offset, bary, value, mass) =>
+                {
+                    int face = owners[offset / 3]; sums[face] += value * (float)mass; masses[face] += mass;
+                    var list = clusters[face]; int found = -1;
+                    for (int i = 0; i < list.Count; i++)
+                    {
+                        var delta = value - list[i].sum / (float)list[i].mass;
+                        if (Mathf.Max(Mathf.Abs(delta.x), Mathf.Max(Mathf.Abs(delta.y), Mathf.Max(Mathf.Abs(delta.z), Mathf.Abs(delta.w)))) < .15f) { found = i; break; }
+                    }
+                    if (found < 0) list.Add((value * (float)mass, mass));
+                    else list[found] = (list[found].sum + value * (float)mass, list[found].mass + mass);
+                }, weight, cancelled);
+            }
+            internal void Paint(Color[] values, int[] indices, int ownerToPaint, bool dominant)
+            {
+                for (int f = 0; f < owners.Length; f++)
+                {
+                    int owner = owners[f]; if (owner != ownerToPaint || masses[owner] == 0) continue;
+                    var value = sums[owner] / (float)masses[owner];
+                    if (dominant) { var cluster = clusters[owner].OrderByDescending(c => c.mass).First(); value = cluster.sum / (float)cluster.mass; }
+                    for (int k = 0; k < 3; k++) values[indices[f * 3 + k]] = value;
+                }
+            }
+        }
+
+        static void VerifyFacePaint(Mesh source, Mesh reduced, Mesh trial, Color[] original, FacePaintSamples samples, int[] indices,
+            int ownerToPaint, bool dominant, LodScreenValidation screen, LodScreenValidation verification, LodScreenValidation.Report before,
+            LodScreenValidation.Report allSidesBefore, VisibleColorBoundaryReport report, ref Mesh accepted, ref LodScreenValidation.Report best, Func<bool> cancelled)
+        {
+            UvProgress.Report(UvProgress.Current.fraction, $"{source.name}: verify polygon paint boundary");
+            CheckCancellation(cancelled);
+            var values = accepted ? accepted.colors : (Color[])original.Clone();
+            samples.Paint(values, indices, ownerToPaint, dominant);
+            SetColors(trial, values, reduced.GetVertexAttributeFormat(VertexAttribute.Color));
+            var local = screen.Measure(trial, cancelled); report.trials++;
+            if (!local.DoesNotWorsen(before) || !local.PaintViewsDoNotWorsen(before) || local.rgbaRms > before.rgbaRms + 1e-6f ||
+                local.colorBoundaryMean >= best.colorBoundaryMean - 1e-6f) return;
+            if (!verification.Measure(trial, cancelled).ColorViewsWithin(allSidesBefore, report.viewColorRmsTolerance)) return;
+            var shared = UnityEngine.Object.Instantiate(trial);
+            if (accepted) UnityEngine.Object.DestroyImmediate(accepted);
+            accepted = shared; best = local; report.accepted = true;
+        }
+
+        static bool GradientUnavailable(Mesh source, Mesh reduced, LodScreenValidation screen)
+        {
+            return screen == null || source.colors.Length != source.vertexCount || reduced.colors.Length != reduced.vertexCount ||
+                source.vertexCount == 0 || reduced.vertexCount == 0 || LodMeshData.TriangleCount(reduced) > 128 ||
+                source.blendShapeCount > 0 || reduced.blendShapeCount > 0 ||
+                source.HasVertexAttribute(VertexAttribute.BlendWeight) || reduced.HasVertexAttribute(VertexAttribute.BlendWeight);
+        }
+
+        static int AddGradientSamples(LodScreenValidation allSides, Mesh reduced, FieldFit fit, Func<bool> cancelled)
+        {
+            return allSides.AddVisibleBoundaryColorSamples(reduced, (faces, at, bary, value, weight) =>
+            {
+                fit.Add(faces, at, bary, value, .25);
+                if (weight <= .25) return;
+                for (int k = 0; k < 3; k++) fit.pinned[faces[at + k]] = true;
+            }, 2, cancelled);
+        }
+
+        static bool ViewsDoNotWorsen(float[] after, float[] before, float tolerance)
+            => after.Length == before.Length && after.Zip(before, (a, b) => !float.IsNaN(a) && !float.IsInfinity(a) && a <= b + tolerance).All(ok => ok);
 
         // Returns an owned replacement only on improvement. Inputs are never edited.
         internal static Mesh Correct(Mesh source, Mesh reduced, MeshSimplifier.SimplifySettings settings,
             LodPipelineOps.Options options, out Report report, out LodSurfaceValidation.Metrics metrics,
-            Func<bool> cancelled = null, LodSurfaceValidation.Metrics? baseline = null)
+            Func<bool> cancelled = null, LodSurfaceValidation.Metrics? baseline = null,LodScreenValidation screen = null)
         {
             metrics = baseline ?? LodSurfaceValidation.MeasureMeshes(source,reduced,settings,cancelled,ignoreDegenerateFaces:true);
             report = new Report { normalRmsBefore = metrics.NormalRms, normalRmsAfter = metrics.NormalRms,
@@ -37,6 +527,14 @@ namespace SashaRX.UnityMeshLab
             if (float.IsInfinity(metrics.weightedError) || float.IsNaN(metrics.weightedError))
             { report.note = "Attribute correction skipped: invalid surface correspondence."; return null; }
             var original = new LodMeshData(source); var target = new LodMeshData(reduced);
+            var visible = options.screenBudget ? screen : null;
+            var bestScreen = visible?.Measure(reduced,cancelled);
+            if (bestScreen != null)
+            {
+                report.screenColorVerification = true;
+                report.visibleRgbaBefore = report.visibleRgbaAfter = bestScreen.rgbaRms;
+                report.visibleChannelsBefore = report.visibleChannelsAfter = bestScreen.rgbaChannelRms;
+            }
             bool normals = original.normals.Length == original.positions.Length && target.normals.Length == target.positions.Length;
             bool colors = original.colors.Length == original.positions.Length && target.colors.Length == target.positions.Length;
             if (!normals && !colors) { report.note = "No authored normals or RGBA channel to correct."; return null; }
@@ -104,6 +602,9 @@ namespace SashaRX.UnityMeshLab
                         var regions = smoothing.Measure(values,cancelled);
                         if (!LodSmoothingRegions.NoRegression(regions,report.regionNormalsAfter) ||
                             !LodSmoothingRegions.NoRegression(regions,report.regionNormalsBefore)) continue;
+                        var local = visible?.Measure(trial,cancelled);
+                        if (local != null && !local.DoesNotWorsen(bestScreen,true)) continue;
+                        if (local != null) bestScreen = local;
                         report.regionNormalsAfter = regions;
                         best = measured; acceptedNormals = values; report.normalsAccepted = true; report.normalBlend = blend;
                     }
@@ -122,7 +623,35 @@ namespace SashaRX.UnityMeshLab
                     // verification passes for already improved or constant fields.
                     if (!report.colorsAccepted && original.colors.Any(c => !c.Equals(original.colors[0])))
                         VerifyColors(colorFit.Resample(cancelled),"area-resampled");
+                    int visibleSamples = 0;
+                    if (visible != null && original.colors.Any(c => !c.Equals(original.colors[0])))
+                    {
+                        var screenFit = new FieldFit(target.colors.Select(c => (Vector4)c).ToArray(),colorOwners);
+                        Array.Copy(colorFit.pinned,screenFit.pinned,colorFit.pinned.Length);
+                        visibleSamples = visible.AddVisibleColorSamples(reduced,screenFit.Add,cancelled);
+                        if (visibleSamples > 0)
+                        {
+                            VerifyColors(screenFit.Solve(.02f,cancelled),"visible-pixel least-squares");
+                            VerifyColors(screenFit.Solve(.002f,cancelled),"visible-pixel weak-prior fit");
+                        }
+                    }
                     SetColors(trial,acceptedColors,reduced.GetVertexAttributeFormat(VertexAttribute.Color));
+                    if (visible != null)
+                    {
+                        if (report.colorsAccepted)
+                        {
+                            var measured = LodSurfaceValidation.MeasureMeshes(source,trial,settings,cancelled,ignoreDegenerateFaces:true);
+                            if (Finite(measured)) best = measured;
+                            else
+                            {
+                                acceptedColors = target.colors; SetColors(trial,acceptedColors,reduced.GetVertexAttributeFormat(VertexAttribute.Color));
+                                report.colorsAccepted = false; report.colorBlend = 0; bestScreen = visible.Measure(trial,cancelled);
+                            }
+                        }
+                        report.visibleColorSamples = visibleSamples;
+                        report.visibleRgbaAfter = bestScreen.rgbaRms; report.visibleChannelsAfter = bestScreen.rgbaChannelRms;
+                        report.note = $" Far RGBA uses {visibleSamples} paired visible samples; all four screen-channel RMS values and local paint loss must not increase. Surface RGBA errors remain diagnostic.";
+                    }
                     void VerifyColors(Vector4[] fitted,string method)
                     {
                         foreach (float blend in blends)
@@ -133,17 +662,41 @@ namespace SashaRX.UnityMeshLab
                             if (values.SequenceEqual(target.colors)) continue;
                             SetColors(trial,values,reduced.GetVertexAttributeFormat(VertexAttribute.Color));
                             UvProgress.Report(UvProgress.Current.fraction,$"{source.name}: verify RGBA {method} {blend:P0}");
+                            if (visible != null) { VerifyVisible(values,method,blend); continue; }
                             var measured = LodSurfaceValidation.MeasureMeshes(source,trial,settings,cancelled,ignoreDegenerateFaces:true); colorReport.trials++;
                             if (!ColorImproved(measured,best)) continue;
                             best = measured; acceptedColors = values; colorReport.colorsAccepted = true; colorReport.colorBlend = blend;
                             colorReport.colorMethod = method;
+                        }
+                        if (visible == null) return;
+                        // Different RGBA channels can prefer different priors or
+                        // blend amounts. Keep every already accepted channel and
+                        // test a single-channel replacement against the full view.
+                        for (int channel = 0; channel < 4; channel++) foreach (float blend in blends)
+                        {
+                            CheckCancellation(cancelled);
+                            var values = (Color[])acceptedColors.Clone();
+                            for (int i = 0; i < values.Length; i++) values[i][channel] = Mathf.Lerp(target.colors[i][channel],fitted[i][channel],blend);
+                            if (values.SequenceEqual(acceptedColors)) continue;
+                            SetColors(trial,values,reduced.GetVertexAttributeFormat(VertexAttribute.Color));
+                            VerifyVisible(values,method+" channel "+channel,blend);
+                        }
+                        void VerifyVisible(Color[] values,string name,float blend)
+                        {
+                            var local = visible.Measure(trial,cancelled); colorReport.trials++;
+                            if (float.IsNaN(local.rgbaRms) || float.IsInfinity(local.rgbaRms) || !local.DoesNotWorsen(bestScreen,true)) return;
+                            bool improved = local.rgbaRms < bestScreen.rgbaRms-1e-6f;
+                            for (int ch = 0; ch < 4; ch++) improved |= local.rgbaChannelRms[ch] < bestScreen.rgbaChannelRms[ch]-1e-6f;
+                            if (!improved) return;
+                            bestScreen = local; acceptedColors = values; colorReport.colorsAccepted = true;
+                            colorReport.colorBlend = blend; colorReport.colorMethod = name;
                         }
                     }
                 }
                 metrics = best;
                 report.normalRmsAfter = best.NormalRms; report.normalMaxAfter = best.authoredNormalAngle;
                 report.colorRmsAfter = best.ColorRms; report.colorMaxAfter = best.colorMax;
-                report.note = $"Surface attribute fit: normals {(report.normalsAccepted ? "improved" : "kept")}, RGBA {(report.colorsAccepted ? "improved via "+report.colorMethod : "kept")} ({samples} samples, {report.trials} verification trials).";
+                report.note = $"Surface attribute fit: normals {(report.normalsAccepted ? "improved" : "kept")}, RGBA {(report.colorsAccepted ? "improved via "+report.colorMethod : "kept")} ({samples} samples, {report.trials} verification trials)."+report.note;
                 if (smoothing != null) report.note += $" Smoothing: {smoothing.count} source regions, {smoothing.linkedDuplicates} linked normal duplicates, " +
                     $"{smoothing.mixedFaces} mixed/unmapped faces pinned, {smoothing.missingRegions} source regions without a mapped LOD face, " +
                     $"{report.incompleteSmoothingRegions} incomplete correspondences pinned. Per-region normal RMS/max must not increase.";
@@ -232,7 +785,7 @@ namespace SashaRX.UnityMeshLab
             {
                 bool normalSeam = normals != null && group.Any(i => normalOwners[group[0]] != normalOwners[i] &&
                     Vector3.Dot(mesh.normals[group[0]].normalized,mesh.normals[i].normalized) < .9999f);
-                bool colorSeam = colors != null && group.Any(i => colorOwners[group[0]] != colorOwners[i] ||
+                bool colorSeam = colors != null && group.Any(i => colorOwners != null && colorOwners[group[0]] != colorOwners[i] ||
                     ((Vector4)mesh.colors[group[0]]-(Vector4)mesh.colors[i]).sqrMagnitude > 1e-8f);
                 foreach (int i in group)
                 {

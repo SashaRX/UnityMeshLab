@@ -48,7 +48,8 @@ on:
       - 'Editor/**'
       - 'Tests/**'
       - 'Tools~/compile_check.py'
-      - 'Tools~/sonar-pr-check.mjs'
+      - 'Tools~/sonar-*'
+      - 'Tools~/run-unity-coverage.ps1'
       - '.github/workflows/sonar-static-analysis.yml'
   pull_request:
     paths:
@@ -56,6 +57,7 @@ on:
       - 'Tests/**'
       - 'Tools~/compile_check.py'
       - 'Tools~/sonar-*'
+      - 'Tools~/run-unity-coverage.ps1'
       - '.github/workflows/sonar-*.yml'
   workflow_dispatch:
     inputs:
@@ -88,6 +90,8 @@ jobs:
       matrix: ${{ steps.targets.outputs.matrix }}
       pr-matrix: ${{ steps.targets.outputs.pr-matrix }}
       has-prs: ${{ steps.targets.outputs.has-prs }}
+      has-main: ${{ steps.targets.outputs.has-main }}
+      main-head: ${{ steps.targets.outputs.main-head }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -130,7 +134,13 @@ jobs:
               | jq -c --arg event "$EVENT" --arg this "$THIS_PR" '. + {gate: (if $event == "pull_request" then (.pr == $this) else true end)}'
           }
           open_prs() { gh pr list --state open --limit 100 --json number --jq '.[].number'; }
-          main_entry() { printf '{"key":"%s","label":"main","head":"%s","base":"","pr":"","head_ref":"","same_repo":false,"gate":true}\n' "$SONAR_PROJECT_KEY" "$HEAD_SHA"; }
+          main_entry() {
+            if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+              echo "::error::Main analysis must run from main; a feature branch must not replace the main dashboard." >&2
+              return 1
+            fi
+            printf '{"key":"%s","label":"main","head":"%s","base":"","pr":"","head_ref":"","same_repo":false,"gate":true}\n' "$SONAR_PROJECT_KEY" "$HEAD_SHA"
+          }
           : > targets.jsonl
           case "$EVENT" in
             push) main_entry > targets.jsonl ;;
@@ -153,6 +163,8 @@ jobs:
             echo "matrix=$(cat matrix.json)"
             echo "pr-matrix=$(cat pr-matrix.json)"
             echo "has-prs=$(jq -r 'if (.include | length) > 0 then "true" else "false" end' pr-matrix.json)"
+            echo "has-main=$(jq -r 'any(.include[]; .pr == "")' matrix.json)"
+            echo "main-head=$(jq -r '.include[] | select(.pr == "") | .head' matrix.json)"
           } >> "$GITHUB_OUTPUT"
           echo "Targets:"; jq -r '.include[] | "  \(.label)  \(.key)  gate=\(.gate)"' matrix.json
 
@@ -187,10 +199,60 @@ jobs:
           args=(); for key in "${orphans[@]}"; do args+=(--project "$key"); done
           node Tools~/sonar-pr-check.mjs delete "${args[@]}"
 
+  coverage:
+    name: Unity coverage for main
+    needs: plan
+    if: needs.plan.outputs.has-main == 'true'
+    runs-on: ${{ vars.CI_RUNNER || 'self-hosted' }}
+    timeout-minutes: 40
+    concurrency:
+      group: unity-coverage-main
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      UNITY_PATH: ${{ vars.UNITY_COVERAGE_EDITOR_PATH }}
+      TEMPLATE_PROJECT: ${{ vars.UNITY_COVERAGE_TEMPLATE_PROJECT }}
+      MODEL_CASES: ${{ vars.UNITY_COVERAGE_MODEL_CASES }}
+      SCREEN_INPUT: ${{ vars.UNITY_COVERAGE_SCREEN_INPUT }}
+      POWERSHELL: ${{ vars.UNITY_COVERAGE_POWERSHELL || 'pwsh.exe' }}
+    steps:
+      # Trusted main only. Never execute a fork's Unity code on the licensed host.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ needs.plan.outputs.main-head }}
+          persist-credentials: false
+
+      - name: Execute isolated Unity EditMode coverage on the WSL host
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${UNITY_PATH:?Set UNITY_COVERAGE_EDITOR_PATH for the licensed host}"
+          : "${TEMPLATE_PROJECT:?Set UNITY_COVERAGE_TEMPLATE_PROJECT to the isolated consumer template}"
+          mkdir -p "$RUNNER_TEMP/unity-coverage"
+          UNITY_ARGS=(-Root "$(wslpath -w "$GITHUB_WORKSPACE")"
+            -Output "$(wslpath -w "$RUNNER_TEMP/unity-coverage")"
+            -UnityPath "$UNITY_PATH" -TemplateProject "$TEMPLATE_PROJECT")
+          if [ -n "$MODEL_CASES" ]; then UNITY_ARGS+=(-ModelCases "$MODEL_CASES"); fi
+          if [ -n "$SCREEN_INPUT" ]; then UNITY_ARGS+=(-ScreenInput "$SCREEN_INPUT"); fi
+          # WSL's UNC checkout is remote to Windows; allow this trusted main script
+          # for this PowerShell process without changing the host execution policy.
+          "$POWERSHELL" -NoProfile -ExecutionPolicy Bypass -File "$(wslpath -w "$GITHUB_WORKSPACE/Tools~/run-unity-coverage.ps1")" \
+            "${UNITY_ARGS[@]}"
+
+      - name: Upload measured coverage and source fingerprints
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-main-coverage
+          path: ${{ runner.temp }}/unity-coverage
+          if-no-files-found: error
+          retention-days: 7
+
   scan:
     name: ${{ matrix.label }}
-    needs: plan
-    if: needs.plan.outputs.has-token == 'true'
+    needs: [plan, coverage]
+    if: ${{ !cancelled() && needs.plan.outputs.has-token == 'true' && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -214,6 +276,8 @@ jobs:
             Tools~/compile_check.py
             Tools~/sonar-pr-check.mjs
             Tools~/sonar-pr-check.test.mjs
+            Tools~/sonar-unity-coverage.py
+            Tools~/sonar-unity-coverage.test.py
             .github/workflows/sonar-static-analysis.yml
           sparse-checkout-cone-mode: false
 
@@ -244,6 +308,22 @@ jobs:
 
       - name: Self-test the findings tool
         run: node --test tooling/Tools~/sonar-pr-check.test.mjs
+
+      - name: Self-test measured coverage import
+        run: python3 tooling/Tools~/sonar-unity-coverage.test.py
+
+      - name: Download main coverage
+        if: matrix.pr == ''
+        uses: actions/download-artifact@v4
+        with:
+          name: unity-main-coverage
+          path: ${{ runner.temp }}/unity-coverage
+
+      - name: Verify source fingerprints and normalize Unity coverage
+        if: matrix.pr == ''
+        run: |
+          python3 tooling/Tools~/sonar-unity-coverage.py --root src \
+            --bundle "$RUNNER_TEMP/unity-coverage" --output "$RUNNER_TEMP/unity-coverage/coverage.xml"
 
       - name: Install dotnet-sonarscanner
         run: dotnet tool install --global dotnet-sonarscanner --version 11.3.0
@@ -286,6 +366,10 @@ jobs:
             IGNORE_ARGS="$IGNORE_ARGS /d:sonar.issue.ignore.multicriteria.$id.ruleKey=csharpsquid:${id^^} /d:sonar.issue.ignore.multicriteria.$id.resourceKey=**/*"
           done
           IGNORE_ARGS="$IGNORE_ARGS /d:sonar.issue.ignore.multicriteria.s1215.ruleKey=csharpsquid:S1215 /d:sonar.issue.ignore.multicriteria.s1215.resourceKey=Editor/Bench/**"
+          COVERAGE_ARGS=()
+          if [ -z "$PR" ]; then
+            COVERAGE_ARGS+=("/d:sonar.coverageReportPaths=$RUNNER_TEMP/unity-coverage/coverage.xml")
+          fi
           cd "$out"
           # IGNORE_ARGS is deliberately word-split into flags.
           # shellcheck disable=SC2086
@@ -300,6 +384,7 @@ jobs:
             /d:sonar.cs.file.suffixes=".cs" \
             /d:sonar.issue.ignore.multicriteria="$IGNORE_IDS" \
             $IGNORE_ARGS \
+            "${COVERAGE_ARGS[@]}" \
             /d:sonar.qualitygate.wait="$QG_WAIT"
           dotnet build MeshLab.sln -nologo -v q --no-incremental -p:MeshLabFbx=true
           dotnet sonarscanner end /d:sonar.token="$SONAR_TOKEN" 2>&1 | tee "$RUNNER_TEMP/sonar-end.log"

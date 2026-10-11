@@ -376,6 +376,17 @@ namespace SashaRX.UnityMeshLab
         const int MaxVertexCount = 1_000_000;
         const int MaxIndexCount = 3_000_000;
 
+        internal static Dictionary<string, CollisionMeshEntry> CollisionSources(string fbxPath)
+        {
+            var result = new Dictionary<string, CollisionMeshEntry>(StringComparer.Ordinal);
+            var data = Load(fbxPath);
+            if (data?.collisionEntries == null) return result;
+            foreach (var entry in data.collisionEntries)
+                if (entry != null && !string.IsNullOrEmpty(entry.meshGroupKey))
+                    result[entry.meshGroupKey] = entry;
+            return result;
+        }
+
         /// <summary>
         /// The collision meshes stored next to <paramref name="fbxPath"/>, one list per
         /// entry: a single mesh for a simplified collider, one per hull for a convex

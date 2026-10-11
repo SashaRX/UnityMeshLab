@@ -100,6 +100,25 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void CancellationDuringFarGeometryProbe_ReleasesBothCandidatesAndRetainsSource()
+        {
+            var source = Grid(8); source.name = "CancelledFarGeometry_"+System.Guid.NewGuid().ToString("N");
+            var positions = source.vertices; var indices = source.GetIndices(0); var uv = source.uv2;
+            UvProgress.Begin("Far geometry cancellation regression",cancelable:true);
+            try
+            {
+                Assert.Throws<System.OperationCanceledException>(() => LodBudgetTriangleSimplifier.Simplify(source,
+                    new MeshSimplifier.SimplifySettings { targetRatio=1f/9,targetError=.3f,normalWeight=.5f,uv2Weight=20,uvChannel=1 },
+                    new LodPipelineOps.Options { candidateCount=1,screenBudget=true },out _,out _,
+                    () => UvProgress.Current.detail?.Contains("normal-cost geometry verification") == true));
+                Assert.That(Resources.FindObjectsOfTypeAll<Mesh>().Where(m => m.name == source.name),Is.EqualTo(new[] { source }));
+                CollectionAssert.AreEqual(positions,source.vertices); CollectionAssert.AreEqual(indices,source.GetIndices(0));
+                CollectionAssert.AreEqual(uv,source.uv2);
+            }
+            finally { UvProgress.End(); }
+        }
+
+        [Test]
         public void CancellationBetweenVariants_DestroysRetainedCandidate()
         {
             var source = Grid(4); source.name = "CancelledQuality_"+System.Guid.NewGuid().ToString("N");

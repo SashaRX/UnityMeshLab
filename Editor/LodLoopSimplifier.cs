@@ -29,6 +29,7 @@ namespace SashaRX.UnityMeshLab
             internal float silhouetteMean, silhouetteMax, selectionScore;
             internal List<LodBudgetTriangleSimplifier.CandidateReport> budgetCandidates;
             internal LodAttributeCorrection.Report attributeCorrection;
+            internal LodScreenValidation.Report screenQuality;
         }
         sealed class Candidate
         {

@@ -1,0 +1,931 @@
+{
+  "fixture": "FairStall_Tent_Ranbow",
+  "sourceSha256": "a4aafe5dc9b4bc31200f31d1a0549a93b729aa7d657bcb7501acdd310e616839",
+  "sourceTriangles": 560,
+  "triangles": 62,
+  "verticesBefore": 154,
+  "verticesAfter": 154,
+  "fieldsUnchanged": {
+    "positions": false,
+    "normals": false,
+    "tangents": false,
+    "slots": true,
+    "uvs": false
+  },
+  "before64": {
+    "views": 6,
+    "detailViews": 6,
+    "colorViews": 2,
+    "objectPixels": 64,
+    "resolution": 72,
+    "detailLoss": 0.008928571827709675,
+    "colorLoss": 1.0,
+    "detailAccepted": true,
+    "colorAccepted": false,
+    "normalsEvaluated": true,
+    "rgbaEvaluated": true,
+    "silhouetteMean": 0.07748622447252274,
+    "silhouetteMax": 0.16323165595531464,
+    "normalRms": 43.54130554199219,
+    "rgbaRms": 0.03225806728005409,
+    "rgbaChannelRms": {
+      "x": 0.050805214792490005,
+      "y": 0.02652057632803917,
+      "z": 0.03421281278133392,
+      "w": 0.0
+    },
+    "rgbaViewRms": [
+      0.03225806728005409,
+      0.006788983009755611,
+      0.0271652452647686,
+      0.008585159666836262,
+      0.008435985073447227,
+      0.020311331376433372
+    ],
+    "rgbaChannelViewRms": [
+      {
+        "x": 0.050805214792490005,
+        "y": 0.02629855088889599,
+        "z": 0.029825283214449883,
+        "w": 0.0
+      },
+      {
+        "x": 0.005507555324584246,
+        "y": 0.009594393894076347,
+        "z": 0.00787245761603117,
+        "w": 0.0
+      },
+      {
+        "x": 0.032832071185112,
+        "y": 0.02652057632803917,
+        "z": 0.03421281278133392,
+        "w": 0.0
+      },
+      {
+        "x": 0.010426524095237255,
+        "y": 0.011393636465072632,
+        "z": 0.007502834778279066,
+        "w": 0.0
+      },
+      {
+        "x": 0.009102566167712212,
+        "y": 0.009729837998747826,
+        "z": 0.010350695811212063,
+        "w": 0.0
+      },
+      {
+        "x": 0.03265909105539322,
+        "y": 0.017621809616684914,
+        "z": 0.01652442291378975,
+        "w": 0.0
+      }
+    ],
+    "headlightRms": 0.13581117987632751,
+    "colorBoundaryMean": 0.44086021184921265,
+    "colorBoundaryViewLoss": [
+      0.5483871102333069,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.3333333432674408
+    ],
+    "normalViewRms": [
+      41.06999206542969,
+      35.39237594604492,
+      43.54130554199219,
+      34.31654739379883,
+      34.41410827636719,
+      35.3907585144043
+    ],
+    "headlightViewRms": [
+      0.13581117987632751,
+      0.014297758229076862,
+      0.05481752008199692,
+      0.05059787258505821,
+      0.03841301053762436,
+      0.07640059292316437
+    ]
+  },
+  "after64": {
+    "views": 6,
+    "detailViews": 6,
+    "colorViews": 2,
+    "objectPixels": 64,
+    "resolution": 72,
+    "detailLoss": 0.008928571827709675,
+    "colorLoss": 1.0,
+    "detailAccepted": true,
+    "colorAccepted": false,
+    "normalsEvaluated": true,
+    "rgbaEvaluated": true,
+    "silhouetteMean": 0.07748622447252274,
+    "silhouetteMax": 0.16323165595531464,
+    "normalRms": 48.26146697998047,
+    "rgbaRms": 0.032246172428131104,
+    "rgbaChannelRms": {
+      "x": 0.05059463530778885,
+      "y": 0.026525411754846573,
+      "z": 0.03421281278133392,
+      "w": 0.0
+    },
+    "rgbaViewRms": [
+      0.032246172428131104,
+      0.006788983009755611,
+      0.0271652452647686,
+      0.008585159666836262,
+      0.008435985073447227,
+      0.020545881241559982
+    ],
+    "rgbaChannelViewRms": [
+      {
+        "x": 0.05059463530778885,
+        "y": 0.026525411754846573,
+        "z": 0.029930708929896355,
+        "w": 0.0
+      },
+      {
+        "x": 0.005507555324584246,
+        "y": 0.009594393894076347,
+        "z": 0.00787245761603117,
+        "w": 0.0
+      },
+      {
+        "x": 0.032832071185112,
+        "y": 0.02652057632803917,
+        "z": 0.03421281278133392,
+        "w": 0.0
+      },
+      {
+        "x": 0.010426524095237255,
+        "y": 0.011393636465072632,
+        "z": 0.007502834778279066,
+        "w": 0.0
+      },
+      {
+        "x": 0.009102566167712212,
+        "y": 0.009729837998747826,
+        "z": 0.010350695811212063,
+        "w": 0.0
+      },
+      {
+        "x": 0.03269027918577194,
+        "y": 0.01849326863884926,
+        "z": 0.016669664531946182,
+        "w": 0.0
+      }
+    ],
+    "headlightRms": 0.14146381616592407,
+    "colorBoundaryMean": 0.39247310161590576,
+    "colorBoundaryViewLoss": [
+      0.4516128897666931,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.3333333432674408
+    ],
+    "normalViewRms": [
+      48.26146697998047,
+      35.39237594604492,
+      43.54130554199219,
+      34.31654739379883,
+      34.41410827636719,
+      42.6766471862793
+    ],
+    "headlightViewRms": [
+      0.14146381616592407,
+      0.014297758229076862,
+      0.05481752008199692,
+      0.05059787258505821,
+      0.03841301053762436,
+      0.06948722153902054
+    ]
+  },
+  "polygonCorrection": {
+    "accepted": true,
+    "samples": 13764,
+    "trials": 156,
+    "verticesBefore": 154,
+    "verticesAfter": 154,
+    "polygonGroups": 38,
+    "activePolygonGroups": 26,
+    "viewColorRmsTolerance": 0.003921568859368563,
+    "boundaryBefore": 0.5008960962295532,
+    "boundaryAfter": 0.44086021184921265,
+    "worstBefore": 1.0,
+    "worstAfter": 1.0,
+    "rgbaBefore": 0.03251459822058678,
+    "rgbaAfter": 0.03225806728005409,
+    "viewsBefore": [
+      0.6129032373428345,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.3888888955116272
+    ],
+    "viewsAfter": [
+      0.5483871102333069,
+      0.0,
+      0.0,
+      0.0,
+      0.0,
+      0.3333333432674408
+    ],
+    "cornerSharing": {
+      "verticesBefore": 0,
+      "verticesAfter": 0,
+      "trials": 0,
+      "colorTolerance": 0.0,
+      "rgbaBefore": 0.0,
+      "rgbaAfter": 0.0,
+      "boundaryBefore": 0.0,
+      "boundaryAfter": 0.0
+    }
+  },
+  "gpu64": [
+    {
+      "view": "front",
+      "before": {
+        "coverageError": 0.021572580561041832,
+        "rgbaRms": 0.008800249546766281,
+        "rgbaChannelRms": [
+          0.010318486019968987,
+          0.00950851384550333,
+          0.010625186376273632,
+          0.0
+        ],
+        "shadingRms": 0.01404462568461895
+      },
+      "after": {
+        "coverageError": 0.021572580561041832,
+        "rgbaRms": 0.008714363910257816,
+        "rgbaChannelRms": [
+          0.010264170356094837,
+          0.00928121991455555,
+          0.01059558056294918,
+          0.0
+        ],
+        "shadingRms": 0.01407008059322834
+      }
+    },
+    {
+      "view": "oblique",
+      "before": {
+        "coverageError": 0.04756629467010498,
+        "rgbaRms": 0.013156222179532051,
+        "rgbaChannelRms": [
+          0.019419973716139793,
+          0.012751772068440914,
+          0.012353206053376198,
+          0.0
+        ],
+        "shadingRms": 0.03258658945560455
+      },
+      "after": {
+        "coverageError": 0.04756629467010498,
+        "rgbaRms": 0.0133415712043643,
+        "rgbaChannelRms": [
+          0.01967584155499935,
+          0.012720469385385513,
+          0.012768750078976154,
+          0.0
+        ],
+        "shadingRms": 0.03166978806257248
+      }
+    }
+  ],
+  "paintGpu64": [
+    {
+      "view": "paint-edge",
+      "variant": "paint-before",
+      "rgbaRms": 0.030410146340727806,
+      "rgbaChannelRms": [
+        0.04814977943897247,
+        0.02438986487686634,
+        0.028032856062054634,
+        0.0
+      ],
+      "coverageError": 0.1580740064382553
+    },
+    {
+      "view": "paint-edge",
+      "variant": "far-lod2",
+      "rgbaRms": 0.030563626438379288,
+      "rgbaChannelRms": [
+        0.0480692982673645,
+        0.024940328672528267,
+        0.028352485969662666,
+        0.0
+      ],
+      "coverageError": 0.1580740064382553
+    },
+    {
+      "view": "paint-angle",
+      "variant": "paint-before",
+      "rgbaRms": 0.020036816596984863,
+      "rgbaChannelRms": [
+        0.033341195434331894,
+        0.016442300751805305,
+        0.014963671565055847,
+        0.0
+      ],
+      "coverageError": 0.08656195551156998
+    },
+    {
+      "view": "paint-angle",
+      "variant": "far-lod2",
+      "rgbaRms": 0.020266661420464516,
+      "rgbaChannelRms": [
+        0.03340943902730942,
+        0.017295824363827705,
+        0.015086881816387177,
+        0.0
+      ],
+      "coverageError": 0.08656195551156998
+    },
+    {
+      "view": "front",
+      "variant": "paint-before",
+      "rgbaRms": 0.008800249546766281,
+      "rgbaChannelRms": [
+        0.010318486019968987,
+        0.00950851384550333,
+        0.010625186376273632,
+        0.0
+      ],
+      "coverageError": 0.021572580561041832
+    },
+    {
+      "view": "front",
+      "variant": "far-lod2",
+      "rgbaRms": 0.008714363910257816,
+      "rgbaChannelRms": [
+        0.010264170356094837,
+        0.00928121991455555,
+        0.01059558056294918,
+        0.0
+      ],
+      "coverageError": 0.021572580561041832
+    },
+    {
+      "view": "oblique",
+      "variant": "paint-before",
+      "rgbaRms": 0.013156222179532051,
+      "rgbaChannelRms": [
+        0.019419973716139793,
+        0.012751772068440914,
+        0.012353206053376198,
+        0.0
+      ],
+      "coverageError": 0.04756629467010498
+    },
+    {
+      "view": "oblique",
+      "variant": "far-lod2",
+      "rgbaRms": 0.0133415712043643,
+      "rgbaChannelRms": [
+        0.01967584155499935,
+        0.012720469385385513,
+        0.012768750078976154,
+        0.0
+      ],
+      "coverageError": 0.04756629467010498
+    }
+  ],
+  "tests": {
+    "total": "249",
+    "passed": "249",
+    "failed": "0",
+    "skipped": "0",
+    "duration": "638,883565"
+  },
+  "raw": "_results~\\lod-paint-geometry-20261010\\final",
+  "baselineRaw": "_results~\\lod-tent-paint-20261010\\final-complete",
+  "limits": "Diagnostic vertex RGBA; original materials/assembly/transition and semantic paint labels unverified. CPU guide acceptance remains explicit. UV2 metrics are coordinate correspondence, not an actual baked-atlas irradiance test. One view's UV2 RMS may increase by at most 0.00002.",
+  "retriangulation": {
+    "accepted": true,
+    "pairs": 13,
+    "trials": 15,
+    "flips": 1,
+    "verticesBefore": 154,
+    "verticesAfter": 154,
+    "intersectionRejected": 8,
+    "screenRejected": 12,
+    "uvRejected": 2,
+    "boundaryBefore": 0.44086021184921265,
+    "boundaryAfter": 0.39247310161590576,
+    "uvBefore": 0.01597752794623375,
+    "uvAfter": 0.014187640510499477,
+    "distanceBefore": 0.004332191776484251,
+    "distanceAfter": 0.004331313073635101,
+    "uvViewRmsTolerance": 1.9999999494757503e-05,
+    "uvViewsBefore": [
+      0.01930931769311428,
+      0.0111630754545331,
+      0.09754229336977005,
+      0.011814668774604797,
+      0.010308592580258846,
+      0.015455120243132114,
+      0.023719942197203636,
+      0.011529412120580673,
+      0.3423304557800293,
+      0.012940052896738052,
+      0.01175651140511036,
+      0.014013184234499931
+    ],
+    "uvViewsAfter": [
+      0.016604728996753693,
+      0.00809404719620943,
+      0.09684795141220093,
+      0.011537563987076283,
+      0.008681181818246841,
+      0.01169400755316019,
+      0.020714236423373222,
+      0.00864360760897398,
+      0.34234994649887085,
+      0.011967083439230919,
+      0.010002737864851952,
+      0.01072161179035902
+    ],
+    "probes": [
+      {
+        "a": 3,
+        "b": 6,
+        "method": 0,
+        "refusal": "screen",
+        "boundary": 0.44086021184921265,
+        "uv": 0.0,
+        "distance": 0.0,
+        "maximumDistance": 0.0,
+        "detail": 0.008928571827709675,
+        "rgba": 0.03241901844739914,
+        "outlineMean": 0.07748622447252274,
+        "outlineMax": 0.16323165595531464,
+        "boundaries": [
+          0.5483871102333069,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.3333333432674408
+        ],
+        "uvViews": []
+      },
+      {
+        "a": 3,
+        "b": 6,
+        "method": 1,
+        "refusal": "screen",
+        "boundary": 0.44086021184921265,
+        "uv": 0.0,
+        "distance": 0.0,
+        "maximumDistance": 0.0,
+        "detail": 0.008928571827709675,
+        "rgba": 0.03232158347964287,
+        "outlineMean": 0.07748622447252274,
+        "outlineMax": 0.16323165595531464,
+        "boundaries": [
+          0.5483871102333069,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.3333333432674408
+        ],
+        "uvViews": []
+      },
+      {
+        "a": 3,
+        "b": 6,
+        "method": 2,
+        "refusal": "screen",
+        "boundary": 0.44086021184921265,
+        "uv": 0.0,
+        "distance": 0.0,
+        "maximumDistance": 0.0,
+        "detail": 0.008928571827709675,
+        "rgba": 0.03232158347964287,
+        "outlineMean": 0.07748622447252274,
+        "outlineMax": 0.16323165595531464,
+        "boundaries": [
+          0.5483871102333069,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.3333333432674408
+        ],
+        "uvViews": []
+      },
+      {
+        "a": 5,
+        "b": 7,
+        "method": 0,
+        "refusal": "",
+        "boundary": 0.39247310161590576,
+        "uv": 0.014187640510499477,
+        "distance": 0.004331313073635101,
+        "maximumDistance": 0.03038673847913742,
+        "detail": 0.008928571827709675,
+        "rgba": 0.032246172428131104,
+        "outlineMean": 0.07748622447252274,
+        "outlineMax": 0.16323165595531464,
+        "boundaries": [
+          0.4516128897666931,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.3333333432674408
+        ],
+        "uvViews": [
+          0.016604728996753693,
+          0.00809404719620943,
+          0.09684795141220093,
+          0.011537563987076283,
+          0.008681181818246841,
+          0.01169400755316019,
+          0.020714236423373222,
+          0.00864360760897398,
+          0.34234994649887085,
+          0.011967083439230919,
+          0.010002737864851952,
+          0.01072161179035902
+        ]
+      },
+      {
+        "a": 5,
+        "b": 7,
+        "method": 1,
+        "refusal": "screen",
+        "boundary": 0.37186378240585327,
+        "uv": 0.0,
+        "distance": 0.0,
+        "maximumDistance": 0.0,
+        "detail": 0.008928571827709675,
+        "rgba": 0.03472710773348808,
+        "outlineMean": 0.07748622447252274,
+        "outlineMax": 0.16323165595531464,
+        "boundaries": [
+          0.35483869910240173,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.3888888955116272
+        ],
+        "uvViews": []
+      },
+      {
+        "a": 5,
+        "b": 7,
+        "method": 2,
+        "refusal": "screen",
+        "boundary": 0.35573476552963257,
+        "uv": 0.0,
+        "distance": 0.0,
+        "maximumDistance": 0.0,
+        "detail": 0.008928571827709675,
+        "rgba": 0.03591097146272659,
+        "outlineMean": 0.07748622447252274,
+        "outlineMax": 0.16323165595531464,
+        "boundaries": [
+          0.32258063554763794,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.3888888955116272
+        ],
+        "uvViews": []
+      },
+      {
+        "a": 3,
+        "b": 6,
+        "method": 0,
+        "refusal": "screen",
+        "boundary": 0.39247310161590576,
+        "uv": 0.0,
+        "distance": 0.0,
+        "maximumDistance": 0.0,
+        "detail": 0.008928571827709675,
+        "rgba": 0.032409388571977615,
+        "outlineMean": 0.07748622447252274,
+        "outlineMax": 0.16323165595531464,
+        "boundaries": [
+          0.4516128897666931,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.3333333432674408
+        ],
+        "uvViews": []
+      },
+      {
+        "a": 3,
+        "b": 6,
+        "method": 1,
+        "refusal": "screen",
+        "boundary": 0.39247310161590576,
+        "uv": 0.0,
+        "distance": 0.0,
+        "maximumDistance": 0.0,
+        "detail": 0.008928571827709675,
+        "rgba": 0.0323110893368721,
+        "outlineMean": 0.07748622447252274,
+        "outlineMax": 0.16323165595531464,
+        "boundaries": [
+          0.4516128897666931,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.3333333432674408
+        ],
+        "uvViews": []
+      },
+      {
+        "a": 3,
+        "b": 6,
+        "method": 2,
+        "refusal": "screen",
+        "boundary": 0.39247310161590576,
+        "uv": 0.0,
+        "distance": 0.0,
+        "maximumDistance": 0.0,
+        "detail": 0.008928571827709675,
+        "rgba": 0.0323110893368721,
+        "outlineMean": 0.07748622447252274,
+        "outlineMax": 0.16323165595531464,
+        "boundaries": [
+          0.4516128897666931,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.3333333432674408
+        ],
+        "uvViews": []
+      },
+      {
+        "a": 34,
+        "b": 35,
+        "method": 0,
+        "refusal": "screen",
+        "boundary": 0.39247310161590576,
+        "uv": 0.0,
+        "distance": 0.0,
+        "maximumDistance": 0.0,
+        "detail": 0.008928571827709675,
+        "rgba": 0.0319773405790329,
+        "outlineMean": 0.07748622447252274,
+        "outlineMax": 0.16323165595531464,
+        "boundaries": [
+          0.4516128897666931,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.3333333432674408
+        ],
+        "uvViews": []
+      },
+      {
+        "a": 34,
+        "b": 35,
+        "method": 1,
+        "refusal": "surface/UV",
+        "boundary": 0.36021506786346436,
+        "uv": 0.014223466627299786,
+        "distance": 0.004330560099333525,
+        "maximumDistance": 0.03038673847913742,
+        "detail": 0.008928571827709675,
+        "rgba": 0.030398163944482803,
+        "outlineMean": 0.07748622447252274,
+        "outlineMax": 0.16323165595531464,
+        "boundaries": [
+          0.3870967626571655,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.3333333432674408
+        ],
+        "uvViews": [
+          0.016477029770612717,
+          0.008086835034191608,
+          0.0968172550201416,
+          0.011618858203291893,
+          0.008743392303586006,
+          0.011584720574319363,
+          0.020553313195705414,
+          0.00870035495609045,
+          0.34237635135650635,
+          0.011931698769330978,
+          0.010115382261574268,
+          0.010657742619514465
+        ]
+      },
+      {
+        "a": 34,
+        "b": 35,
+        "method": 2,
+        "refusal": "surface/UV",
+        "boundary": 0.36021506786346436,
+        "uv": 0.014223466627299786,
+        "distance": 0.004330560099333525,
+        "maximumDistance": 0.03038673847913742,
+        "detail": 0.008928571827709675,
+        "rgba": 0.030398163944482803,
+        "outlineMean": 0.07748622447252274,
+        "outlineMax": 0.16323165595531464,
+        "boundaries": [
+          0.3870967626571655,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.3333333432674408
+        ],
+        "uvViews": [
+          0.016477029770612717,
+          0.008086835034191608,
+          0.0968172550201416,
+          0.011618858203291893,
+          0.008743392303586006,
+          0.011584720574319363,
+          0.020553313195705414,
+          0.00870035495609045,
+          0.34237635135650635,
+          0.011931698769330978,
+          0.010115382261574268,
+          0.010657742619514465
+        ]
+      },
+      {
+        "a": 35,
+        "b": 36,
+        "method": 0,
+        "refusal": "screen",
+        "boundary": 0.42473119497299194,
+        "uv": 0.0,
+        "distance": 0.0,
+        "maximumDistance": 0.0,
+        "detail": 0.008928571827709675,
+        "rgba": 0.03192977234721184,
+        "outlineMean": 0.07748622447252274,
+        "outlineMax": 0.16323165595531464,
+        "boundaries": [
+          0.5161290168762207,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.3333333432674408
+        ],
+        "uvViews": []
+      },
+      {
+        "a": 35,
+        "b": 36,
+        "method": 1,
+        "refusal": "screen",
+        "boundary": 0.44086021184921265,
+        "uv": 0.0,
+        "distance": 0.0,
+        "maximumDistance": 0.0,
+        "detail": 0.008928571827709675,
+        "rgba": 0.0324103981256485,
+        "outlineMean": 0.07748622447252274,
+        "outlineMax": 0.16323165595531464,
+        "boundaries": [
+          0.5483871102333069,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.3333333432674408
+        ],
+        "uvViews": []
+      },
+      {
+        "a": 35,
+        "b": 36,
+        "method": 2,
+        "refusal": "screen",
+        "boundary": 0.44086021184921265,
+        "uv": 0.0,
+        "distance": 0.0,
+        "maximumDistance": 0.0,
+        "detail": 0.008928571827709675,
+        "rgba": 0.03234293311834335,
+        "outlineMean": 0.07748622447252274,
+        "outlineMax": 0.16323165595531464,
+        "boundaries": [
+          0.5483871102333069,
+          0.0,
+          0.0,
+          0.0,
+          0.0,
+          0.3333333432674408
+        ],
+        "uvViews": []
+      }
+    ]
+  },
+  "geometricCornersRetained": true,
+  "benchRegression": {
+    "sourceSha256": "313fe7429853f372f1b01a15c47145f266fc1c1e39d1e80c42a8563179077471",
+    "triangles": 1032,
+    "vertices": 2251,
+    "stageBypassed": true,
+    "gpuFieldsIdentical": {
+      "bench-colored-source-front-color.rgba": true,
+      "bench-colored-source-front-coverage.rgba": true,
+      "bench-colored-source-front-shaded.rgba": true,
+      "bench-colored-source-oblique-color.rgba": true,
+      "bench-colored-source-oblique-coverage.rgba": true,
+      "bench-colored-source-oblique-shaded.rgba": true,
+      "bench-colored-native-lod1-front-color.rgba": true,
+      "bench-colored-native-lod1-front-coverage.rgba": true,
+      "bench-colored-native-lod1-front-shaded.rgba": true,
+      "bench-colored-native-lod1-oblique-color.rgba": true,
+      "bench-colored-native-lod1-oblique-coverage.rgba": true,
+      "bench-colored-native-lod1-oblique-shaded.rgba": true,
+      "bench-colored-native-lod2-front-color.rgba": true,
+      "bench-colored-native-lod2-front-coverage.rgba": true,
+      "bench-colored-native-lod2-front-shaded.rgba": true,
+      "bench-colored-native-lod2-oblique-color.rgba": true,
+      "bench-colored-native-lod2-oblique-coverage.rgba": true,
+      "bench-colored-native-lod2-oblique-shaded.rgba": true,
+      "bench-colored-far-lod1-front-color.rgba": true,
+      "bench-colored-far-lod1-front-coverage.rgba": true,
+      "bench-colored-far-lod1-front-shaded.rgba": true,
+      "bench-colored-far-lod1-oblique-color.rgba": true,
+      "bench-colored-far-lod1-oblique-coverage.rgba": true,
+      "bench-colored-far-lod1-oblique-shaded.rgba": true,
+      "bench-colored-far-lod2-front-color.rgba": true,
+      "bench-colored-far-lod2-front-coverage.rgba": true,
+      "bench-colored-far-lod2-front-shaded.rgba": true,
+      "bench-colored-far-lod2-oblique-color.rgba": true,
+      "bench-colored-far-lod2-oblique-coverage.rgba": true,
+      "bench-colored-far-lod2-oblique-shaded.rgba": true
+    },
+    "gpu64": [
+      {
+        "view": "front",
+        "before": {
+          "coverageError": 0.00803767703473568,
+          "rgbaRms": 0.013564049266278744,
+          "rgbaChannelRms": [
+            0.027128098532557487,
+            6.244144969969057e-07,
+            9.365192568111524e-07,
+            0.0
+          ],
+          "shadingRms": 0.02589351497590542
+        },
+        "after": {
+          "coverageError": 0.00803767703473568,
+          "rgbaRms": 0.013564049266278744,
+          "rgbaChannelRms": [
+            0.027128098532557487,
+            6.244144969969057e-07,
+            9.365192568111524e-07,
+            0.0
+          ],
+          "shadingRms": 0.02589351497590542
+        }
+      },
+      {
+        "view": "oblique",
+        "before": {
+          "coverageError": 0.03183440864086151,
+          "rgbaRms": 0.014207420870661736,
+          "rgbaChannelRms": [
+            0.02841484174132347,
+            3.872713023156393e-06,
+            5.808652986161178e-06,
+            0.0
+          ],
+          "shadingRms": 0.024989722296595573
+        },
+        "after": {
+          "coverageError": 0.03183440864086151,
+          "rgbaRms": 0.014207420870661736,
+          "rgbaChannelRms": [
+            0.02841484174132347,
+            3.872713023156393e-06,
+            5.808652986161178e-06,
+            0.0
+          ],
+          "shadingRms": 0.024989722296595573
+        }
+      }
+    ],
+    "baselineRaw": "_results~\\lod-corner-sharing-20261010\\final-exact"
+  }
+}

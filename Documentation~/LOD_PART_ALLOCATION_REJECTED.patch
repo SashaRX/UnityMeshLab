@@ -1,0 +1,252 @@
+diff --git a/Editor/LodBudgetTriangleSimplifier.cs b/Editor/LodBudgetTriangleSimplifier.cs
+index 5c29ae9..c43c84f 100644
+--- a/Editor/LodBudgetTriangleSimplifier.cs
++++ b/Editor/LodBudgetTriangleSimplifier.cs
+@@ -403,6 +403,44 @@ namespace SashaRX.UnityMeshLab
+                     }
+                     finally { if (gradient) UnityEngine.Object.DestroyImmediate(gradient); }
+                 }
++                if (options.screenBudget && options.correctSurfaceAttributes && !settings.lockBorder && screenPixels <= 128 &&
++                    target <= 512 && NeedsSilhouetteRefit(bestScreen))
++                {
++                    var allocated = LodSmallParts.AllocateScreenBudget(source,target,screenPixels,settings,out string allocationNote,cancelled);
++                    try
++                    {
++                        if (allocated)
++                        {
++                            var verification = screen.WithAllSides(source,cancelled);
++                            var before = verification.Measure(best.simplifiedMesh,cancelled);
++                            var measured = LodSurfaceValidation.MeasureMeshes(source,allocated,settings,cancelled,ignoreDegenerateFaces:true);
++                            var fitted = LodAttributeCorrection.Correct(source,allocated,settings,options,out var allocationCorrection,
++                                out var fittedMetrics,cancelled,measured,verification);
++                            if (fitted)
++                            {
++                                UnityEngine.Object.DestroyImmediate(allocated); allocated = fitted; measured = fittedMetrics;
++                            }
++                            var all = verification.Measure(allocated,cancelled); var local = screen.Measure(allocated,cancelled);
++                            float score = CandidateScore(measured,Outline(null,allocated,local,cancelled),local,settings,options);
++                            bool accept = score < bestScore && allocated.vertexCount <= best.simplifiedMesh.vertexCount &&
++                                SilhouetteFieldsDoNotWorsen(all,before) && all.ColorsDoNotWorsen(before) &&
++                                SilhouetteFieldsDoNotWorsen(local,bestScreen) && SilhouetteSurfaceDoesNotWorsen(measured,bestMetrics);
++                            reports.Add(new CandidateReport { variant = count+20,name = "source component allocation",triangles = LodMeshData.TriangleCount(allocated),
++                                score = score,distanceRms = measured.DistanceRms,normalRms = measured.NormalRms,colorRms = Maximum(measured.ColorRms),
++                                uvRms = measured.UvRms,silhouetteMean = local.silhouetteMean,silhouetteMax = local.silhouetteMax,screenQuality = all });
++                            shapeNote += $" {allocationNote} Final twelve-view/surface acceptance: {(accept ? "accepted" : "rejected")}.";
++                            if (accept)
++                            {
++                                UnityEngine.Object.DestroyImmediate(best.simplifiedMesh); best.simplifiedMesh = allocated; allocated = null;
++                                best.simplifiedTriCount = LodMeshData.TriangleCount(best.simplifiedMesh);
++                                bestMetrics = measured; bestScreen = local; bestSilhouette = Outline(null,best.simplifiedMesh,local,cancelled);
++                                bestScore = score; best.resultError = measured.weightedError; correction = allocationCorrection; selected = count+20;
++                            }
++                        }
++                        else if (allocationNote != null) shapeNote += " "+allocationNote;
++                    }
++                    finally { if (allocated) UnityEngine.Object.DestroyImmediate(allocated); }
++                }
+                 if (options.screenBudget && options.correctSurfaceAttributes && options.bakedLightmapFields != null &&
+                     LodMeshData.TriangleCount(best.simplifiedMesh) <= 512 && screenPixels == 64)
+                 {
+diff --git a/Editor/LodSmallParts.cs b/Editor/LodSmallParts.cs
+index 5c3134c..1f18e59 100644
+--- a/Editor/LodSmallParts.cs
++++ b/Editor/LodSmallParts.cs
+@@ -102,6 +102,14 @@ namespace SashaRX.UnityMeshLab
+                         return id;
+                     }).ToArray();
+             }
++            return AnalyzeSource(mesh,source,raw && !nativeQuads ? "Source polygon control points" : "Exact position connectivity: "+(reason ?? "native quads"),cancelled);
++        }
++
++        internal static Analysis AnalyzeTriangles(Mesh mesh,Func<bool> cancelled = null)
++            => AnalyzeSource(mesh,TriangleSource(mesh),"Exact position connectivity",cancelled);
++
++        static Analysis AnalyzeSource(Mesh mesh,LodSourceTopology source,string connectivity,Func<bool> cancelled)
++        {
+             var owners = new Dictionary<int,int>();
+             int[] roots = Enumerable.Range(0,source.faces.Count).ToArray();
+             int Root(int i) { while (roots[i] != i) { roots[i] = roots[roots[i]]; i = roots[i]; } return i; }
+@@ -135,7 +143,7 @@ namespace SashaRX.UnityMeshLab
+                 parts.Add(part);
+             }
+             var result = new Analysis { source = source, parts = parts.ToArray(), area = parts.Sum(p => p.area),
+-                triangles = parts.Sum(p => p.triangles), connectivity = raw && !nativeQuads ? "Source polygon control points" : "Exact position connectivity: "+(reason ?? "native quads"),
++                triangles = parts.Sum(p => p.triangles), connectivity = connectivity,
+                 indices = Enumerable.Range(0,mesh.subMeshCount).Select(s => LodMeshData.Triangles(mesh,s)).ToArray() };
+             if (parts.Count == 0) return result;
+             var overall = parts[0].bounds;
+@@ -153,6 +161,122 @@ namespace SashaRX.UnityMeshLab
+             return result;
+         }
+ 
++        sealed class BudgetChoice
++        {
++            internal Mesh mesh;
++            internal int triangles;
++            internal float cost;
++        }
++
++        // One source-derived alternative to uniform submesh reduction. A small
++        // dynamic program spends the same total budget on disconnected parts,
++        // using each part's screen footprint and silhouette rather than its
++        // tessellation density. Only sub-two-pixel parts may disappear entirely.
++        internal static Mesh AllocateScreenBudget(Mesh source,int budget,int pixels,MeshSimplifier.SimplifySettings settings,
++            out string note,Func<bool> cancelled = null)
++        {
++            note = null;
++            if (!source || source.vertexCount == 0 || budget < 1 || budget > 512 || pixels < 1 || pixels > 128 || settings.lockBorder ||
++                source.blendShapeCount > 0 || source.HasVertexAttribute(VertexAttribute.BlendWeight) || source.bindposes.Length > 0) return null;
++            var analysis = AnalyzeTriangles(source,cancelled);
++            if (analysis.parts.Length < 2 || analysis.parts.Length > 64) return null;
++            float extent = Mathf.Max(source.bounds.size.x,Mathf.Max(source.bounds.size.y,source.bounds.size.z));
++            var choices = new List<BudgetChoice>[analysis.parts.Length];
++            var owned = new List<Mesh>();
++            try
++            {
++                for (int p = 0; p < choices.Length; p++)
++                {
++                    if (cancelled?.Invoke() == true) throw new OperationCanceledException();
++                    var part = analysis.parts[p];
++                    var faces = part.faces.Select(f => analysis.source.faces[f]).ToList();
++                    var mesh = analysis.source.data.CreateMesh(faces,out _,ensureChannels:false); owned.Add(mesh);
++                    float diameter = Mathf.Max(part.bounds.size.x,Mathf.Max(part.bounds.size.y,part.bounds.size.z));
++                    int footprint = Mathf.Clamp(Mathf.CeilToInt(diameter/Mathf.Max(extent,1e-8f)*pixels),1,pixels);
++                    float weight = Mathf.Pow((float)footprint/pixels,2);
++                    var guide = new LodScreenValidation(mesh,false,cancelled,resolution:Mathf.Max(32,footprint+8),objectPixels:footprint,measureFields:true,allSides:true);
++                    choices[p] = new List<BudgetChoice>();
++                    if (diameter/Mathf.Max(extent,1e-8f)*pixels <= 2)
++                        choices[p].Add(new BudgetChoice { cost = weight*2 });
++                    foreach (int count in new[] { 2,4,6,8,12,16 })
++                    {
++                        if (count > budget) break;
++                        var attempt = settings; attempt.targetRatio = Mathf.Min(1,(float)count/part.triangles);
++                        attempt.targetError = 1; attempt.allowAttributeSeamCollapse = true;
++                        attempt.preserveHardEdges = attempt.nativeHardEdgeConstraints = false;
++                        attempt.normalWeight = attempt.uv2Weight = attempt.colorWeight = 0;
++                        var candidate = MeshSimplifier.Simplify(mesh,attempt);
++                        if (candidate.simplifiedMesh) owned.Add(candidate.simplifiedMesh);
++                        if (!candidate.ok || candidate.simplifiedTriCount < 1 || candidate.simplifiedTriCount > budget ||
++                            choices[p].Any(c => c.triangles == candidate.simplifiedTriCount)) continue;
++                        var measured = guide.Measure(candidate.simplifiedMesh,cancelled);
++                        choices[p].Add(new BudgetChoice { mesh = candidate.simplifiedMesh,triangles = candidate.simplifiedTriCount,
++                            cost = weight*(measured.silhouetteMean+measured.silhouetteMax) });
++                    }
++                    if (choices[p].Count == 0) { note = "Component floor exceeds the available budget; retained global candidate."; return null; }
++                }
++                var costs = new float[budget+1]; for (int b = 1; b <= budget; b++) costs[b] = float.PositiveInfinity;
++                var trace = new int[choices.Length,budget+1];
++                for (int p = 0; p < choices.Length; p++)
++                {
++                    if (cancelled?.Invoke() == true) throw new OperationCanceledException();
++                    var next = Enumerable.Repeat(float.PositiveInfinity,budget+1).ToArray();
++                    for (int b = 0; b <= budget; b++) trace[p,b] = -1;
++                    for (int b = 0; b <= budget; b++)
++                        for (int c = 0; c < choices[p].Count; c++)
++                        {
++                            var choice = choices[p][c]; int n = b+choice.triangles;
++                            if (n > budget || costs[b]+choice.cost >= next[n]) continue;
++                            next[n] = costs[b]+choice.cost; trace[p,n] = c;
++                        }
++                    costs = next;
++                }
++                int total = 0;
++                for (int b = 1; b <= budget; b++) if (costs[b] <= costs[total]) total = b;
++                if (float.IsInfinity(costs[total])) { note = "Combined component floors exceed the budget; retained global candidate."; return null; }
++                var selected = new BudgetChoice[choices.Length]; int remaining = total;
++                for (int p = choices.Length-1; p >= 0; p--)
++                {
++                    selected[p] = choices[p][trace[p,remaining]]; remaining -= selected[p].triangles;
++                }
++                // Assemble without welding separate components or changing slots.
++                var positions = new List<Vector3>(); var normals = new List<Vector3>(); var tangents = new List<Vector4>(); var colors = new List<Color>();
++                var uvs = new List<Vector4>[8]; for (int ch = 0; ch < 8; ch++) uvs[ch] = new List<Vector4>();
++                var slots = new List<int>[source.subMeshCount]; for (int s = 0; s < slots.Length; s++) slots[s] = new List<int>();
++                foreach (var choice in selected)
++                {
++                    if (!choice.mesh) continue;
++                    var data = new LodMeshData(choice.mesh); int offset = positions.Count;
++                    positions.AddRange(data.positions); normals.AddRange(data.normals); tangents.AddRange(data.tangents); colors.AddRange(data.colors);
++                    for (int ch = 0; ch < 8; ch++) if (data.uvs[ch] != null) uvs[ch].AddRange(data.uvs[ch]);
++                    for (int s = 0; s < slots.Length; s++) slots[s].AddRange(LodMeshData.Triangles(choice.mesh,s).Select(v => v+offset));
++                }
++                if (positions.Count == 0) return null;
++                var result = new Mesh { name = source.name,indexFormat = source.indexFormat }; owned.Add(result);
++                result.SetVertices(positions);
++                if (normals.Count == positions.Count) result.SetNormals(normals);
++                if (tangents.Count == positions.Count) result.SetTangents(tangents);
++                if (colors.Count == positions.Count)
++                {
++                    if (source.GetVertexAttributeFormat(VertexAttribute.Color) == VertexAttributeFormat.UNorm8) result.SetColors(colors.ConvertAll(c => (Color32)c));
++                    else result.SetColors(colors);
++                }
++                for (int ch = 0; ch < 8; ch++) if (uvs[ch].Count == positions.Count)
++                {
++                    int dimension = analysis.source.data.uvDimensions[ch];
++                    if (dimension == 2) result.SetUVs(ch,uvs[ch].ConvertAll(v => (Vector2)v));
++                    else if (dimension == 3) result.SetUVs(ch,uvs[ch].ConvertAll(v => (Vector3)v));
++                    else result.SetUVs(ch,uvs[ch]);
++                }
++                result.subMeshCount = slots.Length;
++                for (int s = 0; s < slots.Length; s++) result.SetTriangles(slots[s],s);
++                result.RecalculateBounds(); MeshUvState.SetDraft(result,MeshUvState.IsDraft(source));
++                note = $"Source component allocation: {choices.Length} parts, {total}/{budget} triangles; allocations [{string.Join(",",selected.Select(c => c.triangles))}].";
++                owned.Remove(result); return result;
++            }
++            finally { foreach (var mesh in owned) if (mesh) UnityEngine.Object.DestroyImmediate(mesh); }
++        }
++
+         static bool TouchesExtrema(Bounds part,Bounds overall,float epsilon)
+         {
+             for (int axis = 0; axis < 3; axis++)
+diff --git a/Tests/Editor/LodSmallPartsTests.cs b/Tests/Editor/LodSmallPartsTests.cs
+index 62203a9..9377ae4 100644
+--- a/Tests/Editor/LodSmallPartsTests.cs
++++ b/Tests/Editor/LodSmallPartsTests.cs
+@@ -48,6 +48,47 @@ namespace SashaRX.UnityMeshLab.Tests
+         static LodSmallParts.Plan Select(LodSmallParts.Analysis a,LodSmallParts.Settings s,int lod = 2)
+             => LodSmallParts.Select(a,s,lod,.25f,Matrix4x4.identity,10);
+ 
++        [Test]
++        public void ComponentBudgetKeepsSourceChannelsSlotsAndIsDeterministic()
++        {
++            var source = Model(true); var indices = source.triangles; var colors = source.colors;
++            source.subMeshCount = 3; source.SetTriangles(indices.Take(96).ToArray(),0); source.SetTriangles(indices.Skip(96).ToArray(),2);
++            var settings = MeshSimplifier.SimplifySettings.Default; settings.lockBorder = false;
++            var first = Track(LodSmallParts.AllocateScreenBudget(source,16,64,settings,out var note));
++            var second = Track(LodSmallParts.AllocateScreenBudget(source,16,64,settings,out _));
++            Assert.That(first,Is.Not.Null,note); Assert.That(second,Is.Not.Null);
++            Assert.That(LodMeshData.TriangleCount(first),Is.LessThanOrEqualTo(16));
++            Assert.That(first.subMeshCount,Is.EqualTo(3)); Assert.That(first.GetIndices(1),Is.Empty);
++            Assert.That(first.GetVertexAttributeFormat(VertexAttribute.Color),Is.EqualTo(VertexAttributeFormat.Float32));
++            Assert.That(first.GetVertexAttributeDimension(VertexAttribute.TexCoord2),Is.EqualTo(4));
++            Assert.That(MeshUvState.IsDraft(first),Is.True);
++            CollectionAssert.AreEqual(first.vertices,second.vertices); CollectionAssert.AreEqual(first.triangles,second.triangles);
++            CollectionAssert.AreEqual(indices,source.triangles); CollectionAssert.AreEqual(colors,source.colors);
++        }
++
++        [Test]
++        public void ComponentBudgetDoesNotDropLongThinMembersToMeetImpossibleBudget()
++        {
++            var source = Model(true); var positions = source.vertices;
++            positions[26].x = positions[27].x = 9; source.vertices = positions; source.RecalculateBounds();
++            var settings = MeshSimplifier.SimplifySettings.Default; settings.lockBorder = false;
++            Assert.That(LodSmallParts.AllocateScreenBudget(source,1,64,settings,out _),Is.Null);
++            settings.lockBorder = true;
++            Assert.That(LodSmallParts.AllocateScreenBudget(source,16,64,settings,out _),Is.Null);
++            settings.lockBorder = false; var zero = new Vector3[source.vertexCount]; source.AddBlendShapeFrame("shape",100,zero,zero,zero);
++            Assert.That(LodSmallParts.AllocateScreenBudget(source,16,64,settings,out _),Is.Null);
++        }
++
++        [TestCase(1)] [TestCase(12)]
++        public void CancelledComponentBudgetDestroysAllTemporaryMeshes(int checks)
++        {
++            var source = Model(true); var before = Resources.FindObjectsOfTypeAll<Mesh>().Select(m => m.GetInstanceID()).ToHashSet();
++            var settings = MeshSimplifier.SimplifySettings.Default; settings.lockBorder = false;
++            int calls = 0;
++            Assert.Throws<System.OperationCanceledException>(() => LodSmallParts.AllocateScreenBudget(source,16,64,settings,out _,() => ++calls >= checks));
++            Assert.That(Resources.FindObjectsOfTypeAll<Mesh>().Where(m => !before.Contains(m.GetInstanceID())),Is.Empty);
++        }
++
+         [TestCase(false)] [TestCase(true)]
+         public void WholePartRemovalKeepsSourceAndEveryRetainedChannel(bool triangles)
+         {

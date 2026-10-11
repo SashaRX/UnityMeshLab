@@ -1,0 +1,572 @@
+{
+  "tests": {
+    "id": "2",
+    "testcasecount": "183",
+    "result": "Passed",
+    "total": "183",
+    "passed": "183",
+    "failed": "0",
+    "inconclusive": "0",
+    "skipped": "0",
+    "asserts": "0",
+    "engine-version": "3.5.0.0",
+    "clr-version": "4.0.30319.42000",
+    "start-time": "2026-10-10 09:45:20Z",
+    "end-time": "2026-10-10 10:06:58Z",
+    "duration": "1297,9662512"
+  },
+  "modelCount": 8,
+  "allCapturesFresh": true,
+  "regionChecks": 1660,
+  "matchedPairs": 16,
+  "comparison": "Native targets equal the freshly generated coarsened-belt counts; LOD1/2 refer to the same quality profiles. Count band is 5% or two triangles, whichever is greater.",
+  "timingScope": "generationMs covers both levels of one Generate call and is repeated on both rows; do not sum across levels.",
+  "sources": [
+    {
+      "fixture": "bench-colored",
+      "sourceSha256": "313fe7429853f372f1b01a15c47145f266fc1c1e39d1e80c42a8563179077471",
+      "meshName": "Park_Bench_B_LOD0",
+      "sourceTriangles": 9334,
+      "unity": "6000.2.6f2",
+      "gpu": "NVIDIA GeForce GTX 980 Ti",
+      "graphicsApi": "Direct3D12",
+      "resolution": 384
+    },
+    {
+      "fixture": "bench",
+      "sourceSha256": "cccda3a61bde738cb37e9b6b4573e692d90af4fe2a42c14d4f6dfb19ecd82501",
+      "meshName": "Park_Bench_A_LOD0",
+      "sourceTriangles": 3832,
+      "unity": "6000.2.6f2",
+      "gpu": "NVIDIA GeForce GTX 980 Ti",
+      "graphicsApi": "Direct3D12",
+      "resolution": 384
+    },
+    {
+      "fixture": "fire-shield",
+      "sourceSha256": "f8880ba9f60492d1f362c137bc7dd73ecc6b5f5828adff65c5be2836cc95fc25",
+      "meshName": "SM_fire_shield_LOD0",
+      "sourceTriangles": 1850,
+      "unity": "6000.2.6f2",
+      "gpu": "NVIDIA GeForce GTX 980 Ti",
+      "graphicsApi": "Direct3D12",
+      "resolution": 384
+    },
+    {
+      "fixture": "first-aid",
+      "sourceSha256": "7f1f4a0688e51d423884b5d855829daaf676ed37a95b11d78a23350202669daf",
+      "meshName": "First_Aid_Kit_LOD0",
+      "sourceTriangles": 2886,
+      "unity": "6000.2.6f2",
+      "gpu": "NVIDIA GeForce GTX 980 Ti",
+      "graphicsApi": "Direct3D12",
+      "resolution": 384
+    },
+    {
+      "fixture": "grenade",
+      "sourceSha256": "5b0717de00286e8777f079dc6a5c93266a046e76770c01fc90531c079b4e3a40",
+      "meshName": "M84_Stun_Grenade_LOD0",
+      "sourceTriangles": 2040,
+      "unity": "6000.2.6f2",
+      "gpu": "NVIDIA GeForce GTX 980 Ti",
+      "graphicsApi": "Direct3D12",
+      "resolution": 384
+    },
+    {
+      "fixture": "rock",
+      "sourceSha256": "a09afacaded89f781ba9742f7feb4cb1aa9db53b42721ac3806ce9b1a3a710fa",
+      "meshName": "mountain_rock_small_01_1_LOD0",
+      "sourceTriangles": 1010,
+      "unity": "6000.2.6f2",
+      "gpu": "NVIDIA GeForce GTX 980 Ti",
+      "graphicsApi": "Direct3D12",
+      "resolution": 384
+    },
+    {
+      "fixture": "tent-colored",
+      "sourceSha256": "a4aafe5dc9b4bc31200f31d1a0549a93b729aa7d657bcb7501acdd310e616839",
+      "meshName": "FairStall_Tent_Ranbow",
+      "sourceTriangles": 560,
+      "unity": "6000.2.6f2",
+      "gpu": "NVIDIA GeForce GTX 980 Ti",
+      "graphicsApi": "Direct3D12",
+      "resolution": 384
+    },
+    {
+      "fixture": "wrench",
+      "sourceSha256": "21968346e7908f00010ebe986ef8d494f17f53bdedacf7e052e1c1072741240e",
+      "meshName": "wrench_universal_Uncom_LOD0",
+      "sourceTriangles": 612,
+      "unity": "6000.2.6f2",
+      "gpu": "NVIDIA GeForce GTX 980 Ti",
+      "graphicsApi": "Direct3D12",
+      "resolution": 384
+    }
+  ],
+  "rows": [
+    {
+      "fixture": "bench-colored",
+      "level": 1,
+      "sourceTriangles": 9334,
+      "chains": {
+        "triangles": 3112,
+        "normalRms": 10.043272018432617,
+        "colorRms": 0.021986020728945732,
+        "geometryRms": 0.0005389702855609357,
+        "uvRms": 0.04449170455336571,
+        "generationMs": 113145.8652,
+        "silhouette": 0.02070048078894615,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected shape from 3 quality candidates (3 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Selected native Target Error=0,2, UV/Normal/Color weights=2/0,1/0,1. Surface attribute fit: normals kept, RGBA improved via least-squares (112014 samples, 6 verification trials). Smoothing: 103 source regions, 191 linked normal duplicates, 78 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Feature chains: removed 0 chain points / 0 triangles; tested 862 collapses from 437 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. RGBA error 0,627 exceeds requested 0,02. Normal error 180,0\u00b0 exceeds requested 15,0\u00b0. Hard-edge coverage: 640/640; protected faces 1227, ambiguous edges 0, patch interfaces 1149/1149."
+      },
+      "native": {
+        "triangles": 3111,
+        "normalRms": 4.658186435699463,
+        "colorRms": 0.03299093618988991,
+        "geometryRms": 0.00025197857758030295,
+        "uvRms": 0.027611827477812767,
+        "generationMs": 201790.178,
+        "silhouette": 0.00816166028380394,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected shape from 3 quality candidates (8 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Coarsened over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape. Selected native Target Error=0,2, UV/Normal/Color weights=2/0,1/0,1. Surface attribute fit: normals kept, RGBA improved via least-squares (112005 samples, 6 verification trials). Smoothing: 103 source regions, 238 linked normal duplicates, 68 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Feature chains: removed 0 chain points / 0 triangles; tested 862 collapses from 437 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. RGBA error 0,688 exceeds requested 0,02. Normal error 151,7\u00b0 exceeds requested 15,0\u00b0. Hard-edge coverage: 640/640; protected faces 0, ambiguous edges 0, patch interfaces 0/0. Direct native constraints; only ambiguous faces remain frozen. Retried with all crease vertices locked."
+      },
+      "target": 3112,
+      "matchedWithinFivePercent": true
+    },
+    {
+      "fixture": "bench-colored",
+      "level": 2,
+      "sourceTriangles": 9334,
+      "chains": {
+        "triangles": 2424,
+        "normalRms": 24.273117065429688,
+        "colorRms": 0.05346320569515228,
+        "geometryRms": 0.0034285709261894226,
+        "uvRms": 0.11342720687389374,
+        "generationMs": 113145.8652,
+        "silhouette": 0.07453746348619461,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected normals from 3 quality candidates (3 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Protected face floor already reaches/exceeds the requested budget; no error/weight relaxation. Over-budget candidates ranked by measured quality. Selected native Target Error=0,3, UV/Normal/Color weights=5/2/0,125. Surface attribute fit: normals kept, RGBA improved via least-squares (105822 samples, 6 verification trials). Smoothing: 103 source regions, 100 linked normal duplicates, 60 mixed/unmapped faces pinned, 1 source regions without a mapped LOD face, 1 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Feature chains: removed 0 chain points / 0 triangles; tested 862 collapses from 437 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. RGBA error 0,673 exceeds requested 0,1. Normal error 179,9\u00b0 exceeds requested 30,0\u00b0. Hard-edge coverage: 640/640; protected faces 1227, ambiguous edges 0, patch interfaces 1149/1149."
+      },
+      "native": {
+        "triangles": 2422,
+        "normalRms": 7.698487281799316,
+        "colorRms": 0.03930319473147392,
+        "geometryRms": 0.0003983287315350026,
+        "uvRms": 0.037984251976013184,
+        "generationMs": 201790.178,
+        "silhouette": 0.014780260622501373,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected shape from 3 quality candidates (10 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Coarsened over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape. Selected native Target Error=0,3, UV/Normal/Color weights=2/0,05/0,025. Surface attribute fit: normals kept, RGBA improved via least-squares (105804 samples, 6 verification trials). Smoothing: 103 source regions, 204 linked normal duplicates, 67 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Feature chains: removed 0 chain points / 0 triangles; tested 862 collapses from 437 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. RGBA error 0,688 exceeds requested 0,1. Normal error 177,0\u00b0 exceeds requested 30,0\u00b0. Hard-edge coverage: 640/640; protected faces 0, ambiguous edges 0, patch interfaces 0/0. Direct native constraints; only ambiguous faces remain frozen. Retried with all crease vertices locked."
+      },
+      "target": 2424,
+      "matchedWithinFivePercent": true
+    },
+    {
+      "fixture": "bench",
+      "level": 1,
+      "sourceTriangles": 3832,
+      "chains": {
+        "triangles": 1269,
+        "normalRms": 14.479889869689941,
+        "colorRms": 3.612381860307323e-08,
+        "geometryRms": 0.0006639106431975961,
+        "uvRms": 0.04463310167193413,
+        "generationMs": 21871.8227,
+        "silhouette": 0.02798345498740673,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected shape from 3 quality candidates (3 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Selected native Target Error=0,2, UV/Normal/Color weights=2/0,1/0,1. Surface attribute fit: normals kept, RGBA kept (45909 samples, 4 verification trials). Smoothing: 24 source regions, 209 linked normal duplicates, 66 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Feature chains: removed 0 chain points / 0 triangles; tested 0 collapses from 0 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. Normal error 179,5\u00b0 exceeds requested 15,0\u00b0. Hard-edge coverage: 0/0; protected faces 0, ambiguous edges 0, patch interfaces 0/0."
+      },
+      "native": {
+        "triangles": 1259,
+        "normalRms": 14.64876937866211,
+        "colorRms": 3.612621668480642e-08,
+        "geometryRms": 0.0006681239465251565,
+        "uvRms": 0.04665530472993851,
+        "generationMs": 29805.403400000003,
+        "silhouette": 0.028148148208856583,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected shape from 3 quality candidates (3 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Coarsened over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape. Selected native Target Error=0,2, UV/Normal/Color weights=2/0,1/0,1. Surface attribute fit: normals kept, RGBA kept (45819 samples, 4 verification trials). Smoothing: 24 source regions, 209 linked normal duplicates, 68 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Feature chains: removed 0 chain points / 0 triangles; tested 0 collapses from 0 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. Normal error 179,5\u00b0 exceeds requested 15,0\u00b0. Hard-edge coverage: 0/0; protected faces 0, ambiguous edges 0, patch interfaces 0/0. Direct native constraints; only ambiguous faces remain frozen."
+      },
+      "target": 1269,
+      "matchedWithinFivePercent": true
+    },
+    {
+      "fixture": "bench",
+      "level": 2,
+      "sourceTriangles": 3832,
+      "chains": {
+        "triangles": 416,
+        "normalRms": 37.76013946533203,
+        "colorRms": 3.630986356029098e-08,
+        "geometryRms": 0.0025274946819990873,
+        "uvRms": 0.10033195465803146,
+        "generationMs": 21871.8227,
+        "silhouette": 0.07005522400140762,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected shape from 3 quality candidates (3 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Selected native Target Error=0,3, UV/Normal/Color weights=2/0,05/0,025. Surface attribute fit: normals kept, RGBA kept (38232 samples, 4 verification trials). Smoothing: 24 source regions, 124 linked normal duplicates, 32 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Feature chains: removed 0 chain points / 0 triangles; tested 0 collapses from 0 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. Normal error 179,9\u00b0 exceeds requested 30,0\u00b0. Hard-edge coverage: 0/0; protected faces 0, ambiguous edges 0, patch interfaces 0/0."
+      },
+      "native": {
+        "triangles": 414,
+        "normalRms": 37.72787094116211,
+        "colorRms": 3.630958289591035e-08,
+        "geometryRms": 0.002529171062633395,
+        "uvRms": 0.10039657354354858,
+        "generationMs": 29805.403400000003,
+        "silhouette": 0.07005522400140762,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected shape from 3 quality candidates (3 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Coarsened over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape. Selected native Target Error=0,3, UV/Normal/Color weights=2/0,05/0,025. Surface attribute fit: normals kept, RGBA kept (38214 samples, 4 verification trials). Smoothing: 24 source regions, 124 linked normal duplicates, 32 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Feature chains: removed 0 chain points / 0 triangles; tested 0 collapses from 0 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. Normal error 179,9\u00b0 exceeds requested 30,0\u00b0. Hard-edge coverage: 0/0; protected faces 0, ambiguous edges 0, patch interfaces 0/0. Direct native constraints; only ambiguous faces remain frozen."
+      },
+      "target": 416,
+      "matchedWithinFivePercent": true
+    },
+    {
+      "fixture": "fire-shield",
+      "level": 1,
+      "sourceTriangles": 1850,
+      "chains": {
+        "triangles": 1462,
+        "normalRms": 8.781907081604004,
+        "colorRms": 0.0,
+        "geometryRms": 0.0016300930874422193,
+        "uvRms": 0.0276380255818367,
+        "generationMs": 12720.235900000001,
+        "silhouette": 0.01775721088051796,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected normals from 3 quality candidates (3 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Protected face floor already reaches/exceeds the requested budget; no error/weight relaxation. Over-budget candidates ranked by measured quality. Selected native Target Error=0,2, UV/Normal/Color weights=5/4/0,5. Surface attribute fit: normals kept, RGBA kept (29772 samples, 3 verification trials). Smoothing: 150 source regions, 115 linked normal duplicates, 6 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Coarsened-source result error is sampled against LOD0; the native bound applies only to the prepared mesh. Feature chains: removed 18 chain points / 36 triangles; tested 1632 collapses from 412 degree-two points, separated 5 disconnected contact fans, kept 2 invalid components. Source component refused: Polygon has repeated or missing vertices. Normal error 179,0\u00b0 exceeds requested 15,0\u00b0. Hard-edge coverage: 738/738; protected faces 1159, ambiguous edges 2, patch interfaces 361/361. Coarsened 18 points; feature deviation \u22640,50% of source diagonal, endpoint normal guide 5,0\u00b0."
+      },
+      "native": {
+        "triangles": 1458,
+        "normalRms": 4.961524486541748,
+        "colorRms": 0.0,
+        "geometryRms": 0.0007347648497670889,
+        "uvRms": 0.01326970849186182,
+        "generationMs": 15183.745400000002,
+        "silhouette": 0.006739270873367786,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected balanced from 3 quality candidates (6 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Coarsened over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape. Selected native Target Error=0,2, UV/Normal/Color weights=20/1/1. Surface attribute fit: normals kept, RGBA kept (29736 samples, 3 verification trials). Smoothing: 150 source regions, 123 linked normal duplicates, 9 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Coarsened-source result error is sampled against LOD0; the native bound applies only to the prepared mesh. Feature chains: removed 18 chain points / 36 triangles; tested 1632 collapses from 412 degree-two points, separated 5 disconnected contact fans, kept 2 invalid components. Source component refused: Polygon has repeated or missing vertices. Normal error 179,2\u00b0 exceeds requested 15,0\u00b0. Hard-edge coverage: 738/738; protected faces 6, ambiguous edges 2, patch interfaces 6/6. Coarsened 18 points; feature deviation \u22640,50% of source diagonal, endpoint normal guide 5,0\u00b0. Direct native constraints; only ambiguous faces remain frozen. Retried with all crease vertices locked."
+      },
+      "target": 1462,
+      "matchedWithinFivePercent": true
+    },
+    {
+      "fixture": "fire-shield",
+      "level": 2,
+      "sourceTriangles": 1850,
+      "chains": {
+        "triangles": 1428,
+        "normalRms": 13.236539840698242,
+        "colorRms": 0.0,
+        "geometryRms": 0.002326179528608918,
+        "uvRms": 0.051131293177604675,
+        "generationMs": 12720.235900000001,
+        "silhouette": 0.03567579388618469,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected normals from 3 quality candidates (3 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Protected face floor already reaches/exceeds the requested budget; no error/weight relaxation. Over-budget candidates ranked by measured quality. Selected native Target Error=0,3, UV/Normal/Color weights=5/2/0,125. Surface attribute fit: normals kept, RGBA kept (29466 samples, 3 verification trials). Smoothing: 150 source regions, 109 linked normal duplicates, 2 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Coarsened-source result error is sampled against LOD0; the native bound applies only to the prepared mesh. Feature chains: removed 18 chain points / 36 triangles; tested 1632 collapses from 412 degree-two points, separated 5 disconnected contact fans, kept 2 invalid components. Source component refused: Polygon has repeated or missing vertices. Normal error 179,6\u00b0 exceeds requested 30,0\u00b0. Hard-edge coverage: 738/738; protected faces 1159, ambiguous edges 2, patch interfaces 361/361. Coarsened 18 points; feature deviation \u22640,50% of source diagonal, endpoint normal guide 5,0\u00b0."
+      },
+      "native": {
+        "triangles": 1428,
+        "normalRms": 5.992127418518066,
+        "colorRms": 0.0,
+        "geometryRms": 0.0008338915649801493,
+        "uvRms": 0.01948588155210018,
+        "generationMs": 15183.745400000002,
+        "silhouette": 0.00873409491032362,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected balanced from 3 quality candidates (6 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Coarsened over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape. Selected native Target Error=0,3, UV/Normal/Color weights=20/0,5/0,25. Surface attribute fit: normals kept, RGBA kept (29466 samples, 3 verification trials). Smoothing: 150 source regions, 120 linked normal duplicates, 11 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Coarsened-source result error is sampled against LOD0; the native bound applies only to the prepared mesh. Feature chains: removed 18 chain points / 36 triangles; tested 1632 collapses from 412 degree-two points, separated 5 disconnected contact fans, kept 2 invalid components. Source component refused: Polygon has repeated or missing vertices. Normal error 179,0\u00b0 exceeds requested 30,0\u00b0. Hard-edge coverage: 738/738; protected faces 6, ambiguous edges 2, patch interfaces 6/6. Coarsened 18 points; feature deviation \u22640,50% of source diagonal, endpoint normal guide 5,0\u00b0. Direct native constraints; only ambiguous faces remain frozen. Retried with all crease vertices locked."
+      },
+      "target": 1428,
+      "matchedWithinFivePercent": true
+    },
+    {
+      "fixture": "first-aid",
+      "level": 1,
+      "sourceTriangles": 2886,
+      "chains": {
+        "triangles": 1804,
+        "normalRms": 6.589188098907471,
+        "colorRms": 0.0,
+        "geometryRms": 0.00339901982806623,
+        "uvRms": 0.0,
+        "generationMs": 33970.2189,
+        "silhouette": 0.018877193331718445,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected normals from 3 quality candidates (12 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Coarsened over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape. Selected native Target Error=0,2, UV/Normal/Color weights=5/4/0,5. Surface attribute fit: normals kept, RGBA kept (42210 samples, 3 verification trials). Smoothing: 34 source regions, 74 linked normal duplicates, 13 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Coarsened-source result error is sampled against LOD0; the native bound applies only to the prepared mesh. Feature chains: removed 16 chain points / 32 triangles; tested 6558 collapses from 429 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. Normal error 176,8\u00b0 exceeds requested 15,0\u00b0. Hard-edge coverage: 541/541; protected faces 961, ambiguous edges 0, patch interfaces 755/755. Coarsened 16 points; feature deviation \u22640,50% of source diagonal, endpoint normal guide 5,0\u00b0."
+      },
+      "native": {
+        "triangles": 1804,
+        "normalRms": 3.860405445098877,
+        "colorRms": 0.0,
+        "geometryRms": 0.0008976291865110397,
+        "uvRms": 0.0,
+        "generationMs": 30260.756800000003,
+        "silhouette": 0.004397969227284193,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected shape from 3 quality candidates (6 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Coarsened over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape. Selected native Target Error=0,2, UV/Normal/Color weights=2/0,1/0,1. Surface attribute fit: normals kept, RGBA kept (42210 samples, 3 verification trials). Smoothing: 34 source regions, 88 linked normal duplicates, 3 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Coarsened-source result error is sampled against LOD0; the native bound applies only to the prepared mesh. Feature chains: removed 16 chain points / 32 triangles; tested 6558 collapses from 429 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. Normal error 134,0\u00b0 exceeds requested 15,0\u00b0. Hard-edge coverage: 541/541; protected faces 0, ambiguous edges 0, patch interfaces 0/0. Coarsened 16 points; feature deviation \u22640,50% of source diagonal, endpoint normal guide 5,0\u00b0. Direct native constraints; only ambiguous faces remain frozen. Retried with all crease vertices locked."
+      },
+      "target": 1804,
+      "matchedWithinFivePercent": true
+    },
+    {
+      "fixture": "first-aid",
+      "level": 2,
+      "sourceTriangles": 2886,
+      "chains": {
+        "triangles": 1682,
+        "normalRms": 11.907930374145508,
+        "colorRms": 0.0,
+        "geometryRms": 0.006388723850250244,
+        "uvRms": 0.0,
+        "generationMs": 33970.2189,
+        "silhouette": 0.03490874916315079,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected normals from 3 quality candidates (3 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Protected face floor already reaches/exceeds the requested budget; no error/weight relaxation. Over-budget candidates ranked by measured quality. Selected native Target Error=0,3, UV/Normal/Color weights=5/2/0,125. Surface attribute fit: normals kept, RGBA kept (41112 samples, 3 verification trials). Smoothing: 34 source regions, 65 linked normal duplicates, 13 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Coarsened-source result error is sampled against LOD0; the native bound applies only to the prepared mesh. Feature chains: removed 16 chain points / 32 triangles; tested 6558 collapses from 429 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. Normal error 178,1\u00b0 exceeds requested 30,0\u00b0. Hard-edge coverage: 541/541; protected faces 961, ambiguous edges 0, patch interfaces 755/755. Coarsened 16 points; feature deviation \u22640,50% of source diagonal, endpoint normal guide 5,0\u00b0."
+      },
+      "native": {
+        "triangles": 1682,
+        "normalRms": 6.119156837463379,
+        "colorRms": 0.0,
+        "geometryRms": 0.0009938583243638277,
+        "uvRms": 0.0,
+        "generationMs": 30260.756800000003,
+        "silhouette": 0.006130386609584093,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected shape from 3 quality candidates (6 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Coarsened over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape. Selected native Target Error=0,3, UV/Normal/Color weights=2/0,05/0,025. Surface attribute fit: normals kept, RGBA kept (41112 samples, 3 verification trials). Smoothing: 34 source regions, 84 linked normal duplicates, 3 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Coarsened-source result error is sampled against LOD0; the native bound applies only to the prepared mesh. Feature chains: removed 16 chain points / 32 triangles; tested 6558 collapses from 429 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. Normal error 152,5\u00b0 exceeds requested 30,0\u00b0. Hard-edge coverage: 541/541; protected faces 0, ambiguous edges 0, patch interfaces 0/0. Coarsened 16 points; feature deviation \u22640,50% of source diagonal, endpoint normal guide 5,0\u00b0. Direct native constraints; only ambiguous faces remain frozen. Retried with all crease vertices locked."
+      },
+      "target": 1682,
+      "matchedWithinFivePercent": true
+    },
+    {
+      "fixture": "grenade",
+      "level": 1,
+      "sourceTriangles": 2040,
+      "chains": {
+        "triangles": 2004,
+        "normalRms": 0.3703969419002533,
+        "colorRms": 0.0,
+        "geometryRms": 4.7460947826039046e-05,
+        "uvRms": 0.0,
+        "generationMs": 22027.1865,
+        "silhouette": 0.00010993239266099408,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected balanced from 3 quality candidates (3 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Protected face floor already reaches/exceeds the requested budget; no error/weight relaxation. Over-budget candidates ranked by measured quality. Selected native Target Error=0,2, UV/Normal/Color weights=20/1/1. Surface attribute fit: normals kept, RGBA kept (36396 samples, 3 verification trials). Smoothing: 69 source regions, 78 linked normal duplicates, 0 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Coarsened-source result error is sampled against LOD0; the native bound applies only to the prepared mesh. Feature chains: removed 11 chain points / 22 triangles; tested 3804 collapses from 765 degree-two points, separated 1 disconnected contact fans, kept 0 invalid components. Normal error 89,9\u00b0 exceeds requested 15,0\u00b0. Hard-edge coverage: 839/839; protected faces 1593, ambiguous edges 0, patch interfaces 635/635. Coarsened 11 points; feature deviation \u22640,50% of source diagonal, endpoint normal guide 5,0\u00b0."
+      },
+      "native": {
+        "triangles": 2004,
+        "normalRms": 0.37033331394195557,
+        "colorRms": 0.0,
+        "geometryRms": 4.692290895036422e-05,
+        "uvRms": 0.0,
+        "generationMs": 22329.299000000003,
+        "silhouette": 5.496619633049704e-05,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected normals from 3 quality candidates (3 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Coarsened over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape. Selected native Target Error=0,2, UV/Normal/Color weights=5/4/0,5. Surface attribute fit: normals kept, RGBA kept (36396 samples, 3 verification trials). Smoothing: 69 source regions, 77 linked normal duplicates, 0 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Coarsened-source result error is sampled against LOD0; the native bound applies only to the prepared mesh. Feature chains: removed 11 chain points / 22 triangles; tested 3804 collapses from 765 degree-two points, separated 1 disconnected contact fans, kept 0 invalid components. Normal error 89,9\u00b0 exceeds requested 15,0\u00b0. Hard-edge coverage: 839/839; protected faces 0, ambiguous edges 0, patch interfaces 0/0. Coarsened 11 points; feature deviation \u22640,50% of source diagonal, endpoint normal guide 5,0\u00b0. Direct native constraints; only ambiguous faces remain frozen."
+      },
+      "target": 2004,
+      "matchedWithinFivePercent": true
+    },
+    {
+      "fixture": "grenade",
+      "level": 2,
+      "sourceTriangles": 2040,
+      "chains": {
+        "triangles": 2004,
+        "normalRms": 0.3703969419002533,
+        "colorRms": 0.0,
+        "geometryRms": 4.7460947826039046e-05,
+        "uvRms": 0.0,
+        "generationMs": 22027.1865,
+        "silhouette": 0.00010993239266099408,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected balanced from 3 quality candidates (3 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Protected face floor already reaches/exceeds the requested budget; no error/weight relaxation. Over-budget candidates ranked by measured quality. Selected native Target Error=0,3, UV/Normal/Color weights=20/0,5/0,25. Surface attribute fit: normals kept, RGBA kept (36396 samples, 3 verification trials). Smoothing: 69 source regions, 78 linked normal duplicates, 0 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Coarsened-source result error is sampled against LOD0; the native bound applies only to the prepared mesh. Feature chains: removed 11 chain points / 22 triangles; tested 3804 collapses from 765 degree-two points, separated 1 disconnected contact fans, kept 0 invalid components. Normal error 89,9\u00b0 exceeds requested 30,0\u00b0. Hard-edge coverage: 839/839; protected faces 1593, ambiguous edges 0, patch interfaces 635/635. Coarsened 11 points; feature deviation \u22640,50% of source diagonal, endpoint normal guide 5,0\u00b0."
+      },
+      "native": {
+        "triangles": 2004,
+        "normalRms": 0.37033718824386597,
+        "colorRms": 0.0,
+        "geometryRms": 4.69365986646153e-05,
+        "uvRms": 0.0,
+        "generationMs": 22329.299000000003,
+        "silhouette": 0.0001099263463402167,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected normals from 3 quality candidates (3 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Coarsened over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape. Selected native Target Error=0,3, UV/Normal/Color weights=5/2/0,125. Surface attribute fit: normals kept, RGBA kept (36396 samples, 3 verification trials). Smoothing: 69 source regions, 78 linked normal duplicates, 0 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Coarsened-source result error is sampled against LOD0; the native bound applies only to the prepared mesh. Feature chains: removed 11 chain points / 22 triangles; tested 3804 collapses from 765 degree-two points, separated 1 disconnected contact fans, kept 0 invalid components. Normal error 89,9\u00b0 exceeds requested 30,0\u00b0. Hard-edge coverage: 839/839; protected faces 0, ambiguous edges 0, patch interfaces 0/0. Coarsened 11 points; feature deviation \u22640,50% of source diagonal, endpoint normal guide 5,0\u00b0. Direct native constraints; only ambiguous faces remain frozen."
+      },
+      "target": 2004,
+      "matchedWithinFivePercent": true
+    },
+    {
+      "fixture": "rock",
+      "level": 1,
+      "sourceTriangles": 1010,
+      "chains": {
+        "triangles": 336,
+        "normalRms": 8.647753715515137,
+        "colorRms": 3.656518998695901e-08,
+        "geometryRms": 0.003690051380544901,
+        "uvRms": 0.05223392695188522,
+        "generationMs": 4578.674,
+        "silhouette": 0.01862502284348011,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected shape from 3 quality candidates (4 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Selected native Target Error=0,2, UV/Normal/Color weights=2/0,1/0,1. Surface attribute fit: normals improved, RGBA kept (12114 samples, 4 verification trials). Smoothing: 1 source regions, 165 linked normal duplicates, 0 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Feature chains: removed 0 chain points / 0 triangles; tested 0 collapses from 0 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. Normal error 85,7\u00b0 exceeds requested 15,0\u00b0. Hard-edge coverage: 0/0; protected faces 0, ambiguous edges 0, patch interfaces 0/0."
+      },
+      "native": {
+        "triangles": 334,
+        "normalRms": 8.69918441772461,
+        "colorRms": 3.657559588532422e-08,
+        "geometryRms": 0.0037104878574609756,
+        "uvRms": 0.05202516168355942,
+        "generationMs": 7200.840700000001,
+        "silhouette": 0.01862502284348011,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected shape from 3 quality candidates (4 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Coarsened over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape. Selected native Target Error=0,2, UV/Normal/Color weights=2/0,1/0,1. Surface attribute fit: normals improved, RGBA kept (12096 samples, 4 verification trials). Smoothing: 1 source regions, 165 linked normal duplicates, 0 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Feature chains: removed 0 chain points / 0 triangles; tested 0 collapses from 0 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. Normal error 85,7\u00b0 exceeds requested 15,0\u00b0. Hard-edge coverage: 0/0; protected faces 0, ambiguous edges 0, patch interfaces 0/0. Direct native constraints; only ambiguous faces remain frozen."
+      },
+      "target": 336,
+      "matchedWithinFivePercent": true
+    },
+    {
+      "fixture": "rock",
+      "level": 2,
+      "sourceTriangles": 1010,
+      "chains": {
+        "triangles": 112,
+        "normalRms": 22.559385299682617,
+        "colorRms": 3.7012476639119996e-08,
+        "geometryRms": 0.011574465781450272,
+        "uvRms": 0.10888045281171799,
+        "generationMs": 4578.674,
+        "silhouette": 0.08004678785800934,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected balanced from 3 quality candidates (5 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Native costs/error relaxed; Lock Border retained. Selected native Target Error=0,5, UV/Normal/Color weights=2/0,05/0,025. Surface attribute fit: normals improved, RGBA kept (10098 samples, 4 verification trials). Smoothing: 1 source regions, 103 linked normal duplicates, 0 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Feature chains: removed 0 chain points / 0 triangles; tested 0 collapses from 0 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. Normal error 89,0\u00b0 exceeds requested 30,0\u00b0. Hard-edge coverage: 0/0; protected faces 0, ambiguous edges 0, patch interfaces 0/0."
+      },
+      "native": {
+        "triangles": 110,
+        "normalRms": 23.101755142211914,
+        "colorRms": 3.708299090021683e-08,
+        "geometryRms": 0.011512067168951035,
+        "uvRms": 0.11282433569431305,
+        "generationMs": 7200.840700000001,
+        "silhouette": 0.08004678785800934,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected balanced from 3 quality candidates (5 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Coarsened over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape. Native costs/error relaxed; Lock Border retained. Selected native Target Error=0,5, UV/Normal/Color weights=2/0,05/0,025. Surface attribute fit: normals improved, RGBA kept (10080 samples, 4 verification trials). Smoothing: 1 source regions, 102 linked normal duplicates, 0 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Feature chains: removed 0 chain points / 0 triangles; tested 0 collapses from 0 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. Normal error 89,7\u00b0 exceeds requested 30,0\u00b0. Hard-edge coverage: 0/0; protected faces 0, ambiguous edges 0, patch interfaces 0/0. Direct native constraints; only ambiguous faces remain frozen."
+      },
+      "target": 112,
+      "matchedWithinFivePercent": true
+    },
+    {
+      "fixture": "tent-colored",
+      "level": 1,
+      "sourceTriangles": 560,
+      "chains": {
+        "triangles": 306,
+        "normalRms": 2.932954788208008,
+        "colorRms": 0.02589339017868042,
+        "geometryRms": 0.00535703357309103,
+        "uvRms": 0.009011387825012207,
+        "generationMs": 7368.463500000001,
+        "silhouette": 0.0005031306063756347,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected normals from 3 quality candidates (12 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Coarsened over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape. Selected native Target Error=0,2, UV/Normal/Color weights=5/4/0,5. Surface attribute fit: normals improved, RGBA improved via least-squares (7794 samples, 6 verification trials). Smoothing: 9 source regions, 20 linked normal duplicates, 0 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Coarsened-source result error is sampled against LOD0; the native bound applies only to the prepared mesh. Feature chains: removed 8 chain points / 16 triangles; tested 494 collapses from 66 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. RGBA error 0,477 exceeds requested 0,02. Normal error 68,3\u00b0 exceeds requested 15,0\u00b0. Hard-edge coverage: 87/87; protected faces 137, ambiguous edges 0, patch interfaces 127/127. Coarsened 8 points; feature deviation \u22640,50% of source diagonal, endpoint normal guide 5,0\u00b0."
+      },
+      "native": {
+        "triangles": 306,
+        "normalRms": 3.1957836151123047,
+        "colorRms": 0.02237021178007126,
+        "geometryRms": 0.0010543159442022443,
+        "uvRms": 0.0008158285054378211,
+        "generationMs": 5328.9354,
+        "silhouette": 0.0005031306063756347,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected shape from 3 quality candidates (6 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Coarsened over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape. Selected native Target Error=0,2, UV/Normal/Color weights=2/0,1/0,1. Surface attribute fit: normals improved, RGBA improved via least-squares (7794 samples, 6 verification trials). Smoothing: 9 source regions, 20 linked normal duplicates, 0 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Coarsened-source result error is sampled against LOD0; the native bound applies only to the prepared mesh. Feature chains: removed 8 chain points / 16 triangles; tested 494 collapses from 66 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. RGBA error 0,458 exceeds requested 0,02. Normal error 52,2\u00b0 exceeds requested 15,0\u00b0. Hard-edge coverage: 87/87; protected faces 0, ambiguous edges 0, patch interfaces 0/0. Coarsened 8 points; feature deviation \u22640,50% of source diagonal, endpoint normal guide 5,0\u00b0. Direct native constraints; only ambiguous faces remain frozen. Retried with all crease vertices locked."
+      },
+      "target": 306,
+      "matchedWithinFivePercent": true
+    },
+    {
+      "fixture": "tent-colored",
+      "level": 2,
+      "sourceTriangles": 560,
+      "chains": {
+        "triangles": 280,
+        "normalRms": 6.449066162109375,
+        "colorRms": 0.03846748173236847,
+        "geometryRms": 0.008084343746304512,
+        "uvRms": 0.010012089274823666,
+        "generationMs": 7368.463500000001,
+        "silhouette": 0.0005031306063756347,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected normals from 3 quality candidates (3 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Protected face floor already reaches/exceeds the requested budget; no error/weight relaxation. Over-budget candidates ranked by measured quality. Selected native Target Error=0,3, UV/Normal/Color weights=5/2/0,125. Surface attribute fit: normals kept, RGBA improved via area-resampled (7560 samples, 9 verification trials). Smoothing: 9 source regions, 17 linked normal duplicates, 0 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Coarsened-source result error is sampled against LOD0; the native bound applies only to the prepared mesh. Feature chains: removed 8 chain points / 16 triangles; tested 494 collapses from 66 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. RGBA error 0,649 exceeds requested 0,1. Normal error 79,2\u00b0 exceeds requested 30,0\u00b0. Hard-edge coverage: 87/87; protected faces 137, ambiguous edges 0, patch interfaces 127/127. Coarsened 8 points; feature deviation \u22640,50% of source diagonal, endpoint normal guide 5,0\u00b0."
+      },
+      "native": {
+        "triangles": 280,
+        "normalRms": 5.7376298904418945,
+        "colorRms": 0.026729395613074303,
+        "geometryRms": 0.0011986944591626525,
+        "uvRms": 0.0006438153213821352,
+        "generationMs": 5328.9354,
+        "silhouette": 0.0005031306063756347,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected shape from 3 quality candidates (6 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Coarsened over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape. Selected native Target Error=0,3, UV/Normal/Color weights=2/0,05/0,025. Surface attribute fit: normals improved, RGBA kept (7560 samples, 9 verification trials). Smoothing: 9 source regions, 17 linked normal duplicates, 0 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Coarsened-source result error is sampled against LOD0; the native bound applies only to the prepared mesh. Feature chains: removed 8 chain points / 16 triangles; tested 494 collapses from 66 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. RGBA error 0,595 exceeds requested 0,1. Normal error 77,2\u00b0 exceeds requested 30,0\u00b0. Hard-edge coverage: 87/87; protected faces 0, ambiguous edges 0, patch interfaces 0/0. Coarsened 8 points; feature deviation \u22640,50% of source diagonal, endpoint normal guide 5,0\u00b0. Direct native constraints; only ambiguous faces remain frozen. Retried with all crease vertices locked."
+      },
+      "target": 280,
+      "matchedWithinFivePercent": true
+    },
+    {
+      "fixture": "wrench",
+      "level": 1,
+      "sourceTriangles": 612,
+      "chains": {
+        "triangles": 456,
+        "normalRms": 6.315135955810547,
+        "colorRms": 0.0,
+        "geometryRms": 0.002108040265738964,
+        "uvRms": 0.0,
+        "generationMs": 2413.7656,
+        "silhouette": 0.019446080550551414,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected normals from 3 quality candidates (3 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Protected face floor already reaches/exceeds the requested budget; no error/weight relaxation. Over-budget candidates ranked by measured quality. Selected native Target Error=0,2, UV/Normal/Color weights=5/4/0,5. Surface attribute fit: normals kept, RGBA kept (9612 samples, 3 verification trials). Smoothing: 25 source regions, 50 linked normal duplicates, 3 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Coarsened-source result error is sampled against LOD0; the native bound applies only to the prepared mesh. Feature chains: removed 6 chain points / 12 triangles; tested 551 collapses from 140 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. Normal error 91,4\u00b0 exceeds requested 15,0\u00b0. Hard-edge coverage: 174/174; protected faces 301, ambiguous edges 0, patch interfaces 124/124. Coarsened 6 points; feature deviation \u22640,50% of source diagonal, endpoint normal guide 5,0\u00b0."
+      },
+      "native": {
+        "triangles": 456,
+        "normalRms": 4.12243127822876,
+        "colorRms": 0.0,
+        "geometryRms": 0.0008960683480836451,
+        "uvRms": 0.0,
+        "generationMs": 2730.7513000000004,
+        "silhouette": 0.017437564209103584,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected shape from 3 quality candidates (6 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Coarsened over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape. Selected native Target Error=0,2, UV/Normal/Color weights=2/0,1/0,1. Surface attribute fit: normals improved, RGBA kept (9612 samples, 3 verification trials). Smoothing: 25 source regions, 47 linked normal duplicates, 1 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Coarsened-source result error is sampled against LOD0; the native bound applies only to the prepared mesh. Feature chains: removed 6 chain points / 12 triangles; tested 551 collapses from 140 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. Normal error 87,6\u00b0 exceeds requested 15,0\u00b0. Hard-edge coverage: 174/174; protected faces 0, ambiguous edges 0, patch interfaces 0/0. Coarsened 6 points; feature deviation \u22640,50% of source diagonal, endpoint normal guide 5,0\u00b0. Direct native constraints; only ambiguous faces remain frozen. Retried with all crease vertices locked."
+      },
+      "target": 456,
+      "matchedWithinFivePercent": true
+    },
+    {
+      "fixture": "wrench",
+      "level": 2,
+      "sourceTriangles": 612,
+      "chains": {
+        "triangles": 424,
+        "normalRms": 19.1826171875,
+        "colorRms": 0.0,
+        "geometryRms": 0.002841329202055931,
+        "uvRms": 0.0,
+        "generationMs": 2413.7656,
+        "silhouette": 0.025044195353984833,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected normals from 3 quality candidates (3 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Protected face floor already reaches/exceeds the requested budget; no error/weight relaxation. Over-budget candidates ranked by measured quality. Selected native Target Error=0,3, UV/Normal/Color weights=5/2/0,125. Surface attribute fit: normals kept, RGBA kept (9324 samples, 3 verification trials). Smoothing: 25 source regions, 46 linked normal duplicates, 7 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Coarsened-source result error is sampled against LOD0; the native bound applies only to the prepared mesh. Feature chains: removed 6 chain points / 12 triangles; tested 551 collapses from 140 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. Normal error 130,2\u00b0 exceeds requested 30,0\u00b0. Hard-edge coverage: 174/174; protected faces 301, ambiguous edges 0, patch interfaces 124/124. Coarsened 6 points; feature deviation \u22640,50% of source diagonal, endpoint normal guide 5,0\u00b0."
+      },
+      "native": {
+        "triangles": 424,
+        "normalRms": 6.184937477111816,
+        "colorRms": 0.0,
+        "geometryRms": 0.0013536380138248205,
+        "uvRms": 0.0,
+        "generationMs": 2730.7513000000004,
+        "silhouette": 0.021986128762364388,
+        "beltFallback": false,
+        "note": "Triangle budget prioritized; selected balanced from 3 quality candidates (6 native probes). Selection measures six-view silhouette, area RMS geometry/normals/UV/RGBA against source; score is a relative ranking heuristic. Coarsened over-budget native probes and strategies ranked by measured source quality; lower triangle counts alone cannot displace a better field/shape. Selected native Target Error=0,3, UV/Normal/Color weights=20/0,5/0,25. Surface attribute fit: normals improved, RGBA kept (9324 samples, 3 verification trials). Smoothing: 25 source regions, 40 linked normal duplicates, 5 mixed/unmapped faces pinned, 0 source regions without a mapped LOD face, 0 incomplete correspondences pinned. Per-region normal RMS/max must not increase. Coarsened-source result error is sampled against LOD0; the native bound applies only to the prepared mesh. Feature chains: removed 6 chain points / 12 triangles; tested 551 collapses from 140 degree-two points, separated 0 disconnected contact fans, kept 0 invalid components. Normal error 90,0\u00b0 exceeds requested 30,0\u00b0. Hard-edge coverage: 174/174; protected faces 0, ambiguous edges 0, patch interfaces 0/0. Coarsened 6 points; feature deviation \u22640,50% of source diagonal, endpoint normal guide 5,0\u00b0. Direct native constraints; only ambiguous faces remain frozen. Retried with all crease vertices locked."
+      },
+      "target": 424,
+      "matchedWithinFivePercent": true
+    }
+  ]
+}

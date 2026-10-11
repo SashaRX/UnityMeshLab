@@ -1019,7 +1019,8 @@ namespace SashaRX.UnityMeshLab
 
             // Collision from the sidecar replaces the clone's _COL children; every
             // _COL mesh is then stripped to geometry and given a real material.
-            int collisionMeshCount = FbxExport.InjectCollisionMeshes(tempRoot, SidecarStore.CollisionMeshes(sourceFbxPath), tempMeshes, collisionSourceFrames);
+            int collisionMeshCount = FbxExport.InjectCollisionMeshes(tempRoot, SidecarStore.CollisionMeshes(sourceFbxPath), tempMeshes,
+                collisionSourceFrames, SidecarStore.CollisionSources(sourceFbxPath));
             FbxExport.StripCollisionMeshes(tempRoot, FbxExport.FirstRealMaterial(entries.Select(p => p.entry)), tempMeshes);
             FbxExport.TrimMaterialArrays(tempRoot);
 
