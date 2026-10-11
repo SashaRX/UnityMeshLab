@@ -69,16 +69,16 @@ namespace SashaRX.UnityMeshLab
             }
 
             string staged = Path.Combine(scratch, "external.fbx");
-            return RewriteAndImport(document, staged, scratch, target, paths, false);
+            return RewriteAndImport(document, staged, scratch, target, paths, false, referenced);
         }
 
-        internal static FbxScene ResolveExternal(FbxSourceDocument document, string scratch, string target, bool requireMedia)
+        internal static FbxScene ResolveExternal(FbxSourceDocument document, string scratch, string target, bool requireMedia, List<string> referenced)
         {
             // Documents without media need no filename staging. Preserve their
             // untouched layer values exactly, including binary double precision.
             if (document.MediaReferences.Count == 0) return document.Scene;
             string staged = Path.Combine(scratch, "resolved.fbx");
-            return RewriteAndImport(document, staged, scratch, Path.GetFullPath(target), new Dictionary<string, string>(PathComparer), requireMedia);
+            return RewriteAndImport(document, staged, scratch, Path.GetFullPath(target), new Dictionary<string, string>(PathComparer), requireMedia, referenced);
         }
 
         static string MediaOutputPath(string destination, string hash, string filename)
@@ -100,13 +100,17 @@ namespace SashaRX.UnityMeshLab
             document.ExportScene(document.Scene, staged, new FbxWriteSettings(true, false).WriterFormat(document.Manager), io);
         }
 
-        static FbxScene RewriteAndImport(FbxSourceDocument document, string staged, string scratch, string target, IReadOnlyDictionary<string, string> extractedPaths, bool requireMedia)
+        static FbxScene RewriteAndImport(FbxSourceDocument document, string staged, string scratch, string target, IReadOnlyDictionary<string, string> extractedPaths, bool requireMedia, List<string> referenced)
         {
             Stage(document, staged);
             string rewritten = Path.Combine(scratch, "media-paths.fbx");
             var originalPaths = SourcePaths(document.MediaReferences, document.SourceDirectory);
             var mediaPaths = FbxUvSetNames.ReadMediaReferences(staged)
                 .Select(reference => ResolveBinaryPaths(reference, scratch, document.SourceDirectory, extractedPaths, originalPaths, requireMedia)).ToArray();
+            // Authored external maps can exist on disk without an AssetDatabase
+            // entry. Import them before the model, without taking deletion ownership.
+            referenced.AddRange(mediaPaths.SelectMany(paths => paths.Values).Where(MediaExists).Distinct(PathComparer)
+                .Where(file => !referenced.Contains(file, PathComparer)));
             using (var reader = File.OpenRead(staged))
             using (var writer = File.Create(rewritten))
                 RewriteBinary(reader, writer, mediaPaths, scratch, target);
@@ -276,9 +280,12 @@ namespace SashaRX.UnityMeshLab
             {
                 string absolute = string.IsNullOrEmpty(reference.filename) ? null : MediaPath(reference.filename, source);
                 string relative = string.IsNullOrEmpty(reference.relative) ? null : MediaPath(reference.relative, source);
-                string resolved = MediaExists(absolute) ? absolute : MediaExists(relative) ? relative
-                    : !string.IsNullOrEmpty(reference.filename) && IsForeignAbsolute(reference.filename) ? reference.filename
-                    : relative ?? absolute;
+                string resolved;
+                if (MediaExists(absolute)) resolved = absolute;
+                else if (MediaExists(relative)) resolved = relative;
+                else if (!string.IsNullOrEmpty(reference.filename) && IsForeignAbsolute(reference.filename)) resolved = reference.filename;
+                else if (!string.IsNullOrEmpty(reference.relative) && IsForeignAbsolute(reference.relative)) resolved = reference.relative;
+                else resolved = relative ?? absolute;
                 if (resolved == null) continue;
                 // A missing source-relative map still has an authored location.
                 // Keep it so restoring that map also restores save-as variants.

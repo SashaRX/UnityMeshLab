@@ -240,7 +240,7 @@ Before merging any code that writes FBX:
     `<output>.fbm` when embedding is off, so texture references survive temporary
     SDK document disposal. Existing external maps are never overwritten.
     Media subfolders use a 32-character SHA256 prefix; reuse checks the full hash.
-    Externalized project/package maps, including reused files, are imported before
+    Referenced project/package maps, including authored external and reused files, are imported before
     committing the FBX write and before importing the model. If the media import
     fails, the existing FBX and its metadata remain untouched;
     rollback uses AssetDatabase for project/package resources. Explicit
@@ -253,6 +253,12 @@ Before merging any code that writes FBX:
     they are never treated as paths relative to the source or output directory.
     An available local relative companion is still preferred; explicit embedding
     refuses a foreign reference without an available local map.
+    The same spelling rule applies when only RelativeFilename/RelPath is present.
+    Foliage variant export retains ownership of newly created media after the FBX
+    commit. If a later model import/configuration or source group fails, removal
+    of each failed variant also removes its new maps and empty folders through
+    AssetDatabase; reused and authored maps remain untouched. If the failed FBX
+    itself cannot be removed, its media stays with it and cleanup reports the error.
 
 If the tool produces a file that flags ANY category in
 `patch_fbx_materials --report-file`, the tool is wrong, not the

@@ -111,8 +111,17 @@ namespace SashaRX.UnityMeshLab
         public void Save(string path)
             => SaveWithSettings(path, FbxWriteSettings.FromProject(), false);
 
-        internal void SaveAtomic(string path)
-            => SaveWithSettings(path, FbxWriteSettings.FromProject(), true);
+        internal void SaveAtomic(string path, MediaOwnership ownership = null)
+            => SaveWithOwnership(path, FbxWriteSettings.FromProject(), true, null, null, ownership);
+
+        // A caller discarding a successfully committed variant must remove only
+        // the resources that save created, never reused or authored external maps.
+        internal sealed class MediaOwnership
+        {
+            internal readonly List<string> files = new List<string>();
+            internal readonly List<string> folders = new List<string>();
+            internal List<Exception> Rollback() => RollbackMedia(files, folders);
+        }
 
         // Corner-tag copies are import probes, not user exports: retain the source's
         // container and media so the probe's imported data keeps the same context.
@@ -120,6 +129,9 @@ namespace SashaRX.UnityMeshLab
             => SaveWithSettings(path, new FbxWriteSettings(Binary, EmbedsMedia), false, requireMedia: false);
 
         void SaveWithSettings(string path, FbxWriteSettings settings, bool atomic, Action<IEnumerable<string>> importMedia = null, bool? requireMedia = null)
+            => SaveWithOwnership(path, settings, atomic, importMedia, requireMedia, null);
+
+        void SaveWithOwnership(string path, FbxWriteSettings settings, bool atomic, Action<IEnumerable<string>> importMedia, bool? requireMedia, MediaOwnership ownership)
         {
             var io = Manager.GetIOSettings();
             int format = settings.WriterFormat(Manager);
@@ -136,14 +148,14 @@ namespace SashaRX.UnityMeshLab
                 // in SDK scenes throughout; the temporary format is never a user output.
                 prepared = EmbedsMedia && !settings.EmbedTextures
                     ? FbxExternalMedia.Prepare(this, scratch, path, createdMedia, createdFolders, referencedMedia)
-                    : FbxExternalMedia.ResolveExternal(this, scratch, path, requireMedia ?? settings.EmbedTextures);
+                    : FbxExternalMedia.ResolveExternal(this, scratch, path, requireMedia ?? settings.EmbedTextures, referencedMedia);
                 // Drain the media import batch before writing the FBX. A texture
                 // postprocessor failure then leaves the old document untouched,
                 // and newly externalized assets remain eligible for rollback.
                 (importMedia ?? FbxExternalMedia.ImportMedia)(referencedMedia);
                 io.SetBoolProp(Globals.EXP_FBX_EMBEDDED, settings.EmbedTextures);
-                if (atomic) FbxExport.ReplaceAtomically(path, temp => ExportScene(prepared, Path.GetFullPath(temp), format, io), () => committed = true);
-                else { ExportScene(prepared, path, format, io); committed = true; }
+                if (atomic) FbxExport.ReplaceAtomically(path, temp => ExportScene(prepared, Path.GetFullPath(temp), format, io), MarkCommitted);
+                else { ExportScene(prepared, path, format, io); MarkCommitted(); }
             }
             catch (Exception original)
             {
@@ -160,6 +172,12 @@ namespace SashaRX.UnityMeshLab
             finally
             {
                 if (prepared != null && prepared != Scene) prepared.Destroy();
+            }
+            void MarkCommitted()
+            {
+                committed = true;
+                ownership?.files.AddRange(createdMedia);
+                ownership?.folders.AddRange(createdFolders);
             }
         }
 

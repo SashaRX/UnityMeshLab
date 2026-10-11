@@ -30,6 +30,9 @@ namespace SashaRX.UnityMeshLab
             internal readonly Dictionary<string, bool[]> submeshes = new Dictionary<string, bool[]>(StringComparer.Ordinal);
             internal readonly Dictionary<string, HashSet<string>> sourceNodes = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
             internal Action<string, ImportAssetOptions> importAsset = AssetDatabase.ImportAsset;
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+            internal readonly FbxSourceDocument.MediaOwnership mediaOwnership = new FbxSourceDocument.MediaOwnership();
+#endif
         }
 
         // ─────────────────────────────────────────────────────────────────

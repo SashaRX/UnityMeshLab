@@ -309,11 +309,12 @@ namespace SashaRX.UnityMeshLab.Tests
             var originalMethod = typeof(FbxExternalMedia).GetMethod("SourcePaths", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
             var resolveMethod = typeof(FbxExternalMedia).GetMethod("ResolveBinaryPaths", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
             foreach (string authored in foreign)
+            foreach (var pair in new[] { (authored, (string)null), ((string)null, authored) })
             {
-                var references = new List<(string, string)> { (authored, null) };
+                var references = new List<(string, string)> { pair };
                 var original = (Dictionary<string, string>)originalMethod.Invoke(null, new object[] { references, source });
                 var resolved = (IReadOnlyDictionary<string, string>)resolveMethod.Invoke(null,
-                    new object[] { (authored, (string)null), scratch, source, new Dictionary<string, string>(), original, false });
+                    new object[] { pair, scratch, source, new Dictionary<string, string>(), original, false });
                 foreach (string field in new[] { "FileName", "RelativeFilename", "Path", "RelPath" })
                 {
                     string prefix = field == "Path" || field == "RelPath" ? "P: \"" + field + "\", \"KString\", \"XRefUrl\", \"\", \"" : field + ": \"";
@@ -321,7 +322,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     Assert.AreEqual(line, FbxExternalMedia.RewriteFilename(line, resolved, scratch, target));
                 }
                 var exception = Assert.Throws<System.Reflection.TargetInvocationException>(() => resolveMethod.Invoke(null,
-                    new object[] { (authored, (string)null), scratch, source, new Dictionary<string, string>(), original, true }));
+                    new object[] { pair, scratch, source, new Dictionary<string, string>(), original, true }));
                 Assert.IsInstanceOf<IOException>(exception.InnerException);
             }
         }
@@ -854,6 +855,40 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsNotNull(UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(assets + "/output.fbx"));
             }
             finally { UnityEditor.AssetDatabase.DeleteAsset(assets); }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void ExistingExternalMapsAreImportedBeforeTheSavedModel(bool embed)
+        {
+            string source = Source(true);
+            string name = "MeshLabExternalImport_" + Guid.NewGuid().ToString("N"), assets = "Assets/" + name;
+            UnityEditor.AssetDatabase.CreateFolder("Assets", name);
+            UnityEditor.AssetDatabase.DisallowAutoRefresh();
+            try
+            {
+                string map = assets + "/external.png", authored = Path.Combine(folder, "authored.fbx");
+                byte[] bytes;
+                var texture = new Texture2D(2, 2);
+                try { bytes = texture.EncodeToPNG(); }
+                finally { UnityEngine.Object.DestroyImmediate(texture); }
+                File.WriteAllBytes(map, bytes);
+                using (var document = FbxSourceDocument.Load(source))
+                {
+                    document.Scene.GetRootNode().GetChild(0).AddMaterial(FbxStructureEdit.NewMaterial(document.Scene,
+                        "M_External", 1, 1, 1, "T_External", Path.GetFullPath(map), "external.png", null));
+                    var io = document.Manager.GetIOSettings(); io.SetBoolProp(Globals.EXP_FBX_EMBEDDED, false);
+                    document.ExportScene(document.Scene, authored, new FbxWriteSettings(true, false).WriterFormat(document.Manager), io);
+                }
+                Assert.IsNull(UnityEditor.AssetDatabase.LoadAssetAtPath<Texture2D>(map));
+                MeshLabProjectSettings.Instance.embedFbxTextures = embed;
+                using (var document = FbxSourceDocument.Load(authored)) document.SaveAtomic(Path.GetFullPath(assets + "/output.fbx"));
+                Assert.IsNotNull(UnityEditor.AssetDatabase.LoadAssetAtPath<Texture2D>(map), "existing project-local external maps need pre-model import too");
+                CollectionAssert.AreEqual(bytes, File.ReadAllBytes(map), "authored maps remain outside rollback ownership");
+                UnityEditor.AssetDatabase.ImportAsset(assets + "/output.fbx", UnityEditor.ImportAssetOptions.ForceSynchronousImport);
+                Assert.IsNotNull(UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(assets + "/output.fbx"));
+            }
+            finally { UnityEditor.AssetDatabase.AllowAutoRefresh(); UnityEditor.AssetDatabase.DeleteAsset(assets); }
         }
 
         [Test]
