@@ -188,7 +188,8 @@ namespace SashaRX.UnityMeshLab
         void DisposeUvQuality()
         {
             CancelUvQuality(); uvQualityHasKey = false; uvQualityReport = null;
-            if (uvQualityMap) DestroyImmediate(uvQualityMap); uvQualityMap = null;
+            if (uvQualityMap) DestroyImmediate(uvQualityMap);
+            uvQualityMap = null;
         }
     }
 }

@@ -331,7 +331,8 @@ namespace SashaRX.UnityMeshLab
         static bool Finite(Vector3 p) => Finite(p.x) && Finite(p.y) && Finite(p.z);
         static bool Finite(float x) => !float.IsNaN(x) && !float.IsInfinity(x);
         static double Dot(Vector3 a, Vector3 b) => (double)a.x * b.x + (double)a.y * b.y + (double)a.z * b.z;
-        static double Cross(Vector2 a, Vector2 b, Vector2 c) => ((double)b.x - a.x) * ((double)c.y - a.y) - ((double)b.y - a.y) * ((double)c.x - a.x);
+        static double Cross(Vector2 origin, Vector2 edge, Vector2 point) => ((double)edge.x - origin.x) * ((double)point.y - origin.y)
+            - ((double)edge.y - origin.y) * ((double)point.x - origin.x);
         static double CrossLength(Vector3 a, Vector3 b)
         {
             double x = (double)a.y * b.z - (double)a.z * b.y, y = (double)a.z * b.x - (double)a.x * b.z, z = (double)a.x * b.y - (double)a.y * b.x;
