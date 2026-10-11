@@ -43,6 +43,10 @@ New entries have a stable instance key derived from the source mesh name and
 root-relative hierarchy path. Separate nodes sharing a mesh retain separate
 entries and placements in both document saves and normalized rebuilds. Legacy
 entries continue to use mesh-name lookup.
+Regeneration prunes missing source paths within the current hierarchy scope,
+retaining valid excluded nodes and other scopes. Superseded keys remain as cleanup
+metadata so document saves remove old legacy or moved-instance collision nodes.
+Cleanup refuses a managed collision container that contains unrelated children.
 
 On the packed Park_Bench_A LOD0 (3,832 source triangles), the Structural preset
 produces two boxes for seat/back and six profiles for the side structures. The

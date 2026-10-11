@@ -473,8 +473,11 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-        [Test]
-        public void SidecarRetainsSharedMeshInstancesAndRebuildUsesEachHierarchyFrame()
+        [TestCase(0)]
+        [TestCase(1)]
+        [TestCase(2)]
+        [TestCase(3)]
+        public void SidecarRetainsSharedMeshInstancesAndRebuildUsesEachHierarchyFrame(int edit)
         {
             var first = Prepare(true, 2);
             var ctx = Field<UvToolContext>(tool, "ctx");
@@ -517,25 +520,65 @@ namespace SashaRX.UnityMeshLab.Tests
                 info.GetField("meshName").SetValue(result, imported.name);
                 results[i] = result;
             }
-            Call(tool, "SaveToSidecar");
+            var initialData = SidecarStore.LoadOrCreate(fbxPath);
+            initialData.collisionEntries.Add(new CollisionMeshEntry { meshGroupKey = imported.name });
             Call(tool, "SaveToSidecar");
             var saved = SidecarStore.Load(fbxPath);
+            var generated = Field<List<Mesh>>(tool, "generatedMeshes");
+            var originalLocalVertices = new[] { generated[0].vertices, generated[1].vertices };
+            string oldFirstKey = saved.collisionEntries[0].meshGroupKey;
+            if (edit == 1) first.name = "RenamedSource";
+            if (edit == 2) first.SetParent(branch, false);
+            if (edit == 3)
+            {
+                // A valid excluded instance keeps its saved geometry.
+                ctx.MeshEntries[1].include = false;
+                secondRenderer.enabled = false;
+                results.RemoveAt(1);
+                Object.DestroyImmediate(generated[1]);
+                generated.RemoveAt(1);
+            }
+            Call(tool, "SaveToSidecar");
             Assert.AreEqual(2, saved.collisionEntries.Count);
             Assert.AreNotEqual(saved.collisionEntries[0].meshGroupKey, saved.collisionEntries[1].meshGroupKey);
             Assert.AreNotEqual(saved.collisionEntries[0].sourceHierarchyPath, saved.collisionEntries[1].sourceHierarchyPath);
+            var firstPath = CollisionHierarchyAnalyzer.RelativePath(root.transform, first);
+            var firstSaved = saved.collisionEntries.Find(e => e.sourceHierarchyPath == firstPath);
+            Assert.IsNotNull(firstSaved);
+            CollectionAssert.Contains(firstSaved.replacedMeshGroupKeys, imported.name, "legacy node cleanup must survive repeated saves");
+            if (edit == 1 || edit == 2)
+            {
+                Assert.IsFalse(saved.collisionEntries.Exists(e => e.meshGroupKey == oldFirstKey), "renamed/reparented instances must not leave stale sidecar entries");
+                CollectionAssert.Contains(firstSaved.replacedMeshGroupKeys, oldFirstKey);
+            }
             var frames = FbxExport.CollisionSourceFrames(root);
             var roundTrip = SidecarStore.CollisionMeshes(fbxPath);
             var sink = new List<Mesh>();
+            var legacy = new GameObject(imported.name + "_COL");
+            legacy.transform.SetParent(exportRoot.transform.GetChild(0), false);
+            new GameObject(imported.name + "_COL_Hull0").transform.SetParent(legacy.transform, false);
+            GameObject moved = null;
+            if (edit == 1 || edit == 2)
+            {
+                moved = new GameObject(oldFirstKey + "_COL");
+                moved.transform.SetParent(exportRoot.transform.GetChild(0), false);
+            }
             try
             {
                 Assert.AreEqual(2, FbxExport.InjectCollisionMeshes(exportRoot, roundTrip, sink, frames, SidecarStore.CollisionSources(fbxPath)));
-                var sources = new[] { first, second };
+                Assert.IsTrue(legacy == null, "normalized rebuild must also remove nested legacy colliders");
+                if (edit == 1 || edit == 2) Assert.IsTrue(moved == null);
+                var sources = new Dictionary<string, Transform> {
+                    [firstPath] = first,
+                    [CollisionHierarchyAnalyzer.RelativePath(root.transform, second)] = second
+                };
                 for (int instance = 0; instance < 2; instance++)
                 {
                     var actual = roundTrip[instance].meshes[0].vertices;
-                    var local = Field<List<Mesh>>(tool, "generatedMeshes")[instance].vertices;
+                    var sourceNode = sources[SidecarStore.CollisionSources(fbxPath)[roundTrip[instance].meshName].sourceHierarchyPath];
+                    var local = originalLocalVertices[sourceNode == first ? 0 : 1];
                     for (int i = 0; i < actual.Length; i++)
-                        Assert.Less(Vector3.Distance(sources[instance].TransformPoint(local[i]) - root.transform.position, actual[i]), .0001f);
+                        Assert.Less(Vector3.Distance(sourceNode.TransformPoint(local[i]) - root.transform.position, actual[i]), .0001f);
                 }
             }
             finally { foreach (var mesh in sink) if (mesh) Object.DestroyImmediate(mesh); }

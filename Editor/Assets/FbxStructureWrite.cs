@@ -140,7 +140,9 @@ namespace SashaRX.UnityMeshLab
             // Collision meshes Cleanup flagged (UVs or colours) are rewritten clean when the
             // sidecar replaces them; any other is the rebuild's to strip.
             var replaced = new HashSet<string>(plan.collisions.SelectMany(NodeNames), StringComparer.Ordinal);
-            var flagged = FbxExport.CollisionMeshesWithSurfaceData(fbxPath).Where(n => !replaced.Contains(n)).ToList();
+            var obsoleteKeys = ReplacedCollisionKeys(plan);
+            var flagged = FbxExport.CollisionMeshesWithSurfaceData(fbxPath)
+                .Where(n => !replaced.Contains(n) && !obsoleteKeys.Any(k => MeshNaming.IsCollisionOf(n, k))).ToList();
             if (flagged.Count > 0)
                 plan.refusals.Add($"{string.Join(", ", flagged.Select(n => $"'{n}'"))} in '{file}' carry UVs or vertex colours that collision meshes should not have; the rebuild strips them");
             return plan;
@@ -440,7 +442,13 @@ namespace SashaRX.UnityMeshLab
                 materialTargets.Add(target);
             }
 
-            int changes = 0;
+            var obsoleteNodes = ObsoleteCollisionNodes(scene, plan);
+            int changes = obsoleteNodes.Count;
+            foreach (var obsolete in obsoleteNodes)
+            {
+                log.Add($"'{obsolete.GetName()}': removed superseded managed collision node");
+                FbxStructureEdit.RemoveSubtree(obsolete);
+            }
             // Material edits first: a generated LOD starts with its source node's materials,
             // which must already be the ones the source renderer was given.
             foreach (var (edit, node, slots) in materialTargets)
@@ -877,6 +885,49 @@ namespace SashaRX.UnityMeshLab
         static bool IsSingle((string key, List<Mesh> meshes, bool convex) collision) => !collision.convex && collision.meshes.Count == 1;
 
         static string HullName(string key, int hull) => $"{key}_COL_Hull{hull}";
+
+        static List<FbxNode> ObsoleteCollisionNodes(FbxScene scene, FbxStructurePlan plan)
+        {
+            var keys = ReplacedCollisionKeys(plan);
+            var nodes = new List<FbxNode>();
+            CollectObsoleteCollisionNodes(scene.GetRootNode(), keys, nodes);
+            return nodes;
+        }
+
+        static HashSet<string> ReplacedCollisionKeys(FbxStructurePlan plan)
+        {
+            var active = new HashSet<string>(plan.collisions.Select(c => c.key), StringComparer.Ordinal);
+            var keys = new HashSet<string>(StringComparer.Ordinal);
+            foreach (string key in active)
+                if (plan.collisionSources.TryGetValue(key, out var entry) && entry.replacedMeshGroupKeys != null)
+                    foreach (string oldKey in entry.replacedMeshGroupKeys)
+                        if (!string.IsNullOrEmpty(oldKey) && !active.Contains(oldKey)) keys.Add(oldKey);
+            return keys;
+        }
+
+        static void CollectObsoleteCollisionNodes(FbxNode node, HashSet<string> keys, List<FbxNode> output)
+        {
+            foreach (string key in keys)
+            {
+                if (!MeshNaming.IsCollisionOf(node.GetName(), key)) continue;
+                RequireOwnedCollisionSubtree(node, key);
+                output.Add(node);
+                return;
+            }
+            for (int i = 0; i < node.GetChildCount(); i++)
+                CollectObsoleteCollisionNodes(node.GetChild(i), keys, output);
+        }
+
+        static void RequireOwnedCollisionSubtree(FbxNode node, string key)
+        {
+            for (int i = 0; i < node.GetChildCount(); i++)
+            {
+                var child = node.GetChild(i);
+                if (!MeshNaming.IsCollisionOf(child.GetName(), key))
+                    throw new FbxStructureRefusalException($"'{node.GetName()}' contains unrelated child '{child.GetName()}'; superseded collision cannot be removed safely");
+                RequireOwnedCollisionSubtree(child, key);
+            }
+        }
 
         // The mesh nodes a collision entry writes.
         static IEnumerable<string> NodeNames((string key, List<Mesh> meshes, bool convex) collision)

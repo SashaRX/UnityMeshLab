@@ -658,6 +658,7 @@ namespace SashaRX.UnityMeshLab
             string sidecarPath = SidecarStore.PathFor(fbxPath);
             var data = SidecarStore.LoadOrCreate(fbxPath);
             Undo.RecordObject(data, "Save Collision Sidecar");
+            var obsoleteKeys = PruneMissingCollisionSources(data);
 
             // Build flattened collision entry per source mesh
             int meshIdx = 0;
@@ -723,13 +724,57 @@ namespace SashaRX.UnityMeshLab
                 };
 
                 // Replace this instance and the old unscoped mesh entry, retaining others.
-                data.collisionEntries.RemoveAll(c => c != null && (c.meshGroupKey == entry.meshGroupKey ||
-                    (string.IsNullOrEmpty(c.sourceMeshName) && c.meshGroupKey == r.meshName)));
+                var replaced = data.collisionEntries.Where(c => c != null && (c.meshGroupKey == entry.meshGroupKey ||
+                    (string.IsNullOrEmpty(c.sourceMeshName) && c.meshGroupKey == r.meshName))).ToList();
+                foreach (var old in replaced)
+                {
+                    CollectReplacedCollisionKeys(old, obsoleteKeys);
+                    data.collisionEntries.Remove(old);
+                }
+                obsoleteKeys.Remove(entry.meshGroupKey);
+                entry.replacedMeshGroupKeys = obsoleteKeys.ToArray();
+                obsoleteKeys.Clear();
                 data.collisionEntries.Add(entry);
             }
 
             SidecarStore.Save(data);
             UvtLog.Info($"[Collision] Saved to sidecar: {sidecarPath} ({data.collisionEntries.Count} collision entries)");
+        }
+
+        HashSet<string> PruneMissingCollisionSources(Uv2DataAsset data)
+        {
+            var root = ctx.LodGroup.transform;
+            var importedRoot = PrefabUtility.GetCorrespondingObjectFromOriginalSource(root);
+            string scope = importedRoot != null ? CollisionHierarchyAnalyzer.RelativePath(importedRoot.root, importedRoot) : ".";
+            var livePaths = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var renderer in root.GetComponentsInChildren<Renderer>(true))
+            {
+                if (MeshNaming.IsCollision(renderer.name)) continue;
+                var node = renderer.transform;
+                var original = PrefabUtility.GetCorrespondingObjectFromOriginalSource(node);
+                string path = original != null ? CollisionHierarchyAnalyzer.RelativePath(original.root, original)
+                    : CollisionHierarchyAnalyzer.RelativePath(root, node);
+                if (!string.IsNullOrEmpty(path)) livePaths.Add(path);
+            }
+            var obsolete = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = data.collisionEntries.Count - 1; i >= 0; i--)
+            {
+                var entry = data.collisionEntries[i];
+                if (entry == null || string.IsNullOrEmpty(entry.sourceMeshName) || string.IsNullOrEmpty(entry.sourceHierarchyPath)) continue;
+                bool inScope = scope == "." || entry.sourceHierarchyPath == scope || entry.sourceHierarchyPath.StartsWith(scope + "/", StringComparison.Ordinal);
+                if (!inScope || livePaths.Contains(entry.sourceHierarchyPath)) continue;
+                CollectReplacedCollisionKeys(entry, obsolete);
+                data.collisionEntries.RemoveAt(i);
+            }
+            return obsolete;
+        }
+
+        static void CollectReplacedCollisionKeys(CollisionMeshEntry entry, HashSet<string> keys)
+        {
+            if (!string.IsNullOrEmpty(entry.meshGroupKey)) keys.Add(entry.meshGroupKey);
+            if (entry.replacedMeshGroupKeys == null) return;
+            foreach (string key in entry.replacedMeshGroupKeys)
+                if (!string.IsNullOrEmpty(key)) keys.Add(key);
         }
 
         /// <summary>

@@ -391,9 +391,11 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
-        [TestCase(false)]
-        [TestCase(true)]
-        public void Structure_CollisionInstancesFollowTheirOwnNodePaths(bool sameParent)
+        [TestCase(false, false)]
+        [TestCase(true, false)]
+        [TestCase(false, true)]
+        [TestCase(true, true)]
+        public void Structure_CollisionInstancesFollowTheirOwnNodePaths(bool sameParent, bool migrate)
         {
             using var document = FbxSourceDocument.Load(WriteSource());
             var scene = document.Scene;
@@ -425,10 +427,25 @@ namespace SashaRX.UnityMeshLab.Tests
                     vertices[i] = new UnityEngine.Vector3(positions[i*3], positions[i*3+1], positions[i*3+2]);
                 mesh.vertices = vertices; mesh.triangles = triangles.Take(3).ToArray();
                 plan.collisions.Add((key, new List<UnityEngine.Mesh> { mesh }, false));
-                plan.collisionSources[key] = new CollisionMeshEntry { meshGroupKey = key, sourceMeshName = "Rock_LOD0", sourceHierarchyPath = path };
+                plan.collisionSources[key] = new CollisionMeshEntry { meshGroupKey = key, sourceMeshName = "Rock_LOD0", sourceHierarchyPath = path,
+                    replacedMeshGroupKeys = migrate ? new[] { "Rock_LOD0", "PreviousInstance", key } : null };
             }
-            Assert.AreEqual(2, FbxStructureWrite.Apply(document, tagged, plan,
+            if (migrate)
+            {
+                var oldScoped = FbxNode.Create(scene, "PreviousInstance_COL");
+                second.GetParent().AddChild(oldScoped);
+                var oldHull = FbxNode.Create(scene, "PreviousInstance_COL_Hull0");
+                oldScoped.AddChild(oldHull);
+            }
+            Assert.AreEqual(migrate ? 4 : 2, FbxStructureWrite.Apply(document, tagged, plan,
                 new FbxStructureWrite.Options { preserveHierarchy = true }, new List<string>()));
+            if (migrate)
+            {
+                Assert.IsEmpty(FbxStructureEdit.FindNodes(scene, "Rock_LOD0_COL"));
+                Assert.IsEmpty(FbxStructureEdit.FindNodes(scene, "Rock_LOD0_COL_Hull0"));
+                Assert.IsEmpty(FbxStructureEdit.FindNodes(scene, "PreviousInstance_COL"));
+                Assert.IsEmpty(FbxStructureEdit.FindNodes(scene, "PreviousInstance_COL_Hull0"));
+            }
             var sourceNodes = new[] { first, second };
             for (int i = 0; i < 2; i++)
             {
@@ -436,6 +453,37 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsTrue(FbxStructureEdit.SamePlacement(sourceNodes[i], collision, true));
                 Assert.AreEqual(sourceNodes[i].GetParent(), collision.GetParent());
             }
+        }
+
+        [Test]
+        public void Structure_MigrationRefusesUnrelatedChildrenBeforeRemovingOldCollision()
+        {
+            using var document = FbxSourceDocument.Load(WriteSource());
+            var scene = document.Scene;
+            var old = FbxStructureEdit.FindNodes(scene, "Rock_LOD0_COL").Single();
+            old.AddChild(FbxNode.Create(scene, "AuthoredMarker"));
+            var (positions, triangles) = SimulatedImport(document.Meshes[0]);
+            var tagged = new Dictionary<string, FbxChannelWrite.Tagged> {
+                ["Rock_LOD0"] = new FbxChannelWrite.Tagged {
+                    ordinal = 0, cornerPositions = positions, submeshCorners = new[] { triangles }, submeshFaceSizes = new[] { 3 }
+                }
+            };
+            string key = CollisionHierarchyAnalyzer.InstanceKey("Rock_LOD0", "Group[0]/Rock_LOD0[0]");
+            using var plan = new FbxStructurePlan();
+            var mesh = new UnityEngine.Mesh();
+            var vertices = new UnityEngine.Vector3[positions.Length / 3];
+            for (int i = 0; i < vertices.Length; i++)
+                vertices[i] = new UnityEngine.Vector3(positions[i*3], positions[i*3+1], positions[i*3+2]);
+            mesh.vertices = vertices; mesh.triangles = triangles.Take(3).ToArray();
+            plan.collisions.Add((key, new List<UnityEngine.Mesh> { mesh }, false));
+            plan.collisionSources[key] = new CollisionMeshEntry { sourceMeshName = "Rock_LOD0", sourceHierarchyPath = "Group[0]/Rock_LOD0[0]",
+                replacedMeshGroupKeys = new[] { "Rock_LOD0" } };
+            var error = Assert.Throws<FbxStructureRefusalException>(() => FbxStructureWrite.Apply(document, tagged, plan,
+                new FbxStructureWrite.Options { preserveHierarchy = true }, new List<string>()));
+            StringAssert.Contains("AuthoredMarker", error.Message);
+            Assert.AreEqual(1, FbxStructureEdit.FindNodes(scene, "Rock_LOD0_COL").Count);
+            Assert.AreEqual(1, FbxStructureEdit.FindNodes(scene, "AuthoredMarker").Count);
+            Assert.IsEmpty(FbxStructureEdit.FindNodes(scene, key + "_COL"));
         }
 
         [Test]

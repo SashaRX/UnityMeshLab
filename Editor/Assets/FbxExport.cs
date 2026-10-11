@@ -1262,10 +1262,12 @@ namespace SashaRX.UnityMeshLab
             // entry fails before the remaining entries are visited.
             foreach (var collision in collisionData) tempSink.AddRange(collision.meshes);
 
-            for (int ci = tempRoot.transform.childCount - 1; ci >= 0; ci--)
+            RemoveManagedCollisionNodes(tempRoot, collisionData, collisionSources);
+            // Preserve the rebuild's existing replacement of top-level collision.
+            for (int i = tempRoot.transform.childCount - 1; i >= 0; i--)
             {
-                var ch = tempRoot.transform.GetChild(ci);
-                if (MeshNaming.IsCollision(ch.name)) Object.DestroyImmediate(ch.gameObject);
+                var child = tempRoot.transform.GetChild(i);
+                if (MeshNaming.IsCollision(child.name)) Object.DestroyImmediate(child.gameObject);
             }
 
             int count = 0;
@@ -1314,6 +1316,44 @@ namespace SashaRX.UnityMeshLab
             }
             if (count > 0) UvtLog.Verbose($"[FBX Export] Added {count} collision mesh(es) from sidecar");
             return count;
+        }
+
+        static void RemoveManagedCollisionNodes(GameObject root, List<(string meshName, List<Mesh> meshes, bool isConvex)> data,
+            Dictionary<string, CollisionMeshEntry> sources)
+        {
+            var keys = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var collision in data) keys.Add(collision.meshName);
+            foreach (var collision in data)
+                if (sources != null && sources.TryGetValue(collision.meshName, out var entry) && entry.replacedMeshGroupKeys != null)
+                    foreach (string key in entry.replacedMeshGroupKeys)
+                        if (!string.IsNullOrEmpty(key)) keys.Add(key);
+            var removed = new List<GameObject>();
+            for (int i = 0; i < root.transform.childCount; i++)
+                CollectManagedCollisionNodes(root.transform.GetChild(i), keys, removed);
+            foreach (var node in removed) Object.DestroyImmediate(node);
+        }
+
+        static void CollectManagedCollisionNodes(Transform node, HashSet<string> keys, List<GameObject> removed)
+        {
+            foreach (string key in keys)
+            {
+                if (!MeshNaming.IsCollisionOf(node.name, key)) continue;
+                RequireManagedCollisionChildren(node, key);
+                removed.Add(node.gameObject);
+                return;
+            }
+            for (int i = 0; i < node.childCount; i++) CollectManagedCollisionNodes(node.GetChild(i), keys, removed);
+        }
+
+        static void RequireManagedCollisionChildren(Transform node, string key)
+        {
+            for (int i = 0; i < node.childCount; i++)
+            {
+                var child = node.GetChild(i);
+                if (!MeshNaming.IsCollisionOf(child.name, key))
+                    throw new InvalidOperationException($"Cannot replace collision '{node.name}': unrelated child '{child.name}'");
+                RequireManagedCollisionChildren(child, key);
+            }
         }
 
         /// <summary>

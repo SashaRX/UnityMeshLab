@@ -237,6 +237,9 @@ namespace SashaRX.UnityMeshLab
         public CollisionMeshBuilder.ShapeReport[] shapes;
         public string sourceHierarchyPath;
         public string sourceMeshName;
+        // Managed collision keys superseded by regeneration; document saves remove
+        // their old nodes even though they no longer have a sidecar geometry entry.
+        public string[] replacedMeshGroupKeys;
         public bool preferSimpleShapes;
         public float shapeFitError;
         public float projectionThicknessRatio;
