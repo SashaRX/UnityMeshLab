@@ -88,3 +88,7 @@ Optional replay environment:
 The replay measures eight forward LOD results and six Reverse Table LOD results
 under both overlap policies. Reverse pair classification is checked against
 the independent saved audit; the input/output snapshots remain unchanged.
+
+The [Kamaz Transfer benchmark](KAMAZ_TRANSFER_BENCHMARK.md) additionally exports
+world-space layouts, per-LOD Viewer scores and orthographic stretch/ancestry
+contact sheets for the full forward and reverse LOD chains.

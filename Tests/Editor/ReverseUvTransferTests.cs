@@ -315,12 +315,17 @@ namespace SashaRX.UnityMeshLab.Tests
                                 seedResolution = resolution, preserveProjectedOverlap = overlap, projectionReach = .05f,
                                 cutNarrowJunctions = Environment.GetEnvironmentVariable("MESHLAB_REVERSE_JUNCTION_CUTS") == "1",
                                 splitDonorSeams = Environment.GetEnvironmentVariable("MESHLAB_REVERSE_JUNCTION_CUTS") == "1",
+                                fillFinalAtlas = Environment.GetEnvironmentVariable("MESHLAB_REVERSE_FILL_FINAL") == "1",
                                 repackFinalAtlas = Environment.GetEnvironmentVariable("MESHLAB_REVERSE_REPACK_FINAL") == "1" }, true, density, true);
                             while (!layout.IsCompleted) yield return null;
                             if (layout.IsFaulted) { trial.error = layout.Exception.GetBaseException().Message; continue; }
                             using var state = layout.Result;
                             trial.stage = "audit";
-                            try { trial.audit = ReverseUvAudit.Write(state.result, state.inputs.levels); trial.accepted = true; }
+                            try {
+                                trial.audit = ReverseUvAudit.Write(state.result, state.inputs.levels);
+                                TransferBenchmarkExport.Reverse(System.IO.Path.Combine(output, "kamaz-frame" + frame + "-" + (overlap ? "overlap" : "exclusive")), state.result, state.inputs.levels);
+                                trial.accepted = true;
+                            }
                             catch (Exception ex) { trial.error = ex.Message; }
                             continue;
                         }

@@ -1047,6 +1047,8 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.GreaterOrEqual(levels.Length,2);
             group.SetLODs(levels.Select(g=>new LOD(.6f/(g.Key+1),g.Select(p=>p.renderer).ToArray())).ToArray());
             var ctx=Open(group); ctx.SourceLodIndex=0; ctx.LightmapDensity=10; ctx.CutNarrowUvJunctions=true;
+            if(float.TryParse(System.Environment.GetEnvironmentVariable("MESHLAB_FORWARD_DENSITY"),System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,out var density)) ctx.LightmapDensity=density;
             ctx.RepackResolutionMode=ResolutionMode.AutoFromTexelDensity; ctx.ShellPaddingPx=2; ctx.BorderPaddingPx=0;
             ctx.CaptureNextTransfer=true;
             if(float.TryParse(System.Environment.GetEnvironmentVariable("MESHLAB_TRANSFER_BOUNDARY_TEXELS"),System.Globalization.NumberStyles.Float,
@@ -1056,12 +1058,20 @@ namespace SashaRX.UnityMeshLab.Tests
             System.IO.Directory.CreateDirectory(directory);
             ((System.Threading.Tasks.Task)CallWorkflow("ExecFullPipelineImpl","forward-quality",false)).GetAwaiter().GetResult();
             Assert.IsTrue(ctx.HasRepack && ctx.HasTransfer);
+            TransferBenchmarkExport.Forward(directory,ctx);
+            System.IO.File.WriteAllText(System.IO.Path.Combine(directory,"capture.txt"),TransferCaseCapture.LastManifest);
+            var measurements=new Dictionary<MeshEntry,TransferUvQuality>();
             foreach (var entry in ctx.MeshEntries)
             {
                 var result=ctx.Assets.GetResultMesh(entry);
                 var quality=TransferUvQuality.Measure(result,result.uv2,Vector2.one,entry.renderer.localToWorldMatrix);
+                measurements.Add(entry,quality);
                 System.IO.File.WriteAllText(System.IO.Path.Combine(directory,entry.fbxMesh.name+".json"),JsonUtility.ToJson(quality,true));
                 System.IO.File.WriteAllBytes(System.IO.Path.Combine(directory,entry.fbxMesh.name+".bin"),TransferMeshSnapshot.Capture(result));
+            }
+            foreach (var entry in ctx.MeshEntries)
+            {
+                var quality=measurements[entry];
                 Assert.AreEqual(0,quality.invalidFaces,entry.fbxMesh.name);
                 Assert.AreEqual(0,quality.outOfBoundsVertices,entry.fbxMesh.name);
                 Assert.IsTrue(quality.overlapScanComplete,entry.fbxMesh.name);
@@ -1089,7 +1099,6 @@ namespace SashaRX.UnityMeshLab.Tests
                     Assert.LessOrEqual(quality.overlapPairs,110);
                 }
             }
-            System.IO.File.WriteAllText(System.IO.Path.Combine(directory,"capture.txt"),TransferCaseCapture.LastManifest);
         }
 
         [Test]
