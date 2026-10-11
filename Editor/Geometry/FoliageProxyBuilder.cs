@@ -38,6 +38,15 @@ namespace SashaRX.UnityMeshLab
 
     internal static class FoliageProxyBuilder
     {
+        internal static void CheckTriangleBudget(RemeshNative.IndexedMesh mesh, int limit, CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            if (mesh?.indices != null && mesh.TriangleCount > limit)
+            {
+                throw new InvalidOperationException($"Proxy triangle budget exceeded ({limit:N0}). Increase target edge length or reduce voxel resolution.");
+            }
+        }
+
         internal static Bounds BoundsOf(Vector3[] p)
         {
             var b = new Bounds(p[0], Vector3.zero);
@@ -82,14 +91,14 @@ namespace SashaRX.UnityMeshLab
             return topology;
         }
 
-        static Dictionary<int, double> ComponentVolumes(RemeshNative.IndexedMesh mesh, RemeshTopology.Snapshot topology)
+        internal static Dictionary<int, double> ComponentVolumes(RemeshNative.IndexedMesh mesh, RemeshTopology.Snapshot topology)
         {
             var volumes = new Dictionary<int, double>();
-            var origin = mesh.positions[0];
             for (int f = 0; f < mesh.TriangleCount; f++)
             {
                 int root = ComponentRoot(topology.components, f);
                 volumes.TryGetValue(root, out double volume);
+                var origin = mesh.positions[mesh.indices[root * 3]];
                 volumes[root] = volume + FaceVolume(mesh.positions, mesh.indices, f * 3, origin);
             }
             return volumes;

@@ -2008,7 +2008,16 @@ namespace SashaRX.UnityMeshLab
             SceneView.RepaintAll();
         }
 
-        internal void RestoreLightmapPreviewSafe() => RestoreLightmapPreview();
+        internal void RestoreLightmapPreviewSafe()
+        {
+            RestoreLightmapPreview();
+            if (canvas != null && canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Lightmap)
+            {
+                canvas.CurrentPreviewMode = UvCanvasView.PreviewMode.Off;
+                Repaint();
+                SceneView.RepaintAll();
+            }
+        }
 
         void RestoreLightmapPreview()
         {

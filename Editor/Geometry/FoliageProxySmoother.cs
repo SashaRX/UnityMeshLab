@@ -17,7 +17,10 @@ namespace SashaRX.UnityMeshLab
 
         internal static RemeshNative.IndexedMesh Smooth(RemeshNative.IndexedMesh input, FoliageNormalsSettings settings, CancellationToken token, out Diagnostics diagnostics)
         {
-            settings.Validate(); FoliageProxyBuilder.Validate(input, token, false);
+            settings.Validate();
+            FoliageProxyBuilder.CheckTriangleBudget(input, settings.maximumProxyTriangles, token);
+            var topology = FoliageProxyBuilder.Validate(input, token, false);
+            var beforeVolumes = FoliageProxyBuilder.ComponentVolumes(input, topology);
             var p = (Vector3[])input.positions.Clone(); var scratch = new Vector3[p.Length];
             var t = (int[])input.indices.Clone();
             var neighbours = Neighbours(p.Length, t, token);
@@ -31,7 +34,14 @@ namespace SashaRX.UnityMeshLab
             var result = new RemeshNative.IndexedMesh { positions = p, indices = t };
             FoliageProxyBuilder.Validate(result, token, false);
             diagnostics.afterBounds = FoliageProxyBuilder.BoundsOf(p); diagnostics.afterVolume = FoliageProxyBuilder.SignedVolume(p, t);
-            if (diagnostics.afterVolume / diagnostics.beforeVolume < .5) throw new InvalidOperationException("Proxy lost more than half its volume. Reduce smoothing strength/iterations.");
+            // Smoothing preserves the face indices, so the original component labels
+            // remain valid even if a small component loses most of its volume.
+            var afterVolumes = FoliageProxyBuilder.ComponentVolumes(result, topology);
+            foreach (var component in beforeVolumes)
+            {
+                if (afterVolumes[component.Key] / component.Value < .5)
+                    throw new InvalidOperationException("Proxy component lost more than half its volume. Reduce smoothing strength/iterations.");
+            }
             result.normals = MeshGeometry.AveragedNormals(p, t, token);
             if (result.normals.Any(n => !FoliageTargetSnapshot.Finite(n) || Math.Abs(n.magnitude - 1) > .001f))
                 throw new InvalidOperationException("Invalid proxy normals.");

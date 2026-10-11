@@ -44,6 +44,10 @@ Unused scatter/smoothing/remesh settings do not rebuild a sphere or hemisphere.
 
 ## Capture and coordinate spaces
 
+Capture restores temporary toolbar previews before reading mesh channels and
+material selections. In particular, Lightmap preview's transformed UV1 display
+coordinates cannot become the saved UV0; its toolbar mode is turned off.
+
 All processing takes place in the selected root's local space. Each static renderer
 has an independent `FoliageTargetSnapshot`, preserving the source Mesh reference,
 readable original snapshot, per-submesh index arrays and selection, materials,
@@ -148,8 +152,9 @@ Taubin geometry smoothing builds sorted vertex adjacency and alternates positive
 lambda and negative mu Laplacian passes. Defaults are lambda=0.5, mu=-0.53,
 strength=1 and five iterations. Topology/indices remain unchanged. Finite geometry,
 degeneracy, closed topology and outward component volume are validated afterward.
-The operation fails if total volume drops below half the original; relative volume
-change over 15% is reported as a warning. Bounds and signed volumes before/after
+The operation fails if any connected component's volume drops below half its
+original volume, even when a larger component keeps the total volume stable.
+Relative total volume change over 15% is reported as a warning. Bounds and signed volumes before/after
 are retained in diagnostics. This is shrink-compensated smoothing, not an exact
 volume constraint or a self-intersection solver.
 
@@ -187,10 +192,13 @@ No temporary Unity objects or compute buffers are allocated by this stage.
 
 **Edge length (0 = auto)** is in root-local capture units; zero uses the smoothed
 proxy's mean unique-edge length. Defaults: five iterations, relaxation 0.5,
-100,000-triangle budget (hard cap 200,000). Input and estimated ideal triangle
-counts are checked before creating mutable adjacency; each split checks the
-budget again. Working adjacency costs approximately 1 KiB per triangle, varying
-with valence and allocator overhead. Reduce voxel resolution or increase target
+100,000-triangle budget (hard cap 200,000). **Proxy triangle budget** is configured
+in Envelope and also applies when Uniform triangles is disabled. The voxel result
+is checked before publishing its preview, and smoothing checks it before building
+adjacency. Changing this budget clears Envelope and downstream results. Remeshing
+checks input and estimated ideal triangle counts before creating mutable adjacency;
+each split checks the budget again. Working adjacency costs approximately 1 KiB
+per triangle, varying with valence and allocator overhead. Reduce voxel resolution or increase target
 length if the budget is exceeded. Source modes Sphere/Hemisphere keep their
 radial normals and bypass this stage. Disabling Uniform triangles passes the
 smoothed proxy through unchanged.

@@ -67,6 +67,8 @@ namespace SashaRX.UnityMeshLab
             Range(smoothingStrength, 0, 1, nameof(smoothingStrength));
             Range(lambda, .001f, .6f, nameof(lambda)); Range(mu, -.65f, -.001f, nameof(mu));
             if (-mu < lambda) throw new ArgumentException("Taubin compensation must be at least lambda in magnitude.");
+            if (maximumProxyTriangles < 4 || maximumProxyTriangles > 200000)
+                throw new ArgumentException("Proxy triangle budget must be 4–200,000.");
             if (remeshProxy) ValidateRemesh();
             if (minimumSamplesPerIsland < 1 || minimumSamplesPerIsland > 100 || maximumPrimitiveCount < 1 || maximumPrimitiveCount > HardPrimitiveCap)
                 throw new ArgumentException("Sample budgets must be positive; primitive hard cap is 50,000.");
@@ -77,8 +79,8 @@ namespace SashaRX.UnityMeshLab
         void ValidateRemesh()
         {
             Range(remeshEdgeLength, 0, 1e6f, nameof(remeshEdgeLength)); Range(remeshRelaxation, 0, 1, nameof(remeshRelaxation));
-            if (remeshIterations < 1 || remeshIterations > 20 || maximumProxyTriangles < 4 || maximumProxyTriangles > 200000)
-                throw new ArgumentException("Proxy remesh iterations must be 1–20 and triangle budget 4–200,000.");
+            if (remeshIterations < 1 || remeshIterations > 20)
+                throw new ArgumentException("Proxy remesh iterations must be 1–20.");
         }
 
         static void Range(float value, float min, float max, string name)

@@ -268,6 +268,70 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
+        public IEnumerator LightmapPreviewCapturePreservesSourceUvsMaterialsAndSavedAppliedMeshes()
+        {
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+            var preferences = new Dictionary<string, string>();
+            foreach (string key in new[] { MeshLabWindowPreferences.Key("Hub"), MeshLabWindowPreferences.Key("Fill.foliage_normals"), "MeshLab.FoliageNormals.Settings" })
+                preferences.Add(key, EditorPrefs.HasKey(key) ? EditorPrefs.GetString(key) : null);
+            var lightmaps = LightmapSettings.lightmaps;
+            var lightmap = new Texture2D(2, 2); var material = new Material(Shader.Find("Unlit/Color"));
+            try
+            {
+                LightmapSettings.lightmaps = new[] { new LightmapData { lightmapColor = lightmap } };
+                foreach (var selection in new[] { FoliageFaceSelection.AllTriangleSubmeshes, FoliageFaceSelection.SelectedMaterials })
+                {
+                    using var fixture = new FoliageNormalTransferTests.Fixture(new[] { Vector3.zero, Vector3.right, Vector3.up });
+                    using var pipeline = new FoliageNormalsPipeline(new TestProxy());
+                    var uv0 = new[] { new Vector2(.1f, .2f), new Vector2(.7f, .3f), new Vector2(.4f, .8f) };
+                    var uv1 = new[] { Vector2.zero, Vector2.right, Vector2.up };
+                    fixture.mesh.uv = uv0; fixture.mesh.uv2 = uv1; fixture.renderer.sharedMaterial = material;
+                    fixture.renderer.lightmapIndex = 0; fixture.renderer.lightmapScaleOffset = new Vector4(.5f, .75f, .1f, .2f);
+                    string folder = "Assets/__FoliageLightmapPreview_" + Guid.NewGuid().ToString("N");
+                    UvToolHub hub = null;
+                    try
+                    {
+                        hub = ScriptableObject.CreateInstance<UvToolHub>();
+                        typeof(UvToolHub).GetMethod("SelectToolById", flags).Invoke(hub, new object[] { "foliage_normals" });
+                        var context = (UvToolContext)typeof(UvToolHub).GetField("ctx", flags).GetValue(hub); context.RefreshStandalone(fixture.renderer);
+                        typeof(UvToolHub).GetMethod("ApplyPreviewMode", flags).Invoke(hub, new object[] { UvCanvasView.PreviewMode.Lightmap });
+                        var preview = fixture.root.GetComponent<MeshFilter>().sharedMesh;
+                        Assert.AreNotSame(fixture.mesh, preview); StringAssert.EndsWith("_LmPreview", preview.name);
+                        CollectionAssert.AreNotEqual(uv0, preview.uv); Assert.AreNotSame(material, fixture.renderer.sharedMaterial);
+                        var settings = FoliageSurfaceSamplerTests.Settings(); settings.selection = selection; settings.materials = new[] { material };
+                        var task = pipeline.Run(fixture.root, settings, FoliageNormalsPipeline.Stage.Transfer); yield return Await(task);
+                        Assert.IsTrue(task.Result, pipeline.Status); Assert.IsTrue(pipeline.CanApply); Assert.IsFalse(preview);
+                        Assert.AreSame(fixture.mesh, fixture.root.GetComponent<MeshFilter>().sharedMesh); Assert.AreSame(material, fixture.renderer.sharedMaterial);
+                        var canvas = (UvCanvasView)typeof(UvToolHub).GetField("canvas", flags).GetValue(hub);
+                        Assert.AreEqual(UvCanvasView.PreviewMode.Off, canvas.CurrentPreviewMode);
+                        CollectionAssert.AreEqual(uv0, pipeline.Targets[0].working.uv); CollectionAssert.AreEqual(uv1, pipeline.Targets[0].working.uv2);
+                        var paths = pipeline.Save(folder); Assert.AreEqual(1, paths.Length);
+                        var saved = AssetDatabase.LoadAssetAtPath<Mesh>(paths[0]); CollectionAssert.AreEqual(uv0, saved.uv); CollectionAssert.AreEqual(uv1, saved.uv2);
+                        pipeline.Apply(); Undo.FlushUndoRecordObjects(); var applied = fixture.root.GetComponent<MeshFilter>().sharedMesh;
+                        CollectionAssert.AreEqual(uv0, applied.uv); CollectionAssert.AreEqual(uv1, applied.uv2);
+                        Undo.PerformUndo(); Assert.AreSame(fixture.mesh, fixture.root.GetComponent<MeshFilter>().sharedMesh);
+                        Undo.PerformRedo(); Assert.IsTrue(fixture.root.GetComponent<MeshFilter>().sharedMesh);
+                        Object.DestroyImmediate(hub); hub = null;
+                        CollectionAssert.AreEqual(uv0, fixture.root.GetComponent<MeshFilter>().sharedMesh.uv);
+                        Assert.AreSame(material, fixture.renderer.sharedMaterial); CollectionAssert.AreEqual(uv0, fixture.mesh.uv); CollectionAssert.AreEqual(uv1, fixture.mesh.uv2);
+                    }
+                    finally
+                    {
+                        if (hub) Object.DestroyImmediate(hub);
+                        Undo.ClearAll(); var applied = fixture.root.GetComponent<MeshFilter>().sharedMesh;
+                        if (applied && applied != fixture.mesh) Object.DestroyImmediate(applied);
+                        AssetDatabase.DeleteAsset(folder);
+                    }
+                }
+            }
+            finally
+            {
+                LightmapSettings.lightmaps = lightmaps; Object.DestroyImmediate(lightmap); Object.DestroyImmediate(material);
+                foreach (var pair in preferences) { if (pair.Value == null) EditorPrefs.DeleteKey(pair.Key); else EditorPrefs.SetString(pair.Key, pair.Value); }
+            }
+        }
+
+        [UnityTest]
         public IEnumerator HubUndoRedoAndWindowClosePreserveAppliedSceneMesh()
         {
             using var fixture = new FoliageNormalTransferTests.Fixture(new[] {Vector3.zero,Vector3.right,Vector3.up});

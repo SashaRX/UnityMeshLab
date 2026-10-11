@@ -153,7 +153,7 @@ namespace SashaRX.UnityMeshLab
                 case Stage.Scatter:
                     return s.normalSource != FoliageNormalSource.VoxelEnvelope ? s.normalSource.ToString() : FormattableString.Invariant($"{s.normalSource}|{s.sampleSpacing:R}|{s.relativeSpacing}|{s.radiusMultiplier:R}|{s.dedupSpacingFraction:R}|{s.minimumSamplesPerIsland}|{s.deterministicSeed}|{s.maximumPrimitiveCount}|{s.includeSourceVertices}|{s.includeTriangleCentroids}");
                 case Stage.Envelope:
-                    return s.normalSource == FoliageNormalSource.VoxelEnvelope ? $"{s.normalSource}|{s.voxelResolution}|{s.primitiveSubdivision}" : FormattableString.Invariant($"{s.normalSource}|{s.autoFitProxy}|{s.proxyCenter.x:R}|{s.proxyCenter.y:R}|{s.proxyCenter.z:R}|{s.proxyRotation.x:R}|{s.proxyRotation.y:R}|{s.proxyRotation.z:R}|{s.proxyRadius:R}|{s.proxyRadiusScale:R}|{s.proxySegments}");
+                    return s.normalSource == FoliageNormalSource.VoxelEnvelope ? $"{s.normalSource}|{s.voxelResolution}|{s.primitiveSubdivision}|{s.maximumProxyTriangles}" : FormattableString.Invariant($"{s.normalSource}|{s.autoFitProxy}|{s.proxyCenter.x:R}|{s.proxyCenter.y:R}|{s.proxyCenter.z:R}|{s.proxyRotation.x:R}|{s.proxyRotation.y:R}|{s.proxyRotation.z:R}|{s.proxyRadius:R}|{s.proxyRadiusScale:R}|{s.proxySegments}");
                 case Stage.Smooth:
                     return s.normalSource != FoliageNormalSource.VoxelEnvelope ? s.normalSource.ToString() : FormattableString.Invariant($"{s.smoothingIterations}|{s.smoothingStrength:R}|{s.lambda:R}|{s.mu:R}");
                 case Stage.Remesh:
@@ -312,6 +312,7 @@ namespace SashaRX.UnityMeshLab
             }
             var spheres = Primitives;
             Envelope = await Task.Run(() => builder.Build(FoliagePrimitiveBuilder.Build(spheres, options.primitiveSubdivision, token), options.voxelResolution, token), token);
+            FoliageProxyBuilder.CheckTriangleBudget(Envelope, options.maximumProxyTriangles, token);
             ProxyComponents = await Task.Run(() => FoliageProxyBuilder.Validate(Envelope, token, false).euler.Count, token);
             EnvelopeMesh = PreviewMesh(ProxyName, Envelope);
         }
@@ -368,6 +369,9 @@ namespace SashaRX.UnityMeshLab
                 throw new InvalidOperationException("Select a scene or Prefab Mode root.");
             }
 
+            // Toolbar previews temporarily replace both the mesh channels and materials.
+            // Capture the restored scene data, never a display-only mesh such as _LmPreview.
+            PreviewSafetyGuard.RestoreAll();
             rootToWorld = root.transform.localToWorldMatrix;
             if (rootToWorld.determinant == 0)
             {

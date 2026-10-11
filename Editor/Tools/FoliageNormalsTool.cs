@@ -349,6 +349,7 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.LabelField("Envelope", EditorStyles.boldLabel);
             settings.voxelResolution = EditorGUILayout.IntSlider("Voxel resolution", settings.voxelResolution, 4, 256);
             settings.primitiveSubdivision = EditorGUILayout.IntSlider("Sphere subdivision", settings.primitiveSubdivision, 0, 1);
+            settings.maximumProxyTriangles = EditorGUILayout.IntField("Proxy triangle budget", settings.maximumProxyTriangles);
             showPrimitives = EditorGUILayout.Toggle("Show sample points", showPrimitives);
             StageButton("Build Proxy", FoliageNormalsPipeline.Stage.Envelope);
         }
@@ -378,7 +379,6 @@ namespace SashaRX.UnityMeshLab
                 settings.remeshEdgeLength = EditorGUILayout.FloatField("Edge length (0 = auto)", settings.remeshEdgeLength);
                 settings.remeshIterations = EditorGUILayout.IntSlider("Remesh iterations", settings.remeshIterations, 1, 20);
                 settings.remeshRelaxation = EditorGUILayout.Slider("Tangential relaxation", settings.remeshRelaxation, 0, 1);
-                settings.maximumProxyTriangles = EditorGUILayout.IntField("Proxy triangle budget", settings.maximumProxyTriangles);
             }
             EditorGUILayout.HelpBox("Split, collapse and flip edges, then relax and project onto the smoothed envelope. Auto uses its mean edge length. Transfer uses this final proxy.", MessageType.Info);
             StageButton("Remesh / rebuild", FoliageNormalsPipeline.Stage.Remesh);

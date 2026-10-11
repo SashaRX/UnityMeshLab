@@ -72,6 +72,59 @@ namespace SashaRX.UnityMeshLab.Tests
             foreach (var n in result.normals) Assert.That(n.magnitude, Is.EqualTo(1).Within(1e-5));
         }
 
+        [TestCase(false)] [TestCase(true)]
+        public void SmoothingRejectsSmallComponentCollapseHiddenByLargeComponent(bool smallFirst)
+        {
+            var large = FoliagePrimitiveBuilder.Build(new[] { new FoliagePrimitive { radius = 10 } }, 1, CancellationToken.None);
+            var small = FoliagePrimitiveBuilder.Build(new[] { new FoliagePrimitive { center = Vector3.right * 30, radius = .25f } }, 0, CancellationToken.None);
+            var settings = new FoliageNormalsSettings { smoothingIterations = 5 };
+            FoliageProxySmoother.Smooth(large, settings, CancellationToken.None, out var largeDiagnostic);
+            FoliageProxySmoother.Diagnostics smallDiagnostic = null;
+            Assert.Throws<InvalidOperationException>(() => FoliageProxySmoother.Smooth(small, settings, CancellationToken.None, out smallDiagnostic));
+            Assert.Less(smallDiagnostic.afterVolume / smallDiagnostic.beforeVolume, .5);
+            Assert.Greater((largeDiagnostic.afterVolume + smallDiagnostic.afterVolume) / (largeDiagnostic.beforeVolume + smallDiagnostic.beforeVolume), .5,
+                "The previous aggregate guard would accept this loss of a small component.");
+            var input = smallFirst ? Join(small, large) : Join(large, small);
+            var positions = (Vector3[])input.positions.Clone(); var indices = (int[])input.indices.Clone();
+            var error = Assert.Throws<InvalidOperationException>(() => FoliageProxySmoother.Smooth(input, settings, CancellationToken.None, out _));
+            StringAssert.Contains("component lost more than half", error.Message);
+            CollectionAssert.AreEqual(positions, input.positions); CollectionAssert.AreEqual(indices, input.indices);
+        }
+
+        [Test]
+        public void SmoothingPreservesVolumeOfEveryDisconnectedComponent()
+        {
+            var input = Spheres(Vector3.left * 2, Vector3.right * 2);
+            var topology = FoliageProxyBuilder.Validate(input, CancellationToken.None, false);
+            var before = FoliageProxyBuilder.ComponentVolumes(input, topology);
+            var result = FoliageProxySmoother.Smooth(input, new FoliageNormalsSettings { smoothingIterations = 3 }, CancellationToken.None, out _);
+            var after = FoliageProxyBuilder.ComponentVolumes(result, topology);
+            Assert.AreEqual(2, before.Count); CollectionAssert.AreEqual(input.indices, result.indices);
+            foreach (var component in before) Assert.That(after[component.Key] / component.Value, Is.InRange(.7, 1.3));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void SmoothingEnforcesTriangleBudgetWithRemeshEnabledOrDisabled(bool remesh)
+        {
+            var input = Spheres(Vector3.zero);
+            var settings = new FoliageNormalsSettings { remeshProxy = remesh, maximumProxyTriangles = input.TriangleCount - 1 };
+            var error = Assert.Throws<InvalidOperationException>(() => FoliageProxySmoother.Smooth(input, settings, CancellationToken.None, out _));
+            StringAssert.Contains("Proxy triangle budget exceeded", error.Message);
+            settings.maximumProxyTriangles = input.TriangleCount;
+            Assert.DoesNotThrow(() => FoliageProxySmoother.Smooth(input, settings, CancellationToken.None, out _));
+            settings.maximumProxyTriangles = 0; Assert.Throws<ArgumentException>(() => settings.Validate());
+        }
+
+        static RemeshNative.IndexedMesh Join(RemeshNative.IndexedMesh first, RemeshNative.IndexedMesh second)
+        {
+            var positions = new Vector3[first.positions.Length + second.positions.Length];
+            var indices = new int[first.indices.Length + second.indices.Length];
+            first.positions.CopyTo(positions, 0); second.positions.CopyTo(positions, first.positions.Length);
+            first.indices.CopyTo(indices, 0);
+            for (int i = 0; i < second.indices.Length; i++) indices[first.indices.Length + i] = second.indices[i] + first.positions.Length;
+            return new RemeshNative.IndexedMesh { positions = positions, indices = indices };
+        }
+
         static double Noise(RemeshNative.IndexedMesh mesh)
         {
             double mean = 0, variance = 0;

@@ -36,11 +36,8 @@ namespace SashaRX.UnityMeshLab
         public Result Remesh(RemeshNative.IndexedMesh input, FoliageNormalsSettings settings, CancellationToken token)
         {
             settings.Validate();
+            FoliageProxyBuilder.CheckTriangleBudget(input, settings.maximumProxyTriangles, token);
             FoliageProxyBuilder.Validate(input, token, false);
-            if (input.TriangleCount > settings.maximumProxyTriangles)
-            {
-                throw Budget(settings.maximumProxyTriangles);
-            }
             // Geometry-only proxies may arrive with exact position splits. Work on shared
             // vertices just as RemeshTopology does, without changing the input arrays.
             input = Weld(input, token);
