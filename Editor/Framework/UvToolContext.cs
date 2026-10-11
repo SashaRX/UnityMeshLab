@@ -55,6 +55,9 @@ namespace SashaRX.UnityMeshLab
         public int SourceLodIndex;
         public List<MeshEntry> MeshEntries = new List<MeshEntry>();
 
+        /// <summary>Renderer placement in the isolated model, without the scene root's TRS.</summary>
+        internal Matrix4x4 PreviewMatrix(Transform source) => PreviewSpace.LocalToRoot(source, LodGroup ? LodGroup.transform : null);
+
         // ── Settings (defaults from Project Settings > Mesh Lab) ──
         public UvTransferPipeline.PipelineSettings PipeSettings;
         public int AtlasResolution;

@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Fixed
+
+- All isolated 3D previews use model coordinates with identity root position/rotation and unit scale. LOD/UV tools, collision surfaces and wire overlays, Remesh source/results/cages, Texture AO and Prefab Builder overlays ignore scene root/ancestor transforms while preserving authored child placement. Scene visualization and exported transforms are unchanged.
 - Foliage LOD matching uses distinct mesh names when selected-level renderer names repeat, preserving the selected part. Smoothing rejects growth beyond 150% of each component's original volume as well as excessive shrinkage. Separate FBX saves refuse regenerated tangent frames when the source uses Tangents = None, while normal-only saves retain that mode.
 - Foliage FBX export requires complete, identifiable source-node coverage for shared geometry and removes variants after failed imports. Tangent generation retains zero default frames on excluded vertices when the source has no tangents. Sphere and hemisphere validation checks only the active automatic or manual radius setting. Read/Write-disabled capture preserves raw vertex formats and streams; UI eligibility is cached between change events while Apply and Save check current source data. Regression tests cover all six review findings.
 - Foliage Normals resolves all 39 advisory Sonar findings by separating sampling, proxy edits, transfer, preview and FBX save operations into focused methods. Deterministic geometry processing, selected-corner shading writes, mesh channel preservation and cleanup remain unchanged; no analyzer suppressions or rule policy changes are added.

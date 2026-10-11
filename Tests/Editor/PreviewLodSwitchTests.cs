@@ -84,6 +84,37 @@ namespace SashaRX.UnityMeshLab.Tests
             Call(hub, "CollectCanvasEntries");
         }
 
+        [TestCase("uv2_transfer")]
+        [TestCase("cleanup")]
+        [TestCase("prefab_builder")]
+        public void CanvasPlacementAndPickingIgnoreSceneRootAcrossToolsAndLods(string toolId)
+        {
+            var group = Group(true, out var lod0, out var lod1);
+            var ancestor = new GameObject("SceneAncestor"); owned.Add(ancestor);
+            group.transform.SetParent(ancestor.transform, false);
+            ancestor.transform.SetPositionAndRotation(new Vector3(50, -30, 40), Quaternion.Euler(20, 75, 30));
+            ancestor.transform.localScale = new Vector3(-2, 3, .5f);
+            group.transform.localPosition = new Vector3(9, 4, 2);
+            group.transform.localRotation = Quaternion.Euler(15, 35, 70);
+            group.transform.localScale = new Vector3(3, .2f, 4);
+            lod0.transform.localPosition = lod1.transform.localPosition = Vector3.right * 2;
+            Open(group);
+            Call(hub, "SelectToolById", toolId);
+            using (var inspection = new MeshInspection())
+            for (int lod = 0; lod < 2; ++lod) {
+                SwitchLod(lod);
+                var items = Get<List<MeshViewport3D.Item>>(hub, "viewportItems");
+                Assert.That(items.Count, Is.EqualTo(1));
+                Assert.AreEqual(Matrix4x4.Translate(Vector3.right * 2), items[0].matrix);
+                Assert.IsTrue(inspection.Pick(items, new Vector3(2.3f, .2f, -2), Vector3.forward, out int picked));
+                Assert.AreEqual(0, picked);
+                group.transform.localScale = Vector3.zero;
+            }
+            Assert.AreEqual(new Vector3(9, 4, 2), group.transform.localPosition, "preview must not edit scene transforms");
+            Assert.That(Quaternion.Angle(Quaternion.Euler(15, 35, 70), group.transform.localRotation), Is.LessThan(.01f));
+            Assert.AreEqual(new Vector3(-2, 3, .5f), ancestor.transform.localScale);
+        }
+
         [Test]
         public void CheckerFollowsThePreviewLod()
         {
