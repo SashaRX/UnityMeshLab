@@ -948,11 +948,18 @@ namespace SashaRX.UnityMeshLab.Tests
                 BenchmarkRecorder.OutputDirectoryOverride = directory;
                 Call(hub,"CollectCanvasEntries"); SetPreviewFrame(); Call(hub,"ApplyPreviewMode",UvCanvasView.PreviewMode.Checker);
                 workflow.RunReverseTransfer(false).GetAwaiter().GetResult();
-                Assert.IsTrue(prior == null); Assert.AreEqual(1,ctx.SourceLodIndex);
+                Assert.IsTrue(prior == null); Assert.AreEqual(oldSource,ctx.SourceLodIndex);
                 Assert.IsTrue(ctx.HasRepack); Assert.IsTrue(ctx.HasTransfer);
                 Assert.IsNotNull(coarse.repackedMesh); Assert.IsNotNull(fine.transferredMesh);
                 Assert.AreEqual(coarse.repackedAtlasWidth,fine.repackedAtlasWidth);
                 Assert.IsNotEmpty(fine.reverseTransferJson);
+                Assert.AreSame(coarse.repackedMesh, ctx.DMesh(coarse));
+                Assert.AreSame(fine.transferredMesh, ctx.DMesh(fine));
+                Assert.AreSame(coarse.repackedMesh, ctx.Assets.GetResultMesh(coarse));
+                Assert.AreSame(fine.transferredMesh, ctx.Assets.GetResultMesh(fine));
+                var reverseFine = fine.transferredMesh; var reverseCoarse = coarse.repackedMesh;
+                Assert.Throws<System.InvalidOperationException>(() => ((System.Threading.Tasks.Task)CallWorkflow("ExecTransferLodImpl",1,false)).GetAwaiter().GetResult());
+                Assert.AreSame(reverseFine,fine.transferredMesh); Assert.AreSame(reverseCoarse,coarse.repackedMesh);
                 CollectionAssert.AreEqual(originalCoarseIndices, coarse.originalMesh.triangles);
                 CollectionAssert.AreEqual(originalFineIndices, fine.originalMesh.triangles);
                 Assert.AreEqual(originalCoarseIndices.Length - 3, coarse.repackedMesh.triangles.Length);
@@ -970,6 +977,51 @@ namespace SashaRX.UnityMeshLab.Tests
                 if(System.IO.Directory.Exists(directory)) System.IO.Directory.Delete(directory,true);
                 ctx.SourceLodIndex = oldSource;
             }
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void FrozenTableForwardAfterReverseMatchesFreshPipeline(bool cuts)
+        {
+            string fixtures = System.Environment.GetEnvironmentVariable("MESHLAB_JUNCTION_FIXTURES");
+            if (string.IsNullOrEmpty(fixtures)) Assert.Ignore("Optional private FBX fixtures are not configured.");
+            var prefab = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(fixtures+"/Cafe_Table_A_01.fbx");
+            Assert.NotNull(prefab);
+            var instance = Object.Instantiate(prefab); owned.Add(instance);
+            var group = instance.GetComponent<LODGroup>() ?? instance.AddComponent<LODGroup>();
+            group.SetLODs(Enumerable.Range(0,3).Select(lod => new LOD(.6f/(lod+1),
+                instance.GetComponentsInChildren<Renderer>().Where(r => r.GetComponent<MeshFilter>()
+                    && r.GetComponent<MeshFilter>().sharedMesh.name.Contains("LOD"+lod)).ToArray())).ToArray());
+            var ctx = Open(group); ctx.SourceLodIndex = 0; ctx.CutNarrowUvJunctions = cuts;
+            ctx.LightmapDensity = 10; ctx.RepackResolutionMode = ResolutionMode.AutoFromTexelDensity;
+            ctx.ShellPaddingPx = 2; ctx.BorderPaddingPx = 0;
+            hub.DiagnosticWorkflow.SymmetrySplitMode = SymmetrySplitShells.ThresholdMode.Adaptive;
+            var oldOutput = BenchmarkRecorder.OutputDirectoryOverride;
+            string output = System.Environment.GetEnvironmentVariable("MESHLAB_JUNCTION_OUTPUT");
+            try
+            {
+                BenchmarkRecorder.OutputDirectoryOverride = output;
+                ((System.Threading.Tasks.Task)CallWorkflow("ExecFullPipelineImpl","forward-before-reverse",false)).GetAwaiter().GetResult();
+                Assert.IsTrue(ctx.HasRepack && ctx.HasTransfer,"The forward pipeline must complete before comparing outputs.");
+                var first = ctx.MeshEntries.ToDictionary(e => e, e => TransferMeshSnapshot.Capture(ctx.Assets.GetResultMesh(e)));
+                foreach (var entry in ctx.MeshEntries)
+                {
+                    var result = ctx.Assets.GetResultMesh(entry);
+                    var q = TransferUvQuality.Measure(result,result.uv2,Vector2.one,Matrix4x4.identity);
+                    if (!string.IsNullOrEmpty(output))
+                        System.IO.File.WriteAllText(System.IO.Path.Combine(output,$"pipeline-{cuts}-{entry.lodIndex}.json"),UnityEngine.JsonUtility.ToJson(q,true));
+                }
+                hub.DiagnosticWorkflow.RunReverseTransfer(false).GetAwaiter().GetResult();
+                Assert.AreEqual(0,ctx.SourceLodIndex);
+                ((System.Threading.Tasks.Task)CallWorkflow("ExecFullPipelineImpl","forward-after-reverse",false)).GetAwaiter().GetResult();
+                Assert.IsTrue(ctx.HasRepack && ctx.HasTransfer);
+                Assert.AreEqual(0,ctx.SourceLodIndex);
+                foreach (var entry in ctx.MeshEntries)
+                {
+                    Assert.IsNull(entry.reverseTransferJson);
+                    CollectionAssert.AreEqual(first[entry],TransferMeshSnapshot.Capture(ctx.Assets.GetResultMesh(entry)));
+                }
+            }
+            finally { BenchmarkRecorder.OutputDirectoryOverride = oldOutput; }
         }
 
         [Test]

@@ -286,6 +286,77 @@ identifier/dependency gates pass. Private chains are enabled with
 
 ### Narrow UV junction cuts — 2026-10-10
 
+#### Transfer regression and complete-chain packing — 2026-10-11
+
+Continuation on PR225 after the supplied Cafe_Table_A_01 failure at `455a803d`.
+Reverse publication assigned the coarsest LOD to the ordinary workflow's source
+selector. A subsequent Full Pipeline therefore ran the forward shell matcher
+coarse-to-fine. Frozen LOD2-to-fine controls reproduce 24 collapsed faces and
+208/213 overlap pairs. Reverse now keeps the forward source selection; display
+and export resolve reverse meshes through their provenance. Transfer-only cannot
+silently use the original UV2 when that forward source owns only a reverse
+transferred result. Full Pipeline rebuilds its original forward inputs. The
+complete forward → reverse → forward fixture checks successful completion and
+byte-identical fresh forward results with junction cuts on and off.
+
+The previous seed trial rejected any atlas growth and required the new seed
+topology to retain every correspondence from the uncut seed. Consequently, tests
+could pass by publishing the uncut layout even with cuts enabled. Seed topology
+is now selected before projection, and newly unmatched pieces enter the existing
+new-chart path. The requested compact/cut seed must pass metric and independent
+atlas audits; failures retain an audited fallback with a reason. Within a built
+chain, donor refinement still checks each previously inherited region, intentional
+overlap and per-face metric. Canvas growth alone is allowed; missing coverage is
+still refused. Forward `GroupedShellTransfer`, symmetry splitting and native
+`XatlasRepack` are unchanged.
+
+The completed chain has one final rectangle pack by shared chart identity.
+Intentional overlay families move together. Every ancestor and descendant gets
+the same rigid transform; geometry and UV0 stay unchanged. Quarter turns, three
+deterministic rectangle orders and a common-scale search operate on the entire
+chain, with fixed pixel padding. `Fill final atlas uniformly` optionally raises
+the common density above the requested minimum; the summary/provenance records
+the actual density. Disabling it keeps density fixed. A Float32 metric failure
+retains the validated coordinates and reports why final packing was skipped.
+
+PR review also exposed a global positional weld in seed preparation. Its key is
+now scoped to the input node, matching the already scoped new-chart path. A
+coincident two-renderer/shared-Mesh fixture requires separate padded seed islands
+and byte-identical source data. Benchmark text now labels schema-2 source quality
+with its captured world transform, with the legacy local-space fallback stated.
+
+Overlap validation also used a boolean flag and overwrote a single parent when
+one detail intersected several lower faces. The same-level graph now retains
+every audited contact to the same donor chart, rebuilding links after seam
+refinement. The legacy representative pointer names the highest parent layer;
+the serialized overlap list contains all direct edges. Final packing consumes
+that graph, and the independent final audit requires the exact recorded pair,
+matching donor chart and strictly ordered layers. Stacked details and missing
+edge/wrong-chart controls cover this distinction.
+
+Cafe_Table_A_01 at the supplied scene frame, density 10, padding 2: the seed
+actually splits 32 → 48 charts. With filling enabled the final 128² chain covers
+about 29% of the fine atlas in exclusive mode and 31% with projected overlap,
+instead of the retained layout's approximately 9%. Density becomes approximately
+36/37 texels per world unit. All three LODs have zero unexpected overlaps,
+collapsed UV faces and out-of-bounds vertices. Density 32 and both overlap policies
+also pass. Assertions require actual extra seed charts, successful final packing,
+atlas extent usage and independent final audits, rather than accepting an uncut
+fallback as a cutting success. Synthetic controls preserve exact inherited and
+intentional-overlay correspondence with filling on/off. A separate frozen
+vacancy control uses one unchanged seed for both projection policies.
+
+The nine-model corpus completes all 18 overlap-policy trials: 16 independently
+audited successes and the same two Modern_Kitchen_A seed Float32 refusals. Inputs
+remain byte-identical. This is acceptance/UV-safety evidence, not a claim that
+every inheritance fraction or atlas dimension is unchanged: changing unpublished
+seed cuts can turn previously projected pieces into independently packed charts.
+The ordinary solver's older distortion/degenerate-geometry issues are not solved
+by fixing its source selection. Private reports and layout PNGs remain outside
+the package under `_results~/transfer-regression-20261011/`.
+
+#### Initial trial — 2026-10-10
+
 Continuation of PR225 at the user's request, baseline `16462a0`. The legacy
 solvers are unchanged. An opt-in preparation pass cuts existing interior edges
 from reflex UV border corners across short junctions. Equal-length proposals

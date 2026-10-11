@@ -20,6 +20,7 @@ namespace SashaRX.UnityMeshLab.Tests
             public TransferUvQuality qualityBefore, qualityAfter;
             public Vector2[] uvBefore, uvAfter;
             public int[] trianglesBefore, trianglesAfter;
+            public int[] faceCharts;
         }
 
         static Mesh Grid(string pattern, int subdivisions = 1)
@@ -210,7 +211,43 @@ namespace SashaRX.UnityMeshLab.Tests
                 faces = new[] { new ReverseUvTransfer.Face(), new ReverseUvTransfer.Face { inherited = true } } });
             StringAssert.Contains("face 0 loses inheritance", ReverseUvJunctionTrial.Compare(baseline, candidate));
             candidate.result.report.atlasSize = 256;
-            StringAssert.Contains("larger atlas", ReverseUvJunctionTrial.Compare(baseline, candidate));
+            StringAssert.Contains("face 0 loses inheritance", ReverseUvJunctionTrial.Compare(baseline, candidate));
+            candidate.result.report.nodes[0].faces[0].inherited = true;
+            Assert.IsNull(ReverseUvJunctionTrial.Compare(baseline,candidate),"An expanded canvas must preserve inherited regions without an arbitrary size-equality gate.");
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void FinalPackingMovesInheritedChartsAndTheirOverlaysTogether(bool fill)
+        {
+            ReverseUvTransfer.Surface Surface(int lod,int chart,Vector2 shift)
+            {
+                var uv = new[] {shift,shift+Vector2.right*10,shift+new Vector2(10,1),shift,shift+new Vector2(10,1),shift+Vector2.up};
+                return new ReverseUvTransfer.Surface {lod=lod,node=0,pixels=uv,
+                    positions=uv.Select(p=>new Vector3(p.x,p.y)).ToArray(),indices=Enumerable.Range(0,6).ToArray(),
+                    faces=new[] {new ReverseUvTransfer.Face {chart=chart,inherited=lod==0},new ReverseUvTransfer.Face {chart=chart,inherited=lod==0}}};
+            }
+            var seed=Surface(1,0,new Vector2(2,30)); var fine=Surface(0,0,new Vector2(2,30));
+            var overlay=Surface(0,1,new Vector2(2,30)); overlay.node=1;
+            foreach (var face in overlay.faces) {face.intentionalOverlap=true;face.overlayMesh=0;face.overlayFace=0;}
+            var source=seed.pixels.ToArray(); var geometry=seed.positions.ToArray();
+            var report=new ReverseUvTransfer.Report {texelsPerUnit=1};
+            report.overlaps.Add(new ReverseUvTransfer.OverlapRelation {lod=0,underMesh=0,underFace=0,overMesh=1,overFace=0});
+            int side=ReverseUvFinalPacking.Pack(new List<ReverseUvTransfer.Surface[]> {new[] {seed},new[] {fine,overlay}},
+                new ReverseUvTransfer.Options {padding=2,fillFinalAtlas=fill},report,64,default);
+            Assert.AreEqual("shared-chart-families",report.finalPacking,report.finalPackingRefusal);
+            CollectionAssert.AreEqual(seed.pixels,fine.pixels); CollectionAssert.AreEqual(fine.pixels,overlay.pixels);
+            CollectionAssert.AreEqual(geometry,seed.positions);
+            Assert.LessOrEqual(side,64);
+            if(fill) Assert.Greater(report.texelsPerUnit,1); else Assert.AreEqual(1,report.texelsPerUnit);
+            Assert.AreEqual(report.texelsPerUnit,(seed.pixels[1]-seed.pixels[0]).magnitude/(source[1]-source[0]).magnitude,1e-5);
+            foreach(var p in seed.pixels) Assert.IsTrue(p.x>=0 && p.y>=0 && p.x<=side && p.y<=side);
+        }
+
+        [Test] public void FinalPackingHonoursTheAtlasLimitBeforeItsFirstPlacement()
+        {
+            var chart = new[] {Vector2.zero,Vector2.right*20,Vector2.one*20};
+            Assert.Throws<InvalidOperationException>(() => ReverseUvSeedPacking.PackRigid(new[] {chart},
+                new ReverseUvTransfer.Options {maxAtlasSize=16,padding=2},default,out _,out _));
         }
 
         [TestCase("Cafe_Table_A_01")] [TestCase("WindowsNA_R_1.5")]
@@ -259,8 +296,9 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
-        [TestCase(false)] [TestCase(true)]
-        public void FrozenTableReverseAuditsBothJunctionPolicies(bool overlap)
+        [TestCase(false, 10)] [TestCase(true, 10)]
+        [TestCase(false, 32)] [TestCase(true, 32)]
+        public void FrozenTableReverseAuditsBothJunctionPolicies(bool overlap, int density)
         {
             string directory = Environment.GetEnvironmentVariable("MESHLAB_JUNCTION_FIXTURES");
             if (string.IsNullOrEmpty(directory)) Assert.Ignore("Optional private FBX fixtures are not configured.");
@@ -276,22 +314,77 @@ namespace SashaRX.UnityMeshLab.Tests
             try
             {
                 string output = Environment.GetEnvironmentVariable("MESHLAB_JUNCTION_OUTPUT");
-                int inherited = 0, newFaces = 0, atlas = 0;
+                int seedCharts = 0;
                 foreach (bool cuts in new[] { false, true })
                 {
                     using var prepared = ReverseUvJunctionTrial.Build(levels, new ReverseUvTransfer.Options {
-                        seedResolution = 128, padding = 2, projectionReach = .05f, cutNarrowJunctions = cuts,
-                        preserveProjectedOverlap = overlap }, true, 32).GetAwaiter().GetResult();
+                        seedResolution = density == 10 ? 64 : 128, padding = 2, projectionReach = .05f, cutNarrowJunctions = cuts,
+                        preserveProjectedOverlap = overlap, repackFinalAtlas = true, fillFinalAtlas = true }, true, density).GetAwaiter().GetResult();
                     var result = prepared.result;
                     BenchmarkRecorder.OutputDirectoryOverride = string.IsNullOrEmpty(output) ? null : Path.Combine(output,
-                        (cuts ? "reverse-cuts" : "reverse-baseline") + (overlap ? "-overlap" : "-exclusive"));
+                        (cuts ? "reverse-cuts" : "reverse-baseline") + (overlap ? "-overlap" : "-exclusive") + "-" + density);
                     ReverseUvAudit.Write(result, prepared.inputs.levels);
+                    if (!string.IsNullOrEmpty(output))
+                    {
+                        int node = 0;
+                        foreach (var level in result.meshes)
+                            foreach (var mesh in level)
+                            {
+                                var report = result.report.nodes[node++];
+                                File.WriteAllText(Path.Combine(BenchmarkRecorder.OutputDirectoryOverride,$"lod{report.lod}.layout.json"),
+                                    JsonUtility.ToJson(new FrozenReport { mesh=mesh.name, uvAfter=mesh.uv2, trianglesAfter=mesh.triangles,
+                                        faceCharts=report.faces.Select(f=>f.chart).ToArray() },true));
+                            }
+                    }
                     UvtLog.Info($"[JunctionFrozen] Table cuts={cuts}, overlap={overlap}: atlas={result.report.atlasSize}, inherited={result.report.inheritedFaces}, new={result.report.newFaces}, ambiguous={result.report.ambiguousFaces}.");
-                    if (!cuts) { inherited = result.report.inheritedFaces; newFaces = result.report.newFaces; atlas = result.report.atlasSize; }
-                    else { Assert.GreaterOrEqual(result.report.inheritedFaces, inherited); Assert.LessOrEqual(result.report.newFaces, newFaces); Assert.LessOrEqual(result.report.atlasSize, atlas); }
+                    Assert.IsNull(prepared.refusal, "Enabled cuts must actually run, rather than silently retaining the baseline.");
+                    Assert.AreEqual("shared-chart-families", result.report.finalPacking, result.report.finalPackingRefusal);
+                    Assert.GreaterOrEqual(result.report.texelsPerUnit,density*.999f);
+                    int charts = result.report.nodes[0].faces.Select(f => f.chart).Distinct().Count();
+                    if (!cuts) seedCharts = charts;
+                    else Assert.Greater(charts,seedCharts,"The table's T/H chart must be split.");
+                    var allUv = result.meshes.SelectMany(l => l).SelectMany(m => m.uv2).ToArray();
+                    var min = allUv.Aggregate(Vector2.Min); var max = allUv.Aggregate(Vector2.Max);
+                    Assert.Greater(Math.Max(max.x-min.x,max.y-min.y),.93f,"The final chain must use the atlas extent.");
                 }
             }
             finally { BenchmarkRecorder.OutputDirectoryOverride = previous; }
+        }
+
+        [TestCase(false, 0)] [TestCase(true, 0)]
+        [TestCase(false, 2)] [TestCase(true, 2)]
+        public void FrozenTableForwardAuditsJunctionPolicies(bool cuts, int sourceLod)
+        {
+            string directory = Environment.GetEnvironmentVariable("MESHLAB_JUNCTION_FIXTURES");
+            if (string.IsNullOrEmpty(directory)) Assert.Ignore("Optional private FBX fixtures are not configured.");
+            var meshes = AssetDatabase.LoadAllAssetsAtPath(directory + "/Cafe_Table_A_01.fbx").OfType<Mesh>()
+                .Where(m => m.name.Contains("_LOD")).ToArray();
+            var source = meshes.Single(m => m.name.Contains("LOD" + sourceLod));
+            var baseline = Object.Instantiate(source);
+            Mesh donor = null;
+            try
+            {
+                donor = cuts ? UvJunctionCuts.CopyForRepack(baseline, Vector2.one) : null;
+                if (!donor) donor = Object.Instantiate(baseline);
+                var options = RepackOptions.Default; options.resolution = 64; options.padding = 2;
+                options.bruteForce = false; options.blockAlign = false;
+                var packed = XatlasRepack.RepackSingle(donor, options);
+                Assert.IsTrue(packed.ok, packed.error);
+                foreach (var target in meshes.Where(m => m != source))
+                {
+                    var transfer = GroupedShellTransfer.Transfer(target, donor, sourceAtlasWidth: (int)packed.atlasWidth,
+                        sourceAtlasHeight: (int)packed.atlasHeight);
+                    var quality = TransferUvQuality.Measure(target, transfer.uv2, Vector2.one, Matrix4x4.identity);
+                    UvtLog.Info($"[JunctionForward] source={sourceLod}, cuts={cuts}, target={target.name}, collapsed={quality.degenerateFaces}, overlap={quality.overlapPairs}, worst={quality.worstAnisotropy:G6}, stretched={quality.stretchedFaces}.");
+                    string output = Environment.GetEnvironmentVariable("MESHLAB_JUNCTION_OUTPUT");
+                    if (!string.IsNullOrEmpty(output))
+                    {
+                        Directory.CreateDirectory(output);
+                        File.WriteAllText(Path.Combine(output, $"forward-{sourceLod}-{cuts}-{target.name}.json"), JsonUtility.ToJson(quality, true));
+                    }
+                }
+            }
+            finally { Object.DestroyImmediate(baseline); if (donor) Object.DestroyImmediate(donor); }
         }
     }
 }

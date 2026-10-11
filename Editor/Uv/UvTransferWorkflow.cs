@@ -818,7 +818,7 @@ namespace SashaRX.UnityMeshLab
                                 "Run Repack only");
                         }
                     }
-                    using (new EditorGUI.DisabledScope(!ctx.HasRepack || !hasTargets))
+                    using (new EditorGUI.DisabledScope(!HasForwardSourceAtlas() || !hasTargets))
                     {
                         if (GUILayout.Button(new GUIContent("Run Transfer only",
                                 "Re-run Transfer against the existing source UV2 (requires a prior Repack)."),
@@ -1000,7 +1000,7 @@ namespace SashaRX.UnityMeshLab
                         "Repack All");
                 });
             }
-            if (ctx.HasRepack)
+            if (HasForwardSourceAtlas())
                 EditorGUILayout.HelpBox("Repack done. Preview UV1, then Transfer.", MessageType.Info);
         }
 
@@ -1222,7 +1222,7 @@ namespace SashaRX.UnityMeshLab
         {
             H("UV Transfer (Source → Targets)");
             if (ctx.LodGroup == null) { Warn("Set LODGroup first."); return; }
-            if (!ctx.HasRepack) { Warn("Run Repack first."); return; }
+            if (!HasForwardSourceAtlas()) { Warn("Run Repack on the selected forward source LOD first."); return; }
 
             // Per-LOD summary card. ✓ when every included entry in the LOD
             // has a transferredMesh, dimmed dot otherwise. Header carries
@@ -2248,10 +2248,23 @@ namespace SashaRX.UnityMeshLab
 
         Task ExecTransferAllAsync() => ExecTransferAllImpl(useAsync: true);
 
+        bool HasForwardSourceAtlas()
+        {
+            var sources=ctx.ForLod(ctx.SourceLodIndex);
+            return sources.Count>0 && sources.All(e=>e.repackedMesh!=null);
+        }
+
+        static void RequireForwardSourceAtlas(List<MeshEntry> sources)
+        {
+            if (sources.Any(e=>!e.repackedMesh && !string.IsNullOrEmpty(e.reverseTransferJson)))
+                throw new InvalidOperationException("Reverse UV is a separate transfer mode. Repack the selected forward source LOD or run Full Pipeline before ordinary Transfer.");
+        }
+
         async Task ExecTransferAllImpl(bool useAsync)
         {
             using var previewChange = PreservePreviewDuringMeshChange();
             RequirePreparedTransferInputs();
+            RequireForwardSourceAtlas(ctx.ForLod(ctx.SourceLodIndex));
             var capture = TransferCaseCapture.Begin(ctx, this, "TransferAll");
             using var _bench = BenchmarkRecorder.NewRun(ctx, "TransferAll",
                 splitTargetsInSymmetryStep, SymmetrySplitMode);
@@ -2342,13 +2355,14 @@ namespace SashaRX.UnityMeshLab
 
         async Task ExecTransferLodImpl(int tLod, bool useAsync)
         {
-            ClearReverseSummary();
             using var previewChange = PreservePreviewDuringMeshChange();
             RequirePreparedTransferInputs();
             var targets = ctx.ForLod(tLod);
             if (targets.Count == 0) return;
             var sources = ctx.ForLod(ctx.SourceLodIndex);
             if (sources.Count == 0) return;
+            RequireForwardSourceAtlas(sources);
+            ClearReverseSummary();
 
             foreach (var tgt in targets)
             {

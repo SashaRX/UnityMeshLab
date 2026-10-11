@@ -20,6 +20,8 @@ namespace SashaRX.UnityMeshLab
             public bool cutNarrowJunctions;
             public bool rotateCharts = true, rotateChartsToAxis;
             internal float seedDensity;
+            internal bool repackFinalAtlas;
+            public bool fillFinalAtlas;
             public bool splitDonorSeams = true, fillAtlasVacancies = true;
             public long comparisonBudget = 2000000;
             internal Dictionary<(int lod, int node), HashSet<int>> seamCutExclusions;
@@ -49,6 +51,7 @@ namespace SashaRX.UnityMeshLab
             public string rejection;
             public string cutRefusal;
             internal bool protectedInheritance;
+            internal HashSet<Face> overlapParents;
         }
 
         [Serializable] internal sealed class NodeReport
@@ -77,6 +80,7 @@ namespace SashaRX.UnityMeshLab
             public string refinementRefusal;
             public string seedPacking, seedPackingRefusal;
             public bool seedChartRotation;
+            public string finalPacking, finalPackingRefusal;
         }
 
         [Serializable] internal sealed class OverlapRelation
@@ -155,6 +159,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 int side = Mathf.NextPowerOfTwo(Mathf.CeilToInt(Math.Max(width, height)));
                 if (side > options.maxAtlasSize) throw new InvalidOperationException("Reverse UV square atlas exceeds the size limit.");
+                if (options.repackFinalAtlas) side = ReverseUvFinalPacking.Pack(all,options,result.report,side,token);
                 result.report.atlasSize = side;
                 foreach (var level in all)
                 {
@@ -528,8 +533,7 @@ namespace SashaRX.UnityMeshLab
                 var under=refs[a]; var over=refs[b];
                 if(under.s.faces[under.f].layer>over.s.faces[over.f].layer) { var swap=under; under=over; over=swap; }
                 var parent=under.s.faces[under.f]; var detail=over.s.faces[over.f];
-                if(!options.preserveProjectedOverlap || !parent.inherited || !detail.inherited
-                    || !detail.intentionalOverlap || detail.layer<=parent.layer)
+                if(!options.preserveProjectedOverlap || !IsOrderedOverlap(parent,detail))
                     throw new InvalidOperationException("Reverse UV overlap has no ordered intentional ancestry.");
                 report.overlaps.Add(new OverlapRelation {lod=under.s.lod,underMesh=under.s.node,underFace=under.f,overMesh=over.s.node,overFace=over.f});
             }
@@ -537,6 +541,14 @@ namespace SashaRX.UnityMeshLab
 
         static void ResolveOverlaps(Surface[] surfaces, Options options, CancellationToken token)
         {
+            // Face indices can change during donor seam refinement. Rebuild all
+            // same-level relationships from current faces, including untouched nodes.
+            foreach (var surface in surfaces)
+                foreach (var face in surface.faces)
+                {
+                    face.intentionalOverlap = false; face.overlayMesh = face.overlayFace = -1;
+                    face.overlapParents = null;
+                }
             var geometry = Atlas(surfaces, inheritedOnly: true);
             var scan = UvAtlasDiagnostics.Measure(geometry, token, comparisonBudget: options.comparisonBudget, collectConflicts: true);
             if (!scan.complete) throw new InvalidOperationException("Reverse UV overlap audit exceeded its budget; no atlas was published.");
@@ -562,13 +574,29 @@ namespace SashaRX.UnityMeshLab
                     {
                         if (!accepted[other]) continue;
                         var (parent, pf) = refs[other];
-                        if (!options.preserveProjectedOverlap || SharedEdge(s, f, parent, pf))
+                        var parentFace = parent.faces[pf];
+                        if (!options.preserveProjectedOverlap || face.chart != parentFace.chart || SharedEdge(s, f, parent, pf))
                         { face.inherited = false; face.ambiguous = true; face.rejection = "overlap"; break; }
-                        face.intentionalOverlap = true; face.overlayMesh = parent.node; face.overlayFace = pf;
-                        face.layer = Math.Max(face.layer, parent.faces[pf].layer + 1);
+                        if (face.overlapParents == null) face.overlapParents = new HashSet<Face>();
+                        face.overlapParents.Add(parentFace);
+                        // Keep a representative parent for legacy readers, while
+                        // the report records every audited edge of the ancestry graph.
+                        if (face.overlayMesh < 0 || parentFace.layer > surfaces[face.overlayMesh].faces[face.overlayFace].layer)
+                        { face.overlayMesh = parent.node; face.overlayFace = pf; }
+                        face.intentionalOverlap = true;
+                        face.layer = Math.Max(face.layer, parentFace.layer + 1);
                     }
                 accepted[i] = face.inherited;
             }
+        }
+
+        internal static bool IsOrderedOverlap(Face a, Face b)
+        {
+            var under = a.layer < b.layer ? a : b;
+            var over = a.layer < b.layer ? b : a;
+            return under.inherited && over.inherited && under.chart == over.chart
+                && under.layer < over.layer && over.intentionalOverlap
+                && over.overlapParents != null && over.overlapParents.Contains(under);
         }
 
         static bool SharedEdge(Surface a, int fa, Surface b, int fb)
@@ -657,8 +685,7 @@ namespace SashaRX.UnityMeshLab
                 var faceRefs = new List<Face>();
                 foreach (var surface in surfaces) faceRefs.AddRange(surface.faces);
                 foreach (var (a, b) in quality.conflicts)
-                    if (!faceRefs[a].inherited || !faceRefs[b].inherited
-                        || (!faceRefs[a].intentionalOverlap && !faceRefs[b].intentionalOverlap))
+                    if (!IsOrderedOverlap(faceRefs[a],faceRefs[b]))
                         throw new InvalidOperationException("Expanded reverse UV atlas contains an unclassified overlap.");
                 foreach (var p in placed) { width = Math.Max(width, p.x + options.padding); height = Math.Max(height, p.y + options.padding); }
             }

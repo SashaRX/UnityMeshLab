@@ -69,6 +69,7 @@ namespace SashaRX.UnityMeshLab
             for (int level = 0; level < inputs.Length; ++level)
             {
                 var pixels = new List<Vector2>(); var faces = new List<ReverseUvTransfer.Face>();
+                var faceKeys = new List<(int mesh,int face)>();
                 var measurement = new LevelMeasurement { lod = inputs[level].lod, texelsPerUnitMin = double.MaxValue };
                 double surfaceArea = 0, inheritedArea = 0;
                 for (int node = 0; node < inputs[level].inputs.Length; ++node)
@@ -105,6 +106,7 @@ namespace SashaRX.UnityMeshLab
                         measurement.texelsPerUnitMax = Math.Max(measurement.texelsPerUnitMax, density);
                     }
                     faces.AddRange(result.report.nodes[reportNode++].faces);
+                    for (int f = 0; f < nodeReport.faces.Length; ++f) faceKeys.Add((node,f));
                 }
                 var scan = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry { uv = pixels.ToArray(),
                     indices = System.Linq.Enumerable.Range(0, pixels.Count).ToArray(), charts = new int[pixels.Count] }, default,
@@ -113,9 +115,16 @@ namespace SashaRX.UnityMeshLab
                 measurement.inheritedAreaFraction = surfaceArea > 0 ? inheritedArea / surfaceArea : 0;
                 measurement.charts = faces.Select(f => f.chart).Distinct().Count();
                 measurement.groups = faces.Select(f => f.group).Distinct().Count();
+                var allowed = new HashSet<((int mesh,int face) under,(int mesh,int face) over)>(result.report.overlaps
+                    .Where(r => r.lod == inputs[level].lod)
+                    .Select(r => ((r.underMesh,r.underFace),(r.overMesh,r.overFace))));
                 foreach (var (a, b) in scan.conflicts)
                 {
-                    if (faces[a].inherited && faces[b].inherited && (faces[a].intentionalOverlap || faces[b].intentionalOverlap)) ++measurement.allowedOverlapPairs;
+                    int under = faces[a].layer < faces[b].layer ? a : b;
+                    int over = faces[a].layer < faces[b].layer ? b : a;
+                    if (faces[under].inherited && faces[over].inherited && faces[under].chart == faces[over].chart
+                        && faces[under].layer < faces[over].layer && faces[over].intentionalOverlap
+                        && allowed.Contains((faceKeys[under],faceKeys[over]))) ++measurement.allowedOverlapPairs;
                     else ++measurement.unexpectedOverlapPairs;
                 }
                 if (!scan.complete || measurement.unexpectedOverlapPairs > 0 || scan.degenerateFaces > 0 || scan.invalidFaces > 0 || scan.outOfBoundsVertices > 0)

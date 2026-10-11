@@ -50,6 +50,7 @@ namespace SashaRX.UnityMeshLab
             projectionReach = options.projectionReach, normalDot = options.normalDot, maxAnisotropy = options.maxAnisotropy,
             preserveProjectedOverlap = options.preserveProjectedOverlap, cutNarrowJunctions = options.cutNarrowJunctions,
             fillAtlasVacancies = options.fillAtlasVacancies, splitDonorSeams = split, comparisonBudget = options.comparisonBudget,
+            repackFinalAtlas = options.repackFinalAtlas, fillFinalAtlas = options.fillFinalAtlas,
                 rotateCharts = options.rotateCharts, rotateChartsToAxis = options.rotateChartsToAxis,seedDensity=options.seedDensity,
             seamCutExclusions = new Dictionary<(int, int), HashSet<int>>() };
 

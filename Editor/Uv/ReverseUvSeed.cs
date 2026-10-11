@@ -19,15 +19,16 @@ namespace SashaRX.UnityMeshLab
             if (resolution < 16 || resolution > 8192 || padding < 0 || padding >= resolution / 2
                 || float.IsNaN(texelsPerUnit) || float.IsInfinity(texelsPerUnit) || texelsPerUnit < 0)
                 throw new ArgumentException("Invalid reverse seed size, padding or density.");
-            var corners = new List<Vector3>(); var originalIndices = new List<int[]>();
+            var corners = new List<Vector3>(); var owners = new List<int>(); var originalIndices = new List<int[]>();
             var origin = inputs[0].toWorld.GetColumn(3);
             double area = 0;
-            foreach (var input in inputs)
+            for (int node=0;node<inputs.Length;++node)
             {
+                var input=inputs[node];
                 token.ThrowIfCancellationRequested();
                 var positions = ReverseUvTransfer.RelativePositions(input, origin); var triangles = input.mesh.triangles;
                 originalIndices.Add(triangles);
-                foreach (int index in triangles) corners.Add(positions[index]);
+                foreach (int index in triangles) { corners.Add(positions[index]); owners.Add(node); }
             }
             if (corners.Count == 0 || corners.Count > 150000)
                 throw new InvalidOperationException("Reverse seed preparation supports 1–50000 faces in the combined coarsest LOD.");
@@ -37,10 +38,11 @@ namespace SashaRX.UnityMeshLab
                 var frame=ReverseUvTransfer.TriangleFrame(corners[t],corners[t+1],corners[t+2]);
                 area+=frame.length*frame.y*.5;
             }
-            var unique = new Dictionary<Vector3,int>(); var vertices = new List<Vector3>(); var indices = new int[corners.Count];
+            var unique = new Dictionary<(int,Vector3),int>(); var vertices = new List<Vector3>(); var indices = new int[corners.Count];
             for(int i=0;i<indices.Length;++i)
             {
-                if(!unique.TryGetValue(corners[i],out int vertex)) { vertex=vertices.Count; vertices.Add(corners[i]); unique.Add(corners[i],vertex); }
+                var key=(owners[i],corners[i]);
+                if(!unique.TryGetValue(key,out int vertex)) { vertex=vertices.Count; vertices.Add(corners[i]); unique.Add(key,vertex); }
                 indices[i]=vertex;
             }
             var temporary = new Mesh { indexFormat=UnityEngine.Rendering.IndexFormat.UInt32 };

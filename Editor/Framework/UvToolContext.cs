@@ -477,6 +477,8 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public Mesh DMesh(MeshEntry e)
         {
+            if (PreviewUvChannel == 1 && !string.IsNullOrEmpty(e.reverseTransferJson))
+                return e.repackedMesh ?? e.transferredMesh ?? e.originalMesh;
             if (e.lodIndex == SourceLodIndex && e.repackedMesh != null && PreviewUvChannel == 1) return e.repackedMesh;
             if (e.lodIndex != SourceLodIndex && e.transferredMesh != null && PreviewUvChannel == 1) return e.transferredMesh;
             return e.originalMesh;

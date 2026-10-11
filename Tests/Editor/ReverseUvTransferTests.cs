@@ -74,6 +74,30 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void PreparedSeedKeepsCoincidentInputNodesSeparateAndPadded()
+        {
+            var source=Quad(); var snapshot=TransferMeshSnapshot.Capture(source);
+            var inputs=Level(1,source,source).inputs;
+            var meshes=ReverseUvSeed.Prepare(inputs,64,2,8,default,out int side);
+            try
+            {
+                var a=meshes[0]; var b=meshes[1];
+                for(int f=0;f<a.triangles.Length;f+=3)
+                    for(int g=0;g<b.triangles.Length;g+=3)
+                    {
+                        var auv=Enumerable.Range(0,3).Select(k=>a.uv2[a.triangles[f+k]]*side).ToArray();
+                        var buv=Enumerable.Range(0,3).Select(k=>b.uv2[b.triangles[g+k]]*side).ToArray();
+                        var amin=auv.Aggregate(Vector2.Min);var amax=auv.Aggregate(Vector2.Max);
+                        var bmin=buv.Aggregate(Vector2.Min);var bmax=buv.Aggregate(Vector2.Max);
+                        Assert.IsTrue(bmin.x-amax.x>=2 || amin.x-bmax.x>=2 || bmin.y-amax.y>=2 || amin.y-bmax.y>=2,
+                            "Independent seed renderers need distinct padded charts, even when sharing one Mesh asset.");
+                    }
+                CollectionAssert.AreEqual(snapshot,TransferMeshSnapshot.Capture(source));
+            }
+            finally {foreach(var mesh in meshes) Object.DestroyImmediate(mesh);}
+        }
+
+        [Test]
         public void MissingRefinementPiecesStopProtectionAndRetainTheBaseline()
         {
             var before=new ReverseUvTransfer.Report(); var after=new ReverseUvTransfer.Report();
@@ -404,6 +428,46 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(1, result.report.nodes[4].faces[0].layer, "Repeated LOD projection must not increment an existing layer.");
             Assert.AreEqual(1, result.report.nodes[4].faces[0].parentMesh);
             Assert.AreEqual(0, result.report.nodes[3].faces[0].layer,"A closer detail must not reorder the parent layer.");
+        }
+
+        [Test] public void StackedDetailsRetainEveryAuditedOverlapParent()
+        {
+            var levels = new[] {Level(1,Quad()),Level(0,Quad(),Quad(.25f,.02f,.25f),Quad(.25f,.04f,.25f))};
+            using var result = Build(Options(true),levels);
+            var top = result.report.nodes[3];
+            Assert.IsTrue(top.faces.All(f => f.layer == 2 && f.overlayMesh == 1));
+            foreach (int node in new[] {0,1})
+                Assert.IsTrue(result.report.overlaps.Any(r => r.underMesh == node && r.overMesh == 2),
+                    "A detail has audited edges to both the underlying plane and the intermediate detail.");
+            foreach (var relation in result.report.overlaps)
+            {
+                var under = result.report.nodes[relation.underMesh+1].faces[relation.underFace];
+                var over = result.report.nodes[relation.overMesh+1].faces[relation.overFace];
+                Assert.IsTrue(ReverseUvTransfer.IsOrderedOverlap(under,over));
+            }
+        }
+
+        [TestCase("missing-edge")] [TestCase("wrong-chart")]
+        public void OverlapAuditRejectsAnIntentionalFlagWithoutMatchingAncestry(string defect)
+        {
+            var levels = new[] {Level(1,Quad()),Level(0,Quad(),Quad(.25f,.02f,.25f))};
+            using var result = Build(Options(true),levels);
+            Assert.IsNotEmpty(result.report.overlaps);
+            if (defect == "missing-edge") result.report.overlaps.Clear();
+            else foreach (var face in result.report.nodes[2].faces) face.chart += 100;
+            Assert.Throws<InvalidOperationException>(() => ReverseUvAudit.Write(result,levels));
+        }
+
+        [Test] public void OrderedOverlapRequiresTheActualParentAndDonorChart()
+        {
+            var parent = new ReverseUvTransfer.Face {inherited=true,chart=7};
+            var other = new ReverseUvTransfer.Face {inherited=true,chart=7};
+            var detail = new ReverseUvTransfer.Face {inherited=true,chart=7,layer=1,intentionalOverlap=true,
+                overlapParents=new HashSet<ReverseUvTransfer.Face> {parent}};
+            Assert.IsTrue(ReverseUvTransfer.IsOrderedOverlap(parent,detail));
+            Assert.IsFalse(ReverseUvTransfer.IsOrderedOverlap(other,detail));
+            parent.chart = 8;
+            Assert.IsFalse(ReverseUvTransfer.IsOrderedOverlap(parent,detail));
         }
 
         [TestCase(true)] [TestCase(false)]

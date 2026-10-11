@@ -18,6 +18,64 @@ namespace SashaRX.UnityMeshLab
             internal Vector2 origin;
         }
 
+        internal static Vector2[][] PackRigid(Vector2[][] coordinates, ReverseUvTransfer.Options options,
+            CancellationToken token, out int side, out float scale)
+        {
+            int offset = 0;
+            var charts = coordinates.Select(points => {
+                var min = points.Aggregate(Vector2.Min); var max = points.Aggregate(Vector2.Max);
+                var chart = new Chart { faces = Enumerable.Range(offset / 3, points.Length / 3).ToArray(),
+                    local = points.Select(p => p - min).ToArray(), width = max.x - min.x, height = max.y - min.y };
+                offset += points.Length; return chart;
+            }).OrderByDescending(c => Math.Max(c.width,c.height)).ThenByDescending(c => c.width*c.height).ToArray();
+            double area = charts.Sum(c => (Math.Ceiling(c.width)+options.padding*2)*(Math.Ceiling(c.height)+options.padding*2));
+            side = Math.Max(16,Mathf.NextPowerOfTwo(Mathf.CeilToInt((float)Math.Sqrt(area)+options.padding*2)));
+            if (side > options.maxAtlasSize) throw new InvalidOperationException("Complete reverse atlas exceeds its size limit.");
+            Vector2[] packed;
+            while (!TryOrders(charts,side,options,1,token,out packed))
+            {
+                side *= 2;
+                if (side > options.maxAtlasSize) throw new InvalidOperationException("Complete reverse atlas exceeds its size limit.");
+            }
+            scale = 1;
+            if (options.fillFinalAtlas)
+            {
+                // Search the common scale before placing rectangles, keeping the
+                // requested pixel padding fixed. Stretching the already scattered
+                // bounding box cannot recover vacancies between the charts.
+                float low = 1, high = 2;
+                while (TryOrders(charts,side,options,high,token,out var larger))
+                { low = high; packed = larger; high *= 2; }
+                for (int attempt = 0; attempt < 14; ++attempt)
+                {
+                    float trial = (low+high)*.5f;
+                    if (TryOrders(charts,side,options,trial,token,out var candidate))
+                    { low = trial; packed = candidate; }
+                    else high = trial;
+                }
+                scale = low;
+            }
+            var lower = packed.Aggregate(Vector2.Min);
+            var output = new Vector2[coordinates.Length][]; offset = 0;
+            for (int i = 0; i < output.Length; ++i)
+            {
+                output[i] = new Vector2[coordinates[i].Length];
+                for (int j = 0; j < output[i].Length; ++j)
+                    output[i][j] = packed[offset++]-lower+Vector2.one*options.padding;
+            }
+            return output;
+        }
+
+        static bool TryOrders(Chart[] charts,int side,ReverseUvTransfer.Options options,float scale,
+            CancellationToken token,out Vector2[] output)
+        {
+            if (TryPack(charts,side,options,scale,token,out output)) return true;
+            var areaOrder = charts.OrderByDescending(c => (double)c.width*c.height).ThenBy(c => c.faces[0]).ToArray();
+            if (TryPack(areaOrder,side,options,scale,token,out output)) return true;
+            var shortOrder = charts.OrderByDescending(c => Math.Min(c.width,c.height)).ThenByDescending(c => Math.Max(c.width,c.height)).ToArray();
+            return TryPack(shortOrder,side,options,scale,token,out output);
+        }
+
         internal static Vector2[] Prepare(Vector3[] positions, Vector2[] uv, float density,
             bool fixedDensity, ReverseUvTransfer.Options options, CancellationToken token, out int side, bool compact = true)
         {

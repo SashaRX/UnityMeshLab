@@ -188,12 +188,16 @@ namespace SashaRX.UnityMeshLab.Tests
                     mesh=f.sharedMesh,key=f.sharedMesh.name,toWorld=frame*f.transform.localToWorldMatrix }).ToArray() }).ToArray();
             var snapshots = levels.SelectMany(l=>l.inputs).Select(i=>Snapshot(i.mesh)).ToArray();
             var previous = BenchmarkRecorder.OutputDirectoryOverride; double oldInheritedArea = 0; int oldSide=0;
+            // Compare projection/vacancy policies against the same prepared seed;
+            // seed packing is covered separately by the junction workflow tests.
+            using var seed=ReverseUvInputs.Prepare(levels);
+            int seedSide=seed.PrepareSeed(128,2,32,default,compact:false);
             try
             {
                 foreach (bool improved in new[] {false,true})
                 {
-                    using var prepared = ReverseUvJunctionTrial.Build(levels,new ReverseUvTransfer.Options {seedResolution=128,
-                        preserveProjectedOverlap=overlap,splitDonorSeams=improved,fillAtlasVacancies=improved},true,32).GetAwaiter().GetResult();
+                    using var prepared = ReverseUvJunctionTrial.Build(seed.levels,new ReverseUvTransfer.Options {seedResolution=seedSide,
+                        seedDensity=seed.seedDensity,preserveProjectedOverlap=overlap,splitDonorSeams=improved,fillAtlasVacancies=improved},false,32).GetAwaiter().GetResult();
                     string output = Environment.GetEnvironmentVariable("MESHLAB_JUNCTION_OUTPUT");
                     BenchmarkRecorder.OutputDirectoryOverride = string.IsNullOrEmpty(output)?null:Path.Combine(output,
                         "table-"+(improved?"improved":"previous")+(overlap?"-overlap":"-exclusive"));
@@ -296,6 +300,7 @@ namespace SashaRX.UnityMeshLab.Tests
             string directory=Environment.GetEnvironmentVariable("MESHLAB_REVERSE_OUTPUT"); Assert.IsNotEmpty(directory);
             Directory.CreateDirectory(directory); var trials=new AssetTrials(); var previous=BenchmarkRecorder.OutputDirectoryOverride;
             var regressions=new List<string>();
+            bool finalPacking=Environment.GetEnvironmentVariable("MESHLAB_REVERSE_REPACK_FINAL")=="1";
             string baselineFile=Environment.GetEnvironmentVariable("MESHLAB_REVERSE_BASELINE_TRIALS");
             var frozenBaseline=string.IsNullOrEmpty(baselineFile)?null:JsonUtility.FromJson<AssetTrials>(File.ReadAllText(baselineFile));
             try
@@ -321,6 +326,7 @@ namespace SashaRX.UnityMeshLab.Tests
                                 trial.stage="projection";
                                 var task=ReverseUvJunctionTrial.Build(levels,new ReverseUvTransfer.Options {seedResolution=256,
                                     splitDonorSeams=improved,fillAtlasVacancies=improved,preserveProjectedOverlap=overlap,
+                                    repackFinalAtlas=finalPacking,fillFinalAtlas=finalPacking,
                                     cutNarrowJunctions=improved && Environment.GetEnvironmentVariable("MESHLAB_REVERSE_JUNCTION_CUTS")=="1"},true,0,true);
                                 while(!task.IsCompleted) yield return null;
                                 if(task.IsFaulted) trial.error=task.Exception.GetBaseException().Message;
@@ -343,7 +349,7 @@ namespace SashaRX.UnityMeshLab.Tests
                             else if(baseline.accepted)
                             {
                                 if(!trial.accepted) regressions.Add(path+", overlap="+overlap+": "+trial.error);
-                                else if(trial.inheritedAreaFraction<baseline.inheritedAreaFraction-1e-5 || trial.atlas>baseline.atlas)
+                                else if(!finalPacking && (trial.inheritedAreaFraction<baseline.inheritedAreaFraction-1e-5 || trial.atlas>baseline.atlas))
                                     regressions.Add(path+", overlap="+overlap+": inherited area or atlas regressed");
                             }
                             File.WriteAllText(Path.Combine(directory,"asset-trials.json"),JsonUtility.ToJson(trials,true));

@@ -137,6 +137,8 @@ namespace SashaRX.UnityMeshLab
 
         public Mesh GetResultMesh(MeshEntry e)
         {
+            if (!string.IsNullOrEmpty(e.reverseTransferJson))
+                return e.repackedMesh ?? e.transferredMesh;
             // Source LOD: prefer repacked mesh
             if (e.lodIndex == ctx.SourceLodIndex && e.repackedMesh != null)
                 return e.repackedMesh;

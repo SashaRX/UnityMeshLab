@@ -166,8 +166,9 @@ after each method so a partial run keeps completed rows.
 Read anisotropy against 3D geometry (1 is isotropic), stretched faces (>1.25),
 degenerate/invalid faces, positive-area triangle overlap including same-shell
 overlap, out-of-bounds vertices, misses and reference error in atlas texels.
-Source quality uses local geometry; target quality uses the captured target world
-matrix. Unknown atlas dimensions make reference error unavailable. Overlap
+Source and target quality use their captured world transforms. Legacy captures
+without a source transform use local source geometry. Unknown atlas dimensions
+make reference error unavailable. Overlap
 scans have a two-million comparison budget; incomplete results are lower bounds,
 never proof of zero overlaps. Pair counts and summed pair areas are not unique
 overlap area. Do not rank methods using anisotropy alone: a collapsed result can

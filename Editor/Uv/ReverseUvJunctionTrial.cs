@@ -7,8 +7,8 @@ using UnityEngine;
 
 namespace SashaRX.UnityMeshLab
 {
-    /// <summary>Optional seam changes must preserve already inherited faces and
-    /// per-face distortion before any result is published to the LOD chain.</summary>
+    /// <summary>Prepare unpublished seed charts before projection. Refinement
+    /// inside an established chain must preserve inherited regions and metric.</summary>
     internal static class ReverseUvJunctionTrial
     {
         internal sealed class PreparedResult : IDisposable
@@ -23,43 +23,21 @@ namespace SashaRX.UnityMeshLab
             ReverseUvTransfer.Options options, bool prepareSeed, float density, bool useAsync = false,
             CancellationToken token = default)
         {
-            PreparedResult baseline;
-            try { baseline = await BuildOne(sources, options, prepareSeed, density, false, useAsync, token, false); }
-            catch (InvalidOperationException) when (prepareSeed)
-            { baseline = await BuildOne(sources, options, prepareSeed, density, false, useAsync, token, true); }
-            if (prepareSeed) baseline = await TryLayout(baseline, sources, options, density, false, useAsync, token);
-            if (options.cutNarrowJunctions)
-                baseline = await TryLayout(baseline, sources, options, density, true, useAsync, token, prepareSeed);
-            return baseline;
-        }
-
-        static async Task<PreparedResult> TryLayout(PreparedResult baseline, ReverseUvTransfer.Level[] sources,
-            ReverseUvTransfer.Options options, float density, bool cuts, bool useAsync, CancellationToken token, bool prepareSeed = true)
-        {
-            PreparedResult candidate = null;
-            try
-            {
-                candidate = await BuildOne(sources, options, prepareSeed, density, cuts, useAsync, token, true);
-                string refusal = Compare(baseline, candidate, token);
-                if (refusal == null)
-                {
-                    baseline.Dispose();
-                    return candidate;
-                }
-                baseline.refusal = refusal;
-            }
-            catch (InvalidOperationException error)
-            {
-                baseline.refusal = error.Message;
-            }
-            catch
-            {
-                candidate?.Dispose(); baseline.Dispose(); throw;
-            }
-            candidate?.Dispose();
-            baseline.result.report.seedPackingRefusal=baseline.refusal;
-            UvtLog.Warn(UvtLog.Category.Repack, $"[ReverseUV] Retained normalized seed layout ({(cuts ? "junction cuts" : "packing/projection trial")}): {baseline.refusal}");
-            return baseline;
+            if (!prepareSeed) return await BuildOne(sources,options,false,density,false,useAsync,token,false);
+            // Seed charts have not yet been published. Choose their topology
+            // before projecting; newly exposed regions are legitimate new charts.
+            // The donor refinement trial still preserves inherited regions inside
+            // each resulting chain, and publication still requires final audits.
+            string refusal = null;
+            try { return await BuildOne(sources,options,true,density,options.cutNarrowJunctions,useAsync,token,true); }
+            catch (InvalidOperationException error) { refusal = error.Message; }
+            PreparedResult fallback;
+            try { fallback = await BuildOne(sources,options,true,density,false,useAsync,token,options.cutNarrowJunctions); }
+            catch (InvalidOperationException)
+            { fallback = await BuildOne(sources,options,true,density,false,useAsync,token,false); }
+            fallback.refusal = fallback.result.report.seedPackingRefusal = refusal;
+            UvtLog.Warn(UvtLog.Category.Repack,"[ReverseUV] Requested seed preparation failed; retained audited fallback: "+refusal);
+            return fallback;
         }
 
         static async Task<PreparedResult> BuildOne(ReverseUvTransfer.Level[] sources,
@@ -80,7 +58,8 @@ namespace SashaRX.UnityMeshLab
                     comparisonBudget = options.comparisonBudget, cutNarrowJunctions = cuts,
                     splitDonorSeams = options.splitDonorSeams, fillAtlasVacancies = options.fillAtlasVacancies,
                     rotateCharts = options.rotateCharts, rotateChartsToAxis = options.rotateChartsToAxis,
-                    seedDensity=state.inputs.seedDensity };
+                    repackFinalAtlas = prepareSeed && options.repackFinalAtlas, fillFinalAtlas = options.fillFinalAtlas,
+                    seedDensity=prepareSeed?state.inputs.seedDensity:options.seedDensity };
                 if(UvProgress.IsActive) UvProgress.Report(.25f,cuts?"Project with junction cuts":"Validate packing across the LOD chain");
                 state.result = await ReverseUvTransfer.Build(state.inputs.levels, trial, useAsync, token);
                 state.result.report.seedPacking=prepareSeed?(compact?"compact":"normalized-original"):"existing";
@@ -106,7 +85,6 @@ namespace SashaRX.UnityMeshLab
             ReverseUvTransfer.Level[] levels, CancellationToken token = default)
         {
             var before = baseline.report; var after = candidate.report;
-            if (after.atlasSize > before.atlasSize) return "cuts require a larger atlas";
             if (after.texelsPerUnit < before.texelsPerUnit * .9999f) return "cuts reduce texel density";
             if (before.nodes.Count != after.nodes.Count) return "cuts change the input node count";
             for (int n = 0; n < before.nodes.Count; ++n)

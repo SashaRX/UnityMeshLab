@@ -72,9 +72,18 @@ namespace SashaRX.UnityMeshLab
                     int w = Mathf.CeilToInt(island.max.x - island.min.x), h = Mathf.CeilToInt(island.max.y - island.min.y);
                     if (fallback != null) { w = Math.Max(1, w); h = Math.Max(1, h); }
                     w += options.padding * 2; h += options.padding * 2;
-                    if (!Find(rows, w, h, options.padding, token, ref work, out int x, out int y)) { complete = false; break; }
+                    bool found = Find(rows, w, h, options.padding, token, ref work, out int x, out int y);
+                    bool turn = false;
+                    if (options.rotateCharts && Find(rows, h, w, options.padding, token, ref work, out int rx, out int ry)
+                        && (!found || Math.Max(rx + h, ry + w) < Math.Max(x + w, y + h)))
+                    { found = true; turn = true; x = rx; y = ry; (w, h) = (h, w); }
+                    if (!found) { complete = false; break; }
                     foreach (int corner in island.corners)
-                        output[corner] = pixels[corner] - island.min + new Vector2(x + options.padding, y + options.padding);
+                    {
+                        var local = pixels[corner] - island.min;
+                        if (turn) local = new Vector2(island.max.y - island.min.y - local.y, local.x);
+                        output[corner] = local + new Vector2(x + options.padding, y + options.padding);
+                    }
                     for (int r = y; r < y + h; ++r) Reserve(rows[r], x, x + w);
                 }
                 if (complete) return output;
