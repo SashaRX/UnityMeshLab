@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.RegularExpressions;
 using Autodesk.Fbx;
 
@@ -19,6 +20,9 @@ namespace SashaRX.UnityMeshLab
         // Existing path components are canonicalized from directory entries, so
         // exact keys preserve distinct files on any case-sensitive directory.
         static readonly StringComparer PathComparer = StringComparer.Ordinal;
+        static readonly Regex FilenamePrefix = new Regex(
+            "^\\s*(?:(?:FileName|Filename|RelativeFilename)\\s*:|P:\\s*\"(?:Path|RelPath)\")",
+            RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
 
         internal static FbxScene Prepare(FbxSourceDocument document, string scratch, string targetPath, List<string> created, List<string> createdFolders, List<string> referenced)
         {
@@ -32,7 +36,7 @@ namespace SashaRX.UnityMeshLab
                 // including an earlier export of a different map with the same filename.
                 // A 128-bit prefix bounds path overhead; reuse still verifies the full hash.
                 string hash = Hash(file);
-                string output = Path.Combine(destination, hash.Substring(0, 32), Path.GetFileName(file));
+                string output = MediaOutputPath(destination, hash, Path.GetFileName(file));
                 if (File.Exists(output))
                 {
                     if (Hash(output) != hash) throw new IOException("An external FBX media file has changed: " + output);
@@ -48,15 +52,13 @@ namespace SashaRX.UnityMeshLab
                         input.CopyTo(saved);
                     }
                 }
+                output = CanonicalPath(output);
                 referenced.Add(output);
                 paths[CanonicalPath(file)] = output;
             }
 
             string staged = Path.Combine(scratch, "external.fbx");
-            string[] lines = Stage(document, staged);
-            for (int i = 0; i < lines.Length; i++) lines[i] = RewriteFilename(lines[i], paths, scratch, target);
-            RebaseTextureBlocks(lines, scratch, document.SourceDirectory, target, SourcePaths(document, scratch), false);
-            return ImportStaged(document, staged, lines);
+            return RewriteAndImport(document, staged, scratch, target, paths, false);
         }
 
         internal static FbxScene ResolveExternal(FbxSourceDocument document, string scratch, string target, bool requireMedia)
@@ -65,26 +67,42 @@ namespace SashaRX.UnityMeshLab
             // untouched layer values exactly, including binary double precision.
             if (FbxUvSetNames.ReadMediaReferences(Path.Combine(scratch, "input.fbx")).Count == 0) return document.Scene;
             string staged = Path.Combine(scratch, "resolved.fbx");
-            string[] lines = Stage(document, staged);
-            RebaseTextureBlocks(lines, scratch, document.SourceDirectory, Path.GetFullPath(target), SourcePaths(document, scratch), requireMedia);
-            return ImportStaged(document, staged, lines);
+            return RewriteAndImport(document, staged, scratch, Path.GetFullPath(target), new Dictionary<string, string>(PathComparer), requireMedia);
         }
 
-        static string[] Stage(FbxSourceDocument document, string staged)
+        static string MediaOutputPath(string destination, string hash, string filename)
+        {
+            string output = Path.Combine(destination, hash.Substring(0, 32), filename);
+            if (Path.DirectorySeparatorChar != '\\' || output.Length < 250) return output;
+            // Legacy Windows SDK/filesystem paths must fit as a whole, not just
+            // the hash component. Flatten long names while keeping their extension.
+            string extension = Path.GetExtension(filename);
+            int budget = 249 - destination.Length - 1 - extension.Length;
+            if (budget < 16) throw new IOException("The FBX output directory is too long to store external media: " + destination);
+            return Path.Combine(destination, hash.Substring(0, Math.Min(32, budget)) + extension);
+        }
+
+        static void Stage(FbxSourceDocument document, string staged)
         {
             var io = document.Manager.GetIOSettings();
             io.SetBoolProp(Globals.EXP_FBX_EMBEDDED, false);
             document.ExportScene(document.Scene, staged, new FbxWriteSettings(false, false).WriterFormat(document.Manager), io);
-            return File.ReadAllLines(staged);
         }
 
-        static FbxScene ImportStaged(FbxSourceDocument document, string staged, string[] lines)
+        static FbxScene RewriteAndImport(FbxSourceDocument document, string staged, string scratch, string target, IReadOnlyDictionary<string, string> extractedPaths, bool requireMedia)
         {
-            File.WriteAllLines(staged, lines);
+            Stage(document, staged);
+            string rewritten = Path.Combine(scratch, "media-paths.fbx");
+            using (var reader = new StreamReader(staged))
+            using (var writer = new StreamWriter(rewritten))
+                RewriteAscii(reader, writer, scratch, document.SourceDirectory, target, extractedPaths, SourcePaths(document, scratch), requireMedia);
             var scene = FbxScene.Create(document.Manager, "MeshLabExternalMedia");
             using var importer = FbxImporter.Create(document.Manager, "MeshLabExternalMediaImport");
-            if (!importer.Initialize(staged, -1, document.Manager.GetIOSettings()) || !importer.Import(scene))
+            if (!importer.Initialize(rewritten, -1, document.Manager.GetIOSettings()) || !importer.Import(scene))
+            {
+                scene.Destroy();
                 throw new IOException("FBX SDK cannot read the external-media document.");
+            }
             return scene;
         }
 
@@ -109,29 +127,98 @@ namespace SashaRX.UnityMeshLab
             return paths;
         }
 
-        static void RebaseTextureBlocks(string[] lines, string scratch, string source, string target, IReadOnlyDictionary<string, string> originalPaths, bool requireMedia)
+        // Geometry and opaque properties are copied with fixed-size buffers, even
+        // when an SDK array occupies one enormous line. Media blocks are spooled
+        // to owned scratch storage; only their bounded filename records are read.
+        internal static void RewriteAscii(TextReader reader, TextWriter writer, string scratch, string source, string target,
+            IReadOnlyDictionary<string, string> extractedPaths, IReadOnlyDictionary<string, string> originalPaths, bool requireMedia)
         {
-            int start = 0;
-            while (start < lines.Length)
+            string spool = Path.Combine(scratch, "media-block.tmp");
+            var buffer = new char[4096];
+            try
             {
-                string header = lines[start].TrimStart();
-                if (!header.StartsWith("Texture:", StringComparison.Ordinal) && !header.StartsWith("Video:", StringComparison.Ordinal)) { start++; continue; }
-                string closing = lines[start].Substring(0, lines[start].Length - header.Length) + "}";
-                int end = start + 1;
-                while (end < lines.Length && lines[end].TrimEnd() != closing) end++;
-                RebaseTextureBlock(lines, start + 1, end, scratch, source, target, originalPaths, requireMedia);
-                start = end + 1;
+                string prefix;
+                while ((prefix = ReadPrefix(reader)) != null)
+                {
+                    string header = prefix.TrimStart();
+                    if (!header.StartsWith("Texture:", StringComparison.Ordinal) && !header.StartsWith("Video:", StringComparison.Ordinal))
+                    {
+                        CopyRecord(reader, writer, prefix, buffer, extractedPaths, scratch, target, null);
+                        continue;
+                    }
+                    string closing = prefix.Substring(0, prefix.Length - header.Length) + "}";
+                    var names = new List<string>();
+                    using (var block = new StreamWriter(spool))
+                    {
+                        CopyRecord(reader, block, prefix, buffer, extractedPaths, scratch, target, null);
+                        while ((prefix = ReadPrefix(reader)) != null)
+                        {
+                            bool closed = prefix.EndsWith("\n", StringComparison.Ordinal) && prefix.TrimEnd() == closing;
+                            CopyRecord(reader, block, prefix, buffer, extractedPaths, scratch, target, names);
+                            if (closed) break;
+                        }
+                    }
+                    var paths = ResolveBlockPaths(names, scratch, source, originalPaths, requireMedia);
+                    using (var block = new StreamReader(spool))
+                        while ((prefix = ReadPrefix(block)) != null)
+                            CopyRecord(block, writer, prefix, buffer, paths, scratch, target, null);
+                }
             }
+            finally { if (File.Exists(spool)) File.Delete(spool); }
         }
 
-        static void RebaseTextureBlock(string[] lines, int start, int end, string scratch, string source, string target, IReadOnlyDictionary<string, string> originalPaths, bool requireMedia)
+        static string ReadPrefix(TextReader reader)
         {
-            var names = new List<string>();
-            for (int i = start; i < end; i++)
+            var prefix = new StringBuilder(256);
+            int value;
+            while (prefix.Length < 256 && (value = reader.Read()) >= 0)
             {
-                var match = FilenameLine.Match(lines[i]);
-                if (match.Success && !string.IsNullOrEmpty(match.Groups[2].Value)) names.Add(match.Groups[2].Value);
+                prefix.Append((char)value);
+                if (value == '\n') break;
             }
+            return prefix.Length == 0 ? null : prefix.ToString();
+        }
+
+        static void CopyRecord(TextReader reader, TextWriter writer, string prefix, char[] buffer,
+            IReadOnlyDictionary<string, string> paths, string scratch, string target, List<string> names)
+        {
+            if (FilenamePrefix.IsMatch(prefix))
+            {
+                var record = new StringBuilder(prefix);
+                if (!prefix.EndsWith("\n", StringComparison.Ordinal))
+                {
+                    int value;
+                    while ((value = reader.Read()) >= 0)
+                    {
+                        if (record.Length >= 65536) throw new IOException("An FBX media filename record is too long.");
+                        record.Append((char)value);
+                        if (value == '\n') break;
+                    }
+                }
+                string full = record.ToString(), line = full.TrimEnd('\r', '\n');
+                string rewritten = RewriteFilename(line, paths, scratch, target);
+                var match = FilenameLine.Match(rewritten);
+                if (names != null && match.Success && !string.IsNullOrEmpty(match.Groups[2].Value)) names.Add(match.Groups[2].Value);
+                writer.Write(rewritten);
+                writer.Write(full.Substring(line.Length));
+                return;
+            }
+            writer.Write(prefix);
+            if (prefix.EndsWith("\n", StringComparison.Ordinal)) return;
+            int count = 0, next;
+            while ((next = reader.Read()) >= 0)
+            {
+                buffer[count++] = (char)next;
+                if (count == buffer.Length || next == '\n') { writer.Write(buffer, 0, count); count = 0; }
+                if (next == '\n') break;
+            }
+            if (count > 0) writer.Write(buffer, 0, count);
+        }
+
+        static Dictionary<string, string> ResolveBlockPaths(List<string> names, string scratch, string source,
+            IReadOnlyDictionary<string, string> originalPaths, bool requireMedia)
+        {
+            var paths = new Dictionary<string, string>(PathComparer);
             string resolved = names.Select(name => MediaPath(name, scratch)).FirstOrDefault(File.Exists)
                 ?? names.Select(name => originalPaths.TryGetValue(MediaPath(name, source), out string mapped) ? mapped : null).FirstOrDefault(path => path != null)
                 ?? names.Where(name => !Path.IsPathRooted(name.Replace('\\', Path.DirectorySeparatorChar)))
@@ -139,11 +226,10 @@ namespace SashaRX.UnityMeshLab
             if (resolved == null)
             {
                 if (requireMedia && names.Count > 0) throw new IOException("Cannot embed missing FBX media: " + names[0]);
-                return;
+                return paths;
             }
-            var paths = new Dictionary<string, string>(PathComparer);
             foreach (string name in names) paths[MediaPath(name, scratch)] = resolved;
-            for (int i = start; i < end; i++) lines[i] = RewriteFilename(lines[i], paths, scratch, target);
+            return paths;
         }
 
         static string MediaPath(string name, string directory)

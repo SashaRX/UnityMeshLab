@@ -123,18 +123,19 @@ namespace SashaRX.UnityMeshLab
             var createdFolders = new List<string>();
             var referencedMedia = new List<string>();
             bool committed = false;
+            FbxScene prepared = null;
             try
             {
                 // The wrapper cannot downcast an imported FbxObject to FbxFileTexture.
                 // Use a temporary SDK ASCII document to relocate only media filenames,
                 // then let the SDK write the selected output container. Geometry stays
                 // in SDK scenes throughout; the temporary format is never a user output.
-                var scene = EmbedsMedia && !settings.EmbedTextures
+                prepared = EmbedsMedia && !settings.EmbedTextures
                     ? FbxExternalMedia.Prepare(this, scratch, path, createdMedia, createdFolders, referencedMedia)
                     : FbxExternalMedia.ResolveExternal(this, scratch, path, settings.EmbedTextures);
                 io.SetBoolProp(Globals.EXP_FBX_EMBEDDED, settings.EmbedTextures);
-                if (atomic) FbxExport.ReplaceAtomically(path, temp => ExportScene(scene, Path.GetFullPath(temp), format, io), () => committed = true);
-                else { ExportScene(scene, path, format, io); committed = true; }
+                if (atomic) FbxExport.ReplaceAtomically(path, temp => ExportScene(prepared, Path.GetFullPath(temp), format, io), () => committed = true);
+                else { ExportScene(prepared, path, format, io); committed = true; }
                 FbxExternalMedia.ImportMedia(referencedMedia);
             }
             catch
@@ -146,6 +147,10 @@ namespace SashaRX.UnityMeshLab
                     if (Directory.Exists(createdFolders[i]) && Directory.GetFileSystemEntries(createdFolders[i]).Length == 0)
                         FbxExternalMedia.DeleteCreated(createdFolders[i]);
                 throw;
+            }
+            finally
+            {
+                if (prepared != null && prepared != Scene) prepared.Destroy();
             }
         }
 

@@ -85,7 +85,45 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-        string Source(bool binary, bool embedded = false, bool external = false)
+        sealed class StreamingOnlyReader : StringReader
+        {
+            internal StreamingOnlyReader(string value) : base(value) { }
+            public override string ReadLine() => throw new InvalidOperationException("Whole geometry lines must not be allocated.");
+            public override string ReadToEnd() => throw new InvalidOperationException("The staged document must not be loaded as a whole.");
+        }
+
+        [Test]
+        public void StagingStreamsOpaqueGeometryAndRewritesPairedMediaRecords()
+        {
+            string map = Path.Combine(folder, "map.png"), target = Path.Combine(folder, "variant.fbx");
+            File.WriteAllText(map, "fixture");
+            string stored = map.Replace('\\', '/');
+            string opaque = "\t\ta: " + new string('7', 1024 * 1024) + " café\r\n";
+            string block = "\tVideo: 1, \"Video::map\", \"Clip\" {\r\n" +
+                "\t\tFileName: \"missing.png\"\r\n\t\tRelativeFilename: \"map.png\"\r\n" +
+                "\t\tProperties70: {\r\n\t\t\tP: \"Path\", \"KString\", \"XRefUrl\", \"\", \"missing.png\"\r\n\t\t}\r\n" +
+                opaque + "\t}\r\n";
+            string expected = block.Replace("missing.png", stored);
+            using var reader = new StreamingOnlyReader(opaque + block + opaque);
+            using var writer = new StringWriter();
+            var empty = new Dictionary<string, string>(StringComparer.Ordinal);
+            FbxExternalMedia.RewriteAscii(reader, writer, folder, folder, target, empty, empty, true);
+            Assert.AreEqual(opaque + expected + opaque, writer.ToString());
+            Assert.IsFalse(File.Exists(Path.Combine(folder, "media-block.tmp")));
+        }
+
+        [Test]
+        public void MissingMediaRefusalRemovesTheStagingSpool()
+        {
+            using var reader = new StreamingOnlyReader("\tVideo: 1, \"Video::map\", \"Clip\" {\n\t\tFileName: \"missing.png\"\n\t}\n");
+            using var writer = new StringWriter();
+            var empty = new Dictionary<string, string>(StringComparer.Ordinal);
+            Assert.Throws<IOException>(() => FbxExternalMedia.RewriteAscii(reader, writer, folder, folder,
+                Path.Combine(folder, "output.fbx"), empty, empty, true));
+            Assert.IsFalse(File.Exists(Path.Combine(folder, "media-block.tmp")));
+        }
+
+        string Source(bool binary, bool embedded = false, bool external = false, string mediaName = "map.png")
         {
             string path = Path.Combine(folder, "source.fbx");
             using var manager = FbxManager.Create();
@@ -104,10 +142,10 @@ namespace SashaRX.UnityMeshLab.Tests
             if (embedded || external)
             {
                 var texture = new Texture2D(2, 2);
-                try { File.WriteAllBytes(Path.Combine(folder, "map.png"), texture.EncodeToPNG()); }
+                try { File.WriteAllBytes(Path.Combine(folder, mediaName), texture.EncodeToPNG()); }
                 finally { UnityEngine.Object.DestroyImmediate(texture); }
                 node.AddMaterial(FbxStructureEdit.NewMaterial(scene, "M_Quad", 1, 1, 1, "T_Quad_Albedo",
-                    Path.Combine(folder, external ? "missing/map.png" : "map.png"), "map.png", null));
+                    Path.Combine(folder, external ? "missing/" + mediaName : mediaName), mediaName, null));
             }
             using var exporter = FbxExporter.Create(manager, "Source");
             int format = new FbxWriteSettings(binary, embedded).WriterFormat(manager);
@@ -319,6 +357,54 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(1, maps.Length); Assert.Less(maps[0].Length, 250);
             using var saved = FbxSourceDocument.Load(output);
             Assert.IsFalse(saved.EmbedsMedia); Assert.AreEqual(4, saved.Meshes[0].GetPolygonSize(0));
+        }
+
+        [Test]
+        [Platform("Win")]
+        public void DeepOutputWithLongMediaNameBoundsTheCompletePath()
+        {
+            string source = Source(true, embedded: true, mediaName: new string('m', 40) + ".png");
+            string directory = Path.Combine(folder, new string('d', 210 - folder.Length - 1));
+            Directory.CreateDirectory(directory);
+            string output = Path.Combine(directory, "output.fbx");
+            using (var document = FbxSourceDocument.Load(source)) document.SaveAtomic(output);
+            string[] maps = Directory.GetFiles(Path.Combine(directory, "output.fbm"), "*.png", SearchOption.AllDirectories);
+            Assert.AreEqual(1, maps.Length); Assert.Less(maps[0].Length, 250);
+            foreach (var reference in FbxUvSetNames.ReadMediaReferences(output))
+                if (!string.IsNullOrEmpty(reference.filename)) Assert.IsTrue(File.Exists(reference.filename));
+        }
+
+        [Test]
+        public void ReusedMediaReferencesUseTheActualDirectoryEntryCase()
+        {
+            string source = Source(true, embedded: true), output = Path.Combine(folder, "output.fbx");
+            using (var document = FbxSourceDocument.Load(source)) document.SaveAtomic(output);
+            string map = Directory.GetFiles(Path.Combine(folder, "output.fbm"), "*.png", SearchOption.AllDirectories).Single();
+            string actual = Path.Combine(Path.GetDirectoryName(map), "MAP.PNG"), temporary = map + ".rename";
+            File.Move(map, temporary); File.Move(temporary, actual);
+            if (!File.Exists(map)) Assert.Ignore("Fixture requires an insensitive filesystem.");
+            using (var document = FbxSourceDocument.Load(source)) document.SaveAtomic(output);
+            foreach (var reference in FbxUvSetNames.ReadMediaReferences(output))
+            {
+                if (!string.IsNullOrEmpty(reference.filename)) StringAssert.EndsWith("MAP.PNG", reference.filename);
+                if (!string.IsNullOrEmpty(reference.relative)) StringAssert.EndsWith("MAP.PNG", reference.relative);
+            }
+        }
+
+        [Test]
+        [Platform("Win")]
+        public void UnfitMediaPathRefusesBeforeChangingTheOutput()
+        {
+            string source = Source(true, embedded: true);
+            string directory = Path.Combine(folder, new string('d', 230 - folder.Length - 1));
+            Directory.CreateDirectory(directory);
+            string output = Path.Combine(directory, "output.fbx");
+            byte[] original = File.ReadAllBytes(source);
+            File.WriteAllBytes(output, original);
+            using (var document = FbxSourceDocument.Load(source))
+                StringAssert.Contains("too long", Assert.Throws<IOException>(() => document.SaveAtomic(output)).Message);
+            CollectionAssert.AreEqual(original, File.ReadAllBytes(output));
+            Assert.IsFalse(Directory.Exists(Path.Combine(directory, "output.fbm")));
         }
 
         [Test]

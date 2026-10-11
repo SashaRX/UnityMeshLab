@@ -286,6 +286,12 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   and texture embedding are selected; otherwise it is copied into
   content-addressed subfolders of `<output>.fbm`, with texture paths updated
   to those durable files. Existing external maps are never overwritten.
+  On Windows, long media paths use a compact hash filename directly inside
+  `<output>.fbm`, preserving the extension and checking the full content hash
+  before reuse. An output directory that cannot fit this compact name is
+  refused before creating that file. Temporary ASCII filename rewriting
+  streams geometry and spools media blocks on disk instead of loading the
+  entire expanded document into managed memory.
   Temporary corner-matching probes preserve the source format and embedding
   through `SaveForImport`; these probes are not the final output.
   Polygons (quads, n-gons), control points, smoothing,
