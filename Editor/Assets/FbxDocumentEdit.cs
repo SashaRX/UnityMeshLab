@@ -119,7 +119,7 @@ namespace SashaRX.UnityMeshLab
         internal void SaveForImport(string path)
             => SaveWithSettings(path, new FbxWriteSettings(Binary, EmbedsMedia), false);
 
-        void SaveWithSettings(string path, FbxWriteSettings settings, bool atomic)
+        void SaveWithSettings(string path, FbxWriteSettings settings, bool atomic, Action<IEnumerable<string>> importMedia = null)
         {
             var io = Manager.GetIOSettings();
             int format = settings.WriterFormat(Manager);
@@ -137,10 +137,13 @@ namespace SashaRX.UnityMeshLab
                 prepared = EmbedsMedia && !settings.EmbedTextures
                     ? FbxExternalMedia.Prepare(this, scratch, path, createdMedia, createdFolders, referencedMedia)
                     : FbxExternalMedia.ResolveExternal(this, scratch, path, settings.EmbedTextures);
+                // Drain the media import batch before writing the FBX. A texture
+                // postprocessor failure then leaves the old document untouched,
+                // and newly externalized assets remain eligible for rollback.
+                (importMedia ?? FbxExternalMedia.ImportMedia)(referencedMedia);
                 io.SetBoolProp(Globals.EXP_FBX_EMBEDDED, settings.EmbedTextures);
                 if (atomic) FbxExport.ReplaceAtomically(path, temp => ExportScene(prepared, Path.GetFullPath(temp), format, io), () => committed = true);
                 else { ExportScene(prepared, path, format, io); committed = true; }
-                FbxExternalMedia.ImportMedia(referencedMedia);
             }
             catch
             {

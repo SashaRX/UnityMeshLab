@@ -46,13 +46,21 @@ namespace SashaRX.UnityMeshLab
                         foreach (var media in MediaNodes(reader, objects.children, objects.end, wide))
                         {
                             if (media.name != "Texture" && media.name != "Video") continue;
-                            string filename = null, relative = null;
+                            string filename = null, relative = null, propertyPath = null, propertyRelative = null;
                             foreach (var child in MediaNodes(reader, media.children, media.end, wide))
                             {
                                 if (child.name == "FileName" || child.name == "Filename") filename = MediaString(reader, child);
                                 if (child.name == "RelativeFilename") relative = MediaString(reader, child);
+                                if (child.name == "Properties70")
+                                    foreach (var property in MediaNodes(reader, child.children, child.end, wide))
+                                    {
+                                        if (property.name != "P") continue;
+                                        string name = MediaString(reader, property);
+                                        if (name == "Path") propertyPath = MediaString(reader, property, 4);
+                                        if (name == "RelPath") propertyRelative = MediaString(reader, property, 4);
+                                    }
                             }
-                            result.Add((filename, relative));
+                            result.Add((filename ?? propertyPath, relative ?? propertyRelative));
                         }
             }
             else
@@ -95,36 +103,49 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static string MediaString(BinaryReader reader, MediaNode node)
+        static string MediaString(BinaryReader reader, MediaNode node, int index = 0)
         {
-            if (node.count == 0 || node.children - node.properties < 5) return null;
+            if (node.count <= index) return null;
             reader.BaseStream.Position = node.properties;
-            if (reader.ReadByte() != 'S') return null;
-            uint length = reader.ReadUInt32();
-            if (length > node.children - reader.BaseStream.Position) return null;
-            if (length > 65536) throw new IOException("An FBX media filename is too long.");
-            return Encoding.UTF8.GetString(reader.ReadBytes((int)length));
+            for (int i = 0; i <= index; i++)
+            {
+                if (node.children - reader.BaseStream.Position < 5 || reader.ReadByte() != 'S') return null;
+                uint length = reader.ReadUInt32();
+                if (length > node.children - reader.BaseStream.Position) return null;
+                if (length > 65536) throw new IOException("An FBX media filename is too long.");
+                if (i == index) return Encoding.UTF8.GetString(reader.ReadBytes((int)length));
+                reader.BaseStream.Position += length;
+            }
+            return null;
         }
 
         internal static void ReadAsciiMedia(TextReader text, List<(string filename, string relative)> result)
         {
-            int depth = 0, mediaDepth = -1;
-            string filename = null, relative = null;
+            int depth = 0, mediaDepth = -1, propertiesDepth = -1;
+            string filename = null, relative = null, propertyPath = null, propertyRelative = null;
             string line;
-            while ((line = ReadMediaLine(text, mediaDepth >= 0 && depth == mediaDepth + 1, out int balance, out char last)) != null)
+            while ((line = ReadMediaLine(text, mediaDepth >= 0 && (depth == mediaDepth + 1 || depth == propertiesDepth + 1), out int balance, out char last)) != null)
             {
                 if (mediaDepth < 0 && (line.StartsWith("Texture:", StringComparison.Ordinal) || line.StartsWith("Video:", StringComparison.Ordinal))
                     && last == '{')
                 {
-                    mediaDepth = depth; filename = null; relative = null;
+                    mediaDepth = depth; filename = null; relative = null; propertyPath = null; propertyRelative = null;
                 }
                 else if (mediaDepth >= 0 && depth == mediaDepth + 1)
                 {
                     if (line.StartsWith("FileName:", StringComparison.Ordinal) || line.StartsWith("Filename:", StringComparison.Ordinal)) filename = FirstQuoted(line);
                     if (line.StartsWith("RelativeFilename:", StringComparison.Ordinal)) relative = FirstQuoted(line);
+                    if (line.StartsWith("Properties70:", StringComparison.Ordinal) && last == '{') propertiesDepth = depth;
+                }
+                else if (propertiesDepth >= 0 && depth == propertiesDepth + 1 && line.StartsWith("P:", StringComparison.Ordinal))
+                {
+                    string name = FirstQuoted(line);
+                    if (name == "Path") propertyPath = FirstQuoted(line, 4);
+                    if (name == "RelPath") propertyRelative = FirstQuoted(line, 4);
                 }
                 depth += balance;
-                if (mediaDepth >= 0 && depth <= mediaDepth) { result.Add((filename, relative)); mediaDepth = -1; }
+                if (propertiesDepth >= 0 && depth <= propertiesDepth) propertiesDepth = -1;
+                if (mediaDepth >= 0 && depth <= mediaDepth) { result.Add((filename ?? propertyPath, relative ?? propertyRelative)); mediaDepth = -1; }
             }
         }
 
@@ -151,7 +172,8 @@ namespace SashaRX.UnityMeshLab
                     {
                         string beginning = prefix.ToString();
                         filename = beginning.StartsWith("FileName:", StringComparison.Ordinal) || beginning.StartsWith("Filename:", StringComparison.Ordinal)
-                            || beginning.StartsWith("RelativeFilename:", StringComparison.Ordinal);
+                            || beginning.StartsWith("RelativeFilename:", StringComparison.Ordinal)
+                            || (beginning.StartsWith("P:", StringComparison.Ordinal) && (FirstQuoted(beginning) == "Path" || FirstQuoted(beginning) == "RelPath"));
                     }
                 }
                 if (comment) continue;
@@ -343,11 +365,17 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static string FirstQuoted(string line)
+        static string FirstQuoted(string line, int index = 0)
         {
-            int open = line.IndexOf('"');
-            int close = open >= 0 ? line.IndexOf('"', open + 1) : -1;
-            return close > open ? line.Substring(open + 1, close - open - 1) : null;
+            int close = -1;
+            for (int i = 0; i <= index; i++)
+            {
+                int open = line.IndexOf('"', close + 1);
+                close = open >= 0 ? line.IndexOf('"', open + 1) : -1;
+                if (close < 0) return null;
+                if (i == index) return line.Substring(open + 1, close - open - 1);
+            }
+            return null;
         }
 
         // Opening minus closing braces outside quoted strings.

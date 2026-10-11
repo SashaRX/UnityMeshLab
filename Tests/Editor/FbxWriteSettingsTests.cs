@@ -185,6 +185,55 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.Less(stream.BytesRead, 4096, "Binary geometry payloads must be skipped by their record offsets.");
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void BinaryMediaDiscoveryReadsPathProperties(bool wide)
+        {
+            using var file = new MemoryStream();
+            using (var writer = new BinaryWriter(file, System.Text.Encoding.UTF8, true))
+            {
+                writer.Write(System.Text.Encoding.ASCII.GetBytes("Kaydara FBX Binary  \0\x1a\0"));
+                writer.Write(wide ? 7500 : 7400);
+                long objects = BeginMediaFixtureNode(writer, "Objects", wide);
+                long video = BeginMediaFixtureNode(writer, "Video", wide);
+                long properties = BeginMediaFixtureNode(writer, "Properties70", wide);
+                WriteMediaFixturePath(writer, "Path", "authoring/map.png", wide);
+                WriteMediaFixturePath(writer, "RelPath", "maps/map.png", wide);
+                FinishMediaFixtureNode(writer, properties, wide);
+                FinishMediaFixtureNode(writer, video, wide);
+                FinishMediaFixtureNode(writer, objects, wide);
+            }
+            CollectionAssert.AreEqual(new[] { ("authoring/map.png", "maps/map.png") }, FbxUvSetNames.ReadMediaReferences(file));
+        }
+
+        static void WriteMediaFixturePath(BinaryWriter writer, string name, string value, bool wide)
+        {
+            string[] values = { name, "KString", "XRefUrl", "", value };
+            long size = values.Sum(s => 5L + System.Text.Encoding.UTF8.GetByteCount(s));
+            long start = BeginMediaFixtureNode(writer, "P", wide, size);
+            foreach (string item in values)
+            {
+                byte[] bytes = System.Text.Encoding.UTF8.GetBytes(item);
+                writer.Write((byte)'S'); writer.Write(bytes.Length); writer.Write(bytes);
+            }
+            long end = writer.BaseStream.Position;
+            writer.BaseStream.Position = start + (wide ? 8 : 4);
+            if (wide) writer.Write(5L); else writer.Write(5U);
+            writer.BaseStream.Position = end;
+            FinishMediaFixtureNode(writer, start, wide);
+        }
+
+        [Test]
+        public void AsciiMediaDiscoveryReadsLongPathProperties()
+        {
+            string path = "authoring/" + new string('x', 600) + "/map.png";
+            string text = "Objects: {\nVideo: 1, \"Video::map\", \"Clip\" {\nProperties70: {\n"
+                + "P: \"Path\", \"KString\", \"XRefUrl\", \"\", \"" + path + "\"\n"
+                + "P: \"RelPath\", \"KString\", \"XRefUrl\", \"\", \"maps/map.png\"\n}\n}\n}\n";
+            using var file = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(text));
+            CollectionAssert.AreEqual(new[] { (path, "maps/map.png") }, FbxUvSetNames.ReadMediaReferences(file));
+        }
+
         sealed class VirtualFixtureStream : Stream
         {
             readonly Dictionary<long, byte[]> records = new Dictionary<long, byte[]>();
@@ -442,6 +491,78 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.Throws<IOException>(() => document.SaveAtomic(output));
             CollectionAssert.AreEqual(original, File.ReadAllBytes(output));
             Assert.IsFalse(File.Exists(output + ".tmp"));
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void PathOnlyExternalMediaSurvivesVariantSave(bool embed)
+        {
+            string source = Source(false, external: true);
+            string text = File.ReadAllText(source);
+            StringAssert.Contains("P: \"Path\"", text);
+            text = Regex.Replace(text, "(?m)^\\s*(?:FileName|Filename|RelativeFilename):[^\\r\\n]*\\r?\\n", "");
+            File.WriteAllText(source, text);
+            byte[] bytes = File.ReadAllBytes(Path.Combine(folder, "map.png"));
+            string relocated = Path.Combine(folder, "relocated"); Directory.CreateDirectory(Path.Combine(relocated, "missing"));
+            string map = Path.Combine(relocated, "missing/map.png"); File.WriteAllBytes(map, bytes);
+            string moved = Path.Combine(relocated, "source.fbx"); File.Move(source, moved); File.Delete(Path.Combine(folder, "map.png"));
+            string destination = Path.Combine(folder, "variant"); Directory.CreateDirectory(destination);
+            string output = Path.Combine(destination, "output.fbx");
+            MeshLabProjectSettings.Instance.embedFbxTextures = embed;
+            using (var document = FbxSourceDocument.Load(moved)) document.SaveAtomic(output);
+            if (embed)
+            {
+                File.Delete(map);
+                using var saved = FbxSourceDocument.Load(output);
+                Assert.IsTrue(saved.EmbedsMedia);
+                MeshLabProjectSettings.Instance.embedFbxTextures = false;
+                saved.Save(Path.Combine(destination, "extracted.fbx"));
+                string[] maps = Directory.GetFiles(Path.Combine(destination, "extracted.fbm"), "*.png", SearchOption.AllDirectories);
+                Assert.AreEqual(1, maps.Length);
+                CollectionAssert.AreEqual(bytes, File.ReadAllBytes(maps[0]));
+            }
+            else
+            {
+                var references = FbxUvSetNames.ReadMediaReferences(output);
+                Assert.IsTrue(references.Any(r => !string.IsNullOrEmpty(r.filename)), "saved source must still reference its map");
+                foreach (var reference in references.Where(r => !string.IsNullOrEmpty(r.filename)))
+                    Assert.AreEqual(Path.GetFullPath(map), Path.GetFullPath(reference.filename.Replace('/', Path.DirectorySeparatorChar)));
+                using var saved = FbxSourceDocument.Load(output);
+                Assert.AreEqual(4, saved.Meshes[0].GetPolygonSize(0));
+            }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void MediaImportFailureLeavesTheExistingFbxAndMetadataUntouched(bool atomic)
+        {
+            string source = Source(true, embedded: true);
+            string name = "MeshLabMediaFailure_" + Guid.NewGuid().ToString("N"), assets = "Assets/" + name;
+            UnityEditor.AssetDatabase.CreateFolder("Assets", name);
+            try
+            {
+                string output = Path.GetFullPath(assets + "/output.fbx");
+                byte[] original = File.ReadAllBytes(source); File.WriteAllBytes(output, original);
+                UnityEditor.AssetDatabase.ImportAsset(assets + "/output.fbx", UnityEditor.ImportAssetOptions.ForceSynchronousImport);
+                byte[] metadata = File.ReadAllBytes(output + ".meta");
+                using var document = FbxSourceDocument.Load(source);
+                var method = typeof(FbxSourceDocument).GetMethod("SaveWithSettings", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                bool imported = false;
+                Action<IEnumerable<string>> failingImport = files =>
+                {
+                    FbxExternalMedia.ImportMedia(files); imported = true;
+                    throw new IOException("Injected texture import failure after the import batch.");
+                };
+                var exception = Assert.Throws<System.Reflection.TargetInvocationException>(() => method.Invoke(document,
+                    new object[] { output, FbxWriteSettings.FromProject(), atomic, failingImport }));
+                Assert.IsInstanceOf<IOException>(exception.InnerException);
+                Assert.IsTrue(imported);
+                CollectionAssert.AreEqual(original, File.ReadAllBytes(output));
+                CollectionAssert.AreEqual(metadata, File.ReadAllBytes(output + ".meta"));
+                Assert.IsFalse(Directory.Exists(Path.GetFullPath(assets + "/output.fbm")), "new maps and their metadata must roll back");
+                Assert.IsFalse(File.Exists(output + ".tmp"));
+            }
+            finally { UnityEditor.AssetDatabase.DeleteAsset(assets); }
         }
 
         [Test]

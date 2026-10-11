@@ -240,7 +240,9 @@ Before merging any code that writes FBX:
     `<output>.fbm` when embedding is off, so texture references survive temporary
     SDK document disposal. Existing external maps are never overwritten.
     Media subfolders use a 32-character SHA256 prefix; reuse checks the full hash.
-    Externalized project/package maps, including reused files, are imported before the model;
+    Externalized project/package maps, including reused files, are imported before
+    committing the FBX write and before importing the model. If the media import
+    fails, the existing FBX and its metadata remain untouched;
     rollback uses AssetDatabase for project/package resources. Explicit
     embedding resolves external maps against the original FBX directory and
     refuses a missing map before replacing the target file.
@@ -295,6 +297,9 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   Original media-reference discovery also streams ASCII records and seeks
   past Binary geometry payloads using 32- or 64-bit record offsets. The
   source document caches the discovered references across repeated saves.
+  Discovery includes `Properties70` `Path` / `RelPath` pairs when direct
+  filename records are absent, so those sources retain working external
+  references in variants and can be embedded explicitly.
   Temporary corner-matching probes preserve the source format and embedding
   through `SaveForImport`; these probes are not the final output.
   Polygons (quads, n-gons), control points, smoothing,
