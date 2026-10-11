@@ -122,19 +122,25 @@ namespace SashaRX.UnityMeshLab
             {
                 token.ThrowIfCancellationRequested();
                 if (input.topology[sub] != MeshTopology.Triangles) continue;
-                bool selected = input.selected != null && input.selected[sub];
-                var color = ExcludedColor;
-                if (selected) color = input.proxySource ? ProxySourceColor : TransferOnlyColor;
-                // Separate face corners keep shared selected/excluded vertices distinct.
-                foreach (int index in input.indices[sub])
-                {
-                    if ((positions.Count & 4095) == 0) token.ThrowIfCancellationRequested();
-                    positions.Add(input.positions[index]);
-                    colors.Add(color);
-                    if (selected) selectedVertices[index] = true;
-                }
+                AppendFaceCorners(input, sub, positions, colors, selectedVertices, token);
             }
             return new Paint { positions = positions.ToArray(), colors = colors.ToArray(), normalLines = SourceNormalLines(input, selectedVertices) };
+        }
+
+        static void AppendFaceCorners(Input input, int sub, List<Vector3> positions, List<Color32> colors,
+            bool[] selectedVertices, CancellationToken token)
+        {
+            bool selected = input.selected != null && input.selected[sub];
+            var color = ExcludedColor;
+            if (selected) color = input.proxySource ? ProxySourceColor : TransferOnlyColor;
+            // Separate face corners keep shared selected/excluded vertices distinct.
+            foreach (int index in input.indices[sub])
+            {
+                if ((positions.Count & 4095) == 0) token.ThrowIfCancellationRequested();
+                positions.Add(input.positions[index]);
+                colors.Add(color);
+                if (selected) selectedVertices[index] = true;
+            }
         }
 
         static Vector3[] SourceNormalLines(Input input, bool[] selected)
