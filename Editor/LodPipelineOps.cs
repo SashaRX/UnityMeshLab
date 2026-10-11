@@ -366,8 +366,7 @@ namespace SashaRX.UnityMeshLab
                                 bool sourceFallback = r.hardEdges?.sourceFallback ?? false;
                                 bool beltFallback = r.hardEdges?.beltFallback ?? false;
                                 bool coarsened = opts.coarsenHardEdgeChains && opts.prioritizeTriangleBudget && opts.reductionMode == LodReductionMode.Triangles && r.hardEdges?.coarsenedPoints > 0;
-                                r.hardEdges = coarsened ? protection.MeasureCoarsened(r.simplifiedMesh,r.hardEdges) :
-                                    r.hardEdges?.nativeConstraints == true ? protection.MeasureNative(r.simplifiedMesh,r.hardEdges.lockedChainRetry) : protection.Measure(r.simplifiedMesh);
+                                r.hardEdges = MeasureResultProtection(protection,r.simplifiedMesh,r.hardEdges,coarsened);
                                 r.hardEdges.sourceFallback = sourceFallback;
                                 r.hardEdges.beltFallback = beltFallback;
                                 r.hardEdges.screenBudgetRelaxed = levelOptions.screenBudget;
@@ -716,6 +715,11 @@ namespace SashaRX.UnityMeshLab
         {
             if (mesh == null) return 0;
             return LodMeshData.TriangleCount(mesh);
+        }
+        static LodHardEdges.Report MeasureResultProtection(LodHardEdges protection,Mesh mesh,LodHardEdges.Report previous,bool coarsened)
+        {
+            if (coarsened) return protection.MeasureCoarsened(mesh,previous);
+            return previous?.nativeConstraints == true ? protection.MeasureNative(mesh,previous.lockedChainRetry) : protection.Measure(mesh);
         }
     }
 }
