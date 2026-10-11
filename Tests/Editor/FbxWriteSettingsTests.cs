@@ -212,9 +212,92 @@ namespace SashaRX.UnityMeshLab.Tests
                 CollectionAssert.AreEqual(original, File.ReadAllBytes(output));
                 foreach (var pair in bytes) CollectionAssert.AreEqual(pair.Value, File.ReadAllBytes(pair.Key));
                 CollectionAssert.AreEquivalent(maps, Directory.Exists(media) ? Directory.GetFiles(media, "*", SearchOption.AllDirectories) : Array.Empty<string>());
+                if (!previousExport) Assert.IsFalse(Directory.Exists(media), "new empty media folders must also be rolled back");
                 Assert.IsFalse(File.Exists(output + ".tmp"));
             }
             finally { if (assetFolder != null) UnityEditor.AssetDatabase.DeleteAsset(assetFolder); }
+        }
+
+        [Test]
+        [Platform("Win")]
+        public void FailureAfterAtomicCommitKeepsTheInstalledFbxExternalMaps()
+        {
+            string source = Source(true, embedded: true), output = Path.Combine(folder, "committed.fbx");
+            File.Delete(Path.Combine(folder, "map.png"));
+            File.Copy(source, output);
+            string meta = output + ".meta", originalMeta = "fileFormatVersion: 2\nguid: 991c2ef843634137bdfc6f0e7949f4de\n";
+            File.WriteAllText(meta, originalMeta);
+            using (var document = FbxSourceDocument.Load(source))
+            using (var locked = new FileStream(meta, FileMode.Open, FileAccess.Read, FileShare.Read))
+                Assert.Throws<IOException>(() => document.SaveAtomic(output), "metadata restoration fails after the FBX rename committed");
+            Assert.AreEqual(originalMeta, File.ReadAllText(meta));
+            string media = Path.Combine(folder, "committed.fbm");
+            Assert.IsTrue(Directory.Exists(media));
+            Assert.IsNotEmpty(Directory.GetFiles(media, "*", SearchOption.AllDirectories), "installed FBX still owns the new external maps");
+            using (var document = FbxSourceDocument.Load(output))
+            {
+                Assert.IsFalse(document.EmbedsMedia, "replacement really committed before the injected metadata failure");
+                string inspection = Path.Combine(folder, "committed-inspection.fbx");
+                document.ExportScene(document.Scene, inspection, new FbxWriteSettings(false, false).WriterFormat(document.Manager), document.Manager.GetIOSettings());
+                var names = Regex.Matches(File.ReadAllText(inspection), "(?m)^\\s*(?:FileName|Filename):\\s*\"([^\"]+)\"")
+                    .Cast<Match>().Select(m => m.Groups[1].Value).ToArray();
+                Assert.IsNotEmpty(names);
+                foreach (string name in names) Assert.IsTrue(File.Exists(name), name);
+            }
+            string pathHash = unchecked((uint)Path.GetFullPath(output).GetHashCode()).ToString("X8");
+            string backup = Path.Combine(Path.GetTempPath(), Path.GetFileName(output) + "." + pathHash + ".fbx.bak");
+            Assert.IsTrue(File.Exists(backup), "retain the old FBX until metadata restoration and cleanup succeed");
+            File.Delete(backup);
+            File.Delete(Path.Combine(Path.GetTempPath(), Path.GetFileName(output) + "." + pathHash + ".meta.bak"));
+        }
+
+        [Test]
+        public void RollbackDeletesUnimportedProjectFilesAndFoldersWithoutLeavingMeta()
+        {
+            string name = "MeshLabUnimportedMedia_" + Guid.NewGuid().ToString("N"), assetFolder = "Assets/" + name;
+            UnityEditor.AssetDatabase.CreateFolder("Assets", name);
+            string fresh = Path.GetFullPath(assetFolder + "/new.fbm");
+            var texture = new Texture2D(2, 2);
+            try
+            {
+                Directory.CreateDirectory(fresh);
+                string file = Path.Combine(fresh, "map.png"); File.WriteAllBytes(file, texture.EncodeToPNG());
+                FbxExternalMedia.DeleteCreated(file);
+                FbxExternalMedia.DeleteCreated(fresh);
+                Assert.IsFalse(Directory.Exists(fresh));
+                Assert.IsFalse(File.Exists(file + ".meta"));
+                Assert.IsFalse(File.Exists(fresh + ".meta"));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(texture); UnityEditor.AssetDatabase.DeleteAsset(assetFolder); }
+        }
+
+        [TestCase("FileName", false)]
+        [TestCase("Filename", false)]
+        [TestCase("RelativeFilename", true)]
+        [TestCase("Path", false)]
+        [TestCase("RelPath", true)]
+        public void FilenameRewriteKeepsDistinctCaseSensitiveMediaAndOtherMetadata(string field, bool relative)
+        {
+            string target = Path.Combine(folder, "output.fbx"), scratch = Path.Combine(folder, "scratch");
+            string first = Path.Combine(scratch, "input.fbm", "A.png"), second = Path.Combine(scratch, "input.fbm", "a.png");
+            // Model a case-sensitive extraction filesystem even on a Windows test host.
+            var paths = new Dictionary<string, string>(StringComparer.Ordinal) {
+                [first] = Path.Combine(folder, "output.fbm", "first", "A.png"),
+                [second] = Path.Combine(folder, "output.fbm", "second", "a.png")
+            };
+            string prefix = field == "Path" || field == "RelPath"
+                ? "\tP: \"" + field + "\", \"KString\", \"XRefUrl\", \"\", \"" : "\t" + field + ": \"";
+            foreach (var pair in paths)
+            {
+                string stored = relative ? Path.GetRelativePath(scratch, pair.Key) : pair.Key;
+                string line = prefix + stored.Replace('\\', '/') + "\", \"keep\"";
+                string expected = relative ? Path.GetRelativePath(folder, pair.Value) : pair.Value;
+                Assert.AreEqual(prefix + expected.Replace('\\', '/') + "\", \"keep\"",
+                    FbxExternalMedia.RewriteFilename(line, paths, scratch, target));
+            }
+            string unknown = prefix + "unmapped.png\"";
+            Assert.AreEqual(unknown, FbxExternalMedia.RewriteFilename(unknown, paths, scratch, target));
+            Assert.AreEqual("Name: \"A.png\"", FbxExternalMedia.RewriteFilename("Name: \"A.png\"", paths, scratch, target));
         }
 
         [TestCase(false, false)]

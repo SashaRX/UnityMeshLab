@@ -120,6 +120,7 @@ namespace SashaRX.UnityMeshLab
             int format = settings.WriterFormat(Manager);
             var createdMedia = new List<string>();
             var createdFolders = new List<string>();
+            bool committed = false;
             try
             {
                 // The wrapper cannot downcast an imported FbxObject to FbxFileTexture.
@@ -128,11 +129,13 @@ namespace SashaRX.UnityMeshLab
                 // in SDK scenes throughout; the temporary format is never a user output.
                 var scene = EmbedsMedia && !settings.EmbedTextures
                     ? FbxExternalMedia.Prepare(this, scratch, path, createdMedia, createdFolders) : Scene;
-                if (atomic) FbxExport.ReplaceAtomically(path, temp => ExportScene(scene, Path.GetFullPath(temp), format, io));
+                if (atomic) FbxExport.ReplaceAtomically(path, temp => ExportScene(scene, Path.GetFullPath(temp), format, io), () => committed = true);
                 else ExportScene(scene, path, format, io);
             }
             catch
             {
+                // A post-rename error must not delete files referenced by the new FBX.
+                if (committed) throw;
                 foreach (string file in createdMedia) FbxExternalMedia.DeleteCreated(file);
                 for (int i = createdFolders.Count - 1; i >= 0; i--)
                     if (Directory.Exists(createdFolders[i]) && Directory.GetFileSystemEntries(createdFolders[i]).Length == 0)

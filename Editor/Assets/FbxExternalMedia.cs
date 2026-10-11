@@ -14,14 +14,19 @@ namespace SashaRX.UnityMeshLab
     {
         static readonly Regex FilenameLine = new Regex(
             "^(\\s*(?:(?:FileName|Filename|RelativeFilename)\\s*:\\s*|P:\\s*\"(?:Path|RelPath)\"(?:,\\s*\"[^\"]*\"){3},\\s*)\")([^\"]*)(\".*)$",
-            RegexOptions.CultureInvariant);
+            RegexOptions.CultureInvariant, TimeSpan.FromSeconds(1));
+
+        static readonly StringComparer PathComparer = Path.DirectorySeparatorChar == '\\'
+            ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+        static readonly StringComparison PathComparison = Path.DirectorySeparatorChar == '\\'
+            ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
 
         internal static FbxScene Prepare(FbxSourceDocument document, string scratch, string targetPath, List<string> created, List<string> createdFolders)
         {
             string media = Path.Combine(scratch, "input.fbm");
             string target = Path.GetFullPath(targetPath);
             string destination = Path.Combine(Path.GetDirectoryName(target), Path.GetFileNameWithoutExtension(target) + ".fbm");
-            var paths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var paths = new Dictionary<string, string>(PathComparer);
             foreach (string file in Directory.GetFiles(media, "*", SearchOption.AllDirectories))
             {
                 // Content-addressed subfolders avoid overwriting authored external maps,
@@ -50,19 +55,7 @@ namespace SashaRX.UnityMeshLab
             var io = document.Manager.GetIOSettings();
             document.ExportScene(document.Scene, staged, new FbxWriteSettings(false, false).WriterFormat(document.Manager), io);
             string[] lines = File.ReadAllLines(staged);
-            for (int i = 0; i < lines.Length; i++)
-            {
-                var match = FilenameLine.Match(lines[i]);
-                if (!match.Success || string.IsNullOrEmpty(match.Groups[2].Value)) continue;
-                string stored = match.Groups[2].Value.Replace('\\', Path.DirectorySeparatorChar);
-                string absolute = Path.GetFullPath(Path.IsPathRooted(stored) ? stored : Path.Combine(scratch, stored));
-                if (paths.TryGetValue(absolute, out string output))
-                {
-                    bool relative = match.Groups[1].Value.Contains("RelativeFilename") || match.Groups[1].Value.Contains("\"RelPath\"");
-                    string filename = relative ? Path.GetRelativePath(Path.GetDirectoryName(target), output) : output;
-                    lines[i] = match.Groups[1].Value + filename.Replace('\\', '/') + match.Groups[3].Value;
-                }
-            }
+            for (int i = 0; i < lines.Length; i++) lines[i] = RewriteFilename(lines[i], paths, scratch, target);
             File.WriteAllLines(staged, lines);
             var scene = FbxScene.Create(document.Manager, "MeshLabExternalMedia");
             using var importer = FbxImporter.Create(document.Manager, "MeshLabExternalMediaImport");
@@ -71,14 +64,31 @@ namespace SashaRX.UnityMeshLab
             return scene;
         }
 
+        internal static string RewriteFilename(string line, IReadOnlyDictionary<string, string> paths, string scratch, string target)
+        {
+            var match = FilenameLine.Match(line);
+            if (!match.Success || string.IsNullOrEmpty(match.Groups[2].Value)) return line;
+            string stored = match.Groups[2].Value.Replace('\\', Path.DirectorySeparatorChar);
+            string absolute = Path.GetFullPath(Path.IsPathRooted(stored) ? stored : Path.Combine(scratch, stored));
+            if (!paths.TryGetValue(absolute, out string output)) return line;
+            bool relative = match.Groups[1].Value.Contains("RelativeFilename") || match.Groups[1].Value.Contains("\"RelPath\"");
+            string filename = relative ? Path.GetRelativePath(Path.GetDirectoryName(target), output) : output;
+            return match.Groups[1].Value + filename.Replace('\\', '/') + match.Groups[3].Value;
+        }
+
         internal static void DeleteCreated(string file)
         {
             string assets = Path.GetFullPath(UnityEngine.Application.dataPath) + Path.DirectorySeparatorChar;
-            if (file.StartsWith(assets, StringComparison.OrdinalIgnoreCase))
+            if (file.StartsWith(assets, PathComparison))
             {
                 string relative = "Assets/" + file.Substring(assets.Length).Replace('\\', '/');
-                if (!UnityEditor.AssetDatabase.DeleteAsset(relative) && File.Exists(file))
-                    throw new IOException("Cannot remove the failed export's new media file: " + file);
+                if (UnityEditor.AssetDatabase.DeleteAsset(relative)) return;
+                if (!File.Exists(file) && !Directory.Exists(file)) return;
+                // SDK-created files/folders may not be registered yet. Import the
+                // owned resource before retrying Unity's GUID-aware deletion.
+                UnityEditor.AssetDatabase.ImportAsset(relative, UnityEditor.ImportAssetOptions.ForceSynchronousImport);
+                if (!UnityEditor.AssetDatabase.DeleteAsset(relative) && (File.Exists(file) || Directory.Exists(file)))
+                    throw new IOException("Cannot remove the failed export's new media resource: " + file);
             }
             else if (Directory.Exists(file)) Directory.Delete(file);
             else File.Delete(file);

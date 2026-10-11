@@ -897,7 +897,7 @@ namespace SashaRX.UnityMeshLab
         /// target's `.meta` as it was. If the writer throws or writes an empty file the
         /// target on disk is untouched. Throws on failure after removing the temp file.
         /// </summary>
-        internal static void ReplaceAtomically(string targetFbxPath, Action<string> write)
+        internal static void ReplaceAtomically(string targetFbxPath, Action<string> write, Action committed = null)
         {
             string fullPath = Path.GetFullPath(targetFbxPath);
             // Hash the full path so two FBX files with the same filename get distinct
@@ -909,6 +909,7 @@ namespace SashaRX.UnityMeshLab
 
             string tmpRelPath = targetFbxPath + ".tmp";
             string tmpAbsPath = Path.GetFullPath(tmpRelPath);
+            string fbxBak = null;
             if (File.Exists(tmpAbsPath)) File.Delete(tmpAbsPath); // leftover from a crashed run
             try
             {
@@ -921,14 +922,16 @@ namespace SashaRX.UnityMeshLab
                 // is a move.
                 if (File.Exists(fullPath))
                 {
-                    string fbxBak = Path.Combine(Path.GetTempPath(), Path.GetFileName(fullPath) + "." + pathHash + ".fbx.bak");
+                    fbxBak = Path.Combine(Path.GetTempPath(), Path.GetFileName(fullPath) + "." + pathHash + ".fbx.bak");
                     File.Replace(tmpAbsPath, fullPath, fbxBak);
-                    if (File.Exists(fbxBak)) File.Delete(fbxBak);
                 }
                 else
                 {
                     File.Move(tmpAbsPath, fullPath);
                 }
+                // From this point the installed FBX owns its new external media,
+                // even if later metadata restoration or housekeeping fails.
+                committed?.Invoke();
 
                 // The exporter may have generated a .meta for the .tmp — strip it so the
                 // AssetDatabase does not pick up a ghost asset on the next refresh.
@@ -940,6 +943,8 @@ namespace SashaRX.UnityMeshLab
                     File.Copy(metaBak, fullPath + MetaExtension, true);
                     File.Delete(metaBak);
                 }
+                // Keep the original recoverable until metadata restoration succeeds.
+                if (fbxBak != null && File.Exists(fbxBak)) File.Delete(fbxBak);
             }
             catch
             {
