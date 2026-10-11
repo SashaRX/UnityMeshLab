@@ -1,6 +1,6 @@
 // FbxDocumentEdit.cs — edits an FBX file in place through the FBX SDK: load the
-// document, change one layer element of one mesh, save it back in the container
-// format and version it came in. Polygons, control points, smoothing, materials,
+// document, change one layer element of one mesh, save it with the project export
+// policy and the source version. Polygons, control points, smoothing, materials,
 // the other layer elements, nodes and properties are never rebuilt, so they come
 // through as the source file has them (n-gons stay n-gons, no vertex splitting).
 //
@@ -16,7 +16,7 @@ using Autodesk.Fbx;
 
 namespace SashaRX.UnityMeshLab
 {
-    /// <summary>An FBX file loaded into an SDK scene, written back as it was read.</summary>
+    /// <summary>An FBX file loaded into an SDK scene without rebuilding its geometry.</summary>
     internal sealed class FbxSourceDocument : IDisposable
     {
         // FBX SDK writer versions by the file version they write (FbxImporter.GetFileVersion).
@@ -101,20 +101,57 @@ namespace SashaRX.UnityMeshLab
             catch (DllNotFoundException ex) { throw new InvalidOperationException("FBX SDK native library unavailable.", ex); }
         }
 
-        /// <summary>Writes the document to <paramref name="path"/> in the source's container format and version.</summary>
+        /// <summary>Writes the document with project export settings and the source's file version.</summary>
         public void Save(string path)
+            => SaveWithSettings(path, FbxWriteSettings.FromProject(), false);
+
+        internal void SaveAtomic(string path)
+            => SaveWithSettings(path, FbxWriteSettings.FromProject(), true);
+
+        // Corner-tag copies are import probes, not user exports: retain the source's
+        // container and media so the probe's imported data keeps the same context.
+        internal void SaveForImport(string path)
+            => SaveWithSettings(path, new FbxWriteSettings(Binary, EmbedsMedia), false);
+
+        void SaveWithSettings(string path, FbxWriteSettings settings, bool atomic)
         {
             var io = Manager.GetIOSettings();
-            io.SetBoolProp(Globals.EXP_FBX_EMBEDDED, EmbedsMedia);
-            int format = Manager.GetIOPluginRegistry().FindWriterIDByDescription(Binary ? "FBX binary (*.fbx)" : "FBX ascii (*.fbx)");
-            if (format < 0) throw new IOException("FBX SDK has no writer for the source format.");
+            io.SetBoolProp(Globals.EXP_FBX_EMBEDDED, settings.EmbedTextures);
+            int format = settings.WriterFormat(Manager);
+            var createdMedia = new List<string>();
+            var createdFolders = new List<string>();
+            try
+            {
+                // The wrapper cannot downcast an imported FbxObject to FbxFileTexture.
+                // Use a temporary SDK ASCII document to relocate only media filenames,
+                // then let the SDK write the selected output container. Geometry stays
+                // in SDK scenes throughout; the temporary format is never a user output.
+                var scene = EmbedsMedia && !settings.EmbedTextures
+                    ? FbxExternalMedia.Prepare(this, scratch, path, createdMedia, createdFolders) : Scene;
+                if (atomic) FbxExport.ReplaceAtomically(path, temp => ExportScene(scene, Path.GetFullPath(temp), format, io));
+                else ExportScene(scene, path, format, io);
+            }
+            catch
+            {
+                foreach (string file in createdMedia) FbxExternalMedia.DeleteCreated(file);
+                for (int i = createdFolders.Count - 1; i >= 0; i--)
+                    if (Directory.Exists(createdFolders[i]) && Directory.GetFileSystemEntries(createdFolders[i]).Length == 0)
+                        FbxExternalMedia.DeleteCreated(createdFolders[i]);
+                throw;
+            }
+        }
+
+        internal void ExportScene(FbxScene scene, string path, int format, FbxIOSettings io)
+        {
             using var exporter = FbxExporter.Create(Manager, "MeshLabExport");
             if (!exporter.Initialize(path, format, io))
                 throw new IOException($"FBX SDK cannot write '{path}'.");
             if (!exporter.SetFileExportVersion(WriterVersion(Major, Minor)))
                 throw new IOException($"FBX SDK cannot write version {Major}.{Minor}.");
-            if (!exporter.Export(Scene))
+            if (!exporter.Export(scene))
                 throw new IOException($"FBX SDK failed to write '{path}'.");
+            var output = new FileInfo(path);
+            if (!output.Exists || output.Length == 0) throw new IOException($"FBX SDK produced no file at '{path}'.");
         }
 
         /// <summary>The writer for the file version, or the oldest one newer than it.</summary>

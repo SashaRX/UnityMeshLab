@@ -777,9 +777,9 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.AreEqual("T_Bark_Albedo", diffuse.GetSrcObject(0).GetName());
                 Assert.AreEqual("map1", diffuse.GetSrcObject(0).FindProperty("UVSet").GetString(), "bound to the mesh's UV set");
             }
-            // The wrapper does not downcast to FbxFileTexture: the path is read from the file. (The
-            // SDK writes the relative path anew on save, from the absolute one and the file's place.)
-            string written = System.Text.Encoding.ASCII.GetString(File.ReadAllBytes(edited));
+            // Texture paths are UTF-8 string records in binary FBX too. The wrapper does not
+            // downcast imported texture objects, so inspect the exact stored filename bytes.
+            string written = System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(edited));
             StringAssert.Contains("C:/Project/Assets/Textures/T_Bark_Albedo.png", written, "absolute path");
         }
 

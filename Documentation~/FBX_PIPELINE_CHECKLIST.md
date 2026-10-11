@@ -231,7 +231,14 @@ Before merging any code that writes FBX:
 7. Skin / blendshape integrity: run `mesh->GetDeformerCount()` test; if non-zero, do not call any CP-mutating op.
 8. Names: ASCII-only.
 9. No `Take 001` empty animation stacks on static exports.
-10. No `Embed Media`.
+10. No `Embed Media` by default. Project Settings > Mesh Lab > FBX Export selects
+    the shared output format (Binary by default) and texture embedding (off by
+    default). ASCII always disables embedding. This applies to document saves,
+    hierarchy rebuilds and Remesh; a source ASCII file is written as Binary with
+    the default settings, while its FBX version and authored polygons are kept.
+    A source's embedded media is extracted into content-addressed subfolders of
+    `<output>.fbm` when embedding is off, so texture references survive temporary
+    SDK document disposal. Existing external maps are never overwritten.
 
 If the tool produces a file that flags ANY category in
 `patch_fbx_materials --report-file`, the tool is wrong, not the

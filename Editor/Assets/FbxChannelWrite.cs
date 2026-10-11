@@ -210,9 +210,9 @@ namespace SashaRX.UnityMeshLab
             // import brings a UV1 written (or removed) here; otherwise the sidecar still applies.
             bool uv1Changed = uv1Written || channelsWritten.Contains("UV1 (removed)");
             if (uv1Changed) Uv2AssetPostprocessor.fbxOverwritePaths.Add(targetFbxPath);
-            try { FbxExport.ReplaceAtomically(targetFbxPath, temp => document.Save(Path.GetFullPath(temp))); }
+            try { document.SaveAtomic(Path.GetFullPath(targetFbxPath)); }
             catch { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); throw; }
-            string format = $"FBX {document.Major}.{document.Minor}, {(document.Binary ? "binary" : "ASCII")}";
+            string format = $"FBX {document.Major}.{document.Minor}, {FbxWriteSettings.FromProject().FormatName}";
             if (meshesWritten > 0)
                 UvtLog.Info($"[FBX Export] {meshesWritten} mesh(es), {cornersWritten} corner value(s) of {string.Join(", ", channelsWritten.OrderBy(c => c))} -> {targetFbxPath} " +
                     $"({format}; polygons and other channels untouched)");
@@ -569,7 +569,7 @@ namespace SashaRX.UnityMeshLab
                             takenSets[i] = FbxLayerChannels.ReadUv(sets[FbxLayerChannels.MaxUnityUvChannels - 1], new FbxLayerChannels.Topology(mesh));
                         tagChannels[i] = FbxUvSet(FbxLayerChannels.AddCornerTag(mesh, i), swapUv);
                     }
-                    tagDocument.Save(Path.GetFullPath(tempPath));
+                    tagDocument.SaveForImport(Path.GetFullPath(tempPath));
                 }
 
                 AssetDatabase.ImportAsset(tempPath, ImportAssetOptions.ForceSynchronousImport);
