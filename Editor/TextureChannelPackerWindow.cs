@@ -8,8 +8,11 @@ using UnityEngine;
 
 namespace SashaRX.UnityMeshLab
 {
-    public sealed class TextureChannelPackerWindow : EditorWindow
+    // Owned by the Mesh Lab tab. The public type name remains for existing callers.
+    public sealed class TextureChannelPackerWindow : ScriptableObject
     {
+        internal Action RequestRepaint { private get; set; }
+        private void Repaint() => RequestRepaint?.Invoke();
         private static readonly string[] Suffixes = { "_Albedo", "_Normal", "_MRCA" };
         private static readonly string[] Channels = { "R", "G", "B", "A" };
         private static readonly int[] Sizes = { 64, 128, 256, 512, 1024, 2048, 4096, 8192 };
@@ -84,9 +87,22 @@ namespace SashaRX.UnityMeshLab
         [MenuItem("Tools/Mesh Lab/Texture Channel Packer", priority = 80)]
         public static void Open()
         {
-            var window = GetWindow<TextureChannelPackerWindow>("Texture Packer");
-            window.minSize = new Vector2(620, 650);
+            UvToolHub.OpenWithTool("texture_channel_packer");
         }
+
+        internal void RestoreWindowPreferences()
+        {
+            string json = EditorPrefs.GetString(MeshLabWindowPreferences.Key("TexturePacker"), "");
+            if (!string.IsNullOrEmpty(json))
+            {
+                try { JsonUtility.FromJsonOverwrite(json, this); }
+                catch (ArgumentException exception) { UvtLog.Warn("Could not restore texture packer settings: " + exception.Message); }
+            }
+            ReloadSources();
+            OnSelectionChanged();
+        }
+
+        internal void SaveWindowPreferences() => MeshLabWindowPreferences.Save("TexturePacker", this);
 
         private void OnEnable()
         {
@@ -137,7 +153,7 @@ namespace SashaRX.UnityMeshLab
             return name.StartsWith("SM_", StringComparison.OrdinalIgnoreCase) ? name.Substring(3) : name;
         }
 
-        private void OnGUI()
+        internal void DrawContent()
         {
             scroll = EditorGUILayout.BeginScrollView(scroll);
             EditorGUILayout.LabelField("Texture Channel Packer", EditorStyles.boldLabel);

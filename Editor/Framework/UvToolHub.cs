@@ -92,7 +92,7 @@ namespace SashaRX.UnityMeshLab
             OpenWithTool(null);
         }
 
-        static void OpenWithTool(string toolId)
+        internal static void OpenWithTool(string toolId)
         {
             var w = GetWindow<UvToolHub>(WindowTitle);
             w.minSize = new Vector2(800, 500);
@@ -364,6 +364,15 @@ namespace SashaRX.UnityMeshLab
             }
 
             DrawHubToolbar();
+
+            if (ActiveTool is IUvToolFullWindow fullWindow)
+            {
+                float top = EditorGUIUtility.singleLineHeight + 2;
+                GUILayout.BeginArea(new Rect(0, top, position.width, Mathf.Max(0, position.height - top)));
+                fullWindow.OnDrawWindowContent();
+                GUILayout.EndArea();
+                return;
+            }
 
             var rightSidebar = ActiveTool as IUvToolRightSidebar;
             var widths = ResolveColumnWidths(position.width, sideW, rightSideW, rightSidebar != null);

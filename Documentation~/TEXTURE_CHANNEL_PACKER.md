@@ -1,6 +1,7 @@
 # Texture Channel Packer
 
-Open **Tools → Mesh Lab → Texture Channel Packer**.
+Open **Tools → Mesh Lab → Open Mesh Lab**, then select the **Texture Packer** tab.
+The **Tools → Mesh Lab → Texture Channel Packer** shortcut selects the same tab.
 
 Drop a PNG, JPG/JPEG or TGA file onto a slot thumbnail, or use its browse button.
 Files can come from anywhere on disk. Source files are read directly; they are
@@ -51,7 +52,7 @@ run in the background. Resize parallelizes rows with at most four workers,
 leaving a processor available when possible; outputs are encoded sequentially
 to avoid retaining several large output buffers. Preview is bounded to 256 pixels.
 Cancel directly in the window to discard staged outputs; closing the
-window also cancels loading and export. Unity texture creation and AssetDatabase
+Mesh Lab window or switching to another tab also cancels loading and export. Unity texture creation and AssetDatabase
 imports remain on the editor thread; Unity's own import phase can still pause
 the editor. Importing is limited to one output per editor update. After files
 commit, the import queue finishes their settings even if the window closes;
@@ -75,9 +76,10 @@ an error. Filesystem path checks probe the destination's actual case rules,
 including case-insensitive macOS volumes and case-sensitive Windows directories.
 FBX selection changes made during export are applied when the export finishes.
 
-Sources are cached for the open window; **Reload source files** picks up external
-edits. Paths and settings survive domain reload; temporary GPU textures are
-released when the window closes or reloads.
+Sources are cached while the tab is active; **Reload source files** picks up external
+edits. Paths and settings are stored in project-specific editor preferences and survive
+tab switches and domain reload. Temporary GPU textures are released when the tab
+deactivates or Mesh Lab closes or reloads.
 Clearing or replacing a slot cancels unused loads, so stale results cannot
 recreate thumbnails. Failed cleanup attempts are reported and other staged files
 are still cleaned. TGA decoding rejects impossible payload sizes before allocating

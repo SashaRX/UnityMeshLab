@@ -14,7 +14,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [SetUp]
         public void IsolatePreferences()
         {
-            foreach (string section in new[] { "Hub", "RemeshBake", "RemeshPreview", "Fill.remesh_bake", "Fixture" })
+            foreach (string section in new[] { "Hub", "RemeshBake", "RemeshPreview", "Fill.remesh_bake", "Fixture", "TexturePacker" })
                 Remember(MeshLabWindowPreferences.Key(section));
             // Tool activation can read and persist its own fill choice during cleanup.
             foreach (var type in MeshLabModuleRegistry.ToolTypes()) {
@@ -89,6 +89,46 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             public bool enabled = true;
             public float width = 360;
+        }
+
+        [Test]
+        public void TexturePackerTabRestoresSettingsAndReleasesThumbnailsOnSwitch()
+        {
+            var window = ScriptableObject.CreateInstance<UvToolHub>();
+            try
+            {
+                var tool = window.FindTool<TextureChannelPackerTool>();
+                Assert.That(tool, Is.Not.Null, "Packer must be discovered as a Mesh Lab tab");
+                Assert.That(tool, Is.InstanceOf<IUvToolFullWindow>());
+                Call(window, "SelectToolById", tool.ToolId);
+                var panel = Get<TextureChannelPackerWindow>(tool, "panel");
+                Assert.That(typeof(EditorWindow).IsAssignableFrom(panel.GetType()), Is.False);
+                Set(panel, "followFbx", false);
+                Set(panel, "textureName", "SavedPackerName");
+                Set(panel, "widthIndex", 2);
+                Set(panel, "heightIndex", 1);
+                Set(panel, "square", false);
+                Call(panel, "AddSource", "fixture", new TexturePackingImage(1, 1, new[] { new Color32(1, 2, 3, 4) }));
+                var sources = (System.Collections.IDictionary)panel.GetType().GetField("loaded", Private).GetValue(panel);
+                var source = sources["fixture"];
+                var thumbnail = (Texture2D)source.GetType().GetField("thumbnail").GetValue(source);
+                var tools = Get<List<IUvTool>>(window, "tools");
+                var other = tools.Find(t => t != tool);
+                Assert.That(other, Is.Not.Null);
+                Call(window, "SelectToolById", other.ToolId);
+                Assert.That(panel == null, Is.True, "Inactive tab must destroy its owned panel");
+                Assert.That(thumbnail == null, Is.True, "Inactive tab must release its GPU thumbnail");
+                Assert.That(Get<TextureChannelPackerWindow>(tool, "panel"), Is.Null);
+                Call(window, "SelectToolById", tool.ToolId);
+                panel = Get<TextureChannelPackerWindow>(tool, "panel");
+                Assert.That(Get<string>(panel, "textureName"), Is.EqualTo("SavedPackerName"));
+                Assert.That(Get<int>(panel, "widthIndex"), Is.EqualTo(2));
+                Assert.That(Get<int>(panel, "heightIndex"), Is.EqualTo(1));
+                Assert.That(Get<bool>(panel, "square"), Is.False);
+                tool.OnActivate(null, null);
+                Assert.That(Get<TextureChannelPackerWindow>(tool, "panel"), Is.SameAs(panel), "Repeated activation must not duplicate subscriptions");
+            }
+            finally { UnityEngine.Object.DestroyImmediate(window); }
         }
 
         [Test]
