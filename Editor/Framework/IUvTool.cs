@@ -123,6 +123,13 @@ namespace SashaRX.UnityMeshLab
         void OnDrawRightSidebar();
     }
 
+    /// <summary>Opt-in export of a tool-owned result through the shared FBX footer buttons.</summary>
+    public interface IUvToolFbxExport
+    {
+        bool CanExportFbx { get; }
+        void ExportFbx(bool overwriteSource);
+    }
+
     /// <summary>Optional hooks around shared asset writes. Only the active tool is called.</summary>
     public interface IUvToolAssetLifecycle
     {

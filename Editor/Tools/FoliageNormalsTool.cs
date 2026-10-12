@@ -8,7 +8,7 @@ using UnityEngine;
 namespace SashaRX.UnityMeshLab
 {
     [MeshLabTool("foliage_normals", MeshLabLibraries.Geometry, MeshLabLibraries.Remesh, MeshLabLibraries.VertexChannels, MeshLabLibraries.Assets)]
-    public sealed class FoliageNormalsTool : IUvTool, IUvTool3D
+    public sealed class FoliageNormalsTool : IUvTool, IUvTool3D, IUvToolFbxExport
     {
         internal enum Preview
         {
@@ -34,7 +34,8 @@ namespace SashaRX.UnityMeshLab
         GameObject previewCapturedRoot;
         float normalLength = .025f;
         internal int previewLod;
-        bool advanced, showPrimitives, showSphereEdges, active;
+        bool advanced, showPrimitives, showSphereEdges, active, assetWriteInProgress;
+        public bool CanExportFbx => FoliageFbxExport.Available && CanApplyPreview;
         internal bool showProxyEdges = true, showProxySurface = true;
         internal float proxyOpacity = .25f;
         bool? previewCanApply;
@@ -186,6 +187,7 @@ namespace SashaRX.UnityMeshLab
         }
         public void OnRefresh()
         {
+            if (assetWriteInProgress) return;
             previewCanApply = null;
             if (!pipeline.IsRunning)
             {
@@ -203,7 +205,7 @@ namespace SashaRX.UnityMeshLab
 
         void RefreshHierarchyWhenIdle()
         {
-            if (!pendingHierarchyRefresh || pipeline.IsRunning) return;
+            if (!pendingHierarchyRefresh || pipeline.IsRunning || assetWriteInProgress) return;
             pendingHierarchyRefresh = false;
             RefreshFilters();
             pipeline.InvalidateChanged(settings, root);
@@ -704,6 +706,26 @@ namespace SashaRX.UnityMeshLab
             }
             catch (Exception e) { UvtLog.Error("[Foliage] " + e.Message); }
         }
+        public void ExportFbx(bool overwriteSource)
+        {
+            if (!overwriteSource) { SaveFbx(); return; }
+            assetWriteInProgress = true;
+            try
+            {
+                var saved = pipeline.OverwriteFbx(sources => EditorUtility.DisplayDialog("Overwrite Source FBX",
+                    "Write the current foliage normals and tangents into the selected submeshes in all captured LODs?\n\n" +
+                    string.Join("\n", sources) + "\n\nOther FBX channels and hierarchy are preserved.", "Overwrite", "Cancel"));
+                if (saved.Length > 0) UvtLog.Info("[Foliage] Overwritten FBX: " + string.Join(", ", saved));
+            }
+            catch (Exception e) { UvtLog.Error("[Foliage] " + e.Message); }
+            finally
+            {
+                assetWriteInProgress = false;
+                OnRefresh();
+                RequestRepaint?.Invoke();
+            }
+        }
+
         void SaveFbx()
         {
             string folder = EditorUtility.OpenFolderPanel("Save separate foliage FBX", Application.dataPath, "");

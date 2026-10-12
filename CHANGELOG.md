@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Fixed
+- Fixed atomic FBX overwrite on Windows when the project and system temporary directory are on different volumes.
+- Shared Overwrite FBX and Export New FBX buttons use the active Foliage preview result, including selected submesh shading in captured LODs. Source overwrite preserves untouched channels and relinks reimported meshes without requiring Apply to Scene first.
 - Foliage Scatter immediately previews translucent spheres with their computed radius on the main mesh, reports radius and preview counts, and keeps sphere surface, opacity and edges adjustable before building the proxy.
 - Foliage Proxy + mesh preview overlays an independently adjustable translucent cyan proxy surface, keeps the source mesh readable and supports hiding proxy edges or returning to wire-only display.
 - Foliage voxel-envelope budget refusals report actual triangle counts, preserve voxel resolution and offer an explicit budget increase with rebuild up to the existing 200,000-triangle hard cap. Envelope failures no longer recommend changing the later remesh edge length.

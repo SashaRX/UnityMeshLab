@@ -678,6 +678,22 @@ namespace SashaRX.UnityMeshLab
             return paths;
         }
 
+        internal string[] OverwriteFbx(Func<IReadOnlyList<string>, bool> confirm, Action<string, ImportAssetOptions> importAsset = null)
+        {
+            if (!CanApply) throw new InvalidOperationException("Build and transfer a current result first.");
+            bool sourceCommitted = false;
+            var importer = importAsset ?? AssetDatabase.ImportAsset;
+            try
+            {
+                return FoliageFbxExport.Overwrite(targets, confirm, (path, options) =>
+                {
+                    sourceCommitted = true; // The channel writer calls import only after committing the file.
+                    importer(path, options);
+                });
+            }
+            finally { if (sourceCommitted) ClearFrom(Stage.Capture); }
+        }
+
         internal string[] SaveFbx(string folder)
         {
             if (!CanApply)

@@ -6,7 +6,7 @@ using UnityEditor;
 
 namespace SashaRX.UnityMeshLab
 {
-    /// <summary>Separate source-document variants, writing only foliage shading through the shared FBX core.</summary>
+    /// <summary>Source-document shading exports through the shared FBX core.</summary>
     internal static class FoliageFbxExport
     {
         internal static bool Available
@@ -19,6 +19,39 @@ namespace SashaRX.UnityMeshLab
                 return false;
 #endif
             }
+        }
+
+        internal static string[] Overwrite(IReadOnlyList<FoliageTargetSnapshot> targets,
+            Func<IReadOnlyList<string>, bool> confirm, Action<string, ImportAssetOptions> importAsset = null)
+        {
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+            var groups = GroupSources(targets);
+            if (groups.Count == 0) throw new InvalidOperationException("No foliage results to export.");
+            if (confirm == null || !confirm(groups.Keys.ToArray())) return Array.Empty<string>();
+            var paths = new List<string>();
+            EditorApplication.LockReloadAssemblies();
+            try
+            {
+                foreach (var group in groups)
+                {
+                    PrepareGroup(group.Key, group.Value, importAsset, out var entries, out var selection);
+                    selection.allowSourceOverwrite = true;
+                    var relinks = group.Value.Select(t => (t.filter, name: t.source.name)).ToArray();
+                    var importer = selection.importAsset;
+                    bool importAttempted = false;
+                    selection.importAsset = (path, options) => { importAttempted = true; importer(path, options); };
+                    bool written;
+                    try { written = FbxExport.WriteChannels(group.Key, entries, FbxExportIntent.Normals | FbxExportIntent.Tangents, null, null, null, selection); }
+                    finally { if (importAttempted) RelinkSourceMeshes(group.Key, relinks); }
+                    if (!written) throw new InvalidOperationException($"Foliage FBX overwrite did not complete for '{group.Key}'. If import failed after writing, fix the import and reimport this FBX; see the Mesh Lab log.");
+                    paths.Add(group.Key);
+                }
+                return paths.ToArray();
+            }
+            finally { EditorApplication.UnlockReloadAssemblies(); }
+#else
+            throw new InvalidOperationException("Install Unity FBX Exporter (com.unity.formats.fbx) to overwrite FBX.");
+#endif
         }
 
         internal static string[] Save(IReadOnlyList<FoliageTargetSnapshot> targets, string folder, Action<string, ImportAssetOptions> importAsset = null)
@@ -69,11 +102,11 @@ namespace SashaRX.UnityMeshLab
             if (!SidecarStore.IsFbxPath(source) || !(AssetImporter.GetAtPath(source) is ModelImporter importer))
                 throw new InvalidOperationException($"'{target.source.name}' is not an imported FBX mesh. Preserving its original FBX data requires an FBX source.");
             if (importer.importNormals != ModelImporterNormals.Import)
-                throw new InvalidOperationException($"'{source}' calculates normals on import. Separate FBX export requires source Normals = Import to preserve excluded shading; recapture after changing that setting.");
+                throw new InvalidOperationException($"'{source}' calculates normals on import. Foliage FBX export requires source Normals = Import to preserve excluded shading; recapture after changing that setting.");
             if (importer.importTangents == ModelImporterTangents.None && target.working.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.Tangent))
-                throw new InvalidOperationException($"'{source}' uses Tangents = None and would discard the result's tangent frame. Disable Recalculate tangents and rebuild, or enable source tangent import and recapture before saving a separate FBX.");
+                throw new InvalidOperationException($"'{source}' uses Tangents = None and would discard the result's tangent frame. Disable Recalculate tangents and rebuild, or enable source tangent import and recapture before exporting.");
             if (importer.meshCompression != ModelImporterMeshCompression.Off)
-                UvtLog.Warn($"[Foliage] '{source}' uses lossy Mesh Compression. The FBX document preserves excluded normals, UVs and colours exactly; its copied Unity importer can quantize them on reimport. Disable Mesh Compression on the new FBX for uncompressed shading.");
+                UvtLog.Warn($"[Foliage] '{source}' uses lossy Mesh Compression. The FBX document preserves excluded normals, UVs and colours exactly; its Unity importer can quantize them on reimport. Disable Mesh Compression on the output FBX for uncompressed shading.");
         }
 
         static void SaveGroup(string source, List<FoliageTargetSnapshot> targets, string folder, List<string> paths, List<FbxSourceDocument.MediaOwnership> ownership, Action<string, ImportAssetOptions> importAsset)
@@ -82,8 +115,18 @@ namespace SashaRX.UnityMeshLab
             string output = AssetDatabase.GenerateUniqueAssetPath(candidate);
             if (string.IsNullOrEmpty(output) || string.Equals(Path.GetFullPath(output), Path.GetFullPath(source), StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException("Choose a separate FBX destination.");
-            var entries = new List<MeshEntry>();
-            var selection = new FbxExport.ShadingSelection();
+            PrepareGroup(source, targets, importAsset, out var entries, out var selection);
+            paths.Add(output);
+            ownership.Add(selection.mediaOwnership);
+            if (!FbxExport.WriteChannels(source, entries, FbxExportIntent.Normals | FbxExportIntent.Tangents, output, null, null, selection))
+                throw new InvalidOperationException($"FBX export failed for '{source}'. See the Mesh Lab log; no result was accepted.");
+        }
+
+        static void PrepareGroup(string source, List<FoliageTargetSnapshot> targets, Action<string, ImportAssetOptions> importAsset,
+            out List<MeshEntry> entries, out FbxExport.ShadingSelection selection)
+        {
+            entries = new List<MeshEntry>();
+            selection = new FbxExport.ShadingSelection();
             if (importAsset != null) selection.importAsset = importAsset;
             foreach (var target in targets)
             {
@@ -93,10 +136,20 @@ namespace SashaRX.UnityMeshLab
                 CaptureSourceNode(source, target, selection);
                 entries.Add(new MeshEntry { fbxMesh = target.source, originalMesh = target.original, transferredMesh = target.working, include = true });
             }
-            paths.Add(output);
-            ownership.Add(selection.mediaOwnership);
-            if (!FbxExport.WriteChannels(source, entries, FbxExportIntent.Normals | FbxExportIntent.Tangents, output, null, null, selection))
-                throw new InvalidOperationException($"FBX export failed for '{source}'. See the Mesh Lab log; no result was accepted.");
+        }
+
+        static void RelinkSourceMeshes(string source, (UnityEngine.MeshFilter filter, string name)[] relinks)
+        {
+            var meshes = AssetDatabase.LoadAllAssetsAtPath(source).OfType<UnityEngine.Mesh>().ToArray();
+            foreach (var (filter, name) in relinks)
+            {
+                if (!filter || EditorUtility.IsPersistent(filter)) continue;
+                var fresh = meshes.SingleOrDefault(mesh => mesh.name == name);
+                if (!fresh || filter.sharedMesh == fresh) continue;
+                Undo.RecordObject(filter, "Relink Foliage FBX");
+                filter.sharedMesh = fresh;
+                PrefabUtility.RecordPrefabInstancePropertyModifications(filter);
+            }
         }
 
         static void CaptureSourceNode(string source, FoliageTargetSnapshot target, FbxExport.ShadingSelection selection)

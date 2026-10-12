@@ -495,3 +495,13 @@ material bake or automatic whole-scene processing. Low voxel resolutions can
 merge close clusters; wide spacing can leave disconnected volumes. Thin gaps and
 overlapping cards require tuning spacing/radius/resolution. Smoothing validates
 topology and volume but does not detect all geometric self-intersections.
+
+The shared footer **Overwrite FBX** uses the current Foliage transfer result
+without requiring **Apply to Scene** first. It confirms the source files, writes
+only selected normals/tangents in the captured LODs through the channel writer,
+and preserves other channels and hierarchy. **Export New FBX** uses the separate
+Foliage FBX workflow. A missing or stale transfer disables the footer actions;
+the hub never substitutes unrelated context meshes. Successful overwrite relinks
+imported meshes and clears the old capture, so rebuild before another transfer.
+An import failure after the atomic file commit is reported as a failed operation;
+the source is retained and can be reimported after fixing the importer failure.
