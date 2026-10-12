@@ -127,9 +127,9 @@ namespace SashaRX.UnityMeshLab
             string targetFbxPath = string.IsNullOrEmpty(outputFbxPath) ? sourceFbxPath : outputFbxPath;
             bool isVariant = !string.Equals(targetFbxPath, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
             bool hasStructure = structure != null && !structure.IsEmpty;
-            if (shadingSelection != null && (!isVariant || hasStructure ||
+            if (shadingSelection != null && ((!isVariant && !shadingSelection.allowSourceOverwrite) || hasStructure ||
                 (intent & ~(FbxExportIntent.Normals | FbxExportIntent.Tangents)) != 0))
-                throw new InvalidOperationException("Selected shading can only be saved into a separate FBX, with normals/tangents intent and no structure edits.");
+                throw new InvalidOperationException("Selected shading requires a separate FBX or explicit source overwrite, with normals/tangents intent and no structure edits.");
             // A changed material reaches Unity through the written file's importer remap; a file
             // written outside the project has no importer, so its slots would carry a name only.
             bool inProject = targetFbxPath.StartsWith("Assets/", StringComparison.Ordinal) || targetFbxPath.StartsWith("Packages/", StringComparison.Ordinal);

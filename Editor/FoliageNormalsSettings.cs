@@ -11,6 +11,7 @@ namespace SashaRX.UnityMeshLab
     internal sealed class FoliageNormalsSettings
     {
         internal const int HardPrimitiveCap = 50000;
+        internal const int HardProxyTriangleCap = 200000;
         public bool lod0Only = true;
         public FoliageFaceSelection selection;
         public Material[] materials = Array.Empty<Material>();
@@ -73,7 +74,7 @@ namespace SashaRX.UnityMeshLab
             Range(smoothingStrength, 0, 1, nameof(smoothingStrength));
             Range(lambda, .001f, .6f, nameof(lambda)); Range(mu, -.65f, -.001f, nameof(mu));
             if (-mu < lambda) throw new ArgumentException("Taubin compensation must be at least lambda in magnitude.");
-            if (maximumProxyTriangles < 4 || maximumProxyTriangles > 200000)
+            if (maximumProxyTriangles < 4 || maximumProxyTriangles > HardProxyTriangleCap)
                 throw new ArgumentException("Proxy triangle budget must be 4–200,000.");
             if (remeshProxy) ValidateRemesh();
             if (minimumSamplesPerIsland < 1 || minimumSamplesPerIsland > 100 || maximumPrimitiveCount < 1 || maximumPrimitiveCount > HardPrimitiveCap)

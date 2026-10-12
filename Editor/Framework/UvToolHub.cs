@@ -1709,18 +1709,33 @@ namespace SashaRX.UnityMeshLab
         //  Helpers
         // ════════════════════════════════════════════════════════════
 
+        internal static bool TryExportToolFbx(IUvToolFbxExport exporter, bool overwriteSource)
+        {
+            if (exporter == null) return false;
+            if (exporter.CanExportFbx) exporter.ExportFbx(overwriteSource);
+            return true; // An unavailable tool result must never fall back to unrelated context meshes.
+        }
+
+        void ExportSidebarFbx(bool overwriteSource)
+        {
+            if (!(ActiveTool is IUvToolFbxExport)) { ctx.Assets.ExportFbxPublic(overwriteSource); return; }
+            try { BeforeAssetWrite(); TryExportToolFbx(ActiveTool as IUvToolFbxExport, overwriteSource); }
+            finally { FinishAssetWrite(); }
+        }
+
         void DrawSidebarFooter()
         {
+            var previewExport = ActiveTool as IUvToolFbxExport;
             bool hasMeshEntries = ctx != null && ctx.MeshEntries != null && ctx.MeshEntries.Count > 0;
-            bool hasFbxWorkflow = ctx != null && !string.IsNullOrEmpty(ctx.SourceFbxPath);
-            if (!hasMeshEntries || modules.LibraryUnavailableReason(MeshLabLibraries.Assets) != null) return;
+            bool hasFbxWorkflow = previewExport != null || ctx != null && !string.IsNullOrEmpty(ctx.SourceFbxPath);
+            if ((!hasMeshEntries && previewExport == null) || modules.LibraryUnavailableReason(MeshLabLibraries.Assets) != null) return;
 
             EditorGUILayout.Space(2);
             var r = GUILayoutUtility.GetRect(0, 1, GUILayout.ExpandWidth(true));
             EditorGUI.DrawRect(r, new Color(.3f, .3f, .3f));
             EditorGUILayout.Space(2);
 
-            if (GUILayout.Button("Save Mesh Assets", EditorStyles.miniButton))
+            if (hasMeshEntries && GUILayout.Button("Save Mesh Assets", EditorStyles.miniButton))
             {
                 ctx.Assets.SaveAllPublic();
             }
@@ -1731,36 +1746,35 @@ namespace SashaRX.UnityMeshLab
 
             var bg = GUI.backgroundColor;
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-            if (!PostprocessorDefineManager.IsEnabled())
+            if (previewExport == null && !PostprocessorDefineManager.IsEnabled())
             {
                 EditorGUILayout.HelpBox(
                     "Sidecar UV2 Mode is OFF. FBX overwrite/apply will use temporary sidecar replay for this import only.",
                     MessageType.Info);
             }
 
-            EditorGUILayout.BeginHorizontal();
-            GUI.backgroundColor = new Color(.95f, .6f, .2f);
-            if (GUILayout.Button("Overwrite FBX", GUILayout.Height(24)))
+            if (previewExport != null)
+                EditorGUILayout.HelpBox($"FBX export uses the current {ActiveTool.ToolName} result.", MessageType.Info);
+            using (new EditorGUI.DisabledScope(previewExport != null && !previewExport.CanExportFbx))
             {
-                ctx.Assets.ExportFbxPublic(true);
+                EditorGUILayout.BeginHorizontal();
+                GUI.backgroundColor = new Color(.95f, .6f, .2f);
+                if (GUILayout.Button("Overwrite FBX", GUILayout.Height(24))) ExportSidebarFbx(true);
+                GUI.backgroundColor = new Color(.4f, .7f, .95f);
+                if (GUILayout.Button("Export New FBX", GUILayout.Height(24))) ExportSidebarFbx(false);
+                GUI.backgroundColor = bg;
+                EditorGUILayout.EndHorizontal();
             }
-            GUI.backgroundColor = new Color(.4f, .7f, .95f);
-            if (GUILayout.Button("Export New FBX", GUILayout.Height(24)))
-            {
-                ctx.Assets.ExportFbxPublic(false);
-            }
-            GUI.backgroundColor = bg;
-            EditorGUILayout.EndHorizontal();
 #else
             EditorGUILayout.HelpBox("Install com.unity.formats.fbx for FBX export.", MessageType.Info);
 #endif
 
-            if (GUILayout.Button("Apply UV2 (sidecar)", EditorStyles.miniButton))
+            if (hasMeshEntries && GUILayout.Button("Apply UV2 (sidecar)", EditorStyles.miniButton))
             {
                 ctx.Assets.ApplyUv2Public();
             }
 
-            if (!string.IsNullOrEmpty(ctx.SourceFbxPath)
+            if (ctx != null && !string.IsNullOrEmpty(ctx.SourceFbxPath)
                 && GUILayout.Button("Backup from main", EditorStyles.miniButton))
             {
                 BackupFbxFromGitMain(ctx.SourceFbxPath);

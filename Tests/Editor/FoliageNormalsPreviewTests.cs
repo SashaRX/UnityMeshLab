@@ -513,6 +513,10 @@ namespace SashaRX.UnityMeshLab.Tests
             tool.preview = FoliageNormalsTool.Preview.ProxyAndMesh; items.Clear(); tool.Get3DContent(items);
             Assert.AreEqual(3, items.Count);
             Assert.IsTrue(items.Last().WireOnly); Assert.AreSame(tool.pipeline.RemeshedMesh, items.Last().mesh);
+            Assert.IsTrue(tool.showProxySurface); Assert.AreEqual(.25f, tool.proxyOpacity); Assert.IsFalse(items.Last().SuppressWire);
+            tool.showProxyEdges = false; items.Clear(); tool.Get3DContent(items);
+            Assert.IsTrue(items.Last().SuppressWire); Assert.IsTrue(items.Last().WireOnly);
+            Assert.IsFalse(items[0].SuppressWire); Assert.AreEqual(beforeMatrix, items[0].matrix);
             tool.SetNormalComparison(false); Assert.AreEqual(FoliageNormalsTool.Preview.ProxyAndMesh, tool.preview);
             items.Clear(); tool.Get3DContent(items); Assert.AreSame(target.original, items[0].mesh); Assert.IsTrue(items.Last().WireOnly);
             tool.preview = FoliageNormalsTool.Preview.BeforeAfter; items.Clear(); tool.Get3DContent(items);
@@ -726,14 +730,138 @@ namespace SashaRX.UnityMeshLab.Tests
                 window.items.Clear();
                 window.items.Add(new MeshViewport3D.Item(target.working, target.localToCapture, target.materials));
                 window.items.Add(new MeshViewport3D.Item(pipeline.RemeshedMesh, Matrix4x4.identity) { WireOnly = true });
+                Action<MeshViewport3D> proxySurface = view => view.DrawHighlightMesh(pipeline.RemeshedMesh, Matrix4x4.identity, new Color(.05f, .8f, 1f, .25f));
+                window.overlay = proxySurface;
                 for (int frame = 0; frame < 10; frame++) { window.Pixels(); yield return null; }
                 window.Pixels(Path.Combine(output, "pine-proxy-plus-mesh.png"));
                 var lines = new List<Vector3>();
                 float length = pipeline.CaptureBounds.size.magnitude * .025f;
                 FoliageNormalsPreview.AppendNormalLines(target, true, Vector3.zero, length, lines);
-                window.overlay = view => view.DrawLines(lines, Matrix4x4.identity, Color.yellow);
+                window.overlay = view => { proxySurface(view); view.DrawLines(lines, Matrix4x4.identity, Color.yellow); };
                 for (int frame = 0; frame < 5; frame++) { window.Pixels(); yield return null; }
                 window.Pixels(Path.Combine(output, "pine-normal-directions.png"));
+            }
+            finally { window.Close(); }
+        }
+
+        [TestCase(1)]
+        [TestCase(4097)]
+        public void ScatterSpherePreviewIsBoundedAndPreservesComputedRadii(int count)
+        {
+            var primitives = Enumerable.Range(0, count).Select(i => new FoliagePrimitive {
+                center = new Vector3(i * .001f, 0, 0), radius = .3f }).ToArray();
+            var geometry = FoliagePrimitiveBuilder.BuildPreview(primitives, CancellationToken.None);
+            int shown = Math.Min(count, FoliagePrimitiveBuilder.MaximumPreviewPrimitives);
+            int verticesPerSphere = geometry.positions.Length / shown;
+            Assert.AreEqual(80 * shown, geometry.TriangleCount);
+            for (int i = 0; i < shown; i++)
+            {
+                var primitive = primitives[(int)((long)i * count / shown)];
+                for (int v = 0; v < verticesPerSphere; v++)
+                    Assert.That(Vector3.Distance(geometry.positions[i * verticesPerSphere + v], primitive.center),
+                        Is.EqualTo(primitive.radius).Within(1e-5f), "Preview vertices must use the computed capture-space radius.");
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator ScatterImmediatelyShowsTranslucentSpheresAndReleasesStaleGeometry()
+        {
+            Assert.AreNotEqual(GraphicsDeviceType.Null, SystemInfo.graphicsDeviceType);
+            using var leaf = new FoliageNormalTransferTests.Fixture(new[] { Vector3.zero, Vector3.right, Vector3.up });
+            leaf.mesh.colors32 = Enumerable.Repeat(new Color32(0, 255, 0, 255), 3).ToArray();
+            var fingerprint = FoliageTargetSnapshot.ContentFingerprint(leaf.mesh);
+            using var fixture = new ToolFixture(); var tool = fixture.tool;
+            tool.settings = new FoliageNormalsSettings { normalSource = FoliageNormalSource.VoxelEnvelope,
+                relativeSpacing = false, sampleSpacing = 2, radiusMultiplier = .25f,
+                includeSourceVertices = false, includeTriangleCentroids = false, gpuProjection = false };
+            tool.SetRoot(leaf.root); yield return AwaitPreview(tool.sourcePreview);
+            var task = tool.Run(FoliageNormalsPipeline.Stage.Scatter);
+            yield return FoliageNormalsToolTests.Await(task);
+            Assert.IsTrue(tool.pipeline.Has(FoliageNormalsPipeline.Stage.Scatter), tool.pipeline.Status);
+            Assert.AreEqual(FoliageNormalsTool.Preview.PrimitiveSamples, tool.preview, "Scatter must select the sphere display automatically.");
+            Assert.IsNull(tool.pipeline.EnvelopeMesh, "Sphere preview must be available before voxelization.");
+            var cached = tool.pipeline.ScatterMesh;
+            Assert.IsTrue(cached); Assert.AreEqual(HideFlags.HideAndDontSave, cached.hideFlags);
+            Assert.AreEqual(.5f, tool.pipeline.Primitives[0].radius);
+            var items = new List<MeshViewport3D.Item>(); tool.Get3DContent(items);
+            Assert.AreEqual(2, items.Count); Assert.AreSame(cached, items.Last().mesh);
+            Assert.IsTrue(items.Last().WireOnly); Assert.IsTrue(items.Last().SuppressWire);
+            tool.preview = FoliageNormalsTool.Preview.ProxyAndMesh;
+            items.Clear(); tool.Get3DContent(items); Assert.AreSame(cached, items.Last().mesh);
+            tool.preview = FoliageNormalsTool.Preview.PrimitiveSamples;
+            for (int draw = 0; draw < 10; draw++) { items.Clear(); tool.Get3DContent(items); Assert.AreSame(cached, items.Last().mesh); }
+            var output = Environment.GetEnvironmentVariable("MESHLAB_SCATTER_PREVIEW_OUTPUT");
+            if (!string.IsNullOrEmpty(output)) Directory.CreateDirectory(output);
+            var window = ScriptableObject.CreateInstance<PreviewWindow>();
+            try
+            {
+                window.position = new Rect(0, 0, 512, 512); window.ShowUtility();
+                window.viewport.ShowGrid = window.viewport.ShowAxes = false;
+                window.viewport.Mode = MeshViewport3D.Shading.VertexColors;
+                window.viewport.ViewProjection = MeshViewport3D.Projection.XY;
+                tool.Get3DContent(window.items); window.overlay = tool.OnDraw3D;
+                tool.showProxySurface = false;
+                for (int frame = 0; frame < 10; frame++) { window.Pixels(); yield return null; }
+                var source = window.Pixels(string.IsNullOrEmpty(output) ? null : Path.Combine(output, "scatter-mesh.png"));
+                var green = Enumerable.Range(0, source.Length).Where(i => source[i].g > .7f && source[i].r < .1f && source[i].b < .1f).ToArray();
+                Assert.Greater(green.Length, 1000);
+                tool.showProxySurface = true; tool.proxyOpacity = .25f;
+                var translucent = window.Pixels(string.IsNullOrEmpty(output) ? null : Path.Combine(output, "scatter-translucent.png"));
+                Assert.Greater(green.Average(i => translucent[i].b - source[i].b), .02, "Scatter spheres must have a filled translucent surface.");
+                Assert.Greater(green.Count(i => translucent[i].g > translucent[i].b * 1.2f), green.Length * .8f, "The main mesh remains readable through the spheres.");
+                Assert.AreEqual(1, window.viewport.SurfaceOpacity);
+                Assert.AreSame(leaf.mesh, leaf.root.GetComponent<MeshFilter>().sharedMesh);
+                Assert.AreEqual(fingerprint, FoliageTargetSnapshot.ContentFingerprint(leaf.mesh));
+            }
+            finally { window.Close(); }
+            tool.settings.radiusMultiplier = .5f;
+            tool.pipeline.InvalidateChanged(tool.settings, leaf.root);
+            Assert.IsFalse(cached, "Changing Scatter inputs must release the stale preview.");
+            Assert.IsNull(tool.pipeline.ScatterMesh);
+            task = tool.Run(FoliageNormalsPipeline.Stage.Scatter);
+            yield return FoliageNormalsToolTests.Await(task);
+            Assert.AreEqual(1, tool.pipeline.Primitives[0].radius);
+            var rebuilt = tool.pipeline.ScatterMesh; Assert.IsTrue(rebuilt);
+            tool.OnDeactivate(); Assert.IsFalse(rebuilt, "Deactivation must release Scatter preview geometry.");
+        }
+
+        [UnityTest]
+        public IEnumerator TranslucentProxyKeepsTheMainMeshVisibleAndUsesIndependentOpacity()
+        {
+            Assert.AreNotEqual(GraphicsDeviceType.Null, SystemInfo.graphicsDeviceType);
+            using var leaf = new FoliageNormalTransferTests.Fixture(new[] { Vector3.zero, Vector3.right, Vector3.up });
+            leaf.mesh.colors32 = Enumerable.Repeat(new Color32(0, 255, 0, 255), 3).ToArray();
+            var fingerprint = FoliageTargetSnapshot.ContentFingerprint(leaf.mesh);
+            using var fixture = new ToolFixture(); var tool = fixture.tool;
+            tool.SetRoot(leaf.root); yield return AwaitPreview(tool.sourcePreview);
+            var task = tool.pipeline.Run(leaf.root, tool.settings, FoliageNormalsPipeline.Stage.Envelope);
+            yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, tool.pipeline.Status);
+            tool.preview = FoliageNormalsTool.Preview.ProxyAndMesh; tool.showProxyEdges = false;
+            var output = Environment.GetEnvironmentVariable("MESHLAB_PROXY_PREVIEW_OUTPUT");
+            if (!string.IsNullOrEmpty(output)) Directory.CreateDirectory(output);
+            var window = ScriptableObject.CreateInstance<PreviewWindow>();
+            try
+            {
+                window.position = new Rect(0, 0, 512, 512); window.ShowUtility();
+                window.viewport.ShowGrid = window.viewport.ShowAxes = false;
+                window.viewport.Mode = MeshViewport3D.Shading.VertexColors;
+                window.viewport.ViewProjection = MeshViewport3D.Projection.XY;
+                tool.Get3DContent(window.items); window.overlay = tool.OnDraw3D;
+                tool.showProxySurface = false;
+                for (int frame = 0; frame < 10; frame++) { window.Pixels(); yield return null; }
+                var source = window.Pixels(string.IsNullOrEmpty(output) ? null : Path.Combine(output, "mesh.png"));
+                var green = Enumerable.Range(0, source.Length).Where(i => source[i].g > .7f && source[i].r < .1f && source[i].b < .1f).ToArray();
+                Assert.Greater(green.Length, 1000, "The main leaf card must be visible before adding the proxy surface.");
+                tool.showProxySurface = true; tool.proxyOpacity = .25f;
+                var translucent = window.Pixels(string.IsNullOrEmpty(output) ? null : Path.Combine(output, "proxy-translucent.png"));
+                tool.proxyOpacity = 1;
+                var opaque = window.Pixels(string.IsNullOrEmpty(output) ? null : Path.Combine(output, "proxy-opaque.png"));
+                Assert.Greater(green.Average(i => translucent[i].b - source[i].b), .05, "The proxy must draw a filled translucent surface.");
+                Assert.Greater(green.Count(i => translucent[i].g > translucent[i].b * 1.2f), green.Length * .8f, "The green mesh remains readable through the proxy.");
+                Assert.Less(green.Count(i => opaque[i].g > opaque[i].b * 1.2f), green.Length * .2f, "Full opacity must differ from translucent display.");
+                Assert.AreEqual(1, window.viewport.SurfaceOpacity, "Proxy opacity must not change the source opacity.");
+                Assert.AreSame(leaf.mesh, leaf.root.GetComponent<MeshFilter>().sharedMesh);
+                Assert.AreEqual(fingerprint, FoliageTargetSnapshot.ContentFingerprint(leaf.mesh));
             }
             finally { window.Close(); }
         }

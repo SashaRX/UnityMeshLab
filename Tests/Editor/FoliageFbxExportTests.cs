@@ -150,6 +150,106 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { pipeline.Dispose(); Object.DestroyImmediate(root); }
         }
 
+        [UnityTest]
+        public IEnumerator PreviewOverwriteWritesSelectedShadingInAllLodsWithoutApplyToScene()
+        {
+            string source = Source(false, true, lods: true);
+            string beforePath = folder + "/before.fbx";
+            Assert.IsTrue(AssetDatabase.CopyAsset(source, beforePath));
+            var bytes = File.ReadAllBytes(source); var meta = File.ReadAllBytes(source + ".meta");
+            string guid = AssetDatabase.AssetPathToGUID(source);
+            var root = (GameObject)PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(source));
+            using var pipeline = new FoliageNormalsPipeline();
+            try
+            {
+                var renderer = root.GetComponentsInChildren<MeshRenderer>().Single(r => r.name == "Tree_LOD0");
+                var settings = new FoliageNormalsSettings { filterRenderers = true, renderers = new[] { renderer },
+                    selection = FoliageFaceSelection.SelectedSubmeshIndices, submeshes = new[] { 1 },
+                    normalSource = FoliageNormalSource.Hemisphere, proxySegments = 16, gpuProjection = false, recalculateTangents = true };
+                var task = pipeline.Run(root, settings, FoliageNormalsPipeline.Stage.Transfer);
+                yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, pipeline.Status);
+                Assert.AreEqual(3, pipeline.Targets.Count);
+                foreach (var target in pipeline.Targets) Assert.AreSame(target.source, target.filter.sharedMesh, "Preview must not require Apply to Scene.");
+                Assert.IsEmpty(pipeline.OverwriteFbx(_ => false));
+                CollectionAssert.AreEqual(bytes, File.ReadAllBytes(source));
+                Assert.IsTrue(pipeline.CanApply, "Cancelling overwrite keeps the result available.");
+                var paths = pipeline.OverwriteFbx(sources => { CollectionAssert.AreEqual(new[] { source }, sources); return true; });
+                CollectionAssert.AreEqual(new[] { source }, paths);
+                Assert.IsFalse(pipeline.Has(FoliageNormalsPipeline.Stage.Capture));
+                Assert.IsEmpty(pipeline.Targets);
+                Assert.AreEqual(guid, AssetDatabase.AssetPathToGUID(source));
+                CollectionAssert.AreEqual(meta, File.ReadAllBytes(source + ".meta"));
+                Assert.IsFalse(bytes.SequenceEqual(File.ReadAllBytes(source)), "The source must receive the current transfer result.");
+                CheckDocuments(beforePath, source);
+                using var before = FbxSourceDocument.Load(beforePath); using var after = FbxSourceDocument.Load(source);
+                foreach (var original in before.Meshes)
+                {
+                    var result = after.Meshes.Single(m => m.GetName() == original.GetName());
+                    var a = new FbxLayerChannels.Topology(original); var b = new FbxLayerChannels.Topology(result);
+                    Assert.IsFalse(FbxLayerChannels.ReadVectors(FbxLayerChannels.NormalElement(original), a)
+                        .SequenceEqual(FbxLayerChannels.ReadVectors(FbxLayerChannels.NormalElement(result), b)), original.GetName());
+                }
+                foreach (var filter in root.GetComponentsInChildren<MeshFilter>())
+                {
+                    Assert.IsTrue(EditorUtility.IsPersistent(filter.sharedMesh));
+                    Assert.AreEqual(source, AssetDatabase.GetAssetPath(filter.sharedMesh));
+                }
+            }
+            finally { pipeline.Dispose(); Object.DestroyImmediate(root); }
+        }
+
+        [UnityTest]
+        public IEnumerator StalePreviewCannotOverwriteOrAskForConfirmation()
+        {
+            string source = Source(false, true);
+            var bytes = File.ReadAllBytes(source);
+            var root = (GameObject)PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(source));
+            using var pipeline = new FoliageNormalsPipeline();
+            try
+            {
+                var settings = new FoliageNormalsSettings { normalSource = FoliageNormalSource.Sphere, proxySegments = 16, gpuProjection = false };
+                var task = pipeline.Run(root, settings, FoliageNormalsPipeline.Stage.Transfer);
+                yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, pipeline.Status);
+                root.transform.position += Vector3.right;
+                bool confirmed = false;
+                Assert.Throws<InvalidOperationException>(() => pipeline.OverwriteFbx(_ => { confirmed = true; return true; }));
+                Assert.IsFalse(confirmed); CollectionAssert.AreEqual(bytes, File.ReadAllBytes(source));
+            }
+            finally { pipeline.Dispose(); Object.DestroyImmediate(root); }
+        }
+
+        [UnityTest]
+        public IEnumerator FailedSourceImportRetainsFbxAndInvalidatesTheOldCapture()
+        {
+            string source = Source(false, true);
+            var root = (GameObject)PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(source));
+            using var pipeline = new FoliageNormalsPipeline();
+            try
+            {
+                var settings = new FoliageNormalsSettings { normalSource = FoliageNormalSource.Sphere, proxySegments = 16, gpuProjection = false };
+                var task = pipeline.Run(root, settings, FoliageNormalsPipeline.Stage.Transfer);
+                yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, pipeline.Status);
+                LogAssert.Expect(LogType.Error, new System.Text.RegularExpressions.Regex(".*overwrite did not complete: Injected source import failure.*"));
+                Assert.Throws<InvalidOperationException>(() => pipeline.OverwriteFbx(_ => true,
+                    (path, options) => throw new InvalidOperationException("Injected source import failure")));
+                Assert.IsTrue(File.Exists(source)); Assert.IsTrue(File.Exists(source + ".meta"));
+                Assert.IsFalse(pipeline.Has(FoliageNormalsPipeline.Stage.Capture)); Assert.IsEmpty(pipeline.Targets);
+                AssetDatabase.ImportAsset(source, ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate);
+                Assert.IsNotNull(AssetDatabase.LoadAssetAtPath<GameObject>(source));
+            }
+            finally { pipeline.Dispose(); Object.DestroyImmediate(root); }
+        }
+
+        [Test]
+        public void SelectedShadingCannotOverwriteSourceWithoutExplicitOptIn()
+        {
+            string source = Source(false, true); var bytes = File.ReadAllBytes(source);
+            var selection = new FbxExport.ShadingSelection();
+            Assert.Throws<InvalidOperationException>(() => FbxChannelWrite.Write(source, Array.Empty<MeshEntry>(),
+                FbxExportIntent.Normals, null, null, shadingSelection: selection));
+            CollectionAssert.AreEqual(bytes, File.ReadAllBytes(source));
+        }
+
         static void AddInstance(FbxScene scene, FbxNode group, FbxNode source)
         {
             var instance = FbxNode.Create(scene, "TreeCopy_LOD0");

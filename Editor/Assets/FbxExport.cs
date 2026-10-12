@@ -24,9 +24,10 @@ namespace SashaRX.UnityMeshLab
         const string MetaExtension = ".meta";
         const string RelinkUndoLabel = "Relink Mesh";
 
-        /// <summary>Explicit shading edits on selected submeshes of a new FBX variant.</summary>
+        /// <summary>Explicit shading edits on selected submeshes of an FBX document.</summary>
         internal sealed class ShadingSelection
         {
+            internal bool allowSourceOverwrite;
             internal readonly Dictionary<string, bool[]> submeshes = new Dictionary<string, bool[]>(StringComparer.Ordinal);
             internal readonly Dictionary<string, HashSet<string>> sourceNodes = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
             internal Action<string, ImportAssetOptions> importAsset = AssetDatabase.ImportAsset;
@@ -619,7 +620,8 @@ namespace SashaRX.UnityMeshLab
                 try { return FbxChannelWrite.Write(sourceFbxPath, entries, intent, outputFbxPath, sceneRoot, shadingSelection: shadingSelection); }
                 catch (Exception ex)
                 {
-                    UvtLog.Error($"[FBX Export] '{sourceFbxPath}' was not written: {ex.Message}");
+                    string outcome = shadingSelection?.allowSourceOverwrite == true ? "overwrite did not complete" : "was not written";
+                    UvtLog.Error($"[FBX Export] '{sourceFbxPath}' {outcome}: {ex.Message}");
                     UvtLog.Verbose(ex.ToString());
                     return false;
                 }
@@ -934,7 +936,8 @@ namespace SashaRX.UnityMeshLab
                 // is a move.
                 if (File.Exists(fullPath))
                 {
-                    fbxBak = Path.Combine(Path.GetTempPath(), Path.GetFileName(fullPath) + "." + pathHash + ".fbx.bak");
+                    // Windows requires the replacement backup on the target volume.
+                    fbxBak = fullPath + "." + Guid.NewGuid().ToString("N") + ".bak";
                     File.Replace(tmpAbsPath, fullPath, fbxBak);
                 }
                 else

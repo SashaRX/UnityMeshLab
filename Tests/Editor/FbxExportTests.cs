@@ -318,6 +318,34 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void AtomicWriteReplacesExistingFbxAndPreservesMeta()
+        {
+            string folderName = "MeshLabFbxReplace_" + System.Guid.NewGuid().ToString("N");
+            string folder = "Assets/" + folderName;
+            AssetDatabase.CreateFolder("Assets", folderName);
+            try
+            {
+                var root = Node("Atomic", null, Quad("Atomic"), renderer: true);
+                string path = folder + "/atomic.fbx";
+                FbxExport.Write(path, root, normalizedTransforms: true);
+                AssetDatabase.ImportAsset(path);
+                var original = File.ReadAllBytes(path);
+                var meta = File.ReadAllBytes(path + ".meta");
+                string guid = AssetDatabase.AssetPathToGUID(path);
+                root.name = "Replaced";
+                FbxExport.WriteAtomic(path, root, normalizedTransforms: true);
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate);
+                Assert.IsNotNull(AssetDatabase.LoadAssetAtPath<GameObject>(path));
+                CollectionAssert.AreNotEqual(original, File.ReadAllBytes(path));
+                Assert.AreEqual(guid, AssetDatabase.AssetPathToGUID(path));
+                CollectionAssert.AreEqual(meta, File.ReadAllBytes(path + ".meta"));
+                Assert.IsFalse(File.Exists(path + ".tmp"));
+                Assert.IsEmpty(Directory.GetFiles(folder, "*.bak"));
+            }
+            finally { AssetDatabase.DeleteAsset(folder); }
+        }
+
+        [Test]
         public void FailedNormalizedAtomicWriteLeavesExistingFbxBytesAndMetaUntouched()
         {
             string folderName = "MeshLabFbxAtomic_" + System.Guid.NewGuid().ToString("N");

@@ -141,6 +141,32 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        sealed class FbxFooterProbe : IUvToolFbxExport
+        {
+            public bool CanExportFbx { get; set; }
+            internal readonly List<bool> calls = new List<bool>();
+            public void ExportFbx(bool overwriteSource) => calls.Add(overwriteSource);
+        }
+
+        [Test]
+        public void SharedFbxButtonsRouteBothActionsToTheReadyToolResult()
+        {
+            var exporter = new FbxFooterProbe { CanExportFbx = true };
+            Assert.IsTrue(UvToolHub.TryExportToolFbx(exporter, true));
+            Assert.IsTrue(UvToolHub.TryExportToolFbx(exporter, false));
+            CollectionAssert.AreEqual(new[] { true, false }, exporter.calls);
+            Assert.IsFalse(UvToolHub.TryExportToolFbx(null, true), "Tools without an export result retain the context workflow.");
+        }
+
+        [Test]
+        public void UnavailableToolResultDoesNotFallBackToContextFbx()
+        {
+            var exporter = new FbxFooterProbe();
+            Assert.IsTrue(UvToolHub.TryExportToolFbx(exporter, true));
+            Assert.IsTrue(UvToolHub.TryExportToolFbx(exporter, false));
+            Assert.IsEmpty(exporter.calls);
+        }
+
         [Test]
         public void SavedAssetsRemainValidAfterWorkingMeshIsDestroyedWithoutAnyTool()
         {
