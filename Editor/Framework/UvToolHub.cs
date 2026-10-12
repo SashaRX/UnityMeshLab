@@ -92,13 +92,14 @@ namespace SashaRX.UnityMeshLab
             OpenWithTool(null);
         }
 
-        internal static void OpenWithTool(string toolId)
+        internal static UvToolHub OpenWithTool(string toolId)
         {
             var w = GetWindow<UvToolHub>(WindowTitle);
             w.minSize = new Vector2(800, 500);
             w.pendingToolId = toolId;
             if (w.tools != null && w.tools.Count > 0)
                 w.SelectToolById(toolId);
+            return w;
         }
 
         void OnEnable()

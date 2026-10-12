@@ -94,6 +94,7 @@ namespace SashaRX.UnityMeshLab
             }
             ReloadSources();
             OnSelectionChanged();
+            Repaint();
         }
 
         internal void SaveWindowPreferences() => MeshLabWindowPreferences.Save("TexturePacker", this);

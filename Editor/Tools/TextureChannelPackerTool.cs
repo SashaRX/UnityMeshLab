@@ -6,7 +6,7 @@ using UnityEngine;
 namespace SashaRX.UnityMeshLab
 {
     [MeshLabTool("texture_channel_packer", MeshLabLibraries.Core)]
-    public sealed class TextureChannelPackerTool : IUvTool, IUvToolFullWindow, IUvToolWindowPreferences
+    public sealed class TextureChannelPackerTool : IUvTool, IUvToolFullWindow, IUvToolWindowPreferences, IUvToolRestoreWindowPreferences
     {
         private TextureChannelPackerPanel panel;
         private Action repaint;
@@ -42,6 +42,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         public void SaveWindowPreferences() { if (panel) panel.SaveWindowPreferences(); }
+        public void RestoreWindowPreferences() { if (panel) panel.RestoreWindowPreferences(); }
         public void OnDrawWindowContent() { if (panel) panel.DrawContent(); }
         public void OnRefresh() { /* FBX selection is tracked by the panel independently of mesh context. */ }
         public void OnDrawSidebar() { /* Controls occupy the full window body. */ }
