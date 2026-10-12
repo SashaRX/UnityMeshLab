@@ -6,7 +6,7 @@ using UnityEngine;
 namespace SashaRX.UnityMeshLab
 {
     [MeshLabTool("texture_channel_packer", MeshLabLibraries.Core)]
-    public sealed class TextureChannelPackerTool : IUvTool, IUvToolFullWindow, IUvToolWindowPreferences, IUvToolRestoreWindowPreferences
+    public sealed class TextureChannelPackerTool : IUvTool, IUvToolFullWindow, IUvToolWindowPreferences
     {
         private TextureChannelPackerPanel panel;
         private Action repaint;

@@ -71,11 +71,6 @@ namespace SashaRX.UnityMeshLab
         void SaveWindowPreferences();
     }
 
-    internal interface IUvToolRestoreWindowPreferences
-    {
-        void RestoreWindowPreferences();
-    }
-
     /// <summary>Tools whose controls use the full body below the Mesh Lab tabs.</summary>
     internal interface IUvToolFullWindow
     {

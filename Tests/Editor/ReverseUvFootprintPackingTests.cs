@@ -204,6 +204,59 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void FrozenNativePackRetainsItsActualCanvasExtent()
+        {
+            var source=new[] {Rectangle(0,0,73,51)};
+            var output=ReverseUvNativeFamilyPacking.TryPack(source,16,new ReverseUvTransfer.Options {
+                padding=2,frozenShellCascade=true,rotateChartsToAxis=true},default,null,
+                out float scale,out int side,allowLargerCanvas:true,fixedScale:1);
+            Assert.NotNull(output);Assert.AreEqual(1,scale);
+            Assert.Less(side,100,"An approximately 78px rectangle must not be normalized into a mostly empty 128px square.");
+            Assert.IsTrue(output[0].All(p=>p.x>=0 && p.y>=0 && p.x<=side && p.y<=side));
+            Assert.AreEqual(73*51,(output[0].Aggregate(Vector2.Max)-output[0].Aggregate(Vector2.Min)).x
+                *(output[0].Aggregate(Vector2.Max)-output[0].Aggregate(Vector2.Min)).y,.01);
+        }
+
+        [Test]
+        public void MicroscopicUnionFragmentsDoNotFillTheWholeRingInterior()
+        {
+            var ring=Rectangle(0,0,24,2).Concat(Rectangle(0,22,24,2)).Concat(Rectangle(0,2,2,20))
+                .Concat(Rectangle(22,2,2,20)).ToArray();
+            var source=ring.Concat(ring.Select(p=>p+new Vector2(.000002f,.000003f)))
+                .Concat(new[] {new Vector2(24,0),new Vector2(24.000002f,0),new Vector2(24,.000001f)}).ToArray();
+            var snapshot=source.ToArray();
+            var proxy=ReverseUvNativeFamilyPacking.Footprint(source,default,true,true);
+            double area=0;
+            for(int i=0;i<proxy.Length;i+=3)
+            {
+                double face=Math.Abs(((double)proxy[i+1].x-proxy[i].x)*((double)proxy[i+2].y-proxy[i].y)
+                    -((double)proxy[i+1].y-proxy[i].y)*((double)proxy[i+2].x-proxy[i].x))*.5;
+                Assert.Greater(face,1.192092896e-7,"Every proxy face must survive native chart discovery.");area+=face;
+            }
+            Assert.Less(area,200,"A tiny union fragment cannot reserve the ring's 576-pixel bounding rectangle.");
+            CollectionAssert.AreEqual(snapshot,source);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void NativeAxisAlignmentRotatesTheWholeFamilyAtConstantDensity(bool align)
+        {
+            double angle=.37;var rectangle=Rectangle(0,0,30,3);
+            var source=new[] {rectangle.Select(p=>new Vector2((float)(p.x*Math.Cos(angle)-p.y*Math.Sin(angle)),
+                (float)(p.x*Math.Sin(angle)+p.y*Math.Cos(angle)))).ToArray()};
+            var snapshot=source[0].ToArray();
+            var result=ReverseUvNativeFamilyPacking.TryPack(source,128,new ReverseUvTransfer.Options {
+                padding=2,frozenShellCascade=true,rotateCharts=true,rotateChartsToAxis=align},default,null,
+                out float scale,out _,allowLargerCanvas:true,fixedScale:1);
+            Assert.NotNull(result);Assert.AreEqual(1,scale);
+            var size=result[0].Aggregate(Vector2.Max)-result[0].Aggregate(Vector2.Min);
+            if(align) Assert.AreEqual(90,size.x*size.y,.01,"The rotated strip should use its minimal axis-aligned box.");
+            else Assert.Greater(size.x*size.y,300);
+            for(int i=0;i<rectangle.Length;++i)
+                Assert.AreEqual((source[0][i]-source[0][0]).magnitude,(result[0][i]-result[0][0]).magnitude,.001);
+            CollectionAssert.AreEqual(snapshot,source[0]);
+        }
+
+        [Test]
         public void CancelledFootprintSearchDoesNotMutateTheRetainedCoordinates()
         {
             var source=new[] {Rectangle(0,0,8,2)};var before=source[0].ToArray();

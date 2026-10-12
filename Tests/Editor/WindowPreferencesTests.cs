@@ -1,11 +1,9 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
-using UnityEngine.TestTools;
 
 namespace SashaRX.UnityMeshLab.Tests
 {
@@ -133,48 +131,49 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { UnityEngine.Object.DestroyImmediate(window); }
         }
 
-        [UnityTest]
-        public IEnumerator LegacyTexturePackerWindowMigratesIntoHubTab()
+        [Test]
+        public void TexturePackerHasOnlyAnEmbeddedTabEntryPoint()
         {
-            if (SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Null)
-                Assert.Ignore("Opening native editor windows requires a graphics device; run this test without -nographics.");
-            var hub = EditorWindow.GetWindow<UvToolHub>();
-            Call(hub, "SelectToolById", "texture_channel_packer");
-            var legacy = EditorWindow.GetWindow<TextureChannelPackerWindow>();
+            var assembly = typeof(TextureChannelPackerTool).Assembly;
+            Assert.That(assembly.GetType("SashaRX.UnityMeshLab.TextureChannelPackerWindow"), Is.Null);
+            foreach (var type in assembly.GetTypes())
+                foreach (var method in type.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static))
+                    foreach (MenuItem menu in method.GetCustomAttributes(typeof(MenuItem), false))
+                        Assert.That(menu.menuItem, Does.Not.Contain("Texture Packer").And.Not.Contain("Texture Channel Packer"));
+            Assert.That(typeof(EditorWindow).IsAssignableFrom(typeof(TextureChannelPackerPanel)), Is.False);
+        }
+
+        [Test]
+        public void TexturePackerTabRetainsStoredLegacySettings()
+        {
             string sourcePath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "LegacyPacker-" + Guid.NewGuid().ToString("N") + ".tga");
+            UvToolHub hub = null;
             try
             {
                 using (var stream = System.IO.File.Create(sourcePath))
                     new TexturePackingImage(1, 1, new[] { new Color32(1, 2, 3, 4) }).WriteTgaRle(stream);
                 string state = "{\"textureName\":\"LegacyChair\",\"followFbx\":false,\"prefix\":false,\"square\":false," +
-                    "\"widthIndex\":2,\"heightIndex\":1,\"albedo\":{\"enabled\":true,\"slots\":[" +
-                    "{\"path\":\"\",\"channel\":2,\"constant\":87},{},{},{}]}}";
-                JsonUtility.FromJsonOverwrite(state, legacy);
-                var legacyAlbedo = Get<object>(legacy, "albedo");
-                var rgb = legacyAlbedo.GetType().GetField("rgb").GetValue(legacyAlbedo);
-                rgb.GetType().GetField("path").SetValue(rgb, sourcePath);
-                double deadline = EditorApplication.timeSinceStartup + 5;
-                while (legacy && EditorApplication.timeSinceStartup < deadline) yield return null;
-                Assert.That(legacy == null, Is.True, "Restoring a legacy layout must close the old window");
-                var tool = hub.FindTool<TextureChannelPackerTool>();
-                Assert.That(tool, Is.Not.Null);
-                var panel = Get<TextureChannelPackerPanel>(tool, "panel");
-                Assert.That(panel, Is.Not.Null, "Migration must activate the hub tab");
+                    "\"widthIndex\":2,\"heightIndex\":1,\"albedo\":{\"enabled\":true,\"rgb\":{\"path\":\"" +
+                    sourcePath.Replace("\\", "\\\\") + "\"},\"slots\":[{\"path\":\"\",\"channel\":2,\"constant\":87},{},{},{}]}}";
+                EditorPrefs.SetString(MeshLabWindowPreferences.Key("TexturePacker"), state);
+                hub = ScriptableObject.CreateInstance<UvToolHub>();
+                Call(hub, "SelectToolById", "texture_channel_packer");
+                var panel = Get<TextureChannelPackerPanel>(hub.FindTool<TextureChannelPackerTool>(), "panel");
+                Assert.That(panel, Is.Not.Null);
                 Assert.That(Get<string>(panel, "textureName"), Is.EqualTo("LegacyChair"));
                 Assert.That(Get<int>(panel, "widthIndex"), Is.EqualTo(2));
                 Assert.That(Get<int>(panel, "heightIndex"), Is.EqualTo(1));
                 Assert.That(Get<bool>(panel, "prefix"), Is.False);
                 Assert.That(Get<bool>(panel, "square"), Is.False);
                 var albedo = Get<object>(panel, "albedo");
-                var migratedRgb = albedo.GetType().GetField("rgb").GetValue(albedo);
-                Assert.That(migratedRgb.GetType().GetField("path").GetValue(migratedRgb), Is.EqualTo(sourcePath));
+                var rgb = albedo.GetType().GetField("rgb").GetValue(albedo);
+                Assert.That(rgb.GetType().GetField("path").GetValue(rgb), Is.EqualTo(sourcePath));
                 var slots = (Array)albedo.GetType().GetField("slots").GetValue(albedo);
                 Assert.That(slots.GetValue(0).GetType().GetField("channel").GetValue(slots.GetValue(0)), Is.EqualTo(2));
                 Assert.That(slots.GetValue(0).GetType().GetField("constant").GetValue(slots.GetValue(0)), Is.EqualTo(87));
             }
             finally
             {
-                if (legacy) UnityEngine.Object.DestroyImmediate(legacy);
                 if (hub) UnityEngine.Object.DestroyImmediate(hub);
                 System.IO.File.Delete(sourcePath);
             }
@@ -187,33 +186,6 @@ namespace SashaRX.UnityMeshLab.Tests
             var settings = MeshLabWindowPreferences.Load<Defaults>("Fixture");
             Assert.That(settings.width, Is.EqualTo(420));
             Assert.That(settings.enabled, Is.True);
-        }
-
-        [UnityTest]
-        public IEnumerator NewLegacyAdapterKeepsExistingTabSettings()
-        {
-            if (SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Null)
-                Assert.Ignore("Opening native editor windows requires a graphics device; run this test without -nographics.");
-            var hub = EditorWindow.GetWindow<UvToolHub>();
-            Call(hub, "SelectToolById", "texture_channel_packer");
-            var tool = hub.FindTool<TextureChannelPackerTool>();
-            var panel = Get<TextureChannelPackerPanel>(tool, "panel");
-            Set(panel, "textureName", "ExistingTabSettings");
-            tool.SaveWindowPreferences();
-            var legacy = EditorWindow.GetWindow<TextureChannelPackerWindow>();
-            try
-            {
-                double deadline = EditorApplication.timeSinceStartup + 5;
-                while (legacy && EditorApplication.timeSinceStartup < deadline) yield return null;
-                Assert.That(legacy == null, Is.True);
-                Assert.That(Get<TextureChannelPackerPanel>(tool, "panel"), Is.SameAs(panel));
-                Assert.That(Get<string>(panel, "textureName"), Is.EqualTo("ExistingTabSettings"));
-            }
-            finally
-            {
-                if (legacy) UnityEngine.Object.DestroyImmediate(legacy);
-                if (hub) UnityEngine.Object.DestroyImmediate(hub);
-            }
         }
 
         [Test]

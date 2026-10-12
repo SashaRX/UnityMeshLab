@@ -63,6 +63,7 @@ namespace SashaRX.UnityMeshLab
                     boundaryToleranceTexels = options.boundaryToleranceTexels, relativeStretchTolerance = options.relativeStretchTolerance,
                     comparisonBudget = options.comparisonBudget, cutNarrowJunctions = cuts,
                     regroupPreparedAtlas=options.regroupPreparedAtlas,
+                    frozenShellCascade=options.frozenShellCascade, beforeFinalPacking=options.beforeFinalPacking,
                     splitDonorSeams = options.splitDonorSeams, fillAtlasVacancies = options.fillAtlasVacancies,
                     rotateCharts = options.rotateCharts, rotateChartsToAxis = options.rotateChartsToAxis,
                     repackFinalAtlas = options.repackFinalAtlas, fillFinalAtlas = options.fillFinalAtlas,
@@ -70,7 +71,8 @@ namespace SashaRX.UnityMeshLab
                 if(UvProgress.IsActive) UvProgress.Report(.25f,cuts?"Project with junction cuts":"Validate packing across the LOD chain");
                 state.result = await ReverseUvTransfer.Build(state.inputs.levels, trial, useAsync, token);
                 state.result.report.seedPacking=prepareSeed?(compact?"compact":"normalized-original"):"existing";
-                state.result.report.seedPreparation=options.regroupPreparedAtlas?"ordinary-transfer-charts":prepareSeed?(options.rebuildSeedWithUnity?"unity-unwrapping":"source-charts-local-repair"):"existing-uv2";
+                state.result.report.seedPreparation=options.frozenShellCascade && !options.preserveProjectedOverlap?"frozen-forward-last-lod"
+                    :options.regroupPreparedAtlas?"ordinary-transfer-charts":prepareSeed?(options.rebuildSeedWithUnity?"unity-unwrapping":"source-charts-local-repair"):"existing-uv2";
                 state.result.report.seedChartRotation=prepareSeed && compact && options.rotateCharts;
                 for(int level=0;level<state.result.meshes.Count;++level)
                     for(int node=0;node<state.result.meshes[level].Length;++node)
