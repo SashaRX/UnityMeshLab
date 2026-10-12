@@ -2706,7 +2706,9 @@ finer islands), rather than calling repaired input shapes preserved originals.
 
 Final focused Unity regression run with a graphics device: 521 passed, 0 failed,
 35 optional checks skipped (UV plus incoming main texture-packer coverage). A preceding `-nographics` run failed two lightmap
-shader-readback checks; both pass with graphics enabled. The earlier full-suite
+shader-readback checks; both pass with graphics enabled. After merging concurrent PR225 foliage commits through b90c26c5, the expanded
+UV / Texture Packer / Hub / Foliage / FBX run passes 758 tests with 0 failures
+and 36 optional skips; both FBX compilation variants pass again. The earlier full-suite
 run also found a separate existing skinned Remesh preview scale failure, outside
 this UV change; it is not claimed as a passing full-suite gate.
 
