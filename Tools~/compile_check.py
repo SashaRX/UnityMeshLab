@@ -51,6 +51,8 @@ FBX_DEFINE = "LIGHTMAP_UV_TOOL_FBX_EXPORTER"
 
 # (file glob, regex, replacement, why) — applied to the copied sources only.
 SHIMS = [
+    ("**/TexturePackingLoad.cs", r"UnityWebRequestTexture\.GetTexture", "TextureRequestShim.GetTexture",
+     "DownloadedTextureParams is a Unity 6 API; a copied-source shim checks its call shape against 2021 refs."),
     ("**/*.cs", r"AssetDatabase\.AssetEditingScope", "AssetEditingScopeShim",
      "AssetDatabase.AssetEditingScope is a 2022.1 nested type; the shim struct below stands in."),
     ("**/*.cs", r"Object\.FindObjectsByType<([A-Za-z0-9_.]+)>\(FindObjectsSortMode\.None\)",
@@ -78,6 +80,21 @@ namespace UnityEngine
         public static int GetVertexBufferStride(this Mesh mesh, int stream) => throw new System.NotSupportedException();
         public static int GetVertexAttributeStream(this Mesh mesh, UnityEngine.Rendering.VertexAttribute attribute) => throw new System.NotSupportedException();
         public static int GetVertexAttributeOffset(this Mesh mesh, UnityEngine.Rendering.VertexAttribute attribute) => throw new System.NotSupportedException();
+    }
+}
+namespace UnityEngine.Networking
+{
+    internal struct DownloadedTextureParams
+    {
+        public bool readable;
+        public bool mipmapChain;
+        public bool linearColorSpace;
+        public static DownloadedTextureParams Default => new DownloadedTextureParams();
+    }
+    internal static class TextureRequestShim
+    {
+        public static UnityWebRequest GetTexture(string uri, DownloadedTextureParams parameters) =>
+            UnityWebRequestTexture.GetTexture(uri, !parameters.readable);
     }
 }
 namespace UnityEngine.TestTools
