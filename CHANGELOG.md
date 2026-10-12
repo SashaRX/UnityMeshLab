@@ -9,6 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Fix PR review regressions in scale-independent UV quality, UInt16 submesh base vertices, translucent material ordering, reverse sidecar geometry validation, cancellable seam audits and capture/replay boundary tolerance, active Mesh LOD raw ranges and raw MeshData importer fallback.
 
 ### Fixed
+
+- Validate every collision sidecar group before writing any group; refuse shared Solid Color saves until the current swatch is baked, and invalidate them when the mesh changes.
+- Split remesh model export and shared save preparation into smaller methods while preserving atomic FBX replacement, stable mesh names, material maps and cleanup.
 - Review follow-up: keep topology highlights above translucent material layers and preflight all foliage FBX sources before overwriting.
 - Foliage can fit proxy triangle budgets automatically without reducing voxel resolution, supports up to two million proxy triangles, bounds manual budget entry, and previews deterministic random sphere radii with a configurable spread.
 - Remesh preparation invalidates when source renderer membership, mesh assignments or captured transforms change, so rerunning a later stage recaptures the current geometry.
@@ -18,7 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Shared Overwrite FBX and Export New FBX buttons use the active Foliage preview result, including selected submesh shading in captured LODs. Source overwrite preserves untouched channels and relinks reimported meshes without requiring Apply to Scene first.
 - Foliage Scatter immediately previews translucent spheres with their computed radius on the main mesh, reports radius and preview counts, and keeps sphere surface, opacity and edges adjustable before building the proxy.
 - Foliage Proxy + mesh preview overlays an independently adjustable translucent cyan proxy surface, keeps the source mesh readable and supports hiding proxy edges or returning to wire-only display.
-- Foliage voxel-envelope budget refusals report actual triangle counts, preserve voxel resolution and offer an explicit budget increase with rebuild up to the existing 200,000-triangle hard cap. Envelope failures no longer recommend changing the later remesh edge length.
+- Foliage voxel-envelope budget refusals report actual triangle counts, preserve voxel resolution and offer an explicit budget increase with rebuild up to the 2,000,000-triangle hard cap. Envelope failures no longer recommend changing the later remesh edge length.
 - Reverse UV always repacks the completed LOD chain on an empty canvas, independently of coarsest-LOD preparation and optional uniform filling. Rectangle refusals try fresh triangle footprints; an unsuccessful required final pack no longer publishes the intermediate vacancy layout as a completed result.
 - Reverse UV prepares complete finer-LOD chart domains before projection, retains problematic optional cuts locally, and rebuilds ordered overlap references after strip subdivision without accumulating stale layers. New chart placement repairs translation-induced Float32 collapse. Final packing tests higher common pixel density and rigid native family footprints while preserving shell shape, descendant placement and audited overlap relationships; ordinary Forward remains unchanged.
 - Reverse UV preserves authored coarsest-LOD UV0 charts by default, repairs stretched charts through the ordinary Repack ARAP pass, normalizes world-space density and packs audited UV2. Unity seed unwrapping is an explicit opt-in rather than a mandatory replacement or automatic fallback. Scratch chart welding preserves source vertex streams, material slots and face provenance.

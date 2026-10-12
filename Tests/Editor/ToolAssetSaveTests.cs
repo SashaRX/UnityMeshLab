@@ -105,6 +105,40 @@ namespace SashaRX.UnityMeshLab.Tests
                 meshFilter = filter, renderer = filter.GetComponent<MeshRenderer>() });
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void SolidColorSaveRequiresCurrentBake(bool hierarchy)
+        {
+            var source = Source("SolidColor");
+            var context = new UvToolContext(); context.MeshEntries.Add(source.entry);
+            var tool = new VertexColorBakingTool(); Set(tool, "ctx", context);
+            Set(tool, "bakeKind", VertexColorBakingTool.BakeKind.SolidColor);
+            Set(tool, "hierarchyMode", hierarchy);
+            if (hierarchy) Set(tool, "hierarchyEntries", new List<MeshEntry> { source.entry });
+            Assert.IsFalse(tool.CanSaveMeshAssets); Assert.IsFalse(tool.CanExportFbx);
+            var clones = new List<Mesh>();
+            try
+            {
+                Assert.IsEmpty(tool.SaveEntries(clones));
+                tool.GetType().GetMethod("ExecuteBakeFirstVariant", Fields).Invoke(tool, null);
+                Assert.IsTrue(tool.CanSaveMeshAssets); Assert.IsTrue(tool.CanExportFbx);
+                var red = tool.SaveEntries(clones).Single().originalMesh;
+                Assert.That(red.colors32, Is.All.EqualTo(new Color32(255, 0, 0, 255)));
+                var variants = Get<List<VariantExportPipeline.Variant>>(tool, "variants");
+                variants[0] = new VariantExportPipeline.Variant { color = Color.green, suffix = "Green" };
+                Assert.IsFalse(tool.CanSaveMeshAssets); Assert.IsFalse(tool.CanExportFbx);
+                Assert.IsEmpty(tool.SaveEntries(clones), "Direct save also refuses a changed swatch.");
+                tool.GetType().GetMethod("ExecuteBakeFirstVariant", Fields).Invoke(tool, null);
+                Assert.IsTrue(tool.CanSaveMeshAssets); Assert.IsTrue(tool.CanExportFbx);
+                var green = tool.SaveEntries(clones).Single().originalMesh;
+                Assert.That(green.colors32, Is.All.EqualTo(new Color32(0, 255, 0, 255)));
+                VertexChannels.FillColors(source.entry.originalMesh, Color.blue, "External color edit");
+                Assert.IsFalse(tool.CanSaveMeshAssets); Assert.IsFalse(tool.CanExportFbx);
+                Assert.IsEmpty(tool.SaveEntries(clones), "A changed mesh invalidates the solid bake.");
+            }
+            finally { foreach (var clone in clones) Object.DestroyImmediate(clone); }
+        }
+
         [TestCase(true)]
         [TestCase(false)]
         public void HierarchyUvSaveUsesPackedCopyAndLeavesOtherChannelsAndContextIntact(bool overwrite)
@@ -208,6 +242,62 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.AreEqual(1,sidecar.collisionEntries.Count);
                 Assert.AreEqual(Path.GetFileNameWithoutExtension(path),sidecar.collisionEntries[0].sourceMeshName);
             }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void CollisionBatchRefusesInvalidLaterGroupBeforeChangingAnySidecar(bool existingSidecars)
+        {
+            var sources = new[] { Source("First_LOD0"), Source("Invalid_LOD0"), Source("Last_LOD0") };
+            var root = new GameObject("CollisionRoot"); owned.Add(root);
+            foreach (var source in sources) source.instance.transform.SetParent(root.transform);
+            var lod = root.AddComponent<LODGroup>();
+            lod.SetLODs(new[] { new LOD(.1f, sources.Select(source => source.entry.renderer).ToArray()) });
+            var context = new UvToolContext { LodGroup = lod };
+            context.MeshEntries.AddRange(sources.Select(source => source.entry));
+            PrefabUtility.UnpackPrefabInstance(sources[1].instance, PrefabUnpackMode.Completely, InteractionMode.AutomatedAction);
+            var tool = new CollisionMeshTool(); Set(tool, "ctx", context);
+            var before = new Dictionary<string, byte[]>();
+            foreach (var source in sources)
+            {
+                if (existingSidecars)
+                {
+                    var data = SidecarStore.LoadOrCreate(source.path);
+                    data.collisionEntries.Add(new CollisionMeshEntry { meshGroupKey = "Existing", sourceMeshName = "Existing" });
+                    SidecarStore.Save(data);
+                    foreach (var path in new[] { SidecarStore.PathFor(source.path), SidecarStore.PathFor(source.path) + ".meta" })
+                        before[path] = File.ReadAllBytes(path);
+                }
+                before[source.path] = File.ReadAllBytes(source.path);
+                before[source.path + ".meta"] = File.ReadAllBytes(source.path + ".meta");
+                AddCollisionResult(tool, source.entry, source.path == sources[1].path ? "MissingSource" : source.entry.fbxMesh.name);
+            }
+            int writes = 0; context.Assets.BeforeWrite = () => writes++;
+            context.Assets.ToolExportPathChooser = (path, intent, overwrite) => throw new InvalidOperationException("No FBX write expected.");
+            // A manually edited source has neither prefab identity nor a matching
+            // imported FBX node. The earlier and later groups are valid.
+            LogAssert.Expect(LogType.Warning, new System.Text.RegularExpressions.Regex("Cannot identify source instance 'MissingSource'.*sidecar was not changed"));
+            tool.ExportFbx(true);
+            Assert.AreEqual(0, writes);
+            foreach (var file in before) CollectionAssert.AreEqual(file.Value, File.ReadAllBytes(file.Key), file.Key);
+            foreach (var source in sources)
+            {
+                var sidecar = SidecarStore.Load(source.path);
+                if (existingSidecars) Assert.AreEqual("Existing", sidecar.collisionEntries.Single().meshGroupKey);
+                else Assert.IsNull(sidecar, "A refused batch must not create an earlier or later sidecar.");
+            }
+        }
+
+        void AddCollisionResult(CollisionMeshTool tool, MeshEntry entry, string meshName)
+        {
+            Get<List<Mesh>>(tool, "generatedMeshes").Add(Triangle(meshName + "_COL"));
+            var results = (IList)tool.GetType().GetField("lastResults", Fields).GetValue(tool);
+            var resultType = tool.GetType().GetNestedType("GeneratedCollisionInfo", BindingFlags.NonPublic);
+            var result = Activator.CreateInstance(resultType);
+            resultType.GetField("meshName").SetValue(result, meshName);
+            resultType.GetField("sourceTransform").SetValue(result, entry.renderer.transform);
+            resultType.GetField("hullCount").SetValue(result, 1);
+            results.Add(result);
         }
 
         [UnityTest]

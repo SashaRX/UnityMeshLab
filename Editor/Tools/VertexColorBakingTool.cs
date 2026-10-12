@@ -120,6 +120,8 @@ namespace SashaRX.UnityMeshLab
         Dictionary<Mesh, float[]> bakedRawAO;       // raw vertex AO (no face-area fix)
         Dictionary<Mesh, float[]> bakedFaceAreaAO;  // face-area corrected AO
         Dictionary<Mesh, float[]> bakedFinalAO;     // after blend + blur + brightness/contrast
+        readonly Dictionary<Mesh, int> bakedSolidMeshes = new Dictionary<Mesh, int>();
+        Color bakedSolidColor;
         float bakeTimeSeconds;
         int   bakedVertexCount;
         int   lastTargetMeshCount;
@@ -379,6 +381,7 @@ namespace SashaRX.UnityMeshLab
 
         void ClearResults()
         {
+            bakedSolidMeshes.Clear();
             bakedRawAO = null;
             bakedFaceAreaAO = null;
             bakedFinalAO = null;
@@ -666,6 +669,7 @@ namespace SashaRX.UnityMeshLab
 
         void ExecuteBakeFirstVariant()
         {
+            bakedSolidMeshes.Clear();
             if (variants.Count == 0)
             {
                 UvtLog.Warn("[Vertex Colors] No variants defined.");
@@ -686,6 +690,9 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Warn("[Vertex Colors] Nothing painted (all collision, excluded, or empty).");
                 return;
             }
+            bakedSolidColor = first.color;
+            foreach (var mesh in VariantExportPipeline.PaintableMeshes(entries))
+                bakedSolidMeshes[mesh] = EditorUtility.GetDirtyCount(mesh);
             string hex = ColorUtility.ToHtmlStringRGBA(first.color);
             UvtLog.Info($"[Vertex Colors] Preview: '{first.suffix}' #{hex} on {painted} mesh(es).");
             requestRepaint?.Invoke();
@@ -973,8 +980,7 @@ namespace SashaRX.UnityMeshLab
             => FbxSaveSelection.Draw(hierarchyEntries, fbxOverwriteMap, ref fbxOverwriteFoldout, ref fbxOverwriteScroll, listVisibleRows);
 
         public bool CanSaveMeshAssets => ctx != null && !UvProgress.IsActive && activeGpuJob == null &&
-            bakeKind != BakeKind.TextureAO && (bakeKind == BakeKind.SolidColor || bakedFinalAO?.Count > 0) &&
-            ActiveEntries().Any(e => IsSaveEntry(e));
+            bakeKind != BakeKind.TextureAO && ActiveEntries().Any(IsSaveEntry);
         public bool CanExportFbx => CanSaveMeshAssets && ActiveEntries().Any(e => IsSaveEntry(e) &&
             SidecarStore.IsFbxPath(AssetDatabase.GetAssetPath(e.fbxMesh)) &&
             (!hierarchyMode || !fbxOverwriteMap.TryGetValue(AssetDatabase.GetAssetPath(e.fbxMesh), out var use) || use));
@@ -982,7 +988,13 @@ namespace SashaRX.UnityMeshLab
         bool IsSaveEntry(MeshEntry entry)
         {
             if (entry == null || !entry.include || entry.originalMesh == null || MeshNaming.IsCollision(entry.originalMesh.name)) return false;
-            if (bakeKind != BakeKind.AO) return true;
+            if (bakeKind == BakeKind.SolidColor)
+            {
+                var mesh = ctx.Assets.GetResultMesh(entry);
+                return variants.Count > 0 && variants[0].color.Equals(bakedSolidColor) && mesh != null &&
+                    bakedSolidMeshes.TryGetValue(mesh, out int revision) && EditorUtility.GetDirtyCount(mesh) == revision;
+            }
+            if (bakeKind != BakeKind.AO) return false;
             if (applySelectedRendererOnly && entry.renderer != (Selection.activeGameObject != null
                 ? Selection.activeGameObject.GetComponentInParent<Renderer>() : null)) return false;
             return bakedFinalAO != null && new[] { entry.originalMesh, entry.repackedMesh, entry.transferredMesh, entry.fbxMesh }
@@ -992,31 +1004,35 @@ namespace SashaRX.UnityMeshLab
         internal List<MeshEntry> SaveEntries(List<Mesh> owned)
         {
             var entries = new List<MeshEntry>();
-            foreach (var e in ActiveEntries())
+            foreach (var entry in ActiveEntries())
             {
-                if (!IsSaveEntry(e)) continue;
-                var seed = ctx.Assets.GetResultMesh(e);
-                float[] values = null;
-                if (bakeKind == BakeKind.AO)
-                {
-                    seed = new[] { e.originalMesh, e.repackedMesh, e.transferredMesh, e.fbxMesh }
-                        .FirstOrDefault(m => m != null && bakedFinalAO != null && bakedFinalAO.TryGetValue(m, out values));
-                    if (seed == null || values == null) continue;
-                }
-                if (seed == null) continue;
-                var mesh = UnityEngine.Object.Instantiate(seed);
-                owned.Add(mesh);
-                if (bakeKind == BakeKind.AO)
-                {
-                    if (applySelectedRendererOnly && applySelectedSubmeshOnly)
-                    {
-                        if (!VertexChannels.WriteSubmesh(mesh, values, TargetChannel, selectedSubmeshIndex)) continue;
-                    }
-                    else VertexChannels.Write(mesh, values, TargetChannel);
-                }
-                entries.Add(e.PreviewCopy(mesh));
+                if (!IsSaveEntry(entry)) continue;
+                var mesh = CloneSaveMesh(entry, owned);
+                if (mesh != null) entries.Add(entry.PreviewCopy(mesh));
             }
             return entries;
+        }
+
+        Mesh SaveSeed(MeshEntry entry, out float[] values)
+        {
+            values = null;
+            if (bakeKind != BakeKind.AO) return ctx.Assets.GetResultMesh(entry);
+            foreach (var mesh in new[] { entry.originalMesh, entry.repackedMesh, entry.transferredMesh, entry.fbxMesh })
+                if (mesh != null && bakedFinalAO != null && bakedFinalAO.TryGetValue(mesh, out values)) return mesh;
+            return null;
+        }
+
+        Mesh CloneSaveMesh(MeshEntry entry, List<Mesh> owned)
+        {
+            var seed = SaveSeed(entry, out var values);
+            if (seed == null) return null;
+            var mesh = UnityEngine.Object.Instantiate(seed);
+            owned.Add(mesh);
+            if (bakeKind != BakeKind.AO) return mesh;
+            if (applySelectedRendererOnly && applySelectedSubmeshOnly)
+                return VertexChannels.WriteSubmesh(mesh, values, TargetChannel, selectedSubmeshIndex) ? mesh : null;
+            VertexChannels.Write(mesh, values, TargetChannel);
+            return mesh;
         }
 
         public void SaveMeshAssets()
