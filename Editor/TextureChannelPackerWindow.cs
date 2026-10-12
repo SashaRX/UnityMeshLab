@@ -9,8 +9,10 @@ namespace SashaRX.UnityMeshLab
 
         public static string ModelBaseName(string path) => TextureChannelPackerPanel.ModelBaseName(path);
 
-        private void OnEnable() => EditorApplication.delayCall += OpenTabAndClose;
-        private void OnDisable() => EditorApplication.delayCall -= OpenTabAndClose;
+        private void OnEnable() => ScheduleMigration(OpenTabAndClose);
+        private void OnDisable() => CancelMigration(OpenTabAndClose);
+        private static void ScheduleMigration(EditorApplication.CallbackFunction callback) => EditorApplication.delayCall += callback;
+        private static void CancelMigration(EditorApplication.CallbackFunction callback) => EditorApplication.delayCall -= callback;
         private void OpenTabAndClose()
         {
             try { Open(); }
