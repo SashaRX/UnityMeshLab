@@ -325,7 +325,7 @@ namespace SashaRX.UnityMeshLab
         static void Stroke(List<Vector2> points,Vector2 a,Vector2 b)
         {
             var edge=b-a;float length=edge.magnitude;if(length<=0) return;
-            var normal=new Vector2(x:-edge.y,y:edge.x)*(.01f/length);
+            var normal=Vector2.Perpendicular(edge)*(.01f/length);
             points.AddRange(new[] {a,b,b+normal,a,b+normal,a+normal,
                 b,a,a-normal,b,a-normal,b-normal});
         }

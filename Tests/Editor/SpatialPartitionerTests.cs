@@ -6,6 +6,16 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class SpatialPartitionerTests
     {
+        [TestCase(1e-9f)] [TestCase(1f)] [TestCase(1e9f)]
+        public void PositiveOverlapIsIndependentOfUniformUvScale(float scale)
+        {
+            var uv=new[] {Vector2.zero,Vector2.right*scale,Vector2.up*scale};
+            var original=(Vector2[])uv.Clone();
+            var shell=new UvShell {shellId=1,faceIndices=new List<int> {0,1}};
+            CollectionAssert.AreEquivalent(new[] {0,1},SpatialPartitioner.DetectOverlap(shell,uv,new[] {0,1,2,0,1,2}));
+            CollectionAssert.AreEqual(original,uv);
+            Assert.IsEmpty(SpatialPartitioner.DetectOverlap(shell,uv,new[] {0,1,2,0,1,1}));
+        }
         [TestCase(0)] [TestCase(1)]
         public void IncompleteOverlapScanCannotCertifySourceShell(int budget)
         {

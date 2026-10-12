@@ -50,6 +50,22 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
+        public IEnumerator HoleSearchReadsUploadedMeshWithoutChangingReadWrite()
+        {
+            var mesh=new Mesh {vertices=Cube,triangles=CubeFaces.Skip(6).ToArray()};
+            mesh.UploadMeshData(true);
+            using var preview=new MeshTopologyPreview {ShowHoles=true};
+            try {
+                preview.Prepare(new[] {new MeshViewport3D.Item(mesh,Matrix4x4.identity)});
+                double deadline=UnityEditor.EditorApplication.timeSinceStartup+10;
+                while(preview.Data(mesh)==null && UnityEditor.EditorApplication.timeSinceStartup<deadline) yield return null;
+                Assert.IsNotNull(preview.Data(mesh));Assert.AreEqual(1,preview.Data(mesh).rims.Length);
+                Assert.IsFalse(mesh.isReadable);
+            }
+            finally {UnityEngine.Object.DestroyImmediate(mesh);}
+        }
+
+        [UnityTest]
         public IEnumerator HoleSearchUploadsOnUpdateAndDisposesStaleMeshResults()
         {
             var mesh = new Mesh { vertices = Cube, triangles = CubeFaces.Skip(6).ToArray() };

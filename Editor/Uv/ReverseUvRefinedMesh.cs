@@ -65,6 +65,7 @@ namespace SashaRX.UnityMeshLab
         static void CopyStreams(Mesh source, Mesh output, List<Sample> samples)
         {
             var layout = source.GetVertexAttributes(); var targetLayout = layout.ToArray();
+            var normals=source.normals;var tangents=source.tangents;
             for (int i = 0; i < targetLayout.Length; ++i)
                 if (targetLayout[i].attribute == VertexAttribute.Position)
                     targetLayout[i] = new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, targetLayout[i].dimension, targetLayout[i].stream);
@@ -84,12 +85,16 @@ namespace SashaRX.UnityMeshLab
                         var sample = samples[v];
                         if (sample.Exact >= 0 && format == attribute.format)
                         { Buffer.BlockCopy(from, sample.Exact * fromStride + offset, bytes, v * toStride + target, attribute.dimension * size); continue; }
+                        var frame=Vector3.zero;
+                        if(attribute.attribute==VertexAttribute.Normal || attribute.attribute==VertexAttribute.Tangent)
+                            frame=InterpolatedFrame(normals,tangents,sample,attribute.attribute);
                         for (int c = 0; c < attribute.dimension; ++c)
                         {
                             double a = Read(from, sample.a * fromStride + offset + c * size, attribute.format);
                             double b = Read(from, sample.b * fromStride + offset + c * size, attribute.format);
                             double d = Read(from, sample.c * fromStride + offset + c * size, attribute.format);
                             double value = a * sample.weights.x + b * sample.weights.y + d * sample.weights.z;
+                            if(c<3 && (attribute.attribute==VertexAttribute.Normal || attribute.attribute==VertexAttribute.Tangent)) value=frame[c];
                             if (IsInteger(attribute.format) || (attribute.attribute == VertexAttribute.Tangent && c == 3))
                                 value = sample.weights.x >= sample.weights.y && sample.weights.x >= sample.weights.z ? a : sample.weights.y >= sample.weights.z ? b : d;
                             Write(bytes, v * toStride + target + c * outputSize, format, value);
@@ -98,6 +103,24 @@ namespace SashaRX.UnityMeshLab
                 }
                 output.SetVertexBufferData(bytes, 0, 0, bytes.Length, stream);
             }
+        }
+
+        static Vector3 InterpolatedFrame(Vector3[] normals,Vector4[] tangents,Sample sample,VertexAttribute attribute)
+        {
+            int dominant=sample.weights.x>=sample.weights.y && sample.weights.x>=sample.weights.z
+                ?sample.a:sample.weights.y>=sample.weights.z?sample.b:sample.c;
+            var normal=normals.Length>0?Interpolate(normals,sample):Vector3.zero;
+            if(normal.sqrMagnitude<1e-20f && normals.Length>0) normal=normals[dominant];
+            normal=normal.normalized;
+            if(attribute==VertexAttribute.Normal) return normal;
+            Vector3 tangent=tangents[sample.a]*sample.weights.x+tangents[sample.b]*sample.weights.y+tangents[sample.c]*sample.weights.z;
+            tangent-=normal*Vector3.Dot(normal,tangent);
+            if(tangent.sqrMagnitude<1e-20f) {
+                tangent=tangents[dominant];tangent-=normal*Vector3.Dot(normal,tangent);
+                if(tangent.sqrMagnitude<1e-20f)
+                    tangent=normal.sqrMagnitude>0?Vector3.Cross(normal,Math.Abs(normal.x)<.9f?Vector3.right:Vector3.up):Vector3.right;
+            }
+            return tangent.normalized;
         }
 
         static bool IsInteger(VertexAttributeFormat format) => format >= VertexAttributeFormat.UInt8;

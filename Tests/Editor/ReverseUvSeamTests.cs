@@ -188,6 +188,24 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void RefinedCopyNormalizesNewShadingFramesAndPreservesOriginalCorners()
+        {
+            var source=Quad();
+            source.normals=new[] {Vector3.forward,Vector3.up,Vector3.forward,Vector3.forward};
+            source.tangents=new[] {new Vector4(1,0,1,1),new Vector4(0,1,1,-1),new Vector4(1,0,0,1),new Vector4(1,0,0,1)};
+            var before=TransferMeshSnapshot.Capture(source);
+            var bary=new[] {Vector3.right,new Vector3(.5f,.5f,0),Vector3.forward,new Vector3(.5f,.5f,0),Vector3.up,Vector3.forward};
+            var output=ReverseUvRefinedMesh.Copy(source,new[] {0,0},bary,bary.Select(p=>new Vector2(p.y,p.z)).ToArray());owned.Add(output);
+            int midpoint=Array.FindIndex(output.vertices,p=>p==new Vector3(.5f,0,0));
+            var normal=output.normals[midpoint];Vector3 tangent=output.tangents[midpoint];
+            Assert.AreEqual(1,normal.magnitude,1e-6);Assert.AreEqual(1,tangent.magnitude,1e-6);
+            Assert.AreEqual(0,Vector3.Dot(normal,tangent),1e-6);Assert.AreEqual(1,output.tangents[midpoint].w);
+            int original=Array.FindIndex(output.vertices,p=>p==Vector3.zero);
+            Assert.AreEqual(source.normals[0],output.normals[original]);Assert.AreEqual(source.tangents[0],output.tangents[original]);
+            CollectionAssert.AreEqual(before,TransferMeshSnapshot.Capture(source));
+        }
+
+        [Test]
         public void RefinedCopyInterpolatesSkinBlendShapesAndKeepsEmptyMaterialSlots()
         {
             var source = Quad(); source.subMeshCount = 3;

@@ -29,7 +29,7 @@ LOD0, minimum 32 tex/m, 2 px padding, common final density filling enabled:
 Overlap relationships remain on their geometric underlays: Kitchen LOD0 has 731
 allowed pairs, Kamaz LOD0 417 and LOD1 174. Exclusive has none. Counts describe
 triangle contacts, not the number of details. Both compile configurations pass;
-419 EditMode tests passed, zero failed, 34 optional fixture skips.
+447 EditMode tests passed, zero failed, 34 optional fixture skips.
 
 Packing and correspondence remain distinct. Kitchen LOD1 UV alignment is 73.3-73.5%;
 Kamaz LOD1 87.7-88.4%, LOD2 about 83.3%. Cafe LOD1 reaches 99.2%, while its coarsest

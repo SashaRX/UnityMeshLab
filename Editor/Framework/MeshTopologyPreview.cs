@@ -79,20 +79,24 @@ namespace SashaRX.UnityMeshLab
             if (!Active) return;
             foreach (var item in items) {
                 var mesh = item.mesh;
-                if (!mesh || caches.ContainsKey(mesh) || !mesh.isReadable) continue;
+                if (!mesh || caches.ContainsKey(mesh)) continue;
                 var cache = new Cache(); caches.Add(mesh, cache);
                 cache.work.Enqueue(() => {
-                    var positions = mesh.vertices; var triangles = new List<int>();
-                    for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
-                        var topology = mesh.GetTopology(sub);
-                        if (topology == MeshTopology.Triangles) triangles.AddRange(mesh.GetIndices(sub));
-                        else if (topology == MeshTopology.Quads) {
-                            var indices = mesh.GetIndices(sub);
-                            for (int j = 0; j < indices.Length; j += 4) triangles.AddRange(new[] { indices[j], indices[j+1], indices[j+2], indices[j], indices[j+2], indices[j+3] });
+                    var readable=MeshAccess.Readable(mesh,out bool owned,preserveVertexLayout:true);
+                    try {
+                        var positions = readable.vertices; var triangles = new List<int>();
+                        for (int sub = 0; sub < readable.subMeshCount; ++sub) {
+                            var topology = readable.GetTopology(sub);
+                            if (topology == MeshTopology.Triangles) triangles.AddRange(readable.GetIndices(sub));
+                            else if (topology == MeshTopology.Quads) {
+                                var indices = readable.GetIndices(sub);
+                                for (int j = 0; j < indices.Length; j += 4) triangles.AddRange(new[] { indices[j], indices[j+1], indices[j+2], indices[j], indices[j+2], indices[j+3] });
+                            }
                         }
+                        var snapshot = triangles.ToArray();
+                        return token => ViewportTopology.Build(positions, snapshot, token);
                     }
-                    var snapshot = triangles.ToArray();
-                    return token => ViewportTopology.Build(positions, snapshot, token);
+                    finally {if(owned && readable) Object.DestroyImmediate(readable);}
                 }, data => {
                     cache.data = data;
                     cache.boundaries = Lines(data, e => e.uses == 1);

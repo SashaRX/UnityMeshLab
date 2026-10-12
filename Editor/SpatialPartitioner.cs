@@ -224,8 +224,29 @@ namespace SashaRX.UnityMeshLab
             int offset = 0;
             foreach (int face in shell.faceIndices)
                 for (int corner = 0; corner < 3; ++corner) indices[offset++] = triangles[face * 3 + corner];
+            // Absolute area thresholds in the atlas audit operate on a unit-sized
+            // shell. Uniformly tiny authored coordinates must not hide folds.
+            var points=new List<Vector2>();var remap=new Dictionary<int,int>();
+            for(int i=0;i<indices.Length;++i) {
+                int vertex=indices[i];
+                if(!remap.TryGetValue(vertex,out int mapped)) {
+                    var point=uv0[vertex];
+                    if(float.IsNaN(point.x) || float.IsInfinity(point.x) || float.IsNaN(point.y) || float.IsInfinity(point.y))
+                        throw new System.InvalidOperationException($"Source shell {shell.shellId}: non-finite UV coordinate.");
+                    mapped=points.Count;remap.Add(vertex,mapped);points.Add(point);
+                }
+                indices[i]=mapped;
+            }
+            if(points.Count>0) {
+                var min=points[0];var max=min;
+                foreach(var point in points) {min=Vector2.Min(min,point);max=Vector2.Max(max,point);}
+                double span=System.Math.Max((double)max.x-min.x,(double)max.y-min.y);
+                if(span>0)
+                    for(int i=0;i<points.Count;++i)
+                        points[i]=new Vector2((float)(((double)points[i].x-min.x)/span),(float)(((double)points[i].y-min.y)/span));
+            }
             var report = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {
-                uv = uv0, indices = indices, charts = new int[uv0.Length]
+                uv = points.ToArray(), indices = indices, charts = new int[points.Count]
             }, System.Threading.CancellationToken.None, comparisonBudget: comparisonBudget, collectConflicts: true);
             if (!report.complete)
                 throw new System.InvalidOperationException($"Source shell {shell.shellId}: UV overlap scan incomplete (comparison budget {comparisonBudget}). " +
