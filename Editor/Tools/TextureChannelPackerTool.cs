@@ -14,7 +14,11 @@ namespace SashaRX.UnityMeshLab
         public string ToolName => "Texture Packer";
         public string ToolId => "texture_channel_packer";
         public int ToolOrder => 80;
-        public Action RequestRepaint { set { repaint = value; if (panel) panel.RequestRepaint = value; } }
+        public Action RequestRepaint
+        {
+            get => repaint;
+            set { repaint = value; if (panel) panel.RequestRepaint = value; }
+        }
 
         public void OnActivate(UvToolContext ctx, UvCanvasView canvas)
         {

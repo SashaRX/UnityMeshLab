@@ -168,6 +168,15 @@ namespace SashaRX.UnityMeshLab
             }
             if (!string.IsNullOrEmpty(error)) EditorGUILayout.HelpBox(error, MessageType.Error);
             if (!string.IsNullOrEmpty(status)) EditorGUILayout.HelpBox(status, MessageType.Info);
+            DrawProgress();
+            using (new EditorGUI.DisabledScope(saveTask != null || SourcesLoading() || (!albedo.enabled && !mrca.enabled && !normal.enabled)))
+                if (GUILayout.Button("Save enabled textures — TGA RLE", GUILayout.Height(30)))
+                    SaveEnabled();
+            EditorGUILayout.EndScrollView();
+        }
+
+        private void DrawProgress()
+        {
             if (SourcesLoading())
             {
                 EditorGUILayout.LabelField("Loading sources… " + pendingSources.Count + " remaining");
@@ -180,10 +189,6 @@ namespace SashaRX.UnityMeshLab
                 using (new EditorGUI.DisabledScope(importTask != null))
                     if (GUILayout.Button("Cancel export")) saveCancellation.Cancel();
             }
-            using (new EditorGUI.DisabledScope(saveTask != null || SourcesLoading() || (!albedo.enabled && !mrca.enabled && !normal.enabled)))
-                if (GUILayout.Button("Save enabled textures — TGA RLE", GUILayout.Height(30)))
-                    SaveEnabled();
-            EditorGUILayout.EndScrollView();
         }
 
         private void DrawSettings()
