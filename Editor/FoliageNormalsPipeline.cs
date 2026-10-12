@@ -49,6 +49,8 @@ namespace SashaRX.UnityMeshLab
         {
             get; private set;
         }
+        internal Mesh ScatterMesh { get; private set; }
+        internal int ScatterPreviewCount => Math.Min(FoliagePrimitiveBuilder.MaximumPreviewPrimitives, Primitives?.Length ?? 0);
         internal FoliageShapeProxyBuilder.Result ShapeProxy
         {
             get; private set;
@@ -352,6 +354,10 @@ namespace SashaRX.UnityMeshLab
             {
                 Primitives[i] = new FoliagePrimitive { center = Samples.samples[i], radius = Samples.spacing * options.radiusMultiplier };
             }
+            var spheres = Primitives;
+            var previewGeometry = await Task.Run(() => FoliagePrimitiveBuilder.BuildPreview(spheres, token), token);
+            token.ThrowIfCancellationRequested();
+            ScatterMesh = PreviewMesh("Scatter spheres (preview)", previewGeometry);
         }
 
         async Task BuildEnvelope(FoliageNormalsSettings options, CancellationToken token)
@@ -733,6 +739,8 @@ namespace SashaRX.UnityMeshLab
             }
             if (stage <= Stage.Scatter)
             {
+                FoliageTargetSnapshot.Destroy(ScatterMesh);
+                ScatterMesh = null;
                 Samples = null;
                 Primitives = null;
             }

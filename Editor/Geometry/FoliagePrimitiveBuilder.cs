@@ -9,8 +9,21 @@ namespace SashaRX.UnityMeshLab
 
     internal static class FoliagePrimitiveBuilder
     {
+        internal const int MaximumPreviewPrimitives = 4096;
         internal const int MaximumTriangles = 2000000;
         internal const long MaximumBytes = 128L * 1024 * 1024;
+
+        internal static RemeshNative.IndexedMesh BuildPreview(FoliagePrimitive[] primitives, CancellationToken token)
+        {
+            int count = Math.Min(MaximumPreviewPrimitives, primitives.Length);
+            var subset = new FoliagePrimitive[count];
+            for (int i = 0; i < count; i++)
+            {
+                token.ThrowIfCancellationRequested();
+                subset[i] = primitives[(int)((long)i * primitives.Length / count)];
+            }
+            return Build(subset, 1, token);
+        }
 
         internal static RemeshNative.IndexedMesh Build(FoliagePrimitive[] primitives, int subdivision, CancellationToken token)
         {

@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Fixed
+- Foliage Scatter immediately previews translucent spheres with their computed radius on the main mesh, reports radius and preview counts, and keeps sphere surface, opacity and edges adjustable before building the proxy.
 - Foliage Proxy + mesh preview overlays an independently adjustable translucent cyan proxy surface, keeps the source mesh readable and supports hiding proxy edges or returning to wire-only display.
 - Foliage voxel-envelope budget refusals report actual triangle counts, preserve voxel resolution and offer an explicit budget increase with rebuild up to the existing 200,000-triangle hard cap. Envelope failures no longer recommend changing the later remesh edge length.
 - Reverse UV always repacks the completed LOD chain on an empty canvas, independently of coarsest-LOD preparation and optional uniform filling. Rectangle refusals try fresh triangle footprints; an unsuccessful required final pack no longer publishes the intermediate vacancy layout as a completed result.

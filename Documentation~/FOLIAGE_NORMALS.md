@@ -340,6 +340,15 @@ this selection before building the proxy.
 
 The shared `MeshViewport3D` also supports source cards, primitive sample points,
 voxel proxy, smoothed proxy, remeshed transfer proxy and transferred cards.
+After **Scatter samples**, **Primitive Samples** immediately overlays translucent
+spheres on the main mesh at the computed radius, with green sample centres. The
+panel reports radius in capture units and the number of visible spheres. **Sphere
+opacity**, **Sphere surface** and **Show sphere edges** control this display; edges
+are off by default. Up to 4,096 evenly distributed spheres are cached per Scatter
+result, while all primitives still participate in building the envelope. The
+preview is rebuilt when Scatter inputs change and released with that result.
+**Proxy + mesh** also shows these spheres before an envelope is available.
+
 **Proxy + mesh** overlays the latest available proxy as a translucent cyan surface
 (default opacity 25%) with optional edges. **Proxy opacity** changes only the proxy;
 the main mesh retains its materials and chosen shading. Disable **Proxy surface**
