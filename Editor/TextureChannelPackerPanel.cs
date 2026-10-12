@@ -335,11 +335,6 @@ namespace SashaRX.UnityMeshLab
 
         private bool SourcesLoading() => pendingSources.Count != 0;
 
-        private void OnInspectorUpdate()
-        {
-            if (SourcesLoading() || saveTask != null) Repaint();
-        }
-
         private void TickLoads()
         {
             if (pendingSources.Count == 0) return;
@@ -627,6 +622,7 @@ namespace SashaRX.UnityMeshLab
                         var token = saveCancellation.Token;
                         saveTask = Task.Run(() => StageOutputs(requests, token), token);
                         continuing = true;
+                        Repaint();
                         return;
                     }
                     try
@@ -636,6 +632,7 @@ namespace SashaRX.UnityMeshLab
                     }
                     catch { DiscardRequests(requests); throw; }
                     committedRequests = requests;
+                    Repaint();
                     return;
                 }
                 importTask.GetAwaiter().GetResult();

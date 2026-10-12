@@ -168,6 +168,14 @@ namespace SashaRX.UnityMeshLab.Tests
             string assetFolder = "Assets/MeshLabPacking-" + id;
             var window = ScriptableObject.CreateInstance<TextureChannelPackerPanel>();
             var pixel = new Color32(12, 34, 56, 78);
+            var paintedPhases = new System.Collections.Generic.HashSet<string>();
+            window.RequestRepaint = () =>
+            {
+                if (GetPrivate(window, "saveTask") == null) return;
+                if ((bool)GetPrivate(window, "snapshotPending")) paintedPhases.Add("snapshot");
+                else if (GetPrivate(window, "importTask") != null) paintedPhases.Add("import");
+                else paintedPhases.Add("stage");
+            };
             try
             {
                 using (var stream = File.Create(sourcePath))
@@ -192,6 +200,8 @@ namespace SashaRX.UnityMeshLab.Tests
                 InvokePrivate(window, "OnSelectionChanged");
                 Assert.IsTrue((bool)GetPrivate(window, "selectionPending"));
                 yield return WaitForExport(window);
+                Assert.Contains("stage", new System.Collections.Generic.List<string>(paintedPhases), "Encoding phase must repaint without mouse input");
+                Assert.Contains("import", new System.Collections.Generic.List<string>(paintedPhases), "Import phase must repaint to disable cancellation");
                 Assert.IsFalse((bool)GetPrivate(window, "selectionPending"));
                 SetPrivate(window, "followFbx", false);
                 Assert.IsEmpty((string)GetPrivate(window, "error"));
