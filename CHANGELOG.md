@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Forward donor-seam trials compare distortion using the target renderer's scale throughout projection, cut validation and final acceptance; transform translation does not reduce edge precision.
 - Viewer frames the first model once and preserves subsequent camera edits. Translucent surfaces share material-channel albedo lookup and keep opaque base-map alpha out of opacity. UV material channels render retained Quads, and both UV/3D views draw excess material slots on the final submesh.
 
+- Texture Channel Packer is a full-width Texture Packer tab inside Mesh Lab; its separate menu entry is removed. Settings survive tab switches while inactive panels release source loads and temporary textures.
 - Foliage selection rejects line/point meshes and empty triangle submeshes. Hierarchy changes during active calculations refresh source context and selection masks once the pipeline becomes idle, including failed runs.
 - Foliage bbox fits clamp planar thickness after scaling and account for float precision at the fitted center. Preview refreshes cancel and serialize active paint work; named LOD siblings refresh on source-channel changes, and Before/After spacing includes all visible context geometry.
 - Object-bounds sphere/hemisphere fitting derives automatic transfer reach from both selected capture bounds and the fitted proxy, so large excluded geometry cannot prevent transfer at the default distance. Positive distance limits retain their exact meaning.

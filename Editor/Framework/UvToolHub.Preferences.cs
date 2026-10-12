@@ -6,6 +6,9 @@ namespace SashaRX.UnityMeshLab
 {
     public partial class UvToolHub
     {
+        internal void RestoreActiveToolPreferences()
+            => (ActiveTool as IUvToolRestoreWindowPreferences)?.RestoreWindowPreferences();
+
         [Serializable]
         sealed class WindowSettings
         {

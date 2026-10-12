@@ -17,6 +17,18 @@ namespace SashaRX.UnityMeshLab.Tests
             typeof(UvPackHierarchyTool), typeof(RemeshBakeTool), typeof(DiagnosticsTool)
         };
 
+        [TestCase(MeshLabLibraries.View)]
+        [TestCase(MeshLabLibraries.Geometry)]
+        [TestCase(MeshLabLibraries.Uv)]
+        public void TexturePackerDoesNotDependOnMeshInspection(string disabledLibrary)
+        {
+            var registry = new MeshLabModuleRegistry(disabledLibraries: new[] { disabledLibrary });
+            Assert.IsNull(registry.ToolUnavailableReason(typeof(TextureChannelPackerTool)));
+            CollectionAssert.AreEqual(new[] { MeshLabLibraries.Core }, registry.RequiredLibraries(typeof(TextureChannelPackerTool)));
+            Assert.That(registry.CreateTools(new[] { typeof(TextureChannelPackerTool) }, null).Count, Is.EqualTo(1));
+            Assert.IsNotNull(registry.ToolUnavailableReason(typeof(CleanupTool)), "Mesh tools still require mesh inspection");
+        }
+
         [TestCaseSource(nameof(ToolTypes))]
         public void DisablingAnyTabPreservesEveryOtherToolAndItsLibraries(Type disabledType)
         {

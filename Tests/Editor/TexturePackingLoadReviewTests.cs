@@ -87,10 +87,10 @@ namespace SashaRX.UnityMeshLab.Tests
                     Assert.AreEqual(0, process.ExitCode);
                 }
                 string destination = Path.Combine(alias, "output.tga");
-                var method = typeof(TextureChannelPackerWindow).GetMethod("AssetPathWithComparison", BindingFlags.NonPublic | BindingFlags.Static);
+                var method = typeof(TextureChannelPackerPanel).GetMethod("AssetPathWithComparison", BindingFlags.NonPublic | BindingFlags.Static);
                 Assert.AreEqual(assetFolder + "/output.tga", method.Invoke(null, new object[] { destination, StringComparison.OrdinalIgnoreCase }));
                 Directory.CreateDirectory(Path.Combine(target, "Ignored~"));
-                var validate = typeof(TextureChannelPackerWindow).GetMethod("ValidateAssetDestination", BindingFlags.NonPublic | BindingFlags.Static);
+                var validate = typeof(TextureChannelPackerPanel).GetMethod("ValidateAssetDestination", BindingFlags.NonPublic | BindingFlags.Static);
                 var exception = Assert.Throws<TargetInvocationException>(() => validate.Invoke(null,
                     new object[] { Path.Combine(alias, "Ignored~", "output.tga") }));
                 Assert.IsInstanceOf<InvalidOperationException>(exception.InnerException);
@@ -105,7 +105,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [UnityTest]
         public IEnumerator FailedInstallationDoesNotStrandImportQueue()
         {
-            var queue = typeof(TextureChannelPackerWindow).Assembly.GetType("SashaRX.UnityMeshLab.TexturePackingImports");
+            var queue = typeof(TextureChannelPackerPanel).Assembly.GetType("SashaRX.UnityMeshLab.TexturePackingImports");
             var input = queue.GetNestedType("Input", BindingFlags.NonPublic);
             var empty = Array.CreateInstance(input, 0);
             var schedule = queue.GetMethod("Schedule", BindingFlags.NonPublic | BindingFlags.Static,
@@ -180,7 +180,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 importer.textureType = TextureImporterType.NormalMap;
                 importer.convertToNormalmap = true;
                 importer.SaveAndReimport();
-                var queue = typeof(TextureChannelPackerWindow).Assembly.GetType("SashaRX.UnityMeshLab.TexturePackingImports");
+                var queue = typeof(TextureChannelPackerPanel).Assembly.GetType("SashaRX.UnityMeshLab.TexturePackingImports");
                 var inputType = queue.GetNestedType("Input", BindingFlags.NonPublic);
                 var input = Activator.CreateInstance(inputType);
                 inputType.GetField("path").SetValue(input, path);
@@ -250,7 +250,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 AssetDatabase.Refresh();
                 Assert.IsTrue(File.Exists(path + ".meta"));
                 File.Delete(path);
-                var requestType = typeof(TextureChannelPackerWindow).GetNestedType("SaveRequest", BindingFlags.NonPublic);
+                var requestType = typeof(TextureChannelPackerPanel).GetNestedType("SaveRequest", BindingFlags.NonPublic);
                 var request = Activator.CreateInstance(requestType);
                 requestType.GetField("path").SetValue(request, Path.GetFullPath(path));
                 requestType.GetField("assetPath").SetValue(request, path);
@@ -258,7 +258,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 var listType = typeof(System.Collections.Generic.List<>).MakeGenericType(requestType);
                 var list = (IList)Activator.CreateInstance(listType);
                 list.Add(request);
-                typeof(TextureChannelPackerWindow).GetMethod("RestoreImports", BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, new object[] { list });
+                typeof(TextureChannelPackerPanel).GetMethod("RestoreImports", BindingFlags.NonPublic | BindingFlags.Static).Invoke(null, new object[] { list });
                 Assert.AreEqual(metaExisted, File.Exists(path + ".meta"));
             }
             finally { AssetDatabase.DeleteAsset(folder); }
