@@ -194,7 +194,7 @@ namespace SashaRX.UnityMeshLab
             switch (stage) {
                 case Stage.Prepare: return $"{(source ? source.GetInstanceID() : 0)}|{s.lod0Only}|{s.keepHierarchy}|{s.sourceShape}|{s.shell}|" +
                     $"{s.minPartSize:R}|{s.minRodVoxels:R}|{s.voxelResolution}|{s.hullResolution}|{s.sourceBackfaces}|" +
-                    $"cap{RemeshPlanarCap.Revision}|{s.planarCap}|{s.planarCapLoops}|{s.planarCapLocalPlanes}|{s.closureMode}|{s.capPlaneTolerance:R}|{s.bridgeCapFallback}";
+                    $"cap{RemeshPlanarCap.Revision}|{s.planarCap}|{s.planarCapLoops}|{s.planarCapLocalPlanes}|{s.closureMode}|{s.capPlaneTolerance:R}|{s.bridgeCapFallback}|{PreparationSourceKey(source, s.lod0Only)}";
                 case Stage.Remesh: return $"voxel{RemeshNative.VoxelRevision}|{(source ? source.GetInstanceID() : 0)}|{s.voxelResolution}|{s.solve}|{s.shell}|{s.lod0Only}|{s.keepHierarchy}|" +
                     $"{s.sourceShape}|{s.hullResolution}|{s.hullTriangles}|{s.minPartSize:R}|{s.minRodVoxels:R}|{s.voxelResolution}|{s.trimToSource}|{s.sourceBackfaces}|" +
                     $"cap{RemeshPlanarCap.Revision}|{s.planarCap}|{s.planarCapLoops}|{s.planarCapLocalPlanes}|{s.closureMode}|{s.capPlaneTolerance:R}|{s.bridgeCapFallback}";
@@ -204,6 +204,66 @@ namespace SashaRX.UnityMeshLab
                     $"{s.maxChartArea}|{s.maxChartBoundary}|{s.packRotate}|{s.packBlockAlign}|{s.packBruteForce}|{s.reduceUvFragmentation}|{s.mergeCharts}";
                 default: return $"{s.bakeMode}|{s.bakeFilteredParts}|{s.projectionDistance}|{s.cageSmoothing:F3}|{s.cageFit}|{s.bakeSamples}|{s.transferVertexColor}|{s.transferVertexAlpha}|{s.vertexColorTint}|{s.proxyDepth:F4}|{s.sourceBackfaces}|{s.bakeSourceAO}|{s.multiplySourceAO}|{s.sourceAO?.Key}|{s.dilationRadius}";
             }
+        }
+
+        // The root reference alone cannot identify the snapshot: child placement,
+        // mesh assignments and LOD membership can change while that reference stays
+        // the same. Hash capture inputs without reading vertex buffers on every GUI
+        // repaint; dirty mesh assets and their layout/bounds also invalidate capture.
+        static string PreparationSourceKey(GameObject root, bool lod0Only)
+        {
+            var hash = new Hash128();
+            if (!root) return hash.ToString();
+            hash.Append(root.name);
+            var rootPose = root.transform.localToWorldMatrix;
+            hash.Append(ref rootPose);
+            foreach (var renderer in RemeshSource.CollectRenderers(root, lod0Only)) {
+                hash.Append(renderer.GetInstanceID());
+                hash.Append(renderer.name);
+                hash.Append(renderer.gameObject.layer);
+                var parent = renderer.transform.parent;
+                hash.Append(parent ? parent.GetInstanceID() : 0);
+                var pose = renderer.localToWorldMatrix;
+                hash.Append(ref pose);
+                var skin = renderer as SkinnedMeshRenderer;
+                var mesh = skin ? skin.sharedMesh : renderer.GetComponent<MeshFilter>().sharedMesh;
+                AppendPreparationMesh(ref hash, mesh);
+                if (skin) AppendPreparationPose(ref hash, skin);
+                foreach (var material in renderer.sharedMaterials) {
+                    hash.Append(material ? material.GetInstanceID() : 0);
+                    hash.Append(material ? EditorUtility.GetDirtyCount(material) : 0);
+                }
+            }
+            return hash.ToString();
+        }
+
+        static void AppendPreparationMesh(ref Hash128 hash, Mesh mesh)
+        {
+            hash.Append(mesh.GetInstanceID());
+            hash.Append(EditorUtility.GetDirtyCount(mesh));
+            hash.Append(mesh.vertexCount);
+            hash.Append(mesh.subMeshCount);
+            var bounds = mesh.bounds;
+            hash.Append(ref bounds);
+            for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
+                var descriptor = mesh.GetSubMesh(sub);
+                hash.Append(descriptor.indexStart);
+                hash.Append(descriptor.indexCount);
+                hash.Append(descriptor.baseVertex);
+                hash.Append((int)descriptor.topology);
+            }
+        }
+
+        static void AppendPreparationPose(ref Hash128 hash, SkinnedMeshRenderer skin)
+        {
+            foreach (var bone in skin.bones) {
+                hash.Append(bone ? bone.GetInstanceID() : 0);
+                if (!bone) continue;
+                var pose = bone.localToWorldMatrix;
+                hash.Append(ref pose);
+            }
+            for (int shape = 0; shape < skin.sharedMesh.blendShapeCount; ++shape)
+                hash.Append(skin.GetBlendShapeWeight(shape));
         }
 
         public bool IsStale(Stage stage, RemeshSettings settings, GameObject source)

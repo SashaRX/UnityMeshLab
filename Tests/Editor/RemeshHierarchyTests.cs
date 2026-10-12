@@ -74,6 +74,63 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
         }
 
         [UnityTest]
+        public IEnumerator PreparedSourceRefreshesAfterChildTransformMeshAndHierarchyChanges()
+        {
+            var root = new GameObject("mutable preparation root");
+            var child = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            child.transform.SetParent(root.transform, false);
+            var original = child.GetComponent<MeshFilter>().sharedMesh;
+            var replacement = Object.Instantiate(original);
+            replacement.vertices = System.Array.ConvertAll(replacement.vertices, p => p * 2);
+            replacement.RecalculateBounds();
+            var settings = new RemeshSettings { sourceShape = RemeshShape.BoundingBox,
+                keepHierarchy = false, minPartSize = 0, minRodVoxels = 0, planarCap = false };
+            using var pipeline = new RemeshPipeline();
+            try {
+                var run = pipeline.Run(root, settings, RemeshPipeline.Stage.Prepare, RemeshPipeline.Stage.Prepare);
+                while (!run.IsCompleted) yield return null;
+                Assert.IsTrue(run.Result, pipeline.Status);
+                Assert.AreEqual(RemeshPipeline.Stage.Remesh, pipeline.FirstStale(RemeshPipeline.Stage.Remesh, settings, root));
+                var capture = pipeline.Source;
+                child.transform.localPosition = Vector3.right * 4;
+                Assert.AreEqual(RemeshPipeline.Stage.Prepare, pipeline.FirstStale(RemeshPipeline.Stage.Remesh, settings, root));
+                run = pipeline.Run(root, settings, RemeshPipeline.Stage.Remesh, RemeshPipeline.Stage.Remesh);
+                while (!run.IsCompleted) yield return null;
+                Assert.IsTrue(run.Result, pipeline.Status);
+                Assert.AreNotSame(capture, pipeline.Source);
+                Assert.That(pipeline.SourceMesh.bounds.center.x, Is.EqualTo(4).Within(1e-4));
+                Assert.That(pipeline.VoxelMesh.bounds.center.x, Is.EqualTo(4).Within(1e-4));
+
+                child.GetComponent<MeshFilter>().sharedMesh = replacement;
+                Assert.AreEqual(original.vertexCount, replacement.vertexCount, "Mesh assignment changes even with identical counts");
+                Assert.AreEqual(RemeshPipeline.Stage.Prepare, pipeline.FirstStale(RemeshPipeline.Stage.Remesh, settings, root));
+                run = pipeline.Run(root, settings, RemeshPipeline.Stage.Remesh, RemeshPipeline.Stage.Remesh);
+                while (!run.IsCompleted) yield return null;
+                Assert.IsTrue(run.Result, pipeline.Status);
+                Assert.That(pipeline.SourceMesh.bounds.size.x, Is.EqualTo(2).Within(1e-4));
+
+                var added = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                added.transform.SetParent(root.transform, false);
+                added.transform.localPosition = Vector3.left * 4;
+                Assert.AreEqual(RemeshPipeline.Stage.Prepare, pipeline.FirstStale(RemeshPipeline.Stage.Remesh, settings, root));
+                run = pipeline.Run(root, settings, RemeshPipeline.Stage.Remesh, RemeshPipeline.Stage.Remesh);
+                while (!run.IsCompleted) yield return null;
+                Assert.IsTrue(run.Result, pipeline.Status);
+                Assert.AreEqual(original.vertexCount + replacement.vertexCount, pipeline.Source.positions.Length);
+                Assert.That(pipeline.SourceMesh.bounds.min.x, Is.EqualTo(-4.5f).Within(1e-4));
+                added.GetComponent<MeshRenderer>().enabled = false;
+                Assert.AreEqual(RemeshPipeline.Stage.Prepare, pipeline.FirstStale(RemeshPipeline.Stage.Remesh, settings, root));
+                run = pipeline.Run(root, settings, RemeshPipeline.Stage.Remesh, RemeshPipeline.Stage.Remesh);
+                while (!run.IsCompleted) yield return null;
+                Assert.IsTrue(run.Result, pipeline.Status);
+                Assert.AreEqual(replacement.vertexCount, pipeline.Source.positions.Length);
+                Assert.IsFalse(pipeline.IsStale(RemeshPipeline.Stage.Prepare, settings, root));
+                Assert.AreSame(replacement, child.GetComponent<MeshFilter>().sharedMesh);
+            }
+            finally { Object.DestroyImmediate(root); Object.DestroyImmediate(replacement); }
+        }
+
+        [UnityTest]
         public IEnumerator RefusedContoursAreRedWithReasonsWhileOtherHierarchyCapsRemainPrepared()
         {
             var root = new GameObject("Mixed closure"); var good = TwoHoleBox(); var bad = TwoHoleBox();

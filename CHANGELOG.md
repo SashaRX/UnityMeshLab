@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Fix PR review regressions in scale-independent UV quality, UInt16 submesh base vertices, translucent material ordering, reverse sidecar geometry validation, cancellable seam audits and capture/replay boundary tolerance, active Mesh LOD raw ranges and raw MeshData importer fallback.
 
 ### Fixed
+- Remesh preparation invalidates when source renderer membership, mesh assignments or captured transforms change, so rerunning a later stage recaptures the current geometry.
 - Texture Packer is available only as a Mesh Lab tab. The former standalone window and its layout migration adapter are removed; project-specific tab settings remain intact.
 - Exclusive Reverse UV freezes ordinary Transfer islands, matches complete finer islands to the coarsest foundation without generating finer triangles, and repacks completed LOD groups at a common final density with fresh pixel padding. Whole-island correspondence uses projection reach rather than seam precision, preventing coarse panels from reserving blank LOD0 regions after tiny fitting refusals. Native packing retains concave masks and its actual canvas extent; refusal diagnostics and imported-model audits distinguish remaining unmatched groups from packing defects.
 - Fixed atomic FBX overwrite on Windows when the project and system temporary directory are on different volumes.
