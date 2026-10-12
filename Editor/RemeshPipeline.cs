@@ -229,18 +229,21 @@ namespace SashaRX.UnityMeshLab
                 var mesh = skin ? skin.sharedMesh : renderer.GetComponent<MeshFilter>().sharedMesh;
                 AppendPreparationMesh(ref hash, mesh);
                 if (skin) AppendPreparationPose(ref hash, skin);
-                foreach (var material in renderer.sharedMaterials) {
-                    hash.Append(material ? material.GetInstanceID() : 0);
-                    hash.Append(material ? EditorUtility.GetDirtyCount(material) : 0);
-                }
+                foreach (var material in renderer.sharedMaterials)
+                    AppendPreparationAsset(ref hash, material);
             }
             return hash.ToString();
         }
 
+        static void AppendPreparationAsset(ref Hash128 hash, Object asset)
+        {
+            hash.Append(asset ? asset.GetInstanceID() : 0);
+            hash.Append(asset ? EditorUtility.GetDirtyCount(asset) : 0);
+        }
+
         static void AppendPreparationMesh(ref Hash128 hash, Mesh mesh)
         {
-            hash.Append(mesh.GetInstanceID());
-            hash.Append(EditorUtility.GetDirtyCount(mesh));
+            AppendPreparationAsset(ref hash, mesh);
             hash.Append(mesh.vertexCount);
             hash.Append(mesh.subMeshCount);
             var bounds = mesh.bounds;
