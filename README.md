@@ -19,11 +19,12 @@ Open the window with **Tools → Mesh Lab → Open Mesh Lab**. The toolbar selec
 | **Prefab Builder** | Hierarchy, LOD levels, split / merge by material and collision of a prefab in one place, with edge and problem previews in the 3D view |
 | **Cleanup** | Scan and fix mesh, material, collider and scene hygiene after UV, LOD, collision and FBX operations |
 | **Vertex Color Baking** | Vertex AO (GPU hemisphere depth sampling) and Solid Color batch export with FBX + prefab variants |
+| **Texture Packer** | Albedo, MRCA and Normal textures assembled from whole RGB images or selected source channels, with shared dimensions and TGA RLE export |
 | **Diagnostics** | Parameter sweep, multi-model benchmark, log filters, hierarchical probe, FBX metrics (debug UI only) |
 
 ## The canvas: UV | 3D
 
-Every tab shares one canvas with a **UV | 3D** switch at its bottom centre (also `Tab` over the canvas), remembered across sessions.
+Mesh tools share one canvas with a **UV | 3D** switch at its bottom centre (also `Tab` over the canvas), remembered across sessions. Texture Packer uses the full area below the tabs for its image inputs and outputs.
 
 * **UV** shows the preview LOD's UV layout: shells, wire, island borders, UDIM tiles, spot picking, a checker or texture background.
 * **3D** is an orbitable lit view of the same meshes (drag orbits, middle button / alt-drag pans, scroll zooms, `F` or a middle double-click frames) with *Shaded* (scene materials), *Vert Colors*, *Normals*, *Tangents* and *UV0–UV3* shading, offered only where a mesh carries the data, a wire overlay and a Lit toggle.
@@ -32,8 +33,8 @@ Every tab shares one canvas with a **UV | 3D** switch at its bottom centre (also
 
 ## Texture Channel Packer
 
-Open **Tools → Mesh Lab → Texture Channel Packer** for a separate window that
-builds Albedo, MRCA and Normal textures from PNG/JPG/TGA files anywhere on disk.
+Open **Tools → Mesh Lab → Open Mesh Lab**, then select the **Texture Packer** tab to
+build Albedo, MRCA and Normal textures from PNG/JPG/TGA files anywhere on disk.
 Sources are read without copying or importing them into the project. Choose whole
 RGB or individual source channels (including alpha), resize to shared X/Y dimensions
 with a default 1:1 lock, and save 32-bit TGA RLE. Naming supports an optional `T_`
