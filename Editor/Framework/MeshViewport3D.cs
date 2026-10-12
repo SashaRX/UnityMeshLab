@@ -34,7 +34,9 @@ namespace SashaRX.UnityMeshLab
             // frame a proxy whose surface must not hide the source mesh.
             public Shading? ShadingOverride { get; set; }
             public bool WireOnly { get; set; }
-            public Item(Mesh mesh, Matrix4x4 matrix, Material[] materials = null) { this.mesh = mesh; this.matrix = matrix; this.materials = materials; ShadingOverride = null; WireOnly = false; }
+            // Overlay geometry still participates in framing and stays out of picking.
+            internal bool SuppressWire { get; set; }
+            public Item(Mesh mesh, Matrix4x4 matrix, Material[] materials = null) { this.mesh = mesh; this.matrix = matrix; this.materials = materials; ShadingOverride = null; WireOnly = false; SuppressWire = false; }
         }
 
         public static readonly string[] ShadingNames = { "Surface", "Vertex colors", "Normals", "Tangents", "UV0", "UV1", "UV2", "UV3",
@@ -188,7 +190,7 @@ namespace SashaRX.UnityMeshLab
                     foreach (var item in items) {
                         if (!item.mesh) continue;
                         DrawItem(item);
-                        if (Wireframe || item.WireOnly) DrawWire(item.mesh, item.matrix, item.WireOnly ? Color.cyan : WireColor);
+                        if (!item.SuppressWire && (Wireframe || item.WireOnly)) DrawWire(item.mesh, item.matrix, item.WireOnly ? Color.cyan : WireColor);
                     }
                 overlay?.Invoke(this);
                 if (any) {

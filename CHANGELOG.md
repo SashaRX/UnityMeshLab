@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Fixed
+- Foliage Proxy + mesh preview overlays an independently adjustable translucent cyan proxy surface, keeps the source mesh readable and supports hiding proxy edges or returning to wire-only display.
 - Foliage voxel-envelope budget refusals report actual triangle counts, preserve voxel resolution and offer an explicit budget increase with rebuild up to the existing 200,000-triangle hard cap. Envelope failures no longer recommend changing the later remesh edge length.
 - Reverse UV always repacks the completed LOD chain on an empty canvas, independently of coarsest-LOD preparation and optional uniform filling. Rectangle refusals try fresh triangle footprints; an unsuccessful required final pack no longer publishes the intermediate vacancy layout as a completed result.
 - Reverse UV prepares complete finer-LOD chart domains before projection, retains problematic optional cuts locally, and rebuilds ordered overlap references after strip subdivision without accumulating stale layers. New chart placement repairs translation-induced Float32 collapse. Final packing tests higher common pixel density and rigid native family footprints while preserving shell shape, descendant placement and audited overlap relationships; ordinary Forward remains unchanged.

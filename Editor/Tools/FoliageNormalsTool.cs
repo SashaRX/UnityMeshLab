@@ -34,7 +34,9 @@ namespace SashaRX.UnityMeshLab
         GameObject previewCapturedRoot;
         float normalLength = .025f;
         internal int previewLod;
-        bool advanced, showPrimitives, showProxyEdges = true, active;
+        bool advanced, showPrimitives, active;
+        internal bool showProxyEdges = true, showProxySurface = true;
+        internal float proxyOpacity = .25f;
         bool? previewCanApply;
         internal bool CanApplyPreview
         {
@@ -311,7 +313,13 @@ namespace SashaRX.UnityMeshLab
             DrawNormalComparison();
             DrawLodPreview();
             showProxyEdges = EditorGUILayout.Toggle("Show proxy edges", showProxyEdges);
-            EditorGUILayout.HelpBox("Selection Mask: green = proxy source, amber = transfer only in other LODs, grey = excluded. Proxy And Mesh overlays a cyan proxy wire. Before/After keeps the camera fixed; Side by side shows both. Normals shading is available in the 3D toolbar.", MessageType.Info);
+            if (preview == Preview.ProxyAndMesh)
+            {
+                showProxySurface = EditorGUILayout.Toggle("Proxy surface", showProxySurface);
+                using (new EditorGUI.DisabledScope(!showProxySurface))
+                    proxyOpacity = EditorGUILayout.Slider("Proxy opacity", proxyOpacity, 0, 1);
+            }
+            EditorGUILayout.HelpBox("Selection Mask: green = proxy source, amber = transfer only in other LODs, grey = excluded. Proxy And Mesh overlays a translucent cyan proxy with optional edges. Before/After keeps the camera fixed; Side by side shows both. Normals shading is available in the 3D toolbar.", MessageType.Info);
             if (!string.IsNullOrEmpty(sourcePreview.Error)) EditorGUILayout.HelpBox(sourcePreview.Error, MessageType.Warning);
             DrawDiagnostics();
             EditorGUILayout.LabelField(pipeline.Status, EditorStyles.wordWrappedMiniLabel);
@@ -768,7 +776,7 @@ namespace SashaRX.UnityMeshLab
                 AddTargetPreview(items, source, target);
             }
             if (preview == Preview.ProxyAndMesh && proxy)
-                items.Add(new MeshViewport3D.Item(proxy, Matrix4x4.identity) { WireOnly = true });
+                items.Add(new MeshViewport3D.Item(proxy, Matrix4x4.identity) { WireOnly = true, SuppressWire = !showProxyEdges });
             return true;
         }
 
@@ -805,6 +813,7 @@ namespace SashaRX.UnityMeshLab
 
         public void OnDraw3D(MeshViewport3D view)
         {
+            DrawCombinedProxySurface(view);
             if (showProxyEdges && !view.Wireframe && preview != Preview.ProxyAndMesh)
             {
                 var proxy = PreviewProxy();
@@ -827,6 +836,13 @@ namespace SashaRX.UnityMeshLab
             AppendPreviewNormalLines(before, after);
             view.DrawLines(before, Matrix4x4.identity, Color.cyan);
             view.DrawLines(after, Matrix4x4.identity, Color.yellow);
+        }
+
+        void DrawCombinedProxySurface(MeshViewport3D view)
+        {
+            if (preview != Preview.ProxyAndMesh || !showProxySurface || proxyOpacity <= 0) return;
+            var proxy = PreviewProxy();
+            if (proxy) view.DrawHighlightMesh(proxy, Matrix4x4.identity, new Color(.05f, .8f, 1f, Mathf.Clamp01(proxyOpacity)));
         }
 
         internal void AppendPreviewNormalLines(List<Vector3> before, List<Vector3> after)

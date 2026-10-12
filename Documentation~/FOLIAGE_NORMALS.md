@@ -340,8 +340,11 @@ this selection before building the proxy.
 
 The shared `MeshViewport3D` also supports source cards, primitive sample points,
 voxel proxy, smoothed proxy, remeshed transfer proxy and transferred cards.
-**Proxy + mesh** overlays the latest available proxy as a cyan wire on the model,
-so its solid surface cannot hide the leaf cards. **Before** / **After** switch
+**Proxy + mesh** overlays the latest available proxy as a translucent cyan surface
+(default opacity 25%) with optional edges. **Proxy opacity** changes only the proxy;
+the main mesh retains its materials and chosen shading. Disable **Proxy surface**
+for wire-only display, or **Show proxy edges** for a surface-only overlay. The proxy
+stays out of mesh inspection picking and UV overlays. **Before** / **After** switch
 original and transferred normals in the same position without moving the camera;
 the proxy remains visible when switching in the combined mode. **Side by side**
 shows original on the left and transferred on the right. Choose **Normals** shading
@@ -349,7 +352,7 @@ in the shared 3D toolbar for direction colours, or enable **Normal directions** 
 cyan original / yellow transferred arrows on selected vertices. Arrow length is
 adjustable; side-by-side mode draws both sets. Primitive points are bounded to
 4,096 per frame. **Show proxy edges** uses cached wire drawing for the three solid
-proxy previews. Source copies and selection paint are cached between changes,
+proxy previews and the combined view. Source copies and selection paint are cached between changes,
 prepared outside GUI repaint, and released on source changes or deactivation.
 Transient meshes use HideAndDontSave and never replace scene meshes during preview.
 
