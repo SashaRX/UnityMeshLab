@@ -891,7 +891,7 @@ namespace SashaRX.UnityMeshLab
         /// as it was. If the exporter throws or writes an empty file the target on disk is
         /// untouched. Throws on failure after removing the temp file.
         /// </summary>
-        internal static void WriteAtomic(string targetFbxPath, GameObject root, bool normalizedTransforms = false)
+        internal static void WriteAtomic(string targetFbxPath, GameObject root, bool normalizedTransforms = false, Action committed = null)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             var settings = FbxWriteSettings.FromProject();
@@ -899,7 +899,7 @@ namespace SashaRX.UnityMeshLab
             {
                 ExportFile(tmpRelPath, root, settings, normalizedTransforms);
                 if (normalizedTransforms) ConvertNormalizedFile(Path.GetFullPath(tmpRelPath), settings);
-            });
+            }, committed);
 #else
             throw new InvalidOperationException("FBX Exporter package not installed.");
 #endif

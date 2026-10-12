@@ -14,7 +14,7 @@ using UnityEditor;
 namespace SashaRX.UnityMeshLab
 {
     [MeshLabTool("vertex_color_baking", MeshLabLibraries.Baking, MeshLabLibraries.Assets)]
-    public class VertexColorBakingTool : IUvTool, IUvToolAssetLifecycle, IUvTool3D, IUvToolUvContent
+    public class VertexColorBakingTool : IUvTool, IUvToolAssetLifecycle, IUvTool3D, IUvToolUvContent, IUvToolFbxExport, IUvToolMeshExport
     {
         UvToolContext ctx;
         UvCanvasView canvas;
@@ -298,23 +298,7 @@ namespace SashaRX.UnityMeshLab
         // candidates for re-save. New paths default to checked; paths that
         // disappear (entry unchecked or removed) are dropped.
         void SyncFbxOverwriteMap()
-        {
-            var current = new HashSet<string>();
-            foreach (var e in hierarchyEntries)
-            {
-                if (e == null || !e.include || e.fbxMesh == null) continue;
-                string p = AssetDatabase.GetAssetPath(e.fbxMesh);
-                if (string.IsNullOrEmpty(p)) continue;
-                if (!p.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase)) continue;
-                current.Add(p);
-                if (!fbxOverwriteMap.ContainsKey(p))
-                    fbxOverwriteMap[p] = true;
-            }
-            // Drop stale keys.
-            var stale = fbxOverwriteMap.Keys.Where(k => !current.Contains(k)).ToList();
-            foreach (var k in stale)
-                fbxOverwriteMap.Remove(k);
-        }
+            => FbxSaveSelection.Sync(hierarchyEntries, fbxOverwriteMap);
 
         // Entries that drive bake / load / apply / preview.
         IEnumerable<MeshEntry> ActiveEntries()
@@ -981,112 +965,83 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
 
-            GUI.backgroundColor = new Color(.4f, .7f, .95f);
-            if (GUILayout.Button("Overwrite FBX (Vertex Colors)", GUILayout.Height(22)))
-            {
-                ctx.Assets.ExportVertexColorsToFbx();
-            }
-            GUI.backgroundColor = bgc;
         }
 
         // Per-FBX overwrite picker for Hierarchy Mode. Lists each unique FBX
         // referenced by hierarchyEntries; only checked files get rewritten.
         void DrawFbxOverwritePicker()
+            => FbxSaveSelection.Draw(hierarchyEntries, fbxOverwriteMap, ref fbxOverwriteFoldout, ref fbxOverwriteScroll, listVisibleRows);
+
+        public bool CanSaveMeshAssets => ctx != null && !UvProgress.IsActive && activeGpuJob == null &&
+            bakeKind != BakeKind.TextureAO && (bakeKind == BakeKind.SolidColor || bakedFinalAO?.Count > 0) &&
+            ActiveEntries().Any(e => IsSaveEntry(e));
+        public bool CanExportFbx => CanSaveMeshAssets && ActiveEntries().Any(e => IsSaveEntry(e) &&
+            SidecarStore.IsFbxPath(AssetDatabase.GetAssetPath(e.fbxMesh)) &&
+            (!hierarchyMode || !fbxOverwriteMap.TryGetValue(AssetDatabase.GetAssetPath(e.fbxMesh), out var use) || use));
+
+        bool IsSaveEntry(MeshEntry entry)
         {
-            // Re-sync each paint so toggling Meshes checkboxes updates the
-            // FBX list immediately. Cheap — set ops over hierarchyEntries.
-            SyncFbxOverwriteMap();
-
-            if (fbxOverwriteMap.Count == 0)
-            {
-                EditorGUILayout.HelpBox(
-                    "No included FBX-backed meshes. Tick at least one row in the Meshes list above.",
-                    MessageType.Info);
-                return;
-            }
-
-            int checkedCount = 0;
-            foreach (var v in fbxOverwriteMap.Values) if (v) checkedCount++;
-
-            fbxOverwriteFoldout = EditorGUILayout.Foldout(
-                fbxOverwriteFoldout,
-                $"Overwrite FBX  ({checkedCount} / {fbxOverwriteMap.Count} selected)",
-                true);
-            if (!fbxOverwriteFoldout) return;
-
-            EditorGUI.indentLevel++;
-            var paths = fbxOverwriteMap.Keys.OrderBy(p => p).ToList();
-
-            float rowHeight = EditorGUIUtility.singleLineHeight + 4f;
-            float listHeight = Mathf.Min(paths.Count, listVisibleRows) * rowHeight + 6f;
-            fbxOverwriteScroll = EditorGUILayout.BeginScrollView(
-                fbxOverwriteScroll,
-                alwaysShowHorizontal: false,
-                alwaysShowVertical: false,
-                GUIStyle.none,
-                GUI.skin.verticalScrollbar,
-                GUI.skin.scrollView,
-                GUILayout.Height(listHeight));
-
-            foreach (var path in paths)
-            {
-                string label = System.IO.Path.GetFileName(path);
-                bool cur = fbxOverwriteMap[path];
-                EditorGUILayout.BeginHorizontal();
-                bool next = EditorGUILayout.Toggle(cur, GUILayout.Width(22));
-                if (next != cur) fbxOverwriteMap[path] = next;
-                GUILayout.Space(4);
-                if (GUILayout.Button(new GUIContent(label, path + "\nClick to ping in Project"),
-                        EditorStyles.label))
-                {
-                    var asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path);
-                    if (asset != null) EditorGUIUtility.PingObject(asset);
-                }
-                EditorGUILayout.EndHorizontal();
-            }
-            EditorGUILayout.EndScrollView();
-
-            var bgc = GUI.backgroundColor;
-            GUI.backgroundColor = checkedCount > 0 ? new Color(.4f, .7f, .95f) : Color.white;
-            using (new EditorGUI.DisabledScope(checkedCount == 0))
-            {
-                if (GUILayout.Button($"Overwrite Selected FBX  ({checkedCount})", GUILayout.Height(22)))
-                    OverwriteSelectedFbx();
-            }
-            GUI.backgroundColor = bgc;
-            EditorGUI.indentLevel--;
+            if (entry == null || !entry.include || entry.originalMesh == null || MeshNaming.IsCollision(entry.originalMesh.name)) return false;
+            if (bakeKind != BakeKind.AO) return true;
+            if (applySelectedRendererOnly && entry.renderer != (Selection.activeGameObject != null
+                ? Selection.activeGameObject.GetComponentInParent<Renderer>() : null)) return false;
+            return bakedFinalAO != null && new[] { entry.originalMesh, entry.repackedMesh, entry.transferredMesh, entry.fbxMesh }
+                .Any(mesh => mesh != null && bakedFinalAO.ContainsKey(mesh));
         }
 
-        void OverwriteSelectedFbx()
+        internal List<MeshEntry> SaveEntries(List<Mesh> owned)
         {
-            var selected = fbxOverwriteMap
-                .Where(kv => kv.Value)
-                .Select(kv => kv.Key)
-                .ToList();
-            if (selected.Count == 0) return;
-
-            string list = string.Join("\n", selected.Select(p => "  • " + System.IO.Path.GetFileName(p)));
-            if (!EditorUtility.DisplayDialog(
-                "Overwrite Selected FBX",
-                $"Overwrite {selected.Count} FBX file(s)?\n\n{list}\n\nOnly vertex colors are updated. UV2 and topology stay unchanged.",
-                "Overwrite", "Cancel"))
-                return;
-
-            var transferTool = ctx.Assets;
-
-            foreach (var path in selected)
+            var entries = new List<MeshEntry>();
+            foreach (var e in ActiveEntries())
             {
-                var entriesForPath = hierarchyEntries
-                    .Where(e => e.fbxMesh != null &&
-                                string.Equals(AssetDatabase.GetAssetPath(e.fbxMesh), path, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-                if (entriesForPath.Count == 0)
+                if (!IsSaveEntry(e)) continue;
+                var seed = ctx.Assets.GetResultMesh(e);
+                float[] values = null;
+                if (bakeKind == BakeKind.AO)
                 {
-                    UvtLog.Warn($"[Vertex AO] No hierarchy entries map to '{path}', skipping.");
-                    continue;
+                    seed = new[] { e.originalMesh, e.repackedMesh, e.transferredMesh, e.fbxMesh }
+                        .FirstOrDefault(m => m != null && bakedFinalAO != null && bakedFinalAO.TryGetValue(m, out values));
+                    if (seed == null || values == null) continue;
                 }
-                transferTool.ExportVertexColorsToFbx(path, entriesForPath);
+                if (seed == null) continue;
+                var mesh = UnityEngine.Object.Instantiate(seed);
+                owned.Add(mesh);
+                if (bakeKind == BakeKind.AO)
+                {
+                    if (applySelectedRendererOnly && applySelectedSubmeshOnly)
+                    {
+                        if (!VertexChannels.WriteSubmesh(mesh, values, TargetChannel, selectedSubmeshIndex)) continue;
+                    }
+                    else VertexChannels.Write(mesh, values, TargetChannel);
+                }
+                entries.Add(e.PreviewCopy(mesh));
             }
+            return entries;
+        }
+
+        public void SaveMeshAssets()
+        {
+            var owned = new List<Mesh>();
+            try { ctx.Assets.SaveToolMeshes(SaveEntries(owned)); }
+            finally { foreach (var mesh in owned) UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
+        public void ExportFbx(bool overwriteSource)
+        {
+            var owned = new List<Mesh>();
+            try
+            {
+                var entries = SaveEntries(owned);
+                if (hierarchyMode)
+                {
+                    SyncFbxOverwriteMap();
+                    entries = entries.Where(e => fbxOverwriteMap.TryGetValue(AssetDatabase.GetAssetPath(e.fbxMesh), out var use) && use).ToList();
+                }
+                int uv = bakeKind == BakeKind.AO ? VertexChannels.UvChannel(TargetChannel) : -1;
+                var intent = uv >= 0 ? (FbxExportIntent)(1 << uv) : FbxExportIntent.VertexColors;
+                ctx.Assets.ExportToolEntries(entries, intent, overwriteSource);
+            }
+            finally { foreach (var mesh in owned) UnityEngine.Object.DestroyImmediate(mesh); }
         }
 
         // ── Bake ──

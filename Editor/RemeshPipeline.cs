@@ -73,6 +73,7 @@ namespace SashaRX.UnityMeshLab
         /// <summary>The root the remesh stage captured; the save resolves its output folder from this,
         /// not from whatever is selected at save time. Null until the stage ran.</summary>
         public GameObject CapturedSource { get; private set; }
+        internal string CapturedFbxPath { get; private set; }
 
         // Previews come from the primary node: the weld itself, or the largest node of
         // a hierarchy so the existing preview panel keeps working.
@@ -458,6 +459,7 @@ namespace SashaRX.UnityMeshLab
             }
             token.ThrowIfCancellationRequested();
             nodes.AddRange(captures); CapturedSource = root;
+            CapturedFbxPath = MeshAssetOperations.ResolveModelFbx(root);
             foreach (var node in nodes)
                 if (previewNode == null || node.source.indices.Length > previewNode.source.indices.Length) previewNode = node;
             BuildSourcePreview(); BuildClosurePreview();
@@ -993,7 +995,7 @@ namespace SashaRX.UnityMeshLab
                 ClosureContourInfo = null;
                 ClosureContourNames = null; ClosureContourEdges = null;
                 ClosureContourColors = null; ClosureContourReasons = null;
-                nodes.Clear(); previewNode = null; hierarchy = false; CapturedSource = null; unfilteredRoot = null;
+                nodes.Clear(); previewNode = null; hierarchy = false; CapturedSource = null; CapturedFbxPath = null; unfilteredRoot = null;
             }
         }
 

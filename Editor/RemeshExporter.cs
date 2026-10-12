@@ -14,7 +14,8 @@ namespace SashaRX.UnityMeshLab
     /// per node, the meshes and a prefab. A single-node (weld) result ships as an FBX
     /// when the FBX exporter package is present, otherwise as a mesh asset; a
     /// keep-hierarchy result is always mesh assets under a rebuilt root prefab.
-    /// Source assets are never written; a failed export deletes the folder again.
+    /// The shared footer can also replace a source FBX with the complete baked model.
+    /// A failure before the file commits deletes the new output folder again.
     /// </summary>
     internal static class RemeshExporter
     {
@@ -36,6 +37,11 @@ namespace SashaRX.UnityMeshLab
                     if (filter && filter.sharedMesh) assetPath = AssetDatabase.GetAssetPath(filter.sharedMesh);
                 }
             }
+            return ResolveDefaultFolder(assetPath);
+        }
+
+        internal static string ResolveDefaultFolder(string assetPath)
+        {
             if (string.IsNullOrEmpty(assetPath)) return null;
             string dir = Path.GetDirectoryName(assetPath);
             if (string.IsNullOrEmpty(dir)) return null;
@@ -70,12 +76,13 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>Exports the baked result into a new folder under parentFolder and
         /// returns the status line. Throws after rolling the folder back on failure.</summary>
-        public static string Export(RemeshPipeline pipeline, RemeshSettings settings, string parentFolder)
+        public static string Export(RemeshPipeline pipeline, RemeshSettings settings, string parentFolder, string outputFbxPath = null, bool meshAssetsOnly = false, bool fbxModel = false)
         {
             if (pipeline.Nodes.Count == 0 || !pipeline.Has(RemeshPipeline.Stage.Bake)) throw new InvalidOperationException("Nothing to save: run the bake first.");
             string clean = SafeName(pipeline.ResultName, "Remesh");
             string folder = AssetDatabase.GenerateUniqueAssetPath(parentFolder + "/" + clean + "_Remesh");
-            bool createdFolder = false;
+            bool createdFolder = false, sourceCommitted = false;
+            bool sourceOverwrite = !string.IsNullOrEmpty(outputFbxPath) && System.IO.File.Exists(outputFbxPath);
             var temporary = new List<Object>();
             try {
                 // Beauty bakes fold the lighting into the BaseColor; the result shades
@@ -91,6 +98,15 @@ namespace SashaRX.UnityMeshLab
                 bool hierarchy = pipeline.IsHierarchy;
                 var nodes = pipeline.Nodes;
                 var names = UniqueNames(nodes, hierarchy);
+                // Keep the stable sub-asset name for a one-mesh overwrite so unpacked
+                // scene references retain their FBX file ID across reimport.
+                if (sourceOverwrite && nodes.Count == 1)
+                {
+                    var importedMeshes = new List<Mesh>();
+                    foreach (var asset in AssetDatabase.LoadAllAssetsAtPath(outputFbxPath))
+                        if (asset is Mesh mesh) importedMeshes.Add(mesh);
+                    if (importedMeshes.Count == 1) names[0] = importedMeshes[0].name;
+                }
                 // Maps: write + import every file in one batch, then configure the
                 // importers in a second batch — imports are deferred until the first
                 // scope closes, so an importer lookup inside it would come back null.
@@ -105,13 +121,13 @@ namespace SashaRX.UnityMeshLab
                 // capture space; the weld bakes the captured world linear matrix into
                 // vertices when normalization is on (real size at identity), a hierarchy keeps the
                 // root scale on the prefab root (no single vertex space to bake it into).
-                bool normalize = settings.normalizeSize && !hierarchy;
+                bool normalize = settings.normalizeSize && !hierarchy && !sourceOverwrite;
                 if (settings.normalizeSize && hierarchy)
                     UvtLog.Warn("[Remesh export] Keep-hierarchy saves keep the source root's scale on the prefab root; 'Normalize saved transform' applies to the single-mesh weld only.");
-                var root = new GameObject(clean + "_LOD0");
+                var root = new GameObject(sourceOverwrite && !hierarchy ? names[0] : clean + "_LOD0");
                 temporary.Add(root);
-                root.transform.localScale = normalize ? Vector3.one : pipeline.RootScale;
-                root.transform.localRotation = normalize ? Quaternion.identity : pipeline.RootRotation;
+                root.transform.localScale = normalize || sourceOverwrite ? Vector3.one : pipeline.RootScale;
+                root.transform.localRotation = normalize || sourceOverwrite ? Quaternion.identity : pipeline.RootRotation;
                 var materials = new Material[nodes.Count];
                 var meshes = new Mesh[nodes.Count];
                 bool twoSidedWarned = false;
@@ -130,7 +146,7 @@ namespace SashaRX.UnityMeshLab
                     }
                     temporary.Add(materials[i]);
                     meshes[i] = Object.Instantiate(node.mesh);
-                    meshes[i].name = names[i] + "_LOD0"; meshes[i].hideFlags = HideFlags.None;
+                    meshes[i].name = sourceOverwrite ? names[i] : names[i] + "_LOD0"; meshes[i].hideFlags = HideFlags.None;
                     temporary.Add(meshes[i]);
                     if (normalize) {
                         var linear = node.spaceToWorld;
@@ -154,8 +170,10 @@ namespace SashaRX.UnityMeshLab
                         AssetDatabase.CreateAsset(materials[i], folder + "/" + names[i] + ".mat");
                 Object ping;
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-                if (!hierarchy) {
-                    ping = ExportFbx(folder + "/" + clean + ".fbx", root, materials[0], prefabPath, normalize);
+                if (!meshAssetsOnly && (!hierarchy || outputFbxPath != null || fbxModel)) {
+                    string target = outputFbxPath ?? folder + "/" + clean + ".fbx";
+                    ping = ExportFbx(target, root, materials, prefabPath, normalize || sourceOverwrite,
+                        () => sourceCommitted = sourceOverwrite);
                 }
                 else
 #endif
@@ -175,7 +193,8 @@ namespace SashaRX.UnityMeshLab
                 return status;
             }
             catch (Exception e) {
-                if (createdFolder && AssetDatabase.IsValidFolder(folder)) AssetDatabase.DeleteAsset(folder);
+                if (createdFolder && !sourceCommitted && AssetDatabase.IsValidFolder(folder)) AssetDatabase.DeleteAsset(folder);
+                if (sourceCommitted) UvtLog.Error("[Remesh export] FBX committed; maps and materials retained at " + folder + ". Fix the import and reimport the FBX.");
                 UvtLog.Error("[Remesh export] " + e);
                 throw;
             }
@@ -194,31 +213,17 @@ namespace SashaRX.UnityMeshLab
         // channel re-save of a source FBX, so the isolated-export core's same-vertex-
         // count snapshot contract does not apply; a failed export still rolls the
         // whole folder back.
-        static Object ExportFbx(string fbxPath, GameObject root, Material material, string prefabPath, bool normalizedTransforms)
+        static Object ExportFbx(string fbxPath, GameObject root, Material[] materials, string prefabPath,
+            bool normalizedTransforms, Action committed)
         {
-            FbxExport.Write(fbxPath, root, normalizedTransforms: normalizedTransforms);
-            var modelImporter = (ModelImporter)AssetImporter.GetAtPath(fbxPath);
-            if (modelImporter != null) {
-                // The curated material + prefab ship next to the FBX; keep the importer
-                // from generating a duplicate MaterialDescription copy.
-                modelImporter.materialImportMode = ModelImporterMaterialImportMode.None;
-                // The normal map was baked against the exported tangent frame; a
-                // recalculation (MikkT default) can flip its handedness per vertex,
-                // which green-flips chunks of the baked map.
-                modelImporter.importNormals = ModelImporterNormals.Import;
-                modelImporter.importTangents = ModelImporterTangents.Import;
-                if (normalizedTransforms) {
-                    modelImporter.globalScale = 1;
-                    modelImporter.useFileScale = true;
-                    modelImporter.bakeAxisConversion = true;
-                }
-                modelImporter.SaveAndReimport();
-            }
+            MeshAssetOperations.WriteModelResult(fbxPath, root, materials, normalizedTransforms, committed);
             var fbxRoot = AssetDatabase.LoadMainAssetAtPath(fbxPath) as GameObject;
             if (!fbxRoot) throw new IOException("FBX reimport failed.");
             var instance = (GameObject)PrefabUtility.InstantiatePrefab(fbxRoot);
             try {
-                instance.GetComponentInChildren<MeshRenderer>().sharedMaterial = material;
+                var renderers = instance.GetComponentsInChildren<MeshRenderer>(true);
+                for (int i = 0; i < renderers.Length && i < materials.Length; i++)
+                    renderers[i].sharedMaterial = materials[i];
                 PrefabUtility.SaveAsPrefabAsset(instance, prefabPath, out bool success);
                 if (!success) throw new IOException("Prefab save failed.");
             }

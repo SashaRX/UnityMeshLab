@@ -1,7 +1,7 @@
 // LodGenerationTool.cs — LOD generation via meshoptimizer simplification.
 // Preserves UV2 lightmap coordinates with configurable weights.
 //
-// Workflow: UV2 Transfer (Analyze → Weld → Repack → Transfer) → LOD Gen → Overwrite FBX (from UV2 Transfer tab)
+// Workflow: UV2 Transfer (Analyze → Weld → Repack → Transfer) → LOD Gen → shared Overwrite FBX
 
 using System;
 using System.Collections.Generic;
@@ -214,7 +214,7 @@ namespace SashaRX.UnityMeshLab
                     "Workflow:\n" +
                     "1. UV2 Transfer: Analyze → Weld → Repack → Transfer\n" +
                     "2. LOD Gen: Generate new LODs\n" +
-                    "3. UV2 Transfer: Overwrite Source FBX (saves everything)",
+                    "3. Overwrite FBX below (saves everything)",
                     MessageType.Info);
             }
         }

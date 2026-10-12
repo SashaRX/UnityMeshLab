@@ -5,6 +5,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+- All mesh tools save through the shared footer. UV1 Hierarchy and vertex-channel baking export their computed results without Apply; Prefab Builder validates the shared full save; Collision includes fresh results grouped by source FBX; Remesh saves its baked model, maps, materials and prefab, including atomic source overwrite. Tool-local duplicate save buttons are removed and asset writes wait for calculations to finish.
 - Fix PR review regressions in scale-independent UV quality, UInt16 submesh base vertices, translucent material ordering, reverse sidecar geometry validation, cancellable seam audits and capture/replay boundary tolerance, active Mesh LOD raw ranges and raw MeshData importer fallback.
 
 ### Fixed

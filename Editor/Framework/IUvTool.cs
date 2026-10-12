@@ -136,6 +136,13 @@ namespace SashaRX.UnityMeshLab
         void ExportFbx(bool overwriteSource);
     }
 
+    /// <summary>Tool-owned mesh assets use the same footer as context-owned meshes.</summary>
+    public interface IUvToolMeshExport
+    {
+        bool CanSaveMeshAssets { get; }
+        void SaveMeshAssets();
+    }
+
     /// <summary>Optional hooks around shared asset writes. Only the active tool is called.</summary>
     public interface IUvToolAssetLifecycle
     {

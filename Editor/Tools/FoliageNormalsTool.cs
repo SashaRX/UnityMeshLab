@@ -8,7 +8,7 @@ using UnityEngine;
 namespace SashaRX.UnityMeshLab
 {
     [MeshLabTool("foliage_normals", MeshLabLibraries.Geometry, MeshLabLibraries.Remesh, MeshLabLibraries.VertexChannels, MeshLabLibraries.Assets)]
-    public sealed class FoliageNormalsTool : IUvTool, IUvTool3D, IUvToolFbxExport
+    public sealed class FoliageNormalsTool : IUvTool, IUvTool3D, IUvToolFbxExport, IUvToolMeshExport
     {
         internal enum Preview
         {
@@ -614,18 +614,7 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
 
-                if (GUILayout.Button("Save Mesh Asset"))
-                {
-                    Save();
-                }
-
-                using (new EditorGUI.DisabledScope(!FoliageFbxExport.Available))
-                {
-                    if (GUILayout.Button("Save Separate FBX"))
-                    {
-                        SaveFbx();
-                    }
-                }
+                EditorGUILayout.LabelField("Save using the shared footer below.", EditorStyles.miniLabel);
             }
             if (!FoliageFbxExport.Available)
             {
@@ -701,6 +690,8 @@ namespace SashaRX.UnityMeshLab
             }
             RequestRepaint?.Invoke();
         }
+        public bool CanSaveMeshAssets => CanApplyPreview;
+        public void SaveMeshAssets() => Save();
         void Save()
         {
             string folder = EditorUtility.OpenFolderPanel("Save foliage meshes", Application.dataPath, "");

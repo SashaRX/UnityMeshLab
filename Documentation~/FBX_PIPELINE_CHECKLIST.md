@@ -575,31 +575,53 @@ imported with `keepQuads = true`:
   (>4 vertices per face) still import triangulated, and generated LODs
   (meshoptimizer output) are triangle meshes by construction.
 
-### New-geometry export (Remesh & Bake) — the one out-of-core write
+### Shared save footer
 
-`RemeshBakeTool.Save()` exports a **brand-new mesh** (voxel remesh result)
-into a **uniquely created folder**, gated by the same
-`LIGHTMAP_UV_TOOL_FBX_EXPORTER` define. It calls
-`ModelExporter.ExportObjects` directly because the isolated core is a
-*re-save* pipeline: its snapshots key on mesh name and require the same
-vertex count, so it structurally cannot carry re-topologized geometry,
-and there is no source FBX whose untouched channels must survive.
-Safety comes from the fresh-path guarantees instead: the target file
-never pre-exists (a new unique folder), the output is verified
-non-empty, and any failure rolls the whole generated folder back.
-The FBX importer of the result is pinned to `materialImportMode = None`
-so the importer does not duplicate the curated material that ships
-next to the FBX. Do not use this carve-out for anything that mutates
-an existing FBX — that path must go through the core.
+`UvToolHub` owns the Overwrite FBX / Export New FBX buttons and Save Mesh Assets.
+Tools with independent output implement `IUvToolFbxExport` and `IUvToolMeshExport`;
+unavailable results disable the buttons instead of exporting another tab's context.
+Calculation progress also disables writes. Texture Packer and Texture AO save
+texture outputs through their texture controls.
+
+| Tool | Result selected by the footer | FBX write |
+|---|---|---|
+| UV Transfer, LOD Gen, Cleanup | Current included context entries | Shared document save, including UVs, geometry, LODs and collision |
+| Prefab Builder | Same context, freshly validated | Same complete document save |
+| UV1 Hierarchy | Successful packed copies; checked source files | Shared UV1 channel save; Apply is optional |
+| Vertex Color Baking | Computed AO/channel copies or painted solid-color meshes | Shared selected-channel save; Apply is optional |
+| Collision | Generated collision grouped by source FBX, plus context entries | Sidecar capture followed by shared document save |
+| Foliage | Captured normals/tangents and selected submesh masks | Shared channel writer with shading-selection adapter |
+| Remesh & Bake | Captured baked output, maps, materials and prefab | Shared atomic model writer |
+
+The hierarchy FBX picker is `FbxSaveSelection`; path picking and channel save
+policy are in `MeshAssetOperations.ExportToolEntries`. Saving private meshes must
+not release another context's working copies. Channel saves preserve channels
+outside their intent and relink written scene meshes with Undo/prefab overrides.
+Public legacy APIs remain compatibility wrappers, not alternative writers.
+
+### New-geometry export (Remesh & Bake)
+
+`RemeshExporter` prepares the baked object tree, maps, materials and prefab.
+`MeshAssetOperations.WriteModelResult` writes the new topology through
+`FbxExport.WriteAtomic`, imports normals/tangents, disables compression and
+automatic lightmap UV generation, and installs material remaps. Welded and
+keep-hierarchy results can both be exported as FBX through the shared footer.
+
+Overwrite replaces the complete source model with the captured baked result;
+the confirmation identifies that scope, including the LOD hierarchy. The source
+must resolve to one FBX and its path is frozen during capture, even if the scene
+mesh changes later; never fall back to another tab's source. Single-mesh
+overwrite retains its mesh name so unpacked scene references keep their file ID.
+Old UV2 sidecar entries are invalidated after commit; collision entries remain.
+A failed writer preserves the original FBX and GUID. An import failure after
+commit retains the maps/materials needed by the file and reports a recovery path.
 
 ### What "rework, not parallel" means in code review
 
 Reject PRs that:
 
-* Add a new method named `Export*Fbx*` on any tool other
-  than `LightmapTransferTool`. Tools push their changes
-  into mesh entries / sidecars and call the existing core
-  with the appropriate intent.
+* Add tool-local save buttons or file writers. `ExportFbx` interface
+  implementations select tool data and delegate to shared services.
 * Call `UnityEditor.Formats.Fbx.Exporter.ModelExporter.ExportObjects`
   outside the core.
 * Bypass intent (e.g. always passing `FbxExportIntent.All`
@@ -609,3 +631,10 @@ Reject PRs that:
 * Add `if (myToolDidThing) NormalizeExportHierarchy(...)`
   branches at call sites — that pass belongs in the core,
   gated by `intent.HasFlag(Hierarchy)`.
+
+Validation on 2026-10-12: 338 EditMode tests passed, 0 failed, 1 skipped in Unity
+6000.2.6f2; compile checks passed with and without the FBX define. Coverage includes
+shared routing, UV1/vertex AO without Apply, source/new export, cancellation,
+preserved channels, independent contexts, multi-FBX collision, Remesh
+maps/materials/GUID/unpacked references, frozen source paths, and failed-writer rollback. Results:
+`_results~/unified-tool-save-20261012/tests-integrated/results.xml`.

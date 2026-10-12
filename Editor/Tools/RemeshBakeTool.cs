@@ -12,7 +12,7 @@ namespace SashaRX.UnityMeshLab
     /// <see cref="RemeshPipeline"/>, the export in <see cref="RemeshExporter"/>.
     /// </summary>
     [MeshLabTool("remesh_bake", MeshLabLibraries.Remesh, MeshLabLibraries.Baking, MeshLabLibraries.Assets)]
-    public sealed class RemeshBakeTool : IUvTool, IUvToolRightSidebar, IUvTool3D, IUvTool3DInput, IUvToolUvContent, IUvToolWindowPreferences
+    public sealed class RemeshBakeTool : IUvTool, IUvToolRightSidebar, IUvTool3D, IUvTool3DInput, IUvToolUvContent, IUvToolWindowPreferences, IUvToolFbxExport, IUvToolMeshExport
     {
         public string ToolName => "Remesh & Bake";
         public string ToolId => "remesh_bake";
@@ -757,20 +757,10 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.LabelField("FBX output", fbxSettings.FormatName +
                 (fbxSettings.EmbedTextures ? ", embedded textures" : ", external textures"));
             if (GUILayout.Button("FBX export settings…")) SettingsService.OpenProjectSettings("Project/Mesh Lab");
-            string label = pipeline.IsHierarchy ? "Save meshes, maps & prefab…" : "Save FBX, maps & prefab…";
 #else
-            string label = pipeline.IsHierarchy ? "Save meshes, maps & prefab…" : "Save mesh, maps & prefab…";
+            EditorGUILayout.HelpBox("Install com.unity.formats.fbx for FBX export.", MessageType.None);
 #endif
-            using (new EditorGUI.DisabledScope(pipeline.IsRunning))
-                if (GUILayout.Button(label)) {
-                    Save();
-                    // The folder panel is modal and the export imports assets; both
-                    // leave this event's layout state stale.
-                    GUIUtility.ExitGUI();
-                }
-#if !LIGHTMAP_UV_TOOL_FBX_EXPORTER
-            EditorGUILayout.HelpBox("Install com.unity.formats.fbx to save the model as an FBX instead of a mesh asset.", MessageType.None);
-#endif
+            EditorGUILayout.LabelField("Save using the shared footer below (includes maps and prefab).", EditorStyles.wordWrappedMiniLabel);
         }
 
         bool StageHeader(RemeshPipeline.Stage stage)
@@ -821,15 +811,35 @@ namespace SashaRX.UnityMeshLab
             RequestRepaint?.Invoke();
         }
 
-        void Save()
+        public bool CanSaveMeshAssets => !pipeline.IsRunning && !UvProgress.IsActive && pipeline.Has(RemeshPipeline.Stage.Bake);
+        public bool CanExportFbx => CanSaveMeshAssets;
+        public void SaveMeshAssets() => Save(meshAssetsOnly: true);
+
+        internal static string SourceFbx(GameObject capturedSource) => MeshAssetOperations.ResolveModelFbx(capturedSource);
+
+        public void ExportFbx(bool overwriteSource)
         {
-            // Default output: a "remesh" subfolder next to the CAPTURED model's asset (the
-            // selection may have moved on since the bake). Falls back to the folder
-            // picker for scene-only objects with no asset, or a captured root that is gone.
-            string parent = RemeshExporter.ResolveDefaultFolder(pipeline.CapturedSource) ?? RemeshExporter.PickFolder(out saveStatus);
+            if (!CanExportFbx) return;
+            string target = null;
+            if (overwriteSource)
+            {
+                target = pipeline.CapturedFbxPath;
+                if (target == null || !(AssetImporter.GetAtPath(target) is ModelImporter)) { saveStatus = "Captured model must belong to a single source FBX. Use Export New FBX."; UvtLog.Warn("[Remesh] " + saveStatus); return; }
+                if (!EditorUtility.DisplayDialog("Overwrite Source FBX",
+                    "Replace '" + System.IO.Path.GetFileName(target) + "' with the complete baked Remesh result?\n\n" +
+                    "This replaces the model geometry and LOD hierarchy with the captured result. Maps, materials and a prefab are saved alongside it.", "Overwrite", "Cancel")) return;
+            }
+            Save(outputFbxPath: target);
+        }
+
+        void Save(string outputFbxPath = null, bool meshAssetsOnly = false)
+        {
+            string parent = (pipeline.CapturedFbxPath != null ? RemeshExporter.ResolveDefaultFolder(pipeline.CapturedFbxPath)
+                : RemeshExporter.ResolveDefaultFolder(pipeline.CapturedSource)) ?? RemeshExporter.PickFolder(out saveStatus);
             if (parent == null) return;
-            try { saveStatus = RemeshExporter.Export(pipeline, settings, parent); }
+            try { saveStatus = RemeshExporter.Export(pipeline, settings, parent, outputFbxPath, meshAssetsOnly, fbxModel: !meshAssetsOnly); }
             catch (Exception e) { saveStatus = e.Message; }
+            RequestRepaint?.Invoke();
         }
     }
 }

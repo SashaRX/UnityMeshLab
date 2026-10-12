@@ -1718,6 +1718,7 @@ namespace SashaRX.UnityMeshLab
 
         void ExportSidebarFbx(bool overwriteSource)
         {
+            if (UvProgress.IsActive) return;
             if (!(ActiveTool is IUvToolFbxExport)) { ctx.Assets.ExportFbxPublic(overwriteSource); return; }
             try { BeforeAssetWrite(); TryExportToolFbx(ActiveTool as IUvToolFbxExport, overwriteSource); }
             finally { FinishAssetWrite(); }
@@ -1726,6 +1727,7 @@ namespace SashaRX.UnityMeshLab
         void DrawSidebarFooter()
         {
             var previewExport = ActiveTool as IUvToolFbxExport;
+            var meshExport = ActiveTool as IUvToolMeshExport;
             bool hasMeshEntries = ctx != null && ctx.MeshEntries != null && ctx.MeshEntries.Count > 0;
             bool hasFbxWorkflow = previewExport != null || ctx != null && !string.IsNullOrEmpty(ctx.SourceFbxPath);
             if ((!hasMeshEntries && previewExport == null) || modules.LibraryUnavailableReason(MeshLabLibraries.Assets) != null) return;
@@ -1735,10 +1737,17 @@ namespace SashaRX.UnityMeshLab
             EditorGUI.DrawRect(r, new Color(.3f, .3f, .3f));
             EditorGUILayout.Space(2);
 
-            if (hasMeshEntries && GUILayout.Button("Save Mesh Assets", EditorStyles.miniButton))
-            {
-                ctx.Assets.SaveAllPublic();
-            }
+            using (new EditorGUI.DisabledScope(UvProgress.IsActive || (meshExport != null && !meshExport.CanSaveMeshAssets)))
+                if ((meshExport != null || hasMeshEntries && previewExport == null)
+                    && GUILayout.Button("Save Mesh Assets", EditorStyles.miniButton))
+                {
+                    if (meshExport == null) ctx.Assets.SaveAllPublic();
+                    else
+                    {
+                        try { BeforeAssetWrite(); meshExport.SaveMeshAssets(); }
+                        finally { FinishAssetWrite(); }
+                    }
+                }
 
             if (!hasFbxWorkflow) return;
 
@@ -1755,13 +1764,23 @@ namespace SashaRX.UnityMeshLab
 
             if (previewExport != null)
                 EditorGUILayout.HelpBox($"FBX export uses the current {ActiveTool.ToolName} result.", MessageType.Info);
-            using (new EditorGUI.DisabledScope(previewExport != null && !previewExport.CanExportFbx))
+            using (new EditorGUI.DisabledScope(UvProgress.IsActive || previewExport != null && !previewExport.CanExportFbx))
             {
                 EditorGUILayout.BeginHorizontal();
                 GUI.backgroundColor = new Color(.95f, .6f, .2f);
-                if (GUILayout.Button("Overwrite FBX", GUILayout.Height(24))) ExportSidebarFbx(true);
+                if (GUILayout.Button("Overwrite FBX", GUILayout.Height(24)))
+                {
+                    ExportSidebarFbx(true);
+                    GUI.backgroundColor = bg;
+                    GUIUtility.ExitGUI();
+                }
                 GUI.backgroundColor = new Color(.4f, .7f, .95f);
-                if (GUILayout.Button("Export New FBX", GUILayout.Height(24))) ExportSidebarFbx(false);
+                if (GUILayout.Button("Export New FBX", GUILayout.Height(24)))
+                {
+                    ExportSidebarFbx(false);
+                    GUI.backgroundColor = bg;
+                    GUIUtility.ExitGUI();
+                }
                 GUI.backgroundColor = bg;
                 EditorGUILayout.EndHorizontal();
             }
@@ -1769,12 +1788,12 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.HelpBox("Install com.unity.formats.fbx for FBX export.", MessageType.Info);
 #endif
 
-            if (hasMeshEntries && GUILayout.Button("Apply UV2 (sidecar)", EditorStyles.miniButton))
+            if (previewExport == null && hasMeshEntries && !UvProgress.IsActive && GUILayout.Button("Apply UV2 (sidecar)", EditorStyles.miniButton))
             {
                 ctx.Assets.ApplyUv2Public();
             }
 
-            if (ctx != null && !string.IsNullOrEmpty(ctx.SourceFbxPath)
+            if (previewExport == null && ctx != null && !string.IsNullOrEmpty(ctx.SourceFbxPath)
                 && GUILayout.Button("Backup from main", EditorStyles.miniButton))
             {
                 BackupFbxFromGitMain(ctx.SourceFbxPath);
