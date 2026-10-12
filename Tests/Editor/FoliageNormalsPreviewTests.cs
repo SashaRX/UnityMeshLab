@@ -683,6 +683,54 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        [UnityTest]
+        public IEnumerator NormalDirectionsToggleHidesArrowsInEveryComparisonView()
+        {
+            Assert.AreNotEqual(GraphicsDeviceType.Null, SystemInfo.graphicsDeviceType);
+            using var leaf = new FoliageNormalTransferTests.Fixture(new[] { Vector3.zero, Vector3.right, Vector3.up });
+            leaf.mesh.normals = Enumerable.Repeat(Vector3.up, 3).ToArray();
+            var fingerprint = FoliageTargetSnapshot.ContentFingerprint(leaf.mesh);
+            using var fixture = new ToolFixture(); var tool = fixture.tool;
+            tool.SetRoot(leaf.root); yield return AwaitPreview(tool.sourcePreview);
+            var task = tool.pipeline.Run(leaf.root, tool.settings, FoliageNormalsPipeline.Stage.Transfer);
+            yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, tool.pipeline.Status);
+            tool.showProxyEdges = tool.showProxySurface = false;
+            var window = ScriptableObject.CreateInstance<PreviewWindow>();
+            try
+            {
+                window.position = new Rect(0, 0, 512, 512); window.ShowUtility();
+                window.viewport.ShowGrid = window.viewport.ShowAxes = false;
+                window.viewport.ViewProjection = MeshViewport3D.Projection.XY;
+                window.viewport.XRay = true;
+                foreach (var mode in new[] { FoliageNormalsTool.Preview.BeforeAfter,
+                    FoliageNormalsTool.Preview.TransferredNormals, FoliageNormalsTool.Preview.ProxyAndMesh })
+                {
+                    foreach (bool after in new[] { false, true })
+                    {
+                        tool.preview = mode; tool.afterNormals = after;
+                        window.items.Clear(); tool.Get3DContent(window.items); window.overlay = null;
+                        for (int frame = 0; frame < 3; frame++) { window.Pixels(); yield return null; }
+                        var clean = window.Pixels();
+                        window.overlay = tool.OnDraw3D;
+                        tool.showNormalDirections = true;
+                        var arrows = window.Pixels();
+                        Assert.Greater(Enumerable.Range(0, clean.Length).Count(i =>
+                            Mathf.Abs(arrows[i].r - clean[i].r) + Mathf.Abs(arrows[i].g - clean[i].g) +
+                            Mathf.Abs(arrows[i].b - clean[i].b) > .05f), 10, "Arrows must be visible in " + mode);
+                        tool.showNormalDirections = false;
+                        var disabled = window.Pixels();
+                        Assert.Zero(Enumerable.Range(0, clean.Length).Count(i => disabled[i] != clean[i]),
+                            "Disabling directions must remove every arrow in " + mode);
+                        Assert.AreEqual(mode, tool.preview, "Arrow visibility must not change the comparison mode.");
+                        Assert.AreEqual(after, tool.afterNormals);
+                    }
+                }
+                Assert.AreSame(leaf.mesh, leaf.root.GetComponent<MeshFilter>().sharedMesh);
+                Assert.AreEqual(fingerprint, FoliageTargetSnapshot.ContentFingerprint(leaf.mesh));
+            }
+            finally { window.Close(); }
+        }
+
         public sealed class PreviewWindow : EditorWindow
         {
             internal readonly MeshViewport3D viewport = new MeshViewport3D();
@@ -804,6 +852,16 @@ namespace SashaRX.UnityMeshLab.Tests
                 tool.Get3DContent(window.items); window.overlay = tool.OnDraw3D;
                 tool.showProxySurface = false;
                 for (int frame = 0; frame < 10; frame++) { window.Pixels(); yield return null; }
+                window.viewport.Mode = MeshViewport3D.Shading.Shaded;
+                tool.showSamplePoints = true;
+                var points = window.Pixels();
+                Assert.Greater(points.Count(c => c.g > c.r * 1.8f && c.g > c.b * 1.4f), 4,
+                    "Enabling sample points must show green markers over the shaded mesh.");
+                tool.showSamplePoints = false;
+                var hiddenPoints = window.Pixels();
+                Assert.Zero(hiddenPoints.Count(c => c.g > c.r * 1.8f && c.g > c.b * 1.4f),
+                    "Disabling sample points must hide the markers in Scatter preview.");
+                window.viewport.Mode = MeshViewport3D.Shading.VertexColors;
                 var source = window.Pixels(string.IsNullOrEmpty(output) ? null : Path.Combine(output, "scatter-mesh.png"));
                 var green = Enumerable.Range(0, source.Length).Where(i => source[i].g > .7f && source[i].r < .1f && source[i].b < .1f).ToArray();
                 Assert.Greater(green.Length, 1000);

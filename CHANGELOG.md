@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
+- Foliage normal direction arrows obey their visibility toggle in every comparison mode, including Side by side. All Foliage display controls live in its Preview section and repaint immediately when changed.
 - Validate every collision sidecar group before writing any group; refuse shared Solid Color saves until the current swatch is baked, and invalidate them when the mesh changes.
 - Split remesh model export and shared save preparation into smaller methods while preserving atomic FBX replacement, stable mesh names, material maps and cleanup.
 - Review follow-up: keep topology highlights above translucent material layers and preflight all foliage FBX sources before overwriting.
