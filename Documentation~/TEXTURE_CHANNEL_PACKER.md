@@ -1,7 +1,6 @@
 # Texture Channel Packer
 
 Open **Tools → Mesh Lab → Open Mesh Lab**, then select the **Texture Packer** tab.
-The **Tools → Mesh Lab → Texture Channel Packer** shortcut selects the same tab.
 
 Drop a PNG, JPG/JPEG or TGA file onto a slot thumbnail, or use its browse button.
 Files can come from anywhere on disk. Source files are read directly; they are

@@ -166,7 +166,7 @@ namespace SashaRX.UnityMeshLab.Tests
             string id = Guid.NewGuid().ToString("N");
             string sourcePath = Path.Combine(Path.GetTempPath(), "MeshLabSource-" + id + ".tga");
             string assetFolder = "Assets/MeshLabPacking-" + id;
-            var window = ScriptableObject.CreateInstance<TextureChannelPackerWindow>();
+            var window = ScriptableObject.CreateInstance<TextureChannelPackerPanel>();
             var pixel = new Color32(12, 34, 56, 78);
             try
             {
@@ -368,7 +368,7 @@ namespace SashaRX.UnityMeshLab.Tests
         public IEnumerator ReloadRetainsEarlyFailuresWhenLaterSourcesAreValid()
         {
             string valid = Path.Combine(Path.GetTempPath(), "MeshLabReload-" + Guid.NewGuid().ToString("N") + ".tga");
-            var window = ScriptableObject.CreateInstance<TextureChannelPackerWindow>();
+            var window = ScriptableObject.CreateInstance<TextureChannelPackerPanel>();
             try
             {
                 using (var stream = File.Create(valid))
@@ -390,7 +390,7 @@ namespace SashaRX.UnityMeshLab.Tests
         public void IgnoredAssetFoldersFailBeforeExport()
         {
             string ignored = Path.Combine(Application.dataPath, "Textures~", "Texture.tga");
-            var failure = Assert.Throws<TargetInvocationException>(() => typeof(TextureChannelPackerWindow)
+            var failure = Assert.Throws<TargetInvocationException>(() => typeof(TextureChannelPackerPanel)
                 .GetMethod("ValidateAssetDestination", BindingFlags.NonPublic | BindingFlags.Static)
                 .Invoke(null, new object[] { ignored }));
             Assert.IsInstanceOf<InvalidOperationException>(failure.InnerException);
@@ -398,16 +398,16 @@ namespace SashaRX.UnityMeshLab.Tests
 
         private static object InvokeAssetPath(string path)
         {
-            return typeof(TextureChannelPackerWindow).GetMethod("AssetPath", BindingFlags.NonPublic | BindingFlags.Static)
+            return typeof(TextureChannelPackerPanel).GetMethod("AssetPath", BindingFlags.NonPublic | BindingFlags.Static)
                 .Invoke(null, new object[] { path });
         }
 
         private static void UnsubscribeUpdate(EditorApplication.CallbackFunction callback) => EditorApplication.update -= callback;
 
-        private static IEnumerator WaitForSources(TextureChannelPackerWindow window)
+        private static IEnumerator WaitForSources(TextureChannelPackerPanel window)
         {
             double deadline = EditorApplication.timeSinceStartup + 30;
-            var loading = typeof(TextureChannelPackerWindow).GetMethod("SourcesLoading", BindingFlags.NonPublic | BindingFlags.Instance);
+            var loading = typeof(TextureChannelPackerPanel).GetMethod("SourcesLoading", BindingFlags.NonPublic | BindingFlags.Instance);
             while ((bool)loading.Invoke(window, null))
             {
                 Assert.Less(EditorApplication.timeSinceStartup, deadline, "Source loading did not finish.");
@@ -415,7 +415,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
-        private static IEnumerator WaitForExport(TextureChannelPackerWindow window)
+        private static IEnumerator WaitForExport(TextureChannelPackerPanel window)
         {
             double deadline = EditorApplication.timeSinceStartup + 30;
             while (GetPrivate(window, "saveTask") != null)
@@ -465,7 +465,7 @@ namespace SashaRX.UnityMeshLab.Tests
         public IEnumerator ClearingSlotCancelsPendingLoadWithoutRecreatingThumbnail()
         {
             string path = Path.Combine(Path.GetTempPath(), "MeshLabClear-" + Guid.NewGuid().ToString("N") + ".tga");
-            var window = ScriptableObject.CreateInstance<TextureChannelPackerWindow>();
+            var window = ScriptableObject.CreateInstance<TextureChannelPackerPanel>();
             try
             {
                 using (var stream = File.Create(path))
@@ -516,7 +516,7 @@ namespace SashaRX.UnityMeshLab.Tests
             string folder = Path.Combine(Path.GetTempPath(), "MeshLabClose-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(folder);
             string path = Path.Combine(folder, "source.tga");
-            var window = ScriptableObject.CreateInstance<TextureChannelPackerWindow>();
+            var window = ScriptableObject.CreateInstance<TextureChannelPackerPanel>();
             try
             {
                 using (var stream = File.Create(path))
@@ -560,7 +560,7 @@ namespace SashaRX.UnityMeshLab.Tests
             string folder = Path.Combine(Path.GetTempPath(), "MeshLabCancelStage-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(folder);
             string path = Path.Combine(folder, "source.tga");
-            var window = ScriptableObject.CreateInstance<TextureChannelPackerWindow>();
+            var window = ScriptableObject.CreateInstance<TextureChannelPackerPanel>();
             try
             {
                 using (var stream = File.Create(path))
@@ -575,7 +575,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 InvokePrivate(window, "SaveEnabled");
                 // Hold the main-thread commit boundary while the real encoder finishes asynchronously.
                 var callback = (EditorApplication.CallbackFunction)Delegate.CreateDelegate(typeof(EditorApplication.CallbackFunction),
-                    window, typeof(TextureChannelPackerWindow).GetMethod("TickSave", BindingFlags.NonPublic | BindingFlags.Instance));
+                    window, typeof(TextureChannelPackerPanel).GetMethod("TickSave", BindingFlags.NonPublic | BindingFlags.Instance));
                 UnsubscribeUpdate(callback);
                 var task = (System.Threading.Tasks.Task)GetPrivate(window, "saveTask");
                 double deadline = EditorApplication.timeSinceStartup + 30;
@@ -607,7 +607,7 @@ namespace SashaRX.UnityMeshLab.Tests
             string id = Guid.NewGuid().ToString("N");
             string path = Path.Combine(Path.GetTempPath(), "MeshLabImportClose-" + id + ".tga");
             string folder = "Assets/MeshLabImportClose-" + id;
-            var window = ScriptableObject.CreateInstance<TextureChannelPackerWindow>();
+            var window = ScriptableObject.CreateInstance<TextureChannelPackerPanel>();
             try
             {
                 using (var stream = File.Create(path))

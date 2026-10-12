@@ -8,7 +8,7 @@ namespace SashaRX.UnityMeshLab
     [MeshLabTool("texture_channel_packer", MeshLabLibraries.Core)]
     public sealed class TextureChannelPackerTool : IUvTool, IUvToolFullWindow, IUvToolWindowPreferences
     {
-        private TextureChannelPackerWindow panel;
+        private TextureChannelPackerPanel panel;
         private Action repaint;
 
         public string ToolName => "Texture Packer";
@@ -23,7 +23,7 @@ namespace SashaRX.UnityMeshLab
         public void OnActivate(UvToolContext ctx, UvCanvasView canvas)
         {
             if (panel) return;
-            panel = ScriptableObject.CreateInstance<TextureChannelPackerWindow>();
+            panel = ScriptableObject.CreateInstance<TextureChannelPackerPanel>();
             panel.hideFlags = HideFlags.HideAndDontSave;
             panel.RequestRepaint = repaint;
             panel.RestoreWindowPreferences();

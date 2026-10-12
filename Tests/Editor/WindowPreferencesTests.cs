@@ -1,9 +1,11 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.TestTools;
 
 namespace SashaRX.UnityMeshLab.Tests
 {
@@ -101,7 +103,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.That(tool, Is.Not.Null, "Packer must be discovered as a Mesh Lab tab");
                 Assert.That(tool, Is.InstanceOf<IUvToolFullWindow>());
                 Call(window, "SelectToolById", tool.ToolId);
-                var panel = Get<TextureChannelPackerWindow>(tool, "panel");
+                var panel = Get<TextureChannelPackerPanel>(tool, "panel");
                 Assert.That(typeof(EditorWindow).IsAssignableFrom(panel.GetType()), Is.False);
                 Set(panel, "followFbx", false);
                 Set(panel, "textureName", "SavedPackerName");
@@ -118,17 +120,39 @@ namespace SashaRX.UnityMeshLab.Tests
                 Call(window, "SelectToolById", other.ToolId);
                 Assert.That(panel == null, Is.True, "Inactive tab must destroy its owned panel");
                 Assert.That(thumbnail == null, Is.True, "Inactive tab must release its GPU thumbnail");
-                Assert.That(Get<TextureChannelPackerWindow>(tool, "panel"), Is.Null);
+                Assert.That(Get<TextureChannelPackerPanel>(tool, "panel"), Is.Null);
                 Call(window, "SelectToolById", tool.ToolId);
-                panel = Get<TextureChannelPackerWindow>(tool, "panel");
+                panel = Get<TextureChannelPackerPanel>(tool, "panel");
                 Assert.That(Get<string>(panel, "textureName"), Is.EqualTo("SavedPackerName"));
                 Assert.That(Get<int>(panel, "widthIndex"), Is.EqualTo(2));
                 Assert.That(Get<int>(panel, "heightIndex"), Is.EqualTo(1));
                 Assert.That(Get<bool>(panel, "square"), Is.False);
                 tool.OnActivate(null, null);
-                Assert.That(Get<TextureChannelPackerWindow>(tool, "panel"), Is.SameAs(panel), "Repeated activation must not duplicate subscriptions");
+                Assert.That(Get<TextureChannelPackerPanel>(tool, "panel"), Is.SameAs(panel), "Repeated activation must not duplicate subscriptions");
             }
             finally { UnityEngine.Object.DestroyImmediate(window); }
+        }
+
+        [UnityTest]
+        public IEnumerator LegacyTexturePackerWindowMigratesIntoHubTab()
+        {
+            if (SystemInfo.graphicsDeviceType == UnityEngine.Rendering.GraphicsDeviceType.Null)
+                Assert.Ignore("Opening native editor windows requires a graphics device; run this test without -nographics.");
+            var hub = EditorWindow.GetWindow<UvToolHub>();
+            var legacy = EditorWindow.GetWindow<TextureChannelPackerWindow>();
+            try
+            {
+                for (int i = 0; i < 10 && legacy; i++) yield return null;
+                Assert.That(legacy == null, Is.True, "Restoring a legacy layout must close the old window");
+                var tool = hub.FindTool<TextureChannelPackerTool>();
+                Assert.That(tool, Is.Not.Null);
+                Assert.That(Get<TextureChannelPackerPanel>(tool, "panel"), Is.Not.Null, "Migration must activate the hub tab");
+            }
+            finally
+            {
+                if (legacy) UnityEngine.Object.DestroyImmediate(legacy);
+                if (hub) UnityEngine.Object.DestroyImmediate(hub);
+            }
         }
 
         [Test]
