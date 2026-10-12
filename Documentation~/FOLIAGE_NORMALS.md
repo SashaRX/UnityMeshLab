@@ -244,8 +244,14 @@ is checked before publishing its preview, and smoothing checks it before buildin
 adjacency. Changing this budget clears Envelope and downstream results. Remeshing
 checks input and estimated ideal triangle counts before creating mutable adjacency;
 each split checks the budget again. Working adjacency costs approximately 1 KiB
-per triangle, varying with valence and allocator overhead. Reduce voxel resolution or increase target
-length if the budget is exceeded. Source modes Sphere/Hemisphere keep their
+per triangle, varying with valence and allocator overhead. An oversized Envelope stops
+before preview and smoothing, reports its actual triangle count and keeps the chosen
+voxel resolution. **Set budget to ... and rebuild** explicitly raises the budget to
+that count (up to 200,000) and rebuilds using the cached samples. Alternatively,
+reduce **Voxel resolution**. The manifold occupancy fallback can produce more
+triangles than the initial rejected voxel surface at the same resolution. Changing
+remesh target edge length cannot fix an Envelope budget refusal; it only helps
+when the later remesh stage exceeds its budget. Source modes Sphere/Hemisphere keep their
 radial normals and bypass this stage. Disabling Uniform triangles passes the
 smoothed proxy through unchanged.
 

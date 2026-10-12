@@ -24,6 +24,8 @@ namespace SashaRX.UnityMeshLab
         CancellationTokenSource cancellation;
         int running;
         bool disposeRequested;
+        string rejectedEnvelopeKey;
+        internal FoliageProxyBudgetException EnvelopeBudgetExceeded { get; private set; }
         Vector3[] capturePositions;
         int[] captureIndices;
         Matrix4x4 rootToWorld;
@@ -204,6 +206,7 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
 
+            if (EnvelopeBudgetExceeded != null && rejectedEnvelopeKey != EnvelopeRecoveryKey(settings, root)) ClearEnvelopeBudgetFailure();
             for (var stage = Stage.Capture; stage <= Stage.Transfer; stage++)
             {
                 if (keys[(int)stage] != null && (keys[(int)stage] != Key(stage, settings, root) || stage == Stage.Capture && !CaptureCurrent()))
@@ -212,6 +215,25 @@ namespace SashaRX.UnityMeshLab
                     break;
                 }
             }
+        }
+
+        static string EnvelopeRecoveryKey(FoliageNormalsSettings settings, GameObject root) =>
+            Key(Stage.Capture, settings, root) + "|" + Key(Stage.Scatter, settings, root) + "|" + Key(Stage.Envelope, settings, root);
+
+        void ClearEnvelopeBudgetFailure()
+        {
+            EnvelopeBudgetExceeded = null;
+            rejectedEnvelopeKey = null;
+        }
+
+        internal bool IncreaseEnvelopeBudget(FoliageNormalsSettings settings, GameObject root)
+        {
+            if (IsRunning || EnvelopeBudgetExceeded == null ||
+                EnvelopeBudgetExceeded.TriangleCount > FoliageNormalsSettings.HardProxyTriangleCap ||
+                rejectedEnvelopeKey != EnvelopeRecoveryKey(settings, root) || !CaptureCurrent()) return false;
+            settings.maximumProxyTriangles = EnvelopeBudgetExceeded.TriangleCount;
+            ClearEnvelopeBudgetFailure();
+            return true;
         }
 
         internal void Cancel()
@@ -228,6 +250,7 @@ namespace SashaRX.UnityMeshLab
                 return false;
             }
 
+            ClearEnvelopeBudgetFailure();
             cancellation = CancellationTokenSource.CreateLinkedTokenSource(externalToken);
             var token = cancellation.Token;
             var clock = Stopwatch.StartNew();
@@ -266,6 +289,15 @@ namespace SashaRX.UnityMeshLab
                 return true;
             }
             catch (OperationCanceledException) { if (RunningStage.HasValue) { ClearFromCore(RunningStage.Value); } Status = "Cancelled."; return false; }
+            catch (FoliageProxyBudgetException e) when (RunningStage == Stage.Envelope)
+            {
+                ClearFromCore(Stage.Envelope);
+                EnvelopeBudgetExceeded = e;
+                rejectedEnvelopeKey = EnvelopeRecoveryKey(live, root);
+                Status = e.Message + $" Voxel resolution {live.voxelResolution} was kept.";
+                UvtLog.Warn("[Foliage] " + Status);
+                return false;
+            }
             catch (Exception e) { if (RunningStage.HasValue) { ClearFromCore(RunningStage.Value); } Status = e.Message; UvtLog.Error("[Foliage] " + e); return false; }
             finally
             {
@@ -692,6 +724,7 @@ namespace SashaRX.UnityMeshLab
             }
             if (stage <= Stage.Envelope)
             {
+                ClearEnvelopeBudgetFailure();
                 FoliageTargetSnapshot.Destroy(EnvelopeMesh);
                 EnvelopeMesh = null;
                 Envelope = null;

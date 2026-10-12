@@ -480,6 +480,24 @@ namespace SashaRX.UnityMeshLab
             settings.maximumProxyTriangles = EditorGUILayout.IntField("Proxy triangle budget", settings.maximumProxyTriangles);
             showPrimitives = EditorGUILayout.Toggle("Show sample points", showPrimitives);
             StageButton("Build Proxy", FoliageNormalsPipeline.Stage.Envelope);
+            DrawEnvelopeBudgetRecovery();
+        }
+
+        void DrawEnvelopeBudgetRecovery()
+        {
+            var failure = pipeline.EnvelopeBudgetExceeded;
+            if (failure == null) return;
+            EditorGUILayout.HelpBox(pipeline.Status, MessageType.Warning);
+            if (failure.TriangleCount > FoliageNormalsSettings.HardProxyTriangleCap)
+            {
+                EditorGUILayout.HelpBox($"The proxy exceeds the {FoliageNormalsSettings.HardProxyTriangleCap:N0}-triangle hard cap. Lower Voxel resolution and rebuild.", MessageType.Warning);
+                return;
+            }
+            if (GUILayout.Button($"Set budget to {failure.TriangleCount:N0} and rebuild") && pipeline.IncreaseEnvelopeBudget(settings, root))
+            {
+                GUI.changed = true;
+                _ = Run(FoliageNormalsPipeline.Stage.Envelope);
+            }
         }
 
         void DrawSmoothSettings()
