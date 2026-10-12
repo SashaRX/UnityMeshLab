@@ -64,6 +64,112 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [TestCase(false)] [TestCase(true)]
+        public void WholeShellCorrespondenceMovesASeparateOrdinaryIslandInBothOverlapModes(bool overlap)
+        {
+            var seed=Quad();var fine=Quad();
+            fine.uv2=fine.uv2.Select(p=>p*.5f+new Vector2(.5f,.05f)).ToArray();
+            var before=TransferMeshSnapshot.Capture(fine);
+            var levels=new[] {Level(1,seed),Level(0,fine)};
+            foreach(var input in levels.SelectMany(l=>l.inputs)) input.usePreparedUv2=true;
+            var options=Options(overlap);options.regroupPreparedAtlas=options.repackFinalAtlas=true;
+            using var result=Build(options,levels);
+            Assert.AreEqual(2,result.report.nodes.Single(n=>n.lod==0).inheritedFaces,
+                "The overlap switch must not disable ordinary whole-shell inheritance.");
+            Assert.AreEqual(0,result.report.overlapFaces);
+            var parent=result.meshes[0][0].uv2;var child=result.meshes[1][0].uv2;
+            for(int i=0;i<parent.Length;++i)
+                Assert.LessOrEqual(Vector2.Distance(parent[i],child[i])*result.report.atlasSize,.01,
+                    "The complete shell must inherit the donor at bake resolution.");
+            Assert.AreEqual(1,UvShellExtractor.Extract(result.meshes[1][0].uv2,result.meshes[1][0].triangles).Count);
+            Assert.AreEqual(2,result.meshes[1][0].triangles.Length/3);
+            CollectionAssert.AreEqual(before,TransferMeshSnapshot.Capture(fine));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void RepairedZeroUvSeedIsTheActualDonorForTheNextLod(bool overlap)
+        {
+            var seed=Quad();seed.uv2=new Vector2[seed.vertexCount];var fine=Quad();
+            var snapshots=new[] {TransferMeshSnapshot.Capture(seed),TransferMeshSnapshot.Capture(fine)};
+            var levels=new[] {Level(1,seed),Level(0,fine)};
+            foreach(var input in levels.SelectMany(l=>l.inputs)) input.usePreparedUv2=true;
+            var options=Options(overlap);options.regroupPreparedAtlas=options.repackFinalAtlas=true;
+            using var result=Build(options,levels);
+            Assert.AreEqual(2,result.report.nodes.Single(n=>n.lod==0).inheritedFaces);
+            Assert.AreEqual(1,result.report.finalPackingFamilies,"Repair and descendant are one packing item.");
+            var parent=result.meshes[0][0].uv2;var child=result.meshes[1][0].uv2;
+            for(int i=0;i<parent.Length;++i) Assert.LessOrEqual(Vector2.Distance(parent[i],child[i])*result.report.atlasSize,.01);
+            foreach(var mesh in result.meshes.SelectMany(l=>l))
+            {
+                Assert.AreEqual(2,mesh.triangles.Length/3);
+                Assert.AreEqual(1,UvShellExtractor.Extract(mesh.uv2,mesh.triangles).Count);
+            }
+            CollectionAssert.AreEqual(snapshots[0],TransferMeshSnapshot.Capture(seed));
+            CollectionAssert.AreEqual(snapshots[1],TransferMeshSnapshot.Capture(fine));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void PreparedLod1FoldRepairKeepsTheConnectedQuadAndItsOriginalFaces(bool overlap)
+        {
+            var coarse=Quad();var fine=Quad();
+            // One folded triangle shares the diagonal with the other triangle.
+            // The old face rescue emitted two independently packed triangles.
+            coarse.uv2=new[] {new Vector2(.25f,.25f),new Vector2(.75f,.25f),
+                new Vector2(.75f,.75f),new Vector2(.65f,.30f)};
+            var snapshots=new[] {TransferMeshSnapshot.Capture(coarse),TransferMeshSnapshot.Capture(fine)};
+            var levels=new[] {Level(1,coarse),Level(0,fine)};
+            foreach(var input in levels.SelectMany(l=>l.inputs)) input.usePreparedUv2=true;
+            var options=Options(overlap);options.regroupPreparedAtlas=options.repackFinalAtlas=true;
+            using var result=Build(options,levels);
+            var repaired=result.meshes[0][0];var node=result.report.nodes.Single(n=>n.lod==1);
+            Assert.AreEqual(2,repaired.triangles.Length/3);Assert.AreEqual(0,node.splitSourceFaces);
+            CollectionAssert.AreEqual(new[] {0,1},node.sourceFaces);
+            Assert.AreEqual(1,UvShellExtractor.Extract(repaired.uv2,repaired.triangles).Count,
+                "A repaired flat shell must remain a quad, not isolated triangle islands.");
+            Assert.Less(TransferUvQuality.Measure(repaired,repaired.uv2,Vector2.one,Matrix4x4.identity).worstAnisotropy,1.001);
+            CollectionAssert.AreEqual(snapshots[0],TransferMeshSnapshot.Capture(coarse));
+            CollectionAssert.AreEqual(snapshots[1],TransferMeshSnapshot.Capture(fine));
+        }
+
+        [Test]
+        public void ThinFaceRepairMovesTheSharedCornerWithoutDetachingItsNeighbour()
+        {
+            var a=Vector3.zero;var b=new Vector3(.25f,1e-6f,0);var c=Vector3.right;var d=new Vector3(.4f,1,0);
+            var corners=new[] {a,b,c,b,d,c};
+            var uv=new[] {Vector2.zero,new Vector2(.25f,.01f),Vector2.right,new Vector2(.25f,.01f),new Vector2(.4f,1),Vector2.right};
+            var snapshot=(Vector2[])uv.Clone();
+            var frames=Enumerable.Range(0,2).Select(f=>ReverseUvTransfer.TriangleFrame(corners[f*3],corners[f*3+1],corners[f*3+2])).ToArray();
+            var repaired=ReverseUvTransfer.RepairPreparedSharedCorners(corners,uv,frames,4,default);
+            Assert.AreEqual(repaired[1],repaired[3]);Assert.AreEqual(repaired[2],repaired[5]);
+            for(int f=0;f<2;++f) Assert.LessOrEqual(ReverseUvTransfer.TriangleAnisotropy(frames[f],repaired[f*3],repaired[f*3+1],repaired[f*3+2]),4);
+            var scan=UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {uv=repaired,indices=Enumerable.Range(0,6).ToArray(),charts=new int[6]},default);
+            Assert.AreEqual(0,scan.pairs);Assert.AreEqual(0,scan.degenerateFaces);
+            CollectionAssert.AreEqual(snapshot,uv);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void ClosedPreparedShellRepairPreservesFacesAndUsesConnectedNativeCharts(bool overlap)
+        {
+            var primitive=GameObject.CreatePrimitive(PrimitiveType.Cube);Mesh cube;
+            try {cube=Object.Instantiate(primitive.GetComponent<MeshFilter>().sharedMesh);owned.Add(cube);}
+            finally {Object.DestroyImmediate(primitive);}
+            cube.uv2=new Vector2[cube.vertexCount];var snapshot=TransferMeshSnapshot.Capture(cube);
+            var levels=new[] {Level(1,Quad(-3)),Level(0,cube)};
+            foreach(var input in levels.SelectMany(l=>l.inputs)) input.usePreparedUv2=true;
+            var options=Options(overlap);options.regroupPreparedAtlas=options.repackFinalAtlas=true;
+            try
+            {
+                using var result=Build(options,levels);var output=result.meshes[1][0];
+                Assert.AreEqual(12,output.triangles.Length/3);
+                Assert.AreEqual(0,result.report.nodes.Single(n=>n.lod==0).splitSourceFaces);
+                Assert.Less(UvShellExtractor.Extract(output.uv2,output.triangles).Count,12,
+                    "Native shell repair must retain connected patches instead of twelve rescue triangles.");
+                CollectionAssert.AreEqual(snapshot,TransferMeshSnapshot.Capture(cube));
+            }
+            catch(DllNotFoundException) {Assert.Ignore("Native xatlas is unavailable on this test host.");}
+            catch(EntryPointNotFoundException) {Assert.Ignore("Native xatlas chart parameterization is unavailable on this test host.");}
+        }
+
+        [TestCase(false)] [TestCase(true)]
         public void RegroupingOrdinaryTransferKeepsPartiallyMatchedIslandIntact(bool overlap)
         {
             var seed=Quad();seed.triangles=new[] {0,1,2};var fine=Quad();

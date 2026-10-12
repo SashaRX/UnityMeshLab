@@ -82,7 +82,7 @@ namespace SashaRX.UnityMeshLab
                         .Select(p => nodeReport.sourceFaces[p.i]).Distinct().Count();
                     var quality = TransferUvQuality.Measure(mesh, mesh.uv2, Vector2.one, inputs[level].inputs[node].toWorld);
                     if (!quality.overlapScanComplete || quality.invalidFaces > 0 || quality.degenerateFaces > 0
-                        || quality.outOfBoundsVertices > 0 || double.IsNaN(quality.worstAnisotropy) || quality.worstAnisotropy > 4.001)
+                        || quality.outOfBoundsVertices > 0 || double.IsNaN(quality.worstAnisotropy) )
                         throw new InvalidOperationException($"Final reverse UV metric failed for LOD{inputs[level].lod} '{inputs[level].inputs[node].key}'; no result was published.");
                     audit.measurements.Add(new Measurement { lod = inputs[level].lod, key = inputs[level].inputs[node].key,
                         triangles = mesh.triangles.Length / 3, invalidFaces = quality.invalidFaces,
@@ -91,6 +91,13 @@ namespace SashaRX.UnityMeshLab
                         overlapPairs = quality.overlapPairs, complete = quality.overlapScanComplete });
                     var positions = mesh.vertices; var uv = mesh.uv2; var triangles = mesh.triangles;
                     var transform = inputs[level].inputs[node].toWorld;
+                    for(int t=0;t<triangles.Length;t+=3)
+                    {
+                        var frame=TransferUvQuality.WorldFrame(positions[triangles[t]],positions[triangles[t+1]],positions[triangles[t+2]],transform);
+                        if(!ReverseUvShellPrecision.Fits(frame,uv[triangles[t]]*result.report.atlasSize,
+                            uv[triangles[t+1]]*result.report.atlasSize,uv[triangles[t+2]]*result.report.atlasSize,4.001))
+                            throw new InvalidOperationException($"Final reverse UV metric failed for LOD{inputs[level].lod} '{inputs[level].inputs[node].key}' face {t/3}; no result was published.");
+                    }
                     for (int t = 0; t < triangles.Length; t += 3)
                     {
                         int a = triangles[t], b = triangles[t + 1], c = triangles[t + 2];

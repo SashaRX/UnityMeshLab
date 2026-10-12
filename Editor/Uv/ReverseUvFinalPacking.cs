@@ -16,6 +16,7 @@ namespace SashaRX.UnityMeshLab
             report.finalPacking=null;report.finalPackingRefusal=null;report.finalPackingRectangleRefusal=null;
             report.finalPackingFootprints=false;report.finalPackingNative=false;
             report.finalPackingFamilies=0;report.finalPackingScale=0;
+            report.resolutionLimitedFaces=0;
             var surfaces = levels.SelectMany(l => l).ToArray();
             // A region label can survive independent placement/rescue of its
             // disconnected pieces. It is not a rigid packing item: using that
@@ -60,6 +61,8 @@ namespace SashaRX.UnityMeshLab
                     {
                         token.ThrowIfCancellationRequested();
                         var parent=byLod[face.parentLod][face.parentMesh];
+                        if(face.coordinateDomain!=parent.faces[face.parentFace].coordinateDomain)
+                            throw new InvalidOperationException("Reverse shell ancestry uses different coordinate frames.");
                         families.Union(offsets[surface]+f,offsets[parent]+face.parentFace);
                     }
                 }
@@ -84,9 +87,9 @@ namespace SashaRX.UnityMeshLab
                 bool logTiming=surfaces.Sum(s=>s.faces.Length)>2048;
                 if(logTiming) UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Pack {groups.Length} shared chart families.");
                 var coordinates = groups.Select(g => g.Select(c => c.surface.pixels[c.corner]).ToArray()).ToArray();
-                var metrics=groups.Select(g=>Enumerable.Range(0,g.Count/3).Select(f=>{
+                var metrics=groups.Select((g,id)=>Enumerable.Range(0,g.Count/3).Select(f=>{
                     var corner=g[f*3];var s=corner.surface;int t=corner.corner;
-                    return Metric(s,t,s.pixels[t],s.pixels[t+1],s.pixels[t+2],previousSide);
+                    return Metric(s,t,coordinates[id][f*3],coordinates[id][f*3+1],coordinates[id][f*3+2],previousSide);
                 }).ToArray()).ToArray();
                 var allowed=new HashSet<(ReverseUvTransfer.Face,ReverseUvTransfer.Face)>();
                 foreach(var relation in report.overlaps)
@@ -102,15 +105,22 @@ namespace SashaRX.UnityMeshLab
                         return (faceIds,geometry:new RemeshNative.Geometry {uv=new Vector2[faceIds.Length*3],
                             indices=Enumerable.Range(0,faceIds.Length*3).ToArray(),charts=new int[faceIds.Length*3]});
                     }).ToArray()).ToArray();
+                var metricFrames=groups.Select(g=>Enumerable.Range(0,g.Count/3).Select(f=>{
+                    var c=g[f*3];var surface=c.surface;int t=c.corner;
+                    return surface.packingFrames!=null?surface.packingFrames[t/3]
+                        :ReverseUvTransfer.TriangleFrame(surface.positions[surface.indices[t]],surface.positions[surface.indices[t+1]],surface.positions[surface.indices[t+2]]);
+                }).ToArray()).ToArray();
                 var intersection=new UvAtlasDiagnostics.IntersectionTest();
                 bool Valid(int group,Vector2[] uv,int side)
                 {
                     var entries=groups[group];
+                    if(options.regroupPreparedAtlas && !ReverseUvShellPrecision.Stabilize(coordinates[group],uv,
+                        metricFrames[group],options.maxAnisotropy,token)) return false;
                     for(int f=0;f<metrics[group].Length;++f)
                     {
                         var corner=entries[f*3];var s=corner.surface;int t=corner.corner;
                         double metric=Metric(s,t,uv[f*3],uv[f*3+1],uv[f*3+2],side);
-                        if(!MetricFits(metric,metrics[group][f],
+                        if(!(options.regroupPreparedAtlas && ReverseUvShellPrecision.ResolutionLimited(metricFrames[group][f],uv[f*3],uv[f*3+1],uv[f*3+2])) && !MetricFits(metric,metrics[group][f],
                             Altitude(s.pixels[t],s.pixels[t+1],s.pixels[t+2]),
                             Altitude(uv[f*3],uv[f*3+1],uv[f*3+2]),options)) return false;
                     }
@@ -119,7 +129,7 @@ namespace SashaRX.UnityMeshLab
                         var faceIds=scanInput.faceIds;var geometry=scanInput.geometry;
                         for(int f=0;f<faceIds.Length;++f)
                             for(int k=0;k<3;++k) geometry.uv[f*3+k]=uv[faceIds[f]*3+k]/side;
-                        if(faceIds.Length<=24)
+                        if(faceIds.Length<=24 && !options.regroupPreparedAtlas)
                         {
                             long comparisons=0;
                             for(int a=0;a<faceIds.Length;++a)
@@ -135,7 +145,8 @@ namespace SashaRX.UnityMeshLab
                             }
                             continue;
                         }
-                        var scan=UvAtlasDiagnostics.Measure(geometry,token,comparisonBudget:options.comparisonBudget,collectConflicts:true);
+                        var scan=UvAtlasDiagnostics.Measure(geometry,token,comparisonBudget:options.comparisonBudget,collectConflicts:true,
+                            coordinateOrigin:geometry.uv.Aggregate(Vector2.Min));
                         if(!scan.complete || scan.invalidFaces>0 || scan.degenerateFaces>0) return false;
                         foreach(var pair in scan.conflicts)
                         {
@@ -145,8 +156,94 @@ namespace SashaRX.UnityMeshLab
                     }
                     return true;
                 }
+                HashSet<int> AuditAtlas(Vector2[][] placement,int canvas)
+                {
+                    var failed=new HashSet<int>();
+                    foreach(var level in levels)
+                    {
+                        var faces=groups.SelectMany((g,id)=>Enumerable.Range(0,g.Count/3)
+                            .Where(f=>g[f*3].surface.lod==level[0].lod).Select(f=>(id,f,corner:g[f*3]))).ToArray();
+                        var uv=faces.SelectMany(x=>Enumerable.Range(0,3).Select(k=>placement[x.id][x.f*3+k]/canvas)).ToArray();
+                        var min=uv.Aggregate(Vector2.Min);var max=uv.Aggregate(Vector2.Max);
+                        double span=Math.Max((double)max.x-min.x,(double)max.y-min.y);
+                        var scan=UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {uv=uv,
+                            indices=Enumerable.Range(0,uv.Length).ToArray(),charts=new int[uv.Length]},token,
+                            comparisonBudget:options.comparisonBudget,collectConflicts:true,coordinateOrigin:min,coordinateScale:1/span);
+                        if(!scan.complete || scan.invalidFaces>0 || scan.degenerateFaces>0)
+                            throw new InvalidOperationException("Classic Repack atlas audit is incomplete or contains invalid faces.");
+                        int cross=0,same=0;
+                        foreach(var pair in scan.conflicts)
+                        {
+                            var a=faces[pair.a];var b=faces[pair.b];
+                            if(allowed.Contains((a.corner.surface.faces[a.corner.corner/3],b.corner.surface.faces[b.corner.corner/3]))) continue;
+                            failed.Add(a.id);failed.Add(b.id);if(a.id==b.id) ++same;else ++cross;
+                        }
+                        if(same+cross>0) UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Classic placement audit LOD{level[0].lod}: {same} internal / {cross} cross-family contacts; retry {failed.Count} families.");
+                    }
+                    return failed;
+                }
                 int side;float scale;
                 Vector2[][] packed;bool freshFootprints=false;
+                bool footprintImproved=false;var search=new ReverseUvFootprintPacking.Diagnostics();
+                if(options.regroupPreparedAtlas)
+                {
+                    // Every candidate packs all shell groups from scratch.
+                    // The projection atlas supplies correspondence, never
+                    // fixed slots or a list of vacancies.
+                    packed=ReverseUvNativeFamilyPacking.TryPack(coordinates,previousSide,options,token,Valid,
+                        out scale,out side,allowLargerCanvas:true,fixedScale:1,validateAtlas:AuditAtlas);
+                    if(packed==null)
+                        foreach(float density in new[] {.5f,.25f,.125f})
+                        {
+                            packed=ReverseUvNativeFamilyPacking.TryPack(coordinates,previousSide,options,token,Valid,
+                                out scale,out side,allowLargerCanvas:true,fixedScale:density,validateAtlas:AuditAtlas);
+                            if(packed!=null) break;
+                        }
+                    bool nativeSelected=packed!=null;
+                    if(options.fillFinalAtlas && packed!=null)
+                        foreach(float density in new[] {1.5f,2f,3f,4f,6f,8f,12f,16f})
+                        {
+                            var candidate=ReverseUvNativeFamilyPacking.TryPack(coordinates,previousSide,options,token,Valid,
+                                out float candidateScale,out int candidateSide,allowLargerCanvas:true,fixedScale:density,validateAtlas:AuditAtlas);
+                            if(candidate!=null && BoundsCost(candidate,candidateScale)<BoundsCost(packed,scale))
+                            {packed=candidate;scale=candidateScale;side=candidateSide;}
+                        }
+                    // Different shells favour different packing orders and
+                    // resolutions. Compare a complete contour repack with the
+                    // native candidate; a smaller density alone cannot win.
+                    try
+                    {
+                        var candidate=ReverseUvFamilyPacking.Pack(coordinates,options,token,out int candidateSide,out float candidateScale,Valid);
+                        if(options.fillFinalAtlas && candidateSide<=options.maxAtlasSize/2)
+                        {
+                            float initialDensity=candidateScale;
+                            foreach(float multiplier in new[] {2f,1.875f,1.75f,1.5f})
+                            try
+                            {
+                                var larger=ReverseUvFamilyPacking.Pack(coordinates,options,token,out int largerSide,
+                                    out float largerScale,Valid,initialScale:initialDensity*multiplier);
+                                if(BoundsCost(larger,largerScale)<BoundsCost(candidate,candidateScale))
+                                {candidate=larger;candidateSide=largerSide;candidateScale=largerScale;}
+                                break;
+                            }
+                            catch(InvalidOperationException error)
+                            {UvtLog.Info(UvtLog.Category.Repack,"[ReverseUV] Higher-density complete shell trial refused: "+error.Message);}
+                        }
+                        int completedSide=candidateSide;
+                        candidate=ReverseUvFootprintPacking.Improve(coordinates,candidate,candidateSide,candidateScale,
+                            options,token,Valid,out candidateScale,out _,search,resized=>completedSide=resized,testNative:false);
+                        if((packed==null || BoundsCost(candidate,candidateScale)<BoundsCost(packed,scale))
+                            && AuditAtlas(candidate,completedSide).Count==0)
+                        {packed=candidate;scale=candidateScale;side=completedSide;nativeSelected=search.nativePacked;}
+                    }
+                    catch(InvalidOperationException error)
+                    {UvtLog.Info(UvtLog.Category.Repack,"[ReverseUV] Alternative complete shell repack refused: "+error.Message);}
+                    if(packed==null) throw new InvalidOperationException("Complete shell Repack could not produce an audited atlas.");
+                    search.nativePacked=nativeSelected;footprintImproved=true;
+                    UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Complete shell Repack: {groups.Length} LOD groups, {side}px, scale {scale:G6}, native {nativeSelected}, {timing.ElapsedMilliseconds} ms.");
+                }
+                else
+                {
                 try {packed=ReverseUvFamilyPacking.Pack(coordinates,options,token,out side,out scale,Valid);}
                 catch(InvalidOperationException error)
                 {
@@ -168,11 +265,13 @@ namespace SashaRX.UnityMeshLab
                     }
                     catch(InvalidOperationException) { /* Retain the already audited placement. */ }
                 if(logTiming) UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Family rectangles: {timing.ElapsedMilliseconds} ms. Test triangle footprints.");
-                var search=new ReverseUvFootprintPacking.Diagnostics();
                 int completedSide=side;
                 packed = ReverseUvFootprintPacking.Improve(coordinates,packed,side,scale,options,token,Valid,
-                    out scale,out bool footprintImproved,search,resized=>completedSide=resized);
+                    out scale,out footprintImproved,search,resized=>completedSide=resized);
                 side=completedSide;
+                }
+                if(AuditAtlas(packed,side).Count>0)
+                    throw new InvalidOperationException("Complete shared-shell placement contains an unexpected UV overlap.");
                 if(logTiming) UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Final family packing: {timing.ElapsedMilliseconds} ms, footprint improvement {footprintImproved}; native {search.nativePacked}; moved {search.tightenedFamilies}; completed orders {search.completedOrders}; search work {search.tighteningWork}/{search.repackingWork}; validations {search.validations}.");
                 if(logTiming && search.refusedOrders.Count>0) UvtLog.Info(UvtLog.Category.Repack,"[ReverseUV] Footprint trials: "+string.Join("; ",search.refusedOrders));
                 var replacements = surfaces.ToDictionary(s => s,s => new Vector2[s.pixels.Length]);
@@ -180,6 +279,7 @@ namespace SashaRX.UnityMeshLab
                     for (int c = 0; c < groups[g].Count; ++c)
                     {
                         var corner = groups[g][c];
+                        corner.surface.faces[corner.corner/3].packingFamily=g;
                         replacements[corner.surface][corner.corner] = packed[g][c];
                     }
                 foreach (var surface in surfaces)
@@ -187,10 +287,17 @@ namespace SashaRX.UnityMeshLab
                     {
                         token.ThrowIfCancellationRequested();
                         int t = f*3; var uv = replacements[surface];
-                        double oldMetric = Metric(surface,t,surface.pixels[t],surface.pixels[t+1],surface.pixels[t+2],previousSide);
+                        var input=surface.pixels;
+                        double oldMetric = Metric(surface,t,input[t],input[t+1],input[t+2],previousSide);
                         double newMetric = Metric(surface,t,uv[t],uv[t+1],uv[t+2],side);
-                        if (!MetricFits(newMetric,oldMetric,
-                            Altitude(surface.pixels[t],surface.pixels[t+1],surface.pixels[t+2]),Altitude(uv[t],uv[t+1],uv[t+2]),options))
+                        var frame=surface.packingFrames!=null?surface.packingFrames[f]
+                            :ReverseUvTransfer.TriangleFrame(surface.positions[surface.indices[t]],surface.positions[surface.indices[t+1]],surface.positions[surface.indices[t+2]]);
+                        bool limited=options.regroupPreparedAtlas && ReverseUvShellPrecision.ResolutionLimited(frame,uv[t],uv[t+1],uv[t+2]);
+                        if(limited) ++report.resolutionLimitedFaces;
+                        if(limited && !ReverseUvShellPrecision.Fits(frame,uv[t],uv[t+1],uv[t+2],options.maxAnisotropy))
+                            throw new InvalidOperationException("Final UV precision adjustment exceeded the 0.01 texel budget.");
+                        if (!limited && !MetricFits(newMetric,oldMetric,
+                            Altitude(input[t],input[t+1],input[t+2]),Altitude(uv[t],uv[t+1],uv[t+2]),options))
                             throw new InvalidOperationException($"Final packing cannot preserve LOD{surface.lod} '{surface.input?.key}' face {f} at float precision (anisotropy {oldMetric:G6} -> {newMetric:G6}).");
                     }
                 foreach (var surface in surfaces) surface.pixels = replacements[surface];
@@ -218,10 +325,11 @@ namespace SashaRX.UnityMeshLab
             Dictionary<ReverseUvTransfer.Surface,int> offsets,DisjointSet families,int side,
             ReverseUvTransfer.Options options,CancellationToken token)
         {
-            foreach(var part in surfaces.GroupBy(s=>UvToolContext.ExtractGroupKey(s.input.key)))
+            foreach(var part in surfaces.SelectMany(s=>Enumerable.Range(0,s.faces.Length).Select(f=>(s,f)))
+                .GroupBy(p=>(UvToolContext.ExtractGroupKey(p.s.input.key),p.s.faces[p.f].coordinateDomain)))
             {
-                if(part.Select(s=>s.lod).Distinct().Count()<2) continue;
-                var faces=part.SelectMany(s=>Enumerable.Range(0,s.faces.Length).Select(f=>(s,f))).ToArray();
+                if(part.Select(p=>p.s.lod).Distinct().Count()<2) continue;
+                var faces=part.ToArray();
                 var geometry=new RemeshNative.Geometry {
                     uv=faces.SelectMany(x=>Enumerable.Range(0,3).Select(k=>x.s.pixels[x.f*3+k]/side)).ToArray(),
                     indices=Enumerable.Range(0,faces.Length*3).ToArray(),charts=new int[faces.Length*3]};

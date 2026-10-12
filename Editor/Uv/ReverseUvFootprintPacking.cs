@@ -48,7 +48,7 @@ namespace SashaRX.UnityMeshLab
 
         internal static Vector2[][] Improve(Vector2[][] source, Vector2[][] baseline, int side, float scale,
             ReverseUvTransfer.Options options, CancellationToken token, Func<int,Vector2[],int,bool> validate,
-            out float finalScale, out bool improved, Diagnostics diagnostics=null,Action<int> preparedSide=null)
+            out float finalScale, out bool improved, Diagnostics diagnostics=null,Action<int> preparedSide=null,bool testNative=true)
         {
             finalScale=scale; improved=false;
             Mask[][] Masks(float density) => PackingMasks(source,options,density,token);
@@ -65,7 +65,7 @@ namespace SashaRX.UnityMeshLab
             if(tightened!=null && BoundsArea(tightened)/(scale*(double)scale)<bestCost)
             {best=tightened;bestCost=BoundsArea(best)/(scale*(double)scale);improved=true;}
             bool nativePacked=false;
-            if(source.Length>256 && options.fillFinalAtlas)
+            if(testNative && source.Length>256 && options.fillFinalAtlas)
             {
                 var native=ReverseUvNativeFamilyPacking.TryPack(source,side,options,token,validate,out float nativeScale,out int nativeSide,
                     allowLargerCanvas:preparedSide!=null);

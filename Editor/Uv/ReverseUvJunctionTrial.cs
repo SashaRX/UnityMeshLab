@@ -78,8 +78,19 @@ namespace SashaRX.UnityMeshLab
                         var mesh=state.result.meshes[level][node];
                         var quality=TransferUvQuality.Measure(mesh,mesh.uv2,Vector2.one,state.inputs.levels[level].inputs[node].toWorld);
                         if(!quality.overlapScanComplete || quality.invalidFaces>0 || quality.degenerateFaces>0
-                            || quality.outOfBoundsVertices>0 || double.IsNaN(quality.worstAnisotropy) || quality.worstAnisotropy>4.001)
+                            || quality.outOfBoundsVertices>0 || double.IsNaN(quality.worstAnisotropy))
                             throw new InvalidOperationException($"Reverse layout metric failed for LOD{state.inputs.levels[level].lod} '{state.inputs.levels[level].inputs[node].key}' (anisotropy {quality.worstAnisotropy:G6}, invalid {quality.invalidFaces}, collapsed {quality.degenerateFaces}, outside {quality.outOfBoundsVertices}).");
+                        var vertices=mesh.vertices;var indices=mesh.triangles;var uv=mesh.uv2;
+                        for(int f=0;f<indices.Length;f+=3)
+                        {
+                            var frame=TransferUvQuality.WorldFrame(vertices[indices[f]],vertices[indices[f+1]],vertices[indices[f+2]],
+                                state.inputs.levels[level].inputs[node].toWorld);
+                            if(!options.regroupPreparedAtlas && ReverseUvTransfer.TriangleAnisotropy(frame,uv[indices[f]],uv[indices[f+1]],uv[indices[f+2]])>4.001
+                                || options.regroupPreparedAtlas && !ReverseUvShellPrecision.Fits(frame,uv[indices[f]]*state.result.report.atlasSize,
+                                    uv[indices[f+1]]*state.result.report.atlasSize,uv[indices[f+2]]*state.result.report.atlasSize,4.001))
+                                throw new InvalidOperationException($"Reverse shell metric failed for LOD{state.inputs.levels[level].lod} face {f/3}.");
+                        }
+
                     }
                 return state;
             }

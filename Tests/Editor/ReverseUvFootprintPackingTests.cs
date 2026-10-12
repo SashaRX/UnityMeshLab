@@ -142,6 +142,23 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void NativePackingRetainsAWholeFamilyAcrossAnIgnoredMicroscopicConnector()
+        {
+            var a=new Vector2(2,0);var b=new Vector2(2.0000002f,0);
+            var family=Rectangle(0,0,2,2).Concat(Rectangle(b.x,0,2,2))
+                .Concat(new[] {a,b,new Vector2(2,.01f)}).ToArray();
+            var source=new[] {family,Rectangle(8,3,2,3)};
+            var output=ReverseUvNativeFamilyPacking.TryPack(source,128,
+                new ReverseUvTransfer.Options {padding=2},default,null,out float scale,out _,
+                allowLargerCanvas:true,fixedScale:1);
+            Assert.NotNull(output,"The discarded proxy connector must not split a family into separate native packing charts.");
+            for(int g=0;g<source.Length;++g)
+                for(int p=0;p<source[g].Length;++p)
+                    Assert.AreEqual((source[g][p]-source[g][0]).magnitude*scale,
+                        (output[g][p]-output[g][0]).magnitude,.001);
+        }
+
+        [Test]
         public void NativeFamilyEnvelopeKeepsOverlaidTrianglesInOneRigidTransform()
         {
             var under=Rectangle(0,0,12,4);

@@ -893,6 +893,96 @@ See [REVERSE_UV_TRANSFER.md](REVERSE_UV_TRANSFER.md).
   clipped inherited pieces; intrinsic rescue fragments islands; no global compact
   packing, guaranteed uniform per-face density or production overlap bake queue.
 
+### Reverse rebuild: repair whole shells before correspondence — 2026-10-12
+
+Continuation of the PR225 experiment above, replacing the rejected per-face input
+repair and packing trials. The previous implementation is preserved losslessly in
+`_results~/reverse-rebuild-20261012/rejected-implementation.zip` together with the
+working diff, HEAD and file hashes. Unrelated main, remesh and viewer changes are
+retained.
+
+The old input repair parameterized rejected faces independently. A folded quad
+became two independently packed triangles, and physically subtexel source faces
+could not survive Float32 placement under the same numerical distortion check as
+visible faces. Repair now operates on the entire original connected UV component:
+shared-corner intrinsic repair, a checked whole flat-patch projection, connected
+ARAP relaxation, then native xatlas parameterization of only that failed component.
+There is no isolated-triangle fallback. Native repair may introduce required seams
+on an already invalid non-planar component; healthy prepared components retain
+one similarity transform and their UV adjacency.
+
+Repairs with a unique healthy anchor stay in the ordinary common UV frame. Other
+repairs get independent local coordinate domains and immediately become valid
+projection donors. Descendants adopt the donor domain only when the complete shell
+fits and passes coverage, metric and same-LOD overlap arbitration. Numerically equal
+coordinates in unrelated local domains are not a correspondence. Each domain is
+audited before packing; every published LOD is additionally audited together in the
+final common Float32 atlas. This prevents a repaired coarsest LOD from remaining an
+invalid donor until the final packing step.
+
+Whole-shell inheritance runs in BOTH overlap modes. Previously the overlap switch
+also disabled ordinary whole-shell movement onto a donor. The switch now governs
+only same-LOD projected detail overlap, requiring the actual ordered underlay
+relationship. Failed movement restores the complete original shell. The default
+prepared path neither refines geometric triangles nor unwraps an unmatched face
+subset; exact zero-area cleanup remains restricted to detached working copies.
+
+Final packing starts from an empty canvas and compares complete classic native and
+managed placements of all linked shell families. Families share one rigid motion
+and common density across LODs, including intentional overlays. Packing-mask union,
+triangulation and short connectors are private proxy geometry only. A proxy whose
+Float32 connectors collapse uses a conservative envelope for that family rather
+than an unbounded connector width; the latter caused a reproducible native crash
+on Kamaz in a rejected trial. No native plugin binary or source is changed here.
+
+Genuinely resolution-limited faces may spend at most 0.01 bake texel on a shared UV
+vertex to avoid Float32 collapse. Incident faces and linked LOD corners move
+together. Visible distorted faces cannot use this exception, and the bound cannot
+be exceeded even at an unrepresentable large atlas offset. Counts are exposed in
+`resolutionLimitedFaces`; raw worst-stretch diagnostics remain visible.
+
+Validation of the rebuild uses Unity 6000.2.6f2 in the isolated frozen-fixture
+project. 381 EditMode tests passed, zero failures; 34 optional fixture cases
+skipped. Both compile-check FBX define variants passed. The new cases exercise
+folded shared quads, a wholly zero-UV repaired seed used as the actual next-LOD
+donor, whole-shell inheritance in both overlap policies, shared-corner precision,
+and ignored microscopic native proxy connectors. Paired model results and actual
+UV comparisons are retained under `_results~/reverse-rebuild-20261012/models-4/`.
+
+All six full model runs completed, and all sixteen reverse LOD audits contain zero
+invalid/collapsed faces and unexpected overlaps. All thirty ordinary Forward layout
+JSON files are byte-identical to the previous published control. Source snapshots,
+face partitions and geometric triangle coordinates are unchanged (apart from the
+previously authorized exact-zero-area cleanup on working copies). `splitSourceFaces`
+is zero in every reverse chain. A separate NumPy audit checked adjacency and one
+similarity for every healthy original shell: 319 Cafe, 1244 Kitchen and 4989 Kamaz
+shells per mode, with maximum normalized-coordinate residual 1.59e-7.
+
+LOD0 occupied-bbox fill (ordinary / reverse exclusive / reverse overlap):
+
+| Fixture | Ordinary | Exclusive | Overlap |
+| --- | ---: | ---: | ---: |
+| Cafe_Table_A_01 | 40.2% | 80.4% | 80.4% |
+| Modern_Kitchen_A | 39.4% | 62.5% | 62.4% |
+| Kamaz Typhoon | 57.5% | 74.8% | 74.9% |
+
+P95 stretch remains 1.210 / 1.101 / 1.064 on those LOD0 results. Whole-component
+repair touches 16 / 760 / 1276 faces respectively; these counts include healthy
+incident faces kept connected to a repaired vertex, not only the initial defect
+faces. Genuinely resolution-limited faces: 0 / 53 / 10 per chain. Overlap mode keeps
+731 audited Kitchen LOD0 underlay contacts and 417 Kamaz LOD0 + 174 LOD1 contacts;
+exclusive mode keeps none.
+
+Limits are not hidden by passing defect tests. Cross-LOD UV alignment is still
+73.3-73.5% on Kitchen LOD1, 87.7-88.4% on Kamaz LOD1 and approximately 83.3% on
+Kamaz LOD2. Cafe LOD1 improves from 65.5% in the old exclusive path to 99.2%; its
+coarsest LOD stays at 45.8%. Packing is not optimal: the rejected per-face repair
+trial reached 78.4% Kamaz overlap fill by fragmenting defective shells; this intact
+rebuild reaches 74.9%. Invalid non-planar input components may acquire native
+parameterization seams, while healthy components remain unchanged. The raw worst
+stretch of the 0.01-texel precision faces can still depress the unified quality
+score, despite negligible world area; the raw diagnostics were not suppressed.
+
 ### Reverse regrouping of ordinary Transfer charts — 2026-10-12
 
 Continuation of PR225, requested after the fragmented reverse results. The default

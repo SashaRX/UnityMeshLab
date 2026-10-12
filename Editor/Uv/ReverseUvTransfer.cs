@@ -64,6 +64,10 @@ namespace SashaRX.UnityMeshLab
             public bool projectionSupport;
             public float distance;
             public int group;
+            public int packingFamily=-1;
+            // Independent local UV frames are packed separately. Zero is the
+            // shared ordinary Transfer frame; inherited shells adopt the donor's.
+            public int coordinateDomain;
             public string rejection;
             public string cutRefusal;
             internal bool protectedInheritance;
@@ -106,6 +110,7 @@ namespace SashaRX.UnityMeshLab
             public string finalPackingRectangleRefusal;
             public int finalPackingFamilies;
             public float finalPackingScale;
+            public int resolutionLimitedFaces;
         }
 
         [Serializable] internal sealed class OverlapRelation
@@ -138,6 +143,7 @@ namespace SashaRX.UnityMeshLab
             internal Vector2[] sourceUvCorners;
             internal int[] preparedRegions;
             internal Vector2[] pixels;
+            internal Vector2[] packingCoordinates;
             internal Face[] faces;
             internal int lod, node;
             internal int orientation;
@@ -151,6 +157,7 @@ namespace SashaRX.UnityMeshLab
         internal sealed class Chart
         {
             internal int id;
+            internal int coordinateDomain;
             internal Vector3[] positions, normals;
             internal Vector2[] pixels;
             internal int[] indices, nodes, faces, layers, orientations;
@@ -463,10 +470,11 @@ namespace SashaRX.UnityMeshLab
                     int t = f * 3;
                     double area = Vector3.Cross(s.positions[s.indices[t + 1]] - s.positions[s.indices[t]],
                         s.positions[s.indices[t + 2]] - s.positions[s.indices[t]]).magnitude;
-                    densities.Add(Math.Sqrt(Math.Abs(Cross(s.pixels[t + 1] - s.pixels[t], s.pixels[t + 2] - s.pixels[t])) / area));
+                    double density=Math.Sqrt(Math.Abs(Cross(s.pixels[t + 1] - s.pixels[t], s.pixels[t + 2] - s.pixels[t])) / area);
+                    if(density>0 && !double.IsInfinity(density) && !double.IsNaN(density)) densities.Add(density);
                 }
             densities.Sort();
-            return (float)densities[densities.Count / 2];
+            return densities.Count==0?0:(float)densities[densities.Count / 2];
         }
 
         static List<Chart> Charts(Surface[] donor)
@@ -483,7 +491,8 @@ namespace SashaRX.UnityMeshLab
             foreach (var pair in grouped)
             {
                 int n = pair.Value.Count;
-                var chart = new Chart { id = pair.Key, positions = new Vector3[n * 3], pixels = new Vector2[n * 3],
+                var chart = new Chart { id = pair.Key, coordinateDomain=pair.Value[0].s.faces[pair.Value[0].f].coordinateDomain,
+                    positions = new Vector3[n * 3], pixels = new Vector2[n * 3],
                     indices = Enumerable.Range(0, n * 3).ToArray(), normals = new Vector3[n], nodes = new int[n], faces = new int[n], layers = new int[n], orientations = new int[n] };
                 for (int f = 0; f < n; ++f)
                 {
@@ -605,6 +614,7 @@ namespace SashaRX.UnityMeshLab
                     if (!CoveredByParentLayer(winner, winner.layers[best.triangleIndex], target.pixels, t,
                         options, ref queries, token)) { record.ambiguous = true; record.rejection = "parent-footprint"; continue; }
                     record.inherited = true; record.chart = winner.id; record.distance = Mathf.Sqrt(maxDistance);
+                    record.coordinateDomain=winner.coordinateDomain;
                     record.ambiguous = false; record.rejection = null;
                     record.parentLod = donor[0].lod; record.parentMesh = winner.nodes[best.triangleIndex];
                     record.parentFace = winner.faces[best.triangleIndex]; record.layer = record.projectionLayer = winner.layers[best.triangleIndex];
@@ -691,21 +701,24 @@ namespace SashaRX.UnityMeshLab
 
         static void RecordOverlapRelations(Surface[] surfaces, Report report, Options options, CancellationToken token)
         {
-            var scan = UvAtlasDiagnostics.Measure(Atlas(surfaces), token, comparisonBudget: options.comparisonBudget, collectConflicts:true);
-            if(!scan.complete || scan.invalidFaces>0 || scan.degenerateFaces>0)
-                throw new InvalidOperationException($"Reverse UV level failed its complete final validation (LOD{surfaces[0].lod}, complete {scan.complete}, invalid {scan.invalidFaces}, collapsed {scan.degenerateFaces}).");
-            var refs = new List<(Surface s,int f)>();
-            foreach(var s in surfaces) for(int f=0;f<s.faces.Length;++f) refs.Add((s,f));
-            foreach(var (a,b) in scan.conflicts)
+            var refs=surfaces.SelectMany(s=>Enumerable.Range(0,s.faces.Length).Select(f=>(s,f))).ToArray();
+            foreach(var part in CorrespondenceDomains(refs))
             {
-                var under=refs[a]; var over=refs[b];
-                if(under.s.faces[under.f].layer>over.s.faces[over.f].layer) { var swap=under; under=over; over=swap; }
-                var parent=under.s.faces[under.f]; var detail=over.s.faces[over.f];
-                if(!options.preserveProjectedOverlap || !IsOrderedOverlap(parent,detail))
-                    throw new InvalidOperationException($"Reverse UV overlap has no ordered intentional ancestry: LOD{under.s.lod} "
-                        +$"'{under.s.input.key}' face {under.f} (chart {parent.chart}, layer {parent.layer}, inherited {parent.inherited}, support {parent.projectionSupport}) / "
-                        +$"'{over.s.input.key}' face {over.f} (chart {detail.chart}, layer {detail.layer}, inherited {detail.inherited}, support {detail.projectionSupport}, rejection {detail.rejection}).");
-                report.overlaps.Add(new OverlapRelation {lod=under.s.lod,underMesh=under.s.node,underFace=under.f,overMesh=over.s.node,overFace=over.f});
+                var scan = UvAtlasDiagnostics.Measure(part.geometry, token, comparisonBudget: options.comparisonBudget, collectConflicts:true);
+                if(!scan.complete || scan.invalidFaces>0 || scan.degenerateFaces>0)
+                    throw new InvalidOperationException($"Reverse UV correspondence validation failed (LOD{surfaces[0].lod}, complete {scan.complete}, invalid {scan.invalidFaces}, collapsed {scan.degenerateFaces}).");
+                foreach(var (localA,localB) in scan.conflicts)
+                {
+                    int a=part.faces[localA],b=part.faces[localB];
+                    var under=refs[a]; var over=refs[b];
+                    if(under.s.faces[under.f].layer>over.s.faces[over.f].layer) { var swap=under; under=over; over=swap; }
+                    var parent=under.s.faces[under.f]; var detail=over.s.faces[over.f];
+                    if(!options.preserveProjectedOverlap || !IsOrderedOverlap(parent,detail))
+                        throw new InvalidOperationException($"Reverse UV overlap has no ordered intentional ancestry: LOD{under.s.lod} "
+                            +$"'{under.s.input.key}' face {under.f} (chart {parent.chart}, layer {parent.layer}, inherited {parent.inherited}, support {parent.projectionSupport}) / "
+                            +$"'{over.s.input.key}' face {over.f} (chart {detail.chart}, layer {detail.layer}, inherited {detail.inherited}, support {detail.projectionSupport}, rejection {detail.rejection}).");
+                    report.overlaps.Add(new OverlapRelation {lod=under.s.lod,underMesh=under.s.node,underFace=under.f,overMesh=over.s.node,overFace=over.f});
+                }
             }
         }
 
@@ -723,21 +736,22 @@ namespace SashaRX.UnityMeshLab
                     if(face.projectionLayer<0) face.projectionLayer=face.layer;
                     face.layer=face.projectionLayer;
                 }
-            var geometry = Atlas(surfaces, inheritedOnly: true);
-            var scan = UvAtlasDiagnostics.Measure(geometry, token, comparisonBudget: options.comparisonBudget, collectConflicts: true);
-            if (!scan.complete) throw new InvalidOperationException("Reverse UV overlap audit exceeded its budget; no atlas was published.");
-            var refs = new List<(Surface s, int f)>();
-            foreach (var s in surfaces)
-                for (int f = 0; f < s.faces.Length; ++f) refs.Add((s, f));
-            var conflicts = new List<int>[refs.Count];
-            foreach (var (a, b) in scan.conflicts)
+            var refs=surfaces.SelectMany(s=>Enumerable.Range(0,s.faces.Length).Select(f=>(s,f))).ToArray();
+            var conflicts = new List<int>[refs.Length];
+            foreach(var part in CorrespondenceDomains(refs,true))
             {
-                if (conflicts[a] == null) conflicts[a] = new List<int>();
-                if (conflicts[b] == null) conflicts[b] = new List<int>();
-                conflicts[a].Add(b); conflicts[b].Add(a);
+                var scan=UvAtlasDiagnostics.Measure(part.geometry,token,comparisonBudget:options.comparisonBudget,collectConflicts:true);
+                if(!scan.complete) throw new InvalidOperationException("Reverse UV overlap audit exceeded its budget; no atlas was published.");
+                foreach(var (localA,localB) in scan.conflicts)
+                {
+                    int a=part.faces[localA],b=part.faces[localB];
+                    if (conflicts[a] == null) conflicts[a] = new List<int>();
+                    if (conflicts[b] == null) conflicts[b] = new List<int>();
+                    conflicts[a].Add(b); conflicts[b].Add(a);
+                }
             }
-            var accepted = new bool[refs.Count];
-            foreach (int i in Enumerable.Range(0, refs.Count).OrderBy(i => refs[i].s.faces[refs[i].f].layer)
+            var accepted = new bool[refs.Length];
+            foreach (int i in Enumerable.Range(0, refs.Length).OrderBy(i => refs[i].s.faces[refs[i].f].layer)
                 .ThenBy(i=>OverlapPriority(refs[i].s,refs[i].f,options))
                 .ThenByDescending(i=>WasInherited(refs[i].s,refs[i].f,options))
                 .ThenByDescending(i => refs[i].s.faces[refs[i].f].protectedInheritance)
@@ -799,6 +813,27 @@ namespace SashaRX.UnityMeshLab
             var normal = Normal(a, fa); var origin = a.positions[a.indices[fa * 3]];
             double span = Enumerable.Range(0,3).Max(k => (a.positions[a.indices[fa*3+k]]-origin).magnitude);
             return Enumerable.Range(0,3).All(k => Math.Abs(Vector3.Dot(b.positions[b.indices[fb*3+k]]-origin,normal)) <= span*1e-6);
+        }
+
+        static RemeshNative.Geometry CorrespondenceGeometry((Surface s,int f)[] faces)
+            => new RemeshNative.Geometry {
+                uv=faces.SelectMany(p=>Enumerable.Range(p.f*3,3).Select(c=>p.s.pixels[c])).ToArray(),
+                indices=Enumerable.Range(0,faces.Length*3).ToArray(),
+                charts=faces.SelectMany(p=>Enumerable.Repeat(p.s.faces[p.f].chart,3)).ToArray()};
+
+        // Independent repair frames may have numerically equal UVs. They only
+        // compete for pixels after final packing; donor descendants in the same
+        // frame must still pass the complete overlap/contact audit.
+        static IEnumerable<(int[] faces,RemeshNative.Geometry geometry)> CorrespondenceDomains(
+            (Surface s,int f)[] faces,bool inheritedOnly=false)
+        {
+            foreach(var group in Enumerable.Range(0,faces.Length)
+                .Where(i=>!inheritedOnly || faces[i].s.faces[faces[i].f].inherited || faces[i].s.faces[faces[i].f].projectionSupport)
+                .GroupBy(i=>faces[i].s.faces[faces[i].f].coordinateDomain))
+            {
+                var indices=group.ToArray();
+                yield return (indices,CorrespondenceGeometry(indices.Select(i=>faces[i]).ToArray()));
+            }
         }
 
         static RemeshNative.Geometry Atlas(Surface[] surfaces, bool inheritedOnly = false)
