@@ -107,7 +107,7 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             int meshes = Resources.FindObjectsOfTypeAll<Mesh>().Length, objects = Resources.FindObjectsOfTypeAll<GameObject>().Length;
             var input = FoliageProxyBuilderTests.Spheres(Vector3.zero); var backend = new FoliageProxyRemesher();
-            Assert.Throws<FoliageProxyBudgetException>(() => backend.Remesh(input, new FoliageNormalsSettings { maximumProxyTriangles = 4 }, CancellationToken.None));
+            Assert.Throws<FoliageProxyBudgetException>(() => backend.Remesh(input, new FoliageNormalsSettings { automaticProxyTriangleBudget = false, maximumProxyTriangles = 4 }, CancellationToken.None));
             Assert.Throws<InvalidOperationException>(() => backend.Remesh(input, new FoliageNormalsSettings { remeshEdgeLength = .0001f }, CancellationToken.None));
             using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
             Assert.Throws<OperationCanceledException>(() => backend.Remesh(input, new FoliageNormalsSettings(), cancelled.Token));
@@ -119,7 +119,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [Test]
         public void OldPreferencesEnableRemeshDefaultsButExplicitDisabledSettingSurvives()
         {
-            var settings = new FoliageNormalsSettings { remeshProxy = false }; string current = JsonUtility.ToJson(settings);
+            var settings = new FoliageNormalsSettings { automaticProxyTriangleBudget = false, remeshProxy = false }; string current = JsonUtility.ToJson(settings);
             var restored = FoliageNormalsTool.RestoreSettings(current); Assert.IsFalse(restored.remeshProxy);
             // Removing the newly added fields models the previous saved-settings schema.
             string old = current;
@@ -237,6 +237,64 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        [UnityTest]
+        public IEnumerator AutomaticBudgetRepairsInvalidLimitsWithoutChangingResolutionOrCachedSamples()
+        {
+            foreach (int invalidBudget in new[] { 0, int.MaxValue }) {
+                using var fixture = new FoliageNormalTransferTests.Fixture();
+                using var pipeline = new FoliageNormalsPipeline(new SphereBuilder());
+                var settings = FoliageSurfaceSamplerTests.Settings();
+                settings.automaticProxyTriangleBudget = true; settings.maximumProxyTriangles = invalidBudget;
+                settings.sampleRadiusVariation = .4f; settings.voxelResolution = 128;
+                var task = pipeline.Run(fixture.root, settings, FoliageNormalsPipeline.Stage.Scatter);
+                yield return FoliageNormalsToolTests.Await(task);
+                Assert.IsTrue(task.Result, pipeline.Status);
+                var samples = pipeline.Samples;
+                task = pipeline.Run(fixture.root, settings, FoliageNormalsPipeline.Stage.Envelope);
+                yield return FoliageNormalsToolTests.Await(task);
+                Assert.IsTrue(task.Result, pipeline.Status);
+                Assert.AreSame(samples, pipeline.Samples);
+                Assert.AreEqual(128, settings.voxelResolution);
+                Assert.AreEqual(pipeline.Envelope.TriangleCount, settings.maximumProxyTriangles);
+                var preview = pipeline.EnvelopeMesh;
+                settings.smoothingIterations = 0;
+                task = pipeline.Run(fixture.root, settings, FoliageNormalsPipeline.Stage.Smooth);
+                yield return FoliageNormalsToolTests.Await(task);
+                Assert.IsTrue(task.Result, pipeline.Status);
+                Assert.AreEqual(pipeline.Envelope.TriangleCount, pipeline.Smoothed.TriangleCount);
+                pipeline.InvalidateChanged(settings, fixture.root);
+                Assert.AreSame(preview, pipeline.EnvelopeMesh, "Fitting the budget must not invalidate the completed proxy");
+                settings.automaticProxyTriangleBudget = false; settings.maximumProxyTriangles = 4;
+                pipeline.InvalidateChanged(settings, fixture.root);
+                Assert.IsFalse(preview); Assert.AreSame(samples, pipeline.Samples);
+                LogAssert.Expect(LogType.Warning, new System.Text.RegularExpressions.Regex("Proxy triangle budget exceeded"));
+                task = pipeline.Run(fixture.root, settings, FoliageNormalsPipeline.Stage.Envelope);
+                yield return FoliageNormalsToolTests.Await(task);
+                Assert.IsFalse(task.Result); Assert.IsNull(pipeline.EnvelopeMesh);
+                Assert.AreEqual(128, settings.voxelResolution);
+                Assert.AreSame(fixture.mesh, fixture.root.GetComponent<MeshFilter>().sharedMesh);
+            }
+        }
+
+        [Test]
+        public void BudgetAndRadiusPreferencesRoundTripAndLegacyPreferencesMigrateSafely()
+        {
+            var settings = new FoliageNormalsSettings { automaticProxyTriangleBudget = false,
+                maximumProxyTriangles = 750000, sampleRadiusVariation = .6f };
+            string json = JsonUtility.ToJson(settings);
+            var restored = FoliageNormalsTool.RestoreSettings(json);
+            Assert.IsFalse(restored.automaticProxyTriangleBudget); Assert.AreEqual(750000, restored.maximumProxyTriangles);
+            Assert.AreEqual(.6f, restored.sampleRadiusVariation);
+            var snapshot = restored.Snapshot();
+            Assert.IsFalse(snapshot.automaticProxyTriangleBudget); Assert.AreEqual(.6f, snapshot.sampleRadiusVariation);
+            foreach (string field in new[] { "automaticProxyTriangleBudget", "sampleRadiusVariation" })
+                json = System.Text.RegularExpressions.Regex.Replace(json, "\"" + field + "\":[^,}]+,?", "");
+            json = json.Replace(",}", "}").Replace("\"maximumProxyTriangles\":750000", "\"maximumProxyTriangles\":0");
+            restored = FoliageNormalsTool.RestoreSettings(json);
+            Assert.IsTrue(restored.automaticProxyTriangleBudget); Assert.AreEqual(0, restored.sampleRadiusVariation);
+            Assert.DoesNotThrow(restored.Validate);
+        }
+
         sealed class OversizedBuilder : IFoliageProxyBuilder
         {
             public RemeshNative.IndexedMesh Build(RemeshNative.IndexedMesh primitives, int resolution, CancellationToken token) =>
@@ -249,7 +307,7 @@ namespace SashaRX.UnityMeshLab.Tests
             using var fixture = new FoliageNormalTransferTests.Fixture();
             using (var pipeline = new FoliageNormalsPipeline(new OversizedBuilder()))
             {
-                var settings = FoliageSurfaceSamplerTests.Settings();
+                var settings = FoliageSurfaceSamplerTests.Settings(); settings.automaticProxyTriangleBudget = true;
                 LogAssert.Expect(LogType.Warning, new System.Text.RegularExpressions.Regex("Proxy triangle budget exceeded"));
                 var task = pipeline.Run(fixture.root, settings, FoliageNormalsPipeline.Stage.Transfer);
                 yield return FoliageNormalsToolTests.Await(task);

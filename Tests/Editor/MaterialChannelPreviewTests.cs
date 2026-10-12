@@ -90,18 +90,23 @@ namespace SashaRX.UnityMeshLab.Tests
                     yield return Capture(window, view, items, value => pixel = value);
                     AssertColor(pixel, repeat % 2 == 0 ? Color.green : Color.red, .015f, "Extra slots must draw in order after changing materials");
                 }
-                items[0] = new MeshViewport3D.Item(mesh, Matrix4x4.identity, new[] { red, green });
-                view.SurfaceOpacity = .5f; view.Background = Color.black;
-                yield return Capture(window, view, items, value => pixel = value);
-                AssertColor(pixel, new Color(.25f, .5f, 0), .015f, "Translucent extra slots must composite in their material order");
-                yield return Capture(window, view, items, value => pixel = value,
-                    preview => preview.DrawHighlightMesh(mesh, Matrix4x4.identity, Color.blue));
-                AssertColor(pixel, Color.blue, .015f, "Topology highlights must remain above the extra translucent slots");
-                view.XRay = true;
-                yield return Capture(window, view, items, value => pixel = value,
-                    preview => preview.DrawHighlightMesh(mesh, Matrix4x4.identity, Color.blue));
-                AssertColor(pixel, Color.blue, .015f, "X-ray highlights must retain their later overlay priority");
-                view.XRay = false;
+                view.SurfaceOpacity = .5f; view.Background = Color.black; view.Lit = false;
+                foreach (var mode in new[] { MeshViewport3D.Shading.Albedo, MeshViewport3D.Shading.Shaded, MeshViewport3D.Shading.Normals }) {
+                    view.Mode = mode;
+                    items[0] = new MeshViewport3D.Item(mesh, Matrix4x4.identity, new[] { red, green }) {
+                        ShadingOverride = mode == MeshViewport3D.Shading.Normals ? MeshViewport3D.Shading.Shaded : (MeshViewport3D.Shading?)null };
+                    yield return Capture(window, view, items, value => pixel = value);
+                    AssertColor(pixel, new Color(.25f, .5f, 0), .015f, "Translucent extra slots must composite in their material order");
+                    yield return Capture(window, view, items, value => pixel = value,
+                        preview => preview.DrawHighlightMesh(mesh, Matrix4x4.identity, Color.blue));
+                    AssertColor(pixel, Color.blue, .015f, "Topology highlights must remain above the extra translucent slots: " + mode);
+                    view.XRay = true;
+                    yield return Capture(window, view, items, value => pixel = value,
+                        preview => preview.DrawHighlightMesh(mesh, Matrix4x4.identity, Color.blue));
+                    AssertColor(pixel, Color.blue, .015f, "X-ray highlights must retain their later overlay priority");
+                    view.XRay = false;
+                }
+                view.Mode = MeshViewport3D.Shading.Albedo;
                 view.SurfaceOpacity = 1;
                 items[0] = new MeshViewport3D.Item(mesh, Matrix4x4.identity, new[] { green });
                 yield return Capture(window, view, items, value => pixel = value);

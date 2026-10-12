@@ -9,7 +9,33 @@ namespace SashaRX.UnityMeshLab.Tests
     public class FoliageSurfaceSamplerTests
     {
         internal static FoliageNormalsSettings Settings() => new FoliageNormalsSettings { relativeSpacing = false, sampleSpacing = .1f,
+            automaticProxyTriangleBudget = false, sampleRadiusVariation = 0,
             includeSourceVertices = false, includeTriangleCentroids = false, gpuProjection = false, recalculateTangents = false };
+
+        [TestCase(0f)] [TestCase(.25f)] [TestCase(.95f)]
+        public void RadiusVariationIsSeededAndPreviewMatchesTheBuiltSphereSizes(float variation)
+        {
+            var samples = Enumerable.Range(0, 256).Select(i => Vector3.right * (i * .01f)).ToArray();
+            var spheres = FoliagePrimitiveBuilder.FromSamples(samples, 2, variation, 1729, CancellationToken.None);
+            var replay = FoliagePrimitiveBuilder.FromSamples(samples, 2, variation, 1729, CancellationToken.None);
+            var otherSeed = FoliagePrimitiveBuilder.FromSamples(samples, 2, variation, 1730, CancellationToken.None);
+            CollectionAssert.AreEqual(samples, spheres.Select(p => p.center).ToArray());
+            CollectionAssert.AreEqual(spheres.Select(p => p.radius).ToArray(), replay.Select(p => p.radius).ToArray());
+            Assert.IsTrue(spheres.All(p => p.radius >= 2 * (1 - variation) && p.radius <= 2 * (1 + variation)));
+            if (variation > 0) {
+                Assert.Greater(spheres.Select(p => p.radius).Distinct().Count(), 200);
+                Assert.IsFalse(spheres.Select(p => p.radius).SequenceEqual(otherSeed.Select(p => p.radius)));
+            }
+            else Assert.IsTrue(spheres.All(p => p.radius == 2));
+            var preview = FoliagePrimitiveBuilder.BuildPreview(spheres, CancellationToken.None);
+            var envelopeInput = FoliagePrimitiveBuilder.Build(spheres, 0, CancellationToken.None);
+            int previewVertices = FoliagePrimitiveBuilder.Template(1).positions.Length;
+            int envelopeVertices = FoliagePrimitiveBuilder.Template(0).positions.Length;
+            for (int i = 0; i < spheres.Length; ++i) {
+                Assert.That((preview.positions[i * previewVertices] - samples[i]).magnitude, Is.EqualTo(spheres[i].radius).Within(1e-5));
+                Assert.That((envelopeInput.positions[i * envelopeVertices] - samples[i]).magnitude, Is.EqualTo(spheres[i].radius).Within(1e-5));
+            }
+        }
 
         internal static (Vector3[] positions, int[] indices) DenseLeafGeometry() => (
             new[] { Vector3.zero, Vector3.right * .001f, Vector3.up * .001f,

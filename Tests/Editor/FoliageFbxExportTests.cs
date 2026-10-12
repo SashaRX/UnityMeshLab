@@ -259,9 +259,9 @@ namespace SashaRX.UnityMeshLab.Tests
             group.AddChild(instance);
         }
 
-        static FoliageTargetSnapshot ShadingTarget(MeshRenderer renderer, Transform root)
+        static FoliageTargetSnapshot ShadingTarget(MeshRenderer renderer, Transform root, int submesh = 1)
         {
-            var settings = new FoliageNormalsSettings { selection = FoliageFaceSelection.SelectedSubmeshIndices, submeshes = new[] { 1 } };
+            var settings = new FoliageNormalsSettings { selection = FoliageFaceSelection.SelectedSubmeshIndices, submeshes = new[] { submesh } };
             var target = new FoliageTargetSnapshot(renderer, root.worldToLocalMatrix, settings, CancellationToken.None);
             try
             {
@@ -272,6 +272,56 @@ namespace SashaRX.UnityMeshLab.Tests
                 return target;
             }
             catch { target.Dispose(); throw; }
+        }
+
+        [Test]
+        public void ChannelPreflightDoesNotArmSidecarReplayOrChangeSourceBytes()
+        {
+            string source = Source(false, true);
+            var bytes = File.ReadAllBytes(source);
+            var root = (GameObject)PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(source));
+            try {
+                using var target = ShadingTarget(root.GetComponentInChildren<MeshRenderer>(), root.transform);
+                target.working.uv2 = Enumerable.Repeat(new Vector2(.23f, .79f), target.working.vertexCount).ToArray();
+                var entry = new MeshEntry { fbxMesh = target.source, originalMesh = target.original, transferredMesh = target.working, include = true };
+                Assert.IsFalse(Uv2AssetPostprocessor.fbxOverwritePaths.Contains(source));
+                Assert.IsTrue(FbxChannelWrite.Write(source, new[] { entry }, FbxExportIntent.UV1, null, null, validationOnly: true));
+                Assert.IsFalse(Uv2AssetPostprocessor.fbxOverwritePaths.Contains(source), "A read-only preflight must not arm a later source import.");
+                CollectionAssert.AreEqual(bytes, File.ReadAllBytes(source));
+            }
+            finally { Object.DestroyImmediate(root); }
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void MultipleSourceOverwritePreflightsLaterSelectionAndDocumentFailures(bool differentSelections)
+        {
+            string first = Source(false, true, filename: "first.fbx");
+            string later = Source(false, true, instanced: true, filename: "later.fbx");
+            var before = new[] { first, later }.Select(path => File.ReadAllBytes(path)).ToArray();
+            var meta = new[] { first, later }.Select(path => File.ReadAllBytes(path + ".meta")).ToArray();
+            var a = (GameObject)PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(first));
+            var b = (GameObject)PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(later));
+            var targets = new List<FoliageTargetSnapshot>();
+            try {
+                targets.Add(ShadingTarget(a.GetComponentInChildren<MeshRenderer>(), a.transform));
+                var renderers = b.GetComponentsInChildren<MeshRenderer>();
+                targets.Add(ShadingTarget(renderers[0], b.transform));
+                if (differentSelections) targets.Add(ShadingTarget(renderers[1], b.transform, 0));
+                int imports = 0;
+                Assert.Throws<InvalidOperationException>(() => FoliageFbxExport.Overwrite(targets, _ => true,
+                    (path, options) => { imports++; AssetDatabase.ImportAsset(path, options); }));
+                Assert.AreEqual(0, imports, "No source import may precede validation of the last source.");
+                for (int i = 0; i < 2; ++i) {
+                    string path = i == 0 ? first : later;
+                    CollectionAssert.AreEqual(before[i], File.ReadAllBytes(path), path);
+                    CollectionAssert.AreEqual(meta[i], File.ReadAllBytes(path + ".meta"), path);
+                }
+                foreach (var target in targets) Assert.IsTrue(target.working, "The preview remains available after preflight refusal.");
+            }
+            finally {
+                foreach (var target in targets) target.Dispose();
+                Object.DestroyImmediate(a); Object.DestroyImmediate(b);
+            }
         }
 
         [TestCase(false)] [TestCase(true)]

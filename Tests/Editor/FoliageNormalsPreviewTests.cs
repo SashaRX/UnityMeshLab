@@ -782,7 +782,9 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsNull(tool.pipeline.EnvelopeMesh, "Sphere preview must be available before voxelization.");
             var cached = tool.pipeline.ScatterMesh;
             Assert.IsTrue(cached); Assert.AreEqual(HideFlags.HideAndDontSave, cached.hideFlags);
-            Assert.AreEqual(.5f, tool.pipeline.Primitives[0].radius);
+            Assert.That(tool.pipeline.Primitives[0].radius, Is.InRange(.375f, .625f));
+            Assert.That(Vector3.Distance(cached.vertices[0], tool.pipeline.Primitives[0].center),
+                Is.EqualTo(tool.pipeline.Primitives[0].radius).Within(1e-5f));
             var items = new List<MeshViewport3D.Item>(); tool.Get3DContent(items);
             Assert.AreEqual(2, items.Count); Assert.AreSame(cached, items.Last().mesh);
             Assert.IsTrue(items.Last().WireOnly); Assert.IsTrue(items.Last().SuppressWire);
@@ -820,7 +822,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsNull(tool.pipeline.ScatterMesh);
             task = tool.Run(FoliageNormalsPipeline.Stage.Scatter);
             yield return FoliageNormalsToolTests.Await(task);
-            Assert.AreEqual(1, tool.pipeline.Primitives[0].radius);
+            Assert.That(tool.pipeline.Primitives[0].radius, Is.InRange(.75f, 1.25f));
             var rebuilt = tool.pipeline.ScatterMesh; Assert.IsTrue(rebuilt);
             tool.OnDeactivate(); Assert.IsFalse(rebuilt, "Deactivation must release Scatter preview geometry.");
         }

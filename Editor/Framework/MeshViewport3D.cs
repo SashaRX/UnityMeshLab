@@ -102,7 +102,7 @@ namespace SashaRX.UnityMeshLab
         Material surface, flat, wire, points;
         Material wireXRay, overlaySurface, overlayXRay;
         Material pointDots, pointDotsXRay;
-        Material materialChannels, translucentChannels;
+        Material materialChannels, translucentChannels, translucentSurface;
         RenderTexture offscreen;   // owned; replaced only when the preview target's size, format or sample count changes
         Rect currentRect;
         bool drawing;
@@ -285,7 +285,7 @@ namespace SashaRX.UnityMeshLab
                     Texture texture = BindSurfaceTexture(material,block);
                     block.SetFloat("_UseTexture", mode == Shading.Shaded && texture ? 1 : 0);
                     int layer = Mathf.Max(0, slot - shown.subMeshCount + 1);
-                    utility.DrawMesh(shown, item.matrix, LayerMaterial(overlaySurface, layer), sub, block);
+                    utility.DrawMesh(shown, item.matrix, LayerMaterial(translucentSurface, layer), sub, block);
                 }
                 return;
             }
@@ -331,9 +331,10 @@ namespace SashaRX.UnityMeshLab
         void ConfigureOverlayQueues(IReadOnlyList<Item> items)
         {
             int extraLayers = 0;
-            if (IsMaterialMode(Mode) && SurfaceOpacity < .999f && items != null)
+            if (SurfaceOpacity < .999f && items != null)
                 foreach (var item in items)
-                    if (item.mesh && item.mesh.subMeshCount > 0)
+                    if (item.mesh && item.mesh.subMeshCount > 0 &&
+                        ((item.ShadingOverride ?? Mode) == Shading.Shaded || IsMaterialMode(item.ShadingOverride ?? Mode)))
                         extraLayers = Mathf.Max(extraLayers, (item.materials?.Length ?? 0) - item.mesh.subMeshCount);
             int overlayQueue = extraLayers > 0 ? Mathf.Min(5000, 3006 + extraLayers) : 3005;
             overlaySurface.renderQueue = overlayQueue;
@@ -700,6 +701,7 @@ namespace SashaRX.UnityMeshLab
             wireXRay = new Material(lineShader) { hideFlags = HideFlags.HideAndDontSave };
             wireXRay.SetFloat("_ZTest", (float)CompareFunction.Always);
             wireXRay.renderQueue = 3030;
+            translucentSurface = new Material(overlayShader) { hideFlags = HideFlags.HideAndDontSave, renderQueue = 3005 };
             overlaySurface = new Material(overlayShader) { hideFlags = HideFlags.HideAndDontSave };
             overlayXRay = new Material(overlayShader) { hideFlags = HideFlags.HideAndDontSave };
             overlayXRay.SetFloat("_ZTest", (float)CompareFunction.Always);
@@ -932,7 +934,8 @@ namespace SashaRX.UnityMeshLab
             if (pointDotsXRay) Object.DestroyImmediate(pointDotsXRay);
             if (materialChannels) Object.DestroyImmediate(materialChannels);
             if (translucentChannels) Object.DestroyImmediate(translucentChannels);
-            materialChannels = translucentChannels = null;
+            if (translucentSurface) Object.DestroyImmediate(translucentSurface);
+            materialChannels = translucentChannels = translucentSurface = null;
             pointDots = pointDotsXRay = null;
             wireXRay = overlaySurface = overlayXRay = null;
             surface = flat = wire = points = null;

@@ -28,23 +28,34 @@ namespace SashaRX.UnityMeshLab
             var groups = GroupSources(targets);
             if (groups.Count == 0) throw new InvalidOperationException("No foliage results to export.");
             if (confirm == null || !confirm(groups.Keys.ToArray())) return Array.Empty<string>();
+            // Validate every group before any source file is changed or imported.
+            var prepared = groups.Select(group => {
+                PrepareGroup(group.Key, group.Value, importAsset, out var entries, out var selection);
+                return (source: group.Key, targets: group.Value, entries, selection);
+            }).ToArray();
+            foreach (var group in prepared) {
+                group.selection.allowSourceOverwrite = true;
+                if (!FbxChannelWrite.Write(group.source, group.entries, FbxExportIntent.Normals | FbxExportIntent.Tangents,
+                    null, null, shadingSelection: group.selection, validationOnly: true))
+                    throw new InvalidOperationException($"Foliage FBX preflight failed for '{group.source}'. No source was overwritten.");
+            }
             var paths = new List<string>();
             EditorApplication.LockReloadAssemblies();
             try
             {
-                foreach (var group in groups)
+                foreach (var group in prepared)
                 {
-                    PrepareGroup(group.Key, group.Value, importAsset, out var entries, out var selection);
+                    var selection = group.selection;
                     selection.allowSourceOverwrite = true;
-                    var relinks = group.Value.Select(t => (t.filter, name: t.source.name)).ToArray();
+                    var relinks = group.targets.Select(t => (t.filter, name: t.source.name)).ToArray();
                     var importer = selection.importAsset;
                     bool importAttempted = false;
                     selection.importAsset = (path, options) => { importAttempted = true; importer(path, options); };
                     bool written;
-                    try { written = FbxExport.WriteChannels(group.Key, entries, FbxExportIntent.Normals | FbxExportIntent.Tangents, null, null, null, selection); }
-                    finally { if (importAttempted) RelinkSourceMeshes(group.Key, relinks); }
-                    if (!written) throw new InvalidOperationException($"Foliage FBX overwrite did not complete for '{group.Key}'. If import failed after writing, fix the import and reimport this FBX; see the Mesh Lab log.");
-                    paths.Add(group.Key);
+                    try { written = FbxExport.WriteChannels(group.source, group.entries, FbxExportIntent.Normals | FbxExportIntent.Tangents, null, null, null, selection); }
+                    finally { if (importAttempted) RelinkSourceMeshes(group.source, relinks); }
+                    if (!written) throw new InvalidOperationException($"Foliage FBX overwrite did not complete for '{group.source}'. If import failed after writing, fix the import and reimport this FBX; see the Mesh Lab log.");
+                    paths.Add(group.source);
                 }
                 return paths.ToArray();
             }

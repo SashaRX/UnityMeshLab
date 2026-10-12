@@ -10,8 +10,36 @@ namespace SashaRX.UnityMeshLab
     internal static class FoliagePrimitiveBuilder
     {
         internal const int MaximumPreviewPrimitives = 4096;
-        internal const int MaximumTriangles = 2000000;
+        internal const int MaximumTriangles = FoliageNormalsSettings.HardProxyTriangleCap;
         internal const long MaximumBytes = 128L * 1024 * 1024;
+
+        internal static FoliagePrimitive[] FromSamples(Vector3[] samples, float radius, float variation, int seed, CancellationToken token)
+        {
+            if (!FoliageTargetSnapshot.Finite(radius) || radius <= 0 ||
+                !FoliageTargetSnapshot.Finite(variation) || variation < 0 || variation > .95f)
+                throw new ArgumentException("Sphere radius must be positive and radius variation must be 0–0.95.");
+            token.ThrowIfCancellationRequested();
+            var primitives = new FoliagePrimitive[samples.Length];
+            for (int i = 0; i < primitives.Length; ++i) {
+                token.ThrowIfCancellationRequested();
+                float scale = 1 + variation * (2 * RadiusNoise(seed, i) - 1);
+                primitives[i] = new FoliagePrimitive { center = samples[i], radius = radius * scale };
+            }
+            return primitives;
+        }
+
+        // Separate index-based noise does not consume the surface sampler's stream:
+        // changing radius variation preserves sample positions and island minimums.
+        static float RadiusNoise(int seed, int index)
+        {
+            unchecked {
+                uint value = (uint)seed ^ ((uint)index + 1) * 0x9e3779b9u;
+                value ^= value >> 16; value *= 0x7feb352du;
+                value ^= value >> 15; value *= 0x846ca68bu;
+                value ^= value >> 16;
+                return (value >> 8) * (1f / 16777216f);
+            }
+        }
 
         internal static RemeshNative.IndexedMesh BuildPreview(FoliagePrimitive[] primitives, CancellationToken token)
         {

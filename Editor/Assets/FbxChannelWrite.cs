@@ -119,10 +119,11 @@ namespace SashaRX.UnityMeshLab
         /// together with the new and replaced geometry of <paramref name="structure"/> when one
         /// is given, then reimports it and relinks <paramref name="sceneRoot"/>. Everything goes
         /// into one load and one save of the document: a refusal anywhere leaves the file as
-        /// it was. Returns true when a file was written and the import settings it needs were set.
+        /// it was. Validation-only mode checks the disposable document without saving or importing the output.
+        /// Returns true when validation succeeded or a file was written with the required import settings.
         /// </summary>
         internal static bool Write(string sourceFbxPath, IEnumerable<MeshEntry> entries, FbxExportIntent intent,
-            string outputFbxPath, LODGroup sceneRoot, FbxStructurePlan structure = null, FbxExport.ShadingSelection shadingSelection = null)
+            string outputFbxPath, LODGroup sceneRoot, FbxStructurePlan structure = null, FbxExport.ShadingSelection shadingSelection = null, bool validationOnly = false)
         {
             string targetFbxPath = string.IsNullOrEmpty(outputFbxPath) ? sourceFbxPath : outputFbxPath;
             bool isVariant = !string.Equals(targetFbxPath, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
@@ -223,7 +224,10 @@ namespace SashaRX.UnityMeshLab
             // The sidecar's UV2 replay is held off for the import that follows only when that
             // import brings a UV1 written (or removed) here; otherwise the sidecar still applies.
             bool uv1Changed = uv1Written || channelsWritten.Contains("UV1 (removed)");
+            // Preflight exercises the same donor, instance and corner mapping checks in a disposable document.
+            if (validationOnly) return true;
             if (uv1Changed) Uv2AssetPostprocessor.fbxOverwritePaths.Add(targetFbxPath);
+
             try { document.SaveAtomic(Path.GetFullPath(targetFbxPath), shadingSelection?.mediaOwnership); }
             catch { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); throw; }
             string format = $"FBX {document.Major}.{document.Minor}, {FbxWriteSettings.FromProject().FormatName}";

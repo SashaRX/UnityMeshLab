@@ -36,7 +36,7 @@ namespace SashaRX.UnityMeshLab
         public Result Remesh(RemeshNative.IndexedMesh input, FoliageNormalsSettings settings, CancellationToken token)
         {
             settings.Validate();
-            FoliageProxyBuilder.CheckTriangleBudget(input, settings.maximumProxyTriangles, token);
+            FoliageProxyBuilder.CheckTriangleBudget(input, settings.ProxyTriangleLimit, token);
             FoliageProxyBuilder.Validate(input, token, false);
             // Geometry-only proxies may arrive with exact position splits. Work on shared
             // vertices just as RemeshTopology does, without changing the input arrays.
@@ -52,13 +52,13 @@ namespace SashaRX.UnityMeshLab
 
             double area = SurfaceArea(input, token);
             double estimated = area / (Math.Sqrt(3) * .25 * length * length);
-            if (input.TriangleCount > settings.maximumProxyTriangles || estimated > settings.maximumProxyTriangles)
+            if (input.TriangleCount > settings.ProxyTriangleLimit || estimated > settings.ProxyTriangleLimit)
             {
-                throw Budget(settings.maximumProxyTriangles);
+                throw Budget(settings.ProxyTriangleLimit);
             }
 
             var diagnostics = new Diagnostics { before = before, targetEdgeLength = length };
-            var state = new Surface(input, topology, length, settings.maximumProxyTriangles, diagnostics, token);
+            var state = new Surface(input, topology, length, settings.ProxyTriangleLimit, diagnostics, token);
             for (int iteration = 0; iteration < settings.remeshIterations; iteration++)
             {
                 state.Split();

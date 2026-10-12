@@ -140,7 +140,7 @@ namespace SashaRX.UnityMeshLab.Tests
         public void SmoothingEnforcesTriangleBudgetWithRemeshEnabledOrDisabled(bool remesh)
         {
             var input = Spheres(Vector3.zero);
-            var settings = new FoliageNormalsSettings { remeshProxy = remesh, maximumProxyTriangles = input.TriangleCount - 1 };
+            var settings = new FoliageNormalsSettings { automaticProxyTriangleBudget = false, remeshProxy = remesh, maximumProxyTriangles = input.TriangleCount - 1 };
             var error = Assert.Throws<FoliageProxyBudgetException>(() => FoliageProxySmoother.Smooth(input, settings, CancellationToken.None, out _));
             StringAssert.Contains("Proxy triangle budget exceeded", error.Message);
             settings.maximumProxyTriangles = input.TriangleCount;

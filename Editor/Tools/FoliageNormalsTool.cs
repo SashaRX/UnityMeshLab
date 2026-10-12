@@ -107,6 +107,12 @@ namespace SashaRX.UnityMeshLab
                 restored.remeshRelaxation = defaults.remeshRelaxation;
                 restored.maximumProxyTriangles = defaults.maximumProxyTriangles;
             }
+            if (json.IndexOf("\"automaticProxyTriangleBudget\"", StringComparison.Ordinal) < 0)
+                restored.automaticProxyTriangleBudget = true;
+            if (json.IndexOf("\"sampleRadiusVariation\"", StringComparison.Ordinal) < 0)
+                restored.sampleRadiusVariation = 0; // retain uniform radii in existing preferences
+            if (restored.automaticProxyTriangleBudget)
+                restored.maximumProxyTriangles = Mathf.Clamp(restored.maximumProxyTriangles, 4, FoliageNormalsSettings.HardProxyTriangleCap);
             restored.Validate();
             return restored;
         }
@@ -472,7 +478,8 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.LabelField("Scatter", EditorStyles.boldLabel);
             settings.relativeSpacing = EditorGUILayout.Toggle("Relative to bounds", settings.relativeSpacing);
             settings.sampleSpacing = EditorGUILayout.FloatField(settings.relativeSpacing ? "Spacing / diagonal" : "Spacing (capture units)", settings.sampleSpacing);
-            settings.radiusMultiplier = EditorGUILayout.FloatField("Sphere radius / spacing", settings.radiusMultiplier);
+            settings.radiusMultiplier = EditorGUILayout.Slider("Sphere radius / spacing", settings.radiusMultiplier, .1f, 10);
+            settings.sampleRadiusVariation = EditorGUILayout.Slider(new GUIContent("Radius variation", "Random radius spread around the base size. Zero keeps uniform spheres; Seed repeats the pattern."), settings.sampleRadiusVariation, 0, .95f);
             settings.minimumSamplesPerIsland = EditorGUILayout.IntField("Minimum / island", settings.minimumSamplesPerIsland);
             settings.includeSourceVertices = EditorGUILayout.Toggle("Include vertices", settings.includeSourceVertices);
             settings.includeTriangleCentroids = EditorGUILayout.Toggle("Include centroids", settings.includeTriangleCentroids);
@@ -488,7 +495,11 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.LabelField("Envelope", EditorStyles.boldLabel);
             settings.voxelResolution = EditorGUILayout.IntSlider("Voxel resolution", settings.voxelResolution, 4, 256);
             settings.primitiveSubdivision = EditorGUILayout.IntSlider("Sphere subdivision", settings.primitiveSubdivision, 0, 1);
-            settings.maximumProxyTriangles = EditorGUILayout.IntField("Proxy triangle budget", settings.maximumProxyTriangles);
+            settings.automaticProxyTriangleBudget = EditorGUILayout.Toggle("Automatic triangle budget", settings.automaticProxyTriangleBudget);
+            if (settings.automaticProxyTriangleBudget)
+                EditorGUILayout.LabelField($"Budget fits the proxy automatically, up to {FoliageNormalsSettings.HardProxyTriangleCap:N0} triangles. Voxel resolution is kept.", EditorStyles.wordWrappedMiniLabel);
+            else
+                settings.maximumProxyTriangles = Mathf.Clamp(EditorGUILayout.DelayedIntField("Proxy triangle budget", settings.maximumProxyTriangles), 4, FoliageNormalsSettings.HardProxyTriangleCap);
             showPrimitives = EditorGUILayout.Toggle("Show sample points", showPrimitives);
             StageButton("Build Proxy", FoliageNormalsPipeline.Stage.Envelope);
             DrawEnvelopeBudgetRecovery();
@@ -750,7 +761,7 @@ namespace SashaRX.UnityMeshLab
                 $"{s.generated:N0} samples → {s.deduplicated:N0} dedup → {s.samples.Length:N0} primitives · {s.skippedDegenerate} degenerate\n" +
                 $"Neighbour min/mean/max: {s.minNeighbour:G4}/{s.meanNeighbour:G4}/{s.maxNeighbour:G4}", EditorStyles.wordWrappedMiniLabel);
                 if (pipeline.Primitives?.Length > 0)
-                    EditorGUILayout.LabelField($"Sphere radius: {pipeline.Primitives[0].radius:G5} capture units · Scatter preview: {pipeline.ScatterPreviewCount:N0} / {pipeline.Primitives.Length:N0} spheres", EditorStyles.wordWrappedMiniLabel);
+                    EditorGUILayout.LabelField($"Base sphere radius: {s.spacing * settings.radiusMultiplier:G5} capture units · variation ±{settings.sampleRadiusVariation:P0} · Scatter preview: {pipeline.ScatterPreviewCount:N0} / {pipeline.Primitives.Length:N0} spheres", EditorStyles.wordWrappedMiniLabel);
                 if (s.retainedForIslandMinimum > 0)
                     EditorGUILayout.LabelField($"{s.retainedForIslandMinimum:N0} close samples retained to preserve Minimum / island.", EditorStyles.wordWrappedMiniLabel);
             }

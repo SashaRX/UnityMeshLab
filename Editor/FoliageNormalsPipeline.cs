@@ -177,9 +177,9 @@ namespace SashaRX.UnityMeshLab
                 case Stage.Capture:
                     return $"{(root ? root.GetInstanceID() : 0)}|{s.lod0Only}|{s.selection}|{s.filterRenderers}|{Ids(s.renderers)}|{Ids(s.materials)}|{string.Join(",", s.submeshes)}";
                 case Stage.Scatter:
-                    return s.normalSource != FoliageNormalSource.VoxelEnvelope ? s.normalSource.ToString() : FormattableString.Invariant($"{s.normalSource}|{s.sampleSpacing:R}|{s.relativeSpacing}|{s.radiusMultiplier:R}|{s.dedupSpacingFraction:R}|{s.minimumSamplesPerIsland}|{s.deterministicSeed}|{s.maximumPrimitiveCount}|{s.includeSourceVertices}|{s.includeTriangleCentroids}");
+                    return s.normalSource != FoliageNormalSource.VoxelEnvelope ? s.normalSource.ToString() : FormattableString.Invariant($"{s.normalSource}|{s.sampleSpacing:R}|{s.relativeSpacing}|{s.radiusMultiplier:R}|{s.sampleRadiusVariation:R}|{s.dedupSpacingFraction:R}|{s.minimumSamplesPerIsland}|{s.deterministicSeed}|{s.maximumPrimitiveCount}|{s.includeSourceVertices}|{s.includeTriangleCentroids}");
                 case Stage.Envelope:
-                    return s.normalSource == FoliageNormalSource.VoxelEnvelope ? $"{s.normalSource}|{s.voxelResolution}|{s.primitiveSubdivision}|{s.maximumProxyTriangles}" : FormattableString.Invariant($"{s.normalSource}|{s.autoFitProxy}|{s.proxyFit}|{s.proxyCenter.x:R}|{s.proxyCenter.y:R}|{s.proxyCenter.z:R}|{s.proxyRotation.x:R}|{s.proxyRotation.y:R}|{s.proxyRotation.z:R}|{s.proxyRadius:R}|{s.proxyRadiusScale:R}|{s.proxySegments}");
+                    return s.normalSource == FoliageNormalSource.VoxelEnvelope ? $"{s.normalSource}|{s.voxelResolution}|{s.primitiveSubdivision}|{s.automaticProxyTriangleBudget}|{s.ProxyTriangleLimit}" : FormattableString.Invariant($"{s.normalSource}|{s.autoFitProxy}|{s.proxyFit}|{s.proxyCenter.x:R}|{s.proxyCenter.y:R}|{s.proxyCenter.z:R}|{s.proxyRotation.x:R}|{s.proxyRotation.y:R}|{s.proxyRotation.z:R}|{s.proxyRadius:R}|{s.proxyRadiusScale:R}|{s.proxySegments}");
                 case Stage.Smooth:
                     return s.normalSource != FoliageNormalSource.VoxelEnvelope ? s.normalSource.ToString() : FormattableString.Invariant($"{s.smoothingIterations}|{s.smoothingStrength:R}|{s.lambda:R}|{s.mu:R}");
                 case Stage.Remesh:
@@ -198,7 +198,7 @@ namespace SashaRX.UnityMeshLab
                 return settings.normalSource.ToString();
             }
 
-            return settings.remeshProxy ? FormattableString.Invariant($"{settings.remeshEdgeLength:R}|{settings.remeshIterations}|{settings.remeshRelaxation:R}|{settings.maximumProxyTriangles}") : "Disabled";
+            return settings.remeshProxy ? FormattableString.Invariant($"{settings.remeshEdgeLength:R}|{settings.remeshIterations}|{settings.remeshRelaxation:R}|{settings.automaticProxyTriangleBudget}|{settings.ProxyTriangleLimit}") : "Disabled";
         }
 
         internal void InvalidateChanged(FoliageNormalsSettings settings, GameObject root)
@@ -282,6 +282,7 @@ namespace SashaRX.UnityMeshLab
                     token.ThrowIfCancellationRequested();
                     await RunStage(stage, root, options, token);
                     token.ThrowIfCancellationRequested();
+                    FitProxyBudget(live, options, stage);
                     keys[(int)stage] = Key(stage, options, root);
                     elapsedSeconds = clock.Elapsed.TotalSeconds;
                     Changed?.Invoke();
@@ -341,6 +342,16 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        void FitProxyBudget(FoliageNormalsSettings live, FoliageNormalsSettings options, Stage stage)
+        {
+            if (options.normalSource != FoliageNormalSource.VoxelEnvelope || !options.automaticProxyTriangleBudget ||
+                (stage != Stage.Envelope && stage != Stage.Remesh)) return;
+            var proxy = stage == Stage.Envelope ? Envelope : Remeshed;
+            if (proxy == null) return;
+            options.FitProxyTriangleBudget(Math.Max(Envelope.TriangleCount, proxy.TriangleCount));
+            if (live.automaticProxyTriangleBudget) live.maximumProxyTriangles = options.maximumProxyTriangles;
+        }
+
         async Task Scatter(FoliageNormalsSettings options, CancellationToken token)
         {
             if (options.normalSource != FoliageNormalSource.VoxelEnvelope)
@@ -349,11 +360,8 @@ namespace SashaRX.UnityMeshLab
             }
 
             Samples = await Task.Run(() => FoliageSurfaceSampler.Sample(capturePositions, captureIndices, options, token), token);
-            Primitives = new FoliagePrimitive[Samples.samples.Length];
-            for (int i = 0; i < Primitives.Length; i++)
-            {
-                Primitives[i] = new FoliagePrimitive { center = Samples.samples[i], radius = Samples.spacing * options.radiusMultiplier };
-            }
+            Primitives = FoliagePrimitiveBuilder.FromSamples(Samples.samples, Samples.spacing * options.radiusMultiplier,
+                options.sampleRadiusVariation, options.deterministicSeed, token);
             var spheres = Primitives;
             var previewGeometry = await Task.Run(() => FoliagePrimitiveBuilder.BuildPreview(spheres, token), token);
             token.ThrowIfCancellationRequested();
@@ -372,7 +380,7 @@ namespace SashaRX.UnityMeshLab
             }
             var spheres = Primitives;
             Envelope = await Task.Run(() => builder.Build(FoliagePrimitiveBuilder.Build(spheres, options.primitiveSubdivision, token), options.voxelResolution, token), token);
-            FoliageProxyBuilder.CheckTriangleBudget(Envelope, options.maximumProxyTriangles, token);
+            FoliageProxyBuilder.CheckTriangleBudget(Envelope, options.ProxyTriangleLimit, token);
             ProxyComponents = await Task.Run(() => FoliageProxyBuilder.Validate(Envelope, token, false).euler.Count, token);
             EnvelopeMesh = PreviewMesh(ProxyName, Envelope);
         }

@@ -11,7 +11,7 @@ namespace SashaRX.UnityMeshLab
     internal sealed class FoliageNormalsSettings
     {
         internal const int HardPrimitiveCap = 50000;
-        internal const int HardProxyTriangleCap = 200000;
+        internal const int HardProxyTriangleCap = 2000000;
         public bool lod0Only = true;
         public FoliageFaceSelection selection;
         public Material[] materials = Array.Empty<Material>();
@@ -27,18 +27,28 @@ namespace SashaRX.UnityMeshLab
         public float sampleSpacing = .05f;
         public bool relativeSpacing = true;
         public float radiusMultiplier = 1f, dedupSpacingFraction = .15f;
+        public float sampleRadiusVariation = .25f;
         public int minimumSamplesPerIsland = 1, deterministicSeed = 1729, maximumPrimitiveCount = 20000;
         public bool includeSourceVertices = true, includeTriangleCentroids;
         public int primitiveSubdivision = 1, voxelResolution = 64;
         public int smoothingIterations = 5;
         public float smoothingStrength = 1f, lambda = .5f, mu = -.53f;
         public bool remeshProxy = true;
+        public bool automaticProxyTriangleBudget = true;
         public float remeshEdgeLength; // zero = mean edge length of the smoothed proxy
         public int remeshIterations = 5, maximumProxyTriangles = 100000;
         public float remeshRelaxation = .5f;
         public float maxTransferDistance; // zero = twice the capture diagonal
         public float transferBlend = 1;
         public bool alignToOriginalHemisphere, gpuProjection = true, recalculateTangents = true;
+
+        internal int ProxyTriangleLimit => automaticProxyTriangleBudget ? HardProxyTriangleCap : maximumProxyTriangles;
+
+        internal void FitProxyTriangleBudget(int triangles)
+        {
+            if (automaticProxyTriangleBudget)
+                maximumProxyTriangles = Mathf.Clamp(triangles, 4, HardProxyTriangleCap);
+        }
 
         internal void Validate()
         {
@@ -70,12 +80,13 @@ namespace SashaRX.UnityMeshLab
         {
             Range(sampleSpacing, 1e-6f, 1e6f, nameof(sampleSpacing));
             Range(radiusMultiplier, .1f, 10, nameof(radiusMultiplier));
+            Range(sampleRadiusVariation, 0, .95f, nameof(sampleRadiusVariation));
             Range(dedupSpacingFraction, .001f, 1, nameof(dedupSpacingFraction));
             Range(smoothingStrength, 0, 1, nameof(smoothingStrength));
             Range(lambda, .001f, .6f, nameof(lambda)); Range(mu, -.65f, -.001f, nameof(mu));
             if (-mu < lambda) throw new ArgumentException("Taubin compensation must be at least lambda in magnitude.");
-            if (maximumProxyTriangles < 4 || maximumProxyTriangles > HardProxyTriangleCap)
-                throw new ArgumentException("Proxy triangle budget must be 4–200,000.");
+            if (!automaticProxyTriangleBudget && (maximumProxyTriangles < 4 || maximumProxyTriangles > HardProxyTriangleCap))
+                throw new ArgumentException($"Proxy triangle budget must be 4–{HardProxyTriangleCap:N0}.");
             if (remeshProxy) ValidateRemesh();
             if (minimumSamplesPerIsland < 1 || minimumSamplesPerIsland > 100 || maximumPrimitiveCount < 1 || maximumPrimitiveCount > HardPrimitiveCap)
                 throw new ArgumentException("Sample budgets must be positive; primitive hard cap is 50,000.");
@@ -101,12 +112,12 @@ namespace SashaRX.UnityMeshLab
             renderers = (MeshRenderer[])renderers.Clone(), filterRenderers = filterRenderers, sampleSpacing = sampleSpacing, relativeSpacing = relativeSpacing,
             normalSource = normalSource, autoFitProxy = autoFitProxy, proxyFit = proxyFit, proxyCenter = proxyCenter, proxyRotation = proxyRotation,
             proxyRadius = proxyRadius, proxyRadiusScale = proxyRadiusScale, proxySegments = proxySegments,
-            radiusMultiplier = radiusMultiplier, dedupSpacingFraction = dedupSpacingFraction, minimumSamplesPerIsland = minimumSamplesPerIsland,
+            radiusMultiplier = radiusMultiplier, sampleRadiusVariation = sampleRadiusVariation, dedupSpacingFraction = dedupSpacingFraction, minimumSamplesPerIsland = minimumSamplesPerIsland,
             deterministicSeed = deterministicSeed, maximumPrimitiveCount = maximumPrimitiveCount, includeSourceVertices = includeSourceVertices,
             includeTriangleCentroids = includeTriangleCentroids, primitiveSubdivision = primitiveSubdivision, voxelResolution = voxelResolution,
             smoothingIterations = smoothingIterations, smoothingStrength = smoothingStrength, lambda = lambda, mu = mu,
             remeshProxy = remeshProxy, remeshEdgeLength = remeshEdgeLength, remeshIterations = remeshIterations,
-            maximumProxyTriangles = maximumProxyTriangles, remeshRelaxation = remeshRelaxation,
+            automaticProxyTriangleBudget = automaticProxyTriangleBudget, maximumProxyTriangles = maximumProxyTriangles, remeshRelaxation = remeshRelaxation,
             maxTransferDistance = maxTransferDistance, transferBlend = transferBlend, alignToOriginalHemisphere = alignToOriginalHemisphere,
             gpuProjection = gpuProjection, recalculateTangents = recalculateTangents
         };
