@@ -97,7 +97,7 @@ namespace SashaRX.UnityMeshLab
             var metadata = Metadata(type);
             if (metadata == null || string.IsNullOrEmpty(metadata.Id)) return "Missing MeshLabTool dependency declaration";
             if (disabledTools.Contains(metadata.Id)) return "Tool disabled";
-            foreach (string library in metadata.Libraries.Concat(new[] { MeshLabLibraries.View }))
+            foreach (string library in ToolLibraries(type, metadata))
             {
                 string reason = LibraryUnavailableReason(library);
                 if (reason != null) return reason;
@@ -109,7 +109,7 @@ namespace SashaRX.UnityMeshLab
         {
             var resolved = new HashSet<string>();
             var metadata = Metadata(type);
-            var pending = new Stack<string>((metadata?.Libraries ?? Array.Empty<string>()).Concat(new[] { MeshLabLibraries.View }));
+            var pending = new Stack<string>(ToolLibraries(type, metadata));
             while (pending.Count > 0)
             {
                 string id = pending.Pop();
@@ -118,6 +118,12 @@ namespace SashaRX.UnityMeshLab
                     foreach (string required in library.Requires) pending.Push(required);
             }
             return resolved.OrderBy(id => id, StringComparer.Ordinal);
+        }
+
+        static IEnumerable<string> ToolLibraries(Type type, MeshLabToolAttribute metadata)
+        {
+            var required = metadata?.Libraries ?? Array.Empty<string>();
+            return typeof(IUvToolFullWindow).IsAssignableFrom(type) ? required : required.Concat(new[] { MeshLabLibraries.View });
         }
 
         internal List<IUvTool> CreateTools(IEnumerable<Type> types, Action repaint, IEnumerable<IUvTool> existing = null)

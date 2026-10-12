@@ -77,6 +77,17 @@ namespace SashaRX.UnityMeshLab
         void SaveWindowPreferences();
     }
 
+    internal interface IUvToolRestoreWindowPreferences
+    {
+        void RestoreWindowPreferences();
+    }
+
+    /// <summary>Tools whose controls use the full body below the Mesh Lab tabs.</summary>
+    internal interface IUvToolFullWindow
+    {
+        void OnDrawWindowContent();
+    }
+
     /// <summary>
     /// Opt-in for tools that take part in the shared 3D canvas (the hub's UV | 3D
     /// switch). Without it a tool's 3D view shows the context's meshes for the
