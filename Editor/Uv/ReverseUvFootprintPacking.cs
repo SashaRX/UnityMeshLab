@@ -110,13 +110,14 @@ namespace SashaRX.UnityMeshLab
                 ?new[] {scale,1f}:new[] {scale};
             foreach(float packingScale in scales.Distinct())
             {
-                var variants=packingScale==scale?masks:Masks(packingScale);
+                bool usesBaselineScale=packingScale.CompareTo(scale)==0;
+                var variants=usesBaselineScale?masks:Masks(packingScale);
                 foreach(var order in PackingOrders(source,variants).GroupBy(o=>string.Join(",",o.Select(m=>m[0].id))).Select(g=>g.First()))
                 {
                     token.ThrowIfCancellationRequested();
                     // Every order is an independent bounded search.
                     long packingWork=0,packingValidations=0;
-                    var packed=TryPack(order,side,options,token,validate,ref packingWork,ref packingValidations,diagnostics,packingScale==scale?baseline:null);
+                    var packed=TryPack(order,side,options,token,validate,ref packingWork,ref packingValidations,diagnostics,usesBaselineScale?baseline:null);
                     work+=packingWork;validations+=packingValidations;
                     if(packed==null) continue;
                     if(diagnostics!=null) ++diagnostics.completedOrders;
@@ -167,9 +168,16 @@ namespace SashaRX.UnityMeshLab
                         ?ReverseUvFamilyPacking.MinimumAltitude(source[m[0].id]):0)
                     .ThenByDescending(m=>Math.Max(m[0].width,m[0].height)).ThenBy(m=>m[0].id).ToArray(),
                 variants.OrderByDescending(m=>Math.Max(m[0].width,m[0].height)).ThenBy(m=>m[0].id).ToArray(),
-                variants.OrderByDescending((Mask[] m)=>m[0].rows.Sum((List<(int start,int end)> r)=>
-                    r.Sum(((int start,int end) span)=>span.end-span.start))).ThenBy(m=>m[0].id).ToArray()
+                variants.OrderByDescending((Mask[] m)=>MaskArea(m[0])).ThenBy(m=>m[0].id).ToArray()
             };
+
+        static int MaskArea(Mask mask)
+        {
+            int area=0;
+            foreach(var row in mask.rows)
+                foreach(var span in row) area+=span.end-span.start;
+            return area;
+        }
 
         // Start from the already validated family placement. A failed move of
         // one thin family must not discard the compaction of every other family.

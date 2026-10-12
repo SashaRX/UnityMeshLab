@@ -942,12 +942,18 @@ be exceeded even at an unrepresentable large atlas offset. Counts are exposed in
 `resolutionLimitedFaces`; raw worst-stretch diagnostics remain visible.
 
 Validation of the rebuild uses Unity 6000.2.6f2 in the isolated frozen-fixture
-project. 381 EditMode tests passed, zero failures; 34 optional fixture cases
+project. 419 EditMode tests passed, zero failures; 34 optional fixture cases
 skipped. Both compile-check FBX define variants passed. The new cases exercise
 folded shared quads, a wholly zero-UV repaired seed used as the actual next-LOD
 donor, whole-shell inheritance in both overlap policies, shared-corner precision,
 and ignored microscopic native proxy connectors. Paired model results and actual
 UV comparisons are retained under `_results~/reverse-rebuild-20261012/models-4/`.
+
+Review follow-up: snapshot payloads now preflight aggregate channels and all
+submesh indices before allocating one bounded buffer; Unicode names retain the
+version-1 binary format. Tests cover both oversized aggregates and round trips.
+CI findings in the rebuild were fixed without changing packing tolerances or
+ordering. The repeated 419-case suite and both FBX compile variants passed.
 
 All six full model runs completed, and all sixteen reverse LOD audits contain zero
 invalid/collapsed faces and unexpected overlaps. All thirty ordinary Forward layout

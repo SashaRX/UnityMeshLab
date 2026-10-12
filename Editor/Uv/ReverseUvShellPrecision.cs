@@ -60,28 +60,30 @@ namespace SashaRX.UnityMeshLab
                 foreach(float step in new[] {.00001f,.0001f,.001f,.005f})
                 {
                     for(int corner=0;corner<3 && !accepted;++corner)
-                    foreach(var direction in new[] {Vector2.right,Vector2.left,Vector2.up,Vector2.down})
                     {
-                        var connected=aliases[source[t+corner]];
-                        var old=new Vector2[connected.Count];
-                        var point=placed[t+corner]+direction*step;
-                        bool bounded=true;
-                        for(int i=0;i<connected.Count;++i)
+                        foreach(var direction in new[] {Vector2.right,Vector2.left,Vector2.up,Vector2.down})
                         {
-                            int c=connected[i];old[i]=placed[c];
-                            if(Distance(initial[c],point)>ErrorTexels) bounded=false;
-                            placed[c]=point;
+                            var connected=aliases[source[t+corner]];
+                            var old=new Vector2[connected.Count];
+                            var point=placed[t+corner]+direction*step;
+                            bool bounded=true;
+                            for(int i=0;i<connected.Count;++i)
+                            {
+                                int c=connected[i];old[i]=placed[c];
+                                if(Distance(initial[c],point)>ErrorTexels) bounded=false;
+                                placed[c]=point;
+                            }
+                            accepted=bounded;
+                            foreach(int c in connected)
+                            {
+                                int n=c/3,j=n*3;
+                                if(!Fits(frames[n],placed[j],placed[j+1],placed[j+2],limit)) accepted=false;
+                                if(Math.Sign(Area(placed[j],placed[j+1],placed[j+2]))
+                                    !=Math.Sign(Area(source[j],source[j+1],source[j+2]))*orientation) accepted=false;
+                            }
+                            if(accepted) break;
+                            for(int i=0;i<connected.Count;++i) placed[connected[i]]=old[i];
                         }
-                        accepted=bounded;
-                        foreach(int c in connected)
-                        {
-                            int n=c/3,j=n*3;
-                            if(!Fits(frames[n],placed[j],placed[j+1],placed[j+2],limit)) accepted=false;
-                            if(Math.Sign(Area(placed[j],placed[j+1],placed[j+2]))
-                                !=Math.Sign(Area(source[j],source[j+1],source[j+2]))*orientation) accepted=false;
-                        }
-                        if(accepted) break;
-                        for(int i=0;i<connected.Count;++i) placed[connected[i]]=old[i];
                     }
                     if(accepted) break;
                 }

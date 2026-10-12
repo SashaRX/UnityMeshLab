@@ -132,9 +132,12 @@ namespace SashaRX.UnityMeshLab
                 // Resolution chooses one common density. PreserveShape disables
                 // native per-axis extent rounding, which would stretch charts.
                 double area=0;
-                foreach(var hull in hulls) for(int f=0;f<hull.Length;f+=3)
-                    area+=Math.Abs(((double)hull[f+1].x-hull[f].x)*((double)hull[f+2].y-hull[f].y)
-                        -((double)hull[f+1].y-hull[f].y)*((double)hull[f+2].x-hull[f].x))*.5;
+                foreach(var hull in hulls)
+                {
+                    for(int f=0;f<hull.Length;f+=3)
+                        area+=Math.Abs(((double)hull[f+1].x-hull[f].x)*((double)hull[f+2].y-hull[f].y)
+                            -((double)hull[f+1].y-hull[f].y)*((double)hull[f+2].x-hull[f].x))*.5;
+                }
                 int estimate=fixedScale.HasValue?Mathf.NextPowerOfTwo((int)Math.Ceiling(Math.Sqrt(Math.Max(1,area/.75))*fixedScale.Value)):side;
                 bool bruteForce=(long)source.Length*estimate*estimate<=500000000L;
                 XatlasNative.xatlasPackChartsPreserveShape(0,(uint)options.padding,fixedScale ?? 0,
@@ -322,7 +325,7 @@ namespace SashaRX.UnityMeshLab
         static void Stroke(List<Vector2> points,Vector2 a,Vector2 b)
         {
             var edge=b-a;float length=edge.magnitude;if(length<=0) return;
-            var normal=new Vector2(-edge.y,edge.x)*(.01f/length);
+            var normal=new Vector2(x:-edge.y,y:edge.x)*(.01f/length);
             points.AddRange(new[] {a,b,b+normal,a,b+normal,a+normal,
                 b,a,a-normal,b,a-normal,b-normal});
         }
@@ -347,7 +350,8 @@ namespace SashaRX.UnityMeshLab
                 if(start>=end) return;
                 int middle=(start+end)/2,index=order[middle];var point=points[index];
                 double x=(double)point.x-query.x,y=(double)point.y-query.y,distance=x*x+y*y;
-                if(distance<best || distance==best && index<found) {found=index;best=distance;}
+                int comparison=distance.CompareTo(best);
+                if(comparison<0 || comparison==0 && index<found) {found=index;best=distance;}
                 double difference=(double)query[axis]-point[axis];
                 if(difference<=0) Search(start,middle,1-axis,query,ref found,ref best);
                 else Search(middle+1,end,1-axis,query,ref found,ref best);

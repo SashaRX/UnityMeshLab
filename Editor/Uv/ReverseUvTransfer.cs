@@ -864,80 +864,78 @@ namespace SashaRX.UnityMeshLab
                     }
             if (refs.Count == 0) return;
             token.ThrowIfCancellationRequested();
+            // Unsupported finer geometry retains its own authored seam
+            // domains and receives the same local metric repair as the seed.
+            // Do not create thousands of fresh Unity charts from fragments
+            // left between inherited faces.
+            var uv=new Vector2[positions.Count];
+            for(int i=0;i<refs.Count;++i)
             {
-                // Unsupported finer geometry retains its own authored seam
-                // domains and receives the same local metric repair as the seed.
-                // Do not create thousands of fresh Unity charts from fragments
-                // left between inherited faces.
-                var uv=new Vector2[positions.Count];
-                for(int i=0;i<refs.Count;++i)
+                var (surface,face)=refs[i];var sourceUv=surface.sourceUvCorners;
+                int source=surface.sourceFaces[face]*3;
+                for(int k=0;k<3;++k)
                 {
-                    var (surface,face)=refs[i];var sourceUv=surface.sourceUvCorners;
-                    int source=surface.sourceFaces[face]*3;
-                    for(int k=0;k<3;++k)
-                    {
-                        var bary=surface.sourceBarycentrics==null?(k==0?Vector3.right:k==1?Vector3.up:Vector3.forward)
-                            :surface.sourceBarycentrics[face*3+k];
-                        var p=sourceUv[source]*bary.x+sourceUv[source+1]*bary.y+sourceUv[source+2]*bary.z;
-                        uv[i*3+k]=Finite(p.x)&&Finite(p.y)?p:Vector2.zero;
-                    }
+                    var bary=surface.sourceBarycentrics==null?(k==0?Vector3.right:k==1?Vector3.up:Vector3.forward)
+                        :surface.sourceBarycentrics[face*3+k];
+                    var p=sourceUv[source]*bary.x+sourceUv[source+1]*bary.y+sourceUv[source+2]*bary.z;
+                    uv[i*3+k]=Finite(p.x)&&Finite(p.y)?p:Vector2.zero;
                 }
-                var regions=ReverseUvSeed.AuthoredRegions(positions.ToArray(),uv,
-                    refs.SelectMany(p=>Enumerable.Repeat(p.s.node,3)).ToArray(),token);
-                var strips=options.cutNarrowJunctions?CutNewStrips(ref refs,ref positions,ref uv,options,density,token):null;
-                if(strips!=null)
-                {
-                    regions=strips;
-                    // Subdivision copies inherited records too. Their old
-                    // intentional contact graph refers to replaced objects.
-                    ResolveOverlaps(surfaces,options,token);
-                }
-                var frames=refs.Select(p=>p.s.metricFrames[p.f]).ToArray();
-                bool[] fallback;
-                Vector2[] pixels;
-                if(regions==null) pixels=ReverseUvNewCharts.Prepare(positions.ToArray(),uv,density,options,token,out fallback,frames);
-                else
-                {
-                    fallback=ReverseUvNewCharts.Classify(positions.ToArray(),uv,options,token,frames,regions);
-                    pixels=ReverseUvSeedPacking.Prepare(positions.ToArray(),uv,density,true,options,token,out _,regions:regions,frames:frames,
-                        preparedFallback:repaired=>fallback=repaired);
-                }
-                var min = pixels[0]; var max = min;
-                foreach (var p in pixels) { min = Vector2.Min(min, p); max = Vector2.Max(max, p); }
-                var offset = new Vector2(width + options.padding, options.padding);
-                var placed = options.fillAtlasVacancies
-                    ? ReverseUvAtlasPlacement.Place(positions.ToArray(), pixels, previousLevels, surfaces,
-                        options, width, height, token, fallback, density,frames)
-                    : pixels.Select(p => p - min + offset).ToArray();
-                ReverseUvNewCharts.Stabilize(positions.ToArray(), placed, fallback, density, options.maxAnisotropy, token: token,frames:frames);
-                for (int i = 0; i < refs.Count; ++i)
-                {
-                    var (s, f) = refs[i];
-                    var face = s.faces[f];
-                    face.parentLod = face.parentMesh = face.parentFace = -1;
-                    face.overlayMesh = face.overlayFace = -1; face.layer = face.projectionLayer = 0; face.intentionalOverlap = false;
-                    face.localFallback = fallback[i];
-                    for (int k = 0; k < 3; ++k) s.pixels[f * 3 + k] = placed[i * 3 + k];
-                    if (Anisotropy(s, f) > options.maxAnisotropy)
-                        throw new InvalidOperationException($"New reverse UV '{s.input.key}' face {f} exceeds the stretch limit (anisotropy {Anisotropy(s,f):G5}, local fallback {face.localFallback}); atlas was not published. "
-                            + $"Density {density:G9}; positions {s.positions[s.indices[f*3]].ToString(coordinateFormat)} / {s.positions[s.indices[f*3+1]].ToString(coordinateFormat)} / {s.positions[s.indices[f*3+2]].ToString(coordinateFormat)}; "
-                            + $"pixels {placed[i*3].ToString(coordinateFormat)} / {placed[i*3+1].ToString(coordinateFormat)} / {placed[i*3+2].ToString(coordinateFormat)}.");
-                }
-                foreach(var s in surfaces)
-                    AssignCharts(s,Enumerable.Range(0,s.faces.Length).Where(f=>!s.faces[f].inherited).ToArray(),ref nextChart);
-                var quality = UvAtlasDiagnostics.Measure(Atlas(surfaces), token, comparisonBudget: options.comparisonBudget, collectConflicts: true);
-                if (!quality.complete || quality.degenerateFaces > 0 || quality.invalidFaces > 0
-                    || (!options.preserveProjectedOverlap && quality.pairs > 0))
-                    throw new InvalidOperationException("Expanded reverse UV atlas failed validation.");
-                var faceRefs = new List<(Surface surface,int face)>();
-                foreach (var surface in surfaces)
-                    for(int f=0;f<surface.faces.Length;++f) faceRefs.Add((surface,f));
-                foreach (var (a, b) in quality.conflicts)
-                    if (!IsOrderedOverlap(faceRefs[a].surface.faces[faceRefs[a].face],faceRefs[b].surface.faces[faceRefs[b].face]))
-                        throw new InvalidOperationException($"Expanded reverse UV atlas contains an unclassified overlap: LOD{surfaces[0].lod} "
-                            +$"node {faceRefs[a].surface.node}/face {faceRefs[a].face} / node {faceRefs[b].surface.node}/face {faceRefs[b].face}.");
-                foreach (var p in placed) { width = Math.Max(width, p.x + options.padding); height = Math.Max(height, p.y + options.padding); }
             }
+            var regions=ReverseUvSeed.AuthoredRegions(positions.ToArray(),uv,
+                refs.SelectMany(p=>Enumerable.Repeat(p.s.node,3)).ToArray(),token);
+            var strips=options.cutNarrowJunctions?CutNewStrips(ref refs,ref positions,ref uv,options,density,token):null;
+            if(strips!=null)
+            {
+                regions=strips;
+                // Subdivision copies inherited records too. Their old
+                // intentional contact graph refers to replaced objects.
+                ResolveOverlaps(surfaces,options,token);
+            }
+            var frames=refs.Select(p=>p.s.metricFrames[p.f]).ToArray();
+            bool[] fallback;
+            Vector2[] pixels;
+            if(regions==null) pixels=ReverseUvNewCharts.Prepare(positions.ToArray(),uv,density,options,token,out fallback,frames);
+            else
+            {
+                fallback=ReverseUvNewCharts.Classify(positions.ToArray(),uv,options,token,frames,regions);
+                pixels=ReverseUvSeedPacking.Prepare(positions.ToArray(),uv,density,true,options,token,out _,regions:regions,frames:frames,
+                    preparedFallback:repaired=>fallback=repaired);
+            }
+            var min = pixels[0]; var max = min;
+            foreach (var p in pixels) { min = Vector2.Min(min, p); max = Vector2.Max(max, p); }
+            var offset = new Vector2(width + options.padding, options.padding);
+            var placed = options.fillAtlasVacancies
+                ? ReverseUvAtlasPlacement.Place(positions.ToArray(), pixels, previousLevels, surfaces,
+                    options, width, height, token, fallback, density,frames)
+                : pixels.Select(p => p - min + offset).ToArray();
+            ReverseUvNewCharts.Stabilize(positions.ToArray(), placed, fallback, density, options.maxAnisotropy, token: token,frames:frames);
+            for (int i = 0; i < refs.Count; ++i)
+            {
+                var (s, f) = refs[i];
+                var face = s.faces[f];
+                face.parentLod = face.parentMesh = face.parentFace = -1;
+                face.overlayMesh = face.overlayFace = -1; face.layer = face.projectionLayer = 0; face.intentionalOverlap = false;
+                face.localFallback = fallback[i];
+                for (int k = 0; k < 3; ++k) s.pixels[f * 3 + k] = placed[i * 3 + k];
+                if (Anisotropy(s, f) > options.maxAnisotropy)
+                    throw new InvalidOperationException($"New reverse UV '{s.input.key}' face {f} exceeds the stretch limit (anisotropy {Anisotropy(s,f):G5}, local fallback {face.localFallback}); atlas was not published. "
+                        + $"Density {density:G9}; positions {s.positions[s.indices[f*3]].ToString(coordinateFormat)} / {s.positions[s.indices[f*3+1]].ToString(coordinateFormat)} / {s.positions[s.indices[f*3+2]].ToString(coordinateFormat)}; "
+                        + $"pixels {placed[i*3].ToString(coordinateFormat)} / {placed[i*3+1].ToString(coordinateFormat)} / {placed[i*3+2].ToString(coordinateFormat)}.");
+            }
+            foreach(var s in surfaces)
+                AssignCharts(s,Enumerable.Range(0,s.faces.Length).Where(f=>!s.faces[f].inherited).ToArray(),ref nextChart);
+            var quality = UvAtlasDiagnostics.Measure(Atlas(surfaces), token, comparisonBudget: options.comparisonBudget, collectConflicts: true);
+            if (!quality.complete || quality.degenerateFaces > 0 || quality.invalidFaces > 0
+                || (!options.preserveProjectedOverlap && quality.pairs > 0))
+                throw new InvalidOperationException("Expanded reverse UV atlas failed validation.");
+            var faceRefs = new List<(Surface surface,int face)>();
+            foreach (var surface in surfaces)
+                for(int f=0;f<surface.faces.Length;++f) faceRefs.Add((surface,f));
+            foreach (var (a, b) in quality.conflicts)
+                if (!IsOrderedOverlap(faceRefs[a].surface.faces[faceRefs[a].face],faceRefs[b].surface.faces[faceRefs[b].face]))
+                    throw new InvalidOperationException($"Expanded reverse UV atlas contains an unclassified overlap: LOD{surfaces[0].lod} "
+                        +$"node {faceRefs[a].surface.node}/face {faceRefs[a].face} / node {faceRefs[b].surface.node}/face {faceRefs[b].face}.");
+            foreach (var p in placed) { width = Math.Max(width, p.x + options.padding); height = Math.Max(height, p.y + options.padding); }
         }
 
         static void AssignCharts(Surface surface, int[] faces, ref int nextChart)

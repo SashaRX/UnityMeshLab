@@ -238,7 +238,7 @@ namespace SashaRX.UnityMeshLab
                         if(along<=0 || across<0 || across>1 || along>=nearest) continue;
                         nearest=along;direction=candidate;
                     }
-                if(nearest==double.MaxValue) continue;
+                if(nearest.CompareTo(double.MaxValue)==0) continue;
                 var end=uv[v]+direction*(float)nearest;
                 if(direction.x<0 || (Math.Abs(direction.x)<float.Epsilon && direction.y<0)) direction=-direction;
                 bool duplicate=lines.Any(l=>Math.Abs(Cross(l.direction,direction))<1e-5

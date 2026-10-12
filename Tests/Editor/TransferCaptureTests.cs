@@ -346,6 +346,32 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Snapshot_PreflightsAggregateChannelsAndIndicesBeforeAllocatingPayload()
+        {
+            // Each count is within the reader's individual mesh limits, while
+            // the aggregate payload is too large. No huge Mesh is allocated.
+            Assert.Throws<InvalidOperationException>(()=>TransferMeshSnapshot.ValidateCaptureByteCount(
+                "UV-heavy",4000000,12+12+16+16+8*16,1,12000000));
+            Assert.Throws<InvalidOperationException>(()=>TransferMeshSnapshot.ValidateCaptureByteCount(
+                "Many submeshes",4,12,10,10UL*15000000));
+        }
+
+        [Test]
+        public void Snapshot_PreflightKeepsUnicodeNameAndVariableLengthPrefixFormat()
+        {
+            var mesh=Quad();Mesh restored=null;
+            try
+            {
+                mesh.name=new string('\u0416',100);
+                byte[] bytes=TransferMeshSnapshot.Capture(mesh);
+                restored=TransferMeshSnapshot.Restore(bytes);
+                Assert.AreEqual(mesh.name,restored.name);
+                CollectionAssert.AreEqual(bytes,TransferMeshSnapshot.Capture(restored));
+            }
+            finally {UnityEngine.Object.DestroyImmediate(mesh);if(restored) UnityEngine.Object.DestroyImmediate(restored);}
+        }
+
+        [Test]
         public void Snapshot_PreservesFloatBitsUvDimensionsAndSubmeshes()
         {
             var mesh = Quad(); Mesh restored = null;

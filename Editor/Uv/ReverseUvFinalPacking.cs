@@ -218,16 +218,18 @@ namespace SashaRX.UnityMeshLab
                         {
                             float initialDensity=candidateScale;
                             foreach(float multiplier in new[] {2f,1.875f,1.75f,1.5f})
-                            try
                             {
-                                var larger=ReverseUvFamilyPacking.Pack(coordinates,options,token,out int largerSide,
-                                    out float largerScale,Valid,initialScale:initialDensity*multiplier);
-                                if(BoundsCost(larger,largerScale)<BoundsCost(candidate,candidateScale))
-                                {candidate=larger;candidateSide=largerSide;candidateScale=largerScale;}
-                                break;
+                                try
+                                {
+                                    var larger=ReverseUvFamilyPacking.Pack(coordinates,options,token,out int largerSide,
+                                        out float largerScale,Valid,initialScale:initialDensity*multiplier);
+                                    if(BoundsCost(larger,largerScale)<BoundsCost(candidate,candidateScale))
+                                    {candidate=larger;candidateSide=largerSide;candidateScale=largerScale;}
+                                    break;
+                                }
+                                catch(InvalidOperationException error)
+                                {UvtLog.Info(UvtLog.Category.Repack,"[ReverseUV] Higher-density complete shell trial refused: "+error.Message);}
                             }
-                            catch(InvalidOperationException error)
-                            {UvtLog.Info(UvtLog.Category.Repack,"[ReverseUV] Higher-density complete shell trial refused: "+error.Message);}
                         }
                         int completedSide=candidateSide;
                         candidate=ReverseUvFootprintPacking.Improve(coordinates,candidate,candidateSide,candidateScale,

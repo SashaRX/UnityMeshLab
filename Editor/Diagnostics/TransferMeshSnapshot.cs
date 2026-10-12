@@ -18,10 +18,24 @@ namespace SashaRX.UnityMeshLab
             if (!mesh || !mesh.isReadable) throw new InvalidOperationException("Capture requires a readable working mesh.");
             if (mesh.vertexCount > MaxVertices || mesh.subMeshCount > 65536)
                 throw new InvalidOperationException("Transfer snapshot exceeds the reader's mesh limits.");
-            for (int sub = 0; sub < mesh.subMeshCount; ++sub)
-                if (mesh.GetIndexCount(sub) > MaxIndices)
+            ulong indexCount=0;
+            for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
+                uint count=mesh.GetIndexCount(sub);
+                if (count > MaxIndices)
                     throw new InvalidOperationException("Transfer snapshot exceeds the reader's index limit.");
-            using var stream = new MemoryStream();
+                indexCount+=count;
+            }
+            int bytesPerVertex=0;
+            foreach(var attribute in new[] {VertexAttribute.Position,VertexAttribute.Normal,VertexAttribute.Tangent,VertexAttribute.Color})
+                if(mesh.HasVertexAttribute(attribute))
+                    bytesPerVertex+=attribute==VertexAttribute.Position || attribute==VertexAttribute.Normal?12:16;
+            for(int channel=0;channel<8;++channel)
+                if(mesh.HasVertexAttribute((VertexAttribute)((int)VertexAttribute.TexCoord0+channel))) bytesPerVertex+=16;
+            long size=ValidateCaptureByteCount(mesh.name,mesh.vertexCount,bytesPerVertex,mesh.subMeshCount,indexCount);
+            // Allocate the bounded final payload once. Attribute arrays have not
+            // been read yet; no growing stream or full-size ToArray copy exists.
+            var data=new byte[(int)size];
+            using var stream = new MemoryStream(data,true);
             using var writer = new BinaryWriter(stream);
             writer.Write(Magic); writer.Write(Version); writer.Write(mesh.name);
             Write(writer, mesh.vertices); Write(writer, mesh.normals);
@@ -42,8 +56,21 @@ namespace SashaRX.UnityMeshLab
                 foreach (int index in indices) writer.Write(index);
             }
             writer.Flush();
-            if (stream.Length > MaxFileBytes) throw new InvalidOperationException("Transfer snapshot exceeds the size limit.");
-            return stream.ToArray();
+            if (stream.Position != size) throw new InvalidOperationException("Transfer snapshot attribute sizes changed during capture.");
+            return data;
+        }
+
+        internal static long ValidateCaptureByteCount(string name,int vertices,int bytesPerVertex,int submeshes,ulong indices)
+        {
+            int nameBytes=System.Text.Encoding.UTF8.GetByteCount(name);
+            int prefixBytes=1;
+            for(int remaining=nameBytes;remaining>=128;remaining>>=7) ++prefixBytes;
+            // Magic/version, BinaryWriter string, four attribute lengths,
+            // eight UV dimension/count pairs, submesh count and topology/counts.
+            long size=checked(8L+prefixBytes+nameBytes+16+64+4+8L*submeshes
+                +(long)vertices*bytesPerVertex+4L*(long)indices);
+            if(size>MaxFileBytes) throw new InvalidOperationException("Transfer snapshot exceeds the size limit.");
+            return size;
         }
 
         internal static Mesh Restore(byte[] data)

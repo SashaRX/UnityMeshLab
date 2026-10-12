@@ -13,7 +13,6 @@ namespace SashaRX.UnityMeshLab
         bool reversePrepareSeed = true, reversePreserveOverlap;
         bool reverseFillAtlas = true;
         bool reverseUseForwardCharts = true;
-        bool reverseRebuildSeedWithUnity;
         float reverseReach = .05f;
         string reverseSummary;
 
@@ -82,7 +81,7 @@ namespace SashaRX.UnityMeshLab
                     rotateCharts = ctx.XatlasRotateCharts, rotateChartsToAxis = ctx.XatlasRotateChartsToAxis,
                     repackFinalAtlas = true, fillFinalAtlas = reverseFillAtlas,
                     regroupPreparedAtlas = forward != null,
-                    rebuildSeedWithUnity = reverseRebuildSeedWithUnity
+                    rebuildSeedWithUnity = false
                 };
                 UvProgress.Report(.15f, "Project and expand atlas");
                 using var prepared = await ReverseUvJunctionTrial.Build(sources, options, reversePrepareSeed,
