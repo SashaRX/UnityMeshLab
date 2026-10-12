@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -215,18 +216,18 @@ namespace SashaRX.UnityMeshLab
         static Object WriteResultModel(SavedModel model, string folder, string clean, string[] names,
             string outputFbxPath, bool meshAssetsOnly, bool fbxModel, Action committed)
         {
-            string prefabPath = folder + "/" + clean + ".prefab";
+            string prefabPath = Path.Combine(folder, clean + ".prefab").Replace('\\', '/');
             using (new AssetDatabase.AssetEditingScope())
                 for (int i = 0; i < names.Length; ++i)
-                    AssetDatabase.CreateAsset(model.materials[i], folder + "/" + names[i] + ".mat");
+                    AssetDatabase.CreateAsset(model.materials[i], Path.Combine(folder, names[i] + ".mat").Replace('\\', '/'));
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             if (!meshAssetsOnly && (!model.hierarchy || outputFbxPath != null || fbxModel))
-                return ExportFbx(outputFbxPath ?? folder + "/" + clean + ".fbx", model.root, model.materials, prefabPath,
+                return ExportFbx(outputFbxPath ?? Path.Combine(folder, clean + ".fbx").Replace('\\', '/'), model.root, model.materials, prefabPath,
                     model.normalize || model.sourceOverwrite, committed);
 #endif
             using (new AssetDatabase.AssetEditingScope())
                 for (int i = 0; i < names.Length; ++i)
-                    AssetDatabase.CreateAsset(model.meshes[i], folder + "/" + names[i] + "_LOD0.asset");
+                    AssetDatabase.CreateAsset(model.meshes[i], Path.Combine(folder, names[i] + "_LOD0.asset").Replace('\\', '/'));
             PrefabUtility.SaveAsPrefabAsset(model.root, prefabPath, out bool success);
             if (!success) throw new IOException("Prefab save failed.");
             return AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
@@ -249,8 +250,8 @@ namespace SashaRX.UnityMeshLab
         static void DestroyTemporary(List<Object> temporary)
         {
             // Persistent assets are now owned by the AssetDatabase.
-            foreach (var item in temporary)
-                if (item && !AssetDatabase.Contains(item)) Object.DestroyImmediate(item);
+            foreach (var item in temporary.Where(item => item && !AssetDatabase.Contains(item)))
+                Object.DestroyImmediate(item);
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER

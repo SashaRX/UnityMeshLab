@@ -736,10 +736,9 @@ namespace SashaRX.UnityMeshLab
         static bool TryPrepareDocumentPaths(FbxSourceDocument document, List<GeneratedCollisionInfo> results,
             Dictionary<Transform, string> paths, Dictionary<Transform, string> documentPaths)
         {
-            foreach (var result in results)
+            foreach (var source in results.Select(result => result.sourceTransform).Where(source => source != null))
             {
-                if (result.sourceTransform == null) continue;
-                try { documentPaths[result.sourceTransform] = FbxStructureWrite.ImportedCollisionDocumentPath(document, paths[result.sourceTransform]); }
+                try { documentPaths[source] = FbxStructureWrite.ImportedCollisionDocumentPath(document, paths[source]); }
                 catch (FbxStructureRefusalException e)
                 {
                     UvtLog.Warn($"[Collision] {e.Message}; sidecar was not changed.");
