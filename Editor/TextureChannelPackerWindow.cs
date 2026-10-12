@@ -55,7 +55,7 @@ namespace SashaRX.UnityMeshLab
                 bool restored = textureName != null;
                 if (restored) EditorPrefs.SetString(MeshLabWindowPreferences.Key("TexturePacker"), JsonUtility.ToJson(this));
                 var hub = UvToolHub.OpenWithTool("texture_channel_packer");
-                if (restored) hub.FindTool<TextureChannelPackerTool>()?.RestoreWindowPreferences();
+                if (restored) hub.RestoreActiveToolPreferences();
             }
             finally { Close(); }
         }

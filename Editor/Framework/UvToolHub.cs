@@ -32,6 +32,11 @@ namespace SashaRX.UnityMeshLab
             return null;
         }
 
+        internal void RestoreActiveToolPreferences()
+        {
+            if (ActiveTool is IUvToolRestoreWindowPreferences preferences) preferences.RestoreWindowPreferences();
+        }
+
         // ── Shared components ──
         UvToolContext ctx;
         internal UvToolContext DiagnosticContext => ctx;
