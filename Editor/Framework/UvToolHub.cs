@@ -603,8 +603,10 @@ namespace SashaRX.UnityMeshLab
             {
                 if (!debug && tools[i] is IUvToolDebugOnly) continue;
                 var bg = GUI.backgroundColor;
-                if (i == activeToolIndex)
-                    GUI.backgroundColor = new Color(.35f, .65f, 1f);
+                bool selected = i == activeToolIndex;
+                Color accent = ToolTabAccent(tools[i].ToolId);
+                float tint = EditorGUIUtility.isProSkin ? (selected ? .7f : .35f) : (selected ? .4f : .2f);
+                GUI.backgroundColor = bg * Color.Lerp(Color.white, accent, tint);
                 float width = Mathf.Max(80, EditorStyles.toolbarButton.CalcSize(new GUIContent(tools[i].ToolName)).x);
                 if (GUI.Button(new Rect(x, 0, width, height), tools[i].ToolName, EditorStyles.toolbarButton))
                 {
@@ -612,6 +614,7 @@ namespace SashaRX.UnityMeshLab
                         SwitchTool(i);
                 }
                 GUI.backgroundColor = bg;
+                if (selected) EditorGUI.DrawRect(new Rect(x + 1, height - 2, width - 2, 2), accent);
                 x += width;
             }
             GUI.EndScrollView();
@@ -628,6 +631,23 @@ namespace SashaRX.UnityMeshLab
             var lvl = (UvtLog.Level)EditorGUI.EnumPopup(new Rect(x + 86, 0, 64, height), UvtLog.Current, EditorStyles.toolbarPopup);
             if (lvl != UvtLog.Current) UvtLog.Current = lvl;
         }
+
+        // Stable tool IDs keep each colour when tabs are reordered or modules are hidden.
+        static Color ToolTabAccent(string toolId) => toolId switch
+        {
+            "uv2_transfer" => new Color(.45f, .72f, .96f),
+            "lod_generation" => new Color(.55f, .82f, .60f),
+            "remesh_bake" => new Color(.96f, .66f, .43f),
+            "collision_mesh" => new Color(.91f, .54f, .57f),
+            "uv1_hierarchy" => new Color(.67f, .59f, .91f),
+            "prefab_builder" => new Color(.45f, .81f, .79f),
+            "cleanup" => new Color(.85f, .80f, .50f),
+            "vertex_color_baking" => new Color(.87f, .58f, .80f),
+            "foliage_normals" => new Color(.68f, .82f, .43f),
+            "texture_channel_packer" => new Color(.51f, .76f, .86f),
+            "diagnostics" => new Color(.72f, .72f, .78f),
+            _ => new Color(.70f, .76f, .82f)
+        };
 
         // ════════════════════════════════════════════════════════════
         //  Inline progress strip — sits at the very bottom of the window
