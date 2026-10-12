@@ -32,7 +32,9 @@ checksum-protected `details/<SHA256>.json` files, each limited to 512 MiB. Repla
 loads pair details on demand. Older schema 1 captures are still supported.
 
 Each completed transfer pair stores the exact source UV0/UV2, target geometry/UV0,
-cross-LOD hints passed to that invocation, lightmap dimensions and clamp setting.
+cross-LOD hints passed to that invocation, lightmap dimensions, clamp setting and
+boundary tolerance in texels. Older captures without the tolerance field replay
+with the historical 0.25-texel default; an explicitly captured zero stays zero.
 Binary snapshots preserve float bits, UV channel dimensions and submeshes and are
 named by SHA-256. Matching traces contain the best eight **evaluated** candidates
 per search, actual distance/normal scores, initial/final source assignment, hint and

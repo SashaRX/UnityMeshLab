@@ -2401,7 +2401,7 @@ namespace SashaRX.UnityMeshLab
             if (!HasSourceShellTransforms(srcMesh)) return;
 
             UvProgress.Report(-1f, $"Transfer LOD{tLod} ← '{tgt.renderer.name}'");
-            var pair = ctx.DiagnosticCapture?.BeforePair(srcEntry, tgt, srcMesh, tgtMesh, hintState.overlapHints, hintState.matchHints);
+            var pair = ctx.DiagnosticCapture?.BeforePair(srcEntry, tgt, srcMesh, tgtMesh, hintState.overlapHints, hintState.matchHints, TransferBoundaryToleranceTexels);
             var tr = await TransferMesh(tgtMesh, srcMesh,
                 hintState.overlapHints.Count > 0 ? hintState.overlapHints : null,
                 hintState.matchHints.Count > 0 ? hintState.matchHints : null,

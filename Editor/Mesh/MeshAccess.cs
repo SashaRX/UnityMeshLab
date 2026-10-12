@@ -46,29 +46,75 @@ namespace SashaRX.UnityMeshLab
 
         // Static-mesh capture that keeps storage formats, streams, index buffers and
         // submesh descriptors exactly, without toggling the source importer.
-        static Mesh RawReadableCopy(Mesh src)
+        internal static Mesh RawReadableCopy(Mesh src, Func<Mesh, Mesh, Mesh> readSnapshot = null)
         {
             var dst = new Mesh();
-            try
-            {
-                using var snapshot = MeshUtility.AcquireReadOnlyMeshData(src);
-                var data = snapshot[0];
-                dst.SetVertexBufferParams(data.vertexCount, src.GetVertexAttributes());
-                for (int stream = 0; stream < data.vertexBufferCount; stream++)
-                {
-                    var bytes = data.GetVertexData<byte>(stream);
-                    dst.SetVertexBufferData(bytes, 0, 0, bytes.Length, stream, MeshUpdateFlags.DontRecalculateBounds);
+            try {
+                try { return (readSnapshot ?? CopyRawMeshData)(src, dst); }
+                catch (Exception error) when (!src.isReadable && SnapshotUnavailable(error)) {
+                    return ReadThroughImporter(src, dst, CopyRawMeshData, error);
                 }
-                var indices = data.GetIndexData<byte>();
-                dst.SetIndexBufferParams(indices.Length / (data.indexFormat == IndexFormat.UInt16 ? 2 : 4), data.indexFormat);
-                dst.SetIndexBufferData(indices, 0, 0, indices.Length, MeshUpdateFlags.DontRecalculateBounds);
-                dst.subMeshCount = data.subMeshCount;
-                for (int s = 0; s < data.subMeshCount; s++) dst.SetSubMesh(s, data.GetSubMesh(s), MeshUpdateFlags.DontRecalculateBounds);
-                dst.bounds = src.bounds;
-                MeshUvState.SetDraft(dst, MeshUvState.IsDraft(src));
-                return dst;
             }
             catch { UnityEngine.Object.DestroyImmediate(dst); throw; }
+        }
+
+        static Mesh CopyRawMeshData(Mesh src, Mesh dst)
+        {
+            using var snapshot = MeshUtility.AcquireReadOnlyMeshData(src);
+            if (snapshot.Length != 1) throw new MeshDataUnavailableException("MeshData snapshot is incomplete.");
+            var data = snapshot[0];
+            ValidateMeshData(src, data);
+            dst.SetVertexBufferParams(data.vertexCount, src.GetVertexAttributes());
+            for (int stream = 0; stream < data.vertexBufferCount; stream++) {
+                var bytes = data.GetVertexData<byte>(stream);
+                dst.SetVertexBufferData(bytes, 0, 0, bytes.Length, stream, MeshUpdateFlags.DontRecalculateBounds);
+            }
+            var indices = data.GetIndexData<byte>();
+            dst.SetIndexBufferParams(indices.Length / (data.indexFormat == IndexFormat.UInt16 ? 2 : 4), data.indexFormat);
+            dst.SetIndexBufferData(indices, 0, 0, indices.Length, MeshUpdateFlags.DontRecalculateBounds);
+            dst.subMeshCount = data.subMeshCount;
+            for (int sub = 0; sub < data.subMeshCount; sub++)
+                dst.SetSubMesh(sub, data.GetSubMesh(sub), MeshUpdateFlags.DontRecalculateBounds);
+            // Preserve exact descriptors unless internal Mesh LOD backing ranges
+            // contain hidden indices. Then rebuild only the active submesh ranges.
+            if (HasInactiveLodIndices(src, data)) {
+                for (int sub = 0; sub < data.subMeshCount; sub++) {
+                    var active = ReadIndices(src, data, sub);
+                    int baseVertex = (int)src.GetBaseVertex(sub);
+                    for (int i = 0; i < active.Length; ++i) active[i] -= baseVertex;
+                    dst.SetIndices(active, src.GetTopology(sub), sub, calculateBounds: false, baseVertex: baseVertex);
+                }
+            }
+            dst.bounds = src.bounds;
+            MeshUvState.SetDraft(dst, MeshUvState.IsDraft(src));
+            return dst;
+        }
+
+        static bool HasInactiveLodIndices(Mesh src, Mesh.MeshData data)
+        {
+            for (int sub = 0; sub < data.subMeshCount; ++sub)
+                if (data.GetSubMesh(sub).indexCount != src.GetIndexCount(sub)) return true;
+            return false;
+        }
+
+        static bool SnapshotUnavailable(Exception error)
+            => error is MeshDataUnavailableException || error is NotSupportedException
+                || (error.Message != null && error.Message.IndexOf("isReadable", StringComparison.OrdinalIgnoreCase) >= 0);
+
+        static Mesh ReadThroughImporter(Mesh src, Mesh dst, Func<Mesh, Mesh, Mesh> read, Exception cause)
+        {
+            string path = AssetDatabase.GetAssetPath(src);
+            if (!(AssetImporter.GetAtPath(path) is ModelImporter model))
+                throw new InvalidOperationException(src.name + " is Read/Write-disabled with no importer to read it through; enable Read/Write on its import or drop it from the capture.", cause);
+            bool wasReadable = model.isReadable;
+            model.isReadable = true;
+            try { model.SaveAndReimport(); return read(src, dst); }
+            finally {
+                if (AssetImporter.GetAtPath(path) is ModelImporter restore) {
+                    restore.isReadable = wasReadable;
+                    restore.SaveAndReimport();
+                }
+            }
         }
 
         static Mesh ReadableCopyCore(Mesh src, Mesh dst)
@@ -93,26 +139,10 @@ namespace SashaRX.UnityMeshLab
                 try {
                     return MakeReadableCopyFromMeshData(src, dst);
                 }
-                catch (Exception e) when (e is MeshDataUnavailableException || (e.Message != null && e.Message.IndexOf("isReadable", StringComparison.OrdinalIgnoreCase) >= 0)) {
-                    // An unavailable Editor snapshot leaves only the importer path:
-                    // flip THIS file's Read/Write for the read and put it back afterwards —
-                    // a reimport pair only for files the MeshData path cannot serve, never
-                    // for the readable or MeshData-served majority.
-                    string path = AssetDatabase.GetAssetPath(src);
-                    if (!(AssetImporter.GetAtPath(path) is ModelImporter model))
-                        throw new InvalidOperationException(src.name + " is Read/Write-disabled with no importer to read it through; enable Read/Write on its import or drop it from the capture.", e);
-                    model.isReadable = true;
-                    try {
-                        model.SaveAndReimport();
-                        FillReadableCopy(src, dst);
-                        return dst;
-                    }
-                    finally {
-                        if (AssetImporter.GetAtPath(path) is ModelImporter restore) {
-                            restore.isReadable = false;
-                            restore.SaveAndReimport();
-                        }
-                    }
+                catch (Exception error) when (SnapshotUnavailable(error)) {
+                    return ReadThroughImporter(src, dst, (source, destination) => {
+                        FillReadableCopy(source, destination); return destination;
+                    }, error);
                 }
             }
             FillReadableCopy(src, dst);
@@ -348,10 +378,17 @@ namespace SashaRX.UnityMeshLab
             internal MeshDataUnavailableException(string message) : base(message) { }
         }
 
-        static void ValidateMeshData(Mesh source, Mesh.MeshData data)
+        internal static void ValidateMeshData(Mesh source, Mesh.MeshData data)
         {
-            if (data.vertexCount != source.vertexCount || (source.vertexCount > 0 && !data.HasVertexAttribute(VertexAttribute.Position)))
-                throw new MeshDataUnavailableException($"MeshData for '{source.name}' does not expose its source vertex buffer (isReadable={source.isReadable}).");
+            if (data.vertexCount != source.vertexCount || data.subMeshCount != source.subMeshCount
+                || data.vertexBufferCount != source.vertexBufferCount
+                || (source.vertexCount > 0 && !data.HasVertexAttribute(VertexAttribute.Position)))
+                throw new MeshDataUnavailableException($"MeshData for '{source.name}' does not expose its source buffers (isReadable={source.isReadable}).");
+            foreach (var attribute in source.GetVertexAttributes())
+                if (!data.HasVertexAttribute(attribute.attribute)
+                    || data.GetVertexAttributeFormat(attribute.attribute) != attribute.format
+                    || data.GetVertexAttributeDimension(attribute.attribute) != attribute.dimension)
+                    throw new MeshDataUnavailableException($"MeshData for '{source.name}' omits a vertex attribute (isReadable={source.isReadable}).");
         }
 
         static Vector3[] ReadVectors3(Mesh.MeshData md, int count)

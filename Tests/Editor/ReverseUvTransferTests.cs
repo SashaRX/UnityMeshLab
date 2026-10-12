@@ -1296,7 +1296,42 @@ namespace SashaRX.UnityMeshLab.Tests
                 vertUv0 = new[] {Vector2.zero,distinctUv0?Vector2.right:Vector2.zero,Vector2.up,Vector2.one},
                 uv2 = new[] {Vector2.zero,sameUv2?Vector2.zero:Vector2.right,Vector2.up,Vector2.one}
             };
+            source.vertices = entry.vertPositions; source.uv = entry.vertUv0;
+            entry.optimizedTriangles = source.triangles; entry.submeshTriangleCounts = new[] { source.triangles.Length };
             Assert.AreEqual(distinctBucket || distinctUv0 || sameUv2,SidecarStore.ReverseLegacyTopologySafe(source,entry));
+        }
+
+        [TestCase("position")] [TestCase("uv0")] [TestCase("triangles")]
+        [TestCase("winding")] [TestCase("submeshes")] [TestCase("missing-topology")]
+        public void ReverseSidecarRefusesEditedGeometryWithTheSameVertexCount(string change)
+        {
+            var source = Quad();
+            var result = Object.Instantiate(source); owned.Add(result);
+            var meshEntry = new MeshEntry { fbxMesh = source, originalMesh = source, reverseTransferJson = "ancestry" };
+            Assert.IsTrue(SidecarStore.TryBuildEntry(meshEntry, result, false, SidecarStore.AoUvTarget.None, out var saved));
+            if (change == "position") { var p = source.vertices; p[0] += Vector3.forward * .1f; source.vertices = p; }
+            if (change == "uv0") { var uv = source.uv; uv[0] += Vector2.one * .1f; source.uv = uv; }
+            if (change == "triangles") source.triangles = new[] { 0,1,3,1,2,3 };
+            if (change == "winding") source.triangles = new[] { 0,2,1,0,3,2 };
+            if (change == "submeshes") { source.subMeshCount = 2; source.SetTriangles(new[] {0,1,2},0); source.SetTriangles(new[] {0,2,3},1); }
+            if (change == "missing-topology") saved.optimizedTriangles = null;
+            var before = TransferMeshSnapshot.Capture(source);
+            Assert.IsFalse(SidecarStore.ReverseLegacyTopologySafe(source, saved));
+            CollectionAssert.AreEqual(before, TransferMeshSnapshot.Capture(source));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void ReverseSidecarAcceptsEquivalentGeometryAfterVertexAndTriangleReordering(bool unreadable)
+        {
+            var source = Quad(); var result = Object.Instantiate(source); owned.Add(result);
+            var meshEntry = new MeshEntry { fbxMesh = source, originalMesh = source, reverseTransferJson = "ancestry" };
+            Assert.IsTrue(SidecarStore.TryBuildEntry(meshEntry, result, false, SidecarStore.AoUvTarget.None, out var saved));
+            var p = source.vertices; var uv = source.uv;
+            source.vertices = new[] {p[2],p[0],p[3],p[1]}; source.uv = new[] {uv[2],uv[0],uv[3],uv[1]};
+            source.triangles = new[] {0,2,1,3,0,1};
+            if (unreadable) source.UploadMeshData(true);
+            Assert.IsTrue(SidecarStore.ReverseLegacyTopologySafe(source,saved));
+            Assert.AreEqual(!unreadable,source.isReadable);
         }
 
         [Test] public void LocalRescueKeepsValidChartsAndUnwrapsNeedlesWithExactMetric()

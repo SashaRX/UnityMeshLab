@@ -78,7 +78,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.Less(ShellQuality.ComputeL2Stretch(shells[0],mesh.triangles,mesh.vertices,flat),1.5);
                 var before=TransferMeshSnapshot.Capture(mesh);
                 var repair=typeof(XatlasRepack).GetMethod("ReparameterizeStretchedShells",BindingFlags.Static|BindingFlags.NonPublic);
-                repair.Invoke(null,new object[] {RepackOptions.Default,shells,mesh.triangles,mesh.vertices,flat});
+                repair.Invoke(null,new object[] {RepackOptions.Default,shells,mesh.triangles,mesh.vertices,flat,default(System.Threading.CancellationToken)});
                 var coordinates=new Dictionary<int,Vector2>();
                 for(int i=0;i<uv.Length;++i) coordinates.Add(i,new Vector2(flat[i*2],flat[i*2+1]));
                 var quality=TransferCandidateQuality.Measure(shells[0],mesh.triangles,mesh.vertices,coordinates);

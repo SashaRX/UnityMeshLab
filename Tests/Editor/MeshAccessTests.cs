@@ -8,8 +8,8 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class MeshAccessTests
     {
-        [Test]
-        public void ReadWriteDisabledModelSnapshotPreservesBuffersWithoutReimporting()
+        [TestCase(false)] [TestCase(true)]
+        public void ReadWriteDisabledModelSnapshotPreservesBuffersWithoutReimporting(bool raw)
         {
             string folder = "Assets/__MeshLabReadOnly_" + System.Guid.NewGuid().ToString("N");
             string path = folder + "/probe.obj";
@@ -28,7 +28,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsFalse(original.isReadable);
                 var assetBytes = System.IO.File.ReadAllBytes(path); var metaBytes = System.IO.File.ReadAllBytes(path+".meta");
                 MeshAccessImportWatch.Path = path; MeshAccessImportWatch.Count = 0;
-                copy = MeshAccess.ReadableCopy(original);
+                copy = raw ? MeshAccess.Readable(original, out _, preserveVertexLayout: true) : MeshAccess.ReadableCopy(original);
                 Assert.AreEqual(0,MeshAccessImportWatch.Count,"Reading an imported mesh must not trigger Bakery or dependent prefab imports.");
                 Assert.IsFalse(original.isReadable); Assert.IsFalse(((ModelImporter)AssetImporter.GetAtPath(path)).isReadable);
                 CollectionAssert.AreEqual(vertices,copy.vertices); CollectionAssert.AreEqual(normals,copy.normals);
@@ -39,6 +39,42 @@ namespace SashaRX.UnityMeshLab.Tests
             finally {
                 MeshAccessImportWatch.Path = null;
                 if (copy) Object.DestroyImmediate(copy);
+                AssetDatabase.DeleteAsset(folder);
+            }
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void RawModelSnapshotFallbackRestoresImporterAndPreservesLayout(bool incomplete)
+        {
+            string folder = "Assets/__MeshLabRawFallback_" + System.Guid.NewGuid().ToString("N");
+            string path = folder + "/probe.obj"; Mesh copy = null;
+            var empty = new Mesh();
+            try {
+                AssetDatabase.CreateFolder("Assets", System.IO.Path.GetFileName(folder));
+                System.IO.File.WriteAllText(path, "v 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\nvt 1 0\nvt 0 1\nvn 0 0 1\nf 1/1/1 2/2/1 3/3/1\n");
+                AssetDatabase.ImportAsset(path);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.isReadable = false; importer.SaveAndReimport();
+                var source = AssetDatabase.LoadAssetAtPath<GameObject>(path).GetComponentInChildren<MeshFilter>().sharedMesh;
+                var layout = source.GetVertexAttributes();
+                var assetBytes = System.IO.File.ReadAllBytes(path); var metaBytes = System.IO.File.ReadAllBytes(path + ".meta");
+                MeshAccessImportWatch.Path = path; MeshAccessImportWatch.Count = 0;
+                copy = MeshAccess.RawReadableCopy(source, (mesh, destination) => {
+                    if (!incomplete) throw new System.NotSupportedException("Simulated unavailable Editor snapshot");
+                    using var data = MeshUtility.AcquireReadOnlyMeshData(empty);
+                    MeshAccess.ValidateMeshData(mesh, data[0]);
+                    return destination;
+                });
+                Assert.AreEqual(2, MeshAccessImportWatch.Count);
+                Assert.IsFalse(((ModelImporter)AssetImporter.GetAtPath(path)).isReadable);
+                CollectionAssert.AreEqual(layout, copy.GetVertexAttributes());
+                Assert.AreEqual(3, copy.vertexCount); Assert.AreEqual(3, copy.triangles.Length);
+                CollectionAssert.AreEqual(assetBytes, System.IO.File.ReadAllBytes(path));
+                CollectionAssert.AreEqual(metaBytes, System.IO.File.ReadAllBytes(path + ".meta"));
+            }
+            finally {
+                MeshAccessImportWatch.Path = null;
+                if (copy) Object.DestroyImmediate(copy); Object.DestroyImmediate(empty);
                 AssetDatabase.DeleteAsset(folder);
             }
         }
@@ -156,9 +192,11 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
 #if UNITY_6000_2_OR_NEWER
-        [TestCase(UnityEngine.Rendering.IndexFormat.UInt16)]
-        [TestCase(UnityEngine.Rendering.IndexFormat.UInt32)]
-        public void UnreadableMeshLodCopiesOnlyTheActiveIndexRange(UnityEngine.Rendering.IndexFormat format)
+        [TestCase(UnityEngine.Rendering.IndexFormat.UInt16, false)]
+        [TestCase(UnityEngine.Rendering.IndexFormat.UInt32, false)]
+        [TestCase(UnityEngine.Rendering.IndexFormat.UInt16, true)]
+        [TestCase(UnityEngine.Rendering.IndexFormat.UInt32, true)]
+        public void UnreadableMeshLodCopiesOnlyTheActiveIndexRange(UnityEngine.Rendering.IndexFormat format, bool raw)
         {
             var source = QuadTopology();
             Mesh copy = null;
@@ -175,7 +213,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 using (var data = Mesh.AcquireReadOnlyMeshData(source))
                     Assert.AreEqual(9, data[0].GetSubMesh(0).indexCount,
                         "MeshData includes the backing ranges of all mesh LODs.");
-                copy = MeshAccess.ReadableCopy(source);
+                copy = raw ? MeshAccess.Readable(source, out _, preserveVertexLayout: true) : MeshAccess.ReadableCopy(source);
                 CollectionAssert.AreEqual(new[] { 0, 1, 2, 0, 2, 3 }, copy.triangles);
                 Assert.AreEqual(4, copy.vertexCount);
                 CollectionAssert.AreEqual(new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up }, copy.uv);

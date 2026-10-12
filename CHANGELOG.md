@@ -5,6 +5,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+- Fix PR review regressions in scale-independent UV quality, UInt16 submesh base vertices, translucent material ordering, reverse sidecar geometry validation, cancellable seam audits and capture/replay boundary tolerance, active Mesh LOD raw ranges and raw MeshData importer fallback.
+
 ### Fixed
 - Fixed atomic FBX overwrite on Windows when the project and system temporary directory are on different volumes.
 - Shared Overwrite FBX and Export New FBX buttons use the active Foliage preview result, including selected submesh shading in captured LODs. Source overwrite preserves untouched channels and relinks reimported meshes without requiring Apply to Scene first.

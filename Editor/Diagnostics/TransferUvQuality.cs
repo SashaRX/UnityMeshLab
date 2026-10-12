@@ -47,25 +47,36 @@ namespace SashaRX.UnityMeshLab
             var frame=WorldFrame(positions[a],positions[b],positions[c],localToWorld);
             double length=frame.length;
             if (!Finite(length)) { ++report.invalidFaces; return; }
-            if (length < 1e-12) { ++report.degenerateFaces; return; }
+            if (length <= 0) { ++report.degenerateFaces; return; }
             double cross=length*frame.y;
             if (!Finite(cross)) { ++report.invalidFaces; return; }
-            if (cross < 1e-18) { ++report.degenerateFaces; return; }
+            if (cross <= 0) { ++report.degenerateFaces; return; }
             double ux=((double)uv[b].x-uv[a].x)*metric.x,uy=((double)uv[b].y-uv[a].y)*metric.y;
             double vx=((double)uv[c].x-uv[a].x)*metric.x,vy=((double)uv[c].y-uv[a].y)*metric.y;
             double j00=ux/length,j10=uy/length;
             double j01=(vx-ux*frame.x/length)/frame.y,j11=(vy-uy*frame.x/length)/frame.y;
-            double aa = j00 * j00 + j10 * j10, bb = j01 * j01 + j11 * j11, ab = j00 * j01 + j10 * j11;
-            double determinant = j00 * j11 - j01 * j10;
-            double max = (aa + bb + Math.Sqrt(Math.Max(0, (aa - bb) * (aa - bb) + 4 * ab * ab))) * .5;
-            double min = max > 0 ? determinant * determinant / max : 0;
-            if (!Finite(max) || !Finite(min)) { ++report.invalidFaces; return; }
-            if (min < 1e-30) { ++report.degenerateFaces; report.faceAnisotropy[f] = float.MaxValue; return; }
-            double ratio = Math.Sqrt(max / min);
+            double ratio = JacobianAnisotropy(j00, j10, j01, j11);
+            if (double.IsNaN(ratio)) { ++report.invalidFaces; return; }
+            if (double.IsInfinity(ratio)) { ++report.degenerateFaces; report.faceAnisotropy[f] = float.MaxValue; return; }
             report.faceAnisotropy[f] = (float)Math.Min(ratio, float.MaxValue);
             report.worstAnisotropy = Math.Max(report.worstAnisotropy, ratio);
             if (ratio > 1.25) ++report.stretchedFaces;
             weighted += ratio * cross; totalArea += cross;
+        }
+
+        // Normalize the Jacobian before squaring: anisotropy depends on shape,
+        // not on the absolute world or UV scale of a nonsingular triangle.
+        static double JacobianAnisotropy(double j00, double j10, double j01, double j11)
+        {
+            if (!Finite(j00) || !Finite(j10) || !Finite(j01) || !Finite(j11)) return double.NaN;
+            double scale = Math.Max(Math.Max(Math.Abs(j00), Math.Abs(j10)), Math.Max(Math.Abs(j01), Math.Abs(j11)));
+            if (scale <= 0) return double.PositiveInfinity;
+            j00 /= scale; j10 /= scale; j01 /= scale; j11 /= scale;
+            double aa = j00 * j00 + j10 * j10, bb = j01 * j01 + j11 * j11, ab = j00 * j01 + j10 * j11;
+            double determinant = j00 * j11 - j01 * j10;
+            double max = (aa + bb + Math.Sqrt(Math.Max(0, (aa - bb) * (aa - bb) + 4 * ab * ab))) * .5;
+            double min = max > 0 ? determinant * determinant / max : 0;
+            return min > 0 ? Math.Sqrt(max / min) : double.PositiveInfinity;
         }
 
         static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
@@ -86,9 +97,12 @@ namespace SashaRX.UnityMeshLab
         internal static double TriangleAnisotropy(Vector3 e1, Vector3 e2, Vector2 a, Vector2 b, Vector2 c)
         {
             var frame=ReverseUvTransfer.TriangleFrame(e1.x,e1.y,e1.z,e2.x,e2.y,e2.z);
-            if(!Finite(frame.length) || !Finite(frame.y) || frame.length<1e-12 || frame.length*frame.y<1e-18)
+            if (!Finite(frame.length) || !Finite(frame.y) || frame.length <= 0 || frame.y <= 0)
                 return double.PositiveInfinity;
-            return ReverseUvTransfer.TriangleAnisotropy(frame,a,b,c);
+            double ux = (double)b.x - a.x, uy = (double)b.y - a.y;
+            return JacobianAnisotropy(ux / frame.length, uy / frame.length,
+                ((double)c.x - a.x - ux * frame.x / frame.length) / frame.y,
+                ((double)c.y - a.y - uy * frame.x / frame.length) / frame.y);
         }
     }
 }

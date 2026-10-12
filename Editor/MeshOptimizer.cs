@@ -322,15 +322,19 @@ namespace SashaRX.UnityMeshLab
             }
             var positions = mesh.vertices;
             var triangles = new List<int[]>();
+            var baseVertices = new int[mesh.subMeshCount];
             for (int submesh = 0; submesh < mesh.subMeshCount; ++submesh) {
                 var indices = mesh.GetTriangles(submesh);
                 var ordered = OptimizeUvSubmesh(indices, positions, submesh, result);
                 if (ordered == null) return result;
+                int baseVertex = (int)mesh.GetBaseVertex(submesh);
+                baseVertices[submesh] = baseVertex;
+                for (int i = 0; i < ordered.Length; ++i) ordered[i] -= baseVertex;
                 triangles.Add(ordered);
             }
             // Commit only after every submesh succeeds. Keep all vertex buffers,
             // layouts, skinning data, blend shapes and submesh boundaries intact.
-            for (int s = 0; s < triangles.Count; ++s) mesh.SetTriangles(triangles[s], s, false);
+            for (int s = 0; s < triangles.Count; ++s) mesh.SetTriangles(triangles[s], s, false, baseVertices[s]);
             VertexChannels.RaiseChanged(mesh);
             result.ok = true;
             return result;

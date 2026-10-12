@@ -284,7 +284,8 @@ namespace SashaRX.UnityMeshLab
                     block.SetFloat(UseVertexColorId, vertexColors ? 1 : 0);
                     Texture texture = BindSurfaceTexture(material,block);
                     block.SetFloat("_UseTexture", mode == Shading.Shaded && texture ? 1 : 0);
-                    utility.DrawMesh(shown, item.matrix, overlaySurface, sub, block);
+                    int layer = Mathf.Max(0, slot - shown.subMeshCount + 1);
+                    utility.DrawMesh(shown, item.matrix, LayerMaterial(overlaySurface, layer), sub, block);
                 }
                 return;
             }

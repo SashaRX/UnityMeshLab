@@ -286,3 +286,9 @@ permit accidental new-chart overlap. The regression checks both policies, no
 intrinsic rescue on coincident quads, chart gutters and unchanged source meshes.
 If a donor-seam trial loses a source face, protection stops and the already
 validated baseline is retained instead of throwing while indexing missing pieces.
+
+Reverse sidecar replay also checks current position/UV0 keys and per-submesh
+triangle topology against the saved payload. Vertex and triangle reordering is
+accepted when geometry, winding and material boundaries agree. Edited geometry
+with the same vertex count is refused. Older reverse entries without saved
+topology must be regenerated before they can be replayed.

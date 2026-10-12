@@ -185,6 +185,31 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { UnityEngine.Object.DestroyImmediate(mesh); }
         }
 
+        [Test]
+        public void UvPreOptimizationPreservesUInt16SubmeshBaseVertices()
+        {
+            const int highBase = 65536;
+            var positions = new Vector3[highBase + 3];
+            positions[1] = Vector3.right; positions[2] = Vector3.up;
+            positions[highBase] = Vector3.one;
+            positions[highBase + 1] = Vector3.one + Vector3.right;
+            positions[highBase + 2] = Vector3.one + Vector3.up;
+            var mesh = new Mesh { indexFormat = IndexFormat.UInt16, vertices = positions, subMeshCount = 2 };
+            try {
+                mesh.SetTriangles(new[] { 0, 1, 2 }, 0, false, 0);
+                mesh.SetTriangles(new[] { 0, 1, 2 }, 1, false, highBase);
+                var result = MeshOptimizer.OptimizeUvTriangleOrder(mesh);
+                Assert.IsTrue(result.ok, result.error);
+                Assert.AreEqual(IndexFormat.UInt16, mesh.indexFormat);
+                Assert.AreEqual(0, mesh.GetBaseVertex(0)); Assert.AreEqual(highBase, mesh.GetBaseVertex(1));
+                CollectionAssert.AreEqual(new[] { 0, 1, 2 }, mesh.GetTriangles(0, false));
+                CollectionAssert.AreEqual(new[] { 0, 1, 2 }, mesh.GetTriangles(1, false));
+                CollectionAssert.AreEqual(new[] { highBase, highBase + 1, highBase + 2 }, mesh.GetTriangles(1));
+                CollectionAssert.AreEqual(positions, mesh.vertices);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
         [TestCase(2)]
         [TestCase(4)]
         public void Metric_RestoresHalfUv0DescriptorAndBitsWhileKeepingGeneratedUv2(int dimension)
@@ -406,6 +431,44 @@ namespace SashaRX.UnityMeshLab.Tests
         public void Replay_RejectsInvalidMeshNames(string name)
             => Assert.Throws<InvalidDataException>(() => TransferCaseReplay.Verify(Path.GetTempPath(), name));
 
+        [TestCase(1e-10f, 1f)] [TestCase(1f, 1f)] [TestCase(1e10f, 1f)]
+        [TestCase(1f, 1e-20f)] [TestCase(1f, 1e20f)]
+        public void Quality_IsIndependentOfUniformWorldAndUvScale(float worldScale, float uvScale)
+        {
+            var mesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, Vector3.up },
+                triangles = new[] { 0, 1, 2 }, uv = new[] { Vector2.zero, Vector2.right * uvScale, Vector2.up * uvScale } };
+            try {
+                var report = TransferUvQuality.Measure(mesh, mesh.uv, Vector2.one, Matrix4x4.Scale(Vector3.one * worldScale));
+                Assert.AreEqual(0, report.invalidFaces); Assert.AreEqual(0, report.degenerateFaces);
+                Assert.AreEqual(1, report.worstAnisotropy, 1e-6);
+                Assert.AreEqual(1, report.areaWeightedAnisotropy, 1e-6);
+                Assert.AreEqual(1, TransferUvQuality.TriangleAnisotropy(Vector3.right * worldScale,
+                    Vector3.up * worldScale, mesh.uv[0], mesh.uv[1], mesh.uv[2]), 1e-6);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
+        [TestCase(true)] [TestCase(false)]
+        public void Quality_StillRejectsSingularGeometryAndUv(bool geometry)
+        {
+            var mesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, geometry ? Vector3.right * 2 : Vector3.up },
+                triangles = new[] { 0, 1, 2 }, uv = new[] { Vector2.zero, Vector2.right, Vector2.right * 2 } };
+            try {
+                var report = TransferUvQuality.Measure(mesh, mesh.uv, Vector2.one, Matrix4x4.Scale(Vector3.one * 1e-10f));
+                Assert.AreEqual(1, report.degenerateFaces);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
+        [Test]
+        public void LegacyCaptureDefaultsBoundaryToleranceButExplicitZeroIsPreserved()
+        {
+            var legacy = JsonUtility.FromJson<TransferCaseCapture.Pair>("{\"index\":0}");
+            Assert.AreEqual(UvTransferTolerance.BoundaryTexels, legacy.BoundaryToleranceTexels);
+            var current = JsonUtility.FromJson<TransferCaseCapture.Pair>("{\"hasBoundaryTolerance\":true,\"boundaryToleranceTexels\":0}");
+            Assert.AreEqual(0, current.BoundaryToleranceTexels);
+        }
+
         [Test]
         public void Quality_DetectsAxisStretchEvenWhenUvAreaIsUnchanged()
         {
@@ -535,19 +598,21 @@ namespace SashaRX.UnityMeshLab.Tests
                 context.MeshEntries.Add(source); context.MeshEntries.Add(target); context.CaptureNextTransfer = true;
                 capture = TransferCaseCapture.Begin(context, null, "Test exact capture");
                 Assert.IsNotNull(capture);
-                var noTrace = GroupedShellTransfer.Transfer(targetMesh, sourceMesh, sourceAtlasWidth: 128, sourceAtlasHeight: 128);
-                var pair = capture.BeforePair(source, target, sourceMesh, targetMesh, null, null);
-                var traced = GroupedShellTransfer.TransferWithDiagnostics(targetMesh, sourceMesh, null, null, 128, 128, pair.trace);
+                var noTrace = GroupedShellTransfer.TransferWithDiagnostics(targetMesh, sourceMesh, null, null, 128, 128, null, 1.5f);
+                var pair = capture.BeforePair(source, target, sourceMesh, targetMesh, null, null, 1.5f);
+                var traced = GroupedShellTransfer.TransferWithDiagnostics(targetMesh, sourceMesh, null, null, 128, 128, pair.trace, 1.5f);
                 Assert.AreEqual(TransferMeshSnapshot.UvHash(noTrace.uv2), TransferMeshSnapshot.UvHash(traced.uv2));
                 CollectionAssert.AreEqual(noTrace.targetShellToSourceShell, traced.targetShellToSourceShell);
                 output = UnityEngine.Object.Instantiate(targetMesh); output.uv2 = traced.uv2; target.transferredMesh = output;
                 capture.AfterPair(pair, target, traced);
                 target.lodIndex = 2;
-                var next = capture.BeforePair(source, target, sourceMesh, targetMesh, traced.overlapHints, traced.matchHints);
-                var second = GroupedShellTransfer.TransferWithDiagnostics(targetMesh, sourceMesh, next.overlapHints, next.matchHints, 128, 128, next.trace);
+                var next = capture.BeforePair(source, target, sourceMesh, targetMesh, traced.overlapHints, traced.matchHints, 1.5f);
+                var second = GroupedShellTransfer.TransferWithDiagnostics(targetMesh, sourceMesh, next.overlapHints, next.matchHints, 128, 128, next.trace, 1.5f);
                 output.uv2 = second.uv2; capture.AfterPair(next, target, second); capture.Finish(true);
                 var manifest = JsonUtility.FromJson<TransferCaseCapture.Manifest>(File.ReadAllText(Path.Combine(capture.Folder, "manifest.json")));
                 Assert.AreEqual(2, manifest.schema);
+                Assert.IsTrue(manifest.pairs[0].hasBoundaryTolerance);
+                Assert.AreEqual(1.5f, manifest.pairs[0].BoundaryToleranceTexels);
                 Assert.IsTrue(manifest.pairs[0].hasSourceTransform);
                 Assert.AreEqual(source.renderer.localToWorldMatrix, manifest.pairs[0].sourceLocalToWorld);
                 Assert.AreEqual(target.renderer.localToWorldMatrix, manifest.pairs[0].localToWorld);

@@ -137,7 +137,7 @@ namespace SashaRX.UnityMeshLab
         static async Task<GroupedShellTransfer.TransferResult> Run(TransferCaseCapture.Pair pair, Mesh target, Mesh source, TransferMatchTrace trace)
         {
             var result = await GroupedShellTransfer.TransferAsyncWithDiagnostics(target, source, pair.overlapHints, pair.matchHints,
-                pair.atlasWidth, pair.atlasHeight, trace);
+                pair.atlasWidth, pair.atlasHeight, trace, pair.BoundaryToleranceTexels);
             if (pair.clamp && result.uv2 != null) XatlasRepack.ClampUvsToUnit(result.uv2);
             return result;
         }

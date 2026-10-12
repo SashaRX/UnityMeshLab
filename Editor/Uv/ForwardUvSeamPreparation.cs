@@ -199,7 +199,7 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
                 var oldContacts=UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {uv=legacyUv,indices=originalIndices,
-                    charts=new int[legacyUv.Length]},CancellationToken.None,comparisonBudget:2000000,collectConflicts:true);
+                    charts=new int[legacyUv.Length]},token,comparisonBudget:2000000,collectConflicts:true);
                 if (!oldContacts.complete) return (null,null);
                 var allowed=new HashSet<(int,int)>(oldContacts.conflicts.Select(p=>(Math.Min(p.a,p.b),Math.Max(p.a,p.b))));
                 while(true)
@@ -207,7 +207,7 @@ namespace SashaRX.UnityMeshLab
                     token.ThrowIfCancellationRequested();
                     if(UvProgress.CancelRequested) throw new OperationCanceledException();
                     var scan=UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {uv=cornerUv,
-                        indices=Enumerable.Range(0,cornerUv.Length).ToArray(),charts=new int[cornerUv.Length]},CancellationToken.None,comparisonBudget:2000000,collectConflicts:true);
+                        indices=Enumerable.Range(0,cornerUv.Length).ToArray(),charts=new int[cornerUv.Length]},token,comparisonBudget:2000000,collectConflicts:true);
                     if(!scan.complete) return (null,null);
                     var refused=new HashSet<int>();
                     foreach(var contact in scan.conflicts)

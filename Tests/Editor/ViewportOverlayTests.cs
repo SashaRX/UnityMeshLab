@@ -30,6 +30,29 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
+        public IEnumerator ExcessTranslucentMaterialSlotsRenderInOrderWithoutChangingMaterials()
+        {
+            if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) Assert.Ignore("Requires GPU preview rendering.");
+            var window = ScriptableObject.CreateInstance<OverlayWindow>();
+            var colors = new[] { Color.red, Color.blue, Color.green };
+            var materials = new Material[colors.Length];
+            try {
+                for (int i = 0; i < materials.Length; ++i) materials[i] = new Material(Shader.Find("Unlit/Color")) { color = colors[i] };
+                window.materials = materials; window.hidePatch = true; window.view.SurfaceOpacity = .6f;
+                window.Show(); window.position = new Rect(0,0,256,256); yield return null;
+                for (int frame = 0; frame < 3; ++frame) {
+                    var pixel = Capture(window,"excess-translucent-slots.png");
+                    Assert.Greater(pixel.g, pixel.b + .1f); Assert.Greater(pixel.g, pixel.r + .1f);
+                    yield return null;
+                }
+                for (int i = 0; i < materials.Length; ++i) {
+                    Assert.AreEqual(colors[i], materials[i].color); Assert.AreEqual(materials[i].shader.renderQueue, materials[i].renderQueue);
+                }
+            }
+            finally { window.Close(); foreach (var material in materials) if (material) Object.DestroyImmediate(material); }
+        }
+
+        [UnityTest]
         public IEnumerator PolygonPickingDistinguishesTwoInstancesOfTheSameMesh()
         {
             if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) Assert.Ignore("Requires GPU preview rendering.");
@@ -125,11 +148,13 @@ namespace SashaRX.UnityMeshLab.Tests
             internal readonly MeshTopologyPreview topology = new MeshTopologyPreview { ShowHoles = true };
             internal bool controls;
             internal bool instances;
+            internal bool hidePatch;
+            internal Material[] materials;
             internal Mesh original;
             internal MeshViewport3D.Item[] Items => instances ? new[] {
                 new MeshViewport3D.Item(original,Matrix4x4.Translate(Vector3.left*2)),
                 new MeshViewport3D.Item(original,Matrix4x4.Translate(Vector3.right*2))
-            } : new[] {new MeshViewport3D.Item(original,Matrix4x4.identity)};
+            } : new[] {new MeshViewport3D.Item(original,Matrix4x4.identity,materials)};
             Mesh patch;
             void OnEnable()
             {
@@ -144,7 +169,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 var items = Items;
                 if (controls) topology.Toolbar(items, view);
                 view.Draw(controls ? GUILayoutUtility.GetRect(100,100,GUILayout.ExpandWidth(true),GUILayout.ExpandHeight(true)) : new Rect(0,0,position.width,position.height),items,
-                    v => { v.DrawHighlightMesh(patch,Matrix4x4.identity,new Color(1,1,1,.65f),true); if (controls) topology.Draw(v,items); });
+                    v => { if (!hidePatch) v.DrawHighlightMesh(patch,Matrix4x4.identity,new Color(1,1,1,.65f),true); if (controls) topology.Draw(v,items); });
             }
             void OnDisable() { topology.Dispose(); view.Dispose(); if (original) Object.DestroyImmediate(original); if (patch) Object.DestroyImmediate(patch); }
         }

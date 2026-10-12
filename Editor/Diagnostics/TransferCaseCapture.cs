@@ -38,6 +38,9 @@ namespace SashaRX.UnityMeshLab
             public string source, target, group, sourceMesh, targetMesh, outputMesh, baselineUvHash, status = "pending";
             public string details;
             public bool clamp;
+            public bool hasBoundaryTolerance;
+            public float boundaryToleranceTexels;
+            internal float BoundaryToleranceTexels => hasBoundaryTolerance ? boundaryToleranceTexels : UvTransferTolerance.BoundaryTexels;
             public Matrix4x4 localToWorld;
             public bool hasSourceTransform;
             public Matrix4x4 sourceLocalToWorld;
@@ -154,7 +157,8 @@ namespace SashaRX.UnityMeshLab
         }
 
         internal Pair BeforePair(MeshEntry source, MeshEntry target, Mesh sourceMesh, Mesh targetMesh,
-            List<GroupedShellTransfer.OverlapSourceHint> overlapHints, List<GroupedShellTransfer.CrossLodMatchHint> matchHints)
+            List<GroupedShellTransfer.OverlapSourceHint> overlapHints, List<GroupedShellTransfer.CrossLodMatchHint> matchHints,
+            float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels)
         {
             Pair pair = null;
             Safe(() => {
@@ -164,7 +168,7 @@ namespace SashaRX.UnityMeshLab
                     sourceMesh = StoreMesh(sourceMesh), targetMesh = StoreMesh(targetMesh), clamp = context.ClampLightmapToUnit,
                     atlasWidth = (int)source.repackedAtlasWidth, atlasHeight = (int)source.repackedAtlasHeight,
                     localToWorld = target.renderer ? target.renderer.localToWorldMatrix : Matrix4x4.identity,
-                    hasSourceTransform = true,
+                    hasSourceTransform = true, hasBoundaryTolerance = true, boundaryToleranceTexels = boundaryToleranceTexels,
                     sourceLocalToWorld = source.renderer ? source.renderer.localToWorldMatrix : Matrix4x4.identity,
                     overlapHints = overlapHints == null || overlapHints.Count == 0 ? null : new List<GroupedShellTransfer.OverlapSourceHint>(overlapHints),
                     matchHints = matchHints == null || matchHints.Count == 0 ? null : new List<GroupedShellTransfer.CrossLodMatchHint>(matchHints) };
@@ -258,7 +262,8 @@ namespace SashaRX.UnityMeshLab
                 group = pair.group, sourceMesh = pair.sourceMesh, targetMesh = pair.targetMesh, outputMesh = pair.outputMesh,
                 baselineUvHash = pair.baselineUvHash, status = pair.status, clamp = pair.clamp,
                 localToWorld = pair.localToWorld, hasSourceTransform = pair.hasSourceTransform,
-                sourceLocalToWorld = pair.sourceLocalToWorld, details = pair.details, trace = null });
+                sourceLocalToWorld = pair.sourceLocalToWorld, hasBoundaryTolerance = pair.hasBoundaryTolerance,
+                boundaryToleranceTexels = pair.boundaryToleranceTexels, details = pair.details, trace = null });
             byte[] bytes = System.Text.Encoding.UTF8.GetBytes(JsonUtility.ToJson(compact, true));
             if (bytes.LongLength > MaxManifestBytes) throw new InvalidDataException("Transfer manifest exceeds the replay size limit.");
             File.WriteAllBytes(temp, bytes);
