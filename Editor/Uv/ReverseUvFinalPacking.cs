@@ -132,7 +132,11 @@ namespace SashaRX.UnityMeshLab
                 }).ToArray()).ToArray();
                 var intersection=new UvAtlasDiagnostics.IntersectionTest();
                 var refusals=new Dictionary<int,string>();
-                bool Refuse(int group,string reason) {if(!refusals.ContainsKey(group)) refusals.Add(group,reason);return false;}
+                bool Refuse(int group,string reason)
+                {
+                    if(!refusals.ContainsKey(group)) refusals.Add(group,reason);
+                    return false;
+                }
                 bool Valid(int group,Vector2[] uv,int side)
                 {
                     var entries=groups[group];

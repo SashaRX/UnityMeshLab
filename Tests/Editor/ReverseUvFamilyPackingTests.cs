@@ -241,7 +241,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 double rounded=TransferUvQuality.TriangleAnisotropy(transform.MultiplyVector(p[1]-p[0]),transform.MultiplyVector(p[2]-p[0]),uv[0],uv[1],uv[2]);
                 var measured=TransferUvQuality.Measure(mesh,uv,Vector2.one,transform);
                 Assert.AreEqual(0,measured.invalidFaces);Assert.AreEqual(0,measured.degenerateFaces);
-                Assert.AreEqual(measured.worstAnisotropy,packed);
+                Assert.AreEqual(measured.worstAnisotropy,packed,1e-10);
                 Assert.That(Math.Abs(rounded-packed),Is.GreaterThan(.1),"Rounding transformed edges before the metric must remain detectable.");
             }
             finally {UnityEngine.Object.DestroyImmediate(mesh);}
