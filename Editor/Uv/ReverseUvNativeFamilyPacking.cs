@@ -7,12 +7,34 @@ using UnityEngine;
 namespace SashaRX.UnityMeshLab
 {
     /// <summary>Connected UV footprints make one native packing item
-    /// per ancestry family. Only their common rigid transform is applied to the
-    /// actual triangles; xatlas never unwraps or rescales individual descendants.</summary>
+    /// per ancestry family. Xatlas supplies one common rigid transform; the
+    /// caller audits Float32 precision without unwrapping individual descendants.</summary>
     internal static class ReverseUvNativeFamilyPacking
     {
         internal static Vector2[][] TryPack(Vector2[][] source,int side,ReverseUvTransfer.Options options,
             CancellationToken token,Func<int,Vector2[],int,bool> validate,out float scale,out int packedSide,bool allowLargerCanvas=false,float? fixedScale=null,Func<Vector2[][],int,HashSet<int>> validateAtlas=null)
+        {
+            var result=TryPackAttempt(source,side,options,token,validate,out scale,out packedSide,
+                allowLargerCanvas,fixedScale,validateAtlas,true);
+            if(options.frozenShellCascade && !options.preserveProjectedOverlap && options.rotateChartsToAxis)
+            {
+                if(result==null) UvtLog.Info(UvtLog.Category.Repack,"[ReverseUV] Axis-aligned family trial refused; retry the same whole families with 90-degree placement rotations.");
+                var orthogonal=TryPackAttempt(source,side,options,token,validate,out float orthogonalScale,out int orthogonalSide,
+                    allowLargerCanvas,fixedScale,validateAtlas,false);
+                double Cost(Vector2[][] uv,float density)
+                {
+                    var points=uv.SelectMany(p=>p).ToArray();var lo=points.Aggregate(Vector2.Min);var hi=points.Aggregate(Vector2.Max);
+                    return ((double)hi.x-lo.x)*(hi.y-lo.y)/(density*(double)density);
+                }
+                if(orthogonal!=null && (result==null || Cost(orthogonal,orthogonalScale)<Cost(result,scale)))
+                {result=orthogonal;scale=orthogonalScale;packedSide=orthogonalSide;}
+            }
+            return result;
+        }
+
+        static Vector2[][] TryPackAttempt(Vector2[][] source,int side,ReverseUvTransfer.Options options,
+            CancellationToken token,Func<int,Vector2[],int,bool> validate,out float scale,out int packedSide,
+            bool allowLargerCanvas,float? fixedScale,Func<Vector2[][],int,HashSet<int>> validateAtlas,bool alignFootprints)
         {
             scale=1;packedSide=side;
             var precision=new HashSet<int>();
@@ -24,10 +46,10 @@ namespace SashaRX.UnityMeshLab
                 var refused=new List<int>();
                 bool ValidRegular(int g,Vector2[] p,int canvas)=>validate==null || validate(regular[g],p,canvas);
                 var native=TryPackCore(regular.Select(g=>source[g]).ToArray(),side,options,token,ValidRegular,
-                    out scale,out packedSide,allowLargerCanvas,refused,fixedScale);
+                    out scale,out packedSide,allowLargerCanvas,refused,fixedScale,alignFootprints:alignFootprints);
                 if(native==null)
                     native=TryPackCore(regular.Select(g=>source[g]).ToArray(),side,options,token,ValidRegular,
-                        out scale,out packedSide,allowLargerCanvas,refused,fixedScale,false);
+                        out scale,out packedSide,allowLargerCanvas,refused,fixedScale,false,alignFootprints);
                 if(native==null) return null;
                 if(refused.Count>0)
                 {
@@ -76,10 +98,10 @@ namespace SashaRX.UnityMeshLab
                     return true;
                 }
                 var completed=TryPackCore(anchored,side,options,token,ValidAnchored,out float anchoredScale,out int canvas,
-                    allowLargerCanvas,anchoredRefusals,commonScale);
+                    allowLargerCanvas,anchoredRefusals,commonScale,alignFootprints:alignFootprints);
                 if(completed==null)
                     completed=TryPackCore(anchored,side,options,token,ValidAnchored,out anchoredScale,out canvas,
-                        allowLargerCanvas,anchoredRefusals,commonScale,false);
+                        allowLargerCanvas,anchoredRefusals,commonScale,false,alignFootprints);
                 if(completed==null) return null;
                 if(anchoredRefusals.Count>0)
                 {
@@ -101,7 +123,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         static Vector2[][] TryPackCore(Vector2[][] source,int side,ReverseUvTransfer.Options options,
-            CancellationToken token,Func<int,Vector2[],int,bool> validate,out float scale,out int packedSide,bool allowLargerCanvas,List<int> refusedFamilies=null,float? fixedScale=null,bool simplifyFootprints=true)
+            CancellationToken token,Func<int,Vector2[],int,bool> validate,out float scale,out int packedSide,bool allowLargerCanvas,List<int> refusedFamilies=null,float? fixedScale=null,bool simplifyFootprints=true,bool alignFootprints=true)
         {
             scale=1;packedSide=side;
             if(!XatlasRepack.TryAcquireNativeSession()) return null;
@@ -109,7 +131,8 @@ namespace SashaRX.UnityMeshLab
             try
             {
                 token.ThrowIfCancellationRequested();
-                var hulls=source.Select(p=>Footprint(p,token,simplifyFootprints)).ToArray();
+                var hulls=source.Select(p=>Footprint(p,token,simplifyFootprints,
+                    options.frozenShellCascade && !options.preserveProjectedOverlap)).ToArray();
                 if(hulls.Any(h=>h.Length<3)) return Refused("collapsed family envelope");
                 var points=new List<Vector2>();var indices=new List<uint>();var materials=new List<uint>();
                 var starts=new int[source.Length];
@@ -140,12 +163,18 @@ namespace SashaRX.UnityMeshLab
                 }
                 int estimate=fixedScale.HasValue?Mathf.NextPowerOfTwo((int)Math.Ceiling(Math.Sqrt(Math.Max(1,area/.75))*fixedScale.Value)):side;
                 bool bruteForce=(long)source.Length*estimate*estimate<=500000000L;
+                bool align=alignFootprints && options.frozenShellCascade && !options.preserveProjectedOverlap && options.rotateChartsToAxis;
                 XatlasNative.xatlasPackChartsPreserveShape(0,(uint)options.padding,fixedScale ?? 0,
                     fixedScale.HasValue?0u:(uint)(side-options.padding*2),
-                    1,0,bruteForce?1:0,options.rotateCharts?1:0,0);
+                    1,0,bruteForce?1:0,options.rotateCharts?1:0,align?1:0);
                 token.ThrowIfCancellationRequested();
                 uint width=XatlasNative.xatlasGetAtlasWidth(),height=XatlasNative.xatlasGetAtlasHeight();
-                int canvas=Math.Max(side,Mathf.NextPowerOfTwo((int)Math.Max(width,height)));
+                int extent=(int)Math.Max(width,height);
+                // Ordinary Repack retains native's actual rectangle. A forced
+                // power-of-two normalization adds a blank quadrant even after
+                // dense packing, and is not a second packing operation.
+                int canvas=Math.Max(side,options.frozenShellCascade && !options.preserveProjectedOverlap
+                    ?extent:Mathf.NextPowerOfTwo(extent));
                 if(XatlasNative.xatlasGetChartCount()!=source.Length || canvas>(allowLargerCanvas?options.maxAtlasSize:side))
                     return Refused($"canvas {width}x{height}, charts {XatlasNative.xatlasGetChartCount()}/{source.Length}");
                 int count=XatlasNative.xatlasGetOutputVertexCount(0);
@@ -181,10 +210,16 @@ namespace SashaRX.UnityMeshLab
                     var origin=source[g].Aggregate(Vector2.Min);
                     int turn=Enumerable.Range(0,options.rotateCharts?8:1).OrderBy(t=>Enumerable.Range(0,hulls[g].Length)
                         .Sum(k=>(Transform(hulls[g][k]-hulls[g][0],t,density,mapped[first])-mapped[first+k]).sqrMagnitude)).First();
-                    double shapeError=Math.Sqrt(Enumerable.Range(0,hulls[g].Length).Max(k=>(Transform(hulls[g][k]-hulls[g][0],turn,density,mapped[first])
+                    var rotation=align?RecoverRotation(hulls[g],mapped,first,density):default;
+                    Vector2 MoveProxy(Vector2 p)=>align?TransformAligned(p,rotation,density,mapped[first],0,0)
+                        :Transform(p,turn,density,mapped[first]);
+                    double shapeError=Math.Sqrt(Enumerable.Range(0,hulls[g].Length).Max(k=>(MoveProxy(hulls[g][k]-hulls[g][0])
                         -mapped[first+k]).sqrMagnitude));
                     if(shapeError>.01) return Refused($"family {g} changes shape ({shapeError:G6} texels, scale {density:G6}, orientation {turn})");
-                    Vector2[] Place(double x,double y)=>source[g].Select(p=>TransformFrom(p,origin,hulls[g][0],turn,density,mapped[first],x,y)).ToArray();
+                    Vector2[] Place(double x,double y)=>source[g].Select(p=>align
+                        ?TransformAligned((double)p.x-origin.x-hulls[g][0].x,(double)p.y-origin.y-hulls[g][0].y,
+                            rotation,density,mapped[first],x,y)
+                        :TransformFrom(p,origin,hulls[g][0],turn,density,mapped[first],x,y)).ToArray();
                     bool Fits(Vector2[] p)=>p.All(v=>v.x>=0 && v.y>=0 && v.x<=canvas && v.y<=canvas)
                         && (validate==null || validate(g,p,canvas));
                     output[g]=Place(0,0);
@@ -241,15 +276,67 @@ namespace SashaRX.UnityMeshLab
             return new Vector2((float)(origin.x+x*scale+phaseX),(float)(origin.y+y*scale+phaseY));
         }
 
+        static (double a,double b,int sign) RecoverRotation(Vector2[] source,Vector2[] packed,int first,double scale)
+        {
+            (double a,double b,int sign) best=default;double bestError=double.MaxValue;
+            foreach(int sign in new[] {1,-1})
+            {
+                double dot=0,cross=0;
+                for(int i=1;i<source.Length;++i)
+                {
+                    double x=(double)source[i].x-source[0].x,y=((double)source[i].y-source[0].y)*sign;
+                    double u=(double)packed[first+i].x-packed[first].x,v=(double)packed[first+i].y-packed[first].y;
+                    dot+=x*u+y*v;cross+=x*v-y*u;
+                }
+                double length=Math.Sqrt(dot*dot+cross*cross);if(!(length>0)) continue;
+                var trial=(a:dot/length,b:cross/length,sign);
+                double error=0;
+                for(int i=1;i<source.Length;++i)
+                {
+                    double x=(double)source[i].x-source[0].x,y=((double)source[i].y-source[0].y)*sign;
+                    double u=(double)packed[first+i].x-packed[first].x,v=(double)packed[first+i].y-packed[first].y;
+                    double ex=(trial.a*x-trial.b*y)*scale-u,ey=(trial.b*x+trial.a*y)*scale-v;
+                    error+=ex*ex+ey*ey;
+                }
+                if(error<bestError) {bestError=error;best=trial;}
+            }
+            return best;
+        }
+
+        static Vector2 TransformAligned(Vector2 p,(double a,double b,int sign) rotation,double scale,Vector2 origin,double phaseX,double phaseY)
+            =>TransformAligned(p.x,p.y,rotation,scale,origin,phaseX,phaseY);
+
+        static Vector2 TransformAligned(double x,double y,(double a,double b,int sign) rotation,double scale,Vector2 origin,double phaseX,double phaseY)
+        {
+            y*=rotation.sign;
+            return new Vector2((float)(origin.x+(rotation.a*x-rotation.b*y)*scale+phaseX),
+                (float)(origin.y+(rotation.b*x+rotation.a*y)*scale+phaseY));
+        }
+
         // Native UV chart discovery joins equal corners. Keep each family's
         // actual concave union, joining disconnected ancestry pieces only with
         // short proxy triangles. These triangles never enter an exported mesh.
-        static Vector2[] Footprint(Vector2[] source,CancellationToken token,bool simplify)
+        internal static Vector2[] Footprint(Vector2[] source,CancellationToken token,bool simplify,bool preserveConcavities=false)
         {
             var origin=source.Aggregate(Vector2.Min);
             var shifted=source.Select(p=>p-origin).ToArray();
             var proxy=simplify?ReverseUvPackingFootprint.Union(shifted,token):shifted;
-            var points=proxy.ToList();
+            var points=new List<Vector2>();
+            for(int f=0;f<proxy.Length;f+=3)
+            {
+                var a=proxy[f];var b=proxy[f+1];var c=proxy[f+2];
+                float area=Math.Abs((b.x-a.x)*(c.y-a.y)-(c.x-a.x)*(b.y-a.y))*.5f;
+                if(!preserveConcavities || area>1.192092896e-7f) points.AddRange(new[] {a,b,c});
+                else
+                {
+                    // Float32 union shards can fall below native's face-area
+                    // threshold. Guard only this subpixel fragment; filling the
+                    // complete family's convex hull erases rings and concavities.
+                    if((c-a).sqrMagnitude>(b-a).sqrMagnitude) b=c;
+                    if((c-proxy[f+1]).sqrMagnitude>(b-a).sqrMagnitude) {a=proxy[f+1];b=c;}
+                    Stroke(points,a,b,true);
+                }
+            }
             // Include guards before connectivity discovery: a union can remove
             // their original corners, so guards also need proxy connections.
             for(int f=0;f<source.Length;f+=3)
@@ -259,7 +346,7 @@ namespace SashaRX.UnityMeshLab
                 if(Altitude(a,b,c)>=.01) continue;
                 if((c-a).sqrMagnitude>(b-a).sqrMagnitude) b=c;
                 if((c-(source[f+1]-origin)).sqrMagnitude>(b-a).sqrMagnitude) {a=source[f+1]-origin;b=c;}
-                Stroke(points,a,b);
+                Stroke(points,a,b,preserveConcavities);
             }
             int proxyFaces=points.Count/3;
             var connected=new DisjointSet(proxyFaces);
@@ -296,7 +383,7 @@ namespace SashaRX.UnityMeshLab
                 if(a<0 || b<0) return Conservative();
                 // A narrow connection keeps native chart discovery together
                 // without filling a concavity with a fan from a long source edge.
-                Stroke(points,points[a],points[b]);
+                Stroke(points,points[a],points[b],preserveConcavities);
                 foreach(int corner in parts[selected]) joined.Add(corner);
                 parts.RemoveAt(selected);
             }
@@ -322,9 +409,17 @@ namespace SashaRX.UnityMeshLab
             return points.ToArray();
         }
 
-        static void Stroke(List<Vector2> points,Vector2 a,Vector2 b)
+        static void Stroke(List<Vector2> points,Vector2 a,Vector2 b,bool preserveConcavities=false)
         {
-            var edge=b-a;float length=edge.magnitude;if(length<=0) return;
+            var edge=b-a;float length=edge.magnitude;
+            if(preserveConcavities && length<.0001f)
+            {
+                // A microscopic connecting edge cannot form a native-valid
+                // ribbon. Both endpoints share a small, well-conditioned guard.
+                var u=a+Vector2.right*.01f;var v=a+Vector2.up*.01f;
+                points.AddRange(new[] {a,u,v,b,u,v});return;
+            }
+            if(length<=0) return;
             var normal=Vector2.Perpendicular(edge)*(.01f/length);
             points.AddRange(new[] {a,b,b+normal,a,b+normal,a+normal,
                 b,a,a-normal,b,a-normal,b-normal});

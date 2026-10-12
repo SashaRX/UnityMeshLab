@@ -20,7 +20,7 @@ namespace SashaRX.UnityMeshLab.Tests
             public int[] indices;
         }
 
-        internal static void Reverse(string directory, ReverseUvTransfer.Result result, ReverseUvTransfer.Level[] inputs)
+        internal static void Reverse(string directory, ReverseUvTransfer.Result result, ReverseUvTransfer.Level[] inputs, bool finalAtlas = true)
         {
             Directory.CreateDirectory(directory);
             File.WriteAllText(Path.Combine(directory,"report.json"),JsonUtility.ToJson(result.report,true));
@@ -32,6 +32,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 WriteLayout(directory, level.lod, input.key, part);
                 return part;
             }).ToArray()).ToArray();
+            if(!finalAtlas) return;
             int reference = Array.FindIndex(inputs, l => l.lod == 0);
             for (int l = 0; l < inputs.Length; ++l)
             {

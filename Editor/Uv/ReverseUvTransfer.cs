@@ -27,6 +27,9 @@ namespace SashaRX.UnityMeshLab
             public bool rebuildSeedWithUnity;
             public bool cutNarrowJunctions;
             internal bool regroupPreparedAtlas;
+            internal bool frozenShellCascade;
+            internal FrozenShellPlacement frozenPlacement;
+            internal Action<Result> beforeFinalPacking;
             public bool rotateCharts = true, rotateChartsToAxis;
             internal float seedDensity;
             internal bool repackFinalAtlas;
@@ -70,6 +73,7 @@ namespace SashaRX.UnityMeshLab
             public int coordinateDomain;
             public string rejection;
             public string cutRefusal;
+            public string wholeMatchRefusal;
             internal bool protectedInheritance;
             internal int projectionLayer = -1;
             internal HashSet<Face> overlapParents;
@@ -180,7 +184,12 @@ namespace SashaRX.UnityMeshLab
             {
                 token.ThrowIfCancellationRequested();
                 var preparedChain=options.regroupPreparedAtlas?levels.Select(l=>Capture(l,origin)).ToArray():null;
-                if(preparedChain!=null) InitializePreparedChain(preparedChain,options,ref nextChart,ref width,ref height,token);
+                if(preparedChain!=null)
+                {
+                    if(options.frozenShellCascade && !options.preserveProjectedOverlap)
+                        InitializeFrozenShellChain(preparedChain,options,result.report,ref nextChart,ref width,ref height,token);
+                    else InitializePreparedChain(preparedChain,options,ref nextChart,ref width,ref height,token);
+                }
                 var seed = preparedChain==null?Capture(levels[0], origin):preparedChain[0];
                 if(preparedChain==null) InitializeSeed(seed, options, ref nextChart, token);
                 float density = options.seedDensity>0?options.seedDensity:Density(seed);
@@ -192,8 +201,14 @@ namespace SashaRX.UnityMeshLab
                     var targets = preparedChain==null?Capture(levels[level], origin):preparedChain[level];
                     if(preparedChain!=null)
                     {
-                        if(useAsync) await Task.Run(()=>ProjectPreparedChain(all[level-1],targets,options,token),token);
-                        else ProjectPreparedChain(all[level-1],targets,options,token);
+                        void ProjectStep()
+                        {
+                            if(options.frozenShellCascade && !options.preserveProjectedOverlap)
+                                ProjectFrozenShells(all[level-1],targets,options,ref nextChart,ref width,ref height,token);
+                            else ProjectPreparedChain(all[level-1],targets,options,token);
+                        }
+                        if(useAsync) await Task.Run(ProjectStep,token);
+                        else ProjectStep();
                         RecordOverlapRelations(targets,result.report,options,token);
                         all.Add(targets);
                         continue;
@@ -226,7 +241,8 @@ namespace SashaRX.UnityMeshLab
                     all.Add(targets);
                 }
                 int side = Mathf.NextPowerOfTwo(Mathf.CeilToInt(Math.Max(width, height)));
-                if (side > options.maxAtlasSize) throw new InvalidOperationException("Reverse UV square atlas exceeds the size limit.");
+                if (side > options.maxAtlasSize && !(options.frozenShellCascade && options.repackFinalAtlas))
+                    throw new InvalidOperationException("Reverse UV square atlas exceeds the size limit.");
                 result.report.atlasSize = side;
                 foreach (var level in all)
                 {
@@ -272,6 +288,7 @@ namespace SashaRX.UnityMeshLab
         {
             if(!options.repackFinalAtlas) return;
             CapturePackingEdges(result,token);
+            options.beforeFinalPacking?.Invoke(result);
             int previousSide=result.report.atlasSize;
             int side=useAsync?await Task.Run(()=>ReverseUvFinalPacking.Pack(result.surfaces,options,result.report,previousSide,token),token)
                 :ReverseUvFinalPacking.Pack(result.surfaces,options,result.report,previousSide,token);

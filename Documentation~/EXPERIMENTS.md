@@ -2644,3 +2644,116 @@ UV0/фолдинг — побочный вопрос; параметризаци
 **Изменение:** Quality Report и Validation Overlay по-прежнему требуют завершённого transfer, а Apply/Reset actions теперь доступны после repack или transfer. Transfer и auto-tune для source-only workflow остаются пропущенными.
 
 **Проверка:** EditMode-тест `ApplyUv2_IsAvailable_AfterSourceOnlyRepack` фиксирует доступность Apply при `HasRepack = true` и `HasTransfer = false`.
+
+## 2026-10-12 — PR225 continuation: frozen forward islands, reverse cascade, fresh final padding
+
+The exclusive reverse path now follows the requested order: run ordinary Transfer
+on detached copies, freeze its whole island membership, prepare and cut only the
+coarsest foundation, match complete finer islands, and repack completed ancestry
+families together. The existing overlap path is a control and is unchanged.
+
+- Correspondence uses face hits as proposals for a whole-island similarity fit.
+  A partial fit can anchor the complete island; unsupported faces are extensions
+  of that group. Several finer islands may share one coarser group.
+- A genuinely unmatched island creates a new group and becomes a donor on the
+  following step. Invalid input islands are repaired as complete components;
+  correspondence is retried after repair before declaring them new.
+- Coarsest O/U/C/H/T foundation cuts use existing edges. Finer islands are never
+  seam-cut or subdivided. All captured model outputs have zero split source faces.
+- Each group keeps precise local UV coordinates until final placement. Large
+  temporary canvas offsets previously rounded tiny UV edges before packing.
+- After correspondence, normalize each complete family to the requested minimum
+  density, using its coarsest member as the reference. Start classic xatlas
+  Repack from these families, with fresh padding in final pixel units.
+- Without Fill atlas, keep the requested density. With Fill atlas, compare fresh
+  native placements at common density multipliers 1/2/3/4/6/8. Every trial applies
+  the configured padding anew; no packed atlas or old gutter is scaled afterward.
+- Packing proxy union shards below native's face-area threshold now receive a
+  local 0.01-pixel guard. They no longer force the whole family into a convex
+  hull or rectangle, which previously erased rings and concavities.
+- Final packing compares axis-aligned and orthogonal whole-family placements;
+  failure of arbitrary-angle placement does not cancel the orthogonal trial.
+- Shared vertices of physically subpixel faces can use the existing 0.01-pixel
+  Float32 repair budget, without cuts or new triangles. Visible faces retain the
+  absolute stretch limit. Every complete family stays connected and its final
+  motion residual is independently checked against that budget.
+- Native's actual canvas extent is retained, as in ordinary Repack. Rounding it
+  to the next power of two previously added a blank quadrant after dense packing.
+- Disconnected families are not stitched on the basis of incidental old UV
+  coincidence. Geometry, overlap and precision are audited before publication.
+
+Private Unity comparison: `_results~/reverse-frozen-cascade-20261012/models-11`.
+All three models completed ordinary / new exclusive / old overlap pipelines.
+Settings: minimum 32 tex/m, Fill atlas on, final padding 2 px.
+
+| Model | Final families | Chosen tex/m | Atlas | LOD0 bbox fill | LOD0 stretch P95 |
+|---|---:|---:|---:|---:|---:|
+| Cafe_Table_A_01 | 160 | 256 | 832 | 49.8% | 1.210 |
+| Modern_Kitchen_A | 910 | 128 | 729 | 48.6% | 1.100 |
+| Kamaz_Typhoon | 2606 | 256 | 4514 | 67.9% | 1.064 |
+
+The rejected previous screenshots had bbox fill 43.6% / 36.1% / 47.5%,
+respectively. Ordinary Transfer gives 39.4% for Kitchen and 57.5% for Kamaz.
+
+Independent exported-layout audit: zero changed geometric triangles, zero
+invalid/collapsed faces, zero unexpected overlaps, zero finer healthy-island
+splits. All 5,122 healthy finer islands retain a common similarity transform per
+island. Maximum completed-family motion residual is 0.004903 bake pixel. Ordinary
+Transfer and old overlap values match the preceding published controls after
+excluding the newly added, empty whole-match refusal diagnostic field.
+The audit separately records whole-component repairs (82 Kitchen and 109 Kamaz
+finer islands), rather than calling repaired input shapes preserved originals.
+
+Final focused Unity regression run with a graphics device: 521 passed, 0 failed,
+35 optional checks skipped (UV plus incoming main texture-packer coverage). A preceding `-nographics` run failed two lightmap
+shader-readback checks; both pass with graphics enabled. The earlier full-suite
+run also found a separate existing skinned Remesh preview scale failure, outside
+this UV change; it is not claimed as a passing full-suite gate.
+
+The new analytic checks cover partial anchors, multiple finer islands in one
+coarse group, new intermediate donors, complete-island repair/rematch, O/U/C/H/T
+foundation cuts, strict density with padding 1/4/8, fresh fixed pixel padding
+when Fill atlas increases density, microscopic shared-face stability, concave
+mask preservation, whole-family axis rotation, actual canvas normalization,
+approximate panel correspondence, incompatible island refusal, sibling overlap
+protection and best-orientation fitting of a thin mirrored island.
+Both FBX compilation variants pass. `Tools~/ReverseFootprintAudit.cs` is a private
+Unity driver that exports the exact native packing proxies from captured groups;
+it makes convex-mask inflation inspectable separately from correspondence.
+
+Ghost reservation investigation (same experiment, after merging main 6ca6976d):
+
+- The two large side-panel reservations were foundation charts 5513 and 5531.
+  Their six-face LOD1 children were rejected at 0.3126 seed pixels; the roof
+  child (21 faces, 12.33 m²) was rejected at 0.5232 pixels from chart 5438.
+  Matching used the 0.25-pixel seam tolerance for approximate LOD correspondence.
+  The finer panels were born as independent groups while coarse panels still
+  reserved their full masks, leaving the visible LOD0 vacancies.
+- Whole-island fitting now uses max(seam tolerance, projection reach × seed
+  density). Nearest-donor world distance/normal tests, whole-island distortion,
+  topology and same-LOD sibling contact audits retain their independent gates.
+  Both orientation signs are evaluated and the lowest-residual fit is chosen;
+  accepting the first sign under the wider budget misplaces thin mirrored charts.
+- Large panel and roof descendants now share their foundation families. Kamaz
+  LOD2 aligned area rises from 53.3% to 93.8%; LOD1 from 86.4% to 96.7%.
+  A separate 1024² raster union measures canvas occupied only by other LODs:
+  24.45% before versus 5.57% after. These raster values include pixel-boundary
+  dilation and are distinct from the quality evaluator's bbox fill.
+- Cafe fill improves from 44.7% to 49.8%. Kitchen fill changes from 49.2% to
+  48.6%; additional whole-panel matches displace intersecting sibling details
+  into independent groups in exclusive mode. It is not claimed as a packing
+  improvement on Kitchen. All eight exclusive LODs have zero invalid/collapsed
+  faces and zero unexpected/intentional overlaps, with unchanged geometric
+  triangles and healthy finer-island connectivity.
+- Refusal reasons are retained per island (fit residual, whole-island quality,
+  sibling contact or absent complete-face anchors); new-island refusals are no
+  longer overwritten with the generic extension reason.
+
+Remaining limitations: some families still have no finer correspondence,
+including door/internal patches without complete-face anchors, and exclusive
+mode keeps details that contact their parent surface in separate groups. Whole
+finer rings and branches remain intact when no whole-island match exists;
+coarsest cuts do not imply every finer chart is an I strip. Kitchen's larger
+Fill candidates can still fail the precision/contact audit. Ordered overlap
+baking is unchanged and unfinished. Zero defects do not establish complete
+matching or optimal packing.

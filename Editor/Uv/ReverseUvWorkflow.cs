@@ -20,13 +20,13 @@ namespace SashaRX.UnityMeshLab
         {
             EditorGUILayout.Space(6);
             EditorGUILayout.LabelField("Reverse UV — coarse → fine (experimental)", EditorStyles.boldLabel);
-            EditorGUILayout.HelpBox("Prepare ordinary Transfer charts once, then regroup from coarse to fine and repack all LODs together. Complete islands stay intact during reverse correspondence.", MessageType.None);
+            EditorGUILayout.HelpBox("Freeze ordinary Transfer, cut the coarsest foundation, then match whole islands towards LOD0. Repack the completed groups together.", MessageType.None);
             reversePrepareSeed = EditorGUILayout.ToggleLeft(new GUIContent("Prepare with ordinary Transfer",
                 "Run Analyze / Weld / Symmetry / Repack / Transfer on detached copies. Uses the Repack junction-cut settings. Disable to regroup an existing forward result."), reversePrepareSeed);
             reversePreserveOverlap = EditorGUILayout.ToggleLeft(new GUIContent("Allow projected detail overlap",
                 "Details can inherit the light under them. Overlap ancestry is saved; ordered baking is not implemented yet."), reversePreserveOverlap);
             reverseFillAtlas = EditorGUILayout.ToggleLeft(new GUIContent("Fill final atlas uniformly",
-                "All LOD chart families are always repacked together on an empty canvas. This option additionally increases their common scale to fit the square; actual texel density can exceed the requested minimum."),reverseFillAtlas);
+                "After all correspondences, try higher texel densities with fresh packing of every group. Padding stays in final pixels; actual density can exceed the requested minimum."),reverseFillAtlas);
             reverseReach = EditorGUILayout.FloatField(new GUIContent("Projection reach (world units)"), reverseReach);
             using (new EditorGUI.DisabledScope(!ctx.LodGroup || ctx.MeshEntries.Where(e => e.include).Select(e => e.lodIndex).Distinct().Count() < 2))
                 if (GUILayout.Button("Run Reverse UV", GUILayout.Height(24)))
@@ -81,9 +81,10 @@ namespace SashaRX.UnityMeshLab
                     rotateCharts = ctx.XatlasRotateCharts, rotateChartsToAxis = ctx.XatlasRotateChartsToAxis,
                     repackFinalAtlas = true, fillFinalAtlas = reverseFillAtlas,
                     regroupPreparedAtlas = forward != null,
+                    frozenShellCascade = forward != null && !reversePreserveOverlap,
                     rebuildSeedWithUnity = false
                 };
-                UvProgress.Report(.15f, "Project and expand atlas");
+                UvProgress.Report(.15f, "Match whole islands from coarse to fine");
                 using var prepared = await ReverseUvJunctionTrial.Build(sources, options, reversePrepareSeed,
                     ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity ? ctx.LightmapDensity : 0,
                     useAsync, cancellation.Token);

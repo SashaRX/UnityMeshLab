@@ -1270,8 +1270,12 @@ namespace SashaRX.UnityMeshLab.Tests
                             preserveProjectedOverlap = overlap, projectionReach = .05f, cutNarrowJunctions = true,
                             rotateCharts = true, rotateChartsToAxis = true, splitDonorSeams = true,
                             fillAtlasVacancies = true, repackFinalAtlas = true, fillFinalAtlas = true
-                            , regroupPreparedAtlas=useForward
+                            , regroupPreparedAtlas=useForward, frozenShellCascade=useForward && !overlap
                         };
+                        string capture=System.Environment.GetEnvironmentVariable("MESHLAB_FROZEN_CAPTURE");
+                        if(options.frozenShellCascade && !string.IsNullOrEmpty(capture))
+                            options.beforeFinalPacking=result=>TransferBenchmarkExport.Reverse(
+                                System.IO.Path.Combine(capture,System.IO.Path.GetFileNameWithoutExtension(asset)),result,reverseSources,finalAtlas:false);
                         // Model the editor's existing repacked working seed on
                         // detached inputs. Reverse must consume it unchanged and
                         // still repack every LOD after projection.
