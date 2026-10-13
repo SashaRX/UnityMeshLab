@@ -111,7 +111,7 @@ namespace SashaRX.UnityMeshLab
                 ReadPackBits(stream, pass.Row, pass.Lengths[channel * pass.Header.Height + y], pass.Cancellation);
             else input.Read(pass.Row);
             pass.Cancellation.ThrowIfCancellationRequested();
-            input.UpdateChecksum(pass.Row);
+            input.AccumulateRowChecksum(pass.Row);
             if (pass.Compression == 3) UndoPrediction(pass.Row, pass.Unshuffled, pass.Header.Width, pass.Header.Depth);
             byte[] samples = pass.Unshuffled ?? pass.Row;
             if (pass.CaptureAlpha)
@@ -511,7 +511,7 @@ namespace SashaRX.UnityMeshLab
 
             internal void Read(byte[] row) => ReadExactly(data, row, cancellation);
 
-            internal void UpdateChecksum(byte[] row)
+            internal void AccumulateRowChecksum(byte[] row)
             {
                 if (inflater != null) TexturePackingPsd.UpdateChecksum(row, ref checksumA, ref checksumB);
             }

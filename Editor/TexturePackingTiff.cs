@@ -107,7 +107,7 @@ namespace SashaRX.UnityMeshLab
 
         private static void DecodeLzw(Stream input, byte[] output, CancellationToken cancellation)
         {
-            new LzwDecoder(input, output).Decode(cancellation);
+            new LzwDecoder(input, output).DecodeIntoOutput(cancellation);
         }
 
         private static void DecodeDeflate(RangeStream input, byte[] output, CancellationToken cancellation)
@@ -271,7 +271,7 @@ namespace SashaRX.UnityMeshLab
             internal LzwDecoder(Stream input, byte[] output)
             { bits = new MsbBits(input); this.output = output; }
 
-            internal void Decode(CancellationToken cancellation)
+            internal void DecodeIntoOutput(CancellationToken cancellation)
             {
                 while (true)
                 {
