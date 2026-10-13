@@ -118,7 +118,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
-        public IEnumerator SeparateFbxIncludesSelectedSubmeshNormalsInAllLodsAndPreservesSource()
+        public IEnumerator SeparateFbxIncludesRelaxedSelectedSubmeshNormalsInAllLodsAndPreservesSource()
         {
             string source = Source(false, true, lods: true);
             var bytes = File.ReadAllBytes(source); var meta = File.ReadAllBytes(source + ".meta");
@@ -130,7 +130,8 @@ namespace SashaRX.UnityMeshLab.Tests
                 var renderer = root.GetComponentsInChildren<MeshRenderer>().Single(r => r.name == "Tree_LOD0");
                 var settings = new FoliageNormalsSettings { filterRenderers = true, renderers = new[] { renderer },
                     selection = FoliageFaceSelection.SelectedSubmeshIndices, submeshes = new[] { 1 },
-                    normalSource = FoliageNormalSource.Sphere, proxySegments = 16, gpuProjection = false, recalculateTangents = true };
+                    normalSource = FoliageNormalSource.Sphere, proxySegments = 16, gpuProjection = false, recalculateTangents = true,
+                    relaxTransferredNormals = true, normalRelaxIterations = 1, normalRelaxStrength = 1 };
                 var task = pipeline.Run(root, settings, FoliageNormalsPipeline.Stage.Transfer);
                 yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, pipeline.Status);
                 Assert.AreEqual(3, pipeline.Targets.Count); Assert.AreEqual(1, pipeline.CaptureSourceCount);
@@ -143,6 +144,12 @@ namespace SashaRX.UnityMeshLab.Tests
                     var originalNormals = FbxLayerChannels.ReadVectors(FbxLayerChannels.NormalElement(mesh), a);
                     var resultNormals = FbxLayerChannels.ReadVectors(FbxLayerChannels.NormalElement(result), b);
                     Assert.IsFalse(originalNormals.SequenceEqual(resultNormals), mesh.GetName() + " must receive the selected foliage normals.");
+                    var materials = FbxStructureEdit.PolygonMaterials(result);
+                    var selectedCorners = Enumerable.Range(0, b.CornerCount).Where(c => materials[b.cornerPolygon[c]] == 1).ToArray();
+                    Assert.AreEqual(3, selectedCorners.Length);
+                    foreach (int corner in selectedCorners)
+                        for (int axis = 0; axis < 3; axis++)
+                            Assert.That(resultNormals[corner * 3 + axis], Is.EqualTo(resultNormals[selectedCorners[0] * 3 + axis]).Within(1e-5), "The saved triangle must contain the final averaged direction.");
                 }
                 CollectionAssert.AreEqual(bytes, File.ReadAllBytes(source)); CollectionAssert.AreEqual(meta, File.ReadAllBytes(source + ".meta"));
                 foreach (var target in pipeline.Targets) Assert.AreSame(target.source, target.filter.sharedMesh);

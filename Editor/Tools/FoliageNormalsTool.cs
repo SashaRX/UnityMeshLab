@@ -115,6 +115,8 @@ namespace SashaRX.UnityMeshLab
             if (restored.automaticProxyTriangleBudget)
                 restored.maximumProxyTriangles = Mathf.Clamp(restored.maximumProxyTriangles, 4, FoliageNormalsSettings.HardProxyTriangleCap);
             if (json.IndexOf("\"sampleByCount\"", StringComparison.Ordinal) < 0) restored.sampleByCount = true;
+            if (json.IndexOf("\"normalRelaxIterations\"", StringComparison.Ordinal) < 0) restored.normalRelaxIterations = 3;
+            if (json.IndexOf("\"normalRelaxStrength\"", StringComparison.Ordinal) < 0) restored.normalRelaxStrength = .5f;
             restored.ClampSampleBudgets();
             restored.Validate();
             return restored;
@@ -611,7 +613,14 @@ namespace SashaRX.UnityMeshLab
             settings.alignToOriginalHemisphere = EditorGUILayout.Toggle("Align original hemisphere", settings.alignToOriginalHemisphere);
             settings.gpuProjection = EditorGUILayout.Toggle("GPU projection", settings.gpuProjection);
             settings.recalculateTangents = EditorGUILayout.Toggle("Recalculate tangents", settings.recalculateTangents);
-            StageButton("Transfer normals", FoliageNormalsPipeline.Stage.Transfer);
+            settings.relaxTransferredNormals = EditorGUILayout.Toggle("Relax transferred normals", settings.relaxTransferredNormals);
+            if (settings.relaxTransferredNormals)
+            {
+                settings.normalRelaxIterations = EditorGUILayout.IntSlider("Normal relax iterations", settings.normalRelaxIterations, 0, 100);
+                settings.normalRelaxStrength = EditorGUILayout.Slider("Normal relax strength", settings.normalRelaxStrength, 0, 1);
+                EditorGUILayout.HelpBox("Smooths directions across connected selected faces after transfer, in every target LOD. Geometry, excluded faces and missed vertices stay unchanged. Transfer again to update the result using the cached proxy.", MessageType.Info);
+            }
+            StageButton(settings.relaxTransferredNormals ? "Transfer + relax normals" : "Transfer normals", FoliageNormalsPipeline.Stage.Transfer);
         }
 
         void DrawOutput()

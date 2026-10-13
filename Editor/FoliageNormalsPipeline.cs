@@ -185,7 +185,7 @@ namespace SashaRX.UnityMeshLab
                 case Stage.Remesh:
                     return RemeshKey(s);
                 default:
-                    return FormattableString.Invariant($"{s.maxTransferDistance:R}|{s.transferBlend:R}|{s.alignToOriginalHemisphere}|{s.gpuProjection}|{s.recalculateTangents}");
+                    return FormattableString.Invariant($"{s.maxTransferDistance:R}|{s.transferBlend:R}|{s.alignToOriginalHemisphere}|{s.gpuProjection}|{s.recalculateTangents}|{s.relaxTransferredNormals}|{s.normalRelaxIterations}|{s.normalRelaxStrength:R}");
             }
         }
 

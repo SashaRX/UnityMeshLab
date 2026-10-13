@@ -42,6 +42,9 @@ namespace SashaRX.UnityMeshLab
         public float maxTransferDistance; // zero = twice the capture diagonal
         public float transferBlend = 1;
         public bool alignToOriginalHemisphere, gpuProjection = true, recalculateTangents = true;
+        public bool relaxTransferredNormals;
+        public int normalRelaxIterations = 3;
+        public float normalRelaxStrength = .5f;
 
         internal int ProxyTriangleLimit => automaticProxyTriangleBudget ? HardProxyTriangleCap : maximumProxyTriangles;
 
@@ -61,6 +64,12 @@ namespace SashaRX.UnityMeshLab
         {
             if (!Enum.IsDefined(typeof(FoliageNormalSource), normalSource)) throw new ArgumentException("Unknown normal source.");
             Range(maxTransferDistance, 0, 1e10f, nameof(maxTransferDistance)); Range(transferBlend, 0, 1, nameof(transferBlend));
+            if (relaxTransferredNormals)
+            {
+                Range(normalRelaxStrength, 0, 1, nameof(normalRelaxStrength));
+                if (normalRelaxIterations < 0 || normalRelaxIterations > 100)
+                    throw new ArgumentException("Normal relax iterations must be 0–100.");
+            }
             if (normalSource != FoliageNormalSource.VoxelEnvelope)
             {
                 ValidateShape();
@@ -128,6 +137,7 @@ namespace SashaRX.UnityMeshLab
             remeshProxy = remeshProxy, remeshEdgeLength = remeshEdgeLength, remeshIterations = remeshIterations,
             automaticProxyTriangleBudget = automaticProxyTriangleBudget, maximumProxyTriangles = maximumProxyTriangles, remeshRelaxation = remeshRelaxation,
             maxTransferDistance = maxTransferDistance, transferBlend = transferBlend, alignToOriginalHemisphere = alignToOriginalHemisphere,
+            relaxTransferredNormals = relaxTransferredNormals, normalRelaxIterations = normalRelaxIterations, normalRelaxStrength = normalRelaxStrength,
             gpuProjection = gpuProjection, recalculateTangents = recalculateTangents
         };
     }

@@ -11,6 +11,23 @@ only its stage and subsequent results. **Clear Preview** releases the captured a
 generated preview meshes. **Apply to Scene** and **Save Mesh Asset** become available
 only after a successful transfer with at least one transferred vertex.
 
+Enable **Relax transferred normals** in **Transfer** to smooth the final directions
+after projection and blend, separately from proxy smoothing. **Normal relax iterations**
+(0–100, default 3) and **Normal relax strength** (0–1, default 0.5) control this optional
+step; it is disabled by default. Press **Transfer + relax normals** after changing them.
+The existing proxy is reused, and every run starts from the projected result, so
+repeating the action does not accumulate relaxation.
+
+Relaxation averages unit directions along connected selected triangle edges in
+capture space, independently in every selected LOD. Disconnected leaf cards and
+vertex splits remain separate. Missed vertices and excluded faces do not supply
+neighbour directions and retain their original normals; selected/excluded boundary
+copies continue to protect the excluded side. Geometry and other channels stay
+unchanged. Original-hemisphere alignment remains active when enabled, and tangents
+are regenerated after relaxation when requested. Preview, Apply, both mesh-save
+paths and FBX output use this same final result. Zero strength, zero iterations or
+zero transfer blend preserve the unrelaxed output exactly.
+
 ## Normal source: voxel envelope, sphere or hemisphere
 
 **Proxy shape** chooses the source surface for the same nearest-triangle normal

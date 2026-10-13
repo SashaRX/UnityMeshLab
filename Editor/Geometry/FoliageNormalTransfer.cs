@@ -39,6 +39,7 @@ namespace SashaRX.UnityMeshLab
         internal sealed class Result
         {
             internal Vector3[] normals; internal Diagnostics diagnostics;
+            internal bool[] transferredVertices;
         }
 
         internal static TriangleBvh.HitResult[] QueryCpu(TriangleBvh bvh, Vector3[] points, float reach, CancellationToken token)
@@ -147,7 +148,8 @@ namespace SashaRX.UnityMeshLab
         internal static Result Resolve(FoliageTargetSnapshot target, RemeshNative.IndexedMesh proxy, int[] selected,
             TriangleBvh.HitResult[] hits, FoliageNormalsSettings settings, float reach, CancellationToken token)
         {
-            var r = new Result { normals = (Vector3[])target.localNormals.Clone(), diagnostics = new Diagnostics { renderers = 1, faces = target.selectedIndices.Length / 3, selected = selected.Length } };
+            var r = new Result { normals = (Vector3[])target.localNormals.Clone(), transferredVertices = new bool[target.localNormals.Length],
+                diagnostics = new Diagnostics { renderers = 1, faces = target.selectedIndices.Length / 3, selected = selected.Length } };
             for (int k = 0; k < selected.Length; k++)
             {
                 if ((k & 1023) == 0)
@@ -156,6 +158,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 ResolveVertex(target, proxy, selected[k], hits[k], settings, reach, r);
             }
+            FoliageNormalRelaxation.Apply(target, r.normals, r.transferredVertices, settings, token);
             ValidateOutput(target, r.normals);
             return r;
         }
@@ -197,6 +200,7 @@ namespace SashaRX.UnityMeshLab
             }
             // Blend 0 and misses retain the original local value exactly.
             r.normals[v] = settings.transferBlend == 0 ? target.localNormals[v] : MeshGeometry.UnitDirection(target.normalCaptureToLocal.MultiplyVector(n));
+            r.transferredVertices[v] = true;
             r.diagnostics.transferred++;
             double distance = Math.Sqrt(hit.distSq);
             r.diagnostics.sumDistance += distance;
