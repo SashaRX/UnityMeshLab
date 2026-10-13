@@ -40,13 +40,16 @@ namespace SashaRX.UnityMeshLab
             }
             foreach (var entry in ctx.MeshEntries)
             {
+                if (entry == null) continue;
                 string path = entry.fbxMesh ? AssetDatabase.GetAssetPath(entry.fbxMesh) : null;
                 if (applied == null || string.IsNullOrEmpty(path) || !applied.TryGetValue(path, out var saved)) continue;
+                var payload = saved.FirstOrDefault(item => item != null && item.meshName == entry.fbxMesh.name);
+                if (payload == null) continue;
                 // Sidecar-off imports use a one-shot payload. Restore this result's
                 // history after refresh, rather than loading an older disk sidecar.
                 entry.reverseTransferJson = null;
                 entry.repackedAtlasWidth = entry.repackedAtlasHeight = 0;
-                SidecarStore.RestoreReverseProvenance(entry, saved.FirstOrDefault(item => item.meshName == entry.fbxMesh.name));
+                SidecarStore.RestoreReverseProvenance(entry, payload);
             }
             AfterWrite?.Invoke();
         }

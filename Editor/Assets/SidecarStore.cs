@@ -395,7 +395,7 @@ namespace SashaRX.UnityMeshLab
             try {
                 if (!raw.isReadable) readable = MeshAccess.ReadableCopy(raw);
                 var current = readable ? readable : raw;
-                if (!ReverseVertexKeys(current, entry, out var storedIds, out var currentIds)
+                if (!ReverseVertexKeys(current, entry, out var storedIds, out var currentIds, verifyLayout)
                     || !ReverseTriangleKeys(current, entry, storedIds, currentIds)) return false;
                 return !verifyLayout || ReverseLayoutMatches(current, entry, storedIds, currentIds);
             }
@@ -426,13 +426,20 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
-        static bool ReverseVertexKeys(Mesh current, MeshUv2Entry entry, out int[] storedIds, out int[] currentIds)
+        static bool ReverseVertexKeys(Mesh current, MeshUv2Entry entry, out int[] storedIds, out int[] currentIds, bool verifyLayout)
         {
             storedIds = new int[entry.uv2.Length]; currentIds = new int[entry.uv2.Length];
-            var keys = new Dictionary<((int,int,int), Vector2), int>();
+            // Existing UV2 seams distinguish vertex identities when restoring
+            // history. Legacy replay still requires one UV2 per position/UV0.
+            var lightmap = new List<Vector2>();
+            if (verifyLayout) {
+                current.GetUVs(1, lightmap);
+                if (lightmap.Count != current.vertexCount) return false;
+            }
+            var keys = new Dictionary<((int,int,int), Vector2, Vector2), int>();
             var values = new List<Vector2>(); var counts = new List<int>();
             for (int i = 0; i < storedIds.Length; ++i) {
-                var key = (Uv2AssetPostprocessor.QuantizePos(entry.vertPositions[i]), entry.vertUv0[i]);
+                var key = (Uv2AssetPostprocessor.QuantizePos(entry.vertPositions[i]), entry.vertUv0[i], verifyLayout ? entry.uv2[i] : default);
                 if (!keys.TryGetValue(key, out int id)) {
                     id = keys.Count; keys.Add(key, id); values.Add(entry.uv2[i]); counts.Add(0);
                 }
@@ -443,7 +450,7 @@ namespace SashaRX.UnityMeshLab
             var uv = new List<Vector2>(); current.GetUVs(0, uv);
             if (uv.Count != positions.Length) return false;
             for (int i = 0; i < positions.Length; ++i) {
-                var key = (Uv2AssetPostprocessor.QuantizePos(positions[i]), uv[i]);
+                var key = (Uv2AssetPostprocessor.QuantizePos(positions[i]), uv[i], verifyLayout ? lightmap[i] : default);
                 if (!keys.TryGetValue(key, out int id) || counts[id] <= 0) return false;
                 currentIds[i] = id; --counts[id];
             }

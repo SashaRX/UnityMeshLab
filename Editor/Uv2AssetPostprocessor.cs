@@ -29,7 +29,7 @@ namespace SashaRX.UnityMeshLab
         // Bump whenever replay behaviour changes so Unity reimports models that
         // were processed by an older version of this postprocessor. Each bump
         // forces a full reimport, so change it at most once per release.
-        public override uint GetVersion() => 3;
+        public override uint GetVersion() => 4;
 
         /// <summary>
         /// Paths to bypass during the next reimport. When ApplyUv2ToFbx needs the

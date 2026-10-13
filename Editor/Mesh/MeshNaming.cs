@@ -35,10 +35,18 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public static bool TryParseLod(string name, out string baseName, out int lod)
         {
+            if (!TryParseLodSuffix(name, out baseName, out lod)) return false;
+            if (lod < MaxLodLevels) return true;
+            baseName = name; lod = -1; return false;
+        }
+
+        /// <summary>Parses an unrestricted source LOD index and preserves its instance key for export renumbering.</summary>
+        internal static bool TryParseLodSuffix(string name, out string baseName, out int lod)
+        {
             baseName = name; lod = -1;
             if (string.IsNullOrEmpty(name)) return false;
             var m = LodSuffix.Match(name);
-            if (!m.Success || !int.TryParse(m.Groups[3].Value, out lod) || lod < 0 || lod >= MaxLodLevels) { lod = -1; return false; }
+            if (!m.Success || !int.TryParse(m.Groups[3].Value, out lod) || lod < 0) { lod = -1; return false; }
             baseName = m.Groups[1].Value + m.Groups["instance"].Value;
             return true;
         }

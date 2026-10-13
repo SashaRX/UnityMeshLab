@@ -1181,10 +1181,7 @@ namespace SashaRX.UnityMeshLab
 
                 // Any LOD index the name carries, even one the LODGroup cannot hold: this
                 // pass only groups and orders children.
-                string groupPrefix = MeshNaming.SplitLodSuffix(child.name, out string lodSuffix);
-                if (lodSuffix.Length == 0 ||
-                    !int.TryParse(lodSuffix.Substring(lodSuffix.ToUpperInvariant().LastIndexOf("LOD") + 3), out int parsedIndex))
-                    continue;
+                if (!MeshNaming.TryParseLodSuffix(child.name, out string groupPrefix, out int parsedIndex)) continue;
                 if (!groupedLodChildren.TryGetValue(groupPrefix, out var list))
                 {
                     groupedLodChildren[groupPrefix] = list = new List<(Transform, int, int)>();
