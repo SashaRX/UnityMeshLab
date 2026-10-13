@@ -9,6 +9,7 @@ namespace SashaRX.UnityMeshLab
     /// <summary>Byte-domain channel packing. Pixels use Unity's bottom-left origin.</summary>
     public sealed class TexturePackingImage
     {
+        internal const string SupportedInputs = "PNG, JPG/JPEG, TGA, PSD, TIF/TIFF";
         public int Width { get; }
         public int Height { get; }
         public Color32[] Pixels { get; }
@@ -26,15 +27,30 @@ namespace SashaRX.UnityMeshLab
         public static bool Supports(string path)
         {
             string extension = Path.GetExtension(path).ToLowerInvariant();
-            return extension == ".png" || extension == ".jpg" || extension == ".jpeg" || extension == ".tga";
+            return extension == ".png" || extension == ".jpg" || extension == ".jpeg" || extension == ".tga" ||
+                extension == ".psd" || extension == ".tif" || extension == ".tiff";
+        }
+
+        internal static bool UsesStreamDecoder(string path)
+        {
+            string extension = Path.GetExtension(path).ToLowerInvariant();
+            return extension == ".tga" || extension == ".psd" || extension == ".tif" || extension == ".tiff";
+        }
+
+        internal static TexturePackingImage DecodeStream(string path, Stream stream, CancellationToken cancellation)
+        {
+            string extension = Path.GetExtension(path).ToLowerInvariant();
+            if (extension == ".psd") return TexturePackingPsd.Decode(stream, cancellation);
+            if (extension == ".tif" || extension == ".tiff") return TexturePackingTiff.Decode(stream, cancellation);
+            return DecodeTga(stream, cancellation);
         }
 
         public static TexturePackingImage Load(string path)
         {
-            if (!Supports(path)) throw new NotSupportedException("Supported inputs: PNG, JPG/JPEG, TGA.");
+            if (!Supports(path)) throw new NotSupportedException("Supported inputs: " + SupportedInputs + ".");
+            if (UsesStreamDecoder(path))
+                using (var stream = File.OpenRead(path)) return DecodeStream(path, stream, default);
             byte[] bytes = File.ReadAllBytes(path);
-            if (string.Equals(Path.GetExtension(path), ".tga", StringComparison.OrdinalIgnoreCase))
-                return DecodeTga(bytes);
             var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false, true)
             { hideFlags = HideFlags.HideAndDontSave };
             try

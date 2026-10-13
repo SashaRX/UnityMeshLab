@@ -4,11 +4,20 @@ Open **Tools → Mesh Lab → Open Mesh Lab**, then select the **Texture Packer*
 Saved layouts containing the former standalone window transfer its packing settings
 to this tab and close the old window automatically.
 
-Drop a PNG, JPG/JPEG or TGA file onto a slot thumbnail, or use its browse button.
+Drop a PNG, JPG/JPEG, TGA, PSD or TIF/TIFF file onto a slot thumbnail, or use its browse button.
 Files can come from anywhere on disk. Source files are read directly; they are
 never copied into the project and their Unity import settings are never changed.
 TGA inputs support raw/RLE 24/32-bit true color and 8-bit grayscale, with either
-image origin. Paletted TGA, PSD, TIFF, BMP and EXR are not supported.
+image origin. PSD reads the saved merged RGB/grayscale image, including alpha;
+save with Photoshop's compatibility option enabled so that composite is present.
+PSD supports 8/16/32-bit channels and raw, RLE or ZIP compression. Layer edits
+must be saved before dropping the file. TIFF reads the first image, including
+alpha, from standard strips or tiles with raw, PackBits, LZW or Deflate compression.
+16-bit channels are reduced to 8-bit; floating-point channels are clamped to 0–1.
+PSD CMYK/Lab/indexed modes and PSB, TIFF CMYK/palette, BigTIFF, JPEG-compressed
+TIFF and floating-point TIFF prediction are not supported. Paletted TGA, BMP
+and EXR are also unsupported. Export an RGB PNG or a TIFF without those options.
+PSD/TIFF sources are limited to 64 megapixels to bound decoder memory.
 
 - **Albedo:** a whole RGB image plus an optional separate alpha, or separate R/G/B/A inputs.
 - **MRCA:** separate R/G/B/A inputs by default; whole RGB plus optional alpha is also available.
@@ -42,12 +51,17 @@ importer regardless of the chosen filename suffix.
 Outside Assets, only the file is written. Saving next to a model requires a
 writable folder (registry/package-cache models may need a different destination).
 
-Source reads and TGA decoding run on workers; PNG/JPEG decoding uses Unity's
+Dropping a file immediately assigns its name and shows the loading state. Drag
+hover and assignment do not read or check files on disk, so a slow disk or network
+path cannot block those UI events. The thumbnail appears when background decoding
+finishes; full decoding cannot be instantaneous for arbitrarily large sources.
+Source reads and TGA/PSD/TIFF decoding run on workers; PNG/JPEG decoding uses Unity's
 asynchronous texture downloader with local file URLs, without mipmaps. TGA reads
 only its header and pixel payload from a stream. Read leases and file identity
 checks on Windows, or background content hashes on Unix, reject source rewrites
-or replacements during decoding. Pixel copies are sliced
-across editor updates. At most two source decoders run at once, and repeated
+or replacements during decoding. PNG RGBA pixels use bounded 4 MiB bulk copies;
+other layouts use short time-budgeted conversions across editor updates.
+At most two source decoders run at once, and repeated
 assignments of one file share one load. Full-resolution resizing and RLE encoding
 run in the background. Resize parallelizes rows with at most four workers,
 leaving a processor available when possible; outputs are encoded sequentially
