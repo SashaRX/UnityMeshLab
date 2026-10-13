@@ -385,7 +385,7 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
                 items.Clear(); Assert.IsTrue(tool.Get3DContent(items));
                 Assert.AreSame(first, items[0].mesh);
                 Assert.That(Vector3.Distance(items[0].matrix.MultiplyPoint3x4(first.bounds.center),
-                    first.bounds.center - root.transform.position), Is.LessThan(1e-5f));
+                    first.bounds.center), Is.LessThan(1e-5f));
                 settings.minRodVoxels = 0;
                 items.Clear(); tool.Get3DContent(items);
                 Assert.IsFalse(first, "Threshold changes release the old paint");
@@ -443,8 +443,8 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
             finally { Object.DestroyImmediate(mesh); }
         }
 
-        [Test]
-        public void SkinnedSourcePreviewKeepsSkinAttributesAndReleasesItsPoseMesh()
+        [TestCase(1f)] [TestCase(2f)]
+        public void SkinnedSourcePreviewKeepsSkinAttributesAndReleasesItsPoseMesh(float sceneScale)
         {
             var root = new GameObject("skin source preview");
             var mesh = new Mesh { name = "skin source" };
@@ -460,12 +460,17 @@ namespace SashaRX.UnityMeshLab.Tests.Editor
                     new BoneWeight { boneIndex0 = 0, weight0 = 1 } };
                 var skin = root.AddComponent<SkinnedMeshRenderer>();
                 skin.sharedMesh = mesh; skin.bones = new[] { root.transform }; skin.rootBone = root.transform;
+                root.transform.SetPositionAndRotation(new Vector3(50, -.07f, 85), Quaternion.Euler(0, 148, 0));
+                root.transform.localScale = Vector3.one * sceneScale;
                 tool.SetSource(root);
                 var entries = new List<MeshEntry>(); var items = new List<MeshViewport3D.Item>();
                 Assert.IsTrue(tool.GetUvContent(entries)); Assert.IsTrue(tool.Get3DContent(items));
                 Assert.AreEqual(1, entries.Count);
                 posed = entries[0].originalMesh;
                 Assert.AreNotSame(mesh, posed); Assert.AreSame(posed, items[0].mesh);
+                Assert.AreEqual(Matrix4x4.identity, items[0].matrix);
+                for (int i = 0; i < mesh.vertexCount; ++i)
+                    Assert.That(Vector3.Distance(mesh.vertices[i], posed.vertices[i]), Is.LessThan(1e-4f), "scene TRS must not change the posed preview size");
                 using (var inspection = new MeshInspection())
                     Assert.IsTrue(MeshInspection.Supports(posed, MeshViewport3D.Shading.BoneWeights), inspection.Report(posed));
                 Assert.IsNotNull(MeshViewport3D.EncodeColors(posed, MeshViewport3D.Shading.BoneIndices));

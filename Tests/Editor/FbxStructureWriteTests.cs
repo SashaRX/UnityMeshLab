@@ -99,6 +99,19 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(0, FbxSpaceFit.WindingRelation(quad, new[] { 0, 0, 1 }));
         }
 
+        [Test]
+        public void GeometryWriteKeepsThinNonzeroFaces()
+        {
+            var source = new FbxMeshData.Source {
+                positions = new[] { -.754247129f, 2.82715511f, -1.81862569f,
+                    -.754247129f, 2.85412812f, -1.81862545f,
+                    -.754247129f, 2.82715535f, -1.81862545f },
+                submeshTriangles = new[] { new[] { 0, 1, 2 } } };
+            var data = FbxMeshData.FromTriangles(source, CubeFit(), false, null);
+            CollectionAssert.AreEqual(new[] { 3 }, data.polygonSizes);
+            Assert.AreEqual(3, data.CornerCount);
+        }
+
         static FbxSpaceFit CubeFit()
         {
             var points = CubePoints();

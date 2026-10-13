@@ -311,6 +311,39 @@ namespace Autodesk.Fbx
         public int GetPolygonSize(int polygon) => 0;
         public int GetPolygonVertex(int polygon, int position) => 0;
         public int GetDeformerCount() => 0;
+        public int AddDeformer(FbxDeformer deformer) => 0;
+    }
+    public class FbxSkeleton : FbxNodeAttribute {
+        public enum EType { eRoot, eLimb, eLimbNode, eEffector }
+        public static FbxSkeleton Create(FbxObject container, string name) => new FbxSkeleton();
+        public void SetSkeletonType(EType type) { }
+    }
+    public class FbxDeformer : FbxObject { }
+    public class FbxSkin : FbxDeformer {
+        public static FbxSkin Create(FbxObject container, string name) => new FbxSkin();
+        public bool AddCluster(FbxCluster cluster) => true;
+    }
+    public class FbxCluster : FbxObject {
+        public enum ELinkMode { eNormalize, eAdditive, eTotalOne }
+        public static FbxCluster Create(FbxObject container, string name) => new FbxCluster();
+        public void SetLink(FbxNode node) { }
+        public void SetLinkMode(ELinkMode mode) { }
+        public void SetTransformMatrix(FbxAMatrix matrix) { }
+        public void SetTransformLinkMatrix(FbxAMatrix matrix) { }
+        public void AddControlPointIndex(int index, double weight) { }
+    }
+    public class FbxShape : FbxLayerContainer {
+        public static FbxShape Create(FbxObject container, string name) => new FbxShape();
+        public void InitControlPoints(int count) { }
+        public void SetControlPointAt(FbxVector4 value, int index) { }
+    }
+    public class FbxBlendShape : FbxDeformer {
+        public static FbxBlendShape Create(FbxObject container, string name) => new FbxBlendShape();
+        public bool AddBlendShapeChannel(FbxBlendShapeChannel channel) => true;
+    }
+    public class FbxBlendShapeChannel : FbxObject {
+        public static FbxBlendShapeChannel Create(FbxObject container, string name) => new FbxBlendShapeChannel();
+        public bool AddTargetShape(FbxShape shape) => true;
     }
     public struct FbxVector2 { public double X, Y; public FbxVector2(double x, double y) { X = x; Y = y; } }
     public struct FbxColor {

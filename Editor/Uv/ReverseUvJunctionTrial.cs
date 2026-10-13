@@ -90,7 +90,10 @@ namespace SashaRX.UnityMeshLab
                             if(!options.regroupPreparedAtlas && ReverseUvTransfer.TriangleAnisotropy(frame,uv[indices[f]],uv[indices[f+1]],uv[indices[f+2]])>4.001
                                 || options.regroupPreparedAtlas && !ReverseUvShellPrecision.Fits(frame,uv[indices[f]]*state.result.report.atlasSize,
                                     uv[indices[f+1]]*state.result.report.atlasSize,uv[indices[f+2]]*state.result.report.atlasSize,4.001))
-                                throw new InvalidOperationException($"Reverse shell metric failed for LOD{state.inputs.levels[level].lod} face {f/3}.");
+                                throw new InvalidOperationException($"Reverse shell metric failed for LOD{state.inputs.levels[level].lod} '{state.inputs.levels[level].inputs[node].key}' face {f/3} "
+                                    + $"(anisotropy {ReverseUvTransfer.TriangleAnisotropy(frame,uv[indices[f]],uv[indices[f+1]],uv[indices[f+2]]):G9}; atlas {state.result.report.atlasSize}; "
+                                    + $"frame {frame.length:R}/{frame.x:R}/{frame.y:R}; pixels "
+                                    + string.Join("; ",Enumerable.Range(f,3).Select(c=>{var p=uv[indices[c]]*state.result.report.atlasSize;return $"{p.x:R}/{p.y:R}";}))+").");
                         }
 
                     }

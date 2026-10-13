@@ -6,12 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 - Optional relaxation of transferred Foliage normals with iteration and strength controls. It smooths selected connected faces in every target LOD after projection, preserves missed/excluded normals and geometry, reuses the cached proxy, and feeds the final result to preview, tangent regeneration, Apply and mesh/FBX saving.
+- Isolated model previews and UV/Remesh/Foliage captures ignore the selected root's scene position, rotation and scale. Relative child placement is retained without multiplying and cancelling world transforms, preserving thin faces during Reverse UV validation. Cap/Bridge overlays and region areas use the same model coordinates.
+- FBX UV saves preserve small lightmap/albedo seams by duplicating their control-point identities with unchanged positions and UV values; per-point channels and deformation bindings follow the duplicates. Geometry replacement retains thin nonzero-area faces.
 - Foliage Scatter defaults to an exact primitive count distributed by surface area. Low counts report incomplete island coverage instead of failing; the spacing mode remains available. Saved sample budgets and editor input stay within their valid ranges.
 - Tool tabs have subtle individual colours, with a stronger tint and matching underline for the active tool in both editor themes.
 - All mesh tools save through the shared footer. UV1 Hierarchy and vertex-channel baking export their computed results without Apply; Prefab Builder validates the shared full save; Collision includes fresh results grouped by source FBX; Remesh saves its baked model, maps, materials and prefab, including atomic source overwrite. Tool-local duplicate save buttons are removed and asset writes wait for calculations to finish.
 - Fix PR review regressions in scale-independent UV quality, UInt16 submesh base vertices, translucent material ordering, reverse sidecar geometry validation, cancellable seam audits and capture/replay boundary tolerance, active Mesh LOD raw ranges and raw MeshData importer fallback.
 
 ### Fixed
+- FBX UV saves no longer refuse models whose untouched collision meshes carry UVs or vertex colours. Those collision nodes and channels remain intact; explicit collision replacement and rebuild still strip surface data.
 - Foliage normal direction arrows obey their visibility toggle in every comparison mode, including Side by side. All Foliage display controls live in its Preview section and repaint immediately when changed.
 - Validate every collision sidecar group before writing any group; refuse shared Solid Color saves until the current swatch is baked, and invalidate them when the mesh changes.
 - Split remesh model export and shared save preparation into smaller methods while preserving atomic FBX replacement, stable mesh names, material maps and cleanup.

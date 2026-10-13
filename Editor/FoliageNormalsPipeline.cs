@@ -441,10 +441,6 @@ namespace SashaRX.UnityMeshLab
             // Capture the restored scene data, never a display-only mesh such as _LmPreview.
             PreviewSafetyGuard.RestoreAll();
             rootToWorld = root.transform.localToWorldMatrix;
-            if (rootToWorld.determinant == 0)
-            {
-                throw new InvalidOperationException("Root transform is singular.");
-            }
 
             captureSettings = options.Snapshot();
             capturePlan.AddRange(FoliageLodSelection.Resolve(root, options, token));
@@ -452,7 +448,7 @@ namespace SashaRX.UnityMeshLab
             foreach (var target in capturePlan)
             {
                 token.ThrowIfCancellationRequested();
-                var snapshot = new FoliageTargetSnapshot(target.renderer, root.transform.worldToLocalMatrix, target.settings, token, true);
+                var snapshot = new FoliageTargetSnapshot(target.renderer, Matrix4x4.identity, target.settings, token, true, root.transform);
                 targets.Add(snapshot);
                 await Task.Run(() => snapshot.PrepareArrays(token), token);
             }

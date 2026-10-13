@@ -34,6 +34,7 @@ namespace SashaRX.UnityMeshLab
             public Vector3 localPosition = Vector3.zero;
             public Quaternion localRotation = Quaternion.identity;
             public Vector3 localScale = Vector3.one;
+            internal Matrix4x4 LocalToRoot => Matrix4x4.TRS(localPosition, localRotation, localScale);
             public Matrix4x4 spaceToWorld = Matrix4x4.identity; // captured at remesh time
             public RemeshSource source;
             internal RemeshSource unfilteredSource;
@@ -68,7 +69,6 @@ namespace SashaRX.UnityMeshLab
         bool hierarchy;
         Node previewNode;
         RemeshSource unfilteredRoot;
-        Matrix4x4 capturedRootToWorld;
         bool disposeRequested;   // Dispose() during a run: clear once the run has observed cancellation
         /// <summary>The root the remesh stage captured; the save resolves its output folder from this,
         /// not from whatever is selected at save time. Null until the stage ran.</summary>
@@ -140,7 +140,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (!includeFiltered) return node.source;
             if (node.unfilteredSource == null && unfilteredRoot != null) {
-                var donor = unfilteredRoot.InSpace(node.spaceToWorld.inverse * capturedRootToWorld, node.source.diagonal);
+                var donor = unfilteredRoot.InSpace(node.LocalToRoot.inverse, node.source.diagonal);
                 // Only the primary preview retains a rebased full-root snapshot.
                 // Keeping one for every node would multiply memory by node count.
                 if (node == Primary) node.unfilteredSource = donor;
@@ -349,12 +349,10 @@ namespace SashaRX.UnityMeshLab
             RootScale = root.transform.lossyScale;
             RootRotation = root.transform.rotation;
             var rootToWorld = root.transform.localToWorldMatrix;
-            capturedRootToWorld = rootToWorld;
-            var worldToRoot = root.transform.worldToLocalMatrix;
             var captures = new List<Node>();
             if (!hierarchy) {
                 captures.Add(new Node { name = root.name, spaceToWorld = rootToWorld,
-                    source = RemeshSource.Capture(worldToRoot, renderers, asyncTextures: true) });
+                    source = RemeshSource.Capture(Matrix4x4.identity, renderers, asyncTextures: true, captureRoot: root.transform) });
             }
             else {
                 // One node per renderer, each in its own TRS space relative to the root;
@@ -369,8 +367,9 @@ namespace SashaRX.UnityMeshLab
                     var toRoot = PreviewSpace.LocalToRoot(renderer.transform, root.transform);
                     var node = new Node { name = renderer.name, localPosition = toRoot.GetColumn(3),
                         localRotation = toRoot.rotation, localScale = toRoot.lossyScale };
-                    node.spaceToWorld = rootToWorld * Matrix4x4.TRS(node.localPosition, node.localRotation, node.localScale);
-                    node.source = RemeshSource.Capture(node.spaceToWorld.inverse, new[] { renderer }, required: false, asyncTextures: true);
+                    var nodeToRoot = node.LocalToRoot;
+                    node.spaceToWorld = rootToWorld * nodeToRoot;
+                    node.source = RemeshSource.Capture(nodeToRoot.inverse, new[] { renderer }, required: false, asyncTextures: true, captureRoot: root.transform);
                     if (node.source == null) { UvtLog.Warn(LogPrefix + renderer.name + ": nothing to remesh, skipped."); continue; }
                     captures.Add(node);
                 }
@@ -384,9 +383,8 @@ namespace SashaRX.UnityMeshLab
             token.ThrowIfCancellationRequested();
             if (hierarchy) {
                 // Retain fully removed renderers too, without reading textures twice.
-                var parts = captures.ConvertAll(node => (node.source, worldToRoot * node.spaceToWorld));
-                var groundNormal = worldToRoot.inverse.transpose.MultiplyVector(Vector3.up).normalized;
-                unfilteredRoot = await Task.Run(() => RemeshSource.Combine(parts, groundNormal), token);
+                var parts = captures.ConvertAll(node => (node.source, node.LocalToRoot));
+                unfilteredRoot = await Task.Run(() => RemeshSource.Combine(parts, Vector3.up), token);
                 token.ThrowIfCancellationRequested();
             }
             var shape = options.sourceShape;
@@ -556,7 +554,7 @@ namespace SashaRX.UnityMeshLab
                 var largestCapture = captures[0];
                 foreach (var node in captures)
                     if (node.voxel.TriangleCount > largestCapture.voxel.TriangleCount) largestCapture = node;
-                var toPreview = largestCapture.spaceToWorld.inverse * capturedRootToWorld;
+                var toPreview = largestCapture.LocalToRoot.inverse;
                 largestCapture.unfilteredSource = await Task.Run(() => unfilteredRoot.InSpace(toPreview, largestCapture.source.diagonal), token);
                 token.ThrowIfCancellationRequested();
             }
@@ -614,7 +612,7 @@ namespace SashaRX.UnityMeshLab
             var contourColors = new List<Color>(); var contourReasons = new List<string>();
             var contourInfo = new List<string>();
             var selectionWarnings = new List<string>(); var loopRanges = new List<string>();
-            var toPrimary = Primary.spaceToWorld.inverse;
+            var toPrimary = Primary.LocalToRoot.inverse;
             foreach (var node in nodes) {
                 var support = node.support;
                 if (support != null) {
@@ -623,7 +621,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 var p = support?.positions ?? node.source.positions;
                 var ix = support?.indices ?? node.source.indices;
-                var matrix = toPrimary * node.spaceToWorld;
+                var matrix = toPrimary * node.LocalToRoot;
                 for (int f = 0; f < ix.Length / 3; ++f) {
                     int patch = support?.facePatches == null ? 0 : support.facePatches[f];
                     if (patch != 0) patchFaces.Add(indices.Count / 3);
@@ -742,9 +740,9 @@ namespace SashaRX.UnityMeshLab
                     node.simplified.indices,node.voxel.positions,node.voxel.indices,node.voxelSyntheticFaces,token),token);
                 node.selectedSyntheticFaces = node.syntheticFaces != null ? new bool[node.simplified.TriangleCount] : null;
                 node.completeSyntheticFaces = node.syntheticFaces;
-                node.syntheticRegions = node.syntheticFaces != null ? await Task.Run(() => RemeshSyntheticFaces.Group(node.simplified,node.syntheticFaces,node.spaceToWorld),token) : null;
+                node.syntheticRegions = node.syntheticFaces != null ? await Task.Run(() => RemeshSyntheticFaces.Group(node.simplified,node.syntheticFaces,node.LocalToRoot),token) : null;
                 if (node.syntheticRegions != null) UvtLog.Info(UvtLog.Category.RemeshDiag,
-                    $"[{node.name}] Closure mask projected from remesh: {node.syntheticRegions.faces.Count} connected regions; areas measured in world-space square units. Mixed regions require manual inspection.");
+                    $"[{node.name}] Closure mask projected from remesh: {node.syntheticRegions.faces.Count} connected regions; areas measured in model-space square units. Mixed regions require manual inspection.");
                 node.syntheticPickBvh = node.syntheticFaces != null ? await Task.Run(() => new TriangleBvh(node.simplified.positions, node.simplified.indices), token) : null;
                 before += node.voxel.TriangleCount; after += node.simplified.TriangleCount;
             }
@@ -790,7 +788,7 @@ namespace SashaRX.UnityMeshLab
                 for (int f = 0; f < node.syntheticFaces.Length; ++f) if (!node.selectedSyntheticFaces[f]) kept.Add(node.syntheticFaces[f]);
                 node.syntheticFaces = kept.ToArray(); node.selectedSyntheticFaces = new bool[kept.Count];
                 node.syntheticPickBvh = null;
-                node.syntheticRegions = RemeshSyntheticFaces.Group(node.simplified,node.syntheticFaces,node.spaceToWorld);
+                node.syntheticRegions = RemeshSyntheticFaces.Group(node.simplified,node.syntheticFaces,node.LocalToRoot);
             }
             Status = "Selected faces removed. Rerun Normals & UV, then Bake. Restore is available until Simplify is rerun.";
             RebuildSimplifiedPreview();
@@ -805,7 +803,7 @@ namespace SashaRX.UnityMeshLab
                 node.syntheticFaces = node.completeSyntheticFaces;
                 node.syntheticPickBvh = null;
                 node.selectedSyntheticFaces = node.syntheticFaces != null ? new bool[node.syntheticFaces.Length] : null;
-                node.syntheticRegions = node.syntheticFaces != null ? RemeshSyntheticFaces.Group(node.simplified,node.syntheticFaces,node.spaceToWorld) : null;
+                node.syntheticRegions = node.syntheticFaces != null ? RemeshSyntheticFaces.Group(node.simplified,node.syntheticFaces,node.LocalToRoot) : null;
             }
             Status = "Restored optimized geometry. Rerun Normals & UV, then Bake."; RebuildSimplifiedPreview();
         }

@@ -63,7 +63,7 @@ namespace SashaRX.UnityMeshLab
                 foreach (var entry in ctx.MeshEntries.Where(e => e.include && e.lodIndex == 0)) {
                     var mesh = ctx.DMesh(entry);
                     key = key * 397 + (mesh ? mesh.GetInstanceID() : 0);
-                    key = key * 397 + (entry.renderer ? entry.renderer.localToWorldMatrix.GetHashCode() : 0);
+                    key = key * 397 + ctx.PreviewMatrix(entry.renderer ? entry.renderer.transform : null).GetHashCode();
                 }
                 return key;
             }

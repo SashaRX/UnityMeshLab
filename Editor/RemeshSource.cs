@@ -150,16 +150,18 @@ namespace SashaRX.UnityMeshLab
         public static RemeshSource Capture(GameObject root, bool lod0Only)
         {
             if (!root) throw new ArgumentException("Select a source root.");
-            return Capture(root.transform.worldToLocalMatrix, CollectRenderers(root, lod0Only));
+            return Capture(Matrix4x4.identity, CollectRenderers(root, lod0Only), captureRoot: root.transform);
         }
 
         /// <summary>
-        /// Snapshot of the given renderers expressed in the space whose world→local
-        /// matrix is worldToSpace. Returns null when they contribute no triangles and
+        /// Snapshot of the given renderers. With captureRoot, worldToSpace maps
+        /// root-local coordinates to capture space; otherwise it maps world coordinates.
+        /// Returns null when they contribute no triangles and
         /// required is false; throws otherwise.
         /// </summary>
         public static RemeshSource Capture(Matrix4x4 worldToSpace, IList<Renderer> renderers, bool required = true,
-            bool geometryOnly = false, bool aoOnly = false, RemeshSettings aoReadbackSettings = null, bool asyncTextures = false)
+            bool geometryOnly = false, bool aoOnly = false, RemeshSettings aoReadbackSettings = null, bool asyncTextures = false,
+            Transform captureRoot = null)
         {
             var positions = new List<Vector3>(); var normals = new List<Vector3>();
             var tangents = new List<Vector4>(); var uv = new List<Vector2>(); var colors = new List<Color>();
@@ -246,7 +248,8 @@ namespace SashaRX.UnityMeshLab
                             t = new Vector4[p.Length];
                             for (int i = 0; i < t.Length; ++i) t[i] = new Vector4(1, 0, 0, 1);
                         }
-                        var transform = worldToSpace * renderer.localToWorldMatrix;
+                        var transform = worldToSpace * (captureRoot ? PreviewSpace.LocalToRoot(renderer.transform, captureRoot)
+                            : renderer.localToWorldMatrix);
                         var normalTransform = NormalTransform(transform);
                         float sign = transform.determinant < 0 ? -1 : 1;
                         int first = positions.Count;

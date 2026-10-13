@@ -142,7 +142,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         // A quad and a pentagon sharing an edge, UV0 per corner with a seam, colours per corner at full precision.
-        string WriteSource(bool binary, string version = "FBX201400")
+        string WriteSource(bool binary, string version = "FBX201400", bool withCollision = false)
         {
             string path = Path.Combine(folder, "source.fbx");
             using var manager = FbxManager.Create();
@@ -177,6 +177,18 @@ namespace SashaRX.UnityMeshLab.Tests
             colors.SetReferenceMode(FbxLayerElement.EReferenceMode.eDirect);
             for (int c = 0; c < 9; c++) colors.GetDirectArray().Add(new FbxColor(0.123456789 + c * 0.01, 0.5, 0.25, 1));
             mesh.GetLayer(0).SetVertexColors(colors);
+            if (withCollision)
+            {
+                var data = new FbxMeshData {
+                    controlPoints = new double[] { 0, 0, 0, 10, 0, 0, 0, 10, 0 },
+                    polygonSizes = new[] { 3 }, polygonVertices = new[] { 0, 1, 2 },
+                    colors = new double[] { .1, .2, .3, 1, .4, .5, .6, 1, .7, .8, .9, 1 }
+                };
+                data.uvNames.Add("map1"); data.uvs.Add(new double[] { 0, 0, 1, 0, 0, 1 });
+                var collision = FbxNode.Create(scene, "Part_COL");
+                collision.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, "Part_COL", data));
+                scene.GetRootNode().AddChild(collision);
+            }
             using var exporter = FbxExporter.Create(manager, "Write");
             int format = manager.GetIOPluginRegistry().FindWriterIDByDescription(binary ? "FBX binary (*.fbx)" : "FBX ascii (*.fbx)");
             Assert.IsTrue(exporter.Initialize(path, format, io) && exporter.SetFileExportVersion(version) && exporter.Export(scene));
@@ -295,6 +307,92 @@ namespace SashaRX.UnityMeshLab.Tests
             return working;
         }
 
+        [TestCase(1f)] [TestCase(.001f)] [TestCase(.00001f)]
+        public void ChannelWrite_ReimportKeepsSmallLightmapSeams(float scale)
+        {
+            string assetFolder = "Assets/MeshLabSmallUvSeams_" + Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", assetFolder.Substring(7));
+            string path = assetFolder + "/source.fbx";
+            Mesh working = null;
+            try {
+                File.Copy(WriteSource(true), path);
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.isReadable = true; importer.keepQuads = false; importer.generateSecondaryUV = false;
+                importer.meshCompression = ModelImporterMeshCompression.Off;
+                importer.optimizeMeshPolygons = importer.optimizeMeshVertices = importer.weldVertices = false;
+                importer.SaveAndReimport();
+                var imported = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().Single();
+                working = MakeTriangleSeams(imported, FbxExportIntent.UV1, false);
+                working.uv2 = working.uv2.Select(p => p * scale).ToArray();
+                var expected = TriangleUvRecords(working);
+                Assert.IsTrue(FbxChannelWrite.Write(path, new[] { new MeshEntry { fbxMesh = imported, originalMesh = working } }, FbxExportIntent.UV1, null, null));
+                var restored = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().Single();
+                string audit = Environment.GetEnvironmentVariable("MESHLAB_FBX_SAVE_AUDIT");
+                if (!string.IsNullOrEmpty(audit)) {
+                    Directory.CreateDirectory(audit);
+                    string stem = Path.Combine(audit, "small-seam-" + scale.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
+                    File.Copy(path, stem + ".fbx", true);
+                    File.WriteAllBytes(stem + ".mesh.bin", TransferMeshSnapshot.Capture(working));
+                }
+                CollectionAssert.AreEqual(expected, TriangleUvRecords(restored));
+            }
+            finally { if (working) UnityEngine.Object.DestroyImmediate(working); AssetDatabase.DeleteAsset(assetFolder); }
+        }
+
+        [Test]
+        public void SmallUvPointSplitsPreserveSkinAndBlendShapeBindings()
+        {
+            string source = WriteSource(true);
+            using (var document = FbxSourceDocument.Load(source)) {
+                var mesh = document.Meshes.Single();
+                var bone = FbxNode.Create(document.Scene, "Bone");
+                var skeleton = FbxSkeleton.Create(document.Scene, "Skeleton");
+                skeleton.SetSkeletonType(FbxSkeleton.EType.eRoot); bone.SetNodeAttribute(skeleton);
+                document.Scene.GetRootNode().AddChild(bone);
+                var skin = FbxSkin.Create(document.Scene, "Skin");
+                var cluster = FbxCluster.Create(document.Scene, "Cluster");
+                cluster.SetLink(bone); cluster.SetLinkMode(FbxCluster.ELinkMode.eNormalize);
+                cluster.SetTransformMatrix(new FbxAMatrix()); cluster.SetTransformLinkMatrix(new FbxAMatrix());
+                for (int i = 0; i < mesh.GetControlPointsCount(); ++i) cluster.AddControlPointIndex(i, 1);
+                skin.AddCluster(cluster); mesh.AddDeformer(skin);
+                var shape = FbxShape.Create(document.Scene, "Raised"); shape.InitControlPoints(mesh.GetControlPointsCount());
+                for (int i = 0; i < mesh.GetControlPointsCount(); ++i) {
+                    var p = mesh.GetControlPointAt(i);
+                    shape.SetControlPointAt(new FbxVector4(p.X, p.Y, p.Z + 2), i);
+                }
+                var blend = FbxBlendShape.Create(document.Scene, "Blend");
+                var channel = FbxBlendShapeChannel.Create(document.Scene, "Raised");
+                channel.AddTargetShape(shape); blend.AddBlendShapeChannel(channel); mesh.AddDeformer(blend);
+                document.Save(source);
+            }
+            string assetFolder = "Assets/MeshLabUvBindings_" + Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", assetFolder.Substring(7));
+            string path = assetFolder + "/source.fbx";
+            Mesh working = null;
+            try {
+                File.Copy(source, path); AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.isReadable = true; importer.generateSecondaryUV = false; importer.keepQuads = false;
+                importer.weldVertices = false; importer.meshCompression = ModelImporterMeshCompression.Off; importer.SaveAndReimport();
+                var imported = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().Single();
+                Assert.AreEqual(1, imported.blendShapeCount); Assert.AreEqual(imported.vertexCount, imported.boneWeights.Length);
+                var beforeDelta = new Vector3[imported.vertexCount]; imported.GetBlendShapeFrameVertices(0, 0, beforeDelta, null, null);
+                working = MakeTriangleSeams(imported, FbxExportIntent.UV1, false);
+                working.uv2 = working.uv2.Select(uv => uv * .001f).ToArray();
+                Assert.IsTrue(FbxChannelWrite.Write(path, new[] { new MeshEntry { fbxMesh = imported, originalMesh = working } }, FbxExportIntent.UV1, null, null));
+                var restored = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().Single();
+                CollectionAssert.AreEqual(TriangleUvRecords(working), TriangleUvRecords(restored));
+                Assert.AreEqual(1, restored.blendShapeCount); Assert.AreEqual(restored.vertexCount, restored.boneWeights.Length);
+                var delta = new Vector3[restored.vertexCount]; restored.GetBlendShapeFrameVertices(0, 0, delta, null, null);
+                for (int v = 0; v < restored.vertexCount; ++v) {
+                    Assert.AreEqual(1, restored.boneWeights[v].weight0); Assert.AreEqual(0, restored.boneWeights[v].boneIndex0);
+                    Assert.AreEqual(beforeDelta[0], delta[v]);
+                }
+            }
+            finally { if (working) UnityEngine.Object.DestroyImmediate(working); AssetDatabase.DeleteAsset(assetFolder); }
+        }
+
         [Test]
         public void ChannelWrite_RealKamazRoundTripPreservesTriangleUvSeamsAndSource()
         {
@@ -348,6 +446,217 @@ namespace SashaRX.UnityMeshLab.Tests
             {
                 if (working != null) UnityEngine.Object.DestroyImmediate(working);
                 AssetDatabase.DeleteAsset(assetFolder);
+            }
+        }
+
+        [Test]
+        public void DocumentWrite_UvSavePreservesUntouchedCollisionSurfaceData()
+        {
+            string assetFolder = "Assets/MeshLabCollisionChannels_" + Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", assetFolder.Substring(7));
+            string path = assetFolder + "/source.fbx", outputPath = assetFolder + "/saved.fbx";
+            Mesh working = null;
+            try
+            {
+                File.WriteAllBytes(path, File.ReadAllBytes(WriteSource(true, withCollision: true)));
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.isReadable = true; importer.generateSecondaryUV = false; importer.SaveAndReimport();
+                var meshes = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().ToArray();
+                var collision = meshes.Single(m => MeshNaming.IsCollision(m.name));
+                Assert.IsTrue(collision.HasVertexAttribute(VertexAttribute.TexCoord0));
+                Assert.IsTrue(collision.HasVertexAttribute(VertexAttribute.Color));
+                var imported = meshes.Single(m => !MeshNaming.IsCollision(m.name));
+                working = UnityEngine.Object.Instantiate(imported);
+                working.uv2 = working.uv.Select(uv => uv * .5f).ToArray();
+                var entry = new MeshEntry { fbxMesh = imported, originalMesh = working };
+                using var plan = FbxStructureWrite.Plan(path, new List<(MeshEntry, Mesh)> { (entry, working) }, 0);
+                Assert.IsTrue(FbxChannelWrite.Write(path, new[] { entry }, FbxExportIntent.UV1, outputPath, null, plan));
+                AssertCollisionUnchanged(path, outputPath);
+                var restored = AssetDatabase.LoadAllAssetsAtPath(outputPath).OfType<Mesh>().Single(m => m.name == imported.name);
+                CollectionAssert.AreEqual(TriangleUvRecords(working), TriangleUvRecords(restored));
+            }
+            finally
+            {
+                if (working) UnityEngine.Object.DestroyImmediate(working);
+                AssetDatabase.DeleteAsset(assetFolder);
+            }
+        }
+
+        static void AssertCollisionUnchanged(string sourcePath, string outputPath)
+        {
+            using var source = FbxSourceDocument.Load(Path.GetFullPath(sourcePath));
+            using var output = FbxSourceDocument.Load(Path.GetFullPath(outputPath));
+            var before = source.Meshes.Single(m => MeshNaming.IsCollision(m.GetName()));
+            var after = output.Meshes.Single(m => m.GetName() == before.GetName());
+            var original = new FbxLayerChannels.Topology(before); var written = new FbxLayerChannels.Topology(after);
+            CollectionAssert.AreEqual(FbxStructureEdit.ControlPoints(before), FbxStructureEdit.ControlPoints(after));
+            CollectionAssert.AreEqual(original.polygonSizes, written.polygonSizes);
+            CollectionAssert.AreEqual(original.cornerControlPoint, written.cornerControlPoint);
+            AssertUntouchedLayers(before, original, after, written, null);
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator DocumentWrite_RealKamazAfterReverseExclusive() => RealKamazReverseDocument(false);
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator DocumentWrite_RealKamazAfterReverseOverlap() => RealKamazReverseDocument(true);
+
+        [TestCase(false)] [TestCase(true)]
+        public void ChannelWrite_CapturedReverseKamazPreservesEveryUvCorner(bool completeDocument)
+        {
+            string fixture = Environment.GetEnvironmentVariable("MESHLAB_FBX_REPLAY_DIR");
+            if (string.IsNullOrEmpty(fixture)) Assert.Ignore("Set MESHLAB_FBX_REPLAY_DIR to a captured reverse-save case.");
+            string assetFolder = "Assets/MeshLabReverseSaveReplay_" + Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", assetFolder.Substring(7));
+            string path = assetFolder + "/Kamaz.fbx";
+            Mesh working = null;
+            var owned = new List<Mesh>();
+            try
+            {
+                File.Copy(Path.Combine(fixture, "before.fbx"), path);
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.isReadable = true; importer.keepQuads = false; importer.generateSecondaryUV = false;
+                importer.meshCompression = ModelImporterMeshCompression.Off;
+                importer.optimizeMeshPolygons = importer.optimizeMeshVertices = importer.weldVertices = false;
+                importer.SaveAndReimport();
+                var imported = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().Single(m => m.name == "Kamaz_Typhoon_LOD0");
+                working = TransferMeshSnapshot.Restore(File.ReadAllBytes(Path.Combine(fixture, imported.name + ".mesh.bin")));
+                owned.Add(working);
+                var expected = TriangleUvRecords(working).Distinct().ToArray();
+                var entries = new List<MeshEntry> { new MeshEntry { fbxMesh = imported, originalMesh = working, transferredMesh = working } };
+                if (completeDocument)
+                    foreach (var mesh in AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().Where(m => m != imported)) {
+                        string snapshot = Path.Combine(fixture, mesh.name + ".mesh.bin");
+                        if (!File.Exists(snapshot)) continue;
+                        var copy = TransferMeshSnapshot.Restore(File.ReadAllBytes(snapshot)); owned.Add(copy);
+                        entries.Add(new MeshEntry { fbxMesh = mesh, originalMesh = copy, transferredMesh = copy, lodIndex = MeshNaming.LodIndex(mesh.name) });
+                    }
+                var allExpected = entries.ToDictionary(e => e.fbxMesh.name, e => TriangleUvRecords(e.originalMesh).Distinct().ToArray());
+                using var plan = completeDocument ? FbxStructureWrite.Plan(path, entries.Select(e => (e, e.originalMesh)).ToList(), 0) : null;
+                Assert.IsTrue(FbxChannelWrite.Write(path, entries, FbxChannelWrite.Supported, null, null, plan));
+                var restored = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().Single(m => m.name == imported.name);
+                string audit = Environment.GetEnvironmentVariable("MESHLAB_FBX_SAVE_AUDIT");
+                if (!string.IsNullOrEmpty(audit)) {
+                    Directory.CreateDirectory(audit);
+                    File.WriteAllBytes(Path.Combine(audit, "restored.mesh.bin"), TransferMeshSnapshot.Capture(restored));
+                }
+                var actual = TriangleUvRecords(restored).Distinct().ToArray();
+                foreach (string missing in expected.Except(actual)) TestContext.WriteLine("Missing corner: " + missing);
+                CollectionAssert.AreEqual(expected, actual, "Captured Reverse UV must survive FBX write and reimport.");
+                foreach (var mesh in AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().Where(m => allExpected.ContainsKey(m.name))) {
+                    var records = TriangleUvRecords(mesh).Distinct().ToArray();
+                    foreach (string missing in allExpected[mesh.name].Except(records).Take(10)) TestContext.WriteLine(mesh.name + " missing: " + missing);
+                    foreach (string extra in records.Except(allExpected[mesh.name]).Take(10)) TestContext.WriteLine(mesh.name + " extra: " + extra);
+                    if (!string.IsNullOrEmpty(audit)) File.WriteAllBytes(Path.Combine(audit, mesh.name + ".mesh.bin"), TransferMeshSnapshot.Capture(mesh));
+                }
+                foreach (var mesh in AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().Where(m => allExpected.ContainsKey(m.name)))
+                    CollectionAssert.AreEqual(allExpected[mesh.name], TriangleUvRecords(mesh).Distinct().ToArray(), mesh.name);
+            }
+            finally { foreach (var mesh in owned) if (mesh) UnityEngine.Object.DestroyImmediate(mesh); AssetDatabase.DeleteAsset(assetFolder); }
+        }
+
+        static System.Collections.IEnumerator RealKamazReverseDocument(bool overlap)
+        {
+            string fixture = Environment.GetEnvironmentVariable("MESHLAB_FBX_KAMAZ");
+            if (string.IsNullOrEmpty(fixture)) Assert.Ignore("Set MESHLAB_FBX_KAMAZ to the original FBX for the real-model regression.");
+            byte[] original = File.ReadAllBytes(fixture);
+            byte[] metadata = File.Exists(fixture + ".meta") ? File.ReadAllBytes(fixture + ".meta") : null;
+            string folder = "Assets/MeshLabKamazReverseSave_" + Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", folder.Substring(7));
+            string path = folder + "/Kamaz.fbx";
+            GameObject root = null;
+            var canvas = new UvCanvasView();
+            var workflow = new UvTransferWorkflow();
+            var context = new UvToolContext();
+            try
+            {
+                File.WriteAllBytes(path, original);
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.isReadable = true; importer.keepQuads = false; importer.generateSecondaryUV = false;
+                importer.meshCompression = ModelImporterMeshCompression.Off;
+                importer.optimizeMeshPolygons = importer.optimizeMeshVertices = importer.weldVertices = false;
+                importer.SaveAndReimport();
+                root = UnityEngine.Object.Instantiate(AssetDatabase.LoadAssetAtPath<GameObject>(path));
+                root.transform.SetPositionAndRotation(new Vector3(52.7f, -.07f, 85.75f), Quaternion.Euler(0, 148.031784f, 0));
+                var lod = root.GetComponentInChildren<LODGroup>();
+                if (!lod)
+                {
+                    lod = root.AddComponent<LODGroup>();
+                    var renderers = root.GetComponentsInChildren<MeshRenderer>(true);
+                    var levels = renderers.GroupBy(r => {
+                        var match = System.Text.RegularExpressions.Regex.Match(r.name, "_LOD(\\d+)$");
+                        Assert.IsTrue(match.Success, r.name);
+                        return int.Parse(match.Groups[1].Value);
+                    }).OrderBy(g => g.Key).Select(g => new LOD(.5f / (g.Key + 1), g.Cast<Renderer>().ToArray())).ToArray();
+                    lod.SetLODs(levels);
+                }
+                context.Refresh(lod); workflow.OnActivate(context, canvas);
+                context.LightmapDensity = 32; context.ShellPaddingPx = 2; context.RepackPerMesh = false;
+                context.RepackResolutionMode = ResolutionMode.AutoFromTexelDensity;
+                const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+                typeof(UvTransferWorkflow).GetField("reversePreserveOverlap", flags).SetValue(workflow, overlap);
+                var task = workflow.RunReverseTransfer(false);
+                while (!task.IsCompleted) yield return null;
+                task.GetAwaiter().GetResult();
+                Assert.IsTrue(context.HasTransfer);
+                var group = context.MeshEntries.Where(e => e.include)
+                    .Select(e => (entry: e, resultMesh: context.Assets.GetResultMesh(e))).ToList();
+                Assert.IsTrue(group.All(p => !string.IsNullOrEmpty(p.entry.reverseTransferJson)));
+                var expected = group.ToDictionary(p => p.entry.fbxMesh.name, p => TriangleUvRecords(p.resultMesh));
+                string auditFolder = Environment.GetEnvironmentVariable("MESHLAB_FBX_SAVE_AUDIT");
+                if (!string.IsNullOrEmpty(auditFolder))
+                {
+                    auditFolder = Path.Combine(auditFolder, overlap ? "overlap" : "exclusive");
+                    Directory.CreateDirectory(auditFolder);
+                    File.Copy(path, Path.Combine(auditFolder, "before.fbx"), true);
+                    foreach (var p in group)
+                        File.WriteAllBytes(Path.Combine(auditFolder, p.entry.fbxMesh.name + ".mesh.bin"), TransferMeshSnapshot.Capture(p.resultMesh));
+                }
+                string collisionBefore = Path.Combine(Path.GetTempPath(), "meshlab-kamaz-collision-" + Guid.NewGuid().ToString("N") + ".fbx");
+                File.WriteAllBytes(collisionBefore, File.ReadAllBytes(path));
+                string guid = AssetDatabase.AssetPathToGUID(path);
+                try
+                {
+                    using var plan = FbxStructureWrite.Plan(path, group, context.SourceLodIndex);
+                    Assert.IsTrue(FbxChannelWrite.Write(path, group.Select(p => p.entry.PreviewCopy(p.resultMesh)),
+                        FbxChannelWrite.Supported, null, null, plan));
+                    AssertCollisionUnchanged(collisionBefore, path);
+                    TestContext.WriteLine($"Kamaz Reverse overlap={overlap}: {group.Count} meshes saved; {plan.reshaped.Count} geometry replacements.");
+                }
+                finally { File.Delete(collisionBefore); }
+                Assert.AreEqual(guid, AssetDatabase.AssetPathToGUID(path));
+                if (!string.IsNullOrEmpty(auditFolder)) File.Copy(path, Path.Combine(auditFolder, "after.fbx"), true);
+                var restored = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().ToDictionary(m => m.name);
+                foreach (var result in expected)
+                {
+                    var actual = TriangleUvRecords(restored[result.Key]);
+                    // Unsplit FBX polygons may import with a different diagonal after UV edits.
+                    // Compare every distinct position/UV corner, independently of how often
+                    // triangulation repeats it, and keep the total triangle corner count.
+                    var wantedCorners = result.Value.Distinct().ToArray(); var savedCorners = actual.Distinct().ToArray();
+                    TestContext.WriteLine($"{result.Key}: {result.Value.Length} triangle corners, " +
+                        $"{wantedCorners.Length}/{savedCorners.Length} distinct corners, " +
+                        $"{wantedCorners.Except(savedCorners).Count()} missing, {savedCorners.Except(wantedCorners).Count()} extra.");
+                    CollectionAssert.AreEqual(wantedCorners, savedCorners, result.Key + " UV corners round trip");
+                    Assert.AreEqual(result.Value.Length, actual.Length, result.Key + " triangle corner count");
+                }
+                CollectionAssert.AreEqual(original, File.ReadAllBytes(fixture), "The user's original FBX must remain untouched.");
+                if (metadata != null) CollectionAssert.AreEqual(metadata, File.ReadAllBytes(fixture + ".meta"));
+            }
+            finally
+            {
+                if (root)
+                {
+                    workflow.OnDeactivate();
+                    typeof(UvTransferWorkflow).GetMethod("ResetWorkingMeshesToFbx",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Invoke(workflow, null);
+                }
+                canvas.Cleanup();
+                if (root) UnityEngine.Object.DestroyImmediate(root);
+                AssetDatabase.DeleteAsset(folder);
             }
         }
 

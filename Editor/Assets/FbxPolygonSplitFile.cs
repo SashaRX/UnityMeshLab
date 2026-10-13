@@ -10,6 +10,11 @@ using System.Text;
 
 namespace SashaRX.UnityMeshLab
 {
+    internal sealed class FbxUvPointSplit
+    {
+        internal int[] sources, corners;
+    }
+
     internal static class FbxPolygonSplitFile
     {
         sealed class Node
@@ -18,12 +23,23 @@ namespace SashaRX.UnityMeshLab
             public readonly List<byte[]> properties = new List<byte[]>();
             public readonly List<Node> children = new List<Node>();
             public bool terminated;
+            public HashSet<(long child, long parent)> parentConnections;
             public Node Child(string key) => children.SingleOrDefault(n => n.name == key);
             public string Text => properties.Count == 1 && properties[0][0] == 'S'
                 ? Encoding.UTF8.GetString(properties[0], 5, BitConverter.ToInt32(properties[0], 1)) : null;
         }
 
         public static void Apply(string path, IReadOnlyDictionary<string, FbxPolygonSplit> plans)
+            => Rewrite(path, (objects, meshes) => {
+                foreach (var pair in plans) Split(meshes(pair.Key), pair.Value);
+            });
+
+        internal static void ApplyUvPoints(string path, IReadOnlyDictionary<string, FbxUvPointSplit> plans)
+            => Rewrite(path, (objects, meshes) => {
+                foreach (var pair in plans) SplitPoints(objects, meshes(pair.Key), pair.Value);
+            });
+
+        static void Rewrite(string path, Action<Node, Func<string, Node>> edit)
         {
             byte[] file = File.ReadAllBytes(path);
             if (file.Length < 27 || Encoding.ASCII.GetString(file, 0, 18) != "Kaydara FBX Binary")
@@ -32,13 +48,16 @@ namespace SashaRX.UnityMeshLab
             int position = 27;
             var roots = ReadNodes(file, ref position, file.Length, wide);
             var objects = roots.Single(n => n.name == "Objects");
-            foreach (var pair in plans)
-            {
+            objects.parentConnections = roots.Single(n => n.name == "Connections").children
+                .Where(n => n.name == "C" && n.properties.Count >= 3 && StringValue(n.properties[0]) == "OO")
+                .Select(n => (BitConverter.ToInt64(n.properties[1],1), BitConverter.ToInt64(n.properties[2],1))).ToHashSet();
+            Node Mesh(string name) {
                 var meshes = objects.children.Where(n => n.name == "Geometry" && n.properties.Count >= 3
-                    && StringValue(n.properties[2]) == "Mesh" && GeometryName(n.properties[1]) == pair.Key).ToArray();
-                if (meshes.Length != 1) throw new InvalidOperationException($"FBX split cannot uniquely find '{pair.Key}'.");
-                Split(meshes[0], pair.Value);
+                    && StringValue(n.properties[2]) == "Mesh" && GeometryName(n.properties[1]) == name).ToArray();
+                if (meshes.Length != 1) throw new InvalidOperationException($"FBX split cannot uniquely find '{name}'.");
+                return meshes[0];
             }
+            edit(objects, Mesh);
             using var stream = new MemoryStream();
             using var writer = new BinaryWriter(stream);
             writer.Write(file, 0, 27);
@@ -55,6 +74,96 @@ namespace SashaRX.UnityMeshLab
             string name = StringValue(property);
             int separator = name?.IndexOf("\0\u0001", StringComparison.Ordinal) ?? -1;
             return separator >= 0 ? name.Substring(0, separator) : name;
+        }
+
+        static void SplitPoints(Node objects, Node mesh, FbxUvPointSplit plan)
+        {
+            var vertices = mesh.Child("Vertices") ?? throw new IOException("FBX has no control points.");
+            int oldCount = BitConverter.ToInt32(vertices.properties[0], 1)/3;
+            RemapArray(vertices, plan.sources, oldCount, false);
+            var polygons = mesh.Child("PolygonVertexIndex");
+            var original = IntArray(polygons);
+            if (original.Length != plan.corners.Length) throw new IOException("FBX UV point split changed the polygon count.");
+            SetInts(polygons, original.Select((v,c) => v < 0 ? ~plan.corners[c] : plan.corners[c]).ToArray());
+            SplitPointEdges(mesh, original, plan.corners);
+            foreach (var layer in mesh.children.Where(n => n.name.StartsWith("LayerElement", StringComparison.Ordinal))) {
+                string mapping = layer.Child("MappingInformationType")?.Text;
+                if (mapping != "ByVertice" && mapping != "ByControlPoint") continue;
+                string reference = layer.Child("ReferenceInformationType")?.Text;
+                if (reference != "Direct" && reference != "IndexToDirect" && reference != "Index")
+                    throw new IOException($"FBX UV point split cannot preserve {layer.name} reference '{reference}'.");
+                bool indexed = reference == "IndexToDirect" || reference == "Index";
+                bool remapped = false;
+                foreach (var data in layer.children.Where(IsArray)) {
+                    bool index = data.name.EndsWith("Index", StringComparison.Ordinal) || data.name.EndsWith("Indices", StringComparison.Ordinal);
+                    if (indexed && !index) continue;
+                    RemapArray(data, plan.sources, oldCount, false); remapped = true;
+                }
+                if (!remapped) throw new IOException($"FBX UV point split cannot preserve {layer.name}.");
+            }
+            // Bindings must also follow new point identities. Refuse unsupported
+            // caches before replacing the scratch document, rather than losing data.
+            long meshId = BitConverter.ToInt64(mesh.properties[0], 1);
+            var connections = objects.parentConnections;
+            var pending = new Queue<long>(); pending.Enqueue(meshId);
+            var seen = new HashSet<long> { meshId };
+            while (pending.Count > 0) {
+                long parent = pending.Dequeue();
+                foreach (var child in objects.children.Where(n => n.properties.Count >= 3 &&
+                    (n.name == "Deformer" || n.name == "Geometry") && connections.Contains((BitConverter.ToInt64(n.properties[0],1), parent)))) {
+                    long id = BitConverter.ToInt64(child.properties[0],1); if (!seen.Add(id)) continue;
+                    pending.Enqueue(id);
+                    string kind = StringValue(child.properties[2]);
+                    if (kind == "Skin" || kind == "BlendShape" || kind == "BlendShapeChannel") continue;
+                    if (kind != "Cluster" && kind != "Shape") throw new IOException($"FBX UV point split cannot preserve '{kind}' deformer.");
+                    var indexNode = child.Child("Indexes"); if (indexNode == null) continue;
+                    var indices = IntArray(indexNode);
+                    if (indices.Length == 0) continue;
+                    var map = Enumerable.Range(0, indices.Length).ToList();
+                    var newIndices = indices.ToList(); var slots = indices.Select((v,i)=>(v,i)).ToDictionary(x=>x.v,x=>x.i);
+                    for (int point = oldCount; point < plan.sources.Length; ++point)
+                        if (slots.TryGetValue(plan.sources[point], out int slot)) { newIndices.Add(point); map.Add(slot); }
+                    foreach (string field in kind == "Cluster" ? new[] { "Weights" } : new[] { "Vertices", "Normals" }) {
+                        var array = child.Child(field); if (array != null) RemapArray(array, map.ToArray(), indices.Length, false);
+                    }
+                    SetInts(indexNode, newIndices.ToArray());
+                }
+            }
+        }
+
+        static void SplitPointEdges(Node mesh, int[] original, int[] points)
+        {
+            var edgesNode = mesh.Child("Edges");
+            var layers = mesh.children.Where(n => n.name.StartsWith("LayerElement", StringComparison.Ordinal)
+                && n.Child("MappingInformationType")?.Text == "ByEdge").ToArray();
+            if (edgesNode == null) {
+                if (layers.Length > 0) throw new IOException("FBX edge-mapped data has no edge table.");
+                return;
+            }
+            var oldEdges = IntArray(edgesNode); var next = new int[original.Length]; int start = 0;
+            for (int c = 0; c < original.Length; ++c) {
+                bool end = original[c] < 0; next[c] = end ? start : c+1;
+                original[c] = end ? ~original[c] : original[c]; if (end) start = c+1;
+            }
+            var oldSlots = new Dictionary<(int,int), int>();
+            var used = new HashSet<(int,int)>(); var edges = new List<int>(); var sources = new List<int>();
+            for (int e = 0; e < oldEdges.Length; ++e) {
+                int c = oldEdges[e];
+                if (c < 0 || c >= original.Length) throw new IOException("FBX has an invalid edge index.");
+                if (!oldSlots.TryAdd(Edge(original[c], original[next[c]]), e))
+                    throw new IOException("FBX point split has ambiguous source edges.");
+                if (!used.Add(Edge(points[c], points[next[c]]))) throw new IOException("FBX point split cannot preserve source edges.");
+                edges.Add(c); sources.Add(e);
+            }
+            for (int c = 0; c < points.Length; ++c) {
+                if (!used.Add(Edge(points[c], points[next[c]]))) continue;
+                if (!oldSlots.TryGetValue(Edge(original[c], original[next[c]]), out int source))
+                    throw new IOException("FBX point split has no source edge for a seam.");
+                edges.Add(c); sources.Add(source);
+            }
+            var plan = new FbxPolygonSplit();
+            foreach (var layer in layers) RemapLayer(layer, plan, original.Length, 0, sources.ToArray(), oldEdges.Length);
+            SetInts(edgesNode, edges.ToArray());
         }
 
         static void Split(Node mesh, FbxPolygonSplit plan)

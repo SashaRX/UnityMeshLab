@@ -2412,7 +2412,7 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Warn($"[Transfer] Failed for '{tgt.renderer.name}'"); return;
             }
 
-            var renderedFrame=tgt.renderer ? tgt.renderer.localToWorldMatrix : Matrix4x4.identity;
+            var renderedFrame=ctx.PreviewMatrix(tgt.renderer ? tgt.renderer.transform : null);
             var beforeQuality=TransferUvQuality.Measure(tgtMesh,tr.uv2,Vector2.one,renderedFrame);
             if (beforeQuality.worstAnisotropy>4 || beforeQuality.overlapPairs>0 || beforeQuality.degenerateFaces>0)
             {

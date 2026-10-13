@@ -2645,6 +2645,56 @@ UV0/фолдинг — побочный вопрос; параметризаци
 
 **Проверка:** EditMode-тест `ApplyUv2_IsAvailable_AfterSourceOnlyRepack` фиксирует доступность Apply при `HasRepack = true` и `HasTransfer = false`.
 
+## 2026-10-13 — PR225 continuation: isolated model space and Kamaz FBX round trip
+
+The placed Kamaz failed its final Reverse UV metric on LOD1 face 9374 before
+reaching FBX save. Reverse preparation and final validation used renderer world
+matrices while the canvas used model coordinates. A scene rotation and translation
+rounded an extremely thin, valid face differently in the two paths.
+
+- Reverse input, detached forward preparation, forward quality checks and diagnostic
+  captures now share `ctx.PreviewMatrix`: compose child-local transforms directly
+  up to the selected root, excluding the root and scene ancestors. Do not multiply
+  a world matrix and its inverse to recover local geometry.
+- Remesh, Foliage and Texture AO capture the same isolated model frame. Remesh
+  closure previews, projected region areas and filtered-donor rebasing use local
+  node transforms. Scene overlays still apply scene placement when drawing into
+  the actual Scene view. Source transforms and FBX assets are not reset in place.
+- An untouched collision mesh carrying UVs/colours no longer blocks a whole-file
+  UV save. Explicit collision replacement/rebuild still strips surface channels.
+- Reimport also erased nearby distinct UV1 values, with compression and importer
+  welding disabled. UV0 could similarly collapse when UV1 was equal. The raw FBX
+  retained the values, so a temporary-document topology edit now duplicates the
+  affected control-point identities without moving any corner or UV. Per-point
+  channels, edge layers, skin weights and BlendShape deltas follow these identities.
+  Unsupported deformation caches refuse the temporary write before publication.
+- Whole-geometry FBX replacement previously discarded nonzero-area triangles below
+  a relative thickness threshold. It now removes only zero-area polygons, using a
+  rebased double-precision area sum. This restores thin authored Kamaz faces.
+
+Focused checks in `_results~/kamaz-reverse-save-20261013/`: local frames retain
+thin-face coordinates under a 100 km scene offset, rotation, negative scale and
+zero root scale; nested part placement remains intact. Small UV seam round trips
+pass at scales 1, 0.001 and 0.00001. Captured exclusive Reverse outputs for all 15
+Kamaz meshes survive whole-document write/reimport with bit-identical distinct
+position/UV0/UV1 corner tuples. A skinned fixture preserves every bone influence
+and BlendShape displacement after the control-point split. These are save/space
+regressions, not a claim that Reverse correspondence or packing is optimal.
+
+Final validation on the merged `0ce923b4` base:
+- `final-verified/results.xml`: 891 passed, 0 failed, 25 optional fixture tests
+  skipped. Includes forward/reverse UV, viewport LOD switching, Remesh hierarchy,
+  closure regions, Foliage, LOD small-part selection and FBX document/channel tests.
+- Both complete Kamaz workflows passed: Reverse UV with and without projected
+  overlap, shared whole-document overwrite, synchronous reimport of all 15 meshes.
+  Distinct position/UV0/UV1 corner tuples match exactly, triangle counts and the
+  original collider are retained, and original FBX/meta bytes are unchanged.
+- A selected Foliage LOD child retains sibling placement even under a zero-scale,
+  rotated scene ancestor. Small-seam protection requires proximity in both UV
+  channels, so ordinary widely separated UV1 seams do not duplicate control points.
+- The C# compile check passes with and without `LIGHTMAP_UV_TOOL_FBX_EXPORTER`;
+  metadata coverage and the undeclared-identifier check have no findings.
+
 ## 2026-10-12 — PR225 continuation: frozen forward islands, reverse cascade, fresh final padding
 
 The exclusive reverse path now follows the requested order: run ordinary Transfer

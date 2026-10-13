@@ -692,10 +692,9 @@ namespace SashaRX.UnityMeshLab
             height = lods.Count > 0 ? lods[0].screenRelativeTransitionHeight : .5f;
             for (int lod = 1; lod < partPreviewLod; lod++)
                 height = lod < lods.Count ? lods[lod].screenRelativeTransitionHeight : height*.5f;
-            var scale = ctx.LodGroup.transform.lossyScale;
-            size = ctx.LodGroup.size*Mathf.Max(Mathf.Abs(scale.x),Mathf.Max(Mathf.Abs(scale.y),Mathf.Abs(scale.z)));
+            size = ctx.LodGroup.size;
             return LodSmallParts.Select(analysis,PartSettings(),partPreviewLod,height,
-                entry.renderer ? entry.renderer.localToWorldMatrix : Matrix4x4.identity,size);
+                ctx.PreviewMatrix(entry.renderer ? entry.renderer.transform : null),size);
         }
 
         void DrawSmallPartsSettings()
@@ -746,7 +745,7 @@ namespace SashaRX.UnityMeshLab
                 EditorGUILayout.LabelField(protection.analysis.connectivity,EditorStyles.wordWrappedMiniLabel);
                 foreach (var part in protection.analysis.parts)
                 {
-                    float pixels = LodSmallParts.Pixels(part,entry.renderer ? entry.renderer.localToWorldMatrix : Matrix4x4.identity,size,height,partScreenHeight);
+                    float pixels = LodSmallParts.Pixels(part,ctx.PreviewMatrix(entry.renderer ? entry.renderer.transform : null),size,height,partScreenHeight);
                     string description = $"{part.triangles} tris; {pixels:F2} px; {part.area/protection.analysis.area:P2} area";
                     if (part.protectedReason != null)
                     {

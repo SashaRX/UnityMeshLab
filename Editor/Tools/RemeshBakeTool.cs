@@ -444,10 +444,9 @@ namespace SashaRX.UnityMeshLab
         {
             SyncPreviewData();
             if (previews.IsSource) {
-                var worldToFrame = previewSourceRoot ? previewSourceRoot.transform.worldToLocalMatrix : Matrix4x4.identity;
                 if (highlightFilterPreview) {
                     EnsureHighlight();
-                    if (highlight.FillPreview(items, worldToFrame)) return true;
+                    if (highlight.FillPreview(items)) return true;
                 }
                 for (int i = 0; i < sourceEntries.Count; ++i) {
                     var renderer = sourceRenderers[i];
@@ -474,7 +473,7 @@ namespace SashaRX.UnityMeshLab
             }
             EditorGUILayout.LabelField($"{synthetic} closure · {mixed} mixed · {selected} selected", EditorStyles.wordWrappedMiniLabel);
             using (new EditorGUI.DisabledScope(pipeline.IsRunning)) {
-                maximumClosureArea = Mathf.Max(0,EditorGUILayout.FloatField(new GUIContent("Max region area (m²)","Select connected masked regions by their total world-space surface area, not by triangle count. Mixed regions require manual inspection."),maximumClosureArea));
+                maximumClosureArea = Mathf.Max(0,EditorGUILayout.FloatField(new GUIContent("Max region area (m²)","Select connected masked regions by their total surface area in model coordinates, not by triangle count. Mixed regions require manual inspection."),maximumClosureArea));
                 if (GUILayout.Button("Select closure regions by area")) {
                     Array.Clear(node.selectedSyntheticFaces,0,node.selectedSyntheticFaces.Length);
                     var regions = node.syntheticRegions;

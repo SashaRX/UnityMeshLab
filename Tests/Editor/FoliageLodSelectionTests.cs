@@ -207,6 +207,8 @@ namespace SashaRX.UnityMeshLab.Tests
         public IEnumerator HigherLodChildRootIncludesItsSiblingsAndUsesOnlyLod0ForProxy()
         {
             using var tree = new Tree(); using var pipeline = new FoliageNormalsPipeline();
+            tree.root.transform.SetPositionAndRotation(new Vector3(100000, -90000, 85000), Quaternion.Euler(30, 45, 70));
+            tree.root.transform.localScale = new Vector3(0, 3, .1f);
             tree.leaves[1].transform.localPosition = Vector3.right * 20;
             var settings = Settings(tree.leaves[1]);
             var task = pipeline.Run(tree.leaves[1].gameObject, settings, FoliageNormalsPipeline.Stage.Capture);

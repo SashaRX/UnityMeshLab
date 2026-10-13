@@ -27,7 +27,7 @@ namespace SashaRX.UnityMeshLab
                 "Details can inherit the light under them. Overlap ancestry is saved; ordered baking is not implemented yet."), reversePreserveOverlap);
             reverseFillAtlas = EditorGUILayout.ToggleLeft(new GUIContent("Fill final atlas uniformly",
                 "After all correspondences, try higher texel densities with fresh packing of every group. Padding stays in final pixels; actual density can exceed the requested minimum."),reverseFillAtlas);
-            reverseReach = EditorGUILayout.FloatField(new GUIContent("Projection reach (world units)"), reverseReach);
+            reverseReach = EditorGUILayout.FloatField(new GUIContent("Projection reach (model units)"), reverseReach);
             using (new EditorGUI.DisabledScope(!ctx.LodGroup || ctx.MeshEntries.Where(e => e.include).Select(e => e.lodIndex).Distinct().Count() < 2))
                 if (GUILayout.Button("Run Reverse UV", GUILayout.Height(24)))
                     FireAndForget(() => RunReverseTransfer(true), "Reverse UV");
@@ -66,7 +66,7 @@ namespace SashaRX.UnityMeshLab
                     lod = g[0].lodIndex,
                     inputs = g.Select((MeshEntry e) => new ReverseUvTransfer.Input {
                         mesh = level == 0 && !reversePrepareSeed ? e.repackedMesh ?? e.transferredMesh ?? e.originalMesh : e.originalMesh,
-                        toWorld = e.renderer ? e.renderer.localToWorldMatrix : Matrix4x4.identity,
+                        toWorld = ctx.PreviewMatrix(e.renderer ? e.renderer.transform : null),
                         key = e.fbxMesh ? e.fbxMesh.name : e.originalMesh.name
                     }).ToArray()
                 }).ToArray();

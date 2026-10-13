@@ -130,7 +130,7 @@ namespace SashaRX.UnityMeshLab
         MeshState CaptureMeshState(MeshEntry entry)
         {
             var metric = SourceTextureUvMetric.Resolve(entry.renderer, entry.previewTexture, entry.originalMesh);
-            var matrix = entry.renderer ? entry.renderer.localToWorldMatrix : Matrix4x4.identity;
+            var matrix = context.PreviewMatrix(entry.renderer ? entry.renderer.transform : null);
             var state = new MeshState { renderer = entry.renderer ? entry.renderer.name : entry.originalMesh.name,
                 group = entry.meshGroupKey, lod = entry.lodIndex, importedAsset = AssetDatabase.GetAssetPath(entry.fbxMesh),
                 working = StoreMesh(entry.originalMesh), repacked = StoreMesh(entry.repackedMesh), transferred = StoreMesh(entry.transferredMesh),
@@ -167,9 +167,9 @@ namespace SashaRX.UnityMeshLab
                     target = target.renderer ? target.renderer.name : targetMesh.name, targetLod = target.lodIndex, group = target.meshGroupKey,
                     sourceMesh = StoreMesh(sourceMesh), targetMesh = StoreMesh(targetMesh), clamp = context.ClampLightmapToUnit,
                     atlasWidth = (int)source.repackedAtlasWidth, atlasHeight = (int)source.repackedAtlasHeight,
-                    localToWorld = target.renderer ? target.renderer.localToWorldMatrix : Matrix4x4.identity,
+                    localToWorld = context.PreviewMatrix(target.renderer ? target.renderer.transform : null),
                     hasSourceTransform = true, hasBoundaryTolerance = true, boundaryToleranceTexels = boundaryToleranceTexels,
-                    sourceLocalToWorld = source.renderer ? source.renderer.localToWorldMatrix : Matrix4x4.identity,
+                    sourceLocalToWorld = context.PreviewMatrix(source.renderer ? source.renderer.transform : null),
                     overlapHints = overlapHints == null || overlapHints.Count == 0 ? null : new List<GroupedShellTransfer.OverlapSourceHint>(overlapHints),
                     matchHints = matchHints == null || matchHints.Count == 0 ? null : new List<GroupedShellTransfer.CrossLodMatchHint>(matchHints) };
                 StorePairDetails(pair);

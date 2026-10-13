@@ -216,10 +216,65 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>Splits only polygons with new internal seams, retaining the entire source document.</summary>
         public void SplitPolygons(IReadOnlyDictionary<string, FbxPolygonSplit> plans)
+            => EditTopology(path => FbxPolygonSplitFile.Apply(path, plans));
+
+        internal int PreserveSmallUvSeams(ICollection<string> names, int uvSet)
+        {
+            var plans = new Dictionary<string, FbxUvPointSplit>();
+            foreach (var mesh in Meshes.Where(m => names.Contains(m.GetName()))) {
+                var sets = FbxLayerChannels.UvElements(mesh);
+                if (sets.Count <= uvSet) continue;
+                var topology = new FbxLayerChannels.Topology(mesh);
+                var uv = FbxLayerChannels.ReadUv(sets[uvSet], topology);
+                int primarySet = uvSet == 0 && sets.Count > 1 ? 1 : 0;
+                var primary = FbxLayerChannels.ReadUv(sets[primarySet], topology);
+                (double, double, double, double) Signature(int c) => (primary[c*2], primary[c*2+1], uv[c*2], uv[c*2+1]);
+                var groups = new Dictionary<int, HashSet<(double, double, double, double)>>();
+                for (int c = 0; c < topology.CornerCount; ++c) {
+                    int point = topology.cornerControlPoint[c];
+                    if (!groups.TryGetValue(point, out var values)) groups.Add(point, values = new HashSet<(double, double, double, double)>());
+                    values.Add(Signature(c));
+                }
+                // Unity's primary/secondary-UV merge can erase nearby, distinct
+                // values even with weld/compression off. Preserve those seams
+                // as control-point identity, without changing any coordinates.
+                bool Nearby(double au, double av, double bu, double bv) => Math.Abs(au-bu) <= .01 && Math.Abs(av-bv) <= .01;
+                var split = groups.Where(g => g.Value.Any(a => g.Value.Any(b =>
+                    a != b && Nearby(a.Item1,a.Item2,b.Item1,b.Item2) && Nearby(a.Item3,a.Item4,b.Item3,b.Item4))))
+                    .Select(g => g.Key).ToHashSet();
+                if (split.Count == 0) continue;
+                int oldCount = mesh.GetControlPointsCount();
+                var sources = Enumerable.Range(0, oldCount).ToList();
+                var corners = (int[])topology.cornerControlPoint.Clone();
+                var first = new HashSet<int>(); var assigned = new Dictionary<(int, (double, double, double, double)), int>();
+                for (int c = 0; c < corners.Length; ++c) {
+                    int point = corners[c]; if (!split.Contains(point)) continue;
+                    var key = (point, Signature(c));
+                    if (!assigned.TryGetValue(key, out int next)) {
+                        next = first.Add(point) ? point : sources.Count;
+                        if (next == sources.Count) sources.Add(point);
+                        assigned.Add(key, next);
+                    }
+                    corners[c] = next;
+                }
+                plans.Add(mesh.GetName(), new FbxUvPointSplit { sources = sources.ToArray(), corners = corners });
+            }
+            if (plans.Count == 0) return 0;
+            EditTopology(path => FbxPolygonSplitFile.ApplyUvPoints(path, plans));
+            return plans.Values.Sum(p => p.sources.Length - p.sources.Distinct().Count());
+        }
+
+        internal void RefreshMeshes()
+        {
+            Meshes.Clear();
+            CollectMeshes(Scene.GetRootNode(), Meshes);
+        }
+
+        void EditTopology(Action<string> edit)
         {
             string path = Path.Combine(scratch, "split.fbx");
             SaveWithSettings(path, new FbxWriteSettings(true, EmbedsMedia), false, requireMedia: false);
-            FbxPolygonSplitFile.Apply(path, plans);
+            edit(path);
             var replacement = FbxScene.Create(Manager, "MeshLabSplitDocument");
             try
             {
@@ -230,8 +285,7 @@ namespace SashaRX.UnityMeshLab
             catch { replacement.Destroy(); throw; }
             Scene.Destroy();
             Scene = replacement;
-            Meshes.Clear();
-            CollectMeshes(Scene.GetRootNode(), Meshes);
+            RefreshMeshes();
         }
 
         /// <summary>The writer for the file version, or the oldest one newer than it.</summary>

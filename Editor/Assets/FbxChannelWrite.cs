@@ -4,6 +4,8 @@
 // touched, and within them only the corners whose value changed. A polygon with a new
 // internal seam is split using the import's triangles. Other polygons, control points,
 // smoothing, the other channels, materials and nodes come through from the source.
+// Nearby UV seams receive separate control-point identities so Unity's importer
+// retains their distinct values; positions and polygon corners do not move.
 // Output format and embedding follow project settings;
 // the source file version is preserved, subject to the SDK's supported versions.
 // Unity's FBX Exporter is not involved, so nothing is welded, re-packed
@@ -211,8 +213,18 @@ namespace SashaRX.UnityMeshLab
                 fbxPath = targetFbxPath,
                 sourceFbxPath = sourceFbxPath,
             };
+            // Capture geometry names before structural replacement destroys old meshes.
+            // Unity mesh names may differ from FBX geometry names.
+            var uvMeshes = donors.Where(d => d.uvs[1] != null && tagged.ContainsKey(d.name))
+                .Select(d => document.Meshes[tagged[d.name].ordinal].GetName()).ToHashSet();
             int structural = hasStructure ? FbxStructureWrite.Apply(document, tagged, structure, options, structureLog) : 0;
+            if (structural > 0) document.RefreshMeshes();
             bool uv1Written = channelsWritten.Contains("UV1") || (options.uv1Written && structural > 0);
+            if (uv1Written) {
+                if (hasStructure && options.uv1Written) uvMeshes.UnionWith(structure.WholeMeshNames());
+                int points = document.PreserveSmallUvSeams(uvMeshes, FbxUvSet(1, swapUv));
+                if (points > 0) UvtLog.Info($"[FBX Export] Preserved nearby lightmap seams with {points} duplicate control points; positions and UVs unchanged.");
+            }
 
             if (meshesWritten == 0 && structural == 0 && shadingSelection == null)
             {

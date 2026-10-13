@@ -77,7 +77,7 @@ namespace SashaRX.UnityMeshLab
                         var source=e.repackedMesh ? e.repackedMesh : e.transferredMesh;
                         var copy=result.Own(UnityEngine.Object.Instantiate(source));copy.name=source.name;
                         return new ReverseUvTransfer.Input { mesh=copy, key=e.fbxMesh ? e.fbxMesh.name : e.originalMesh.name,
-                            toWorld=e.renderer ? e.renderer.localToWorldMatrix : Matrix4x4.identity,
+                            toWorld=ctx.PreviewMatrix(e.renderer ? e.renderer.transform : null),
                             usePreparedUv2=true };
                     }).ToArray() }).ToArray();
                 return result;
