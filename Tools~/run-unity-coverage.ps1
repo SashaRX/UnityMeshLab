@@ -51,7 +51,8 @@ try {
         'TexturePackingTiffTests','TexturePackingFormatIntegrationTests','WindowPreferencesTests')
     $assetTransferSuites = @('ToolAssetSaveTests','FbxExportTests','FoliageFbxExportTests','PrReviewRegressionTests',
         'ReverseUvTransferTests','TransferCaptureTests','MeshNamingTests','MeshAccessTests')
-    $requiredSuites = $texturePackingSuites + $assetTransferSuites
+    $viewportSuites = @('ViewportOverlayTests')
+    $requiredSuites = $texturePackingSuites + $assetTransferSuites + $viewportSuites
     $testFilter = 'LodHardEdgeTests;LodSmoothingRegionTests;LodQslimTransferTests;LodAttributeCorrectionTests;LodQualitySelectionTests;LodGenerationToolTests;LodLoopSimplifierTests;LodSmallPartsTests;LodScreenAcceptanceTests;LodScreenValidationTests;LodProjectVisualQualityTests;CollisionElementTests;CollisionMeshToolTests;LodSharedUvTransferTests;LodPaintRetriangulationTests;' + ($requiredSuites -join ';')
     $arguments = @('-batchmode','-projectPath',$consumer,'-runTests','-testPlatform','EditMode','-testFilter',$testFilter,
         '-testResults',(Join-Path $results 'tests.xml'),'-logFile',(Join-Path $results 'unity.log'),

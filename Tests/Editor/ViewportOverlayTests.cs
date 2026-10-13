@@ -1,6 +1,7 @@
 using System.Collections;
 using System.IO;
 using System.Reflection;
+using System.Collections.Generic;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
@@ -11,6 +12,94 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class ViewportOverlayTests
     {
+        [UnityTest]
+        public IEnumerator ImportedModelUvFillMatchesTheAuthoredSurfaceAcrossLods()
+        {
+            string path = System.Environment.GetEnvironmentVariable("MESHLAB_VIEWPORT_MODEL");
+            if (string.IsNullOrEmpty(path)) Assert.Ignore("Supply an imported model fixture through MESHLAB_VIEWPORT_MODEL.");
+            if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) Assert.Ignore("Requires GPU preview rendering.");
+            var source = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+            Assert.IsNotNull(source);
+            var shader = Shader.Find("_MSC_2035/Environment_Master");
+            Assert.IsNotNull(shader, "The fixture must include its authored shader.");
+            Assert.IsFalse(ShaderUtil.ShaderHasError(shader));
+            var root = Object.Instantiate(source);
+            var window = ScriptableObject.CreateInstance<ModelOverlayWindow>();
+            var material = new Material(shader);
+            var meshes = new List<Mesh>();
+            try {
+                root.hideFlags = HideFlags.HideAndDontSave;
+                material.SetFloat("_VPOOffsetFar", .02f);
+                var group = root.GetComponentInChildren<LODGroup>();
+                Assert.IsNotNull(group);
+                var lods = group.GetLODs();
+                Assert.Greater(lods.Length, 1);
+                window.Show(); window.position = new Rect(0,0,800,600);
+                for (int lod = 0; lod < lods.Length; ++lod) {
+                    SetModelLod(window, lods[lod], lod, root.transform, material, meshes);
+                    Assert.Greater(window.items.Count, 0);
+                    window.context.PreviewLod = lod;
+                    for (int frame = 0; frame < 60; ++frame) { window.Repaint(); yield return null; }
+                    Capture(window, window.view, "bench-lod" + lod + ".png");
+                    var target = (RenderTexture)typeof(MeshViewport3D).GetField("offscreen", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(window.view);
+                    var pixels = GpuReadback.Read(target, target.width, target.height, hdr: false);
+                    Assert.IsNotNull(pixels);
+                    try {
+                        Assert.Greater(PaintedPixels(pixels), 2000, "UV fill must remain visible on LOD" + lod);
+                    }
+                    finally { Object.DestroyImmediate(pixels); }
+                }
+                Assert.AreEqual(.02f, material.GetFloat("_VPOOffsetFar"));
+            }
+            finally { window.Close(); foreach (var mesh in meshes) Object.DestroyImmediate(mesh); Object.DestroyImmediate(material); Object.DestroyImmediate(root); }
+        }
+
+        static void SetModelLod(ModelOverlayWindow window, LOD level, int lod, Transform root, Material material, List<Mesh> meshes)
+        {
+            window.items.Clear(); window.entries.Clear(); window.layer.Invalidate();
+            foreach (var renderer in level.renderers) {
+                var filter = renderer.GetComponent<MeshFilter>();
+                if (!filter || !filter.sharedMesh) continue;
+                var mesh = MeshAccess.ReadableCopy(filter.sharedMesh); meshes.Add(mesh);
+                var materials = new Material[mesh.subMeshCount];
+                for (int sub = 0; sub < materials.Length; ++sub) materials[sub] = material;
+                window.items.Add(new MeshViewport3D.Item(mesh, PreviewSpace.LocalToRoot(renderer.transform, root), materials));
+                window.entries.Add(new MeshEntry { originalMesh = mesh, renderer = renderer, include = true, lodIndex = lod });
+            }
+        }
+
+        static int PaintedPixels(Texture2D pixels)
+        {
+            int painted = 0;
+            foreach (var pixel in pixels.GetPixels())
+                if (Mathf.Max(pixel.r, pixel.g, pixel.b) - Mathf.Min(pixel.r, pixel.g, pixel.b) > .18f) ++painted;
+            return painted;
+        }
+
+        [UnityTest]
+        public IEnumerator UvFillStaysOnTheSurfaceWithCameraDirectedMaterialOffsets()
+        {
+            if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) Assert.Ignore("Requires GPU preview rendering.");
+            var window = ScriptableObject.CreateInstance<OverlayWindow>();
+            var material = new Material(Shader.Find("Hidden/MeshLab/Tests/ViewerVertexOffset"));
+            var overlay = new Material(Shader.Find("Hidden/MeshLab/UvOverlay"));
+            try {
+                material.SetFloat("_VPOOffsetFar", .02f);
+                window.materials = new[] { material }; window.hidePatch = true;
+                window.uvOverlay = overlay;
+                window.Show(); window.position = new Rect(0,0,256,256);
+                yield return null;
+                var pixel = Capture(window, "uv-material-offset.png");
+                Assert.Greater(pixel.r, .9f, "The UV fill must cover the surface, instead of being hidden behind the material's vertex offset.");
+                Assert.Less(pixel.b, .1f);
+                Assert.AreEqual(.02f, material.GetFloat("_VPOOffsetFar"), "The authored material must retain its scene offset.");
+                window.uvOverlay = null;
+                var surface = Capture(window);
+                Assert.Greater(surface.b, .9f, "Returning to the surface must retain the original material colour.");
+            }
+            finally { window.Close(); Object.DestroyImmediate(material); Object.DestroyImmediate(overlay); }
+        }
+
         [Test]
         public void TranslucentTextureBindingKeepsMaterialTilingAndOffset()
         {
@@ -124,14 +213,19 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         static Color Capture(OverlayWindow window, string file = null)
+            => Capture(window, window.view, file);
+
+        static Color Capture(EditorWindow window, MeshViewport3D view, string file)
         {
             window.SendEvent(new Event { type = EventType.Layout });
             window.SendEvent(new Event { type = EventType.Repaint });
-            var target = (RenderTexture)typeof(MeshViewport3D).GetField("offscreen", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(window.view);
+            var target = (RenderTexture)typeof(MeshViewport3D).GetField("offscreen", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(view);
             Assert.IsNotNull(target);
             var previous = RenderTexture.active;
             var pixels = new Texture2D(target.width,target.height,TextureFormat.RGBA32,false);
-            var resolved = RenderTexture.GetTemporary(target.width,target.height,0,RenderTextureFormat.ARGB32);
+            var descriptor = target.descriptor;
+            descriptor.depthBufferBits = 0; descriptor.msaaSamples = 1;
+            var resolved = RenderTexture.GetTemporary(descriptor);
             try {
                 MeshViewport3D.ResolveFrame(target,resolved); RenderTexture.active=resolved;
                 pixels.ReadPixels(new Rect(0,0,target.width,target.height),0,0); pixels.Apply();
@@ -142,6 +236,19 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { RenderTexture.active=previous; RenderTexture.ReleaseTemporary(resolved); Object.DestroyImmediate(pixels); }
         }
 
+        public sealed class ModelOverlayWindow : EditorWindow
+        {
+            internal readonly MeshViewport3D view = new MeshViewport3D { ShowGrid = false, ShowAxes = false };
+            internal readonly UvLayer3D layer = new UvLayer3D();
+            internal readonly UvCanvasView canvas = new UvCanvasView { CurrentPreviewMode = UvCanvasView.PreviewMode.Shells3D, ShowBorder = false, ShowWireframe = false };
+            internal readonly UvToolContext context = new UvToolContext { PreviewUvChannel = 1 };
+            internal readonly List<MeshViewport3D.Item> items = new List<MeshViewport3D.Item>();
+            internal readonly List<MeshEntry> entries = new List<MeshEntry>();
+            void OnEnable() => canvas.Init();
+            void OnGUI() => view.Draw(new Rect(0,0,position.width,position.height), items, v => layer.Draw(v,canvas,context,items,entries));
+            void OnDisable() { layer.Dispose(); view.Dispose(); canvas.Cleanup(); }
+        }
+
         public sealed class OverlayWindow : EditorWindow
         {
             internal readonly MeshViewport3D view = new MeshViewport3D { ViewProjection = MeshViewport3D.Projection.XY, ShowGrid = false, ShowAxes = false, Lit = false };
@@ -150,6 +257,7 @@ namespace SashaRX.UnityMeshLab.Tests
             internal bool instances;
             internal bool hidePatch;
             internal Material[] materials;
+            internal Material uvOverlay;
             internal Mesh original;
             internal MeshViewport3D.Item[] Items => instances ? new[] {
                 new MeshViewport3D.Item(original,Matrix4x4.Translate(Vector3.left*2)),
@@ -169,7 +277,8 @@ namespace SashaRX.UnityMeshLab.Tests
                 var items = Items;
                 if (controls) topology.Toolbar(items, view);
                 view.Draw(controls ? GUILayoutUtility.GetRect(100,100,GUILayout.ExpandWidth(true),GUILayout.ExpandHeight(true)) : new Rect(0,0,position.width,position.height),items,
-                    v => { if (!hidePatch) v.DrawHighlightMesh(patch,Matrix4x4.identity,new Color(1,1,1,.65f),true); if (controls) topology.Draw(v,items); });
+                    v => { if (uvOverlay) v.DrawTextured(original, Matrix4x4.identity, uvOverlay, Texture2D.whiteTexture, Color.red, 0);
+                        if (!hidePatch) v.DrawHighlightMesh(patch,Matrix4x4.identity,new Color(1,1,1,.65f),true); if (controls) topology.Draw(v,items); });
             }
             void OnDisable() { topology.Dispose(); view.Dispose(); if (original) Object.DestroyImmediate(original); if (patch) Object.DestroyImmediate(patch); }
         }

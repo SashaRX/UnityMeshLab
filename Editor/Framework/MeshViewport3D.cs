@@ -70,6 +70,8 @@ namespace SashaRX.UnityMeshLab
 
         static readonly int ColorId = Shader.PropertyToID("_Color");
         static readonly int UseVertexColorId = Shader.PropertyToID("_UseVertexColor");
+        static readonly int VertexOffsetNearId = Shader.PropertyToID("_VPOOffsetNear");
+        static readonly int VertexOffsetFarId = Shader.PropertyToID("_VPOOffsetFar");
         const string MainTextureProperty = "_MainTex";
 
         // The orbit stores the drag: x turns around the vertical axis (yaw), y tilts (pitch).
@@ -295,7 +297,7 @@ namespace SashaRX.UnityMeshLab
                     int sub = Mathf.Min(slot, mesh.subMeshCount - 1);
                     var material = item.materials != null && slot < item.materials.Length ? item.materials[slot] : null;
 
-                    if (material) utility.DrawMesh(mesh, item.matrix, material, sub);
+                    if (material) DrawMesh(mesh, item.matrix, material, sub);
                     else utility.DrawMesh(mesh, item.matrix, surface, sub, SurfaceBlock(mesh, false));
                 }
                 return;
@@ -378,6 +380,16 @@ namespace SashaRX.UnityMeshLab
         {
             if (!drawing || !mesh) return;
             if (!material) { material = surface; properties = properties ?? SurfaceBlock(mesh, false); }
+            // Environment_Master moves the surface towards the scene camera. The
+            // isolated viewer inspects mesh vertices; UV paint, picking and topology
+            // all use those same vertices. Disable its offsets on this draw only.
+            bool nearOffset = material.HasProperty(VertexOffsetNearId);
+            bool farOffset = material.HasProperty(VertexOffsetFarId);
+            if (nearOffset || farOffset) {
+                properties = properties ?? Block();
+                if (nearOffset) properties.SetFloat(VertexOffsetNearId, 0);
+                if (farOffset) properties.SetFloat(VertexOffsetFarId, 0);
+            }
             if (submesh >= 0) utility.DrawMesh(mesh, matrix, material, submesh, properties);
             else for (int sub = 0; sub < mesh.subMeshCount; ++sub) utility.DrawMesh(mesh, matrix, material, sub, properties);
         }
