@@ -47,7 +47,9 @@ try {
     }
     @{ package_root=$packageRoot.Replace('\','/'); files=$hashes; unity=$UnityPath } |
         ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $Output 'sources.json')
-    $testFilter = 'LodHardEdgeTests;LodSmoothingRegionTests;LodQslimTransferTests;LodAttributeCorrectionTests;LodQualitySelectionTests;LodGenerationToolTests;LodLoopSimplifierTests;LodSmallPartsTests;LodScreenAcceptanceTests;LodScreenValidationTests;LodProjectVisualQualityTests;CollisionElementTests;CollisionMeshToolTests;LodSharedUvTransferTests;LodPaintRetriangulationTests'
+    $texturePackingSuites = @('TextureChannelPackerTests','TexturePackingLoadReviewTests','TexturePackingPsdTests',
+        'TexturePackingTiffTests','TexturePackingFormatIntegrationTests','WindowPreferencesTests')
+    $testFilter = 'LodHardEdgeTests;LodSmoothingRegionTests;LodQslimTransferTests;LodAttributeCorrectionTests;LodQualitySelectionTests;LodGenerationToolTests;LodLoopSimplifierTests;LodSmallPartsTests;LodScreenAcceptanceTests;LodScreenValidationTests;LodProjectVisualQualityTests;CollisionElementTests;CollisionMeshToolTests;LodSharedUvTransferTests;LodPaintRetriangulationTests;' + ($texturePackingSuites -join ';')
     $arguments = @('-batchmode','-projectPath',$consumer,'-runTests','-testPlatform','EditMode','-testFilter',$testFilter,
         '-testResults',(Join-Path $results 'tests.xml'),'-logFile',(Join-Path $results 'unity.log'),
         '-enableCodeCoverage','-debugCodeOptimization','-coverageResultsPath',(Join-Path $results 'coverage'),
@@ -72,6 +74,10 @@ try {
     if ($process.ExitCode -ne 0) { throw "Unity coverage failed with exit code $($process.ExitCode)" }
     [xml]$tests = Get-Content -LiteralPath (Join-Path $results 'tests.xml')
     if ([int]$tests.'test-run'.failed -ne 0 -or [int]$tests.'test-run'.passed -le 0) { throw 'Unity tests failed or did not execute' }
+    foreach ($suite in $texturePackingSuites) {
+        $executed = $tests.SelectNodes("//test-suite[@name='$suite']//test-case[@result='Passed']")
+        if ($executed.Count -eq 0) { throw "Texture Packer suite did not execute successfully: $suite" }
+    }
     $raw = @(Get-ChildItem -LiteralPath (Join-Path $results 'coverage') -Filter '*-opencov' -Directory)
     if ($raw.Count -ne 1) { throw 'Expected exactly one Unity OpenCover result directory' }
     Copy-Item -LiteralPath $raw[0].FullName -Destination (Join-Path $Output 'opencover') -Recurse

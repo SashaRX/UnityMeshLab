@@ -302,6 +302,47 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
+        public IEnumerator ExternalJpegPreservesRgbAndSuppliesOpaqueAlpha()
+        {
+            string path = Path.Combine(Path.GetTempPath(), "MeshLabJpeg-" + Guid.NewGuid().ToString("N") + ".jpg");
+            var texture = new Texture2D(8, 8, TextureFormat.RGB24, false, true);
+            try
+            {
+                var expected = new Color32(17, 91, 203, 255);
+                var sourcePixels = new Color32[64];
+                for (int i = 0; i < sourcePixels.Length; i++) sourcePixels[i] = expected;
+                texture.SetPixels32(sourcePixels);
+                texture.Apply();
+                File.WriteAllBytes(path, ImageConversion.EncodeToJPG(texture, 100));
+                using (var load = new TexturePackingLoad(path))
+                {
+                    double deadline = EditorApplication.timeSinceStartup + 30;
+                    TexturePackingImage image;
+                    while (!load.TryComplete(out image))
+                    {
+                        Assert.Less(EditorApplication.timeSinceStartup, deadline);
+                        yield return null;
+                    }
+                    Assert.AreEqual(8, image.Width);
+                    Assert.AreEqual(8, image.Height);
+                    foreach (Color32 pixel in image.Pixels)
+                    {
+                        Assert.That(pixel.r, Is.EqualTo(expected.r).Within(3));
+                        Assert.That(pixel.g, Is.EqualTo(expected.g).Within(3));
+                        Assert.That(pixel.b, Is.EqualTo(expected.b).Within(3));
+                        Assert.AreEqual(255, pixel.a);
+                    }
+                    Assert.IsFalse(File.Exists(path + ".meta"));
+                }
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(texture);
+                File.Delete(path);
+            }
+        }
+
+        [UnityTest]
         public IEnumerator PngDecodeDisablesMipmapsAndDetectsAtomicSourceReplacement()
         {
             string path = Path.Combine(Path.GetTempPath(), "MeshLabSnapshot-" + Guid.NewGuid().ToString("N") + ".png");

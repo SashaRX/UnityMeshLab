@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Fixed
+- Main CI coverage includes the Texture Packer tests alongside existing LOD suites. PSD/TIFF decoding and pixel conversion use smaller helpers while preserving format validation, cancellation and channel values.
 - Texture Packer binds dropped source files immediately without filesystem checks in drag events, and accelerates PNG pixel copies while keeping editor updates responsive.
 - Texture Channel Packer is a full-width Texture Packer tab inside Mesh Lab; its separate menu entry is removed. Settings survive tab switches while inactive panels release source loads and temporary textures.
 - Foliage selection rejects line/point meshes and empty triangle submeshes. Hierarchy changes during active calculations refresh source context and selection masks once the pipeline becomes idle, including failed runs.

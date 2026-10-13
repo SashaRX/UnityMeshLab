@@ -198,15 +198,23 @@ namespace SashaRX.UnityMeshLab
                 for (; offset < end; offset++)
                 {
                     int i = offset * stride;
-                    if (format == TextureFormat.ARGB32)
-                        pixels[offset] = new Color32(raw[i + 1], raw[i + 2], raw[i + 3], raw[i]);
-                    else if (format == TextureFormat.BGRA32)
-                        pixels[offset] = new Color32(raw[i + 2], raw[i + 1], raw[i], raw[i + 3]);
-                    else
-                        pixels[offset] = new Color32(raw[i], raw[i + 1], raw[i + 2], stride == 4 ? raw[i + 3] : (byte)255);
+                    pixels[offset] = ConvertPixel(raw, i, format);
                 }
             }
             while (offset < pixels.Length && budget.Elapsed.TotalMilliseconds < 2);
+        }
+
+        private static Color32 ConvertPixel(NativeArray<byte> raw, int index, TextureFormat format)
+        {
+            switch (format)
+            {
+                case TextureFormat.ARGB32:
+                    return new Color32(raw[index + 1], raw[index + 2], raw[index + 3], raw[index]);
+                case TextureFormat.BGRA32:
+                    return new Color32(raw[index + 2], raw[index + 1], raw[index], raw[index + 3]);
+                default:
+                    return new Color32(raw[index], raw[index + 1], raw[index + 2], (byte)255);
+            }
         }
 
         public void Dispose()

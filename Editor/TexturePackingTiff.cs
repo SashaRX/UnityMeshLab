@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using UnityEngine;
@@ -83,74 +84,30 @@ namespace SashaRX.UnityMeshLab
                 cancellation.ThrowIfCancellationRequested();
                 int control = RequiredByte(input);
                 if (control == 128) continue;
-                int count = control < 128 ? control + 1 : 257 - control;
-                if (count > output.Length - written)
-                    throw new InvalidDataException("TIFF PackBits packet exceeds its strip or tile.");
-                if (control < 128)
-                {
-                    for (int i = 0; i < count; i++) output[written++] = (byte)RequiredByte(input);
-                }
-                else
-                {
-                    byte value = (byte)RequiredByte(input);
-                    for (int i = 0; i < count; i++) output[written++] = value;
-                }
+                written = CopyPackBitsPacket(input, output, written, control);
             }
+        }
+
+        private static int CopyPackBitsPacket(Stream input, byte[] output, int written, int control)
+        {
+            int count = control < 128 ? control + 1 : 257 - control;
+            if (count > output.Length - written)
+                throw new InvalidDataException("TIFF PackBits packet exceeds its strip or tile.");
+            if (control < 128)
+            {
+                for (int i = 0; i < count; i++) output[written++] = (byte)RequiredByte(input);
+            }
+            else
+            {
+                byte value = (byte)RequiredByte(input);
+                for (int i = 0; i < count; i++) output[written++] = value;
+            }
+            return written;
         }
 
         private static void DecodeLzw(Stream input, byte[] output, CancellationToken cancellation)
         {
-            var prefix = new ushort[4096];
-            var suffix = new byte[4096];
-            var stack = new byte[4096];
-            var bits = new MsbBits(input);
-            int width = 9, next = 258, previous = -1, written = 0;
-            byte first = 0;
-            bool cleared = false;
-            while (true)
-            {
-                cancellation.ThrowIfCancellationRequested();
-                int code = bits.Read(width);
-                if (code == 256)
-                {
-                    width = 9; next = 258; previous = -1; cleared = true;
-                    continue;
-                }
-                if (!cleared) throw new InvalidDataException("TIFF LZW data must begin with a clear code.");
-                if (code == 257)
-                {
-                    if (written != output.Length) throw new InvalidDataException("Truncated TIFF LZW pixels.");
-                    return;
-                }
-                int current = code, count = 0;
-                if (current >= next)
-                {
-                    if (current != next || previous < 0 || next >= 4096)
-                        throw new InvalidDataException("Invalid TIFF LZW dictionary code.");
-                    stack[count++] = first;
-                    current = previous;
-                }
-                while (current >= 256)
-                {
-                    if (current >= next || count >= stack.Length - 1)
-                        throw new InvalidDataException("Invalid TIFF LZW dictionary chain.");
-                    stack[count++] = suffix[current];
-                    current = prefix[current];
-                }
-                first = (byte)current;
-                stack[count++] = first;
-                if (count > output.Length - written)
-                    throw new InvalidDataException("TIFF LZW data exceeds its strip or tile.");
-                for (int i = count - 1; i >= 0; i--) output[written++] = stack[i];
-                if (previous >= 0 && next < 4096)
-                {
-                    prefix[next] = (ushort)previous;
-                    suffix[next++] = first;
-                    // TIFF uses MSB-first codes and the early-change width transition.
-                    if (width < 12 && next == (1 << width) - 1) width++;
-                }
-                previous = code;
-            }
+            new LzwDecoder(input, output).DecodeIntoOutput(cancellation);
         }
 
         private static void DecodeDeflate(RangeStream input, byte[] output, CancellationToken cancellation)
@@ -227,20 +184,25 @@ namespace SashaRX.UnityMeshLab
                 {
                     if ((x & 4095) == 0) cancellation.ThrowIfCancellationRequested();
                     int sample = y * image.BlockWidth + x;
-                    double r = ReadSample(planes, image, sample, 0, littleEndian);
-                    double g = image.Gray ? r : ReadSample(planes, image, sample, 1, littleEndian);
-                    double b = image.Gray ? r : ReadSample(planes, image, sample, 2, littleEndian);
-                    if (image.Photo == 0) { r = 1 - r; g = 1 - g; b = 1 - b; }
-                    double alpha = image.Alpha == 0 ? 1 : ReadSample(planes, image, sample, image.Samples - 1, littleEndian);
-                    if (image.Alpha == 1)
-                    {
-                        if (alpha > 0) { r /= alpha; g /= alpha; b /= alpha; }
-                        else { r = 0; g = 0; b = 0; }
-                    }
                     int target = OutputIndex(left + x, top + y, image);
-                    pixels[target] = new Color32(ToByte(r), ToByte(g), ToByte(b), ToByte(alpha));
+                    pixels[target] = ReadColor(planes, image, sample, littleEndian);
                 }
             }
+        }
+
+        private static Color32 ReadColor(byte[][] planes, ImageInfo image, int sample, bool littleEndian)
+        {
+            double r = ReadSample(planes, image, sample, 0, littleEndian);
+            double g = image.Gray ? r : ReadSample(planes, image, sample, 1, littleEndian);
+            double b = image.Gray ? r : ReadSample(planes, image, sample, 2, littleEndian);
+            if (image.Photo == 0) { r = 1 - r; g = 1 - g; b = 1 - b; }
+            double alpha = image.Alpha == 0 ? 1 : ReadSample(planes, image, sample, image.Samples - 1, littleEndian);
+            if (image.Alpha == 1)
+            {
+                if (alpha > 0) { r /= alpha; g /= alpha; b /= alpha; }
+                else { r = 0; g = 0; b = 0; }
+            }
+            return new Color32(ToByte(r), ToByte(g), ToByte(b), ToByte(alpha));
         }
 
         private static double ReadSample(byte[][] planes, ImageInfo image, int pixel, int component, bool littleEndian)
@@ -295,6 +257,93 @@ namespace SashaRX.UnityMeshLab
             [FieldOffset(0)] public float Value;
         }
 
+        private sealed class LzwDecoder
+        {
+            private readonly ushort[] prefix = new ushort[4096];
+            private readonly byte[] suffix = new byte[4096];
+            private readonly byte[] stack = new byte[4096];
+            private readonly MsbBits bits;
+            private readonly byte[] output;
+            private int width = 9, next = 258, previous = -1, written;
+            private byte first;
+            private bool cleared;
+
+            internal LzwDecoder(Stream input, byte[] output)
+            { bits = new MsbBits(input); this.output = output; }
+
+            internal void DecodeIntoOutput(CancellationToken cancellation)
+            {
+                while (true)
+                {
+                    cancellation.ThrowIfCancellationRequested();
+                    if (ReadCode()) return;
+                }
+            }
+
+            private bool ReadCode()
+            {
+                int code = bits.Read(width);
+                if (code == 256) { ClearDictionary(); return false; }
+                if (!cleared) throw new InvalidDataException("TIFF LZW data must begin with a clear code.");
+                if (code == 257)
+                {
+                    if (written != output.Length) throw new InvalidDataException("Truncated TIFF LZW pixels.");
+                    return true;
+                }
+                int count = ExpandCode(code);
+                CopyExpandedCode(count);
+                AddDictionaryEntry();
+                previous = code;
+                return false;
+            }
+
+            private void ClearDictionary()
+            {
+                width = 9;
+                next = 258;
+                previous = -1;
+                cleared = true;
+            }
+
+            private int ExpandCode(int code)
+            {
+                int current = code, count = 0;
+                if (current >= next)
+                {
+                    if (current != next || previous < 0 || next >= 4096)
+                        throw new InvalidDataException("Invalid TIFF LZW dictionary code.");
+                    stack[count++] = first;
+                    current = previous;
+                }
+                while (current >= 256)
+                {
+                    if (current >= next || count >= stack.Length - 1)
+                        throw new InvalidDataException("Invalid TIFF LZW dictionary chain.");
+                    stack[count++] = suffix[current];
+                    current = prefix[current];
+                }
+                first = (byte)current;
+                stack[count++] = first;
+                return count;
+            }
+
+            private void CopyExpandedCode(int count)
+            {
+                if (count > output.Length - written)
+                    throw new InvalidDataException("TIFF LZW data exceeds its strip or tile.");
+                for (int i = count - 1; i >= 0; i--) output[written++] = stack[i];
+            }
+
+            private void AddDictionaryEntry()
+            {
+                if (previous < 0 || next >= 4096) return;
+                prefix[next] = (ushort)previous;
+                suffix[next++] = first;
+                // TIFF uses MSB-first codes and the early-change width transition.
+                if (width < 12 && next == (1 << width) - 1) width++;
+            }
+        }
+
         private sealed class ImageInfo
         {
             internal readonly int Width, Height, Samples, Bits, Photo, Alpha, Compression, Predictor, Orientation;
@@ -309,64 +358,145 @@ namespace SashaRX.UnityMeshLab
             {
                 Width = Dimension(tags, 256);
                 Height = Dimension(tags, 257);
-                if ((long)Width * Height * 4 > MaximumImageBytes)
-                    throw new InvalidDataException("TIFF image exceeds the 64 megapixel decoded pixel limit.");
+                ValidateImageSize(Width, Height);
                 Photo = Scalar(tags, 262, -1);
-                Gray = Photo == 0 || Photo == 1;
-                if (!Gray && Photo != 2)
-                    throw new NotSupportedException("TIFF must contain RGB or grayscale pixels. Convert CMYK/palette images to RGB.");
-                Samples = Scalar(tags, 277, 1);
-                int colorSamples = Gray ? 1 : 3;
-                if (Samples < colorSamples || Samples > colorSamples + 1)
-                    throw new NotSupportedException("TIFF supports grayscale/RGB with at most one alpha sample.");
+                Gray = ReadGrayscale(Photo);
+                Samples = ReadSampleCount(tags, Gray);
                 Bits = Uniform(tags, 258, Samples, 1);
-                int format = Uniform(tags, 339, Samples, 1);
-                if (!(format == 1 && (Bits == 8 || Bits == 16) || format == 3 && Bits == 32))
+                ValidateSampleFormat(tags, Samples, Bits);
+                Compression = ReadCompression(tags);
+                Predictor = ReadPredictor(tags, Bits);
+                ValidateFillOrder(tags);
+                Planar = ReadPlanarConfiguration(tags);
+                Orientation = ReadOrientation(tags);
+                Alpha = ReadAlpha(tags, Samples, Gray);
+                Tiled = tags.ContainsKey(324);
+                var layout = new BlockLayout(tags, this);
+                BlockWidth = layout.Width;
+                BlockHeight = layout.Height;
+                BlocksAcross = layout.Across;
+                BlocksPerPlane = layout.PerPlane;
+                Offsets = layout.Offsets;
+                ByteCounts = layout.ByteCounts;
+            }
+
+            private static void ValidateImageSize(int width, int height)
+            {
+                if ((long)width * height * 4 > MaximumImageBytes)
+                    throw new InvalidDataException("TIFF image exceeds the 64 megapixel decoded pixel limit.");
+            }
+
+            private static bool ReadGrayscale(int photo)
+            {
+                bool gray = photo == 0 || photo == 1;
+                if (!gray && photo != 2)
+                    throw new NotSupportedException("TIFF must contain RGB or grayscale pixels. Convert CMYK/palette images to RGB.");
+                return gray;
+            }
+
+            private static int ReadSampleCount(Dictionary<int, uint[]> tags, bool gray)
+            {
+                int samples = Scalar(tags, 277, 1);
+                int colorSamples = gray ? 1 : 3;
+                if (samples < colorSamples || samples > colorSamples + 1)
+                    throw new NotSupportedException("TIFF supports grayscale/RGB with at most one alpha sample.");
+                return samples;
+            }
+
+            private static void ValidateSampleFormat(Dictionary<int, uint[]> tags, int samples, int bits)
+            {
+                int format = Uniform(tags, 339, samples, 1);
+                bool integer = format == 1 && (bits == 8 || bits == 16);
+                bool floatingPoint = format == 3 && bits == 32;
+                if (!integer && !floatingPoint)
                     throw new NotSupportedException("TIFF samples must be 8/16-bit unsigned integers or 32-bit float.");
-                Compression = Scalar(tags, 259, 1);
-                if (Compression != 1 && Compression != 5 && Compression != 8 && Compression != 32946 && Compression != 32773)
-                    throw new NotSupportedException("TIFF compression must be raw, LZW, Deflate or PackBits. Resave JPEG-compressed TIFF as LZW.");
-                Predictor = Scalar(tags, 317, 1);
-                if (Predictor != 1 && Predictor != 2 || Predictor == 2 && Bits == 32)
+            }
+
+            private static int ReadCompression(Dictionary<int, uint[]> tags)
+            {
+                int compression = Scalar(tags, 259, 1);
+                switch (compression)
+                {
+                    case 1: case 5: case 8: case 32946: case 32773: return compression;
+                    default:
+                        throw new NotSupportedException("TIFF compression must be raw, LZW, Deflate or PackBits. Resave JPEG-compressed TIFF as LZW.");
+                }
+            }
+
+            private static int ReadPredictor(Dictionary<int, uint[]> tags, int bits)
+            {
+                int predictor = Scalar(tags, 317, 1);
+                if (predictor != 1 && predictor != 2 || predictor == 2 && bits == 32)
                     throw new NotSupportedException("TIFF predictor must be none or integer horizontal differencing. Resave float TIFF without prediction.");
+                return predictor;
+            }
+
+            private static void ValidateFillOrder(Dictionary<int, uint[]> tags)
+            {
                 if (Scalar(tags, 266, 1) != 1)
                     throw new NotSupportedException("TIFF reverse bit fill order is unsupported. Resave with standard fill order.");
+            }
+
+            private static bool ReadPlanarConfiguration(Dictionary<int, uint[]> tags)
+            {
                 int planar = Scalar(tags, 284, 1);
                 if (planar != 1 && planar != 2) throw new InvalidDataException("Invalid TIFF planar configuration.");
-                Planar = planar == 2;
-                Orientation = Scalar(tags, 274, 1);
-                if (Orientation < 1 || Orientation > 8) throw new InvalidDataException("Invalid TIFF orientation.");
-                if (tags.TryGetValue(338, out var extras))
+                return planar == 2;
+            }
+
+            private static int ReadOrientation(Dictionary<int, uint[]> tags)
+            {
+                int orientation = Scalar(tags, 274, 1);
+                if (orientation < 1 || orientation > 8) throw new InvalidDataException("Invalid TIFF orientation.");
+                return orientation;
+            }
+
+            private static int ReadAlpha(Dictionary<int, uint[]> tags, int samples, bool gray)
+            {
+                if (!tags.TryGetValue(338, out var extras)) return 0;
+                int colorSamples = gray ? 1 : 3;
+                if (samples != colorSamples + extras.Length || extras.Length != 1 || extras[0] > 2)
+                    throw new NotSupportedException("TIFF ExtraSamples must specify one associated or straight alpha sample.");
+                return (int)extras[0];
+            }
+
+            private sealed class BlockLayout
+            {
+                internal readonly int Width, Height, Across, PerPlane;
+                internal readonly uint[] Offsets, ByteCounts;
+
+                internal BlockLayout(Dictionary<int, uint[]> tags, ImageInfo image)
                 {
-                    if (Samples != colorSamples + extras.Length || extras.Length != 1 || extras[0] > 2)
-                        throw new NotSupportedException("TIFF ExtraSamples must specify one associated or straight alpha sample.");
-                    Alpha = (int)extras[0];
+                    if (image.Tiled)
+                    {
+                        if (tags.ContainsKey(273)) throw new InvalidDataException("TIFF cannot mix strips and tiles.");
+                        Width = Dimension(tags, 322);
+                        Height = Dimension(tags, 323);
+                        Across = (image.Width + Width - 1) / Width;
+                        PerPlane = checked(Across * ((image.Height + Height - 1) / Height));
+                        Offsets = Required(tags, 324);
+                        ByteCounts = Required(tags, 325);
+                    }
+                    else
+                    {
+                        Width = image.Width;
+                        Height = ReadStripHeight(tags, image.Height);
+                        Across = 1;
+                        PerPlane = (image.Height + Height - 1) / Height;
+                        Offsets = Required(tags, 273);
+                        ByteCounts = Required(tags, 279);
+                    }
+                    int expectedBlocks = checked(PerPlane * (image.Planar ? image.Samples : 1));
+                    if (Offsets.Length != expectedBlocks || ByteCounts.Length != expectedBlocks)
+                        throw new InvalidDataException("TIFF strip/tile counts do not match its dimensions and sample planes.");
                 }
-                Tiled = tags.ContainsKey(324);
-                if (Tiled)
+
+                private static int ReadStripHeight(Dictionary<int, uint[]> tags, int imageHeight)
                 {
-                    if (tags.ContainsKey(273)) throw new InvalidDataException("TIFF cannot mix strips and tiles.");
-                    BlockWidth = Dimension(tags, 322);
-                    BlockHeight = Dimension(tags, 323);
-                    BlocksAcross = (Width + BlockWidth - 1) / BlockWidth;
-                    BlocksPerPlane = checked(BlocksAcross * ((Height + BlockHeight - 1) / BlockHeight));
-                    Offsets = Required(tags, 324);
-                    ByteCounts = Required(tags, 325);
-                }
-                else
-                {
-                    BlockWidth = Width;
                     uint rows = tags.TryGetValue(278, out var rowValues) ? Single(rowValues) : uint.MaxValue;
                     if (rows == 0) throw new InvalidDataException("Invalid TIFF rows per strip.");
-                    BlockHeight = (int)Math.Min(rows, (uint)Height);
-                    BlocksAcross = 1;
-                    BlocksPerPlane = (Height + BlockHeight - 1) / BlockHeight;
-                    Offsets = Required(tags, 273);
-                    ByteCounts = Required(tags, 279);
+                    return (int)Math.Min(rows, (uint)imageHeight);
                 }
-                int expectedBlocks = checked(BlocksPerPlane * (Planar ? Samples : 1));
-                if (Offsets.Length != expectedBlocks || ByteCounts.Length != expectedBlocks)
-                    throw new InvalidDataException("TIFF strip/tile counts do not match its dimensions and sample planes.");
             }
 
             internal int BlockRows(int block) => Tiled ? BlockHeight : Math.Min(BlockHeight, Height - block * BlockHeight);
@@ -376,14 +506,19 @@ namespace SashaRX.UnityMeshLab
                 for (int i = 0; i < Offsets.Length; i++)
                 {
                     if ((i & 255) == 0) cancellation.ThrowIfCancellationRequested();
-                    if (Offsets[i] < 8 || ByteCounts[i] == 0 || (long)Offsets[i] + ByteCounts[i] > length)
-                        throw new InvalidDataException("TIFF strip/tile points outside the file.");
-                    long expected = (long)BlockWidth * BlockRows(i % BlocksPerPlane) * (Planar ? 1 : Samples) * SampleBytes;
-                    if (expected > MaximumBlockBytes || expected * (Planar ? Samples : 1) > MaximumImageBytes)
-                        throw new InvalidDataException("TIFF strip/tile exceeds the decoded memory limit. Resave with smaller strips or tiles.");
-                    if (Compression == 1 && ByteCounts[i] < expected)
-                        throw new InvalidDataException("Truncated TIFF strip/tile.");
+                    ValidateBlock(i, length);
                 }
+            }
+
+            private void ValidateBlock(int index, long length)
+            {
+                if (Offsets[index] < 8 || ByteCounts[index] == 0 || (long)Offsets[index] + ByteCounts[index] > length)
+                    throw new InvalidDataException("TIFF strip/tile points outside the file.");
+                long expected = (long)BlockWidth * BlockRows(index % BlocksPerPlane) * (Planar ? 1 : Samples) * SampleBytes;
+                if (expected > MaximumBlockBytes || expected * (Planar ? Samples : 1) > MaximumImageBytes)
+                    throw new InvalidDataException("TIFF strip/tile exceeds the decoded memory limit. Resave with smaller strips or tiles.");
+                if (Compression == 1 && ByteCounts[index] < expected)
+                    throw new InvalidDataException("Truncated TIFF strip/tile.");
             }
 
             private static int Dimension(Dictionary<int, uint[]> tags, int id)
@@ -419,8 +554,8 @@ namespace SashaRX.UnityMeshLab
                 if (values.Length != 1 && values.Length != samples)
                     throw new InvalidDataException("TIFF sample tag count does not match SamplesPerPixel.");
                 uint first = values[0];
-                foreach (uint value in values)
-                    if (value != first) throw new NotSupportedException("TIFF samples must share their bit depth and sample format.");
+                if (values.Any(value => value != first))
+                    throw new NotSupportedException("TIFF samples must share their bit depth and sample format.");
                 if (first > int.MaxValue) throw new InvalidDataException("Invalid TIFF sample tag.");
                 return (int)first;
             }
@@ -439,10 +574,20 @@ namespace SashaRX.UnityMeshLab
 
             internal Dictionary<int, uint[]> ReadDirectory()
             {
+                int entries = ReadHeaderAndDirectorySize();
+                var tags = new Dictionary<int, uint[]>();
+                for (int i = 0; i < entries; i++)
+                {
+                    cancellation.ThrowIfCancellationRequested();
+                    ReadDirectoryEntry(tags);
+                }
+                return tags;
+            }
+
+            private int ReadHeaderAndDirectorySize()
+            {
                 stream.Position = 0;
-                int first = RequiredByte(stream), second = RequiredByte(stream);
-                if (first == 73 && second == 73) LittleEndian = true;
-                else if (first != 77 || second != 77) throw new InvalidDataException("Invalid TIFF byte order signature.");
+                ReadByteOrder();
                 int version = Word();
                 if (version == 43) throw new NotSupportedException("BigTIFF is unsupported. Resave as a classic TIFF smaller than 4 GiB.");
                 if (version != 42) throw new InvalidDataException("Invalid TIFF version.");
@@ -451,31 +596,72 @@ namespace SashaRX.UnityMeshLab
                 stream.Position = directory;
                 int entries = Word();
                 CheckRange(directory + 2L, (long)entries * 12 + 4);
-                var tags = new Dictionary<int, uint[]>();
-                for (int i = 0; i < entries; i++)
+                return entries;
+            }
+
+            private void ReadByteOrder()
+            {
+                int first = RequiredByte(stream), second = RequiredByte(stream);
+                if (first == 73 && second == 73) LittleEndian = true;
+                else if (first != 77 || second != 77) throw new InvalidDataException("Invalid TIFF byte order signature.");
+            }
+
+            private void ReadDirectoryEntry(Dictionary<int, uint[]> tags)
+            {
+                int tag = Word(), type = Word();
+                uint count = Dword(), value = Dword();
+                if (!Relevant(tag)) return;
+                if (tags.ContainsKey(tag)) throw new InvalidDataException("Duplicate TIFF image tag.");
+                int size = TagElementSize(type);
+                ValidateTagCount(count);
+                long resume = stream.Position;
+                PositionTagValues(value, (long)count * size, resume);
+                uint[] values = ReadTagValues(count, size);
+                tags.Add(tag, values);
+                stream.Position = resume;
+            }
+
+            private static int TagElementSize(int type)
+            {
+                switch (type)
                 {
-                    cancellation.ThrowIfCancellationRequested();
-                    int tag = Word(), type = Word();
-                    uint count = Dword(), value = Dword();
-                    if (!Relevant(tag)) continue;
-                    if (tags.ContainsKey(tag)) throw new InvalidDataException("Duplicate TIFF image tag.");
-                    int size = type == 1 ? 1 : type == 3 ? 2 : type == 4 ? 4 : 0;
-                    if (size == 0) throw new InvalidDataException("Invalid TIFF image tag type.");
-                    if (count == 0 || count > MaximumTagValues) throw new InvalidDataException("Invalid TIFF tag value count.");
-                    long resume = stream.Position;
-                    long bytes = (long)count * size;
-                    if (bytes <= 4) stream.Position = resume - 4;
-                    else { CheckRange(value, bytes); stream.Position = value; }
-                    var values = new uint[(int)count];
-                    for (int j = 0; j < values.Length; j++)
-                    {
-                        if ((j & 4095) == 0) cancellation.ThrowIfCancellationRequested();
-                        values[j] = size == 1 ? (uint)RequiredByte(stream) : size == 2 ? Word() : Dword();
-                    }
-                    tags.Add(tag, values);
-                    stream.Position = resume;
+                    case 1: return 1;
+                    case 3: return 2;
+                    case 4: return 4;
+                    default: throw new InvalidDataException("Invalid TIFF image tag type.");
                 }
-                return tags;
+            }
+
+            private static void ValidateTagCount(uint count)
+            {
+                if (count == 0 || count > MaximumTagValues) throw new InvalidDataException("Invalid TIFF tag value count.");
+            }
+
+            private void PositionTagValues(uint value, long bytes, long resume)
+            {
+                if (bytes <= 4) stream.Position = resume - 4;
+                else { CheckRange(value, bytes); stream.Position = value; }
+            }
+
+            private uint[] ReadTagValues(uint count, int size)
+            {
+                var values = new uint[(int)count];
+                for (int j = 0; j < values.Length; j++)
+                {
+                    if ((j & 4095) == 0) cancellation.ThrowIfCancellationRequested();
+                    values[j] = ReadTagElement(size);
+                }
+                return values;
+            }
+
+            private uint ReadTagElement(int size)
+            {
+                switch (size)
+                {
+                    case 1: return (uint)RequiredByte(stream);
+                    case 2: return Word();
+                    default: return Dword();
+                }
             }
 
             private static bool Relevant(int tag)
