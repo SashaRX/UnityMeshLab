@@ -131,6 +131,7 @@ namespace SashaRX.UnityMeshLab
             try
             {
                 token.ThrowIfCancellationRequested();
+                RemeshNative.CheckAvailable();
                 var hulls=source.Select(p=>Footprint(p,token,simplifyFootprints,
                     options.frozenShellCascade && !options.preserveProjectedOverlap)).ToArray();
                 if(hulls.Any(h=>h.Length<3)) return Refused("collapsed family envelope");

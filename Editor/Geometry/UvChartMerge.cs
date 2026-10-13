@@ -866,6 +866,7 @@ namespace SashaRX.UnityMeshLab
         static bool PackAndRead(RemeshNative.Geometry geometry, RemeshSettings settings, float[] flatUv, uint[] indices,
             uint[] faceMaterials, int rotateCharts, int rotateToAxis, CancellationToken token, int oversample)
         {
+            RemeshNative.CheckAvailable();
             // Usually pack at 4× the user-facing resolution, like XatlasRepack;
             // overlap repair can retry at higher precision. xatlas
             // rounds each chart's raster extents to texel dimensions, so a layout whose

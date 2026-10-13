@@ -62,82 +62,27 @@ namespace SashaRX.UnityMeshLab
             return json;
         }
 
+        sealed class LevelAudit
+        {
+            internal readonly List<Vector2> pixels = new List<Vector2>();
+            internal readonly List<ReverseUvTransfer.Face> faces = new List<ReverseUvTransfer.Face>();
+            internal readonly List<(int mesh,int face)> faceKeys = new List<(int,int)>();
+            internal readonly LevelMeasurement measurement;
+            internal double surfaceArea, inheritedArea;
+            internal LevelAudit(int lod) => measurement = new LevelMeasurement { lod = lod, texelsPerUnitMin = double.MaxValue };
+        }
+
         internal static string Write(ReverseUvTransfer.Result result, ReverseUvTransfer.Level[] inputs)
         {
             var audit = new Audit { report = result.report };
             int reportNode = 0;
             for (int level = 0; level < inputs.Length; ++level)
             {
-                var pixels = new List<Vector2>(); var faces = new List<ReverseUvTransfer.Face>();
-                var faceKeys = new List<(int mesh,int face)>();
-                var measurement = new LevelMeasurement { lod = inputs[level].lod, texelsPerUnitMin = double.MaxValue };
-                double surfaceArea = 0, inheritedArea = 0;
+                var state = new LevelAudit(inputs[level].lod);
                 for (int node = 0; node < inputs[level].inputs.Length; ++node)
-                {
-                    var mesh = result.meshes[level][node];
-                    var nodeReport = result.report.nodes[reportNode];
-                    ValidateSourcePartition(nodeReport);
-                    measurement.splitSourceFaces += nodeReport.splitSourceFaces;
-                    measurement.refusedCutFaces += nodeReport.faces.Select((f, i) => (f, i)).Where(p => p.f.cutRefusal != null)
-                        .Select(p => nodeReport.sourceFaces[p.i]).Distinct().Count();
-                    var quality = TransferUvQuality.Measure(mesh, mesh.uv2, Vector2.one, inputs[level].inputs[node].toWorld);
-                    if (!quality.overlapScanComplete || quality.invalidFaces > 0 || quality.degenerateFaces > 0
-                        || quality.outOfBoundsVertices > 0 || double.IsNaN(quality.worstAnisotropy) )
-                        throw new InvalidOperationException($"Final reverse UV metric failed for LOD{inputs[level].lod} '{inputs[level].inputs[node].key}'; no result was published.");
-                    audit.measurements.Add(new Measurement { lod = inputs[level].lod, key = inputs[level].inputs[node].key,
-                        triangles = mesh.triangles.Length / 3, invalidFaces = quality.invalidFaces,
-                        degenerateFaces = quality.degenerateFaces, stretchedFaces = quality.stretchedFaces,
-                        outOfBounds = quality.outOfBoundsVertices, worstAnisotropy = quality.worstAnisotropy,
-                        overlapPairs = quality.overlapPairs, complete = quality.overlapScanComplete });
-                    var positions = mesh.vertices; var uv = mesh.uv2; var triangles = mesh.triangles;
-                    var transform = inputs[level].inputs[node].toWorld;
-                    for(int t=0;t<triangles.Length;t+=3)
-                    {
-                        var frame=TransferUvQuality.WorldFrame(positions[triangles[t]],positions[triangles[t+1]],positions[triangles[t+2]],transform);
-                        if(!ReverseUvShellPrecision.Fits(frame,uv[triangles[t]]*result.report.atlasSize,
-                            uv[triangles[t+1]]*result.report.atlasSize,uv[triangles[t+2]]*result.report.atlasSize,4.001))
-                            throw new InvalidOperationException($"Final reverse UV metric failed for LOD{inputs[level].lod} '{inputs[level].inputs[node].key}' face {t/3}; no result was published.");
-                    }
-                    for (int t = 0; t < triangles.Length; t += 3)
-                    {
-                        int a = triangles[t], b = triangles[t + 1], c = triangles[t + 2];
-                        pixels.Add(uv[a]); pixels.Add(uv[b]); pixels.Add(uv[c]);
-                        var u = uv[b] - uv[a]; var v = uv[c] - uv[a];
-                        double uvArea = Math.Abs((double)u.x * v.y - (double)u.y * v.x);
-                        double worldArea = Vector3.Cross(transform.MultiplyVector(positions[b] - positions[a]), transform.MultiplyVector(positions[c] - positions[a])).magnitude;
-                        double density = result.report.atlasSize * Math.Sqrt(uvArea / worldArea);
-                        surfaceArea += worldArea;
-                        if (nodeReport.faces[t / 3].inherited) inheritedArea += worldArea;
-                        measurement.uvAreaFraction += uvArea * .5;
-                        measurement.texelsPerUnitMin = Math.Min(measurement.texelsPerUnitMin, density);
-                        measurement.texelsPerUnitMax = Math.Max(measurement.texelsPerUnitMax, density);
-                    }
-                    faces.AddRange(result.report.nodes[reportNode++].faces);
-                    for (int f = 0; f < nodeReport.faces.Length; ++f) faceKeys.Add((node,f));
-                }
-                var scan = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry { uv = pixels.ToArray(),
-                    indices = System.Linq.Enumerable.Range(0, pixels.Count).ToArray(), charts = new int[pixels.Count] }, default,
-                    comparisonBudget: 2000000, collectConflicts: true);
-                measurement.triangles = faces.Count; measurement.complete = scan.complete;
-                measurement.inheritedAreaFraction = surfaceArea > 0 ? inheritedArea / surfaceArea : 0;
-                measurement.charts = faces.Select(f => f.chart).Distinct().Count();
-                measurement.groups = faces.Select(f => f.group).Distinct().Count();
-                var allowed = new HashSet<((int mesh,int face) under,(int mesh,int face) over)>(result.report.overlaps
-                    .Where(r => r.lod == inputs[level].lod)
-                    .Select(r => ((r.underMesh,r.underFace),(r.overMesh,r.overFace))));
-                foreach (var (a, b) in scan.conflicts)
-                {
-                    int under = faces[a].layer < faces[b].layer ? a : b;
-                    int over = faces[a].layer < faces[b].layer ? b : a;
-                    if ((faces[under].inherited || faces[under].projectionSupport) && faces[over].inherited && faces[under].chart == faces[over].chart
-                        && faces[under].layer < faces[over].layer && faces[over].intentionalOverlap
-                        && allowed.Contains((faceKeys[under],faceKeys[over]))) ++measurement.allowedOverlapPairs;
-                    else ++measurement.unexpectedOverlapPairs;
-                }
-                if (!scan.complete || measurement.unexpectedOverlapPairs > 0 || scan.degenerateFaces > 0 || scan.invalidFaces > 0 || scan.outOfBoundsVertices > 0)
-                    throw new InvalidOperationException($"Final reverse UV audit failed for LOD{measurement.lod}: complete={scan.complete}, unexpected overlaps={measurement.unexpectedOverlapPairs}, "
-                        + $"collapsed={scan.degenerateFaces}, invalid={scan.invalidFaces}, outside={scan.outOfBoundsVertices}; {string.Join("; ",scan.samples)}. No result was published.");
-                audit.levels.Add(measurement);
+                    AuditNode(result, inputs, level, node, audit, state, reportNode++);
+                AuditLevel(result, state);
+                audit.levels.Add(state.measurement);
             }
             string directory = BenchmarkRecorder.OutputDirectoryOverride
                 ?? Path.Combine(Path.GetDirectoryName(Application.dataPath), "BenchmarkReports", "ReverseUV");
@@ -146,6 +91,92 @@ namespace SashaRX.UnityMeshLab
             File.WriteAllText(path, JsonUtility.ToJson(audit, true));
             return path;
         }
+
+        static void AuditNode(ReverseUvTransfer.Result result, ReverseUvTransfer.Level[] inputs, int level, int node,
+            Audit audit, LevelAudit state, int reportNode)
+        {
+            var mesh = result.meshes[level][node];
+            var nodeReport = result.report.nodes[reportNode];
+            ValidateSourcePartition(nodeReport);
+            state.measurement.splitSourceFaces += nodeReport.splitSourceFaces;
+            state.measurement.refusedCutFaces += nodeReport.faces.Select((f, i) => (f, i)).Where(p => p.f.cutRefusal != null)
+                .Select(p => nodeReport.sourceFaces[p.i]).Distinct().Count();
+            var quality = TransferUvQuality.Measure(mesh, mesh.uv2, Vector2.one, inputs[level].inputs[node].toWorld);
+            if (!quality.overlapScanComplete || quality.invalidFaces > 0 || quality.degenerateFaces > 0
+                || quality.outOfBoundsVertices > 0 || double.IsNaN(quality.worstAnisotropy) )
+                throw new InvalidOperationException($"Final reverse UV metric failed for LOD{inputs[level].lod} '{inputs[level].inputs[node].key}'; no result was published.");
+            audit.measurements.Add(new Measurement { lod = inputs[level].lod, key = inputs[level].inputs[node].key,
+                triangles = mesh.triangles.Length / 3, invalidFaces = quality.invalidFaces,
+                degenerateFaces = quality.degenerateFaces, stretchedFaces = quality.stretchedFaces,
+                outOfBounds = quality.outOfBoundsVertices, worstAnisotropy = quality.worstAnisotropy,
+                overlapPairs = quality.overlapPairs, complete = quality.overlapScanComplete });
+            var meshPositions = mesh.vertices; var meshUv = mesh.uv2; var meshTriangles = mesh.triangles;
+            var transform = inputs[level].inputs[node].toWorld;
+            AuditPrecision(meshPositions, meshUv, meshTriangles, transform, result.report.atlasSize, inputs[level].lod, inputs[level].inputs[node].key);
+            AccumulateFaces(meshPositions, meshUv, meshTriangles, transform, result.report.atlasSize, nodeReport, state);
+            state.faces.AddRange(nodeReport.faces);
+            for (int f = 0; f < nodeReport.faces.Length; ++f) state.faceKeys.Add((node,f));
+        }
+
+        static void AuditPrecision(Vector3[] positions, Vector2[] uv, int[] triangles, Matrix4x4 transform, int atlasSize, int lod, string key)
+        {
+            for(int t=0;t<triangles.Length;t+=3)
+            {
+                var frame=TransferUvQuality.WorldFrame(positions[triangles[t]],positions[triangles[t+1]],positions[triangles[t+2]],transform);
+                if(!ReverseUvShellPrecision.Fits(frame,uv[triangles[t]]*atlasSize,
+                    uv[triangles[t+1]]*atlasSize,uv[triangles[t+2]]*atlasSize,4.001))
+                    throw new InvalidOperationException($"Final reverse UV metric failed for LOD{lod} '{key}' face {t/3}; no result was published.");
+            }
+        }
+
+        static void AccumulateFaces(Vector3[] positions, Vector2[] uv, int[] triangles, Matrix4x4 transform,
+            int atlasSize, ReverseUvTransfer.NodeReport nodeReport, LevelAudit state)
+        {
+            for (int t = 0; t < triangles.Length; t += 3)
+            {
+                int a = triangles[t], b = triangles[t + 1], c = triangles[t + 2];
+                state.pixels.Add(uv[a]); state.pixels.Add(uv[b]); state.pixels.Add(uv[c]);
+                var u = uv[b] - uv[a]; var v = uv[c] - uv[a];
+                double uvArea = Math.Abs((double)u.x * v.y - (double)u.y * v.x);
+                double worldArea = Vector3.Cross(transform.MultiplyVector(positions[b] - positions[a]), transform.MultiplyVector(positions[c] - positions[a])).magnitude;
+                double density = atlasSize * Math.Sqrt(uvArea / worldArea);
+                state.surfaceArea += worldArea;
+                if (nodeReport.faces[t / 3].inherited) state.inheritedArea += worldArea;
+                state.measurement.uvAreaFraction += uvArea * .5;
+                state.measurement.texelsPerUnitMin = Math.Min(state.measurement.texelsPerUnitMin, density);
+                state.measurement.texelsPerUnitMax = Math.Max(state.measurement.texelsPerUnitMax, density);
+            }
+        }
+
+        static void AuditLevel(ReverseUvTransfer.Result result, LevelAudit state)
+        {
+            var pixels = state.pixels; var faces = state.faces; var faceKeys = state.faceKeys; var measurement = state.measurement;
+            double surfaceArea = state.surfaceArea, inheritedArea = state.inheritedArea;
+            var scan = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry { uv = pixels.ToArray(),
+                indices = System.Linq.Enumerable.Range(0, pixels.Count).ToArray(), charts = new int[pixels.Count] }, default,
+                comparisonBudget: 2000000, collectConflicts: true);
+            measurement.triangles = faces.Count; measurement.complete = scan.complete;
+            measurement.inheritedAreaFraction = surfaceArea > 0 ? inheritedArea / surfaceArea : 0;
+            measurement.charts = faces.Select(f => f.chart).Distinct().Count();
+            measurement.groups = faces.Select(f => f.group).Distinct().Count();
+            var allowed = new HashSet<((int mesh,int face) under,(int mesh,int face) over)>(result.report.overlaps
+                .Where(r => r.lod == measurement.lod)
+                .Select(r => ((r.underMesh,r.underFace),(r.overMesh,r.overFace))));
+            foreach (var (a, b) in scan.conflicts)
+            {
+                int under = faces[a].layer < faces[b].layer ? a : b;
+                int over = faces[a].layer < faces[b].layer ? b : a;
+                if (AllowsOverlap(faces[under], faces[over]) && allowed.Contains((faceKeys[under],faceKeys[over]))) ++measurement.allowedOverlapPairs;
+                else ++measurement.unexpectedOverlapPairs;
+            }
+            if (!scan.complete || measurement.unexpectedOverlapPairs > 0 || scan.degenerateFaces > 0 || scan.invalidFaces > 0 || scan.outOfBoundsVertices > 0)
+                throw new InvalidOperationException($"Final reverse UV audit failed for LOD{measurement.lod}: complete={scan.complete}, unexpected overlaps={measurement.unexpectedOverlapPairs}, "
+                    + $"collapsed={scan.degenerateFaces}, invalid={scan.invalidFaces}, outside={scan.outOfBoundsVertices}; {string.Join("; ",scan.samples)}. No result was published.");
+        }
+
+        static bool AllowsOverlap(ReverseUvTransfer.Face under, ReverseUvTransfer.Face over)
+            => (under.inherited || under.projectionSupport) && over.inherited && under.chart == over.chart
+                && under.layer < over.layer && over.intentionalOverlap;
 
         static void ValidateSourcePartition(ReverseUvTransfer.NodeReport node)
         {

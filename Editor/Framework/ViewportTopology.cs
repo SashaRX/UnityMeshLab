@@ -18,7 +18,7 @@ namespace SashaRX.UnityMeshLab
             internal string Reason => closed ? "Closed boundary loop. It may be an intentional opening." : "Open or branched boundary; not a simple hole loop.";
         }
         internal Vector3[] positions;
-        internal int[] triangles, vertexRepresentatives;
+        internal int[] triangles, vertexRepresentatives, edgeToRim;
         internal Edge[] edges;
         internal Rim[] rims;
         internal TriangleBvh bvh;
@@ -84,6 +84,10 @@ namespace SashaRX.UnityMeshLab
                 group.Sort(); rims.Add(new Rim { edges = group.ToArray(), closed = closed, bounds = bounds, length = length });
             }
             result.edges = edges.ToArray(); result.rims = rims.ToArray();
+            result.edgeToRim = new int[result.edges.Length];
+            Array.Fill(result.edgeToRim, -1);
+            for (int rim = 0; rim < result.rims.Length; ++rim)
+                foreach (int edge in result.rims[rim].edges) result.edgeToRim[edge] = rim;
             var visibleVertices = new List<int>();
             for (int i = 0; i < representatives.Length; ++i) if (triangles.Length == 0 || used.Contains(i)) visibleVertices.Add(representatives[i]);
             result.vertexRepresentatives = visibleVertices.ToArray();

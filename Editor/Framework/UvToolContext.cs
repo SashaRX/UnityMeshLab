@@ -373,6 +373,7 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
+            RestoreReverseProvenance();
             OnMeshEntriesChanged?.Invoke();
         }
 
@@ -429,7 +430,13 @@ namespace SashaRX.UnityMeshLab
                     SourceFbxPath = p;
             }
 
+            RestoreReverseProvenance();
             OnMeshEntriesChanged?.Invoke();
+        }
+
+        void RestoreReverseProvenance()
+        {
+            foreach (var entry in MeshEntries) SidecarStore.RestoreReverseProvenance(entry);
         }
 
         public void ClearAllCaches()

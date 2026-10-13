@@ -170,23 +170,27 @@ namespace SashaRX.UnityMeshLab
 
         static void AddCaptureJobs(Config config, List<Job> jobs)
         {
-            foreach (string path in config.captures) {
-                var file = new FileInfo(path);
-                if (!file.Exists || file.Length > TransferCaseCapture.MaxManifestBytes) throw new InvalidDataException("Missing or oversized capture: " + path);
-                var manifest = JsonUtility.FromJson<TransferCaseCapture.Manifest>(File.ReadAllText(file.FullName));
-                if (manifest == null || (manifest.schema != 1 && manifest.schema != 2) || manifest.pairs == null || manifest.pairs.Count > TransferCaseCapture.MaxPairs)
-                    throw new InvalidDataException("Unsupported transfer capture: " + path);
-                int added = 0;
-                foreach (var pair in manifest.pairs) {
-                    if (pair == null || pair.status != "complete") continue;
-                    if (jobs.Count >= config.maxPairs) throw new InvalidDataException("Selected captures exceed maxPairs; select a smaller corpus or raise the limit.");
-                    var captured = pair;
-                    jobs.Add(new Job { name = Path.GetFileName(file.DirectoryName) + "/" + pair.index + "/" + pair.target,
-                        load = () => LoadCapture(file, manifest.schema, captured) });
-                    ++added;
-                }
-                if (added == 0) throw new InvalidDataException("Capture has no completed transfer pairs. Use Capture next run, then Transfer or Full Pipeline: " + path);
+            foreach (string path in config.captures) AddCapture(config, jobs, path);
+        }
+
+        static void AddCapture(Config config, List<Job> jobs, string path)
+        {
+            var file = new FileInfo(path);
+            if (!file.Exists || file.Length > TransferCaseCapture.MaxManifestBytes) throw new InvalidDataException("Missing or oversized capture: " + path);
+            var manifest = JsonUtility.FromJson<TransferCaseCapture.Manifest>(File.ReadAllText(file.FullName));
+            if (manifest == null || (manifest.schema != 1 && manifest.schema != 2) || manifest.pairs == null || manifest.pairs.Count > TransferCaseCapture.MaxPairs)
+                throw new InvalidDataException("Unsupported transfer capture: " + path);
+            int added = 0;
+            foreach (var pair in manifest.pairs)
+            {
+                if (pair == null || pair.status != "complete") continue;
+                if (jobs.Count >= config.maxPairs) throw new InvalidDataException("Selected captures exceed maxPairs; select a smaller corpus or raise the limit.");
+                var captured = pair;
+                jobs.Add(new Job { name = Path.GetFileName(file.DirectoryName) + "/" + pair.index + "/" + pair.target,
+                    load = () => LoadCapture(file, manifest.schema, captured) });
+                ++added;
             }
+            if (added == 0) throw new InvalidDataException("Capture has no completed transfer pairs. Use Capture next run, then Transfer or Full Pipeline: " + path);
         }
 
         static void AddAssetJobs(Config config, List<Job> jobs)

@@ -2,12 +2,17 @@
 // Place in Assets/Editor/
 
 using System.Runtime.InteropServices;
+using System.Reflection;
 
 namespace SashaRX.UnityMeshLab
 {
     public static class XatlasNative
     {
         const string DLL = "xatlas-unity";
+
+        // Resolve without executing the packer or touching its active atlas.
+        internal static void CheckPreserveShapeAvailable() => Marshal.Prelink(typeof(XatlasNative).GetMethod(
+            nameof(xatlasPackChartsPreserveShape), BindingFlags.Static | BindingFlags.NonPublic));
 
         // ── Lifecycle ──
         [DllImport(DLL)] public static extern void xatlasCreate();

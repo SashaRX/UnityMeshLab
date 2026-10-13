@@ -567,7 +567,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }
             var initialData = SidecarStore.LoadOrCreate(fbxPath);
             initialData.collisionEntries.Add(new CollisionMeshEntry { meshGroupKey = imported.name });
-            Call(tool, "SaveToSidecar");
+            ToolAssetSaveTests.SaveCollisionSidecarFixture(tool);
             var saved = SidecarStore.Load(fbxPath);
             var generated = Field<List<Mesh>>(tool, "generatedMeshes");
             var originalLocalVertices = new[] { generated[0].vertices, generated[1].vertices };
@@ -612,7 +612,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     var result = results[i]; info.GetField("meshName").SetValue(result, name); results[i] = result;
                 }
             }
-            Call(tool, "SaveToSidecar");
+            ToolAssetSaveTests.SaveCollisionSidecarFixture(tool);
             var model = AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath);
             string identities = string.Join(";", model.GetComponentsInChildren<Renderer>(true).Select(v =>
                 CollisionHierarchyAnalyzer.RelativePath(model.transform, v.transform) + ":" + v.GetComponent<MeshFilter>()?.sharedMesh?.name));
@@ -678,7 +678,7 @@ namespace SashaRX.UnityMeshLab.Tests
             FbxExport.Write(fbxPath, exportRoot);
             AssetDatabase.ImportAsset(fbxPath, ImportAssetOptions.ForceSynchronousImport);
             ctx.MeshEntries[0].fbxMesh = AssetDatabase.LoadAllAssetsAtPath(fbxPath).OfType<Mesh>().First();
-            if (existingSidecar) Call(tool, "SaveToSidecar");
+            if (existingSidecar) ToolAssetSaveTests.SaveCollisionSidecarFixture(tool);
             var before = SidecarStore.Load(fbxPath);
             string beforeJson = before != null ? EditorJsonUtility.ToJson(before) : null;
             byte[] beforeBytes = before != null ? System.IO.File.ReadAllBytes(sidecarPath) : null;
@@ -703,7 +703,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 UvtLog.Current = UvtLog.Level.Warning;
                 UvtLog.EnabledCategories |= UvtLog.Category.General;
                 Application.logMessageReceived += capture;
-                Assert.DoesNotThrow(() => Call(tool, "SaveToSidecar"));
+                Assert.DoesNotThrow(() => ToolAssetSaveTests.SaveCollisionSidecarFixture(tool));
                 Assert.AreEqual(1, warnings.Count);
                 StringAssert.Contains("has no source node in the FBX; sidecar was not changed.", warnings[0]);
                 CollectionAssert.AreEqual(sourceBytes, System.IO.File.ReadAllBytes(fbxPath));
@@ -774,13 +774,13 @@ namespace SashaRX.UnityMeshLab.Tests
             source.GetComponent<MeshFilter>().sharedMesh = ctx.MeshEntries[0].fbxMesh;
             if (sceneOnlyPath)
             {
-                Call(tool, "SaveToSidecar");
+                ToolAssetSaveTests.SaveCollisionSidecarFixture(tool);
                 source.name = "ManuallyAssembledSource";
                 source.SetParent(root.transform, true);
             }
             var generated = Field<List<Mesh>>(tool, "generatedMeshes");
             var originalVertices = generated[0].vertices;
-            Call(tool, "SaveToSidecar");
+            ToolAssetSaveTests.SaveCollisionSidecarFixture(tool);
             var saved = SidecarStore.Load(fbxPath);
             Assert.AreEqual(sourceName, saved.collisionEntries[0].sourceMeshName);
             if (sceneOnlyPath) Assert.IsTrue(string.IsNullOrEmpty(saved.collisionEntries[0].sourceHierarchyPath));
@@ -809,7 +809,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.AreEqual(generated[h].triangles[1], mesh.triangles[2], "normalized export reverses mirrored winding");
             }
             Assert.AreEqual(originalVertices, generated[0].vertices);
-            Call(tool, "SaveToSidecar");
+            ToolAssetSaveTests.SaveCollisionSidecarFixture(tool);
             Assert.AreEqual(1, saved.collisionEntries.Count, "saving again replaces the same group");
         }
 #endif

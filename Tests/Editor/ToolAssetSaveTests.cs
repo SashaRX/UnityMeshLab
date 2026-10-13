@@ -20,6 +20,23 @@ namespace SashaRX.UnityMeshLab.Tests
         static void Set(object target, string name, object value) => target.GetType().GetField(name, Fields).SetValue(target, value);
         static T Get<T>(object target, string name) => (T)target.GetType().GetField(name, Fields).GetValue(target);
 
+        internal static bool SaveCollisionSidecarFixture(CollisionMeshTool tool)
+        {
+            var staged = tool.PrepareSidecars();
+            if (staged == null) return false;
+            try
+            {
+                foreach (var pair in staged)
+                {
+                    var data = SidecarStore.LoadOrCreate(pair.Key);
+                    data.collisionEntries = new List<CollisionMeshEntry>(pair.Value.collisionEntries);
+                    SidecarStore.Save(data);
+                }
+                return staged.Count > 0;
+            }
+            finally { foreach (var data in staged.Values) Object.DestroyImmediate(data); }
+        }
+
         Mesh Triangle(string name)
         {
             var mesh = new Mesh { name = name, vertices = new[] { Vector3.zero, Vector3.right, Vector3.up }, triangles = new[] { 0, 1, 2 } };
@@ -84,7 +101,70 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { foreach (var clone in clones) Object.DestroyImmediate(clone); }
         }
 
+        [Test]
+        public void CollisionExportRequiresGeneratedResultsAndCannotFallBackAfterClear()
+        {
+            var context = new UvToolContext();
+            context.MeshEntries.Add(new MeshEntry { originalMesh = Triangle("Unrelated") });
+            var tool = new CollisionMeshTool(); Set(tool, "ctx", context);
+            int writes = 0; context.Assets.BeforeWrite = () => writes++;
+            Assert.IsFalse(tool.CanExportFbx);
+            tool.ExportFbx(true); tool.ExportFbx(false); Assert.AreEqual(0, writes);
+            var generated = Get<List<Mesh>>(tool, "generatedMeshes");
+            generated.Add(Triangle("Collision")); Assert.IsFalse(tool.CanExportFbx, "Incomplete collision metadata must also refuse export.");
+            generated.Clear(); Assert.IsFalse(tool.CanExportFbx);
+            tool.ExportFbx(true); Assert.AreEqual(0, writes);
+        }
+
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        [Test]
+        public void ModelReplacementInvalidatesOnlyUvSidecarBeforeFailingFirstImport()
+        {
+            var source = Source("Replacement");
+            var data = SidecarStore.LoadOrCreate(source.path);
+            string meshName = source.entry.fbxMesh.name;
+            data.Set(meshName, new[] { Vector2.zero, Vector2.right, Vector2.up });
+            data.toolSettings = new ToolSettings();
+            SidecarStore.Save(data);
+            var before = File.ReadAllBytes(source.path);
+            int committed = 0, imports = 0;
+            var replacement = new GameObject("NewGeometry"); owned.Add(replacement);
+            replacement.AddComponent<MeshFilter>().sharedMesh = Triangle("Changed");
+            replacement.AddComponent<MeshRenderer>().sharedMaterial = source.instance.GetComponentInChildren<MeshRenderer>().sharedMaterial;
+            Assert.Throws<IOException>(() => MeshAssetOperations.WriteModelResult(source.path, replacement,
+                Array.Empty<Material>(), false, () => committed++, (path, options) => {
+                    ++imports;
+                    Assert.IsNull(SidecarStore.Load(path).Find(meshName));
+                    throw new IOException("Injected first import failure");
+                }));
+            Assert.AreEqual(1, committed); Assert.AreEqual(1, imports);
+            CollectionAssert.AreNotEqual(before, File.ReadAllBytes(source.path));
+            Assert.IsEmpty(SidecarStore.Load(source.path).entries);
+            Assert.IsNotNull(SidecarStore.Load(source.path).toolSettings);
+        }
+
+        [TestCase(false, false)] [TestCase(true, false)]
+        [TestCase(false, true)] [TestCase(true, true)]
+        public void ContextRefreshRestoresOnlyMatchingReverseProvenance(bool lod, bool staleUv)
+        {
+            var source = Source("ReverseHistory"); var mesh = source.entry.fbxMesh;
+            mesh.uv2 = mesh.uv;
+            var entry = source.entry; entry.reverseTransferJson = "{\"schema\":2}";
+            Assert.IsTrue(SidecarStore.TryBuildEntry(entry, mesh, false, SidecarStore.AoUvTarget.None, out var saved));
+            var data = SidecarStore.LoadOrCreate(source.path); data.Set(saved); SidecarStore.Save(data);
+            if (staleUv) mesh.uv2 = mesh.uv.Select(uv => uv * .5f).ToArray();
+            var context = new UvToolContext();
+            if (lod)
+            {
+                var group = source.instance.AddComponent<LODGroup>();
+                group.SetLODs(new[] { new LOD(.5f, new[] { source.entry.renderer }) });
+                context.Refresh(group);
+            }
+            else context.RefreshStandalone((MeshRenderer)source.entry.renderer);
+            Assert.AreEqual(staleUv ? null : entry.reverseTransferJson, context.MeshEntries.Single().reverseTransferJson);
+            Assert.AreEqual("{\"schema\":2}", data.entries.Single().reverseTransferJson);
+        }
+
         (string path, GameObject instance, MeshEntry entry) Source(string name, bool nested = false)
         {
             if (!AssetDatabase.IsValidFolder(Folder)) AssetDatabase.CreateFolder("Assets", "MeshLabToolSaveTests");
@@ -237,7 +317,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 resultType.GetField("sourceTransform").SetValue(result,entry.renderer.transform);
                 resultType.GetField("hullCount").SetValue(result,1); results.Add(result);
             }
-            Assert.IsTrue((bool)tool.GetType().GetMethod("SaveToSidecar",Fields).Invoke(tool,null));
+            Assert.IsTrue(SaveCollisionSidecarFixture(tool));
             foreach (string path in new[] { first.path,second.path })
             {
                 var sidecar = SidecarStore.Load(path);
@@ -386,7 +466,7 @@ namespace SashaRX.UnityMeshLab.Tests
             if (existingSidecar)
             {
                 AddCollisionResult(tool, source.entry, source.entry.fbxMesh.name);
-                Assert.IsTrue((bool)tool.GetType().GetMethod("SaveToSidecar", Fields).Invoke(tool, null));
+                Assert.IsTrue(SaveCollisionSidecarFixture(tool));
                 Get<List<Mesh>>(tool, "generatedMeshes").Single().vertices = new[] { Vector3.zero, Vector3.right * 2, Vector3.up * 2 };
             }
             else AddCollisionResult(tool, source.entry, source.entry.fbxMesh.name);

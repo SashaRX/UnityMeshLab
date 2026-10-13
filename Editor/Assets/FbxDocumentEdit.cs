@@ -215,77 +215,128 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>Splits only polygons with new internal seams, retaining the entire source document.</summary>
-        public void SplitPolygons(IReadOnlyDictionary<string, FbxPolygonSplit> plans)
-            => EditTopology(path => FbxPolygonSplitFile.Apply(path, plans));
+        public void SplitPolygons(IReadOnlyDictionary<int, FbxPolygonSplit> plans)
+            => EditTopology(plans, FbxPolygonSplitFile.Apply);
 
         internal int PreserveSmallUvSeams(ICollection<string> names, int uvSet)
         {
-            var plans = new Dictionary<string, FbxUvPointSplit>();
-            foreach (var mesh in Meshes.Where(m => names.Contains(m.GetName()))) {
-                var sets = FbxLayerChannels.UvElements(mesh);
-                if (sets.Count <= uvSet) continue;
-                var topology = new FbxLayerChannels.Topology(mesh);
-                var uv = FbxLayerChannels.ReadUv(sets[uvSet], topology);
-                int primarySet = uvSet == 0 && sets.Count > 1 ? 1 : 0;
-                var primary = FbxLayerChannels.ReadUv(sets[primarySet], topology);
-                (double, double, double, double) Signature(int c) => (primary[c*2], primary[c*2+1], uv[c*2], uv[c*2+1]);
-                var groups = new Dictionary<int, HashSet<(double, double, double, double)>>();
-                for (int c = 0; c < topology.CornerCount; ++c) {
-                    int point = topology.cornerControlPoint[c];
-                    if (!groups.TryGetValue(point, out var values)) groups.Add(point, values = new HashSet<(double, double, double, double)>());
-                    values.Add(Signature(c));
-                }
-                // Unity's primary/secondary-UV merge can erase nearby, distinct
-                // values even with weld/compression off. Preserve those seams
-                // as control-point identity, without changing any coordinates.
-                bool Nearby(double au, double av, double bu, double bv) => Math.Abs(au-bu) <= .01 && Math.Abs(av-bv) <= .01;
-                var split = groups.Where(g => g.Value.Any(a => g.Value.Any(b =>
-                    a != b && Nearby(a.Item1,a.Item2,b.Item1,b.Item2) && Nearby(a.Item3,a.Item4,b.Item3,b.Item4))))
-                    .Select(g => g.Key).ToHashSet();
-                if (split.Count == 0) continue;
-                int oldCount = mesh.GetControlPointsCount();
-                var sources = Enumerable.Range(0, oldCount).ToList();
-                var corners = (int[])topology.cornerControlPoint.Clone();
-                var first = new HashSet<int>(); var assigned = new Dictionary<(int, (double, double, double, double)), int>();
-                for (int c = 0; c < corners.Length; ++c) {
-                    int point = corners[c]; if (!split.Contains(point)) continue;
-                    var key = (point, Signature(c));
-                    if (!assigned.TryGetValue(key, out int next)) {
-                        next = first.Add(point) ? point : sources.Count;
-                        if (next == sources.Count) sources.Add(point);
-                        assigned.Add(key, next);
-                    }
-                    corners[c] = next;
-                }
-                plans.Add(mesh.GetName(), new FbxUvPointSplit { sources = sources.ToArray(), corners = corners });
+            var plans = new Dictionary<int, FbxUvPointSplit>();
+            for (int ordinal = 0; ordinal < Meshes.Count; ++ordinal) {
+                var mesh = Meshes[ordinal];
+                if (!names.Contains(mesh.GetName())) continue;
+                var plan = SmallUvSeamPlan(mesh, uvSet);
+                if (plan != null) plans.Add(ordinal, plan);
             }
             if (plans.Count == 0) return 0;
-            EditTopology(path => FbxPolygonSplitFile.ApplyUvPoints(path, plans));
+            EditTopology(plans, FbxPolygonSplitFile.ApplyUvPoints);
             return plans.Values.Sum(p => p.sources.Length - p.sources.Distinct().Count());
+        }
+
+        static FbxUvPointSplit SmallUvSeamPlan(FbxMesh mesh, int uvSet)
+        {
+            var sets = FbxLayerChannels.UvElements(mesh);
+            if (sets.Count <= uvSet) return null;
+            var topology = new FbxLayerChannels.Topology(mesh);
+            var uv = FbxLayerChannels.ReadUv(sets[uvSet], topology);
+            int primarySet = uvSet == 0 && sets.Count > 1 ? 1 : 0;
+            var primary = FbxLayerChannels.ReadUv(sets[primarySet], topology);
+            (double, double, double, double) Signature(int c) => (primary[c*2], primary[c*2+1], uv[c*2], uv[c*2+1]);
+            var groups = PointUvGroups(topology.cornerControlPoint, Signature);
+            // Unity can merge nearby UV values even with weld/compression off.
+            // Distinct control-point identities preserve coordinates and seams.
+            var split = groups.Where(g => HasNearbyUvSeam(g.Value)).Select(g => g.Key).ToHashSet();
+            return split.Count == 0 ? null : SplitUvPointIdentities(mesh.GetControlPointsCount(), topology.cornerControlPoint, split, Signature);
+        }
+
+        static Dictionary<int, HashSet<(double,double,double,double)>> PointUvGroups(int[] corners,
+            Func<int,(double,double,double,double)> signature)
+        {
+            var groups = new Dictionary<int, HashSet<(double,double,double,double)>>();
+            for (int c = 0; c < corners.Length; ++c) {
+                int point = corners[c];
+                if (!groups.TryGetValue(point, out var values)) {
+                    values = new HashSet<(double,double,double,double)>(); groups.Add(point, values);
+                }
+                values.Add(signature(c));
+            }
+            return groups;
+        }
+
+        static bool HasNearbyUvSeam(HashSet<(double,double,double,double)> values)
+        {
+            bool Nearby(double au, double av, double bu, double bv) => Math.Abs(au-bu) <= .01 && Math.Abs(av-bv) <= .01;
+            return values.Any(a => values.Any(b => a != b && Nearby(a.Item1,a.Item2,b.Item1,b.Item2)
+                && Nearby(a.Item3,a.Item4,b.Item3,b.Item4)));
+        }
+
+        static FbxUvPointSplit SplitUvPointIdentities(int oldCount, int[] original, HashSet<int> split,
+            Func<int,(double,double,double,double)> signature)
+        {
+            var sources = Enumerable.Range(0, oldCount).ToList(); var corners = (int[])original.Clone();
+            var first = new HashSet<int>(); var assigned = new Dictionary<(int,(double,double,double,double)),int>();
+            for (int c = 0; c < corners.Length; ++c) {
+                int point = corners[c]; if (!split.Contains(point)) continue;
+                var key = (point, signature(c));
+                if (!assigned.TryGetValue(key, out int next)) {
+                    next = first.Add(point) ? point : sources.Count;
+                    if (next == sources.Count) sources.Add(point);
+                    assigned.Add(key, next);
+                }
+                corners[c] = next;
+            }
+            return new FbxUvPointSplit { sources = sources.ToArray(), corners = corners };
         }
 
         internal void RefreshMeshes()
         {
-            Meshes.Clear();
-            CollectMeshes(Scene.GetRootNode(), Meshes);
+            Meshes.Clear(); CollectMeshes(Scene.GetRootNode(), Meshes);
         }
 
-        void EditTopology(Action<string> edit)
+        void EditTopology<T>(IReadOnlyDictionary<int,T> plans, Action<string,IReadOnlyDictionary<string,T>> edit)
         {
             string path = Path.Combine(scratch, "split.fbx");
-            SaveWithSettings(path, new FbxWriteSettings(true, EmbedsMedia), false, requireMedia: false);
-            edit(path);
+            // This wrapper has no object IDs. Carry mesh ordinals through scratch
+            // export as unique identities and restore authored names before publish.
+            var identities = SaveSplitScratch(path);
+            edit(path, plans.ToDictionary(p => identities[p.Key].identity, p => p.Value));
             var replacement = FbxScene.Create(Manager, "MeshLabSplitDocument");
             try
             {
                 using var importer = FbxImporter.Create(Manager, "MeshLabSplitImport");
                 if (!importer.Initialize(path, -1, Manager.GetIOSettings()) || !importer.Import(replacement))
                     throw new IOException("FBX SDK cannot read the local seam split.");
+                RestoreSplitNames(replacement, identities);
             }
             catch { replacement.Destroy(); throw; }
             Scene.Destroy();
             Scene = replacement;
             RefreshMeshes();
+        }
+
+        (string identity, string name)[] SaveSplitScratch(string path)
+        {
+            string prefix = "MeshLabSplit_" + Guid.NewGuid().ToString("N") + "_";
+            var identities = Meshes.Select((mesh, i) => (identity: prefix + i, name: mesh.GetName())).ToArray();
+            try
+            {
+                for (int i = 0; i < Meshes.Count; ++i) Meshes[i].SetName(identities[i].identity);
+                SaveWithSettings(path, new FbxWriteSettings(true, EmbedsMedia), false, requireMedia: false);
+            }
+            finally { for (int i = 0; i < Meshes.Count; ++i) Meshes[i].SetName(identities[i].name); }
+            return identities;
+        }
+
+        static void RestoreSplitNames(FbxScene replacement, (string identity, string name)[] identities)
+        {
+            var meshes = new List<FbxMesh>(); CollectMeshes(replacement.GetRootNode(), meshes);
+            var names = identities.ToDictionary(i => i.identity, i => i.name);
+            if (meshes.Count != names.Count) throw new IOException("FBX split changed the source mesh identities.");
+            foreach (var mesh in meshes)
+            {
+                string key = mesh.GetName();
+                if (!names.Remove(key, out string name)) throw new IOException("FBX split lost a source mesh identity.");
+                mesh.SetName(name);
+            }
         }
 
         /// <summary>The writer for the file version, or the oldest one newer than it.</summary>

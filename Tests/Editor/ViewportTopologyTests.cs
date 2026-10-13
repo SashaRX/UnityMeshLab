@@ -65,6 +65,22 @@ namespace SashaRX.UnityMeshLab.Tests
             finally {UnityEngine.Object.DestroyImmediate(mesh);}
         }
 
+        [Test]
+        public void ManyDisconnectedHolesCacheEveryBoundaryEdgeAndExcludeInteriorEdges()
+        {
+            var positions = Enumerable.Range(0, 200).SelectMany(i => new[] {
+                new Vector3(i*3,0,0), new Vector3(i*3+1,0,0), new Vector3(i*3+1,1,0), new Vector3(i*3,1,0) }).ToArray();
+            var triangles = Enumerable.Range(0, 200).SelectMany(i => new[] { i*4,i*4+1,i*4+2,i*4,i*4+2,i*4+3 }).ToArray();
+            var data = ViewportTopology.Build(positions, triangles, CancellationToken.None);
+            Assert.AreEqual(200, data.rims.Length);
+            Assert.AreEqual(data.edges.Length, data.edgeToRim.Length);
+            for (int i = 0; i < data.edges.Length; ++i)
+            {
+                if (data.edges[i].uses != 1) Assert.AreEqual(-1, data.edgeToRim[i]);
+                else CollectionAssert.Contains(data.rims[data.edgeToRim[i]].edges, i);
+            }
+        }
+
         [UnityTest]
         public IEnumerator HoleSearchUploadsOnUpdateAndDisposesStaleMeshResults()
         {

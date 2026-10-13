@@ -637,7 +637,17 @@ namespace SashaRX.UnityMeshLab
         public void ExportFbx(bool overwriteSource)
         {
             if (!CanExportFbx) return;
-            if (!TryPrepareSidecars(out var prepared)) return;
+            var staged = PrepareSidecars();
+            if (staged == null) return;
+            try { ctx.Assets.ExportCollisionEntries(ctx.MeshEntries, staged, overwriteSource); }
+            finally { foreach (var data in staged.Values) UnityEngine.Object.DestroyImmediate(data); }
+        }
+        public void SaveMeshAssets() => ctx.Assets.SaveToolMeshes(generatedMeshes.Select(mesh => new MeshEntry { originalMesh = mesh }));
+
+        // Caller owns the staged assets; preparation never persists an unconfirmed result.
+        internal Dictionary<string, Uv2DataAsset> PrepareSidecars()
+        {
+            if (!TryPrepareSidecars(out var prepared)) return null;
             var staged = new Dictionary<string, Uv2DataAsset>(StringComparer.OrdinalIgnoreCase);
             try
             {
@@ -648,17 +658,13 @@ namespace SashaRX.UnityMeshLab
                     staged.Add(sidecar.fbxPath, data);
                     UpdateCollisionEntries(data, sidecar);
                 }
-                ctx.Assets.ExportCollisionEntries(ctx.MeshEntries, staged, overwriteSource);
+                return staged;
             }
-            finally { foreach (var data in staged.Values) UnityEngine.Object.DestroyImmediate(data); }
-        }
-        public void SaveMeshAssets() => ctx.Assets.SaveToolMeshes(generatedMeshes.Select(mesh => new MeshEntry { originalMesh = mesh }));
-
-        bool SaveToSidecar()
-        {
-            if (!TryPrepareSidecars(out var prepared)) return false;
-            foreach (var sidecar in prepared) SavePreparedSidecar(sidecar);
-            return prepared.Count > 0;
+            catch
+            {
+                foreach (var data in staged.Values) UnityEngine.Object.DestroyImmediate(data);
+                throw;
+            }
         }
 
         bool TryPrepareSidecars(out List<PreparedCollisionSidecar> prepared)
@@ -805,15 +811,6 @@ namespace SashaRX.UnityMeshLab
                 preferSimpleShapes = convexSimpleShapes, shapeFitError = convexShapeFit,
                 projectionThicknessRatio = convexProjectionThickness
             };
-        }
-
-        void SavePreparedSidecar(PreparedCollisionSidecar prepared)
-        {
-            var data = SidecarStore.LoadOrCreate(prepared.fbxPath);
-            Undo.RecordObject(data, "Save Collision Sidecar");
-            UpdateCollisionEntries(data, prepared);
-            SidecarStore.Save(data);
-            UvtLog.Info($"[Collision] Saved to sidecar: {SidecarStore.PathFor(prepared.fbxPath)} ({data.collisionEntries.Count} collision entries)");
         }
 
         void UpdateCollisionEntries(Uv2DataAsset data, PreparedCollisionSidecar prepared)

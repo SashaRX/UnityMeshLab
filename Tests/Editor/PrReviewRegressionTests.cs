@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
@@ -14,6 +15,19 @@ namespace SashaRX.UnityMeshLab.Tests
     {
         readonly List<Object> owned = new List<Object>();
         const string Scratch = "Assets/__MeshLabReviewTests";
+
+        [DllImport("xatlas-unity", EntryPoint = "MeshLab_Missing_Review_225_Export")]
+        static extern void MissingNativeExport();
+
+        [Test]
+        public void NativePreflightResolvesRequiredExportWithoutPackingAndRefusesMissingExport()
+        {
+            RemeshNative.CheckAvailable();
+            var missing = typeof(PrReviewRegressionTests).GetMethod(nameof(MissingNativeExport), BindingFlags.Static | BindingFlags.NonPublic);
+            var error = Assert.Throws<InvalidOperationException>(() => RemeshNative.CheckAvailable(() => Marshal.Prelink(missing)));
+            Assert.IsInstanceOf<EntryPointNotFoundException>(error.InnerException);
+            StringAssert.Contains("restart Unity", error.Message);
+        }
 
         Mesh Plane(string name = "Plane")
         {

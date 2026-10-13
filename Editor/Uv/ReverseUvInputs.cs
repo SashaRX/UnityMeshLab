@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -46,7 +47,7 @@ namespace SashaRX.UnityMeshLab
             if (!source.mesh.isReadable && (source.mesh.blendShapeCount > 0 ||
                 source.mesh.HasVertexAttribute(VertexAttribute.BlendWeight) || source.mesh.HasVertexAttribute(VertexAttribute.BlendIndices)))
                 throw new InvalidOperationException($"Reverse UV input '{source.key ?? source.mesh.name}' is Read/Write-disabled with skinning or blend shapes. Enable Read/Write to preserve those attributes.");
-            var mesh = MeshAccess.Readable(source.mesh, out bool ownsReadable);
+            var mesh = MeshAccess.Readable(source.mesh, out bool ownsReadable, preserveVertexLayout: true);
             if (ownsReadable) owned.Add(mesh);
             var positions = mesh.vertices;
             var parts = new int[mesh.subMeshCount][];
@@ -67,7 +68,8 @@ namespace SashaRX.UnityMeshLab
                     if (!MeshGeometry.HasArea(positions[a], positions[b], positions[c])) { removed.Add(face); continue; }
                     retained.Add(face); kept.Add(a); kept.Add(b); kept.Add(c);
                 }
-                parts[sub] = kept.ToArray();
+                int baseVertex = checked((int)mesh.GetBaseVertex(sub));
+                parts[sub] = kept.Select(index => index - baseVertex).ToArray();
             }
             if (retained.Count == 0)
                 throw new InvalidOperationException($"Reverse UV input '{source.key ?? mesh.name}' LOD{lod} has no nonzero-area triangles; cleanup was not published.");
@@ -77,7 +79,8 @@ namespace SashaRX.UnityMeshLab
             if (!ownsReadable) owned.Add(copy);
             copy.hideFlags = HideFlags.HideAndDontSave;
             copy.name = source.mesh.name + "_reverseInput";
-            for (int sub = 0; sub < parts.Length; ++sub) copy.SetTriangles(parts[sub], sub, false);
+            for (int sub = 0; sub < parts.Length; ++sub)
+                copy.SetTriangles(parts[sub], sub, false, checked((int)mesh.GetBaseVertex(sub)));
             copy.bounds = source.mesh.bounds;
             MeshUvState.SetDraft(copy, MeshUvState.IsDraft(source.mesh));
             return new ReverseUvTransfer.Input { mesh = copy, key = source.key, toWorld = source.toWorld,

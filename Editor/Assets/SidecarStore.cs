@@ -147,7 +147,7 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>
         /// Drops the UV2 entries of every sidecar behind <paramref name="fbxPaths"/>.
-        /// Collision entries are kept; a sidecar left with nothing is deleted.
+        /// Collision entries and tool settings are kept; a sidecar left with nothing is deleted.
         /// Returns the number of sidecars that had UV2 entries.
         /// </summary>
         internal static int ClearUv2Entries(IEnumerable<string> fbxPaths)
@@ -167,7 +167,7 @@ namespace SashaRX.UnityMeshLab
 
                 data.entries.Clear();
                 cleared++;
-                if (hasCollision) EditorUtility.SetDirty(data);
+                if (hasCollision || data.toolSettings != null) EditorUtility.SetDirty(data);
                 else AssetDatabase.DeleteAsset(sidecarPath);
             }
             if (cleared > 0) AssetDatabase.SaveAssets();
@@ -355,6 +355,27 @@ namespace SashaRX.UnityMeshLab
             {
                 UnityEngine.Object.DestroyImmediate(sidecarMesh);
             }
+        }
+
+        internal static void RestoreReverseProvenance(MeshEntry entry)
+        {
+            var raw = entry.fbxMesh;
+            if (!raw) return;
+            var data = Load(AssetDatabase.GetAssetPath(raw));
+            var saved = data?.FindRobust(raw.name, MeshFingerprint.Compute(raw));
+            if (string.IsNullOrEmpty(saved?.reverseTransferJson) || !ReverseLegacyTopologySafe(raw, saved)) return;
+            var readable = MeshAccess.Readable(raw, out bool owns);
+            try
+            {
+                if (!ReverseVertexKeys(readable, saved, out var storedIds, out var currentIds)) return;
+                var expected = new Dictionary<int, Vector2>();
+                for (int i = 0; i < storedIds.Length; ++i) expected[storedIds[i]] = saved.uv2[i];
+                var uv = new List<Vector2>(); readable.GetUVs(1, uv);
+                if (uv.Count != currentIds.Length) return;
+                for (int i = 0; i < uv.Count; ++i) if (uv[i] != expected[currentIds[i]]) return;
+                entry.reverseTransferJson = saved.reverseTransferJson;
+            }
+            finally { if (owns) UnityEngine.Object.DestroyImmediate(readable); }
         }
 
         internal static bool ReverseLegacyTopologySafe(Mesh raw, MeshUv2Entry entry)

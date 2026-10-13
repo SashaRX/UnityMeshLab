@@ -60,41 +60,45 @@ namespace SashaRX.UnityMeshLab
                 BenchmarkRecorder.OutputDirectoryOverride = outputDirectory;
                 foreach (var pair in manifest.pairs)
                     foreach (bool overlap in new[] { false, true })
-                    {
-                        var trial = new Trial { pair = pair.index, source = pair.source, target = pair.target, allowOverlap = overlap };
-                        summary.trials.Add(trial);
-                        Mesh coarse = null, fine = null;
-                        trial.failureStage = "snapshot";
-                        try
-                        {
-                            // A forward capture's target is the coarse mesh. Prepare
-                            // it from geometry rather than copying failed forward UV2.
-                            coarse = TransferCaseReplay.Load(file.DirectoryName, pair.targetMesh);
-                            fine = TransferCaseReplay.Load(file.DirectoryName, pair.sourceMesh);
-                            trial.failureStage = "cleanup";
-                            var sources = new[] {
-                                new ReverseUvTransfer.Level { lod = 1, inputs = new[] { new ReverseUvTransfer.Input { mesh = coarse, key = pair.target, toWorld = pair.localToWorld } } },
-                                new ReverseUvTransfer.Level { lod = 0, inputs = new[] { new ReverseUvTransfer.Input { mesh = fine, key = pair.source, toWorld = SourceTransform(pair, sourceFrames) } } }
-                            };
-                            trial.failureStage = "seed/projection";
-                            using var prepared = await ReverseUvJunctionTrial.Build(sources, new ReverseUvTransfer.Options {
-                                seedResolution = 256, projectionReach = .05f, preserveProjectedOverlap = overlap }, true, 0, true);
-                            var levels = prepared.inputs.levels; var result = prepared.result;
-                            trial.failureStage = "audit";
-                            trial.audit = ReverseUvAudit.Write(result, levels); trial.result = result.report;
-                            trial.accepted = true; trial.failureStage = null; ++summary.accepted;
-                        }
-                        catch (Exception ex) { trial.error = ex.Message; ++summary.refused; }
-                        finally
-                        {
-                            if (coarse) UnityEngine.Object.DestroyImmediate(coarse);
-                            if (fine) UnityEngine.Object.DestroyImmediate(fine);
-                        }
-                    }
+                        await RunTrial(pair, overlap, file, sourceFrames, summary);
                 await File.WriteAllTextAsync(Path.Combine(outputDirectory,"summary.json"),JsonUtility.ToJson(summary,true));
                 return summary;
             }
             finally { BenchmarkRecorder.OutputDirectoryOverride = previousOutput; }
+        }
+
+        static async Task RunTrial(TransferCaseCapture.Pair pair, bool overlap, FileInfo file,
+            List<TransferCaseCapture.MeshState> sourceFrames, Summary summary)
+        {
+            var trial = new Trial { pair = pair.index, source = pair.source, target = pair.target, allowOverlap = overlap };
+            summary.trials.Add(trial);
+            Mesh coarse = null, fine = null;
+            trial.failureStage = "snapshot";
+            try
+            {
+                // A forward capture's target is the coarse mesh. Prepare
+                // it from geometry rather than copying failed forward UV2.
+                coarse = TransferCaseReplay.Load(file.DirectoryName, pair.targetMesh);
+                fine = TransferCaseReplay.Load(file.DirectoryName, pair.sourceMesh);
+                trial.failureStage = "cleanup";
+                var sources = new[] {
+                    new ReverseUvTransfer.Level { lod = 1, inputs = new[] { new ReverseUvTransfer.Input { mesh = coarse, key = pair.target, toWorld = pair.localToWorld } } },
+                    new ReverseUvTransfer.Level { lod = 0, inputs = new[] { new ReverseUvTransfer.Input { mesh = fine, key = pair.source, toWorld = SourceTransform(pair, sourceFrames) } } }
+                };
+                trial.failureStage = "seed/projection";
+                using var prepared = await ReverseUvJunctionTrial.Build(sources, new ReverseUvTransfer.Options {
+                    seedResolution = 256, projectionReach = .05f, preserveProjectedOverlap = overlap }, true, 0, true);
+                var levels = prepared.inputs.levels; var result = prepared.result;
+                trial.failureStage = "audit";
+                trial.audit = ReverseUvAudit.Write(result, levels); trial.result = result.report;
+                trial.accepted = true; trial.failureStage = null; ++summary.accepted;
+            }
+            catch (Exception ex) { trial.error = ex.Message; ++summary.refused; }
+            finally
+            {
+                if (coarse) UnityEngine.Object.DestroyImmediate(coarse);
+                if (fine) UnityEngine.Object.DestroyImmediate(fine);
+            }
         }
 
         static async Task<List<TransferCaseCapture.MeshState>> ReadSourceFrames(TransferCaseCapture.Manifest manifest, string root)

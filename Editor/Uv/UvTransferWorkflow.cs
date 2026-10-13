@@ -2443,7 +2443,7 @@ namespace SashaRX.UnityMeshLab
                             tgt.originalMesh=prepared;prepared=null;
                             tgtMesh=tgt.originalMesh;tr=ReverseUvTransfer.DescribeForwardProjection(tgtMesh,srcMesh,projectedSources);
                             hintState.overlapHints.Clear();hintState.matchHints.Clear();
-                            pair=ctx.DiagnosticCapture?.BeforePair(srcEntry,tgt,srcMesh,tgtMesh,null,null);
+                            pair=ctx.DiagnosticCapture?.BeforePair(srcEntry,tgt,srcMesh,tgtMesh,null,null,TransferBoundaryToleranceTexels);
                             UvtLog.Info($"[Transfer] '{tgt.renderer.name}': donor seam subdivision reduced average stretch {beforeQuality.areaWeightedAnisotropy:G5} → {quality.areaWeightedAnisotropy:G5}.");
                         }
                         else if(pair?.trace!=null) pair.trace.forwardSeamRefusal="Whole-mesh quality did not improve without regressions.";

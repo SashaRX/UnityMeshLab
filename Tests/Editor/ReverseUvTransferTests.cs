@@ -351,6 +351,35 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(copy == null); Assert.IsTrue(source);
         }
 
+        [TestCase(false)] [TestCase(true)]
+        public void CleanupPreservesUInt16SubmeshBaseVertices(bool unreadable)
+        {
+            var positions = new Vector3[100003];
+            positions[100001] = Vector3.right; positions[100002] = Vector3.up;
+            var source = new Mesh { indexFormat = UnityEngine.Rendering.IndexFormat.UInt16, vertices = positions };
+            source.subMeshCount = 2;
+            source.SetTriangles(new[] { 0,1,2, 0,0,1 }, 0, false, 100000);
+            source.SetTriangles(new[] { 0,0,1 }, 1, false, 100000);
+            var before = source.GetTriangles(0, false);
+            if (unreadable) source.UploadMeshData(true);
+            try
+            {
+                using var prepared = ReverseUvInputs.Prepare(new[] { Level(1, source) });
+                var input = prepared.levels[0].inputs[0]; var copy = input.mesh;
+                Assert.AreEqual(UnityEngine.Rendering.IndexFormat.UInt16, copy.indexFormat);
+                Assert.AreEqual(100000, copy.GetBaseVertex(0));
+                CollectionAssert.AreEqual(new[] { 0,1,2 }, copy.GetTriangles(0, false));
+                CollectionAssert.AreEqual(new[] { 100000,100001,100002 }, copy.GetTriangles(0));
+                Assert.IsEmpty(copy.GetTriangles(1));
+                CollectionAssert.AreEqual(new[] { 0 }, input.sourceFaces);
+                CollectionAssert.AreEqual(new[] { 1,2 }, input.removedSourceFaces);
+                CollectionAssert.AreEqual(positions, copy.vertices);
+                if (!unreadable) CollectionAssert.AreEqual(before, source.GetTriangles(0, false));
+                Assert.AreEqual(!unreadable, source.isReadable);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(source); }
+        }
+
         [Test]
         public void CleanupKeepsKamazThinFaceAndRemovesOnlyItsCollinearControl()
         {

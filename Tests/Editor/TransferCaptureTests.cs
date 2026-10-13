@@ -581,11 +581,59 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        [TestCase(0f)] [TestCase(1.5f)]
+        public void WorkflowReplacementCaptureRetainsConfiguredBoundaryTolerance(float tolerance)
+        {
+            var sourceMesh = new Mesh { vertices = new[] { Vector3.zero, new Vector3(.5f, 0, 0), new Vector3(.5f, 1, 0), Vector3.up,
+                new Vector3(.5f, 0, 0), Vector3.right, new Vector3(1, 1, 0), new Vector3(.5f, 1, 0) },
+                triangles = new[] { 0,1,2, 0,2,3, 4,5,6, 4,6,7 },
+                uv = new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up, Vector2.zero, Vector2.right, Vector2.one, Vector2.up },
+                uv2 = new[] { new Vector2(.05f,.05f), new Vector2(.45f,.05f), new Vector2(.45f,.15f), new Vector2(.05f,.15f),
+                    new Vector2(.55f,.05f), new Vector2(.95f,.05f), new Vector2(.95f,.15f), new Vector2(.55f,.15f) } };
+            var targetMesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, new Vector3(1,1,0), Vector3.up },
+                triangles = new[] { 0,1,2, 0,2,3 }, uv = new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up } };
+            var sourceObject = new GameObject("Source"); var targetObject = new GameObject("Target");
+            var modelRoot = new GameObject("Captured model");
+            sourceObject.transform.SetParent(modelRoot.transform, false); targetObject.transform.SetParent(modelRoot.transform, false);
+            targetObject.transform.localScale = new Vector3(20,1,2);
+            var source = new MeshEntry { originalMesh = sourceMesh, fbxMesh = sourceMesh, repackedMesh = sourceMesh,
+                repackedAtlasWidth = 128, repackedAtlasHeight = 128, renderer = sourceObject.AddComponent<MeshRenderer>() };
+            var target = new MeshEntry { originalMesh = targetMesh, fbxMesh = targetMesh, lodIndex = 1,
+                renderer = targetObject.AddComponent<MeshRenderer>() };
+            var context = new UvToolContext(); var canvas = new UvCanvasView(); var workflow = new UvTransferWorkflow();
+            TransferCaseCapture capture = null;
+            try {
+                workflow.OnActivate(context, canvas); workflow.TransferBoundaryToleranceTexels = tolerance;
+                context.LodGroup = modelRoot.AddComponent<LODGroup>();
+                context.MeshEntries.Add(source); context.MeshEntries.Add(target); context.CaptureNextTransfer = true;
+                context.DiagnosticCapture = capture = TransferCaseCapture.Begin(context, workflow, "Replacement boundary tolerance");
+                var method = typeof(UvTransferWorkflow).GetMethod("TransferTargetMesh", BindingFlags.Instance | BindingFlags.NonPublic);
+                ((Task)method.Invoke(workflow, new object[] { target, new List<MeshEntry> { source }, 1, false })).GetAwaiter().GetResult();
+                capture.Finish(true);
+                Assert.Greater(target.originalMesh.vertexCount, targetMesh.vertexCount, "Exercise the accepted donor seam replacement.");
+                Assert.AreEqual(2, capture.Data.pairs.Count, "Capture both the original and the replacement input.");
+                foreach (var pair in capture.Data.pairs) {
+                    Assert.IsTrue(pair.hasBoundaryTolerance);
+                    Assert.AreEqual(tolerance, pair.BoundaryToleranceTexels);
+                }
+            }
+            finally {
+                capture?.Finish(true); context.DiagnosticCapture = null; workflow.OnDeactivate(); canvas.Cleanup();
+                if (target.transferredMesh) UnityEngine.Object.DestroyImmediate(target.transferredMesh);
+                if (target.originalMesh && target.originalMesh != targetMesh) UnityEngine.Object.DestroyImmediate(target.originalMesh);
+                UnityEngine.Object.DestroyImmediate(sourceMesh); UnityEngine.Object.DestroyImmediate(targetMesh);
+                UnityEngine.Object.DestroyImmediate(sourceObject); UnityEngine.Object.DestroyImmediate(targetObject);
+                UnityEngine.Object.DestroyImmediate(modelRoot);
+            }
+        }
+
         [UnityTest]
         public IEnumerator Capture_ReplaysExactInputsAndCrossLodHintsTwice()
         {
             var sourceMesh = Quad(); var targetMesh = Quad(); var context = new UvToolContext();
             var sourceObject = new GameObject("Source child"); var targetObject = new GameObject("Target child");
+            var modelRoot = new GameObject("Captured model"); context.LodGroup = modelRoot.AddComponent<LODGroup>();
+            sourceObject.transform.SetParent(modelRoot.transform, false); targetObject.transform.SetParent(modelRoot.transform, false);
             sourceObject.transform.position = new Vector3(2, 3, 4);
             targetObject.transform.position = new Vector3(-3, 5, 1);
             TransferCaseCapture capture = null; Mesh output = null;
@@ -652,6 +700,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 if (output) UnityEngine.Object.DestroyImmediate(output);
                 UnityEngine.Object.DestroyImmediate(sourceObject); UnityEngine.Object.DestroyImmediate(targetObject);
                 UnityEngine.Object.DestroyImmediate(sourceMesh); UnityEngine.Object.DestroyImmediate(targetMesh);
+                UnityEngine.Object.DestroyImmediate(modelRoot);
                 if (capture != null && Directory.Exists(capture.Folder)) Directory.Delete(capture.Folder, true);
             }
         }

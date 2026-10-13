@@ -142,6 +142,33 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         // A quad and a pentagon sharing an edge, UV0 per corner with a seam, colours per corner at full precision.
+        [TestCase(0)] [TestCase(1)]
+        public void LocalSplitIdentifiesDuplicateGeometryNamesByOrdinalAndRestoresNames(int ordinal)
+        {
+            string path = WriteSource(true);
+            using var document = FbxSourceDocument.Load(path);
+            var duplicate = FbxMesh.Create(document.Scene, document.Meshes[0].GetName());
+            duplicate.InitControlPoints(4);
+            duplicate.SetControlPointAt(new FbxVector4(30,0,0), 0);
+            duplicate.SetControlPointAt(new FbxVector4(31,0,0), 1);
+            duplicate.SetControlPointAt(new FbxVector4(31,1,0), 2);
+            duplicate.SetControlPointAt(new FbxVector4(30,1,0), 3);
+            duplicate.BeginPolygon(); for (int i = 0; i < 4; ++i) duplicate.AddPolygon(i); duplicate.EndPolygon();
+            var node = FbxNode.Create(document.Scene, "OtherPart"); node.SetNodeAttribute(duplicate);
+            document.Scene.GetRootNode().AddChild(node); document.Meshes.Add(duplicate);
+            var names = document.Meshes.Select(mesh => mesh.GetName()).ToArray();
+            int[] sizes = ordinal == 0 ? new[] { 4,5 } : new[] { 4 };
+            var conflicts = new bool[sizes.Sum()]; conflicts[0] = true;
+            int[] triangles = ordinal == 0 ? new[] { 0,1,2,0,2,3,4,5,6,4,6,7,4,7,8 } : new[] { 0,1,2,0,2,3 };
+            var plan = FbxPolygonSplit.Plan(sizes, conflicts, triangles);
+            document.SplitPolygons(new Dictionary<int,FbxPolygonSplit> { [ordinal] = plan });
+            CollectionAssert.AreEqual(names, document.Meshes.Select(mesh => mesh.GetName()));
+            Assert.AreEqual(ordinal == 0 ? 3 : 2, document.Meshes[0].GetPolygonCount());
+            Assert.AreEqual(ordinal == 1 ? 2 : 1, document.Meshes[1].GetPolygonCount());
+            Assert.AreEqual("Part", document.Scene.GetRootNode().GetChild(0).GetName());
+            Assert.AreEqual("OtherPart", document.Scene.GetRootNode().GetChild(1).GetName());
+        }
+
         string WriteSource(bool binary, string version = "FBX201400", bool withCollision = false)
         {
             string path = Path.Combine(folder, "source.fbx");
@@ -696,7 +723,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var original = new FbxLayerChannels.Topology(source.Meshes.Single());
             var plan = FbxPolygonSplit.Plan(original.polygonSizes,
                 new[] { true, false, true, false, false, false, false, false, false }, new[] { 0, 2, 1, 0, 3, 2 });
-            result.SplitPolygons(new Dictionary<string, FbxPolygonSplit> { { result.Meshes.Single().GetName(), plan } });
+            result.SplitPolygons(new Dictionary<int, FbxPolygonSplit> { { 0, plan } });
             string path = Path.Combine(folder, "split75.fbx"); result.Save(path);
             using var reloaded = FbxSourceDocument.Load(path);
             Assert.AreEqual((7, 5), (reloaded.Major, reloaded.Minor));

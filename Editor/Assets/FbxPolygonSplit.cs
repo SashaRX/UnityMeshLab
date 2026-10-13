@@ -15,50 +15,58 @@ namespace SashaRX.UnityMeshLab
             if (sizes == null || conflicts == null || triangles == null || triangles.Length % 3 != 0
                 || sizes.Any(size => size < 3) || sizes.Sum() != conflicts.Length)
                 throw new ArgumentException("FBX split requires complete polygon and triangle arrays.");
-            var parent = new int[conflicts.Length];
-            var starts = new int[sizes.Length];
+            var (parent, starts) = PolygonCorners(sizes, conflicts.Length);
+            var faces = SourceTriangles(sizes, triangles, parent);
+            var newSizes = new List<int>(); var newCorners = new List<int>(); var newPolygons = new List<int>();
+            var plan = new FbxPolygonSplit();
+            for (int p = 0; p < sizes.Length; ++p)
+                plan.splitCount += AppendPolygon(p, sizes[p], starts[p], conflicts, faces[p], newSizes, newCorners, newPolygons);
+            plan.sizes = newSizes.ToArray(); plan.corners = newCorners.ToArray(); plan.polygons = newPolygons.ToArray();
+            return plan;
+        }
+
+        static (int[] parent, int[] starts) PolygonCorners(int[] sizes, int cornerCount)
+        {
+            var parent = new int[cornerCount]; var starts = new int[sizes.Length];
             int end = 0;
-            for (int p = 0; p < sizes.Length; p++)
+            for (int p = 0; p < sizes.Length; ++p)
             {
                 starts[p] = end;
-                for (int k = 0; k < sizes[p]; k++) parent[end++] = p;
+                for (int k = 0; k < sizes[p]; ++k) parent[end++] = p;
             }
-            if (end != conflicts.Length) throw new InvalidOperationException("FBX split corner count differs from its polygons.");
+            if (end != cornerCount) throw new InvalidOperationException("FBX split corner count differs from its polygons.");
+            return (parent, starts);
+        }
+
+        static List<int[]>[] SourceTriangles(int[] sizes, int[] triangles, int[] parent)
+        {
             var faces = new List<int[]>[sizes.Length];
             for (int t = 0; t < triangles.Length; t += 3)
             {
                 int a = triangles[t], b = triangles[t + 1], c = triangles[t + 2];
-                if (a < 0 || b < 0 || c < 0 || a >= end || b >= end || c >= end) continue;
+                if (a < 0 || b < 0 || c < 0 || a >= parent.Length || b >= parent.Length || c >= parent.Length) continue;
                 int p = parent[a];
                 if (parent[b] != p || parent[c] != p) continue;
-                // Restore FBX winding from cyclic corner order (Unity mirrors the X axis).
+                // Restore FBX winding from cyclic corner order (Unity mirrors X).
                 int n = sizes[p];
-                if ((b - a + n) % n + (c - b + n) % n + (a - c + n) % n != n)
-                    (b, c) = (c, b);
+                if ((b - a + n) % n + (c - b + n) % n + (a - c + n) % n != n) (b, c) = (c, b);
                 (faces[p] ??= new List<int[]>()).Add(new[] { a, b, c });
             }
-            var newSizes = new List<int>();
-            var newCorners = new List<int>();
-            var newPolygons = new List<int>();
-            var plan = new FbxPolygonSplit();
-            for (int p = 0; p < sizes.Length; p++)
+            return faces;
+        }
+
+        static int AppendPolygon(int p, int size, int start, bool[] conflicts, List<int[]> faces,
+            List<int> sizes, List<int> corners, List<int> polygons)
+        {
+            bool split = size > 3 && Enumerable.Range(start, size).Any(c => conflicts[c]);
+            if (!split)
             {
-                bool split = sizes[p] > 3 && Enumerable.Range(starts[p], sizes[p]).Any(c => conflicts[c]);
-                if (!split)
-                {
-                    newSizes.Add(sizes[p]); newPolygons.Add(p);
-                    newCorners.AddRange(Enumerable.Range(starts[p], sizes[p]));
-                    continue;
-                }
-                Audit(sizes[p], starts[p], faces[p]);
-                foreach (var face in faces[p])
-                {
-                    newSizes.Add(3); newPolygons.Add(p); newCorners.AddRange(face);
-                }
-                plan.splitCount++;
+                sizes.Add(size); polygons.Add(p); corners.AddRange(Enumerable.Range(start, size));
+                return 0;
             }
-            plan.sizes = newSizes.ToArray(); plan.corners = newCorners.ToArray(); plan.polygons = newPolygons.ToArray();
-            return plan;
+            Audit(size, start, faces);
+            foreach (var face in faces) { sizes.Add(3); polygons.Add(p); corners.AddRange(face); }
+            return 1;
         }
 
         static void Audit(int size, int start, List<int[]> faces)

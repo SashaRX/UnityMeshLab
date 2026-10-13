@@ -251,11 +251,17 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>New model geometry (Remesh): the same atomic FBX writer and import policy.</summary>
         internal static void WriteModelResult(string path, GameObject root, IReadOnlyList<Material> materials,
-            bool normalizedTransforms, Action committed = null)
+            bool normalizedTransforms, Action committed = null, Action<string, ImportAssetOptions> importAsset = null)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-            FbxExport.WriteAtomic(path, root, normalizedTransforms, committed);
-            FbxExport.ReimportWithoutSidecars(path, () => AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport));
+            FbxExport.WriteAtomic(path, root, normalizedTransforms, () => {
+                // The rename already committed, even if a subsequent import fails.
+                // Old UV2 replay must never be applied to this replacement geometry.
+                try { SidecarStore.ClearUv2Entries(new[] { path }); }
+                finally { committed?.Invoke(); }
+            });
+            importAsset ??= AssetDatabase.ImportAsset;
+            FbxExport.ReimportWithoutSidecars(path, () => importAsset(path, ImportAssetOptions.ForceSynchronousImport));
             var importer = AssetImporter.GetAtPath(path) as ModelImporter;
             if (importer == null) throw new InvalidOperationException("FBX reimport failed: " + path);
             importer.importNormals = ModelImporterNormals.Import;
@@ -271,8 +277,6 @@ namespace SashaRX.UnityMeshLab
                 importer.useFileScale = true;
                 importer.bakeAxisConversion = true;
             }
-            // A whole-model replacement invalidates old UV2 replay. Keep collision and settings.
-            SidecarStore.ClearUv2Entries(new[] { path });
             FbxExport.ReimportWithoutSidecars(path, importer.SaveAndReimport);
 #else
             throw new InvalidOperationException("FBX Exporter package not installed.");

@@ -17,6 +17,8 @@ namespace SashaRX.UnityMeshLab
 
     internal static class FbxPolygonSplitFile
     {
+        const string IndexName = "Index";
+
         sealed class Node
         {
             public string name;
@@ -86,49 +88,63 @@ namespace SashaRX.UnityMeshLab
             if (original.Length != plan.corners.Length) throw new IOException("FBX UV point split changed the polygon count.");
             SetInts(polygons, original.Select((v,c) => v < 0 ? ~plan.corners[c] : plan.corners[c]).ToArray());
             SplitPointEdges(mesh, original, plan.corners);
-            foreach (var layer in mesh.children.Where(n => n.name.StartsWith("LayerElement", StringComparison.Ordinal))) {
-                string mapping = layer.Child("MappingInformationType")?.Text;
-                if (mapping != "ByVertice" && mapping != "ByControlPoint") continue;
-                string reference = layer.Child("ReferenceInformationType")?.Text;
-                if (reference != "Direct" && reference != "IndexToDirect" && reference != "Index")
-                    throw new IOException($"FBX UV point split cannot preserve {layer.name} reference '{reference}'.");
-                bool indexed = reference == "IndexToDirect" || reference == "Index";
-                bool remapped = false;
-                foreach (var data in layer.children.Where(IsArray)) {
-                    bool index = data.name.EndsWith("Index", StringComparison.Ordinal) || data.name.EndsWith("Indices", StringComparison.Ordinal);
-                    if (indexed && !index) continue;
-                    RemapArray(data, plan.sources, oldCount, false); remapped = true;
-                }
-                if (!remapped) throw new IOException($"FBX UV point split cannot preserve {layer.name}.");
+            foreach (var layer in mesh.children.Where(n => n.name.StartsWith("LayerElement", StringComparison.Ordinal)))
+                SplitPointLayer(layer, plan.sources, oldCount);
+            SplitPointBindings(objects, BitConverter.ToInt64(mesh.properties[0], 1), plan, oldCount);
+        }
+
+        static void SplitPointLayer(Node layer, int[] sources, int oldCount)
+        {
+            string mapping = layer.Child("MappingInformationType")?.Text;
+            if (mapping != "ByVertice" && mapping != "ByControlPoint") return;
+            string reference = layer.Child("ReferenceInformationType")?.Text;
+            if (reference != "Direct" && reference != "IndexToDirect" && reference != IndexName)
+                throw new IOException($"FBX UV point split cannot preserve {layer.name} reference '{reference}'.");
+            bool indexed = reference == "IndexToDirect" || reference == IndexName;
+            bool remapped = false;
+            foreach (var data in layer.children.Where(IsArray)) {
+                bool index = data.name.EndsWith(IndexName, StringComparison.Ordinal) || data.name.EndsWith("Indices", StringComparison.Ordinal);
+                if (indexed && !index) continue;
+                RemapArray(data, sources, oldCount, false); remapped = true;
             }
-            // Bindings must also follow new point identities. Refuse unsupported
-            // caches before replacing the scratch document, rather than losing data.
-            long meshId = BitConverter.ToInt64(mesh.properties[0], 1);
-            var connections = objects.parentConnections;
+            if (!remapped) throw new IOException($"FBX UV point split cannot preserve {layer.name}.");
+        }
+
+        // Bindings follow new point identities. Refuse unsupported caches before
+        // replacing scratch documents rather than losing their data.
+        static void SplitPointBindings(Node objects, long meshId, FbxUvPointSplit plan, int oldCount)
+        {
             var pending = new Queue<long>(); pending.Enqueue(meshId);
             var seen = new HashSet<long> { meshId };
             while (pending.Count > 0) {
                 long parent = pending.Dequeue();
-                foreach (var child in objects.children.Where(n => n.properties.Count >= 3 &&
-                    (n.name == "Deformer" || n.name == "Geometry") && connections.Contains((BitConverter.ToInt64(n.properties[0],1), parent)))) {
+                foreach (var child in BoundPointNodes(objects, parent)) {
                     long id = BitConverter.ToInt64(child.properties[0],1); if (!seen.Add(id)) continue;
                     pending.Enqueue(id);
-                    string kind = StringValue(child.properties[2]);
-                    if (kind == "Skin" || kind == "BlendShape" || kind == "BlendShapeChannel") continue;
-                    if (kind != "Cluster" && kind != "Shape") throw new IOException($"FBX UV point split cannot preserve '{kind}' deformer.");
-                    var indexNode = child.Child("Indexes"); if (indexNode == null) continue;
-                    var indices = IntArray(indexNode);
-                    if (indices.Length == 0) continue;
-                    var map = Enumerable.Range(0, indices.Length).ToList();
-                    var newIndices = indices.ToList(); var slots = indices.Select((v,i)=>(v,i)).ToDictionary(x=>x.v,x=>x.i);
-                    for (int point = oldCount; point < plan.sources.Length; ++point)
-                        if (slots.TryGetValue(plan.sources[point], out int slot)) { newIndices.Add(point); map.Add(slot); }
-                    foreach (string field in kind == "Cluster" ? new[] { "Weights" } : new[] { "Vertices", "Normals" }) {
-                        var array = child.Child(field); if (array != null) RemapArray(array, map.ToArray(), indices.Length, false);
-                    }
-                    SetInts(indexNode, newIndices.ToArray());
+                    SplitPointBinding(child, plan, oldCount);
                 }
             }
+        }
+
+        static IEnumerable<Node> BoundPointNodes(Node objects, long parent) => objects.children.Where(n => n.properties.Count >= 3 &&
+            (n.name == "Deformer" || n.name == "Geometry") && objects.parentConnections.Contains((BitConverter.ToInt64(n.properties[0],1), parent)));
+
+        static void SplitPointBinding(Node child, FbxUvPointSplit plan, int oldCount)
+        {
+            string kind = StringValue(child.properties[2]);
+            if (kind == "Skin" || kind == "BlendShape" || kind == "BlendShapeChannel") return;
+            if (kind != "Cluster" && kind != "Shape") throw new IOException($"FBX UV point split cannot preserve '{kind}' deformer.");
+            var indexNode = child.Child("Indexes"); if (indexNode == null) return;
+            var indices = IntArray(indexNode);
+            if (indices.Length == 0) return;
+            var map = Enumerable.Range(0, indices.Length).ToList();
+            var newIndices = indices.ToList(); var slots = indices.Select((v,i)=>(v,i)).ToDictionary(x=>x.v,x=>x.i);
+            for (int point = oldCount; point < plan.sources.Length; ++point)
+                if (slots.TryGetValue(plan.sources[point], out int slot)) { newIndices.Add(point); map.Add(slot); }
+            foreach (string field in kind == "Cluster" ? new[] { "Weights" } : new[] { "Vertices", "Normals" }) {
+                var array = child.Child(field); if (array != null) RemapArray(array, map.ToArray(), indices.Length, false);
+            }
+            SetInts(indexNode, newIndices.ToArray());
         }
 
         static void SplitPointEdges(Node mesh, int[] original, int[] points)
@@ -140,21 +156,8 @@ namespace SashaRX.UnityMeshLab
                 if (layers.Length > 0) throw new IOException("FBX edge-mapped data has no edge table.");
                 return;
             }
-            var oldEdges = IntArray(edgesNode); var next = new int[original.Length]; int start = 0;
-            for (int c = 0; c < original.Length; ++c) {
-                bool end = original[c] < 0; next[c] = end ? start : c+1;
-                original[c] = end ? ~original[c] : original[c]; if (end) start = c+1;
-            }
-            var oldSlots = new Dictionary<(int,int), int>();
-            var used = new HashSet<(int,int)>(); var edges = new List<int>(); var sources = new List<int>();
-            for (int e = 0; e < oldEdges.Length; ++e) {
-                int c = oldEdges[e];
-                if (c < 0 || c >= original.Length) throw new IOException("FBX has an invalid edge index.");
-                if (!oldSlots.TryAdd(Edge(original[c], original[next[c]]), e))
-                    throw new IOException("FBX point split has ambiguous source edges.");
-                if (!used.Add(Edge(points[c], points[next[c]]))) throw new IOException("FBX point split cannot preserve source edges.");
-                edges.Add(c); sources.Add(e);
-            }
+            var next = PointCornerSuccessors(original);
+            var (oldSlots, used, edges, sources) = OriginalPointEdges(IntArray(edgesNode), original, points, next);
             for (int c = 0; c < points.Length; ++c) {
                 if (!used.Add(Edge(points[c], points[next[c]]))) continue;
                 if (!oldSlots.TryGetValue(Edge(original[c], original[next[c]]), out int source))
@@ -162,63 +165,102 @@ namespace SashaRX.UnityMeshLab
                 edges.Add(c); sources.Add(source);
             }
             var plan = new FbxPolygonSplit();
-            foreach (var layer in layers) RemapLayer(layer, plan, original.Length, 0, sources.ToArray(), oldEdges.Length);
+            foreach (var layer in layers) RemapLayer(layer, plan, original.Length, 0, sources.ToArray(), oldSlots.Count);
             SetInts(edgesNode, edges.ToArray());
+        }
+
+        static int[] PointCornerSuccessors(int[] original)
+        {
+            var next = new int[original.Length]; int start = 0;
+            for (int c = 0; c < original.Length; ++c) {
+                bool end = original[c] < 0; next[c] = end ? start : c+1;
+                original[c] = end ? ~original[c] : original[c]; if (end) start = c+1;
+            }
+            return next;
+        }
+
+        static (Dictionary<(int,int),int> slots, HashSet<(int,int)> used, List<int> edges, List<int> sources)
+            OriginalPointEdges(int[] oldEdges, int[] original, int[] points, int[] next)
+        {
+            var slots = new Dictionary<(int,int),int>(); var used = new HashSet<(int,int)>();
+            var edges = new List<int>(); var sources = new List<int>();
+            for (int e = 0; e < oldEdges.Length; ++e) {
+                int c = oldEdges[e];
+                if (c < 0 || c >= original.Length) throw new IOException("FBX has an invalid edge index.");
+                if (!slots.TryAdd(Edge(original[c], original[next[c]]), e))
+                    throw new IOException("FBX point split has ambiguous source edges.");
+                if (!used.Add(Edge(points[c], points[next[c]]))) throw new IOException("FBX point split cannot preserve source edges.");
+                edges.Add(c); sources.Add(e);
+            }
+            return (slots, used, edges, sources);
         }
 
         static void Split(Node mesh, FbxPolygonSplit plan)
         {
             var polygonNode = mesh.Child("PolygonVertexIndex") ?? throw new IOException("FBX has no polygon indices.");
-            int[] oldPoints = IntArray(polygonNode);
-            var next = new int[oldPoints.Length];
-            int start = 0, polygonCount = 0;
-            for (int c = 0; c < oldPoints.Length; c++)
-            {
-                bool last = oldPoints[c] < 0;
-                oldPoints[c] = last ? ~oldPoints[c] : oldPoints[c];
-                next[c] = last ? start : c + 1;
-                if (last) { start = c + 1; polygonCount++; }
-            }
+            var (oldPoints, next, polygonCount) = ReadPolygons(polygonNode);
             var points = plan.corners.Select(c => oldPoints[c]).ToArray();
-            var newNext = new int[points.Length];
-            int at = 0;
-            foreach (int size in plan.sizes)
-            {
-                for (int k = 0; k < size; k++) newNext[at + k] = at + (k + 1) % size;
-                at += size;
-            }
-            if (start != oldPoints.Length || at != points.Length) throw new IOException("FBX polygon split indices are incomplete.");
-            var edgesNode = mesh.Child("Edges");
-            int[] edgeMap = null;
-            int oldEdgeCount = 0;
-            if (edgesNode != null)
-            {
-                var oldEdges = IntArray(edgesNode);
-                oldEdgeCount = oldEdges.Length;
-                var firstCorner = new Dictionary<(int, int), int>();
-                for (int c = 0; c < points.Length; c++) firstCorner.TryAdd(Edge(points[c], points[newNext[c]]), c);
-                var newEdges = new List<int>();
-                var originals = new List<int>();
-                var used = new HashSet<(int, int)>();
-                for (int e = 0; e < oldEdges.Length; e++)
-                {
-                    int corner = oldEdges[e];
-                    if (corner < 0 || corner >= oldPoints.Length) throw new IOException("FBX has an invalid edge index.");
-                    var key = Edge(oldPoints[corner], oldPoints[next[corner]]);
-                    if (!used.Add(key) || !firstCorner.TryGetValue(key, out int representative))
-                        throw new IOException("FBX split cannot preserve the source edge table.");
-                    newEdges.Add(representative); originals.Add(e);
-                }
-                foreach (var pair in firstCorner)
-                    if (used.Add(pair.Key)) { newEdges.Add(pair.Value); originals.Add(-1); }
-                SetInts(edgesNode, newEdges.ToArray());
-                edgeMap = originals.ToArray();
-            }
+            var newNext = CornerSuccessors(plan.sizes, points.Length);
+            var (edgeMap, oldEdgeCount) = RemapEdges(mesh.Child("Edges"), oldPoints, next, points, newNext);
             foreach (var layer in mesh.children.Where(n => n.name.StartsWith("LayerElement", StringComparison.Ordinal)))
                 RemapLayer(layer, plan, oldPoints.Length, polygonCount, edgeMap, oldEdgeCount);
-            at = 0;
+            int at = 0;
             foreach (int size in plan.sizes) { at += size; points[at - 1] = ~points[at - 1]; }
             SetInts(polygonNode, points);
+        }
+
+        static (int[] points, int[] next, int count) ReadPolygons(Node polygonNode)
+        {
+            var points = IntArray(polygonNode);
+            var next = new int[points.Length];
+            int start = 0, count = 0;
+            for (int c = 0; c < points.Length; ++c)
+            {
+                bool last = points[c] < 0;
+                points[c] = last ? ~points[c] : points[c];
+                next[c] = last ? start : c + 1;
+                if (last) { start = c + 1; ++count; }
+            }
+            if (start != points.Length) throw new IOException("FBX polygon split indices are incomplete.");
+            return (points, next, count);
+        }
+
+        static int[] CornerSuccessors(int[] sizes, int count)
+        {
+            var next = new int[count];
+            int at = 0;
+            foreach (int size in sizes)
+            {
+                for (int k = 0; k < size; ++k) next[at + k] = at + (k + 1) % size;
+                at += size;
+            }
+            if (at != count) throw new IOException("FBX polygon split indices are incomplete.");
+            return next;
+        }
+
+        static (int[] map, int count) RemapEdges(Node node, int[] oldPoints, int[] oldNext, int[] points, int[] next)
+        {
+            if (node == null) return (null, 0);
+            var oldEdges = IntArray(node);
+            var firstCorner = new Dictionary<(int, int), int>();
+            for (int c = 0; c < points.Length; ++c) firstCorner.TryAdd(Edge(points[c], points[next[c]]), c);
+            var newEdges = new List<int>();
+            var originals = new List<int>();
+            var used = new HashSet<(int, int)>();
+            for (int e = 0; e < oldEdges.Length; ++e)
+            {
+                int corner = oldEdges[e];
+                if (corner < 0 || corner >= oldPoints.Length) throw new IOException("FBX has an invalid edge index.");
+                var key = Edge(oldPoints[corner], oldPoints[oldNext[corner]]);
+                if (!used.Add(key) || !firstCorner.TryGetValue(key, out int representative))
+                    throw new IOException("FBX split cannot preserve the source edge table.");
+                newEdges.Add(representative); originals.Add(e);
+            }
+            foreach (var pair in firstCorner.Where(pair => !used.Contains(pair.Key))) {
+                used.Add(pair.Key); newEdges.Add(pair.Value); originals.Add(-1);
+            }
+            SetInts(node, newEdges.ToArray());
+            return (originals.ToArray(), oldEdges.Length);
         }
 
         static (int, int) Edge(int a, int b) => a < b ? (a, b) : (b, a);
@@ -227,34 +269,41 @@ namespace SashaRX.UnityMeshLab
         {
             string mapping = layer.Child("MappingInformationType")?.Text;
             if (mapping == "ByVertice" || mapping == "ByControlPoint" || mapping == "AllSame" || mapping == "None") return;
-            int[] map;
-            int count;
+            var (map, count) = LayerMap(layer, mapping, plan, corners, polygons, edges, edgeCount);
+            string reference = layer.Child("ReferenceInformationType")?.Text;
+            bool indexed = reference == "IndexToDirect" || reference == IndexName;
+            if (!indexed && reference != "Direct") throw new IOException($"FBX split does not support '{reference}' references.");
+            bool remapped = false;
+            foreach (var data in layer.children.Where(IsArray))
+                remapped |= RemapLayerArray(layer, data, mapping, indexed, map, count);
+            if (!remapped) throw new IOException($"FBX split found no safely remappable data for {layer.name}.");
+        }
+
+        static (int[] map, int count) LayerMap(Node layer, string mapping, FbxPolygonSplit plan,
+            int corners, int polygons, int[] edges, int edgeCount)
+        {
             switch (mapping)
             {
-                case "ByPolygonVertex": map = plan.corners; count = corners; break;
-                case "ByPolygon": map = plan.polygons; count = polygons; break;
+                case "ByPolygonVertex": return (plan.corners, corners);
+                case "ByPolygon": return (plan.polygons, polygons);
                 case "ByEdge":
                     if (edges == null) throw new IOException("FBX edge-mapped data has no edge table.");
                     if (layer.name != "LayerElementSmoothing" && layer.name != "LayerElementVisibility" && layer.name != "LayerElementEdgeCrease")
                         throw new IOException($"FBX split cannot invent diagonal values for {layer.name}.");
-                    map = edges; count = edgeCount; break;
+                    return (edges, edgeCount);
                 default: throw new IOException($"FBX split does not support {layer.name} mapping '{mapping}'.");
             }
-            string reference = layer.Child("ReferenceInformationType")?.Text;
-            bool indexed = reference == "IndexToDirect" || reference == "Index";
-            if (!indexed && reference != "Direct") throw new IOException($"FBX split does not support '{reference}' references.");
-            bool remapped = false;
-            foreach (var data in layer.children.Where(IsArray))
-            {
-                bool index = data.name.EndsWith("Index", StringComparison.Ordinal) || data.name.EndsWith("Indices", StringComparison.Ordinal)
-                    || layer.name == "LayerElementMaterial" || layer.name == "LayerElementTexture";
-                if (indexed && !index) continue;
-                if (mapping == "ByEdge" && indexed && map.Any(e => e < 0))
-                    throw new IOException($"FBX split cannot invent indexed diagonal values for {layer.name}.");
-                RemapArray(data, map, count, layer.name == "LayerElementSmoothing");
-                remapped = true;
-            }
-            if (!remapped) throw new IOException($"FBX split found no safely remappable data for {layer.name}.");
+        }
+
+        static bool RemapLayerArray(Node layer, Node data, string mapping, bool indexed, int[] map, int count)
+        {
+            bool index = data.name.EndsWith(IndexName, StringComparison.Ordinal) || data.name.EndsWith("Indices", StringComparison.Ordinal)
+                || layer.name == "LayerElementMaterial" || layer.name == "LayerElementTexture";
+            if (indexed && !index) return false;
+            if (mapping == "ByEdge" && indexed && map.Any(e => e < 0))
+                throw new IOException($"FBX split cannot invent indexed diagonal values for {layer.name}.");
+            RemapArray(data, map, count, layer.name == "LayerElementSmoothing");
+            return true;
         }
 
         static bool IsArray(Node node) => node.properties.Count == 1 && "fdlibc".IndexOf((char)node.properties[0][0]) >= 0;
@@ -267,19 +316,22 @@ namespace SashaRX.UnityMeshLab
             int stride = length / oldCount * itemBytes;
             byte[] original = ArrayData(property);
             var result = new byte[checked(map.Length * stride)];
-            for (int i = 0; i < map.Length; i++)
-            {
-                if (map[i] >= 0) Buffer.BlockCopy(original, map[i] * stride, result, i * stride, stride);
-                else if (smoothDiagonal)
-                {
-                    if (stride != itemBytes) throw new IOException("FBX smoothing must have one value per edge.");
-                    byte[] value = property[0] == 'd' ? BitConverter.GetBytes(1d)
-                        : property[0] == 'f' ? BitConverter.GetBytes(1f) : new byte[itemBytes];
-                    if (property[0] != 'd' && property[0] != 'f') value[0] = 1;
-                    Buffer.BlockCopy(value, 0, result, i * stride, stride);
-                }
-            }
+            for (int i = 0; i < map.Length; ++i)
+                CopyMappedValue(property[0], original, result, map[i], i, stride, itemBytes, smoothDiagonal);
             node.properties[0] = ArrayProperty((char)property[0], result);
+        }
+
+        static void CopyMappedValue(byte type, byte[] original, byte[] result, int source, int target,
+            int stride, int itemBytes, bool smoothDiagonal)
+        {
+            if (source >= 0) { Buffer.BlockCopy(original, source * stride, result, target * stride, stride); return; }
+            if (!smoothDiagonal) return;
+            if (stride != itemBytes) throw new IOException("FBX smoothing must have one value per edge.");
+            byte[] value;
+            if (type == 'd') value = BitConverter.GetBytes(1d);
+            else if (type == 'f') value = BitConverter.GetBytes(1f);
+            else { value = new byte[itemBytes]; value[0] = 1; }
+            Buffer.BlockCopy(value, 0, result, target * stride, stride);
         }
 
         static int ItemBytes(char type)
@@ -341,27 +393,38 @@ namespace SashaRX.UnityMeshLab
             {
                 long end = wide ? BitConverter.ToInt64(file, at) : BitConverter.ToUInt32(file, at);
                 if (end == 0) break;
-                long count = wide ? BitConverter.ToInt64(file, at + 8) : BitConverter.ToUInt32(file, at + 4);
-                long bytes = wide ? BitConverter.ToInt64(file, at + 16) : BitConverter.ToUInt32(file, at + 8);
-                int nameLength = file[at + header - 1];
-                if (end > limit || end <= at || count > int.MaxValue || bytes > int.MaxValue) throw new IOException("Malformed FBX record.");
-                var node = new Node { name = Encoding.UTF8.GetString(file, at + header, nameLength) };
-                at += header + nameLength;
-                int propertyEnd = checked(at + (int)bytes);
-                if (propertyEnd > end) throw new IOException("FBX properties extend beyond their record.");
-                for (int p = 0; p < count; p++)
-                {
-                    int size = PropertySize(file, at);
-                    if (at + size > propertyEnd) throw new IOException("Malformed FBX property.");
-                    var property = new byte[size]; Buffer.BlockCopy(file, at, property, 0, size);
-                    node.properties.Add(property); at += size;
-                }
-                if (at != propertyEnd) throw new IOException("FBX property count differs from its byte count.");
-                node.children.AddRange(ReadNodes(file, ref at, (int)end, wide));
-                node.terminated = at < end;
-                at = (int)end; nodes.Add(node);
+                nodes.Add(ReadNode(file, ref at, limit, wide, end, header));
             }
             return nodes;
+        }
+
+        static Node ReadNode(byte[] file, ref int at, int limit, bool wide, long end, int header)
+        {
+            long count = wide ? BitConverter.ToInt64(file, at + 8) : BitConverter.ToUInt32(file, at + 4);
+            long bytes = wide ? BitConverter.ToInt64(file, at + 16) : BitConverter.ToUInt32(file, at + 8);
+            int nameLength = file[at + header - 1];
+            if (end > limit || end <= at || count > int.MaxValue || bytes > int.MaxValue) throw new IOException("Malformed FBX record.");
+            var node = new Node { name = Encoding.UTF8.GetString(file, at + header, nameLength) };
+            at += header + nameLength;
+            ReadProperties(file, ref at, node, (int)count, (int)bytes, end);
+            node.children.AddRange(ReadNodes(file, ref at, (int)end, wide));
+            node.terminated = at < end;
+            at = (int)end;
+            return node;
+        }
+
+        static void ReadProperties(byte[] file, ref int at, Node node, int count, int bytes, long end)
+        {
+            int propertyEnd = checked(at + bytes);
+            if (propertyEnd > end) throw new IOException("FBX properties extend beyond their record.");
+            for (int p = 0; p < count; ++p)
+            {
+                int size = PropertySize(file, at);
+                if (at + size > propertyEnd) throw new IOException("Malformed FBX property.");
+                var property = new byte[size]; Buffer.BlockCopy(file, at, property, 0, size);
+                node.properties.Add(property); at += size;
+            }
+            if (at != propertyEnd) throw new IOException("FBX property count differs from its byte count.");
         }
 
         static int PropertySize(byte[] file, int at)

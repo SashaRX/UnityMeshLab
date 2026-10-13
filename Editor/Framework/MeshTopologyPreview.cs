@@ -209,7 +209,7 @@ namespace SashaRX.UnityMeshLab
                         float score = (sa + ab * t - pointer).sqrMagnitude;
                         if (score >= best || !Visible(Vector3.Lerp(a,b,t))) continue;
                         int index = i;
-                        if (Mode == Element.Off) index = Array.FindIndex(data.rims, r => Array.IndexOf(r.edges, i) >= 0);
+                        if (Mode == Element.Off) index = data.edgeToRim[i];
                         best = score; hit = new Hit { mesh = item.mesh, index = index, item = itemIndex, matrix = item.matrix };
                     }
                 }
