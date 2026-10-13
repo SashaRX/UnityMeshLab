@@ -437,15 +437,8 @@ namespace SashaRX.UnityMeshLab
                 if (lightmap.Count != current.vertexCount) return false;
             }
             var keys = new Dictionary<((int,int,int), Vector2, Vector2), int>();
-            var values = new List<Vector2>(); var counts = new List<int>();
-            for (int i = 0; i < storedIds.Length; ++i) {
-                var key = (Uv2AssetPostprocessor.QuantizePos(entry.vertPositions[i]), entry.vertUv0[i], verifyLayout ? entry.uv2[i] : default);
-                if (!keys.TryGetValue(key, out int id)) {
-                    id = keys.Count; keys.Add(key, id); values.Add(entry.uv2[i]); counts.Add(0);
-                }
-                if (values[id] != entry.uv2[i]) return false;
-                storedIds[i] = id; ++counts[id];
-            }
+            var counts = new List<int>();
+            if (!ReverseStoredVertexKeys(entry, storedIds, keys, counts, verifyLayout)) return false;
             var positions = current.vertices;
             var uv = new List<Vector2>(); current.GetUVs(0, uv);
             if (uv.Count != positions.Length) return false;
@@ -453,6 +446,23 @@ namespace SashaRX.UnityMeshLab
                 var key = (Uv2AssetPostprocessor.QuantizePos(positions[i]), uv[i], verifyLayout ? lightmap[i] : default);
                 if (!keys.TryGetValue(key, out int id) || counts[id] <= 0) return false;
                 currentIds[i] = id; --counts[id];
+            }
+            return true;
+        }
+
+        // Build identities and multiplicities once, rejecting ambiguous UV2
+        // values before comparing the imported mesh with the saved vertices.
+        static bool ReverseStoredVertexKeys(MeshUv2Entry entry, int[] storedIds,
+            Dictionary<((int,int,int), Vector2, Vector2), int> keys, List<int> counts, bool verifyLayout)
+        {
+            var values = new List<Vector2>();
+            for (int i = 0; i < storedIds.Length; ++i) {
+                var key = (Uv2AssetPostprocessor.QuantizePos(entry.vertPositions[i]), entry.vertUv0[i], verifyLayout ? entry.uv2[i] : default);
+                if (!keys.TryGetValue(key, out int id)) {
+                    id = keys.Count; keys.Add(key, id); values.Add(entry.uv2[i]); counts.Add(0);
+                }
+                if (values[id] != entry.uv2[i]) return false;
+                storedIds[i] = id; ++counts[id];
             }
             return true;
         }
