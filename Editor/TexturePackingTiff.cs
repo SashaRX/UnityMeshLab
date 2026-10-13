@@ -15,6 +15,7 @@ namespace SashaRX.UnityMeshLab
         private const int MaximumBlockBytes = 256 * 1024 * 1024;
         private const int MaximumTagValues = 1048576;
 
+        /// <summary>Reads the TIFF directory, validates every strip or tile, then decodes and reassembles them into an image.</summary>
         internal static TexturePackingImage Decode(Stream stream, CancellationToken cancellation = default)
         {
             if (stream == null || !stream.CanRead || !stream.CanSeek)
@@ -44,6 +45,7 @@ namespace SashaRX.UnityMeshLab
             return new TexturePackingImage(image.OutputWidth, image.OutputHeight, pixels);
         }
 
+        /// <summary>Reads and decompresses one strip or tile's raw sample bytes according to the image's compression scheme.</summary>
         private static byte[] DecodeBlock(Input input, ImageInfo image, int index, int bytes,
             CancellationToken cancellation)
         {
@@ -63,6 +65,7 @@ namespace SashaRX.UnityMeshLab
             return decoded;
         }
 
+        /// <summary>Fills <paramref name="output"/> completely from the stream, throwing if it ends early.</summary>
         private static void ReadExactly(Stream input, byte[] output, CancellationToken cancellation)
         {
             int offset = 0;
@@ -75,6 +78,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        /// <summary>Decodes a PackBits-compressed strip or tile into <paramref name="output"/>.</summary>
         private static void DecodePackBits(Stream input, byte[] output, CancellationToken cancellation)
         {
             int written = 0;
@@ -98,6 +102,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        /// <summary>Decodes a classic TIFF LZW (MSB-first, early-change) compressed strip or tile into <paramref name="output"/>.</summary>
         private static void DecodeLzw(Stream input, byte[] output, CancellationToken cancellation)
         {
             var prefix = new ushort[4096];
@@ -153,6 +158,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        /// <summary>Decodes a zlib/Deflate-compressed strip or tile into <paramref name="output"/> and verifies its Adler-32 checksum.</summary>
         private static void DecodeDeflate(RangeStream input, byte[] output, CancellationToken cancellation)
         {
             if (input.Length < 6) throw new InvalidDataException("Truncated TIFF zlib stream.");
@@ -185,6 +191,7 @@ namespace SashaRX.UnityMeshLab
             if ((b << 16 | a) != expected) throw new InvalidDataException("TIFF zlib checksum mismatch.");
         }
 
+        /// <summary>Reads one byte from the stream, throwing if the stream has ended.</summary>
         private static int RequiredByte(Stream stream)
         {
             int value = stream.ReadByte();
@@ -192,6 +199,7 @@ namespace SashaRX.UnityMeshLab
             return value;
         }
 
+        /// <summary>Reverses horizontal differencing prediction in place across each row of a decoded block.</summary>
         private static void UndoPredictor(byte[] data, ImageInfo image, int rows, int components,
             bool littleEndian, CancellationToken cancellation)
         {
@@ -213,6 +221,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        /// <summary>Converts one decoded block's samples to RGBA bytes, applying inversion, alpha unmultiplication and orientation, and writes them into the output pixels.</summary>
         private static void CopyBlock(Color32[] pixels, byte[][] planes, ImageInfo image, int block, int rows,
             bool littleEndian, CancellationToken cancellation)
         {
@@ -243,6 +252,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        /// <summary>Reads one sample (8/16-bit unsigned or 32-bit float) for a pixel's component from the correct plane and returns it as a unit double.</summary>
         private static double ReadSample(byte[][] planes, ImageInfo image, int pixel, int component, bool littleEndian)
         {
             byte[] data = planes[image.Planar ? component : 0];
@@ -255,6 +265,7 @@ namespace SashaRX.UnityMeshLab
             return new FloatBits { Bits = value }.Value;
         }
 
+        /// <summary>Clamps a possibly non-finite unit value to [0, 1] and rounds it to a byte.</summary>
         private static byte ToByte(double value)
         {
             if (double.IsNaN(value) || value <= 0) return 0;
@@ -262,6 +273,7 @@ namespace SashaRX.UnityMeshLab
             return (byte)(value * 255 + 0.5);
         }
 
+        /// <summary>Maps a source pixel coordinate through the TIFF orientation tag to its bottom-left-origin output index.</summary>
         private static int OutputIndex(int x, int y, ImageInfo image)
         {
             int targetX, targetY;
@@ -279,9 +291,11 @@ namespace SashaRX.UnityMeshLab
             return (image.OutputHeight - 1 - targetY) * image.OutputWidth + targetX;
         }
 
+        /// <summary>Reads a 16-bit value from a byte buffer using the given byte order.</summary>
         private static ushort Read16(byte[] data, int offset, bool littleEndian)
             => (ushort)(littleEndian ? data[offset] | data[offset + 1] << 8 : data[offset] << 8 | data[offset + 1]);
 
+        /// <summary>Writes a 16-bit value into a byte buffer using the given byte order.</summary>
         private static void Write16(byte[] data, int offset, ushort value, bool littleEndian)
         {
             data[offset] = littleEndian ? (byte)value : (byte)(value >> 8);
@@ -295,6 +309,7 @@ namespace SashaRX.UnityMeshLab
             [FieldOffset(0)] public float Value;
         }
 
+        /// <summary>Parses and validates the TIFF tags needed to decode the first image, exposing its geometry and strip/tile layout.</summary>
         private sealed class ImageInfo
         {
             internal readonly int Width, Height, Samples, Bits, Photo, Alpha, Compression, Predictor, Orientation;
@@ -305,6 +320,7 @@ namespace SashaRX.UnityMeshLab
             internal int OutputWidth => Orientation >= 5 ? Height : Width;
             internal int OutputHeight => Orientation >= 5 ? Width : Height;
 
+            /// <summary>Extracts and validates image dimensions, sample layout, compression, predictor and strip/tile tags, rejecting unsupported combinations.</summary>
             internal ImageInfo(Dictionary<int, uint[]> tags)
             {
                 Width = Dimension(tags, 256);
@@ -369,8 +385,10 @@ namespace SashaRX.UnityMeshLab
                     throw new InvalidDataException("TIFF strip/tile counts do not match its dimensions and sample planes.");
             }
 
+            /// <summary>Returns the number of actual rows in a strip or tile, clipped at the image's bottom edge for strips.</summary>
             internal int BlockRows(int block) => Tiled ? BlockHeight : Math.Min(BlockHeight, Height - block * BlockHeight);
 
+            /// <summary>Checks every strip/tile offset, byte count and decoded size against the file length and memory limits before any are decoded.</summary>
             internal void ValidateBlocks(long length, CancellationToken cancellation)
             {
                 for (int i = 0; i < Offsets.Length; i++)
@@ -386,6 +404,7 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
+            /// <summary>Reads a required scalar dimension tag and validates it is within the supported range.</summary>
             private static int Dimension(Dictionary<int, uint[]> tags, int id)
             {
                 uint value = Single(Required(tags, id));
@@ -393,18 +412,21 @@ namespace SashaRX.UnityMeshLab
                 return (int)value;
             }
 
+            /// <summary>Returns a tag's values, throwing if it is missing.</summary>
             private static uint[] Required(Dictionary<int, uint[]> tags, int id)
             {
                 if (!tags.TryGetValue(id, out var value)) throw new InvalidDataException("Missing required TIFF tag " + id + ".");
                 return value;
             }
 
+            /// <summary>Returns a tag's single value, throwing if it holds more than one.</summary>
             private static uint Single(uint[] values)
             {
                 if (values.Length != 1) throw new InvalidDataException("TIFF scalar tag contains multiple values.");
                 return values[0];
             }
 
+            /// <summary>Reads an optional scalar tag as an int, or returns <paramref name="fallback"/> if it is absent.</summary>
             private static int Scalar(Dictionary<int, uint[]> tags, int id, int fallback)
             {
                 if (!tags.TryGetValue(id, out var value)) return fallback;
@@ -413,6 +435,7 @@ namespace SashaRX.UnityMeshLab
                 return (int)result;
             }
 
+            /// <summary>Reads an optional per-sample tag, requiring every sample to share the same value, or returns <paramref name="fallback"/> if absent.</summary>
             private static int Uniform(Dictionary<int, uint[]> tags, int id, int samples, int fallback)
             {
                 if (!tags.TryGetValue(id, out var values)) return fallback;
@@ -426,6 +449,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        /// <summary>Reads the TIFF byte order, header and directory tags from the source stream.</summary>
         private sealed class Input
         {
             private readonly Stream stream;
@@ -434,9 +458,11 @@ namespace SashaRX.UnityMeshLab
             internal bool LittleEndian { get; private set; }
             internal long Length => stream.Length;
 
+            /// <summary>Wraps the source stream for reading the TIFF byte order, header and directory.</summary>
             internal Input(Stream stream, CancellationToken cancellation)
             { this.stream = stream; this.cancellation = cancellation; }
 
+            /// <summary>Reads the byte order mark, header and the first image directory's relevant tags.</summary>
             internal Dictionary<int, uint[]> ReadDirectory()
             {
                 stream.Position = 0;
@@ -478,6 +504,7 @@ namespace SashaRX.UnityMeshLab
                 return tags;
             }
 
+            /// <summary>Returns whether the given tag ID is one the decoder reads; unrelated tags are skipped.</summary>
             private static bool Relevant(int tag)
             {
                 switch (tag)
@@ -489,12 +516,14 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
+            /// <summary>Reads a 16-bit value from the stream in the file's byte order.</summary>
             private ushort Word()
             {
                 int a = RequiredByte(stream), b = RequiredByte(stream);
                 return (ushort)(LittleEndian ? a | b << 8 : a << 8 | b);
             }
 
+            /// <summary>Reads a 32-bit value from the stream in the file's byte order.</summary>
             private uint Dword()
             {
                 for (int i = 0; i < 4; i++) scratch[i] = (byte)RequiredByte(stream);
@@ -502,12 +531,14 @@ namespace SashaRX.UnityMeshLab
                     (uint)scratch[0] << 24 | (uint)scratch[1] << 16 | (uint)scratch[2] << 8 | scratch[3];
             }
 
+            /// <summary>Throws if the given offset and count would read outside the file.</summary>
             private void CheckRange(long offset, long count)
             {
                 if (offset < 8 || offset > Length || count < 0 || count > Length - offset)
                     throw new InvalidDataException("TIFF directory/tag points outside the file.");
             }
 
+            /// <summary>Opens a bounded, validated view of the stream over one strip or tile's byte range.</summary>
             internal RangeStream OpenRange(uint offset, uint count)
             {
                 CheckRange(offset, count);
@@ -516,12 +547,15 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        /// <summary>Reads fixed-width, most-significant-bit-first codes from a stream, as used by TIFF LZW.</summary>
         private sealed class MsbBits
         {
             private readonly Stream stream;
             private uint buffer;
             private int available;
+            /// <summary>Wraps the stream to read MSB-first bit codes from it.</summary>
             internal MsbBits(Stream stream) { this.stream = stream; }
+            /// <summary>Reads the next code of the given bit width.</summary>
             internal int Read(int width)
             {
                 while (available < width) { buffer = buffer << 8 | (uint)RequiredByte(stream); available += 8; }
@@ -537,6 +571,7 @@ namespace SashaRX.UnityMeshLab
             private readonly long length;
             private readonly CancellationToken cancellation;
             private long position;
+            /// <summary>Wraps <paramref name="source"/>, exposing at most <paramref name="length"/> further bytes.</summary>
             internal RangeStream(Stream source, long length, CancellationToken cancellation)
             { this.source = source; this.length = length; this.cancellation = cancellation; }
             public override bool CanRead => true;
@@ -544,6 +579,7 @@ namespace SashaRX.UnityMeshLab
             public override bool CanWrite => false;
             public override long Length => length;
             public override long Position { get => position; set => throw new NotSupportedException(); }
+            /// <summary>Reads up to <paramref name="count"/> bytes, never exceeding the remaining bounded length.</summary>
             public override int Read(byte[] buffer, int offset, int count)
             {
                 cancellation.ThrowIfCancellationRequested();
@@ -551,6 +587,7 @@ namespace SashaRX.UnityMeshLab
                 position += read;
                 return read;
             }
+            /// <summary>Reads one byte, or -1 once the bounded length is reached.</summary>
             public override int ReadByte()
             {
                 cancellation.ThrowIfCancellationRequested();
@@ -559,6 +596,7 @@ namespace SashaRX.UnityMeshLab
                 if (value >= 0) position++;
                 return value;
             }
+            /// <summary>Advances the read position to <paramref name="target"/>, seeking when the source supports it and reading forward otherwise.</summary>
             internal void SkipTo(long target)
             {
                 cancellation.ThrowIfCancellationRequested();

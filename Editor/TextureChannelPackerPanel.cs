@@ -148,6 +148,7 @@ namespace SashaRX.UnityMeshLab
             return name.StartsWith("SM_", StringComparison.OrdinalIgnoreCase) ? name.Substring(3) : name;
         }
 
+        /// <summary>Draws the Texture Channel Packer tab: settings, outputs, status and the save button.</summary>
         internal void DrawContent()
         {
             scroll = EditorGUILayout.BeginScrollView(scroll);
@@ -258,6 +259,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        /// <summary>Draws a single source slot's thumbnail, path, scalar controls and file picker.</summary>
         private void DrawSlot(Output output, Slot slot, string label, bool scalar)
         {
             using (new EditorGUILayout.HorizontalScope())
@@ -299,6 +301,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        /// <summary>Accepts a single-file drag over a slot's rect by extension only, deferring existence and decode checks to the background loader.</summary>
         private void HandleDrop(Rect rect, Output output, Slot slot)
         {
             if (!GUI.enabled) return;
@@ -318,6 +321,7 @@ namespace SashaRX.UnityMeshLab
             evt.Use();
         }
 
+        /// <summary>Binds a chosen path to a slot immediately, schedules its background load and repaints to show the pending state.</summary>
         private void Assign(Output output, Slot slot, string path)
         {
             RunAction(() =>

@@ -9,10 +9,12 @@ using UnityEngine;
 
 namespace SashaRX.UnityMeshLab.Tests
 {
+    /// <summary>Unit coverage for the TIFF stream decoder: compression, prediction, planar/tiled layout, orientation, cancellation and malformed input.</summary>
     public sealed class TexturePackingTiffTests
     {
         [TestCase(false)]
         [TestCase(true)]
+        /// <summary>RGBA strips decode with their alpha intact and rows flipped to Unity's bottom-left origin, for both byte orders.</summary>
         public void RgbaStripsPreserveAlphaAndConvertToBottomLeft(bool bigEndian)
         {
             var fixture = new Fixture(2, 2, 4) { BigEndian = bigEndian, Rows = 1, Alpha = 2 };
@@ -30,6 +32,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [TestCase(8)]
         [TestCase(32946)]
         [TestCase(32773)]
+        /// <summary>Every supported compression scheme decodes a strip back to the original pixels.</summary>
         public void SupportedCompressionProducesIdenticalPixels(int compression)
         {
             var fixture = new Fixture(2, 1, 3) { Compression = compression };
@@ -40,6 +43,7 @@ namespace SashaRX.UnityMeshLab.Tests
 
         [TestCase(false)]
         [TestCase(true)]
+        /// <summary>Horizontal differencing prediction on 16-bit samples undoes deltas correctly and resets at the start of each row, for both byte orders.</summary>
         public void HorizontalPredictionUsesSixteenBitSamplesAndResetsAtRows(bool bigEndian)
         {
             var fixture = new Fixture(2, 2, 3) { Bits = 16, BigEndian = bigEndian, Predictor = 2, Compression = 8 };
@@ -51,6 +55,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>8-bit horizontal prediction combined with PackBits no-op and repeat packets decodes to the expected running sums.</summary>
         public void EightBitPredictorAndPackBitsRepeatPacketsDecode()
         {
             var fixture = new Fixture(3, 1, 1) { Photo = 1, Predictor = 2, Compression = 32773, BlocksEncoded = true };
@@ -62,6 +67,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>Planar, associated 16-bit alpha unmultiplies using full native precision before quantizing to bytes.</summary>
         public void PlanarAssociatedAlphaUsesOriginalSixteenBitPrecision()
         {
             var fixture = new Fixture(2, 1, 4) { Planar = true, Bits = 16, Alpha = 1, Compression = 5 };
@@ -75,6 +81,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>Tiles wider than the image are cropped to the real width without shifting pixels on the right edge.</summary>
         public void TilesCropPaddingWithoutShiftingTheRightEdge()
         {
             var fixture = new Fixture(3, 2, 1) { Photo = 1, TileWidth = 2, TileHeight = 2, Compression = 8 };
@@ -92,6 +99,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [TestCase(6, new byte[] { 6, 3, 5, 2, 4, 1 }, 2, 3)]
         [TestCase(7, new byte[] { 4, 1, 5, 2, 6, 3 }, 2, 3)]
         [TestCase(8, new byte[] { 1, 4, 2, 5, 3, 6 }, 2, 3)]
+        /// <summary>Every TIFF orientation value remaps pixels to the correct upright, bottom-left-origin layout and output dimensions.</summary>
         public void AllOrientationsProduceUprightBottomLeftPixels(int orientation, byte[] expected, int width, int height)
         {
             var fixture = new Fixture(3, 2, 1) { Photo = 1, Orientation = orientation };
@@ -104,6 +112,7 @@ namespace SashaRX.UnityMeshLab.Tests
 
         [TestCase(false)]
         [TestCase(true)]
+        /// <summary>32-bit float grayscale with alpha clamps out-of-range and NaN samples while preserving transparency, for both byte orders.</summary>
         public void FloatingPointGrayscaleAlphaClampsAndPreservesTransparency(bool bigEndian)
         {
             var fixture = new Fixture(2, 1, 2) { Bits = 32, Float = true, Photo = 1, Alpha = 2, BigEndian = bigEndian };
@@ -114,6 +123,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>Photometric interpretation 0 (WhiteIsZero) inverts grayscale color but leaves alpha untouched.</summary>
         public void WhiteIsZeroGrayscaleInvertsOnlyColor()
         {
             var fixture = new Fixture(1, 1, 2) { Photo = 0, Alpha = 2 };
@@ -123,6 +133,7 @@ namespace SashaRX.UnityMeshLab.Tests
 
         [TestCase(-1)]
         [TestCase(0)]
+        /// <summary>An extra sample that is not flagged as alpha is ignored, leaving the pixel fully opaque.</summary>
         public void UnspecifiedExtraSampleDoesNotBecomeAlpha(int extra)
         {
             var fixture = new Fixture(1, 1, 4) { Alpha = extra };
@@ -131,6 +142,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>An LZW code equal to the next dictionary entry (the KwKwK case) decodes using the previous string plus its own first byte.</summary>
         public void LzwHandlesTheNextDictionaryEntryCase()
         {
             var fixture = new Fixture(3, 1, 1) { Photo = 1, Compression = 5, BlocksEncoded = true };
@@ -139,6 +151,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>LZW decoding stays aligned across the code-width growth thresholds and an in-stream dictionary clear over many samples.</summary>
         public void LzwEarlyCodeWidthTransitionsAndDictionaryClearRemainAligned()
         {
             var fixture = new Fixture(2200, 1, 1) { Photo = 1, Compression = 5 };
@@ -148,6 +161,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>An LZW stream produced independently by libtiff/Pillow, spanning every code width, decodes to the expected pixel bytes.</summary>
         public void IndependentLibTiffLzwFixtureCrossesAllCodeWidths()
         {
             // Generated by Pillow 11/libtiff, not by the decoder or the literal fixture encoder.
@@ -198,6 +212,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [TestCase(5)]
         [TestCase(8)]
         [TestCase(32773)]
+        /// <summary>A strip truncated by one byte is rejected, for every supported compression, without the caller's stream being disposed.</summary>
         public void TruncatedBlockThrowsWithoutClosingCallerStream(int compression)
         {
             var fixture = new Fixture(2, 1, 3) { Compression = compression };
@@ -211,6 +226,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>Deflate decoding rejects a stream that expands beyond its declared size and one with a corrupted Adler-32 checksum.</summary>
         public void DeflateRejectsOverExpansionAndChecksumCorruption()
         {
             var fixture = new Fixture(1, 1, 1) { Photo = 1, Compression = 8, BlocksEncoded = true };
@@ -222,6 +238,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>The Adler-32 checksum accumulates correctly across a block large enough to require multiple modulo passes.</summary>
         public void DeflateChecksumAccumulatesAcrossLargeBlocks()
         {
             var fixture = new Fixture(8192, 1, 1) { Photo = 1, Compression = 8 };
@@ -231,6 +248,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>A PackBits packet and an LZW code that would overflow their block are both rejected instead of corrupting adjacent memory.</summary>
         public void MalformedCompressionPacketsCannotWriteBeyondTheirBlock()
         {
             var fixture = new Fixture(1, 1, 1) { Photo = 1, Compression = 32773, BlocksEncoded = true };
@@ -242,6 +260,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>A directory entry whose out-of-line value offset is corrupted is rejected before any pixel buffer is allocated.</summary>
         public void InvalidTagRangeIsRejectedBeforePixelAllocation()
         {
             var fixture = new Fixture(1, 1, 4) { Alpha = 2 };
@@ -255,6 +274,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>An image over the 64 megapixel limit and planar data missing one sample plane both fail before pixels are allocated.</summary>
         public void OversizedImagesAndIncompletePlanarBlocksFailBeforeAllocatingPixels()
         {
             var oversized = new Fixture(8192, 8193, 1) { Photo = 1 };
@@ -270,6 +290,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [TestCase(1, 8, 5, 1, false)]
         [TestCase(1, 32, 2, 3, true)]
         [TestCase(1, 8, 2, 1, true)]
+        /// <summary>Unsupported compression, photometric interpretation, predictor and float/predictor combinations each raise a clear "TIFF" error.</summary>
         public void UnsupportedFeaturesGiveActionableErrors(int compression, int bits, int photo, int predictor, bool floatingPoint)
         {
             var fixture = new Fixture(1, 1, 3)
@@ -280,6 +301,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>A BigTIFF version marker is rejected with guidance to resave as a classic TIFF.</summary>
         public void BigTiffGivesResaveGuidance()
         {
             using (var stream = new MemoryStream(new byte[] { 73, 73, 43, 0, 8, 0, 0, 0 }))
@@ -293,6 +315,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [TestCase(5)]
         [TestCase(8)]
         [TestCase(32773)]
+        /// <summary>Cancellation during a compressed read throws and leaves the caller's stream open, for every supported compression.</summary>
         public void DecodeHonorsCancellationDuringCompressedReads(int compression)
         {
             var fixture = new Fixture(4000, 1, 1) { Photo = 1, Compression = compression };
@@ -307,6 +330,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>An already-cancelled token throws before any byte is read from the source stream.</summary>
         public void AlreadyCanceledDecodeDoesNotReadItsInput()
         {
             using (var cancellation = new CancellationTokenSource())
@@ -318,11 +342,13 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        /// <summary>Builds the fixture's file bytes and decodes them with <see cref="TexturePackingTiff.Decode"/>.</summary>
         private static TexturePackingImage Decode(Fixture fixture)
         {
             using (var input = new MemoryStream(fixture.Build())) return TexturePackingTiff.Decode(input);
         }
 
+        /// <summary>Encodes 16-bit values as raw bytes in the given byte order.</summary>
         private static byte[] Words(bool bigEndian, params ushort[] values)
         {
             using (var output = new MemoryStream())
@@ -332,6 +358,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        /// <summary>Encodes 32-bit float values as raw bytes in the given byte order.</summary>
         private static byte[] Floats(bool bigEndian, params float[] values)
         {
             using (var output = new MemoryStream())
@@ -346,6 +373,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        /// <summary>Wraps raw bytes in a valid zlib header, Deflate payload and Adler-32 trailer.</summary>
         private static byte[] Zlib(byte[] data)
         {
             using (var output = new MemoryStream())
@@ -360,6 +388,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        /// <summary>Encodes bytes as literal (uncompressed-ratio) TIFF LZW codes, inserting clear codes at the dictionary limit.</summary>
         private static byte[] LiteralLzw(byte[] data)
         {
             var codes = new List<int> { 256 };
@@ -384,6 +413,7 @@ namespace SashaRX.UnityMeshLab.Tests
             return PackCodes(codes, widths);
         }
 
+        /// <summary>Packs a sequence of variable-width codes MSB-first into bytes, as TIFF LZW expects.</summary>
         private static byte[] PackCodes(IList<int> codes, IList<int> widths)
         {
             using (var output = new MemoryStream())
@@ -405,6 +435,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        /// <summary>Encodes bytes as literal (uncompressed) PackBits packets of up to 128 bytes each.</summary>
         private static byte[] LiteralPackBits(byte[] data)
         {
             using (var output = new MemoryStream())
@@ -419,11 +450,13 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        /// <summary>Writes an integer's low <paramref name="bytes"/> bytes to the stream in the given byte order.</summary>
         private static void WriteInteger(Stream output, uint value, int bytes, bool bigEndian)
         {
             for (int i = 0; i < bytes; i++) output.WriteByte((byte)(value >> ((bigEndian ? bytes - 1 - i : i) * 8)));
         }
 
+        /// <summary>Builds a classic TIFF file byte-for-byte from configurable tags and raw strip/tile blocks for test fixtures.</summary>
         private sealed class Fixture
         {
             private readonly int width, height, samples;
@@ -433,11 +466,14 @@ namespace SashaRX.UnityMeshLab.Tests
             internal int Bits = 8, Photo = 2, Compression = 1, Predictor = 1, Orientation = 1, Alpha = -1;
             internal int Rows, TileWidth, TileHeight;
             internal int FirstBlockOffset { get; private set; }
+            /// <summary>Starts a fixture with the given dimensions and sample count, defaulting to one strip spanning the full height.</summary>
             internal Fixture(int width, int height, int samples)
             { this.width = width; this.height = height; this.samples = samples; Rows = height; }
 
+            /// <summary>Returns the byte offset of a tag's directory entry, for tests that corrupt it directly.</summary>
             internal int TagEntryOffset(int id) => 10 + tags.FindIndex(tag => tag.Id == id) * 12;
 
+            /// <summary>Assembles the configured tags and encoded blocks into a complete classic TIFF file.</summary>
             internal byte[] Build()
             {
                 byte[][] encoded = Blocks.Select(EncodeBlock).ToArray();
@@ -488,9 +524,11 @@ namespace SashaRX.UnityMeshLab.Tests
                 }
             }
 
+            /// <summary>Writes a tag's values as its declared type, in the fixture's byte order.</summary>
             private void WriteTag(Stream output, Tag tag)
             { foreach (uint value in tag.Values) WriteInteger(output, value, tag.Type == 3 ? 2 : 4, BigEndian); }
 
+            /// <summary>Compresses one block's bytes according to the fixture's compression setting, unless the block is already pre-encoded.</summary>
             private byte[] EncodeBlock(byte[] data)
             {
                 if (BlocksEncoded) return data;
@@ -505,27 +543,33 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        /// <summary>One TIFF directory entry's ID, type and values, as built by a <see cref="Fixture"/>.</summary>
         private sealed class Tag
         {
             internal readonly int Id, Type;
             internal readonly uint[] Values;
             internal int Offset;
             internal int Bytes => Values.Length * (Type == 3 ? 2 : 4);
+            /// <summary>Stores the tag's ID, type and values.</summary>
             internal Tag(int id, int type, params uint[] values) { Id = id; Type = type; Values = values; }
         }
 
+        /// <summary>A memory stream that cancels its token once reads pass a configured position, to test mid-decode cancellation.</summary>
         private sealed class CancelingStream : MemoryStream
         {
             private readonly int cancelAt;
             private readonly CancellationTokenSource cancellation;
+            /// <summary>Wraps the bytes, cancelling <paramref name="cancellation"/> once the read position passes <paramref name="cancelAt"/>.</summary>
             internal CancelingStream(byte[] data, int cancelAt, CancellationTokenSource cancellation) : base(data)
             { this.cancelAt = cancelAt; this.cancellation = cancellation; }
+            /// <summary>Reads as normal, then cancels the token once the position passes the configured threshold.</summary>
             public override int Read(byte[] buffer, int offset, int count)
             {
                 int result = base.Read(buffer, offset, count);
                 if (Position > cancelAt) cancellation.Cancel();
                 return result;
             }
+            /// <summary>Reads one byte as normal, then cancels the token once the position passes the configured threshold.</summary>
             public override int ReadByte()
             {
                 int result = base.ReadByte();

@@ -19,6 +19,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [TestCase(".PSD")]
         [TestCase(".tif")]
         [TestCase(".tiff")]
+        /// <summary>A dropped file of any supported extension binds to the slot and repaints immediately, without the panel touching the filesystem.</summary>
         public void DropAssignsImmediatelyWithoutOpeningTheSource(string extension)
         {
             // A missing source must still bind immediately; only the worker checks readability.
@@ -493,6 +494,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
+        /// <summary>A large PNG's pixel copy yields across several bounded slices while still reproducing every source byte exactly.</summary>
         public IEnumerator LargePngCopiesInBoundedBulkSlicesAndKeepsChannelBytes()
         {
             const int size = 2048;
@@ -788,11 +790,13 @@ namespace SashaRX.UnityMeshLab.Tests
 
 namespace SashaRX.UnityMeshLab.Tests
 {
+    /// <summary>A minimal editor window that drives a test-supplied callback from <c>OnGUI</c> and captures any exception it throws.</summary>
     internal sealed class TexturePackingDropTestWindow : EditorWindow
     {
         internal Action HandleEvent;
         internal Exception Failure;
 
+        /// <summary>Invokes the test's handler and records any exception instead of letting it escape IMGUI.</summary>
         private void OnGUI()
         {
             try { HandleEvent?.Invoke(); }

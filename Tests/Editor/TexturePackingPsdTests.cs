@@ -7,12 +7,14 @@ using UnityEngine;
 
 namespace SashaRX.UnityMeshLab.Tests
 {
+    /// <summary>Unit coverage for the PSD stream decoder: composites, bit depths, prediction, transparency, cancellation and malformed input.</summary>
     public sealed class TexturePackingPsdTests
     {
         [TestCase(0)]
         [TestCase(1)]
         [TestCase(2)]
         [TestCase(3)]
+        /// <summary>An 8-bit RGBA composite decodes to the expected pixels, with row order flipped to Unity's bottom-left origin, for every compression mode.</summary>
         public void CompositePreservesRgbAlphaAndBottomLeftOrigin(int compression)
         {
             // Two rows, each two pixels. PSD planes are in top-to-bottom order.
@@ -34,6 +36,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [TestCase(0)]
         [TestCase(1)]
         [TestCase(2)]
+        /// <summary>16-bit grayscale samples scale across the full unsigned range to 8-bit gray with their alpha, for every compression mode.</summary>
         public void SixteenBitGrayscaleScalesTheWholeUnsignedRange(int compression)
         {
             byte[] planes = { 0, 0, 0x80, 0, 255, 255, 255, 255, 0x40, 0x40, 0, 0 };
@@ -47,6 +50,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>ZIP-with-prediction on 16-bit samples undoes word-wide deltas, including unsigned wraparound, back to the original values.</summary>
         public void SixteenBitZipPredictionUsesWordDeltasWithWraparound()
         {
             // Samples: 65535, 0, 32768. Deltas: 65535, 1, 32768.
@@ -62,6 +66,7 @@ namespace SashaRX.UnityMeshLab.Tests
 
         [TestCase(0)]
         [TestCase(2)]
+        /// <summary>32-bit float samples outside [0, 1], including NaN, are clamped and quantized to valid bytes, for every compression mode.</summary>
         public void FloatCompositeClampsHdrAndNonFiniteSamples(int compression)
         {
             byte[] planes = { 0xBF, 0x80, 0, 0, 0x3F, 0, 0, 0, 0x40, 0, 0, 0, 0x7F, 0xC0, 0, 0 };
@@ -77,6 +82,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>ZIP-with-prediction on 32-bit float samples un-shuffles byte planes and undoes the row delta back to the original floats.</summary>
         public void FloatZipPredictionRestoresShuffledBytePlanes()
         {
             // Floats 0, 0.5, 1: shuffle byte planes, then delta across the entire shuffled row.
@@ -91,6 +97,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>Additional alpha channels beyond the first are ignored and never overwrite the stored alpha.</summary>
         public void ExtraAlphaChannelsDoNotOverwriteFirstAlpha()
         {
             using (var stream = new MemoryStream(Fixture(1, 1, 5, 8, 3, 0, new byte[] { 10, 20, 30, 40, 50 })))
@@ -98,6 +105,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>When a layer's negative count flags merged transparency, the decoder removes Photoshop's white matte from the composited RGB.</summary>
         public void PhotoshopMergedTransparencyRemovesWhiteMatte()
         {
             byte[] planes = { 191, 255, 127, 255, 159, 255, 128, 0 };
@@ -111,6 +119,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>When a layer's non-negative count indicates an independent user alpha, stored RGB is kept as-is without unmatting.</summary>
         public void LayeredUserAlphaPreservesStoredRgbWithoutUnmatting()
         {
             byte[] file = WithLayerCount(Fixture(1, 1, 4, 8, 3, 0, new byte[] { 191, 127, 159, 128 }), 1);
@@ -120,6 +129,7 @@ namespace SashaRX.UnityMeshLab.Tests
 
         [TestCase(16, 0x4C723136u)]
         [TestCase(32, 0x4C723332u)]
+        /// <summary>A tagged 16/32-bit-per-channel global layer count with a negative value still marks the composite as having merged transparency.</summary>
         public void TaggedHighDepthLayerCountMarksMergedTransparency(int depth, uint tag)
         {
             byte[] planes = depth == 16 ? new byte[] { 0xBF, 0xBF, 0x80, 0x80 } :
@@ -133,6 +143,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [TestCase(1)]
         [TestCase(2)]
         [TestCase(3)]
+        /// <summary>A 16-bit composite with very low alpha unmattes using native-precision samples before quantizing to bytes.</summary>
         public void LowAlphaSixteenBitCompositeUnmattesBeforeQuantizing(int compression)
         {
             // Exact unmatted native samples are327/655 and328/655 (gray127 and128).
@@ -152,6 +163,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [TestCase(1)]
         [TestCase(2)]
         [TestCase(3)]
+        /// <summary>A float composite with very low alpha unmattes using native-precision samples before quantizing to bytes.</summary>
         public void LowAlphaFloatCompositeUnmattesBeforeQuantizing(int compression)
         {
             // Native float gray0.995 and alpha0.01 represent gray0.5 over white.
@@ -164,6 +176,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>Cancellation during the second, native-alpha capture pass throws and leaves the caller's stream open.</summary>
         public void CancellationInterruptsSecondNativeTransparencyPass()
         {
             byte[] file = WithLayerCount(Fixture(1, 1, 2, 16, 1, 0,
@@ -177,6 +190,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>RLE-compressed rows decode correctly when they contain no-op (128) and repeat packets.</summary>
         public void RleAcceptsRepeatAndNoOpPackets()
         {
             byte[] file = Fixture(3, 1, 1, 8, 1, 0, new byte[] { 0, 0, 0 });
@@ -195,6 +209,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [TestCase(1)]
         [TestCase(2)]
         [TestCase(3)]
+        /// <summary>A composite truncated by one byte is rejected for every compression mode.</summary>
         public void TruncatedCompositeIsRejected(int compression)
         {
             byte[] file = Fixture(2, 1, 3, 8, 3, compression, new byte[] { 1, 2, 3, 4, 5, 6 });
@@ -204,6 +219,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>ZIP composite decoding rejects an Adler-32 checksum mismatch and data that expands beyond its declared dimensions.</summary>
         public void ZipRejectsChecksumMismatchAndOversizedExpansion()
         {
             byte[] file = Fixture(1, 1, 1, 8, 1, 2, new byte[] { 17 });
@@ -215,6 +231,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>RLE decoding rejects a packet that would overflow a scanline and a scanline left incomplete by no-op packets.</summary>
         public void RleRejectsScanlineOverflowAndUnderflow()
         {
             byte[] file = Fixture(1, 1, 1, 8, 1, 1, new byte[] { 17 });
@@ -228,6 +245,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>An invalid width and an oversized color-mode section length are both rejected before any large allocation.</summary>
         public void HostileDimensionsAndSectionLengthsAreRejectedBeforeAllocation()
         {
             byte[] file = Fixture(1, 1, 1, 8, 1, 0, new byte[] { 17 });
@@ -242,6 +260,7 @@ namespace SashaRX.UnityMeshLab.Tests
 
         [TestCase(0)]
         [TestCase(2)]
+        /// <summary>Cancellation during decoding throws and leaves the caller's stream open, for raw and ZIP-compressed composites.</summary>
         public void CancellationInterruptsDecodeAndLeavesCallerStreamOpen(int compression)
         {
             using (var cancel = new CancellationTokenSource())
@@ -254,6 +273,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>PSB version, unsupported color mode and unsupported bit depth each produce a clear, distinguishable error message.</summary>
         public void UnsupportedPsbColorModeAndDepthAreReportedClearly()
         {
             byte[] file = Fixture(1, 1, 1, 8, 1, 0, new byte[] { 17 });
@@ -269,6 +289,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>A PSD whose Version Info resource reports no saved composite fails with guidance to enable Maximize Compatibility.</summary>
         public void PsdWithoutSavedCompositeRequestsMaximizeCompatibility()
         {
             byte[] file = Fixture(1, 1, 1, 8, 1, 0, new byte[] { 17 });
@@ -288,6 +309,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        /// <summary>An already-cancelled token throws before any byte is read from the source stream.</summary>
         public void PreCancelledReadDoesNotAdvanceSourceStream()
         {
             using (var cancellation = new CancellationTokenSource())
@@ -299,6 +321,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        /// <summary>Builds a minimal PSD file with a header, empty color-mode and resources sections, an empty layer section, and the given composite planes encoded for the requested compression mode.</summary>
         private static byte[] Fixture(int width, int height, int channels, int depth,
             int mode, int compression, byte[] planes, bool alreadyPredicted = false)
         {
@@ -339,11 +362,14 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        /// <summary>Writes a big-endian 16-bit value to the stream.</summary>
         private static void Write16(Stream stream, int value)
         { stream.WriteByte((byte)(value >> 8)); stream.WriteByte((byte)value); }
+        /// <summary>Writes a big-endian 32-bit value to the stream.</summary>
         private static void Write32(Stream stream, uint value)
         { Write16(stream, (int)(value >> 16)); Write16(stream, (int)value); }
 
+        /// <summary>Rewrites a fixture's layer and mask section with either a plain layer count or a tagged global layer info block.</summary>
         private static byte[] WithLayerCount(byte[] file, int layerCount, uint tag = 0)
         {
             using (var layers = new MemoryStream())
@@ -366,12 +392,15 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        /// <summary>A memory stream that cancels its token after a configured number of reads, to test mid-decode cancellation.</summary>
         private sealed class CancellingStream : MemoryStream
         {
             private readonly CancellationTokenSource cancellation;
             private int readsRemaining;
+            /// <summary>Wraps the bytes, cancelling <paramref name="cancellation"/> after <paramref name="readsBeforeCancellation"/> reads.</summary>
             internal CancellingStream(byte[] bytes, CancellationTokenSource cancellation, int readsBeforeCancellation = 1) : base(bytes)
             { this.cancellation = cancellation; readsRemaining = readsBeforeCancellation; }
+            /// <summary>Reads as normal, then cancels the token once the configured read count is reached.</summary>
             public override int Read(byte[] buffer, int offset, int count)
             {
                 int read = base.Read(buffer, offset, count);
