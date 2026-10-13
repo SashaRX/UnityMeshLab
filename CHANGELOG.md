@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Fixed
+- Texture Packer binds dropped source files immediately without filesystem checks in drag events, and accelerates PNG pixel copies while keeping editor updates responsive. PSD merged images and classic TIFF inputs decode in the background with alpha and source-channel selection.
 - Texture Channel Packer is a full-width Texture Packer tab inside Mesh Lab; its separate menu entry is removed. Settings survive tab switches while inactive panels release source loads and temporary textures.
 - Foliage selection rejects line/point meshes and empty triangle submeshes. Hierarchy changes during active calculations refresh source context and selection masks once the pipeline becomes idle, including failed runs.
 - Foliage bbox fits clamp planar thickness after scaling and account for float precision at the fitted center. Preview refreshes cancel and serialize active paint work; named LOD siblings refresh on source-channel changes, and Before/After spacing includes all visible context geometry.

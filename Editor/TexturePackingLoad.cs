@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using Unity.Collections;
 using UnityEngine;
 using UnityEngine.Networking;
 
@@ -29,12 +30,12 @@ namespace SashaRX.UnityMeshLab
             try
             {
                 sourcePath = Path.GetFullPath(path);
-                if (!TexturePackingImage.Supports(path)) throw new NotSupportedException("Supported inputs: PNG, JPG/JPEG, TGA.");
-                if (string.Equals(Path.GetExtension(path), ".tga", StringComparison.OrdinalIgnoreCase))
+                if (!TexturePackingImage.Supports(path)) throw new NotSupportedException("Supported inputs: " + TexturePackingImage.SupportedInputs + ".");
+                if (TexturePackingImage.UsesStreamDecoder(path))
                 {
                     var token = cancellation.Token;
                     string fullPath = sourcePath;
-                    task = Task.Run(() => ReadTga(fullPath, token), token);
+                    task = Task.Run(() => ReadStreamImage(fullPath, token), token);
                 }
                 else
                 {
@@ -47,11 +48,11 @@ namespace SashaRX.UnityMeshLab
             catch { Dispose(); throw; }
         }
 
-        private static TexturePackingImage ReadTga(string path, CancellationToken token)
+        private static TexturePackingImage ReadStreamImage(string path, CancellationToken token)
         {
             using (var source = new SourceLease(path, token))
             {
-                var image = TexturePackingImage.DecodeTga(source.Input, token);
+                var image = TexturePackingImage.DecodeStream(path, source.Input, token);
                 source.Validate(token);
                 return image;
             }
@@ -158,21 +159,7 @@ namespace SashaRX.UnityMeshLab
             }
             if (!pixelAllocation.IsCompleted) return false;
             if (pixels == null) pixels = pixelAllocation.GetAwaiter().GetResult();
-            // A large GetPixels32 copy can also stall the editor. Copy a bounded slice per update.
-            var raw = texture.GetPixelData<byte>(0);
-            TextureFormat format = texture.format;
-            int stride = format == TextureFormat.RGB24 ? 3 : 4;
-            int end = Math.Min(offset + 32768, pixels.Length);
-            for (; offset < end; offset++)
-            {
-                int i = offset * stride;
-                if (format == TextureFormat.ARGB32)
-                    pixels[offset] = new Color32(raw[i + 1], raw[i + 2], raw[i + 3], raw[i]);
-                else if (format == TextureFormat.BGRA32)
-                    pixels[offset] = new Color32(raw[i + 2], raw[i + 1], raw[i], raw[i + 3]);
-                else
-                    pixels[offset] = new Color32(raw[i], raw[i + 1], raw[i + 2], stride == 4 ? raw[i + 3] : (byte)255);
-            }
+            CopyPixelSlice();
             if (offset != pixels.Length) return false;
             if (validation == null)
             {
@@ -185,6 +172,41 @@ namespace SashaRX.UnityMeshLab
             validation.GetAwaiter().GetResult();
             image = new TexturePackingImage(texture.width, texture.height, pixels);
             return true;
+        }
+
+        private void CopyPixelSlice()
+        {
+            if (offset == pixels.Length) return;
+            // Bulk copy the usual RGBA layout instead of converting every byte in managed code.
+            // Keep each copy bounded to 4 MiB so large textures still yield to the editor.
+            if (texture.format == TextureFormat.RGBA32)
+            {
+                var colors = texture.GetPixelData<Color32>(0);
+                int count = Math.Min(1048576, pixels.Length - offset);
+                NativeArray<Color32>.Copy(colors, offset, pixels, offset, count);
+                offset += count;
+                return;
+            }
+            var raw = texture.GetPixelData<byte>(0);
+            TextureFormat format = texture.format;
+            int stride = format == TextureFormat.RGB24 ? 3 : 4;
+            var budget = System.Diagnostics.Stopwatch.StartNew();
+            // Other layouts require channel conversion; stop between small blocks after 2 ms.
+            do
+            {
+                int end = Math.Min(offset + 8192, pixels.Length);
+                for (; offset < end; offset++)
+                {
+                    int i = offset * stride;
+                    if (format == TextureFormat.ARGB32)
+                        pixels[offset] = new Color32(raw[i + 1], raw[i + 2], raw[i + 3], raw[i]);
+                    else if (format == TextureFormat.BGRA32)
+                        pixels[offset] = new Color32(raw[i + 2], raw[i + 1], raw[i], raw[i + 3]);
+                    else
+                        pixels[offset] = new Color32(raw[i], raw[i + 1], raw[i + 2], stride == 4 ? raw[i + 3] : (byte)255);
+                }
+            }
+            while (offset < pixels.Length && budget.Elapsed.TotalMilliseconds < 2);
         }
 
         public void Dispose()
