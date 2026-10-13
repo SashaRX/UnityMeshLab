@@ -30,13 +30,23 @@ namespace SashaRX.UnityMeshLab
         }
 
         void RestoreAllPreviews() => BeforeWrite?.Invoke();
-        void SwitchToPostApplyView()
+        void SwitchToPostApplyView(Dictionary<string, List<MeshUv2Entry>> applied = null)
         {
             if (ctx.LodGroup != null) ctx.Refresh(ctx.LodGroup);
             else if (ctx.StandaloneMesh)
             {
                 var renderer = ctx.MeshEntries.FirstOrDefault(e => e?.renderer is MeshRenderer)?.renderer as MeshRenderer;
                 if (renderer != null) ctx.RefreshStandalone(renderer);
+            }
+            foreach (var entry in ctx.MeshEntries)
+            {
+                string path = entry.fbxMesh ? AssetDatabase.GetAssetPath(entry.fbxMesh) : null;
+                if (applied == null || string.IsNullOrEmpty(path) || !applied.TryGetValue(path, out var saved)) continue;
+                // Sidecar-off imports use a one-shot payload. Restore this result's
+                // history after refresh, rather than loading an older disk sidecar.
+                entry.reverseTransferJson = null;
+                entry.repackedAtlasWidth = entry.repackedAtlasHeight = 0;
+                SidecarStore.RestoreReverseProvenance(entry, saved.FirstOrDefault(item => item.meshName == entry.fbxMesh.name));
             }
             AfterWrite?.Invoke();
         }
@@ -57,7 +67,7 @@ namespace SashaRX.UnityMeshLab
 
             StoreAndImportSidecars(fbxGroups);
             UvtLog.Info($"[Apply] Done — {fbxGroups.Count} FBX(es) updated.");
-            SwitchToPostApplyView();
+            SwitchToPostApplyView(fbxGroups);
         }
 
         // Get the raw vertex order before building sidecars.

@@ -361,24 +361,30 @@ namespace SashaRX.UnityMeshLab
         {
             var raw = entry.fbxMesh;
             if (!raw) return;
-            var data = Load(AssetDatabase.GetAssetPath(raw));
-            var saved = data?.FindRobust(raw.name, MeshFingerprint.Compute(raw));
-            if (string.IsNullOrEmpty(saved?.reverseTransferJson) || !ReverseLegacyTopologySafe(raw, saved)) return;
-            var readable = MeshAccess.Readable(raw, out bool owns);
-            try
-            {
-                if (!ReverseVertexKeys(readable, saved, out var storedIds, out var currentIds)) return;
-                var expected = new Dictionary<int, Vector2>();
-                for (int i = 0; i < storedIds.Length; ++i) expected[storedIds[i]] = saved.uv2[i];
-                var uv = new List<Vector2>(); readable.GetUVs(1, uv);
-                if (uv.Count != currentIds.Length) return;
-                for (int i = 0; i < uv.Count; ++i) if (uv[i] != expected[currentIds[i]]) return;
-                entry.reverseTransferJson = saved.reverseTransferJson;
-            }
-            finally { if (owns) UnityEngine.Object.DestroyImmediate(readable); }
+            string path = AssetDatabase.GetAssetPath(raw);
+            if (!IsFbxPath(path)) return;
+            RestoreReverseProvenance(entry, Load(path)?.Find(raw.name));
+        }
+
+        internal static void RestoreReverseProvenance(MeshEntry entry, MeshUv2Entry saved)
+        {
+            var raw = entry.fbxMesh;
+            if (!raw) return;
+            if (saved == null || saved.targetUvChannel != 1 || string.IsNullOrEmpty(saved.reverseTransferJson)) return;
+            ReverseUvAudit.ProvenanceEntry provenance;
+            try { provenance = JsonUtility.FromJson<ReverseUvAudit.ProvenanceEntry>(saved.reverseTransferJson); }
+            catch (ArgumentException) { return; }
+            if (provenance?.schema != 2 || provenance.surface?.key != raw.name || provenance.surface.faces == null
+                || saved.optimizedTriangles == null || provenance.surface.faces.Length != saved.optimizedTriangles.Length / 3
+                || provenance.atlasSize <= 0 || !ReverseTopologyMatches(raw, saved, verifyLayout: true)) return;
+            entry.reverseTransferJson = saved.reverseTransferJson;
+            entry.repackedAtlasWidth = entry.repackedAtlasHeight = (uint)provenance.atlasSize;
         }
 
         internal static bool ReverseLegacyTopologySafe(Mesh raw, MeshUv2Entry entry)
+            => ReverseTopologyMatches(raw, entry, verifyLayout: false);
+
+        static bool ReverseTopologyMatches(Mesh raw, MeshUv2Entry entry, bool verifyLayout)
         {
             if (!raw || entry == null || entry.uv2 == null || entry.uv2.Length != raw.vertexCount
                 || entry.vertPositions == null || entry.vertPositions.Length != raw.vertexCount
@@ -389,10 +395,35 @@ namespace SashaRX.UnityMeshLab
             try {
                 if (!raw.isReadable) readable = MeshAccess.ReadableCopy(raw);
                 var current = readable ? readable : raw;
-                return ReverseVertexKeys(current, entry, out var storedIds, out var currentIds)
-                    && ReverseTriangleKeys(current, entry, storedIds, currentIds);
+                if (!ReverseVertexKeys(current, entry, out var storedIds, out var currentIds)
+                    || !ReverseTriangleKeys(current, entry, storedIds, currentIds)) return false;
+                return !verifyLayout || ReverseLayoutMatches(current, entry, storedIds, currentIds);
             }
             finally { if (readable) UnityEngine.Object.DestroyImmediate(readable); }
+        }
+
+        static bool ReverseLayoutMatches(Mesh current, MeshUv2Entry entry, int[] storedIds, int[] currentIds)
+        {
+            var uv = new List<Vector2>(); current.GetUVs(1, uv);
+            if (uv.Count != current.vertexCount) return false;
+            var byKey = new Dictionary<int, Vector2>();
+            for (int i = 0; i < storedIds.Length; ++i) {
+                if (byKey.TryGetValue(storedIds[i], out var previous) && !previous.Equals(entry.uv2[i])) return false;
+                byKey[storedIds[i]] = entry.uv2[i];
+            }
+            for (int i = 0; i < currentIds.Length; ++i)
+                if (!byKey[currentIds[i]].Equals(uv[i])) return false;
+            // Provenance is indexed by face. Vertex reordering is harmless, but
+            // changed face order cannot inherit old overlap permissions or ancestry.
+            int offset = 0;
+            for (int submesh = 0; submesh < current.subMeshCount; ++submesh) {
+                var triangles = current.GetTriangles(submesh);
+                for (int i = 0; i < triangles.Length; i += 3)
+                    if (!TryTriangleKey(entry.optimizedTriangles, offset + i, storedIds, out var expected)
+                        || !TryTriangleKey(triangles, i, currentIds, out var actual) || expected != actual) return false;
+                offset += triangles.Length;
+            }
+            return true;
         }
 
         static bool ReverseVertexKeys(Mesh current, MeshUv2Entry entry, out int[] storedIds, out int[] currentIds)

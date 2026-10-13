@@ -85,6 +85,7 @@ namespace SashaRX.UnityMeshLab
                 // The next pair does not need the previous capture's large diagnostic arrays.
                 pair.result = null; pair.trace = null; pair.quality = null; pair.validation = null;
                 pair.overlapHints = null; pair.matchHints = null;
+                pair.projectionSources = null;
             }
         }
 
@@ -136,7 +137,13 @@ namespace SashaRX.UnityMeshLab
 
         static async Task<GroupedShellTransfer.TransferResult> Run(TransferCaseCapture.Pair pair, Mesh target, Mesh source, TransferMatchTrace trace)
         {
-            var result = await GroupedShellTransfer.TransferAsyncWithDiagnostics(target, source, pair.overlapHints, pair.matchHints,
+            GroupedShellTransfer.TransferResult result;
+            if (pair.preparedProjection) {
+                if (pair.projectionSources == null || pair.projectionSources.Length != target.vertexCount)
+                    throw new InvalidDataException("Prepared donor projection has no matching vertex ancestry.");
+                result = ReverseUvTransfer.DescribeForwardProjection(target, source, pair.projectionSources);
+            }
+            else result = await GroupedShellTransfer.TransferAsyncWithDiagnostics(target, source, pair.overlapHints, pair.matchHints,
                 pair.atlasWidth, pair.atlasHeight, trace, pair.BoundaryToleranceTexels);
             if (pair.clamp && result.uv2 != null) XatlasRepack.ClampUvsToUnit(result.uv2);
             return result;

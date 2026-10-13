@@ -17,6 +17,27 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(MeshNaming.HasLodSuffix(name));
         }
 
+        [TestCase("Seat_LOD0.001", 0)] [TestCase("Seat_LOD1.001", 1)]
+        public void NumericInstanceSuffixKeepsLodIdentityAndRenameRoundtrip(string name, int lod)
+        {
+            Assert.IsTrue(MeshNaming.TryParseLod(name, out var key, out var parsed));
+            Assert.AreEqual("Seat.001", key); Assert.AreEqual(lod, parsed);
+            Assert.AreEqual(lod, MeshNaming.LodIndex(name)); Assert.IsTrue(MeshNaming.HasLodSuffix(name));
+            Assert.IsTrue(MeshNaming.HasLodOrCollisionSuffix(name)); Assert.AreEqual(key, MeshNaming.GroupKey(name));
+            Assert.AreEqual(key, MeshNaming.StripLod(name));
+            var stem = MeshNaming.SplitLodSuffix(name, out var suffix);
+            Assert.AreEqual(name, stem + suffix);
+        }
+
+        [TestCase("Seat_COL.001")] [TestCase("Seat_COL_Hull3.001")]
+        [TestCase("Seat_Collider.001")] [TestCase("Seat_Collision.001")]
+        public void NumericInstanceSuffixIsRecognizedByEveryCollisionPredicate(string name)
+        {
+            Assert.IsTrue(MeshNaming.IsCollision(name)); Assert.IsTrue(MeshNaming.HasLodOrCollisionSuffix(name));
+            Assert.AreEqual("Seat.001", MeshNaming.StripCollision(name)); Assert.AreEqual("Seat.001", MeshNaming.GroupKey(name));
+            Assert.AreEqual(-1, MeshNaming.LodIndex(name));
+        }
+
         [TestCase("Wall_LOD8")]
         [TestCase("Wall_LOD100000000")]
         [TestCase("Wall_LOD999999999999999999999")]
