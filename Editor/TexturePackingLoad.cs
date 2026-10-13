@@ -25,6 +25,7 @@ namespace SashaRX.UnityMeshLab
         private int offset;
         private bool disposed;
 
+        /// <summary>Begins loading the image at the given path, using a worker-thread stream decoder for TGA/PSD/TIFF or a web request for other formats.</summary>
         public TexturePackingLoad(string path)
         {
             try
@@ -48,6 +49,7 @@ namespace SashaRX.UnityMeshLab
             catch { Dispose(); throw; }
         }
 
+        /// <summary>Leases the source file, decodes it with the matching stream decoder, and revalidates the file afterward.</summary>
         private static TexturePackingImage ReadStreamImage(string path, CancellationToken token)
         {
             using (var source = new SourceLease(path, token))
@@ -117,6 +119,7 @@ namespace SashaRX.UnityMeshLab
             public void Dispose() => Input.Dispose();
         }
 
+        /// <summary>Advances the load state machine one step and returns true, with the decoded image, once loading has finished.</summary>
         public bool TryComplete(out TexturePackingImage image)
         {
             if (disposed) throw new ObjectDisposedException(nameof(TexturePackingLoad));
@@ -174,6 +177,7 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
+        /// <summary>Copies a time- or size-bounded slice of the decoded texture's pixels into the output buffer, resuming from the last offset.</summary>
         private void CopyPixelSlice()
         {
             if (offset == pixels.Length) return;

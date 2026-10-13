@@ -8,13 +8,16 @@ using UnityEngine.TestTools;
 
 namespace SashaRX.UnityMeshLab.Tests
 {
+    /// <summary>End-to-end coverage of external PSD/TIFF files loading through <see cref="TexturePackingLoad"/> and round-tripping through TGA packing.</summary>
     public sealed class TexturePackingFormatIntegrationTests
     {
         // TIFF payloads generated independently by Pillow/libtiff 11.0.0;
         // PSD payload follows the Adobe composite layout and Python zlib encoder.
+        /// <summary>A named, base64-encoded source file fixture and its extension.</summary>
         private sealed class Fixture
         {
             internal readonly string Name, Extension, Data;
+            /// <summary>Stores the fixture's name, extension and base64-encoded file bytes.</summary>
             internal Fixture(string name, string extension, string data)
             { Name = name; Extension = extension; Data = data; }
         }
@@ -31,6 +34,7 @@ namespace SashaRX.UnityMeshLab.Tests
         };
 
         [UnityTest]
+        /// <summary>Loads each PSD/TIFF fixture via <see cref="TexturePackingLoad"/>, verifies its pixels and TGA round-trip, and confirms the source was never imported.</summary>
         public IEnumerator ExternalPsdAndTiffLoadWithoutImportAndPreserveEveryChannel()
         {
             foreach (var fixture in Fixtures)

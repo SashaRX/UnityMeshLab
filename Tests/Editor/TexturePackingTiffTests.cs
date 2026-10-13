@@ -9,8 +9,10 @@ using UnityEngine;
 
 namespace SashaRX.UnityMeshLab.Tests
 {
+    /// <summary>Unit coverage of <see cref="TexturePackingTiff"/>'s decoding across compressions, sample layouts, orientations and error cases.</summary>
     public sealed class TexturePackingTiffTests
     {
+        /// <summary>Verifies that RGBA strips decode with their alpha intact and are converted to Unity's bottom-left row order, for both byte orders.</summary>
         [TestCase(false)]
         [TestCase(true)]
         public void RgbaStripsPreserveAlphaAndConvertToBottomLeft(bool bigEndian)
@@ -25,6 +27,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(new Color32(10, 20, 30, 40), image.Pixels[3]);
         }
 
+        /// <summary>Verifies that every supported compression scheme decodes to the same pixel values.</summary>
         [TestCase(1)]
         [TestCase(5)]
         [TestCase(8)]
@@ -38,6 +41,7 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(new[] { new Color32(25, 50, 100, 255), new Color32(200, 150, 75, 255) }, image.Pixels);
         }
 
+        /// <summary>Verifies that horizontal differencing prediction operates on whole 16-bit samples and resets at the start of each row.</summary>
         [TestCase(false)]
         [TestCase(true)]
         public void HorizontalPredictionUsesSixteenBitSamplesAndResetsAtRows(bool bigEndian)
@@ -50,6 +54,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 new Color32(0, 128, 255, 255), new Color32(255, 255, 0, 255) }, image.Pixels);
         }
 
+        /// <summary>Verifies that 8-bit horizontal prediction combined with PackBits repeat packets decodes correctly.</summary>
         [Test]
         public void EightBitPredictorAndPackBitsRepeatPacketsDecode()
         {
@@ -61,6 +66,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 new Color32(50, 50, 50, 255) }, image.Pixels);
         }
 
+        /// <summary>Verifies that planar, associated-alpha 16-bit samples are un-premultiplied at their original precision before quantizing.</summary>
         [Test]
         public void PlanarAssociatedAlphaUsesOriginalSixteenBitPrecision()
         {
@@ -74,6 +80,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(new Color32(0, 0, 0, 0), image.Pixels[1]);
         }
 
+        /// <summary>Verifies that tile padding beyond the image edge is cropped without shifting visible pixels at the right/bottom edges.</summary>
         [Test]
         public void TilesCropPaddingWithoutShiftingTheRightEdge()
         {
@@ -84,6 +91,7 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(new byte[] { 40, 50, 60, 10, 20, 30 }, image.Pixels.Select(pixel => pixel.r).ToArray());
         }
 
+        /// <summary>Verifies that every TIFF orientation value is rotated/mirrored into the correct upright, bottom-left pixel layout.</summary>
         [TestCase(1, new byte[] { 4, 5, 6, 1, 2, 3 }, 3, 2)]
         [TestCase(2, new byte[] { 6, 5, 4, 3, 2, 1 }, 3, 2)]
         [TestCase(3, new byte[] { 3, 2, 1, 6, 5, 4 }, 3, 2)]
@@ -102,6 +110,7 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(expected, image.Pixels.Select(pixel => pixel.r).ToArray());
         }
 
+        /// <summary>Verifies that 32-bit float grayscale-alpha samples are clamped on overflow/NaN while preserving zero alpha.</summary>
         [TestCase(false)]
         [TestCase(true)]
         public void FloatingPointGrayscaleAlphaClampsAndPreservesTransparency(bool bigEndian)
@@ -113,6 +122,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(new Color32(255, 255, 255, 0), image.Pixels[1]);
         }
 
+        /// <summary>Verifies that WhiteIsZero (Photometric 0) grayscale inverts only the color sample, leaving alpha unaffected.</summary>
         [Test]
         public void WhiteIsZeroGrayscaleInvertsOnlyColor()
         {
@@ -121,6 +131,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(new Color32(230, 230, 230, 64), Decode(fixture).Pixels[0]);
         }
 
+        /// <summary>Verifies that an extra sample not marked as alpha (absent or unassociated-without-alpha) is ignored rather than used as alpha.</summary>
         [TestCase(-1)]
         [TestCase(0)]
         public void UnspecifiedExtraSampleDoesNotBecomeAlpha(int extra)
@@ -130,6 +141,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(new Color32(10, 20, 30, 255), Decode(fixture).Pixels[0]);
         }
 
+        /// <summary>Verifies that LZW decoding handles the "code equals next dictionary entry" case correctly.</summary>
         [Test]
         public void LzwHandlesTheNextDictionaryEntryCase()
         {
@@ -138,6 +150,7 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(new byte[] { 65, 65, 65 }, Decode(fixture).Pixels.Select(pixel => pixel.r).ToArray());
         }
 
+        /// <summary>Verifies that LZW code-width transitions and dictionary clears stay aligned across a long run of codes.</summary>
         [Test]
         public void LzwEarlyCodeWidthTransitionsAndDictionaryClearRemainAligned()
         {
@@ -147,6 +160,7 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(values, Decode(fixture).Pixels.Select(pixel => pixel.r).ToArray());
         }
 
+        /// <summary>Verifies that a real libtiff-generated LZW stream spanning every code width decodes to the expected pixels.</summary>
         [Test]
         public void IndependentLibTiffLzwFixtureCrossesAllCodeWidths()
         {
@@ -194,6 +208,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     Assert.AreEqual(expected[row * 32 + x], image.Pixels[(255 - row) * 32 + x].r);
         }
 
+        /// <summary>Verifies that a strip/tile missing its final byte is rejected as truncated, and that the caller's stream stays open.</summary>
         [TestCase(1)]
         [TestCase(5)]
         [TestCase(8)]
@@ -210,6 +225,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        /// <summary>Verifies that a Deflate stream which expands beyond its block and one with a corrupted checksum are both rejected.</summary>
         [Test]
         public void DeflateRejectsOverExpansionAndChecksumCorruption()
         {
@@ -221,6 +237,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.Throws<InvalidDataException>(() => Decode(fixture));
         }
 
+        /// <summary>Verifies that the Adler-32 checksum over a large Deflate block accumulates correctly across its NMAX-sized chunks.</summary>
         [Test]
         public void DeflateChecksumAccumulatesAcrossLargeBlocks()
         {
@@ -230,6 +247,7 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(expected, Decode(fixture).Pixels.Select(pixel => pixel.r).ToArray());
         }
 
+        /// <summary>Verifies that malformed PackBits and LZW packets are rejected instead of writing past the end of the decoded block.</summary>
         [Test]
         public void MalformedCompressionPacketsCannotWriteBeyondTheirBlock()
         {
@@ -241,6 +259,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.Throws<InvalidDataException>(() => Decode(fixture));
         }
 
+        /// <summary>Verifies that a BitsPerSample tag with mismatched values is rejected before the pixel buffer is allocated.</summary>
         [Test]
         public void InvalidTagRangeIsRejectedBeforePixelAllocation()
         {
@@ -254,6 +273,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.Throws<InvalidDataException>(() => TexturePackingTiff.Decode(stream));
         }
 
+        /// <summary>Verifies that an image exceeding the 64-megapixel limit and planar data missing a sample plane both fail before pixel allocation.</summary>
         [Test]
         public void OversizedImagesAndIncompletePlanarBlocksFailBeforeAllocatingPixels()
         {
@@ -266,6 +286,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.Throws<InvalidDataException>(() => Decode(incomplete));
         }
 
+        /// <summary>Verifies that each unsupported feature (compression, bit depth/photometric combination, or float with prediction) gives an actionable "TIFF" error.</summary>
         [TestCase(7, 8, 2, 1, false)]
         [TestCase(1, 8, 5, 1, false)]
         [TestCase(1, 32, 2, 3, true)]
@@ -279,6 +300,7 @@ namespace SashaRX.UnityMeshLab.Tests
             StringAssert.Contains("TIFF", error.Message);
         }
 
+        /// <summary>Verifies that a BigTIFF file is rejected with guidance to resave as a classic TIFF.</summary>
         [Test]
         public void BigTiffGivesResaveGuidance()
         {
@@ -289,6 +311,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        /// <summary>Verifies that cancelling mid-decode of each compressed format stops decoding and leaves the caller's stream open.</summary>
         [TestCase(1)]
         [TestCase(5)]
         [TestCase(8)]
@@ -306,6 +329,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        /// <summary>Verifies that decoding with an already-cancelled token throws immediately without reading from the stream.</summary>
         [Test]
         public void AlreadyCanceledDecodeDoesNotReadItsInput()
         {
@@ -318,11 +342,13 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        /// <summary>Builds the fixture's TIFF bytes and decodes them.</summary>
         private static TexturePackingImage Decode(Fixture fixture)
         {
             using (var input = new MemoryStream(fixture.Build())) return TexturePackingTiff.Decode(input);
         }
 
+        /// <summary>Encodes 16-bit values as raw bytes in the given byte order.</summary>
         private static byte[] Words(bool bigEndian, params ushort[] values)
         {
             using (var output = new MemoryStream())
@@ -332,6 +358,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        /// <summary>Encodes 32-bit float values as raw bytes in the given byte order.</summary>
         private static byte[] Floats(bool bigEndian, params float[] values)
         {
             using (var output = new MemoryStream())
@@ -346,6 +373,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        /// <summary>Wraps the data in a zlib stream (header, Deflate payload and Adler-32 checksum) as TIFF Deflate/Adobe Deflate expects.</summary>
         private static byte[] Zlib(byte[] data)
         {
             using (var output = new MemoryStream())
@@ -360,6 +388,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        /// <summary>Encodes each byte as its own literal LZW code (clear, one code per byte, periodic clears, end-of-information).</summary>
         private static byte[] LiteralLzw(byte[] data)
         {
             var codes = new List<int> { 256 };
@@ -384,6 +413,7 @@ namespace SashaRX.UnityMeshLab.Tests
             return PackCodes(codes, widths);
         }
 
+        /// <summary>Packs a sequence of variable-width MSB-first codes into bytes, as TIFF LZW expects.</summary>
         private static byte[] PackCodes(IList<int> codes, IList<int> widths)
         {
             using (var output = new MemoryStream())
@@ -405,6 +435,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        /// <summary>Encodes data as literal (non-repeat) PackBits packets of up to 128 bytes each.</summary>
         private static byte[] LiteralPackBits(byte[] data)
         {
             using (var output = new MemoryStream())
@@ -419,11 +450,13 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        /// <summary>Writes an integer's low bytes to the stream in the given byte order.</summary>
         private static void WriteInteger(Stream output, uint value, int bytes, bool bigEndian)
         {
             for (int i = 0; i < bytes; i++) output.WriteByte((byte)(value >> ((bigEndian ? bytes - 1 - i : i) * 8)));
         }
 
+        /// <summary>Builds a classic TIFF file byte-for-byte from configurable tags and raw block data, for exercising the decoder.</summary>
         private sealed class Fixture
         {
             private readonly int width, height, samples;
@@ -433,11 +466,14 @@ namespace SashaRX.UnityMeshLab.Tests
             internal int Bits = 8, Photo = 2, Compression = 1, Predictor = 1, Orientation = 1, Alpha = -1;
             internal int Rows, TileWidth, TileHeight;
             internal int FirstBlockOffset { get; private set; }
+            /// <summary>Stores the image dimensions and sample count for a fixture with one row per strip by default.</summary>
             internal Fixture(int width, int height, int samples)
             { this.width = width; this.height = height; this.samples = samples; Rows = height; }
 
+            /// <summary>Returns the byte offset of a tag's 12-byte directory entry, once <see cref="Build"/> has run.</summary>
             internal int TagEntryOffset(int id) => 10 + tags.FindIndex(tag => tag.Id == id) * 12;
 
+            /// <summary>Encodes the configured blocks and assembles a complete classic TIFF byte-order header, directory and tag/block data.</summary>
             internal byte[] Build()
             {
                 byte[][] encoded = Blocks.Select(EncodeBlock).ToArray();
@@ -488,9 +524,11 @@ namespace SashaRX.UnityMeshLab.Tests
                 }
             }
 
+            /// <summary>Writes a tag's values in its native type width and the fixture's byte order.</summary>
             private void WriteTag(Stream output, Tag tag)
             { foreach (uint value in tag.Values) WriteInteger(output, value, tag.Type == 3 ? 2 : 4, BigEndian); }
 
+            /// <summary>Compresses one block's data according to the fixture's configured compression, unless the caller already pre-encoded it.</summary>
             private byte[] EncodeBlock(byte[] data)
             {
                 if (BlocksEncoded) return data;
@@ -505,27 +543,33 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        /// <summary>A single TIFF tag's ID, type and values, plus its out-of-line data offset once laid out.</summary>
         private sealed class Tag
         {
             internal readonly int Id, Type;
             internal readonly uint[] Values;
             internal int Offset;
             internal int Bytes => Values.Length * (Type == 3 ? 2 : 4);
+            /// <summary>Stores the tag's ID, type and values.</summary>
             internal Tag(int id, int type, params uint[] values) { Id = id; Type = type; Values = values; }
         }
 
+        /// <summary>A MemoryStream that cancels its associated token once reads pass a given position, to test mid-decode cancellation.</summary>
         private sealed class CancelingStream : MemoryStream
         {
             private readonly int cancelAt;
             private readonly CancellationTokenSource cancellation;
+            /// <summary>Wraps the data, cancelling the token once the stream position passes <paramref name="cancelAt"/>.</summary>
             internal CancelingStream(byte[] data, int cancelAt, CancellationTokenSource cancellation) : base(data)
             { this.cancelAt = cancelAt; this.cancellation = cancellation; }
+            /// <summary>Reads as usual, cancelling the token once the read position passes the configured threshold.</summary>
             public override int Read(byte[] buffer, int offset, int count)
             {
                 int result = base.Read(buffer, offset, count);
                 if (Position > cancelAt) cancellation.Cancel();
                 return result;
             }
+            /// <summary>Reads a byte as usual, cancelling the token once the read position passes the configured threshold.</summary>
             public override int ReadByte()
             {
                 int result = base.ReadByte();

@@ -19,6 +19,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [TestCase(".PSD")]
         [TestCase(".tif")]
         [TestCase(".tiff")]
+        /// <summary>Verifies that dropping a path onto a slot binds it and queues background loading without the drag handler touching the filesystem.</summary>
         public void DropAssignsImmediatelyWithoutOpeningTheSource(string extension)
         {
             // A missing source must still bind immediately; only the worker checks readability.
@@ -493,6 +494,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
+        /// <summary>Verifies that loading a large PNG copies its pixels in several bounded slices across frames while preserving every channel byte.</summary>
         public IEnumerator LargePngCopiesInBoundedBulkSlicesAndKeepsChannelBytes()
         {
             const int size = 2048;
@@ -788,11 +790,13 @@ namespace SashaRX.UnityMeshLab.Tests
 
 namespace SashaRX.UnityMeshLab.Tests
 {
+    /// <summary>Minimal EditorWindow used to deliver real IMGUI drag-and-drop events to a handler under test.</summary>
     internal sealed class TexturePackingDropTestWindow : EditorWindow
     {
         internal Action HandleEvent;
         internal Exception Failure;
 
+        /// <summary>Invokes the test's event handler and captures any exception it throws so the test can assert on it.</summary>
         private void OnGUI()
         {
             try { HandleEvent?.Invoke(); }

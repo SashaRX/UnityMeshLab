@@ -24,6 +24,7 @@ namespace SashaRX.UnityMeshLab
             Pixels = pixels;
         }
 
+        /// <summary>Returns whether the path's extension is a format this class can load (PNG, JPG/JPEG, TGA, PSD or TIFF).</summary>
         public static bool Supports(string path)
         {
             string extension = Path.GetExtension(path).ToLowerInvariant();
@@ -31,12 +32,14 @@ namespace SashaRX.UnityMeshLab
                 extension == ".psd" || extension == ".tif" || extension == ".tiff";
         }
 
+        /// <summary>Returns whether the path's extension is decoded via the streaming decoders (TGA, PSD or TIFF) instead of Unity's image importer.</summary>
         internal static bool UsesStreamDecoder(string path)
         {
             string extension = Path.GetExtension(path).ToLowerInvariant();
             return extension == ".tga" || extension == ".psd" || extension == ".tif" || extension == ".tiff";
         }
 
+        /// <summary>Dispatches to the PSD, TIFF or TGA stream decoder based on the path's extension.</summary>
         internal static TexturePackingImage DecodeStream(string path, Stream stream, CancellationToken cancellation)
         {
             string extension = Path.GetExtension(path).ToLowerInvariant();
@@ -45,6 +48,7 @@ namespace SashaRX.UnityMeshLab
             return DecodeTga(stream, cancellation);
         }
 
+        /// <summary>Loads an image from disk, using the streaming decoders for TGA/PSD/TIFF and Unity's image importer otherwise.</summary>
         public static TexturePackingImage Load(string path)
         {
             if (!Supports(path)) throw new NotSupportedException("Supported inputs: " + SupportedInputs + ".");

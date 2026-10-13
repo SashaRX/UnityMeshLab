@@ -11,6 +11,7 @@ namespace SashaRX.UnityMeshLab
     {
         private const long MaximumPixels = 64L * 1024 * 1024;
 
+        /// <summary>Parses the PSD header, skips layer/resource data and decodes the saved composite into a <see cref="TexturePackingImage"/>.</summary>
         internal static TexturePackingImage Decode(Stream stream, CancellationToken cancellation = default)
         {
             if (stream == null) throw new ArgumentNullException(nameof(stream));
@@ -63,6 +64,7 @@ namespace SashaRX.UnityMeshLab
                 depth, compression, lengths, rowBytes, mergedTransparency, cancellation);
         }
 
+        /// <summary>Decodes every channel's scanlines into pixels, re-reading the data a second time to resolve native alpha when needed.</summary>
         private static TexturePackingImage DecodeRows(Stream stream, int width, int height,
             int channels, int colorChannels, int depth, int compression, ushort[] lengths,
             int rowBytes, bool mergedTransparency, CancellationToken cancellation, float[] nativeAlpha = null)
@@ -154,6 +156,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        /// <summary>Writes one decoded channel scanline into the pixel buffer, unmatting against native alpha or Photoshop's white matte as needed.</summary>
         private static void StoreRow(Color32[] pixels, byte[] row, int width, int height,
             int y, int channel, int colorChannels, int depth, bool mergedTransparency, float[] nativeAlpha)
         {
@@ -190,6 +193,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        /// <summary>Reads one sample at the given depth and quantizes it to an 8-bit channel value.</summary>
         private static byte Sample(byte[] row, int x, int depth)
         {
             if (depth == 8) return row[x];
@@ -201,6 +205,7 @@ namespace SashaRX.UnityMeshLab
             return Quantize(SampleUnit(row, x, depth));
         }
 
+        /// <summary>Reads one sample at the given depth as a normalized float in the unit range (unclamped for 32-bit float data).</summary>
         private static float SampleUnit(byte[] row, int x, int depth)
         {
             if (depth == 8) return row[x] / 255f;
@@ -214,6 +219,7 @@ namespace SashaRX.UnityMeshLab
             return BitConverter.Int32BitsToSingle(unchecked((int)bits));
         }
 
+        /// <summary>Clamps a unit-range float and rounds it to an 8-bit channel value.</summary>
         private static byte Quantize(float value)
         {
             if (float.IsNaN(value) || value <= 0) return 0;
@@ -221,12 +227,14 @@ namespace SashaRX.UnityMeshLab
             return (byte)(value * 255 + 0.5f);
         }
 
+        /// <summary>Clamps a possibly non-finite float sample to the 0..1 unit range.</summary>
         private static float ClampUnit(float value)
         {
             if (float.IsNaN(value) || value <= 0) return 0;
             return value >= 1 ? 1 : value;
         }
 
+        /// <summary>Un-composites a color channel value that was blended over white at the given alpha, restoring its straight-alpha value.</summary>
         private static byte RemoveWhiteMatte(byte color, byte alpha)
         {
             if (alpha == 0) return 0;
@@ -234,6 +242,7 @@ namespace SashaRX.UnityMeshLab
             return (byte)Math.Min(255, Math.Max(0, value));
         }
 
+        /// <summary>Reverses PSD ZIP-with-prediction encoding: horizontal delta decoding, and byte-plane unshuffling for 32-bit float rows.</summary>
         private static void UndoPrediction(byte[] row, byte[] unshuffled, int width, int depth)
         {
             if (depth == 16)
@@ -254,6 +263,7 @@ namespace SashaRX.UnityMeshLab
                 for (int b = 0; b < 4; b++) unshuffled[x * 4 + b] = row[b * width + x];
         }
 
+        /// <summary>Decodes a PSD RLE (PackBits) scanline of the given packed length into the row buffer.</summary>
         private static void ReadPackBits(Stream stream, byte[] row, int packedLength, CancellationToken cancellation)
         {
             int remaining = packedLength, output = 0;
@@ -281,6 +291,7 @@ namespace SashaRX.UnityMeshLab
             if (output != row.Length) throw Invalid("PSD RLE row does not fill its declared width.");
         }
 
+        /// <summary>Accumulates the Adler-32 checksum of a scanline into the running sums.</summary>
         private static void UpdateChecksum(byte[] bytes, ref uint a, ref uint b)
         {
             // Keep sums bounded without performing modulo for every sample.
@@ -293,6 +304,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        /// <summary>Fills the buffer completely from the stream, throwing if the stream ends early.</summary>
         private static void ReadExactly(Stream stream, byte[] bytes, CancellationToken cancellation)
         {
             int offset = 0;
@@ -305,6 +317,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        /// <summary>Reads a single byte from the stream, throwing if the stream has ended.</summary>
         private static int ReadByte(Stream stream)
         {
             int value = stream.ReadByte();
@@ -312,22 +325,28 @@ namespace SashaRX.UnityMeshLab
             return value;
         }
 
+        /// <summary>Reads a big-endian 16-bit value from the stream.</summary>
         private static int Read16(Stream stream) => ReadByte(stream) << 8 | ReadByte(stream);
+        /// <summary>Reads a big-endian 32-bit value from the stream.</summary>
         private static uint Read32(Stream stream) => (uint)(Read16(stream) << 16 | Read16(stream));
 
+        /// <summary>Validates that the stream has at least the given number of bytes remaining.</summary>
         private static void RequireRemaining(Stream stream, long count)
         {
             if (count < 0 || count > stream.Length - stream.Position) throw Invalid("PSD section exceeds the file length.");
         }
 
+        /// <summary>Validates and advances the stream past a section of the given byte count.</summary>
         private static void Skip(Stream stream, long count)
         {
             RequireRemaining(stream, count);
             stream.Seek(count, SeekOrigin.Current);
         }
 
+        /// <summary>Creates an <see cref="InvalidDataException"/> carrying the given message.</summary>
         private static InvalidDataException Invalid(string message) => new InvalidDataException(message);
 
+        /// <summary>Skips the layer and mask info section, returning whether it indicates merged transparency.</summary>
         private static bool ReadLayerTransparency(Stream stream, CancellationToken cancellation)
         {
             uint length = Read32(stream);
@@ -383,6 +402,7 @@ namespace SashaRX.UnityMeshLab
             return transparency;
         }
 
+        /// <summary>Scans the image resources section for the Version Info resource, rejecting PSDs saved without Maximize Compatibility.</summary>
         private static void ReadResources(Stream stream, CancellationToken cancellation)
         {
             uint length = Read32(stream);
@@ -421,6 +441,7 @@ namespace SashaRX.UnityMeshLab
             private readonly CancellationToken cancellation;
             private long remaining;
 
+            /// <summary>Wraps the input stream, exposing only the next <paramref name="length"/> bytes.</summary>
             internal BoundedInput(Stream input, long length, CancellationToken cancellation)
             { this.input = input; remaining = length; this.cancellation = cancellation; }
 
@@ -429,6 +450,7 @@ namespace SashaRX.UnityMeshLab
             public override bool CanWrite => false;
             public override long Length => throw new NotSupportedException();
             public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+            /// <summary>Reads up to the remaining bounded byte count from the underlying stream.</summary>
             public override int Read(byte[] buffer, int offset, int count)
             {
                 cancellation.ThrowIfCancellationRequested();
@@ -437,8 +459,11 @@ namespace SashaRX.UnityMeshLab
                 return read;
             }
             public override void Flush() { /* Read-only view has nothing to flush. */ }
+            /// <summary>Not supported; this is a forward-only read view.</summary>
             public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            /// <summary>Not supported; this is a forward-only read view.</summary>
             public override void SetLength(long value) => throw new NotSupportedException();
+            /// <summary>Not supported; this is a forward-only read view.</summary>
             public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
         }
     }
