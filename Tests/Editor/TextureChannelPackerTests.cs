@@ -12,6 +12,63 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class TextureChannelPackerTests
     {
+        [TestCase(".png")]
+        [TestCase(".jpg")]
+        [TestCase(".tga")]
+        [TestCase(".psd")]
+        [TestCase(".PSD")]
+        [TestCase(".tif")]
+        [TestCase(".tiff")]
+        public void DropAssignsImmediatelyWithoutOpeningTheSource(string extension)
+        {
+            // A missing source must still bind immediately; only the worker checks readability.
+            string path = Path.Combine(Path.GetTempPath(), "MeshLabDeferred-" + Guid.NewGuid().ToString("N") + extension);
+            var panel = ScriptableObject.CreateInstance<TextureChannelPackerPanel>();
+            var host = ScriptableObject.CreateInstance<TexturePackingDropTestWindow>();
+            string[] oldPaths = DragAndDrop.paths;
+            var oldVisualMode = DragAndDrop.visualMode;
+            try
+            {
+                int repaints = 0;
+                panel.RequestRepaint = () => repaints++;
+                object output = GetPrivate(panel, "albedo");
+                object slot = output.GetType().GetField("rgb").GetValue(output);
+                DragAndDrop.paths = new[] { path };
+                var rect = new Rect(0, 0, 48, 48);
+                int events = 0;
+                host.HandleEvent = () =>
+                {
+                    if (Event.current.type != EventType.DragUpdated && Event.current.type != EventType.DragPerform) return;
+                    events++;
+                    InvokePrivate(panel, "HandleDrop", rect, output, slot);
+                };
+                host.ShowUtility();
+                host.SendEvent(new Event { type = EventType.DragUpdated, mousePosition = new Vector2(24, 24) });
+                Assert.IsNull(host.Failure);
+                Assert.AreEqual(1, events);
+                Assert.AreEqual(DragAndDropVisualMode.Copy, DragAndDrop.visualMode);
+                host.SendEvent(new Event { type = EventType.DragPerform, mousePosition = new Vector2(24, 24) });
+                Assert.IsNull(host.Failure);
+                Assert.AreEqual(2, events);
+                Assert.AreEqual(path, slot.GetType().GetField("path").GetValue(slot));
+                Assert.IsTrue((bool)output.GetType().GetField("enabled").GetValue(output));
+                Assert.IsTrue(((System.Collections.Generic.HashSet<string>)GetPrivate(panel, "pendingSources")).Contains(path));
+                Assert.AreEqual(0, ((IDictionary)GetPrivate(panel, "activeLoads")).Count);
+                Assert.AreEqual(0, ((IDictionary)GetPrivate(panel, "loaded")).Count);
+                Assert.Greater(repaints, 0, "The filename/loading state must be visible immediately.");
+                Assert.IsFalse(File.Exists(path));
+                Assert.IsFalse(File.Exists(path + ".meta"));
+            }
+            finally
+            {
+                host.HandleEvent = null;
+                host.Close();
+                DragAndDrop.paths = oldPaths;
+                DragAndDrop.visualMode = oldVisualMode;
+                UnityEngine.Object.DestroyImmediate(panel);
+            }
+        }
+
         [Test]
         public void RleRoundTripPreservesChannelsAlphaAndRows()
         {
@@ -436,6 +493,53 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
+        public IEnumerator LargePngCopiesInBoundedBulkSlicesAndKeepsChannelBytes()
+        {
+            const int size = 2048;
+            string path = Path.Combine(Path.GetTempPath(), "MeshLabBulk-" + Guid.NewGuid().ToString("N") + ".png");
+            var source = new Texture2D(size, size, TextureFormat.RGBA32, false, true);
+            var expected = new Color32[size * size];
+            for (int i = 0; i < expected.Length; i++) expected[i] = new Color32((byte)i, (byte)(i >> 8), 117, (byte)(i % 251));
+            try
+            {
+                source.SetPixels32(expected);
+                source.Apply();
+                File.WriteAllBytes(path, ImageConversion.EncodeToPNG(source));
+                using (var load = new TexturePackingLoad(path))
+                {
+                    double started = EditorApplication.timeSinceStartup, deadline = started + 30;
+                    double maximumTick = 0;
+                    int slices = 0;
+                    TexturePackingImage image;
+                    while (true)
+                    {
+                        int before = (int)GetPrivate(load, "offset");
+                        var timer = System.Diagnostics.Stopwatch.StartNew();
+                        bool finished = load.TryComplete(out image);
+                        maximumTick = Math.Max(maximumTick, timer.Elapsed.TotalMilliseconds);
+                        int copied = (int)GetPrivate(load, "offset") - before;
+                        if (copied > 0)
+                        {
+                            slices++;
+                            var native = (Texture2D)GetPrivate(load, "texture");
+                            if (native.format == TextureFormat.RGBA32) Assert.LessOrEqual(copied, 1048576);
+                        }
+                        if (finished) break;
+                        Assert.Less(EditorApplication.timeSinceStartup, deadline);
+                        yield return null;
+                    }
+                    Assert.Greater(slices, 1, "A large source must yield between copy slices.");
+                    CollectionAssert.AreEqual(expected, image.Pixels);
+                    TestContext.WriteLine("2048x2048 PNG: " + slices + " pixel-copy updates, max poll " +
+                        maximumTick.ToString("F2", System.Globalization.CultureInfo.InvariantCulture) + " ms, total " +
+                        (EditorApplication.timeSinceStartup - started).ToString("F2", System.Globalization.CultureInfo.InvariantCulture) + " s.");
+                }
+                Assert.IsFalse(File.Exists(path + ".meta"));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(source); File.Delete(path); }
+        }
+
+        [UnityTest]
         public IEnumerator AsyncPngLoadPreservesBytesAndReleasesItsTexture()
         {
             string path = Path.Combine(Path.GetTempPath(), "MeshLabAsync-" + Guid.NewGuid().ToString("N") + ".png");
@@ -678,6 +782,21 @@ namespace SashaRX.UnityMeshLab.Tests
         private static void InvokePrivate(object instance, string name, params object[] arguments)
         {
             instance.GetType().GetMethod(name, BindingFlags.NonPublic | BindingFlags.Instance).Invoke(instance, arguments);
+        }
+    }
+}
+
+namespace SashaRX.UnityMeshLab.Tests
+{
+    internal sealed class TexturePackingDropTestWindow : EditorWindow
+    {
+        internal Action HandleEvent;
+        internal Exception Failure;
+
+        private void OnGUI()
+        {
+            try { HandleEvent?.Invoke(); }
+            catch (Exception exception) { Failure = exception; }
         }
     }
 }

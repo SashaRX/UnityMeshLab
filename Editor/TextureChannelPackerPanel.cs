@@ -152,7 +152,7 @@ namespace SashaRX.UnityMeshLab
         {
             scroll = EditorGUILayout.BeginScrollView(scroll);
             EditorGUILayout.LabelField("Texture Channel Packer", EditorStyles.boldLabel);
-            EditorGUILayout.HelpBox("Drop PNG, JPG or TGA files from Explorer / Finder or the Project window. " +
+            EditorGUILayout.HelpBox("Drop PNG, JPG, TGA, PSD or TIFF files from Explorer / Finder or the Project window. " +
                 "Sources stay on disk and are never copied into the project. Full-image bilinear resize; no cropping.", MessageType.Info);
             using (new EditorGUI.DisabledScope(saveTask != null))
             {
@@ -287,7 +287,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (GUILayout.Button("…", GUILayout.Width(28)))
                 {
-                    string path = EditorUtility.OpenFilePanel("Source texture (PNG / JPG / TGA)", "", "");
+                    string path = EditorUtility.OpenFilePanel("Source texture (PNG / JPG / TGA / PSD / TIFF)", "", "");
                     if (!string.IsNullOrEmpty(path)) Assign(output, slot, path);
                 }
                 if (GUILayout.Button("×", GUILayout.Width(28)))
@@ -306,7 +306,9 @@ namespace SashaRX.UnityMeshLab
             if (!rect.Contains(evt.mousePosition) ||
                 (evt.type != EventType.DragUpdated && evt.type != EventType.DragPerform)) return;
             string path = DragAndDrop.paths.Length == 1 ? DragAndDrop.paths[0] : "";
-            bool valid = TexturePackingImage.Supports(path) && File.Exists(path);
+            // Hover/drop must not probe the filesystem (network paths can block the editor).
+            // Existence, permissions and decoding are checked by the background loader.
+            bool valid = TexturePackingImage.Supports(path);
             DragAndDrop.visualMode = valid ? DragAndDropVisualMode.Copy : DragAndDropVisualMode.Rejected;
             if (valid && evt.type == EventType.DragPerform)
             {
@@ -326,6 +328,7 @@ namespace SashaRX.UnityMeshLab
                 output.enabled = true;
                 ClearPreviews();
                 PruneSources();
+                Repaint();
             });
         }
 

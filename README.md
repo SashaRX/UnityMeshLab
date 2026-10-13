@@ -34,7 +34,7 @@ Mesh tools share one canvas with a **UV | 3D** switch at its bottom centre (also
 ## Texture Channel Packer
 
 Open **Tools → Mesh Lab → Open Mesh Lab**, then select the **Texture Packer** tab to
-build Albedo, MRCA and Normal textures from PNG/JPG/TGA files anywhere on disk.
+build Albedo, MRCA and Normal textures from PNG/JPG/TGA/PSD/TIFF files anywhere on disk.
 Sources are read without copying or importing them into the project. Choose whole
 RGB or individual source channels (including alpha), resize to shared X/Y dimensions
 with a default 1:1 lock, and save 32-bit TGA RLE. Naming supports an optional `T_`
