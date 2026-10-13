@@ -5,6 +5,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+- Foliage Scatter defaults to an exact primitive count distributed by surface area. Low counts report incomplete island coverage instead of failing; the spacing mode remains available. Saved sample budgets and editor input stay within their valid ranges.
 - Tool tabs have subtle individual colours, with a stronger tint and matching underline for the active tool in both editor themes.
 - All mesh tools save through the shared footer. UV1 Hierarchy and vertex-channel baking export their computed results without Apply; Prefab Builder validates the shared full save; Collision includes fresh results grouped by source FBX; Remesh saves its baked model, maps, materials and prefab, including atomic source overwrite. Tool-local duplicate save buttons are removed and asset writes wait for calculations to finish.
 - Fix PR review regressions in scale-independent UV quality, UInt16 submesh base vertices, translucent material ordering, reverse sidecar geometry validation, cancellable seam audits and capture/replay boundary tolerance, active Mesh LOD raw ranges and raw MeshData importer fallback.

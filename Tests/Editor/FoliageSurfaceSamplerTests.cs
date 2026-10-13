@@ -8,6 +8,39 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class FoliageSurfaceSamplerTests
     {
+        [TestCase(1)] [TestCase(2)] [TestCase(3)] [TestCase(17)] [TestCase(50000)]
+        public void CountModeProducesExactDeterministicSurfaceSamplesEvenBelowIslandCount(int count)
+        {
+            var (positions, indices) = DenseLeafGeometry();
+            var settings = Settings(); settings.sampleByCount = true; settings.maximumPrimitiveCount = count;
+            settings.minimumSamplesPerIsland = 100; settings.sampleSpacing = float.NaN;
+            settings.dedupSpacingFraction = float.NaN; settings.includeSourceVertices = true;
+            var result = FoliageSurfaceSampler.Sample(positions, indices, settings, CancellationToken.None);
+            Assert.AreEqual(count, result.samples.Length);
+            Assert.AreEqual(Math.Min(count, 3), result.coveredIslands);
+            Assert.AreEqual(Math.Min(count, 3), result.sampleIslands.Distinct().Count());
+            Assert.That(result.spacing, Is.EqualTo(Math.Sqrt(result.area / count)).Within(1e-6));
+            var replay = FoliageSurfaceSampler.Sample(positions, indices, settings, CancellationToken.None);
+            CollectionAssert.AreEqual(result.samples, replay.samples);
+            var surface = new TriangleBvh(positions, indices);
+            foreach (var point in result.samples) Assert.Less(surface.FindNearest(point).distSq, 1e-10);
+            if (count > 3) Assert.Greater(result.sampleIslands.Count(g => g == 2), count - 4);
+        }
+
+        [TestCase(0, 1)] [TestCase(75000, 50000)]
+        public void RestoredCountPreferencesClampOnlyBudgetsAndPreserveOtherSettings(int savedCount, int expected)
+        {
+            var settings = Settings(); settings.maximumPrimitiveCount = savedCount;
+            settings.minimumSamplesPerIsland = 0; settings.radiusMultiplier = 2;
+            string json = JsonUtility.ToJson(settings).Replace("\"sampleByCount\":false,", "");
+            var restored = FoliageNormalsTool.RestoreSettings(json);
+            Assert.IsTrue(restored.sampleByCount);
+            Assert.AreEqual(expected, restored.maximumPrimitiveCount);
+            Assert.AreEqual(1, restored.minimumSamplesPerIsland);
+            Assert.AreEqual(2, restored.radiusMultiplier);
+            Assert.IsTrue(restored.Snapshot().sampleByCount);
+        }
+
         internal static FoliageNormalsSettings Settings() => new FoliageNormalsSettings { relativeSpacing = false, sampleSpacing = .1f,
             automaticProxyTriangleBudget = false, sampleRadiusVariation = 0,
             includeSourceVertices = false, includeTriangleCentroids = false, gpuProjection = false, recalculateTangents = false };

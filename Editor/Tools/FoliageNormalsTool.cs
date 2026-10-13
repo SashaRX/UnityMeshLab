@@ -22,7 +22,7 @@ namespace SashaRX.UnityMeshLab
             private get; set;
         }
         internal readonly FoliageNormalsPipeline pipeline = new FoliageNormalsPipeline();
-        internal FoliageNormalsSettings settings = new FoliageNormalsSettings();
+        internal FoliageNormalsSettings settings = new FoliageNormalsSettings { sampleByCount = true, maximumPrimitiveCount = 2000 };
         internal GameObject root;
         internal Preview preview = Preview.SelectionMask;
         internal bool afterNormals = true, showNormalDirections;
@@ -114,6 +114,8 @@ namespace SashaRX.UnityMeshLab
                 restored.sampleRadiusVariation = 0; // retain uniform radii in existing preferences
             if (restored.automaticProxyTriangleBudget)
                 restored.maximumProxyTriangles = Mathf.Clamp(restored.maximumProxyTriangles, 4, FoliageNormalsSettings.HardProxyTriangleCap);
+            if (json.IndexOf("\"sampleByCount\"", StringComparison.Ordinal) < 0) restored.sampleByCount = true;
+            restored.ClampSampleBudgets();
             restored.Validate();
             return restored;
         }
@@ -487,17 +489,29 @@ namespace SashaRX.UnityMeshLab
         {
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("Scatter", EditorStyles.boldLabel);
-            settings.relativeSpacing = EditorGUILayout.Toggle("Relative to bounds", settings.relativeSpacing);
-            settings.sampleSpacing = EditorGUILayout.FloatField(settings.relativeSpacing ? "Spacing / diagonal" : "Spacing (capture units)", settings.sampleSpacing);
+            settings.sampleByCount = EditorGUILayout.Toggle("By primitive count", settings.sampleByCount);
+            settings.maximumPrimitiveCount = Mathf.Clamp(EditorGUILayout.DelayedIntField(
+                settings.sampleByCount ? "Primitive count" : "Maximum primitives", settings.maximumPrimitiveCount), 1, FoliageNormalsSettings.HardPrimitiveCap);
+            if (!settings.sampleByCount)
+            {
+                settings.relativeSpacing = EditorGUILayout.Toggle("Relative to bounds", settings.relativeSpacing);
+                settings.sampleSpacing = EditorGUILayout.FloatField(settings.relativeSpacing ? "Spacing / diagonal" : "Spacing (capture units)", settings.sampleSpacing);
+                settings.minimumSamplesPerIsland = EditorGUILayout.IntSlider("Minimum / island", settings.minimumSamplesPerIsland, 1, 100);
+                settings.includeSourceVertices = EditorGUILayout.Toggle("Include vertices", settings.includeSourceVertices);
+                settings.includeTriangleCentroids = EditorGUILayout.Toggle("Include centroids", settings.includeTriangleCentroids);
+                settings.dedupSpacingFraction = EditorGUILayout.Slider("Dedup / spacing", settings.dedupSpacingFraction, .001f, 1);
+            }
+            else EditorGUILayout.LabelField("Exact count, distributed by surface area (1–50,000). Radius follows the resulting density.", EditorStyles.wordWrappedMiniLabel);
             settings.radiusMultiplier = EditorGUILayout.Slider("Sphere radius / spacing", settings.radiusMultiplier, .1f, 10);
             settings.sampleRadiusVariation = EditorGUILayout.Slider(new GUIContent("Radius variation", "Random radius spread around the base size. Zero keeps uniform spheres; Seed repeats the pattern."), settings.sampleRadiusVariation, 0, .95f);
-            settings.minimumSamplesPerIsland = EditorGUILayout.IntField("Minimum / island", settings.minimumSamplesPerIsland);
-            settings.includeSourceVertices = EditorGUILayout.Toggle("Include vertices", settings.includeSourceVertices);
-            settings.includeTriangleCentroids = EditorGUILayout.Toggle("Include centroids", settings.includeTriangleCentroids);
             settings.deterministicSeed = EditorGUILayout.IntField("Seed", settings.deterministicSeed);
-            settings.maximumPrimitiveCount = EditorGUILayout.IntField("Primitive budget", settings.maximumPrimitiveCount);
-            settings.dedupSpacingFraction = EditorGUILayout.Slider("Dedup / spacing", settings.dedupSpacingFraction, .001f, 1);
             StageButton("Scatter samples", FoliageNormalsPipeline.Stage.Scatter);
+            if (pipeline.Samples != null)
+            {
+                int covered = pipeline.Samples.coveredIslands;
+                EditorGUILayout.HelpBox($"Built {pipeline.Samples.samples.Length:N0} primitives · islands covered {covered:N0}/{pipeline.Samples.islands:N0}.",
+                    covered < pipeline.Samples.islands ? MessageType.Warning : MessageType.Info);
+            }
         }
 
         void DrawEnvelopeSettings()

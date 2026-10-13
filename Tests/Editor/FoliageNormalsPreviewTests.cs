@@ -812,6 +812,28 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
+        public IEnumerator CountModeRebuildsTheActualScatterPreviewAtTheRequestedCount()
+        {
+            using var leaf = new FoliageNormalTransferTests.Fixture(new[] { Vector3.zero, Vector3.right, Vector3.up });
+            using var pipeline = new FoliageNormalsPipeline();
+            var settings = new FoliageNormalsSettings { sampleByCount = true, maximumPrimitiveCount = 17,
+                sampleSpacing = float.NaN, gpuProjection = false };
+            var task = pipeline.Run(leaf.root, settings, FoliageNormalsPipeline.Stage.Scatter);
+            yield return FoliageNormalsToolTests.Await(task);
+            Assert.IsTrue(task.Result, pipeline.Status);
+            Assert.AreEqual(17, pipeline.Primitives.Length);
+            var oldPreview = pipeline.ScatterMesh;
+            Assert.IsTrue(oldPreview);
+            settings.maximumPrimitiveCount = 3;
+            task = pipeline.Run(leaf.root, settings, FoliageNormalsPipeline.Stage.Scatter);
+            yield return FoliageNormalsToolTests.Await(task);
+            Assert.IsTrue(task.Result, pipeline.Status);
+            Assert.AreEqual(3, pipeline.Primitives.Length);
+            Assert.IsFalse(oldPreview, "Changing the count must release the old sphere preview.");
+            Assert.IsTrue(pipeline.ScatterMesh);
+        }
+
+        [UnityTest]
         public IEnumerator ScatterImmediatelyShowsTranslucentSpheresAndReleasesStaleGeometry()
         {
             Assert.AreNotEqual(GraphicsDeviceType.Null, SystemInfo.graphicsDeviceType);

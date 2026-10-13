@@ -13,7 +13,7 @@ namespace SashaRX.UnityMeshLab
             internal Vector3[] samples;
             internal int[] sampleIslands;
             internal int faces, islands, generated, deduplicated, skippedDegenerate;
-            internal int retainedForIslandMinimum;
+            internal int retainedForIslandMinimum, coveredIslands;
             internal double area;
             internal float spacing, minNeighbour, meanNeighbour, maxNeighbour;
         }
@@ -28,16 +28,18 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < count; i++) { parent[i] = i; }
             var areas = new double[t.Length / 3];
             var bounds = CaptureAreas(p, t, slots, parent, areas, result, token);
-            result.spacing = s.relativeSpacing ? s.sampleSpacing * bounds.size.magnitude : s.sampleSpacing;
+            result.spacing = s.sampleByCount ? 1 : s.relativeSpacing ? s.sampleSpacing * bounds.size.magnitude : s.sampleSpacing;
             if (!(result.spacing > 0) || !FoliageTargetSnapshot.Finite(result.spacing))
             {
                 throw new InvalidOperationException("Invalid capture spacing.");
             }
             var groups = GroupFaces(t, slots, parent, areas);
             result.islands = groups.Count;
+            if (s.sampleByCount)
+                return SampleCount(p, t, areas, groups, result, s, token);
             if ((long)groups.Count * s.minimumSamplesPerIsland > s.maximumPrimitiveCount)
             {
-                throw new InvalidOperationException("Primitive budget cannot cover every island's minimum samples. Raise budget or reduce the selection.");
+                throw new InvalidOperationException($"Primitive budget cannot cover every island's minimum samples: {groups.Count:N0} islands × {s.minimumSamplesPerIsland} require {(long)groups.Count * s.minimumSamplesPerIsland:N0}; budget is {s.maximumPrimitiveCount:N0}. Use primitive count mode or increase the budget.");
             }
             var candidates = new List<Vector3>();
             var candidateIslands = new List<int>();
@@ -60,6 +62,51 @@ namespace SashaRX.UnityMeshLab
             var unique = Deduplicate(candidates, candidateIslands, result, s, token, out var ids);
             result.deduplicated = unique.Count;
             ApplyBudget(unique, ids, result, s);
+            result.coveredIslands = result.sampleIslands.Distinct().Count();
+            MeasureNeighbours(result, token);
+            return result;
+        }
+
+        static Result SampleCount(Vector3[] p, int[] t, double[] areas, List<List<int>> groups,
+            Result result, FoliageNormalsSettings settings, CancellationToken token)
+        {
+            int count = settings.maximumPrimitiveCount;
+            var islandAreas = groups.Select(faces => faces.Sum(f => areas[f])).ToArray();
+            var quotas = new int[groups.Count];
+            int reserved = Math.Min(count, groups.Count);
+            foreach (int g in Enumerable.Range(0, groups.Count).OrderByDescending(g => islandAreas[g]).ThenBy(g => g).Take(reserved))
+                quotas[g] = 1;
+            int remaining = count - reserved;
+            var fractions = new double[groups.Count];
+            int allocated = 0;
+            for (int g = 0; g < groups.Count; g++)
+            {
+                double share = remaining * (islandAreas[g] / result.area);
+                int extra = (int)Math.Floor(share);
+                quotas[g] += extra;
+                allocated += extra;
+                fractions[g] = share - extra;
+            }
+            foreach (int g in Enumerable.Range(0, groups.Count).OrderByDescending(g => fractions[g]).ThenBy(g => g).Take(remaining - allocated))
+                quotas[g]++;
+            var points = new List<Vector3>(count);
+            var ids = new List<int>(count);
+            for (int g = 0; g < groups.Count; g++)
+            {
+                token.ThrowIfCancellationRequested();
+                if (quotas[g] == 0) continue;
+                double sum = 0;
+                var cdf = groups[g].Select(f => sum += areas[f]).ToArray();
+                var samples = SurfaceSamples(p, t, groups[g], cdf, quotas[g],
+                    Hash(unchecked((uint)settings.deterministicSeed) ^ (uint)g), token);
+                points.AddRange(samples);
+                ids.AddRange(Enumerable.Repeat(g, samples.Count));
+            }
+            // Count mode samples surfaces directly: dedup or optional vertices must not change the requested count.
+            result.samples = points.ToArray(); result.sampleIslands = ids.ToArray();
+            result.generated = count; result.deduplicated = count;
+            result.coveredIslands = reserved;
+            result.spacing = (float)Math.Sqrt(result.area / count);
             MeasureNeighbours(result, token);
             return result;
         }

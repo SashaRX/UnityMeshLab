@@ -25,6 +25,7 @@ namespace SashaRX.UnityMeshLab
         public float proxyRadius = 1, proxyRadiusScale = 1;
         public int proxySegments = 64;
         public float sampleSpacing = .05f;
+        public bool sampleByCount;
         public bool relativeSpacing = true;
         public float radiusMultiplier = 1f, dedupSpacingFraction = .15f;
         public float sampleRadiusVariation = .25f;
@@ -43,6 +44,12 @@ namespace SashaRX.UnityMeshLab
         public bool alignToOriginalHemisphere, gpuProjection = true, recalculateTangents = true;
 
         internal int ProxyTriangleLimit => automaticProxyTriangleBudget ? HardProxyTriangleCap : maximumProxyTriangles;
+
+        internal void ClampSampleBudgets()
+        {
+            minimumSamplesPerIsland = Mathf.Clamp(minimumSamplesPerIsland, 1, 100);
+            maximumPrimitiveCount = Mathf.Clamp(maximumPrimitiveCount, 1, HardPrimitiveCap);
+        }
 
         internal void FitProxyTriangleBudget(int triangles)
         {
@@ -78,18 +85,20 @@ namespace SashaRX.UnityMeshLab
 
         void ValidateEnvelope()
         {
-            Range(sampleSpacing, 1e-6f, 1e6f, nameof(sampleSpacing));
+            if (!sampleByCount) Range(sampleSpacing, 1e-6f, 1e6f, nameof(sampleSpacing));
             Range(radiusMultiplier, .1f, 10, nameof(radiusMultiplier));
             Range(sampleRadiusVariation, 0, .95f, nameof(sampleRadiusVariation));
-            Range(dedupSpacingFraction, .001f, 1, nameof(dedupSpacingFraction));
+            if (!sampleByCount) Range(dedupSpacingFraction, .001f, 1, nameof(dedupSpacingFraction));
             Range(smoothingStrength, 0, 1, nameof(smoothingStrength));
             Range(lambda, .001f, .6f, nameof(lambda)); Range(mu, -.65f, -.001f, nameof(mu));
             if (-mu < lambda) throw new ArgumentException("Taubin compensation must be at least lambda in magnitude.");
             if (!automaticProxyTriangleBudget && (maximumProxyTriangles < 4 || maximumProxyTriangles > HardProxyTriangleCap))
                 throw new ArgumentException($"Proxy triangle budget must be 4–{HardProxyTriangleCap:N0}.");
             if (remeshProxy) ValidateRemesh();
-            if (minimumSamplesPerIsland < 1 || minimumSamplesPerIsland > 100 || maximumPrimitiveCount < 1 || maximumPrimitiveCount > HardPrimitiveCap)
-                throw new ArgumentException("Sample budgets must be positive; primitive hard cap is 50,000.");
+            if (!sampleByCount && (minimumSamplesPerIsland < 1 || minimumSamplesPerIsland > 100))
+                throw new ArgumentException($"Minimum samples per island must be 1–100; got {minimumSamplesPerIsland}.");
+            if (maximumPrimitiveCount < 1 || maximumPrimitiveCount > HardPrimitiveCap)
+                throw new ArgumentException($"Primitive count must be 1–{HardPrimitiveCap:N0}; got {maximumPrimitiveCount}.");
             if (primitiveSubdivision < 0 || primitiveSubdivision > 1 || voxelResolution < 4 || voxelResolution > 256 || smoothingIterations < 0 || smoothingIterations > 100)
                 throw new ArgumentException("Subdivision must be 0–1, voxel resolution 4–256, smoothing iterations 0–100.");
         }
@@ -109,7 +118,7 @@ namespace SashaRX.UnityMeshLab
 
         internal FoliageNormalsSettings Snapshot() => new FoliageNormalsSettings {
             lod0Only = lod0Only, selection = selection, materials = (Material[])materials.Clone(), submeshes = (int[])submeshes.Clone(),
-            renderers = (MeshRenderer[])renderers.Clone(), filterRenderers = filterRenderers, sampleSpacing = sampleSpacing, relativeSpacing = relativeSpacing,
+            renderers = (MeshRenderer[])renderers.Clone(), filterRenderers = filterRenderers, sampleSpacing = sampleSpacing, sampleByCount = sampleByCount, relativeSpacing = relativeSpacing,
             normalSource = normalSource, autoFitProxy = autoFitProxy, proxyFit = proxyFit, proxyCenter = proxyCenter, proxyRotation = proxyRotation,
             proxyRadius = proxyRadius, proxyRadiusScale = proxyRadiusScale, proxySegments = proxySegments,
             radiusMultiplier = radiusMultiplier, sampleRadiusVariation = sampleRadiusVariation, dedupSpacingFraction = dedupSpacingFraction, minimumSamplesPerIsland = minimumSamplesPerIsland,
