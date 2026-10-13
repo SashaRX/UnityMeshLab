@@ -82,6 +82,8 @@ try {
         $executed = $tests.SelectNodes("//test-suite[@name='$suite']//test-case[@result='Passed']")
         if ($executed.Count -eq 0) { throw "Required coverage suite did not execute successfully: $suite" }
     }
+    $viewportRegression = $tests.SelectNodes("//test-suite[@name='ViewportOverlayTests']//test-case[@name='UvFillStaysOnTheSurfaceWithCameraDirectedMaterialOffsets' and @result='Passed']")
+    if ($viewportRegression.Count -eq 0) { throw 'Required viewport GPU regression did not pass' }
     $raw = @(Get-ChildItem -LiteralPath (Join-Path $results 'coverage') -Filter '*-opencov' -Directory)
     if ($raw.Count -ne 1) { throw 'Expected exactly one Unity OpenCover result directory' }
     Copy-Item -LiteralPath $raw[0].FullName -Destination (Join-Path $Output 'opencover') -Recurse
