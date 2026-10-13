@@ -5,6 +5,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+- Isolated 3D previews disable material camera-directed vertex offsets per draw, so UV fill, topology highlights and picking stay on the displayed surface without changing scene materials.
 - Main CI coverage includes FBX saves, Reverse UV provenance, transfer capture/replay and mesh identity tests; each required fixture must actually execute. Reverse sidecar validation separates stored vertex identity construction from imported vertex matching without changing seam or overlap permissions.
 - PR #244 review: partial Apply retains Reverse UV history on omitted meshes, existing UV2 seams retain validated ancestry, numeric-instance LOD export normalizes each chain independently, and the sidecar postprocessor invalidates cached imports after the UInt16 base-vertex replay fix.
 - Review follow-up: restored Reverse UV ancestry requires matching UV2, surface identity and face order, and restores atlas dimensions; Apply retains the current history after one-shot imports with sidecar mode off. Transfer captures distinguish accepted donor projections from superseded trials and replay their actual processing path. Readable mesh copies preserve UInt16 submesh base vertices across UV formats; LOD and collision naming predicates recognize numeric instance suffixes consistently.
