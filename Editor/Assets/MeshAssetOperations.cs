@@ -174,6 +174,14 @@ namespace SashaRX.UnityMeshLab
         /// The owner retains its meshes; unrelated context working copies are never released.</summary>
         public IReadOnlyList<string> ExportToolEntries(IEnumerable<MeshEntry> results, FbxExportIntent intent, bool overwriteSource,
             Func<string, FbxExportIntent, bool, string> choosePath = null)
+            => ExportToolEntriesCore(results, intent, overwriteSource, choosePath, null);
+
+        internal IReadOnlyList<string> ExportCollisionEntries(IEnumerable<MeshEntry> sources,
+            IReadOnlyDictionary<string, Uv2DataAsset> prepared, bool overwriteSource)
+            => ExportToolEntriesCore(sources, FbxExportIntent.Collision, overwriteSource, null, prepared);
+
+        IReadOnlyList<string> ExportToolEntriesCore(IEnumerable<MeshEntry> results, FbxExportIntent intent, bool overwriteSource,
+            Func<string, FbxExportIntent, bool, string> choosePath, IReadOnlyDictionary<string, Uv2DataAsset> collisions)
         {
             using var previewWrite = PreservePreviewDuringWrite();
             var written = new List<string>();
@@ -185,6 +193,8 @@ namespace SashaRX.UnityMeshLab
             RestoreAllPreviews();
             foreach (var group in groups)
             {
+                Uv2DataAsset collisionData = null;
+                if (collisions != null && !collisions.TryGetValue(group.Key, out collisionData)) continue;
                 string output;
                 if (choosePath != null)
                 {
@@ -193,12 +203,12 @@ namespace SashaRX.UnityMeshLab
                 }
                 else if (!TryChooseNarrowExportPath(group.Key, intent, overwriteSource, out output)) continue;
                 var copies = group.Value.Select(p => p.entry.PreviewCopy(p.resultMesh)).ToList();
-                var bindings = copies.Where(e => e.fbxMesh != null)
-                    .Select(e => (entry: e, name: e.fbxMesh.name)).ToList();
-                if (!ExportFbxIsolatedCore(group.Key, copies, intent, output, refreshContext: false)) continue;
-                written.Add(group.Key);
                 bool sourceSave = string.IsNullOrEmpty(output) || string.Equals(output, group.Key, StringComparison.OrdinalIgnoreCase);
-                if (sourceSave) RelinkToolEntries(group.Key, bindings);
+                var bindings = sourceSave ? FbxExport.CaptureSceneMeshReferences(group.Key,
+                    collisionData == null ? copies : Array.Empty<MeshEntry>()) : null;
+                if (!ExportFbxIsolatedCore(group.Key, copies, intent, output, refreshContext: false, collisionData: collisionData)) continue;
+                written.Add(group.Key);
+                bindings?.Relink(group.Key);
             }
             UvtLog.Info($"[FBX Export] Tool results: {written.Count}/{groups.Count} file(s) written.");
 #else
@@ -206,37 +216,6 @@ namespace SashaRX.UnityMeshLab
 #endif
             return written;
         }
-
-#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-        static void RelinkToolEntries(string path, List<(MeshEntry entry, string name)> bindings)
-        {
-            var meshes = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().ToList();
-            Undo.IncrementCurrentGroup();
-            int undoGroup = Undo.GetCurrentGroup();
-            try
-            {
-                foreach (var (entry, name) in bindings)
-                {
-                    var fresh = meshes.SingleOrDefault(m => m.name == name);
-                    if (fresh == null) continue;
-                    var filter = entry.meshFilter;
-                    if (filter != null && !EditorUtility.IsPersistent(filter) && filter.sharedMesh != fresh)
-                    {
-                        Undo.RecordObject(filter, "Relink Saved Mesh");
-                        filter.sharedMesh = fresh;
-                        PrefabUtility.RecordPrefabInstancePropertyModifications(filter);
-                    }
-                    if (entry.renderer is SkinnedMeshRenderer skin && !EditorUtility.IsPersistent(skin) && skin.sharedMesh != fresh)
-                    {
-                        Undo.RecordObject(skin, "Relink Saved Mesh");
-                        skin.sharedMesh = fresh;
-                        PrefabUtility.RecordPrefabInstancePropertyModifications(skin);
-                    }
-                }
-            }
-            finally { Undo.CollapseUndoOperations(undoGroup); }
-        }
-#endif
 
         public void SaveToolMeshes(IEnumerable<MeshEntry> results)
         {
@@ -610,7 +589,8 @@ namespace SashaRX.UnityMeshLab
             IEnumerable<MeshEntry> entries,
             FbxExportIntent intent,
             string outputFbxPathOverride,
-            bool refreshContext = true)
+            bool refreshContext = true,
+            Uv2DataAsset collisionData = null)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             bool isVariantExport = !string.IsNullOrEmpty(outputFbxPathOverride)
@@ -624,12 +604,32 @@ namespace SashaRX.UnityMeshLab
             var sidecar = sidecarFbx == null ? null
                 : PrepareSidecarSync(sidecarFbx, list.Select(e => (e, WorkingMesh(e))).Where(p => p.Item2 != null).ToList());
             if (!isVariantExport && refreshContext) PrepareStandaloneRelink(sourceFbxPath);
-            bool exported = FbxExport.WriteChannels(
+            bool exported;
+            if (collisionData != null)
+            {
+                using var plan = FbxStructureWrite.CollisionPlan(collisionData);
+                try { exported = FbxChannelWrite.Write(sourceFbxPath, Array.Empty<MeshEntry>(), FbxExportIntent.None, outputFbxPathOverride, null, plan); }
+                catch (Exception ex)
+                {
+                    UvtLog.Error($"[FBX Export] '{sourceFbxPath}' was not written: {ex.Message}");
+                    UvtLog.Verbose(ex.ToString());
+                    exported = false;
+                }
+            }
+            else exported = FbxExport.WriteChannels(
                 sourceFbxPath, list, intent, outputFbxPathOverride,
                 FbxExport.FirstRealMaterial(refreshContext ? ctx?.MeshEntries : list),
                 isVariantExport || !refreshContext ? null : ctx?.LodGroup);
             if (!exported) { standaloneRelinks.Clear(); return false; }
             ApplySidecarSync(sidecar);
+            string collisionTarget = isVariantExport ? outputFbxPathOverride : sourceFbxPath;
+            if (collisionData != null && collisionTarget.StartsWith("Assets/", StringComparison.Ordinal))
+            {
+                var saved = SidecarStore.LoadOrCreate(collisionTarget);
+                Undo.RecordObject(saved, "Save Collision Sidecar");
+                saved.collisionEntries = new List<CollisionMeshEntry>(collisionData.collisionEntries);
+                SidecarStore.Save(saved);
+            }
             if (!isVariantExport && refreshContext) AfterSourceSave();
             return true;
 #else

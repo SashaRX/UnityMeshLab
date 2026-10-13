@@ -81,6 +81,16 @@ namespace SashaRX.UnityMeshLab
 
     internal static class FbxStructureWrite
     {
+        internal static FbxStructurePlan CollisionPlan(Uv2DataAsset data)
+        {
+            var plan = new FbxStructurePlan();
+            plan.collisions.AddRange(SidecarStore.CollisionMeshes(data.collisionEntries));
+            foreach (var entry in data.collisionEntries)
+                if (entry != null && !string.IsNullOrEmpty(entry.meshGroupKey))
+                    plan.collisionSources[entry.meshGroupKey] = entry;
+            return plan;
+        }
+
         // ── Plan (Unity side, before anything is imported) ──
 
         /// <summary>

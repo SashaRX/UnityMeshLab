@@ -630,27 +630,47 @@ namespace SashaRX.UnityMeshLab
 
         // ── Sidecar persistence ──
 
-        public bool CanExportFbx => ctx != null && !UvProgress.IsActive && ctx.MeshEntries.Any(e => e.include && e.originalMesh != null);
+        public bool CanExportFbx => ctx?.LodGroup != null && !UvProgress.IsActive && generatedMeshes.Count > 0
+            && lastResults.Count > 0 && generatedMeshes.All(mesh => mesh != null)
+            && lastResults.Sum(result => result.hullCount) == generatedMeshes.Count;
         public bool CanSaveMeshAssets => !UvProgress.IsActive && generatedMeshes.Count > 0;
         public void ExportFbx(bool overwriteSource)
         {
             if (!CanExportFbx) return;
-            if (generatedMeshes.Count > 0 && !SaveToSidecar()) return;
-            ctx.Assets.ExportFbxPublic(overwriteSource);
+            if (!TryPrepareSidecars(out var prepared)) return;
+            var staged = new Dictionary<string, Uv2DataAsset>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                foreach (var sidecar in prepared)
+                {
+                    var existing = SidecarStore.Load(sidecar.fbxPath);
+                    var data = existing != null ? UnityEngine.Object.Instantiate(existing) : ScriptableObject.CreateInstance<Uv2DataAsset>();
+                    staged.Add(sidecar.fbxPath, data);
+                    UpdateCollisionEntries(data, sidecar);
+                }
+                ctx.Assets.ExportCollisionEntries(ctx.MeshEntries, staged, overwriteSource);
+            }
+            finally { foreach (var data in staged.Values) UnityEngine.Object.DestroyImmediate(data); }
         }
         public void SaveMeshAssets() => ctx.Assets.SaveToolMeshes(generatedMeshes.Select(mesh => new MeshEntry { originalMesh = mesh }));
 
         bool SaveToSidecar()
         {
+            if (!TryPrepareSidecars(out var prepared)) return false;
+            foreach (var sidecar in prepared) SavePreparedSidecar(sidecar);
+            return prepared.Count > 0;
+        }
+
+        bool TryPrepareSidecars(out List<PreparedCollisionSidecar> prepared)
+        {
+            prepared = new List<PreparedCollisionSidecar>();
             if (ctx.LodGroup == null || generatedMeshes.Count == 0) return false;
             if (!TryGroupCollisionSources(out var groups)) return false;
-            var prepared = new List<PreparedCollisionSidecar>();
             foreach (var group in groups)
             {
                 if (!TryPrepareSidecarFile(group.Key, group.Value.results, group.Value.meshes, out var sidecar)) return false;
                 prepared.Add(sidecar);
             }
-            foreach (var sidecar in prepared) SavePreparedSidecar(sidecar);
             return prepared.Count > 0;
         }
 
@@ -791,10 +811,15 @@ namespace SashaRX.UnityMeshLab
         {
             var data = SidecarStore.LoadOrCreate(prepared.fbxPath);
             Undo.RecordObject(data, "Save Collision Sidecar");
-            var obsoleteKeys = PruneMissingCollisionSources(data, prepared.model, prepared.fbxPath);
-            foreach (var entry in prepared.entries) ReplaceCollisionEntry(data, entry, obsoleteKeys);
+            UpdateCollisionEntries(data, prepared);
             SidecarStore.Save(data);
             UvtLog.Info($"[Collision] Saved to sidecar: {SidecarStore.PathFor(prepared.fbxPath)} ({data.collisionEntries.Count} collision entries)");
+        }
+
+        void UpdateCollisionEntries(Uv2DataAsset data, PreparedCollisionSidecar prepared)
+        {
+            var obsoleteKeys = PruneMissingCollisionSources(data, prepared.model, prepared.fbxPath);
+            foreach (var entry in prepared.entries) ReplaceCollisionEntry(data, entry, obsoleteKeys);
         }
 
         static void ReplaceCollisionEntry(Uv2DataAsset data, CollisionMeshEntry entry, HashSet<string> obsoleteKeys)

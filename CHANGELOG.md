@@ -5,6 +5,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+- Collision FBX export requires a generated result and writes only collision geometry. New sidecar data is staged in memory and committed only for successfully written files; cancellation, refusal and failed writes retain the previous FBX/sidecar and pending UV work. Tool overwrites capture all scene mesh references before reimport and relink inactive, unselected, skinned and collider instances with Undo and prefab overrides, preserving unrelated working copies.
 - Optional relaxation of transferred Foliage normals with iteration and strength controls. It smooths selected connected faces in every target LOD after projection, preserves missed/excluded normals and geometry, reuses the cached proxy, and feeds the final result to preview, tangent regeneration, Apply and mesh/FBX saving.
 - Isolated model previews and UV/Remesh/Foliage captures ignore the selected root's scene position, rotation and scale. Relative child placement is retained without multiplying and cancelling world transforms, preserving thin faces during Reverse UV validation. Cap/Bridge overlays and region areas use the same model coordinates.
 - FBX UV saves preserve small lightmap/albedo seams by duplicating their control-point identities with unchanged positions and UV values; per-point channels and deformation bindings follow the duplicates. Geometry replacement retains thin nonzero-area faces.

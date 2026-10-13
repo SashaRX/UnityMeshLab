@@ -463,12 +463,14 @@ namespace SashaRX.UnityMeshLab
         /// Invalid entries are logged and skipped.
         /// </summary>
         internal static List<(string meshName, List<Mesh> meshes, bool isConvex)> CollisionMeshes(string fbxPath)
+            => CollisionMeshes(Load(fbxPath)?.collisionEntries);
+
+        internal static List<(string meshName, List<Mesh> meshes, bool isConvex)> CollisionMeshes(IEnumerable<CollisionMeshEntry> entries)
         {
             var result = new List<(string, List<Mesh>, bool)>();
-            var data = Load(fbxPath);
-            if (data == null || data.collisionEntries == null) return result;
+            if (entries == null) return result;
 
-            foreach (var entry in data.collisionEntries)
+            foreach (var entry in entries)
             {
                 if (!TryValidateCollisionEntry(entry, out var globalTriangleIndices, out string validationError))
                 {

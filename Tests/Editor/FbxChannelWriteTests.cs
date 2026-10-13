@@ -497,9 +497,11 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityEngine.TestTools.UnityTest]
+        [Timeout(600000)] // Full-model Reverse UV and FBX round trips can exceed the default three minutes.
         public System.Collections.IEnumerator DocumentWrite_RealKamazAfterReverseExclusive() => RealKamazReverseDocument(false);
 
         [UnityEngine.TestTools.UnityTest]
+        [Timeout(600000)]
         public System.Collections.IEnumerator DocumentWrite_RealKamazAfterReverseOverlap() => RealKamazReverseDocument(true);
 
         [TestCase(false)] [TestCase(true)]

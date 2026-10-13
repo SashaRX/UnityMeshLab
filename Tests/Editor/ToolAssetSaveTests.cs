@@ -85,13 +85,15 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-        (string path, GameObject instance, MeshEntry entry) Source(string name)
+        (string path, GameObject instance, MeshEntry entry) Source(string name, bool nested = false)
         {
             if (!AssetDatabase.IsValidFolder(Folder)) AssetDatabase.CreateFolder("Assets", "MeshLabToolSaveTests");
-            var root = new GameObject(name); owned.Add(root);
-            root.AddComponent<MeshFilter>().sharedMesh = Triangle(name);
-            root.AddComponent<MeshRenderer>().sharedMaterial = new Material(Shader.Find("Standard"));
-            owned.Add(root.GetComponent<MeshRenderer>().sharedMaterial);
+            var root = new GameObject(nested ? name + "_Model" : name); owned.Add(root);
+            var geometry = nested ? new GameObject(name) : root;
+            if (nested) geometry.transform.SetParent(root.transform);
+            geometry.AddComponent<MeshFilter>().sharedMesh = Triangle(name);
+            geometry.AddComponent<MeshRenderer>().sharedMaterial = new Material(Shader.Find("Standard"));
+            owned.Add(geometry.GetComponent<MeshRenderer>().sharedMaterial);
             string path = Folder + "/" + name + ".fbx";
             FbxExport.Write(path, root);
             AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
@@ -298,6 +300,209 @@ namespace SashaRX.UnityMeshLab.Tests
             resultType.GetField("sourceTransform").SetValue(result, entry.renderer.transform);
             resultType.GetField("hullCount").SetValue(result, 1);
             results.Add(result);
+        }
+
+        (CollisionMeshTool tool, UvToolContext context) CollisionTool(MeshEntry entry, GameObject instance)
+        {
+            var lod = instance.AddComponent<LODGroup>();
+            lod.SetLODs(new[] { new LOD(.1f, new[] { entry.renderer }) });
+            var context = new UvToolContext { LodGroup = lod };
+            context.MeshEntries.Add(entry);
+            var tool = new CollisionMeshTool(); Set(tool, "ctx", context);
+            return (tool, context);
+        }
+
+        Dictionary<string, byte[]> SaveFileSnapshot(string path)
+        {
+            var snapshot = new Dictionary<string, byte[]>();
+            foreach (string file in new[] { path, path + ".meta", SidecarStore.PathFor(path), SidecarStore.PathFor(path) + ".meta" })
+                if (File.Exists(file)) snapshot.Add(file, File.ReadAllBytes(file));
+            return snapshot;
+        }
+
+        static void AssertFilesUnchanged(Dictionary<string, byte[]> before)
+        {
+            foreach (var file in before) CollectionAssert.AreEqual(file.Value, File.ReadAllBytes(file.Key), file.Key);
+        }
+
+        [Test]
+        public void CollisionExportRequiresGeneratedResultsAndDisablesAfterClear()
+        {
+            var source = Source("Availability_LOD0");
+            var (tool, context) = CollisionTool(source.entry, source.instance);
+            int requested = 0;
+            context.Assets.ToolExportPathChooser = (path, intent, overwrite) => { requested++; return null; };
+            Assert.IsFalse(tool.CanExportFbx);
+            tool.ExportFbx(true);
+            Assert.AreEqual(0, requested);
+            AddCollisionResult(tool, source.entry, source.entry.fbxMesh.name);
+            Assert.IsTrue(tool.CanExportFbx);
+            tool.OnRefresh();
+            Assert.IsFalse(tool.CanExportFbx);
+            tool.ExportFbx(true);
+            Assert.AreEqual(0, requested);
+        }
+
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public void CancelledCollisionExportLeavesFbxSidecarAndPendingUvUntouched(bool existingSidecar, bool overwrite)
+        {
+            var source = Source("CancelledCollision_LOD0");
+            var (tool, context) = CollisionTool(source.entry, source.instance);
+            if (existingSidecar)
+            {
+                var data = SidecarStore.LoadOrCreate(source.path);
+                data.collisionEntries.Add(new CollisionMeshEntry { meshGroupKey = "Existing", sourceMeshName = "Existing" });
+                SidecarStore.Save(data);
+            }
+            var pending = Object.Instantiate(source.entry.originalMesh); owned.Add(pending);
+            pending.uv2 = Enumerable.Repeat(Vector2.one, pending.vertexCount).ToArray();
+            source.entry.transferredMesh = pending;
+            AddCollisionResult(tool, source.entry, source.entry.fbxMesh.name);
+            var before = SaveFileSnapshot(source.path);
+            var beforeMesh = source.entry.meshFilter.sharedMesh;
+            int requested = 0;
+            context.Assets.ToolExportPathChooser = (path, intent, replace) =>
+            {
+                Assert.AreEqual(FbxExportIntent.Collision, intent); Assert.AreEqual(overwrite, replace);
+                requested++; return null;
+            };
+            tool.ExportFbx(overwrite);
+            Assert.AreEqual(1, requested); AssertFilesUnchanged(before);
+            Assert.AreSame(pending, source.entry.transferredMesh);
+            Assert.AreSame(beforeMesh, source.entry.meshFilter.sharedMesh);
+            Assert.IsTrue(tool.CanExportFbx, "Cancel retains the generated result for retry.");
+            if (!existingSidecar) Assert.IsNull(SidecarStore.Load(source.path));
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void FailedCollisionWriteDoesNotCommitSidecar(bool existingSidecar)
+        {
+            var source = Source("FailedCollision_LOD0", nested: true);
+            var (tool, context) = CollisionTool(source.entry, source.instance);
+            if (existingSidecar)
+            {
+                AddCollisionResult(tool, source.entry, source.entry.fbxMesh.name);
+                Assert.IsTrue((bool)tool.GetType().GetMethod("SaveToSidecar", Fields).Invoke(tool, null));
+                Get<List<Mesh>>(tool, "generatedMeshes").Single().vertices = new[] { Vector3.zero, Vector3.right * 2, Vector3.up * 2 };
+            }
+            else AddCollisionResult(tool, source.entry, source.entry.fbxMesh.name);
+            var before = SaveFileSnapshot(source.path);
+            // An existing FBX file cannot also be the parent directory of the output.
+            context.Assets.ToolExportPathChooser = (path, intent, overwrite) => path + "/invalid.fbx";
+            LogAssert.Expect(LogType.Error, new System.Text.RegularExpressions.Regex("\\[FBX Export\\].*was not written:"));
+            tool.ExportFbx(false);
+            AssertFilesUnchanged(before);
+            Assert.IsTrue(tool.CanExportFbx);
+            if (!existingSidecar) Assert.IsNull(SidecarStore.Load(source.path));
+        }
+
+        [TestCase(false, false)]
+        [TestCase(false, true)]
+        [TestCase(true, false)]
+        [TestCase(true, true)]
+        public void CollisionExportCommitsOnlyCollisionAndOnlyToWrittenFile(bool overwrite, bool previewWorkingMesh)
+        {
+            var source = Source("CollisionOnly_LOD0", nested: true);
+            var (tool, context) = CollisionTool(source.entry, source.instance);
+            var pending = Object.Instantiate(source.entry.originalMesh); owned.Add(pending);
+            pending.uv2 = Enumerable.Repeat(Vector2.one, pending.vertexCount).ToArray();
+            source.entry.transferredMesh = pending;
+            if (previewWorkingMesh) source.entry.meshFilter.sharedMesh = pending;
+            var originalUv = source.entry.originalMesh.uv2;
+            var originalVertices = source.entry.originalMesh.vertices;
+            string meshName = source.entry.originalMesh.name;
+            var guid = AssetDatabase.AssetPathToGUID(source.path);
+            AddCollisionResult(tool, source.entry, source.entry.fbxMesh.name);
+            var before = SaveFileSnapshot(source.path);
+            string target = overwrite ? source.path : Folder + "/CollisionVariant.fbx";
+            context.Assets.ToolExportPathChooser = (path, intent, replace) =>
+            { Assert.AreEqual(FbxExportIntent.Collision, intent); return target; };
+            tool.ExportFbx(overwrite);
+            var fresh = AssetDatabase.LoadAllAssetsAtPath(target).OfType<Mesh>().Single(mesh => mesh.name == meshName);
+            CollectionAssert.AreEqual(originalVertices, fresh.vertices);
+            CollectionAssert.AreEqual(originalUv, fresh.uv2, "Collision export must not save pending Reverse/Forward UV work.");
+            Assert.AreSame(pending, source.entry.transferredMesh);
+            Assert.AreEqual(guid, AssetDatabase.AssetPathToGUID(source.path));
+            Assert.AreEqual(1, SidecarStore.Load(target).collisionEntries.Count);
+            Assert.IsTrue(AssetDatabase.LoadAllAssetsAtPath(target).OfType<Mesh>().Any(mesh => MeshNaming.IsCollision(mesh.name)));
+            if (previewWorkingMesh) Assert.AreSame(pending, source.entry.meshFilter.sharedMesh);
+            else if (overwrite) Assert.AreSame(fresh, source.entry.meshFilter.sharedMesh);
+            if (!overwrite) { AssertFilesUnchanged(before); Assert.IsNull(SidecarStore.Load(source.path)); }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void CollisionBatchCommitsOnlyTheSuccessfulFile(bool cancelFirst)
+        {
+            var first = Source("BatchFirst_LOD0", nested: true);
+            var second = Source("BatchSecond_LOD0", nested: true);
+            var root = new GameObject("CollisionRoot"); owned.Add(root);
+            first.instance.transform.SetParent(root.transform); second.instance.transform.SetParent(root.transform);
+            var lod = root.AddComponent<LODGroup>();
+            lod.SetLODs(new[] { new LOD(.1f, new[] { first.entry.renderer, second.entry.renderer }) });
+            var context = new UvToolContext { LodGroup = lod };
+            context.MeshEntries.Add(first.entry); context.MeshEntries.Add(second.entry);
+            var tool = new CollisionMeshTool(); Set(tool, "ctx", context);
+            AddCollisionResult(tool, first.entry, first.entry.fbxMesh.name);
+            AddCollisionResult(tool, second.entry, second.entry.fbxMesh.name);
+            string cancelled = cancelFirst ? first.path : second.path;
+            string saved = cancelFirst ? second.path : first.path;
+            var before = SaveFileSnapshot(cancelled);
+            context.Assets.ToolExportPathChooser = (path, intent, overwrite) => path == cancelled ? null : "";
+            tool.ExportFbx(true);
+            AssertFilesUnchanged(before); Assert.IsNull(SidecarStore.Load(cancelled));
+            Assert.AreEqual(1, SidecarStore.Load(saved).collisionEntries.Count);
+            Assert.IsTrue(AssetDatabase.LoadAllAssetsAtPath(saved).OfType<Mesh>().Any(mesh => MeshNaming.IsCollision(mesh.name)));
+            Assert.IsTrue(tool.CanExportFbx, "The skipped result remains available for retry.");
+        }
+
+        [Test]
+        public void PrivateOverwriteRelinksUnselectedInactiveAndSkinnedInstancesOfTheSameFbx()
+        {
+            var source = Source("SharedBody");
+            var imported = source.entry.fbxMesh;
+            var extra = new GameObject("Arbitrary scene name"); owned.Add(extra); extra.SetActive(false);
+            var filter = extra.AddComponent<MeshFilter>(); filter.sharedMesh = imported;
+            var skin = extra.AddComponent<SkinnedMeshRenderer>(); skin.sharedMesh = imported;
+            var collider = extra.AddComponent<MeshCollider>(); collider.sharedMesh = imported;
+            var unrelated = Source("OtherBody");
+            var unrelatedMesh = unrelated.entry.meshFilter.sharedMesh;
+            var working = new GameObject("Unsaved sibling"); owned.Add(working);
+            var workingFilter = working.AddComponent<MeshFilter>(); workingFilter.sharedMesh = Triangle("SharedBody");
+            var pending = workingFilter.sharedMesh;
+            var context = new UvToolContext();
+            context.MeshEntries.Add(new MeshEntry { fbxMesh = imported, originalMesh = pending, meshFilter = workingFilter, include = false });
+            var packed = Object.Instantiate(imported); owned.Add(packed);
+            packed.uv2 = new[] { new Vector2(.2f, .3f), new Vector2(.6f, .3f), new Vector2(.2f, .7f) };
+            Assert.AreEqual(1, context.Assets.ExportToolEntries(new[] { source.entry.PreviewCopy(packed) }, FbxExportIntent.UV1, true,
+                (path, intent, overwrite) => "").Count);
+            var fresh = AssetDatabase.LoadAllAssetsAtPath(source.path).OfType<Mesh>().Single();
+            Assert.AreSame(fresh, source.entry.meshFilter.sharedMesh);
+            Assert.AreSame(fresh, filter.sharedMesh); Assert.AreSame(fresh, skin.sharedMesh); Assert.AreSame(fresh, collider.sharedMesh);
+            Assert.AreSame(unrelatedMesh, unrelated.entry.meshFilter.sharedMesh);
+            Assert.AreSame(pending, workingFilter.sharedMesh);
+            CollectionAssert.AreEqual(packed.uv2, fresh.uv2);
+        }
+
+        [Test]
+        public void RelinkUsesNamesCapturedBeforeReferencesBecomeMissingAndSupportsUndo()
+        {
+            var source = Source("RememberedMesh");
+            var extra = new GameObject("Name differs from FBX mesh"); owned.Add(extra);
+            var filter = extra.AddComponent<MeshFilter>(); filter.sharedMesh = source.entry.fbxMesh;
+            var skin = extra.AddComponent<SkinnedMeshRenderer>(); skin.sharedMesh = source.entry.fbxMesh;
+            var collider = extra.AddComponent<MeshCollider>(); collider.sharedMesh = source.entry.fbxMesh;
+            var bindings = FbxExport.CaptureSceneMeshReferences(source.path, Array.Empty<MeshEntry>());
+            filter.sharedMesh = null; skin.sharedMesh = null; collider.sharedMesh = null;
+            bindings.Relink(source.path);
+            Assert.AreSame(source.entry.fbxMesh, filter.sharedMesh);
+            Assert.AreSame(source.entry.fbxMesh, skin.sharedMesh); Assert.AreSame(source.entry.fbxMesh, collider.sharedMesh);
+            Undo.FlushUndoRecordObjects(); Undo.PerformUndo();
+            Assert.IsNull(filter.sharedMesh); Assert.IsNull(skin.sharedMesh); Assert.IsNull(collider.sharedMesh);
         }
 
         [UnityTest]
