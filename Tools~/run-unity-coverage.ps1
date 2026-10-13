@@ -47,7 +47,7 @@ try {
     }
     @{ package_root=$packageRoot.Replace('\','/'); files=$hashes; unity=$UnityPath } |
         ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $Output 'sources.json')
-    $testFilter = 'LodHardEdgeTests;LodSmoothingRegionTests;LodQslimTransferTests;LodAttributeCorrectionTests;LodQualitySelectionTests;LodGenerationToolTests;LodLoopSimplifierTests;LodSmallPartsTests;LodScreenAcceptanceTests;LodScreenValidationTests;LodProjectVisualQualityTests;CollisionElementTests;CollisionMeshToolTests;LodSharedUvTransferTests;LodPaintRetriangulationTests'
+    $testFilter = 'LodHardEdgeTests;LodSmoothingRegionTests;LodQslimTransferTests;LodAttributeCorrectionTests;LodQualitySelectionTests;LodGenerationToolTests;LodLoopSimplifierTests;LodSmallPartsTests;LodScreenAcceptanceTests;LodScreenValidationTests;LodProjectVisualQualityTests;CollisionElementTests;CollisionMeshToolTests;LodSharedUvTransferTests;LodPaintRetriangulationTests;TextureChannelPackerTests;TexturePackingLoadReviewTests;TexturePackingPsdTests;TexturePackingTiffTests;TexturePackingFormatIntegrationTests;WindowPreferencesTests'
     $arguments = @('-batchmode','-projectPath',$consumer,'-runTests','-testPlatform','EditMode','-testFilter',$testFilter,
         '-testResults',(Join-Path $results 'tests.xml'),'-logFile',(Join-Path $results 'unity.log'),
         '-enableCodeCoverage','-debugCodeOptimization','-coverageResultsPath',(Join-Path $results 'coverage'),
