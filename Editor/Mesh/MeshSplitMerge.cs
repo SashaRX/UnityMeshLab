@@ -174,13 +174,16 @@ namespace SashaRX.UnityMeshLab
 
                 string name = MeshNaming.LodName(MeshNaming.StripLod(first.renderer.name), group.lodIndex);
                 var mergedMesh = Combine(parts, name);
+                Undo.RegisterCreatedObjectUndo(mergedMesh, undoLabel);
                 Undo.RecordObject(first.meshFilter, undoLabel);
                 Undo.RecordObject(first.renderer, undoLabel);
                 Undo.RecordObject(first.renderer.gameObject, undoLabel);
                 first.meshFilter.sharedMesh = mergedMesh;
                 first.renderer.sharedMaterials = new[] { group.material };
                 first.renderer.gameObject.name = name;
-                first.originalMesh = mergedMesh;
+                // Refresh restores the context before rebuilding entries. The merge is
+                // the new scene baseline, so restoration must keep it alive.
+                first.fbxMesh = first.originalMesh = mergedMesh;
                 RemoveFromLodGroup(ctx.LodGroup, destroy, undoLabel);
                 foreach (var go in destroy)
                 {
@@ -189,7 +192,11 @@ namespace SashaRX.UnityMeshLab
                     Undo.DestroyObjectImmediate(go);
                 }
                 if (PrefabUtility.IsPartOfPrefabInstance(first.renderer))
+                {
                     PrefabUtility.RecordPrefabInstancePropertyModifications(first.renderer);
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(first.meshFilter);
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(first.renderer.gameObject);
+                }
                 merged++;
                 UvtLog.Info($"Created merged object: {name} ({mergedMesh.vertexCount} verts)");
             }

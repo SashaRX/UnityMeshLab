@@ -8352,7 +8352,7 @@ struct Atlas
 				int height = ftoi_ceil(extents.y);
 				if (options.blockAlign)
 					height = align(height + blockAlignSizeOffset, 4) - blockAlignSizeOffset;
-				for (uint32_t v = 0; v < chart->uniqueVertexCount(); v++) {
+				if (!options.preserveChartShape) for (uint32_t v = 0; v < chart->uniqueVertexCount(); v++) {
 					Vector2 &texcoord = chart->uniqueVertexAt(v);
 					texcoord.x = texcoord.x / extents.x * (float)width;
 					texcoord.y = texcoord.y / extents.y * (float)height;

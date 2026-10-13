@@ -109,6 +109,14 @@ namespace SashaRX.UnityMeshLab
         }
 
         static readonly List<RendererBackup> backups = new List<RendererBackup>();
+
+        internal static bool TryGetOriginalMaterials(Renderer renderer, out Material[] materials)
+        {
+            foreach (var backup in backups)
+                if (backup.renderer == renderer) { materials = backup.origMaterials; return true; }
+            materials = null;
+            return false;
+        }
         static Material vertexColorMaterial;
         static bool isActive;
 
@@ -169,8 +177,8 @@ namespace SashaRX.UnityMeshLab
             {
                 var b = backups[i];
                 if (b.renderer != null) b.renderer.sharedMaterials = b.origMaterials;
-                if (b.meshFilter != null) b.meshFilter.sharedMesh = b.origMeshFilterMesh;
-                if (b.skinnedRenderer != null) b.skinnedRenderer.sharedMesh = b.origSkinnedMesh;
+                if (b.meshFilter != null && b.meshFilter.sharedMesh == b.tempMesh) b.meshFilter.sharedMesh = b.origMeshFilterMesh;
+                if (b.skinnedRenderer != null && b.skinnedRenderer.sharedMesh == b.tempMesh) b.skinnedRenderer.sharedMesh = b.origSkinnedMesh;
                 if (b.tempMesh != null) Object.DestroyImmediate(b.tempMesh);
             }
 

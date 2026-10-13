@@ -9,6 +9,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -24,9 +25,10 @@ namespace SashaRX.UnityMeshLab
         const string MetaExtension = ".meta";
         const string RelinkUndoLabel = "Relink Mesh";
 
-        /// <summary>Explicit shading edits on selected submeshes of a new FBX variant.</summary>
+        /// <summary>Explicit shading edits on selected submeshes of an FBX document.</summary>
         internal sealed class ShadingSelection
         {
+            internal bool allowSourceOverwrite;
             internal readonly Dictionary<string, bool[]> submeshes = new Dictionary<string, bool[]>(StringComparer.Ordinal);
             internal readonly Dictionary<string, HashSet<string>> sourceNodes = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
             internal Action<string, ImportAssetOptions> importAsset = AssetDatabase.ImportAsset;
@@ -619,7 +621,8 @@ namespace SashaRX.UnityMeshLab
                 try { return FbxChannelWrite.Write(sourceFbxPath, entries, intent, outputFbxPath, sceneRoot, shadingSelection: shadingSelection); }
                 catch (Exception ex)
                 {
-                    UvtLog.Error($"[FBX Export] '{sourceFbxPath}' was not written: {ex.Message}");
+                    string outcome = shadingSelection?.allowSourceOverwrite == true ? "overwrite did not complete" : "was not written";
+                    UvtLog.Error($"[FBX Export] '{sourceFbxPath}' {outcome}: {ex.Message}");
                     UvtLog.Verbose(ex.ToString());
                     return false;
                 }
@@ -889,7 +892,7 @@ namespace SashaRX.UnityMeshLab
         /// as it was. If the exporter throws or writes an empty file the target on disk is
         /// untouched. Throws on failure after removing the temp file.
         /// </summary>
-        internal static void WriteAtomic(string targetFbxPath, GameObject root, bool normalizedTransforms = false)
+        internal static void WriteAtomic(string targetFbxPath, GameObject root, bool normalizedTransforms = false, Action committed = null)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             var settings = FbxWriteSettings.FromProject();
@@ -897,7 +900,7 @@ namespace SashaRX.UnityMeshLab
             {
                 ExportFile(tmpRelPath, root, settings, normalizedTransforms);
                 if (normalizedTransforms) ConvertNormalizedFile(Path.GetFullPath(tmpRelPath), settings);
-            });
+            }, committed);
 #else
             throw new InvalidOperationException("FBX Exporter package not installed.");
 #endif
@@ -934,7 +937,8 @@ namespace SashaRX.UnityMeshLab
                 // is a move.
                 if (File.Exists(fullPath))
                 {
-                    fbxBak = Path.Combine(Path.GetTempPath(), Path.GetFileName(fullPath) + "." + pathHash + ".fbx.bak");
+                    // Windows requires the replacement backup on the target volume.
+                    fbxBak = fullPath + "." + Guid.NewGuid().ToString("N") + ".bak";
                     File.Replace(tmpAbsPath, fullPath, fbxBak);
                 }
                 else
@@ -1399,21 +1403,6 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
-        /// The `_COL` meshes of the model at <paramref name="fbxPath"/> that carry UVs or vertex
-        /// colours: Cleanup reports them, and only a rebuild (<see cref="StripCollisionMeshes"/>)
-        /// takes them off.
-        /// </summary>
-        internal static List<string> CollisionMeshesWithSurfaceData(string fbxPath)
-        {
-            var names = new List<string>();
-            foreach (var asset in AssetDatabase.LoadAllAssetsAtPath(fbxPath))
-                if (asset is Mesh mesh && MeshNaming.IsCollision(mesh.name)
-                    && (mesh.HasVertexAttribute(VertexAttribute.TexCoord0) || mesh.HasVertexAttribute(VertexAttribute.Color)))
-                    names.Add(mesh.name);
-            return names;
-        }
-
-        /// <summary>
         /// Reduces every readable `_COL` mesh to positions, triangles, recalculated normals
         /// and (only when the source had them) synthesized tangents — no UVs or colours —
         /// after <see cref="PrepareCollisionMaterials"/>. The stripped copies go to
@@ -1494,6 +1483,79 @@ namespace SashaRX.UnityMeshLab
         // ─────────────────────────────────────────────────────────────────
         // After the reimport
         // ─────────────────────────────────────────────────────────────────
+
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        internal sealed class SceneMeshBindings
+        {
+            readonly Dictionary<Component, (string name, Mesh previous)> bindings = new Dictionary<Component, (string, Mesh)>();
+
+            internal void Add(Component component, string name)
+            {
+                if (component != null && !EditorUtility.IsPersistent(component) && !string.IsNullOrEmpty(name))
+                    bindings[component] = (name, CurrentMesh(component));
+            }
+
+            static Mesh CurrentMesh(Component component) => component switch
+            {
+                MeshFilter filter => filter.sharedMesh,
+                SkinnedMeshRenderer skin => skin.sharedMesh,
+                MeshCollider collider => collider.sharedMesh,
+                _ => null,
+            };
+
+            internal void Relink(string path)
+            {
+                var meshes = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>()
+                    .GroupBy(mesh => mesh.name, StringComparer.Ordinal).Where(group => group.Count() == 1)
+                    .ToDictionary(group => group.Key, group => group.Single(), StringComparer.Ordinal);
+                Undo.IncrementCurrentGroup();
+                int undoGroup = Undo.GetCurrentGroup();
+                try
+                {
+                    foreach (var binding in bindings)
+                    {
+                        var component = binding.Key;
+                        if (component == null || !meshes.TryGetValue(binding.Value.name, out var fresh)) continue;
+                        var current = CurrentMesh(component);
+                        if (current == fresh || (current != null && current != binding.Value.previous)) continue;
+                        Undo.RecordObject(component, RelinkUndoLabel);
+                        switch (component)
+                        {
+                            case MeshFilter filter: filter.sharedMesh = fresh; break;
+                            case SkinnedMeshRenderer skin: skin.sharedMesh = fresh; break;
+                            case MeshCollider collider: collider.sharedMesh = fresh; break;
+                        }
+                        PrefabUtility.RecordPrefabInstancePropertyModifications(component);
+                    }
+                }
+                finally { Undo.CollapseUndoOperations(undoGroup); }
+            }
+
+            internal void Capture(string path, Component component)
+            {
+                var mesh = CurrentMesh(component);
+                if (mesh != null && string.Equals(AssetDatabase.GetAssetPath(mesh), path, StringComparison.OrdinalIgnoreCase))
+                    Add(component, mesh.name);
+            }
+        }
+
+        // Capture names before reimport can invalidate the sub-assets. Include all loaded
+        // instances of this file, without adopting unrelated temporary working meshes.
+        internal static SceneMeshBindings CaptureSceneMeshReferences(string path, IEnumerable<MeshEntry> savedEntries)
+        {
+            var result = new SceneMeshBindings();
+            foreach (var filter in Resources.FindObjectsOfTypeAll<MeshFilter>()) result.Capture(path, filter);
+            foreach (var skin in Resources.FindObjectsOfTypeAll<SkinnedMeshRenderer>()) result.Capture(path, skin);
+            foreach (var collider in Resources.FindObjectsOfTypeAll<MeshCollider>()) result.Capture(path, collider);
+            foreach (var entry in savedEntries)
+            {
+                if (entry.fbxMesh == null || !string.Equals(AssetDatabase.GetAssetPath(entry.fbxMesh), path, StringComparison.OrdinalIgnoreCase)) continue;
+                result.Add(entry.meshFilter, entry.fbxMesh.name);
+                if (entry.renderer is SkinnedMeshRenderer skin) result.Add(skin, entry.fbxMesh.name);
+            }
+            return result;
+        }
+#endif
 
         /// <summary>
         /// Re-binds the MeshFilters and MeshColliders under <paramref name="lodGroup"/> to

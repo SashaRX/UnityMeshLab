@@ -8,7 +8,7 @@ using UnityEngine;
 namespace SashaRX.UnityMeshLab
 {
     [MeshLabTool("foliage_normals", MeshLabLibraries.Geometry, MeshLabLibraries.Remesh, MeshLabLibraries.VertexChannels, MeshLabLibraries.Assets)]
-    public sealed class FoliageNormalsTool : IUvTool, IUvTool3D, IUvTool3DFrameContext
+    public sealed class FoliageNormalsTool : IUvTool, IUvTool3D, IUvToolFbxExport, IUvToolMeshExport
     {
         internal enum Preview
         {
@@ -21,9 +21,8 @@ namespace SashaRX.UnityMeshLab
         {
             private get; set;
         }
-        object IUvTool3DFrameContext.FrameContext => root;
         internal readonly FoliageNormalsPipeline pipeline = new FoliageNormalsPipeline();
-        internal FoliageNormalsSettings settings = new FoliageNormalsSettings();
+        internal FoliageNormalsSettings settings = new FoliageNormalsSettings { sampleByCount = true, maximumPrimitiveCount = 2000 };
         internal GameObject root;
         internal Preview preview = Preview.SelectionMask;
         internal bool afterNormals = true, showNormalDirections;
@@ -35,7 +34,11 @@ namespace SashaRX.UnityMeshLab
         GameObject previewCapturedRoot;
         float normalLength = .025f;
         internal int previewLod;
-        bool advanced, showPrimitives, showProxyEdges = true, active;
+        bool advanced, showSphereEdges, active, assetWriteInProgress;
+        internal bool showSamplePoints;
+        public bool CanExportFbx => FoliageFbxExport.Available && CanApplyPreview;
+        internal bool showProxyEdges = true, showProxySurface = true;
+        internal float proxyOpacity = .25f;
         bool? previewCanApply;
         internal bool CanApplyPreview
         {
@@ -105,6 +108,16 @@ namespace SashaRX.UnityMeshLab
                 restored.remeshRelaxation = defaults.remeshRelaxation;
                 restored.maximumProxyTriangles = defaults.maximumProxyTriangles;
             }
+            if (json.IndexOf("\"automaticProxyTriangleBudget\"", StringComparison.Ordinal) < 0)
+                restored.automaticProxyTriangleBudget = true;
+            if (json.IndexOf("\"sampleRadiusVariation\"", StringComparison.Ordinal) < 0)
+                restored.sampleRadiusVariation = 0; // retain uniform radii in existing preferences
+            if (restored.automaticProxyTriangleBudget)
+                restored.maximumProxyTriangles = Mathf.Clamp(restored.maximumProxyTriangles, 4, FoliageNormalsSettings.HardProxyTriangleCap);
+            if (json.IndexOf("\"sampleByCount\"", StringComparison.Ordinal) < 0) restored.sampleByCount = true;
+            if (json.IndexOf("\"normalRelaxIterations\"", StringComparison.Ordinal) < 0) restored.normalRelaxIterations = 3;
+            if (json.IndexOf("\"normalRelaxStrength\"", StringComparison.Ordinal) < 0) restored.normalRelaxStrength = .5f;
+            restored.ClampSampleBudgets();
             restored.Validate();
             return restored;
         }
@@ -185,6 +198,7 @@ namespace SashaRX.UnityMeshLab
         }
         public void OnRefresh()
         {
+            if (assetWriteInProgress) return;
             previewCanApply = null;
             if (!pipeline.IsRunning)
             {
@@ -202,7 +216,7 @@ namespace SashaRX.UnityMeshLab
 
         void RefreshHierarchyWhenIdle()
         {
-            if (!pendingHierarchyRefresh || pipeline.IsRunning) return;
+            if (!pendingHierarchyRefresh || pipeline.IsRunning || assetWriteInProgress) return;
             pendingHierarchyRefresh = false;
             RefreshFilters();
             pipeline.InvalidateChanged(settings, root);
@@ -308,14 +322,31 @@ namespace SashaRX.UnityMeshLab
                 pipeline.Cancel();
             }
 
-            preview = (Preview)EditorGUILayout.EnumPopup("Preview", preview);
-            DrawNormalComparison();
-            DrawLodPreview();
-            showProxyEdges = EditorGUILayout.Toggle("Show proxy edges", showProxyEdges);
-            EditorGUILayout.HelpBox("Selection Mask: green = proxy source, amber = transfer only in other LODs, grey = excluded. Proxy And Mesh overlays a cyan proxy wire. Before/After keeps the camera fixed; Side by side shows both. Normals shading is available in the 3D toolbar.", MessageType.Info);
+            DrawPreviewSettings();
             if (!string.IsNullOrEmpty(sourcePreview.Error)) EditorGUILayout.HelpBox(sourcePreview.Error, MessageType.Warning);
             DrawDiagnostics();
             EditorGUILayout.LabelField(pipeline.Status, EditorStyles.wordWrappedMiniLabel);
+        }
+
+        void DrawPreviewSettings()
+        {
+            EditorGUILayout.LabelField("Preview", EditorStyles.boldLabel);
+            EditorGUI.BeginChangeCheck();
+            preview = (Preview)EditorGUILayout.EnumPopup("Display", preview);
+            DrawNormalComparison();
+            DrawLodPreview();
+            using (new EditorGUI.DisabledScope(pipeline.Samples == null))
+                showSamplePoints = EditorGUILayout.Toggle("Show sample points", showSamplePoints);
+            if (UsesScatterPreview) showSphereEdges = EditorGUILayout.Toggle("Show sphere edges", showSphereEdges);
+            else showProxyEdges = EditorGUILayout.Toggle("Show proxy edges", showProxyEdges);
+            if (CombinedPreview)
+            {
+                showProxySurface = EditorGUILayout.Toggle(UsesScatterPreview ? "Sphere surface" : "Proxy surface", showProxySurface);
+                using (new EditorGUI.DisabledScope(!showProxySurface))
+                    proxyOpacity = EditorGUILayout.Slider(UsesScatterPreview ? "Sphere opacity" : "Proxy opacity", proxyOpacity, 0, 1);
+            }
+            if (EditorGUI.EndChangeCheck()) RequestRepaint?.Invoke();
+            EditorGUILayout.HelpBox("Selection Mask: green = proxy source, amber = transfer only in other LODs, grey = excluded. Primitive Samples overlays translucent spheres at the actual Scatter radius. Proxy And Mesh overlays the latest proxy, or Scatter spheres before Build Proxy, with optional edges. Before/After keeps the camera fixed; Side by side shows both. Normal directions controls arrows in every display, including Side by side. Normals shading is available in the 3D toolbar.", MessageType.Info);
         }
 
         void DrawLodPreview()
@@ -460,16 +491,29 @@ namespace SashaRX.UnityMeshLab
         {
             EditorGUILayout.Space();
             EditorGUILayout.LabelField("Scatter", EditorStyles.boldLabel);
-            settings.relativeSpacing = EditorGUILayout.Toggle("Relative to bounds", settings.relativeSpacing);
-            settings.sampleSpacing = EditorGUILayout.FloatField(settings.relativeSpacing ? "Spacing / diagonal" : "Spacing (capture units)", settings.sampleSpacing);
-            settings.radiusMultiplier = EditorGUILayout.FloatField("Sphere radius / spacing", settings.radiusMultiplier);
-            settings.minimumSamplesPerIsland = EditorGUILayout.IntField("Minimum / island", settings.minimumSamplesPerIsland);
-            settings.includeSourceVertices = EditorGUILayout.Toggle("Include vertices", settings.includeSourceVertices);
-            settings.includeTriangleCentroids = EditorGUILayout.Toggle("Include centroids", settings.includeTriangleCentroids);
+            settings.sampleByCount = EditorGUILayout.Toggle("By primitive count", settings.sampleByCount);
+            settings.maximumPrimitiveCount = Mathf.Clamp(EditorGUILayout.DelayedIntField(
+                settings.sampleByCount ? "Primitive count" : "Maximum primitives", settings.maximumPrimitiveCount), 1, FoliageNormalsSettings.HardPrimitiveCap);
+            if (!settings.sampleByCount)
+            {
+                settings.relativeSpacing = EditorGUILayout.Toggle("Relative to bounds", settings.relativeSpacing);
+                settings.sampleSpacing = EditorGUILayout.FloatField(settings.relativeSpacing ? "Spacing / diagonal" : "Spacing (capture units)", settings.sampleSpacing);
+                settings.minimumSamplesPerIsland = EditorGUILayout.IntSlider("Minimum / island", settings.minimumSamplesPerIsland, 1, 100);
+                settings.includeSourceVertices = EditorGUILayout.Toggle("Include vertices", settings.includeSourceVertices);
+                settings.includeTriangleCentroids = EditorGUILayout.Toggle("Include centroids", settings.includeTriangleCentroids);
+                settings.dedupSpacingFraction = EditorGUILayout.Slider("Dedup / spacing", settings.dedupSpacingFraction, .001f, 1);
+            }
+            else EditorGUILayout.LabelField("Exact count, distributed by surface area (1–50,000). Radius follows the resulting density.", EditorStyles.wordWrappedMiniLabel);
+            settings.radiusMultiplier = EditorGUILayout.Slider("Sphere radius / spacing", settings.radiusMultiplier, .1f, 10);
+            settings.sampleRadiusVariation = EditorGUILayout.Slider(new GUIContent("Radius variation", "Random radius spread around the base size. Zero keeps uniform spheres; Seed repeats the pattern."), settings.sampleRadiusVariation, 0, .95f);
             settings.deterministicSeed = EditorGUILayout.IntField("Seed", settings.deterministicSeed);
-            settings.maximumPrimitiveCount = EditorGUILayout.IntField("Primitive budget", settings.maximumPrimitiveCount);
-            settings.dedupSpacingFraction = EditorGUILayout.Slider("Dedup / spacing", settings.dedupSpacingFraction, .001f, 1);
             StageButton("Scatter samples", FoliageNormalsPipeline.Stage.Scatter);
+            if (pipeline.Samples != null)
+            {
+                int covered = pipeline.Samples.coveredIslands;
+                EditorGUILayout.HelpBox($"Built {pipeline.Samples.samples.Length:N0} primitives · islands covered {covered:N0}/{pipeline.Samples.islands:N0}.",
+                    covered < pipeline.Samples.islands ? MessageType.Warning : MessageType.Info);
+            }
         }
 
         void DrawEnvelopeSettings()
@@ -478,9 +522,30 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.LabelField("Envelope", EditorStyles.boldLabel);
             settings.voxelResolution = EditorGUILayout.IntSlider("Voxel resolution", settings.voxelResolution, 4, 256);
             settings.primitiveSubdivision = EditorGUILayout.IntSlider("Sphere subdivision", settings.primitiveSubdivision, 0, 1);
-            settings.maximumProxyTriangles = EditorGUILayout.IntField("Proxy triangle budget", settings.maximumProxyTriangles);
-            showPrimitives = EditorGUILayout.Toggle("Show sample points", showPrimitives);
+            settings.automaticProxyTriangleBudget = EditorGUILayout.Toggle("Automatic triangle budget", settings.automaticProxyTriangleBudget);
+            if (settings.automaticProxyTriangleBudget)
+                EditorGUILayout.LabelField($"Budget fits the proxy automatically, up to {FoliageNormalsSettings.HardProxyTriangleCap:N0} triangles. Voxel resolution is kept.", EditorStyles.wordWrappedMiniLabel);
+            else
+                settings.maximumProxyTriangles = Mathf.Clamp(EditorGUILayout.DelayedIntField("Proxy triangle budget", settings.maximumProxyTriangles), 4, FoliageNormalsSettings.HardProxyTriangleCap);
             StageButton("Build Proxy", FoliageNormalsPipeline.Stage.Envelope);
+            DrawEnvelopeBudgetRecovery();
+        }
+
+        void DrawEnvelopeBudgetRecovery()
+        {
+            var failure = pipeline.EnvelopeBudgetExceeded;
+            if (failure == null) return;
+            EditorGUILayout.HelpBox(pipeline.Status, MessageType.Warning);
+            if (failure.TriangleCount > FoliageNormalsSettings.HardProxyTriangleCap)
+            {
+                EditorGUILayout.HelpBox($"The proxy exceeds the {FoliageNormalsSettings.HardProxyTriangleCap:N0}-triangle hard cap. Lower Voxel resolution and rebuild.", MessageType.Warning);
+                return;
+            }
+            if (GUILayout.Button($"Set budget to {failure.TriangleCount:N0} and rebuild") && pipeline.IncreaseEnvelopeBudget(settings, root))
+            {
+                GUI.changed = true;
+                _ = Run(FoliageNormalsPipeline.Stage.Envelope);
+            }
         }
 
         void DrawSmoothSettings()
@@ -548,7 +613,14 @@ namespace SashaRX.UnityMeshLab
             settings.alignToOriginalHemisphere = EditorGUILayout.Toggle("Align original hemisphere", settings.alignToOriginalHemisphere);
             settings.gpuProjection = EditorGUILayout.Toggle("GPU projection", settings.gpuProjection);
             settings.recalculateTangents = EditorGUILayout.Toggle("Recalculate tangents", settings.recalculateTangents);
-            StageButton("Transfer normals", FoliageNormalsPipeline.Stage.Transfer);
+            settings.relaxTransferredNormals = EditorGUILayout.Toggle("Relax transferred normals", settings.relaxTransferredNormals);
+            if (settings.relaxTransferredNormals)
+            {
+                settings.normalRelaxIterations = EditorGUILayout.IntSlider("Normal relax iterations", settings.normalRelaxIterations, 0, 100);
+                settings.normalRelaxStrength = EditorGUILayout.Slider("Normal relax strength", settings.normalRelaxStrength, 0, 1);
+                EditorGUILayout.HelpBox("Smooths directions across connected selected faces after transfer, in every target LOD. Geometry, excluded faces and missed vertices stay unchanged. Transfer again to update the result using the cached proxy.", MessageType.Info);
+            }
+            StageButton(settings.relaxTransferredNormals ? "Transfer + relax normals" : "Transfer normals", FoliageNormalsPipeline.Stage.Transfer);
         }
 
         void DrawOutput()
@@ -575,18 +647,7 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
 
-                if (GUILayout.Button("Save Mesh Asset"))
-                {
-                    Save();
-                }
-
-                using (new EditorGUI.DisabledScope(!FoliageFbxExport.Available))
-                {
-                    if (GUILayout.Button("Save Separate FBX"))
-                    {
-                        SaveFbx();
-                    }
-                }
+                EditorGUILayout.LabelField("Save using the shared footer below.", EditorStyles.miniLabel);
             }
             if (!FoliageFbxExport.Available)
             {
@@ -619,7 +680,7 @@ namespace SashaRX.UnityMeshLab
                 _ = Run(stage);
             }
         }
-        async Task Run(FoliageNormalsPipeline.Stage to)
+        internal async Task Run(FoliageNormalsPipeline.Stage to)
         {
             var runRoot = root;
             if (await pipeline.Run(runRoot, settings, to) && runRoot == root && !hasPendingRoot)
@@ -662,6 +723,8 @@ namespace SashaRX.UnityMeshLab
             }
             RequestRepaint?.Invoke();
         }
+        public bool CanSaveMeshAssets => CanApplyPreview;
+        public void SaveMeshAssets() => Save();
         void Save()
         {
             string folder = EditorUtility.OpenFolderPanel("Save foliage meshes", Application.dataPath, "");
@@ -678,6 +741,26 @@ namespace SashaRX.UnityMeshLab
             }
             catch (Exception e) { UvtLog.Error("[Foliage] " + e.Message); }
         }
+        public void ExportFbx(bool overwriteSource)
+        {
+            if (!overwriteSource) { SaveFbx(); return; }
+            assetWriteInProgress = true;
+            try
+            {
+                var saved = pipeline.OverwriteFbx(sources => EditorUtility.DisplayDialog("Overwrite Source FBX",
+                    "Write the current foliage normals and tangents into the selected submeshes in all captured LODs?\n\n" +
+                    string.Join("\n", sources) + "\n\nOther FBX channels and hierarchy are preserved.", "Overwrite", "Cancel"));
+                if (saved.Length > 0) UvtLog.Info("[Foliage] Overwritten FBX: " + string.Join(", ", saved));
+            }
+            catch (Exception e) { UvtLog.Error("[Foliage] " + e.Message); }
+            finally
+            {
+                assetWriteInProgress = false;
+                OnRefresh();
+                RequestRepaint?.Invoke();
+            }
+        }
+
         void SaveFbx()
         {
             string folder = EditorUtility.OpenFolderPanel("Save separate foliage FBX", Application.dataPath, "");
@@ -701,6 +784,8 @@ namespace SashaRX.UnityMeshLab
                 EditorGUILayout.LabelField($"{s.faces:N0} selected faces · area {s.area:G5} · {s.islands:N0} islands\n" +
                 $"{s.generated:N0} samples → {s.deduplicated:N0} dedup → {s.samples.Length:N0} primitives · {s.skippedDegenerate} degenerate\n" +
                 $"Neighbour min/mean/max: {s.minNeighbour:G4}/{s.meanNeighbour:G4}/{s.maxNeighbour:G4}", EditorStyles.wordWrappedMiniLabel);
+                if (pipeline.Primitives?.Length > 0)
+                    EditorGUILayout.LabelField($"Base sphere radius: {s.spacing * settings.radiusMultiplier:G5} capture units · variation ±{settings.sampleRadiusVariation:P0} · Scatter preview: {pipeline.ScatterPreviewCount:N0} / {pipeline.Primitives.Length:N0} spheres", EditorStyles.wordWrappedMiniLabel);
                 if (s.retainedForIslandMinimum > 0)
                     EditorGUILayout.LabelField($"{s.retainedForIslandMinimum:N0} close samples retained to preserve Minimum / island.", EditorStyles.wordWrappedMiniLabel);
             }
@@ -731,11 +816,15 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        bool CombinedPreview => preview == Preview.ProxyAndMesh || preview == Preview.PrimitiveSamples;
+        bool UsesScatterPreview => preview == Preview.PrimitiveSamples ||
+            preview == Preview.ProxyAndMesh && !pipeline.RemeshedMesh && !pipeline.SmoothedMesh && !pipeline.EnvelopeMesh;
+
         public bool Get3DContent(List<MeshViewport3D.Item> items)
         {
             ValidateComparisonPreview();
             var proxy = PreviewProxy();
-            if (proxy && preview != Preview.ProxyAndMesh)
+            if (proxy && !CombinedPreview)
             {
                 items.Add(new MeshViewport3D.Item(proxy, Matrix4x4.identity));
                 return true;
@@ -750,8 +839,8 @@ namespace SashaRX.UnityMeshLab
                 var target = pipeline.Targets.FirstOrDefault(t => t.renderer == source.renderer);
                 AddTargetPreview(items, source, target);
             }
-            if (preview == Preview.ProxyAndMesh && proxy)
-                items.Add(new MeshViewport3D.Item(proxy, Matrix4x4.identity) { WireOnly = true });
+            if (CombinedPreview && proxy)
+                items.Add(new MeshViewport3D.Item(proxy, Matrix4x4.identity) { WireOnly = true, SuppressWire = UsesScatterPreview ? !showSphereEdges : !showProxyEdges });
             return true;
         }
 
@@ -759,12 +848,14 @@ namespace SashaRX.UnityMeshLab
         {
             switch (preview)
             {
+                case Preview.PrimitiveSamples: return pipeline.ScatterMesh;
                 case Preview.SourceProxy: return pipeline.EnvelopeMesh;
                 case Preview.SmoothedProxy: return pipeline.SmoothedMesh;
                 case Preview.TransferProxy: return pipeline.RemeshedMesh;
                 case Preview.ProxyAndMesh:
                     if (pipeline.RemeshedMesh) return pipeline.RemeshedMesh;
-                    return pipeline.SmoothedMesh ? pipeline.SmoothedMesh : pipeline.EnvelopeMesh;
+                    if (pipeline.SmoothedMesh) return pipeline.SmoothedMesh;
+                    return pipeline.EnvelopeMesh ? pipeline.EnvelopeMesh : pipeline.ScatterMesh;
                 default: return null;
             }
         }
@@ -788,7 +879,8 @@ namespace SashaRX.UnityMeshLab
 
         public void OnDraw3D(MeshViewport3D view)
         {
-            if (showProxyEdges && !view.Wireframe && preview != Preview.ProxyAndMesh)
+            DrawCombinedProxySurface(view);
+            if (showProxyEdges && !view.Wireframe && !CombinedPreview)
             {
                 var proxy = PreviewProxy();
                 if (proxy)
@@ -796,11 +888,11 @@ namespace SashaRX.UnityMeshLab
                     view.DrawWire(proxy, Matrix4x4.identity, view.WireColor);
                 }
             }
-            if ((showPrimitives || preview == Preview.PrimitiveSamples) && pipeline.Samples != null)
+            if (showSamplePoints && pipeline.Samples != null)
             {
                 DrawSamples(view);
             }
-            if (!showNormalDirections && preview != Preview.BeforeAfter)
+            if (!showNormalDirections)
             {
                 return;
             }
@@ -810,6 +902,13 @@ namespace SashaRX.UnityMeshLab
             AppendPreviewNormalLines(before, after);
             view.DrawLines(before, Matrix4x4.identity, Color.cyan);
             view.DrawLines(after, Matrix4x4.identity, Color.yellow);
+        }
+
+        void DrawCombinedProxySurface(MeshViewport3D view)
+        {
+            if (!CombinedPreview || !showProxySurface || proxyOpacity <= 0) return;
+            var proxy = PreviewProxy();
+            if (proxy) view.DrawHighlightMesh(proxy, Matrix4x4.identity, new Color(.05f, .8f, 1f, Mathf.Clamp01(proxyOpacity)));
         }
 
         internal void AppendPreviewNormalLines(List<Vector3> before, List<Vector3> after)
@@ -850,7 +949,7 @@ namespace SashaRX.UnityMeshLab
         {
             var p = pipeline.Samples.samples;
             var subset = new List<Vector3>();
-            int n = Math.Min(4096, p.Length);
+            int n = Math.Min(FoliagePrimitiveBuilder.MaximumPreviewPrimitives, p.Length);
             for (int i = 0; i < n; i++)
             {
                 subset.Add(p[(int)((long)i * p.Length / n)]);
@@ -861,12 +960,6 @@ namespace SashaRX.UnityMeshLab
 
         public void OnDrawToolbarExtra()
         {
-            if (GUILayout.Button("Proxy + mesh", EditorStyles.toolbarButton)) preview = Preview.ProxyAndMesh;
-            if (GUILayout.Button("Mask", EditorStyles.toolbarButton)) preview = Preview.SelectionMask;
-            if (GUILayout.Button("Before", EditorStyles.toolbarButton)) SetNormalComparison(false);
-            using (new EditorGUI.DisabledScope(!pipeline.Has(FoliageNormalsPipeline.Stage.Transfer)))
-                if (GUILayout.Button("After", EditorStyles.toolbarButton)) SetNormalComparison(true);
-            showNormalDirections = GUILayout.Toggle(showNormalDirections, "Normal directions", EditorStyles.toolbarButton);
         }
         public void OnDrawStatusBar() => GUILayout.Label($"{pipeline.RunningStage?.ToString() ?? "Foliage"} · {pipeline.NormalSource} · {pipeline.ElapsedSeconds:F1}s · {pipeline.Primitives?.Length ?? 0:N0} primitives · {(pipeline.Remeshed ?? pipeline.Smoothed ?? pipeline.Envelope)?.TriangleCount ?? 0:N0} proxy triangles / {pipeline.ProxyComponents} components · {pipeline.TransferDiagnostics?.transferred ?? 0:N0} transferred / {pipeline.TransferDiagnostics?.misses ?? 0:N0} missed");
         public void OnDrawCanvasOverlay(UvCanvasView canvas, float cx, float cy, float sz)

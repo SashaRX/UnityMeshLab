@@ -118,7 +118,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
-        public IEnumerator SeparateFbxIncludesSelectedSubmeshNormalsInAllLodsAndPreservesSource()
+        public IEnumerator SeparateFbxIncludesRelaxedSelectedSubmeshNormalsInAllLodsAndPreservesSource()
         {
             string source = Source(false, true, lods: true);
             var bytes = File.ReadAllBytes(source); var meta = File.ReadAllBytes(source + ".meta");
@@ -130,7 +130,8 @@ namespace SashaRX.UnityMeshLab.Tests
                 var renderer = root.GetComponentsInChildren<MeshRenderer>().Single(r => r.name == "Tree_LOD0");
                 var settings = new FoliageNormalsSettings { filterRenderers = true, renderers = new[] { renderer },
                     selection = FoliageFaceSelection.SelectedSubmeshIndices, submeshes = new[] { 1 },
-                    normalSource = FoliageNormalSource.Sphere, proxySegments = 16, gpuProjection = false, recalculateTangents = true };
+                    normalSource = FoliageNormalSource.Sphere, proxySegments = 16, gpuProjection = false, recalculateTangents = true,
+                    relaxTransferredNormals = true, normalRelaxIterations = 1, normalRelaxStrength = 1 };
                 var task = pipeline.Run(root, settings, FoliageNormalsPipeline.Stage.Transfer);
                 yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, pipeline.Status);
                 Assert.AreEqual(3, pipeline.Targets.Count); Assert.AreEqual(1, pipeline.CaptureSourceCount);
@@ -143,11 +144,117 @@ namespace SashaRX.UnityMeshLab.Tests
                     var originalNormals = FbxLayerChannels.ReadVectors(FbxLayerChannels.NormalElement(mesh), a);
                     var resultNormals = FbxLayerChannels.ReadVectors(FbxLayerChannels.NormalElement(result), b);
                     Assert.IsFalse(originalNormals.SequenceEqual(resultNormals), mesh.GetName() + " must receive the selected foliage normals.");
+                    var materials = FbxStructureEdit.PolygonMaterials(result);
+                    var selectedCorners = Enumerable.Range(0, b.CornerCount).Where(c => materials[b.cornerPolygon[c]] == 1).ToArray();
+                    Assert.AreEqual(3, selectedCorners.Length);
+                    foreach (int corner in selectedCorners)
+                        for (int axis = 0; axis < 3; axis++)
+                            Assert.That(resultNormals[corner * 3 + axis], Is.EqualTo(resultNormals[selectedCorners[0] * 3 + axis]).Within(1e-5), "The saved triangle must contain the final averaged direction.");
                 }
                 CollectionAssert.AreEqual(bytes, File.ReadAllBytes(source)); CollectionAssert.AreEqual(meta, File.ReadAllBytes(source + ".meta"));
                 foreach (var target in pipeline.Targets) Assert.AreSame(target.source, target.filter.sharedMesh);
             }
             finally { pipeline.Dispose(); Object.DestroyImmediate(root); }
+        }
+
+        [UnityTest]
+        public IEnumerator PreviewOverwriteWritesSelectedShadingInAllLodsWithoutApplyToScene()
+        {
+            string source = Source(false, true, lods: true);
+            string beforePath = folder + "/before.fbx";
+            Assert.IsTrue(AssetDatabase.CopyAsset(source, beforePath));
+            var bytes = File.ReadAllBytes(source); var meta = File.ReadAllBytes(source + ".meta");
+            string guid = AssetDatabase.AssetPathToGUID(source);
+            var root = (GameObject)PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(source));
+            using var pipeline = new FoliageNormalsPipeline();
+            try
+            {
+                var renderer = root.GetComponentsInChildren<MeshRenderer>().Single(r => r.name == "Tree_LOD0");
+                var settings = new FoliageNormalsSettings { filterRenderers = true, renderers = new[] { renderer },
+                    selection = FoliageFaceSelection.SelectedSubmeshIndices, submeshes = new[] { 1 },
+                    normalSource = FoliageNormalSource.Hemisphere, proxySegments = 16, gpuProjection = false, recalculateTangents = true };
+                var task = pipeline.Run(root, settings, FoliageNormalsPipeline.Stage.Transfer);
+                yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, pipeline.Status);
+                Assert.AreEqual(3, pipeline.Targets.Count);
+                foreach (var target in pipeline.Targets) Assert.AreSame(target.source, target.filter.sharedMesh, "Preview must not require Apply to Scene.");
+                Assert.IsEmpty(pipeline.OverwriteFbx(_ => false));
+                CollectionAssert.AreEqual(bytes, File.ReadAllBytes(source));
+                Assert.IsTrue(pipeline.CanApply, "Cancelling overwrite keeps the result available.");
+                var paths = pipeline.OverwriteFbx(sources => { CollectionAssert.AreEqual(new[] { source }, sources); return true; });
+                CollectionAssert.AreEqual(new[] { source }, paths);
+                Assert.IsFalse(pipeline.Has(FoliageNormalsPipeline.Stage.Capture));
+                Assert.IsEmpty(pipeline.Targets);
+                Assert.AreEqual(guid, AssetDatabase.AssetPathToGUID(source));
+                CollectionAssert.AreEqual(meta, File.ReadAllBytes(source + ".meta"));
+                Assert.IsFalse(bytes.SequenceEqual(File.ReadAllBytes(source)), "The source must receive the current transfer result.");
+                CheckDocuments(beforePath, source);
+                using var before = FbxSourceDocument.Load(beforePath); using var after = FbxSourceDocument.Load(source);
+                foreach (var original in before.Meshes)
+                {
+                    var result = after.Meshes.Single(m => m.GetName() == original.GetName());
+                    var a = new FbxLayerChannels.Topology(original); var b = new FbxLayerChannels.Topology(result);
+                    Assert.IsFalse(FbxLayerChannels.ReadVectors(FbxLayerChannels.NormalElement(original), a)
+                        .SequenceEqual(FbxLayerChannels.ReadVectors(FbxLayerChannels.NormalElement(result), b)), original.GetName());
+                }
+                foreach (var filter in root.GetComponentsInChildren<MeshFilter>())
+                {
+                    Assert.IsTrue(EditorUtility.IsPersistent(filter.sharedMesh));
+                    Assert.AreEqual(source, AssetDatabase.GetAssetPath(filter.sharedMesh));
+                }
+            }
+            finally { pipeline.Dispose(); Object.DestroyImmediate(root); }
+        }
+
+        [UnityTest]
+        public IEnumerator StalePreviewCannotOverwriteOrAskForConfirmation()
+        {
+            string source = Source(false, true);
+            var bytes = File.ReadAllBytes(source);
+            var root = (GameObject)PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(source));
+            using var pipeline = new FoliageNormalsPipeline();
+            try
+            {
+                var settings = new FoliageNormalsSettings { normalSource = FoliageNormalSource.Sphere, proxySegments = 16, gpuProjection = false };
+                var task = pipeline.Run(root, settings, FoliageNormalsPipeline.Stage.Transfer);
+                yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, pipeline.Status);
+                root.transform.position += Vector3.right;
+                bool confirmed = false;
+                Assert.Throws<InvalidOperationException>(() => pipeline.OverwriteFbx(_ => { confirmed = true; return true; }));
+                Assert.IsFalse(confirmed); CollectionAssert.AreEqual(bytes, File.ReadAllBytes(source));
+            }
+            finally { pipeline.Dispose(); Object.DestroyImmediate(root); }
+        }
+
+        [UnityTest]
+        public IEnumerator FailedSourceImportRetainsFbxAndInvalidatesTheOldCapture()
+        {
+            string source = Source(false, true);
+            var root = (GameObject)PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(source));
+            using var pipeline = new FoliageNormalsPipeline();
+            try
+            {
+                var settings = new FoliageNormalsSettings { normalSource = FoliageNormalSource.Sphere, proxySegments = 16, gpuProjection = false };
+                var task = pipeline.Run(root, settings, FoliageNormalsPipeline.Stage.Transfer);
+                yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, pipeline.Status);
+                LogAssert.Expect(LogType.Error, new System.Text.RegularExpressions.Regex(".*overwrite did not complete: Injected source import failure.*"));
+                Assert.Throws<InvalidOperationException>(() => pipeline.OverwriteFbx(_ => true,
+                    (path, options) => throw new InvalidOperationException("Injected source import failure")));
+                Assert.IsTrue(File.Exists(source)); Assert.IsTrue(File.Exists(source + ".meta"));
+                Assert.IsFalse(pipeline.Has(FoliageNormalsPipeline.Stage.Capture)); Assert.IsEmpty(pipeline.Targets);
+                AssetDatabase.ImportAsset(source, ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate);
+                Assert.IsNotNull(AssetDatabase.LoadAssetAtPath<GameObject>(source));
+            }
+            finally { pipeline.Dispose(); Object.DestroyImmediate(root); }
+        }
+
+        [Test]
+        public void SelectedShadingCannotOverwriteSourceWithoutExplicitOptIn()
+        {
+            string source = Source(false, true); var bytes = File.ReadAllBytes(source);
+            var selection = new FbxExport.ShadingSelection();
+            Assert.Throws<InvalidOperationException>(() => FbxChannelWrite.Write(source, Array.Empty<MeshEntry>(),
+                FbxExportIntent.Normals, null, null, shadingSelection: selection));
+            CollectionAssert.AreEqual(bytes, File.ReadAllBytes(source));
         }
 
         static void AddInstance(FbxScene scene, FbxNode group, FbxNode source)
@@ -159,9 +266,9 @@ namespace SashaRX.UnityMeshLab.Tests
             group.AddChild(instance);
         }
 
-        static FoliageTargetSnapshot ShadingTarget(MeshRenderer renderer, Transform root)
+        static FoliageTargetSnapshot ShadingTarget(MeshRenderer renderer, Transform root, int submesh = 1)
         {
-            var settings = new FoliageNormalsSettings { selection = FoliageFaceSelection.SelectedSubmeshIndices, submeshes = new[] { 1 } };
+            var settings = new FoliageNormalsSettings { selection = FoliageFaceSelection.SelectedSubmeshIndices, submeshes = new[] { submesh } };
             var target = new FoliageTargetSnapshot(renderer, root.worldToLocalMatrix, settings, CancellationToken.None);
             try
             {
@@ -172,6 +279,56 @@ namespace SashaRX.UnityMeshLab.Tests
                 return target;
             }
             catch { target.Dispose(); throw; }
+        }
+
+        [Test]
+        public void ChannelPreflightDoesNotArmSidecarReplayOrChangeSourceBytes()
+        {
+            string source = Source(false, true);
+            var bytes = File.ReadAllBytes(source);
+            var root = (GameObject)PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(source));
+            try {
+                using var target = ShadingTarget(root.GetComponentInChildren<MeshRenderer>(), root.transform);
+                target.working.uv2 = Enumerable.Repeat(new Vector2(.23f, .79f), target.working.vertexCount).ToArray();
+                var entry = new MeshEntry { fbxMesh = target.source, originalMesh = target.original, transferredMesh = target.working, include = true };
+                Assert.IsFalse(Uv2AssetPostprocessor.fbxOverwritePaths.Contains(source));
+                Assert.IsTrue(FbxChannelWrite.Write(source, new[] { entry }, FbxExportIntent.UV1, null, null, validationOnly: true));
+                Assert.IsFalse(Uv2AssetPostprocessor.fbxOverwritePaths.Contains(source), "A read-only preflight must not arm a later source import.");
+                CollectionAssert.AreEqual(bytes, File.ReadAllBytes(source));
+            }
+            finally { Object.DestroyImmediate(root); }
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void MultipleSourceOverwritePreflightsLaterSelectionAndDocumentFailures(bool differentSelections)
+        {
+            string first = Source(false, true, filename: "first.fbx");
+            string later = Source(false, true, instanced: true, filename: "later.fbx");
+            var before = new[] { first, later }.Select(path => File.ReadAllBytes(path)).ToArray();
+            var meta = new[] { first, later }.Select(path => File.ReadAllBytes(path + ".meta")).ToArray();
+            var a = (GameObject)PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(first));
+            var b = (GameObject)PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(later));
+            var targets = new List<FoliageTargetSnapshot>();
+            try {
+                targets.Add(ShadingTarget(a.GetComponentInChildren<MeshRenderer>(), a.transform));
+                var renderers = b.GetComponentsInChildren<MeshRenderer>();
+                targets.Add(ShadingTarget(renderers[0], b.transform));
+                if (differentSelections) targets.Add(ShadingTarget(renderers[1], b.transform, 0));
+                int imports = 0;
+                Assert.Throws<InvalidOperationException>(() => FoliageFbxExport.Overwrite(targets, _ => true,
+                    (path, options) => { imports++; AssetDatabase.ImportAsset(path, options); }));
+                Assert.AreEqual(0, imports, "No source import may precede validation of the last source.");
+                for (int i = 0; i < 2; ++i) {
+                    string path = i == 0 ? first : later;
+                    CollectionAssert.AreEqual(before[i], File.ReadAllBytes(path), path);
+                    CollectionAssert.AreEqual(meta[i], File.ReadAllBytes(path + ".meta"), path);
+                }
+                foreach (var target in targets) Assert.IsTrue(target.working, "The preview remains available after preflight refusal.");
+            }
+            finally {
+                foreach (var target in targets) target.Dispose();
+                Object.DestroyImmediate(a); Object.DestroyImmediate(b);
+            }
         }
 
         [TestCase(false)] [TestCase(true)]

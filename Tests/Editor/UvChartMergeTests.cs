@@ -169,6 +169,35 @@ namespace SashaRX.UnityMeshLab.Tests
 
         // ── similarity fit ──────────────────────────────────────────────────
 
+        [Test]
+        public void BroadStrategyKeepsTheStretchAlreadyRecoveredByNarrowMerging()
+        {
+            var original = new UvChartQuality(381, 306, 1.03514, 5.02693, true);
+            var narrow = new UvChartQuality(113, 56, 1.03929, 3.1215, true);
+            var broad = new UvChartQuality(83, 47, 1.09305, 5.38553, true);
+            var packing = UvPackingQuality.Measure(TwoPatchGeometry(), default);
+            Assert.IsTrue(broad.Improves(narrow, original), "the old baseline would permit this regression");
+            Assert.IsFalse(UvChartMerge.PreferBroad(narrow, broad, packing, packing));
+            var bounded = new UvChartQuality(100, 50, 1.05, 3.5, true);
+            Assert.IsTrue(UvChartMerge.PreferBroad(narrow, bounded, packing, packing));
+            Assert.IsFalse(UvChartMerge.PreferBroad(narrow, bounded, packing, default), "packing still has to be valid");
+        }
+
+        [Test]
+        public void PrunedCafeChairBudgetCannotWinEvenWithPerfectStretchAndPacking()
+        {
+            var narrow = new UvChartQuality(754, 417, 1.03814, 8.461, true);
+            var fewerJoins = new UvChartQuality(1668, 1296, 1, 1, true);
+            var packing = UvPackingQuality.Measure(TwoPatchGeometry(), default);
+            Assert.IsFalse(UvChartMerge.PreferBroad(narrow, fewerJoins, packing, packing));
+            Assert.IsFalse(UvChartMerge.CanReachChartCount(2747, 1079, narrow.charts));
+            // Equal chart counts can still win by reducing the small-chart count.
+            var equalCharts = new UvChartQuality(754, 416, 1, 1, true);
+            Assert.IsTrue(UvChartMerge.PreferBroad(narrow, equalCharts, packing, packing));
+            Assert.IsTrue(UvChartMerge.CanReachChartCount(2747, 1993, narrow.charts));
+            Assert.IsTrue(UvChartMerge.CanReachChartCount(2747, int.MaxValue, narrow.charts));
+        }
+
         [TestCase(1)]
         [TestCase(2)]
         [TestCase(3)]

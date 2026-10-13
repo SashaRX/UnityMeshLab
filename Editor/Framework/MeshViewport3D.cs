@@ -18,7 +18,8 @@ namespace SashaRX.UnityMeshLab
     {
         /// <summary>How the content's surfaces are coloured.</summary>
         public enum Shading { Shaded, VertexColors, Normals, Tangents, UV0, UV1, UV2, UV3,
-            UV4, UV5, UV6, UV7, Positions, TangentSign, ColorAlpha, BoneWeights, BoneIndices }
+            UV4, UV5, UV6, UV7, Positions, TangentSign, ColorAlpha, BoneWeights, BoneIndices,
+            Albedo, NormalMap, Gloss, Metalness, AO }
         public enum Projection { Perspective, XY, XZ, YZ }
         internal enum UpAxis { X, Y, Z }
 
@@ -33,11 +34,16 @@ namespace SashaRX.UnityMeshLab
             // frame a proxy whose surface must not hide the source mesh.
             public Shading? ShadingOverride { get; set; }
             public bool WireOnly { get; set; }
-            public Item(Mesh mesh, Matrix4x4 matrix, Material[] materials = null) { this.mesh = mesh; this.matrix = matrix; this.materials = materials; ShadingOverride = null; WireOnly = false; }
+            // Overlay geometry still participates in framing and stays out of picking.
+            internal bool SuppressWire { get; set; }
+            public Item(Mesh mesh, Matrix4x4 matrix, Material[] materials = null) { this.mesh = mesh; this.matrix = matrix; this.materials = materials; ShadingOverride = null; WireOnly = false; SuppressWire = false; }
         }
 
         public static readonly string[] ShadingNames = { "Surface", "Vertex colors", "Normals", "Tangents", "UV0", "UV1", "UV2", "UV3",
-            "UV4", "UV5", "UV6", "UV7", "Positions", "Tangent sign", "Color alpha", "Dominant bone weight", "Dominant bone index" };
+            "UV4", "UV5", "UV6", "UV7", "Positions", "Tangent sign", "Color alpha", "Dominant bone weight", "Dominant bone index",
+            "Unlit / Albedo", "Unlit / Normal map", "Unlit / Gloss", "Unlit / Metalness", "Unlit / AO" };
+
+        internal static bool IsMaterialMode(Shading mode) => mode >= Shading.Albedo && mode <= Shading.AO;
 
         public Shading Mode = Shading.Shaded;
         public Projection ViewProjection;
@@ -45,6 +51,8 @@ namespace SashaRX.UnityMeshLab
         public bool Wireframe;
         public bool Lit = true;
         public bool ShowGrid = true, ShowAxes = true;
+        public bool XRay;
+        public float SurfaceOpacity = 1f;
         public Color Background = new Color(0.16f, 0.19f, 0.24f, 1f);
         public Action RequestRepaint;
         /// <summary>The wire colour that reads on the current shading: near-black on the lit
@@ -58,13 +66,11 @@ namespace SashaRX.UnityMeshLab
         Vector3 pivot;
         Vector2 orbit = new Vector2(-135f, 20f);   // yaw, pitch (degrees)
         float distance = 5f, radius = 1f;
-        int framedKey;
-        bool framedOnce;
-        object framedContext;
-        internal object FramingContext { get; set; }
+        bool frameRequested = true;
 
         static readonly int ColorId = Shader.PropertyToID("_Color");
         static readonly int UseVertexColorId = Shader.PropertyToID("_UseVertexColor");
+        const string MainTextureProperty = "_MainTex";
 
         // The orbit stores the drag: x turns around the vertical axis (yaw), y tilts (pitch).
         Quaternion OrbitRotation()
@@ -94,6 +100,9 @@ namespace SashaRX.UnityMeshLab
 
         PreviewRenderUtility utility;
         Material surface, flat, wire, points;
+        Material wireXRay, overlaySurface, overlayXRay;
+        Material pointDots, pointDotsXRay;
+        Material materialChannels, translucentChannels, translucentSurface;
         RenderTexture offscreen;   // owned; replaced only when the preview target's size, format or sample count changes
         Rect currentRect;
         bool drawing;
@@ -108,11 +117,20 @@ namespace SashaRX.UnityMeshLab
         readonly Dictionary<int, WirePreview> wireCache = new Dictionary<int, WirePreview>();
         readonly PreviewLines lineRibbons = new PreviewLines();
         readonly List<Mesh> frameMeshes = new List<Mesh>();   // transient meshes built for this frame
+        readonly Dictionary<(Material, int), Material> materialLayerMaterials = new Dictionary<(Material, int), Material>();
 
         public MeshViewport3D() { VertexChannels.Changed += InvalidateMesh; }
 
         public Rect LastRect => currentRect;
         public Camera Camera => utility?.camera;
+        internal LightmapData[] SceneLightmaps { get; private set; }
+
+        // GUILayout supplies a placeholder during Layout. Keep the usable rect for
+        // async Spot completion, and refresh it before picking an input event.
+        internal void PrepareRect(Rect rect, EventType eventType)
+        {
+            if (eventType != EventType.Layout) currentRect = rect;
+        }
 
         // ═══════════════════════════════════════════════════════════
         //  Drawing
@@ -122,14 +140,18 @@ namespace SashaRX.UnityMeshLab
         /// current shading, calls overlay for the tool's additions and blits the result.</summary>
         public void Draw(Rect rect, IReadOnlyList<Item> items, Action<MeshViewport3D> overlay)
         {
-            currentRect = rect;
-            var bounds = BoundsOf(items, out int key, out bool any);
-            AutoFrame(bounds, key, any);
+            PrepareRect(rect, Event.current.type);
+            var bounds = BoundsOf(items, out bool any);
+            FrameIfRequested(bounds, any);
             HandleInput(rect, any ? bounds : (Bounds?)null);
             if (Event.current.type != EventType.Repaint) return;
             EditorGUI.DrawRect(rect, Background);
             if (!EnsureResources()) return;
+            ConfigureOverlayQueues(items);
 
+            // BeginPreview switches to an isolated scene with its own empty lightmaps.
+            // UV overlays need the authored scene's atlas references during that render.
+            SceneLightmaps = LightmapSettings.lightmaps;
             utility.BeginPreview(rect, GUIStyle.none);
             var camera = utility.camera;
             camera.clearFlags = CameraClearFlags.SolidColor;
@@ -140,7 +162,8 @@ namespace SashaRX.UnityMeshLab
             camera.transform.rotation = rotation;
             camera.transform.position = pivot - rotation * Vector3.forward * distance;
             camera.nearClipPlane = Mathf.Max(distance * 0.001f, 1e-4f);
-            camera.farClipPlane = distance + radius * 8f + 1f;
+            camera.farClipPlane = Mathf.Max(distance + radius * 8f + 1f,
+                any ? Vector3.Distance(camera.transform.position, bounds.center) + radius : 0f);
             utility.lights[0].intensity = 1.1f; utility.lights[0].transform.rotation = rotation * Quaternion.Euler(30f, 30f, 0f);
             utility.lights[1].intensity = 0.6f; utility.lights[1].transform.rotation = rotation * Quaternion.Euler(-20f, -150f, 0f);
             utility.ambientColor = new Color(0.25f, 0.25f, 0.25f, 1f);
@@ -167,7 +190,7 @@ namespace SashaRX.UnityMeshLab
                     foreach (var item in items) {
                         if (!item.mesh) continue;
                         DrawItem(item);
-                        if (Wireframe || item.WireOnly) DrawWire(item.mesh, item.matrix, item.WireOnly ? Color.cyan : WireColor);
+                        if (!item.SuppressWire && (Wireframe || item.WireOnly)) DrawWire(item.mesh, item.matrix, item.WireOnly ? Color.cyan : WireColor);
                     }
                 overlay?.Invoke(this);
                 if (any) {
@@ -182,6 +205,7 @@ namespace SashaRX.UnityMeshLab
             catch (Exception ex) { UvtLog.Warn("[3D] " + ex.Message); }
             finally {
                 drawing = false;
+                SceneLightmaps = null;
                 if (own) camera.targetTexture = target;
                 GUI.DrawTexture(rect, utility.EndPreview(), ScaleMode.StretchToFill, false);
                 foreach (var mesh in frameMeshes) if (mesh) Object.DestroyImmediate(mesh);
@@ -230,9 +254,47 @@ namespace SashaRX.UnityMeshLab
             if (item.WireOnly) return;
             var mesh = item.mesh;
             var mode = item.ShadingOverride ?? Mode;
+            if (IsMaterialMode(mode)) {
+                int slots = MaterialChannelPreview.DrawSlotCount(mesh.subMeshCount, item.materials);
+                for (int slot = 0; slot < slots; ++slot) {
+                    int sub = Mathf.Min(slot, mesh.subMeshCount - 1);
+                    var source = item.materials != null && slot < item.materials.Length ? item.materials[slot] : null;
+                    var block = Block();
+                    MaterialChannelPreview.Read(source, mode).Apply(block);
+                    block.SetFloat("_Opacity", Mathf.Clamp01(SurfaceOpacity));
+                    var template = SurfaceOpacity < .999f ? translucentChannels : materialChannels;
+                    int layer = Mathf.Max(0, slot - mesh.subMeshCount + 1);
+                    utility.DrawMesh(mesh, item.matrix, LayerMaterial(template, layer), sub, block);
+                }
+                return;
+            }
+            if (SurfaceOpacity < .999f) {
+                var shown = mode == Shading.Shaded ? mesh : Encoded(mesh, mode);
+                if (!shown) shown = mesh;
+                int slots = mode == Shading.Shaded ? MaterialChannelPreview.DrawSlotCount(shown.subMeshCount, item.materials) : shown.subMeshCount;
+                for (int slot = 0; slot < slots; ++slot) {
+                    int sub = Mathf.Min(slot, shown.subMeshCount - 1);
+                    var material = item.materials != null && slot < item.materials.Length ? item.materials[slot] : null;
+                    var block = SurfaceBlock(shown, mode != Shading.Shaded);
+                    var albedo = MaterialChannelPreview.Read(material, Shading.Albedo);
+                    Color tint = mode == Shading.Shaded ? albedo.tint : Color.white;
+                    tint.a = Mathf.Clamp01(SurfaceOpacity) * (mode == Shading.Shaded && MaterialChannelPreview.UsesSurfaceAlpha(material) ? albedo.tint.a : 1);
+                    block.SetColor(ColorId, tint);
+                    bool vertexColors = mode != Shading.Shaded || (material && material.HasProperty("_UseVertexColor") && material.GetFloat("_UseVertexColor") > .5f);
+                    block.SetFloat(UseVertexColorId, vertexColors ? 1 : 0);
+                    Texture texture = BindSurfaceTexture(material,block);
+                    block.SetFloat("_UseTexture", mode == Shading.Shaded && texture ? 1 : 0);
+                    int layer = Mathf.Max(0, slot - shown.subMeshCount + 1);
+                    utility.DrawMesh(shown, item.matrix, LayerMaterial(translucentSurface, layer), sub, block);
+                }
+                return;
+            }
             if (mode == Shading.Shaded) {
-                for (int sub = 0; sub < mesh.subMeshCount; ++sub) {
-                    var material = item.materials != null && sub < item.materials.Length ? item.materials[sub] : null;
+                int slots = MaterialChannelPreview.DrawSlotCount(mesh.subMeshCount, item.materials);
+                for (int slot = 0; slot < slots; ++slot) {
+                    int sub = Mathf.Min(slot, mesh.subMeshCount - 1);
+                    var material = item.materials != null && slot < item.materials.Length ? item.materials[slot] : null;
+
                     if (material) utility.DrawMesh(mesh, item.matrix, material, sub);
                     else utility.DrawMesh(mesh, item.matrix, surface, sub, SurfaceBlock(mesh, false));
                 }
@@ -250,6 +312,39 @@ namespace SashaRX.UnityMeshLab
             for (int sub = 0; sub < encoded.subMeshCount; ++sub) utility.DrawMesh(encoded, item.matrix, surface, sub, data);
         }
 
+        // Coincident Graphics.DrawMesh submissions have no stable tie order.
+        // Give excess slots increasing queues without editing authored materials.
+        Material LayerMaterial(Material template, int layer)
+        {
+            if (layer == 0) return template;
+            var key = (template, layer);
+            if (!materialLayerMaterials.TryGetValue(key, out var material)) {
+                material = new Material(template) {
+                    hideFlags = HideFlags.HideAndDontSave,
+                    renderQueue = Mathf.Min(5000, template.renderQueue + layer)
+                };
+                materialLayerMaterials.Add(key, material);
+            }
+            return material;
+        }
+
+        void ConfigureOverlayQueues(IReadOnlyList<Item> items)
+        {
+            int extraLayers = 0;
+            if (SurfaceOpacity < .999f && items != null)
+                foreach (var item in items)
+                    if (item.mesh && item.mesh.subMeshCount > 0 &&
+                        ((item.ShadingOverride ?? Mode) == Shading.Shaded || IsMaterialMode(item.ShadingOverride ?? Mode)))
+                        extraLayers = Mathf.Max(extraLayers, (item.materials?.Length ?? 0) - item.mesh.subMeshCount);
+            int overlayQueue = extraLayers > 0 ? Mathf.Min(5000, 3006 + extraLayers) : 3005;
+            overlaySurface.renderQueue = overlayQueue;
+            overlayXRay.renderQueue = Mathf.Min(5000, Mathf.Max(3020, overlayQueue + 15));
+            wire.renderQueue = Mathf.Min(5000, Mathf.Max(3010, overlayQueue + 5));
+            wireXRay.renderQueue = Mathf.Min(5000, Mathf.Max(3030, overlayQueue + 25));
+            pointDots.renderQueue = Mathf.Min(5000, Mathf.Max(3020, overlayQueue + 15));
+            pointDotsXRay.renderQueue = Mathf.Min(5000, Mathf.Max(3040, overlayQueue + 35));
+        }
+
         // ═══════════════════════════════════════════════════════════
         //  Overlay API (valid inside the overlay callback)
         // ═══════════════════════════════════════════════════════════
@@ -259,6 +354,15 @@ namespace SashaRX.UnityMeshLab
         // materials — otherwise the last value set would paint every queued draw.
         readonly List<MaterialPropertyBlock> frameBlocks = new List<MaterialPropertyBlock>();
         MaterialPropertyBlock Block() { var block = new MaterialPropertyBlock(); frameBlocks.Add(block); return block; }
+        internal static Texture BindSurfaceTexture(Material material, MaterialPropertyBlock block)
+        {
+            var albedo = MaterialChannelPreview.Read(material, Shading.Albedo);
+            block.SetVector("_UvScaleOffset", albedo.transform);
+            block.SetTexture(MainTextureProperty, albedo.texture ? albedo.texture : Texture2D.whiteTexture);
+            block.SetFloat("_UseTextureAlpha", MaterialChannelPreview.UsesSurfaceAlpha(material) ? 1 : 0);
+            return albedo.texture;
+        }
+
         MaterialPropertyBlock SurfaceBlock(Mesh mesh, bool encoded)
         {
             var block = Block();
@@ -281,12 +385,17 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Draws a mesh with the given material and a per-draw texture/tint pair
         /// (the UV layer: texture + white, a shell highlight: white texture + colour).</summary>
         public void DrawTextured(Mesh mesh, Matrix4x4 matrix, Material material, Texture texture, Color tint, int uvChannel)
+            => DrawTextured(mesh, matrix, material, texture, tint, uvChannel, new Vector4(1, 1, 0, 0));
+
+        internal void DrawTextured(Mesh mesh, Matrix4x4 matrix, Material material, Texture texture, Color tint, int uvChannel, Vector4 uvScaleOffset)
         {
             if (!drawing || !mesh || !material) return;
             var block = Block();
-            block.SetTexture("_MainTex", texture ? texture : Texture2D.whiteTexture);
+            block.SetTexture(MainTextureProperty, texture ? texture : Texture2D.whiteTexture);
             block.SetColor(ColorId, tint);
+            if (SurfaceOpacity < .999f) { tint.a *= Mathf.Clamp01(SurfaceOpacity); block.SetColor(ColorId, tint); }
             block.SetFloat("_UVChannel", uvChannel);
+            block.SetVector("_UvScaleOffset", uvScaleOffset);
             for (int sub = 0; sub < mesh.subMeshCount; ++sub) utility.DrawMesh(mesh, matrix, material, sub, block);
         }
 
@@ -300,18 +409,51 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>Draws a prebuilt line-topology mesh in one colour (cage shells, edge sets).</summary>
         public void DrawLineMesh(Mesh lines, Matrix4x4 matrix, Color color)
+            => DrawLineMesh(lines, matrix, color, 1f);
+
+        internal void DrawLineMesh(Mesh lines, Matrix4x4 matrix, Color color, float width)
         {
             if (!drawing || !lines) return;
-            DrawRibbons(lineRibbons.Get(lines), matrix, color);
+            DrawRibbons(lineRibbons.Get(lines), matrix, color, width);
         }
 
-        void DrawRibbons(Mesh ribbons, Matrix4x4 matrix, Color color)
+        void DrawRibbons(Mesh ribbons, Matrix4x4 matrix, Color color, float width = 1f)
         {
             if (!ribbons) return;
             var target = utility.camera.targetTexture;
             var block = Block(); block.SetColor(ColorId, color);
+            block.SetFloat("_LineWidth", width);
             block.SetVector("_ViewportSize", new Vector4(target.width, target.height, 0, 0));
-            utility.DrawMesh(ribbons, matrix, wire, 0, block);
+            utility.DrawMesh(ribbons, matrix, XRay ? wireXRay : wire, 0, block);
+        }
+
+        internal void DrawHighlightMesh(Mesh mesh, Matrix4x4 matrix, Color color, bool vertexColors = false)
+        {
+            if (!drawing || !mesh) return;
+            var block = Block(); block.SetColor(ColorId, color);
+            block.SetFloat(UseVertexColorId, vertexColors ? 1 : 0);
+            utility.DrawMesh(mesh, matrix, XRay ? overlayXRay : overlaySurface, 0, block);
+        }
+
+        internal void DrawPointMesh(Mesh mesh, Matrix4x4 matrix, Color color, float size)
+        {
+            if (!drawing || !mesh) return;
+            var target = utility.camera.targetTexture; var block = Block();
+            block.SetColor(ColorId, color); block.SetFloat("_PointSize", size);
+            block.SetVector("_ViewportSize", new Vector4(target.width, target.height, 0, 0));
+            utility.DrawMesh(mesh, matrix, XRay ? pointDotsXRay : pointDots, 0, block);
+        }
+
+        internal bool TryProject(Vector3 world, out Vector2 gui, out float depth)
+        {
+            var rotation = OrbitRotation();
+            var local = Quaternion.Inverse(rotation) * (world - (pivot - rotation * Vector3.forward * distance));
+            depth = local.z; gui = default;
+            if (depth <= 0 || currentRect.height <= 0 || currentRect.width <= 0) return false;
+            float half = Mathf.Tan(15f * Mathf.Deg2Rad) * (ViewProjection == Projection.Perspective ? depth : distance);
+            gui = new Vector2(currentRect.center.x + local.x / half * currentRect.height * .5f,
+                currentRect.center.y - local.y / half * currentRect.height * .5f);
+            return true;
         }
 
         /// <summary>The world-space ray under a GUI point of the last drawn rect, from the
@@ -337,13 +479,16 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>Draws line segments given as consecutive point pairs.</summary>
         public void DrawLines(IList<Vector3> pairs, Matrix4x4 matrix, Color color)
+            => DrawLines(pairs, matrix, color, 1f);
+
+        internal void DrawLines(IList<Vector3> pairs, Matrix4x4 matrix, Color color, float width)
         {
             if (!drawing || pairs == null || pairs.Count < 2) return;
             var indices = new int[pairs.Count - pairs.Count % 2];
             for (int i = 0; i < indices.Length; ++i) indices[i] = i;
             var mesh = PreviewLines.Build(pairs, indices, null).Upload();
             frameMeshes.Add(mesh);
-            DrawRibbons(mesh, matrix, color);
+            DrawRibbons(mesh, matrix, color, width);
         }
 
         /// <summary>Draws per-segment coloured lines: pairs[i*2..i*2+1] in colors[i].</summary>
@@ -431,7 +576,8 @@ namespace SashaRX.UnityMeshLab
             var mesh = new Mesh { hideFlags = HideFlags.HideAndDontSave, indexFormat = IndexFormat.UInt32 };
             mesh.vertices = vertices; mesh.colors = vertexColors; mesh.SetIndices(indices, MeshTopology.Triangles, 0);
             frameMeshes.Add(mesh);
-            utility.DrawMesh(mesh, Matrix4x4.identity, points, 0);
+            var block = Block(); block.SetColor(ColorId, Color.white); block.SetFloat(UseVertexColorId, 1);
+            utility.DrawMesh(mesh, Matrix4x4.identity, XRay ? overlayXRay : overlaySurface, 0, block);
         }
 
         /// <summary>A material of the viewport's own shader: flat colour, optional
@@ -447,19 +593,19 @@ namespace SashaRX.UnityMeshLab
         //  Camera
         // ═══════════════════════════════════════════════════════════
 
-        void AutoFrame(Bounds bounds, int key, bool any)
+        void FrameIfRequested(Bounds bounds, bool any)
         {
             if (!any) return;
-            bool changed = FramingContext != null ? !ReferenceEquals(framedContext, FramingContext)
-                : framedContext != null || key != framedKey;
-            if (!framedOnce || changed) {
-                Frame(bounds); framedKey = key; framedContext = FramingContext; framedOnce = true;
-            }
+            // Content size drives clipping, axis size and navigation limits; it is
+            // independent of the camera position/orbit/distance chosen by the user.
+            radius = Mathf.Max(bounds.extents.magnitude, 1e-4f);
+            if (frameRequested) Frame(bounds);
         }
 
         /// <summary>Centres the camera on bounds at a distance that fits them.</summary>
         public void Frame(Bounds bounds)
         {
+            frameRequested = false;
             pivot = bounds.center;
             radius = Mathf.Max(bounds.extents.magnitude, 1e-4f);
             distance = radius / Mathf.Sin(15f * Mathf.Deg2Rad) * 1.05f;
@@ -467,7 +613,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>Re-frames the current content on the next draw.</summary>
-        public void FrameContent() { framedOnce = false; RequestRepaint?.Invoke(); }
+        public void FrameContent() { frameRequested = true; RequestRepaint?.Invoke(); }
 
         void HandleInput(Rect rect, Bounds? content)
         {
@@ -505,22 +651,26 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static Bounds BoundsOf(IReadOnlyList<Item> items, out int key, out bool any)
+        static Bounds BoundsOf(IReadOnlyList<Item> items, out bool any)
         {
-            var bounds = new Bounds(); any = false; key = 17;
+            var bounds = new Bounds(); any = false;
             if (items == null) return bounds;
             foreach (var item in items) {
                 if (!item.mesh) continue;
-                key = unchecked(key * 31 + item.mesh.GetInstanceID());
-                var local = item.mesh.bounds;
-                // Transform the eight corners so a rotated item still fits.
-                for (int c = 0; c < 8; ++c) {
-                    var corner = new Vector3((c & 1) == 0 ? local.min.x : local.max.x, (c & 2) == 0 ? local.min.y : local.max.y, (c & 4) == 0 ? local.min.z : local.max.z);
-                    var world = item.matrix.MultiplyPoint3x4(corner);
-                    if (!any) { bounds = new Bounds(world, Vector3.zero); any = true; } else bounds.Encapsulate(world);
-                }
+                AddItemBounds(item, ref bounds, ref any);
             }
             return bounds;
+        }
+
+        static void AddItemBounds(Item item, ref Bounds bounds, ref bool any)
+        {
+            var local = item.mesh.bounds;
+            // Transform the eight corners so a rotated item still fits.
+            for (int c = 0; c < 8; ++c) {
+                var corner = new Vector3((c & 1) == 0 ? local.min.x : local.max.x, (c & 2) == 0 ? local.min.y : local.max.y, (c & 4) == 0 ? local.min.z : local.max.z);
+                var world = item.matrix.MultiplyPoint3x4(corner);
+                if (!any) { bounds = new Bounds(world, Vector3.zero); any = true; } else bounds.Encapsulate(world);
+            }
         }
 
         // ═══════════════════════════════════════════════════════════
@@ -530,16 +680,36 @@ namespace SashaRX.UnityMeshLab
         bool EnsureResources()
         {
             if (utility == null) utility = new PreviewRenderUtility { cameraFieldOfView = 30f };
-            if (surface && flat && wire && points) return true;
+            if (surface && flat && wire && points && overlaySurface && materialChannels) return true;
             var shader = Shader.Find("Hidden/MeshLab/RemeshPreview");
             var lineShader = Shader.Find("Hidden/MeshLab/PreviewLines");
-            if (!shader || !lineShader) return false;
+            var overlayShader = Shader.Find("Hidden/MeshLab/ViewportOverlay");
+            var pointShader = Shader.Find("Hidden/MeshLab/PreviewPoints");
+            var channelShader = Shader.Find("Hidden/MeshLab/MaterialChannelPreview");
+            if (!shader || !lineShader || !overlayShader || !pointShader || !channelShader) return false;
+            materialChannels = new Material(channelShader) { hideFlags = HideFlags.HideAndDontSave };
+            translucentChannels = new Material(channelShader) { hideFlags = HideFlags.HideAndDontSave, renderQueue = 3005 };
+            translucentChannels.SetFloat("_ZWrite", 0);
+            translucentChannels.SetFloat("_SrcBlend", (float)BlendMode.SrcAlpha);
+            translucentChannels.SetFloat("_DstBlend", (float)BlendMode.OneMinusSrcAlpha);
             surface = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
             flat = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
             flat.SetFloat("_DepthOffset", -1);
             // Lines sit above the flat overlays and the UV layer (both at -1): at the same
             // offset the layer, drawn later, covered the wire wherever it was opaque.
             wire = new Material(lineShader) { hideFlags = HideFlags.HideAndDontSave };
+            wireXRay = new Material(lineShader) { hideFlags = HideFlags.HideAndDontSave };
+            wireXRay.SetFloat("_ZTest", (float)CompareFunction.Always);
+            wireXRay.renderQueue = 3030;
+            translucentSurface = new Material(overlayShader) { hideFlags = HideFlags.HideAndDontSave, renderQueue = 3005 };
+            overlaySurface = new Material(overlayShader) { hideFlags = HideFlags.HideAndDontSave };
+            overlayXRay = new Material(overlayShader) { hideFlags = HideFlags.HideAndDontSave };
+            overlayXRay.SetFloat("_ZTest", (float)CompareFunction.Always);
+            overlayXRay.renderQueue = 3020;
+            pointDots = new Material(pointShader) { hideFlags = HideFlags.HideAndDontSave };
+            pointDotsXRay = new Material(pointShader) { hideFlags = HideFlags.HideAndDontSave };
+            pointDotsXRay.SetFloat("_ZTest", (float)CompareFunction.Always);
+            pointDotsXRay.renderQueue = 3040;
             points = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
             points.SetFloat("_Lit", 0); points.SetFloat(UseVertexColorId, 1); points.SetFloat("_DepthOffset", -3);
             return true;
@@ -750,12 +920,26 @@ namespace SashaRX.UnityMeshLab
             VertexChannels.Changed -= InvalidateMesh;
             InvalidateCaches();
             utility?.Cleanup(); utility = null;
+            foreach (var material in materialLayerMaterials.Values) if (material) Object.DestroyImmediate(material);
+            materialLayerMaterials.Clear();
             ReleaseOffscreen();
             if (surface) Object.DestroyImmediate(surface);
             if (flat) Object.DestroyImmediate(flat);
             if (wire) Object.DestroyImmediate(wire);
             if (points) Object.DestroyImmediate(points);
+            if (wireXRay) Object.DestroyImmediate(wireXRay);
+            if (overlaySurface) Object.DestroyImmediate(overlaySurface);
+            if (overlayXRay) Object.DestroyImmediate(overlayXRay);
+            if (pointDots) Object.DestroyImmediate(pointDots);
+            if (pointDotsXRay) Object.DestroyImmediate(pointDotsXRay);
+            if (materialChannels) Object.DestroyImmediate(materialChannels);
+            if (translucentChannels) Object.DestroyImmediate(translucentChannels);
+            if (translucentSurface) Object.DestroyImmediate(translucentSurface);
+            materialChannels = translucentChannels = translucentSurface = null;
+            pointDots = pointDotsXRay = null;
+            wireXRay = overlaySurface = overlayXRay = null;
             surface = flat = wire = points = null;
         }
     }
 }
+

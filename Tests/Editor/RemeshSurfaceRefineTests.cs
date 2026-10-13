@@ -7,6 +7,33 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public sealed class RemeshSurfaceRefineTests
     {
+        [TestCase(.001f, false)]
+        [TestCase(1f, false)]
+        [TestCase(1000f, false)]
+        [TestCase(.001f, true)]
+        [TestCase(1f, true)]
+        [TestCase(1000f, true)]
+        public void FinalRegularizationRepairsRoundoffNormalWhilePreservingSourceFeatures(float scale, bool protectedSourceEdge)
+        {
+            var p = new[] { Vector3.zero, Vector3.right * scale, new Vector3(.5f, 1e-7f, 0) * scale, Vector3.up * scale };
+            var ix = new[] { 0, 1, 2, 1, 0, 3 };
+            var input = new RemeshNative.IndexedMesh { positions = p, indices = ix };
+            var source = protectedSourceEdge ? new[] { Vector3.zero, Vector3.right * scale, Vector3.up * scale } :
+                new[] { new Vector3(-1,-1,0)*scale, new Vector3(2,-1,0)*scale, new Vector3(2,2,0)*scale, new Vector3(-1,2,0)*scale };
+            var sourceIx = protectedSourceEdge ? new[] { 1, 0, 2 } : new[] { 0, 2, 1, 0, 3, 2 };
+            var result = RemeshSurfaceRefine.RegularizeFitted(input, source, sourceIx, scale * .1f, CancellationToken.None, out var report);
+            if (protectedSourceEdge) {
+                Assert.AreEqual(0, report.flips); Assert.AreSame(input, result);
+                CollectionAssert.AreEqual(p, input.positions); CollectionAssert.AreEqual(ix, input.indices);
+                return;
+            }
+            Assert.Greater(report.flips, 0); Assert.IsFalse(report.reverted);
+            CollectionAssert.AreEqual(p, result.positions); CollectionAssert.AreEqual(new[] { 0, 1, 2, 1, 0, 3 }, input.indices);
+            Assert.AreEqual(ix.Length, result.indices.Length);
+            for (int f = 0; f < result.indices.Length; f += 3)
+                Assert.Greater(RemeshSurfaceRefine.Quality(p[result.indices[f]], p[result.indices[f+1]], p[result.indices[f+2]]), .1f);
+        }
+
         [TestCase(false, 1f)]
         [TestCase(true, 1f)]
         [TestCase(false, .001f)]
@@ -140,6 +167,49 @@ namespace SashaRX.UnityMeshLab.Tests
             var before = RemeshTopology.Inspect(p, ix); var after = RemeshTopology.Inspect(result.positions, result.indices);
             Assert.IsTrue(after.Valid, after.Description);
             Assert.IsTrue(after.PreservesBoundary(before)); Assert.IsTrue(after.PreservesComponents(before, false));
+        }
+
+        [TestCase(1f)]
+        [TestCase(.001f)]
+        [TestCase(1000f)]
+        public void CoarseFitIncludesLongPatchesWithShortCrossSectionEdges(float scale)
+        {
+            var source = new[] { new Vector3(.015f,0,0), new Vector3(1,1,0), new Vector3(-1,1,0),
+                new Vector3(-1,-1,0), new Vector3(1,-1,0), Vector3.zero };
+            for (int v = 0; v < source.Length; v++) source[v] *= scale;
+            var p = (Vector3[])source.Clone(); p[5].z = scale * .0025f;
+            var ix = new[] { 0,1,5, 1,2,5, 2,3,5, 3,4,5, 4,0,5 };
+            var input = new RemeshNative.IndexedMesh { positions = p, indices = ix };
+            var result = RemeshSurfaceRefine.FitCoarse(input, source, ix, scale * .01f, default, out var report);
+            Assert.IsFalse(report.reverted, report.rejectionReason); Assert.Greater(report.moves, 0);
+            Assert.Less(Mathf.Abs(result.positions[5].z), scale * 1e-6f);
+            for (int v = 0; v < 5; v++) Assert.AreEqual(p[v], result.positions[v]);
+            CollectionAssert.AreEqual(ix, result.indices);
+            Assert.AreEqual(scale * .0025f, input.positions[5].z);
+        }
+
+        [TestCase(1f)]
+        [TestCase(.001f)]
+        [TestCase(1000f)]
+        public void CoarseFitBacktracksMotionThatWouldLoseASourceProtrusion(float scale)
+        {
+            var source = new[] { new Vector3(-1,-1,0), new Vector3(1,-1,0), new Vector3(1,1,0), new Vector3(-1,1,0), Vector3.zero,
+                new Vector3(-.001f,-.001f,.04f), new Vector3(.001f,-.001f,.04f), new Vector3(0,.001f,.04f) };
+            for (int v = 0; v < source.Length; v++) source[v] *= scale;
+            var p = new[] { source[0], source[1], source[2], source[3], new Vector3(0,0,.005f * scale) };
+            var ix = new[] { 0,1,4, 1,2,4, 2,3,4, 3,0,4 };
+            var sourceIx = new[] { 0,1,4, 1,2,4, 2,3,4, 3,0,4, 5,6,7 };
+            var input = new RemeshNative.IndexedMesh { positions = p, indices = ix };
+            var result = RemeshSurfaceRefine.FitCoarse(input, source, sourceIx, scale * .1f, default, out var report);
+            Assert.IsFalse(report.reverted, report.rejectionReason);
+            Assert.Greater(report.motionBacktracks, 0); Assert.LessOrEqual(report.motionBacktracks, 3);
+            Assert.Greater(report.motionScale, 0); Assert.Less(report.motionScale, 1);
+            Assert.Greater(report.moves, 0);
+            var before = RemeshSurfaceRefine.SampleErrorCore(new TriangleBvh(p, ix), source, sourceIx, default, true);
+            var after = RemeshSurfaceRefine.SampleErrorCore(new TriangleBvh(result.positions, result.indices), source, sourceIx, default, true);
+            Assert.LessOrEqual(after.max, before.max + scale * .0025f);
+            for (int v = 0; v < 4; v++) Assert.AreEqual(p[v], result.positions[v]);
+            Assert.AreEqual(scale * .005f, input.positions[4].z); CollectionAssert.AreEqual(ix, input.indices);
         }
 
         [TestCase(1f)]

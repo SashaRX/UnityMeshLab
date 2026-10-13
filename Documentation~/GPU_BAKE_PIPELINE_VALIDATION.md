@@ -78,3 +78,38 @@ changes in individual old/new stage spans as pure CPU or GPU kernel speedups.
   `_results~/gpu-pipeline/android` and `_results~/gpu-pipeline-compile`.
 
 The user's live E-project was not modified by these validation runs.
+
+## Glim source comparison — 2026-10-08
+
+Reference: [z3y/glim at d4fe3bc](https://github.com/z3y/glim/tree/d4fe3bc452fe62586af8ba3d18a952e1622a537a).
+This is source inspection; none of these alternatives has been integrated or timed here.
+
+- **BVH layout.** [TinyBVH wrapper](https://github.com/z3y/glim/blob/d4fe3bc452fe62586af8ba3d18a952e1622a537a/tinybvh/wrapper.cpp)
+  builds BVH8_CWBVH with BuildHQ. The compressed GPU tree is a candidate for
+  high ray counts. Our binary binned-SAH tree also supports nearest-point queries,
+  normal/facing masks and preferred-target projection. A replacement must preserve
+  those queries, triangle IDs, barycentrics and stack safety. Keep our watertight
+  triangle test; Glim's software traversal uses a determinant epsilon test.
+- **Visibility queries.** [TraceShadowRay](https://github.com/z3y/glim/blob/d4fe3bc452fe62586af8ba3d18a952e1622a537a/shaders/includes/core.slang)
+  supports early termination at an eligible occluder. Our Beauty shadow loop
+  currently requests closest hits and steps past excluded renderer layers.
+  An any-hit query must filter layer/alpha/tMin during traversal. Binary AO can
+  use the same mode; distance-falloff AO and material projection require hit distance.
+- **AO origin precision and leaks.** [RayOffset](https://github.com/z3y/glim/blob/d4fe3bc452fe62586af8ba3d18a952e1622a537a/shaders/includes/ray.slang)
+  adapts offsets to float precision. [AdjustSamplePosition](https://github.com/z3y/glim/blob/d4fe3bc452fe62586af8ba3d18a952e1622a537a/shaders/adjust_samples.slang)
+  probes along local texel axes for back-face leaks. Our source AO uses geometric
+  normals with a bounds-relative bias, while projection has a fitted cage and
+  target-distance selection. Test numerical AO offsets separately from cage reach;
+  do not relocate a projection hit simply because an AO leak probe moves its origin.
+- **GPU working set.** [Compact visibility](https://github.com/z3y/glim/blob/d4fe3bc452fe62586af8ba3d18a952e1622a537a/shaders/compact_visibility.slang)
+  uses Morton-ordered coverage masks and keeps bake working buffers on the GPU.
+  Our CPU already compacts footprint samples into query bands, but GPU hit results
+  return to the CPU for source material evaluation. GPU material sampling and a
+  GPU coverage cache may remove more traffic than changing traversal alone.
+  They must preserve material-specific UV transforms, normal conventions, the
+  3D footprint walk across seams, sample seeds and deterministic pixel reduction.
+
+For each future experiment, freeze source/target buffers, textures, cage and sample
+settings. Measure build/upload, traversal, readback, evaluation and end-to-end time
+separately. Compare surface IDs/barycentrics, misses/fallbacks, thin-wall leakage,
+normal error, map hashes and peak CPU/GPU memory against the current backend.

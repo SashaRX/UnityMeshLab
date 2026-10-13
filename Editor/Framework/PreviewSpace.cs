@@ -18,5 +18,20 @@ namespace SashaRX.UnityMeshLab
             // A renderer outside the selected model has no shared model frame.
             return current == root ? matrix : Matrix4x4.identity;
         }
+
+        // Foliage may expand a selected LOD child to sibling LOD renderers.
+        // Express those siblings in the selected child's frame without passing
+        // through world space or its potentially singular scene ancestors.
+        internal static Matrix4x4 LocalToRelatedRoot(Transform source, Transform root)
+        {
+            if (!source || !root || source.IsChildOf(root)) return LocalToRoot(source, root);
+            var sourceToCommon = Matrix4x4.identity;
+            for (var common = source; common; common = common.parent) {
+                if (root.IsChildOf(common))
+                    return LocalToRoot(root, common).inverse * sourceToCommon;
+                sourceToCommon = Matrix4x4.TRS(common.localPosition, common.localRotation, common.localScale) * sourceToCommon;
+            }
+            return Matrix4x4.identity;
+        }
     }
 }

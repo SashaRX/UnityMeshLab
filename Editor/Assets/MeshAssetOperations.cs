@@ -11,8 +11,23 @@ namespace SashaRX.UnityMeshLab
     {
         const string CancelButton = "Cancel";
         readonly UvToolContext ctx;
-        internal Action BeforeWrite, AfterWrite;
+        internal Action BeforeWrite, AfterWrite, WriteFinished;
+        int previewWriteDepth;
+        internal Func<string, FbxExportIntent, bool, string> ToolExportPathChooser;
         public MeshAssetOperations(UvToolContext context) => ctx = context ?? throw new ArgumentNullException(nameof(context));
+
+        internal IDisposable PreservePreviewDuringWrite() => new PreviewWriteScope(this);
+
+        sealed class PreviewWriteScope : IDisposable
+        {
+            MeshAssetOperations operations;
+            public PreviewWriteScope(MeshAssetOperations operations) { this.operations = operations; ++operations.previewWriteDepth; }
+            public void Dispose()
+            {
+                var owner = operations; operations = null;
+                if (owner != null && --owner.previewWriteDepth == 0) owner.WriteFinished?.Invoke();
+            }
+        }
 
         void RestoreAllPreviews() => BeforeWrite?.Invoke();
         void SwitchToPostApplyView()
@@ -123,6 +138,8 @@ namespace SashaRX.UnityMeshLab
 
         public Mesh GetResultMesh(MeshEntry e)
         {
+            if (!string.IsNullOrEmpty(e.reverseTransferJson))
+                return e.repackedMesh ?? e.transferredMesh;
             // Source LOD: prefer repacked mesh
             if (e.lodIndex == ctx.SourceLodIndex && e.repackedMesh != null)
                 return e.repackedMesh;
@@ -149,10 +166,127 @@ namespace SashaRX.UnityMeshLab
             return e.originalMesh;
         }
 
-        public void ExportFbxPublic(bool overwriteSource) => ExportFbx(overwriteSource, FbxExportIntent.All);
-        public void ExportFbxPublic(bool overwriteSource, FbxExportIntent intent) => ExportFbx(overwriteSource, intent);
-        public void ApplyUv2Public() => ApplyUv2ToFbx();
-        public void SaveAllPublic() => SaveAll();
+        public void ExportFbxPublic(bool overwriteSource) => ExportFbxPublic(overwriteSource, FbxExportIntent.All);
+        public void ExportFbxPublic(bool overwriteSource, FbxExportIntent intent)
+        { using var previewWrite = PreservePreviewDuringWrite(); if (!UvProgress.IsActive) ExportFbx(overwriteSource, intent); }
+        /// <summary>Tool-owned results, independent of the hub's last preview selection.
+        /// All groups share the standard path picker, channel writer and sidecar sync.
+        /// The owner retains its meshes; unrelated context working copies are never released.</summary>
+        public IReadOnlyList<string> ExportToolEntries(IEnumerable<MeshEntry> results, FbxExportIntent intent, bool overwriteSource,
+            Func<string, FbxExportIntent, bool, string> choosePath = null)
+            => ExportToolEntriesCore(results, intent, overwriteSource, choosePath, null);
+
+        internal IReadOnlyList<string> ExportCollisionEntries(IEnumerable<MeshEntry> sources,
+            IReadOnlyDictionary<string, Uv2DataAsset> prepared, bool overwriteSource)
+            => ExportToolEntriesCore(sources, FbxExportIntent.Collision, overwriteSource, null, prepared);
+
+        IReadOnlyList<string> ExportToolEntriesCore(IEnumerable<MeshEntry> results, FbxExportIntent intent, bool overwriteSource,
+            Func<string, FbxExportIntent, bool, string> choosePath, IReadOnlyDictionary<string, Uv2DataAsset> collisions)
+        {
+            using var previewWrite = PreservePreviewDuringWrite();
+            var written = new List<string>();
+            choosePath ??= ToolExportPathChooser;
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+            if (UvProgress.IsActive || intent == FbxExportIntent.None) return written;
+            var entries = results?.Where(e => e != null && e.include).ToList() ?? new List<MeshEntry>();
+            var groups = FbxExport.GroupByFbx(entries, WorkingMesh, null);
+            RestoreAllPreviews();
+            foreach (var group in groups)
+            {
+                Uv2DataAsset collisionData = null;
+                if (collisions != null && !collisions.TryGetValue(group.Key, out collisionData)) continue;
+                string output;
+                if (choosePath != null)
+                {
+                    output = choosePath(group.Key, intent, overwriteSource);
+                    if (output == null) continue;
+                }
+                else if (!TryChooseNarrowExportPath(group.Key, intent, overwriteSource, out output)) continue;
+                var copies = group.Value.Select(p => p.entry.PreviewCopy(p.resultMesh)).ToList();
+                bool sourceSave = string.IsNullOrEmpty(output) || string.Equals(output, group.Key, StringComparison.OrdinalIgnoreCase);
+                var bindings = sourceSave ? FbxExport.CaptureSceneMeshReferences(group.Key,
+                    collisionData == null ? copies : Array.Empty<MeshEntry>()) : null;
+                if (!ExportFbxIsolatedCore(group.Key, copies, intent, output, refreshContext: false, collisionData: collisionData)) continue;
+                written.Add(group.Key);
+                bindings?.Relink(group.Key);
+            }
+            UvtLog.Info($"[FBX Export] Tool results: {written.Count}/{groups.Count} file(s) written.");
+#else
+            UvtLog.Error("[FBX Export] FBX Exporter package not installed.");
+#endif
+            return written;
+        }
+
+        public void SaveToolMeshes(IEnumerable<MeshEntry> results)
+        {
+            // A separate context selects the supplied meshes through the same SaveAll implementation.
+            var output = new UvToolContext { PipeSettings = ctx.PipeSettings };
+            foreach (var entry in results.Where(e => e != null && e.include))
+            {
+                var copy = entry.PreviewCopy(WorkingMesh(entry));
+                if (!string.IsNullOrEmpty(copy.reverseTransferJson)) copy.repackedMesh = copy.originalMesh;
+                output.MeshEntries.Add(copy);
+            }
+            output.Assets.SaveAllPublic();
+        }
+
+        internal static string ResolveModelFbx(GameObject source)
+        {
+            if (source == null) return null;
+            string prefab = PrefabUtility.GetPrefabAssetPathOfNearestInstanceRoot(source);
+            if (SidecarStore.IsFbxPath(prefab)) return prefab;
+            var paths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var filter in source.GetComponentsInChildren<MeshFilter>(true))
+            {
+                string path = AssetDatabase.GetAssetPath(filter.sharedMesh);
+                if (SidecarStore.IsFbxPath(path)) paths.Add(path);
+            }
+            foreach (var skin in source.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+            {
+                string path = AssetDatabase.GetAssetPath(skin.sharedMesh);
+                if (SidecarStore.IsFbxPath(path)) paths.Add(path);
+            }
+            return paths.Count == 1 ? paths.Single() : null;
+        }
+
+        /// <summary>New model geometry (Remesh): the same atomic FBX writer and import policy.</summary>
+        internal static void WriteModelResult(string path, GameObject root, IReadOnlyList<Material> materials,
+            bool normalizedTransforms, Action committed = null, Action<string, ImportAssetOptions> importAsset = null)
+        {
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+            FbxExport.WriteAtomic(path, root, normalizedTransforms, () => {
+                // The rename already committed, even if a subsequent import fails.
+                // Old UV2 replay must never be applied to this replacement geometry.
+                try { SidecarStore.ClearUv2Entries(new[] { path }); }
+                finally { committed?.Invoke(); }
+            });
+            importAsset ??= AssetDatabase.ImportAsset;
+            FbxExport.ReimportWithoutSidecars(path, () => importAsset(path, ImportAssetOptions.ForceSynchronousImport));
+            var importer = AssetImporter.GetAtPath(path) as ModelImporter;
+            if (importer == null) throw new InvalidOperationException("FBX reimport failed: " + path);
+            importer.importNormals = ModelImporterNormals.Import;
+            importer.importTangents = ModelImporterTangents.Import;
+            importer.generateSecondaryUV = false;
+            importer.meshCompression = ModelImporterMeshCompression.Off;
+            importer.materialImportMode = ModelImporterMaterialImportMode.ImportStandard;
+            foreach (var material in materials)
+                importer.AddRemap(new AssetImporter.SourceAssetIdentifier(typeof(Material), material.name), material);
+            if (normalizedTransforms)
+            {
+                importer.globalScale = 1;
+                importer.useFileScale = true;
+                importer.bakeAxisConversion = true;
+            }
+            FbxExport.ReimportWithoutSidecars(path, importer.SaveAndReimport);
+#else
+            throw new InvalidOperationException("FBX Exporter package not installed.");
+#endif
+        }
+
+        public void ApplyUv2Public()
+        { using var previewWrite = PreservePreviewDuringWrite(); ApplyUv2ToFbx(); }
+        public void SaveAllPublic()
+        { using var previewWrite = PreservePreviewDuringWrite(); SaveAll(); }
 
         /// <summary>
         /// Export only vertex colors (e.g. baked AO) to FBX without running the
@@ -161,6 +295,7 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public void ExportVertexColorsToFbx()
         {
+            using var previewWrite = PreservePreviewDuringWrite();
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             if (ctx?.MeshEntries == null || ctx.MeshEntries.Count == 0)
             {
@@ -195,6 +330,7 @@ namespace SashaRX.UnityMeshLab
         // so unrelated submeshes / instanced refs are not mutated.
         public void ExportVertexColorsToFbx(string sourceFbxPath, IEnumerable<MeshEntry> entries, int uvChannelOverride = -1)
         {
+            using var previewWrite = PreservePreviewDuringWrite();
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             if (string.IsNullOrEmpty(sourceFbxPath))
             {
@@ -225,6 +361,7 @@ namespace SashaRX.UnityMeshLab
             IEnumerable<MeshEntry> entries,
             int uvChannelOverride = -1)
         {
+            using var previewWrite = PreservePreviewDuringWrite();
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             if (string.IsNullOrEmpty(sourceFbxPath) || string.IsNullOrEmpty(outputFbxPath))
             {
@@ -419,6 +556,7 @@ namespace SashaRX.UnityMeshLab
             IEnumerable<MeshEntry> entries,
             FbxExportIntent intent)
         {
+            using var previewWrite = PreservePreviewDuringWrite();
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             if (intent == FbxExportIntent.None)
             {
@@ -454,7 +592,9 @@ namespace SashaRX.UnityMeshLab
             string sourceFbxPath,
             IEnumerable<MeshEntry> entries,
             FbxExportIntent intent,
-            string outputFbxPathOverride)
+            string outputFbxPathOverride,
+            bool refreshContext = true,
+            Uv2DataAsset collisionData = null)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             bool isVariantExport = !string.IsNullOrEmpty(outputFbxPathOverride)
@@ -467,14 +607,34 @@ namespace SashaRX.UnityMeshLab
                 : outputFbxPathOverride.StartsWith("Assets/", StringComparison.Ordinal) ? outputFbxPathOverride : null;
             var sidecar = sidecarFbx == null ? null
                 : PrepareSidecarSync(sidecarFbx, list.Select(e => (e, WorkingMesh(e))).Where(p => p.Item2 != null).ToList());
-            if (!isVariantExport) PrepareStandaloneRelink(sourceFbxPath);
-            bool exported = FbxExport.WriteChannels(
+            if (!isVariantExport && refreshContext) PrepareStandaloneRelink(sourceFbxPath);
+            bool exported;
+            if (collisionData != null)
+            {
+                using var plan = FbxStructureWrite.CollisionPlan(collisionData);
+                try { exported = FbxChannelWrite.Write(sourceFbxPath, Array.Empty<MeshEntry>(), FbxExportIntent.None, outputFbxPathOverride, null, plan); }
+                catch (Exception ex)
+                {
+                    UvtLog.Error($"[FBX Export] '{sourceFbxPath}' was not written: {ex.Message}");
+                    UvtLog.Verbose(ex.ToString());
+                    exported = false;
+                }
+            }
+            else exported = FbxExport.WriteChannels(
                 sourceFbxPath, list, intent, outputFbxPathOverride,
-                FbxExport.FirstRealMaterial(ctx?.MeshEntries),
-                isVariantExport ? null : ctx?.LodGroup);
+                FbxExport.FirstRealMaterial(refreshContext ? ctx?.MeshEntries : list),
+                isVariantExport || !refreshContext ? null : ctx?.LodGroup);
             if (!exported) { standaloneRelinks.Clear(); return false; }
             ApplySidecarSync(sidecar);
-            if (!isVariantExport) AfterSourceSave();
+            string collisionTarget = isVariantExport ? outputFbxPathOverride : sourceFbxPath;
+            if (collisionData != null && collisionTarget.StartsWith("Assets/", StringComparison.Ordinal))
+            {
+                var saved = SidecarStore.LoadOrCreate(collisionTarget);
+                Undo.RecordObject(saved, "Save Collision Sidecar");
+                saved.collisionEntries = new List<CollisionMeshEntry>(collisionData.collisionEntries);
+                SidecarStore.Save(saved);
+            }
+            if (!isVariantExport && refreshContext) AfterSourceSave();
             return true;
 #else
             UvtLog.Error("[FBX Export] FBX Exporter package not installed.");

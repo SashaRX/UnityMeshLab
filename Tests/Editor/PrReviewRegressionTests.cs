@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
@@ -14,6 +15,19 @@ namespace SashaRX.UnityMeshLab.Tests
     {
         readonly List<Object> owned = new List<Object>();
         const string Scratch = "Assets/__MeshLabReviewTests";
+
+        [DllImport("xatlas-unity", EntryPoint = "MeshLab_Missing_Review_225_Export")]
+        static extern void MissingNativeExport();
+
+        [Test]
+        public void NativePreflightResolvesRequiredExportWithoutPackingAndRefusesMissingExport()
+        {
+            RemeshNative.CheckAvailable();
+            var missing = typeof(PrReviewRegressionTests).GetMethod(nameof(MissingNativeExport), BindingFlags.Static | BindingFlags.NonPublic);
+            var error = Assert.Throws<InvalidOperationException>(() => RemeshNative.CheckAvailable(() => Marshal.Prelink(missing)));
+            Assert.IsInstanceOf<EntryPointNotFoundException>(error.InnerException);
+            StringAssert.Contains("restart Unity", error.Message);
+        }
 
         Mesh Plane(string name = "Plane")
         {
@@ -489,10 +503,10 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(XatlasRepack.TryAcquireNativeSession()); XatlasRepack.ReleaseNativeSession();
         }
 
-        [Test]
-        public void SkinnedPreviewAppliesNonUniformRendererScaleOnce()
+        [TestCase(2f)] [TestCase(-2f)] [TestCase(1f)]
+        public void SkinnedPreviewAppliesNonUniformRendererScaleOnce(float xScale)
         {
-            var root = Root(); root.transform.localScale = new Vector3(2, 3, 4);
+            var root = Root(); root.transform.localScale = new Vector3(xScale, 3, 4);
             var mesh = Plane(); mesh.bindposes = new[] { Matrix4x4.identity };
             var weights = new BoneWeight[4]; for (int i = 0; i < weights.Length; ++i) weights[i] = new BoneWeight { boneIndex0 = 0, weight0 = 1 };
             mesh.boneWeights = weights;
@@ -502,8 +516,13 @@ namespace SashaRX.UnityMeshLab.Tests
             try {
                 tool.SetSource(root); var items = new List<MeshViewport3D.Item>(); Assert.IsTrue(tool.Get3DContent(items));
                 var captured = RemeshSource.Capture(root, false);
-                Assert.That((captured.positions[1] - mesh.vertices[1]).magnitude, Is.LessThan(1e-5f), "Capture and preview must apply renderer scale once");
-                Assert.That((items[0].matrix.MultiplyPoint3x4(items[0].mesh.vertices[1]) - root.transform.localToWorldMatrix.MultiplyPoint3x4(mesh.vertices[1])).magnitude, Is.LessThan(1e-5f));
+                Assert.That((captured.positions[1] - mesh.vertices[1]).magnitude, Is.LessThan(1e-5f), "Capture and preview must apply renderer scale once; captured=" + captured.positions[1] + "; source=" + mesh.vertices[1] + "; preview=" + items[0].mesh.vertices[1]);
+                // Get3DContent is in preview-root space, like Capture(root), rather
+                // than world space. Compare both poses in that same frame first.
+                var previewPoint = items[0].matrix.MultiplyPoint3x4(items[0].mesh.vertices[1]);
+                Assert.That((previewPoint - captured.positions[1]).magnitude, Is.LessThan(1e-5f));
+                Assert.That((root.transform.localToWorldMatrix.MultiplyPoint3x4(previewPoint)
+                    - root.transform.localToWorldMatrix.MultiplyPoint3x4(mesh.vertices[1])).magnitude, Is.LessThan(1e-5f));
             }
             finally { tool.ClearSourcePreview(); }
         }

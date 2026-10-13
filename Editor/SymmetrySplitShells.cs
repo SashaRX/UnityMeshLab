@@ -197,9 +197,8 @@ namespace SashaRX.UnityMeshLab
                 //    cleanly separates the cases regardless of mesh scale or
                 //    triangle count.
                 //
-                // HasUv0Overlap (used by SplitWithParams) is NOT suitable here:
-                // it's a spatial-hash density check on a 0.01 UV grid and
-                // false-positives on any dense chart.
+                // Coverage and votes are a fast source gate; prescribed target
+                // cuts additionally require a positive-area UV intersection.
                 if (N >= 3)
                 {
                     float coverageRatio = UvCoverageRatio(shell, uv0, tris);
@@ -357,7 +356,7 @@ namespace SashaRX.UnityMeshLab
                 {
                     if (usedShells.Contains(si)) continue;
                     var shell = shells[si];
-                    if (p.foldCount >= 3 && !HasUv0Overlap(shell, uv0C)) continue;
+                    if (p.foldCount >= 3 && !HasUv0Overlap(shell, uv0, tris)) continue;
 
                     var descriptor = BuildShellSnapshot(shell, mesh);
                     bool descriptorMatch = p.sourceDescriptorHash != 0 && descriptor.descriptorHash != 0
@@ -381,7 +380,7 @@ namespace SashaRX.UnityMeshLab
                     {
                         if (usedShells.Contains(si)) continue;
                         var shell = shells[si];
-                        if (p.foldCount >= 3 && !HasUv0Overlap(shell, uv0C)) continue;
+                        if (p.foldCount >= 3 && !HasUv0Overlap(shell, uv0, tris)) continue;
 
                         var descriptor = BuildShellSnapshot(shell, mesh);
                         if (p.sourceGroupId != 0 && descriptor.groupId != p.sourceGroupId) continue;
@@ -716,6 +715,8 @@ namespace SashaRX.UnityMeshLab
             var uv0 = mesh.uv;
             var tris = mesh.triangles;
             if (uv0 == null || uv0.Length == 0 || tris.Length == 0) return splits;
+            var uvGeometry = new RemeshNative.Geometry { uv = uv0, indices = tris };
+            var overlapTest = new UvAtlasDiagnostics.IntersectionTest();
 
             int faceCount = tris.Length / 3;
             var uv0C = new Vector2[faceCount];
@@ -770,6 +771,9 @@ namespace SashaRX.UnityMeshLab
                             if (g <= f) continue;
                             if (Vector2.Distance(uv0C[f], uv0C[g]) >= thresholds.uvNear) continue;
                             if (Vector3.Distance(posC[f], posC[g]) <= thresholds.posFar) continue;
+                            // Nearby centroids are also common in dense, clean charts.
+                            // Only a positive-area intersection is evidence of stacking.
+                            if (!overlapTest.Overlaps(uvGeometry, f, g)) continue;
 
                             Vector3 sep = posC[f] - posC[g];
                             float sx = Mathf.Abs(sep.x);
@@ -1239,26 +1243,23 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>
         /// Check if a shell has UV0 overlap (multiple faces sharing the same UV0 space
-        /// but at different 3D positions). Quick check using spatial hash.
+        /// but at different 3D positions). Tests positive-area intersections.
         /// </summary>
-        static bool HasUv0Overlap(UvShell shell, Vector2[] uv0C)
+        internal static bool HasUv0Overlap(UvShell shell, Vector2[] uv0, int[] triangles)
         {
-            var thresholds = GetThresholds(null, shell, shell.shellId, "HasUv0Overlap");
-            var grid = new Dictionary<long, List<int>>();
+            var indices = new int[shell.faceIndices.Count * 3];
+            int index = 0;
             foreach (int f in shell.faceIndices)
             {
-                long key = UvGridKey(uv0C[f], thresholds);
-                if (!grid.TryGetValue(key, out var bucket))
-                {
-                    bucket = new List<int>();
-                    grid[key] = bucket;
-                }
-                bucket.Add(f);
+                for (int corner = 0; corner < 3; ++corner)
+                    indices[index++] = triangles[f * 3 + corner];
             }
-            // If any bucket has more than 1 face, there's potential overlap
-            foreach (var kv in grid)
-                if (kv.Value.Count > 1) return true;
-            return false;
+            var report = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {
+                uv = uv0, indices = indices, charts = new int[uv0.Length]
+            }, System.Threading.CancellationToken.None, comparisonBudget: 200000);
+            // Only a witnessed intersection authorizes a split; exhausting the
+            // budget without a witness is not evidence of stacking.
+            return report.pairs > 0;
         }
 
         /// <summary>

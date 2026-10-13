@@ -8,8 +8,67 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class FoliageSurfaceSamplerTests
     {
+        [TestCase(1)] [TestCase(2)] [TestCase(3)] [TestCase(17)] [TestCase(50000)]
+        public void CountModeProducesExactDeterministicSurfaceSamplesEvenBelowIslandCount(int count)
+        {
+            var (positions, indices) = DenseLeafGeometry();
+            var settings = Settings(); settings.sampleByCount = true; settings.maximumPrimitiveCount = count;
+            settings.minimumSamplesPerIsland = 100; settings.sampleSpacing = float.NaN;
+            settings.dedupSpacingFraction = float.NaN; settings.includeSourceVertices = true;
+            var result = FoliageSurfaceSampler.Sample(positions, indices, settings, CancellationToken.None);
+            Assert.AreEqual(count, result.samples.Length);
+            Assert.AreEqual(Math.Min(count, 3), result.coveredIslands);
+            Assert.AreEqual(Math.Min(count, 3), result.sampleIslands.Distinct().Count());
+            Assert.That(result.spacing, Is.EqualTo(Math.Sqrt(result.area / count)).Within(1e-6));
+            var replay = FoliageSurfaceSampler.Sample(positions, indices, settings, CancellationToken.None);
+            CollectionAssert.AreEqual(result.samples, replay.samples);
+            var surface = new TriangleBvh(positions, indices);
+            foreach (var point in result.samples) Assert.Less(surface.FindNearest(point).distSq, 1e-10);
+            if (count > 3) Assert.Greater(result.sampleIslands.Count(g => g == 2), count - 4);
+        }
+
+        [TestCase(0, 1)] [TestCase(75000, 50000)]
+        public void RestoredCountPreferencesClampOnlyBudgetsAndPreserveOtherSettings(int savedCount, int expected)
+        {
+            var settings = Settings(); settings.maximumPrimitiveCount = savedCount;
+            settings.minimumSamplesPerIsland = 0; settings.radiusMultiplier = 2;
+            string json = JsonUtility.ToJson(settings).Replace("\"sampleByCount\":false,", "");
+            var restored = FoliageNormalsTool.RestoreSettings(json);
+            Assert.IsTrue(restored.sampleByCount);
+            Assert.AreEqual(expected, restored.maximumPrimitiveCount);
+            Assert.AreEqual(1, restored.minimumSamplesPerIsland);
+            Assert.AreEqual(2, restored.radiusMultiplier);
+            Assert.IsTrue(restored.Snapshot().sampleByCount);
+        }
+
         internal static FoliageNormalsSettings Settings() => new FoliageNormalsSettings { relativeSpacing = false, sampleSpacing = .1f,
+            automaticProxyTriangleBudget = false, sampleRadiusVariation = 0,
             includeSourceVertices = false, includeTriangleCentroids = false, gpuProjection = false, recalculateTangents = false };
+
+        [TestCase(0f)] [TestCase(.25f)] [TestCase(.95f)]
+        public void RadiusVariationIsSeededAndPreviewMatchesTheBuiltSphereSizes(float variation)
+        {
+            var samples = Enumerable.Range(0, 256).Select(i => Vector3.right * (i * .01f)).ToArray();
+            var spheres = FoliagePrimitiveBuilder.FromSamples(samples, 2, variation, 1729, CancellationToken.None);
+            var replay = FoliagePrimitiveBuilder.FromSamples(samples, 2, variation, 1729, CancellationToken.None);
+            var otherSeed = FoliagePrimitiveBuilder.FromSamples(samples, 2, variation, 1730, CancellationToken.None);
+            CollectionAssert.AreEqual(samples, spheres.Select(p => p.center).ToArray());
+            CollectionAssert.AreEqual(spheres.Select(p => p.radius).ToArray(), replay.Select(p => p.radius).ToArray());
+            Assert.IsTrue(spheres.All(p => p.radius >= 2 * (1 - variation) && p.radius <= 2 * (1 + variation)));
+            if (variation > 0) {
+                Assert.Greater(spheres.Select(p => p.radius).Distinct().Count(), 200);
+                Assert.IsFalse(spheres.Select(p => p.radius).SequenceEqual(otherSeed.Select(p => p.radius)));
+            }
+            else Assert.IsTrue(spheres.All(p => p.radius == 2));
+            var preview = FoliagePrimitiveBuilder.BuildPreview(spheres, CancellationToken.None);
+            var envelopeInput = FoliagePrimitiveBuilder.Build(spheres, 0, CancellationToken.None);
+            int previewVertices = FoliagePrimitiveBuilder.Template(1).positions.Length;
+            int envelopeVertices = FoliagePrimitiveBuilder.Template(0).positions.Length;
+            for (int i = 0; i < spheres.Length; ++i) {
+                Assert.That((preview.positions[i * previewVertices] - samples[i]).magnitude, Is.EqualTo(spheres[i].radius).Within(1e-5));
+                Assert.That((envelopeInput.positions[i * envelopeVertices] - samples[i]).magnitude, Is.EqualTo(spheres[i].radius).Within(1e-5));
+            }
+        }
 
         internal static (Vector3[] positions, int[] indices) DenseLeafGeometry() => (
             new[] { Vector3.zero, Vector3.right * .001f, Vector3.up * .001f,

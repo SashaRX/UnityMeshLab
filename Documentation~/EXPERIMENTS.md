@@ -1,7 +1,1695 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Remesh chart merge continuation: fitted thin parts — 2026-10-10
+
+- Continuation after native voxel-2 position correction: three CafeChair
+  roundoff faces produce zero-area UVs under all three charting variants.
+  Surface-fit revision 2 uses the healthy adjoining normal only for final
+  regularization of float-roundoff faces, under existing feature/topology/
+  surface audits. Six scale/protected-edge controls pass. Exact Simplify inputs
+  and rejection counters are retained; clean UV certification still does not
+  imply acceptable stretch (12,219.9 on the intermediate CafeChair repair).
+  Its completed saved-setting case selects a certified broad result: 30,128
+  faces / 663 islands, mean/worst stretch 1.07793/7.36968, zero UV defects,
+  1,557.9 seconds. The narrow 896-island packed candidate is refused for one
+  tiny same-chart intersection; certification is not relaxed. The long case
+  passes, while final corrected public controls run separately from its three
+  outdated prototype fixture failures.
+  Packing controls use byte-identical Simplify inputs: no merge finishes in
+  62.9 seconds but retains 3,641 islands / worst stretch 12,216.9. Fast packing
+  plus merge reaches a certified 898-island / 3.89556 narrow checkpoint, then
+  is stopped after the 30-minute research budget without a full-case pass.
+  The remaining broad bracket cannot beat 898 islands after its rejected
+  upper budget falls to 2,233 joins; early exit and rejected-pair reuse remain
+  proposed performance work. See the replay's packing-control table.
+
+- Same Remesh UV0 chart-merge experiment; baseline `fc62cc8`. Legacy transfer,
+  `GroupedShellTransfer`, `XatlasRepack` and `SymmetrySplitShells` are unchanged.
+- Coarse fitting includes long patches next to short cross-section edges and
+  retries reduced motion under the existing topology/distance gates. Broad UV
+  merging must preserve the quality already achieved by narrow merging, rather
+  than spend the original atlas's larger stretch allowance.
+- Historical voxel-1 Park at 64 / Solve On: same 2,946 triangles, target RMS 0.0415130 → 0.0405652;
+  112 → 113 islands, worst stretch 2.85105 → 3.12150, zero overlaps/degenerates/OOB.
+  Reverse maximum rises within the unchanged surface gate. The 83-island variant
+  with worst stretch 5.38553 is rejected. This does not solve fragmentation or
+  coarse-voxel thickness. Garbage_Chute and Park Solve Off retain their metrics.
+- At 128, Solve Off fails native unwrap; Solve On improves distances but retains
+  worst stretch 14.2755. These research rows are not quality acceptance evidence.
+- Protocol and measurements: [surface fitting replay](REMESH_SURFACE_FIT_REPRO.md).
+
+## Progressive reverse atlas — 2026-10-09
+
+### Mandatory final packing independent of seed preparation — 2026-10-11
+
+Same PR225 experiment, continuation from `6f3f66d0`. The editor workflow always
+requests final shared-family packing, including when it consumes an existing
+coarsest-LOD UV2 layout from Repack or Transfer. Optional uniform filling controls only the common scale;
+it no longer depends on seed preparation. Intermediate vacancy placement remains
+part of projection, but cannot become a successful final atlas by itself.
+
+The final pack no longer adopts the entire intermediate coordinate array when
+rectangle packing fails or a fresh placement has a higher bbox cost. A rectangle
+refusal tries complete triangle-footprint packing on an empty canvas instead,
+with no old family placements pinned. Further optional improvement starts from
+that completed fresh pack. An unsuccessful required final pack is reported as
+failure before publishing any mesh, preserving the previous editor result.
+All ancestry/overlay families retain one rigid move and all LOD audits still
+gate publication. Controls cover preparation/filling independently, actual donor
+movement, projected detail ancestry, empty-canvas ring nesting and final-packing
+failure without intermediate publication.
+
+Verification: 358 EditMode cases pass, zero fail, and 28 optional fixture cases
+are skipped; the last donor-selection/status edits pass five additional focused
+controls. Twelve actual FBX Reverse chains complete across three models, both
+overlap policies and both seed paths, with zero collapsed/invalid faces and zero
+unexpected overlap pairs. All 30 Forward exports match the preceding baseline.
+Both FBX reference-compile variants pass. Kamaz fragmentation and visible empty
+regions remain; these checks certify completed packing, not optimal density.
+
+Artifacts: `_results~/reverse-full-repack-20261011/`.
+
+### Stable donor charts, local cut retention and native family envelopes — 2026-10-11
+
+Continuation of the same PR225 experiment, baseline `160d976a`, with main
+`9ab555c9` merged in `8459785`. New finer-LOD parameterization is prepared on
+the complete detached input, using authored charts, local ARAP and planar
+lightmap-only joins across texture seams. Retries interpolate that immutable
+parameterization instead of re-unwrapping whichever faces projection leaves
+unsupported. UV0, mesh streams, source geometry and source FBXs are preserved.
+
+Strip subdivision recreates face records, so ordered overlap references are
+rebuilt against the current records before chart allocation. Intrinsic rescue
+flags reflect actual packing repairs, including valid local triangles whose
+altitude disappears after Float32 translation. Previously explicit strip
+regions are not subdivided a second time by the legacy junction finder.
+
+Refinement protects the complete donor/recipient patch and donor ancestors,
+keeps baseline overlay ordering, and prioritizes protected inheritance during
+the first contact arbitration. If a patch retry cannot advance, optional cuts
+are retained for that input and its immediate donor; unrelated inputs can
+still keep their cuts. Publication retains coverage, stretch and contact gates.
+
+Repeated overlap audits now start from the original projection layer, rather
+than the rank assigned by the previous arbitration. Removing or recutting a
+neighbour cannot accumulate stale overlay ranks. Seam copies retain this
+scratch state; existing serialized ancestry fields are unchanged.
+Compact seed preparation propagates the actual packed density to finer charts.
+Current-LOD underlay rollback rebuilds support flags from surviving projections,
+so refused details cannot leave orphaned support in the contact audit. These
+address the two Reverse findings in review `5484582384`.
+
+Final packing additionally tests xatlas's existing PreserveShape UV packing on
+the actual triangle union of each ancestry family. Disconnected pieces receive
+short connecting proxy triangles for native chart discovery; a bounded search
+can fall back to a conservative envelope. Precision-sensitive families can be
+packed in a low-coordinate header without an intermediate Float32 rescale. No
+proxy triangle is exported. All descendants and ordered overlays receive the
+same quarter turn, common scale and translation. Native normalized output is
+converted back using its actual width/height, and a larger common canvas is
+accepted only under the atlas limit and a lower bbox cost per unit density.
+Sub-ULP phase retries occur before Float32 rounding; complete family contacts
+and actual exported triangle metrics still gate every result. Additional proxy
+connectors can reserve part of a concavity. The native candidate is optional
+and wins only when its bbox cost improves; valid existing shells are retained
+otherwise. Triangle-footprint compaction and ring controls remain in place.
+Packing also tests twice the common pixel density in a larger canvas, with the
+same two-pixel gutter. It accepts this only at a lower bbox cost per unit
+density. This reduces the gutter overhead of thousands of small charts without
+stretching, shrinking, or independently moving inherited family members.
+
+Artifacts: `_results~/reverse-cuts-pack-20261011/`. The complete fresh model
+comparison and test counts are recorded in
+[FORWARD_REVERSE_COMPARISON.md](FORWARD_REVERSE_COMPARISON.md).
+
+### Authored-chart seed preparation by default — 2026-10-11
+
+Continuation of the same progressive Reverse experiment on PR225, baseline
+`81e9fb59`. Coarsest-LOD preparation now retains authored UV0 chart domains,
+uses the ordinary Repack ARAP repair in world metric, and applies the existing
+per-chart normalization, intrinsic-face rescue and audited seed packing.
+Matching 3D/UV edges weld only chart scratch topology. Source mesh attributes,
+material slots and original face identity stay detached and preserved.
+Independent renderers and point contacts keep separate domains. UV0 overlaps
+between different domains are resolved by packing; self contacts still trigger
+local repair, and packed UV2 receives the full cross-chart contact audit.
+
+Unity seed charting is an explicit disabled-by-default option, never an implicit
+fallback. Existing seed cut, barycentric ancestry, projection and final family
+packing checks remain active. The shared Repack ARAP implementation is exposed
+internally with cancellation; its ordinary Transfer callers retain their
+previous settings and behaviour. Local unsupported finer-LOD charting is a
+separate path. Benchmark and regression evidence is recorded in
+`_results~/source-seed-default-20261011/`.
+
+Fresh full-pipeline runs complete all six Cafe/Kitchen/Kamaz policies at
+32 tex/m with no collapsed UV faces or unexpected contacts in any LOD.
+Thirty Forward mesh exports are byte-identical to the previous baseline.
+The final graphics-enabled run passes 331 tests, skips 34 optional cases and
+has no failures; both FBX reference compilation variants pass. Some donor and
+seed junction trials still refuse and retain an audited uncut layout. Packing
+is not uniformly better than the Unity seed. See the authored-chart section
+of [FORWARD_REVERSE_COMPARISON.md](FORWARD_REVERSE_COMPARISON.md) for measurements.
+
+### Actual UV components before shared-family packing — 2026-10-11
+
+Same progressive Reverse experiment on PR225; baseline `a51de228`. A completed
+Kamaz exclusive atlas retained region labels across independent placement of
+disconnected UV pieces. Grouping by those labels reserved 18.35 million pixels
+of rectangles in a 1.05-million-pixel canvas. Actual component families need
+approximately 0.45 million padded rectangle pixels at the same density. Final
+packing now finds geometric/UV corner-connected components within each surface,
+then joins explicit donor ancestry and ordered overlays. Corner-connected
+region pieces, including the ring control's T-junction boundaries, retain one
+motion. A reused label cannot pin separated islands to their original gaps.
+
+Preliminary tightening also exhausted the budget shared with every fresh
+footprint order. The orders now have independent bounded budgets, and their
+work/refusal diagnostics are retained. This does not remove precision, stretch,
+positive-area, overlap or gutter requirements. Frozen completed-chain replays
+check every donor/descendant and underlay/detail relation against a common
+quarter-turn, scale and translation, separately from the full pipeline runs.
+Source geometry and UV0 are unchanged. Artifacts: `_results~/finalpack-20261011/`.
+The completed model and regression results are recorded in
+[FORWARD_REVERSE_COMPARISON.md](FORWARD_REVERSE_COMPARISON.md).
+
+### Current-LOD underlays and triangulation-independent strips — 2026-10-11
+
+Same progressive Reverse experiment on PR225, baseline `eccca7d1`. The attached
+raised-rim and new same-LOD underlay controls both reproduce failures in the old
+overlap path. New detail can now inherit UVs from newly introduced lower geometry
+in its own LOD. Lower dependencies are resolved geometrically before mapping;
+normal, ambiguity, metric and complete footprint checks remain active. Coplanar
+independent renderers remain separate. Optional projection refusal restores its
+allocated UVs and dependent detail instead of leaving an unclassified overlap.
+The additive `projectionSupport` provenance is understood by the independent
+audit and Viewer as well as the transfer's ordered contact graph.
+
+UV-plane subdivisions replace tessellation-dependent cuts on unpublished seed
+charts and newly unsupported finer geometry. Barycentric source maps compose
+through donor and junction cuts; original material order is retained. Neighbouring
+pieces may rejoin as a compact rectangle and new strips align to their compact
+axis when rotation is enabled. Inherited family members are not recut or moved
+independently. Ordinary source repacking retains its existing-edge cutting path;
+the interim attempt to share interior cuts with the legacy matcher regressed
+Kamaz's forward distortion and was removed before publication.
+
+The final packing improvement rasterizes the union of all triangles in each
+family across the LOD chain. A padded ring can admit an unrelated smaller family
+inside its hole; a duplicated overlay remains at the same transformed coordinates
+as its underlying faces. This is a same-size improvement of the valid rectangle
+placement, not a claim of optimal packing. Metric/contact validation still checks
+actual exported coordinates; placements unable to improve extent skip expensive
+geometry validation.
+
+Research, invariants and executable control details:
+[REVERSE_UV_UNDERLAYS.md](REVERSE_UV_UNDERLAYS.md). The 45-case control run passes,
+including compactness and source-area tests, sparse T triangulation, three scales,
+reflection, stacked underlays, renderer order and actual post-packing UV equality.
+The first long corpus attempt was cancelled after exposing repeated validation
+work; its partial passes are not reported as full regression validation.
+Final corpus results follow after the complete fresh run.
+
+### Scalable shared-family final packing — 2026-10-11
+
+Continuation after the paired Forward/Reverse visual comparison rejected the
+Kamaz and Kitchen results. The seed, new-chart rescue, projection metric,
+refinement comparison and final export audit now use source-local triangle
+corners transformed in double precision. BVH positions still share the same
+relative world frame. Rounding those positions before measuring a nearly
+collinear face could change its intrinsic metric and make a valid working
+layout fail the exported-mesh audit. Neither positive-area faces nor vertex
+attributes are removed to hide this failure; the stretch limit remains 4.
+
+Independent rescue triangles test their actual placement before reserving a
+seed cell. Fragile charts have priority near the atlas origin. The footprint
+packer also starts from validated family coordinates and moves families
+individually, so one immovable family does not discard every other improvement.
+A refused optional density increase retains the tighter valid layout. Rectangle
+packing cannot replace an existing layout with worse bbox cost at equal density;
+a rectangle refusal still permits compaction of the validated triangle union.
+
+Private paired captures at 10/32 tex/m remain distinct from acceptance tests:
+they record a refused mode instead of calling it a successful Reverse result.
+The intermediate source-metric run completes both Kitchen policies at 32 tex/m
+with no collapsed faces or unexpected overlaps, but its 11.5/11.6% LOD0 bbox
+fills are still unacceptable. Kitchen at 10 tex/m still refuses a thin seed
+face. Final family fallback/compaction results and the frozen corpus gate must
+be checked before publishing this continuation.
+
+Refined source frames are reconstructed from editor-thread snapshots rather
+than reading Mesh accessors on the projection worker. Viewer assessment also
+retains the original local corners and transform: converting the whole mesh to
+Float32 world positions first manufactured stretch on the thin captured faces.
+Zero-length geometric edges keep the existing degenerate classification.
+
+Final family candidates are rigid transforms or one common scale. Their 1%
+relative derivative preservation gate now applies to texel-resolved triangles;
+when both old and new minimum altitudes fit the configured subpixel boundary
+tolerance, Float32 metric drift may pass the absolute stretch limit instead.
+Every positive-area, winding and ordered-overlap check still runs. This does
+not permit independently moving a detail away from its underlay or dropping
+tiny source faces. The private model and frozen corpus results must still
+validate this resolution-dependent placement policy.
+
+Completed continuation artifacts: `_results~/reverse-model-repair-20261011/texel-policy/`.
+Kitchen at 32 tex/m now fills 40.9/45.6% in exclusive/overlap modes, with zero
+collapsed faces or unexpected overlaps; Cafe retains its accepted result.
+Kamaz overlap fills 50.1%, but exclusive packing remains unacceptable at
+34.1% (10.0% at 10 tex/m), and a junction trial still loses inheritance. Kitchen
+at 10 tex/m retains a positive-area seed refusal. These are explicit remaining
+defects; this continuation does not complete arbitrary-model Transfer quality.
+
+Donor seam precision now reserves one Float32 spacing in the actual seed atlas
+rather than eight spacings in the maximum configured capacity. Local emitted
+geometry and composed barycentric mappings are audited before accepting cuts.
+The nine-asset inherited-area gate passed without relaxing its threshold;
+DressingTable recovered above its frozen acceptance threshold. The complete
+affected run had 632 passes, 4 skips and one pair-count failure. Subdivision
+changed that count while preserving the same overlap area. The frozen Forward
+gate now compares overlap area, with a subdivision-invariance control. A focused
+repeat passed 206 tests with 8 optional skips and no failures. Both FBX compile
+variants passed. See [FORWARD_REVERSE_COMPARISON.md](FORWARD_REVERSE_COMPARISON.md)
+for actual UV images, metrics, overlap-coordinate witnesses and limitations.
+Main `cd8d848d` / package 1.1.42 is integrated after these captures. The shared
+FBX export policy coexists with Binary polygon-split scratch documents and
+source-format import probes. Post-merge validation passes 217 FBX tests with
+one optional skip, including the four Binary/ASCII input/output combinations;
+both reference compile variants pass. These export checks are separate from
+the UV-model results above.
+
+Continuation on PR225, baseline `30f2fd94`. The completed Kamaz chain exceeded
+the previous rectangle packer's 16-million-work limit and retained the sparse
+projection layout in both overlap policies. Final packing now joins explicit
+donor ancestry and intentional overlap edges, then reserves each family's
+complete footprint across all LODs. Every family receives one rigid quarter
+turn, translation and the same global scale; neither LOD0 nor another member is
+packed independently.
+
+Disjoint guillotine cells and shelf rows replace overlapping MaxRects cells and
+repeated containment pruning. Geometric capacity is searched separately from
+Float32 placement validity, which is not monotone in scale. Thin families can
+use all four quarter turns and padded fractional origins. A positive origin
+phase belongs to its allocated cell; requested two-pixel gutters are preserved
+rather than doubled. At the selected scale, shorter canvases in both axes can
+reduce large internal empty rectangles without requiring a full square bbox.
+Uniform final filling remains optional and records the actual resulting density.
+
+Donor seam selection now finishes before final filling. Comparing two already
+filled trials gave the uncut topology an unrelated density bonus and discarded
+useful cuts on Wooden_Box_Long. The existing requested-density, inherited-region
+and distortion gates still select the topology; one final family pack runs on
+the chosen chain. It checks the actual Float32 output vertices and transformed
+edges, including barycentrically created corners, with the exported-mesh audit's
+arithmetic. Temporary output replacement remains atomic and detached from FBX.
+
+Output rounding is checked against the existing world-space anisotropy limit,
+the shared 1% relative metric allowance, normalized triangle area and all
+same-LOD contacts. Only explicit ordered detail contacts are allowed. Invalid
+placements are retried; failure retains the audited input coordinates. Scratch
+intersection predicates for small families match the atlas scan; larger families
+retain its grid and completeness/budget checks. The managed final pack runs in
+the existing asynchronous path so the Editor can respond to cancellation.
+
+The Viewer formerly rounded a second bbox-normalized Float32 atlas before
+intersection checks. This could report contacts absent from the saved UVs.
+Normalization now stays in double inside the same predicates. A partial shared
+edge control reproduces the former false overlap and still detects a deliberate
+intersection. Small nonzero transform scales no longer fail an absolute
+determinant cutoff; finite-matrix, genuine singularity and transformed-face
+collapse checks remain active.
+
+The final 10 tex/m run passes 583 EditMode cases with four fixture/URP skips.
+All 30 ordinary Transfer snapshots for Cafe, Kitchen and Kamaz remain byte
+identical to the preceding reviewed baseline. The nine-model Reverse corpus
+retains 16 accepted cases and the same two Kitchen seed refusals; inherited
+surface coverage improves in every accepted case. Wooden keeps 72 source-face
+splits in each policy (previously 73), with higher inherited coverage and no
+refinement refusal. Kamaz packs 4,621/4,089 families into 512 square and raises
+LOD0 bbox fill from 10.3/10.8% to 39.2/37.3%, with zero unexpected contacts in
+both the raw audit and Viewer. Its overlap seam trial still refuses one inherited
+region; final packing does not resolve that separate topology limitation.
+At 32 tex/m, both completed chains also pass the raw/Viewer audits and the
+explicit final-packing assertion: 1024 square, final densities 47.8381/39.7344,
+LOD0 bbox fill 52.8/48.3%, and grades 90/89. The two separate LOD0 seam refusals
+remain reported; successful packing does not waive them.
+
+Latest main (`f9aad54c`, package 1.1.41) is merged. Its Foliage component lookup
+uses the common topology disjoint set, and its preview follows this branch's
+manual camera lifecycle. FBX helper refactoring retains PR225's corner-count and
+polygon seam-split protection. Measurements and validation for this continuation
+are recorded in [KAMAZ_TRANSFER_BENCHMARK.md](KAMAZ_TRANSFER_BENCHMARK.md).
+
+### Texel-sized correspondence tolerance — 2026-10-11
+
+Requested continuation on PR225, baseline `719cce0`. Local inherited metric
+comparison permits 1% relative change. Refinement may spend up to 1% of the
+density gained by uniform final-atlas filling; the requested minimum remains
+audited. Projection and inheritance comparison
+try 0.25/0.5 actual texels, rather than a percentage of a potentially very large
+face. A failed existing coverage check subtracts the union of donor triangles
+dilated by an inscribed octagon: the allowance stays within the Euclidean band
+even at acute corners, and duplicate donors never count coverage twice.
+Comparison uses the original face's final atlas pixels; barycentric area is
+not interpreted as texels. Missing entire inherited faces still fail.
+
+Planar forward recovery converts the same band into distance using the donor
+chart's density and the known atlas resolution. With no resolution it retains
+the prior exact footprint check. Forward and reverse retain zero-area geometry,
+final UV degeneracy, real contact and intentional-overlap ancestry audits.
+Clip predicates and Float32 representability preflights are unchanged.
+Private fixtures can select the tested band via `MESHLAB_TRANSFER_BOUNDARY_TEXELS`;
+runtime code does not read test environment variables.
+
+Final packing fits the completed layout uniformly after integer rectangle
+placement. This fills the residual outer strip without decreasing gaps or
+changing an individual chart's proportions. Cafe's overlap/10-texel extent
+regression is repaired without weakening its existing 0.93 extent assertion.
+The restored Tire trial cuts 13 source faces in both policies (previously 6),
+at 184.222 tex/unit versus the uncut filled layout's 185.597 (0.74% difference).
+
+The 0.5-texel trial improves Kamaz's forward degeneracy count further, but loses
+Park overlap's previously accepted donor cuts. It is rejected; the shipping
+default remains 0.25 texel. Neither the cut-retention test nor the UV audits
+are relaxed. Independent controls exercise the band in pixel and normalized
+units, internal holes, duplicate donors, acute corners, work/cancellation limits,
+one-percent metric/density bounds and uniform-fit padding.
+Final isolated Unity 6000.2.6f2 replay: 373 cases, 370 passed, 0 failed, 3 optional
+skips, including 23 new controls. Both FBX define reference builds, identifier
+and dependency gates pass. Nine-model reverse corpus: 16 accepted / 18 trials,
+with both Kitchen seed failures retained; Cafe and frozen Kamaz frame 3 pass
+both overlap policies. Final Park cuts 251 faces in each policy; Shelf cuts 18.
+Forward Kitchen Main LOD1 degenerates: 6 -> 0; Kamaz LOD1/2: 156/104 -> 131/94.
+Their contact counts fall from 238/574/99 to 226/510/96. Strong legacy stretch
+and Kitchen's Float32 seed face 53 remain unresolved. Captures and complete
+metrics: `_results~/transfer-tolerance-20261011/REPORT.md` (local, ignored).
+Native plugins, original FBXs and live Unity projects are unchanged.
+PR review follow-up: planar recovery uses a scale-independent unit direction
+and refuses a zero normal. Millimetre-scale donors retain the same texel-sized
+plane test; an off-plane target cannot pass because Unity zeroed the area normal.
+
+### Forward stretch and local donor-seam protection — 2026-10-11
+
+Review continuation on PR225, baseline `2642445`: forward seam trials now use
+the target renderer's local-to-world linear transform for every stretch gate,
+including donor eligibility, projection, snapped corners, proposed cuts,
+per-face rollback, incremental selection and workflow publication. Projection
+positions and donor atlas coordinates remain in the existing shared local
+frame. Double-precision transformed edges exclude translation. Reverse inputs
+already contain world positions, so their additional stretch transform remains
+identity; projection reach, overlap policy and tolerances are unchanged.
+
+Two analytic controls use an 8:1 renderer scale: locally isotropic projection
+must not replace a visibly isotropic legacy layout with 8x stretch; a locally
+8x-stretched donor must remain eligible when it becomes visibly isotropic.
+Both fail on the baseline and pass with the rendered metric. Source snapshots
+must remain byte-identical. Broader fresh model results are recorded in the
+private review replay report.
+
+Review replay: 441/445 EditMode cases pass, zero failures, four optional skips.
+Fresh Cafe_Table_A_01 / Modern_Kitchen_A / Kamaz forward outputs match all 30
+pre-fix snapshots. Reverse completes 16/18 corpus trials with both policies;
+Kitchen retains its two known seed-metric refusals, and difficult Kamaz frame
+3 completes with overlap off/on. Final Viewer priority/lifecycle verification
+adds 190 passing cases with zero failures. This fixes rendered-space trial
+ranking; it does not certify the existing distorted layouts as clean.
+
+Continuation of the transfer work explicitly requested on PR225; baseline
+`2820d0a`. A mean Sander L² below 1.5 can hide severely distorted individual
+faces. ARAP now also tests local anisotropy above 1.25, on a detached buffer,
+and retains only candidates that improve the shell metric without introducing
+collapsed faces or UV contacts. Grouped and single-mesh repack share this pass.
+
+A coarse target UV0 shell can span several independently packed donor charts.
+Forward recovery uses the existing donor correspondence/seam subdivision on a
+working copy. The donor atlas stays fixed. Unsupported regions retain their
+previous UVs; projection is rolled back per conflicting piece. Original faces
+whose subdivision introduces Float32 contacts or worsens their metric are
+protected locally, including incident edges. Final publication still requires
+an improved whole-mesh metric and no increase in overlap area. Splitting an
+existing contact can increase its triangle-pair count, so contact identity is
+audited against original face pairs, rather than judged by that count alone.
+Output classifications are rebuilt for the changed topology.
+
+Reverse refinement now protects all affected original faces and donor ancestors
+when cuts lose inherited/intentional-overlap coverage or worsen local distortion.
+Other seams remain eligible. The inheritance, density and distortion gates are
+unchanged; a protected face records `preserved-inheritance-or-metric`.
+
+Final continuation verification: `release5/tests.xml` has 345 passed, zero
+failures and five optional skips. `release4` separately verifies all 18 corpus
+trials (16 accepted, both Kitchen modes still refused), preserved successful
+Shelf/Park cuts, and both policies in the difficult Kamaz frame 3. Only forward
+variant selection and additive trace fields changed after those reverse tests.
+The full earlier `release2` replay accepts frames 1/2/3 in both modes and refuses
+frame 0's real shared-frame geometry collapse. Reference compilation passes
+with/without the FBX exporter define; CS0103 and diff checks are clean.
+
+Private replay fixtures: Cafe_Table_A_01, Modern_Kitchen_A and uncompressed
+`kamaz_Off.fbx`, plus the frozen Kamaz transform frames. Current forward controls
+at 10 tex/m, 2 px padding and junction cuts:
+
+- Cafe source / LOD1 worst anisotropy: 1.45490 / 1.53571, no overlaps or collapsed
+  UV faces. Initial LOD2 subdivision retained a severely distorted unsupported
+  region (worst 3,465,807.85; weighted 7,914.83). The existing-atlas-only trial
+  reduces these to 2,027.82 / 6.02527, with zero collapsed faces or overlaps.
+  One unsupported region remains; this is not a complete distortion repair.
+- Kamaz main LOD1: 156 collapsed faces / 574 contact pairs, weighted anisotropy
+  1,129.43. LOD2: 104 / 99, weighted 527.43. These are partial improvements,
+  **not** a clean-transfer certificate.
+- Kitchen remains defective: main LOD1 retains 238 contact pairs and six
+  collapsed faces. Reverse seed preparation still refuses a positive-area
+  Float32 sliver. Origin anchoring and oblique rescue trials did not solve the
+  complete model and were removed; the metric gate was not weakened and the
+  face was not silently deleted.
+
+Nearly coincident donor rims (a 0.00000012-unit gap in the control) can make one
+optional line invalidate earlier valid cuts. Incremental validation retains the
+earlier partition and skips the unusable line. Forward recovery compares both
+incremental variants with the original method and keeps only an improvement without increased
+collapsed-face counts or overlap area. It reuses a fixed donor atlas and retains
+legacy UVs for unsupported pieces, so the preflight altitude estimate for future
+new charts is inapplicable there. Actual Float32 geometry, mapped UV metrics,
+coverage, contacts and final publication guards still apply.
+The conservative variant is still needed for coincident rims: dropping its
+new-chart preflight globally regressed that control. An unsafe cut at an already
+inherited corner retains complete triangles and the prior metric; the control
+does not claim that this unsupported region has been repaired.
+
+Replacing reverse refinement with that trial regressed previously successful
+Shelf/Park cuts. The replacement was rejected. Reverse now tries the original
+method first and retains successful cuts; the incremental variant retries an
+accepted layout with no cuts and recorded precision refusals, under the same
+chain comparison. Full-chain inheritance/density/metric failures retain the
+original result rather than repeat an unsuccessful expensive search.
+The corpus benchmark checks that previously successful seam cuts do not all
+disappear. Per-piece forward diagnostics record the original face, candidate
+metric, projection rejection and the adjacent face responsible for a precision
+refusal. Snapping cut intersections to nearby vertices did not repair the real
+Cafe case and was removed.
+
+Regression controls include hidden local stretch, planar donor coverage/holes,
+cross-chart target subdivision, collision rollback, immutable input snapshots,
+both reverse overlap policies and forward-after-reverse reproducibility. Private
+model tests assert numeric bounds, in addition to writing snapshots and quality
+reports. These fixtures omit external material textures; this run does not certify
+texture-aspect resolution through those materials. Artifacts are under
+`_results~/transfer-quality-20261011/`; native binaries and live projects were not
+modified.
+
+Initial local verification: 342 EditMode passes, zero failures, four optional
+fixture skips; reference compilation passes with and without FBX Exporter.
+The seven-asset reverse control set retains 12/14 accepted runs; both refusals
+remain Kitchen. Frozen Kamaz frames 1/2/3 accept both overlap policies, with
+frame 0 still refusing an actual shared-frame geometric collapse. Kamaz overlap
+can still retain the unsplit baseline when donor seams lose inheritance.
+An additional whole-node ancestry retry did not remove that real-model refusal
+and was discarded. No clean-UV claim is made for these accepted but unsplit runs.
+
+### Metric-aware rescue vacancies — 2026-10-11
+
+Continuation on PR225, baseline `5ffec80`. The supplied Kamaz log refuses a
+new LOD1 face after both original and compact seed preparation. Frozen 512 /
+10 texels-per-unit controls reproduce the same failure class: a positive-area
+triangle with a 0.24-micrometre edge gets identical Float32 UV corners when
+translated to high atlas coordinates. Reconstructing inside its collapsed
+zero-width footprint cannot recover the metric; changing only the stretch gate
+would publish invalid UVs.
+
+Independent intrinsic rescues now participate in vacancy selection with their
+source metric, rather than their already rounded UV bounds. Their longest-edge
+frame defines the reserved rectangle, with at least one texel per dimension.
+The existing placement and stabilization are tried first: every already valid
+rescue layout is retained exactly, including its original Float32 phase spacing.
+The alternative is used only if that layout cannot fit or a rescue loses its
+metric. In that alternative the thinnest rescues are placed first. Cyclic bases, quarter-turns and bounded
+Float32 translation phases are tested before reserving a vacancy; a failed
+position is skipped, the transposed rectangle is tried, and the existing canvas
+growth/size limits still apply. Rounded coincident UV edges cannot weld separate
+rescues back together. Ordinary charts keep their rigid layout; inherited texel
+coordinates, source geometry and the nominal density remain fixed. Publication
+and independent overlap/stretch audits stay mandatory. An unrepresentable
+triangle remains a refusal, including when no valid vacancy exists.
+
+The frozen Kamaz harness supports explicit resolution/density, a single frame,
+the actual junction/packing workflow, and required accepted frames. Source mesh
+snapshots are compared after both policies. Its timeout covers successful full
+chains rather than only fast refusals. Public controls include the two captured
+thin triangles, occupied donor space, padding zero/two, both overlap policies,
+final square normalization, exact configured metric-limit acceptance, unchanged
+ordinary chart scale and refusal of an unrepresentable triangle.
+
+Isolated Unity 6000.2.6f2: **118 passed, zero failed, nine optional corpus skips**
+(365.4 seconds). The 512 / 10 texels-per-unit frozen Kamaz matrix changes from
+eight refusals to six accepted chains: frames 1, 2 and the imported identity
+frame 3 pass both policies, including independent final metric/overlap audits.
+Exclusive results use 1024-square atlases; allowed-overlap results use 512.
+Worst anisotropy ranges from 3.94729 to 3.99703; finest inherited area ranges from
+90.824% to 92.475%; all six have zero unexpected overlaps/invalid/degenerate UVs.
+Frame 0 retains its two earlier refusals because face 9057 collapses in the
+shared *3D* frame, before new chart creation. The UV fix does not repair that
+different defect. Low triangle-area atlas utilization and declined donor seam
+refinement remain limitations. Both FBX-define reference builds and the
+identifier/dependency checks pass.
+
+The retained-layout follow-up completes **121 Unity tests, zero failures, seven
+optional corpus skips** (521.3 seconds). The actual original/compact seed workflow
+accepts the imported Kamaz frame in both policies at 10 texels/unit. All 18 policy
+trials on nine FBX chains retain acceptance and atlas size against the current
+`8740d15` seed/junction baseline: 16 accepted, the same two Kitchen seed refusals,
+zero unexpected overlaps and no decrease in finest inherited area. Wooden's
+per-mesh quality measurements are identical to that baseline; its independent
+32-texels/unit standalone control passes both policies. The older `30fcd06`
+Wooden report predates the finer-inheritance protection and is not the baseline
+for this change. Original mesh snapshots remain identical. Both FBX-define
+reference builds and identifiers/dependencies pass. Large reports are retained
+in the E project's `BenchmarkReports/ReverseUV/codex-4c41a53-precision-20261011`
+after the C drive filled during an earlier, discarded corpus attempt.
+
+### Coarsest normalization, compact packing and junction paths — 2026-10-10
+
+Continuation on PR225, baseline `30fcd06`, requested by the user. The forward
+solvers/native ABI are unchanged. Narrow cuts previously required one direct
+interior edge between two border vertices; extra tessellation prevented the
+same geometric cut. A bounded shortest interior-edge path now crosses the join,
+stopping at the opposite border. Width remains at most half a straight border
+run, path detour at most 1.25 times its chord, and total oriented-box area must
+improve by at least 15%. U/T/F/E/H/O/X/C controls cover rotated shapes with three
+segments per original grid edge, complete overlap scans and unchanged metric.
+Convex, nonmanifold and ambiguous charts retain the existing topology. No new
+edge through a face interior is synthesized by this preparation pass.
+
+Reverse preparation now normalizes world density per connected coarsest chart,
+repairs invalid UV faces, tests compact rectangle packing with optional quarter
+turns/axis alignment, and stabilizes intrinsic rescues at their final location.
+Manual mode searches the highest uniform scale that fits; auto mode retains the
+requested density. It never scales U and V independently. Incremental pruning
+checks only new free-rectangle fragments, avoiding repeated scans of unchanged
+pairs on fragmented Train inputs without increasing the packing work budget.
+
+Initial trials were **not safe to publish**: blindly moving the seed reduced
+DressingTable inheritance from 96.34% to 88.29%, and some placements failed the
+independent final metric gate. Recentring already normalized tiny charts added
+Float32 errors. Charts already within 0.1% of the requested world density, or
+within the area uncertainty derived from Float32 coordinate spacing and triangle
+perimeter, now retain their coordinates exactly. An analytic thin-chart control
+checks exact preservation, including already repaired triangles. The normalized
+original trial also retains its original canvas when a correction shrinks a
+chart, avoiding a fresh global refit of unaffected coordinates. This is a density
+normalization tolerance;
+zero-area, stretch and overlap publication gates are unchanged.
+
+Train exposed a separate one-ULP median-density change after valid per-chart
+corrections: the inferred new-chart density changed from 1.923953533 to
+1.923953652 and overlap inheritance decreased by 0.052343 percentage points.
+The original-placement trial now carries the original seed's reference median
+through projection/refinement, rather than re-estimating it after corrections.
+The compact trial still measures its own seed. Frozen prior-commit trial reports
+are accepted as the private benchmark baseline so this small correspondence
+regression is detected independently of the current legacy solver.
+
+The workflow compares complete chains from the normalized original placement,
+compact packing and optional junction cuts. A candidate must preserve every
+inherited barycentric region/overlap, density, distortion and atlas side; final
+output meshes also pass the independent quality measurement used by the audit.
+Failed candidates release their meshes and retain the accepted normalized
+control. This may run two or three complete chains. Reports record `seedPacking`,
+`seedChartRotation` and `seedPackingRefusal`; the viewport summary identifies a
+retained safer layout. Frozen FBX and captured-case benchmarks use this same
+workflow rather than bypassing seed selection.
+
+Forward Transfer-only continues to inherit an existing atlas; enable the narrow
+cut option before Repack/Full Pipeline. Reverse prepares the last included LOD
+before projection and does not require a preceding forward transfer. Once the
+seed has been accepted, vacancy placement still only translates new islands;
+inherited texel coordinates remain fixed. Remaining Kitchen/Kamaz precision
+refusals are recorded separately from passing unit or corpus tests.
+
+Final isolated Unity 6000.2.6f2 validation: **179 passed, zero failed, one unrelated
+optional legacy-input skip**, 533.6 seconds. With cuts enabled, all 18 current
+solver FBX/policy trials match `30fcd06` in acceptance, atlas size, finest inherited
+area, per-mesh quality and density: 16 accepted and two Kitchen refusals. Train's
+only remaining measurement differences are triangle UV-area fractions below
+2.7e-10 after normalization; inheritance and overlap counts are unchanged. The
+eight Kamaz controls still refuse invalid Float32 seed placements. Both FBX
+define reference builds, identifier/dependency checks and diff whitespace pass.
+The earlier 36-row legacy/current run also retained acceptance and atlas sizes;
+superseded packing prototypes are not counted as final validation. Wooden's
+compact auto-density candidate is still rejected for lost inheritance, retaining
+the 512-square layout and its low 7.34–8.37% triangle UV coverage.
+
+### Final-placement intrinsic precision — 2026-10-10
+
+Continuation of the reverse-atlas experiment on PR225, baseline `0596960`.
+Both supplied Wooden_Box_Long logs are identical and load the older `0a544f5`.
+Standalone reproduction on the PRE-PROD FBX at 32 texels/unit still refuses
+LOD0 face 2 with anisotropy 6.4708. Its nonzero geometry is almost collinear;
+normal Float32 shelf and atlas translations introduce shear even after an exact
+intrinsic unwrap. Choosing only a different local base edge is insufficient.
+
+Only a failed *independent intrinsic fallback* is reconstructed after its final
+vacancy placement. Three cyclic bases, their quarter-turns and sixteen bounded
+translation phases are evaluated in double before final Float32 storage. The
+candidate must fit the already reserved integer texel rectangle and satisfy the
+unchanged anisotropy gate. Ordinary valid charts, inherited UVs, source positions,
+face count, nominal density, atlas reservations and publication audits remain.
+Cancellation is supported. If no representable candidate passes, retain the
+failed UV for the existing publication refusal; never delete a thin source face.
+
+Wooden_Box_Long now passes both current overlap policies at 32 texels/unit:
+512-square seed/final atlas, 95.320% finest inherited area, worst anisotropy 1.741,
+no invalid/degenerate UVs or unexpected overlaps. Overlap mode classifies three
+intentional LOD1 pairs. Manual 256 mode also passes with vacancy packing, finest
+inherited area 95.369% / 95.366%; the legacy append-only control remains refused.
+A nanometre Backsplash local fixture also becomes valid and now tests independent
+quality, preserved source bytes and exact output geometry instead of demanding
+its former numerical refusal. This is not acceptance of the complete Kitchen
+model: its seed still fails. The eight Kamaz frame/policy trials remain refused.
+
+Packing remains unresolved on this asset: only 7.34–8.37% of the density-driven
+512 square is occupied by UV triangle area on each LOD. The repair addresses
+metric representability, not seed-chart compactness. Forward's 100% coverage in
+the supplied log only counted matched vertices despite degenerate target UVs;
+its diagnostics now explicitly say vertex coverage.
+
+The private standalone test is enabled by `MESHLAB_REVERSE_WOODEN_BOX`; outputs
+use `MESHLAB_REVERSE_OUTPUT`. Public controls cover cyclic orders, the reserved
+footprint, idempotence, ordinary/inherited coordinate preservation, cancellation,
+and an unrepresentable placement that stays refused.
+
+Final isolated Unity 6000.2.6f2 selection: **166 passed, zero failed, one optional
+legacy-capture skip**. All 32 previous FBX policy/algorithm trials retain identical
+acceptance, atlas size, inherited area, complete quality arrays and density extrema;
+all eight Kamaz refusals retain their causes. The final ten focused precision cases
+also pass. Both FBX define reference builds, identifiers and dependencies pass.
+Inputs were copied to the isolated project; FBX SHA-256 remains
+`6FA71BC2A815BED6A23AB42AB4B2CC84BA55F73CC18A3F0D9F978E31CC9AE09F`.
+
+### Correspondence graph, donor seam refinement and vacancy packing — 2026-10-10
+
+Continuation of PR225 from `0a544f5`, requested by the user. Reverse remains a
+standalone coarse-to-fine alternative; the Full Pipeline still runs forward.
+No native solver or imported FBX is changed.
+
+- Geometry edge adjacency records continuous UV, chart/UV seams, layer boundaries,
+  open rims and nonmanifold incidence. Connected groups are distinct from root
+  donor chart IDs. Source-face maps and barycentric partitions survive subdivision.
+- Failed target faces are cut by locally overlapping donor seams/rims in the
+  target plane. Subdivision points propagate to incident target faces. Original
+  corners keep their bytes; new samples interpolate vertex streams, skin weights
+  and blend-shape deltas, preserving submesh slots and packed UV dimensions/formats.
+  Position samples use Float32. Optional cuts below representable precision are
+  refused locally; thin nonzero source triangles are never removed to pass a gate.
+- An initial Cafe/Park trial increased the inherited face count but lost inherited
+  *area* on the following LOD. That is a real regression. The final trial compares
+  complete regions in original-face barycentric space across the whole chain,
+  protects responsible intermediate donor faces, retries local exclusions, and
+  retains the continuous baseline if inheritance, overlaps, distortion, density
+  or atlas size regresses. Existing accepted claims precede new refinement claims.
+- New connected islands use a row-interval occupancy raster across every earlier
+  LOD and accepted current faces. Search holes and other vacant texels before
+  increasing the square; all chart moves are translations with pixel padding.
+  Inherited pixels remain fixed. Grouping or an atlas-size reduction does not
+  by itself prove improved inheritance; independent audits report area fractions.
+
+Frozen asset-frame chains, legacy algorithm versus guarded refinement plus
+vacancy packing; **both overlap policies**:
+
+| Model | Atlas before → after | Finest inherited area (exclusive / overlap) |
+|---|---|---|
+| Modern_DressingTable_A | 512 → 512 | 96.338% / 96.338%, preserved by guard |
+| speaker-retro | 512 → 256 | 98.514% / 99.126%, preserved by guard |
+| Park_Bench_A | 1024 → 512 | 83.337 → 83.364% / 83.265 → 83.324% |
+| Shelf_C | 512 → 512 | 99.132% / 99.138%, preserved by guard |
+| Tire_C | 1024 → 512 | 72.890% / 72.890%, preserved by guard |
+| Bench_Metal_A | 1024 → 512 | 98.062 → 98.107%, both policies |
+| TrainCarriage | 1024 → 512 | 94.256 → 94.291% / 94.110 → 94.235% |
+| Modern_Kitchen_A | refused in both versions | prepared Backsplash seed loses its UV metric at float precision |
+
+Cafe_Table uses the previously captured exact scene frame. Atlas 256 → 128;
+finest UV area fraction 5.76 → 23.02% in both policies at unchanged pixel density.
+LOD1 exclusive inherited area 92.900 → 92.930%; LOD0 stays 100%. The overlap
+refinement trial retains its uncut baseline after a distortion regression;
+vacancy packing still halves that atlas. Geometry/snapshot and final overlap,
+degenerate, bounds and stretch audits pass. Fixed density, padding and fine-only
+detail reservations do not imply 100% occupied UV area on every coarse LOD.
+
+Kamaz: all eight frame/policy captures remain refused, with exact causes recorded:
+one shared-frame collapse and microscopic new-face UV placement collapse in the
+remaining frames. These are remaining precision limits, not successful transfers.
+Older merged captures with no unique source transform are unsuitable as a live
+acceptance baseline; the full imported chains above provide explicit frames.
+
+Isolated Unity 6000.2.6f2 run: 157 tests passed, zero failed, one unrelated optional
+legacy-capture test skipped. After Sonar fixes, the focused reverse/junction run
+passes 98 tests with zero failures and the same optional skip; all 32 asset
+trials retain identical acceptance, atlas size and inherited-area measurements.
+Both reference-assembly compile variants and the
+identifier/dependency gates pass. Private chains are enabled with
+`MESHLAB_REVERSE_ASSET_PATHS` (semicolon-separated imported FBX paths);
+`MESHLAB_REVERSE_OUTPUT` retains the old/new per-policy audits and refusal matrix.
+`MESHLAB_JUNCTION_FIXTURES`/`MESHLAB_JUNCTION_OUTPUT` retain the Cafe UV/index layouts.
+
+### Narrow UV junction cuts — 2026-10-10
+
+#### Transfer regression and complete-chain packing — 2026-10-11
+
+Continuation on PR225 after the supplied Cafe_Table_A_01 failure at `455a803d`.
+Reverse publication assigned the coarsest LOD to the ordinary workflow's source
+selector. A subsequent Full Pipeline therefore ran the forward shell matcher
+coarse-to-fine. Frozen LOD2-to-fine controls reproduce 24 collapsed faces and
+208/213 overlap pairs. Reverse now keeps the forward source selection; display
+and export resolve reverse meshes through their provenance. Transfer-only cannot
+silently use the original UV2 when that forward source owns only a reverse
+transferred result. Full Pipeline rebuilds its original forward inputs. The
+complete forward → reverse → forward fixture checks successful completion and
+byte-identical fresh forward results with junction cuts on and off.
+
+The previous seed trial rejected any atlas growth and required the new seed
+topology to retain every correspondence from the uncut seed. Consequently, tests
+could pass by publishing the uncut layout even with cuts enabled. Seed topology
+is now selected before projection, and newly unmatched pieces enter the existing
+new-chart path. The requested compact/cut seed must pass metric and independent
+atlas audits; failures retain an audited fallback with a reason. Within a built
+chain, donor refinement still checks each previously inherited region, intentional
+overlap and per-face metric. Canvas growth alone is allowed; missing coverage is
+still refused. Forward `GroupedShellTransfer`, symmetry splitting and native
+`XatlasRepack` are unchanged.
+
+The completed chain has one final rectangle pack by shared chart identity.
+Intentional overlay families move together. Every ancestor and descendant gets
+the same rigid transform; geometry and UV0 stay unchanged. Quarter turns, three
+deterministic rectangle orders and a common-scale search operate on the entire
+chain, with fixed pixel padding. `Fill final atlas uniformly` optionally raises
+the common density above the requested minimum; the summary/provenance records
+the actual density. Disabling it keeps density fixed. A Float32 metric failure
+retains the validated coordinates and reports why final packing was skipped.
+
+PR review also exposed a global positional weld in seed preparation. Its key is
+now scoped to the input node, matching the already scoped new-chart path. A
+coincident two-renderer/shared-Mesh fixture requires separate padded seed islands
+and byte-identical source data. Benchmark text now labels schema-2 source quality
+with its captured world transform, with the legacy local-space fallback stated.
+
+Overlap validation also used a boolean flag and overwrote a single parent when
+one detail intersected several lower faces. The same-level graph now retains
+every audited contact to the same donor chart, rebuilding links after seam
+refinement. The legacy representative pointer names the highest parent layer;
+the serialized overlap list contains all direct edges. Final packing consumes
+that graph, and the independent final audit requires the exact recorded pair,
+matching donor chart and strictly ordered layers. Stacked details and missing
+edge/wrong-chart controls cover this distinction.
+
+Cafe_Table_A_01 at the supplied scene frame, density 10, padding 2: the seed
+actually splits 32 → 48 charts. With filling enabled the final 128² chain covers
+about 29% of the fine atlas in exclusive mode and 31% with projected overlap,
+instead of the retained layout's approximately 9%. Density becomes approximately
+36/37 texels per world unit. All three LODs have zero unexpected overlaps,
+collapsed UV faces and out-of-bounds vertices. Density 32 and both overlap policies
+also pass. Assertions require actual extra seed charts, successful final packing,
+atlas extent usage and independent final audits, rather than accepting an uncut
+fallback as a cutting success. Synthetic controls preserve exact inherited and
+intentional-overlay correspondence with filling on/off. A separate frozen
+vacancy control uses one unchanged seed for both projection policies.
+
+The nine-model corpus completes all 18 overlap-policy trials: 16 independently
+audited successes and the same two Modern_Kitchen_A seed Float32 refusals. Inputs
+remain byte-identical. This is acceptance/UV-safety evidence, not a claim that
+every inheritance fraction or atlas dimension is unchanged: changing unpublished
+seed cuts can turn previously projected pieces into independently packed charts.
+The ordinary solver's older distortion/degenerate-geometry issues are not solved
+by fixing its source selection. Private reports and layout PNGs remain outside
+the package under `_results~/transfer-regression-20261011/`.
+
+#### Initial trial — 2026-10-10
+
+Continuation of PR225 at the user's request, baseline `16462a0`. The legacy
+solvers are unchanged. An opt-in preparation pass cuts existing interior edges
+from reflex UV border corners across short junctions. Equal-length proposals
+prefer two reflex corners, preventing a T/H junction from acquiring an extra
+diagonal cut. Accept only partitions whose summed oriented bounding boxes use
+less than 85% of the original box. Convex charts, ambiguous winding and
+nonmanifold borders retain their existing topology; bounded optional searches
+never refuse the input mesh. Work copies duplicate seam vertices and preserve
+the source positions, material triangles and raw non-UV2 corner streams.
+
+- T/H/U/L and rectangular-frame fixtures yield 2/3/3/2/4 strips; straight strips,
+  squares and rectangles remain intact. Rotation, scale, reflection, cancellation,
+  corner attributes and actual xatlas packing are checked independently.
+- Frozen WindowsNA_R_1.5: 20 cut edges, 52 → 66 packed charts, native oversampled
+  square side 881 → 815; zero overlap/degenerate faces before and after.
+  Glass remains unchanged. The original imported mesh is byte-identical.
+- Cafe_Table authored UV0 is already fragmented and remains unchanged by Repack.
+  The geometry-derived reverse seed contains the junction pattern. An initial
+  asset-frame trial lost seven inherited faces after cutting this seed. This is
+  an actual regression from incompatible donor seams, not a packing success.
+- Reverse now builds both variants on detached inputs when the option is enabled.
+  Compare inheritance per face, intentional-overlap retention, per-face
+  anisotropy, density and atlas side. Reject a worsening candidate and publish
+  only the baseline, with a visible reason. It can cost two complete builds.
+- Replayed Cafe_Table scene transform `(33.65, .002, 51.18)`, Y=89.99995 degrees,
+  scale=.84974 reproduces the submitted exclusive-policy report exactly:
+  256², 438 inherited, 72 new, 44 ambiguous. Seed junction cuts are refused at
+  LOD1 face 83; the published result retains these baseline measurements.
+  Projected-overlap policy also retains its baseline: 462 inherited, 48 new,
+  20 ambiguous. Independent final audits certify both policies.
+- Unity 6000.2.6f2 isolated EditMode selection: 144 passed, zero failed,
+  two unrelated private Reverse fixture checks skipped. Includes both junction
+  policies, input precision, real xatlas packing, Reverse and FBX export guards.
+  Reference compilation passes both FBX define variants; identifier/dependency
+  checks pass.
+- Repack/private captures exclude collision meshes. No seam is synthesized
+  through a face interior. New-block packing still does not search vacant
+  inherited atlas space. Detailed-triangle clipping at donor seams remains the
+  prerequisite for applying the complete pattern to the reverse Cafe_Table.
+
+Private fixtures: set `MESHLAB_JUNCTION_FIXTURES=Assets/JunctionFixtures`, containing
+the original Cafe_Table_A_01 and WindowsNA_R_1.5 FBX/meta pairs, and set
+`MESHLAB_JUNCTION_OUTPUT` to an ignored report directory. Run `UvJunctionCutsTests`
+in an isolated Editor; Repack reports include both UV/index arrays for visual
+comparison and Reverse audits cover exclusive and projected-overlap policies.
+
+### Initial prototype — 2026-10-09
+
+Continuation of PR225 at user request, baseline `67ff4b1`. Isolated new mode;
+`GroupedShellTransfer`, `XatlasRepack` and `SymmetrySplitShells` solvers are unchanged.
+See [REVERSE_UV_TRANSFER.md](REVERSE_UV_TRANSFER.md).
+
+- Coarsest geometric seed, projection onto the preceding LOD, frozen pixel
+  placements, append-only new regions and common final normalization.
+- Optional inherited overlaps retain ordered face relationships for future baking;
+  no bake-order integration in this experiment. Complete footprint/overlap and
+  distortion checks reject ambiguous or unrepresentable results.
+- Local intrinsic rescue preserves triangle proportions when connected unwrap
+  fails, at the cost of more islands. Sidecars preserve result UV2 and ancestry.
+- Unity 6000.2.6f2 DX11: **215/215 EditMode checks passed**, including preview,
+  export and capture regressions. Compile check passes both FBX define variants.
+- Frozen saved variants from the Modern and Park_Bench captures: **86/112 trials
+  accepted**, **26 refused** (10 degenerate input/seed geometry, 8 seed distortion,
+  8 collapsed local rescue faces after placement). These are repeated saved
+  variants, not 112 distinct models; failures are not certified as successful.
+  Audits report no unexpected positive-area overlap in accepted outputs.
+- Current limits: incompatible donor seam crossings create new UV instead of
+  clipped inherited pieces; intrinsic rescue fragments islands; no global compact
+  packing, guaranteed uniform per-face density or production overlap bake queue.
+
+### Reverse rebuild: repair whole shells before correspondence — 2026-10-12
+
+Continuation of the PR225 experiment above, replacing the rejected per-face input
+repair and packing trials. The previous implementation is preserved losslessly in
+`_results~/reverse-rebuild-20261012/rejected-implementation.zip` together with the
+working diff, HEAD and file hashes. Unrelated main, remesh and viewer changes are
+retained.
+
+The old input repair parameterized rejected faces independently. A folded quad
+became two independently packed triangles, and physically subtexel source faces
+could not survive Float32 placement under the same numerical distortion check as
+visible faces. Repair now operates on the entire original connected UV component:
+shared-corner intrinsic repair, a checked whole flat-patch projection, connected
+ARAP relaxation, then native xatlas parameterization of only that failed component.
+There is no isolated-triangle fallback. Native repair may introduce required seams
+on an already invalid non-planar component; healthy prepared components retain
+one similarity transform and their UV adjacency.
+
+Repairs with a unique healthy anchor stay in the ordinary common UV frame. Other
+repairs get independent local coordinate domains and immediately become valid
+projection donors. Descendants adopt the donor domain only when the complete shell
+fits and passes coverage, metric and same-LOD overlap arbitration. Numerically equal
+coordinates in unrelated local domains are not a correspondence. Each domain is
+audited before packing; every published LOD is additionally audited together in the
+final common Float32 atlas. This prevents a repaired coarsest LOD from remaining an
+invalid donor until the final packing step.
+
+Whole-shell inheritance runs in BOTH overlap modes. Previously the overlap switch
+also disabled ordinary whole-shell movement onto a donor. The switch now governs
+only same-LOD projected detail overlap, requiring the actual ordered underlay
+relationship. Failed movement restores the complete original shell. The default
+prepared path neither refines geometric triangles nor unwraps an unmatched face
+subset; exact zero-area cleanup remains restricted to detached working copies.
+
+Final packing starts from an empty canvas and compares complete classic native and
+managed placements of all linked shell families. Families share one rigid motion
+and common density across LODs, including intentional overlays. Packing-mask union,
+triangulation and short connectors are private proxy geometry only. A proxy whose
+Float32 connectors collapse uses a conservative envelope for that family rather
+than an unbounded connector width; the latter caused a reproducible native crash
+on Kamaz in a rejected trial. No native plugin binary or source is changed here.
+
+Genuinely resolution-limited faces may spend at most 0.01 bake texel on a shared UV
+vertex to avoid Float32 collapse. Incident faces and linked LOD corners move
+together. Visible distorted faces cannot use this exception, and the bound cannot
+be exceeded even at an unrepresentable large atlas offset. Counts are exposed in
+`resolutionLimitedFaces`; raw worst-stretch diagnostics remain visible.
+
+Validation of the rebuild uses Unity 6000.2.6f2 in the isolated frozen-fixture
+project. 447 EditMode tests passed, zero failures; 34 optional fixture cases
+skipped. Both compile-check FBX define variants passed. The new cases exercise
+folded shared quads, a wholly zero-UV repaired seed used as the actual next-LOD
+donor, whole-shell inheritance in both overlap policies, shared-corner precision,
+and ignored microscopic native proxy connectors. Paired model results and actual
+UV comparisons are retained under `_results~/reverse-rebuild-20261012/models-4/`.
+
+Review follow-up: snapshot payloads now preflight aggregate channels and all
+submesh indices before allocating one bounded buffer; Unicode names retain the
+version-1 binary format. Tests cover both oversized aggregates and round trips.
+CI findings in the rebuild were fixed without changing packing tolerances or
+ordering. The repeated 447-case suite and both FBX compile variants passed.
+
+Three further confirmed review findings are covered by regressions: authored
+shell overlap is measured after uniform normalization (including 1e-9 and 1e9
+scales), interpolated new-corner normals and tangents form an orthonormal frame
+while original bytes/handedness survive, and hole inspection reads an owned
+Editor snapshot for Read/Write-disabled meshes and disposes it before background
+work. No importer or original mesh is modified by these inspections.
+
+All six full model runs completed, and all sixteen reverse LOD audits contain zero
+invalid/collapsed faces and unexpected overlaps. All thirty ordinary Forward layout
+JSON files are byte-identical to the previous published control. Source snapshots,
+face partitions and geometric triangle coordinates are unchanged (apart from the
+previously authorized exact-zero-area cleanup on working copies). `splitSourceFaces`
+is zero in every reverse chain. A separate NumPy audit checked adjacency and one
+similarity for every healthy original shell: 319 Cafe, 1244 Kitchen and 4989 Kamaz
+shells per mode, with maximum normalized-coordinate residual 1.59e-7.
+
+LOD0 occupied-bbox fill (ordinary / reverse exclusive / reverse overlap):
+
+| Fixture | Ordinary | Exclusive | Overlap |
+| --- | ---: | ---: | ---: |
+| Cafe_Table_A_01 | 40.2% | 80.4% | 80.4% |
+| Modern_Kitchen_A | 39.4% | 62.5% | 62.4% |
+| Kamaz Typhoon | 57.5% | 74.8% | 74.9% |
+
+P95 stretch remains 1.210 / 1.101 / 1.064 on those LOD0 results. Whole-component
+repair touches 16 / 760 / 1276 faces respectively; these counts include healthy
+incident faces kept connected to a repaired vertex, not only the initial defect
+faces. Genuinely resolution-limited faces: 0 / 53 / 10 per chain. Overlap mode keeps
+731 audited Kitchen LOD0 underlay contacts and 417 Kamaz LOD0 + 174 LOD1 contacts;
+exclusive mode keeps none.
+
+Limits are not hidden by passing defect tests. Cross-LOD UV alignment is still
+73.3-73.5% on Kitchen LOD1, 87.7-88.4% on Kamaz LOD1 and approximately 83.3% on
+Kamaz LOD2. Cafe LOD1 improves from 65.5% in the old exclusive path to 99.2%; its
+coarsest LOD stays at 45.8%. Packing is not optimal: the rejected per-face repair
+trial reached 78.4% Kamaz overlap fill by fragmenting defective shells; this intact
+rebuild reaches 74.9%. Invalid non-planar input components may acquire native
+parameterization seams, while healthy components remain unchanged. The raw worst
+stretch of the 0.01-texel precision faces can still depress the unified quality
+score, despite negligible world area; the raw diagnostics were not suppressed.
+
+### Reverse regrouping of ordinary Transfer charts — 2026-10-12
+
+Continuation of PR225, requested after the fragmented reverse results. The default
+Reverse action now prepares the same ordinary Analyze/Weld/Symmetry/Repack/Transfer
+chain on detached working entries. Repack performs the configured T/H/L/O and other
+junction cuts once. Imported precision preparation precedes the detached copies;
+the source FBX geometry is not overwritten. The original forward source selection
+is retained. Disabling preparation consumes an already completed shared forward
+atlas, and refuses independent per-mesh atlases or previous reverse provenance.
+
+The source of the fragmentation was per-face acceptance followed by unwrapping and
+cutting the rejected subset. The new path retains the prepared island even when
+only some of its faces obtain correspondence. Existing matching UV coordinates are
+kept; projected detail may move only as a complete fitted island, and every face
+must pass coverage, metric and ordered-contact checks. A failed proposal restores
+the complete island. Final packing unions each prepared island with its validated
+LOD ancestry and overlays, then repacks all families on an empty canvas. No donor
+seam refinement or unmatched-face junction cutting runs in this path.
+
+Actual input defects are a separate exception: collapsed/stretched faces and
+measured UV contacts in the ordinary result are repaired before grouping. These
+repairs are explicitly logged and retain source-face identity; they are not
+triggered by ambiguous projection. This does not claim that every authored island
+can be kept intact when its input UVs already overlap or collapse. Strict overlap
+and absolute distortion audits remain in place. Unity Unwrapping is not used.
+
+The paired benchmark additionally checks that detached preparation is byte-identical
+to the ordinary pipeline, including vertex streams and topology, and retains the
+actual forward atlas dimensions instead of assuming 256 pixels. It now fails if
+any requested reverse mode fails, while still saving the comparison JSON.
+
+Validation for this continuation (Unity 6000.2.6f2, private frozen fixtures):
+
+- 363 individual EditMode tests passed across the regression suite and the focused
+  preview rerun; 34 optional fixture cases skipped. Both compile-check FBX define
+  variants pass; metadata and whitespace checks pass.
+- Cafe_Table_A_01, Modern_Kitchen_A and kamaz_Off completed both overlap policies
+  from ordinary prepared inputs, at a requested minimum of 32 tex/m and 2 px padding.
+  All 16 reverse LOD quality reports have zero collapsed faces, invalid faces and
+  unexpected overlaps. `splitSourceFaces` is zero in all six chains.
+- Similarity fitting against ordinary output checked 319 Cafe, 1238 Kitchen and
+  4989 Kamaz healthy islands in each policy. Maximum UV residual was 1.51e-7;
+  islands containing input repairs were explicitly excluded from this assertion.
+- Input repairs across the chain: Cafe 14 faces, Kitchen 515, Kamaz 873. This remains
+  a separate limitation of the ordinary input rather than a projection-fragment
+  repair policy. Original FBX snapshots remained unchanged.
+- LOD0 bbox fill, ordinary / exclusive / overlap: Cafe 40.2 / 53.8 / 64.9 percent;
+  Kitchen 39.4 / 41.0 / 42.4; Kamaz 57.5 / 56.0 / 54.7. Packing quality on Kamaz
+  remains below ordinary Forward and is not claimed solved by this change.
+- Intermediate coordinates are scaled together by an exact binary factor before
+  correspondence so forward oversampling does not tighten the bake-space tolerance.
+  The oversampling regression checks identical final layout at 128 and 1024 input
+  dimensions with uniform final filling disabled.
+
+Artifacts: `_results~/reverse-chart-groups-20261012/density-models/` contains all-LOD
+and LOD0 UV comparisons, paired JSON audits and `island-preservation.json`.
+
+#### Preserve the shared Forward footprint during final packing — 2026-10-12
+
+The previous graph retained only explicit per-face reverse acceptance. Ordinary
+Transfer had already aligned additional islands across LODs, but ambiguous reverse
+proposals dropped those links. Final packing then allocated separate space to the
+same prepared UV footprint. This was a correspondence loss, not a missing call to
+repack. A rectangle-only experiment confirmed that replacing the rectangle search
+could not recover that duplicated reservation and was discarded.
+
+For `regroupPreparedAtlas`, final packing now joins positive-area UV intersections
+across different LODs of the same `ExtractGroupKey` before building rigid families.
+The precondition is the existing shared ordinary Transfer atlas; this rule does
+not apply to arbitrary independently unwrapped LODs. Same-LOD overlaps are never
+whitelisted by this relation, and projection/overlay provenance is not fabricated.
+The prepared island and every explicit ancestry/overlay link remain indivisible.
+
+Large family sets additionally search a 1024-cell occupancy grid at several common
+scales. The grid reserves conservative padded footprints; emitted corners are
+rebuilt from the original coordinates in double precision and pass the existing
+metric/contact audit. The search is not a quantization of UVs. Native precision
+rescue now isolates only families that actually fail a placement, instead of all
+families below a blanket minimum-altitude threshold. All complete candidate layouts
+compete on occupied bbox area divided by their common scale squared.
+
+Regression coverage includes ambiguous reverse proposals with valid shared Forward
+footprints in both overlap policies, mesh-group isolation, intact prepared islands,
+precision exceptions and existing padding/contact/cancellation checks. Private
+fixtures are run through the real ordinary preparation plus reverse workflow; a
+post-packing replay alone cannot restore relationships already lost by an old run.
+
+Validation (Unity 6000.2.6f2, frozen private models, 32 tex/m, 2 px padding):
+
+- 368 EditMode tests passed, zero failures; 34 optional fixture cases skipped.
+- All six complete reverse runs and all 16 LOD quality audits completed with zero
+  invalid/collapsed faces or unexpected overlap. Input FBX snapshots are unchanged;
+  every ordinary Forward layout is identical to the previous benchmark output.
+- LOD0 bbox fill, previous exclusive / new exclusive / previous overlap / new
+  overlap: Cafe 53.8 / 81.3 / 64.9 / 81.0 percent; Kitchen 41.0 / 61.9 / 42.4 / 62.9;
+  Kamaz 56.0 / 72.0 / 54.7 / 78.4.
+- 6546 healthy prepared islands were checked independently in each overlap policy.
+  Maximum similarity residual is 1.60e-7 normalized UV; no new triangle splits.
+  Input repairs (Cafe 14, Kitchen 515, Kamaz 873 faces) remain unchanged and are
+  excluded from the healthy-island assertion. They are not disguised as packing.
+- Final families exclusive / overlap: Cafe 122 / 122, Kitchen 1243 / 989, Kamaz
+  3025 / 2884. P95 stretch remains 1.210 / 1.100 / 1.064 respectively.
+- Artifacts: `_results~/reverse-shared-footprints-20261012/models/` contains paired
+  audits, all-LOD plots and before/after UV comparisons. Kitchen still has packing
+  headroom; the result does not claim an optimal layout.
+
+### Reverse precision and frozen regression gate — 2026-10-09
+
+Continuation of the same experiment at baseline `a72e06f`; legacy solvers remain
+unchanged. Double intermediates now begin before geometry/UV edge subtraction,
+dot/cross products and intrinsic rescue coordinates. Kitchen Countertop face 38
+previously reported different distortion for cyclic vertex order, despite the same
+geometry and UV. Six corner-order fixtures and four scale fixtures verify the
+metric; the quality threshold remains unchanged.
+
+The final independent audit now refuses excessive stretch after normalization,
+even if its positive-area overlap scan is clean. A negative control changes only
+final UV2 to verify this gate. The frozen test checks every accepted audit and,
+when `MESHLAB_REVERSE_BASELINES` is supplied, requires every previously accepted
+pair/policy to stay accepted. Benchmark failures record their processing stage;
+degenerate input errors name the face and, for projection inputs, the LOD/key.
+
+- **228/228** local Unity 6000.2.6f2 DX11 EditMode checks pass.
+- Same frozen corpus: **86/112 accepted, 26 refused**, no lost accepted variants,
+  and no unexpected overlap or incomplete scans in accepted outputs.
+- The remaining repeated Kitchen failures are not cured by metric precision:
+  Backsplash fine face 22 has altitude **1.2317e-8 m** over a **0.68664 m** edge;
+  its local UV collapses after atlas placement. Countertop coarse face 38 has an
+  **8.8298e-6 m** altitude, and prepared seed placement still yields distortion
+  **32.973**. Exact captured coordinates are regression fixtures. These are 16
+  trial refusals across repeated captures/policies; ten further trials contain
+  genuinely degenerate geometry (seed faces 8618/96 or detailed face 10925).
+- Geometry is not silently removed and the stretch threshold is not relaxed.
+  Connected unwrap/placement of very thin faces remains an open limitation.
+- A shortest-edge intrinsic basis was tested and rejected: it changed Backsplash
+  face 22 from a collapsed line to distortion **13.441**, still above the limit;
+  the isolated placement negative control reached **95.587**. It did not recover
+  any corpus trial, so that packing change is not included.
+
+### Reverse shared projection frame — 2026-10-09
+
+Continuation of the same PR225 prototype at baseline `33150eb`. Seed preparation
+and every projected LOD share a translated world frame. Double matrix products
+and translation subtraction happen before float BVH coordinates are stored;
+source-local geometry is checked first. The frozen Kamaz triangle fixtures cover
+world-position collapse and a genuinely collinear source face. The latter remains
+a refusal; no triangles are dropped, thresholds relaxed or legacy solvers changed.
+Translation controls compare complete UV output and inherited face counts in both
+overlap policies. The previously accepted frozen variants remain **86/112** with
+no lost success; all remaining 26 refusals are retained and stage-classified.
+The combined local Unity 6000.2.6f2 battery passes **309 checks**, with **7 private
+fixture checks skipped** and no failures. It includes the frozen reverse corpus,
+Kamaz exact-triangle controls, preview/export/capture and planar/local/bridge
+closure regressions. Reference compilation passes both FBX define variants.
+
 > **Обновлять этот документ при каждом эксперименте с transfer pipeline.**
-> Последнее обновление: v0.15.39 (2026-04-07)
+> Последнее обновление: v1.1.34 (2026-10-09)
+
+## Source UV packing: relative face degeneracy — 2026-10-09
+
+- Продолжение PR #225, baseline `24266da`. Изолированный Unity 6000.2.6f2 / DX11 проект, оригинальные FBX и meta; изменения геометрии и UV0 запрещены. Проверяется подготовка source до transfer, включая reverse LOD1→0.
+- Stage probe TrainСarriage_Base_LOD0 и Modern_DressingTable_A_Frame_LOD0: после ARAP и density normalization у Frame 0 вырожденных UV-граней, но xatlas оставляет 50/51 orphan vertices (weld off/on). После orphan repair появляются 11/10 вырожденных граней. Train имеет 8 исходных вырожденных 3D-граней; дополнительно xatlas игнорирует 248/280 корректных маленьких UV-граней.
+- Причина: `AddUvMesh` сравнивает float UV area с абсолютным `FLT_EPSILON`. Порог зависит от единиц UV, поэтому normalization уменьшает корректные triangles ниже cutoff. Это source packing defect, а не ошибка BVH traversal или source assignment.
+- Отклонён общий ×16/×32 scale входа: он убирает orphan collapse, но меняет автоматический расчёт texels-per-unit (`max(1, meshArea / .75)`) и round-up размеров chart. На 174 prepared rows (87 inputs × grouped/grouped-no-hints) 32 строки ухудшили хотя бы одну quality metric, в том числе Kitchen. В production масштабирование не переносится.
+- Native bridge компилирует pinned xatlas implementation в своей translation unit, затем после успешного `AddUvMesh` пересчитывает `faceIgnore` до chart construction: finite float coordinates, double determinant, relative cutoff `4 * DBL_EPSILON * max(edgeLengthSquared)`. Unmodified vendor snapshot и C ABI сохранены. Координаты, packing options и texels-per-unit не масштабируются. Коллинеарные и non-finite faces остаются ignored.
+- Добавлены native CTest fixtures для маленьких, mirrored, translated, collinear и non-finite UV, плюс EditMode проверки automatic/explicit density и mixed-scale shared atlas. Native binaries обновляет только build-native CI.
+- CI rebuild `37910357333`: Windows/Linux/macOS (universal), native uv-input и remesh CTests проходят на всех трёх платформах. В изолированном Unity: **154 passed, 0 failed, 3 ignored** (отсутствующий Cabinet corpus); все три новые native-backed EditMode проверки проходят. Обе FBX reference-сборки, dependency/identifier и meta gates проходят.
+- Native stage probe: Train source weld off **43 degenerates / 17822 overlaps → 8 / 0**, weld on **42 / 13346 → 8 / 4**. Остаточные 8 faces вырождены в импортированной 3D-геометрии. Frame weld off **11 / 295 → 0 / 10**, weld on **11 / 194 → 0 / 7**; остаточные folds уже есть после ARAP. Площадь/форма source chart больше не портятся из-за orphan recovery.
+- Final prepared corpus **174 rows, 2 repeats**, complete, errors=0, deterministic, inputs unchanged. Geometry, indices, normals, tangents и UV0 не изменены. **32 rows изменены**, остальные 142 byte-identical. Frame target weld off pairs **111→0**, worst stretch **4156.58→8.85**; weld on degenerates **3→1**, pairs **12→0**, worst **3790326.83→54.04**. Shelf/Tire/Park/Bench результаты сохранены.
+- Это **не regression-free end-to-end transfer**: строгая проверка семи source/target quality metrics отмечает **26 rows** с хотя бы одним ухудшением. В Kitchen есть float line→sliver / sliver→line tradeoffs, а Train LOD2 weld off degenerates **179→188**, хотя pairs **5321→435**. Train reverse weld on LOD1→0: pairs **3851→140**, degenerates **175→171**, но mean stretch **16.54→31.59**. Native pack исправлен; target projection/legacy candidate selection ещё требуют отдельного исправления.
+- Отклонён дополнительный trial выбора transform по локальной quality: 174 rows, 44 strict metric regressions; Train weld off LOD2 pairs **435→438** относительно native-only и ряд Tire numeric metrics хуже. Локальное улучшение chart не сертифицирует cross-chart footprints. `GroupedShellTransfer` оставлен без изменений; этот trial не входит в production.
+- Подробный отчёт и точные labels/stage metrics: [SOURCE_UV_PACKING_REPRO.md](SOURCE_UV_PACKING_REPRO.md). Native-only binaries опубликованы штатным CI; остаточные ARAP folds, thin/degenerate authored geometry и недостатки обратного трансфера не считаются исправленными.
+
+## Projection candidate quality and source-atlas gate — 2026-10-09
+
+- Продолжение PR #225, baseline `269bba6`. Сначала разделены два механизма
+  Bench LOD2: inherited hint выбирает opposed distant surface вне UV0 interior;
+  normal-filtered UV0 queries чистого chart выбрасывают близкие triangles и
+  складывают целый target chart на удалённую границу. Brute-force double queries
+  независимо воспроизводят исходный результат, поэтому BVH traversal не причина.
+- Shared `TransferCandidateQuality` измеряет geometry anisotropy (worst и
+  area-weighted), collapse/missing UV, internal overlap, bounds, density/CV.
+  Recovery UV0 без normal filter и 3D projection допускаются только для clean
+  source atlas, unshared/unrestricted chart без UV0 stacking. Они не меняют source
+  assignment и не экстраполируют за source triangles. Candidate comparison
+  не допускает больше issues/overlap и требует улучшения stretch. Line → floating
+  sliver при прежнем числе collapse issues не считается исправлением.
+- Hint guard дополнительно отвергает opposed hint только при >2× distance
+  до 3D interiors и отсутствии UV0 interior coverage hint. Correct displaced
+  UV0 feature и thin-sheet tests сохранены. Classification происходит после
+  topology correction и учитывает stretch >4 и internal folds; trace содержит
+  before/final quality, source-atlas gate, rescore/dedup stages и ограниченный
+  объём raw recovery candidates (4096 vertices/candidate, 65536/case).
+- Отклонён вариант с проверкой лишь отдельного source chart: на bad source
+  Train LOD2 pairs 4953→4966, DressingTable Frame overlap area +0.51%, несмотря
+  на улучшение локальной candidate quality. В окончательном варианте bounded
+  scan всего source UV2 обязан завершиться с 0 overlap/degenerate/invalid/OOB.
+  Train и DressingTable Frame сохраняют исходные UV2 bytes. Это консервативный
+  guard, а не исправление дефектов source.
+- Final frozen corpus: 74 captured pairs + 7 analytic controls × 6 methods =
+  **486 rows**, two repeats, row errors=0, deterministic, inputs unchanged.
+  **58 UV2 results изменены**, все grouped/grouped-no-hints. При сравнении
+  degenerate/invalid/OOB, pairs/area и worst/area-weighted anisotropy ни одной
+  регрессии (epsilon 1e-12 для area и 1e-6 для numeric stretch). Пять Train
+  nearest-method scans остаются incomplete как и в baseline; grouped scans полные.
+- **140/140 affected EditMode tests**, zero failures/skips; обе FBX define
+  reference-сборки, identifier/dependency guards и meta/GUID checks проходят.
+- Full Bench LOD2: **0/13 → 0/0**, mean anisotropy **477.6345→1.9044**,
+  worst **6,418,951.6→148.45**. Controlled Bench LOD2: **0/6→0/0**;
+  Packed Tire LOD2: **0/14→0/7**. Shelf reverse square worst **14.19→7.36**,
+  1:2 **9.11→4.22**, both still 0/0. Bench LOD1 remains 1/8, and target
+  distortion is not fully repaired. DressingTable Handle clamp remains.
+- [Подробные измерения](MODERN_TRANSFER_REPRO.md#projection-candidate-quality-and-source-atlas-gate).
+  [Присланный joint-layout алгоритм](LOD_UV_ALGORITHM_REVIEW.md) рассмотрен
+  отдельно: uniform packing сохраняет aspect distortion, greedy assignment
+  проигрывает альтернативе на воспроизводимом fixture, UV0 overlap не доказывает
+  cross-LOD correspondence. В production совместная перестройка атласа не перенесена.
+
+## Bench_Metal_A: shared boundaries and inherited chart hints — 2026-10-09
+
+- Продолжение PR #225, baseline `927eff1`. Actual prefab использует FBX GUID
+  `7896c81e71a3ef74f804c0e590cb339e`, 1668/1268/272 faces на LOD0/1/2.
+  Original FBX/meta скопированы в изолированный Unity 6000.2.6f2 / DX11 проект.
+  Controlled preparation: manual 512, square metric, weld on, pre-optimize off,
+  symmetry off/legacy/adaptive × ARAP off/on — 12 target cases; source UV2 0/0.
+- LOD1: target boundary vertices точно лежат на неправильном coplanar frame,
+  но face interiors находятся в его отверстии. Vertex-only average distance
+  ≈1e-12 не отличает рамку от заполненной поверхности. Для t47/t150/t161
+  UV2 interior coverage неправильного source равен 0%; source bbox скрывает
+  проблему. Bounded sampling до 32 face centroids добавлен к каждой candidate
+  оценке и dedup retry: score использует max(vertex distance, interior distance).
+  Candidate set, normal penalty и merged rescore сохранены.
+- Cross-LOD hint path раньше обходил surface matching. Full-pipeline frozen
+  LOD2 с hints имел 30 degenerate faces / 111 overlaps; без hints — 0 / 6.
+  Geometric-only rejection hints отклонён: Train LOD2 ухудшался 19 → 47
+  degenerates. Relative UV0 rejection тоже отклонён (19 → 25). Итоговый guard
+  отклоняет hint только при >2× distance до 3D interiors, когда alternative
+  покрывает sampled UV0 interiors в пределах squared tolerance 1e-8, а hint
+  не покрывает. Это сохраняет UV0 feature для деталей, смещённых decimation.
+  Trace сохраняет отдельные optional 3D/UV0 interior distances и причину rejection.
+- Controlled Bench LOD1: **8/418 → 2/7**, LOD2: **0/119 → 0/6**, одинаково
+  во всех шести settings. Остаточные LOD2 pairs — folds внутри двух charts;
+  sampling не является сертификатом полного triangle coverage.
+- Frozen Full Pipeline inputs после interior scoring: LOD1 1/8; LOD2 после
+  окончательного hint guard **30/111 → 0/13**. Полное отключение hints даёт
+  меньше pairs, но отбрасывает полезные feature matches; оно не принято.
+- Семь analytic cases: три масштаба общей границы, те же три с неверным hint,
+  и сохранение правильного UV0 hint после displacement. Первые три падали
+  до correction. **136/136 affected EditMode tests**, zero skips; обе reference
+  C# сборки и identifier/dependency guards проходят.
+- Corpus tradeoff: Train LOD1 66/11797 → 62/11800; summed pair area растёт
+  на ≈0.0115%, source уже имеет 32 degenerates / 13964 pairs. Train grouped
+  LOD2 19/4955 → 19/4953. Shelf reverse cases становятся 0/0; Countertop
+  degenerates уменьшаются 14→3 без weld и 15→4 с weld. POST-DEDUP warnings
+  сохранены; ни Bench, ни Train ещё не имеют полностью чистого target atlas.
+  [Измерения и local evidence](MODERN_TRANSFER_REPRO.md#bench_metal_a-shared-boundaries-and-cross-lod-hints).
+- Final frozen corpus: 74 captured pairs + 7 analytic controls × 6 methods =
+  **486 rows**, two repeats, row errors=0, deterministic, inputs unchanged.
+  Пять Train nearest overlap scans остаются lower bounds; Bench scans полные.
+  Final async Full Pipeline с Checker: 9839 updates, missing meshes=0,
+  repeat TransferAll capture подтверждает LOD1 1/8 и LOD2 0/13.
+
+## Tire_C: tessellation-dependent normal override — 2026-10-09
+
+- Продолжение PR #225, baseline `ebe5fcd`. Actual Tire_C prefab использует
+  Packed FBX GUID `f23fd07c97f149d4bac9b04b087dfd44`; Separate — отдельный
+  input. Обе версии имеют LOD0/1/2: 816/560/144 faces. Копии original FBX/meta
+  импортированы в изолированный Unity 6000.2.6f2 / DX11 проект.
+- В controlled preparation source UV2 чистый у обеих версий. Packed LOD1
+  исходно имеет 87 degenerate faces / 8727 positive-area overlap pairs;
+  Separate LOD1 — 0 / 0. У обеих версий LOD2 остаются 14 overlap pairs.
+  Matrix: manual 512, weld on, pre-optimize off, square metric,
+  symmetry off/adaptive, ARAP off/on — 16 target cases.
+- Match trace Packed LOD1 выбирает внутреннюю поверхность вместо внешней:
+  правильный source находится на squared surface distance ≈5.5e-13,
+  но unweighted average normals имеют dot=-1. После decimation средняя normal
+  меняет знак из-за количества мелких граней. Weighted cross sums сохраняют
+  направление: source Z≈-0.3767, target Z≈-0.3586; unweighted sums дают
+  Z≈-13.86 и +16.62. Это не opposite side тонкого листа.
+- Полная замена всех средних нормалей отклонена: ухудшает Kitchen/Train
+  в 402-row comparison. Итоговый guard сохраняет прежнее scoring/rescore,
+  но запрещает opposed-normal override для почти точного sampled surface
+  match (squared tolerance = mesh diagonal² × 1e-10), если area-weighted
+  направления согласованы (dot≥0.3). Nearly closed chart не получает
+  выдуманную area-normal. Проверка обратной стороны thin sheets сохраняется.
+- После исправления matching остаются folds от normal-filtered interpolation
+  внутри правильного source. Только для защищённого match на равном числе
+  face issues выбирается существующий transform, если его bounded overlap
+  scan полный и чистый, а interpolation не проходит эту проверку.
+  POST-DEDUP warning и проверки настоящего shared-source ambiguity сохраняются.
+- Четыре analytic retessellation fixtures (subdivision source/target, 8/40
+  segments) сначала выбрали remote wall вместо правильного chart. Итоговый
+  subset: **129/129 EditMode tests**, без skips. Обе reference C# сборки,
+  identifier/dependency checks проходят. [Корпус и результаты](MODERN_TRANSFER_REPRO.md#tire_c-tessellation-dependent-normal-override).
+- Final frozen corpus: 60 captured pairs + 7 analytic controls × 6 methods =
+  **402 rows**, два повторения, deterministic, inputs unchanged, row errors=0.
+  Пять Train nearest scans неполные (lower bounds). Все Park/Modern/Shelf outputs
+  совпадают с baseline. Train grouped LOD1: 124/11830 → 66/11797; grouped LOD2
+  не меняется. No-hints LOD2: 129/4319 → 120/4327 (не чистый output и не
+  production hint path). Пять positive analytic grouped controls проходят.
+- После финальной проверки dedup propagation повторены **134 grouped/no-hints
+  rows** на всех 67 парах: UV2/mapping hashes и все quality counters совпадают
+  с 402-row comparison; ошибки=0, deterministic, inputs unchanged.
+- Tire Packed LOD1: **87/8727 → 0/0**, weighted anisotropy 23.139 → 1.283,
+  во всех четырёх prepared settings; Separate LOD1 не меняется. LOD2 обеих
+  версий сохраняет 14 pairs. По два async Full Pipeline с Checker на LOD1/2
+  завершились, missing render meshes=0. Specific src3/t3/t4 POST-DEDUP строка
+  в controlled/full probes не воспроизвелась; source-claim warnings не удалены.
+
+## Park_Bench_A: internal Mesh LOD indices и отклонённые matching variants — 2026-10-09
+
+- Продолжение PR #225, baseline `2c40343`. Проверены две разные FBX версии:
+  actual prefab использует Packed (LOD0/1/2: 3832/1498/230 faces), Separate
+  содержит 9110/2306/1498 faces и внутренние Mesh LOD ranges. Их albedo textures
+  квадратные: 4096×4096 и 2048×2048. Original FBX/importer meta не менялись.
+- Separate падал при native UV packing после создания working copy. Для LOD0
+  MeshData descriptor сообщает 36561 indices, но Mesh.GetIndexCount — 27330.
+  MeshData.GetIndices заполняет только 27330: sentinel probe подтвердил 9231
+  нетронутый элемент в хвосте. У LOD1/2 хвост содержит 2553/1533 элемента.
+  Uninitialized tail попадал в SetIndices. ReadIndices теперь выделяет массив
+  по active Mesh.GetIndexCount; обычный и raw-UV copy используют один helper.
+  Native binaries, импорт и исходные UV не меняются.
+- Два UInt16/UInt32 regression fixtures воспроизвели пустую/невалидную topology
+  до исправления. Итоговый subset: **125/125 EditMode tests**, без skips,
+  Unity 6000.2.6f2 / DX11. Обе reference C# сборки, identifier/dependency checks
+  проходят. По два async Full Pipeline для Packed/Separate с Checker на
+  LOD1/2 завершились; missing render meshes = 0 во время updates и после
+  смены preview mode.
+- Controlled preparation: weld on, pre-optimize off, manual 512, square metric,
+  symmetry off/adaptive, ARAP off/on. Separate targets чистые в восьми случаях
+  (zero degenerate faces / positive-area overlaps). Это не утверждение о
+  неизвестных UI auto-tune settings. Packed остаётся дефектным: с ARAP source
+  имеет 0 degenerates / overlaps, но grouped LOD1 — 0 / 4, LOD2 — 5 / 52.
+- Проверены и отклонены matching variants: nearest-face normal вместо average
+  normal для curved fragment, ограничение merged rescore по 3D distance и
+  дополнительный UV0 coverage gate. Analytic curved fixture подтверждает
+  ошибочный source override, но на реальном Packed эти изменения увеличивают
+  summed overlap area с ≈0.00535 до ≈0.0255; rescore variant также увеличивает
+  degenerate faces с 5 до 9. Они **не включены** в итоговый patch. Ни один из
+  шести benchmark methods не даёт чистый Packed LOD2. Требуется согласованное
+  исправление matching и проекции, а не смена метода по одному счётчику.
+- Старые CollapseDiag строки `uv2 aspect vs 3D bbox` не доказывают sliver:
+  bbox-проверка уже заменена triangle anisotropy в текущей ветке. Реальные
+  overlaps/degenerates подтверждены полным независимым scan. [Данные и
+  ограничения](MODERN_TRANSFER_REPRO.md#park_bench_a-internal-mesh-lods-and-packed-quality-limits).
+- Итоговый frozen regression corpus: Park 4, Modern 16, Shelf 12, Train 8
+  пар × 6 методов = **240 rows**, по два повторения. Все outputs deterministic,
+  inputs unchanged; 40 grouped references совпадают. Park hashes/mappings
+  совпадают с baseline во всех 24 rows. У пяти Train nearest rows overlap scan
+  неполный (lower bounds); ни один Park scan не исчерпал budget.
+
+## TrainCarriage: pack budget и выбор source для instance — 2026-10-09
+
+- Продолжение PR #225, baseline `ca2daf0`. Присланные stack traces относятся
+  к `59d634d`, но pack refusal воспроизведён на текущей копии модели: 1428
+  source shells, 4096 × oversample 4 → 383B cost, 2048 × 4 → 95B, оба отклонены
+  бюджетом 20B. На 2048 × 1 pack проходит примерно за 0.4 s. Native binaries
+  и бюджет не менялись. Сварка всех импортированных мешей сохраняет corner
+  tangent.w; для корпуса LOD0/1/2 изменённых signs — 0.
+- RepackSingle/Multi выбирают максимальный внутренний oversample, помещающийся
+  в бюджет; requested resolution и пропорциональный padding сохраняются.
+  Если даже factor 1 не помещается (корпус на 4096), возвращается причина
+  budget refusal вместо `cancelled`. Full Pipeline проверяет все included
+  source outputs: partial/all failed Repack останавливает transfer/auto-tune,
+  не пишет успешный capture/benchmark и не сообщает Complete. Успешные source
+  outputs остаются доступными. User cancellation сохраняет свой отдельный путь.
+- `ElectricWagon_Seat_LOD1.001/.002` не имели одинакового group key со своим
+  LOD0, поэтому transfer выбирал первый source renderer (дверь). Group key
+  удаляет LOD/collision suffix, сохраняя numeric instance. Настоящие .001 и
+  .002 остаются разными группами; имена сцены и FBX не переименовываются.
+- 5 pack/pipeline regressions и ещё 5 naming/source-selection cases сначала
+  воспроизвели ошибки. Итоговый subset: **273/273 EditMode tests**, без skips,
+  Unity 6000.2.6f2 / DX11. Проверены native single/shared packs, input UV0/UV2,
+  positive-area overlaps и session release, максимальный int oversample,
+  partial/all failed pipeline и фактический source atlas. Обе reference C#
+  сборки и identifier check проходят.
+- Два полных async запуска с Checker на LOD1/2, manual 2048, per-mesh packing:
+  missing meshes = 0. Pipeline rejected shells 85 → 2 после исправления names.
+  Узкая pipeline сводка overlaps=5 **не является полным UV scan**.
+  Capture подтверждает чистые три Seat LOD1; у LOD2 Seat остаются по 2 degenerate
+  faces и 20–22 overlap pairs. Сам source UV2 корпуса уже содержит 32 degenerate
+  faces / 13964 overlap pairs. Grouped targets LOD1: 124 / 11830, LOD2: 19 / 4955.
+  Это не исправлено сменой transfer method или уменьшением oversample.
+- Frozen Capture: 8 пар корпуса/сидений × 6 методов = **48 rows**, по 2
+  повторения; deterministic, inputs unchanged, grouped reference matches.
+  Ни один метод не даёт чистый корпус. У 5 nearest-method rows overlap scan
+  неполный, их counts — lower bounds. [Корпус и данные](MODERN_TRANSFER_REPRO.md#traincarriage-pack-budget-and-instance-source-selection).
+
+## Shelf_C: shared-source overlap и collapse diagnostics — 2026-10-09
+
+- Продолжение PR #225, baseline `f3cbb88`. Исходный `Shelf_C.fbx` и importer meta
+  проверены в проекте на E: и скопированы в изолированный Unity 6000.2.6f2 / DX11
+  проект. Сварка сохраняет `tangent.w` каждого угла: LOD0 587 → 551 vertices,
+  LOD1 449 → 425, изменённых handedness — 0. Присланные TBN warnings на текущем
+  импорте не воспроизвелись; новое изменение weld не требуется.
+- Два shared-source gate считали пересечение UV0 AABB доказательством overlap.
+  Теперь нужны пересечения треугольников положительной площади. Общая граница
+  и пустые области bbox не вызывают eviction. Лимит 200000 сравнений на пару
+  сохраняет консервативный conflict, но лог сообщает incomplete вместо
+  подтверждённого duplicate. На Shelf ложный shared-source conflict исчезает;
+  подтверждённый UV0 ambiguity остаётся видимым.
+- CollapseDiag сравнивал UV AABB с world AABB: повёрнутая тонкая деталь могла
+  выглядеть квадратной в 3D bbox. У target shell #50 реальная anisotropy ≈1.37,
+  хотя прежний лог сообщал 12.7:1 vs 1.4:1. Проверка теперь использует метрику
+  каждого треугольника и порог anisotropy 5; bbox только описывает дефект.
+  UV2 эта диагностика не меняет. Реальные collapsed/stretched charts остаются
+  предупреждениями, включая 5.2:1 в отдельном full-pipeline probe.
+- 12 подготовленных случаев (forward/reverse, square/1:2 metric,
+  off/legacy/adaptive symmetry), 6 методов, 2 повторения: **72 frozen rows**.
+  Все UV2 hashes и quality counters совпадают с baseline; outputs deterministic,
+  inputs unchanged. Это исправление классификации, не улучшение UV2 Shelf в
+  этом corpus. В reverse остаются 22 overlap pairs для square metric и 8 для 1:2.
+- **101/101** связанных EditMode tests; обе reference C# сборки и identifier
+  check проходят. Два async Full Pipeline с Checker завершились без missing
+  render meshes и TBN warnings. Материалы исходной сцены не скопированы;
+  реальные failing settings требуют Capture. [Данные и ограничения](MODERN_TRANSFER_REPRO.md#shelf_c-shared-source-and-rotation-invariant-diagnostics).
+
+## Modern furniture: weld и владение мешами — 2026-10-09
+
+- Продолжение PR #225. Копии `Modern_DressingTable_A`, `Modern_Kitchen_A` и
+  `speaker-retro` импортированы с исходными importer meta в изолированный Unity
+  6000.2.6f2 / DX11 проект. Исходные FBX не менялись; SHA256 сохранены.
+- Сварка UV0 теряла противоположный `tangent.w`, предупреждая уже после слияния.
+  Теперь такой шов сохраняется. На Kitchen Handle LOD1 в контролируемой adaptive
+  подготовке: 24 → 0 degenerate faces, 12 → 0 overlap pairs, area-weighted
+  anisotropy 512.56 → 1.05. На других деталях остаются дефекты; это не сертификация
+  всей модели. Matching/repack/symmetry core в итоговой правке не изменены.
+- Повторный Full Pipeline с Checker воспроизвёл уничтожение привязанных к
+  MeshFilter outputs до repaint: Speaker 2, DressingTable 2 и Kitchen 4 missing
+  meshes. Операции снимают overrides и ссылки на старые working outputs до
+  изменения мешей, затем сохраняют выбранный режим и framing. Проверены также
+  Off и Checker с working output в исходном scene binding/preview backup.
+- Auto-tune сохранял лучший target transfer, но source atlas оставался от
+  последней попытки. Выбранные source/target meshes, atlas dimensions, validation
+  и symmetry flags теперь восстанавливаются вместе. Заменённые попытки и snapshots
+  освобождаются, включая cancel/exception paths.
+- Cross-LOD hints были привязаны только к entry/group, поэтому смена порядка
+  островов атласа выбирала соседнюю поверхность. Подсказки теперь принадлежат
+  конкретному source mesh; winner restore, refresh и in-place mesh events
+  сбрасывают устаревшие source indices/transforms. Все три перехода сначала
+  воспроизвели неверный остров в двух-chart fixture и проходят после исправления.
+- Новый набор сначала воспроизвёл 3 failures из 9 tests (TBN seam и Renderer
+  lifetime), отдельный auto-tune fixture и 2/2 scene-binding fixtures также упали.
+  Итоговый affected subset: **353/353 tests**, без skipped/failed. Обе reference
+  compile variants с/без FBX exporter проходят. Async full pipeline с обновлением
+  canvas на editor updates: два запуска каждой модели, missing meshes = 0.
+  Зависание Speaker не воспроизведено; время 0.45–0.68 s на контролируемых настройках.
+- Frozen comparison шести методов: 96 rows × 2 repetitions, deterministic,
+  inputs unchanged. Повтор после Sonar helper extraction и source-hint fix
+  сохранил все quality/reference counters на 96 rows. Эксперимент с mesh-relative
+  dedup guard убрал 11 схлопнувшихся
+  граней Countertop, но увеличил overlap area до ≈0.001. Geometry fallback не
+  решил конфликт. Эксперимент отвергнут, в production его нет; качество не
+  объявляется исправленным заменой одного дефекта другим.
+- [Корпус, команды, метрики и ограничения](MODERN_TRANSFER_REPRO.md).
+  Локальные logs/XML находятся в `_results~/modern-transfer-20261009/`, полные
+  frozen reports — в `BenchmarkReports/` изолированного consuming project.
+
+## Синхронизация UV/3D preview после Transfer — 2026-10-09
+
+- Продолжение PR #225, без изменений core matching/repack/symmetry алгоритмов.
+  Смена transferredMesh сбрасывала кеши, но не переустанавливала активный Checker.
+  Изменение UV на том же Mesh также не наблюдалось hub. Теперь учитываются
+  displayed mesh/entry identities и context cache version; переустанавливаются
+  Checker, Shells3D и Lightmap, затем собираются актуальные material references
+  для того же кадра. Старый transfer output освобождается.
+- Lightmap preview клонировало MeshFilter.sharedMesh вместо текущего working mesh;
+  GPU layer игнорировал renderer atlas scale/offset и делил одну texture между
+  экземплярами одного mesh. Пиксельный тест выявил ещё один дефект: BeginPreview
+  переключает сцену, и LightmapSettings внутри preview становится пустым. Атласы
+  теперь берутся из snapshot исходной сцены перед BeginPreview, слои принадлежат
+  отдельным entries и sampled UV получает renderer scale/offset.
+- Preview сохраняется через UV/LOD/context/Undo/reset и save/apply/export,
+  включая nested write, early return, cancel и exception paths. Во время записи
+  временные overrides сняты. Camera и UV framing не сбрасываются. Surface-area
+  display также обновляется при geometry edits на том же Mesh.
+- Исходная новая матрица воспроизвела 39 failures из 68 tests на `59d634d`.
+  Дополнительно подтверждено замечание PR про radius/clipping после смены модели:
+  3/3 новых fixtures упали на `08e13d4`, включая GPU pixels distant content.
+  Radius/clip/zoom bounds теперь следуют текущему content независимо от framing;
+  pivot/orbit/distance сохраняются. Changelog entries распределены по категориям.
+  После исправлений: 104/104 preview tests и 350 passed / 0 failed / 1 skipped
+  из 351 affected tests, Unity 6000.2.6f2 / DX11 / Built-in. Пропущенный line-render
+  fixture требует URP. Оба FBX compile variants проходят.
+  Отдельный изолированный URP 17.2.0 / DX11 проект: 114/114 preview/line tests,
+  без skipped, включая тот же integration fixture и GPU pixel assertions.
+  Это проверка отображения, не новая оценка correspondence/overlap quality реальной модели.
+  [Матрица событий и ограничения](PREVIEW_UPDATE_EVENTS.md).
+
+## Эксперимент 2026-10-08 — Пропорции исходной текстуры и квадратного lightmap
+
+- Исходный случай: текстура 1024×2048 и соответствующие ей UV0. До упаковки UV2
+  временная копия получает pixel metric текстуры с учётом tiling материала:
+  U × sqrt(width/height), V × sqrt(height/width). ARAP и density работают уже
+  в этой метрике; исходный UV0 с исходной размерностью, форматом, stream и raw bytes
+  восстанавливается в finally.
+  Разные или неизвестные аспекты используемых материалов одного меша не исправляются
+  одной общей матрицей. Пустые submeshes не участвуют в выборе метрики.
+- Дополнительно воспроизведено влияние активного Checker/Shells3D/Lightmap preview:
+  resolution метрики читало подменённые renderer materials, поэтому исходный
+  прямоугольный texture aspect становился квадратным. Read-only lookup теперь
+  берёт сохранённые исходные material slots и tiling. Он не снимает preview,
+  не меняет выбранный режим, renderer references или UV0. Три regression fixtures
+  сначала воспроизвели неверную метрику во всех режимах, затем прошли с исправлением.
+- Дополнительный дефект подтверждён native-тестом: bridge нормализует координаты
+  отдельно по ширине/высоте прямоугольного packed atlas. В UV transfer workflow
+  результат переводится в квадратную метрику max(width,height) на стороне C#,
+  включая размеры, переданные transfer. Border inset применяется после перевода
+  в квадрат, чтобы сохранить указанный отступ в пикселях на обеих осях.
+  Native source и binaries не менялись.
+- Opt-in Capture сохраняет точные меши/параметры/меж-LOD hints и этапы симметрии,
+  repack и transfer. Trace записывает реально оценённые кандидаты без дополнительных
+  matching queries; Replay сравнивает baseline и два запуска. Schema 2 выносит большие
+  stage/pair данные в checksum-protected details JSON; manifest имеет общий лимит
+  writer/reader 64 MiB, payloads — 512 MiB. Replay также выносит массивы каждой пары
+  в свой details JSON и держит только summaries в replay.json. Schema 1 по-прежнему читается.
+  Добавлены axis stretch
+  против 3D и positive-area overlap, включая same-shell пары. Алгоритмы symmetry,
+  overlap repair и критерий выбора auto-tune не менялись.
+- Проверка после исправления замечаний PR #225: 340 passed / 0 failed / 1 skipped,
+  Unity 6000.2.6f2 / DX11. Пропущен fixture совместных Standard/URP normal conventions:
+  в изолированном test project отсутствует URP source shader.
+  При выключенных ARAP/density source aspect ON даёт anisotropy ≈1, OFF ≈2 после
+  repack и transfer; UV0 (включая третий компонент) сохранён. Capture/Replay двух
+  LOD с hints совпадает по UV2 hash и mapping; trace on/off не меняет результат.
+  Подтверждены прежние shell IDs, scalar UV0 и auxiliary UVs в readable/unreadable
+  working copies и snapshots, отказ общей коррекции при textureless used material,
+  pixel border после repack, capture payloads суммарно >64 MiB с компактным manifest,
+  legacy replay, проверка checksum и обработка ошибок capture/IMGUI.
+  После проверки и интеграции Sonar autofix отдельно повторён затронутый набор:
+  42/42 tests (transfer capture, shell extraction, geometry helpers, mesh access),
+  без skipped. Это subset полного прогона 341 tests, а не другой полный прогон.
+  Обе FBX compile variants прошли после autofix.
+  Последующие preview/UV0-format/replay-report правки проверены 138/138 tests без
+  skipped (transfer capture, mesh access, FBX export, preview LOD switches, viewport),
+  Unity 6000.2.6f2 / DX11. Float16 UV0 сохраняет формат, stream и raw bits после
+  working copy и native repack/transfer; replay payloads суммарно >64 MiB не растят
+  общий summary report.
+  Реальная модель пользователя пока не захвачена новым кодом, её overlap/symmetry
+  проблема не объявляется исправленной. [Использование и ограничения](TRANSFER_CAPTURE.md).
+
+### Качество прямого и обратного переноса — 2026-10-08/09
+
+- Продолжение того же texture-metric эксперимента в PR #225. Бенч получил
+  `includeHigherDetailTargets`: source LOD1 можно переносить на LOD0. Подготовлены
+  81 пары: аналитические контроли, шкаф в обоих направлениях, symmetry
+  off/legacy/adaptive, ARAP ON/OFF и стул. Шесть методов запускаются на одном
+  portable corpus, с warmup и тремя измеряемыми повторами; source UV2 между
+  методами не перепаковывается. Подготовка использует копии импортированных FBX,
+  отдельный атлас пары и заданный аспект 4096×8192, а не UI Full Pipeline.
+- Найдены независимые дефекты transfer: маленький UV-треугольник при фиксированном
+  пороге Gram determinant превращался в первую вершину; поиск source прекращался
+  на первом «достаточно близком» chart; мягкий штраф нормали выбирал обратную сторону
+  тонкой поверхности, когда LOD-вершина переходила ближе к ней. Теперь UV barycentric
+  использует double cross product и ближайший сегмент для настоящей вырожденности;
+  3D queries используют общий TriangleBvh helper. Проверяется весь ограниченный
+  набор source-кандидатов. Совместимая нормаль переопределяет только победителя,
+  обращённого в противоположную сторону. Review regression на U-образном chart
+  подтвердил, что без этого ограничения средняя нормаль целого chart отвергала
+  точный фрагмент боковой стенки в пользу удалённой плоскости. Ортогональная средняя
+  нормаль теперь сохраняет преимущество точного surface match. Сохранённая
+  source-вершина с теми же 3D/UV0 получает
+  точный UV2; неоднозначные совпадения с разными UV2 исключаются из этого пути.
+- Laplacian post-pass больше не перемещает корректную тонкую грань на противоположное
+  ребро. Проверяется уже ограниченное перемещение: сохранение winding, не менее 10%
+  прежней площади и отсутствие нового axis stretch. Почти нулевая ширина от float
+  roundoff теперь также считается дефектом кандидата (anisotropy >10,000), с учётом
+  3D-геометрии, чтобы не отвергать изометрические slivers.
+- Symmetry и SpatialPartitioner требуют positive-area UV intersection. Общая ячейка
+  сетки, ребро или вершина не являются доказательством overlap; реально сложенные
+  соседние грани выявляются. Ограниченные сканы не объявляют отсутствие witness
+  доказательством чистой развёртки. Для чистого, единолично используемого source chart
+  доступны проверенные fallback для смещённой UV0-строки и геометрической проекции.
+  Они должны уменьшать число дефектов и пройти внутренний overlap scan; shared
+  fragments и stacked source не переводятся в этот путь.
+- В source preparation обнаружено обратное схлопывание ARAP: all-zero UV0 разворачивался
+  через Tutte/ARAP, затем uniform scale возвращал нулевую площадь. Теперь сохраняется
+  оставшаяся длина или масштаб геометрического решения. Полностью коллинеарный input
+  также запускает Tutte, даже если диагональная линия имеет ненулевой bbox. Отдельная
+  растянутая грань получает точную развёртку в собственной tangent plane без ARAP solve.
+  На `Grandma_Cabinet_B_Dpanel_B` исчезли все 14 вырожденных source/target UV2-граней
+  при ARAP ON. Исходный UV0 остаётся нетронутым; ARAP OFF сохраняет прежний контракт.
+- Проверено в Unity 6000.2.6f2 / DX11: 189/189 EditMode tests, без skipped, включая
+  native xatlas, shared density, capture/replay, forward/reverse analytic atlas,
+  thin-sheet normal disambiguation, curved-source fragments, tiny UV charts,
+  source collapse, preview material metrics и IMGUI regressions.
+  Обе FBX compile variants проходят. Отдельно сохранён replay старых 41 frozen inputs
+  для проверки transfer без новой подготовки source. Artifact reports имеют dirty-state
+  provenance; записанный результат capture не является независимой correspondence truth.
+- Ограничения остаются измеримыми: shared-source fragments могут давать cross-shell
+  наложения; reverse transfer на более подробную геометрию не восстанавливает отсутствующую
+  поверхность и UV2 seams. Shape/overlap metrics не доказывают правильную correspondence.
+  Прямой и обратный перенос не объявлены полностью исправленными. Альтернативные
+  global UV0/3D nearest методы дают значительно больше наложений на этом cabinet corpus;
+  их меньший vertex miss count не означает лучшую lightmap-развёртку.
+
+### Pre-optimize и иглы на целевом LOD — 2026-10-09
+
+- Продолжение эксперимента PR #225. Пользователь подтвердил ухудшение после Transfer
+  на целевом LOD при включённом `Pre-optimize (meshopt dedup)`. Старый этап сравнивал
+  только position/normal/UV0 и склеивал вершины независимых chart, касающихся одной
+  точкой. Extractor объединяет грани по общему индексу вершины; такой merge меняет
+  connectivity и убирает возможность хранить разные UV2 на совпадающих углах.
+  Полная byte equivalence также не доказывает, что два chart следует соединить.
+- Два аналитических regression tests сначала упали на реальном native пути:
+  8 вершин превращались в 7, два UV0 chart — в один; последующий Transfer давал
+  2 вырожденные грани. Теперь UV pre-optimization выполняет cache/overdraw triangle
+  ordering через прежний native ABI с уникальной identity каждой вершины и обратным
+  декодированием fetch remap. Вершины, raw streams, formats, skinning, blend shapes
+  и material boundaries сохраняются. Никакого geometric weld flag этот этап не
+  устанавливает; решение о слиянии остаётся за UV-aware edge weld.
+- Imported-FBX preparation получил независимые opt-in `weldUv0`/`preOptimize`.
+  На 21 части шкафа LOD0 → LOD1 сравниваются два одинаковых набора с edge weld,
+  adaptive symmetry, ARAP/density и aspect 4096×8192; меняется только pre-optimize.
+  По 2 измеряемых повтора, 42 строки на прогон, без warmup. Старый pre-optimize дал
+  405 positive-area source overlap pairs и 263 target pairs против 0/0 в контроле;
+  target vertices уменьшились с 3419 до 3183. На Dpanel_A area-weighted anisotropy
+  выросла с 1.130 до 8.423. После исправления оба варианта дают 3419 target vertices,
+  0 source/target overlaps и одинаковые целочисленные quality counters; anisotropy
+  отличается только малым численным округлением после изменения порядка граней.
+- Unity 6000.2.6f2 / DX11: 193/193 affected EditMode tests, без failed/skipped,
+  включая actual workflow point-contact fixtures и сохранение Float16 UV0 2D/4D,
+  color raw bits, skinning, blend shapes и пустого material slot. Оба C# compile
+  variants проходят. Все 42 строки до/после детерминированы, сохраняют frozen inputs
+  и имеют complete overlap scans. Local artifacts: `_results~/pre-optimize-20261009/`;
+  provenance — `075fa92` плюс recorded dirty working tree с этим patch.
+- Замечание Sonar S6640 устранено managed-упаковкой position/identity через
+  переиспользуемые массивы и `Buffer.BlockCopy`, без unsafe блока. Проверен diff
+  автоматического commit `2cb376e`: 64/64 tests capture/quality и повтор всех 42
+  imported-FBX строк на clean checkout сохраняют те же quality counters. Повтор
+  имеет `gitDirty=false` и SHA `2cb376e`; это отдельная проверка после 193-test subset.
+- Контроль и исправленный pre-optimize сохраняют 1 вырожденную target-грань и 1299
+  stretched faces на шкафе: устранено именно добавочное ухудшение от dedup. Это
+  отдельные атласы пар, не UI auto-tune/shared-atlas run; reverse correspondence,
+  исходное локальное растяжение и качество произвольных моделей не объявляются
+  исправленными. Native source и binaries не менялись.
+
+### Общий бюджет плотности в совместном атласе — 2026-10-08
+
+- Лог пользователя v1.1.34 и CSV `20261008_202301_950` подтверждают проблему при
+  `repackPerMesh=0`: `RepackMulti` давал каждому из 21 меша отдельный бюджет
+  `targetUvCoverage`, затем собирал все charts в один атлас. Мелкие детали получали
+  такую же суммарную UV-площадь, как корпус. Поле старого CSV `texelDensityMedian`
+  имеет единицы 3D-area / UV-area, а не tex/m; его разброс 2.514–337.634 означает
+  приблизительно 11.59× по линейной плотности.
+- Pre-pack normalization теперь выполняется после ARAP всех мешей с общей целью:
+  `coverage / sum(surfaceArea)`. При отключённом coverage budget используется
+  общая подготовленная UV-площадь; сохраняется единственный общий масштаб плотности.
+  `RepackSingle` и отключённая нормализация сохраняют прежний контракт.
+- Post-pack correction совместного атласа тоже получает общую цель. Медиана
+  взвешена 3D-площадью: большое число маленьких charts, раздутых округлением xatlas,
+  не должно определять плотность корпуса. Коррекция остаётся shrink-only вокруг
+  центроида каждого packed chart; острова не перемещаются между слотами.
+- `JointAtlasDensityTests` проверяет бюджет и одинаковую плотность поверхностей
+  площадью 1 и 16, сохранение UV0, native output при normalization ON/OFF.
+  Изолированный FBX-бенч работает с копиями `Grandma_Cabinet_B_Destructed.fbx`
+  в проекте из `Tools~/prepare-transfer-benchmark.ps1`, пишет per-triangle medians
+  UV-area / 3D-area и отдельные CSV для authored/ARAP и post-correction вариантов.
+  Контроль воспроизводит прежний per-mesh бюджет с ARAP OFF; ARAP-вариант является
+  дополнительной проверкой подготовки, а не сравнением одной изменённой операции.
+- Тесты плотности не объявляют исправленными intra-chart stretch, симметрию,
+  overlaps или LOD matching. Ни исходный FBX, ни проект пользователя на E: не меняются.
+- Unity 6000.2.6f2 / DX11: 69/69 tests passed, 0 skipped; обе FBX compile variants
+  прошли. На 21 исходном меше контроль с прежним бюджетом имеет разброс линейной
+  плотности 12.145×. Общий бюджет даёт 1.367× без post-correction, 1.151× с общей
+  post-correction (ARAP OFF); дополнительный ARAP ON прогон даёт 1.153×.
+  Это медианы треугольников каждого меша, а не гарантия одинакового texel footprint
+  каждого треугольника. Подтверждены сохранение UV0 и прежний одиночный режим.
+
+### Автономное сравнение transfer — 2026-10-08
+
+- Добавлен [бенч зафиксированных входов](TRANSFER_COMPARISON.md): шесть методов,
+  семь аналитических случаев, native source preparation на копиях импортированных
+  FBX с aspect ON/OFF и symmetry off/legacy/adaptive. Production transfer и выбор
+  auto-tune не менялись. Подготовленные входы сохраняются как переносимый capture.
+- Изолированный Unity 6000.2.6f2 / DX11 прогон исходных FBX с E: стул и 21 группа
+  `Grandma_Cabinet_B_Destructed`, плюс матрица подготовки трёх групп шкафа.
+  Всего 41 случай × 6 методов = 246 строк, warmup 1, measured repeats 3 и отдельный
+  trace run; UV2/mapping повторяемы, input mesh hashes сохранены.
+- В базовой adaptive-подготовке 21 группы текущий grouped transfer дал 75
+  positive-area triangle overlap pairs, 74 degenerate faces и 1441 stretched faces.
+  Это реальные дефекты качества, а не ошибки выполнения бенча. Source atlas
+  `Dpanel_A` уже имеет большую анизотропию (area-weighted ≈542.6) до transfer;
+  у `Handles` transfer даёт большую анизотропию (≈58770.2) при source ≈1.9.
+  Эти случаи пригодны для раздельной проверки source repack и matching/topology.
+- При ARAP/density OFF на трёх выбранных группах source anisotropy с aspect
+  OFF в среднем по группам ≈2.08, с aspect ON ≈1.09. Подготовка использует явный
+  аспект 4096×8192 из исходного Wood Trim albedo (также 1:2); размеры импортированной
+  текстуры могут быть уменьшены без смены аспекта.
+- Прогон импортированных sub-assets не воспроизводит UI auto-tune/weld, material
+  tiling/conflicts или индивидуальные renderer transforms. Для точного выбранного
+  запуска всё ещё нужен next-run capture. Внутри бенча reference для реальных FBX
+  является recorded production baseline, не independent ground truth; дефекты
+  overlap/symmetry не объявляются исправленными.
 
 ## Эксперимент 2026-10-03 — Chart-merge постпроцессинг Unwrap (UV0)
 
@@ -956,3 +2644,168 @@ UV0/фолдинг — побочный вопрос; параметризаци
 **Изменение:** Quality Report и Validation Overlay по-прежнему требуют завершённого transfer, а Apply/Reset actions теперь доступны после repack или transfer. Transfer и auto-tune для source-only workflow остаются пропущенными.
 
 **Проверка:** EditMode-тест `ApplyUv2_IsAvailable_AfterSourceOnlyRepack` фиксирует доступность Apply при `HasRepack = true` и `HasTransfer = false`.
+
+## 2026-10-13 — PR225 continuation: isolated model space and Kamaz FBX round trip
+
+The placed Kamaz failed its final Reverse UV metric on LOD1 face 9374 before
+reaching FBX save. Reverse preparation and final validation used renderer world
+matrices while the canvas used model coordinates. A scene rotation and translation
+rounded an extremely thin, valid face differently in the two paths.
+
+- Reverse input, detached forward preparation, forward quality checks and diagnostic
+  captures now share `ctx.PreviewMatrix`: compose child-local transforms directly
+  up to the selected root, excluding the root and scene ancestors. Do not multiply
+  a world matrix and its inverse to recover local geometry.
+- Remesh, Foliage and Texture AO capture the same isolated model frame. Remesh
+  closure previews, projected region areas and filtered-donor rebasing use local
+  node transforms. Scene overlays still apply scene placement when drawing into
+  the actual Scene view. Source transforms and FBX assets are not reset in place.
+- An untouched collision mesh carrying UVs/colours no longer blocks a whole-file
+  UV save. Explicit collision replacement/rebuild still strips surface channels.
+- Reimport also erased nearby distinct UV1 values, with compression and importer
+  welding disabled. UV0 could similarly collapse when UV1 was equal. The raw FBX
+  retained the values, so a temporary-document topology edit now duplicates the
+  affected control-point identities without moving any corner or UV. Per-point
+  channels, edge layers, skin weights and BlendShape deltas follow these identities.
+  Unsupported deformation caches refuse the temporary write before publication.
+- Whole-geometry FBX replacement previously discarded nonzero-area triangles below
+  a relative thickness threshold. It now removes only zero-area polygons, using a
+  rebased double-precision area sum. This restores thin authored Kamaz faces.
+
+Focused checks in `_results~/kamaz-reverse-save-20261013/`: local frames retain
+thin-face coordinates under a 100 km scene offset, rotation, negative scale and
+zero root scale; nested part placement remains intact. Small UV seam round trips
+pass at scales 1, 0.001 and 0.00001. Captured exclusive Reverse outputs for all 15
+Kamaz meshes survive whole-document write/reimport with bit-identical distinct
+position/UV0/UV1 corner tuples. A skinned fixture preserves every bone influence
+and BlendShape displacement after the control-point split. These are save/space
+regressions, not a claim that Reverse correspondence or packing is optimal.
+
+Final validation on the merged `0ce923b4` base:
+- `final-verified/results.xml`: 891 passed, 0 failed, 25 optional fixture tests
+  skipped. Includes forward/reverse UV, viewport LOD switching, Remesh hierarchy,
+  closure regions, Foliage, LOD small-part selection and FBX document/channel tests.
+- Both complete Kamaz workflows passed: Reverse UV with and without projected
+  overlap, shared whole-document overwrite, synchronous reimport of all 15 meshes.
+  Distinct position/UV0/UV1 corner tuples match exactly, triangle counts and the
+  original collider are retained, and original FBX/meta bytes are unchanged.
+- A selected Foliage LOD child retains sibling placement even under a zero-scale,
+  rotated scene ancestor. Small-seam protection requires proximity in both UV
+  channels, so ordinary widely separated UV1 seams do not duplicate control points.
+- The C# compile check passes with and without `LIGHTMAP_UV_TOOL_FBX_EXPORTER`;
+  metadata coverage and the undeclared-identifier check have no findings.
+
+## 2026-10-12 — PR225 continuation: frozen forward islands, reverse cascade, fresh final padding
+
+The exclusive reverse path now follows the requested order: run ordinary Transfer
+on detached copies, freeze its whole island membership, prepare and cut only the
+coarsest foundation, match complete finer islands, and repack completed ancestry
+families together. The existing overlap path is a control and is unchanged.
+
+- Correspondence uses face hits as proposals for a whole-island similarity fit.
+  A partial fit can anchor the complete island; unsupported faces are extensions
+  of that group. Several finer islands may share one coarser group.
+- A genuinely unmatched island creates a new group and becomes a donor on the
+  following step. Invalid input islands are repaired as complete components;
+  correspondence is retried after repair before declaring them new.
+- Coarsest O/U/C/H/T foundation cuts use existing edges. Finer islands are never
+  seam-cut or subdivided. All captured model outputs have zero split source faces.
+- Each group keeps precise local UV coordinates until final placement. Large
+  temporary canvas offsets previously rounded tiny UV edges before packing.
+- After correspondence, normalize each complete family to the requested minimum
+  density, using its coarsest member as the reference. Start classic xatlas
+  Repack from these families, with fresh padding in final pixel units.
+- Without Fill atlas, keep the requested density. With Fill atlas, compare fresh
+  native placements at common density multipliers 1/2/3/4/6/8. Every trial applies
+  the configured padding anew; no packed atlas or old gutter is scaled afterward.
+- Packing proxy union shards below native's face-area threshold now receive a
+  local 0.01-pixel guard. They no longer force the whole family into a convex
+  hull or rectangle, which previously erased rings and concavities.
+- Final packing compares axis-aligned and orthogonal whole-family placements;
+  failure of arbitrary-angle placement does not cancel the orthogonal trial.
+- Shared vertices of physically subpixel faces can use the existing 0.01-pixel
+  Float32 repair budget, without cuts or new triangles. Visible faces retain the
+  absolute stretch limit. Every complete family stays connected and its final
+  motion residual is independently checked against that budget.
+- Native's actual canvas extent is retained, as in ordinary Repack. Rounding it
+  to the next power of two previously added a blank quadrant after dense packing.
+- Disconnected families are not stitched on the basis of incidental old UV
+  coincidence. Geometry, overlap and precision are audited before publication.
+
+Private Unity comparison: `_results~/reverse-frozen-cascade-20261012/models-11`.
+All three models completed ordinary / new exclusive / old overlap pipelines.
+Settings: minimum 32 tex/m, Fill atlas on, final padding 2 px.
+
+| Model | Final families | Chosen tex/m | Atlas | LOD0 bbox fill | LOD0 stretch P95 |
+|---|---:|---:|---:|---:|---:|
+| Cafe_Table_A_01 | 160 | 256 | 832 | 49.8% | 1.210 |
+| Modern_Kitchen_A | 910 | 128 | 729 | 48.6% | 1.100 |
+| Kamaz_Typhoon | 2606 | 256 | 4514 | 67.9% | 1.064 |
+
+The rejected previous screenshots had bbox fill 43.6% / 36.1% / 47.5%,
+respectively. Ordinary Transfer gives 39.4% for Kitchen and 57.5% for Kamaz.
+
+Independent exported-layout audit: zero changed geometric triangles, zero
+invalid/collapsed faces, zero unexpected overlaps, zero finer healthy-island
+splits. All 5,122 healthy finer islands retain a common similarity transform per
+island. Maximum completed-family motion residual is 0.004903 bake pixel. Ordinary
+Transfer and old overlap values match the preceding published controls after
+excluding the newly added, empty whole-match refusal diagnostic field.
+The audit separately records whole-component repairs (82 Kitchen and 109 Kamaz
+finer islands), rather than calling repaired input shapes preserved originals.
+
+Final focused Unity regression run with a graphics device: 521 passed, 0 failed,
+35 optional checks skipped (UV plus incoming main texture-packer coverage). A preceding `-nographics` run failed two lightmap
+shader-readback checks; both pass with graphics enabled. After merging concurrent PR225 foliage commits through b90c26c5, the expanded
+UV / Texture Packer / Hub / Foliage / FBX run passes 758 tests with 0 failures
+and 36 optional skips; both FBX compilation variants pass again. The earlier full-suite
+run also found a separate existing skinned Remesh preview scale failure, outside
+this UV change; it is not claimed as a passing full-suite gate.
+
+The new analytic checks cover partial anchors, multiple finer islands in one
+coarse group, new intermediate donors, complete-island repair/rematch, O/U/C/H/T
+foundation cuts, strict density with padding 1/4/8, fresh fixed pixel padding
+when Fill atlas increases density, microscopic shared-face stability, concave
+mask preservation, whole-family axis rotation, actual canvas normalization,
+approximate panel correspondence, incompatible island refusal, sibling overlap
+protection and best-orientation fitting of a thin mirrored island.
+Both FBX compilation variants pass. `Tools~/ReverseFootprintAudit.cs` is a private
+Unity driver that exports the exact native packing proxies from captured groups;
+it makes convex-mask inflation inspectable separately from correspondence.
+
+Ghost reservation investigation (same experiment, after merging main 6ca6976d):
+
+- The two large side-panel reservations were foundation charts 5513 and 5531.
+  Their six-face LOD1 children were rejected at 0.3126 seed pixels; the roof
+  child (21 faces, 12.33 m²) was rejected at 0.5232 pixels from chart 5438.
+  Matching used the 0.25-pixel seam tolerance for approximate LOD correspondence.
+  The finer panels were born as independent groups while coarse panels still
+  reserved their full masks, leaving the visible LOD0 vacancies.
+- Whole-island fitting now uses max(seam tolerance, projection reach × seed
+  density). Nearest-donor world distance/normal tests, whole-island distortion,
+  topology and same-LOD sibling contact audits retain their independent gates.
+  Both orientation signs are evaluated and the lowest-residual fit is chosen;
+  accepting the first sign under the wider budget misplaces thin mirrored charts.
+- Large panel and roof descendants now share their foundation families. Kamaz
+  LOD2 aligned area rises from 53.3% to 93.8%; LOD1 from 86.4% to 96.7%.
+  A separate 1024² raster union measures canvas occupied only by other LODs:
+  24.45% before versus 5.57% after. These raster values include pixel-boundary
+  dilation and are distinct from the quality evaluator's bbox fill.
+- Cafe fill improves from 44.7% to 49.8%. Kitchen fill changes from 49.2% to
+  48.6%; additional whole-panel matches displace intersecting sibling details
+  into independent groups in exclusive mode. It is not claimed as a packing
+  improvement on Kitchen. All eight exclusive LODs have zero invalid/collapsed
+  faces and zero unexpected/intentional overlaps, with unchanged geometric
+  triangles and healthy finer-island connectivity.
+- Refusal reasons are retained per island (fit residual, whole-island quality,
+  sibling contact or absent complete-face anchors); new-island refusals are no
+  longer overwritten with the generic extension reason.
+
+Remaining limitations: some families still have no finer correspondence,
+including door/internal patches without complete-face anchors, and exclusive
+mode keeps details that contact their parent surface in separate groups. Whole
+finer rings and branches remain intact when no whole-island match exists;
+coarsest cuts do not imply every finer chart is an I strip. Kitchen's larger
+Fill candidates can still fail the precision/contact audit. Ordered overlap
+baking is unchanged and unfinished. Zero defects do not establish complete
+matching or optimal packing.

@@ -5,6 +5,7 @@
 // five; every one of those goes through here now.
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -146,7 +147,7 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>
         /// Drops the UV2 entries of every sidecar behind <paramref name="fbxPaths"/>.
-        /// Collision entries are kept; a sidecar left with nothing is deleted.
+        /// Collision entries and tool settings are kept; a sidecar left with nothing is deleted.
         /// Returns the number of sidecars that had UV2 entries.
         /// </summary>
         internal static int ClearUv2Entries(IEnumerable<string> fbxPaths)
@@ -166,7 +167,7 @@ namespace SashaRX.UnityMeshLab
 
                 data.entries.Clear();
                 cleared++;
-                if (hasCollision) EditorUtility.SetDirty(data);
+                if (hasCollision || data.toolSettings != null) EditorUtility.SetDirty(data);
                 else AssetDatabase.DeleteAsset(sidecarPath);
             }
             if (cleared > 0) AssetDatabase.SaveAssets();
@@ -262,7 +263,8 @@ namespace SashaRX.UnityMeshLab
                 if (entry.originalMesh != null && entry.originalMesh != entry.fbxMesh)
                 {
                     FbxExport.PreserveUvChannels(sidecarMesh, entry.originalMesh);
-                    FbxExport.OverwriteUvChannel(sidecarMesh, entry.originalMesh, 1);
+                    if (entry.repackedMesh == null && entry.transferredMesh == null)
+                        FbxExport.OverwriteUvChannel(sidecarMesh, entry.originalMesh, 1);
                 }
 
                 // TBN: keep tangent presence in sync with the source FBX. If the FBX
@@ -304,7 +306,7 @@ namespace SashaRX.UnityMeshLab
                 var positions = sidecarMesh.vertices;
                 var colors = sidecarMesh.colors32;
                 var uv0List = new List<Vector2>();
-                (entry.originalMesh ?? resultMesh).GetUVs(0, uv0List);
+                (string.IsNullOrEmpty(entry.reverseTransferJson) ? entry.originalMesh ?? resultMesh : sidecarMesh).GetUVs(0, uv0List);
 
                 string meshName = entry.fbxMesh != null
                     ? entry.fbxMesh.name
@@ -314,6 +316,7 @@ namespace SashaRX.UnityMeshLab
                 sidecarEntry = new MeshUv2Entry
                 {
                     meshName = meshName,
+                    reverseTransferJson = entry.reverseTransferJson,
                     uv2 = primaryUv,
                     welded = entry.wasWelded,
                     edgeWelded = entry.wasEdgeWelded,
@@ -332,12 +335,126 @@ namespace SashaRX.UnityMeshLab
                     stepRepack = isSourceLod,
                     stepTransfer = !isSourceLod,
                 };
+                if (!string.IsNullOrEmpty(entry.reverseTransferJson)) {
+                    // These existing payload fields also identify legacy reverse topology;
+                    // hasReplayData/vertexRemap retain their deterministic-replay meaning.
+                    sidecarEntry.optimizedTriangles = sidecarMesh.triangles;
+                    sidecarEntry.submeshTriangleCounts = Enumerable.Range(0, sidecarMesh.subMeshCount)
+                        .Select(submesh => (int)sidecarMesh.GetIndexCount(submesh)).ToArray();
+                }
+                if (!string.IsNullOrEmpty(entry.reverseTransferJson)
+                    && !ReverseLegacyTopologySafe(entry.fbxMesh, sidecarEntry))
+                {
+                    UvtLog.Warn("[ReverseUV] Sidecar cannot replay changed topology or UV2 seam splits. Save the result as a mesh asset or export a new FBX; sidecar application was refused.");
+                    sidecarEntry = null;
+                    return false;
+                }
                 return true;
             }
             finally
             {
                 UnityEngine.Object.DestroyImmediate(sidecarMesh);
             }
+        }
+
+        internal static void RestoreReverseProvenance(MeshEntry entry)
+        {
+            var raw = entry.fbxMesh;
+            if (!raw) return;
+            var data = Load(AssetDatabase.GetAssetPath(raw));
+            var saved = data?.FindRobust(raw.name, MeshFingerprint.Compute(raw));
+            if (string.IsNullOrEmpty(saved?.reverseTransferJson) || !ReverseLegacyTopologySafe(raw, saved)) return;
+            var readable = MeshAccess.Readable(raw, out bool owns);
+            try
+            {
+                if (!ReverseVertexKeys(readable, saved, out var storedIds, out var currentIds)) return;
+                var expected = new Dictionary<int, Vector2>();
+                for (int i = 0; i < storedIds.Length; ++i) expected[storedIds[i]] = saved.uv2[i];
+                var uv = new List<Vector2>(); readable.GetUVs(1, uv);
+                if (uv.Count != currentIds.Length) return;
+                for (int i = 0; i < uv.Count; ++i) if (uv[i] != expected[currentIds[i]]) return;
+                entry.reverseTransferJson = saved.reverseTransferJson;
+            }
+            finally { if (owns) UnityEngine.Object.DestroyImmediate(readable); }
+        }
+
+        internal static bool ReverseLegacyTopologySafe(Mesh raw, MeshUv2Entry entry)
+        {
+            if (!raw || entry == null || entry.uv2 == null || entry.uv2.Length != raw.vertexCount
+                || entry.vertPositions == null || entry.vertPositions.Length != raw.vertexCount
+                || entry.vertUv0 == null || entry.vertUv0.Length != raw.vertexCount
+                || entry.optimizedTriangles == null || entry.submeshTriangleCounts == null
+                || entry.submeshTriangleCounts.Length != raw.subMeshCount) return false;
+            Mesh readable = null;
+            try {
+                if (!raw.isReadable) readable = MeshAccess.ReadableCopy(raw);
+                var current = readable ? readable : raw;
+                return ReverseVertexKeys(current, entry, out var storedIds, out var currentIds)
+                    && ReverseTriangleKeys(current, entry, storedIds, currentIds);
+            }
+            finally { if (readable) UnityEngine.Object.DestroyImmediate(readable); }
+        }
+
+        static bool ReverseVertexKeys(Mesh current, MeshUv2Entry entry, out int[] storedIds, out int[] currentIds)
+        {
+            storedIds = new int[entry.uv2.Length]; currentIds = new int[entry.uv2.Length];
+            var keys = new Dictionary<((int,int,int), Vector2), int>();
+            var values = new List<Vector2>(); var counts = new List<int>();
+            for (int i = 0; i < storedIds.Length; ++i) {
+                var key = (Uv2AssetPostprocessor.QuantizePos(entry.vertPositions[i]), entry.vertUv0[i]);
+                if (!keys.TryGetValue(key, out int id)) {
+                    id = keys.Count; keys.Add(key, id); values.Add(entry.uv2[i]); counts.Add(0);
+                }
+                if (values[id] != entry.uv2[i]) return false;
+                storedIds[i] = id; ++counts[id];
+            }
+            var positions = current.vertices;
+            var uv = new List<Vector2>(); current.GetUVs(0, uv);
+            if (uv.Count != positions.Length) return false;
+            for (int i = 0; i < positions.Length; ++i) {
+                var key = (Uv2AssetPostprocessor.QuantizePos(positions[i]), uv[i]);
+                if (!keys.TryGetValue(key, out int id) || counts[id] <= 0) return false;
+                currentIds[i] = id; --counts[id];
+            }
+            return true;
+        }
+
+        static bool ReverseTriangleKeys(Mesh current, MeshUv2Entry entry, int[] storedIds, int[] currentIds)
+        {
+            int offset = 0;
+            for (int submesh = 0; submesh < current.subMeshCount; ++submesh) {
+                int count = entry.submeshTriangleCounts[submesh];
+                if (count < 0 || count % 3 != 0 || count > entry.optimizedTriangles.Length - offset
+                    || current.GetTopology(submesh) != MeshTopology.Triangles
+                    || current.GetIndexCount(submesh) != (uint)count) return false;
+                var expected = new Dictionary<(int,int,int), int>();
+                for (int i = offset; i < offset + count; i += 3) {
+                    if (!TryTriangleKey(entry.optimizedTriangles, i, storedIds, out var key)) return false;
+                    expected.TryGetValue(key, out int copies); expected[key] = copies + 1;
+                }
+                var actual = current.GetTriangles(submesh);
+                for (int i = 0; i < actual.Length; i += 3) {
+                    if (!TryTriangleKey(actual, i, currentIds, out var key)
+                        || !expected.TryGetValue(key, out int copies) || copies <= 0) return false;
+                    expected[key] = copies - 1;
+                }
+                offset += count;
+            }
+            return offset == entry.optimizedTriangles.Length;
+        }
+
+        // Cyclic rotations and triangle/vertex ordering are harmless. Winding and
+        // material boundaries must still agree with the geometry that was captured.
+        static bool TryTriangleKey(int[] indices, int offset, int[] ids, out (int,int,int) key)
+        {
+            key = default;
+            int a = indices[offset], b = indices[offset + 1], c = indices[offset + 2];
+            if ((uint)a >= ids.Length || (uint)b >= ids.Length || (uint)c >= ids.Length) return false;
+            a = ids[a]; b = ids[b]; c = ids[c]; key = (a, b, c);
+            var second = (b, c, a); var third = (c, a, b);
+            if (second.CompareTo(key) < 0) key = second;
+            if (third.CompareTo(key) < 0) key = third;
+            return true;
         }
 
         // ── Collision entries ──
@@ -367,12 +484,14 @@ namespace SashaRX.UnityMeshLab
         /// Invalid entries are logged and skipped.
         /// </summary>
         internal static List<(string meshName, List<Mesh> meshes, bool isConvex)> CollisionMeshes(string fbxPath)
+            => CollisionMeshes(Load(fbxPath)?.collisionEntries);
+
+        internal static List<(string meshName, List<Mesh> meshes, bool isConvex)> CollisionMeshes(IEnumerable<CollisionMeshEntry> entries)
         {
             var result = new List<(string, List<Mesh>, bool)>();
-            var data = Load(fbxPath);
-            if (data == null || data.collisionEntries == null) return result;
+            if (entries == null) return result;
 
-            foreach (var entry in data.collisionEntries)
+            foreach (var entry in entries)
             {
                 if (!TryValidateCollisionEntry(entry, out var globalTriangleIndices, out string validationError))
                 {

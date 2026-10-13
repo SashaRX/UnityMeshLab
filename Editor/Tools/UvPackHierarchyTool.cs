@@ -2,8 +2,7 @@
 // subtree, without requiring a LODGroup. For every included MeshRenderer
 // under the selected root, clones the mesh and runs XatlasRepack.RepackSingle
 // to write a fresh unique UV1 atlas. Apply swaps the clone into the scene;
-// "Overwrite Selected FBX" uses the shared context export service and hierarchy
-// export overload with channel=1.
+// the shared footer saves the packed result directly through the channel writer.
 
 using System;
 using System.Collections.Generic;
@@ -14,7 +13,7 @@ using UnityEditor;
 namespace SashaRX.UnityMeshLab
 {
     [MeshLabTool("uv1_hierarchy", MeshLabLibraries.Uv, MeshLabLibraries.Assets)]
-    public class UvPackHierarchyTool : IUvTool
+    public class UvPackHierarchyTool : IUvTool, IUvToolFbxExport, IUvToolMeshExport
     {
         UvToolContext ctx;
         UvCanvasView canvas;
@@ -166,21 +165,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         void SyncFbxOverwriteMap()
-        {
-            var current = new HashSet<string>();
-            foreach (var e in hierarchyEntries)
-            {
-                if (e == null || !e.include || e.fbxMesh == null) continue;
-                string p = AssetDatabase.GetAssetPath(e.fbxMesh);
-                if (string.IsNullOrEmpty(p)) continue;
-                if (!p.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase)) continue;
-                current.Add(p);
-                if (!fbxOverwriteMap.ContainsKey(p))
-                    fbxOverwriteMap[p] = true;
-            }
-            var stale = fbxOverwriteMap.Keys.Where(k => !current.Contains(k)).ToList();
-            foreach (var k in stale) fbxOverwriteMap.Remove(k);
-        }
+            => FbxSaveSelection.Sync(hierarchyEntries, fbxOverwriteMap);
 
         // ── UI ──
 
@@ -350,64 +335,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         void DrawFbxOverwritePicker()
-        {
-            SyncFbxOverwriteMap();
-
-            if (fbxOverwriteMap.Count == 0)
-            {
-                EditorGUILayout.HelpBox(
-                    "No included FBX-backed meshes.",
-                    MessageType.Info);
-                return;
-            }
-
-            int checkedCount = 0;
-            foreach (var v in fbxOverwriteMap.Values) if (v) checkedCount++;
-
-            fbxOverwriteFoldout = EditorGUILayout.Foldout(fbxOverwriteFoldout,
-                $"Overwrite FBX  ({checkedCount} / {fbxOverwriteMap.Count} selected)", true);
-            if (!fbxOverwriteFoldout) return;
-
-            EditorGUI.indentLevel++;
-            var paths = fbxOverwriteMap.Keys.OrderBy(p => p).ToList();
-
-            float rowHeight = EditorGUIUtility.singleLineHeight + 4f;
-            float listHeight = Mathf.Min(paths.Count, listVisibleRows) * rowHeight + 6f;
-            fbxOverwriteScroll = EditorGUILayout.BeginScrollView(fbxOverwriteScroll,
-                alwaysShowHorizontal: false, alwaysShowVertical: false,
-                GUIStyle.none, GUI.skin.verticalScrollbar, GUI.skin.scrollView,
-                GUILayout.Height(listHeight));
-
-            foreach (var path in paths)
-            {
-                string label = System.IO.Path.GetFileName(path);
-                bool cur = fbxOverwriteMap[path];
-                EditorGUILayout.BeginHorizontal();
-                bool next = EditorGUILayout.Toggle(cur, GUILayout.Width(22));
-                if (next != cur) fbxOverwriteMap[path] = next;
-                GUILayout.Space(4);
-                if (GUILayout.Button(new GUIContent(label, path + "\nClick to ping in Project"),
-                        EditorStyles.label))
-                {
-                    var asset = AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(path);
-                    if (asset != null) EditorGUIUtility.PingObject(asset);
-                }
-                EditorGUILayout.EndHorizontal();
-            }
-            EditorGUILayout.EndScrollView();
-
-            var bgc = GUI.backgroundColor;
-            GUI.backgroundColor = checkedCount > 0 && packedAppliedToScene ? new Color(.4f, .7f, .95f) : Color.white;
-            using (new EditorGUI.DisabledScope(checkedCount == 0 || !packedAppliedToScene))
-            {
-                if (GUILayout.Button($"Overwrite Selected FBX  ({checkedCount})", GUILayout.Height(22)))
-                    OverwriteSelectedFbx();
-            }
-            GUI.backgroundColor = bgc;
-            if (!packedAppliedToScene)
-                EditorGUILayout.LabelField("  Apply to Mesh first.", EditorStyles.miniLabel);
-            EditorGUI.indentLevel--;
-        }
+            => FbxSaveSelection.Draw(hierarchyEntries, fbxOverwriteMap, ref fbxOverwriteFoldout, ref fbxOverwriteScroll, listVisibleRows);
 
         // ── Pack ──
 
@@ -550,37 +478,24 @@ namespace SashaRX.UnityMeshLab
             packedResults.Clear();
         }
 
-        void OverwriteSelectedFbx()
+        internal List<MeshEntry> SaveEntries()
         {
-            var selected = fbxOverwriteMap.Where(kv => kv.Value).Select(kv => kv.Key).ToList();
-            if (selected.Count == 0) return;
+            return hierarchyEntries.Where(e => e != null && e.include)
+                .Select(e => (entry: e, source: e.fbxMesh ?? e.originalMesh))
+                .Where(p => p.source != null && packedMeshes.ContainsKey(p.source) &&
+                    packedResults.TryGetValue(p.source, out var result) && result.ok)
+                .Select(p => p.entry.PreviewCopy(packedMeshes[p.source])).ToList();
+        }
 
-            string list = string.Join("\n", selected.Select(p => "  • " + System.IO.Path.GetFileName(p)));
-            if (!EditorUtility.DisplayDialog(
-                "Overwrite Selected FBX",
-                $"Overwrite {selected.Count} FBX file(s)?\n\n{list}\n\nOnly UV channel 1 is updated. Topology stays unchanged.",
-                "Overwrite", "Cancel"))
-                return;
-
-            var transferTool = ctx.Assets;
-
-            foreach (var path in selected)
-            {
-                var entriesForPath = hierarchyEntries
-                    .Where(e => e.include && e.fbxMesh != null &&
-                                string.Equals(AssetDatabase.GetAssetPath(e.fbxMesh), path, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
-                if (entriesForPath.Count == 0)
-                {
-                    UvtLog.Warn($"[UV1] No hierarchy entries map to '{path}', skipping.");
-                    continue;
-                }
-                // UV1-only re-save: ExportVertexColorsToFbx unconditionally
-                // seeds VertexColors into the intent and would clobber any
-                // authored vertex colors in the source FBX. Use the explicit
-                // isolated-channel API instead.
-                transferTool.ExportIsolatedChannelsToFbx(path, entriesForPath, FbxExportIntent.UV1);
-            }
+        public bool CanSaveMeshAssets => !UvProgress.IsActive && SaveEntries().Count > 0;
+        public bool CanExportFbx => CanSaveMeshAssets && SaveEntries().Any(e => SidecarStore.IsFbxPath(AssetDatabase.GetAssetPath(e.fbxMesh)) &&
+            (!fbxOverwriteMap.TryGetValue(AssetDatabase.GetAssetPath(e.fbxMesh), out var use) || use));
+        public void SaveMeshAssets() => ctx.Assets.SaveToolMeshes(SaveEntries());
+        public void ExportFbx(bool overwriteSource)
+        {
+            SyncFbxOverwriteMap();
+            var entries = SaveEntries().Where(e => fbxOverwriteMap.TryGetValue(AssetDatabase.GetAssetPath(e.fbxMesh), out var use) && use).ToList();
+            ctx.Assets.ExportToolEntries(entries, FbxExportIntent.UV1, overwriteSource);
         }
 
         // ── Helpers ──

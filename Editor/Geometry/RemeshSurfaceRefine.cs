@@ -10,6 +10,7 @@ namespace SashaRX.UnityMeshLab
     /// <summary>Fits voxel vertices and chooses source-aligned diagonals before and after decimation.</summary>
     internal static class RemeshSurfaceRefine
     {
+        internal const int Revision = 2;
         internal struct Report
         {
             internal int moves, flips, features;
@@ -389,11 +390,15 @@ namespace SashaRX.UnityMeshLab
                 for (int v = 0; v < p.Length; v++) {
                     if ((v & 63) == 0) token.ThrowIfCancellationRequested();
                     if (locked[v] || fans[v].Count == 0) continue;
-                    float shortest = float.PositiveInfinity;
-                    foreach (int n in neighbours[v]) shortest = Mathf.Min(shortest, (p[v] - p[n]).magnitude);
-                    // Dense voxel triangles are handled by Apply; this pass is for
-                    // the larger approximation patches left by decimation.
-                    if (shortest < cell * 2) continue;
+                    float shortest = float.PositiveInfinity, longest = 0;
+                    foreach (int n in neighbours[v]) {
+                        float length = (p[v] - p[n]).magnitude;
+                        shortest = Mathf.Min(shortest, length); longest = Mathf.Max(longest, length);
+                    }
+                    // A thin rod can have a long approximation edge next to a
+                    // short cross-section edge. Use the long edge for eligibility,
+                    // while the shortest edge still limits every motion trial.
+                    if (longest < cell * 2) continue;
                     float budget = Mathf.Min(cell * 4, shortest * .25f), reach = Mathf.Max(cell * 4, shortest * .5f);
                     var hit = source.Nearest(p[v], normals[v], reach);
                     if (hit.triangleIndex < 0) continue;
@@ -445,11 +450,39 @@ namespace SashaRX.UnityMeshLab
             if (report.moves == 0) return input;
             var after = RemeshTopology.Inspect(p, ix, token);
             bool surface = PreservesSurface(source.bvh, sourcePositions, sourceIndices, input.positions, ix, p, ix, cell, token, out var reason);
+            if (!surface && after.Valid && after.PreservesBoundary(before) && after.PreservesComponents(before, false)) {
+                report.fallbackReason = reason;
+                var fitted = p;
+                // Local one-ring improvements can collectively move the worst
+                // reverse probe away from its source. Retry from the original
+                // snapshot, keeping the same bidirectional surface gates.
+                for (int trial = 1; trial <= 3; trial++) {
+                    token.ThrowIfCancellationRequested(); report.motionBacktracks++;
+                    float factor = 1f / (1 << trial);
+                    var reduced = new Vector3[p.Length];
+                    for (int v = 0; v < reduced.Length; v++) reduced[v] = input.positions[v] + (fitted[v] - input.positions[v]) * factor;
+                    if (!SafeCollectiveMotion(input, reduced, 0, token)) continue;
+                    var reducedTopology = RemeshTopology.Inspect(reduced, ix, token);
+                    if (!reducedTopology.Valid || !reducedTopology.PreservesBoundary(before) || !reducedTopology.PreservesComponents(before, false)) continue;
+                    surface = PreservesSurface(source.bvh, sourcePositions, sourceIndices, input.positions, ix, reduced, ix, cell, token, out reason);
+                    report.backtrackReason = reason;
+                    if (!surface) continue;
+                    p = reduced; after = reducedTopology; report.motionScale = factor;
+                    report.meanQualityAfter = MeanQuality(p, ix);
+                    break;
+                }
+            }
             if (!after.Valid || !after.PreservesBoundary(before) || !after.PreservesComponents(before, false) || !surface) {
                 report.reverted = true; report.rejectionReason = !surface ? reason : after.Description;
                 report.moves = 0; report.meanQualityAfter = report.meanQualityBefore; return input;
             }
-            report.maxDisplacement = report.attemptedMaxDisplacement; report.motionScale = 1;
+            report.moves = 0;
+            for (int v = 0; v < p.Length; v++) {
+                float distance = (p[v] - input.positions[v]).magnitude;
+                if (distance > 0) report.moves++;
+                report.maxDisplacement = Mathf.Max(report.maxDisplacement, distance);
+            }
+            if (report.motionBacktracks == 0) report.motionScale = 1;
             return new RemeshNative.IndexedMesh { positions = p, indices = (int[])ix.Clone() }.PrepareChannels(token);
         }
 
@@ -540,6 +573,15 @@ namespace SashaRX.UnityMeshLab
                 for (int k = 0; k < 3; k++) if (ix[g * 3 + k] != a && ix[g * 3 + k] != b) d = ix[g * 3 + k];
                 if (d < 0 || data.edges.ContainsKey(Key(data.slots[c], data.slots[d]))) continue;
                 var n0 = MeshGeometry.UnitDirection(Cross(p, ix, f)); var n1 = MeshGeometry.UnitDirection(Cross(p, ix, g));
+                // Float32-roundoff faces from native collapse have unreliable normals.
+                // Final regularization can use the healthy adjoining direction;
+                // source feature, new-face, topology and surface audits still apply.
+                if (regularize) {
+                    float q0 = Quality(p[a], p[b], p[c]), q1 = Quality(p[b], p[a], p[d]);
+                    const float roundoffQuality = 3.814697265625e-6f; // 32 * FLT_EPSILON
+                    if (q0 <= roundoffQuality && q1 > roundoffQuality) n0 = n1;
+                    else if (q1 <= roundoffQuality && q0 > roundoffQuality) n1 = n0;
+                }
                 // A decimated organic surface need not be almost planar. Keep
                 // sharp folds, but let the source choose a diagonal on a bend.
                 float normalLimit = sourceAligned ? .75f : .9f;

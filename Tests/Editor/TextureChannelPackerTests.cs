@@ -166,7 +166,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [TestCase("Assets/Props/Chair_SM_Back.fbx", "Chair_SM_Back")]
         public void ModelNamingStripsOnlyTheLeadingPrefix(string path, string expected)
         {
-            Assert.AreEqual(expected, TextureChannelPackerWindow.ModelBaseName(path));
+            Assert.AreEqual(expected, TextureChannelPackerPanel.ModelBaseName(path));
         }
 
         [Test]

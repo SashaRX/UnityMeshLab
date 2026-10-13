@@ -1084,9 +1084,10 @@ namespace SashaRX.UnityMeshLab.Tests
                 foreach (string name in names) Assert.IsTrue(File.Exists(name), name);
             }
             string pathHash = unchecked((uint)Path.GetFullPath(output).GetHashCode()).ToString("X8");
-            string backup = Path.Combine(Path.GetTempPath(), Path.GetFileName(output) + "." + pathHash + ".fbx.bak");
-            Assert.IsTrue(File.Exists(backup), "retain the old FBX until metadata restoration and cleanup succeed");
-            File.Delete(backup);
+            var backups = Directory.GetFiles(folder, Path.GetFileName(output) + ".*.bak");
+            Assert.AreEqual(1, backups.Length, "retain the old FBX on its volume until metadata restoration and cleanup succeed");
+            CollectionAssert.AreEqual(File.ReadAllBytes(source), File.ReadAllBytes(backups[0]));
+            File.Delete(backups[0]);
             File.Delete(Path.Combine(Path.GetTempPath(), Path.GetFileName(output) + "." + pathHash + ".meta.bak"));
         }
 

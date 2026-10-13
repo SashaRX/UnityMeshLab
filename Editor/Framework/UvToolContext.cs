@@ -127,16 +127,17 @@ namespace SashaRX.UnityMeshLab
         /// non-uniform density.
         /// </summary>
         public bool NormalizeTexelDensity = true;
+        public bool CorrectSourceTextureAspect = true;
+        public bool CutNarrowUvJunctions;
+
+        internal bool CaptureNextTransfer;
+        internal TransferCaseCapture DiagnosticCapture;
 
         /// <summary>
-        /// Auto-reparameterize shells whose UV0 stretch (Sander L² metric) exceeds
-        /// <see cref="StretchThreshold"/>. Replaces the previous IsRibbon-based
-        /// trigger — now driven by an actual UV quality metric. ARAP local-global
-        /// solver redistributes vertices to minimize per-triangle isometric
-        /// distortion. Off by default (opt-in safety), but recommended ON for most
-        /// assets — stretched ribbons, twisted strips, and any high-distortion
-        /// shells get cleaned up at the parameterization level instead of via
-        /// downstream affine hacks.
+        /// Reparameterize shells whose mean Sander L² exceeds
+        /// <see cref="StretchThreshold"/>, or whose local triangle anisotropy
+        /// exceeds 1.25. Enabled by default. The detached ARAP candidate must
+        /// improve the metric without increasing collapsed faces or contacts.
         /// </summary>
         public bool ReparameterizeStretchedShells = true;  // DEFAULT ON
 
@@ -274,6 +275,7 @@ namespace SashaRX.UnityMeshLab
         public string SourceFbxPath;
 
         // ── Events ──
+        internal event Action BeforeRefresh;
         public event Action OnMeshEntriesChanged;
         public event Action OnSelectionChanged;
 
@@ -300,6 +302,7 @@ namespace SashaRX.UnityMeshLab
 
         public void Refresh(LODGroup lodGroup)
         {
+            BeforeRefresh?.Invoke();
             MeshEntries.Clear();
             HasRepack = HasTransfer = false;
             SrcCache.Clear();
@@ -370,6 +373,7 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
+            RestoreReverseProvenance();
             OnMeshEntriesChanged?.Invoke();
         }
 
@@ -378,6 +382,7 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public void RefreshStandalone(MeshRenderer mr)
         {
+            BeforeRefresh?.Invoke();
             MeshEntries.Clear();
             HasRepack = HasTransfer = false;
             SrcCache.Clear();
@@ -425,7 +430,13 @@ namespace SashaRX.UnityMeshLab
                     SourceFbxPath = p;
             }
 
+            RestoreReverseProvenance();
             OnMeshEntriesChanged?.Invoke();
+        }
+
+        void RestoreReverseProvenance()
+        {
+            foreach (var entry in MeshEntries) SidecarStore.RestoreReverseProvenance(entry);
         }
 
         public void ClearAllCaches()
@@ -472,6 +483,8 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public Mesh DMesh(MeshEntry e)
         {
+            if (PreviewUvChannel == 1 && !string.IsNullOrEmpty(e.reverseTransferJson))
+                return e.repackedMesh ?? e.transferredMesh ?? e.originalMesh;
             if (e.lodIndex == SourceLodIndex && e.repackedMesh != null && PreviewUvChannel == 1) return e.repackedMesh;
             if (e.lodIndex != SourceLodIndex && e.transferredMesh != null && PreviewUvChannel == 1) return e.transferredMesh;
             return e.originalMesh;

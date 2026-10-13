@@ -90,7 +90,7 @@ namespace SashaRX.UnityMeshLab
                     readable.name = mesh.name;
                     owned.Add(readable);
                     var target = plan.FirstOrDefault(t => t.renderer == renderer);
-                    var matrix = root.transform.worldToLocalMatrix * renderer.localToWorldMatrix;
+                    var matrix = PreviewSpace.LocalToRelatedRoot(renderer.transform, root.transform);
                     sources.Add(new Source { renderer = renderer, mesh = readable, materials = renderer.sharedMaterials,
                         matrix = matrix,
                         lod = FoliageLodSelection.Level(renderer, mesh) });

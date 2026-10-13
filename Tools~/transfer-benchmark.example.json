@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "includeSynthetic": true,
+  "captures": [],
+  "assetCases": [],
+  "methods": ["grouped", "grouped-no-hints", "uv0-nearest", "surface-nearest", "surface-normal", "shell-similarity"],
+  "repetitions": 3,
+  "warmup": 1,
+  "maxPairs": 64,
+  "outputRoot": "../BenchmarkReports"
+}

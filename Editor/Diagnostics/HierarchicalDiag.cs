@@ -338,18 +338,7 @@ namespace SashaRX.UnityMeshLab
             float thresholdCos = Mathf.Cos(kShellNormalThresholdDeg * Mathf.Deg2Rad);
 
             // Union-find over faces by adjacency + normal compatibility.
-            var parent = new int[n];
-            for (int i = 0; i < n; i++) parent[i] = i;
-            int Find(int x)
-            {
-                while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
-                return x;
-            }
-            void Union(int a, int b)
-            {
-                int ra = Find(a), rb = Find(b);
-                if (ra != rb) parent[ra] = rb;
-            }
+            var components = new DisjointSet(n);
 
             foreach (var kv in edgeFaces)
             {
@@ -359,7 +348,7 @@ namespace SashaRX.UnityMeshLab
                     for (int j = i + 1; j < list.Count; j++)
                     {
                         float d = Vector3.Dot(faces[list[i]].normal, faces[list[j]].normal);
-                        if (d >= thresholdCos) Union(list[i], list[j]);
+                        if (d >= thresholdCos) components.Union(list[i], list[j]);
                     }
             }
 
@@ -372,7 +361,7 @@ namespace SashaRX.UnityMeshLab
             var accumCount = new List<int>();
             for (int f = 0; f < n; f++)
             {
-                int r = Find(f);
+                int r = components.Find(f);
                 if (!rootToShell.TryGetValue(r, out int si))
                 {
                     si = accumNormal.Count;

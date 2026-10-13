@@ -14,7 +14,8 @@ namespace SashaRX.UnityMeshLab
         {
             var report = UvAtlasDiagnostics.Measure(geometry, token, collectConflicts: true);
             if (!report.complete || report.invalidFaces > 0 || report.degenerateFaces > 0)
-                throw new InvalidOperationException("UV atlas cannot be certified: incomplete scan or invalid/degenerate UV faces.");
+                throw new InvalidOperationException(FormattableString.Invariant(
+                    $"UV atlas cannot be certified: complete={report.complete}, invalid={report.invalidFaces}, degenerate={report.degenerateFaces}, pairs={report.pairs}, comparisons={report.comparisons}."));
             if (report.pairs == 0) return geometry;
             var quality = UvChartQuality.Measure(geometry, token);
             var repaired = SplitConflicts(geometry, report.conflicts, token);

@@ -29,6 +29,7 @@ Mesh tools share one canvas with a **UV | 3D** switch at its bottom centre (also
 * **UV** shows the preview LOD's UV layout: shells, wire, island borders, UDIM tiles, spot picking, a checker or texture background.
 * **3D** is an orbitable lit view of the same meshes (drag orbits, middle button / alt-drag pans, scroll zooms, `F` or a middle double-click frames) with *Shaded* (scene materials), *Vert Colors*, *Normals*, *Tangents* and *UV0–UV3* shading, offered only where a mesh carries the data, a wire overlay and a Lit toggle.
 * Tools feed the canvas: Remesh & Bake shows its stage result and cage there, Prefab Builder paints its edge classes and problem dots, and the result's UV layout is drawn on the model.
+* **UV quality** gives an approximate 0–100 lightmap assessment of the displayed UVs. Click for bbox packing, stretch, density spread, defects, LOD0 correspondence and an occupancy map. Ordered Reverse detail overlaps are listed separately. [Measurements and limits](Documentation~/LIGHTMAP_UV_QUALITY.md).
 
 ## Texture Channel Packer
 
@@ -176,7 +177,7 @@ The editor assembly `SashaRX.UnityMeshLab.Editor` (namespace `SashaRX.UnityMeshL
 | `Editor/Tools/` | The tabs, one `IUvTool` each |
 | `Editor/Mesh/` | `MeshNaming` (the one reader of LOD / collision naming rules), `MeshSplitMerge`, `MeshAccess` (reading Read/Write-disabled meshes), `MeshTransform`, `LodHierarchy`, `VertexChannels`, `RendererSettings` |
 | `Editor/Uv/` | `UvTopology` (boundary edges, shells, point-in-triangle, UDIM tiles) |
-| `Editor/Geometry/` | `MeshGeometry`, `GpuReadback`; the BVHs in `Editor/TriangleBvh*.cs` |
+| `Editor/Geometry/` | `MeshGeometry`, `DisjointSet`, `GpuReadback`; the BVHs in `Editor/TriangleBvh*.cs` |
 | `Editor/Assets/` | `FbxExport` (every FBX write), `SidecarStore` (the `_uv2data.asset` sidecar), `TextureAssets` |
 | `Editor/Bench/` | `SweepRunner`, `BenchmarkRunner`, recorder, sweep reports, test suite asset |
 | `Editor/Diagnostics/` | `DebugUi`, `BakeHealth`, `HierarchicalDiag`, `FbxMetricsExporter` |
@@ -273,6 +274,7 @@ Requirements: CMake 3.20+, C++17 compiler. xatlas and V-HACD are vendored in `Na
 ## Documentation
 
 * [Remesh & Bake](Documentation~/REMESH_AND_BAKE.md) — workflow, architecture, limits, validation checklist
+* [Solid voxel recovery](Documentation~/REMESH_SOLID_RECOVERY.md) — singular thin-feature output, occupancy fallback, native and capture tests
 * [Transfer pipeline experiments](Documentation~/EXPERIMENTS.md) and [benchmark protocol](Documentation~/TRANSFER_BENCHMARK.md)
 * [FBX pipeline checklist](Documentation~/FBX_PIPELINE_CHECKLIST.md)
 * [Vertex Color Baking architecture](Documentation~/VERTEX_COLOR_BAKING_ARCHITECTURE.md)

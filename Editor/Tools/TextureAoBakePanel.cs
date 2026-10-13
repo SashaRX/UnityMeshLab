@@ -119,8 +119,7 @@ namespace SashaRX.UnityMeshLab
                 await Task.Yield(); token.ThrowIfCancellationRequested();
                 var options = JsonUtility.FromJson<RemeshSettings>(JsonUtility.ToJson(settings));
                 options.Validate();
-                Matrix4x4 worldToSource = root.transform.worldToLocalMatrix;
-                var source = RemeshSource.Capture(worldToSource, RemeshSource.CollectRenderers(root, lod0Only), aoOnly: true, aoReadbackSettings: options);
+                var source = RemeshSource.Capture(Matrix4x4.identity, RemeshSource.CollectRenderers(root, lod0Only), aoOnly: true, aoReadbackSettings: options, captureRoot: root.transform);
                 await GpuReadback.AwaitReadbacks(source.TextureReadbacks, token);
                 for (int i = 0; i < entries.Length; ++i) {
                     token.ThrowIfCancellationRequested();
@@ -129,7 +128,7 @@ namespace SashaRX.UnityMeshLab
                     status = $"Texture AO: {i + 1}/{entries.Length} · {entry.renderer.name}"; repaint?.Invoke();
                     await Task.Yield(); token.ThrowIfCancellationRequested();
                     var geometry = CaptureTarget(mesh, uvChannel);
-                    Matrix4x4 toSource = worldToSource * entry.renderer.localToWorldMatrix;
+                    Matrix4x4 toSource = PreviewSpace.LocalToRoot(entry.renderer.transform, root.transform);
                     await Task.Run(() => TransformTarget(geometry, toSource), token);
                     var item = new Result { name = entry.renderer.name, geometry = geometry };
                     item.maps = await BakeMaps(source, geometry, options, token);
@@ -285,6 +284,7 @@ namespace SashaRX.UnityMeshLab
             var r = results[Mathf.Clamp(resultIndex, 0, results.Count - 1)];
             // Target geometry was captured in root-local coordinates during baking.
             items.Add(new MeshViewport3D.Item(r.mesh, Matrix4x4.identity, r.material ? Enumerable.Repeat(r.material, r.mesh.subMeshCount).ToArray() : null));
+
             return true;
         }
     }

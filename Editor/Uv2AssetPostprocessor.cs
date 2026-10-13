@@ -29,7 +29,7 @@ namespace SashaRX.UnityMeshLab
         // Bump whenever replay behaviour changes so Unity reimports models that
         // were processed by an older version of this postprocessor. Each bump
         // forces a full reimport, so change it at most once per release.
-        public override uint GetVersion() => 2;
+        public override uint GetVersion() => 3;
 
         /// <summary>
         /// Paths to bypass during the next reimport. When ApplyUv2ToFbx needs the
@@ -434,6 +434,14 @@ namespace SashaRX.UnityMeshLab
             var entry = data.FindRobust(mesh.name, currentFp);
             if (entry == null || entry.uv2 == null) return false;
 
+            if (!string.IsNullOrEmpty(entry.reverseTransferJson)
+                && (entry.vertexRemap == null || entry.vertexRemap.Length != mesh.vertexCount)
+                && !SidecarStore.ReverseLegacyTopologySafe(mesh, entry))
+            {
+                UvtLog.Warn($"[ReverseUV] '{mesh.name}': legacy sidecar cannot reproduce reverse topology or UV2 splits; the imported mesh was left unchanged.");
+                return false;
+            }
+
             stats.fbxVerts = mesh.vertexCount;
 
             // ── Schema version check ──
@@ -504,6 +512,8 @@ namespace SashaRX.UnityMeshLab
             }
 
             // ── Legacy path (no replay data in sidecar) ──
+            if (!string.IsNullOrEmpty(entry.reverseTransferJson)
+                && !SidecarStore.ReverseLegacyTopologySafe(mesh, entry)) return false;
             stats.legacyUsed = true;
 
             // Warn if mesh was modified but has no replay data
@@ -1539,7 +1549,7 @@ namespace SashaRX.UnityMeshLab
             return result;
         }
 
-        static (int, int, int) QuantizePos(Vector3 pos)
+        internal static (int, int, int) QuantizePos(Vector3 pos)
         {
             return (
                 Mathf.RoundToInt(pos.x * 10000f),

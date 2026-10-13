@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <limits>
 #include <vector>
 
 #ifdef _WIN32
@@ -237,11 +238,30 @@ int Unwrap(const PosMesh& m, float crease, float smoothing, const UnwrapOptions&
     for (Vertex& v : atlasVerts)
         for (int k = 0; k < 3; ++k)
             v.p[k] = (v.p[k] - center[k]) / extent;
+    // A valid collapsed sliver may still fall below xatlas's absolute area
+    // cutoff in this unit-sized domain. Expand the entire atlas-only domain,
+    // preserving proportions and every source corner. Do not delete surface
+    // faces to work around ignored xrefs (which would open a closed mesh).
+    double minimumArea = std::numeric_limits<double>::infinity();
+    for (size_t f = 0; f < idx.size(); f += 3) {
+        const auto& a = atlasVerts[idx[f]]; const auto& b = atlasVerts[idx[f+1]]; const auto& c = atlasVerts[idx[f+2]];
+        double u[3], v[3];
+        for (int k = 0; k < 3; ++k) { u[k] = double(b.p[k])-a.p[k]; v[k] = double(c.p[k])-a.p[k]; }
+        const double x = u[1]*v[2]-u[2]*v[1], y = u[2]*v[0]-u[0]*v[2], z = u[0]*v[1]-u[1]*v[0];
+        const double area = .5*std::sqrt(x*x+y*y+z*z);
+        if (!(area > 0) || !std::isfinite(area)) return BadMapping;
+        minimumArea = std::min(minimumArea, area);
+    }
+    const double gain = std::max(1.0, std::sqrt(1e-4 / minimumArea));
+    if (!std::isfinite(gain) || gain > 65536) return BadMapping;
+    for (Vertex& v : atlasVerts) for (float& coordinate : v.p) coordinate *= float(gain);
+    const float atlasUnit = extent / float(gain);
     UnwrapOptions scaled = o;
+    scaled.pack.preserveChartShape = true;
     // Chart limits are given in source units; the atlas input is normalized by extent.
-    scaled.charts.maxChartArea = o.charts.maxChartArea / (extent * extent);
-    scaled.charts.maxBoundaryLength = o.charts.maxBoundaryLength / extent;
-    scaled.pack.texelsPerUnit = o.pack.texelsPerUnit * extent;
+    scaled.charts.maxChartArea = o.charts.maxChartArea / (atlasUnit * atlasUnit);
+    scaled.charts.maxBoundaryLength = o.charts.maxBoundaryLength / atlasUnit;
+    scaled.pack.texelsPerUnit = o.pack.texelsPerUnit * atlasUnit;
 
     xatlas::MeshDecl decl;
     decl.vertexPositionData = atlasVerts.data(); decl.vertexPositionStride = sizeof(Vertex);
@@ -254,14 +274,15 @@ int Unwrap(const PosMesh& m, float crease, float smoothing, const UnwrapOptions&
     if (!atlas->meshCount || !atlas->width || !atlas->height || !atlas->atlasCount) return NoAtlas;
     if (atlas->atlasCount != 1) return MultipleAtlases;
     const xatlas::Mesh& mesh = atlas->meshes[0];
+    const float atlasExtent = float(std::max(atlas->width,atlas->height));
     out.vertices.resize(mesh.vertexCount);
     out.charts.resize(mesh.vertexCount);
     for (uint32_t i = 0; i < mesh.vertexCount; ++i) {
         const auto& v = mesh.vertexArray[i];
         if (v.atlasIndex != 0 || v.xref >= verts.size()) return BadMapping;
         out.vertices[i] = verts[v.xref];
-        out.vertices[i].uv[0] = v.uv[0] / atlas->width;
-        out.vertices[i].uv[1] = v.uv[1] / atlas->height;
+        out.vertices[i].uv[0] = v.uv[0] / atlasExtent;
+        out.vertices[i].uv[1] = v.uv[1] / atlasExtent;
         out.charts[i] = v.chartIndex;
     }
     out.indices.assign(mesh.indexArray, mesh.indexArray + mesh.indexCount);
@@ -385,6 +406,27 @@ EXPORT int meshLabVoxelRemesh(const float* positions, uint32_t vertexCount,
         // cleanup's model-relative area floor deletes those faces and opens the
         // solid, increasingly often as resolution grows. Keep every positive-area
         // voxel face; still reject non-finite data and remove exact collapses.
+        if (int code = Clean(*mesh, 0.0)) return code;
+        *outVertices = uint32_t(mesh->pos.size() / 3); *outIndices = uint32_t(mesh->idx.size());
+        Publish(mesh, handle);
+        return Ok;
+    } catch (...) { return Internal; }
+}
+
+// Additive ABI 3 entry point. Only used after the editor rejects both the fitted
+// and unfitted corner extractor. Same occupancy/solidification, new isosurface;
+// no source fit and no change to the ordinary remesher or two-sided shell mode.
+EXPORT int meshLabVoxelRemeshManifold(const float* positions, uint32_t vertexCount,
+    const uint32_t* indices, uint32_t indexCount, int resolution,
+    void** handle, uint32_t* outVertices, uint32_t* outIndices)
+{
+    if (!handle || !outVertices || !outIndices) return Invalid;
+    *handle = nullptr; *outVertices = 0; *outIndices = 0;
+    if (resolution < 4 || resolution > MaxVoxelResolution) return Invalid;
+    if (int code = ValidateMesh(positions, vertexCount, indices, indexCount)) return code;
+    try {
+        auto mesh = std::make_unique<PosMesh>();
+        if (int code = Voxelize(positions, vertexCount, indices, indexCount, resolution, 1u << 29, *mesh)) return code;
         if (int code = Clean(*mesh, 0.0)) return code;
         *outVertices = uint32_t(mesh->pos.size() / 3); *outIndices = uint32_t(mesh->idx.size());
         Publish(mesh, handle);

@@ -37,6 +37,7 @@ namespace SashaRX.UnityMeshLab
         internal static bool Supports(Mesh mesh, MeshViewport3D.Shading mode)
         {
             if (!mesh) return false;
+            if (MeshViewport3D.IsMaterialMode(mode)) return true; // Scalars and neutral defaults also work without UV0.
             switch (mode) {
                 case MeshViewport3D.Shading.Shaded: return true;
                 case MeshViewport3D.Shading.Positions: return mesh.HasVertexAttribute(VertexAttribute.Position);

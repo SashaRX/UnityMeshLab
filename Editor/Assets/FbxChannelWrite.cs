@@ -1,11 +1,14 @@
 // FbxChannelWrite.cs — the strict FBX re-save for per-vertex channels (UV sets, vertex
 // colours, and for the hub's save normals and tangents). The FBX document is edited
 // through the FBX SDK: only the layer elements of the channels the tool changed are
-// touched, and within them only the corners whose value changed. Polygons (quads,
-// n-gons), control points, smoothing, the other channels, materials and nodes come
-// through from the source. Output format and embedding follow project settings;
+// touched, and within them only the corners whose value changed. A polygon with a new
+// internal seam is split using the import's triangles. Other polygons, control points,
+// smoothing, the other channels, materials and nodes come through from the source.
+// Nearby UV seams receive separate control-point identities so Unity's importer
+// retains their distinct values; positions and polygon corners do not move.
+// Output format and embedding follow project settings;
 // the source file version is preserved, subject to the SDK's supported versions.
-// Unity's FBX Exporter is not involved, so nothing is triangulated, welded, re-packed
+// Unity's FBX Exporter is not involved, so nothing is welded, re-packed
 // or quantised. Normals and
 // tangents are directions in the mesh's space, so they go back through the map fitted
 // to the mesh's import (FbxSpaceFit).
@@ -118,17 +121,18 @@ namespace SashaRX.UnityMeshLab
         /// together with the new and replaced geometry of <paramref name="structure"/> when one
         /// is given, then reimports it and relinks <paramref name="sceneRoot"/>. Everything goes
         /// into one load and one save of the document: a refusal anywhere leaves the file as
-        /// it was. Returns true when a file was written and the import settings it needs were set.
+        /// it was. Validation-only mode checks the disposable document without saving or importing the output.
+        /// Returns true when validation succeeded or a file was written with the required import settings.
         /// </summary>
         internal static bool Write(string sourceFbxPath, IEnumerable<MeshEntry> entries, FbxExportIntent intent,
-            string outputFbxPath, LODGroup sceneRoot, FbxStructurePlan structure = null, FbxExport.ShadingSelection shadingSelection = null)
+            string outputFbxPath, LODGroup sceneRoot, FbxStructurePlan structure = null, FbxExport.ShadingSelection shadingSelection = null, bool validationOnly = false)
         {
             string targetFbxPath = string.IsNullOrEmpty(outputFbxPath) ? sourceFbxPath : outputFbxPath;
             bool isVariant = !string.Equals(targetFbxPath, sourceFbxPath, StringComparison.OrdinalIgnoreCase);
             bool hasStructure = structure != null && !structure.IsEmpty;
-            if (shadingSelection != null && (!isVariant || hasStructure ||
+            if (shadingSelection != null && ((!isVariant && !shadingSelection.allowSourceOverwrite) || hasStructure ||
                 (intent & ~(FbxExportIntent.Normals | FbxExportIntent.Tangents)) != 0))
-                throw new InvalidOperationException("Selected shading can only be saved into a separate FBX, with normals/tangents intent and no structure edits.");
+                throw new InvalidOperationException("Selected shading requires a separate FBX or explicit source overwrite, with normals/tangents intent and no structure edits.");
             // A changed material reaches Unity through the written file's importer remap; a file
             // written outside the project has no importer, so its slots would carry a name only.
             bool inProject = targetFbxPath.StartsWith("Assets/", StringComparison.Ordinal) || targetFbxPath.StartsWith("Packages/", StringComparison.Ordinal);
@@ -163,6 +167,7 @@ namespace SashaRX.UnityMeshLab
 
             using var document = FbxSourceDocument.Load(Path.GetFullPath(sourceFbxPath));
             var tagged = ImportTagged(sourceFbxPath, swapUv, out var importedNames);
+            int splitPolygons = PrepareSeamSplits(document, donors, tagged);
 
             int meshesWritten = 0, cornersWritten = 0;
             var written = new HashSet<int>();
@@ -175,8 +180,8 @@ namespace SashaRX.UnityMeshLab
                         throw new InvalidOperationException($"'{donor.name}': no exact FBX corner mapping was found; foliage export was refused.");
                     if (importedNames.Contains(donor.name))
                         throw new InvalidOperationException(
-                            $"'{donor.name}': the corner tags did not survive the import (is Mesh Compression on for '{sourceFbxPath}'? " +
-                            "The exact corner pairing needs it Off); nothing was written.");
+                            $"'{donor.name}': the corner tags could not be decoded safely after import. " +
+                            $"Mesh Compression may need to be reduced for '{sourceFbxPath}'; nothing was written.");
                     UvtLog.Warn($"[FBX Export] '{donor.name}' is not a mesh of '{sourceFbxPath}'; skipped.");
                     continue;
                 }
@@ -208,8 +213,18 @@ namespace SashaRX.UnityMeshLab
                 fbxPath = targetFbxPath,
                 sourceFbxPath = sourceFbxPath,
             };
+            // Capture geometry names before structural replacement destroys old meshes.
+            // Unity mesh names may differ from FBX geometry names.
+            var uvMeshes = donors.Where(d => d.uvs[1] != null && tagged.ContainsKey(d.name))
+                .Select(d => document.Meshes[tagged[d.name].ordinal].GetName()).ToHashSet();
             int structural = hasStructure ? FbxStructureWrite.Apply(document, tagged, structure, options, structureLog) : 0;
+            if (structural > 0) document.RefreshMeshes();
             bool uv1Written = channelsWritten.Contains("UV1") || (options.uv1Written && structural > 0);
+            if (uv1Written) {
+                if (hasStructure && options.uv1Written) uvMeshes.UnionWith(structure.WholeMeshNames());
+                int points = document.PreserveSmallUvSeams(uvMeshes, FbxUvSet(1, swapUv));
+                if (points > 0) UvtLog.Info($"[FBX Export] Preserved nearby lightmap seams with {points} duplicate control points; positions and UVs unchanged.");
+            }
 
             if (meshesWritten == 0 && structural == 0 && shadingSelection == null)
             {
@@ -221,13 +236,16 @@ namespace SashaRX.UnityMeshLab
             // The sidecar's UV2 replay is held off for the import that follows only when that
             // import brings a UV1 written (or removed) here; otherwise the sidecar still applies.
             bool uv1Changed = uv1Written || channelsWritten.Contains("UV1 (removed)");
+            // Preflight exercises the same donor, instance and corner mapping checks in a disposable document.
+            if (validationOnly) return true;
             if (uv1Changed) Uv2AssetPostprocessor.fbxOverwritePaths.Add(targetFbxPath);
+
             try { document.SaveAtomic(Path.GetFullPath(targetFbxPath), shadingSelection?.mediaOwnership); }
             catch { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); throw; }
             string format = $"FBX {document.Major}.{document.Minor}, {FbxWriteSettings.FromProject().FormatName}";
             if (meshesWritten > 0)
                 UvtLog.Info($"[FBX Export] {meshesWritten} mesh(es), {cornersWritten} corner value(s) of {string.Join(", ", channelsWritten.OrderBy(c => c))} -> {targetFbxPath} " +
-                    $"({format}; polygons and other channels untouched)");
+                    $"({format}; {splitPolygons} polygon(s) split at new internal seams; other channels retained)");
             foreach (string line in structureLog) UvtLog.Info($"[FBX Export] {line} -> {targetFbxPath} ({format})");
 
             // A save-as outside the project is a plain file; nothing to import.
@@ -596,6 +614,7 @@ namespace SashaRX.UnityMeshLab
             if (!AssetDatabase.IsValidFolder(TempFolder)) AssetDatabase.CreateFolder("Assets", TempFolder.Substring("Assets/".Length));
             string tempPath = $"{TempFolder}/corner_tags_{Guid.NewGuid():N}.fbx";
             var tagChannels = new Dictionary<int, int>();
+            var cornerCounts = new Dictionary<int, int>();
             // A mesh with all eight UV sets gives its last one to the tag; that set's values come
             // from the file instead, per corner, so the corner matching still sees them.
             var takenSets = new Dictionary<int, double[]>();
@@ -604,7 +623,7 @@ namespace SashaRX.UnityMeshLab
             {
                 using (var tagDocument = FbxSourceDocument.Load(Path.GetFullPath(sourceFbxPath)))
                 {
-                    AddCornerTags(tagDocument, swapUv, tagChannels, takenSets);
+                    AddCornerTags(tagDocument, swapUv, tagChannels, takenSets, cornerCounts);
                     tagDocument.SaveForImport(Path.GetFullPath(tempPath));
                 }
 
@@ -624,7 +643,7 @@ namespace SashaRX.UnityMeshLab
                 importer.SaveAndReimport();
 
                 var tagged = new Dictionary<string, Tagged>(StringComparer.Ordinal);
-                ReadImportedTags(tempPath, tagChannels, takenSets, importedNames, tagged);
+                ReadImportedTags(tempPath, tagChannels, cornerCounts, takenSets, importedNames, tagged);
                 return tagged;
             }
             finally
@@ -641,7 +660,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static void AddCornerTags(FbxSourceDocument document, bool swapUv, Dictionary<int, int> channels, Dictionary<int, double[]> takenSets)
+        static void AddCornerTags(FbxSourceDocument document, bool swapUv, Dictionary<int, int> channels, Dictionary<int, double[]> takenSets, Dictionary<int, int> cornerCounts)
         {
             for (int i = 0; i < document.Meshes.Count; i++)
             {
@@ -650,16 +669,17 @@ namespace SashaRX.UnityMeshLab
                 if (sets.Count >= FbxLayerChannels.MaxUnityUvChannels)
                     takenSets[i] = FbxLayerChannels.ReadUv(sets[FbxLayerChannels.MaxUnityUvChannels - 1], new FbxLayerChannels.Topology(mesh));
                 channels[i] = FbxUvSet(FbxLayerChannels.AddCornerTag(mesh, i), swapUv);
+                cornerCounts[i] = new FbxLayerChannels.Topology(mesh).CornerCount;
             }
         }
 
-        static void ReadImportedTags(string path, Dictionary<int, int> tagChannels, Dictionary<int, double[]> takenSets,
+        static void ReadImportedTags(string path, Dictionary<int, int> tagChannels, Dictionary<int, int> cornerCounts, Dictionary<int, double[]> takenSets,
             HashSet<string> importedNames, Dictionary<string, Tagged> tagged)
         {
             foreach (var mesh in AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>())
             {
                 importedNames.Add(mesh.name);
-                var tag = ReadTags(mesh, tagChannels);
+                var tag = ReadTags(mesh, tagChannels, cornerCounts);
                 if (tag == null) continue;
                 if (tagged.TryGetValue(mesh.name, out var first)) { first.ambiguous = true; continue; }
                 if (takenSets.TryGetValue(tag.ordinal, out var values)) tag.uvs[tagChannels[tag.ordinal]] = PerCornerUvs(values, tag.cornerPositions.Length / 3);
@@ -667,7 +687,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static Tagged ReadTags(Mesh mesh, Dictionary<int, int> tagChannels)
+        static Tagged ReadTags(Mesh mesh, Dictionary<int, int> tagChannels, Dictionary<int, int> cornerCounts)
         {
             var list = new List<Vector2>();
             for (int ch = 0; ch < 8; ch++)
@@ -676,26 +696,49 @@ namespace SashaRX.UnityMeshLab
                 if (list.Count == 0 || list.Count != mesh.vertexCount) continue;
                 int ordinal = TagOrdinal(list);
                 if (ordinal < 0 || !tagChannels.TryGetValue(ordinal, out int expected) || expected != ch) continue;
-                return BuildTagged(mesh, ch, ordinal, list);
+                int count = cornerCounts[ordinal];
+                if (list.Any(t => TagCorner(t) >= count)) continue;
+                return BuildTagged(mesh, ch, ordinal, list, count);
             }
             return null;
         }
 
         // The ordinal every vertex of the channel agrees on, or -1 when it is not a tag channel.
-        static int TagOrdinal(List<Vector2> tags)
+        internal static int TagOrdinal(List<Vector2> tags)
         {
-            float v = tags[0].y;
-            if (v >= 0 || !IsWhole(v, out int tagValue)) return -1;
+            if (tags == null || tags.Count == 0 || !DecodeTag(tags[0], out _, out int ordinal)) return -1;
             foreach (var t in tags)
-                if (!IsWhole(t.y, out int y) || y != tagValue || t.x < 0 || !IsWhole(t.x, out _)) return -1;
-            return -tagValue - 1;
+                if (!DecodeTag(t, out _, out int candidate) || candidate != ordinal) return -1;
+            return ordinal;
         }
 
-        // Tag values are whole numbers below 2^24, so any fractional part means "not a tag".
+        internal static bool DecodeTag(Vector2 tag, out int corner, out int ordinal)
+        {
+            corner = ordinal = -1;
+            int radix = FbxLayerChannels.CornerTagRadix;
+            if (!IsWhole(tag.x, out int low) || low < 0 || low >= radix
+                || !IsWhole(tag.y, out int packed) || packed >= 0 || packed < -(1 << 24)) return false;
+            int value = -packed - 1;
+            ordinal = value / radix;
+            corner = (value % radix) * radix + low;
+            return true;
+        }
+
+        static int TagCorner(Vector2 tag)
+        {
+            DecodeTag(tag, out int corner, out _);
+            return corner;
+        }
+
+        // Each varying component spans at most 4095. Real compressed imports can exceed
+        // 0.002 even on small meshes; retain a strict margin to the half-integer boundary.
+        // Non-finite, out-of-range and mixed-ordinal IDs still fail before any file write.
         static bool IsWhole(float f, out int whole)
         {
+            whole = 0;
+            if (float.IsNaN(f) || float.IsInfinity(f) || f < -(1 << 24) || f >= 1 << 24) return false;
             whole = Mathf.RoundToInt(f);
-            return Mathf.Abs(f - whole) < 1e-3f;
+            return Mathf.Abs(f - whole) < .125f;
         }
 
         // The file's per-corner UV values as Unity imports them (single precision).
@@ -706,10 +749,8 @@ namespace SashaRX.UnityMeshLab
             return uvs;
         }
 
-        static Tagged BuildTagged(Mesh mesh, int tagChannel, int ordinal, List<Vector2> tags)
+        static Tagged BuildTagged(Mesh mesh, int tagChannel, int ordinal, List<Vector2> tags, int corners)
         {
-            int corners = 0;
-            foreach (var t in tags) corners = Math.Max(corners, Mathf.RoundToInt(t.x) + 1);
             var tag = new Tagged { ordinal = ordinal, cornerPositions = new float[corners * 3] };
             for (int i = 0; i < tag.cornerPositions.Length; i++) tag.cornerPositions[i] = float.NaN;
 
@@ -717,7 +758,7 @@ namespace SashaRX.UnityMeshLab
             var cornerOf = new int[vertices.Length];
             for (int v = 0; v < vertices.Length; v++)
             {
-                int c = cornerOf[v] = Mathf.RoundToInt(tags[v].x);
+                int c = cornerOf[v] = TagCorner(tags[v]);
                 tag.cornerPositions[c * 3] = vertices[v].x; tag.cornerPositions[c * 3 + 1] = vertices[v].y; tag.cornerPositions[c * 3 + 2] = vertices[v].z;
             }
             tag.submeshCorners = new int[mesh.subMeshCount][];
@@ -729,37 +770,48 @@ namespace SashaRX.UnityMeshLab
                 tag.submeshCorners[s] = faces ? Array.ConvertAll(mesh.GetIndices(s), i => cornerOf[i]) : new int[0];
                 tag.submeshFaceSizes[s] = topology == MeshTopology.Quads ? 4 : 3;
             }
+            ReadTaggedUvs(mesh, tagChannel, corners, cornerOf, tag);
+            ReadTaggedShading(mesh, corners, cornerOf, tag);
+            return tag;
+        }
+
+        static void ReadTaggedUvs(Mesh mesh, int tagChannel, int corners, int[] cornerOf, Tagged tag)
+        {
             var list = new List<Vector2>();
             for (int ch = 0; ch < 8; ch++)
             {
                 if (ch == tagChannel) continue;
                 mesh.GetUVs(ch, list);
-                if (list.Count != vertices.Length) continue;
+                if (list.Count != mesh.vertexCount) continue;
                 tag.uvs[ch] = new Vector2[corners];
-                for (int v = 0; v < vertices.Length; v++) tag.uvs[ch][cornerOf[v]] = list[v];
+                for (int v = 0; v < mesh.vertexCount; v++) tag.uvs[ch][cornerOf[v]] = list[v];
             }
+        }
+
+        static void ReadTaggedShading(Mesh mesh, int corners, int[] cornerOf, Tagged tag)
+        {
             var normals = mesh.normals;
-            if (normals != null && normals.Length == vertices.Length)
+            if (normals != null && normals.Length == mesh.vertexCount)
             {
                 tag.normals = new Vector3[corners];
-                for (int v = 0; v < vertices.Length; v++) tag.normals[cornerOf[v]] = normals[v];
+                for (int v = 0; v < mesh.vertexCount; v++) tag.normals[cornerOf[v]] = normals[v];
             }
             var tangents = mesh.tangents;
-            if (tangents != null && tangents.Length == vertices.Length)
+            if (tangents != null && tangents.Length == mesh.vertexCount)
             {
                 tag.tangents = new Vector4[corners];
-                for (int v = 0; v < vertices.Length; v++) tag.tangents[cornerOf[v]] = tangents[v];
+                for (int v = 0; v < mesh.vertexCount; v++) tag.tangents[cornerOf[v]] = tangents[v];
             }
             var colors = mesh.colors;
-            if (colors != null && colors.Length == vertices.Length)
+            if (colors != null && colors.Length == mesh.vertexCount)
             {
                 var colors32 = mesh.colors32;
                 tag.colors = new Color[corners];
                 tag.colors32 = new Color32[corners];
-                for (int v = 0; v < vertices.Length; v++) { tag.colors[cornerOf[v]] = colors[v]; tag.colors32[cornerOf[v]] = colors32[v]; }
+                for (int v = 0; v < mesh.vertexCount; v++) { tag.colors[cornerOf[v]] = colors[v]; tag.colors32[cornerOf[v]] = colors32[v]; }
             }
-            return tag;
         }
+
 
         // ── Per mesh ──
 
@@ -937,11 +989,99 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static int[] PairCorners(Donor donor, Tagged tag, in FbxLayerChannels.Topology topology)
+        static int PrepareSeamSplits(FbxSourceDocument document, List<Donor> donors, Dictionary<string, Tagged> tagged)
         {
-            var match = FbxCornerMatch.Match(topology.polygonSizes, CornerPositions(donor, tag, topology), donor.positions, donor.faces, donor.faceSizes,
+            var plans = new Dictionary<int, FbxPolygonSplit>();
+            var expanded = new List<(Tagged tag, FbxPolygonSplit plan, int cornerCount)>();
+            foreach (var donor in donors)
+            {
+                if (!donor.HasValues || !tagged.TryGetValue(donor.name, out var tag) || tag.ambiguous) continue;
+                var mesh = document.Meshes[tag.ordinal];
+                var topology = new FbxLayerChannels.Topology(mesh);
+                var match = MatchCorners(donor, tag, topology);
+                if (match.conflicts == 0 || match.unresolved > 0) continue;
+                var plan = FbxPolygonSplit.Plan(topology.polygonSizes, match.conflictingCorners, tag.TriangleCorners());
+                if (plan.splitCount == 0) continue;
+                if (!plans.TryAdd(tag.ordinal, plan))
+                    throw new InvalidOperationException($"FBX mesh '{mesh.GetName()}' has several conflicting donors.");
+                expanded.Add((tag, plan, topology.CornerCount));
+            }
+            if (plans.Count == 0) return 0;
+            var names = document.Meshes.Select(m => m.GetName()).ToArray();
+            document.SplitPolygons(plans);
+            if (!names.SequenceEqual(document.Meshes.Select(m => m.GetName())))
+                throw new InvalidOperationException("FBX mesh order changed during the seam split; nothing was written.");
+            foreach (var item in expanded) ExpandTag(item.tag, item.plan, item.cornerCount);
+            return plans.Values.Sum(p => p.splitCount);
+        }
+
+        internal static void ExpandTag(Tagged tag, FbxPolygonSplit plan, int cornerCount)
+        {
+            var positions = Enumerable.Repeat(float.NaN, cornerCount * 3).ToArray();
+            Array.Copy(tag.cornerPositions, positions, tag.cornerPositions.Length);
+            tag.cornerPositions = plan.Expand(positions, 3);
+            for (int channel = 0; channel < tag.uvs.Length; ++channel) tag.uvs[channel] = plan.Expand(tag.uvs[channel]);
+            tag.colors = plan.Expand(tag.colors); tag.colors32 = plan.Expand(tag.colors32);
+            tag.normals = plan.Expand(tag.normals); tag.tangents = plan.Expand(tag.tangents);
+            var firstCopy = FirstCornerCopies(plan, cornerCount);
+            var splitTriangles = SplitTriangleCorners(plan);
+            for (int s = 0; s < tag.submeshCorners.Length; ++s)
+            {
+                tag.submeshCorners[s] = ExpandSubmeshCorners(tag.submeshCorners[s], tag.submeshFaceSizes[s], plan, firstCopy, splitTriangles);
+                tag.submeshFaceSizes[s] = 3;
+            }
+        }
+
+        static int[] FirstCornerCopies(FbxPolygonSplit plan, int count)
+        {
+            var first = new int[count]; Array.Fill(first, -1);
+            for (int c = 0; c < plan.corners.Length; ++c)
+                if (first[plan.corners[c]] < 0) first[plan.corners[c]] = c;
+            return first;
+        }
+
+        static Dictionary<(int,int,int),int[]> SplitTriangleCorners(FbxPolygonSplit plan)
+        {
+            var triangles = new Dictionary<(int,int,int),int[]>(); int offset = 0;
+            foreach (int size in plan.sizes)
+            {
+                if (size == 3)
+                {
+                    var triangle = Enumerable.Range(offset, 3).ToArray();
+                    var old = triangle.Select(c => plan.corners[c]).OrderBy(c => c).ToArray();
+                    triangles.Add((old[0], old[1], old[2]), triangle);
+                }
+                offset += size;
+            }
+            return triangles;
+        }
+
+        static int[] ExpandSubmeshCorners(int[] original, int size, FbxPolygonSplit plan, int[] first,
+            Dictionary<(int,int,int),int[]> splitTriangles)
+        {
+            var triangles = size == 4
+                ? Enumerable.Range(0, original.Length / 4).SelectMany(f => new[] { original[f*4], original[f*4+1], original[f*4+2],
+                    original[f*4], original[f*4+2], original[f*4+3] }).ToArray() : original;
+            var mapped = new int[triangles.Length];
+            for (int t = 0; t < triangles.Length; t += 3)
+            {
+                var old = new[] { triangles[t], triangles[t+1], triangles[t+2] }; var sorted = old.OrderBy(c => c).ToArray();
+                if (splitTriangles.TryGetValue((sorted[0], sorted[1], sorted[2]), out var triangle))
+                    for (int k = 0; k < 3; ++k) mapped[t+k] = triangle.Single(c => plan.corners[c] == old[k]);
+                else for (int k = 0; k < 3; ++k) mapped[t+k] = old[k] < 0 ? old[k] : first[old[k]];
+            }
+            return mapped;
+        }
+
+        static FbxCornerMatch.Result MatchCorners(Donor donor, Tagged tag, in FbxLayerChannels.Topology topology)
+            => FbxCornerMatch.Match(topology.polygonSizes, CornerPositions(donor, tag, topology), donor.positions, donor.faces, donor.faceSizes,
                 (c, v) => SignatureMatches(donor, tag, c, v),
                 (a, b) => SameWrittenValues(donor, a, b));
+
+        // Every FBX corner's vertex in the working mesh; refuses ambiguity that a local split cannot resolve.
+        static int[] PairCorners(Donor donor, Tagged tag, in FbxLayerChannels.Topology topology)
+        {
+            var match = MatchCorners(donor, tag, topology);
             if (match.conflicts > 0)
                 throw new InvalidOperationException(
                     $"'{donor.name}': {match.conflicts} FBX corner(s) get different values from different triangles of the same polygon " +

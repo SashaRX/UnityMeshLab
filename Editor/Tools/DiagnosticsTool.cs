@@ -49,6 +49,8 @@ namespace SashaRX.UnityMeshLab
         {
             DebugUi.Banner();
             EditorGUILayout.Space(6);
+            TransferDiagnosticCommands.Draw(ctx);
+            EditorGUILayout.Space(6);
             DrawBench();
             EditorGUILayout.Space(6);
             DebugUi.LogFilters(ref foldLogFilters);

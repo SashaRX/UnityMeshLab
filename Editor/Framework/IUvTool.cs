@@ -66,12 +66,6 @@ namespace SashaRX.UnityMeshLab
         System.Action RequestRepaint { set; }
     }
 
-    internal interface IUvTool3DFrameContext
-    {
-        // Stable model identity across intermediate meshes of one pipeline.
-        object FrameContext { get; }
-    }
-
     internal interface IUvToolWindowPreferences
     {
         void SaveWindowPreferences();
@@ -107,6 +101,12 @@ namespace SashaRX.UnityMeshLab
         void OnDraw3D(MeshViewport3D view);
     }
 
+    /// <summary>Optional input before the shared viewport handles orbit and spot selection.</summary>
+    internal interface IUvTool3DInput
+    {
+        void On3DInput(MeshViewport3D view, UnityEngine.Event input);
+    }
+
     /// <summary>
     /// Opt-in for tools whose own output should fill the shared UV canvas (the hub's
     /// UV mode) instead of the context's preview-LOD meshes — the Remesh &amp; Bake
@@ -132,6 +132,20 @@ namespace SashaRX.UnityMeshLab
     public interface IUvToolRightSidebar
     {
         void OnDrawRightSidebar();
+    }
+
+    /// <summary>Opt-in export of a tool-owned result through the shared FBX footer buttons.</summary>
+    public interface IUvToolFbxExport
+    {
+        bool CanExportFbx { get; }
+        void ExportFbx(bool overwriteSource);
+    }
+
+    /// <summary>Tool-owned mesh assets use the same footer as context-owned meshes.</summary>
+    public interface IUvToolMeshExport
+    {
+        bool CanSaveMeshAssets { get; }
+        void SaveMeshAssets();
     }
 
     /// <summary>Optional hooks around shared asset writes. Only the active tool is called.</summary>

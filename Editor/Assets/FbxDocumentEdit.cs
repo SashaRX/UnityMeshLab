@@ -1,8 +1,8 @@
 // FbxDocumentEdit.cs — edits an FBX file in place through the FBX SDK: load the
 // document, change one layer element of one mesh, save it with the project export
-// policy and the source version. Polygons, control points, smoothing, materials,
-// the other layer elements, nodes and properties are never rebuilt, so they come
-// through as the source file has them (n-gons stay n-gons, no vertex splitting).
+// policy and the source version. Only polygons with new internal value seams are
+// split; their layers are remapped through a binary scratch document. Control points,
+// materials, nodes, properties and unaffected polygons are preserved.
 //
 // No UnityEngine types: the Unity side (which corner gets which value) is
 // FbxCornerMatch and FbxExport.WriteChannels.
@@ -29,7 +29,7 @@ namespace SashaRX.UnityMeshLab
         readonly string scratch;
         internal readonly string SourceDirectory;
         public readonly FbxManager Manager;
-        public readonly FbxScene Scene;
+        public FbxScene Scene { get; private set; }
         public readonly bool Binary;
         public readonly int Major, Minor;
         public readonly bool EmbedsMedia;
@@ -214,6 +214,131 @@ namespace SashaRX.UnityMeshLab
             if (!output.Exists || output.Length == 0) throw new IOException($"FBX SDK produced no file at '{path}'.");
         }
 
+        /// <summary>Splits only polygons with new internal seams, retaining the entire source document.</summary>
+        public void SplitPolygons(IReadOnlyDictionary<int, FbxPolygonSplit> plans)
+            => EditTopology(plans, FbxPolygonSplitFile.Apply);
+
+        internal int PreserveSmallUvSeams(ICollection<string> names, int uvSet)
+        {
+            var plans = new Dictionary<int, FbxUvPointSplit>();
+            for (int ordinal = 0; ordinal < Meshes.Count; ++ordinal) {
+                var mesh = Meshes[ordinal];
+                if (!names.Contains(mesh.GetName())) continue;
+                var plan = SmallUvSeamPlan(mesh, uvSet);
+                if (plan != null) plans.Add(ordinal, plan);
+            }
+            if (plans.Count == 0) return 0;
+            EditTopology(plans, FbxPolygonSplitFile.ApplyUvPoints);
+            return plans.Values.Sum(p => p.sources.Length - p.sources.Distinct().Count());
+        }
+
+        static FbxUvPointSplit SmallUvSeamPlan(FbxMesh mesh, int uvSet)
+        {
+            var sets = FbxLayerChannels.UvElements(mesh);
+            if (sets.Count <= uvSet) return null;
+            var topology = new FbxLayerChannels.Topology(mesh);
+            var uv = FbxLayerChannels.ReadUv(sets[uvSet], topology);
+            int primarySet = uvSet == 0 && sets.Count > 1 ? 1 : 0;
+            var primary = FbxLayerChannels.ReadUv(sets[primarySet], topology);
+            (double, double, double, double) Signature(int c) => (primary[c*2], primary[c*2+1], uv[c*2], uv[c*2+1]);
+            var groups = PointUvGroups(topology.cornerControlPoint, Signature);
+            // Unity can merge nearby UV values even with weld/compression off.
+            // Distinct control-point identities preserve coordinates and seams.
+            var split = groups.Where(g => HasNearbyUvSeam(g.Value)).Select(g => g.Key).ToHashSet();
+            return split.Count == 0 ? null : SplitUvPointIdentities(mesh.GetControlPointsCount(), topology.cornerControlPoint, split, Signature);
+        }
+
+        static Dictionary<int, HashSet<(double,double,double,double)>> PointUvGroups(int[] corners,
+            Func<int,(double,double,double,double)> signature)
+        {
+            var groups = new Dictionary<int, HashSet<(double,double,double,double)>>();
+            for (int c = 0; c < corners.Length; ++c) {
+                int point = corners[c];
+                if (!groups.TryGetValue(point, out var values)) {
+                    values = new HashSet<(double,double,double,double)>(); groups.Add(point, values);
+                }
+                values.Add(signature(c));
+            }
+            return groups;
+        }
+
+        static bool HasNearbyUvSeam(HashSet<(double,double,double,double)> values)
+        {
+            bool Nearby(double au, double av, double bu, double bv) => Math.Abs(au-bu) <= .01 && Math.Abs(av-bv) <= .01;
+            return values.Any(a => values.Any(b => a != b && Nearby(a.Item1,a.Item2,b.Item1,b.Item2)
+                && Nearby(a.Item3,a.Item4,b.Item3,b.Item4)));
+        }
+
+        static FbxUvPointSplit SplitUvPointIdentities(int oldCount, int[] original, HashSet<int> split,
+            Func<int,(double,double,double,double)> signature)
+        {
+            var sources = Enumerable.Range(0, oldCount).ToList(); var corners = (int[])original.Clone();
+            var first = new HashSet<int>(); var assigned = new Dictionary<(int,(double,double,double,double)),int>();
+            for (int c = 0; c < corners.Length; ++c) {
+                int point = corners[c]; if (!split.Contains(point)) continue;
+                var key = (point, signature(c));
+                if (!assigned.TryGetValue(key, out int next)) {
+                    next = first.Add(point) ? point : sources.Count;
+                    if (next == sources.Count) sources.Add(point);
+                    assigned.Add(key, next);
+                }
+                corners[c] = next;
+            }
+            return new FbxUvPointSplit { sources = sources.ToArray(), corners = corners };
+        }
+
+        internal void RefreshMeshes()
+        {
+            Meshes.Clear(); CollectMeshes(Scene.GetRootNode(), Meshes);
+        }
+
+        void EditTopology<T>(IReadOnlyDictionary<int,T> plans, Action<string,IReadOnlyDictionary<string,T>> edit)
+        {
+            string path = Path.Combine(scratch, "split.fbx");
+            // This wrapper has no object IDs. Carry mesh ordinals through scratch
+            // export as unique identities and restore authored names before publish.
+            var identities = SaveSplitScratch(path);
+            edit(path, plans.ToDictionary(p => identities[p.Key].identity, p => p.Value));
+            var replacement = FbxScene.Create(Manager, "MeshLabSplitDocument");
+            try
+            {
+                using var importer = FbxImporter.Create(Manager, "MeshLabSplitImport");
+                if (!importer.Initialize(path, -1, Manager.GetIOSettings()) || !importer.Import(replacement))
+                    throw new IOException("FBX SDK cannot read the local seam split.");
+                RestoreSplitNames(replacement, identities);
+            }
+            catch { replacement.Destroy(); throw; }
+            Scene.Destroy();
+            Scene = replacement;
+            RefreshMeshes();
+        }
+
+        (string identity, string name)[] SaveSplitScratch(string path)
+        {
+            string prefix = "MeshLabSplit_" + Guid.NewGuid().ToString("N") + "_";
+            var identities = Meshes.Select((mesh, i) => (identity: prefix + i, name: mesh.GetName())).ToArray();
+            try
+            {
+                for (int i = 0; i < Meshes.Count; ++i) Meshes[i].SetName(identities[i].identity);
+                SaveWithSettings(path, new FbxWriteSettings(true, EmbedsMedia), false, requireMedia: false);
+            }
+            finally { for (int i = 0; i < Meshes.Count; ++i) Meshes[i].SetName(identities[i].name); }
+            return identities;
+        }
+
+        static void RestoreSplitNames(FbxScene replacement, (string identity, string name)[] identities)
+        {
+            var meshes = new List<FbxMesh>(); CollectMeshes(replacement.GetRootNode(), meshes);
+            var names = identities.ToDictionary(i => i.identity, i => i.name);
+            if (meshes.Count != names.Count) throw new IOException("FBX split changed the source mesh identities.");
+            foreach (var mesh in meshes)
+            {
+                string key = mesh.GetName();
+                if (!names.Remove(key, out string name)) throw new IOException("FBX split lost a source mesh identity.");
+                mesh.SetName(name);
+            }
+        }
+
         /// <summary>The writer for the file version, or the oldest one newer than it.</summary>
         internal static string WriterVersion(int major, int minor)
         {
@@ -325,7 +450,7 @@ namespace SashaRX.UnityMeshLab
             => mesh.GetLayerCount() > 0 ? mesh.GetLayer(0)?.GetVertexColors() : null;
 
         /// <summary>
-        /// Adds a UV set holding (corner index, -(ordinal + 1)) per corner so a Unity import
+        /// Adds a UV set holding a two-digit corner index and mesh ordinal so a Unity import
         /// of the file tells which FBX corner every vertex came from; returns the Unity UV
         /// channel the tag lands in. Only for the throwaway tagged copy.
         /// </summary>
@@ -334,6 +459,8 @@ namespace SashaRX.UnityMeshLab
             var topology = new Topology(mesh);
             if (topology.CornerCount >= 1 << 24)
                 throw new InvalidOperationException($"Mesh '{mesh.GetName()}' has too many corners to tag exactly.");
+            if (ordinal < 0 || ordinal >= CornerTagRadix)
+                throw new InvalidOperationException("The FBX has too many meshes to tag exactly.");
             var existing = UvElements(mesh);
             FbxLayerElementUV tag;
             int channel;
@@ -353,10 +480,15 @@ namespace SashaRX.UnityMeshLab
             tag.SetReferenceMode(FbxLayerElement.EReferenceMode.eDirect);
             var direct = tag.GetDirectArray();
             direct.SetCount(topology.CornerCount);
-            for (int c = 0; c < topology.CornerCount; c++) direct.SetAt(c, new FbxVector2(c, -(ordinal + 1)));
+            for (int c = 0; c < topology.CornerCount; c++)
+                direct.SetAt(c, new FbxVector2(c % CornerTagRadix, -(ordinal * CornerTagRadix + c / CornerTagRadix + 1)));
             tag.GetIndexArray().SetCount(0);
             return channel;
         }
+
+        // Split the 24-bit corner ID so neither component spans millions of values.
+        // Compression quantizes each component's range; the ordinal is a constant offset.
+        internal const int CornerTagRadix = 4096;
 
         /// <summary>Per-corner values (2 per corner) of a UV set.</summary>
         internal static double[] ReadUv(FbxLayerElementUV element, in Topology topology)

@@ -15,6 +15,19 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void OversizedProxyReportsActualCountAndKeepsCancellationPriority()
+        {
+            var mesh = new RemeshNative.IndexedMesh { indices = new int[177476 * 3] };
+            var error = Assert.Throws<FoliageProxyBudgetException>(() => FoliageProxyBuilder.CheckTriangleBudget(mesh, 100000, CancellationToken.None));
+            Assert.AreEqual(177476, error.TriangleCount); Assert.AreEqual(100000, error.Limit);
+            StringAssert.Contains(177476.ToString("N0"), error.Message);
+            StringAssert.Contains(100000.ToString("N0"), error.Message);
+            StringAssert.DoesNotContain("edge length", error.Message);
+            Assert.DoesNotThrow(() => FoliageProxyBuilder.CheckTriangleBudget(mesh, error.TriangleCount, CancellationToken.None));
+            Assert.Throws<OperationCanceledException>(() => FoliageProxyBuilder.CheckTriangleBudget(mesh, 100000, new CancellationToken(true)));
+        }
+
+        [Test]
         public void PrimitiveBoundsIndicesBudgetAndUInt32WithoutSceneObjects()
         {
             int before = UnityEngine.Object.FindObjectsByType<GameObject>(FindObjectsSortMode.None).Length;
@@ -127,8 +140,8 @@ namespace SashaRX.UnityMeshLab.Tests
         public void SmoothingEnforcesTriangleBudgetWithRemeshEnabledOrDisabled(bool remesh)
         {
             var input = Spheres(Vector3.zero);
-            var settings = new FoliageNormalsSettings { remeshProxy = remesh, maximumProxyTriangles = input.TriangleCount - 1 };
-            var error = Assert.Throws<InvalidOperationException>(() => FoliageProxySmoother.Smooth(input, settings, CancellationToken.None, out _));
+            var settings = new FoliageNormalsSettings { automaticProxyTriangleBudget = false, remeshProxy = remesh, maximumProxyTriangles = input.TriangleCount - 1 };
+            var error = Assert.Throws<FoliageProxyBudgetException>(() => FoliageProxySmoother.Smooth(input, settings, CancellationToken.None, out _));
             StringAssert.Contains("Proxy triangle budget exceeded", error.Message);
             settings.maximumProxyTriangles = input.TriangleCount;
             Assert.DoesNotThrow(() => FoliageProxySmoother.Smooth(input, settings, CancellationToken.None, out _));

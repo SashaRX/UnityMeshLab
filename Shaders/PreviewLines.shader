@@ -6,13 +6,14 @@ Shader "Hidden/MeshLab/PreviewLines"
         _Color ("Tint", Color) = (1,1,1,1)
         _LineWidth ("Width in target pixels", Float) = 1
         _DepthOffset ("Depth offset", Float) = -2
+        [Enum(UnityEngine.Rendering.CompareFunction)] _ZTest ("Depth test", Float) = 4
     }
     SubShader
     {
         Tags { "Queue" = "Transparent+10" "RenderType" = "Transparent" }
         Cull Off
         ZWrite Off
-        ZTest LEqual
+        ZTest [_ZTest]
         Offset [_DepthOffset], [_DepthOffset]
         Blend One OneMinusSrcAlpha
         Pass

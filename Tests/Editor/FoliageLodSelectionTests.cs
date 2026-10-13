@@ -146,9 +146,69 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [UnityTest]
+        public IEnumerator TransferredNormalRelaxationReusesProxyForAllSelectedLodsAndSavesTheFinalResult()
+        {
+            using var tree = new Tree(true); using var pipeline = new FoliageNormalsPipeline();
+            tree.leaves[1].sharedMaterials = new[] { tree.leaf, tree.trunk };
+            var settings = Settings(tree.leaves[0]); settings.selection = FoliageFaceSelection.SelectedSubmeshIndices; settings.submeshes = new[] { 1 };
+            string folder = "Assets/FoliageRelaxLods_" + Guid.NewGuid().ToString("N");
+            try
+            {
+                var task = pipeline.Run(tree.root, settings, FoliageNormalsPipeline.Stage.Transfer);
+                yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, pipeline.Status);
+                var proxy = pipeline.Remeshed; var snapshots = pipeline.Targets.ToArray();
+                var raw = snapshots.Select(t => t.working.normals).ToArray();
+                settings.relaxTransferredNormals = true; settings.normalRelaxStrength = .5f; settings.normalRelaxIterations = 3;
+                pipeline.InvalidateChanged(settings, tree.root);
+                Assert.IsTrue(pipeline.Has(FoliageNormalsPipeline.Stage.Remesh)); Assert.IsFalse(pipeline.Has(FoliageNormalsPipeline.Stage.Transfer));
+                task = pipeline.Run(tree.root, settings, FoliageNormalsPipeline.Stage.Transfer);
+                yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, pipeline.Status);
+                Assert.AreSame(proxy, pipeline.Remeshed); CollectionAssert.AreEqual(snapshots, pipeline.Targets);
+                var relaxed = snapshots.Select(t => t.working.normals).ToArray();
+                for (int level = 0; level < snapshots.Length; level++)
+                {
+                    var target = snapshots[level]; int selected = level == 1 ? 0 : 1;
+                    Assert.IsTrue(target.working.GetIndices(selected).Any(v => Vector3.Dot(raw[level][v], relaxed[level][v]) < .999f));
+                    foreach (int v in target.working.GetIndices(1 - selected))
+                    {
+                        Assert.AreEqual(target.localNormals[v], relaxed[level][v]);
+                        Assert.AreEqual(target.original.tangents[v], target.working.tangents[v]);
+                    }
+                    CollectionAssert.AreEqual(target.localNormals, target.source.normals);
+                }
+                settings.normalRelaxIterations = 6;
+                task = pipeline.Run(tree.root, settings, FoliageNormalsPipeline.Stage.Transfer);
+                yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, pipeline.Status);
+                settings.normalRelaxIterations = 3;
+                task = pipeline.Run(tree.root, settings, FoliageNormalsPipeline.Stage.Transfer);
+                yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, pipeline.Status);
+                for (int level = 0; level < snapshots.Length; level++) CollectionAssert.AreEqual(relaxed[level], snapshots[level].working.normals, "Re-running must start from projection, not accumulate relaxation.");
+                if (GpuBvh.Supported)
+                {
+                    settings.gpuProjection = true;
+                    task = pipeline.Run(tree.root, settings, FoliageNormalsPipeline.Stage.Transfer);
+                    yield return FoliageNormalsToolTests.Await(task); Assert.IsTrue(task.Result, pipeline.Status);
+                    Assert.IsTrue(pipeline.TransferDiagnostics.gpu);
+                    for (int level = 0; level < snapshots.Length; level++)
+                    {
+                        var gpu = snapshots[level].working.normals;
+                        for (int v = 0; v < gpu.Length; v++) Assert.Greater(Vector3.Dot(relaxed[level][v], gpu[v]), .9999f);
+                    }
+                }
+                var paths = pipeline.Save(folder); Assert.AreEqual(3, paths.Length);
+                for (int level = 0; level < paths.Length; level++)
+                    CollectionAssert.AreEqual(snapshots[level].working.normals, AssetDatabase.LoadAssetAtPath<Mesh>(paths[level]).normals);
+                Assert.AreSame(proxy, pipeline.Remeshed);
+            }
+            finally { AssetDatabase.DeleteAsset(folder); }
+        }
+
+        [UnityTest]
         public IEnumerator HigherLodChildRootIncludesItsSiblingsAndUsesOnlyLod0ForProxy()
         {
             using var tree = new Tree(); using var pipeline = new FoliageNormalsPipeline();
+            tree.root.transform.SetPositionAndRotation(new Vector3(100000, -90000, 85000), Quaternion.Euler(30, 45, 70));
+            tree.root.transform.localScale = new Vector3(0, 3, .1f);
             tree.leaves[1].transform.localPosition = Vector3.right * 20;
             var settings = Settings(tree.leaves[1]);
             var task = pipeline.Run(tree.leaves[1].gameObject, settings, FoliageNormalsPipeline.Stage.Capture);

@@ -81,6 +81,16 @@ namespace SashaRX.UnityMeshLab
 
     internal static class FbxStructureWrite
     {
+        internal static FbxStructurePlan CollisionPlan(Uv2DataAsset data)
+        {
+            var plan = new FbxStructurePlan();
+            plan.collisions.AddRange(SidecarStore.CollisionMeshes(data.collisionEntries));
+            foreach (var entry in data.collisionEntries)
+                if (entry != null && !string.IsNullOrEmpty(entry.meshGroupKey))
+                    plan.collisionSources[entry.meshGroupKey] = entry;
+            return plan;
+        }
+
         // ── Plan (Unity side, before anything is imported) ──
 
         /// <summary>
@@ -137,14 +147,9 @@ namespace SashaRX.UnityMeshLab
             plan.collisions.AddRange(SidecarStore.CollisionMeshes(fbxPath));
             foreach (var source in SidecarStore.CollisionSources(fbxPath))
                 plan.collisionSources[source.Key] = source.Value;
-            // Collision meshes Cleanup flagged (UVs or colours) are rewritten clean when the
-            // sidecar replaces them; any other is the rebuild's to strip.
-            var replaced = new HashSet<string>(plan.collisions.SelectMany(NodeNames), StringComparer.Ordinal);
-            var obsoleteKeys = ReplacedCollisionKeys(plan);
-            var flagged = FbxExport.CollisionMeshesWithSurfaceData(fbxPath)
-                .Where(n => !replaced.Contains(n) && !obsoleteKeys.Any(k => MeshNaming.IsCollisionOf(n, k))).ToList();
-            if (flagged.Count > 0)
-                plan.refusals.Add($"{string.Join(", ", flagged.Select(n => $"'{n}'"))} in '{file}' carry UVs or vertex colours that collision meshes should not have; the rebuild strips them");
+            // Existing collision nodes outside the requested edits stay in the document,
+            // including their surface channels. Only an explicit collision replacement
+            // or rebuild strips those channels; their presence must not block a UV save.
             return plan;
         }
 
@@ -956,10 +961,6 @@ namespace SashaRX.UnityMeshLab
                 RequireOwnedCollisionSubtree(child, key);
             }
         }
-
-        // The mesh nodes a collision entry writes.
-        static IEnumerable<string> NodeNames((string key, List<Mesh> meshes, bool convex) collision)
-            => IsSingle(collision) ? new[] { collision.key + "_COL" } : Enumerable.Range(0, collision.meshes.Count).Select(i => HullName(collision.key, i));
 
         static int WriteCollision(FbxScene scene, Reference r, (string key, List<Mesh> meshes, bool convex) collision, List<string> log)
         {

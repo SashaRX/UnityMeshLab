@@ -308,10 +308,9 @@ namespace SashaRX.UnityMeshLab
                             float entryHeight = lodLevel > 0 && lodLevel-1 < newLods.Count ? newLods[lodLevel-1].screenRelativeTransitionHeight : 1;
                             if (levelOptions.screenGuidedSelection)
                                 entryHeight = Mathf.Min(entryHeight,(float)levelOptions.screenObjectPixels/opts.smallParts.screenHeight);
-                            var scale = ctx.LodGroup.transform.lossyScale;
-                            float worldSize = ctx.LodGroup.size*Mathf.Max(Mathf.Abs(scale.x),Mathf.Max(Mathf.Abs(scale.y),Mathf.Abs(scale.z)));
+                            float worldSize = ctx.LodGroup.size;
                             partPlan = LodSmallParts.Select(analysis,opts.smallParts,lodLevel,entryHeight,
-                                entry.renderer ? entry.renderer.localToWorldMatrix : Matrix4x4.identity,worldSize);
+                                ctx.PreviewMatrix(entry.renderer ? entry.renderer.transform : null),worldSize);
                             if (partPlan.removed.Count > 0)
                             {
                                 retained = LodSmallParts.Retain(analysis,partPlan);
@@ -321,7 +320,7 @@ namespace SashaRX.UnityMeshLab
                                     try
                                     {
                                         accepted = LodSmallParts.ScreenSafe(srcMesh,retained.data.source,!levelOptions.skipColorValidation,
-                                            entry.renderer ? entry.renderer.localToWorldMatrix : Matrix4x4.identity,
+                                            ctx.PreviewMatrix(entry.renderer ? entry.renderer.transform : null),
                                             entryHeight*opts.smallParts.screenHeight/worldSize,
                                             () => UvProgress.CancelRequested || cancelled?.Invoke() == true);
                                     }

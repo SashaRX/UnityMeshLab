@@ -285,41 +285,43 @@ namespace SashaRX.UnityMeshLab
         /// <summary>
         /// Closest point on 2D triangle, returns barycentric coords and squared distance.
         /// </summary>
-        static float PointToTri2D(Vector2 p, Vector2 a, Vector2 b, Vector2 c,
+        internal static float PointToTri2D(Vector2 p, Vector2 a, Vector2 b, Vector2 c,
                                    out float u, out float v, out float w)
         {
-            Vector2 ab = b - a, ac = c - a, ap = p - a;
-            float d00 = Vector2.Dot(ab, ab), d01 = Vector2.Dot(ab, ac);
-            float d11 = Vector2.Dot(ac, ac), d20 = Vector2.Dot(ap, ab);
-            float d21 = Vector2.Dot(ap, ac);
-            float denom = d00 * d11 - d01 * d01;
-
-            if (Mathf.Abs(denom) < 1e-12f)
-            { u = 1f; v = 0f; w = 0f; return (p - a).sqrMagnitude; }
-
-            float bV = (d11 * d20 - d01 * d21) / denom;
-            float bW = (d00 * d21 - d01 * d20) / denom;
-            float bU = 1f - bV - bW;
-
-            if (bU >= 0f && bV >= 0f && bW >= 0f)
+            // The Gram determinant is area squared and a fixed epsilon collapsed
+            // valid small UV charts to vertex A. Cross products in double precision
+            // also avoid cancellation on long, thin triangles.
+            double abx = (double)b.x - a.x, aby = (double)b.y - a.y;
+            double acx = (double)c.x - a.x, acy = (double)c.y - a.y;
+            double apx = (double)p.x - a.x, apy = (double)p.y - a.y;
+            double det = abx * acy - aby * acx;
+            if (det != 0)
             {
-                u = bU; v = bV; w = bW;
-                Vector2 proj = a * u + b * v + c * w;
-                return (p - proj).sqrMagnitude;
+                double bv = (apx * acy - apy * acx) / det;
+                double bw = (abx * apy - aby * apx) / det;
+                double bu = 1 - bv - bw;
+                if (bu >= 0 && bv >= 0 && bw >= 0) {
+                    u = (float)bu; v = (float)bv; w = (float)bw;
+                    return 0;
+                }
             }
+            double best = SegmentDistance(p, a, b, out double t);
+            u = (float)(1 - t); v = (float)t; w = 0;
+            double distance = SegmentDistance(p, a, c, out t);
+            if (distance < best) { best = distance; u = (float)(1 - t); v = 0; w = (float)t; }
+            distance = SegmentDistance(p, b, c, out t);
+            if (distance < best) { best = distance; u = 0; v = (float)(1 - t); w = (float)t; }
+            return (float)best;
+        }
 
-            float best = float.MaxValue; u = 1; v = 0; w = 0;
-            { float t = Mathf.Clamp01(Vector2.Dot(p - a, ab) / Mathf.Max(d00, 1e-12f));
-              float d = (p - (a + ab * t)).sqrMagnitude;
-              if (d < best) { best = d; u = 1f - t; v = t; w = 0f; } }
-            { float t = Mathf.Clamp01(Vector2.Dot(p - a, ac) / Mathf.Max(d11, 1e-12f));
-              float d = (p - (a + ac * t)).sqrMagnitude;
-              if (d < best) { best = d; u = 1f - t; v = 0f; w = t; } }
-            { Vector2 bc = c - b; float bcL = Vector2.Dot(bc, bc);
-              float t = Mathf.Clamp01(Vector2.Dot(p - b, bc) / Mathf.Max(bcL, 1e-12f));
-              float d = (p - (b + bc * t)).sqrMagnitude;
-              if (d < best) { best = d; u = 0f; v = 1f - t; w = t; } }
-            return best;
+        static double SegmentDistance(Vector2 p, Vector2 a, Vector2 b, out double t)
+        {
+            double dx = (double)b.x - a.x, dy = (double)b.y - a.y;
+            double px = (double)p.x - a.x, py = (double)p.y - a.y;
+            double length = dx * dx + dy * dy;
+            t = length > 0 ? System.Math.Clamp((px * dx + py * dy) / length, 0, 1) : 0;
+            px -= t * dx; py -= t * dy;
+            return px * px + py * py;
         }
     }
 }

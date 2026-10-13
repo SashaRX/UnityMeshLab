@@ -120,6 +120,20 @@ namespace SashaRX.UnityMeshLab.Tests
         static int Lit(Color[] pixels) { int n = 0; foreach (var c in pixels) if (c.r > .01f) n++; return n; }
 
         [UnityTest]
+        public IEnumerator XRayLineRemainsVisibleBehindTheModel()
+        {
+            using var render = new LineRender(1);
+            yield return null;
+            var hidden = render.Draw(new Vector3(-.3f, 0, 2), new Vector3(.3f, 0, 2), 2, true);
+            Assert.AreEqual(0, Lit(hidden));
+            yield return null;
+            var shown = render.Draw(new Vector3(-.3f, 0, 2), new Vector3(.3f, 0, 2), 2, true, true);
+            Assert.Greater(Lit(shown), 50, "X-ray uses an independent depth state.");
+            yield return null;
+            Assert.AreEqual(0, Lit(render.Draw(new Vector3(-.3f, 0, 2), new Vector3(.3f, 0, 2), 2, true)), "Returning to solid depth must hide the line again.");
+        }
+
+        [UnityTest]
         public IEnumerator SrpPreviewDoesNotChangeTheAssetOrRequireAMultisampledResolve()
         {
             RequireGraphics();
@@ -187,13 +201,14 @@ namespace SashaRX.UnityMeshLab.Tests
                 material = new Material(shader); material.SetVector("_ViewportSize", new Vector4(128, 128, 0, 0));
                 solid = new Material(Shader.Find("Hidden/MeshLab/RemeshPreview")); solid.SetColor("_Color", Color.black); solid.SetFloat("_Lit", 0);
             }
-            internal Color[] Draw(Vector3 a, Vector3 b, float width, bool occlude = false)
+            internal Color[] Draw(Vector3 a, Vector3 b, float width, bool occlude = false, bool xRay = false)
             {
                 var mesh = PreviewLines.Build(new[] { a, b }, new[] { 0, 1 }, null).Upload();
                 var previous = RenderTexture.active; Mesh plane = null;
                 GameObject lineObject = null, planeObject = null;
                 try {
                     material.SetFloat("_LineWidth", width);
+                    material.SetFloat("_ZTest", (float)(xRay ? CompareFunction.Always : CompareFunction.LessEqual));
                     lineObject = RenderObject(mesh, material);
                     if (occlude) {
                         plane = new Mesh { vertices = new[] { new Vector3(-2,-2,1), new Vector3(2,-2,1), new Vector3(-2,2,1), new Vector3(2,2,1) },

@@ -20,9 +20,13 @@ in SHIMS with the reason. Keep that list short: every entry is an API the real
 Unity build sees and this check cannot.
 
 The Unity Test Framework is a separate package, absent from Unity3D.SDK. Its
-UnityTest marker and LogAssert.Expect signature are stubbed only in the generated
-compile-check sources; coroutine execution and expected logs are verified by the
+UnityTest marker and LogAssert.Expect signatures are stubbed only in the generated
+compile-check sources; coroutine execution and log assertions are verified by the
 real Unity Test Runner.
+
+Mesh.GetVertexBufferStride/GetVertexAttributeStream/GetVertexAttributeOffset are
+also absent from the reference Mesh type. Generated extension signatures bridge
+only that API gap; raw vertex layout and byte preservation require real Unity tests.
 
 Usage:
   python3 Tools~/compile_check.py                 # build both define variants
@@ -69,6 +73,15 @@ namespace SashaRX.UnityMeshLab
 {
     internal struct AssetEditingScopeShim : System.IDisposable { public void Dispose() { } }
 }
+namespace UnityEngine
+{
+    public static class MeshLayoutApiShim
+    {
+        public static int GetVertexBufferStride(this Mesh mesh, int stream) => throw new System.NotSupportedException();
+        public static int GetVertexAttributeStream(this Mesh mesh, UnityEngine.Rendering.VertexAttribute attribute) => throw new System.NotSupportedException();
+        public static int GetVertexAttributeOffset(this Mesh mesh, UnityEngine.Rendering.VertexAttribute attribute) => throw new System.NotSupportedException();
+    }
+}
 namespace UnityEngine.Networking
 {
     internal struct DownloadedTextureParams
@@ -90,6 +103,7 @@ namespace UnityEngine.TestTools
     public sealed class UnityTestAttribute : System.Attribute { }
     public static class LogAssert
     {
+        public static void Expect(UnityEngine.LogType type, string message) { }
         public static void Expect(UnityEngine.LogType type, System.Text.RegularExpressions.Regex message) { }
     }
 }
@@ -297,6 +311,39 @@ namespace Autodesk.Fbx
         public int GetPolygonSize(int polygon) => 0;
         public int GetPolygonVertex(int polygon, int position) => 0;
         public int GetDeformerCount() => 0;
+        public int AddDeformer(FbxDeformer deformer) => 0;
+    }
+    public class FbxSkeleton : FbxNodeAttribute {
+        public enum EType { eRoot, eLimb, eLimbNode, eEffector }
+        public static FbxSkeleton Create(FbxObject container, string name) => new FbxSkeleton();
+        public void SetSkeletonType(EType type) { }
+    }
+    public class FbxDeformer : FbxObject { }
+    public class FbxSkin : FbxDeformer {
+        public static FbxSkin Create(FbxObject container, string name) => new FbxSkin();
+        public bool AddCluster(FbxCluster cluster) => true;
+    }
+    public class FbxCluster : FbxObject {
+        public enum ELinkMode { eNormalize, eAdditive, eTotalOne }
+        public static FbxCluster Create(FbxObject container, string name) => new FbxCluster();
+        public void SetLink(FbxNode node) { }
+        public void SetLinkMode(ELinkMode mode) { }
+        public void SetTransformMatrix(FbxAMatrix matrix) { }
+        public void SetTransformLinkMatrix(FbxAMatrix matrix) { }
+        public void AddControlPointIndex(int index, double weight) { }
+    }
+    public class FbxShape : FbxLayerContainer {
+        public static FbxShape Create(FbxObject container, string name) => new FbxShape();
+        public void InitControlPoints(int count) { }
+        public void SetControlPointAt(FbxVector4 value, int index) { }
+    }
+    public class FbxBlendShape : FbxDeformer {
+        public static FbxBlendShape Create(FbxObject container, string name) => new FbxBlendShape();
+        public bool AddBlendShapeChannel(FbxBlendShapeChannel channel) => true;
+    }
+    public class FbxBlendShapeChannel : FbxObject {
+        public static FbxBlendShapeChannel Create(FbxObject container, string name) => new FbxBlendShapeChannel();
+        public bool AddTargetShape(FbxShape shape) => true;
     }
     public struct FbxVector2 { public double X, Y; public FbxVector2(double x, double y) { X = x; Y = y; } }
     public struct FbxColor {

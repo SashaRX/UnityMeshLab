@@ -47,7 +47,7 @@ namespace SashaRX.UnityMeshLab
 
         // The meshes a variant paints: every mesh variant of an included, non-collision
         // entry (originalMesh, repackedMesh, transferredMesh, fbxMesh), each once.
-        static List<Mesh> PaintableMeshes(IEnumerable<MeshEntry> entries)
+        internal static List<Mesh> PaintableMeshes(IEnumerable<MeshEntry> entries)
         {
             var meshes = new List<Mesh>();
             if (entries == null) return meshes;

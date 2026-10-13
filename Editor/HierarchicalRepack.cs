@@ -873,18 +873,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             float thresholdCos = Mathf.Cos(thresholdDeg * Mathf.Deg2Rad);
-            var parent = new int[n];
-            for (int i = 0; i < n; i++) parent[i] = i;
-            int Find(int x)
-            {
-                while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
-                return x;
-            }
-            void Union(int a, int b)
-            {
-                int ra = Find(a), rb = Find(b);
-                if (ra != rb) parent[ra] = rb;
-            }
+            var components = new DisjointSet(n);
             foreach (var kv in edgeFaces)
             {
                 var list = kv.Value;
@@ -893,7 +882,7 @@ namespace SashaRX.UnityMeshLab
                     for (int j = i + 1; j < list.Count; j++)
                     {
                         float d = Vector3.Dot(faces[list[i]].normal, faces[list[j]].normal);
-                        if (d >= thresholdCos) Union(list[i], list[j]);
+                        if (d >= thresholdCos) components.Union(list[i], list[j]);
                     }
             }
 
@@ -914,7 +903,7 @@ namespace SashaRX.UnityMeshLab
                     faceToShellOut[f] = -1;
                     continue;
                 }
-                int r = Find(f);
+                int r = components.Find(f);
                 if (!rootToShell.TryGetValue(r, out int si))
                 {
                     si = faces_.Count;
@@ -1015,13 +1004,7 @@ namespace SashaRX.UnityMeshLab
             if (adjPairs.Count == 0) return shells;
 
             // Union-find over shells with angular threshold.
-            var parent = new int[shells.Length];
-            for (int i = 0; i < shells.Length; i++) parent[i] = i;
-            int Find(int x)
-            {
-                while (parent[x] != x) { parent[x] = parent[parent[x]]; x = parent[x]; }
-                return x;
-            }
+            var joined = new DisjointSet(shells.Length);
             float cosThr = Mathf.Cos(mergeAngleDeg * Mathf.Deg2Rad);
             foreach (long pair in adjPairs)
             {
@@ -1029,11 +1012,7 @@ namespace SashaRX.UnityMeshLab
                 int s2 = (int)(pair & 0xFFFFFFFFL);
                 float dot = Vector3.Dot(shells[s1].dominantNormal,
                                          shells[s2].dominantNormal);
-                if (dot >= cosThr)
-                {
-                    int r1 = Find(s1), r2 = Find(s2);
-                    if (r1 != r2) parent[r1] = r2;
-                }
+                if (dot >= cosThr) joined.Union(s1, s2);
             }
 
             // Compact: build new shell list, one entry per unique root.
@@ -1042,7 +1021,7 @@ namespace SashaRX.UnityMeshLab
             int[] oldToNew = new int[shells.Length];
             for (int i = 0; i < shells.Length; i++)
             {
-                int r = Find(i);
+                int r = joined.Find(i);
                 if (!rootToNew.TryGetValue(r, out int ni))
                 {
                     ni = newFaceLists.Count;

@@ -1,5 +1,9 @@
 # Transfer Modes Benchmark — Protocol & Metrics
 
+For autonomous algorithm comparisons, imported FBX preparation and a portable
+capture corpus, use [TRANSFER_COMPARISON.md](TRANSFER_COMPARISON.md). The protocol
+below describes the older packing/settings sweep.
+
 > See `EXPERIMENTS.md` for the experiments log (what we tried and why).
 > This doc is about **how to measure** each run reproducibly.
 

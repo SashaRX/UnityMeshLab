@@ -205,18 +205,10 @@ namespace SashaRX.UnityMeshLab
             int a = indices[face * 3], b = indices[face * 3 + 1], c = indices[face * 3 + 2];
             if (!InRange(a, positions.Length) || !InRange(b, positions.Length) || !InRange(c, positions.Length)) return false;
             var pa = positions[a]; var pb = positions[b]; var pc = positions[c];
-            if (!Finite(pa) || !Finite(pb) || !Finite(pc) || !HasArea(pa, pb, pc)) return false;
+            if (!Finite(pa) || !Finite(pb) || !Finite(pc) || !MeshGeometry.HasArea(pa, pb, pc)) return false;
             key = FaceKey.Create(pa, pb, pc, out rotation);
             return true;
         }
 
-        // Double intermediates avoid float underflow/overflow and an absolute scale cutoff.
-        static bool HasArea(Vector3 a, Vector3 b, Vector3 c)
-        {
-            double abx = (double)b.x - a.x, aby = (double)b.y - a.y, abz = (double)b.z - a.z;
-            double acx = (double)c.x - a.x, acy = (double)c.y - a.y, acz = (double)c.z - a.z;
-            double x = aby * acz - abz * acy, y = abz * acx - abx * acz, z = abx * acy - aby * acx;
-            return x * x + y * y + z * z > 0;
-        }
     }
 }

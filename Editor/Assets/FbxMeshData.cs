@@ -152,20 +152,21 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < face.Length; i++)
                 for (int j = i + 1; j < face.Length; j++)
                     if (pointOfVertex[face[i]] == pointOfVertex[face[j]]) return true;
-            // Newell's normal is twice the area; against the longest edge it is the face's
-            // thickness, here a millionth of its length or less.
-            double nx = 0, ny = 0, nz = 0, longest = 0;
+            // Remove only zero-area faces. Thin authored faces must survive a UV
+            // save. Rebase Newell's sum to the first point to avoid cancellation.
+            int origin = face[0] * 3;
+            double ox = positions[origin], oy = positions[origin + 1], oz = positions[origin + 2];
+            double nx = 0, ny = 0, nz = 0;
             for (int i = 0; i < face.Length; i++)
             {
                 int a = face[i] * 3, b = face[(i + 1) % face.Length] * 3;
-                double ax = positions[a], ay = positions[a + 1], az = positions[a + 2];
-                double bx = positions[b], by = positions[b + 1], bz = positions[b + 2];
+                double ax = positions[a] - ox, ay = positions[a + 1] - oy, az = positions[a + 2] - oz;
+                double bx = positions[b] - ox, by = positions[b + 1] - oy, bz = positions[b + 2] - oz;
                 nx += (ay - by) * (az + bz);
                 ny += (az - bz) * (ax + bx);
                 nz += (ax - bx) * (ay + by);
-                longest = Math.Max(longest, (bx - ax) * (bx - ax) + (by - ay) * (by - ay) + (bz - az) * (bz - az));
             }
-            return nx * nx + ny * ny + nz * nz <= 1e-12 * longest * longest;
+            return nx == 0 && ny == 0 && nz == 0;
         }
 
         // Tangent and binormal per corner. Unity keeps a tangent and the bitangent's sign; the

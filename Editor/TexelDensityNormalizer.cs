@@ -22,6 +22,30 @@ namespace SashaRX.UnityMeshLab
 {
     internal static class TexelDensityNormalizer
     {
+        /// <summary>One coverage budget and density target for every mesh sharing an atlas.</summary>
+        internal static int NormalizeBatch(float[][] uvFlat, List<UvShell>[] shells,
+            int[][] tris, Vector3[][] positions, float targetCoverage = 0.75f)
+        {
+            double totalArea3D = 0, totalAreaUV = 0;
+            for (int m = 0; m < uvFlat.Length; ++m)
+            {
+                MeasureAreas(uvFlat[m], shells[m], tris[m], positions[m],
+                    out _, out _, out double area3D, out double areaUV);
+                totalArea3D += area3D;
+                totalAreaUV += areaUV;
+            }
+            if (totalArea3D < 1e-12 || totalAreaUV < 1e-12) return 0;
+            double density = (targetCoverage > 0f && targetCoverage < 1f
+                ? targetCoverage : totalAreaUV) / totalArea3D;
+            int modified = 0;
+            for (int m = 0; m < uvFlat.Length; ++m)
+                modified += Normalize(uvFlat[m], shells[m], tris[m], positions[m],
+                    targetCoverage: 0f, sharedDensity: density);
+            UvtLog.Info(UvtLog.Category.Repack,
+                $"[Density:batch] meshes={uvFlat.Length}, area3D={totalArea3D:G6}, target={density:G6}, coverageBudget={targetCoverage:G3}");
+            return modified;
+        }
+
         /// <summary>
         /// Per-shell uniform-scale density correction. Each shell is rescaled
         /// around its UV centroid so that UV-area / 3D-area is constant across
@@ -38,6 +62,8 @@ namespace SashaRX.UnityMeshLab
         /// <param name="targetCoverage">After per-shell density normalisation, total UV area is rescaled
         /// to this fraction of [0,1]² so xatlas doesn't overflow the requested atlas resolution due to
         /// bin-packing slack. Default 0.75. ≤0 or ≥1 disables the budget step.</param>
+        /// <param name="sharedDensity">Positive UV-area / 3D-area target supplied by a shared atlas.
+        /// Overrides the per-mesh target and coverage budget. Zero keeps single-mesh behaviour.</param>
         /// <returns>Number of shells modified by the density pass.</returns>
         internal static int Normalize(
             float[] uvFlat,
@@ -47,7 +73,8 @@ namespace SashaRX.UnityMeshLab
             float scaleMin = 0.1f,
             float scaleMax = 10f,
             bool medianDensity = false,
-            float targetCoverage = 0.75f)
+            float targetCoverage = 0.75f,
+            double sharedDensity = 0d)
         {
             if (uvFlat == null || shells == null || shells.Count == 0) return 0;
             if (tris == null || positions == null) return 0;
@@ -56,51 +83,24 @@ namespace SashaRX.UnityMeshLab
 
             int n = shells.Count;
             int uvLen = uvFlat.Length;
-            int posLen = positions.Length;
             int modifiedDensity = 0;
 
             // ── Density correction ──
             // Measure UV area + 3D area per shell, then apply per-shell uniform
             // scale so UV-area / 3D-area is constant across all shells,
             // modulated by the coverage budget.
-            var area3DPerShell = new double[n];
-            var areaUVPerShell = new double[n];
-            double sumArea3D = 0.0;
-            double sumAreaUV = 0.0;
-
-            for (int si = 0; si < n; si++)
-            {
-                var shell = shells[si];
-                if (shell.faceIndices == null) continue;
-                double a3 = 0.0, au = 0.0;
-                foreach (int f in shell.faceIndices)
-                {
-                    int t = f * 3;
-                    if ((uint)(t + 2) >= (uint)tris.Length) continue;
-                    int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
-                    if ((uint)i0 >= (uint)posLen || (uint)i1 >= (uint)posLen || (uint)i2 >= (uint)posLen) continue;
-                    Vector3 p0 = positions[i0], p1 = positions[i1], p2 = positions[i2];
-                    a3 += Vector3.Cross(p1 - p0, p2 - p0).magnitude * 0.5;
-
-                    int u0 = i0 * 2, u1 = i1 * 2, u2 = i2 * 2;
-                    if ((uint)(u0 + 1) >= (uint)uvLen ||
-                        (uint)(u1 + 1) >= (uint)uvLen ||
-                        (uint)(u2 + 1) >= (uint)uvLen) continue;
-                    double ax = uvFlat[u0],     ay = uvFlat[u0 + 1];
-                    double bx = uvFlat[u1],     by = uvFlat[u1 + 1];
-                    double cx = uvFlat[u2],     cy = uvFlat[u2 + 1];
-                    au += Math.Abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) * 0.5;
-                }
-                area3DPerShell[si] = a3;
-                areaUVPerShell[si] = au;
-                sumArea3D += a3;
-                sumAreaUV += au;
-            }
+            MeasureAreas(uvFlat, shells, tris, positions, out var area3DPerShell,
+                out var areaUVPerShell, out double sumArea3D, out double sumAreaUV);
 
             if (sumArea3D < 1e-12 || sumAreaUV < 1e-12) return 0;
 
             double densityTarget;
-            if (medianDensity)
+            bool hasSharedDensity = sharedDensity > 0d && !double.IsInfinity(sharedDensity);
+            if (hasSharedDensity)
+            {
+                densityTarget = sharedDensity;
+            }
+            else if (medianDensity)
             {
                 var densities = new List<double>(n);
                 for (int si = 0; si < n; si++)
@@ -122,7 +122,7 @@ namespace SashaRX.UnityMeshLab
 
             // Coverage budget: scale density target so total post-normalize UV
             // area equals targetCoverage fraction of [0,1]².
-            if (targetCoverage > 0f && targetCoverage < 1f && sumArea3D > 1e-12)
+            if (!hasSharedDensity && targetCoverage > 0f && targetCoverage < 1f && sumArea3D > 1e-12)
                 densityTarget = targetCoverage / sumArea3D;
 
             // ── Diagnostics: pre-normalize density distribution ──
@@ -227,6 +227,42 @@ namespace SashaRX.UnityMeshLab
                 $"scale: min={scaleMinSeen:F3} max={scaleMaxSeen:F3} spread={scaleSpread:F2}x");
 
             return modifiedDensity;
+        }
+
+        static void MeasureAreas(float[] uvFlat, List<UvShell> shells, int[] tris, Vector3[] positions,
+            out double[] area3D, out double[] areaUV, out double sum3D, out double sumUV)
+        {
+            area3D = new double[shells.Count];
+            areaUV = new double[shells.Count];
+            sum3D = 0;
+            sumUV = 0;
+            for (int si = 0; si < shells.Count; ++si)
+            {
+                var shell = shells[si];
+                if (shell.faceIndices == null) continue;
+                foreach (int f in shell.faceIndices)
+                    MeasureFaceAreas(f, uvFlat, tris, positions, ref area3D[si], ref areaUV[si]);
+                sum3D += area3D[si];
+                sumUV += areaUV[si];
+            }
+        }
+
+        static void MeasureFaceAreas(int f, float[] uvFlat, int[] tris, Vector3[] positions,
+            ref double area3D, ref double areaUV)
+        {
+            int t = f * 3;
+            if ((uint)(t + 2) >= (uint)tris.Length) return;
+            int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
+            if ((uint)i0 >= (uint)positions.Length || (uint)i1 >= (uint)positions.Length ||
+                (uint)i2 >= (uint)positions.Length) return;
+            area3D += Vector3.Cross(positions[i1] - positions[i0], positions[i2] - positions[i0]).magnitude * 0.5;
+            int u0 = i0 * 2, u1 = i1 * 2, u2 = i2 * 2;
+            if ((uint)(u0 + 1) >= (uint)uvFlat.Length || (uint)(u1 + 1) >= (uint)uvFlat.Length ||
+                (uint)(u2 + 1) >= (uint)uvFlat.Length) return;
+            double ax = uvFlat[u0], ay = uvFlat[u0 + 1];
+            double bx = uvFlat[u1], by = uvFlat[u1 + 1];
+            double cx = uvFlat[u2], cy = uvFlat[u2 + 1];
+            areaUV += Math.Abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) * 0.5;
         }
     }
 }

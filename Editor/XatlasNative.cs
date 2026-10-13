@@ -1,6 +1,7 @@
 // XatlasNative.cs — P/Invoke declarations for xatlas-unity bridge
 // Place in Assets/Editor/
 
+using System;
 using System.Runtime.InteropServices;
 
 namespace SashaRX.UnityMeshLab
@@ -8,6 +9,13 @@ namespace SashaRX.UnityMeshLab
     public static class XatlasNative
     {
         const string DLL = "xatlas-unity";
+
+        // Resolve without executing the packer or touching its active atlas.
+        internal static void CheckPreserveShapeAvailable()
+        {
+            Action<int, uint, float, uint, int, int, int, int, int> pack = xatlasPackChartsPreserveShape;
+            Marshal.Prelink(pack.Method);
+        }
 
         // ── Lifecycle ──
         [DllImport(DLL)] public static extern void xatlasCreate();
@@ -63,6 +71,10 @@ namespace SashaRX.UnityMeshLab
             float[] outUV,
             uint[] outChartIndex,
             int    maxVerts);
+
+        [DllImport(DLL)] internal static extern void xatlasPackChartsPreserveShape(
+            int maxChartSize, uint padding, float texelsPerUnit, uint resolution,
+            int bilinear, int blockAlign, int bruteForce, int rotateCharts, int rotateChartsToAxis);
 
         [DllImport(DLL)] public static extern int xatlasGetOutputIndices(
             int    meshIndex,

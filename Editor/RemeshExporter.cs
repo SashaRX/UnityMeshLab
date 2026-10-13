@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -14,7 +15,8 @@ namespace SashaRX.UnityMeshLab
     /// per node, the meshes and a prefab. A single-node (weld) result ships as an FBX
     /// when the FBX exporter package is present, otherwise as a mesh asset; a
     /// keep-hierarchy result is always mesh assets under a rebuilt root prefab.
-    /// Source assets are never written; a failed export deletes the folder again.
+    /// The shared footer can also replace a source FBX with the complete baked model.
+    /// A failure before the file commits deletes the new output folder again.
     /// </summary>
     internal static class RemeshExporter
     {
@@ -36,6 +38,11 @@ namespace SashaRX.UnityMeshLab
                     if (filter && filter.sharedMesh) assetPath = AssetDatabase.GetAssetPath(filter.sharedMesh);
                 }
             }
+            return ResolveDefaultFolder(assetPath);
+        }
+
+        internal static string ResolveDefaultFolder(string assetPath)
+        {
             if (string.IsNullOrEmpty(assetPath)) return null;
             string dir = Path.GetDirectoryName(assetPath);
             if (string.IsNullOrEmpty(dir)) return null;
@@ -70,121 +77,181 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>Exports the baked result into a new folder under parentFolder and
         /// returns the status line. Throws after rolling the folder back on failure.</summary>
-        public static string Export(RemeshPipeline pipeline, RemeshSettings settings, string parentFolder)
+        public static string Export(RemeshPipeline pipeline, RemeshSettings settings, string parentFolder, string outputFbxPath = null, bool meshAssetsOnly = false, bool fbxModel = false)
         {
             if (pipeline.Nodes.Count == 0 || !pipeline.Has(RemeshPipeline.Stage.Bake)) throw new InvalidOperationException("Nothing to save: run the bake first.");
             string clean = SafeName(pipeline.ResultName, "Remesh");
             string folder = AssetDatabase.GenerateUniqueAssetPath(parentFolder + "/" + clean + "_Remesh");
-            bool createdFolder = false;
+            bool createdFolder = false, sourceCommitted = false;
+            bool sourceOverwrite = !string.IsNullOrEmpty(outputFbxPath) && System.IO.File.Exists(outputFbxPath);
             var temporary = new List<Object>();
             try {
-                // Beauty bakes fold the lighting into the BaseColor; the result shades
-                // with the pipeline's Unlit (Built-in Unlit/Texture, URP Unlit) instead
-                // of Standard / URP Lit.
-                bool unlit = pipeline.Primary.maps.beauty;
-                var shader = ResolveShader(unlit, out bool urp);
+                var model = new SavedModel(pipeline, settings, sourceOverwrite);
                 string guid = AssetDatabase.CreateFolder(parentFolder, Path.GetFileName(folder));
                 if (string.IsNullOrEmpty(guid)) throw new IOException("Could not create " + folder + ".");
                 createdFolder = true;
                 folder = AssetDatabase.GUIDToAssetPath(guid);
 
-                bool hierarchy = pipeline.IsHierarchy;
-                var nodes = pipeline.Nodes;
-                var names = UniqueNames(nodes, hierarchy);
-                // Maps: write + import every file in one batch, then configure the
-                // importers in a second batch — imports are deferred until the first
-                // scope closes, so an importer lookup inside it would come back null.
-                var paths = new string[nodes.Count][];
-                using (new AssetDatabase.AssetEditingScope())
-                    for (int i = 0; i < nodes.Count; ++i)
-                        paths[i] = WriteMaps(folder, hierarchy ? names[i] + "_" : "", nodes[i].maps);
-                using (new AssetDatabase.AssetEditingScope())
-                    for (int i = 0; i < nodes.Count; ++i) ConfigureMaps(paths[i], nodes[i].maps.size);
-
-                // Materials, meshes and the object tree. The result meshes live in their
-                // capture space; the weld bakes the captured world linear matrix into
-                // vertices when normalization is on (real size at identity), a hierarchy keeps the
-                // root scale on the prefab root (no single vertex space to bake it into).
-                bool normalize = settings.normalizeSize && !hierarchy;
-                if (settings.normalizeSize && hierarchy)
-                    UvtLog.Warn("[Remesh export] Keep-hierarchy saves keep the source root's scale on the prefab root; 'Normalize saved transform' applies to the single-mesh weld only.");
-                var root = new GameObject(clean + "_LOD0");
-                temporary.Add(root);
-                root.transform.localScale = normalize ? Vector3.one : pipeline.RootScale;
-                root.transform.localRotation = normalize ? Quaternion.identity : pipeline.RootRotation;
-                var materials = new Material[nodes.Count];
-                var meshes = new Mesh[nodes.Count];
-                bool twoSidedWarned = false;
-                for (int i = 0; i < nodes.Count; ++i) {
-                    var node = nodes[i];
-                    materials[i] = CreateMaterial(shader, urp, node.maps.beauty, names[i] + "_Remesh", paths[i]);
-                    // A source that renders both sides keeps one sheet in the result; the
-                    // material renders both sides of it. URP Lit/Unlit expose the cull mode;
-                    // Standard and Unlit/Texture do not, so the user is told once.
-                    if (node.twoSided) {
-                        if (materials[i].HasProperty("_Cull")) { materials[i].SetFloat("_Cull", (float)CullMode.Off); materials[i].doubleSidedGI = true; }
-                        else if (!twoSidedWarned) {
-                            twoSidedWarned = true;
-                            UvtLog.Warn("[Remesh export] The source renders both sides, but " + shader.name + " has no two-sided mode; assign a two-sided shader to the result material or its back faces will be culled.");
-                        }
-                    }
-                    temporary.Add(materials[i]);
-                    meshes[i] = Object.Instantiate(node.mesh);
-                    meshes[i].name = names[i] + "_LOD0"; meshes[i].hideFlags = HideFlags.None;
-                    temporary.Add(meshes[i]);
-                    if (normalize) {
-                        var linear = node.spaceToWorld;
-                        linear.SetColumn(3, new Vector4(0, 0, 0, 1));
-                        MeshTransform.BakeMatrix(meshes[i], linear);
-                    }
-                    var go = hierarchy ? new GameObject(names[i]) : root;
-                    go.AddComponent<MeshFilter>().sharedMesh = meshes[i];
-                    go.AddComponent<MeshRenderer>().sharedMaterial = materials[i];
-                    if (hierarchy) {
-                        go.transform.localPosition = node.localPosition;
-                        go.transform.localRotation = node.localRotation;
-                        go.transform.localScale = node.localScale;
-                        go.transform.SetParent(root.transform, false);
-                    }
-                }
-
-                string prefabPath = folder + "/" + clean + ".prefab";
-                using (new AssetDatabase.AssetEditingScope())
-                    for (int i = 0; i < nodes.Count; ++i)
-                        AssetDatabase.CreateAsset(materials[i], folder + "/" + names[i] + ".mat");
-                Object ping;
-#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-                if (!hierarchy) {
-                    ping = ExportFbx(folder + "/" + clean + ".fbx", root, materials[0], prefabPath, normalize);
-                }
-                else
-#endif
-                {
-                    using (new AssetDatabase.AssetEditingScope())
-                        for (int i = 0; i < nodes.Count; ++i)
-                            AssetDatabase.CreateAsset(meshes[i], folder + "/" + names[i] + "_LOD0.asset");
-                    PrefabUtility.SaveAsPrefabAsset(root, prefabPath, out bool success);
-                    if (!success) throw new IOException("Prefab save failed.");
-                    ping = AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
-                }
+                var names = ExportNames(pipeline.Nodes, model.hierarchy, sourceOverwrite, outputFbxPath);
+                var paths = WriteNodeMaps(folder, pipeline.Nodes, names, model.hierarchy);
+                BuildResultModel(model, pipeline, settings, names, paths, sourceOverwrite, temporary);
+                var ping = WriteResultModel(model, folder, clean, names, outputFbxPath, meshAssetsOnly, fbxModel,
+                    () => sourceCommitted = sourceOverwrite);
                 AssetDatabase.SaveAssets();
                 EditorGUIUtility.PingObject(ping);
-                string status = (hierarchy ? $"Saved: {folder} ({nodes.Count} node(s))" : "Saved: " + folder) +
-                    (twoSidedWarned ? ". Two-sided source: assign a two-sided shader (see Console)." : pipeline.ResultTwoSided ? ". Material renders both sides." : "");
+                string status = ExportStatus(pipeline, folder, model);
                 UvtLog.Info("[Remesh export] " + status);
                 return status;
             }
             catch (Exception e) {
-                if (createdFolder && AssetDatabase.IsValidFolder(folder)) AssetDatabase.DeleteAsset(folder);
-                UvtLog.Error("[Remesh export] " + e);
+                ReportFailure(folder, createdFolder, sourceCommitted, e);
                 throw;
             }
             finally {
-                // Everything that became an asset is owned by the AssetDatabase now; the
-                // rest (the scene-less object tree, and all of it on failure) goes.
-                foreach (var o in temporary)
-                    if (o && !AssetDatabase.Contains(o)) Object.DestroyImmediate(o);
+                DestroyTemporary(temporary);
             }
+        }
+
+        sealed class SavedModel
+        {
+            public readonly Shader shader;
+            public readonly bool urp, hierarchy, normalize, sourceOverwrite;
+            public readonly Material[] materials;
+            public readonly Mesh[] meshes;
+            public GameObject root;
+            public bool twoSidedWarned;
+
+            public SavedModel(RemeshPipeline pipeline, RemeshSettings settings, bool sourceOverwrite)
+            {
+                this.sourceOverwrite = sourceOverwrite;
+                hierarchy = pipeline.IsHierarchy;
+                normalize = settings.normalizeSize && !hierarchy && !sourceOverwrite;
+                shader = ResolveShader(pipeline.Primary.maps.beauty, out urp);
+                materials = new Material[pipeline.Nodes.Count];
+                meshes = new Mesh[pipeline.Nodes.Count];
+            }
+        }
+
+        static string[] ExportNames(IReadOnlyList<RemeshPipeline.Node> nodes, bool hierarchy, bool sourceOverwrite, string outputFbxPath)
+        {
+            var names = UniqueNames(nodes, hierarchy);
+            if (!sourceOverwrite || nodes.Count != 1) return names;
+            // Preserve the sub-asset file ID of a single-mesh FBX overwrite.
+            var importedMeshes = new List<Mesh>();
+            foreach (var asset in AssetDatabase.LoadAllAssetsAtPath(outputFbxPath))
+                if (asset is Mesh mesh) importedMeshes.Add(mesh);
+            if (importedMeshes.Count == 1) names[0] = importedMeshes[0].name;
+            return names;
+        }
+
+        static string[][] WriteNodeMaps(string folder, IReadOnlyList<RemeshPipeline.Node> nodes, string[] names, bool hierarchy)
+        {
+            // Close the write/import batch before looking up and configuring importers.
+            var paths = new string[nodes.Count][];
+            using (new AssetDatabase.AssetEditingScope())
+                for (int i = 0; i < nodes.Count; ++i)
+                    paths[i] = WriteMaps(folder, hierarchy ? names[i] + "_" : "", nodes[i].maps);
+            using (new AssetDatabase.AssetEditingScope())
+                for (int i = 0; i < nodes.Count; ++i) ConfigureMaps(paths[i], nodes[i].maps.size);
+            return paths;
+        }
+
+        static void BuildResultModel(SavedModel model, RemeshPipeline pipeline, RemeshSettings settings,
+            string[] names, string[][] paths, bool sourceOverwrite, List<Object> temporary)
+        {
+            if (settings.normalizeSize && model.hierarchy)
+                UvtLog.Warn("[Remesh export] Keep-hierarchy saves keep the source root's scale on the prefab root; 'Normalize saved transform' applies to the single-mesh weld only.");
+            string clean = SafeName(pipeline.ResultName, "Remesh");
+            model.root = new GameObject(sourceOverwrite && !model.hierarchy ? names[0] : clean + "_LOD0");
+            temporary.Add(model.root);
+            model.root.transform.localScale = model.normalize || sourceOverwrite ? Vector3.one : pipeline.RootScale;
+            model.root.transform.localRotation = model.normalize || sourceOverwrite ? Quaternion.identity : pipeline.RootRotation;
+            for (int i = 0; i < pipeline.Nodes.Count; ++i)
+                CreateNodeAssets(model, pipeline.Nodes[i], i, names[i], paths[i], sourceOverwrite, temporary);
+        }
+
+        static void CreateNodeAssets(SavedModel model, RemeshPipeline.Node node, int index, string name,
+            string[] paths, bool sourceOverwrite, List<Object> temporary)
+        {
+            var material = CreateMaterial(model.shader, model.urp, node.maps.beauty, name + "_Remesh", paths);
+            model.materials[index] = material;
+            temporary.Add(material);
+            ConfigureTwoSidedMaterial(model, node, material);
+            var mesh = Object.Instantiate(node.mesh);
+            model.meshes[index] = mesh;
+            mesh.name = sourceOverwrite ? name : name + "_LOD0";
+            mesh.hideFlags = HideFlags.None;
+            temporary.Add(mesh);
+            if (model.normalize)
+            {
+                var linear = node.spaceToWorld;
+                linear.SetColumn(3, new Vector4(0, 0, 0, 1));
+                MeshTransform.BakeMatrix(mesh, linear);
+            }
+            var go = model.hierarchy ? new GameObject(name) : model.root;
+            go.AddComponent<MeshFilter>().sharedMesh = mesh;
+            go.AddComponent<MeshRenderer>().sharedMaterial = material;
+            if (!model.hierarchy) return;
+            go.transform.localPosition = node.localPosition;
+            go.transform.localRotation = node.localRotation;
+            go.transform.localScale = node.localScale;
+            go.transform.SetParent(model.root.transform, false);
+        }
+
+        static void ConfigureTwoSidedMaterial(SavedModel model, RemeshPipeline.Node node, Material material)
+        {
+            if (!node.twoSided) return;
+            if (material.HasProperty("_Cull"))
+            {
+                material.SetFloat("_Cull", (float)CullMode.Off);
+                material.doubleSidedGI = true;
+            }
+            else if (!model.twoSidedWarned)
+            {
+                model.twoSidedWarned = true;
+                UvtLog.Warn("[Remesh export] The source renders both sides, but " + model.shader.name + " has no two-sided mode; assign a two-sided shader to the result material or its back faces will be culled.");
+            }
+        }
+
+        static Object WriteResultModel(SavedModel model, string folder, string clean, string[] names,
+            string outputFbxPath, bool meshAssetsOnly, bool fbxModel, Action committed)
+        {
+            string prefabPath = Path.Combine(folder, clean + ".prefab").Replace('\\', '/');
+            using (new AssetDatabase.AssetEditingScope())
+                for (int i = 0; i < names.Length; ++i)
+                    AssetDatabase.CreateAsset(model.materials[i], Path.Combine(folder, names[i] + ".mat").Replace('\\', '/'));
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+            if (!meshAssetsOnly && (!model.hierarchy || outputFbxPath != null || fbxModel))
+                return ExportFbx(outputFbxPath ?? Path.Combine(folder, clean + ".fbx").Replace('\\', '/'), model.root, model.materials, prefabPath,
+                    model.normalize || model.sourceOverwrite, committed);
+#endif
+            using (new AssetDatabase.AssetEditingScope())
+                for (int i = 0; i < names.Length; ++i)
+                    AssetDatabase.CreateAsset(model.meshes[i], Path.Combine(folder, names[i] + "_LOD0.asset").Replace('\\', '/'));
+            PrefabUtility.SaveAsPrefabAsset(model.root, prefabPath, out bool success);
+            if (!success) throw new IOException("Prefab save failed.");
+            return AssetDatabase.LoadAssetAtPath<GameObject>(prefabPath);
+        }
+
+        static string ExportStatus(RemeshPipeline pipeline, string folder, SavedModel model)
+        {
+            string status = model.hierarchy ? $"Saved: {folder} ({pipeline.Nodes.Count} node(s))" : "Saved: " + folder;
+            if (model.twoSidedWarned) return status + ". Two-sided source: assign a two-sided shader (see Console).";
+            return pipeline.ResultTwoSided ? status + ". Material renders both sides." : status;
+        }
+
+        static void ReportFailure(string folder, bool createdFolder, bool sourceCommitted, Exception error)
+        {
+            if (createdFolder && !sourceCommitted && AssetDatabase.IsValidFolder(folder)) AssetDatabase.DeleteAsset(folder);
+            if (sourceCommitted) UvtLog.Error("[Remesh export] FBX committed; maps and materials retained at " + folder + ". Fix the import and reimport the FBX.");
+            UvtLog.Error("[Remesh export] " + error);
+        }
+
+        static void DestroyTemporary(List<Object> temporary)
+        {
+            // Persistent assets are now owned by the AssetDatabase.
+            foreach (var item in temporary.Where(item => item && !AssetDatabase.Contains(item)))
+                Object.DestroyImmediate(item);
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
@@ -194,31 +261,17 @@ namespace SashaRX.UnityMeshLab
         // channel re-save of a source FBX, so the isolated-export core's same-vertex-
         // count snapshot contract does not apply; a failed export still rolls the
         // whole folder back.
-        static Object ExportFbx(string fbxPath, GameObject root, Material material, string prefabPath, bool normalizedTransforms)
+        static Object ExportFbx(string fbxPath, GameObject root, Material[] materials, string prefabPath,
+            bool normalizedTransforms, Action committed)
         {
-            FbxExport.Write(fbxPath, root, normalizedTransforms: normalizedTransforms);
-            var modelImporter = (ModelImporter)AssetImporter.GetAtPath(fbxPath);
-            if (modelImporter != null) {
-                // The curated material + prefab ship next to the FBX; keep the importer
-                // from generating a duplicate MaterialDescription copy.
-                modelImporter.materialImportMode = ModelImporterMaterialImportMode.None;
-                // The normal map was baked against the exported tangent frame; a
-                // recalculation (MikkT default) can flip its handedness per vertex,
-                // which green-flips chunks of the baked map.
-                modelImporter.importNormals = ModelImporterNormals.Import;
-                modelImporter.importTangents = ModelImporterTangents.Import;
-                if (normalizedTransforms) {
-                    modelImporter.globalScale = 1;
-                    modelImporter.useFileScale = true;
-                    modelImporter.bakeAxisConversion = true;
-                }
-                modelImporter.SaveAndReimport();
-            }
+            MeshAssetOperations.WriteModelResult(fbxPath, root, materials, normalizedTransforms, committed);
             var fbxRoot = AssetDatabase.LoadMainAssetAtPath(fbxPath) as GameObject;
             if (!fbxRoot) throw new IOException("FBX reimport failed.");
             var instance = (GameObject)PrefabUtility.InstantiatePrefab(fbxRoot);
             try {
-                instance.GetComponentInChildren<MeshRenderer>().sharedMaterial = material;
+                var renderers = instance.GetComponentsInChildren<MeshRenderer>(true);
+                for (int i = 0; i < renderers.Length && i < materials.Length; i++)
+                    renderers[i].sharedMaterial = materials[i];
                 PrefabUtility.SaveAsPrefabAsset(instance, prefabPath, out bool success);
                 if (!success) throw new IOException("Prefab save failed.");
             }

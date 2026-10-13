@@ -703,7 +703,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var prepare = typeof(RemeshBaker).GetMethod("Prepare", BindingFlags.NonPublic | BindingFlags.Static);
             var build = typeof(RemeshBaker).GetMethod("BuildRequests", BindingFlags.NonPublic | BindingFlags.Static);
             Assert.IsNotNull(prepare); Assert.IsNotNull(build);
-            var context = (RemeshBaker.Context)prepare.Invoke(null, new object[] { source, target, target.tangents, settings, Token, null });
+            var context = (RemeshBaker.Context)prepare.Invoke(null, new object[] { source, target, target.tangents, settings, Token, null, null });
             context.bandRows = 64; // isolate the query budget from the row budget
             var band = new RemeshBaker.Band(context);
             var counts = new int[4096]; var areas = new float[4096]; int chunks = 0;

@@ -25,9 +25,11 @@ namespace SashaRX.UnityMeshLab
         internal readonly bool[] selectedSubmeshes, selectedVertices, excludedVertices;
         internal readonly int[] selectedIndices;
         readonly Hash128 sourceContent;
+        readonly Transform captureRoot;
         Hash128 appliedContent;
 
-        internal FoliageTargetSnapshot(MeshRenderer renderer, Matrix4x4 worldToCapture, FoliageNormalsSettings settings, CancellationToken token, bool deferArrayProcessing = false)
+        internal FoliageTargetSnapshot(MeshRenderer renderer, Matrix4x4 worldToCapture, FoliageNormalsSettings settings, CancellationToken token, bool deferArrayProcessing = false,
+            Transform captureRoot = null)
         {
             if (renderer.additionalVertexStreams)
             {
@@ -35,13 +37,14 @@ namespace SashaRX.UnityMeshLab
             }
 
             this.renderer = renderer;
+            this.captureRoot = captureRoot;
             filter = renderer.GetComponent<MeshFilter>();
             source = filter.sharedMesh;
             ValidateReadableChannels(source, !source.isReadable, settings.recalculateTangents);
             sourceContent = ContentFingerprint(source);
             materials = renderer.sharedMaterials;
             localToWorld = renderer.localToWorldMatrix;
-            localToCapture = worldToCapture * localToWorld;
+            localToCapture = captureRoot ? PreviewSpace.LocalToRelatedRoot(renderer.transform, captureRoot) : worldToCapture * localToWorld;
             if (localToCapture.determinant == 0 || !Finite(localToCapture.determinant))
             {
                 throw new InvalidOperationException("Singular foliage transform.");
@@ -185,7 +188,7 @@ namespace SashaRX.UnityMeshLab
 
         internal bool IsCurrent(Matrix4x4 worldToCapture) => source && renderer && renderer.enabled && renderer.gameObject.activeInHierarchy && filter && filter.sharedMesh &&
             (filter.sharedMesh == source || filter.sharedMesh == applied) && localToWorld == renderer.localToWorldMatrix &&
-            localToCapture == worldToCapture * renderer.localToWorldMatrix && !renderer.additionalVertexStreams && SameMaterials() &&
+            localToCapture == (captureRoot ? PreviewSpace.LocalToRelatedRoot(renderer.transform, captureRoot) : worldToCapture * renderer.localToWorldMatrix) && !renderer.additionalVertexStreams && SameMaterials() &&
             ContentFingerprint(source) == sourceContent && (filter.sharedMesh == source || ContentFingerprint(applied) == appliedContent);
 
         internal void SetApplied(Mesh mesh)

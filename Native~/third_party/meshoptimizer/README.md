@@ -10,12 +10,23 @@ No downloaded dependency tree or checked-in plugin binary is modified.
 
 Local changes:
 
+- Occupancy midpoint positions undo the rasterizer's one-cell padding: padded
+  index `g` has source-space center `g - 0.5`. Component center/bounds checks
+  cover three axes, resolutions 32/64 and scales 0.001/1/1000.
+
 - Grid access and row offsets are templated. Grids up to 256 retain upstream's
   byte storage and behavior; 257 through 1024 use unsigned 16-bit offsets.
 - Interior sentinels, row comparisons and flood-fill temporary values use the
   grid's actual type. The zero row is bounded to 1024 entries.
 - An explicit release-build guard rejects resolutions outside 4 through 1024.
   The packed voxel coordinates still use upstream's ten bits per axis.
+- Internal option `1 << 29` extracts the 0.5 isosurface of the filled binary
+  occupancy grid using six conforming tetrahedra per cell. This is the editor's
+  solid recovery path only, after strict rejection of ordinary voxel output.
+  It uses occupancy midpoints, without quadrics/source fitting or shell mode.
+  Ordinary corner-based extraction and its byte/16-bit grid paths are unchanged.
+  Count and emission use the same cases; the native five-million-face budget
+  still applies before the output corner buffer is allocated.
 
 The grid is still dense: the 16-bit grid alone uses 256 MiB at 512 and 2 GiB at
 1024. Occupied-voxel quadrics and output/weld buffers add to this; the bridge's

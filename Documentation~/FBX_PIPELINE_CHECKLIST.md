@@ -323,9 +323,10 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   through `SaveForImport`; these probes are not the final output. A probe keeps
   available embedded media without refusing stale missing external references;
   explicit embedding in a final export still refuses missing maps.
-  Polygons (quads, n-gons), control points, smoothing,
-  materials, nodes, properties and every other layer element are never
-  rebuilt.
+  Control points, smoothing, materials, nodes and properties are preserved.
+  Quads and n-gons remain intact unless a new value seam runs inside them;
+  only those polygons are split as described below, through a Binary scratch
+  document independent of the final output format.
 * Inside a written channel only the corners whose value changed are
   written; unchanged corners keep their stored doubles bit for bit. A
   by-control-point set stays by-control-point when the change allows it;
@@ -337,15 +338,30 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   colour layer Unity's importer reads (TS_UnityExport_SDK checklist I4).
   Written values are clamped to `[0, 1]` (§4); stored ones are left as they are.
 * Which Unity vertex a corner became is recovered from a throwaway import
-  of a tagged copy (corner index in an extra UV set, same importer settings,
+  of a tagged copy (corner index in two base-4096 digits of an extra UV set,
+  with the mesh ordinal as a constant offset, same importer settings,
   `Assets/__MeshLabTemp`, deleted afterwards, also when it fails). A mesh with
   all eight UV sets lends its last one to the tag; that set's values are read
   from the file per corner instead. `FbxCornerMatch` pairs corners with the
   working mesh by position (bit-identical: same file, same import), by the
   polygon's own corners, and by the untouched UVs and colours, so welding,
   vertex splits and triangle order do not matter.
-* Refused, nothing written: a value seam inside one polygon (the polygon
-  cannot hold it without being split), a UV set that would skip a channel
+  Each varying tag component spans at most 4095; decoding accepts noise strictly
+  below 0.125, checks finite/integer/range validity and a common mesh ordinal,
+  and bounds every decoded corner against the source document's corner count.
+  The tag format supports up to 4096 meshes and fewer than 2^24 corners per mesh;
+  larger documents refuse before saving. See `REPRO_FBX_CORNER_COMPRESSION.md`.
+* A new UV seam, colour discontinuity or hard edge inside a quad/n-gon triggers
+  a local split using the tagged import's exact triangles. Its boundary and
+  paired internal edges are audited; adjacent polygons stay intact. Existing
+  per-corner/per-polygon layers and material assignments are remapped without
+  changing stored values. Existing edge data stays; new diagonals are smooth,
+  invisible and have zero crease where those layers exist. The split passes
+  through a binary scratch document to retain SDK data that its C# wrapper
+  does not expose, then corner matching is repeated before the atomic save.
+* Refused, nothing written: unresolved ambiguity after a local split, an
+  incomplete source triangulation, unsupported diagonal layer values or mapping,
+  a UV set that would skip a channel
   (UV3 on a mesh with one set), corner tags lost on import (Mesh
   Compression), an instanced FBX mesh edited from more than one Unity mesh.
 * The source importer is left alone, except `generateSecondaryUV` is
@@ -376,8 +392,8 @@ Unity's FBX Exporter at all (`Editor/Assets/FbxChannelWrite.cs`):
   where the importer reads them from the file (`Normals: Import`, and for
   tangents also `Tangents: Import`): under Calculate Unity recomputes them on
   every import, so a changed set is reported in the log and left out. A hard
-  edge inside one polygon (two normals for one corner) is refused like a UV
-  seam. Smoothing groups are left as they are.
+  edge inside one polygon (two normals for one corner) uses the same local
+  split as a UV seam. Existing smoothing values are retained.
 * "Save channels only" writes UV sets and vertex colours only.
 * The hub's Overwrite / Export New FBX (`All`) takes this path, together with
   the structure edit below, in one load and one save of the document.
@@ -529,9 +545,9 @@ their index buffer, and the FBX exporter writes whatever topology the
 serialized mesh has — so the clone that reaches `ModelExporter` must be
 imported with `keepQuads = true`:
 
-* **Channel re-save (UV / vertex colours)** — not affected: the FBX
-  document's polygons are never rewritten, so quads and n-gons stay as
-  authored whatever `keepQuads` is set to, and `keepQuads` is not touched
+* **Channel re-save (UV / vertex colours)** — quads and n-gons stay as
+  authored except polygons with new internal seams. Those are split locally;
+  `keepQuads` is not touched
   (a save that writes UV1 does switch `generateSecondaryUV` off, see above).
 * **Isolated core (normals / tangents / hierarchy / materials intents)** —
   Phase 1 enables `keepQuads` on the source importer
@@ -559,31 +575,53 @@ imported with `keepQuads = true`:
   (>4 vertices per face) still import triangulated, and generated LODs
   (meshoptimizer output) are triangle meshes by construction.
 
-### New-geometry export (Remesh & Bake) — the one out-of-core write
+### Shared save footer
 
-`RemeshBakeTool.Save()` exports a **brand-new mesh** (voxel remesh result)
-into a **uniquely created folder**, gated by the same
-`LIGHTMAP_UV_TOOL_FBX_EXPORTER` define. It calls
-`ModelExporter.ExportObjects` directly because the isolated core is a
-*re-save* pipeline: its snapshots key on mesh name and require the same
-vertex count, so it structurally cannot carry re-topologized geometry,
-and there is no source FBX whose untouched channels must survive.
-Safety comes from the fresh-path guarantees instead: the target file
-never pre-exists (a new unique folder), the output is verified
-non-empty, and any failure rolls the whole generated folder back.
-The FBX importer of the result is pinned to `materialImportMode = None`
-so the importer does not duplicate the curated material that ships
-next to the FBX. Do not use this carve-out for anything that mutates
-an existing FBX — that path must go through the core.
+`UvToolHub` owns the Overwrite FBX / Export New FBX buttons and Save Mesh Assets.
+Tools with independent output implement `IUvToolFbxExport` and `IUvToolMeshExport`;
+unavailable results disable the buttons instead of exporting another tab's context.
+Calculation progress also disables writes. Texture Packer and Texture AO save
+texture outputs through their texture controls.
+
+| Tool | Result selected by the footer | FBX write |
+|---|---|---|
+| UV Transfer, LOD Gen, Cleanup | Current included context entries | Shared document save, including UVs, geometry, LODs and collision |
+| Prefab Builder | Same context, freshly validated | Same complete document save |
+| UV1 Hierarchy | Successful packed copies; checked source files | Shared UV1 channel save; Apply is optional |
+| Vertex Color Baking | Computed AO/channel copies or painted solid-color meshes | Shared selected-channel save; Apply is optional |
+| Collision | Generated collision grouped by source FBX, plus context entries | Sidecar capture followed by shared document save |
+| Foliage | Captured normals/tangents and selected submesh masks | Shared channel writer with shading-selection adapter |
+| Remesh & Bake | Captured baked output, maps, materials and prefab | Shared atomic model writer |
+
+The hierarchy FBX picker is `FbxSaveSelection`; path picking and channel save
+policy are in `MeshAssetOperations.ExportToolEntries`. Saving private meshes must
+not release another context's working copies. Channel saves preserve channels
+outside their intent and relink written scene meshes with Undo/prefab overrides.
+Public legacy APIs remain compatibility wrappers, not alternative writers.
+
+### New-geometry export (Remesh & Bake)
+
+`RemeshExporter` prepares the baked object tree, maps, materials and prefab.
+`MeshAssetOperations.WriteModelResult` writes the new topology through
+`FbxExport.WriteAtomic`, imports normals/tangents, disables compression and
+automatic lightmap UV generation, and installs material remaps. Welded and
+keep-hierarchy results can both be exported as FBX through the shared footer.
+
+Overwrite replaces the complete source model with the captured baked result;
+the confirmation identifies that scope, including the LOD hierarchy. The source
+must resolve to one FBX and its path is frozen during capture, even if the scene
+mesh changes later; never fall back to another tab's source. Single-mesh
+overwrite retains its mesh name so unpacked scene references keep their file ID.
+Old UV2 sidecar entries are invalidated after commit; collision entries remain.
+A failed writer preserves the original FBX and GUID. An import failure after
+commit retains the maps/materials needed by the file and reports a recovery path.
 
 ### What "rework, not parallel" means in code review
 
 Reject PRs that:
 
-* Add a new method named `Export*Fbx*` on any tool other
-  than `LightmapTransferTool`. Tools push their changes
-  into mesh entries / sidecars and call the existing core
-  with the appropriate intent.
+* Add tool-local save buttons or file writers. `ExportFbx` interface
+  implementations select tool data and delegate to shared services.
 * Call `UnityEditor.Formats.Fbx.Exporter.ModelExporter.ExportObjects`
   outside the core.
 * Bypass intent (e.g. always passing `FbxExportIntent.All`
@@ -593,3 +631,10 @@ Reject PRs that:
 * Add `if (myToolDidThing) NormalizeExportHierarchy(...)`
   branches at call sites — that pass belongs in the core,
   gated by `intent.HasFlag(Hierarchy)`.
+
+Validation on 2026-10-12: 338 EditMode tests passed, 0 failed, 1 skipped in Unity
+6000.2.6f2; compile checks passed with and without the FBX define. Coverage includes
+shared routing, UV1/vertex AO without Apply, source/new export, cancellation,
+preserved channels, independent contexts, multi-FBX collision, Remesh
+maps/materials/GUID/unpacked references, frozen source paths, and failed-writer rollback. Results:
+`_results~/unified-tool-save-20261012/tests-integrated/results.xml`.

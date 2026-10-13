@@ -11,6 +11,23 @@ only its stage and subsequent results. **Clear Preview** releases the captured a
 generated preview meshes. **Apply to Scene** and **Save Mesh Asset** become available
 only after a successful transfer with at least one transferred vertex.
 
+Enable **Relax transferred normals** in **Transfer** to smooth the final directions
+after projection and blend, separately from proxy smoothing. **Normal relax iterations**
+(0–100, default 3) and **Normal relax strength** (0–1, default 0.5) control this optional
+step; it is disabled by default. Press **Transfer + relax normals** after changing them.
+The existing proxy is reused, and every run starts from the projected result, so
+repeating the action does not accumulate relaxation.
+
+Relaxation averages unit directions along connected selected triangle edges in
+capture space, independently in every selected LOD. Disconnected leaf cards and
+vertex splits remain separate. Missed vertices and excluded faces do not supply
+neighbour directions and retain their original normals; selected/excluded boundary
+copies continue to protect the excluded side. Geometry and other channels stay
+unchanged. Original-hemisphere alignment remains active when enabled, and tangents
+are regenerated after relaxation when requested. Preview, Apply, both mesh-save
+paths and FBX output use this same final result. Zero strength, zero iterations or
+zero transfer blend preserve the unrelaxed output exactly.
+
 ## Normal source: voxel envelope, sphere or hemisphere
 
 **Proxy shape** chooses the source surface for the same nearest-triangle normal
@@ -244,8 +261,14 @@ is checked before publishing its preview, and smoothing checks it before buildin
 adjacency. Changing this budget clears Envelope and downstream results. Remeshing
 checks input and estimated ideal triangle counts before creating mutable adjacency;
 each split checks the budget again. Working adjacency costs approximately 1 KiB
-per triangle, varying with valence and allocator overhead. Reduce voxel resolution or increase target
-length if the budget is exceeded. Source modes Sphere/Hemisphere keep their
+per triangle, varying with valence and allocator overhead. An oversized Envelope stops
+before preview and smoothing, reports its actual triangle count and keeps the chosen
+voxel resolution. **Set budget to ... and rebuild** explicitly raises the budget to
+that count (up to 200,000) and rebuilds using the cached samples. Alternatively,
+reduce **Voxel resolution**. The manifold occupancy fallback can produce more
+triangles than the initial rejected voxel surface at the same resolution. Changing
+remesh target edge length cannot fix an Envelope budget refusal; it only helps
+when the later remesh stage exceeds its budget. Source modes Sphere/Hemisphere keep their
 radial normals and bypass this stage. Disabling Uniform triangles passes the
 smoothed proxy through unchanged.
 
@@ -334,8 +357,20 @@ this selection before building the proxy.
 
 The shared `MeshViewport3D` also supports source cards, primitive sample points,
 voxel proxy, smoothed proxy, remeshed transfer proxy and transferred cards.
-**Proxy + mesh** overlays the latest available proxy as a cyan wire on the model,
-so its solid surface cannot hide the leaf cards. **Before** / **After** switch
+After **Scatter samples**, **Primitive Samples** immediately overlays translucent
+spheres on the main mesh at the computed radius, with green sample centres. The
+panel reports radius in capture units and the number of visible spheres. **Sphere
+opacity**, **Sphere surface** and **Show sphere edges** control this display; edges
+are off by default. Up to 4,096 evenly distributed spheres are cached per Scatter
+result, while all primitives still participate in building the envelope. The
+preview is rebuilt when Scatter inputs change and released with that result.
+**Proxy + mesh** also shows these spheres before an envelope is available.
+
+**Proxy + mesh** overlays the latest available proxy as a translucent cyan surface
+(default opacity 25%) with optional edges. **Proxy opacity** changes only the proxy;
+the main mesh retains its materials and chosen shading. Disable **Proxy surface**
+for wire-only display, or **Show proxy edges** for a surface-only overlay. The proxy
+stays out of mesh inspection picking and UV overlays. **Before** / **After** switch
 original and transferred normals in the same position without moving the camera;
 the proxy remains visible when switching in the combined mode. **Side by side**
 shows original on the left and transferred on the right. Choose **Normals** shading
@@ -343,7 +378,7 @@ in the shared 3D toolbar for direction colours, or enable **Normal directions** 
 cyan original / yellow transferred arrows on selected vertices. Arrow length is
 adjustable; side-by-side mode draws both sets. Primitive points are bounded to
 4,096 per frame. **Show proxy edges** uses cached wire drawing for the three solid
-proxy previews. Source copies and selection paint are cached between changes,
+proxy previews and the combined view. Source copies and selection paint are cached between changes,
 prepared outside GUI repaint, and released on source changes or deactivation.
 Transient meshes use HideAndDontSave and never replace scene meshes during preview.
 
@@ -477,3 +512,13 @@ material bake or automatic whole-scene processing. Low voxel resolutions can
 merge close clusters; wide spacing can leave disconnected volumes. Thin gaps and
 overlapping cards require tuning spacing/radius/resolution. Smoothing validates
 topology and volume but does not detect all geometric self-intersections.
+
+The shared footer **Overwrite FBX** uses the current Foliage transfer result
+without requiring **Apply to Scene** first. It confirms the source files, writes
+only selected normals/tangents in the captured LODs through the channel writer,
+and preserves other channels and hierarchy. **Export New FBX** uses the separate
+Foliage FBX workflow. A missing or stale transfer disables the footer actions;
+the hub never substitutes unrelated context meshes. Successful overwrite relinks
+imported meshes and clears the old capture, so rebuild before another transfer.
+An import failure after the atomic file commit is reported as a failed operation;
+the source is retained and can be reimported after fixing the importer failure.

@@ -11,7 +11,7 @@ using UnityEditor;
 namespace SashaRX.UnityMeshLab
 {
     [MeshLabTool("collision_mesh", MeshLabLibraries.Collision, MeshLabLibraries.Assets)]
-    public class CollisionMeshTool : IUvTool, IUvTool3D
+    public class CollisionMeshTool : IUvTool, IUvTool3D, IUvToolFbxExport, IUvToolMeshExport
     {
         UvToolContext ctx;
         Action requestRepaint;
@@ -221,14 +221,7 @@ namespace SashaRX.UnityMeshLab
                     RemoveFromScene();
                 EditorGUILayout.EndHorizontal();
 
-                EditorGUILayout.Space(4);
-                EditorGUILayout.LabelField("Persist", EditorStyles.boldLabel);
-
-                var bgc2 = GUI.backgroundColor;
-                GUI.backgroundColor = new Color(.3f, .85f, .4f);
-                if (GUILayout.Button("Save to Sidecar (for FBX reimport)", GUILayout.Height(24)))
-                    SaveToSidecar();
-                GUI.backgroundColor = bgc2;
+                EditorGUILayout.LabelField("Save using the shared footer below. FBX saves include generated collision.", EditorStyles.wordWrappedMiniLabel);
             }
 
             // Existing collision objects info
@@ -637,147 +630,211 @@ namespace SashaRX.UnityMeshLab
 
         // ── Sidecar persistence ──
 
-        void SaveToSidecar()
+        public bool CanExportFbx => ctx?.LodGroup != null && !UvProgress.IsActive && generatedMeshes.Count > 0
+            && lastResults.Count > 0 && generatedMeshes.All(mesh => mesh != null)
+            && lastResults.Sum(result => result.hullCount) == generatedMeshes.Count;
+        public bool CanSaveMeshAssets => !UvProgress.IsActive && generatedMeshes.Count > 0;
+        public void ExportFbx(bool overwriteSource)
         {
-            if (ctx.LodGroup == null || generatedMeshes.Count == 0) return;
+            if (!CanExportFbx) return;
+            var staged = PrepareSidecars();
+            if (staged == null) return;
+            try { ctx.Assets.ExportCollisionEntries(ctx.MeshEntries, staged, overwriteSource); }
+            finally { foreach (var data in staged.Values) UnityEngine.Object.DestroyImmediate(data); }
+        }
+        public void SaveMeshAssets() => ctx.Assets.SaveToolMeshes(generatedMeshes.Select(mesh => new MeshEntry { originalMesh = mesh }));
 
-            // Find source FBX path from source LOD entries
-            string fbxPath = null;
-            foreach (var e in ctx.MeshEntries)
+        // Caller owns the staged assets; preparation never persists an unconfirmed result.
+        internal Dictionary<string, Uv2DataAsset> PrepareSidecars()
+        {
+            if (!TryPrepareSidecars(out var prepared)) return null;
+            var staged = new Dictionary<string, Uv2DataAsset>(StringComparer.OrdinalIgnoreCase);
+            try
             {
-                if (e.lodIndex != ctx.SourceLodIndex || e.fbxMesh == null) continue;
-                string p = AssetDatabase.GetAssetPath(e.fbxMesh);
-                if (!string.IsNullOrEmpty(p) && p.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase))
-                { fbxPath = p; break; }
+                foreach (var sidecar in prepared)
+                {
+                    var existing = SidecarStore.Load(sidecar.fbxPath);
+                    var data = existing != null ? UnityEngine.Object.Instantiate(existing) : ScriptableObject.CreateInstance<Uv2DataAsset>();
+                    staged.Add(sidecar.fbxPath, data);
+                    UpdateCollisionEntries(data, sidecar);
+                }
+                return staged;
             }
-            if (string.IsNullOrEmpty(fbxPath))
+            catch
             {
-                UvtLog.Warn("[Collision] Cannot find source FBX path for sidecar.");
-                return;
+                foreach (var data in staged.Values) UnityEngine.Object.DestroyImmediate(data);
+                throw;
             }
+        }
 
-            // Build CollisionMeshEntry and save to sidecar
-            string sidecarPath = SidecarStore.PathFor(fbxPath);
-            var model = AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath);
-            var paths = new Dictionary<Transform, string>();
-#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-            using var document = model != null ? FbxSourceDocument.Load(fbxPath) : null;
-            var documentPaths = new Dictionary<Transform, string>();
-#endif
+        bool TryPrepareSidecars(out List<PreparedCollisionSidecar> prepared)
+        {
+            prepared = new List<PreparedCollisionSidecar>();
+            if (ctx.LodGroup == null || generatedMeshes.Count == 0) return false;
+            if (!TryGroupCollisionSources(out var groups)) return false;
+            foreach (var group in groups)
+            {
+                if (!TryPrepareSidecarFile(group.Key, group.Value.results, group.Value.meshes, out var sidecar)) return false;
+                prepared.Add(sidecar);
+            }
+            return prepared.Count > 0;
+        }
+
+        bool TryGroupCollisionSources(out Dictionary<string, (List<GeneratedCollisionInfo> results, List<Mesh> meshes)> groups)
+        {
+            groups = new Dictionary<string, (List<GeneratedCollisionInfo> results, List<Mesh> meshes)>(StringComparer.OrdinalIgnoreCase);
+            int offset = 0;
             foreach (var result in lastResults)
             {
-                if (!TryResolveSidecarPath(model, fbxPath, result.sourceTransform, result.meshName, out var path))
+                var entry = ctx.MeshEntries.FirstOrDefault(e => e.include && e.lodIndex == ctx.SourceLodIndex &&
+                    (result.sourceTransform != null ? e.renderer?.transform == result.sourceTransform : e.fbxMesh?.name == result.meshName));
+                string path = entry?.fbxMesh != null ? AssetDatabase.GetAssetPath(entry.fbxMesh) : null;
+                if (!SidecarStore.IsFbxPath(path))
+                {
+                    UvtLog.Warn("[Collision] Cannot identify source FBX for " + result.meshName + "; sidecars were not changed.");
+                    return false;
+                }
+                if (!groups.TryGetValue(path, out var group))
+                    groups[path] = group = (new List<GeneratedCollisionInfo>(), new List<Mesh>());
+                group.results.Add(result);
+                group.meshes.AddRange(generatedMeshes.Skip(offset).Take(result.hullCount));
+                offset += result.hullCount;
+            }
+            return true;
+        }
+
+        sealed class PreparedCollisionSidecar
+        {
+            public string fbxPath;
+            public GameObject model;
+            public readonly List<CollisionMeshEntry> entries = new List<CollisionMeshEntry>();
+        }
+
+        bool TryPrepareSidecarFile(string fbxPath, List<GeneratedCollisionInfo> results, List<Mesh> meshes,
+            out PreparedCollisionSidecar prepared)
+        {
+            prepared = new PreparedCollisionSidecar { fbxPath = fbxPath, model = AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath) };
+            if (!TryPrepareSourcePaths(prepared, results, out var paths)) return false;
+            var documentPaths = new Dictionary<Transform, string>();
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+            using var document = FbxSourceDocument.Load(fbxPath);
+            if (!TryPrepareDocumentPaths(document, results, paths, documentPaths)) return false;
+#endif
+            int meshIndex = 0;
+            foreach (var result in results)
+            {
+                string sourcePath = result.sourceTransform != null ? paths[result.sourceTransform] : null;
+                string documentPath = result.sourceTransform != null && documentPaths.TryGetValue(result.sourceTransform, out var path) ? path : null;
+                prepared.entries.Add(CreateCollisionEntry(result, meshes, ref meshIndex, sourcePath, documentPath));
+            }
+            return true;
+        }
+
+        bool TryPrepareSourcePaths(PreparedCollisionSidecar prepared, List<GeneratedCollisionInfo> results,
+            out Dictionary<Transform, string> paths)
+        {
+            paths = new Dictionary<Transform, string>();
+            foreach (var result in results)
+            {
+                if (!TryResolveSidecarPath(prepared.model, prepared.fbxPath, result.sourceTransform, result.meshName, out var path))
                 {
                     UvtLog.Warn($"[Collision] Cannot identify source instance '{result.meshName}' in the imported FBX; sidecar was not changed.");
-                    return;
+                    return false;
                 }
-                if (result.sourceTransform != null)
-                {
-                    paths[result.sourceTransform] = path;
-#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-                    try
-                    {
-                        documentPaths[result.sourceTransform] = FbxStructureWrite.ImportedCollisionDocumentPath(document, path);
-                    }
-                    catch (FbxStructureRefusalException e)
-                    {
-                        UvtLog.Warn($"[Collision] {e.Message}; sidecar was not changed.");
-                        return;
-                    }
-#endif
-                }
+                if (result.sourceTransform != null) paths[result.sourceTransform] = path;
             }
-            foreach (var result in lastResults)
+            return SourcePathsAreUnique(results, paths);
+        }
+
+        static bool SourcePathsAreUnique(List<GeneratedCollisionInfo> results, Dictionary<Transform, string> paths)
+        {
+            foreach (var result in results)
                 if (result.sourceTransform != null && string.IsNullOrEmpty(paths[result.sourceTransform]) &&
-                    lastResults.Count(r => r.meshName == result.meshName) > 1)
+                    results.Count(r => r.meshName == result.meshName) > 1)
                 {
                     UvtLog.Warn($"[Collision] Multiple scene instances of '{result.meshName}' have no unique FBX hierarchy identity; sidecar was not changed.");
-                    return;
+                    return false;
                 }
-            var data = SidecarStore.LoadOrCreate(fbxPath);
-            Undo.RecordObject(data, "Save Collision Sidecar");
-            var obsoleteKeys = PruneMissingCollisionSources(data, model, fbxPath);
+            return true;
+        }
 
-            // Build flattened collision entry per source mesh
-            int meshIdx = 0;
-            foreach (var r in lastResults)
-            {
-                // Compute fingerprint from source FBX mesh
-                MeshFingerprint fp = null;
-                var srcEntry = ctx.MeshEntries.FirstOrDefault(
-                    e => e.lodIndex == ctx.SourceLodIndex && e.include &&
-                    (r.sourceTransform == null || e.renderer?.transform == r.sourceTransform) &&
-                    (e.fbxMesh != null ? e.fbxMesh.name : e.originalMesh?.name) == r.meshName);
-                if (srcEntry != null && srcEntry.fbxMesh != null)
-                    fp = MeshFingerprint.Compute(srcEntry.fbxMesh);
-
-                var allPos = new List<Vector3>();
-                var posOffsets = new List<int>();
-                var allTri = new List<int>();
-                var triOffsets = new List<int>();
-                // Keep the sidecar in source-local space: the document save places
-                // collision next to that source. The rebuild converts to root space
-                // using source frames captured before hierarchy normalization.
-
-                for (int h = 0; h < r.hullCount && meshIdx < generatedMeshes.Count; h++, meshIdx++)
-                {
-                    var m = generatedMeshes[meshIdx];
-                    int posOffset = allPos.Count;
-                    posOffsets.Add(posOffset);
-                    triOffsets.Add(allTri.Count);
-                    allPos.AddRange(m.vertices);
-                    // Rebase triangle indices to global vertex offset so
-                    // GetCollisionMeshesFromSidecar can correctly extract per-hull data.
-                    var localTris = m.triangles;
-                    for (int ti = 0; ti < localTris.Length; ti++)
-                        localTris[ti] += posOffset;
-                    allTri.AddRange(localTris);
-                }
-
-                string sourcePath = r.sourceTransform != null ? paths[r.sourceTransform] : null;
-                var entry = new CollisionMeshEntry
-                {
-                    meshGroupKey      = CollisionHierarchyAnalyzer.InstanceKey(r.meshName, sourcePath),
-                    mode              = (int)generatedMode,
-                    sourceFingerprint = fp,
-                    allPositions      = allPos.ToArray(),
-                    positionOffsets   = posOffsets.ToArray(),
-                    allTriangles      = allTri.ToArray(),
-                    triangleOffsets   = triOffsets.ToArray(),
-                    targetRatio       = simplifyTargetRatio,
-                    targetError       = simplifyTargetError,
-                    maxHulls          = convexMaxHulls,
-                    resolution        = convexResolution,
-                    maxVertsPerHull   = convexMaxVertsPerHull,
-                    shapes            = r.shapeReports?.ToArray(),
-                    sourceHierarchyPath = sourcePath,
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-                    sourceDocumentHierarchyPath = r.sourceTransform != null ? documentPaths[r.sourceTransform] : null,
-#endif
-                    sourceMeshName    = r.meshName,
-                    preferSimpleShapes = convexSimpleShapes,
-                    shapeFitError     = convexShapeFit,
-                    projectionThicknessRatio = convexProjectionThickness,
-                };
-
-                // Replace this instance and the old unscoped mesh entry, retaining others.
-                var replaced = data.collisionEntries.Where(c => c != null && (c.meshGroupKey == entry.meshGroupKey ||
-                    (!string.IsNullOrEmpty(sourcePath) && c.sourceHierarchyPath == sourcePath) ||
-                    (string.IsNullOrEmpty(sourcePath) && c.sourceMeshName == r.meshName) ||
-                    (string.IsNullOrEmpty(c.sourceHierarchyPath) && c.meshGroupKey == r.meshName))).ToList();
-                foreach (var old in replaced)
+        static bool TryPrepareDocumentPaths(FbxSourceDocument document, List<GeneratedCollisionInfo> results,
+            Dictionary<Transform, string> paths, Dictionary<Transform, string> documentPaths)
+        {
+            foreach (var source in results.Select(result => result.sourceTransform).Where(source => source != null))
+            {
+                try { documentPaths[source] = FbxStructureWrite.ImportedCollisionDocumentPath(document, paths[source]); }
+                catch (FbxStructureRefusalException e)
                 {
-                    CollectReplacedCollisionKeys(old, obsoleteKeys);
-                    data.collisionEntries.Remove(old);
+                    UvtLog.Warn($"[Collision] {e.Message}; sidecar was not changed.");
+                    return false;
                 }
-                obsoleteKeys.Remove(entry.meshGroupKey);
-                entry.replacedMeshGroupKeys = obsoleteKeys.ToArray();
-                obsoleteKeys.Clear();
-                data.collisionEntries.Add(entry);
             }
+            return true;
+        }
+#endif
 
-            SidecarStore.Save(data);
-            UvtLog.Info($"[Collision] Saved to sidecar: {sidecarPath} ({data.collisionEntries.Count} collision entries)");
+        CollisionMeshEntry CreateCollisionEntry(GeneratedCollisionInfo result, List<Mesh> meshes, ref int meshIndex,
+            string sourcePath, string documentPath)
+        {
+            var srcEntry = ctx.MeshEntries.FirstOrDefault(e => e.lodIndex == ctx.SourceLodIndex && e.include &&
+                (result.sourceTransform == null || e.renderer?.transform == result.sourceTransform) &&
+                (e.fbxMesh != null ? e.fbxMesh.name : e.originalMesh?.name) == result.meshName);
+            var positions = new List<Vector3>();
+            var positionOffsets = new List<int>();
+            var triangles = new List<int>();
+            var triangleOffsets = new List<int>();
+            // Preserve source-local coordinates and rebase each hull's indices.
+            for (int h = 0; h < result.hullCount && meshIndex < meshes.Count; h++, meshIndex++)
+            {
+                var mesh = meshes[meshIndex];
+                int offset = positions.Count;
+                positionOffsets.Add(offset);
+                triangleOffsets.Add(triangles.Count);
+                positions.AddRange(mesh.vertices);
+                var local = mesh.triangles;
+                for (int t = 0; t < local.Length; t++) local[t] += offset;
+                triangles.AddRange(local);
+            }
+            return new CollisionMeshEntry
+            {
+                meshGroupKey = CollisionHierarchyAnalyzer.InstanceKey(result.meshName, sourcePath),
+                mode = (int)generatedMode,
+                sourceFingerprint = srcEntry?.fbxMesh != null ? MeshFingerprint.Compute(srcEntry.fbxMesh) : null,
+                allPositions = positions.ToArray(), positionOffsets = positionOffsets.ToArray(),
+                allTriangles = triangles.ToArray(), triangleOffsets = triangleOffsets.ToArray(),
+                targetRatio = simplifyTargetRatio, targetError = simplifyTargetError,
+                maxHulls = convexMaxHulls, resolution = convexResolution, maxVertsPerHull = convexMaxVertsPerHull,
+                shapes = result.shapeReports?.ToArray(), sourceHierarchyPath = sourcePath,
+                sourceDocumentHierarchyPath = documentPath, sourceMeshName = result.meshName,
+                preferSimpleShapes = convexSimpleShapes, shapeFitError = convexShapeFit,
+                projectionThicknessRatio = convexProjectionThickness
+            };
+        }
+
+        void UpdateCollisionEntries(Uv2DataAsset data, PreparedCollisionSidecar prepared)
+        {
+            var obsoleteKeys = PruneMissingCollisionSources(data, prepared.model, prepared.fbxPath);
+            foreach (var entry in prepared.entries) ReplaceCollisionEntry(data, entry, obsoleteKeys);
+        }
+
+        static void ReplaceCollisionEntry(Uv2DataAsset data, CollisionMeshEntry entry, HashSet<string> obsoleteKeys)
+        {
+            string sourcePath = entry.sourceHierarchyPath;
+            var replaced = data.collisionEntries.Where(c => c != null && (c.meshGroupKey == entry.meshGroupKey ||
+                (!string.IsNullOrEmpty(sourcePath) && c.sourceHierarchyPath == sourcePath) ||
+                (string.IsNullOrEmpty(sourcePath) && c.sourceMeshName == entry.sourceMeshName) ||
+                (string.IsNullOrEmpty(c.sourceHierarchyPath) && c.meshGroupKey == entry.sourceMeshName))).ToList();
+            foreach (var old in replaced)
+            {
+                CollectReplacedCollisionKeys(old, obsoleteKeys);
+                data.collisionEntries.Remove(old);
+            }
+            obsoleteKeys.Remove(entry.meshGroupKey);
+            entry.replacedMeshGroupKeys = obsoleteKeys.ToArray();
+            obsoleteKeys.Clear();
+            data.collisionEntries.Add(entry);
         }
 
         bool TryResolveSidecarPath(GameObject model, string fbxPath, Transform source, string meshName, out string path)

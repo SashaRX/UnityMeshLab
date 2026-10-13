@@ -22,20 +22,23 @@ namespace SashaRX.UnityMeshLab
         static readonly Color Excluded = new Color(0.4f, 0.4f, 0.4f);
 
         Mesh painted;
+        GameObject sourceRoot;
         Material paint, grey;
         readonly List<(Mesh mesh, Matrix4x4 matrix)> excluded = new List<(Mesh, Matrix4x4)>();
         public string Key { get; private set; }
         public string Summary { get; private set; } = "";
         public string Error { get; private set; }
+        internal Mesh PreviewMesh => painted;
 
         public static string KeyFor(GameObject root, RemeshSettings s) =>
-            $"{(root ? root.GetInstanceID() : 0)}|{s.lod0Only}|{s.keepHierarchy}|{s.sourceShape}|{s.voxelResolution}|{s.hullResolution}|{s.minPartSize:F4}|{s.minRodVoxels:F3}";
+            $"{(root ? root.GetInstanceID() : 0)}|{s.lod0Only}|{s.keepHierarchy}|{s.sourceShape}|{s.voxelResolution}|{s.hullResolution}|{s.minPartSize:R}|{s.minRodVoxels:R}";
 
         /// <summary>Rebuilds the paint for root under the given settings (main thread).</summary>
         public void Build(GameObject root, RemeshSettings settings)
         {
             Clear();
             Key = KeyFor(root, settings);
+            sourceRoot = root;
             Error = null;
             if (!root) return;
             try {
@@ -44,18 +47,18 @@ namespace SashaRX.UnityMeshLab
                 foreach (var renderer in root.GetComponentsInChildren<Renderer>()) {
                     if (includedSet.Contains(renderer)) continue;
                     var mesh = MeshOf(renderer);
-                    if (mesh) excluded.Add((mesh, renderer.localToWorldMatrix));
+                    if (mesh) excluded.Add((mesh, PreviewSpace.LocalToRoot(renderer.transform, root.transform)));
                 }
                 int gridResolution = settings.sourceShape == RemeshShape.Hull ? settings.hullResolution : settings.voxelResolution;
                 var vertices = new List<Vector3>(); var colors = new List<Color32>(); var indices = new List<int>();
                 long keptFaces = 0, smallFaces = 0, rodFaces = 0; int skippedNodes = 0;
-                void Add(RemeshSource source, Matrix4x4 spaceToWorld, byte[] cls, bool nodeSkipped)
+                void Add(RemeshSource source, Matrix4x4 spaceToWorld, byte[] cls)
                 {
                     int baseIndex = vertices.Count;
                     var vertexClass = new byte[source.positions.Length];
                     int faceCount = source.indices.Length / 3;
                     for (int f = 0; f < faceCount; ++f) {
-                        byte c = nodeSkipped ? (byte)255 : cls != null ? cls[f] : RemeshSource.PartKept;
+                        byte c = cls != null ? cls[f] : RemeshSource.PartKept;
                         if (c == RemeshSource.PartKept) ++keptFaces; else if (c == RemeshSource.PartSmall) ++smallFaces; else if (c == RemeshSource.PartRod) ++rodFaces;
                         for (int k = 0; k < 3; ++k) vertexClass[source.indices[f * 3 + k]] = c;
                     }
@@ -67,23 +70,23 @@ namespace SashaRX.UnityMeshLab
                     foreach (var index in source.indices) indices.Add(baseIndex + index);
                 }
                 if (!settings.keepHierarchy) {
-                    var source = RemeshSource.Capture(root.transform.worldToLocalMatrix, included, required: false, geometryOnly: true);
+                    var source = RemeshSource.Capture(Matrix4x4.identity, included, required: false, geometryOnly: true, captureRoot: root.transform);
                     if (source != null) {
                         var cls = source.ClassifyParts(settings.minPartSize, settings.minRodVoxels, gridResolution);
                         // The pipeline refuses a filter that would empty the weld: everything stays.
                         if (cls != null && Array.TrueForAll(cls, c => c != RemeshSource.PartKept)) cls = null;
-                        Add(source, root.transform.localToWorldMatrix, cls, false);
+                        Add(source, Matrix4x4.identity, cls);
                     }
                 }
                 else {
                     foreach (var renderer in included) {
-                        var source = RemeshSource.Capture(renderer.transform.worldToLocalMatrix, new[] { renderer }, required: false, geometryOnly: true);
+                        var source = RemeshSource.Capture(Matrix4x4.identity, new[] { renderer }, required: false, geometryOnly: true, captureRoot: renderer.transform);
                         if (source == null) continue;
                         var cls = source.ClassifyParts(settings.minPartSize, settings.minRodVoxels, gridResolution);
                         // A node whose every part fails the filter is skipped by the pipeline.
                         bool skipped = cls != null && Array.TrueForAll(cls, c => c != RemeshSource.PartKept);
                         if (skipped) ++skippedNodes;
-                        Add(source, renderer.transform.localToWorldMatrix, cls, skipped);
+                        Add(source, PreviewSpace.LocalToRoot(renderer.transform, root.transform), cls);
                     }
                 }
                 if (indices.Count > 0) {
@@ -104,14 +107,23 @@ namespace SashaRX.UnityMeshLab
         {
             if (Event.current.type != EventType.Repaint) return;
             if (!EnsureMaterials()) return;
-            if (painted) { paint.SetPass(0); Graphics.DrawMeshNow(painted, Matrix4x4.identity); }
+            var toWorld = sourceRoot ? sourceRoot.transform.localToWorldMatrix : Matrix4x4.identity;
+            if (painted) { paint.SetPass(0); Graphics.DrawMeshNow(painted, toWorld); }
             if (excluded.Count == 0) return;
             grey.SetPass(0);
             foreach (var (mesh, matrix) in excluded) {
                 if (!mesh) continue;
                 for (int sub = 0; sub < mesh.subMeshCount; ++sub)
-                    if (mesh.GetTopology(sub) == MeshTopology.Triangles) Graphics.DrawMeshNow(mesh, matrix, sub);
+                    if (mesh.GetTopology(sub) == MeshTopology.Triangles) Graphics.DrawMeshNow(mesh, toWorld * matrix, sub);
             }
+        }
+
+        // Capture and isolated preview share the same root-local coordinates.
+        internal bool FillPreview(List<MeshViewport3D.Item> items)
+        {
+            if (!painted || !EnsureMaterials()) return false;
+            items.Add(new MeshViewport3D.Item(painted, Matrix4x4.identity, new[] { paint }));
+            return true;
         }
 
         static Mesh MeshOf(Renderer renderer)
@@ -136,7 +148,7 @@ namespace SashaRX.UnityMeshLab
         public void Clear()
         {
             if (painted) Object.DestroyImmediate(painted);
-            painted = null; excluded.Clear(); Summary = ""; Key = null;
+            painted = null; sourceRoot = null; excluded.Clear(); Summary = ""; Key = null; Error = null;
         }
 
         public void Dispose()

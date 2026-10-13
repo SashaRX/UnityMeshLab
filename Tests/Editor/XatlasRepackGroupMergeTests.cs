@@ -220,6 +220,68 @@ namespace SashaRX.UnityMeshLab.Tests
 
             Assert.AreEqual(long.MaxValue, cost);
         }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void DensePackReducesInternalOversampleWithoutDroppingRequestedResolution(bool sharedAtlas)
+        {
+            if (!NativeAvailable()) Assert.Ignore("xatlas native plugin not available");
+            var mesh = BuildTiledMesh(600, .02f);
+            try {
+                var original = mesh.uv;
+                var options = RepackOptions.Default; options.resolution = 2048;
+                options.reparameterizeStretchedShells = false;
+                var result = sharedAtlas ? XatlasRepack.RepackMulti(new[] { mesh }, options)[0]
+                    : XatlasRepack.RepackSingle(mesh, options);
+                Assert.IsTrue(result.ok, result.error);
+                CollectionAssert.AreEqual(original, mesh.uv);
+                Assert.GreaterOrEqual(result.atlasWidth, 2048, "Budget adaptation changes oversample, not the requested resolution.");
+                var charts = new int[mesh.vertexCount];
+                for (int i = 0; i < charts.Length; ++i) charts[i] = i / 4;
+                var report = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry
+                    { uv = mesh.uv2, indices = mesh.triangles, charts = charts }, System.Threading.CancellationToken.None);
+                Assert.AreEqual(0, report.degenerateFaces); Assert.AreEqual(0, report.pairs);
+                Assert.AreEqual(0, report.invalidFaces); Assert.IsTrue(report.complete);
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
+
+        [TestCase(1024u, 4, 1428, 2u)]
+        [TestCase(1u, int.MaxValue, 1, 0u)]
+        public void PackBudgetKeepsTheHighestAffordablePrecisionAndProportionalPadding(uint resolution, int oversample, int shells, uint padding)
+        {
+            var method = typeof(XatlasRepack).GetMethod("TryResolveBudgetedPackDimensions",
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+            var options = RepackOptions.Default; options.resolution = resolution;
+            options.internalOversample = oversample; options.padding = padding;
+            object[] args = { options, shells, 0, 0u, 0u, null };
+            Assert.IsTrue((bool)method.Invoke(null, args));
+            int actual = (int)args[2];
+            Assert.AreEqual(resolution * (uint)actual, args[3]);
+            Assert.AreEqual(padding * (uint)actual, args[4]);
+            Assert.LessOrEqual((double)shells * resolution * actual * resolution * actual, 20_000_000_000d);
+            Assert.Greater((double)shells * resolution * (actual + 1) * resolution * (actual + 1), 20_000_000_000d);
+        }
+
+        [Test]
+        public void PackRefusalAtUnitOversampleReportsBudgetAndPreservesUv2()
+        {
+            if (!NativeAvailable()) Assert.Ignore("xatlas native plugin not available");
+            var mesh = BuildTiledMesh(1428, .02f);
+            try {
+                var original = mesh.uv; mesh.uv2 = original;
+                var options = RepackOptions.Default; options.resolution = 4096;
+                options.reparameterizeStretchedShells = false;
+                var result = XatlasRepack.RepackSingle(mesh, options);
+                Assert.IsFalse(result.ok);
+                StringAssert.Contains("budget", result.error);
+                StringAssert.DoesNotContain("cancelled", result.error);
+                CollectionAssert.AreEqual(original, mesh.uv); CollectionAssert.AreEqual(original, mesh.uv2);
+                Assert.IsTrue(XatlasRepack.TryAcquireNativeSession(), "Refusal must release the native session.");
+                XatlasRepack.ReleaseNativeSession();
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
     }
 
     public class GroupedShellTransferTests

@@ -1,8 +1,7 @@
 # Texture Channel Packer
 
 Open **Tools → Mesh Lab → Open Mesh Lab**, then select the **Texture Packer** tab.
-Saved layouts containing the former standalone window transfer its packing settings
-to this tab and close the old window automatically.
+The tool is available only inside Mesh Lab; there is no standalone window or menu entry.
 
 Drop a PNG, JPG/JPEG, TGA, PSD or TIF/TIFF file onto a slot thumbnail, or use its browse button.
 Files can come from anywhere on disk. Source files are read directly; they are

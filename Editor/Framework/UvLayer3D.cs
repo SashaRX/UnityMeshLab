@@ -17,10 +17,8 @@ namespace SashaRX.UnityMeshLab
         sealed class Layer { public RenderTexture texture; public string key; }
 
         public int LayerSize = 1024;
-        static readonly Color HoverColor = new Color(.25f, 1f, .95f, .35f);
-        static readonly Color SelectedColor = new Color(1f, .95f, .2f, .4f);
 
-        readonly Dictionary<int, Layer> layers = new Dictionary<int, Layer>();
+        readonly Dictionary<(int meshId, MeshEntry entry), Layer> layers = new Dictionary<(int meshId, MeshEntry entry), Layer>();
         readonly Dictionary<long, Mesh> shellMeshes = new Dictionary<long, Mesh>();
         readonly Dictionary<long, Mesh> boundaryMeshes = new Dictionary<long, Mesh>();
         Material overlay;
@@ -68,15 +66,18 @@ namespace SashaRX.UnityMeshLab
                 if (entry == null) continue;
                 if (layerVisible && UvTopology.HasUv(item.mesh, ctx.PreviewUvChannel) && MeshInspection.HasOnlyTriangles(item.mesh))
                 {
-                    int id = item.mesh.GetInstanceID();
+                    var id = (item.mesh.GetInstanceID(), entry);
                     string key = LayerKey(canvas, ctx, item.mesh, entry);
                     if (!layers.TryGetValue(id, out var layer)) layers[id] = layer = new Layer();
                     if (layer.key != key || layer.texture == null)
                     {
-                        layer.texture = canvas.RenderUvLayer(ctx, item.mesh, entry, layer.texture, size, drawBorders: false);
+                        layer.texture = canvas.RenderUvLayer(ctx, item.mesh, entry, layer.texture, size, false, view.SceneLightmaps);
                         layer.key = key;
                     }
-                    if (layer.texture) view.DrawTextured(item.mesh, item.matrix, overlay, layer.texture, Color.white, ctx.PreviewUvChannel);
+                    var uvScaleOffset = canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Lightmap &&
+                                        ctx.PreviewUvChannel == 1 && entry.renderer && entry.renderer.lightmapIndex >= 0
+                        ? entry.renderer.lightmapScaleOffset : new Vector4(1, 1, 0, 0);
+                    if (layer.texture) view.DrawTextured(item.mesh, item.matrix, overlay, layer.texture, Color.white, ctx.PreviewUvChannel, uvScaleOffset);
                 }
                 if (canvas.ShowBorder) {
                     long boundaryKey = ((long)item.mesh.GetInstanceID() << 8) ^ (uint)ctx.PreviewUvChannel;
@@ -84,15 +85,15 @@ namespace SashaRX.UnityMeshLab
                         var pairs = canvas.GetPreviewBoundary(ctx, item.mesh, ctx.PreviewUvChannel);
                         if (pairs != null) boundaryMeshes[boundaryKey] = boundary = BuildBoundaryMesh(item.mesh, pairs);
                     }
-                    if (boundary) view.DrawLineMesh(boundary, item.matrix, new Color(1f, .35f, .05f, .9f));
+                    if (boundary) view.DrawLineMesh(boundary, item.matrix, ViewportHighlight.Border, ViewportHighlight.EdgeWidth);
                 }
                 if (canvas.SpotMode && EnsureMaterial())
                 {
                     if (canvas.HasSelectedShell && canvas.SelectedShell.meshEntry == entry)
-                        DrawShell(view, canvas, ctx, item, canvas.SelectedShell.shellId, SelectedColor);
+                        DrawShell(view, canvas, ctx, item, canvas.SelectedShell.shellId, ViewportHighlight.Fill(ViewportHighlight.Selected));
                     if (canvas.HasHoveredShell && canvas.HoveredShell.meshEntry == entry &&
                         !(canvas.HasSelectedShell && canvas.SelectedShell.meshEntry == entry && canvas.SelectedShell.shellId == canvas.HoveredShell.shellId))
-                        DrawShell(view, canvas, ctx, item, canvas.HoveredShell.shellId, HoverColor);
+                        DrawShell(view, canvas, ctx, item, canvas.HoveredShell.shellId, ViewportHighlight.Fill(ViewportHighlight.Hover));
                 }
             }
         }
@@ -100,7 +101,7 @@ namespace SashaRX.UnityMeshLab
         void DrawShell(MeshViewport3D view, UvCanvasView canvas, UvToolContext ctx, MeshViewport3D.Item item, int shellId, Color color)
         {
             var mesh = ShellMesh(canvas, ctx, item.mesh, shellId);
-            if (mesh) view.DrawTextured(mesh, item.matrix, overlay, null, color, 0);
+            if (mesh) view.DrawHighlightMesh(mesh, item.matrix, color);
         }
 
         internal static Mesh BuildBoundaryMesh(Mesh source, int channel)

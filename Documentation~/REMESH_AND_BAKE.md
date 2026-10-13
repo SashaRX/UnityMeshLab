@@ -4,9 +4,45 @@ Build a new static low-poly mesh, new UV0 atlas, and reproject source materials 
 the **Remesh & Bake** tab of **Tools → Mesh Lab → Open Mesh Lab**. The original
 meshes, materials, importers, scene objects and LODGroups are not replaced.
 
+Source-preview mesh reads and skinned posing are scheduled after IMGUI drawing.
+The sidebar shows `Preparing source preview…` while queued. Empty meshes are
+omitted from the preview. If a nonempty mesh has no Position channel or its data
+cannot be read, the partial preview is discarded and the sidebar shows the error
+with **Retry source preview**. Selecting another source or refreshing also retries.
+Queued work is cancelled when the preview/tool is cleared. MeshData availability
+is checked against the source layout/count; imported buffers use the Editor
+MeshUtility read-only snapshot without changing Read/Write. Unavailable snapshots
+retain the temporary importer fallback outside IMGUI, while truly empty copies do
+not acquire vertex data or reimport anything. These checks affect preview handling,
+not the strict geometry validation of Remesh/Reverse UV stages.
+
 ## Workflow
 
-The tab runs four stages. Each stage has its own settings and button; running a
+The tab prepares the source and then runs four native/bake stages. **Prepare / inspect Cap & Bridge**
+in the Remesh section captures and filters the source, welds the geometry-only
+support and prepares the selected closures without invoking native Remesh. The
+**Cap / Bridge** preview shows all retained hierarchy nodes: grey original faces,
+orange/purple closure patches, cyan original hole rims and red refused contours.
+Each refused contour has a selectable reason; its refusal does not cancel closures
+on other contours. A failed compound Cap or Bridge is rolled back in full. Its summary reports
+initial loops, generated patches/faces and remaining boundary edges. A partial
+loop selection can be inspected even with other holes still open. Remesh consumes
+the same snapshot; a subsequent solid-input or native-output refusal retains it.
+Changing capture/filter/closure settings requires preparation again. Changing
+only Solve, trim, Simplify, UV or bake settings reuses the captured support.
+
+Closure contacts are checked against its connected geometric element after weld.
+Faces and earlier Caps from other elements do not block closure, including inside
+one Mesh asset. Bridges protect both elements they join; subsequent closures use
+the updated connectivity. Unsupported contours still retain their refusal reasons.
+
+Automatic closure supports more than 16 selected contours, with work budgets for
+partner analysis instead of a global loop-count refusal. It recognizes mutually
+continuing collars and close, oppositely wound thin skins as Bridge candidates.
+Independent rims try local planar closure and then an audited curved Surface Cap.
+The full proposal is discarded on refusal; accepted closures on other rims remain.
+
+Each stage has its own settings and button; running a
 stage first brings every earlier stage up to date (missing output or changed
 settings, marked "settings changed" in its header) and clears everything after it.
 **Run all stages** re-runs the whole chain. The right panel previews the result:
@@ -30,6 +66,11 @@ settings, marked "settings changed" in its header) and clears everything after i
   of a sheet (a source face within reach faces the other way), orange a rim or a
   face with no source within reach — so what the cut removes, and why, is
   visible before the simplifier touches it.
+  **Part filter highlight**, at the *Source* stage, paints the original capture
+  green for kept parts, orange for parts removed by size, and red for parts
+  removed by thickness. It follows the filter sliders and selected root, and
+  includes completely filtered nodes in *Keep hierarchy*. The paint uses
+  temporary preview meshes and does not replace scene meshes or materials.
   The 3D panel also reports the atlas: island count and texel usage.
 - **Maps** — each baked map (base color, normal, metallic/smoothness, occlusion,
   emission).
@@ -220,7 +261,16 @@ Before the UV stage the canvas shows the selected model as usual.
    remaining background from the nearest filled pixel within the additional
    radius, without changing island pixels or averaging normal-map directions.
    It also applies to Texture AO and is included in previews and saved maps.
-5. **Bake** — **GPU projection** (default on where compute shaders exist) runs
+5. **Bake** — **Bake filtered-out parts** (default off) projects from the full
+   captured source before the small-part/rod filter. Small bolts, pipes and
+   cables can contribute materials, normals, vertex colours and lighting to
+   the retained shape even though they were removed from Remesh. In *Keep
+   hierarchy*, this includes fully filtered renderers under the source root;
+   donors are rebased into each target node's space. The captured texture
+   readbacks are reused. Changing this option requires only another Bake,
+   and the cage preview uses the selected donor. Projection reach and backface
+   rules still apply; the option does not restore removed geometry to the shape.
+   **GPU projection** (default on where compute shaders exist) runs
    the geometry queries — the projection rays and the nearest-point fallbacks —
    on the GPU through `Shaders/BvhQueries.compute`, the same BVH as the CPU with
    the same filters and the same hit records, so the result is the one the CPU

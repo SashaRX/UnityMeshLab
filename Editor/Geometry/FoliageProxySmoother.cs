@@ -18,7 +18,7 @@ namespace SashaRX.UnityMeshLab
         internal static RemeshNative.IndexedMesh Smooth(RemeshNative.IndexedMesh input, FoliageNormalsSettings settings, CancellationToken token, out Diagnostics diagnostics)
         {
             settings.Validate();
-            FoliageProxyBuilder.CheckTriangleBudget(input, settings.maximumProxyTriangles, token);
+            FoliageProxyBuilder.CheckTriangleBudget(input, settings.ProxyTriangleLimit, token);
             var topology = FoliageProxyBuilder.Validate(input, token, false);
             var beforeVolumes = FoliageProxyBuilder.ComponentVolumes(input, topology);
             var p = (Vector3[])input.positions.Clone(); var scratch = new Vector3[p.Length];
