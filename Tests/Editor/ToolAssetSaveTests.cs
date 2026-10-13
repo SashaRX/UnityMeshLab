@@ -16,9 +16,13 @@ namespace SashaRX.UnityMeshLab.Tests
     {
         const string Folder = "Assets/MeshLabToolSaveTests";
         readonly List<Object> owned = new List<Object>();
+        bool previousSidecarMode;
         const BindingFlags Fields = BindingFlags.Instance | BindingFlags.NonPublic;
         static void Set(object target, string name, object value) => target.GetType().GetField(name, Fields).SetValue(target, value);
         static T Get<T>(object target, string name) => (T)target.GetType().GetField(name, Fields).GetValue(target);
+
+        [SetUp]
+        public void RememberSidecarMode() => previousSidecarMode = PostprocessorDefineManager.IsEnabled();
 
         internal static bool SaveCollisionSidecarFixture(CollisionMeshTool tool)
         {
@@ -49,6 +53,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [TearDown]
         public void Cleanup()
         {
+            if (PostprocessorDefineManager.IsEnabled() != previousSidecarMode) PostprocessorDefineManager.SetEnabled(previousSidecarMode);
             foreach (var item in owned) if (item != null && !EditorUtility.IsPersistent(item)) Object.DestroyImmediate(item);
             owned.Clear();
             if (AssetDatabase.IsValidFolder(Folder)) AssetDatabase.DeleteAsset(Folder);
@@ -149,9 +154,12 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             var source = Source("ReverseHistory"); var mesh = source.entry.fbxMesh;
             mesh.uv2 = mesh.uv;
-            var entry = source.entry; entry.reverseTransferJson = "{\"schema\":2}";
+            var entry = source.entry; entry.reverseTransferJson = ReverseHistory(mesh);
             Assert.IsTrue(SidecarStore.TryBuildEntry(entry, mesh, false, SidecarStore.AoUvTarget.None, out var saved));
             var data = SidecarStore.LoadOrCreate(source.path); data.Set(saved); SidecarStore.Save(data);
+            SidecarStore.ArmTransientReplay(source.path, new List<MeshUv2Entry> { saved });
+            AssetDatabase.ImportAsset(source.path, ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate);
+            mesh = source.entry.meshFilter.sharedMesh;
             if (staleUv) mesh.uv2 = mesh.uv.Select(uv => uv * .5f).ToArray();
             var context = new UvToolContext();
             if (lod)
@@ -162,18 +170,165 @@ namespace SashaRX.UnityMeshLab.Tests
             }
             else context.RefreshStandalone((MeshRenderer)source.entry.renderer);
             Assert.AreEqual(staleUv ? null : entry.reverseTransferJson, context.MeshEntries.Single().reverseTransferJson);
-            Assert.AreEqual("{\"schema\":2}", data.entries.Single().reverseTransferJson);
+            if (!staleUv) Assert.AreEqual(128, context.MeshEntries.Single().repackedAtlasWidth);
+            Assert.AreEqual(entry.reverseTransferJson, data.entries.Single().reverseTransferJson);
         }
 
-        (string path, GameObject instance, MeshEntry entry) Source(string name, bool nested = false)
+        [Test]
+        public void PartialReverseApplyPreservesOmittedMeshesFromTheSameFbx()
+        {
+            PostprocessorDefineManager.SetEnabled(true);
+            var source = Source("PartialReverse", secondMesh: true);
+            var renderers = source.instance.GetComponentsInChildren<MeshRenderer>();
+            var group = source.instance.AddComponent<LODGroup>();
+            group.SetLODs(new[] { new LOD(.5f, renderers) });
+            var context = new UvToolContext(); context.Refresh(group);
+            var saved = new List<MeshUv2Entry>();
+            foreach (var entry in context.MeshEntries) {
+                entry.reverseTransferJson = ReverseHistory(entry.fbxMesh);
+                Assert.IsTrue(SidecarStore.TryBuildEntry(entry, entry.fbxMesh, false, SidecarStore.AoUvTarget.None, out var item));
+                saved.Add(item);
+            }
+            SidecarStore.SaveEntries(source.path, saved); context.Refresh(group);
+            var included = context.MeshEntries.Single(entry => entry.fbxMesh.name == source.entry.fbxMesh.name);
+            var omitted = context.MeshEntries.Single(entry => entry != included);
+            omitted.include = false;
+            string omittedName = omitted.fbxMesh.name, expected = omitted.reverseTransferJson;
+            Assert.IsNotNull(expected);
+            var result = Object.Instantiate(included.fbxMesh); owned.Add(result);
+            result.uv2 = result.uv2.Select(uv => uv * .75f).ToArray(); included.repackedMesh = result;
+            var before = File.ReadAllBytes(source.path);
+            context.Assets.AfterWrite = () => {
+                var current = context.MeshEntries.Single(entry => entry.fbxMesh.name == omittedName);
+                Assert.AreEqual(expected, current.reverseTransferJson);
+                Assert.AreEqual(128u, current.repackedAtlasWidth);
+            };
+            context.Assets.ApplyUv2Public();
+            CollectionAssert.AreEqual(before, File.ReadAllBytes(source.path));
+            Assert.AreEqual(expected, SidecarStore.Load(source.path).Find(omittedName).reverseTransferJson);
+        }
+
+        static string ReverseHistory(Mesh mesh, bool overlap = false)
+        {
+            var faces = Enumerable.Range(0, mesh.triangles.Length / 3).Select(face => new ReverseUvTransfer.Face {
+                chart = 0, layer = face, inherited = true, intentionalOverlap = overlap && face > 0 }).ToArray();
+            return JsonUtility.ToJson(new ReverseUvAudit.ProvenanceEntry {
+                atlasSize = 128, seedResolution = 128, texelsPerUnit = 32,
+                surface = new ReverseUvTransfer.NodeReport { lod = 0, key = mesh.name, faces = faces },
+                chain = new[] { new ReverseUvAudit.NodeKey { lod = 0, node = 0, key = mesh.name } },
+                overlaps = overlap ? new[] { new ReverseUvTransfer.OverlapRelation {
+                    lod = 0, underMesh = 0, overMesh = 0, underFace = 0, overFace = 1 } } : Array.Empty<ReverseUvTransfer.OverlapRelation>()
+            });
+        }
+
+        [TestCase(false, false)] [TestCase(true, false)]
+        [TestCase(false, true)] [TestCase(true, true)]
+        public void ReverseApplyRestoresCurrentProvenanceAfterOneShotImport(bool lod, bool persistent)
+        {
+            PostprocessorDefineManager.SetEnabled(persistent);
+            var source = Source("ReverseApply"); var mesh = source.entry.fbxMesh;
+            source.entry.reverseTransferJson = ReverseHistory(mesh);
+            Assert.IsTrue(SidecarStore.TryBuildEntry(source.entry, mesh, false, SidecarStore.AoUvTarget.None, out var previous));
+            SidecarStore.SaveEntries(source.path, new[] { previous });
+            var context = new UvToolContext();
+            if (lod) {
+                var group = source.instance.AddComponent<LODGroup>();
+                group.SetLODs(new[] { new LOD(.5f, new[] { source.entry.renderer }) }); context.Refresh(group);
+            }
+            else context.RefreshStandalone((MeshRenderer)source.entry.renderer);
+            var entry = context.MeshEntries.Single();
+            var result = Object.Instantiate(mesh); owned.Add(result);
+            result.uv2 = mesh.uv2.Select(uv => uv * .75f).ToArray(); entry.repackedMesh = result;
+            var history = JsonUtility.FromJson<ReverseUvAudit.ProvenanceEntry>(ReverseHistory(result));
+            history.surface.key = mesh.name; history.chain[0].key = mesh.name; history.texelsPerUnit = 24;
+            entry.reverseTransferJson = JsonUtility.ToJson(history);
+            string expected = entry.reverseTransferJson;
+            var bytes = File.ReadAllBytes(source.path); var guid = AssetDatabase.AssetPathToGUID(source.path);
+            context.Assets.AfterWrite = () => Assert.AreEqual(expected, context.MeshEntries.Single().reverseTransferJson);
+            context.Assets.ApplyUv2Public();
+            var current = context.MeshEntries.Single();
+            CollectionAssert.AreEqual(result.uv2, current.fbxMesh.uv2);
+            Assert.AreEqual(expected, current.reverseTransferJson);
+            Assert.AreEqual(128, current.repackedAtlasWidth);
+            Assert.AreEqual(persistent ? expected : previous.reverseTransferJson, SidecarStore.Load(source.path).entries.Single().reverseTransferJson);
+            CollectionAssert.AreEqual(bytes, File.ReadAllBytes(source.path));
+            Assert.AreEqual(guid, AssetDatabase.AssetPathToGUID(source.path));
+            // Returning to ordinary UV can deliberately reuse the old layout. Its
+            // matching disk sidecar must not revive old reverse permissions.
+            var ordinary = Object.Instantiate(current.fbxMesh); owned.Add(ordinary);
+            ordinary.uv2 = previous.uv2; current.repackedMesh = ordinary; current.reverseTransferJson = null;
+            context.Assets.AfterWrite = () => Assert.IsNull(context.MeshEntries.Single().reverseTransferJson);
+            context.Assets.ApplyUv2Public();
+            Assert.AreEqual(0, context.MeshEntries.Single().repackedAtlasWidth);
+        }
+
+        [TestCase("geometry")] [TestCase("face order")] [TestCase("winding")]
+        [TestCase("uv channel")] [TestCase("corrupt JSON")] [TestCase("surface identity")]
+        [TestCase("face count")] [TestCase("valid")] [TestCase("vertex order")]
+        [TestCase("unreadable")] [TestCase("reimport")]
+        public void ReverseRefreshDoesNotReusePermissionsForChangedFaces(string change)
+        {
+            var geometry = Triangle("ReversePair");
+            var positions = geometry.vertices; var uv = geometry.uv; var lightmap = geometry.uv2;
+            geometry.vertices = positions.Concat(positions.Select(v => v + Vector3.forward)).ToArray();
+            geometry.uv = uv.Concat(uv).ToArray(); geometry.uv2 = lightmap.Concat(lightmap).ToArray();
+            geometry.triangles = new[] { 0, 1, 2, 3, 4, 5 }; geometry.RecalculateNormals(); geometry.RecalculateBounds();
+            var source = Source("ReversePair", modelMesh: geometry); var mesh = source.entry.fbxMesh;
+            source.entry.reverseTransferJson = ReverseHistory(mesh, overlap: true);
+            Assert.IsTrue(SidecarStore.TryBuildEntry(source.entry, mesh, false, SidecarStore.AoUvTarget.None, out var saved));
+            var data = SidecarStore.LoadOrCreate(source.path); data.Set(saved); SidecarStore.Save(data);
+            saved = data.Find(mesh.name);
+            bool valid = change == "valid" || change == "vertex order" || change == "unreadable" || change == "reimport";
+            if (change == "vertex order") {
+                mesh.vertices = mesh.vertices.Reverse().ToArray(); mesh.uv = mesh.uv.Reverse().ToArray();
+                mesh.uv2 = mesh.uv2.Reverse().ToArray(); mesh.normals = mesh.normals.Reverse().ToArray();
+                mesh.triangles = mesh.triangles.Select(index => mesh.vertexCount - 1 - index).ToArray();
+            }
+            if (change == "unreadable") mesh.UploadMeshData(true);
+            if (change == "reimport") {
+                SidecarStore.ArmTransientReplay(source.path, new List<MeshUv2Entry> { saved });
+                AssetDatabase.ImportAsset(source.path, ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate);
+                mesh = source.entry.meshFilter.sharedMesh;
+            }
+            if (change == "geometry") { var v = mesh.vertices; v[0] += Vector3.right * .1f; mesh.vertices = v; }
+            if (change == "face order") mesh.triangles = mesh.triangles.Skip(3).Concat(mesh.triangles.Take(3)).ToArray();
+            if (change == "winding") { var t = mesh.triangles; (t[0], t[1]) = (t[1], t[0]); mesh.triangles = t; }
+            if (change == "uv channel") saved.targetUvChannel = 0;
+            if (change == "corrupt JSON") saved.reverseTransferJson = "not JSON";
+            if (change == "surface identity" || change == "face count") {
+                var report = JsonUtility.FromJson<ReverseUvAudit.ProvenanceEntry>(saved.reverseTransferJson);
+                if (change == "surface identity") report.surface.key = "Other";
+                else report.surface.faces = report.surface.faces.Take(1).ToArray();
+                saved.reverseTransferJson = JsonUtility.ToJson(report);
+            }
+            var context = new UvToolContext(); context.RefreshStandalone((MeshRenderer)source.entry.renderer);
+            var restored = context.MeshEntries.Single();
+            Assert.AreEqual(valid ? saved.reverseTransferJson : null, restored.reverseTransferJson);
+            var readable = MeshAccess.Readable(mesh, out bool owns);
+            try {
+            var quality = LightmapUvQuality.Measure(new[] { new LightmapUvQuality.Part {
+                positions = readable.vertices, uv = readable.uv2, triangles = readable.triangles, key = mesh.name,
+                provenance = restored.reverseTransferJson == null ? null : JsonUtility.FromJson<ReverseUvAudit.ProvenanceEntry>(restored.reverseTransferJson) } });
+            Assert.AreEqual(valid ? 1 : 0, quality.allowedOverlapPairs);
+            Assert.AreEqual(valid ? 0 : 1, quality.unexpectedOverlapPairs);
+            }
+            finally { if (owns) Object.DestroyImmediate(readable); }
+        }
+
+        (string path, GameObject instance, MeshEntry entry) Source(string name, bool nested = false, Mesh modelMesh = null, bool secondMesh = false)
         {
             if (!AssetDatabase.IsValidFolder(Folder)) AssetDatabase.CreateFolder("Assets", "MeshLabToolSaveTests");
             var root = new GameObject(nested ? name + "_Model" : name); owned.Add(root);
             var geometry = nested ? new GameObject(name) : root;
             if (nested) geometry.transform.SetParent(root.transform);
-            geometry.AddComponent<MeshFilter>().sharedMesh = Triangle(name);
+            geometry.AddComponent<MeshFilter>().sharedMesh = modelMesh ? modelMesh : Triangle(name);
             geometry.AddComponent<MeshRenderer>().sharedMaterial = new Material(Shader.Find("Standard"));
             owned.Add(geometry.GetComponent<MeshRenderer>().sharedMaterial);
+            if (secondMesh) {
+                var other = new GameObject(name + "_Other"); other.transform.SetParent(root.transform);
+                other.AddComponent<MeshFilter>().sharedMesh = Triangle(other.name);
+                other.AddComponent<MeshRenderer>().sharedMaterial = geometry.GetComponent<MeshRenderer>().sharedMaterial;
+            }
             string path = Folder + "/" + name + ".fbx";
             FbxExport.Write(path, root);
             AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);

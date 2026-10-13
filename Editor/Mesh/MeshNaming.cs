@@ -20,9 +20,9 @@ namespace SashaRX.UnityMeshLab
         // A match timeout bounds the backtracking on a hostile name (an asset name is user
         // input); every name these patterns see matches in microseconds.
         static readonly TimeSpan MatchTimeout = TimeSpan.FromSeconds(1);
-        static readonly Regex LodSuffix = new Regex(@"^(.*?)([_\-\s]+LOD(\d+))$", Ci, MatchTimeout);
-        static readonly Regex CollisionSuffix = new Regex(@"[_\-\s]+(?:COL(?:_\w+)?|Collider|Collision)$", Ci, MatchTimeout);
-        static readonly Regex LodOrCollisionSuffix = new Regex(@"[_\-\s]+(LOD\d+|COL\w*|Collider|Collision)$", Ci, MatchTimeout);
+        static readonly Regex LodSuffix = new Regex(@"^(.*?)([_\-\s]+LOD(\d+)(?<instance>\.\d+)?)$", Ci, MatchTimeout);
+        static readonly Regex CollisionSuffix = new Regex(@"[_\-\s]+(?:COL(?:_\w+)?|Collider|Collision)(?<instance>\.\d+)?$", Ci, MatchTimeout);
+        static readonly Regex LodOrCollisionSuffix = new Regex(@"[_\-\s]+(LOD\d+|COL\w*|Collider|Collision)(?:\.\d+)?$", Ci, MatchTimeout);
         static readonly Regex GroupSuffixes = new Regex(@"(?:[_\-\s]+(?:LOD\d+|COL(?:_Hull\d+)?|Collider|Collision))+(?<instance>\.\d+)?$", Ci, MatchTimeout);
         static readonly Regex PipelineSuffixes = new Regex(@"(_wc|_repack|_uvTransfer|_optimized|_LOD\d+)+$", RegexOptions.Compiled, MatchTimeout);
 
@@ -35,11 +35,19 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public static bool TryParseLod(string name, out string baseName, out int lod)
         {
+            if (!TryParseLodSuffix(name, out baseName, out lod)) return false;
+            if (lod < MaxLodLevels) return true;
+            baseName = name; lod = -1; return false;
+        }
+
+        /// <summary>Parses an unrestricted source LOD index and preserves its instance key for export renumbering.</summary>
+        internal static bool TryParseLodSuffix(string name, out string baseName, out int lod)
+        {
             baseName = name; lod = -1;
             if (string.IsNullOrEmpty(name)) return false;
             var m = LodSuffix.Match(name);
-            if (!m.Success || !int.TryParse(m.Groups[3].Value, out lod) || lod < 0 || lod >= MaxLodLevels) { lod = -1; return false; }
-            baseName = m.Groups[1].Value;
+            if (!m.Success || !int.TryParse(m.Groups[3].Value, out lod) || lod < 0) { lod = -1; return false; }
+            baseName = m.Groups[1].Value + m.Groups["instance"].Value;
             return true;
         }
 
@@ -47,7 +55,12 @@ namespace SashaRX.UnityMeshLab
         public static int LodIndex(string name) => TryParseLod(name, out _, out int lod) ? lod : -1;
 
         /// <summary>The name without its LOD suffix (any index), or the name itself.</summary>
-        public static string StripLod(string name) => SplitLodSuffix(name, out _);
+        public static string StripLod(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return name;
+            var match = LodSuffix.Match(name);
+            return match.Success ? match.Groups[1].Value + match.Groups["instance"].Value : name;
+        }
 
         /// <summary>
         /// The name without its LOD suffix, with the suffix text exactly as written
@@ -87,7 +100,7 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>The name without its collision suffix, or the name itself.</summary>
         public static string StripCollision(string name)
-            => string.IsNullOrEmpty(name) ? name : CollisionSuffix.Replace(name, "");
+            => string.IsNullOrEmpty(name) ? name : CollisionSuffix.Replace(name, "${instance}");
 
         /// <summary>True when a clean base name still carries a LOD or collision suffix.</summary>
         public static bool HasLodOrCollisionSuffix(string name) => !string.IsNullOrEmpty(name) && LodOrCollisionSuffix.IsMatch(name);

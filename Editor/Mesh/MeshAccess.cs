@@ -163,7 +163,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 dst.subMeshCount = meshData.subMeshCount;
                 for (int sub = 0; sub < meshData.subMeshCount; ++sub)
-                    dst.SetIndices(ReadIndices(src, meshData, sub), meshData.GetSubMesh(sub).topology, sub, calculateBounds: false);
+                    CopySubmeshIndices(dst, ReadIndices(src, meshData, sub), meshData.GetSubMesh(sub), sub);
             }
             if (src.isReadable) dst.bindposes = src.bindposes;
             else if (src.HasVertexAttribute(VertexAttribute.BlendWeight) || src.HasVertexAttribute(VertexAttribute.BlendIndices))
@@ -305,7 +305,8 @@ namespace SashaRX.UnityMeshLab
             // Indices at their own topology: a quad or line submesh stays one.
             dst.subMeshCount = src.subMeshCount;
             for (int s = 0; s < src.subMeshCount; s++)
-                dst.SetIndices(src.GetIndices(s), src.GetTopology(s), s, calculateBounds: false);
+                dst.SetIndices(src.GetIndices(s, applyBaseVertex: false), src.GetTopology(s), s,
+                    calculateBounds: false, baseVertex: checked((int)src.GetBaseVertex(s)));
             dst.bounds = src.bounds;
         }
 
@@ -352,10 +353,16 @@ namespace SashaRX.UnityMeshLab
                 }
                 dst.subMeshCount = md.subMeshCount;
                 for (int s = 0; s < md.subMeshCount; s++)
-                    dst.SetIndices(ReadIndices(src, md, s), md.GetSubMesh(s).topology, s, calculateBounds: false);
+                    CopySubmeshIndices(dst, ReadIndices(src, md, s), md.GetSubMesh(s), s);
             }
             dst.bounds = src.bounds;
             return dst;
+        }
+
+        static void CopySubmeshIndices(Mesh destination, int[] indices, SubMeshDescriptor descriptor, int submesh)
+        {
+            for (int i = 0; i < indices.Length; ++i) indices[i] -= descriptor.baseVertex;
+            destination.SetIndices(indices, descriptor.topology, submesh, calculateBounds: false, baseVertex: descriptor.baseVertex);
         }
 
         // MeshData's typed getters all take NativeArray buffers; each helper copies out

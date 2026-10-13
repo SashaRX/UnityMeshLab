@@ -184,6 +184,22 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void NormalizeExportKeepsNumericInstancesInSeparateContiguousLodChains()
+        {
+            var root = Node("Seat", null);
+            foreach (string name in new[] { "Seat_LOD5", "Seat_LOD2.001", "Seat_LOD16.001", "Seat_LOD8.002" })
+                Node(name, root.transform, Quad(name));
+            var sink = new List<Mesh>();
+            var renames = FbxExport.NormalizeExportHierarchy(root, sink);
+            scratch.AddRange(sink);
+            Assert.AreEqual("Seat_LOD0", renames["Seat_LOD5"]);
+            Assert.AreEqual("Seat.001_LOD0", renames["Seat_LOD2.001"]);
+            Assert.AreEqual("Seat.001_LOD1", renames["Seat_LOD16.001"]);
+            Assert.AreEqual("Seat.002_LOD0", renames["Seat_LOD8.002"]);
+            foreach (Transform child in root.transform) Assert.IsTrue(MeshNaming.TryParseLod(child.name, out _, out _));
+        }
+
+        [Test]
         public void NormalizeHierarchyPreservesWorldGeometryThroughNestedAndMirroredTransforms()
         {
             var root = Node("Body", null, Quad("RootMesh"));

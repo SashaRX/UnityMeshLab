@@ -210,6 +210,48 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { UnityEngine.Object.DestroyImmediate(mesh); }
         }
 
+        [TestCase(1, false, false)] [TestCase(1, false, true)]
+        [TestCase(2, false, false)] [TestCase(2, false, true)]
+        [TestCase(2, true, false)] [TestCase(2, true, true)]
+        public void ReadableCopyPreservesUInt16BaseVerticesAcrossUvFormats(int dimension, bool half, bool unreadable)
+        {
+            const int highBase = 65536;
+            int count = highBase + 3;
+            var mesh = new Mesh { indexFormat = IndexFormat.UInt16 };
+            Mesh copy = null;
+            try {
+                mesh.SetVertexBufferParams(count,
+                    new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3, 0),
+                    new VertexAttributeDescriptor(VertexAttribute.TexCoord0, half ? VertexAttributeFormat.Float16 : VertexAttributeFormat.Float32, dimension, 1));
+                var positions = new Vector3[count]; positions[1] = Vector3.right; positions[2] = Vector3.up;
+                positions[highBase] = Vector3.forward; positions[highBase + 1] = Vector3.forward + Vector3.right;
+                positions[highBase + 2] = Vector3.forward + Vector3.up;
+                mesh.SetVertexBufferData(positions, 0, 0, count, 0);
+                if (half) {
+                    var uv = new ushort[count * dimension]; uv[1] = 0x3c00;
+                    mesh.SetVertexBufferData(uv, 0, 0, uv.Length, 1);
+                }
+                else {
+                    var uv = new float[count * dimension]; uv[1] = .123456789f;
+                    mesh.SetVertexBufferData(uv, 0, 0, uv.Length, 1);
+                }
+                mesh.subMeshCount = 2;
+                mesh.SetTriangles(new[] { 0, 1, 2 }, 0, false, 0);
+                mesh.SetTriangles(new[] { 0, 1, 2 }, 1, false, highBase); mesh.RecalculateBounds();
+                var channel = RawChannel(mesh, VertexAttribute.TexCoord0, dimension * (half ? 2 : 4));
+                if (unreadable) mesh.UploadMeshData(true);
+                copy = MeshAccess.ReadableCopy(mesh);
+                Assert.AreEqual(IndexFormat.UInt16, copy.indexFormat);
+                Assert.AreEqual(0, copy.GetBaseVertex(0)); Assert.AreEqual(highBase, copy.GetBaseVertex(1));
+                CollectionAssert.AreEqual(new[] { 0, 1, 2 }, copy.GetTriangles(0, false));
+                CollectionAssert.AreEqual(new[] { 0, 1, 2 }, copy.GetTriangles(1, false));
+                CollectionAssert.AreEqual(new[] { highBase, highBase + 1, highBase + 2 }, copy.GetTriangles(1));
+                CollectionAssert.AreEqual(positions, copy.vertices);
+                CollectionAssert.AreEqual(channel, RawChannel(copy, VertexAttribute.TexCoord0, dimension * (half ? 2 : 4)));
+            }
+            finally { if (copy) UnityEngine.Object.DestroyImmediate(copy); UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
         [TestCase(2)]
         [TestCase(4)]
         public void Metric_RestoresHalfUv0DescriptorAndBitsWhileKeepingGeneratedUv2(int dimension)
@@ -581,8 +623,10 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
-        [TestCase(0f)] [TestCase(1.5f)]
-        public void WorkflowReplacementCaptureRetainsConfiguredBoundaryTolerance(float tolerance)
+        static readonly float[] ReplacementTolerances = { 0f, 1.5f };
+
+        [UnityTest]
+        public IEnumerator WorkflowReplacementCaptureRetainsConfiguredBoundaryTolerance([ValueSource(nameof(ReplacementTolerances))] float tolerance)
         {
             var sourceMesh = new Mesh { vertices = new[] { Vector3.zero, new Vector3(.5f, 0, 0), new Vector3(.5f, 1, 0), Vector3.up,
                 new Vector3(.5f, 0, 0), Vector3.right, new Vector3(1, 1, 0), new Vector3(.5f, 1, 0) },
@@ -616,6 +660,17 @@ namespace SashaRX.UnityMeshLab.Tests
                     Assert.IsTrue(pair.hasBoundaryTolerance);
                     Assert.AreEqual(tolerance, pair.BoundaryToleranceTexels);
                 }
+                Assert.AreEqual("superseded", capture.Data.pairs[0].status);
+                Assert.IsNull(capture.Data.pairs[0].outputMesh);
+                Assert.AreEqual("complete", capture.Data.pairs[1].status);
+                var replayTask = TransferCaseReplay.Replay(Path.Combine(capture.Folder, "manifest.json"));
+                while (!replayTask.IsCompleted) yield return null;
+                var replay = replayTask.GetAwaiter().GetResult();
+                Assert.IsTrue(replay.complete, replay.error);
+                Assert.AreEqual(1, replay.pairs.Count, "Only the published replacement may be replayed.");
+                Assert.IsNull(replay.pairs[0].error);
+                Assert.IsTrue(replay.pairs[0].baselineEqual);
+                Assert.IsTrue(replay.pairs[0].repeatEqual);
             }
             finally {
                 capture?.Finish(true); context.DiagnosticCapture = null; workflow.OnDeactivate(); canvas.Cleanup();

@@ -38,6 +38,8 @@ namespace SashaRX.UnityMeshLab
             public string source, target, group, sourceMesh, targetMesh, outputMesh, baselineUvHash, status = "pending";
             public string details;
             public bool clamp;
+            public bool preparedProjection;
+            public int[] projectionSources;
             public bool hasBoundaryTolerance;
             public float boundaryToleranceTexels;
             internal float BoundaryToleranceTexels => hasBoundaryTolerance ? boundaryToleranceTexels : UvTransferTolerance.BoundaryTexels;
@@ -53,6 +55,7 @@ namespace SashaRX.UnityMeshLab
         }
         [Serializable] internal sealed class PairDetails
         {
+            public int[] projectionSources;
             public List<GroupedShellTransfer.OverlapSourceHint> overlapHints;
             public List<GroupedShellTransfer.CrossLodMatchHint> matchHints;
             public GroupedShellTransfer.TransferResult result;
@@ -158,7 +161,7 @@ namespace SashaRX.UnityMeshLab
 
         internal Pair BeforePair(MeshEntry source, MeshEntry target, Mesh sourceMesh, Mesh targetMesh,
             List<GroupedShellTransfer.OverlapSourceHint> overlapHints, List<GroupedShellTransfer.CrossLodMatchHint> matchHints,
-            float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels)
+            float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels, int[] projectionSources = null)
         {
             Pair pair = null;
             Safe(() => {
@@ -166,6 +169,7 @@ namespace SashaRX.UnityMeshLab
                 pair = new Pair { index = Data.pairs.Count, source = source.renderer ? source.renderer.name : sourceMesh.name,
                     target = target.renderer ? target.renderer.name : targetMesh.name, targetLod = target.lodIndex, group = target.meshGroupKey,
                     sourceMesh = StoreMesh(sourceMesh), targetMesh = StoreMesh(targetMesh), clamp = context.ClampLightmapToUnit,
+                    preparedProjection = projectionSources != null, projectionSources = projectionSources == null ? null : (int[])projectionSources.Clone(),
                     atlasWidth = (int)source.repackedAtlasWidth, atlasHeight = (int)source.repackedAtlasHeight,
                     localToWorld = context.PreviewMatrix(target.renderer ? target.renderer.transform : null),
                     hasSourceTransform = true, hasBoundaryTolerance = true, boundaryToleranceTexels = boundaryToleranceTexels,
@@ -176,6 +180,20 @@ namespace SashaRX.UnityMeshLab
                 Data.pairs.Add(pair); Save();
             });
             return failed ? null : pair;
+        }
+
+        internal Pair ReplacePair(Pair previous, MeshEntry source, MeshEntry target, Mesh sourceMesh, Mesh targetMesh,
+            GroupedShellTransfer.TransferResult trial, float boundaryToleranceTexels, int[] projectionSources)
+        {
+            if (previous != null) Safe(() => {
+                previous.result = trial;
+                previous.status = "superseded";
+                StorePairDetails(previous);
+                Save();
+            });
+            // The trial has never been published to entry.transferredMesh. Keep it
+            // for diagnosis, but only replay the replacement with its actual inputs.
+            return BeforePair(source, target, sourceMesh, targetMesh, null, null, boundaryToleranceTexels, projectionSources);
         }
 
         internal void AfterPair(Pair pair, MeshEntry entry, GroupedShellTransfer.TransferResult result)
@@ -260,7 +278,7 @@ namespace SashaRX.UnityMeshLab
             foreach (var pair in Data.pairs) compact.pairs.Add(new Pair { index = pair.index, targetLod = pair.targetLod,
                 atlasWidth = pair.atlasWidth, atlasHeight = pair.atlasHeight, source = pair.source, target = pair.target,
                 group = pair.group, sourceMesh = pair.sourceMesh, targetMesh = pair.targetMesh, outputMesh = pair.outputMesh,
-                baselineUvHash = pair.baselineUvHash, status = pair.status, clamp = pair.clamp,
+                baselineUvHash = pair.baselineUvHash, status = pair.status, clamp = pair.clamp, preparedProjection = pair.preparedProjection,
                 localToWorld = pair.localToWorld, hasSourceTransform = pair.hasSourceTransform,
                 sourceLocalToWorld = pair.sourceLocalToWorld, hasBoundaryTolerance = pair.hasBoundaryTolerance,
                 boundaryToleranceTexels = pair.boundaryToleranceTexels, details = pair.details, trace = null });
@@ -273,7 +291,7 @@ namespace SashaRX.UnityMeshLab
 
         void StorePairDetails(Pair pair)
         {
-            pair.details = StoreDetails(new PairDetails { overlapHints = pair.overlapHints, matchHints = pair.matchHints,
+            pair.details = StoreDetails(new PairDetails { projectionSources = pair.projectionSources, overlapHints = pair.overlapHints, matchHints = pair.matchHints,
                 result = pair.result, trace = pair.trace, quality = pair.quality, validation = pair.validation });
         }
 
@@ -403,6 +421,7 @@ namespace SashaRX.UnityMeshLab
             var details = ReadDetails<PairDetails>(root, pair.details);
             if (details == null) throw new InvalidDataException("Invalid transfer pair payload.");
             pair.overlapHints = details.overlapHints; pair.matchHints = details.matchHints;
+            pair.projectionSources = details.projectionSources;
             pair.result = details.result; pair.trace = details.trace;
             pair.quality = details.quality; pair.validation = details.validation;
         }

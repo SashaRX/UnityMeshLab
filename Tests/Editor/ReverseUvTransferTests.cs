@@ -1316,6 +1316,44 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsNull(saved); CollectionAssert.AreEqual(before, TransferMeshSnapshot.Capture(source));
         }
 
+        [TestCase("valid")] [TestCase("vertex order")] [TestCase("unreadable")]
+        [TestCase("changed UV2")] [TestCase("face order")]
+        public void ReverseHistoryRecognizesExistingUv2SeamsWithoutReusingEditedFaces(string change)
+        {
+            var original = Quad();
+            var mesh = ReverseUvMesh.Copy(original, original.triangles,
+                new[] { Vector2.zero, Vector2.right * .2f, Vector2.one * .2f,
+                    Vector2.one * .6f, Vector2.one * .8f, Vector2.up * .8f });
+            owned.Add(mesh);
+            var saved = new MeshUv2Entry {
+                targetUvChannel = 1, vertPositions = mesh.vertices, vertUv0 = mesh.uv, uv2 = mesh.uv2,
+                optimizedTriangles = mesh.triangles, submeshTriangleCounts = new[] { mesh.triangles.Length },
+                reverseTransferJson = JsonUtility.ToJson(new ReverseUvAudit.ProvenanceEntry {
+                    atlasSize = 128, surface = new ReverseUvTransfer.NodeReport { key = mesh.name,
+                        faces = new[] { new ReverseUvTransfer.Face { chart = 0 }, new ReverseUvTransfer.Face { chart = 1 } } }
+                })
+            };
+            if (change == "vertex order") {
+                mesh.vertices = saved.vertPositions.Reverse().ToArray();
+                mesh.uv = saved.vertUv0.Reverse().ToArray(); mesh.uv2 = saved.uv2.Reverse().ToArray();
+                mesh.triangles = saved.optimizedTriangles.Select(index => mesh.vertexCount - 1 - index).ToArray();
+            }
+            if (change == "changed UV2") { var uv = mesh.uv2; uv[0] += Vector2.one * .01f; mesh.uv2 = uv; }
+            if (change == "face order") mesh.triangles = saved.optimizedTriangles.Skip(3).Concat(saved.optimizedTriangles.Take(3)).ToArray();
+            var before = TransferMeshSnapshot.Capture(mesh);
+            if (change == "unreadable") mesh.UploadMeshData(true);
+            var entry = new MeshEntry { fbxMesh = mesh, originalMesh = mesh };
+            SidecarStore.RestoreReverseProvenance(entry, saved);
+            bool valid = change == "valid" || change == "vertex order" || change == "unreadable";
+            Assert.AreEqual(valid ? saved.reverseTransferJson : null, entry.reverseTransferJson);
+            Assert.AreEqual(valid ? 128u : 0u, entry.repackedAtlasWidth);
+            Assert.IsFalse(SidecarStore.ReverseLegacyTopologySafe(mesh, saved), "Legacy sidecar replay still cannot introduce an ambiguous UV2 seam.");
+            Assert.AreEqual(change != "unreadable", mesh.isReadable);
+            var readable = MeshAccess.Readable(mesh, out bool owns);
+            try { CollectionAssert.AreEqual(before, TransferMeshSnapshot.Capture(readable)); }
+            finally { if (owns) Object.DestroyImmediate(readable); }
+        }
+
         [TestCase(false,false,false)] [TestCase(true,false,false)] [TestCase(false,true,false)] [TestCase(false,false,true)]
         public void ReverseSidecarChecksTheReplayPositionBucket(bool distinctBucket, bool distinctUv0, bool sameUv2)
         {
