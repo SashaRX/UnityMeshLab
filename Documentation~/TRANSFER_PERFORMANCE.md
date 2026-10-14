@@ -772,3 +772,13 @@ sync path and from 1.25 s to 0.93 s on the async path, where it runs as a
 direct call. That stage is under 4% of the overlap solve, so the whole Reverse
 total shows no change beyond run-to-run spread. See EXPERIMENTS.md ("Burst
 raster on the synchronous and asynchronous paths — measured").
+
+### Forward stage profile
+
+Forward stages are now profiled too. The paired test passes its forward profile
+to `UvTransferWorkflow.ForwardPerformance`, and every `Forward …` sample nests
+inside `Forward pipeline`. Kamaz medians: 27.41 s pipeline, of which 23.58 s is
+the donor seam trial (26 projection passes, 20.12 s; 279 contact audits,
+2.61 s). Shell transfer takes 2.24 s and repack 0.82 s, with one auto-tune
+attempt. All 120 exports remain byte-identical. The full table and the next
+forward experiment are in EXPERIMENTS.md ("Forward stage profile").
