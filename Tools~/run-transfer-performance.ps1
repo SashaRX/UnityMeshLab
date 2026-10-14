@@ -14,6 +14,7 @@ param(
     [switch]$DisableOccupancySnapshotReuse,
     [switch]$DisableBurstRaster,
     [switch]$ParallelValidation,
+    [switch]$AsyncReverse,
     [switch]$RequireBurstRaster,
     [switch]$CaptureNativePacking,
     [string]$NativePackingReplayExecutable='',
@@ -39,6 +40,7 @@ $savedCombined=$env:MESHLAB_COMBINED_NATIVE
 $savedReuse=$env:MESHLAB_DISABLE_OCCUPANCY_SNAPSHOT_REUSE
 $savedBurst=$env:MESHLAB_DISABLE_BURST_RASTER
 $savedParallel=$env:MESHLAB_PARALLEL_VALIDATION
+$savedAsync=$env:MESHLAB_PAIRED_ASYNC_REVERSE
 $savedRequireBurst=$env:MESHLAB_REQUIRE_BURST_RASTER
 $savedNativeCapture=$env:MESHLAB_CAPTURE_NATIVE_PACKING
 $savedNativeReplay=$env:MESHLAB_NATIVE_PACKING_REPLAY_EXECUTABLE
@@ -60,6 +62,7 @@ try {
     $env:MESHLAB_DISABLE_OCCUPANCY_SNAPSHOT_REUSE=if($DisableOccupancySnapshotReuse){'1'}else{'0'}
     $env:MESHLAB_DISABLE_BURST_RASTER=if($DisableBurstRaster){'1'}else{'0'}
     $env:MESHLAB_PARALLEL_VALIDATION=if($ParallelValidation){'1'}else{'0'}
+    $env:MESHLAB_PAIRED_ASYNC_REVERSE=if($AsyncReverse){'1'}else{'0'}
     $env:MESHLAB_REQUIRE_BURST_RASTER=if($RequireBurstRaster){'1'}else{'0'}
     $env:MESHLAB_DISABLE_NATIVE_FOOTPRINT_SEARCH=if($DisableNativeFootprintSearch){'1'}else{'0'}
     if($NativePackingReplayExecutable) {
@@ -116,6 +119,7 @@ finally {
     $env:MESHLAB_DISABLE_OCCUPANCY_SNAPSHOT_REUSE=$savedReuse
     $env:MESHLAB_DISABLE_BURST_RASTER=$savedBurst
     $env:MESHLAB_PARALLEL_VALIDATION=$savedParallel
+    $env:MESHLAB_PAIRED_ASYNC_REVERSE=$savedAsync
     $env:MESHLAB_REQUIRE_BURST_RASTER=$savedRequireBurst
     $env:MESHLAB_CAPTURE_NATIVE_PACKING=$savedNativeCapture
     $env:MESHLAB_NATIVE_PACKING_REPLAY_EXECUTABLE=$savedNativeReplay

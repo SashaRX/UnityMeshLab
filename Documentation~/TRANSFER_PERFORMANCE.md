@@ -777,3 +777,12 @@ control. Kamaz forward falls from 27.41 s to 19.89 s and Kitchen from 3.74 s to
 3.00 s (three-run medians). The detached reverse preparation gains the same.
 All 120 exports stay byte-identical; details are in EXPERIMENTS.md ("Forward
 seam passes share their projection prefix").
+
+`-AsyncReverse` (`MESHLAB_PAIRED_ASYNC_REVERSE=1`) runs the reverse modes through
+the editor's asynchronous path, with final packing on workers, as the hub does.
+A Burst ablation on both paths keeps all 120 exports byte-identical in 12 runs.
+Burst shortens the Kamaz footprint raster stage from 1.28 s to 1.04 s on the
+sync path and from 1.25 s to 0.93 s on the async path, where it runs as a
+direct call. That stage is under 4% of the overlap solve, so the whole Reverse
+total shows no change beyond run-to-run spread. See EXPERIMENTS.md ("Burst
+raster on the synchronous and asynchronous paths — measured").
