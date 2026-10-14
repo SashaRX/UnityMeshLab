@@ -20,8 +20,10 @@ namespace SashaRX.UnityMeshLab.Tests
         }
         static ReverseUvTransfer.Level Level(int lod,params Mesh[] meshes)=>new ReverseUvTransfer.Level {lod=lod,
             inputs=meshes.Select((m,i)=>new ReverseUvTransfer.Input {mesh=m,key="Frozen"+i,usePreparedUv2=true}).ToArray()};
-        static ReverseUvTransfer.Result Build(params ReverseUvTransfer.Level[] levels)=>ReverseUvTransfer.Build(levels,
-            new ReverseUvTransfer.Options {seedResolution=128,seedDensity=32,projectionReach=.1f,
+        static ReverseUvTransfer.Result Build(params ReverseUvTransfer.Level[] levels)=>Build(false,levels);
+
+        static ReverseUvTransfer.Result Build(bool cutNarrowJunctions,params ReverseUvTransfer.Level[] levels)=>ReverseUvTransfer.Build(levels,
+            new ReverseUvTransfer.Options {seedResolution=128,seedDensity=32,projectionReach=.1f,cutFoundationJunctions=cutNarrowJunctions,
                 regroupPreparedAtlas=true,frozenShellCascade=true,repackFinalAtlas=true}).GetAwaiter().GetResult();
 
         [Test]
@@ -196,12 +198,14 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(0,result.report.splitSourceFaces);
         }
 
-        [TestCase("#####/#...#/#####")]
-        [TestCase("#...#/#...#/#####")]
-        [TestCase("#####/#..../#####")]
-        [TestCase("#...#/#####/#...#")]
-        [TestCase("#####/..#../..#..")]
-        public void FoundationCutsFrameAndBranchPatternsWithoutGeneratingFinerTriangles(string pattern)
+        [TestCase("#####/#...#/#####",true)]
+        [TestCase("#...#/#...#/#####",true)]
+        [TestCase("#####/#..../#####",true)]
+        [TestCase("#...#/#####/#...#",true)]
+        [TestCase("#####/..#../..#..",true)]
+        [TestCase("#####/#...#/#####",false)]
+        [TestCase("#...#/#####/#...#",false)]
+        public void FoundationCutsFrameAndBranchPatternsWithoutGeneratingFinerTriangles(string pattern,bool cutNarrowJunctions)
         {
             var vertices=new List<Vector3>();var indices=new List<int>();var unique=new Dictionary<Vector3,int>();var rows=pattern.Split('/');
             for(int y=0;y<rows.Length;++y)
@@ -213,8 +217,11 @@ namespace SashaRX.UnityMeshLab.Tests
                 }
             var coarse=new Mesh {name="Pattern",vertices=vertices.ToArray(),triangles=indices.ToArray(),
                 uv2=vertices.Select(p=>new Vector2(p.x,p.y)*.25f).ToArray()};owned.Add(coarse);
-            var fine=Quad(20);using var result=Build(Level(1,coarse),Level(0,fine));
-            Assert.Greater(result.report.nodes.Single(n=>n.lod==1).faces.Select(f=>f.chart).Distinct().Count(),1);
+            var fine=Quad(20);using var result=Build(cutNarrowJunctions,Level(1,coarse),Level(0,fine));
+            int charts=result.report.nodes.Single(n=>n.lod==1).faces.Select(f=>f.chart).Distinct().Count();
+            // The cut is the user's "Cut narrow UV junctions" option, as in Repack.
+            if(cutNarrowJunctions) Assert.Greater(charts,1);
+            else Assert.AreEqual(1,charts,"Without the option the connected foundation island stays whole.");
             Assert.AreEqual(indices.Count,result.meshes[0][0].triangles.Length);
             Assert.AreEqual(6,result.meshes[1][0].triangles.Length);
             Assert.AreEqual(0,result.report.splitSourceFaces);

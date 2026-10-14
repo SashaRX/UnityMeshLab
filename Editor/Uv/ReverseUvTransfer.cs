@@ -26,6 +26,9 @@ namespace SashaRX.UnityMeshLab
             public bool preserveProjectedOverlap;
             public bool rebuildSeedWithUnity;
             public bool cutNarrowJunctions;
+            // The user's junction-cut option for the frozen coarsest foundation.
+            // Projection trials clear cutNarrowJunctions in regrouped chains.
+            internal bool cutFoundationJunctions;
             internal bool regroupPreparedAtlas;
             internal bool frozenShellCascade;
             internal FrozenShellPlacement frozenPlacement;

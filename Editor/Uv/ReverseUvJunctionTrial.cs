@@ -76,6 +76,7 @@ namespace SashaRX.UnityMeshLab
                     maxAnisotropy = options.maxAnisotropy, preserveProjectedOverlap = options.preserveProjectedOverlap,
                     boundaryToleranceTexels = options.boundaryToleranceTexels, relativeStretchTolerance = options.relativeStretchTolerance,
                     comparisonBudget = options.comparisonBudget, cutNarrowJunctions = cuts,
+                    cutFoundationJunctions = options.cutNarrowJunctions,
                     regroupPreparedAtlas=options.regroupPreparedAtlas,
                     frozenShellCascade=options.frozenShellCascade, beforeFinalPacking=options.beforeFinalPacking,
                     splitDonorSeams = options.splitDonorSeams, fillAtlasVacancies = options.fillAtlasVacancies,

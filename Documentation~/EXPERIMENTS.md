@@ -35,10 +35,17 @@ per-face provenance from `report.json`. Analysis scripts and atlas renders:
   sliver's ratio is roundoff, e.g. 4.7 or 10⁴ for one 1e-4 px² face. Quality
   scores that fall to 39 come from `worstStretch` counting these faces, not
   from visible distortion.
+- **Foundation cuts follow the option.** The coarsest-foundation O/U/C/H/T
+  cuts in `InitializeFrozenShellChain` ran unconditionally. The regrouped
+  trial clears `cutNarrowJunctions` for its projection cuts, so the frozen
+  foundation now reads `cutFoundationJunctions`, which `BuildOne` sets from the
+  user's "Cut narrow UV junctions" option. It is off by default and labelled
+  experimental. With the option on (the benchmark), all 120 exports are
+  unchanged. An experiment without the cuts shows the trade-off on Kitchen:
+  LOD1 has 560 instead of 708 islands, alignment 83.3 → 83.8%, but Fill atlas
+  reaches only 96 instead of 128 tex/m. Kamaz fill drops 0.5%. The cuts buy
+  density, not alignment; Kitchen's remaining misalignment has another cause.
 - **Remaining causes, not fixed here.**
-  - Coarsest-foundation O/U/C/H/T cuts in `InitializeFrozenShellChain` run
-    unconditionally, ignoring `cutNarrowJunctions`. Kitchen LOD1 has 708
-    reverse islands against 503 forward.
   - Overlap mode repacks intact forward islands apart from their coarser
     counterparts. Kitchen LOD1 alignment is 74% (forward 87%).
   - A coarse LOD triangulated differently from the finer one leaves many

@@ -55,18 +55,24 @@ namespace SashaRX.UnityMeshLab
             int cuts=0;
             foreach(var surface in chain[0])
             {
-                // A UV cut duplicates a seam at existing edges. The foundation's
-                // positions, triangle order and UV coordinates remain unchanged.
-                var unique=new Dictionary<(Vector3,Vector2),int>();var points=new List<Vector2>();
-                var indices=new int[surface.indices.Length];
-                for(int c=0;c<indices.Length;++c)
+                // Optional cuts follow the user's "Cut narrow UV junctions" option, as
+                // before Repack; without it every connected foundation island stays whole.
+                var regions=(int[])surface.preparedRegions.Clone();
+                if(options.cutFoundationJunctions)
                 {
-                    var key=(surface.positions[surface.indices[c]],surface.pixels[c]);
-                    if(!unique.TryGetValue(key,out int vertex)) {vertex=points.Count;unique.Add(key,vertex);points.Add(key.Item2);}
-                    indices[c]=vertex;
+                    // A UV cut duplicates a seam at existing edges. The foundation's
+                    // positions, triangle order and UV coordinates remain unchanged.
+                    var unique=new Dictionary<(Vector3,Vector2),int>();var points=new List<Vector2>();
+                    var indices=new int[surface.indices.Length];
+                    for(int c=0;c<indices.Length;++c)
+                    {
+                        var key=(surface.positions[surface.indices[c]],surface.pixels[c]);
+                        if(!unique.TryGetValue(key,out int vertex)) {vertex=points.Count;unique.Add(key,vertex);points.Add(key.Item2);}
+                        indices[c]=vertex;
+                    }
+                    var plan=UvJunctionCuts.Find(points.ToArray(),indices,token);cuts+=plan.cuts;regions=plan.regions;
                 }
-                var plan=UvJunctionCuts.Find(points.ToArray(),indices,token);cuts+=plan.cuts;
-                foreach(var region in Enumerable.Range(0,surface.faces.Length).GroupBy(f=>plan.regions[f]))
+                foreach(var region in Enumerable.Range(0,surface.faces.Length).GroupBy(f=>regions[f]))
                 {
                     int chart=nextChart++;
                     var corners=region.SelectMany(f=>Enumerable.Range(f*3,3)).ToArray();

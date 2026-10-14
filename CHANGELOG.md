@@ -5,6 +5,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+- Reverse UV cuts the frozen coarsest foundation at narrow O/U/C/H/T junctions only when "Cut narrow UV junctions" is enabled, as it already did before Repack; with the option off (default) connected foundation islands stay whole.
 - Ordinary Transfer welds co-positioned UV2 corners that differ by at most 0.25 texel (transfer roundoff on duplicated vertices), copying the lowest-index value and refusing any weld that flips or collapses a face. Transferred LODs lose phantom seams; Reverse UV no longer splits such islands, which improves its LOD alignment and packing.
 - Forward Transfer no longer copies whole-mesh streams per shell: symmetry-split snapshots read vertices/normals once per mesh state, prescribed splits memoize a shell's UV0 overlap until the next split, and per-shell overlap scans use compact shell geometry. The diagnostic-only 3D coverage pass runs only when its Verbose log is enabled. Transfer decisions and UVs are unchanged.
 - Reverse UV final packing skips the unused rotation ranking of axis-aligned families and the duplicate first sub-ULP rescue phase, and parses mesh group keys once per surface in the cross-LOD join. Packing decisions and UVs are unchanged.
