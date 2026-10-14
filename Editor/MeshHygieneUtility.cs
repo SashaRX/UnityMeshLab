@@ -198,9 +198,8 @@ namespace SashaRX.UnityMeshLab
         /// <list type="bullet">
         /// <item>Resolves writable mesh (<c>originalMesh ?? fbxMesh</c>).</item>
         /// <item>Bails out with a warning if missing or non-readable.</item>
-        /// <item>Clones asset-backed meshes and re-wires <c>MeshFilter</c> + <c>entry.originalMesh</c>;
-        /// adopts a pipeline working copy as the renderer's scene edit. Either way the edit is
-        /// <c>entry.sceneEditMesh</c>, which no reset destroys.</item>
+        /// <item>Clones asset-backed meshes and pipeline working copies and re-wires <c>MeshFilter</c> +
+        /// <c>entry.originalMesh</c>: the clone is <c>entry.sceneEditMesh</c>, which no reset destroys.</item>
         /// <item>Records the resulting mesh and its filter for Undo under <paramref name="undoLabel"/>.</item>
         /// </list>
         /// Returns <c>false</c> when the entry cannot be safely mutated.
@@ -240,19 +239,27 @@ namespace SashaRX.UnityMeshLab
             }
             else if (source != entry.fbxMesh && source != entry.sceneEditMesh)
             {
-                // A pipeline working copy (the transfer workflow's weld or symmetry split): the
-                // edit makes it the renderer's scene edit, so no reset destroys the fix with the
-                // copy. Undo reverts the edit; the copy was never Undo's to destroy and stays.
-                if (entry.meshFilter != null && entry.meshFilter.sharedMesh != source)
+                // A pipeline working copy (the transfer workflow's weld or symmetry split) is not
+                // Undo's to keep, so the edit goes into a clone that is: the clone is the renderer's
+                // scene edit, which no reset destroys, and the copy goes through Undo, registered as
+                // the working copy it was, so an Undo of the edit brings the pipeline state back as
+                // it stood instead of leaving a stray mesh on the renderer.
+                var clone = UnityEngine.Object.Instantiate(source);
+                clone.name = entry.fbxMesh != null ? entry.fbxMesh.name : source.name;
+                Undo.RegisterCreatedObjectUndo(clone, undoLabel);
+                if (entry.meshFilter != null)
                 {
                     Undo.RecordObject(entry.meshFilter, undoLabel);
-                    entry.meshFilter.sharedMesh = source;
+                    entry.meshFilter.sharedMesh = clone;
                     if (PrefabUtility.IsPartOfPrefabInstance(entry.meshFilter))
                         PrefabUtility.RecordPrefabInstancePropertyModifications(entry.meshFilter);
                 }
-                entry.sceneEditMesh = source;
-                SceneEditRegistry.Register(entry.meshFilter, entry.fbxMesh, source);
-                mesh = source;
+                SceneEditRegistry.Register(entry.meshFilter, entry.fbxMesh, source, workingCopy: true);
+                SceneEditRegistry.Register(entry.meshFilter, entry.fbxMesh, clone);
+                Undo.DestroyObjectImmediate(source);
+                entry.originalMesh = clone;
+                entry.sceneEditMesh = clone;
+                mesh = clone;
             }
             else
             {

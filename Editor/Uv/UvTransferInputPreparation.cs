@@ -79,20 +79,11 @@ namespace SashaRX.UnityMeshLab
                 foreach (string path in bypassed) Uv2AssetPostprocessor.bypassPaths.Remove(path);
             }
 
-            var imported = paths.ToDictionary(path => path,
-                path => AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().ToArray(), StringComparer.Ordinal);
             foreach (var binding in bindings)
             {
-                var meshes = imported[binding.path];
-                binding.mesh = meshes.FirstOrDefault(mesh =>
-                    AssetDatabase.TryGetGUIDAndLocalFileIdentifier(mesh, out string _, out long id) && id == binding.id);
-                if (!binding.mesh)
-                {
-                    // Some importers regenerate sub-asset IDs after changing welding.
-                    // A name fallback is allowed only when it is unique in this file.
-                    var named = meshes.Where(mesh => mesh.name == binding.name).ToArray();
-                    if (named.Length == 1) binding.mesh = named[0];
-                }
+                // By local id, else by a name unique in the file: some importers regenerate
+                // sub-asset ids after changing welding.
+                binding.mesh = SceneEditRegistry.FindImported(binding.path, binding.id, binding.name);
                 if (!binding.mesh)
                     throw new InvalidOperationException($"Cannot uniquely rebind UV input '{binding.name}' in '{binding.path}'. Run Setup again.");
                 if (!(AssetImporter.GetAtPath(binding.path) is ModelImporter importer) || NeedsPreparation(importer))

@@ -89,8 +89,10 @@ namespace SashaRX.UnityMeshLab
                 }
                 foreach (var e in ctx.MeshEntries)
                 {
-                    if (e.meshFilter != null && e.meshFilter.sharedMesh != null)
-                        e.fbxMesh = e.meshFilter.sharedMesh;
+                    if (e.meshFilter == null || e.meshFilter.sharedMesh == null) continue;
+                    // A scene edit on the renderer keeps the imported mesh, found again after the reimport, as the file reference.
+                    var shown = e.meshFilter.sharedMesh;
+                    e.fbxMesh = SceneEditRegistry.TryGetImported(e.meshFilter, shown, out var imported) ? imported : shown;
                 }
             }
         }

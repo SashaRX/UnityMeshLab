@@ -335,16 +335,17 @@ namespace SashaRX.UnityMeshLab
                     var fbm = mf.sharedMesh;
                     var uv2Check = new List<Vector2>();
                     fbm.GetUVs(1, uv2Check);
-                    // A scene edit (MeshEntry.sceneEditMesh) on the renderer keeps the imported mesh as the entry's file reference.
-                    bool sceneEdit = SceneEditRegistry.TryGetImported(mf, fbm, out var imported);
+                    // A registered edit on the renderer keeps the imported mesh as the entry's file
+                    // reference; a pipeline copy an Undo brought back is the working mesh, not the baseline.
+                    bool known = SceneEditRegistry.TryGetImported(mf, fbm, out var imported, out bool workingCopy);
                     MeshEntries.Add(new MeshEntry
                     {
                         lodIndex = li,
                         renderer = r,
                         meshFilter = mf,
                         originalMesh = fbm,
-                        fbxMesh = sceneEdit ? imported : fbm,
-                        sceneEditMesh = sceneEdit ? fbm : null,
+                        fbxMesh = known ? imported : fbm,
+                        sceneEditMesh = known && !workingCopy ? fbm : null,
                         hasExistingUv2 = uv2Check.Count > 0,
                         meshGroupKey = ExtractGroupKey(r.name)
                     });
@@ -412,15 +413,15 @@ namespace SashaRX.UnityMeshLab
             var fbm = mf.sharedMesh;
             var uv2Check = new List<Vector2>();
             fbm.GetUVs(1, uv2Check);
-            bool sceneEdit = SceneEditRegistry.TryGetImported(mf, fbm, out var imported);
+            bool known = SceneEditRegistry.TryGetImported(mf, fbm, out var imported, out bool workingCopy);
             MeshEntries.Add(new MeshEntry
             {
                 lodIndex = 0,
                 renderer = mr,
                 meshFilter = mf,
                 originalMesh = fbm,
-                fbxMesh = sceneEdit ? imported : fbm,
-                sceneEditMesh = sceneEdit ? fbm : null,
+                fbxMesh = known ? imported : fbm,
+                sceneEditMesh = known && !workingCopy ? fbm : null,
                 hasExistingUv2 = uv2Check.Count > 0,
                 meshGroupKey = ExtractGroupKey(mr.name)
             });
