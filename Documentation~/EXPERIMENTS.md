@@ -29,8 +29,55 @@ however, independent per family and per LOD level:
 `-DisableParallelValidation` / `MESHLAB_DISABLE_PARALLEL_VALIDATION=1` keeps
 sequential validation for the control arm. `Native family parallel
 validation` times the concurrent phase. A synthetic six-island test compares
-reports and mesh streams for both overlap policies. Corpus timing and the
-120-export exactness check are pending a local Unity run.
+reports and mesh streams for both overlap policies.
+
+Measured on candidate `3552a3c5` (Intel Core i9-14900K, Unity 6000.2.6f2, Burst
+1.8.28 / Collections 2.5.7, 32 tex/m, 2 px padding, Fill atlas). Every arm uses
+the same private combined native library (`-CombinedNative`, SHA256
+`15C512B4…51783`) and `-RequireBurstRaster`; package Plugins are unchanged.
+Arms: (a) package at `a5c5deb`, (b) head with `-DisableParallelValidation`,
+(c) head default. Arms alternate per round, one repetition each; a has three
+rounds, b and c five (rounds 4–5 are supplementary b/c pairs). Medians, seconds:
+
+| Model | Policy | Reverse a | Reverse b | Reverse c | Packing trial b | Packing trial c | Parallel validation c |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Cafe_Table_A_01 | no overlap | 1.09 | 1.13 | 1.15 | 1.04 | 1.05 | 0.03 |
+| Cafe_Table_A_01 | overlap | 2.96 | 2.88 | 2.88 | 1.75 | 1.74 | 0.02 |
+| Modern_Kitchen_A | no overlap | 6.50 | 6.04 | 6.06 | 5.34 | 5.32 | 0.24 |
+| Modern_Kitchen_A | overlap | 6.59 | 5.90 | 5.87 | 1.55 | 1.53 | 0.12 |
+| Kamaz (`kamaz_Off`) | no overlap | 16.46 | 15.39 | 16.39 | 12.74 | 13.41 | 0.62 |
+| Kamaz (`kamaz_Off`) | overlap | 34.66 | 32.22 | 32.56 | 15.84 | 16.23 | 0.53 |
+
+Concurrent validation gives no measurable gain on this corpus. The concurrent
+phase itself is short (at most 0.62 s), so the sequential work it replaces is
+small too. On Kamaz without overlap it is slower and noisier: b spans
+15.17–15.52 s over five runs, c 15.26–17.40 s (median +6.5%); its packing-trial
+median rises 12.74 → 13.41 s. Kamaz overlap is +1%, inside run-to-run spread.
+The cause (thread-pool contention with the native packer, or GC pressure from
+concurrent scan buffers) is unconfirmed. Keep `parallelFamilyValidation`
+under review; it should not be counted as a speedup. The a → b gain comes from
+the two exact trims below, not from concurrency.
+
+All 14 runs execute and pass the three required model cases. All 120 exported
+geometry/UV/ancestry/quality files are byte-identical (SHA256) to arm a round 1
+in every run. Input hashes/frames, atlas sizes, native pack, candidate search
+and placement-audit counts, logical work and refused/retained orders also
+match. Against the earlier `tbb-final-control` baseline, the same 120 files keep
+exact binary numeric values; eight differ only in JSON last-digit formatting.
+Kitchen and Kamaz overlap execute 57,151 and 326,588 genuinely compiled Burst
+triangles in every arm.
+
+Candidate EditMode regression (Burst required): 385 tests, 348 pass, 0 fail,
+37 skip (optional private fixtures/libraries). `TransferPerformanceTests` 27 pass
+/ 10 skip; rerun with the private native-search library, 37 pass / 0 skip.
+`BurstRasterSpansMatchScalarEdgesIncludingClippingAndRoundoff`, including the
+worker-thread direct-call assertions, and both
+`ParallelFamilyValidationIsByteIdenticalWithBothOverlapPolicies` cases pass.
+ReverseUv fixtures: FamilyPacking 19/0, FootprintPacking 16/0, FrozenCascade
+18/0, PackingReplay 0/6, QueryBackend 2/4, Seam 16/4, ShellPrecision 3/0,
+Transfer 150/2 (pass/skip). `UvJunctionCutsTests` 31/11,
+`TransferQualityRegressionTests` 66/0. The async hub UI path was not timed.
+Artifacts: `_results~/transfer-performance-20261014-eighth/`.
 
 Asynchronous Reverse (the editor UI path) runs final packing in `Task.Run`, where
 Unity jobs cannot be scheduled, so the Burst raster job is a main-thread-only
@@ -79,11 +126,25 @@ placement whose validation has just failed (`Place` is deterministic and
 validation keeps only the first refusal reason) — and the cross-LOD join
 parses each surface's group key once instead of once per face.
 
-No transfer decision, UV, ordering or tolerance changes. Timing on the private
-corpus is not yet measured; the forward pipeline still needs stage timing in
-`TransferPerformanceProfile` before larger forward changes (source analysis
-reuse across target LODs, BVH-backed Phase 3 nearest search, merged-shell
-rescoring bounds) are attempted as separate experiments.
+No transfer decision, UV, ordering or tolerance changes. The paired benchmark
+times the complete ordinary pipeline as `Forward pipeline` (export excluded) and
+the detached re-run as `Detached forward preparation`. Medians, same setup and
+arms as the concurrent-audit entry above (a = `a5c5deb`, b/c = `3552a3c5`
+without/with concurrent validation; three runs of a, five of b and c):
+
+| Model | Forward a (s) | Forward b (s) | Forward c (s) | Detached a (s) | Detached c (s) |
+|---|---:|---:|---:|---:|---:|
+| Cafe_Table_A_01 | 0.53 | 0.46 | 0.47 | 0.30 | 0.24 |
+| Modern_Kitchen_A | 4.40 | 3.86 | 3.84 | 4.23 | 3.91 |
+| Kamaz (`kamaz_Off`) | 30.39 | 28.09 | 27.78 | 29.82 | 28.93 |
+
+Ordinary Transfer is about 13% faster on Kitchen and 9% on Kamaz (a → c); Cafe
+is too small to resolve. The detached preparation gains less (8% / 3%). The reverse
+trims account for the a → b reverse gain (Kitchen 8–10%, Kamaz 6–7%). Forward
+outputs and every reverse export are byte-identical across all arms. Stage
+timing inside the forward pipeline is still needed before larger forward changes
+(source analysis reuse across target LODs, BVH-backed Phase 3 nearest search,
+merged-shell rescoring bounds) are attempted as separate experiments.
 
 ## Transfer performance: immutable footprints and equivalent placement search — 2026-10-13
 
