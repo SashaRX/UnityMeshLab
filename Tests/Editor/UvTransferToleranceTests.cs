@@ -10,6 +10,43 @@ namespace SashaRX.UnityMeshLab.Tests
     {
         static Vector2[] Triangle(float offset=0) => new[] {new Vector2(offset,0),new Vector2(10,0),new Vector2(offset,10-offset)};
 
+        // Transferred LODs carry duplicated vertices (normal/UV0 splits) whose UV2
+        // differ by ULPs to fractions of a texel. They are one point of the surface;
+        // reverse grouping and packing must not see a seam there.
+        [Test]
+        public void CoincidentCornersWeldWithinTheBoundaryTolerance()
+        {
+            const float atlas=1000f, texel=1f/atlas, tolerance=UvTransferTolerance.BoundaryTexels*texel;
+            var positions=new[] {Vector3.zero,Vector3.right,new Vector3(1,1,0),Vector3.up,Vector3.zero,new Vector3(1,1,0)};
+            var triangles=new[] {0,1,2, 4,5,3};
+            Vector2[] Layout(float diagonalGap) => new[] {new Vector2(.1f,.1f),new Vector2(.2f,.1f),new Vector2(.2f,.2f),new Vector2(.1f,.2f),
+                new Vector2(.1f+1e-7f,.1f),new Vector2(.2f+diagonalGap*texel,.2f)};
+
+            var uv=Layout(.2f);
+            Assert.AreEqual(2,UvTransferTolerance.WeldCoincidentCorners(uv,positions,triangles,tolerance));
+            Assert.AreEqual(uv[0],uv[4],"An ULP split takes the lower-index corner's exact value.");
+            Assert.AreEqual(uv[2],uv[5],"A subtexel split welds as well.");
+
+            var seam=Layout(5f);var before=(Vector2[])seam.Clone();
+            Assert.AreEqual(1,UvTransferTolerance.WeldCoincidentCorners(seam,positions,triangles,tolerance));
+            Assert.AreEqual(before[5],seam[5],"A five-texel gap is a real seam and stays.");
+
+            // Three copies 0.2 texel apart: the far one is 0.4 texel from the kept value.
+            var chain=new[] {new Vector2(.5f,.5f),new Vector2(.5f+.2f*texel,.5f),new Vector2(.5f+.4f*texel,.5f),
+                new Vector2(.6f,.5f),new Vector2(.6f,.6f)};
+            var chainPositions=new[] {Vector3.zero,Vector3.zero,Vector3.zero,Vector3.right,Vector3.up};
+            Assert.AreEqual(1,UvTransferTolerance.WeldCoincidentCorners(chain,chainPositions,new[] {0,3,4, 1,3,4, 2,3,4},tolerance));
+            Assert.AreEqual(chain[0],chain[1]);Assert.AreNotEqual(chain[0],chain[2],"Welds never accumulate beyond the tolerance.");
+
+            // Moving the apex of a sliver across its base would flip the face: keep it.
+            var sliver=new[] {new Vector2(.3f,.3f-.1f*texel),new Vector2(.3f-5*texel,.3f),new Vector2(.3f+5*texel,.3f),
+                new Vector2(.3f,.3f+.1f*texel),new Vector2(.3f,.4f)};
+            var sliverPositions=new[] {Vector3.up,Vector3.zero,Vector3.right,Vector3.up,new Vector3(0,2,0)};
+            var kept=(Vector2[])sliver.Clone();
+            Assert.AreEqual(0,UvTransferTolerance.WeldCoincidentCorners(sliver,sliverPositions,new[] {1,2,3, 0,2,4},tolerance));
+            CollectionAssert.AreEqual(kept,sliver,"A weld that flips or collapses an incident face is rolled back.");
+        }
+
         [TestCase(.2f,.25f,true)]
         [TestCase(.4f,.25f,false)]
         [TestCase(.4f,.5f,true)]

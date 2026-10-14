@@ -1,5 +1,50 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Reverse UV review: transferred micro-seams — 2026-10-14
+
+Review of reverse results on the private three-model corpus (32 tex/m), with
+per-face provenance from `report.json`. Analysis scripts and atlas renders:
+`_results~/transfer-performance-20261014-eighth/reverse-review/`.
+
+- **Phantom seams in transferred LODs.** Ordinary Transfer assigns UV2 per target
+  shell. Vertices duplicated at one position (normal or UV0 splits) received UV2
+  that differ by one ULP up to fractions of a texel. Edge-connected islands at
+  zero / 1e-6 / 5e-4 UV tolerance: Kamaz LOD1 2161 / 1949 / 1908, LOD2
+  869 / 788 / 767, Kitchen LOD1 617 / 604 / 515; Repack LOD0 is clean. Reverse
+  groups charts by exact (position, UV) equality, so it cut the foundation along
+  these gaps and packed the halves apart. Finer whole islands then matched one
+  half, and the other half (`whole-island-extension`) lost its LOD alignment.
+  On Kitchen exclusive that is half of all misaligned LOD1 area.
+- **Fix.** `UvTransferTolerance.WeldCoincidentCorners`, called in
+  `ApplyTransferResult` for every target mesh. Co-positioned vertices whose UV2
+  lies within `BoundaryTexels` (0.25 texel of the source atlas) of the
+  lowest-index vertex get exactly that vertex's value. Nothing is averaged,
+  welds never chain beyond the tolerance, and a group whose weld would flip or
+  collapse an incident face keeps its UVs. Larger gaps are real seams. The
+  corpus welds 1,344 vertices.
+- **Result (one corpus run, corner-connected islands).** Kamaz LOD1 exclusive
+  islands 2266 → 2067 and seam length −4.5%. Kamaz exclusive LOD alignment
+  96.7 → 98.2% (LOD1) and 89.5 → 90.8% (LOD2). Kamaz packing: exclusive fill
+  0.678 → 0.706; overlap fill 0.702 → 0.740, largest empty rectangle
+  5.6% → 0.85%. Kitchen exclusive alignment 82.4 → 83.3%; overlap alignment is
+  unchanged (separate cause, below). No new overlaps; regression groups pass
+  445, fail 0, skip 17.
+- **Stretch is not a reverse defect.** Every remaining reverse face with
+  anisotropy > 4 is a zero-area 3D sliver (area/longest-edge² < 1e-4): 21
+  Kitchen and 2 Kamaz faces. Forward has 278 / 460 visibly stretched faces. A
+  sliver's ratio is roundoff, e.g. 4.7 or 10⁴ for one 1e-4 px² face. Quality
+  scores that fall to 39 come from `worstStretch` counting these faces, not
+  from visible distortion.
+- **Remaining causes, not fixed here.**
+  - Coarsest-foundation O/U/C/H/T cuts in `InitializeFrozenShellChain` run
+    unconditionally, ignoring `cutNarrowJunctions`. Kitchen LOD1 has 708
+    reverse islands against 503 forward.
+  - Overlap mode repacks intact forward islands apart from their coarser
+    counterparts. Kitchen LOD1 alignment is 74% (forward 87%).
+  - A coarse LOD triangulated differently from the finer one leaves many
+    finer faces without complete anchors (Cafe LOD2, about 40% aligned in all
+    modes).
+
 ## Reverse final packing: concurrent family and atlas audits — 2026-10-14
 
 Packing and its audits dominate Kamaz reverse time. An exact cache of family

@@ -2491,7 +2491,8 @@ namespace SashaRX.UnityMeshLab
             if (tr.matchHints != null && tr.matchHints.Count > 0)
                 hintState.matchHints.AddRange(tr.matchHints);
 
-            ApplyTransferResult(tgt, tgtMesh, tr, tLod);
+            ApplyTransferResult(tgt, tgtMesh, tr, tLod,
+                (int)Math.Max(srcEntry.repackedAtlasWidth, srcEntry.repackedAtlasHeight));
             ctx.DiagnosticCapture?.AfterPair(pair, tgt, tr);
         }
 
@@ -2507,8 +2508,18 @@ namespace SashaRX.UnityMeshLab
 
         }
 
-        void ApplyTransferResult(MeshEntry tgt, Mesh tgtMesh, GroupedShellTransfer.TransferResult tr, int tLod)
+        void ApplyTransferResult(MeshEntry tgt, Mesh tgtMesh, GroupedShellTransfer.TransferResult tr, int tLod, int atlasSize)
         {
+            // Duplicated target vertices are transferred per shell; their UV2 can
+            // differ by roundoff. Within the boundary tolerance they are one point,
+            // so reverse grouping, packing and baking must not see a seam there.
+            if (atlasSize > 0)
+            {
+                int welded = UvTransferTolerance.WeldCoincidentCorners(tr.uv2, tgtMesh.vertices, tgtMesh.triangles,
+                    TransferBoundaryToleranceTexels / atlasSize);
+                if (welded > 0)
+                    UvtLog.Info(UvtLog.Category.Match, $"[Transfer] '{tgt.renderer.name}' LOD{tLod}: welded {welded} coincident UV2 corner(s) within {TransferBoundaryToleranceTexels} texel.");
+            }
             // Build output mesh with UV2 applied
             var om = UnityEngine.Object.Instantiate(tgtMesh);
             om.name = tgtMesh.name + "_uvTransfer";

@@ -14,6 +14,66 @@ namespace SashaRX.UnityMeshLab
         internal static bool MetricFits(double after, double before, double tolerance = RelativeStretch)
             => after <= before * (1 + tolerance) + 1e-6;
 
+        /// <summary>Give co-positioned vertices whose UVs lie within <paramref name="tolerance"/>
+        /// (UV units) of the lowest such index exactly that vertex's UV. Duplicated vertices
+        /// (normal or UV0 splits) are one surface point; a sub-tolerance UV gap between them
+        /// is transfer roundoff, not a seam. Larger gaps are left alone, values are copied
+        /// rather than averaged, and a group whose weld would flip or collapse an incident
+        /// face keeps its UVs. Returns the number of vertices moved.</summary>
+        internal static int WeldCoincidentCorners(Vector2[] uv, Vector3[] positions, int[] triangles, float tolerance)
+        {
+            var faces = new List<int>[uv.Length];
+            for (int t = 0; t < triangles.Length; ++t)
+                (faces[triangles[t]] ??= new List<int>()).Add(t / 3);
+            var groups = new Dictionary<Vector3, List<int>>();
+            for (int v = 0; v < uv.Length; ++v)
+                if (faces[v] != null && Finite(uv[v]))
+                {
+                    if (!groups.TryGetValue(positions[v], out var group)) groups.Add(positions[v], group = new List<int>());
+                    group.Add(v);
+                }
+            double Area(int f)
+            {
+                Vector2 a = uv[triangles[f * 3]], b = uv[triangles[f * 3 + 1]], c = uv[triangles[f * 3 + 2]];
+                return ((double)b.x - a.x) * ((double)c.y - a.y) - ((double)b.y - a.y) * ((double)c.x - a.x);
+            }
+            double reach = (double)tolerance * tolerance;
+            int moved = 0;
+            var kept = new List<int>();
+            var targets = new List<(int vertex, Vector2 value)>();
+            foreach (var group in groups.Values)
+            {
+                if (group.Count < 2) continue;
+                // Ascending indices: each vertex joins the first kept value within
+                // reach, so welds never chain beyond the tolerance. Unity's
+                // Vector2 equality is approximate; compare components exactly.
+                kept.Clear(); targets.Clear();
+                foreach (int v in group)
+                {
+                    int keep = kept.FindIndex(k => Distance2(uv[v], uv[k]) <= reach);
+                    if (keep < 0) kept.Add(v);
+                    else if (uv[v].x != uv[kept[keep]].x || uv[v].y != uv[kept[keep]].y) targets.Add((v, uv[kept[keep]]));
+                }
+                if (targets.Count == 0) continue;
+                var incident = new HashSet<int>();
+                foreach (var (v, _) in targets) incident.UnionWith(faces[v]);
+                var before = incident.ToDictionary(f => f, f => Math.Sign(Area(f)));
+                var original = targets.Select(p => uv[p.vertex]).ToArray();
+                foreach (var (v, value) in targets) uv[v] = value;
+                if (incident.All(f => before[f] == 0 || Math.Sign(Area(f)) == before[f])) moved += targets.Count;
+                else for (int i = 0; i < targets.Count; ++i) uv[targets[i].vertex] = original[i];
+            }
+            return moved;
+        }
+
+        static double Distance2(Vector2 a, Vector2 b)
+        {
+            double x = (double)a.x - b.x, y = (double)a.y - b.y;
+            return x * x + y * y;
+        }
+
+        static bool Finite(Vector2 p) => !float.IsNaN(p.x) && !float.IsInfinity(p.x) && !float.IsNaN(p.y) && !float.IsInfinity(p.y);
+
         readonly struct Point
         {
             internal readonly double x, y;
