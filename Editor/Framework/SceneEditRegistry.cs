@@ -16,9 +16,10 @@ namespace SashaRX.UnityMeshLab
     /// entry with the imported mesh as its file reference instead of taking the edit for the
     /// import. A link outlives its objects: an edit or a renderer destroyed by Undo, by a save or
     /// by Split comes back through Undo as what it was, and an imported mesh a reimport recreated
-    /// is found again by its file, local id and name. Links go when their imported mesh is gone for
-    /// good; beyond the capacity, the oldest links whose edit is gone go first, and a link to a
-    /// living edit is never dropped.
+    /// is found again by its file, local id and name. A renderer the registry does not know that
+    /// shows an edit it does (the object was duplicated) is registered with that edit's import.
+    /// Links go when their imported mesh is gone for good; beyond the capacity, the oldest links
+    /// whose edit is gone go first, and a link to a living edit is never dropped.
     /// </summary>
     sealed class SceneEditRegistry : ScriptableSingleton<SceneEditRegistry>
     {
@@ -87,7 +88,7 @@ namespace SashaRX.UnityMeshLab
         {
             imported = null; workingCopy = false; baseline = null;
             if (filter == null || shown == null) return false;
-            var link = instance.links.Find(candidate => candidate.filter == filter && candidate.edit == shown);
+            var link = instance.links.Find(candidate => candidate.filter == filter && candidate.edit == shown) ?? Adopt(filter, shown);
             if (link == null) return false;
             imported = Imported(link);
             workingCopy = link.workingCopy;
@@ -133,6 +134,28 @@ namespace SashaRX.UnityMeshLab
                     && e.meshFilter.sharedMesh == e.sceneEditMesh)
                     Register(e.meshFilter, e.fbxMesh, e.sceneEditMesh);
             instance.links.RemoveAll(link => Imported(link) == null);
+        }
+
+        // A renderer the registry does not know showing an edit it does (the object was duplicated
+        // with the edit on it): the edit stands for the same import there, and the renderer is
+        // registered with it when every link of the edit names that import. A working copy is not
+        // adopted: it belongs to the pipeline of the renderer it was made for.
+        static Link Adopt(MeshFilter filter, Mesh shown)
+        {
+            var links = instance.links;
+            Link template = null;
+            foreach (var link in links)
+            {
+                if (link.edit != shown || link.workingCopy) continue;
+                if (template == null) { template = link; continue; }
+                if (link.assetPath != template.assetPath || link.localId != template.localId || link.meshName != template.meshName) return null;
+            }
+            if (template == null) return null;
+            if (links.Count >= Capacity) Evict(links);
+            var adopted = new Link { filter = filter, edit = shown, imported = template.imported,
+                assetPath = template.assetPath, meshName = template.meshName, localId = template.localId };
+            links.Add(adopted);
+            return adopted;
         }
 
         // Drops the oldest link whose edit is gone. A living edit is what the next refresh asks about,

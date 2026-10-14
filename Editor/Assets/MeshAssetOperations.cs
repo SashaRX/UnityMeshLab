@@ -35,10 +35,13 @@ namespace SashaRX.UnityMeshLab
             if (applied != null)
                 foreach (var entry in ctx.MeshEntries)
                 {
-                    if (entry?.sceneEditMesh == null || entry.fbxMesh == null) continue;
-                    string path = AssetDatabase.GetAssetPath(entry.fbxMesh);
+                    if (entry?.sceneEditMesh == null) continue;
+                    // The import that applied the channels may have recreated the imported mesh.
+                    var imported = ImportOf(entry);
+                    if (imported == null) continue;
+                    string path = AssetDatabase.GetAssetPath(imported);
                     if (string.IsNullOrEmpty(path) || !applied.TryGetValue(path, out var saved)) continue;
-                    var payload = saved.FirstOrDefault(item => item != null && item.meshName == entry.fbxMesh.name);
+                    var payload = saved.FirstOrDefault(item => item != null && item.meshName == imported.name);
                     if (payload == null) continue;
                     var intent = UvIntent(payload.targetUvChannel)
                         | (payload.auxiliaryUv != null ? UvIntent(payload.auxiliaryTargetUvChannel) : FbxExportIntent.None)
@@ -167,7 +170,14 @@ namespace SashaRX.UnityMeshLab
         public Mesh GetResultMesh(MeshEntry e)
         {
             if (!string.IsNullOrEmpty(e.reverseTransferJson))
-                return e.repackedMesh ?? e.transferredMesh;
+            {
+                // A reverse transfer's result is its repacked or transferred mesh. Restored from the
+                // sidecar after a refresh, the file has the result and an import has nothing to
+                // write; a scene edit (checked against the record when it was restored) is still
+                // the renderer's unsaved mesh.
+                var reverse = e.repackedMesh ?? e.transferredMesh;
+                if (reverse != null || e.sceneEditMesh == null) return reverse;
+            }
             // Source LOD: prefer repacked mesh
             if (e.lodIndex == ctx.SourceLodIndex && e.repackedMesh != null)
                 return e.repackedMesh;
@@ -876,6 +886,16 @@ namespace SashaRX.UnityMeshLab
         }
 
         static FbxExportIntent UvIntent(int channel) => (uint)channel > 7u ? FbxExportIntent.None : (FbxExportIntent)(1 << channel);
+
+        // The entry's file reference, found again through its scene edit's link when a reimport the
+        // entry has not been refreshed for recreated the imported mesh.
+        static Mesh ImportOf(MeshEntry entry)
+        {
+            if (entry.fbxMesh == null && entry.sceneEditMesh != null
+                && SceneEditRegistry.TryGetImported(entry.meshFilter, entry.sceneEditMesh, out var imported))
+                entry.fbxMesh = imported;
+            return entry.fbxMesh;
+        }
 
         string ResolveFbxPath()
             => !string.IsNullOrEmpty(ctx.SourceFbxPath) ? ctx.SourceFbxPath
