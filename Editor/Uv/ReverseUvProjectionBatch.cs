@@ -96,8 +96,10 @@ namespace SashaRX.UnityMeshLab
                     return;
                 int limit = Math.Min(surface.faces.Length, first + ReverseUvQueryBackend.BatchSize), count = 0;
                 for (int f = first; f < limit; ++f)
-                if (!surface.faces[f].inherited)
-                    faceSlots[count++] = f;
+                {
+                    if (!surface.faces[f].inherited)
+                        faceSlots[count++] = f;
+                }
                 if (!ReverseUvQueryBackend.SelectEmbree(options.queryBackend, totalFaces, count, true) || !Create())
                     return;
                 using var timing = options.performance?.Measure("Embree centre discovery", surface.lod);

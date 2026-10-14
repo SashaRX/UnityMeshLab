@@ -79,7 +79,11 @@ namespace SashaRX.UnityMeshLab
                 });
                 token.ThrowIfCancellationRequested();return true;
             }
-            public void Dispose() {if(handle==IntPtr.Zero) return;var previous=handle;handle=IntPtr.Zero;api.destroy(previous);}
+            public void Dispose()
+            {
+                if(handle==IntPtr.Zero) return;
+                var previous=handle;handle=IntPtr.Zero;api.destroy(previous);
+            }
         }
 
         // One bounded owner per projection call. Arrays/scratch survive every
@@ -122,7 +126,12 @@ namespace SashaRX.UnityMeshLab
                 profile?.Record("Managed nearest batch queries",0,count);
             }
             internal void For(int count,int workers,CancellationToken token,Action<int> action)
-                => Workers(workers,token,w=>{for(int i=w;i<count;i+=workers) {if((i&63)==w) token.ThrowIfCancellationRequested();action(i);}});
+                => Workers(workers,token,w=>{
+                    for(int i=w;i<count;i+=workers) {
+                        if((i&63)==w) token.ThrowIfCancellationRequested();
+                        action(i);
+                    }
+                });
             internal void Workers(int workers,CancellationToken token,Action<int> action)
             {
                 if(workers==1) {action(0);return;}

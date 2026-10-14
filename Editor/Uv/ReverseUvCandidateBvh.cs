@@ -57,8 +57,10 @@ namespace SashaRX.UnityMeshLab
                     depth[n.left] = depth[n.right] = depth[i] + 1;
                 }
                 else
-                for (int slot = n.triStart; slot < n.triStart + n.triCount; ++slot)
-                    leafByFace[order[slot]] = i;
+                {
+                    for (int slot = n.triStart; slot < n.triStart + n.triCount; ++slot)
+                        leafByFace[order[slot]] = i;
+                }
             }
         }
         public ReverseUvQueryBackend.Query Region(ReverseUvQueryBackend.Query q, ReverseUvQueryBackend.Answer proposal)
@@ -123,8 +125,10 @@ namespace SashaRX.UnityMeshLab
             // of distinct seam faces, including coincident triangles.
             int unique = 0;
             for (int i = 0; i < count; ++i)
-            if (unique == 0 || scratch[i] != scratch[unique - 1])
-                scratch[unique++] = scratch[i];
+            {
+                if (unique == 0 || scratch[i] != scratch[unique - 1])
+                    scratch[unique++] = scratch[i];
+            }
             if (q.mode == 2)
             {
                 if (!(q.target > 0))

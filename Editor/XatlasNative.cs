@@ -42,15 +42,15 @@ namespace SashaRX.UnityMeshLab
             internal xatlasGetOutputIndicesDelegate getOutputIndices;
         }
         static Api testApi;
-        static Api ReplaceBinding(Api value)
-        {
-            var previous = testApi;
-            testApi = value;
-            return previous;
-        }
         internal static IDisposable UseForTests(Api api) => new TestScope(api);
         sealed class TestScope : IDisposable
         {
+            static Api ReplaceBinding(Api value)
+            {
+                var previous = testApi;
+                testApi = value;
+                return previous;
+            }
             readonly Api previous;
             readonly Api current;
             bool disposed;

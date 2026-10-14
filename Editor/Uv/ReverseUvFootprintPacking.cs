@@ -545,40 +545,44 @@ namespace SashaRX.UnityMeshLab
                 performance?.Accumulate("Burst footprint raster spans", System.Diagnostics.Stopwatch.GetTimestamp() - rasterStarted, local.Length / 3);
             }
             else
-            for (int t = 0; t < local.Length; t += 3)
             {
-                token.ThrowIfCancellationRequested();
-                var triangle = new[] { local[t], local[t + 1], local[t + 2] };
-                int lo = Math.Max(0, (int)Math.Floor(triangle.Min(p => p.y) - radius));
-                int hi = Math.Min(h, (int)Math.Ceiling(triangle.Max(p => p.y) + radius));
-                for (int y = lo; y < hi; ++y)
+                for (int t = 0; t < local.Length; t += 3)
                 {
-                    double bottom = y - radius, top = y + 1 + radius, left = double.MaxValue, right = double.MinValue;
-                    foreach (var p in triangle)
-                    if (p.y >= bottom && p.y <= top)
+                    token.ThrowIfCancellationRequested();
+                    var triangle = new[] { local[t], local[t + 1], local[t + 2] };
+                    int lo = Math.Max(0, (int)Math.Floor(triangle.Min(p => p.y) - radius));
+                    int hi = Math.Min(h, (int)Math.Ceiling(triangle.Max(p => p.y) + radius));
+                    for (int y = lo; y < hi; ++y)
                     {
-                        left = Math.Min(left, p.x);
-                        right = Math.Max(right, p.x);
-                    }
-                    for (int e = 0; e < 3; ++e)
-                    {
-                        var a = triangle[e];
-                        var b = triangle[(e + 1) % 3];
-                        double rise = (double)b.y - a.y;
-                        if (rise == 0)
-                            continue;
-                        foreach (double v in new[] { bottom, top })
+                        double bottom = y - radius, top = y + 1 + radius, left = double.MaxValue, right = double.MinValue;
+                        foreach (var p in triangle)
                         {
-                            double fraction = (v - a.y) / rise;
-                            if (fraction < 0 || fraction > 1)
-                                continue;
-                            double x = a.x + ((double)b.x - a.x) * fraction;
-                            left = Math.Min(left, x);
-                            right = Math.Max(right, x);
+                            if (p.y >= bottom && p.y <= top)
+                            {
+                                left = Math.Min(left, p.x);
+                                right = Math.Max(right, p.x);
+                            }
                         }
+                        for (int e = 0; e < 3; ++e)
+                        {
+                            var a = triangle[e];
+                            var b = triangle[(e + 1) % 3];
+                            double rise = (double)b.y - a.y;
+                            if (rise == 0)
+                                continue;
+                            foreach (double v in new[] { bottom, top })
+                            {
+                                double fraction = (v - a.y) / rise;
+                                if (fraction < 0 || fraction > 1)
+                                    continue;
+                                double x = a.x + ((double)b.x - a.x) * fraction;
+                                left = Math.Min(left, x);
+                                right = Math.Max(right, x);
+                            }
+                        }
+                        if (left <= right)
+                            Reserve(rows[y], Math.Max(0, (int)Math.Floor(left - radius)), Math.Min(w, (int)Math.Ceiling(right + radius)));
                     }
-                    if (left <= right)
-                        Reserve(rows[y], Math.Max(0, (int)Math.Floor(left - radius)), Math.Min(w, (int)Math.Ceiling(right + radius)));
                 }
             }
             return new Mask
