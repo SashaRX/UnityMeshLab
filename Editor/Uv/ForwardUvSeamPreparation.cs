@@ -129,6 +129,8 @@ namespace SashaRX.UnityMeshLab
             internal List<int> validFaces;
             internal Surface projected;
             internal long queries;
+            // Captured on the editor thread: Unity mesh accessors are main-thread only.
+            Surface pristineTarget;
             DonorSeamIndex seamIndex;
             int[] targetIndices, sourceFaceShells;
             Vector3[] targetPositions;
@@ -191,6 +193,7 @@ namespace SashaRX.UnityMeshLab
                     for(int i=0;i<s.indices.Length;++i) s.pixels[i]=uv[s.indices[i]]*resolution;
                     AssignCharts(s,Enumerable.Range(0,s.faces.Length).ToArray(),ref next);
                 }
+                pristineTarget=Capture(inputs.levels[1],Vector3.zero)[0];
                 // Only a completed preparation is reused by later passes.
                 prepared=true;
             }
@@ -201,7 +204,8 @@ namespace SashaRX.UnityMeshLab
             {
                 List<Chart> built;
                 using (options.performance?.Accumulated("Projection donor charts")) built=Charts(donor);
-                var targets=Capture(inputs.levels[1],Vector3.zero);
+                // A copy, so a failed or cancelled run leaves the capture untouched.
+                var targets=new[] {CopySurface(pristineTarget)};
                 long count=0;
                 ReverseUvTransfer.ProjectInitial(donor,targets,built,options,ref count,token);
                 charts=built;queries=count;projected=targets[0];
@@ -209,9 +213,10 @@ namespace SashaRX.UnityMeshLab
 
             // Every array a pass may write in place is copied. Faces carry no
             // overlap relations before the pass resolves overlaps itself.
-            internal Surface CopyProjected()
+            internal Surface CopyProjected() => CopySurface(projected);
+
+            static Surface CopySurface(Surface s)
             {
-                var s=projected;
                 var faces=new Face[s.faces.Length];
                 for(int f=0;f<faces.Length;++f)
                 {
