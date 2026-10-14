@@ -153,10 +153,43 @@ without/with concurrent validation; three runs of a, five of b and c):
 Ordinary Transfer is about 13% faster on Kitchen and 9% on Kamaz (a → c); Cafe
 is too small to resolve. The detached preparation gains less (8% / 3%). The reverse
 trims account for the a → b reverse gain (Kitchen 8–10%, Kamaz 6–7%). Forward
-outputs and every reverse export are byte-identical across all arms. Stage
-timing inside the forward pipeline is still needed before larger forward changes
-(source analysis reuse across target LODs, BVH-backed Phase 3 nearest search,
-merged-shell rescoring bounds) are attempted as separate experiments.
+outputs and every reverse export are byte-identical across all arms.
+
+### Forward stage profile
+
+The paired benchmark now hands `UvTransferWorkflow.ForwardPerformance` to the
+ordinary pipeline (null in production). It records analyze, weld, symmetry,
+repack, per-LOD transfer, shell transfer, quality measure, donor seam trial,
+validation and auto-tune mesh copies/evaluation. Inside the donor seam trial,
+`PrepareForwardSeamsAsync` records its projection passes (the stable pass, two
+incremental passes and protected-face retries), projection time, contact audits
+and quality measures. Medians of three runs on the same setup, seconds:
+
+| Stage | Cafe | Kitchen | Kamaz |
+|---|---:|---:|---:|
+| Forward pipeline | 0.43 | 3.74 | 27.41 |
+| Repack (one auto-tune attempt in all three) | 0.16 | 0.40 | 0.82 |
+| Shell transfer (count) | 0.08 (2) | 1.21 (4) | 2.24 (10) |
+| Donor seam trial (count) | 0.14 (1) | 2.02 (4) | 23.58 (6) |
+| — seam projection (passes) | 0.09 (3) | 1.92 (14) | 20.12 (26) |
+| — seam contact audits (count) | 0.00 (12) | 0.02 (66) | 2.61 (279) |
+| Analyze + weld UV0 | 0.03 | 0.06 | 0.68 |
+
+The donor seam trial is 86% of Kamaz forward time and 54% of Kitchen; repeated
+full projections inside it dominate (about 0.77 s per Kamaz pass). The shell
+transfer itself, the earlier candidate for source analysis reuse and BVH-backed
+Phase 3 search, is only 2.2 s on Kamaz. Auto-tune stops after its first attempt
+on all three models, and mesh copies cost milliseconds. `Detached forward
+preparation` (27.4 s on Kamaz) re-runs the same donor seam trials. Every reverse
+benchmark run pays it too.
+
+Next forward experiment: avoid repeated work across the seam passes of one
+target. Each pass re-prepares inputs, captures donor/target surfaces and
+projects the whole target again. The stable and incremental passes differ only
+in cut validation and existing-atlas policy, and protected-face retries change
+only exclusions. Any reuse must keep pass order, refusal reasons and the final
+selection identical. The 120-export check and the forward layouts verify that.
+Artifacts: `_results~/transfer-performance-20261014-eighth/forward-profile-seams/`.
 
 ## Transfer performance: immutable footprints and equivalent placement search — 2026-10-13
 

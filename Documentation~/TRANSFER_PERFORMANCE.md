@@ -761,3 +761,11 @@ same 26,316 Kamaz overlap snapshot searches and 326,588 Burst triangles. The
 regression run passes 363 tests, fails 0 and skips 27 optional private fixtures.
 Its timings are single observations, partly measured alongside the regression
 suite, and are not a performance comparison. Artifacts: `merge-check/`.
+
+Forward stages are now profiled too. The paired test passes its forward profile
+to `UvTransferWorkflow.ForwardPerformance`, and every `Forward …` sample nests
+inside `Forward pipeline`. Kamaz medians: 27.41 s pipeline, of which 23.58 s is
+the donor seam trial (26 projection passes, 20.12 s; 279 contact audits,
+2.61 s). Shell transfer takes 2.24 s and repack 0.82 s, with one auto-tune
+attempt. All 120 exports remain byte-identical. The full table and the next
+forward experiment are in EXPERIMENTS.md ("Forward stage profile").
