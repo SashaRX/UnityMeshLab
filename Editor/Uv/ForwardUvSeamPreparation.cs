@@ -259,12 +259,12 @@ namespace SashaRX.UnityMeshLab
             HashSet<int> protectedFaces,int attempt,TransferMatchTrace trace,bool incrementalCuts,bool existingAtlasOnly,float boundaryToleranceTexels,
             Matrix4x4 renderedFrame,TransferPerformanceProfile performance,ForwardSeamShared shared)
         {
-            // One count per projection pass, including protected-face retries.
-            performance?.Accumulate("Forward seam passes",0,1);
             using var owned=shared==null?new ForwardSeamShared():null;
             var pass=shared ?? owned;
             if (!pass.prepared) pass.Prepare(source,target,resolution,renderedFrame,token);
             if (pass.unusable) return (null,null);
+            // One count per pass that reaches projection, including protected-face retries.
+            performance?.Accumulate("Forward seam passes",0,1);
             var inputs=pass.inputs;var validFaces=pass.validFaces;
             var options=new Options {seedResolution=resolution,maxAtlasSize=resolution,projectionReach=.05f,
                 splitDonorSeams=true,preserveProjectedOverlap=false,comparisonBudget=20000000,
