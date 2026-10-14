@@ -1427,9 +1427,9 @@ namespace SashaRX.UnityMeshLab
             foreach (var e in ctx.MeshEntries)
             {
                 if (!e.include || e.originalMesh == null) continue;
-                if (e.originalMesh == e.fbxMesh)
+                if (e.originalMesh == e.Baseline)
                 {
-                    e.originalMesh = MeshAccess.ReadableCopy(e.fbxMesh);
+                    e.originalMesh = MeshAccess.ReadableCopy(e.Baseline);
                     e.originalMesh.name = e.fbxMesh.name + "_wc";
                 }
                 var optResult = MeshOptimizer.OptimizeUvTriangleOrder(e.originalMesh);
@@ -1470,10 +1470,10 @@ namespace SashaRX.UnityMeshLab
             {
                 if (!e.include || e.originalMesh == null) continue;
                 // Materialise a working copy if we skipped meshopt (which
-                // is what normally clones the fbx mesh).
-                if (e.originalMesh == e.fbxMesh)
+                // is what normally clones the baseline).
+                if (e.originalMesh == e.Baseline)
                 {
-                    e.originalMesh = MeshAccess.ReadableCopy(e.fbxMesh);
+                    e.originalMesh = MeshAccess.ReadableCopy(e.Baseline);
                     e.originalMesh.name = e.fbxMesh.name + "_wc";
                 }
                 var welded = Uv0Analyzer.UvEdgeWeld(e.originalMesh);
@@ -1540,8 +1540,8 @@ namespace SashaRX.UnityMeshLab
 
         static void EnsureTransferWorkingMesh(MeshEntry entry)
         {
-            if (entry.originalMesh != entry.fbxMesh) return;
-            entry.originalMesh = MeshAccess.ReadableCopy(entry.fbxMesh);
+            if (entry.originalMesh != entry.Baseline) return;
+            entry.originalMesh = MeshAccess.ReadableCopy(entry.Baseline);
             entry.originalMesh.name = entry.fbxMesh.name + "_wc";
         }
 
@@ -1677,14 +1677,15 @@ namespace SashaRX.UnityMeshLab
                 e.validationReport = null;
                 e.reverseTransferJson = null;
 
-                // Rewind the working mesh to the imported fbx asset. The stale
-                // working clone (weld / sym-split product) is destroyed — it is
-                // ours, never the asset (fbxMesh is owned by the AssetDatabase).
-                if (e.fbxMesh != null)
+                // Rewind the working mesh to its baseline: the scene edit when there is
+                // one, else the imported fbx asset. The stale working clone (weld /
+                // sym-split product) is destroyed — it is ours, never the asset (owned by
+                // the AssetDatabase) and never the scene edit (owned by Undo).
+                if (e.Baseline != null)
                 {
-                    if (e.originalMesh != null && e.originalMesh != e.fbxMesh)
+                    if (e.originalMesh != null && e.originalMesh != e.fbxMesh && e.originalMesh != e.sceneEditMesh)
                         UnityEngine.Object.DestroyImmediate(e.originalMesh);
-                    e.originalMesh = e.fbxMesh;
+                    e.originalMesh = e.Baseline;
                 }
 
                 e.wasWelded = false;
@@ -2060,7 +2061,7 @@ namespace SashaRX.UnityMeshLab
         {
             DestroyWorkingMesh(ref entry.transferredMesh);
             DestroyWorkingMesh(ref entry.repackedMesh);
-            if (entry.originalMesh != entry.fbxMesh) DestroyWorkingMesh(ref entry.originalMesh);
+            if (entry.originalMesh != entry.fbxMesh && entry.originalMesh != entry.sceneEditMesh) DestroyWorkingMesh(ref entry.originalMesh);
         }
 
         // Async entry — button-click path. Editor main thread is free during
@@ -2566,10 +2567,12 @@ namespace SashaRX.UnityMeshLab
                 foreach (var entry in ctx.MeshEntries)
                 {
                     if (!entry.meshFilter || !entry.fbxMesh) continue;
+                    // Owned copies give way to the baseline: the scene edit when there is one.
+                    var baseline = entry.Baseline;
                     var shown = entry.meshFilter.sharedMesh;
-                    if (shown != entry.fbxMesh && (shown == entry.originalMesh
+                    if (shown != baseline && (shown == entry.originalMesh
                         || shown == entry.repackedMesh || shown == entry.transferredMesh))
-                        entry.meshFilter.sharedMesh = entry.fbxMesh;
+                        entry.meshFilter.sharedMesh = baseline;
                 }
                 return scope;
             }
@@ -2621,19 +2624,20 @@ namespace SashaRX.UnityMeshLab
             // Does NOT delete sidecar assets — use ResetUv2FromFbx for that.
             foreach (var e in ctx.MeshEntries)
             {
-                // Restore original mesh on MeshFilter before destroying working copies.
+                // Restore the baseline mesh (the scene edit when there is one, else the
+                // imported mesh) on the MeshFilter before destroying working copies.
                 // Recorded so the reset itself is one revertible step.
-                if (e.meshFilter != null && e.fbxMesh != null)
+                if (e.meshFilter != null && e.Baseline != null)
                 {
                     Undo.RecordObject(e.meshFilter, "Reset Working Copies");
-                    e.meshFilter.sharedMesh = e.fbxMesh;
+                    e.meshFilter.sharedMesh = e.Baseline;
                 }
                 DestroyWorkingMesh(ref e.transferredMesh);
                 DestroyWorkingMesh(ref e.repackedMesh);
                 e.repackedAtlasWidth = 0;
                 e.repackedAtlasHeight = 0;
-                if (e.originalMesh != null && e.originalMesh != e.fbxMesh) DestroyWorkingMesh(ref e.originalMesh);
-                if (e.fbxMesh != null) e.originalMesh = e.fbxMesh;
+                if (e.originalMesh != null && e.originalMesh != e.fbxMesh && e.originalMesh != e.sceneEditMesh) DestroyWorkingMesh(ref e.originalMesh);
+                if (e.Baseline != null) e.originalMesh = e.Baseline;
                 e.shellTransferResult = null;
                 e.wasWelded = e.wasEdgeWelded = e.wasSymmetrySplit = false;
             }

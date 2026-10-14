@@ -369,14 +369,18 @@ namespace SashaRX.UnityMeshLab
         internal static void RestoreReverseProvenance(MeshEntry entry, MeshUv2Entry saved)
         {
             var raw = entry.fbxMesh;
-            if (!raw) return;
+            // The record is checked against the mesh the entry works from: a scene edit on the
+            // renderer, else the import. An edit with other faces or another layout is not the mesh
+            // the record describes, and the save must still write it.
+            var current = entry.Baseline;
+            if (!raw || !current) return;
             if (saved == null || saved.targetUvChannel != 1 || string.IsNullOrEmpty(saved.reverseTransferJson)) return;
             ReverseUvAudit.ProvenanceEntry provenance;
             try { provenance = JsonUtility.FromJson<ReverseUvAudit.ProvenanceEntry>(saved.reverseTransferJson); }
             catch (ArgumentException) { return; }
             if (provenance?.schema != 2 || provenance.surface?.key != raw.name || provenance.surface.faces == null
                 || saved.optimizedTriangles == null || provenance.surface.faces.Length != saved.optimizedTriangles.Length / 3
-                || provenance.atlasSize <= 0 || !ReverseTopologyMatches(raw, saved, verifyLayout: true)) return;
+                || provenance.atlasSize <= 0 || !ReverseTopologyMatches(current, saved, verifyLayout: true)) return;
             entry.reverseTransferJson = saved.reverseTransferJson;
             entry.repackedAtlasWidth = entry.repackedAtlasHeight = (uint)provenance.atlasSize;
         }

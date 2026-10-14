@@ -169,12 +169,25 @@ namespace SashaRX.UnityMeshLab
         internal static LODGroup CreateLodGroupFromRenderers(GameObject root)
             => LodHierarchy.CreateFromRenderers(root, 0.01f, requireRenderers: true, out _);
 
-        static bool IsMeshReferenced(Mesh mesh)
+        /// <summary>
+        /// The loaded MeshFilters showing <paramref name="mesh"/> other than <paramref name="except"/>;
+        /// hidden don't-save objects (previews) are left out.
+        /// </summary>
+        internal static List<MeshFilter> FiltersShowing(Mesh mesh, Component except = null)
+        {
+            var filters = new List<MeshFilter>();
+            foreach (var filter in Resources.FindObjectsOfTypeAll<MeshFilter>())
+                if (filter != except && filter.sharedMesh == mesh && (filter.hideFlags & HideFlags.DontSave) == 0) filters.Add(filter);
+            return filters;
+        }
+
+        /// <summary>Whether a loaded MeshFilter or SkinnedMeshRenderer other than <paramref name="except"/> shows <paramref name="mesh"/>.</summary>
+        internal static bool IsMeshReferenced(Mesh mesh, Component except = null)
         {
             foreach (var filter in Resources.FindObjectsOfTypeAll<MeshFilter>())
-                if (filter.sharedMesh == mesh) return true;
+                if (filter != except && filter.sharedMesh == mesh) return true;
             foreach (var renderer in Resources.FindObjectsOfTypeAll<SkinnedMeshRenderer>())
-                if (renderer.sharedMesh == mesh) return true;
+                if (renderer != except && renderer.sharedMesh == mesh) return true;
             return false;
         }
 

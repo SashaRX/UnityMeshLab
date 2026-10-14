@@ -303,6 +303,7 @@ namespace SashaRX.UnityMeshLab
         public void Refresh(LODGroup lodGroup)
         {
             BeforeRefresh?.Invoke();
+            SceneEditRegistry.Collect(MeshEntries);
             MeshEntries.Clear();
             HasRepack = HasTransfer = false;
             SrcCache.Clear();
@@ -334,13 +335,18 @@ namespace SashaRX.UnityMeshLab
                     var fbm = mf.sharedMesh;
                     var uv2Check = new List<Vector2>();
                     fbm.GetUVs(1, uv2Check);
+                    // A registered edit on the renderer keeps the imported mesh as the entry's file
+                    // reference; a pipeline copy an Undo brought back is the working mesh, and the
+                    // scene edit it was taken from, if any, stays the baseline.
+                    bool known = SceneEditRegistry.TryGetImported(mf, fbm, out var imported, out bool workingCopy, out var baseline);
                     MeshEntries.Add(new MeshEntry
                     {
                         lodIndex = li,
                         renderer = r,
                         meshFilter = mf,
                         originalMesh = fbm,
-                        fbxMesh = fbm,
+                        fbxMesh = known ? imported : fbm,
+                        sceneEditMesh = !known ? null : workingCopy ? baseline : fbm,
                         hasExistingUv2 = uv2Check.Count > 0,
                         meshGroupKey = ExtractGroupKey(r.name)
                     });
@@ -383,6 +389,7 @@ namespace SashaRX.UnityMeshLab
         public void RefreshStandalone(MeshRenderer mr)
         {
             BeforeRefresh?.Invoke();
+            SceneEditRegistry.Collect(MeshEntries);
             MeshEntries.Clear();
             HasRepack = HasTransfer = false;
             SrcCache.Clear();
@@ -407,13 +414,15 @@ namespace SashaRX.UnityMeshLab
             var fbm = mf.sharedMesh;
             var uv2Check = new List<Vector2>();
             fbm.GetUVs(1, uv2Check);
+            bool known = SceneEditRegistry.TryGetImported(mf, fbm, out var imported, out bool workingCopy, out var baseline);
             MeshEntries.Add(new MeshEntry
             {
                 lodIndex = 0,
                 renderer = mr,
                 meshFilter = mf,
                 originalMesh = fbm,
-                fbxMesh = fbm,
+                fbxMesh = known ? imported : fbm,
+                sceneEditMesh = !known ? null : workingCopy ? baseline : fbm,
                 hasExistingUv2 = uv2Check.Count > 0,
                 meshGroupKey = ExtractGroupKey(mr.name)
             });
@@ -425,7 +434,8 @@ namespace SashaRX.UnityMeshLab
             // Do not reuse a previously valid FBX path from another selection.
             {
                 SourceFbxPath = null;
-                string p = UnityEditor.AssetDatabase.GetAssetPath(fbm);
+                // The entry's file reference, not the shown mesh: after a scene edit the renderer shows an unsaved clone.
+                string p = UnityEditor.AssetDatabase.GetAssetPath(MeshEntries[0].fbxMesh);
                 if (!string.IsNullOrEmpty(p) && p.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase))
                     SourceFbxPath = p;
             }
