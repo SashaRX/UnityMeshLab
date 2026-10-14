@@ -183,13 +183,53 @@ on all three models, and mesh copies cost milliseconds. `Detached forward
 preparation` (27.4 s on Kamaz) re-runs the same donor seam trials. Every reverse
 benchmark run pays it too.
 
-Next forward experiment: avoid repeated work across the seam passes of one
-target. Each pass re-prepares inputs, captures donor/target surfaces and
-projects the whole target again. The stable and incremental passes differ only
-in cut validation and existing-atlas policy, and protected-face retries change
-only exclusions. Any reuse must keep pass order, refusal reasons and the final
-selection identical. The 120-export check and the forward layouts verify that.
 Artifacts: `_results~/transfer-performance-20261014-eighth/forward-profile-seams/`.
+
+### Forward seam passes share their projection prefix
+
+Each pass re-prepared inputs, captured the donor and target and projected the
+whole target again. The stable and incremental passes differ only in cut
+validation and the existing-atlas policy; protected-face retries change only
+the exclusions. Splitting `Project` showed where the 20.1 s of Kamaz seam
+projection went: initial face projection 9.26 s, refined faces 6.85 s, donor
+seam refinement 5.33 s, donor charts 0.94 s.
+
+Initial face projection and its first corner snap read none of the
+pass-specific options. Neither reads `protectedInheritance`, which only
+`ResolveOverlaps` and the cuts use. `ForwardSeamShared` therefore computes
+the clean inputs, donor surfaces and charts, the initial projection, the first
+snap and its query count once per `PrepareForwardSeamsAsync` call. Each pass,
+including retries, continues on a deep copy. Arrays are cloned and faces
+copied; a face carrying overlap relations would throw, but none exists before
+`ResolveOverlaps`. The pass then sets its protected faces and continues
+unchanged from the first `ResolveOverlaps`. That assignment moved after the
+initial projection, which is equivalent because nothing before it reads the
+flag. The donor is read-only in every pass. A failed or cancelled initial
+projection caches nothing. `Project` keeps its original composition for the
+progressive reverse path.
+
+`shareSeamPasses=false` restores independent passes as the regression control.
+`SharedForwardSeamPassesMatchIndependentPasses` compares mesh streams and
+vertex sources for five synthetic cases. The rendered-frame cases and the
+seam/corner cut cases include multi-pass runs. Medians of three runs:
+
+| Model | Forward before (s) | Forward shared (s) | Seam trial before → shared (s) | Detached before → shared (s) |
+|---|---:|---:|---:|---:|
+| Modern_Kitchen_A | 3.74 | 3.00 | 2.02 → 1.22 | 3.77 → 2.99 |
+| Kamaz (`kamaz_Off`) | 27.41 | 19.89 | 23.58 → 16.06 | 27.44 → 19.75 |
+
+Kamaz ordinary Transfer is 27% faster, Kitchen 20%; Cafe (0.4–0.5 s) is within
+noise. Every reverse benchmark run also gains this through its detached forward
+preparation. All 120 exports stay byte-identical in four runs. The regression
+groups pass 364 tests, fail 0 and skip 17 optional private fixtures.
+
+What remains of Kamaz seam projection is 12.75 s: refined-face projection
+6.55 s (18 calls), donor seam refinement 4.69 s (26) and initial projection
+0.90 s (6). Two next targets. Refinement rebuilds the donor correspondence
+graph from the same donor in every pass. Face projection tests every chart's
+bounds per face (415 million tests on Kamaz), where an ordered spatial
+prefilter would return the same candidates in the same order. Artifacts:
+`forward-shared-seams/`, `forward-shared-switch/`.
 
 ## Transfer performance: immutable footprints and equivalent placement search — 2026-10-13
 

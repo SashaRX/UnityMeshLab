@@ -769,3 +769,11 @@ the donor seam trial (26 projection passes, 20.12 s; 279 contact audits,
 2.61 s). Shell transfer takes 2.24 s and repack 0.82 s, with one auto-tune
 attempt. All 120 exports remain byte-identical. The full table and the next
 forward experiment are in EXPERIMENTS.md ("Forward stage profile").
+
+The seam passes of one target now share their prefix: clean inputs, donor
+charts, initial face projection and first corner snap. Each pass and retry
+continues on a copy. `shareSeamPasses=false` keeps independent passes as the
+control. Kamaz forward falls from 27.41 s to 19.89 s and Kitchen from 3.74 s to
+3.00 s (three-run medians). The detached reverse preparation gains the same.
+All 120 exports stay byte-identical; details are in EXPERIMENTS.md ("Forward
+seam passes share their projection prefix").
