@@ -249,6 +249,72 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void ASaveReleasesARegisteredWorkingCopyToTheImportFoundAgain()
+        {
+            // Undo brought the pipeline copy Cleanup promoted back under the renderer; a save then
+            // reimports the file and recreates the imported mesh. The release after the save finds
+            // the import the copy stands for again instead of leaving the renderer without a mesh.
+            string folder="Assets/__MeshLabSceneEditTests_"+System.Guid.NewGuid().ToString("N"); string asset=folder+"/imported.asset";
+            var group=Group(true,out var renderer,out _); var filter=renderer.GetComponent<MeshFilter>(); var imported=filter.sharedMesh;
+            UnityEditor.AssetDatabase.CreateFolder("Assets",folder.Substring("Assets/".Length));
+            UnityEditor.AssetDatabase.CreateAsset(imported,asset);
+            try {
+                var ctx=Open(group); var entry=ctx.MeshEntries.Find(e=>e.renderer==renderer);
+                var working=Object.Instantiate(imported); working.name=imported.name+"_wc"; owned.Add(working);
+                entry.originalMesh=working; filter.sharedMesh=working; // as after Weld
+                UnityEditor.Undo.IncrementCurrentGroup();
+                Assert.IsTrue(MeshHygieneUtility.PrepareWritable(entry,"Remove Degenerate Triangles",out var edited)); owned.Add(edited);
+                UnityEditor.Undo.PerformUndo();
+                Assert.IsTrue(working); Assert.AreSame(working,filter.sharedMesh);
+                entry=ctx.MeshEntries.Find(e=>e.renderer==renderer); // the hub refreshed on the Undo
+                Assert.AreSame(working,entry.originalMesh); Assert.AreSame(imported,entry.fbxMesh); Assert.IsNull(entry.sceneEditMesh);
+
+                // The save's import replaces the file's mesh by another object of the same name.
+                var replacement=Object.Instantiate(imported); replacement.name=imported.name; owned.Add(replacement);
+                UnityEditor.AssetDatabase.DeleteAsset(asset);
+                UnityEditor.AssetDatabase.CreateAsset(replacement,asset);
+                Assert.IsFalse(imported); Assert.IsFalse(entry.Baseline,"the entry's baseline went with the import");
+                ctx.Assets.ReleaseWorkingMeshes();
+                Assert.IsFalse(working,"the copy is released"); Assert.AreSame(replacement,filter.sharedMesh,"the renderer takes the import found again");
+                Assert.AreSame(replacement,entry.fbxMesh);
+                ctx.Refresh(group); entry=ctx.MeshEntries.Find(e=>e.renderer==renderer);
+                Assert.AreSame(replacement,entry.fbxMesh); Assert.IsNull(entry.sceneEditMesh); Assert.AreSame(replacement,entry.originalMesh);
+            }
+            finally { UnityEditor.AssetDatabase.DeleteAsset(folder); }
+        }
+
+        [Test]
+        public void ARelinkKeepsAWorkingCopyOnlyForTheEditItWasTakenFrom()
+        {
+            // The relink after a save leaves a scene edit on its renderer, and a pipeline working copy
+            // taken from a living scene edit (its release returns the renderer to that edit); a working
+            // copy of the import itself is relinked by name like any copy.
+            string folder="Assets/__MeshLabSceneEditTests_"+System.Guid.NewGuid().ToString("N"); string asset=folder+"/imported.asset";
+            var group=Group(true,out var renderer,out _); var filter=renderer.GetComponent<MeshFilter>(); var imported=filter.sharedMesh;
+            UnityEditor.AssetDatabase.CreateFolder("Assets",folder.Substring("Assets/".Length));
+            UnityEditor.AssetDatabase.CreateAsset(imported,asset);
+            try {
+                var edit=Object.Instantiate(imported); edit.name=imported.name; owned.Add(edit);
+                var copy=Object.Instantiate(imported); copy.name=imported.name; owned.Add(copy); // named like the import: a relink by name would take it
+                SceneEditRegistry.Register(filter,imported,edit);
+                filter.sharedMesh=edit;
+                FbxExport.RelinkSceneMeshReferences(asset,null,group);
+                Assert.AreSame(edit,filter.sharedMesh,"a scene edit stays"); Assert.IsTrue(SceneEditRegistry.KeepsRenderer(filter,edit));
+
+                SceneEditRegistry.Register(filter,imported,copy,workingCopy:true,baseline:edit);
+                filter.sharedMesh=copy;
+                FbxExport.RelinkSceneMeshReferences(asset,null,group);
+                Assert.AreSame(copy,filter.sharedMesh,"a working copy of a living edit stays"); Assert.IsTrue(SceneEditRegistry.KeepsRenderer(filter,copy));
+
+                SceneEditRegistry.Register(filter,imported,copy,workingCopy:true);
+                Assert.IsFalse(SceneEditRegistry.KeepsRenderer(filter,copy));
+                FbxExport.RelinkSceneMeshReferences(asset,null,group);
+                Assert.AreSame(imported,filter.sharedMesh,"a working copy of the import is relinked by name");
+            }
+            finally { UnityEditor.AssetDatabase.DeleteAsset(folder); }
+        }
+
+        [Test]
         public void SceneEditLinksOutliveTheirObjects()
         {
             // The imported mesh a reimport recreated is found again by its file and name; a renderer

@@ -242,7 +242,10 @@ namespace SashaRX.UnityMeshLab
             {
                 // A scene edit (MeshEntry.sceneEditMesh) is the renderer's baseline: previews
                 // and pipeline copies swap back to it, not to the imported mesh, and it stays.
+                // A reimport that recreated the import takes the baseline with it; a working copy
+                // the registry knows still names what it goes back to.
                 var baseline = e.Baseline;
+                if (baseline == null) baseline = SceneEditRegistry.BaselineBehindWorkingCopy(e);
                 if (e.meshFilter != null && baseline != null) {
                     var current = e.meshFilter.sharedMesh;
                     bool ownedSwap = current != null && current != baseline && (current == e.transferredMesh || current == e.repackedMesh ||

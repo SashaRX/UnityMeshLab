@@ -777,8 +777,8 @@ namespace SashaRX.UnityMeshLab
             {
                 if (filter == null) continue;
                 var fresh = AssetDatabase.LoadAllAssetsAtPath(fbxPath).OfType<Mesh>().FirstOrDefault(m => m.name == meshName);
-                // A scene edit the save did not write stays the renderer's mesh.
-                if (fresh == null || filter.sharedMesh == fresh || SceneEditRegistry.TryGetImported(filter, filter.sharedMesh, out _)) continue;
+                // A scene edit the save did not write stays the renderer's mesh, as does a working copy of one.
+                if (fresh == null || filter.sharedMesh == fresh || SceneEditRegistry.KeepsRenderer(filter, filter.sharedMesh)) continue;
                 Undo.RecordObject(filter, "Relink Saved Mesh");
                 filter.sharedMesh = fresh;
             }
@@ -796,7 +796,10 @@ namespace SashaRX.UnityMeshLab
             if (ctx?.MeshEntries == null) return;
             foreach (var e in ctx.MeshEntries)
             {
+                // The import the save recreated took the entry's baseline with it: a working copy
+                // on the renderer that the registry knows still names what it is released to.
                 var baseline = e.Baseline;
+                if (baseline == null) baseline = SceneEditRegistry.BaselineBehindWorkingCopy(e);
                 var copies = new[] { e.transferredMesh, e.repackedMesh,
                     e.originalMesh != e.fbxMesh && e.originalMesh != e.sceneEditMesh ? e.originalMesh : null };
                 foreach (var copy in copies)

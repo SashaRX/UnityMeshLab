@@ -96,6 +96,32 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
+        /// Whether <paramref name="shown"/> stays on <paramref name="filter"/> through a relink to a
+        /// reimported file: a scene edit, or a pipeline working copy taken from a living scene edit
+        /// (its release returns the renderer to that edit). A working copy of the import itself is
+        /// relinked by name like any copy.
+        /// </summary>
+        internal static bool KeepsRenderer(MeshFilter filter, Mesh shown)
+            => TryGetImported(filter, shown, out _, out bool workingCopy, out var baseline) && (!workingCopy || baseline != null);
+
+        /// <summary>
+        /// The baseline a pipeline working copy on <paramref name="entry"/>'s renderer (an Undo
+        /// brought it back after Cleanup promoted it) is released to when the entry's own is gone
+        /// with the import a save recreated: the living scene edit the copy was taken from, else the
+        /// imported mesh found again. The entry takes them as its scene edit and file reference.
+        /// Null when the renderer shows anything else.
+        /// </summary>
+        internal static Mesh BaselineBehindWorkingCopy(MeshEntry entry)
+        {
+            if (entry?.meshFilter == null) return null;
+            var shown = entry.meshFilter.sharedMesh;
+            if (shown == null || !TryGetImported(entry.meshFilter, shown, out var imported, out bool workingCopy, out var baseline) || !workingCopy) return null;
+            entry.fbxMesh = imported;
+            if (baseline != null) entry.sceneEditMesh = baseline;
+            return baseline != null ? baseline : imported;
+        }
+
+        /// <summary>
         /// Takes the edits the entries' renderers show into the registry and drops the links whose
         /// imported mesh is gone for good. An edit a renderer no longer shows (Merge replaced it) keeps
         /// the provenance it had, for the Undo that brings it back.
