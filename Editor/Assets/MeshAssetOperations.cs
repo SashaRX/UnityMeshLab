@@ -680,11 +680,12 @@ namespace SashaRX.UnityMeshLab
         // the batch then ends without freeing, adopting or reloading anything.
         bool sourceSavesOpen, sceneReloadPending, lodAdoptionPending, workLeftUnsaved;
 
-        // The scene edits (MeshEntry.sceneEditMesh) whose geometry a save wrote into the file, with
-        // the file and mesh name that find the written mesh after the import. Only these are
-        // released after the save: a save of channels alone leaves an edit the only record of its
-        // faces, so it stays on the renderer.
-        readonly List<(MeshEntry entry, string fbxPath, string meshName)> savedSceneEdits = new List<(MeshEntry, string, string)>();
+        // The scene edits (MeshEntry.sceneEditMesh) whose geometry a save writes into the file, with
+        // the file, local id and name that find the written mesh after the import. They are marked
+        // before the write, while the imported mesh is still there to name, and unmarked when the
+        // write does not happen. Only these are released after the save: a save of channels alone
+        // leaves an edit the only record of its faces, so it stays on the renderer.
+        readonly List<(MeshEntry entry, string fbxPath, string meshName, long localId)> savedSceneEdits = new List<(MeshEntry, string, string, long)>();
 
         void BeginSourceSaves()
         {
@@ -693,13 +694,20 @@ namespace SashaRX.UnityMeshLab
             savedSceneEdits.Clear();
         }
 
-        /// <summary>Records that a save wrote the scene edits of the <paramref name="entries"/> that <paramref name="written"/> accepts into <paramref name="fbxPath"/>.</summary>
+        /// <summary>Records, before the write, that a save writes the scene edits of the <paramref name="entries"/> that <paramref name="written"/> accepts into <paramref name="fbxPath"/>.</summary>
         internal void MarkSceneEditsSaved(string fbxPath, IEnumerable<MeshEntry> entries, Func<MeshEntry, bool> written)
         {
             foreach (var e in entries)
-                if (e?.sceneEditMesh != null && e.fbxMesh != null && written(e) && !savedSceneEdits.Any(saved => saved.entry == e))
-                    savedSceneEdits.Add((e, fbxPath, e.fbxMesh.name));
+            {
+                if (e?.sceneEditMesh == null || e.fbxMesh == null || !written(e) || savedSceneEdits.Any(saved => saved.entry == e)) continue;
+                long localId = AssetDatabase.TryGetGUIDAndLocalFileIdentifier(e.fbxMesh, out string _, out long id) ? id : 0;
+                savedSceneEdits.Add((e, fbxPath, e.fbxMesh.name, localId));
+            }
         }
+
+        /// <summary>Forgets the marks of <paramref name="fbxPath"/>: its write did not happen.</summary>
+        internal void UnmarkSceneEditsSaved(string fbxPath)
+            => savedSceneEdits.RemoveAll(saved => string.Equals(saved.fbxPath, fbxPath, StringComparison.OrdinalIgnoreCase));
 
         void MarkUnsaved(List<(MeshEntry entry, Mesh resultMesh)> group)
         {
@@ -809,11 +817,11 @@ namespace SashaRX.UnityMeshLab
         // found stays, and says so.
         void ReleaseSavedSceneEdits()
         {
-            foreach (var (entry, fbxPath, meshName) in savedSceneEdits)
+            foreach (var (entry, fbxPath, meshName, localId) in savedSceneEdits)
             {
                 var edit = entry.sceneEditMesh;
-                var fresh = entry.fbxMesh != null ? entry.fbxMesh
-                    : AssetDatabase.LoadAllAssetsAtPath(fbxPath).OfType<Mesh>().FirstOrDefault(m => m.name == meshName);
+                // The import may have recreated the sub-asset: find it again by its identity.
+                var fresh = entry.fbxMesh != null ? entry.fbxMesh : SceneEditRegistry.FindImported(fbxPath, localId, meshName);
                 if (fresh == null)
                 {
                     UvtLog.Warn($"[FBX Export] '{meshName}' was not found in '{fbxPath}' after the save; the scene keeps its edited mesh.");
@@ -978,6 +986,13 @@ namespace SashaRX.UnityMeshLab
                         : outputFbxPath.StartsWith("Assets/", StringComparison.Ordinal) ? outputFbxPath : null;
                     var sidecar = sidecarFbx == null ? null : PrepareSidecarSync(sidecarFbx, kv.Value);
                     if (!isVariant) PrepareStandaloneRelink(sourceFbxPath);
+                    // The structure step writes these meshes whole: their scene edits will be in the file.
+                    // Marked now, while the import that follows the write cannot have replaced the
+                    // meshes they are named after; the other scene edits take the channels the channel
+                    // step writes, after it.
+                    var reshaped = new HashSet<MeshEntry>(kv.Value.Select(p => p.entry)
+                        .Where(e => e.fbxMesh != null && plan.reshaped.Any(r => r.name == e.fbxMesh.name)));
+                    if (!isVariant) MarkSceneEditsSaved(sourceFbxPath, reshaped, _ => true);
 
                     bool written;
                     try
@@ -987,6 +1002,7 @@ namespace SashaRX.UnityMeshLab
                     }
                     catch (FbxStructureRefusalException refusal)
                     {
+                        UnmarkSceneEditsSaved(sourceFbxPath);
                         written = ExportAfterRefusal(sourceFbxPath, kv.Value, entries, outputFbxPath, overwriteSource, refusal.Message, rebuilds);
                         if (written) okCount++;
                         else MarkUnsaved(kv.Value);
@@ -994,21 +1010,18 @@ namespace SashaRX.UnityMeshLab
                     }
                     catch (Exception ex)
                     {
+                        UnmarkSceneEditsSaved(sourceFbxPath);
                         UvtLog.Error($"[FBX Export] '{sourceFbxPath}' was not written: {ex.Message}");
                         UvtLog.Verbose(ex.ToString());
                         MarkUnsaved(kv.Value);
                         continue;
                     }
-                    if (!written) { standaloneRelinks.Clear(); MarkUnsaved(kv.Value); continue; }
+                    if (!written) { UnmarkSceneEditsSaved(sourceFbxPath); standaloneRelinks.Clear(); MarkUnsaved(kv.Value); continue; }
                     okCount++;
                     ApplySidecarSync(sidecar);
                     if (isVariant) continue;
-                    // The structure step wrote these meshes whole: their scene edits are in the file.
-                    // The other scene edits take the channels the channel step wrote.
-                    MarkSceneEditsSaved(sourceFbxPath, kv.Value.Select(p => p.entry), e => plan.reshaped.Any(r => r.name == e.fbxMesh.name));
                     foreach (var (entry, resultMesh) in kv.Value)
-                        if (entry.fbxMesh == null || !plan.reshaped.Any(r => r.name == entry.fbxMesh.name))
-                            SyncSceneEditChannels(entry, resultMesh, FbxChannelWrite.Supported, "FBX Export");
+                        if (!reshaped.Contains(entry)) SyncSceneEditChannels(entry, resultMesh, FbxChannelWrite.Supported, "FBX Export");
                     AfterSourceSave(plan.lods.Count > 0);
                 }
             }
@@ -1124,6 +1137,9 @@ namespace SashaRX.UnityMeshLab
                 }
                 var prefab = HierarchyPrefabLoader != null ? HierarchyPrefabLoader(sourceFbxPath) : AssetDatabase.LoadAssetAtPath<GameObject>(sourceFbxPath);
                 if (prefab == null) throw new InvalidOperationException("Cannot load FBX prefab: " + sourceFbxPath);
+                // The rebuild writes every mesh from the scene: the scene edits of an overwritten file
+                // are in it. Marked before the write, while their imported meshes are there to name.
+                if (overwriteSource) MarkSceneEditsSaved(sourceFbxPath, entries.Select(p => p.entry), _ => true);
                 tempRoot = UnityEngine.Object.Instantiate(prefab);
                 tempRoot.name = prefab.name;
                 FbxExport.PromoteRootMeshToLod0Child(tempRoot);
@@ -1145,7 +1161,7 @@ namespace SashaRX.UnityMeshLab
             }
             // A completed write needs replay even if restoring its importer metadata failed.
             if (overwriteSource && written) StoreHierarchyExportSidecars(sourceFbxPath, entries, true, batch);
-            if (overwriteSource && written && !failed) MarkSceneEditsSaved(sourceFbxPath, entries.Select(p => p.entry), _ => true);
+            if (overwriteSource && !(written && !failed)) UnmarkSceneEditsSaved(sourceFbxPath);
             return written && !failed;
         }
 
