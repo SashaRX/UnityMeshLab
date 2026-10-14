@@ -1451,6 +1451,7 @@ namespace SashaRX.UnityMeshLab.Tests
             public string mode, error;
             public bool completed;
             public int atlasWidth, atlasHeight;
+            public TransferPerformanceProfile performance = new TransferPerformanceProfile();
         }
 
         [System.Serializable] sealed class PairedTransferComparison
@@ -1483,6 +1484,12 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             string output = System.Environment.GetEnvironmentVariable("MESHLAB_PAIRED_TRANSFER_OUTPUT");
             if (string.IsNullOrEmpty(output)) Assert.Ignore("Optional private paired transfer fixtures are not configured.");
+            using var nativeSearch=NativeFootprintTestLibrary.OpenFromEnvironment();
+            using var nativeQuery=NativeQueryTestLibrary.OpenFromEnvironment();
+            using var burstCompiler=System.Environment.GetEnvironmentVariable("MESHLAB_REQUIRE_BURST_RASTER")=="1"
+                ?ReverseUvRasterAcceleration.beginTestScope?.Invoke():null;
+            using var nativePacking=System.Environment.GetEnvironmentVariable("MESHLAB_COMBINED_NATIVE")=="1"
+                ?XatlasNative.UseForTests(nativeSearch?.packing??throw new System.InvalidOperationException("Combined native test library is missing.")):null;
             var prefab = UnityEditor.AssetDatabase.LoadAssetAtPath<GameObject>(asset); Assert.NotNull(prefab, asset);
             var instance = Object.Instantiate(prefab); owned.Add(instance);
             var group = instance.GetComponent<LODGroup>() ?? instance.AddComponent<LODGroup>();
@@ -1527,7 +1534,8 @@ namespace SashaRX.UnityMeshLab.Tests
             {
                 var forward = new PairedTransferMode {mode = "forward"}; comparison.modes.Add(forward);
                 BenchmarkRecorder.OutputDirectoryOverride = System.IO.Path.Combine(directory, forward.mode);
-                ((System.Threading.Tasks.Task)CallWorkflow("ExecFullPipelineImpl", "paired-forward", false)).GetAwaiter().GetResult();
+                using (forward.performance.Measure("Forward pipeline"))
+                    ((System.Threading.Tasks.Task)CallWorkflow("ExecFullPipelineImpl", "paired-forward", false)).GetAwaiter().GetResult();
                 Assert.IsTrue(ctx.HasRepack && ctx.HasTransfer);
                 System.IO.Directory.CreateDirectory(BenchmarkRecorder.OutputDirectoryOverride);
                 TransferBenchmarkExport.Forward(BenchmarkRecorder.OutputDirectoryOverride, ctx);
@@ -1536,7 +1544,10 @@ namespace SashaRX.UnityMeshLab.Tests
                 forward.atlasHeight = (int)entries.Max(e => e.repackedAtlasHeight);
                 bool includeExisting=System.Environment.GetEnvironmentVariable("MESHLAB_PAIRED_EXISTING_SEED")=="1";
                 bool useForward=System.Environment.GetEnvironmentVariable("MESHLAB_REVERSE_FROM_FORWARD")!="0";
-                using var detached=useForward?hub.DiagnosticWorkflow.PrepareForwardReverseInputs(true,false,default).GetAwaiter().GetResult():null;
+                UvTransferWorkflow.ForwardReverseInputs detached;
+                using (forward.performance.Measure("Detached forward preparation"))
+                    detached=useForward?hub.DiagnosticWorkflow.PrepareForwardReverseInputs(true,false,default).GetAwaiter().GetResult():null;
+                using var detachedLifetime = detached;
                 var reverseSources=levels;
                 if(useForward)
                 {
@@ -1558,7 +1569,23 @@ namespace SashaRX.UnityMeshLab.Tests
                     BenchmarkRecorder.OutputDirectoryOverride = System.IO.Path.Combine(directory, reverse.mode);
                     try
                     {
+                        if(System.Environment.GetEnvironmentVariable("MESHLAB_CAPTURE_NATIVE_PACKING")=="1")
+                        {
+                            reverse.performance.nativePackingCaptureDirectory=System.IO.Path.Combine(BenchmarkRecorder.OutputDirectoryOverride,"native-requests");
+                            reverse.performance.nativePackingReplayExecutable=System.Environment.GetEnvironmentVariable("MESHLAB_NATIVE_PACKING_REPLAY_EXECUTABLE");
+                        }
                         var options = new ReverseUvTransfer.Options {
+                            performance = reverse.performance,
+                            cachePackingFootprints = System.Environment.GetEnvironmentVariable("MESHLAB_DISABLE_FOOTPRINT_CACHE") != "1",
+                            indexFootprintSearch = System.Environment.GetEnvironmentVariable("MESHLAB_DISABLE_FOOTPRINT_SEARCH_INDEX") != "1",
+                            cacheCollisionRows = System.Environment.GetEnvironmentVariable("MESHLAB_DISABLE_COLLISION_ROW_CACHE") != "1",
+                            nativeFootprintSearch = System.Environment.GetEnvironmentVariable("MESHLAB_DISABLE_NATIVE_FOOTPRINT_SEARCH") != "1",
+                            reuseOccupancySnapshots = System.Environment.GetEnvironmentVariable("MESHLAB_DISABLE_OCCUPANCY_SNAPSHOT_REUSE") != "1",
+                            burstFootprintRaster = System.Environment.GetEnvironmentVariable("MESHLAB_DISABLE_BURST_RASTER") != "1",
+                            footprintSearchApi = nativeSearch?.api,
+                            queryApi=nativeQuery?.api,
+                            queryBackend=System.Environment.GetEnvironmentVariable("MESHLAB_QUERY_BACKEND")=="legacy"
+                                ?ReverseUvQueryBackend.Mode.Legacy:ReverseUvQueryBackend.Mode.Auto,
                             seedResolution = useForward ? forward.atlasWidth : 256, padding = 2, boundaryToleranceTexels = tolerance,
                             preserveProjectedOverlap = overlap, projectionReach = .05f, cutNarrowJunctions = true,
                             rotateCharts = true, rotateChartsToAxis = true, splitDonorSeams = true,
@@ -1593,6 +1620,13 @@ namespace SashaRX.UnityMeshLab.Tests
                                 CollectionAssert.AreEqual(existingSnapshots[i],TransferMeshSnapshot.Capture(retained[i].mesh));
                         }
                         reverse.atlasWidth = reverse.atlasHeight = prepared.result.report.atlasSize;
+                        if(overlap && System.Environment.GetEnvironmentVariable("MESHLAB_REQUIRE_BURST_RASTER")=="1")
+                        {
+                            Assert.IsTrue(ReverseUvRasterAcceleration.Available,"Required Burst assembly must register.");
+                            if(reverse.performance.samples.Any(s=>s.stage=="Burst raster qualifying triangles" && s.count>0))
+                                Assert.IsTrue(reverse.performance.samples.Any(s=>s.stage=="Burst footprint raster spans" && s.count>0),
+                                    "Qualifying model masks must execute compiled Burst jobs.");
+                        }
                         reverse.completed = true;
                     }
                     catch (System.InvalidOperationException error) {reverse.error = error.Message;}

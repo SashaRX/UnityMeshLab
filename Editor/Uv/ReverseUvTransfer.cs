@@ -30,6 +30,16 @@ namespace SashaRX.UnityMeshLab
             internal bool frozenShellCascade;
             internal FrozenShellPlacement frozenPlacement;
             internal Action<Result> beforeFinalPacking;
+            internal TransferPerformanceProfile performance;
+            internal bool cachePackingFootprints = true;
+            internal bool indexFootprintSearch = true;
+            internal bool cacheCollisionRows = true;
+            internal bool nativeFootprintSearch = true;
+            internal bool reuseOccupancySnapshots = true;
+            internal bool burstFootprintRaster = true;
+            internal ReverseUvOccupancySearch.Api footprintSearchApi;
+            internal ReverseUvQueryBackend.Mode queryBackend=ReverseUvQueryBackend.Mode.Auto;
+            internal ReverseUvQueryBackend.Api queryApi;
             public bool rotateCharts = true, rotateChartsToAxis;
             internal float seedDensity;
             internal bool repackFinalAtlas;
@@ -183,6 +193,7 @@ namespace SashaRX.UnityMeshLab
             try
             {
                 token.ThrowIfCancellationRequested();
+                long captureStarted = options.performance == null ? 0 : System.Diagnostics.Stopwatch.GetTimestamp();
                 var preparedChain=options.regroupPreparedAtlas?levels.Select(l=>Capture(l,origin)).ToArray():null;
                 if(preparedChain!=null)
                 {
@@ -192,11 +203,13 @@ namespace SashaRX.UnityMeshLab
                 }
                 var seed = preparedChain==null?Capture(levels[0], origin):preparedChain[0];
                 if(preparedChain==null) InitializeSeed(seed, options, ref nextChart, token);
+                options.performance?.Record("Capture and normalization", System.Diagnostics.Stopwatch.GetTimestamp() - captureStarted);
                 float density = options.seedDensity>0?options.seedDensity:Density(seed);
                 result.report.texelsPerUnit = density;
                 all.Add(seed);
                 for (int level = 1; level < levels.Length; ++level)
                 {
+                    using var levelTiming = options.performance?.Measure("LOD correspondence and grouping", levels[level].lod);
                     token.ThrowIfCancellationRequested();
                     var targets = preparedChain==null?Capture(levels[level], origin):preparedChain[level];
                     if(preparedChain!=null)
@@ -244,6 +257,7 @@ namespace SashaRX.UnityMeshLab
                 if (side > options.maxAtlasSize && !(options.frozenShellCascade && options.repackFinalAtlas))
                     throw new InvalidOperationException("Reverse UV square atlas exceeds the size limit.");
                 result.report.atlasSize = side;
+                using var outputTiming = options.performance?.Measure("Correspondence graph and output meshes");
                 foreach (var level in all)
                 {
                     result.report.edges.AddRange(ReverseUvCorrespondenceGraph.Build(level, token).edges);
@@ -290,12 +304,15 @@ namespace SashaRX.UnityMeshLab
             CapturePackingEdges(result,token);
             options.beforeFinalPacking?.Invoke(result);
             int previousSide=result.report.atlasSize;
-            int side=useAsync?await Task.Run(()=>ReverseUvFinalPacking.Pack(result.surfaces,options,result.report,previousSide,token),token)
-                :ReverseUvFinalPacking.Pack(result.surfaces,options,result.report,previousSide,token);
+            int side;
+            using (options.performance?.Measure("Final packing and atlas audits"))
+                side=useAsync?await Task.Run(()=>ReverseUvFinalPacking.Pack(result.surfaces,options,result.report,previousSide,token),token)
+                    :ReverseUvFinalPacking.Pack(result.surfaces,options,result.report,previousSide,token);
             if(result.report.finalPacking==null)
                 throw new InvalidOperationException("Reverse UV final atlas packing failed; no result was published: "
                     +result.report.finalPackingRefusal);
             using var replacement=new Result();
+            using var meshTiming = options.performance?.Measure("Final output meshes");
             foreach(var level in result.surfaces)
             {
                 token.ThrowIfCancellationRequested();
@@ -535,9 +552,9 @@ namespace SashaRX.UnityMeshLab
             new Vector3(.5f, 0, .5f), Vector3.one / 3 };
 
         static TriangleBvh.HitResult NearestDonor(Chart chart, Vector3 point, Vector3 normal, Options options,
-            ref long comparisons, CancellationToken token, out bool ambiguous)
+            ref long comparisons, CancellationToken token, out bool ambiguous, TriangleBvh.HitResult? precomputed=null)
         {
-            var hit = chart.bvh.FindNearestNormalFiltered(point, normal, chart.normals, options.normalDot, options.projectionReach);
+            var hit = precomputed??chart.bvh.FindNearestNormalFiltered(point, normal, chart.normals, options.normalDot, options.projectionReach);
             ambiguous = false;
             if (hit.triangleIndex < 0) return hit;
             var pixel = Pixel(chart, hit);
@@ -574,10 +591,15 @@ namespace SashaRX.UnityMeshLab
         static void ProjectFaces(Surface[] donor, Surface[] targets, List<Chart> charts, Options options,
             ref long queries, CancellationToken token)
         {
+            if (targets.Length == 0) return;
+            using var projectionTiming = options.performance?.Measure("Face projection", targets[0].lod);
+            long candidates = 0, footprintTicks = 0, footprintCalls = 0;
+            using var batch=new ProjectionBatch(charts,options,token);
             foreach (var target in targets)
                 for (int f = 0; f < target.faces.Length; ++f)
                 {
                     token.ThrowIfCancellationRequested();
+                    if(f%ReverseUvQueryBackend.BatchSize==0) batch.Prepare(target,f);
                     if (target.faces[f].inherited) continue;
                     int t = f * 3;
                     var a = target.positions[target.indices[t]]; var b = target.positions[target.indices[t + 1]];
@@ -588,9 +610,11 @@ namespace SashaRX.UnityMeshLab
                     bool ambiguous = false;
                     foreach (var chart in charts)
                     {
+                        ++candidates;
                         if (chart.bounds.SqrDistance(center) > options.projectionReach * options.projectionReach) continue;
                         if (++queries > options.comparisonBudget) throw new InvalidOperationException("Reverse UV projection query budget exceeded.");
-                        var hit = NearestDonor(chart, center, normal, options, ref queries, token, out bool chartAmbiguous);
+                        var cached=batch.Get(target,f,chart,out var cachedHit)?(TriangleBvh.HitResult?)cachedHit:null;
+                        var hit = NearestDonor(chart, center, normal, options, ref queries, token, out bool chartAmbiguous,cached);
                         if (hit.triangleIndex < 0) continue;
                         float tolerance = Math.Max(1e-12f, options.projectionReach * options.projectionReach * 1e-6f);
                         if (hit.distSq < best.distSq - tolerance) { winner = chart; best = hit; ambiguous = chartAmbiguous; }
@@ -628,14 +652,20 @@ namespace SashaRX.UnityMeshLab
                         { valid = false; break; }
                     }
                     if (!valid) { record.ambiguous = true; record.rejection = "non-affine-or-hole"; continue; }
-                    if (!CoveredByParentLayer(winner, winner.layers[best.triangleIndex], target.pixels, t,
-                        options, ref queries, token)) { record.ambiguous = true; record.rejection = "parent-footprint"; continue; }
+                    long footprintStarted = options.performance == null ? 0 : System.Diagnostics.Stopwatch.GetTimestamp();
+                    bool covered = CoveredByParentLayer(winner, winner.layers[best.triangleIndex], target.pixels, t,
+                        options, ref queries, token);
+                    if (options.performance != null)
+                    { footprintTicks += System.Diagnostics.Stopwatch.GetTimestamp() - footprintStarted; ++footprintCalls; }
+                    if (!covered) { record.ambiguous = true; record.rejection = "parent-footprint"; continue; }
                     record.inherited = true; record.chart = winner.id; record.distance = Mathf.Sqrt(maxDistance);
                     record.coordinateDomain=winner.coordinateDomain;
                     record.ambiguous = false; record.rejection = null;
                     record.parentLod = donor[0].lod; record.parentMesh = winner.nodes[best.triangleIndex];
                     record.parentFace = winner.faces[best.triangleIndex]; record.layer = record.projectionLayer = winner.layers[best.triangleIndex];
                 }
+            options.performance?.Record("Chart bounds tested", 0, candidates, targets[0].lod);
+            options.performance?.Record("Parent footprint coverage", footprintTicks, footprintCalls, targets[0].lod);
         }
 
         // Interior probes alone miss holes between probes. Parent faces in one
