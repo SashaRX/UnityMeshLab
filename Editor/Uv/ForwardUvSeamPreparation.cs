@@ -117,8 +117,6 @@ namespace SashaRX.UnityMeshLab
             HashSet<int> protectedFaces,int attempt,TransferMatchTrace trace,bool incrementalCuts,bool existingAtlasOnly,float boundaryToleranceTexels,
             Matrix4x4 renderedFrame,TransferPerformanceProfile performance)
         {
-            // One count per projection pass, including protected-face retries.
-            performance?.Accumulate("Forward seam passes",0,1);
             using var inputs=ReverseUvInputs.Prepare(new[] {new Level {lod=1,inputs=new[] {new Input {mesh=source,key=source.name}}},
                 new Level {lod=0,inputs=new[] {new Input {mesh=target,key=target.name}}}},token);
             var cleanSource=inputs.levels[0].inputs[0].mesh;
@@ -130,6 +128,8 @@ namespace SashaRX.UnityMeshLab
                     uv[indices[t]],uv[indices[t+1]],uv[indices[t+2]],renderedFrame)<=4)
                 {valid.AddRange(new[] {indices[t],indices[t+1],indices[t+2]});validFaces.Add(inputs.levels[0].inputs[0].sourceFaces[t/3]);}
             if (valid.Count==0) return (null,null);
+            // One count per pass that reaches projection, including protected-face retries.
+            performance?.Accumulate("Forward seam passes",0,1);
             var donorMesh=UnityEngine.Object.Instantiate(cleanSource);
             try
             {
