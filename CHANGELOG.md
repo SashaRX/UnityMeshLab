@@ -5,6 +5,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+- Ordinary Transfer welds co-positioned UV2 corners that differ by at most 0.25 texel (transfer roundoff on duplicated vertices), copying the lowest-index value and refusing any weld that flips or collapses a face. Transferred LODs lose phantom seams; Reverse UV no longer splits such islands, which improves its LOD alignment and packing.
 - Forward Transfer no longer copies whole-mesh streams per shell: symmetry-split snapshots read vertices/normals once per mesh state, prescribed splits memoize a shell's UV0 overlap until the next split, and per-shell overlap scans use compact shell geometry. The diagnostic-only 3D coverage pass runs only when its Verbose log is enabled. Transfer decisions and UVs are unchanged.
 - Reverse UV final packing skips the unused rotation ranking of axis-aligned families and the duplicate first sub-ULP rescue phase, and parses mesh group keys once per surface in the cross-LOD join. Packing decisions and UVs are unchanged.
 - Reverse UV final packing builds atlas LOD face lists once per pack, and precision repair allocates its snapshot only when a face needs it. An internal option validates family placements and scans atlas LOD levels concurrently, consuming results in the original order; it is off by default because corpus measurements showed no reliable gain, and the benchmark's `-ParallelValidation` opts in. Packing decisions and UVs are unchanged; a failed frozen pack lists refusals by family index.
