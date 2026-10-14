@@ -179,6 +179,15 @@ namespace SashaRX.UnityMeshLab
             internal int[] indices, nodes, faces, layers, orientations;
             internal TriangleBvh bvh;
             internal Bounds bounds;
+            // Pixel-space triangles (z = 0), built on first coverage query.
+            // Chart pixels and layers never change after construction.
+            internal PixelIndex pixelIndex;
+        }
+
+        internal sealed class PixelIndex
+        {
+            // Null when a pixel is not finite: such a chart keeps the plain scan.
+            internal TriangleBvh bvh;
         }
 
         static async Task<Result> BuildCore(Level[] levels, Options options, bool useAsync = false,
@@ -588,7 +597,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         static void ProjectAfterInitial(Surface[] donor, Surface[] targets, List<Chart> charts, Options options,
-            long queries, CancellationToken token)
+            long queries, CancellationToken token, DonorSeamIndex seamIndex = null)
         {
             var performance = options.performance;
             foreach(var target in targets)
@@ -599,13 +608,52 @@ namespace SashaRX.UnityMeshLab
             if (options.splitDonorSeams)
             {
                 foreach (var s in targets) foreach (var face in s.faces) face.protectedInheritance |= face.inherited;
-                using (performance?.Accumulated("Projection donor seam refinement")) RefineAtDonorSeams(donor, targets, options, token);
+                using (performance?.Accumulated("Projection donor seam refinement")) RefineAtDonorSeams(donor, targets, options, token, seamIndex);
                 if (targets.Any(s => s.sourceBarycentrics != null))
                     using (performance?.Accumulated("Projection refined faces"))
                         ProjectFaces(donor, targets.Where(s => s.sourceBarycentrics != null).ToArray(), charts, options, ref queries, token);
             }
             using (performance?.Accumulated("Projection corner snapping")) SnapContinuousCorners(targets, options);
             using (performance?.Accumulated("Projection overlap resolution")) ResolveOverlaps(targets, options, token);
+        }
+
+        /// <summary>Ordered superset of the charts whose bounds lie within reach of a
+        /// point. Each chart is a degenerate triangle spanning its bounds plus a
+        /// margin far above Float32 rounding of the distance test. Callers still
+        /// apply that exact test to every candidate, in chart order, so the
+        /// accepted charts and their order equal a scan of every chart.</summary>
+        internal sealed class ChartBoundsIndex
+        {
+            readonly TriangleBvh bvh;
+            readonly List<int> nearby = new List<int>();
+            ChartBoundsIndex(TriangleBvh bvh) { this.bvh = bvh; }
+
+            /// <returns>Null when every chart must be scanned: no charts, an
+            /// unbounded reach or non-finite chart bounds.</returns>
+            internal static ChartBoundsIndex Create(List<Chart> charts, float reach)
+            {
+                if (charts.Count == 0 || !Finite(reach) || !Finite(reach * reach)) return null;
+                var corners = new Vector3[charts.Count * 3];
+                for (int i = 0; i < charts.Count; ++i)
+                {
+                    var min = charts[i].bounds.min; var max = charts[i].bounds.max;
+                    float scale = Math.Max(Math.Max(Math.Max(Math.Abs(min.x), Math.Abs(min.y)), Math.Abs(min.z)),
+                        Math.Max(Math.Max(Math.Abs(max.x), Math.Abs(max.y)), Math.Abs(max.z)));
+                    if (!Finite(scale)) return null;
+                    var pad = Vector3.one * (reach * 1.01f + 1e-5f * (1 + scale));
+                    corners[i * 3] = min - pad; corners[i * 3 + 1] = corners[i * 3 + 2] = max + pad;
+                }
+                return new ChartBoundsIndex(new TriangleBvh(corners, Enumerable.Range(0, corners.Length).ToArray()));
+            }
+
+            /// <summary>Candidate chart indices in ascending order; reused per call.</summary>
+            internal List<int> Near(Vector3 point)
+            {
+                nearby.Clear();
+                bvh.CollectOverlapping(new Bounds(point, Vector3.zero), nearby);
+                nearby.Sort();
+                return nearby;
+            }
         }
 
         static void ProjectFaces(Surface[] donor, Surface[] targets, List<Chart> charts, Options options,
@@ -615,6 +663,7 @@ namespace SashaRX.UnityMeshLab
             using var projectionTiming = options.performance?.Measure("Face projection", targets[0].lod);
             long candidates = 0, footprintTicks = 0, footprintCalls = 0;
             using var batch=new ProjectionBatch(charts,options,token);
+            var chartIndex = ChartBoundsIndex.Create(charts, options.projectionReach);
             foreach (var target in targets)
                 for (int f = 0; f < target.faces.Length; ++f)
                 {
@@ -628,8 +677,11 @@ namespace SashaRX.UnityMeshLab
                     Chart winner = null;
                     var best = new TriangleBvh.HitResult { triangleIndex = -1, distSq = float.MaxValue };
                     bool ambiguous = false;
-                    foreach (var chart in charts)
+                    var nearby = chartIndex?.Near(center);
+                    int count = nearby?.Count ?? charts.Count;
+                    for (int n = 0; n < count; ++n)
                     {
+                        var chart = charts[nearby == null ? n : nearby[n]];
                         ++candidates;
                         if (chart.bounds.SqrDistance(center) > options.projectionReach * options.projectionReach) continue;
                         if (++queries > options.comparisonBudget) throw new InvalidOperationException("Reverse UV projection query budget exceeded.");
@@ -691,6 +743,11 @@ namespace SashaRX.UnityMeshLab
         // Interior probes alone miss holes between probes. Parent faces in one
         // layer have disjoint UV interiors, so their clipped areas measure exact
         // coverage without counting overlapping detail layers twice.
+        // Charts below this face count keep the plain scan; the index only pays off
+        // on larger parents. Internal so tests can force either path.
+        internal static int CoverageIndexMinimumFaces { get; set; } = 64;
+        [ThreadStatic] static List<int> coverageCandidates;
+
         internal static bool CoveredByParentLayer(Chart parent, int layer, Vector2[] pixels, int start,
             Options options, ref long comparisons, CancellationToken token)
         {
@@ -699,42 +756,74 @@ namespace SashaRX.UnityMeshLab
             double covered = 0;
             var min = Vector2.Min(triangle[0], Vector2.Min(triangle[1], triangle[2]));
             var max = Vector2.Max(triangle[0], Vector2.Max(triangle[1], triangle[2]));
-            for (int f = 0; f < parent.layers.Length; ++f)
+            int faceCount = parent.layers.Length;
+            var index = faceCount < CoverageIndexMinimumFaces ? null : LazyInitializer.EnsureInitialized(ref parent.pixelIndex, () => new PixelIndex {
+                bvh = parent.pixels.All(p => !float.IsNaN(p.x) && !float.IsInfinity(p.x) && !float.IsNaN(p.y) && !float.IsInfinity(p.y))
+                    ? new TriangleBvh(parent.pixels.Select(p => new Vector3(p.x, p.y, 0)).ToArray(), Enumerable.Range(0, parent.pixels.Length).ToArray())
+                    : null }).bvh;
+            if (index != null)
             {
+                // The scan charges one comparison per parent face and throws once
+                // the budget is exceeded; charging them all first throws exactly
+                // when that scan would. Candidates come back in ascending face
+                // order, so the clipped areas are summed in the scan's order.
                 token.ThrowIfCancellationRequested();
-                if (++comparisons > options.comparisonBudget) throw new InvalidOperationException("Reverse UV footprint budget exceeded.");
-                if (parent.layers[f] != layer) continue;
-                int t = f * 3;
-                var a = parent.pixels[t]; var b = parent.pixels[t + 1]; var c = parent.pixels[t + 2];
-                var lo = Vector2.Min(a, Vector2.Min(b, c)); var hi = Vector2.Max(a, Vector2.Max(b, c));
-                if (hi.x <= min.x || hi.y <= min.y || lo.x >= max.x || lo.y >= max.y) continue;
-                var polygon = new List<Vector2>(triangle);
-                double orientation = Math.Sign(Cross(b - a, c - a));
-                for (int edge = 0; edge < 3 && polygon.Count > 0; ++edge)
+                comparisons += faceCount;
+                if (comparisons > options.comparisonBudget) throw new InvalidOperationException("Reverse UV footprint budget exceeded.");
+                var candidates = coverageCandidates ??= new List<int>();
+                candidates.Clear();
+                index.CollectOverlapping(new Vector3(min.x, min.y, 0), new Vector3(max.x, max.y, 0), candidates);
+                candidates.Sort();
+                foreach (int f in candidates)
                 {
-                    var x = parent.pixels[t + edge]; var y = parent.pixels[t + (edge + 1) % 3];
-                    var clipped = new List<Vector2>(); var previous = polygon[polygon.Count - 1];
-                    double previousSide = orientation * Cross(y - x, previous - x);
-                    foreach (var point in polygon)
-                    {
-                        double side = orientation * Cross(y - x, point - x);
-                        if ((side >= 0) != (previousSide >= 0))
-                            clipped.Add(Vector2.LerpUnclamped(previous, point, (float)(previousSide / (previousSide - side))));
-                        if (side >= 0) clipped.Add(point);
-                        previous = point; previousSide = side;
-                    }
-                    polygon = clipped;
+                    token.ThrowIfCancellationRequested();
+                    if (parent.layers[f] == layer) covered += ClippedCoverage(parent, f, triangle, min, max);
                 }
-                double clippedArea = 0;
-                for (int k = 1; k + 1 < polygon.Count; ++k)
-                    clippedArea += Cross(polygon[k] - polygon[0], polygon[k + 1] - polygon[0]);
-                covered += Math.Abs(clippedArea);
             }
+            else
+                for (int f = 0; f < faceCount; ++f)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (++comparisons > options.comparisonBudget) throw new InvalidOperationException("Reverse UV footprint budget exceeded.");
+                    if (parent.layers[f] != layer) continue;
+                    covered += ClippedCoverage(parent, f, triangle, min, max);
+                }
             if(area > 0 && covered >= area * (1 - 1e-5)) return true;
             var regions=Enumerable.Range(0,parent.layers.Length).Where(f=>parent.layers[f]==layer)
                 .Select(f=>new[] {parent.pixels[f*3],parent.pixels[f*3+1],parent.pixels[f*3+2]});
             return UvTransferTolerance.Covers(triangle,regions,options.boundaryToleranceTexels,
                 ref comparisons,options.comparisonBudget,token);
+        }
+
+        /// <summary>Area of the triangle clipped to one parent face; zero when
+        /// their pixel bounds do not overlap.</summary>
+        static double ClippedCoverage(Chart parent, int f, Vector2[] triangle, Vector2 min, Vector2 max)
+        {
+            int t = f * 3;
+            var a = parent.pixels[t]; var b = parent.pixels[t + 1]; var c = parent.pixels[t + 2];
+            var lo = Vector2.Min(a, Vector2.Min(b, c)); var hi = Vector2.Max(a, Vector2.Max(b, c));
+            if (hi.x <= min.x || hi.y <= min.y || lo.x >= max.x || lo.y >= max.y) return 0;
+            var polygon = new List<Vector2>(triangle);
+            double orientation = Math.Sign(Cross(b - a, c - a));
+            for (int edge = 0; edge < 3 && polygon.Count > 0; ++edge)
+            {
+                var x = parent.pixels[t + edge]; var y = parent.pixels[t + (edge + 1) % 3];
+                var clipped = new List<Vector2>(); var previous = polygon[polygon.Count - 1];
+                double previousSide = orientation * Cross(y - x, previous - x);
+                foreach (var point in polygon)
+                {
+                    double side = orientation * Cross(y - x, point - x);
+                    if ((side >= 0) != (previousSide >= 0))
+                        clipped.Add(Vector2.LerpUnclamped(previous, point, (float)(previousSide / (previousSide - side))));
+                    if (side >= 0) clipped.Add(point);
+                    previous = point; previousSide = side;
+                }
+                polygon = clipped;
+            }
+            double clippedArea = 0;
+            for (int k = 1; k + 1 < polygon.Count; ++k)
+                clippedArea += Cross(polygon[k] - polygon[0], polygon[k + 1] - polygon[0]);
+            return Math.Abs(clippedArea);
         }
 
         static void SnapContinuousCorners(Surface[] targets, Options options)

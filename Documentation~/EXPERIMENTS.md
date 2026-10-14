@@ -1,5 +1,88 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Projection and seam refinement indexes — 2026-10-14
+
+### Donor seam index and ordered chart prefilter
+
+The forward stage profile and shared seam passes left two targets: refinement
+rebuilt the donor correspondence graph in every pass, and face projection tested
+every chart's bounds per face. Both are now addressed, exactly.
+
+- `DonorSeamIndex` holds what `RefineAtDonorSeams` derives from the donor alone:
+  the correspondence graph's seam links, their edge BVH and the donor pixel
+  density. It is built in the same order as before, with the same early return
+  when no seam exists. Forward seam passes share one index per target through
+  `ForwardSeamShared`; other callers still build their own.
+- `ProjectFaces` scanned every chart's bounds for every target face.
+  `ChartBoundsIndex` turns each chart into a degenerate triangle spanning its
+  bounds, padded by `1.01 * reach + 1e-5 * (1 + |coordinate|)`, far above
+  Float32 rounding. A per-face point query yields a superset in ascending chart
+  order. The original `SqrDistance > reach²` test still runs on every
+  candidate, so the accepted charts, their order, the query count and every
+  tie decision are unchanged. With an unbounded reach or non-finite chart
+  bounds, every chart is scanned as before. `Chart bounds tested` now counts
+  the tests actually performed (Kamaz forward: 208 million → 0.96 million).
+  This also speeds up reverse face projection.
+
+`ChartBoundsIndexKeepsEveryChartWithinReachInOrder` compares the index with a
+full scan: 24,000 queries clustered at box faces and corners, coordinate scales
+1–5000, two reach values, degenerate boxes, plus the infinite-reach and NaN
+fallbacks.
+
+The first timing set ran while another editor (with its profiler) and a browser
+were busy. Even unchanged stages slowed down there, so it is not used. Instead,
+three alternating control/candidate rounds were run: control `fadcf7da`
+(shared seam passes), candidate with both indexes. All six runs keep the 120
+exports byte-identical. Medians, seconds:
+
+| Stage | Control | Indexes |
+|---|---:|---:|
+| Kamaz forward pipeline | 20.98 | 15.77 |
+| Kamaz detached forward preparation | 21.35 | 15.54 |
+| Kamaz donor seam refinement (plus index) | 4.86 | 3.30 (+0.18) |
+| Kamaz refined / initial face projection | 6.92 / 1.00 | 3.88 / 0.55 |
+| Kamaz reverse face projection, exclusive / overlap | 1.52 / 1.56 | 0.76 / 0.85 |
+| Kamaz Reverse total, exclusive / overlap | 15.99 / 33.90 | 15.05 / 33.40 |
+| Kitchen forward pipeline | 3.04 | 2.87 |
+| Kitchen reverse face projection, exclusive / overlap | 0.36 / 0.42 | 0.25 / 0.30 |
+
+Every candidate Kamaz forward run (15.72–15.80 s) is faster than every control
+run (20.56–26.08 s). Compared with the original profile (27.41 s), Kamaz
+ordinary Transfer is now 42% faster. The reverse solve gains about 0.7 s of
+face projection per mode; that is clear in the stage, but within run-to-run
+spread of the overlap total. The regression groups pass 365 tests, fail 0 and
+skip 17. Artifacts: `index-ab/` (`summary.json`), `forward-index-regression/`.
+
+### Legacy audit cache, refinement sub-stages and parent coverage index
+
+Three further exact changes:
+
+- Every seam pass audited the same legacy layout for its allowed contacts. It
+  also re-read the target triangles/vertices through the Mesh API and
+  re-extracted source UV shells. `ForwardSeamShared` now keeps all three. This
+  removes only 20 of 279 audits: the cost lies in the per-pass contact loop,
+  which rescans the whole corner layout after each refusal (about 233 scans).
+- `RefineAtDonorSeams` records `Seam cut planning`, `Seam cut validation` and
+  `Seam cut application`. On Kamaz forward they take 1.75, 0.98 and 0.26 s.
+- `CoveredByParentLayer` scanned every face of the winning parent chart.
+  Parents with at least 64 faces and finite pixels now query a pixel-space
+  `TriangleBvh`, built once per chart. `CollectOverlapping(min, max)` takes
+  exact corners, without the rounding of `Bounds`. Candidates come in ascending
+  face order through the original bounds and layer tests, so clipped areas are
+  summed in the scan's order. All comparisons are charged first, which throws
+  exactly when the scan would. `IndexedParentCoverageMatchesTheFullScan`
+  compares both paths, including results, comparison counts and budget
+  refusals.
+
+Alternating A/B against `f189fde7` (three rounds, 120 exports byte-identical in
+all six): Kamaz parent coverage 1.41 → 1.23 s and forward 15.35 → 14.94 s
+(−2.7%), with every candidate run faster than every control run. Kitchen and
+reverse are unchanged within noise. Their coverage cost is the clipping
+itself, not the face scan. A modest gain; the remaining forward cost on Kamaz is
+refined-face projection (about 3.8 s), the contact loop (2.6 s) and cut planning
+(1.75 s). Regression groups: 366 pass, 0 fail, 17 optional skips. Artifacts:
+`coverage-ab/`, `forward-legacy-cache/`, `forward-coverage-regression/`.
+
 ## Forward seam passes share their projection prefix — 2026-10-14
 
 Each pass re-prepared inputs, captured the donor and target and projected the

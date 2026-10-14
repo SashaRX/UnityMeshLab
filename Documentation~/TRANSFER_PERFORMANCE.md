@@ -792,3 +792,19 @@ control. Kamaz forward falls from 27.41 s to 19.89 s and Kitchen from 3.74 s to
 3.00 s (three-run medians). The detached reverse preparation gains the same.
 All 120 exports stay byte-identical; details are in EXPERIMENTS.md ("Forward
 seam passes share their projection prefix").
+
+### Projection and seam refinement indexes
+
+Two further exact indexes follow. Seam refinement shares a donor-only seam index
+(graph links, edge BVH, density) across passes. Face projection queries an
+ordered, padded chart-bounds BVH and still applies the original distance test
+to every candidate. In three alternating A/B rounds, Kamaz forward falls from
+20.98 s to 15.77 s (27.41 s before the forward work) and reverse face projection
+halves. All 120 exports stay byte-identical. See EXPERIMENTS.md ("Donor seam
+index and ordered chart prefilter").
+
+An exact parent-coverage index and a shared legacy contact audit add about 3%
+on Kamaz forward (15.35 → 14.94 s, alternating A/B). The remaining forward cost
+is refined-face projection, the per-pass contact loop and cut planning; see
+EXPERIMENTS.md ("Legacy audit cache, refinement sub-stages and parent coverage
+index").

@@ -82,6 +82,85 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void ChartBoundsIndexKeepsEveryChartWithinReachInOrder()
+        {
+            var random=new System.Random(0x5eed);
+            float Next() => (float)random.NextDouble();
+            foreach(float scale in new[] {1f,100f,5000f})
+            foreach(float reach in new[] {.05f,.5f})
+            {
+                // Degenerate (point) bounds and boxes of mixed size; queries cluster
+                // around box faces, edges and corners near the reach boundary.
+                var charts=Enumerable.Range(0,400).Select(i=>new ReverseUvTransfer.Chart {bounds=new Bounds(
+                    new Vector3(Next(),Next(),Next())*scale,i%7==0?Vector3.zero:new Vector3(Next(),Next(),Next())*scale*.02f)}).ToList();
+                var index=ReverseUvTransfer.ChartBoundsIndex.Create(charts,reach);
+                Assert.NotNull(index);
+                for(int q=0;q<4000;++q)
+                {
+                    var box=charts[random.Next(charts.Count)].bounds;
+                    var lo=box.min-Vector3.one*reach*1.2f;var hi=box.max+Vector3.one*reach*1.2f;
+                    var point=new Vector3(Mathf.Lerp(lo.x,hi.x,Next()),Mathf.Lerp(lo.y,hi.y,Next()),Mathf.Lerp(lo.z,hi.z,Next()));
+                    var expected=Enumerable.Range(0,charts.Count).Where(i=>!(charts[i].bounds.SqrDistance(point)>reach*reach)).ToList();
+                    var near=index.Near(point);
+                    CollectionAssert.IsOrdered(near);
+                    CollectionAssert.AreEqual(expected,near.Where(i=>!(charts[i].bounds.SqrDistance(point)>reach*reach)).ToList(),
+                        $"scale {scale}, reach {reach}, point {point:R}");
+                }
+            }
+            var finite=new List<ReverseUvTransfer.Chart> {new ReverseUvTransfer.Chart {bounds=new Bounds(Vector3.zero,Vector3.one)}};
+            Assert.IsNull(ReverseUvTransfer.ChartBoundsIndex.Create(finite,float.PositiveInfinity),"Unbounded reach scans every chart.");
+            Assert.IsNull(ReverseUvTransfer.ChartBoundsIndex.Create(new List<ReverseUvTransfer.Chart> {new ReverseUvTransfer.Chart {
+                bounds=new Bounds(new Vector3(float.NaN,0,0),Vector3.one)}},.05f),"Non-finite bounds scan every chart.");
+        }
+
+        [Test]
+        public void IndexedParentCoverageMatchesTheFullScan()
+        {
+            var random=new System.Random(0xc0fe);
+            float Next() => (float)random.NextDouble();
+            int saved=ReverseUvTransfer.CoverageIndexMinimumFaces;
+            try
+            {
+                for(int trial=0;trial<40;++trial)
+                {
+                    // A grid of parent triangles over two layers, with shared edges,
+                    // plus scattered slivers; queries straddle cells, edges and gaps.
+                    int n=4+trial%9;float cell=8;var pixels=new List<Vector2>();var layers=new List<int>();
+                    for(int y=0;y<n;++y) for(int x=0;x<n;++x)
+                    {
+                        var o=new Vector2(x,y)*cell;int layer=(x+y+trial)%2;
+                        pixels.AddRange(new[] {o,o+new Vector2(cell,0),o+new Vector2(cell,cell)});layers.Add(layer);
+                        pixels.AddRange(new[] {o,o+new Vector2(cell,cell),o+new Vector2(0,cell)});layers.Add(layer);
+                    }
+                    for(int s=0;s<20;++s)
+                    {
+                        var o=new Vector2(Next(),Next())*n*cell;
+                        pixels.AddRange(new[] {o,o+new Vector2(Next()*3,0),o+new Vector2(0,Next()*.01f)});layers.Add(s%2);
+                    }
+                    ReverseUvTransfer.Chart Parent() => new ReverseUvTransfer.Chart {pixels=pixels.ToArray(),layers=layers.ToArray()};
+                    for(int q=0;q<60;++q)
+                    {
+                        var a=new Vector2(Next(),Next())*n*cell;
+                        var query=new[] {a,a+new Vector2(Next()*cell*2-cell,Next()*cell*2-cell),a+new Vector2(Next()*cell*2-cell,Next()*cell*2-cell)};
+                        int layer=q%2;long budget=q%10==0?pixels.Count/6:long.MaxValue/2;
+                        var options=new ReverseUvTransfer.Options {comparisonBudget=budget,boundaryToleranceTexels=.01f};
+                        (bool? covered,long comparisons,string error) Run(int minimum)
+                        {
+                            ReverseUvTransfer.CoverageIndexMinimumFaces=minimum;long comparisons=3;
+                            try {return (ReverseUvTransfer.CoveredByParentLayer(Parent(),layer,query,0,options,ref comparisons,CancellationToken.None),comparisons,null);}
+                            catch(InvalidOperationException error) {return (null,comparisons,error.Message);}
+                        }
+                        var scan=Run(int.MaxValue);var indexed=Run(1);
+                        Assert.AreEqual(scan.covered,indexed.covered,$"trial {trial} query {q}");
+                        Assert.AreEqual(scan.error,indexed.error,$"trial {trial} query {q}");
+                        if(scan.error==null) Assert.AreEqual(scan.comparisons,indexed.comparisons,$"trial {trial} query {q}");
+                    }
+                }
+            }
+            finally {ReverseUvTransfer.CoverageIndexMinimumFaces=saved;}
+        }
+
+        [Test]
         public void BurstRasterSpansMatchScalarEdgesIncludingClippingAndRoundoff()
         {
             if(!ReverseUvRasterAcceleration.Available)
