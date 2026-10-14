@@ -787,7 +787,9 @@ namespace SashaRX.UnityMeshLab
 
         // The scene edits a save wrote into their file go the way of every saved working copy:
         // the renderer takes the file's mesh and the edit is destroyed, both through Undo like
-        // the edit itself. An edit whose written mesh cannot be found stays, and says so.
+        // the edit itself; the registry keeps the edit's link to the written mesh, so an Undo of
+        // the save brings the edit back as what it was. An edit whose written mesh cannot be
+        // found stays, and says so.
         void ReleaseSavedSceneEdits()
         {
             foreach (var (entry, fbxPath, meshName) in savedSceneEdits)
@@ -807,7 +809,7 @@ namespace SashaRX.UnityMeshLab
                     if (PrefabUtility.IsPartOfPrefabInstance(entry.meshFilter))
                         PrefabUtility.RecordPrefabInstancePropertyModifications(entry.meshFilter);
                 }
-                SceneEditRegistry.Forget(entry.meshFilter);
+                if (edit != null) SceneEditRegistry.Register(entry.meshFilter, fresh, edit);
                 entry.sceneEditMesh = null;
                 if (entry.originalMesh == edit || entry.originalMesh == null) entry.originalMesh = fresh;
                 entry.fbxMesh = fresh;

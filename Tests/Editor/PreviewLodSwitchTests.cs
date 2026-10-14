@@ -190,11 +190,47 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.AreSame(edited,filter.sharedMesh); Assert.AreSame(edited,entry.sceneEditMesh);
                 Assert.IsTrue(SceneEditRegistry.TryGetImported(filter,edited,out var behind)); Assert.AreSame(imported,behind);
 
+                UnityEditor.Undo.IncrementCurrentGroup();
                 ctx.Assets.MarkSceneEditsSaved(asset,new[] {entry},_=>true);
                 ctx.Assets.ReleaseWorkingMeshes(); // a document save wrote the edited faces
                 Assert.IsFalse(edited,"the written edit is released"); Assert.AreSame(imported,filter.sharedMesh);
                 Assert.IsNull(entry.sceneEditMesh); Assert.AreSame(imported,entry.fbxMesh); Assert.AreSame(imported,entry.originalMesh);
                 Assert.IsFalse(SceneEditRegistry.TryGetImported(filter,imported,out _));
+
+                // Undo of the save brings the edit back under the renderer, still known as an edit of the imported mesh.
+                UnityEditor.Undo.PerformUndo();
+                Assert.IsTrue(edited,"Undo restores the released edit"); Assert.AreSame(edited,filter.sharedMesh);
+                Assert.IsTrue(SceneEditRegistry.TryGetImported(filter,edited,out behind)); Assert.AreSame(imported,behind);
+                ctx.Refresh(group); entry=ctx.MeshEntries.Find(e=>e.renderer==renderer);
+                Assert.AreSame(imported,entry.fbxMesh); Assert.AreSame(edited,entry.sceneEditMesh); Assert.AreSame(edited,entry.originalMesh);
+            }
+            finally { UnityEditor.AssetDatabase.DeleteAsset(folder); }
+        }
+
+        [Test]
+        public void CleanupOnAPipelineWorkingCopyAdoptsItAsTheSceneEdit()
+        {
+            // Cleanup after Weld or Symmetry edits the transfer workflow's working copy. The copy
+            // becomes the renderer's scene edit, so the resets that used to destroy it keep the fix;
+            // a tool-made mesh that is the entry's own baseline is edited in place as before.
+            string folder="Assets/__MeshLabSceneEditTests_"+System.Guid.NewGuid().ToString("N");
+            var group=Group(true,out var renderer,out _); var filter=renderer.GetComponent<MeshFilter>(); var imported=filter.sharedMesh;
+            var ctx=Open(group); var entry=ctx.MeshEntries.Find(e=>e.renderer==renderer);
+            Assert.IsTrue(MeshHygieneUtility.PrepareWritable(entry,"In place",out var same));
+            Assert.AreSame(imported,same,"a non-asset baseline is edited in place"); Assert.IsNull(entry.sceneEditMesh);
+            UnityEditor.AssetDatabase.CreateFolder("Assets",folder.Substring("Assets/".Length));
+            UnityEditor.AssetDatabase.CreateAsset(imported,folder+"/imported.asset");
+            try {
+                var working=Object.Instantiate(imported); working.name=imported.name+"_wc"; owned.Add(working);
+                entry.originalMesh=working; filter.sharedMesh=working; // as after Weld
+                Assert.IsTrue(MeshHygieneUtility.PrepareWritable(entry,"Remove Degenerate Triangles",out var edited));
+                Assert.AreSame(working,edited); Assert.AreSame(working,entry.sceneEditMesh); Assert.AreSame(working,entry.Baseline);
+                Assert.AreSame(working,filter.sharedMesh);
+                Assert.IsTrue(SceneEditRegistry.TryGetImported(filter,working,out var behind)); Assert.AreSame(imported,behind);
+                Call(hub,"RestoreWorkingMeshes");
+                Assert.IsTrue(working,"the adopted copy is no longer a working copy to destroy"); Assert.AreSame(working,filter.sharedMesh);
+                ctx.Refresh(group); entry=ctx.MeshEntries.Find(e=>e.renderer==renderer);
+                Assert.AreSame(imported,entry.fbxMesh); Assert.AreSame(working,entry.sceneEditMesh); Assert.AreSame(working,entry.originalMesh);
             }
             finally { UnityEditor.AssetDatabase.DeleteAsset(folder); }
         }

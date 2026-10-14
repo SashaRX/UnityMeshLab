@@ -2542,10 +2542,12 @@ namespace SashaRX.UnityMeshLab
                 foreach (var entry in ctx.MeshEntries)
                 {
                     if (!entry.meshFilter || !entry.fbxMesh) continue;
+                    // Owned copies give way to the baseline: the scene edit when there is one.
+                    var baseline = entry.Baseline;
                     var shown = entry.meshFilter.sharedMesh;
-                    if (shown != entry.fbxMesh && (shown == entry.originalMesh
+                    if (shown != baseline && (shown == entry.originalMesh
                         || shown == entry.repackedMesh || shown == entry.transferredMesh))
-                        entry.meshFilter.sharedMesh = entry.fbxMesh;
+                        entry.meshFilter.sharedMesh = baseline;
                 }
                 return scope;
             }

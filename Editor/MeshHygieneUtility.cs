@@ -198,7 +198,9 @@ namespace SashaRX.UnityMeshLab
         /// <list type="bullet">
         /// <item>Resolves writable mesh (<c>originalMesh ?? fbxMesh</c>).</item>
         /// <item>Bails out with a warning if missing or non-readable.</item>
-        /// <item>Clones asset-backed meshes and re-wires <c>MeshFilter</c> + <c>entry.originalMesh</c>.</item>
+        /// <item>Clones asset-backed meshes and re-wires <c>MeshFilter</c> + <c>entry.originalMesh</c>;
+        /// adopts a pipeline working copy as the renderer's scene edit. Either way the edit is
+        /// <c>entry.sceneEditMesh</c>, which no reset destroys.</item>
         /// <item>Records the resulting mesh and its filter for Undo under <paramref name="undoLabel"/>.</item>
         /// </list>
         /// Returns <c>false</c> when the entry cannot be safely mutated.
@@ -235,6 +237,22 @@ namespace SashaRX.UnityMeshLab
                 entry.sceneEditMesh = clone;
                 SceneEditRegistry.Register(entry.meshFilter, source, clone);
                 mesh = clone;
+            }
+            else if (source != entry.fbxMesh && source != entry.sceneEditMesh)
+            {
+                // A pipeline working copy (the transfer workflow's weld or symmetry split): the
+                // edit makes it the renderer's scene edit, so no reset destroys the fix with the
+                // copy. Undo reverts the edit; the copy was never Undo's to destroy and stays.
+                if (entry.meshFilter != null && entry.meshFilter.sharedMesh != source)
+                {
+                    Undo.RecordObject(entry.meshFilter, undoLabel);
+                    entry.meshFilter.sharedMesh = source;
+                    if (PrefabUtility.IsPartOfPrefabInstance(entry.meshFilter))
+                        PrefabUtility.RecordPrefabInstancePropertyModifications(entry.meshFilter);
+                }
+                entry.sceneEditMesh = source;
+                SceneEditRegistry.Register(entry.meshFilter, entry.fbxMesh, source);
+                mesh = source;
             }
             else
             {

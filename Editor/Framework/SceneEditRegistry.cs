@@ -13,8 +13,8 @@ namespace SashaRX.UnityMeshLab
     /// window's close and reopen, and goes with a scene load or an editor restart. The registry
     /// lives exactly as long, so a context built after a reload or a reopen still rebuilds the
     /// entry with the imported mesh as its file reference instead of taking the edit for the
-    /// import. A renderer that is gone takes its link with it; an edit destroyed by Undo keeps
-    /// its link for Redo.
+    /// import. A renderer that is gone takes its link with it; an edit destroyed by Undo, or by
+    /// the save that wrote it, keeps its link for the Undo or Redo that brings it back.
     /// </summary>
     sealed class SceneEditRegistry : ScriptableSingleton<SceneEditRegistry>
     {
@@ -55,13 +55,6 @@ namespace SashaRX.UnityMeshLab
                 if (e != null && e.sceneEditMesh != null && e.meshFilter != null && e.fbxMesh != null && e.sceneEditMesh != e.fbxMesh)
                     Register(e.meshFilter, e.fbxMesh, e.sceneEditMesh);
             instance.links.RemoveAll(link => link.filter == null || link.imported == null);
-        }
-
-        /// <summary>Drops the link of <paramref name="filter"/>: its edit was written into the file or given up.</summary>
-        internal static void Forget(MeshFilter filter)
-        {
-            if (filter == null) return;
-            instance.links.RemoveAll(link => link.filter == filter);
         }
     }
 }
