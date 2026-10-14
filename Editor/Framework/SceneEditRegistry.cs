@@ -50,7 +50,8 @@ namespace SashaRX.UnityMeshLab
             if (link == null)
             {
                 if (links.Count >= Capacity) links.RemoveAt(0);
-                links.Add(link = new Link { filter = filter, edit = edit });
+                link = new Link { filter = filter, edit = edit };
+                links.Add(link);
             }
             link.imported = imported;
             link.workingCopy = workingCopy;
