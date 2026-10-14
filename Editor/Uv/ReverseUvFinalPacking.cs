@@ -82,6 +82,7 @@ namespace SashaRX.UnityMeshLab
                 }
             try
             {
+                using var footprints = new ReverseUvNativeFamilyPacking.FootprintCache(options.cachePackingFootprints, options.performance);
                 var groups = corners.Values.ToArray();
                 var timing=System.Diagnostics.Stopwatch.StartNew();
                 bool logTiming=surfaces.Sum(s=>s.faces.Length)>2048;
@@ -222,7 +223,7 @@ namespace SashaRX.UnityMeshLab
                 if(options.frozenShellCascade && !options.preserveProjectedOverlap)
                 {
                     packed=ReverseUvNativeFamilyPacking.TryPack(coordinates,16,options,token,Valid,
-                        out scale,out side,allowLargerCanvas:true,fixedScale:1,validateAtlas:AuditAtlas);
+                        out scale,out side,allowLargerCanvas:true,fixedScale:1,validateAtlas:AuditAtlas,footprints:footprints);
                     if(packed==null) throw new InvalidOperationException("Classic frozen-group Repack failed; no atlas or shell fragments were published. "
                         +string.Join("; ",refusals.Take(12).Select(p=>$"family {p.Key} '{groups[p.Key][0].surface.input.key}': {p.Value}")));
                     if(options.fillFinalAtlas)
@@ -233,7 +234,7 @@ namespace SashaRX.UnityMeshLab
                             // never enlarged with an already packed atlas.
                             var candidate=ReverseUvNativeFamilyPacking.TryPack(coordinates,16,options,token,Valid,
                                 out float candidateScale,out int candidateSide,allowLargerCanvas:true,
-                                fixedScale:density,validateAtlas:AuditAtlas);
+                                fixedScale:density,validateAtlas:AuditAtlas,footprints:footprints);
                             if(candidate!=null && BoundsCost(candidate,candidateScale)<BoundsCost(packed,scale))
                             {packed=candidate;scale=candidateScale;side=candidateSide;}
                         }
@@ -246,12 +247,12 @@ namespace SashaRX.UnityMeshLab
                     // The projection atlas supplies correspondence, never
                     // fixed slots or a list of vacancies.
                     packed=ReverseUvNativeFamilyPacking.TryPack(coordinates,previousSide,options,token,Valid,
-                        out scale,out side,allowLargerCanvas:true,fixedScale:1,validateAtlas:AuditAtlas);
+                        out scale,out side,allowLargerCanvas:true,fixedScale:1,validateAtlas:AuditAtlas,footprints:footprints);
                     if(packed==null)
                         foreach(float density in new[] {.5f,.25f,.125f})
                         {
                             packed=ReverseUvNativeFamilyPacking.TryPack(coordinates,previousSide,options,token,Valid,
-                                out scale,out side,allowLargerCanvas:true,fixedScale:density,validateAtlas:AuditAtlas);
+                                out scale,out side,allowLargerCanvas:true,fixedScale:density,validateAtlas:AuditAtlas,footprints:footprints);
                             if(packed!=null) break;
                         }
                     bool nativeSelected=packed!=null;
@@ -259,7 +260,7 @@ namespace SashaRX.UnityMeshLab
                         foreach(float density in new[] {1.5f,2f,3f,4f,6f,8f,12f,16f})
                         {
                             var candidate=ReverseUvNativeFamilyPacking.TryPack(coordinates,previousSide,options,token,Valid,
-                                out float candidateScale,out int candidateSide,allowLargerCanvas:true,fixedScale:density,validateAtlas:AuditAtlas);
+                                out float candidateScale,out int candidateSide,allowLargerCanvas:true,fixedScale:density,validateAtlas:AuditAtlas,footprints:footprints);
                             if(candidate!=null && BoundsCost(candidate,candidateScale)<BoundsCost(packed,scale))
                             {packed=candidate;scale=candidateScale;side=candidateSide;}
                         }

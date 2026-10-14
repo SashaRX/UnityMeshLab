@@ -18,6 +18,7 @@ namespace SashaRX.UnityMeshLab
             public bool allowOverlap, accepted;
             public string error, audit, failureStage;
             public ReverseUvTransfer.Report result;
+            public TransferPerformanceProfile performance = new TransferPerformanceProfile();
         }
         [Serializable] internal sealed class Summary
         {
@@ -87,6 +88,7 @@ namespace SashaRX.UnityMeshLab
                 };
                 trial.failureStage = "seed/projection";
                 using var prepared = await ReverseUvJunctionTrial.Build(sources, new ReverseUvTransfer.Options {
+                    performance = trial.performance,
                     seedResolution = 256, projectionReach = .05f, preserveProjectedOverlap = overlap }, true, 0, true);
                 var levels = prepared.inputs.levels; var result = prepared.result;
                 trial.failureStage = "audit";

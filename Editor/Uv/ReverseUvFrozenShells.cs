@@ -92,10 +92,13 @@ namespace SashaRX.UnityMeshLab
             ref int nextChart,ref float width,ref float height,CancellationToken token)
         {
             var originals=targets.ToDictionary(s=>s,s=>s.pixels.ToArray());
-            var charts=Charts(donor);long queries=0;
+            List<Chart> charts;
+            using (options.performance?.Measure("Donor chart BVHs", targets[0].lod)) charts=Charts(donor);
+            long queries=0;
             // Face hits are anchor proposals only. No face result is published
             // independently, and no finer island is subdivided or seam-cut.
             ProjectFaces(donor,targets,charts,options,ref queries,token);
+            using var shellTiming = options.performance?.Measure("Whole-shell matching and grouping", targets[0].lod);
             var proposed=targets.ToDictionary(s=>s,s=>s.pixels.ToArray());
             var records=targets.ToDictionary(s=>s,s=>s.faces.Select(f=>f.Copy()).ToArray());
             var shells=targets.SelectMany(s=>Enumerable.Range(0,s.faces.Length)

@@ -1,0 +1,15 @@
+{
+  "name": "SashaRX.UnityMeshLab.Burst.Editor",
+  "rootNamespace": "SashaRX.UnityMeshLab",
+  "references": ["SashaRX.UnityMeshLab.Editor", "Unity.Burst", "Unity.Collections"],
+  "includePlatforms": ["Editor"],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "autoReferenced": false,
+  "defineConstraints": ["MESHLAB_BURST", "MESHLAB_COLLECTIONS"],
+  "versionDefines": [
+    {"name": "com.unity.burst", "expression": "1.8.0", "define": "MESHLAB_BURST"},
+    {"name": "com.unity.collections", "expression": "2.1.0", "define": "MESHLAB_COLLECTIONS"}
+  ],
+  "noEngineReferences": false
+}
