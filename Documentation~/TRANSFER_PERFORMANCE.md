@@ -786,6 +786,12 @@ to every candidate. In three alternating A/B rounds, Kamaz forward falls from
 halves. All 120 exports stay byte-identical. See EXPERIMENTS.md ("Donor seam
 index and ordered chart prefilter").
 
+An exact parent-coverage index and a shared legacy contact audit add about 3%
+on Kamaz forward (15.35 → 14.94 s, alternating A/B). The remaining forward cost
+is refined-face projection, the per-pass contact loop and cut planning; see
+EXPERIMENTS.md ("Legacy audit cache, refinement sub-stages and parent coverage
+index").
+
 `-AsyncReverse` (`MESHLAB_PAIRED_ASYNC_REVERSE=1`) runs the reverse modes through
 the editor's asynchronous path, with final packing on workers, as the hub does.
 A Burst ablation on both paths keeps all 120 exports byte-identical in 12 runs.
