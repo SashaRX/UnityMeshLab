@@ -32,6 +32,19 @@ validation` times the concurrent phase. A synthetic six-island test compares
 reports and mesh streams for both overlap policies. Corpus timing and the
 120-export exactness check are pending a local Unity run.
 
+Asynchronous Reverse (the editor UI path) runs final packing in `Task.Run`, where
+Unity jobs cannot be scheduled, so the Burst raster job is a main-thread-only
+path. On a worker the optional Burst assembly now runs the same per-triangle
+kernel through a Burst direct call in thread-pool chunks; each chunk writes its
+own output range and the caller still merges spans in triangle/row order. The
+job and the direct call share one scan-line function (`RasterMath.Row`) in
+Strict mode, and the BurstDiscard witness still refuses managed execution, so a
+direct call that is not compiled falls back to scalar rasterization. The kernel
+is compiled after editor load through `delayCall`. The Burst assembly now allows
+unsafe code (pinned arrays for the direct call). The synchronous benchmark does
+not exercise this path; `BurstRasterSpansMatchScalarEdgesIncludingClippingAndRoundoff`
+now also rasterizes every trial on a worker and requires compiled execution.
+
 Not pursued now: incremental occupancy rows. Snapshot construction plus search
 setup already costs about 0.83s of 33.9s on Kamaz overlap (sixth continuation),
 which bounds that gain and does not apply to exclusive packing.

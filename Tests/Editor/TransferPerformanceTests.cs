@@ -63,6 +63,11 @@ namespace SashaRX.UnityMeshLab.Tests
                 var actual=ReverseUvRasterAcceleration.TryRasterize(points,w,h,radius,default);
                 Assert.NotNull(actual,"Configured provider must execute Burst: "+ReverseUvRasterAcceleration.LastRefusal);
                 Assert.IsTrue(actual.burstExecuted);CollectionAssert.AreEqual(expected,actual.spans,$"trial {trial}");
+                // Asynchronous Reverse packs on a worker, where jobs cannot be scheduled.
+                var worker=System.Threading.Tasks.Task.Run(()=>ReverseUvRasterAcceleration.TryRasterize(points,w,h,radius,default));
+                Assert.IsTrue(worker.Wait(TimeSpan.FromSeconds(60)),"Worker raster did not finish.");
+                Assert.NotNull(worker.Result,"Worker threads must execute the Burst direct call: "+ReverseUvRasterAcceleration.LastRefusal);
+                Assert.IsTrue(worker.Result.burstExecuted);CollectionAssert.AreEqual(expected,worker.Result.spans,$"worker trial {trial}");
             }
             using var cancellation=new CancellationTokenSource();cancellation.Cancel();
             Assert.Throws<OperationCanceledException>(()=>ReverseUvRasterAcceleration.TryRasterize(
