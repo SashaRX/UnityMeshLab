@@ -1,5 +1,49 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Forward transfer: per-shell work without whole-mesh copies — 2026-10-14
+
+The paired performance runs exclude ordinary (forward) Transfer, and a code
+read of that path found per-shell work that scales with the whole mesh:
+
+- `SymmetrySplitShells` built every shell snapshot from fresh `mesh.vertices`
+  and `mesh.normals`, two full array copies per shell (per prescribed parameter
+  × shell in `SplitWithParams`). The streams are now read once and re-read only
+  where the existing code already re-reads them, after an applied split (the
+  split helpers write the mesh exactly when they return a nonzero count).
+  `SplitWithParams` also memoizes a shell's UV0 overlap until the next split
+  instead of rescanning every shell for every parameter and both match passes.
+- Per-shell overlap scans (`HasUv0Overlap`, `TransferCandidateQuality`
+  overlap, `CandidateHasOverlap`) allocated whole-mesh UV and chart arrays per
+  shell and candidate. `UvAtlasDiagnostics.ShellGeometry` renumbers the shell's
+  vertices into compact arrays. Face order and corner coordinates are unchanged,
+  so the scan's triangles, grid, pairs, area sum and completeness are the same;
+  only `outOfBoundsVertices`, which none of these callers reads, now counts the
+  shell's vertices instead of the whole mesh.
+- The diagnostic-only Phase 2a-cov 3D coverage pass (a whole-source BVH plus one
+  query per target face, used only for a Verbose log) runs only when that log
+  is enabled.
+
+No transfer decision, UV, ordering or tolerance changes. The paired benchmark
+times the complete ordinary pipeline as `Forward pipeline` (export excluded) and
+the detached re-run as `Detached forward preparation`. Measured on the private
+three-model corpus (Intel Core i9-14900K, Unity 6000.2.6f2, 32 tex/m, 2 px
+padding, Fill atlas): a = `a5c5deb`; b/c = `3552a3c5`, which carries this change
+plus reverse-only packing and Burst changes that the forward pipeline does not
+call (b and c differ only in reverse validation concurrency). Medians of three
+runs of a and five of b and c:
+
+| Model | Forward a (s) | Forward b (s) | Forward c (s) | Detached a (s) | Detached c (s) |
+|---|---:|---:|---:|---:|---:|
+| Cafe_Table_A_01 | 0.53 | 0.46 | 0.47 | 0.30 | 0.24 |
+| Modern_Kitchen_A | 4.40 | 3.86 | 3.84 | 4.23 | 3.91 |
+| Kamaz (`kamaz_Off`) | 30.39 | 28.09 | 27.78 | 29.82 | 28.93 |
+
+Ordinary Transfer is about 13% faster on Kitchen and 9% on Kamaz (a → c); Cafe
+is too small to resolve. The detached preparation gains less (8% / 3%). Forward
+outputs and all 120 exported geometry/UV/ancestry/quality files are
+byte-identical across all arms. Artifacts:
+`_results~/transfer-performance-20261014-eighth/`.
+
 ## Transfer performance: immutable footprints and equivalent placement search — 2026-10-13
 
 Baseline `97d8828f` (1.1.52), branch `codex/transfer-performance`.

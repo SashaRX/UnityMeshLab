@@ -168,8 +168,9 @@ namespace SashaRX.UnityMeshLab
             int shellCountBefore = shells.Count;
             var sourceDescriptors = new ShellStateSnapshot[shellCountBefore];
             var nFoldProcessedShells = new HashSet<int>();
+            var sourceNormals = mesh.normals;
             for (int i = 0; i < shellCountBefore; i++)
-                sourceDescriptors[i] = BuildShellSnapshot(shells[i], mesh);
+                sourceDescriptors[i] = BuildShellSnapshot(shells[i], verts, sourceNormals);
 
             // Stage 1: Detect + Apply N-fold splits.
             UvtLog.Verbose($"[SymSplit] Stage 1/2: Detect+Apply N-fold (shells={shellCountBefore})");
@@ -324,6 +325,7 @@ namespace SashaRX.UnityMeshLab
                 return 0;
 
             var verts = mesh.vertices;
+            var normals = mesh.normals;
             var uv0 = mesh.uv;
             var tris = mesh.triangles;
             if (uv0 == null || uv0.Length == 0 || tris.Length == 0)
@@ -343,6 +345,18 @@ namespace SashaRX.UnityMeshLab
             int shellCountBefore = shells.Count;
             var usedShells = new HashSet<int>();
             var processedShells = new HashSet<int>();
+            // A shell's UV0 overlap depends only on the mesh streams, which change only
+            // when a split is applied: every parameter otherwise rescans the same shells.
+            var uv0Overlap = new Dictionary<int, bool>();
+            bool ShellHasUv0Overlap(int shellIndex)
+            {
+                if (!uv0Overlap.TryGetValue(shellIndex, out bool overlap))
+                {
+                    overlap = HasUv0Overlap(shells[shellIndex], uv0, tris);
+                    uv0Overlap.Add(shellIndex, overlap);
+                }
+                return overlap;
+            }
 
             foreach (var p in prescribed)
             {
@@ -356,9 +370,9 @@ namespace SashaRX.UnityMeshLab
                 {
                     if (usedShells.Contains(si)) continue;
                     var shell = shells[si];
-                    if (p.foldCount >= 3 && !HasUv0Overlap(shell, uv0, tris)) continue;
+                    if (p.foldCount >= 3 && !ShellHasUv0Overlap(si)) continue;
 
-                    var descriptor = BuildShellSnapshot(shell, mesh);
+                    var descriptor = BuildShellSnapshot(shell, verts, normals);
                     bool descriptorMatch = p.sourceDescriptorHash != 0 && descriptor.descriptorHash != 0
                         ? descriptor.descriptorHash == p.sourceDescriptorHash
                         : descriptor.signature == p.sourceShellSignature;
@@ -380,9 +394,9 @@ namespace SashaRX.UnityMeshLab
                     {
                         if (usedShells.Contains(si)) continue;
                         var shell = shells[si];
-                        if (p.foldCount >= 3 && !HasUv0Overlap(shell, uv0, tris)) continue;
+                        if (p.foldCount >= 3 && !ShellHasUv0Overlap(si)) continue;
 
-                        var descriptor = BuildShellSnapshot(shell, mesh);
+                        var descriptor = BuildShellSnapshot(shell, verts, normals);
                         if (p.sourceGroupId != 0 && descriptor.groupId != p.sourceGroupId) continue;
                         float distance = DescriptorDistance(p, descriptor);
                         if (distance < bestDistance)
@@ -417,6 +431,8 @@ namespace SashaRX.UnityMeshLab
                         UvtLog.Info($"[SymSplit] SplitWithParams: shell {bestShell} → {p.foldCount} sectors (prescribed{(usedFallback ? ", fallback" : string.Empty)})");
                         // Reread after mesh modification
                         verts = mesh.vertices;
+                        normals = mesh.normals;
+                        uv0Overlap.Clear();
                         uv0 = mesh.uv;
                         tris = mesh.triangles;
                         faceCount = tris.Length / 3;
@@ -444,6 +460,8 @@ namespace SashaRX.UnityMeshLab
                         UvtLog.Info($"[SymSplit][PrescribedBinary] SplitWithParams: shell {bestShell} axis={AxisName(p.axis)} threshold={p.splitThreshold:F4} (prescribed{(usedFallback ? ", fallback" : string.Empty)})");
                         // Reread after mesh modification
                         verts = mesh.vertices;
+                        normals = mesh.normals;
+                        uv0Overlap.Clear();
                         uv0 = mesh.uv;
                         tris = mesh.triangles;
                         faceCount = tris.Length / 3;
@@ -1247,16 +1265,8 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         internal static bool HasUv0Overlap(UvShell shell, Vector2[] uv0, int[] triangles)
         {
-            var indices = new int[shell.faceIndices.Count * 3];
-            int index = 0;
-            foreach (int f in shell.faceIndices)
-            {
-                for (int corner = 0; corner < 3; ++corner)
-                    indices[index++] = triangles[f * 3 + corner];
-            }
-            var report = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {
-                uv = uv0, indices = indices, charts = new int[uv0.Length]
-            }, System.Threading.CancellationToken.None, comparisonBudget: 200000);
+            var report = UvAtlasDiagnostics.Measure(UvAtlasDiagnostics.ShellGeometry(shell.faceIndices, triangles,
+                vertex => uv0[vertex]), System.Threading.CancellationToken.None, comparisonBudget: 200000);
             // Only a witnessed intersection authorizes a split; exhausting the
             // budget without a witness is not evidence of stacking.
             return report.pairs > 0;
@@ -1338,14 +1348,14 @@ namespace SashaRX.UnityMeshLab
             return axis == 0 ? "X" : axis == 1 ? "Y" : "Z";
         }
 
-        static ShellStateSnapshot BuildShellSnapshot(UvShell shell, Mesh mesh)
+        // vertices/normals are the mesh's current streams, read once by the caller:
+        // each Mesh getter copies the whole array, and a snapshot runs per shell.
+        static ShellStateSnapshot BuildShellSnapshot(UvShell shell, Vector3[] vertices, Vector3[] normals)
         {
             Vector2 uvSize = shell.boundsMax - shell.boundsMin;
             Vector3 worldCentroid = Vector3.zero;
             Vector3 worldNormal = Vector3.zero;
             int centroidCount = 0;
-            var vertices = mesh.vertices;
-            var normals = mesh.normals;
             foreach (int vi in shell.vertexIndices)
             {
                 if (vi >= 0 && vi < vertices.Length)
