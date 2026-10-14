@@ -1559,7 +1559,9 @@ namespace SashaRX.UnityMeshLab
             // Coverage upgrade disabled: upgrading shells to merged changes their
             // transfer mode from interp to 3D voting, which produces different UV2
             // positions and causes visible UV2 jumps between LODs.
-            // Keeping the computation for diagnostics only.
+            // Keeping the computation for diagnostics only: it builds a whole-source BVH
+            // and queries every target face, so it runs only when its log is shown.
+            if (UvtLog.Current >= UvtLog.Level.Verbose && UvtLog.IsCategoryEnabled(UvtLog.Category.General))
             {
                 float coverageMaxDist = Mathf.Max(meshDiagonal * 0.05f, 0.01f);
                 float coverageMinDot = 0.5f; // ~60°
@@ -3559,7 +3561,7 @@ namespace SashaRX.UnityMeshLab
                             triUv2A, triUv2B, triUv2C, out var aligned))
                     {
                         int alignedIssues = CountShellIssues(tShell.faceIndices, tgtTris, tVerts, aligned);
-                        if (alignedIssues < issuesInterp && !CandidateHasOverlap(tShell, tgtTris, tVerts, aligned)) {
+                        if (alignedIssues < issuesInterp && !CandidateHasOverlap(tShell, tgtTris, aligned)) {
                             uv2_interp = aligned; issuesInterp = alignedIssues;
                             alignedInterpolation = true;
                         }
@@ -3572,7 +3574,7 @@ namespace SashaRX.UnityMeshLab
                             shellBvh3D[chosenSrc], shellBvh3DFaceMap[chosenSrc], shellBvh3DFaceNormals[chosenSrc],
                             triPosA, triPosB, triPosC, triNormal, triUv2A, triUv2B, triUv2C);
                         int geometricIssues = CountShellIssues(tShell.faceIndices, tgtTris, tVerts, geometric);
-                        if (geometricIssues < issuesInterp && !CandidateHasOverlap(tShell, tgtTris, tVerts, geometric)) {
+                        if (geometricIssues < issuesInterp && !CandidateHasOverlap(tShell, tgtTris, geometric)) {
                             uv2_interp = geometric; issuesInterp = geometricIssues;
                             alignedInterpolation = false; geometricInterpolation = true;
                         }
@@ -3584,8 +3586,8 @@ namespace SashaRX.UnityMeshLab
                     // and interpolation has overlaps (or cannot certify its scan).
                     bool preferTransform = uv2_transform != null && (issuesTransform < issuesInterp
                         || (issuesTransform == issuesInterp && tgtExactAreaProtected[tsi]
-                            && !CandidateHasOverlap(tShell, tgtTris, tVerts, uv2_transform)
-                            && CandidateHasOverlap(tShell, tgtTris, tVerts, uv2_interp)));
+                            && !CandidateHasOverlap(tShell, tgtTris, uv2_transform)
+                            && CandidateHasOverlap(tShell, tgtTris, uv2_interp)));
                     if (preferTransform)
                     {
                         chosenUv2 = uv2_transform;
@@ -4592,16 +4594,11 @@ namespace SashaRX.UnityMeshLab
             return ShellUvOverlap.None;
         }
 
-        static bool CandidateHasOverlap(UvShell shell, int[] triangles, Vector3[] positions, Dictionary<int, Vector2> candidate)
+        static bool CandidateHasOverlap(UvShell shell, int[] triangles, Dictionary<int, Vector2> candidate)
         {
-            var uv = new Vector2[positions.Length];
-            foreach (var point in candidate) uv[point.Key] = point.Value;
-            var indices = new int[shell.faceIndices.Count * 3];
-            int i = 0;
-            foreach (int face in shell.faceIndices)
-                for (int corner = 0; corner < 3; ++corner) indices[i++] = triangles[face * 3 + corner];
-            var quality = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry { uv = uv, indices = indices,
-                charts = new int[positions.Length] }, System.Threading.CancellationToken.None, comparisonBudget: 200000);
+            var quality = UvAtlasDiagnostics.Measure(UvAtlasDiagnostics.ShellGeometry(shell.faceIndices, triangles,
+                vertex => candidate.TryGetValue(vertex, out var point) ? point : default),
+                System.Threading.CancellationToken.None, comparisonBudget: 200000);
             return !quality.complete || quality.pairs > 0;
         }
 

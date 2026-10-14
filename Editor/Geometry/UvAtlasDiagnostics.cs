@@ -204,6 +204,32 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        /// <summary>One shell's faces as a compact atlas for <see cref="Measure"/>: faces keep
+        /// their order and corner coordinates, vertices are renumbered in first-use order,
+        /// so a per-shell scan neither allocates nor walks whole-mesh arrays. A vertex
+        /// <paramref name="uv"/> reports no coordinate for reads as zero, as an unset slot
+        /// of a whole-mesh array did.</summary>
+        internal static RemeshNative.Geometry ShellGeometry(List<int> faces, int[] triangles, Func<int, Vector2> uv)
+        {
+            var slots = new Dictionary<int, int>(faces.Count * 2);
+            var coordinates = new List<Vector2>(faces.Count * 2);
+            var indices = new int[faces.Count * 3];
+            int index = 0;
+            foreach (int face in faces)
+                for (int corner = 0; corner < 3; ++corner)
+                {
+                    int vertex = triangles[face * 3 + corner];
+                    if (!slots.TryGetValue(vertex, out int slot))
+                    {
+                        slot = coordinates.Count;
+                        slots.Add(vertex, slot);
+                        coordinates.Add(uv(vertex));
+                    }
+                    indices[index++] = slot;
+                }
+            return new RemeshNative.Geometry { uv = coordinates.ToArray(), indices = indices, charts = new int[coordinates.Count] };
+        }
+
         /// <summary>Overlapping pairs the scan records before giving up as incomplete.</summary>
         internal const int MaxConflicts = 1 << 22;
 

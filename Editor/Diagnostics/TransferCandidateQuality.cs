@@ -47,20 +47,15 @@ namespace SashaRX.UnityMeshLab
                 if (!Finite(pair.Value) || pair.Value.x < 0 || pair.Value.x > 1 || pair.Value.y < 0 || pair.Value.y > 1)
                     ++quality.outOfBoundsVertices;
             }
-            if (scanOverlap) quality.ScanOverlap(shell, triangles, positions.Length, uv);
+            if (scanOverlap) quality.ScanOverlap(shell, triangles, uv);
             return quality;
         }
 
-        void ScanOverlap(UvShell shell, int[] triangles, int vertexCount, Dictionary<int, Vector2> candidate)
+        void ScanOverlap(UvShell shell, int[] triangles, Dictionary<int, Vector2> candidate)
         {
-            var uv = new Vector2[vertexCount];
-            foreach (var point in candidate) uv[point.Key] = point.Value;
-            var indices = new int[shell.faceIndices.Count * 3]; int index = 0;
-            foreach (int face in shell.faceIndices)
-                for (int corner = 0; corner < 3; ++corner) indices[index++] = triangles[face * 3 + corner];
-            var atlas = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {
-                uv = uv, indices = indices, charts = new int[vertexCount]
-            }, CancellationToken.None, comparisonBudget: 200000);
+            var atlas = UvAtlasDiagnostics.Measure(UvAtlasDiagnostics.ShellGeometry(shell.faceIndices, triangles,
+                vertex => candidate.TryGetValue(vertex, out var point) ? point : default),
+                CancellationToken.None, comparisonBudget: 200000);
             overlapPairs = atlas.pairs; overlapArea = atlas.pairAreaSum; overlapScanComplete = atlas.complete;
         }
 
