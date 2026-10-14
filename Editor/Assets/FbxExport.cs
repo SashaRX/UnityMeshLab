@@ -1018,16 +1018,24 @@ namespace SashaRX.UnityMeshLab
             }
             if (metaBackedUp && File.Exists(metaBak))
             {
+                bool metaRestored = false;
                 try
                 {
                     File.Copy(metaBak, fullPath + MetaExtension, true);
-                    File.Delete(metaBak);
+                    metaRestored = true;
                 }
                 catch (Exception ex)
                 {
                     // Without its .meta the asset would take a new GUID on import.
                     housekeepingDone = false;
                     Failed($"its .meta could not be restored from '{metaBak}': {ex.Message}. Copy it back by hand before the next import so the asset keeps its GUID", ex);
+                }
+                // The copy of the .meta is housekeeping once it is restored: one that cannot be
+                // deleted (a scanner holding it) is a warning, not a failed restore.
+                if (metaRestored)
+                {
+                    try { File.Delete(metaBak); }
+                    catch (Exception ex) { UvtLog.Warn($"[FBX Export] '{targetFbxPath}' was written and its .meta restored; the copy is left at '{metaBak}': {ex.Message}"); }
                 }
             }
             // The previous file stays recoverable until the .meta restore and the housekeeping

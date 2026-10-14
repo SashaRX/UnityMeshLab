@@ -658,45 +658,48 @@ namespace SashaRX.UnityMeshLab
             var sidecar = sidecarFbx == null ? null
                 : PrepareSidecarSync(sidecarFbx, list.Select(e => (e, WorkingMesh(e))).Where(p => p.Item2 != null).ToList());
             if (!isVariantExport && refreshContext) PrepareStandaloneRelink(sourceFbxPath);
-            bool exported;
-            if (collisionData != null)
-            {
-                using var plan = FbxStructureWrite.CollisionPlan(collisionData);
-                try { exported = FbxChannelWrite.Write(sourceFbxPath, Array.Empty<MeshEntry>(), FbxExportIntent.None, outputFbxPathOverride, null, plan); }
-                catch (Exception ex)
-                {
-                    UvtLog.Error($"[FBX Export] '{sourceFbxPath}' was not written: {ex.Message}");
-                    UvtLog.Verbose(ex.ToString());
-                    exported = false;
-                }
-            }
-            else
-            {
-                try
-                {
-                    exported = FbxExport.WriteChannels(
-                        sourceFbxPath, list, intent, outputFbxPathOverride,
-                        FbxExport.FirstRealMaterial(refreshContext ? ctx?.MeshEntries : list),
-                        isVariantExport || !refreshContext ? null : ctx?.LodGroup);
-                }
-                catch (FbxExport.PostCommitException ex)
-                {
-                    AfterPostCommitFailure(sourceFbxPath, ex, sidecar);
-                    exported = false;
-                }
-            }
-            if (!exported) { standaloneRelinks.Clear(); return false; }
-            ApplySidecarSync(sidecar);
-            if (!isVariantExport)
-                foreach (var e in list) SyncSceneEditChannels(e, WorkingMesh(e), intent, "FBX Export");
+            // The written file's collision is what the sidecar must hold from here on.
             string collisionTarget = isVariantExport ? outputFbxPathOverride : sourceFbxPath;
-            if (collisionData != null && collisionTarget.StartsWith("Assets/", StringComparison.Ordinal))
+            void SaveCollisionSidecar()
             {
+                if (collisionData == null || !collisionTarget.StartsWith("Assets/", StringComparison.Ordinal)) return;
                 var saved = SidecarStore.LoadOrCreate(collisionTarget);
                 Undo.RecordObject(saved, "Save Collision Sidecar");
                 saved.collisionEntries = new List<CollisionMeshEntry>(collisionData.collisionEntries);
                 SidecarStore.Save(saved);
             }
+            bool exported;
+            try
+            {
+                if (collisionData != null)
+                {
+                    using var plan = FbxStructureWrite.CollisionPlan(collisionData);
+                    try { exported = FbxChannelWrite.Write(sourceFbxPath, Array.Empty<MeshEntry>(), FbxExportIntent.None, outputFbxPathOverride, null, plan); }
+                    catch (Exception ex) when (!(ex is FbxExport.PostCommitException))
+                    {
+                        UvtLog.Error($"[FBX Export] '{sourceFbxPath}' was not written: {ex.Message}");
+                        UvtLog.Verbose(ex.ToString());
+                        exported = false;
+                    }
+                }
+                else exported = FbxExport.WriteChannels(
+                    sourceFbxPath, list, intent, outputFbxPathOverride,
+                    FbxExport.FirstRealMaterial(refreshContext ? ctx?.MeshEntries : list),
+                    isVariantExport || !refreshContext ? null : ctx?.LodGroup);
+            }
+            catch (FbxExport.PostCommitException ex)
+            {
+                // The file is written: the sidecars take what is in it; the import, the relink
+                // and the scene follow the save that finishes the job.
+                AfterPostCommitFailure(sourceFbxPath, ex, sidecar);
+                SaveCollisionSidecar();
+                exported = false;
+            }
+            if (!exported) { standaloneRelinks.Clear(); return false; }
+            ApplySidecarSync(sidecar);
+            if (!isVariantExport)
+                foreach (var e in list) SyncSceneEditChannels(e, WorkingMesh(e), intent, "FBX Export");
+            SaveCollisionSidecar();
             if (!isVariantExport && refreshContext) AfterSourceSave();
             return true;
 #else
@@ -1128,13 +1131,23 @@ namespace SashaRX.UnityMeshLab
                 foreach (string fbxPath in batch.ImportReadyFbxPaths)
                     AssetDatabase.ImportAsset(fbxPath, ImportAssetOptions.ForceUpdate);
 
+            var imported = batch.ImportReadyFbxPaths.Where(batch.OverwrittenFbxPaths.Contains).ToList();
+            // Stale "Lit" / "No Name" material remaps the importer created for collision-
+            // only nodes must not survive an overwrite. Removing one reimports the file, so
+            // this goes before the relink.
+            if (overwriteSource)
+            {
+                foreach (string fbxPath in imported)
+                    FbxExport.RemoveDefaultMaterialRemaps(fbxPath, () => batch.ReArm(fbxPath));
+            }
+
             // Unity recreates sub-asset meshes on reimport; old MeshFilter references go
             // Missing even when names did not change. Every renderer noted before the write
             // takes the recreated mesh of the name it showed, or of the name the normalisation gave
             // it; under a LODGroup the by-name pass then covers the nodes the export renamed and
             // what the bindings could not place. Every overwritten file that was imported is
-            // relinked, in a partly failed batch too.
-            var imported = batch.ImportReadyFbxPaths.Where(batch.OverwrittenFbxPaths.Contains).ToList();
+            // relinked, in a partly failed batch too, after the remap removal's reimport, which
+            // recreates the meshes once more.
             if (overwriteSource)
             {
                 foreach (string fbxPath in imported)
@@ -1144,14 +1157,6 @@ namespace SashaRX.UnityMeshLab
                     if (ctx?.LodGroup == null) continue;
                     FbxExport.RelinkSceneMeshReferences(fbxPath, renameMap, ctx.LodGroup);
                 }
-            }
-
-            // Stale "Lit" / "No Name" material remaps the importer created for collision-
-            // only nodes must not survive an overwrite.
-            if (overwriteSource)
-            {
-                foreach (string fbxPath in imported)
-                    FbxExport.RemoveDefaultMaterialRemaps(fbxPath, () => batch.ReArm(fbxPath));
             }
 
             // A rebuild writes every mesh from the scene: the scene edits of the files it
