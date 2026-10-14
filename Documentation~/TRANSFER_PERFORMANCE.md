@@ -446,6 +446,16 @@ the original triangle/row order. Local point transforms, rounding, dilation
 radius and final UV placement are unchanged. Masks below 32 triangles and
 temporary buffers above two million spans retain scalar rasterization.
 
+Unity's job scheduling is only supported from the editor main thread, and async
+final packing runs on a Task worker. PR review first kept that worker scalar; the
+eighth continuation instead runs the same kernel there through a Burst direct
+call, never reaching the job API off the main thread. The timing tables below
+were measured by the synchronous benchmark path and do not establish a Burst gain
+for async editor actions. Regression coverage compares complete synchronous/async
+Reverse outputs with both overlap policies, requires every qualifying async mask
+to run compiled, and checks worker cancellation, direct-call/job span equality
+and subsequent main-thread Burst execution.
+
 The job writes a per-triangle BurstDiscard witness: managed execution is never
 counted as accelerated. The benchmark enables compilation only inside its test
 scope, suppressing the editor-option persistence callback while changing runtime
@@ -740,3 +750,14 @@ python -I 'Tools~/compare-transfer-performance.py' --baseline $a1Models `
 Artifacts: `_results~/transfer-performance-20261014-eighth/` (`arm-a|b|c/`,
 `summary-a-vs-c.json`, `summary-b-vs-c-5pairs.json`, `summary-historical*.json`,
 `stage-medians.json`, `regression-candidate*/`, `optin-check/`).
+
+Merging `codex/transfer-performance` (PR #247) brings the CI-published Plugins
+(`7607b172`), which export the footprint-search and snapshot API, and its
+async-packing tests. The async tests now require the direct call instead of the
+earlier scalar guard. On the merged source, a run with only the installed plugin
+(no private library) and a combined-library run with the regression groups both
+keep all 120 exports byte-identical to arm a. The installed plugin performs the
+same 26,316 Kamaz overlap snapshot searches and 326,588 Burst triangles. The
+regression run passes 363 tests, fails 0 and skips 27 optional private fixtures.
+Its timings are single observations, partly measured alongside the regression
+suite, and are not a performance comparison. Artifacts: `merge-check/`.

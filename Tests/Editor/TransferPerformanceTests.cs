@@ -15,6 +15,72 @@ namespace SashaRX.UnityMeshLab.Tests
         static Vector2[] Rectangle(float x,float y,float width,float height)
             =>Shape().Select(p=>new Vector2(x+p.x*width,y+p.y*height)).ToArray();
 
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator AsyncReversePackingMatchesSynchronousWithBothOverlapPolicies()
+        {
+            var vertices=Enumerable.Range(0,81).Select(i=>new Vector3(i%9/8f,i/9/8f,0)).ToArray();
+            var indices=Enumerable.Range(0,64).SelectMany(i=>{
+                int a=i%8+i/8*9;return new[] {a,a+1,a+10,a,a+10,a+9};
+            }).ToArray();
+            var source=new Mesh {name="Grid",vertices=vertices,triangles=indices,
+                uv2=vertices.Select(p=>new Vector2(p.x,p.y)*.25f).ToArray()};
+            var target=UnityEngine.Object.Instantiate(source);
+            try
+            {
+                var levels=new[] {
+                    new ReverseUvTransfer.Level {lod=1,inputs=new[] {new ReverseUvTransfer.Input {mesh=source,key="Grid",usePreparedUv2=true}}},
+                    new ReverseUvTransfer.Level {lod=0,inputs=new[] {new ReverseUvTransfer.Input {mesh=target,key="Grid",usePreparedUv2=true}}}};
+                var before=new[] {source,target}.Select(TransferMeshSnapshot.Capture).ToArray();
+                using var compiler=ReverseUvRasterAcceleration.beginTestScope?.Invoke();
+                foreach(bool overlap in new[] {false,true})
+                {
+                    ReverseUvTransfer.Options Options() => new ReverseUvTransfer.Options {seedResolution=128,seedDensity=32,
+                        regroupPreparedAtlas=true,frozenShellCascade=!overlap,preserveProjectedOverlap=overlap,
+                        repackFinalAtlas=true,fillFinalAtlas=true,burstFootprintRaster=true};
+                    using var baseline=ReverseUvTransfer.Build(levels,Options()).GetAwaiter().GetResult();
+                    var options=Options();options.performance=new TransferPerformanceProfile();
+                    var task=ReverseUvTransfer.Build(levels,options,true);
+                    while(!task.IsCompleted) yield return null;
+                    using var actual=task.GetAwaiter().GetResult();
+                    Assert.AreEqual(JsonUtility.ToJson(baseline.report),JsonUtility.ToJson(actual.report));
+                    for(int l=0;l<levels.Length;++l)
+                        CollectionAssert.AreEqual(TransferMeshSnapshot.Capture(baseline.meshes[l][0]),TransferMeshSnapshot.Capture(actual.meshes[l][0]));
+                    // Worker threads cannot schedule jobs; every qualifying mask
+                    // must still run through the Burst direct call there.
+                    long Count(string stage)=>options.performance.samples.Where(s=>s.stage==stage).Sum(s=>s.count);
+                    Assert.AreEqual(Count("Burst raster qualifying triangles"),Count("Burst footprint raster spans"),
+                        "Async final packing must execute qualifying masks through the Burst direct call: "+ReverseUvRasterAcceleration.LastRefusal);
+                }
+                CollectionAssert.AreEqual(before[0],TransferMeshSnapshot.Capture(source));
+                CollectionAssert.AreEqual(before[1],TransferMeshSnapshot.Capture(target));
+            }
+            finally {UnityEngine.Object.DestroyImmediate(source);UnityEngine.Object.DestroyImmediate(target);}
+        }
+
+        [Test]
+        public void BackgroundPackingUsesBurstDirectCallAndPreservesMainThreadExecution()
+        {
+            if(!ReverseUvRasterAcceleration.Available)
+            {
+                if(Environment.GetEnvironmentVariable("MESHLAB_REQUIRE_BURST_RASTER")=="1") Assert.Fail("Required Burst assembly did not register.");
+                Assert.Ignore("Optional Burst/Collections packages are not installed.");
+            }
+            using var compiler=ReverseUvRasterAcceleration.beginTestScope?.Invoke();
+            var points=Enumerable.Range(0,32).SelectMany(_=>Rectangle(1,1,8,8)).ToArray();
+            // A worker never reaches the job API; it runs the direct call instead.
+            var result=System.Threading.Tasks.Task.Run(()=>ReverseUvRasterAcceleration.TryRasterize(points,16,16,2,default))
+                .GetAwaiter().GetResult();
+            Assert.NotNull(result,"Background packing must execute the Burst direct call: "+ReverseUvRasterAcceleration.LastRefusal);
+            Assert.IsTrue(result.burstExecuted);
+            using var cancellation=new CancellationTokenSource();cancellation.Cancel();
+            Assert.Throws<OperationCanceledException>(()=>System.Threading.Tasks.Task.Run(
+                ()=>ReverseUvRasterAcceleration.TryRasterize(points,16,16,2,cancellation.Token)).GetAwaiter().GetResult());
+            var main=ReverseUvRasterAcceleration.TryRasterize(points,16,16,2,default);
+            Assert.NotNull(main,"A background call must keep main-thread Burst available.");
+            Assert.IsTrue(main.burstExecuted);
+            CollectionAssert.AreEqual(main.spans,result.spans,"Direct-call spans must equal the job's.");
+        }
+
         [Test]
         public void BurstRasterSpansMatchScalarEdgesIncludingClippingAndRoundoff()
         {
