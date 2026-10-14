@@ -570,24 +570,42 @@ namespace SashaRX.UnityMeshLab
 
         static void Project(Surface[] donor, Surface[] targets, Options options, CancellationToken token)
         {
-            var charts = Charts(donor);
+            List<Chart> charts;
+            using (options.performance?.Accumulated("Projection donor charts")) charts = Charts(donor);
             long queries = 0;
+            ProjectInitial(donor, targets, charts, options, ref queries, token);
+            ProjectAfterInitial(donor, targets, charts, options, queries, token);
+        }
+
+        // Face projection and the first corner snap read neither the cut options
+        // nor protected faces, so passes over one target can share their result.
+        static void ProjectInitial(Surface[] donor, Surface[] targets, List<Chart> charts, Options options,
+            ref long queries, CancellationToken token)
+        {
+            var performance = options.performance;
+            using (performance?.Accumulated("Projection initial faces")) ProjectFaces(donor, targets, charts, options, ref queries, token);
+            using (performance?.Accumulated("Projection corner snapping")) SnapContinuousCorners(targets, options);
+        }
+
+        static void ProjectAfterInitial(Surface[] donor, Surface[] targets, List<Chart> charts, Options options,
+            long queries, CancellationToken token)
+        {
+            var performance = options.performance;
             foreach(var target in targets)
                 if(options.seamCutExclusions!=null && options.seamCutExclusions.TryGetValue((target.lod,target.node),out var protectedSources))
                     for(int f=0;f<target.faces.Length;++f)
                         target.faces[f].protectedInheritance=protectedSources.Contains(target.input.sourceFaces==null?f:target.input.sourceFaces[f]);
-            ProjectFaces(donor, targets, charts, options, ref queries, token);
-            SnapContinuousCorners(targets, options);
-            ResolveOverlaps(targets, options, token);
+            using (performance?.Accumulated("Projection overlap resolution")) ResolveOverlaps(targets, options, token);
             if (options.splitDonorSeams)
             {
                 foreach (var s in targets) foreach (var face in s.faces) face.protectedInheritance |= face.inherited;
-                RefineAtDonorSeams(donor, targets, options, token);
+                using (performance?.Accumulated("Projection donor seam refinement")) RefineAtDonorSeams(donor, targets, options, token);
                 if (targets.Any(s => s.sourceBarycentrics != null))
-                    ProjectFaces(donor, targets.Where(s => s.sourceBarycentrics != null).ToArray(), charts, options, ref queries, token);
+                    using (performance?.Accumulated("Projection refined faces"))
+                        ProjectFaces(donor, targets.Where(s => s.sourceBarycentrics != null).ToArray(), charts, options, ref queries, token);
             }
-            SnapContinuousCorners(targets, options);
-            ResolveOverlaps(targets, options, token);
+            using (performance?.Accumulated("Projection corner snapping")) SnapContinuousCorners(targets, options);
+            using (performance?.Accumulated("Projection overlap resolution")) ResolveOverlaps(targets, options, token);
         }
 
         static void ProjectFaces(Surface[] donor, Surface[] targets, List<Chart> charts, Options options,
