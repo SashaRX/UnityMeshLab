@@ -286,8 +286,11 @@ namespace SashaRX.UnityMeshLab
         {
             var originals=targets.ToDictionary(s=>s,s=>s.pixels.ToArray());
             var originalFaces=targets.ToDictionary(s=>s,s=>s.faces.Select(f=>f.Copy()).ToArray());
-            var charts=Charts(donor);var parents=charts.ToDictionary(c=>c.id);long queries=0;
+            List<Chart> charts;
+            using (options.performance?.Measure("Donor chart BVHs", targets[0].lod)) charts=Charts(donor);
+            var parents=charts.ToDictionary(c=>c.id);long queries=0;
             ProjectFaces(donor,targets,charts,options,ref queries,token);
+            using var shellTiming = options.performance?.Measure("Prepared-shell grouping and underlays", targets[0].lod);
             var moved=new HashSet<(Surface,int)>();
             foreach(var surface in targets)
                 foreach(var group in Enumerable.Range(0,surface.faces.Length).GroupBy(f=>surface.preparedRegions[f]))

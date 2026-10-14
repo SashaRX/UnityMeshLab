@@ -34,6 +34,8 @@ MIT License
 Copyright (c) 2012 Brandon Pelfrey
 */
 #include "xatlas.h"
+#include "bit_image_overlap.h"
+#include "parallel_chart_search.h"
 #ifndef XATLAS_C_API
 #define XATLAS_C_API 0
 #endif
@@ -1400,57 +1402,17 @@ public:
 		m_data.zeroOutMemory();
 	}
 
-	bool canBlit(const BitImage &image, uint32_t offsetX, uint32_t offsetY) const
+	XA_INLINE bool canBlit(const BitImage &image, uint32_t offsetX, uint32_t offsetY) const
 	{
-		for (uint32_t y = 0; y < image.m_height; y++) {
-			const uint32_t thisY = y + offsetY;
-			if (thisY >= m_height)
-				continue;
-			uint32_t x = 0;
-			for (;;) {
-				const uint32_t thisX = x + offsetX;
-				if (thisX >= m_width)
-					break;
-				const uint32_t thisBlockShift = thisX % 64;
-				const uint64_t thisBlock = m_data[(thisX >> 6) + thisY * m_rowStride] >> thisBlockShift;
-				const uint32_t blockShift = x % 64;
-				const uint64_t block = image.m_data[(x >> 6) + y * image.m_rowStride] >> blockShift;
-				if ((thisBlock & block) != 0)
-					return false;
-				x += 64 - max(thisBlockShift, blockShift);
-				if (x >= image.m_width)
-					break;
-			}
-		}
-		return true;
+		return canBlitWords(m_data.data(), m_width, m_height, m_rowStride,
+			image.m_data.data(), image.m_width, image.m_height, image.m_rowStride, offsetX, offsetY);
 	}
 
 	void dilate(uint32_t padding)
 	{
 		BitImage tmp(m_width, m_height);
 		for (uint32_t p = 0; p < padding; p++) {
-			tmp.zeroOutMemory();
-			for (uint32_t y = 0; y < m_height; y++) {
-				for (uint32_t x = 0; x < m_width; x++) {
-					bool b = get(x, y);
-					if (!b) {
-						if (x > 0) {
-							b |= get(x - 1, y);
-							if (y > 0) b |= get(x - 1, y - 1);
-							if (y < m_height - 1) b |= get(x - 1, y + 1);
-						}
-						if (y > 0) b |= get(x, y - 1);
-						if (y < m_height - 1) b |= get(x, y + 1);
-						if (x < m_width - 1) {
-							b |= get(x + 1, y);
-							if (y > 0) b |= get(x + 1, y - 1);
-							if (y < m_height - 1) b |= get(x + 1, y + 1);
-						}
-					}
-					if (b)
-						tmp.set(x, y);
-				}
-			}
+			dilateWords(m_data.data(), tmp.m_data.data(), m_width, m_height, m_rowStride);
 			tmp.m_data.copyTo(m_data);
 		}
 	}
@@ -8660,6 +8622,20 @@ private:
 	bool findChartLocation_bruteForce(const PackOptions &options, const Vector2i &startPosition, const BitImage *atlasBitImage, const BitImage *chartBitImage, const BitImage *chartBitImageRotated, int w, int h, int *best_x, int *best_y, int *best_w, int *best_h, int *best_r, uint32_t maxResolution)
 	{
 		const int stepSize = options.blockAlign ? 4 : 1;
+#ifdef MESHLAB_TBB_PACKING
+		const auto parallel = parallelChartLocation(startPosition.x, startPosition.y, w, h,
+			chartBitImage->width(), chartBitImage->height(), stepSize, options.rotateCharts, maxResolution,
+			[&](int rotation, int x, int y) {
+				return atlasBitImage->canBlit(rotation ? *chartBitImageRotated : *chartBitImage, x, y);
+			});
+		if (parallel.handled) {
+			if (parallel.found) {
+				*best_x = parallel.x;*best_y = parallel.y;*best_w = parallel.width;
+				*best_h = parallel.height;*best_r = parallel.rotation;
+			}
+			return parallel.found;
+		}
+#endif
 		int best_metric = INT_MAX;
 		// Try two different orientations.
 		for (int r = 0; r < 2; r++) {

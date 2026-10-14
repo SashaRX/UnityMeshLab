@@ -1,5 +1,129 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Transfer performance: immutable footprints and equivalent placement search — 2026-10-13
+
+Baseline `97d8828f` (1.1.52), branch `codex/transfer-performance`.
+This experiment adds opt-in stage timing and counters for the paired forward /
+reverse benchmark, then reuses immutable whole-family proxy footprints within
+one final pack. It does not change density candidates, rotations, overlap rules,
+shell correspondence, Float32 repair or publication audits. Cache retention is
+bounded and no cache survives a final-pack call. Ordinary Transfer,
+`GroupedShellTransfer`, `XatlasRepack` and `SymmetrySplitShells` are unchanged.
+
+The continuation profiles fallback candidate search separately from placement
+audits. Its indexed occupancy lookup must keep the complete candidate trace,
+refusals and work budgets equal to the original traversal. Both overlap policies
+are checked on the same three private models and all exported geometry, UV and
+ancestry reports are compared by their exact binary numeric values (without
+tolerance); JSON decimal formatting may differ at the final printed digit.
+
+The native continuation replaces only bit-image intersection and padding
+dilation traversal. It must reproduce the original clipped storage-word
+predicate and every eight-neighbour dilation pixel exactly. Local
+native builds use `MESHLAB_COPY_PLUGINS=OFF`; plugin publication still requires
+`build-native.yml`. Differential mask tests and replay of every real native
+request cover both overlap policies; managed final UV audits remain unchanged.
+
+The next managed continuation indexes the first colliding mask span for integer
+x positions on a repeatedly searched occupancy row. The index is local to one
+Find call and one immutable row window. Preparation is bounded; a partial final
+span resumes at the original prefix. Logical work accounting must stop at the
+same over-budget span, and every candidate/audit trace must stay identical.
+
+The native search continuation owns one immutable integer occupancy snapshot
+per Find call. It advances through occupied candidates in bounded chunks and
+returns the next free candidate to the existing managed placement/UV audit.
+Logical work, row/span priority, jumps, phase retries and all stop conditions
+must match. Chunks resume inside a long span query so cancellation remains
+responsive. Older plugins fall back to managed search. Private native builds
+are loaded only by explicit test configuration; package binaries remain
+published through `build-native.yml`.
+
+The combined continuation binds all xatlas calls in the private benchmark to
+the same rebuilt library as footprint search. Version 2 additionally shares
+immutable occupancy rows between rotations of one family; mask cursors remain
+private to each Find. Snapshot owners are recreated after occupancy changes,
+and native searches retain their row data until disposal. Legacy exports and
+managed fallback remain compatible.
+
+An optional Editor assembly uses Burst/Collections to compute triangle raster
+spans in parallel with Strict floating-point mode. Spans are merged in the
+original triangle/row order. Small masks and bounded oversized buffers retain
+the scalar path. A BurstDiscard execution witness prevents reporting managed
+jobs as accelerated. The benchmark scopes compiler runtime flags without
+writing EditorPrefs. Every native/Burst result must retain the exact baseline
+UV, geometry, ancestry, work budgets and packing decisions.
+
+The Intel oneTBB continuation is an opt-in native build experiment. Large
+brute-force chart windows evaluate independent read-only rows in an eight-thread
+arena. Reduction preserves first-inside early return, rotation priority and
+stable metric/distance ties; chart commits and random placement remain serial.
+Small windows and the first eight rows retain scalar traversal. The normal
+build stays dependency-free until native replay and the paired corpus establish
+a measurable benefit. oneTBB sources are pinned to 2021.12.0 commit
+`9afd759b72c0c233cd5ea3c3c06b0894c9da9c54`. Burst and shared snapshots stay enabled
+in both benchmark arms.
+
+The first full oneTBB trial preserves every UV bit but slows Kamaz overlap by
+about 6%; native-only timing is insufficient to qualify it. The revised row
+search stops already-running late rows after an earlier inside fit, shares only
+a strictly lower feasible metric for pruning (equal metrics remain eligible),
+and allocates the parallel row table only after the scalar prefix fails. Both
+native replay and complete Unity solve measurements must be repeated.
+
+Revised final result: Cafe whole reverse solve 1.165s -> 0.746s without overlap,
+2.875s -> 1.698s with overlap (36% / 41% reduction). Kitchen gains about 3% / 1%;
+Kamaz is effectively unchanged (16.370s -> 16.351s / 34.173s -> 33.736s), so the
+initial slowdown is removed. Six fresh final runs retain all 120 baseline
+exports' exact numeric bits, counts and packing decisions; both full suites
+pass 288/305 with 17 optional skips and zero failures. Six native suites and all
+74 recorded requests also pass on the revised source. Real Burst work remains
+unchanged in both arms. The oneTBB option stays experimental/OFF; publishing an
+ON build is blocked without native runtime integration. See the seventh
+continuation in TRANSFER_PERFORMANCE.md for artifacts, limits and the earlier
+unreproduced ordinary Kamaz NullReferenceException.
+
+The baseline runs at 32 tex/m show final packing dominating reverse solve on
+Cafe Table, Modern Kitchen and Kamaz. Therefore the first optimization targets
+repeated footprint preparation rather than GPU projection. A faster query
+backend remains a separate experiment after packing costs are reduced.
+Reproduction, timing semantics and verification:
+[TRANSFER_PERFORMANCE.md](TRANSFER_PERFORMANCE.md).
+Artifacts: `_results~/transfer-performance-20261013/`.
+
+Intel-library continuation, 2026-10-14: optional ISPC integer masks preserve
+all 74 native requests and all 120 complete UV exports, but do not improve
+packing and regress Cafe overlap by roughly 9%; the backend stays OFF.
+Embree CPU query batches on the three real model geometries are faster on
+Kitchen/Kamaz, but direct primitive traversal changes boundary hits and tied
+donor UVs. It is a private query experiment, not an enabled transfer/bake path.
+The IPP byte-mask adapter is exact but loses to existing word dilation after
+conversion; the separate 1u adapter fails exact comparison. oneMKL was assessed
+against the packing and managed ARAP code, not numerically benchmarked.
+See [INTEL_LIBRARY_BENCHMARKS.md](INTEL_LIBRARY_BENCHMARKS.md) for full timing
+scope, compatibility failures, pinned dependencies and reproduction.
+
+Compatible Embree continuation: discovery/proposals now feed the original
+managed primitive tests and tie order. Three final processes pass 956,040 strict
+result-bit comparisons on nine fixtures; actual 64²/128² bake bands retain all
+map bytes and counters on Cafe/Kitchen/Kamaz. Large Kamaz nearest batches gain
+1.54x/1.62x, but small batches and Kitchen rays regress. This is a private
+prototype, not a production/default backend or complete reverse speed claim.
+See [EMBREE_COMPATIBILITY.md](EMBREE_COMPATIBILITY.md).
+
+Production-path continuation: Reverse centre queries now use an optional typed
+backend and bounded buffers local to one projection call. Per-chart native
+batches were usually too small on the real corpus, so one global donor tree
+discovers full-reach candidates, followed by exact managed resolution within
+each original chart. A global nearest proposal must never narrow another
+chart's search. Small batches, missing plugins, oversized donor inputs and
+candidate overflow keep the managed path. Final UVs, ancestry, ambiguity,
+comparison budgets and packing decisions remain the strict qualification gate.
+The optional `meshlab-queries` target builds from `Native~/src/embree_queries.cpp`
+with pinned Embree 4.3.3; runtime publication stays gated by native CI and
+dependency/license integration. Paired full-workflow measurements and limits:
+[REVERSE_QUERY_BACKEND.md](REVERSE_QUERY_BACKEND.md).
+
 ## Remesh chart merge continuation: fitted thin parts — 2026-10-10
 
 - Continuation after native voxel-2 position correction: three CafeChair

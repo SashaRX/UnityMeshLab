@@ -11,16 +11,59 @@ namespace SashaRX.UnityMeshLab
     /// caller audits Float32 precision without unwrapping individual descendants.</summary>
     internal static class ReverseUvNativeFamilyPacking
     {
-        internal static Vector2[][] TryPack(Vector2[][] source,int side,ReverseUvTransfer.Options options,
-            CancellationToken token,Func<int,Vector2[],int,bool> validate,out float scale,out int packedSide,bool allowLargerCanvas=false,float? fixedScale=null,Func<Vector2[][],int,HashSet<int>> validateAtlas=null)
+        /// <summary>Immutable proxy masks reused only inside one final pack.
+        /// Density and orientation trials read these masks without modifying them.</summary>
+        internal sealed class FootprintCache : IDisposable
         {
+            const int MaxRetainedCorners = 1000000;
+            readonly Dictionary<(Vector2[] source, bool simplify, bool concave), Vector2[]> entries = new Dictionary<(Vector2[], bool, bool), Vector2[]>();
+            readonly bool enabled;
+            readonly TransferPerformanceProfile performance;
+            bool disposed;
+            int retainedCorners;
+            internal long hits, misses, constructionTicks;
+
+            internal FootprintCache(bool enabled, TransferPerformanceProfile performance = null)
+            { this.enabled = enabled; this.performance = performance; }
+
+            internal Vector2[] Get(Vector2[] source, CancellationToken token, bool simplify, bool concave)
+            {
+                token.ThrowIfCancellationRequested();
+                var key = (source, simplify, concave);
+                if (enabled && entries.TryGetValue(key, out var cached)) { ++hits; return cached; }
+                long started = performance == null ? 0 : System.Diagnostics.Stopwatch.GetTimestamp();
+                var footprint = Footprint(source, token, simplify, concave);
+                if (performance != null) constructionTicks += System.Diagnostics.Stopwatch.GetTimestamp() - started;
+                ++misses;
+                if (enabled && source.Length + (long)footprint.Length <= MaxRetainedCorners - retainedCorners)
+                {
+                    entries.Add(key, footprint);
+                    retainedCorners += source.Length + footprint.Length;
+                }
+                return footprint;
+            }
+
+            public void Dispose()
+            {
+                if (disposed) return;
+                performance?.Record("Packing footprint construction", constructionTicks, misses);
+                performance?.Record("Packing footprint cache hits", 0, hits);
+                entries.Clear();
+                disposed = true;
+            }
+        }
+
+        internal static Vector2[][] TryPack(Vector2[][] source,int side,ReverseUvTransfer.Options options,
+            CancellationToken token,Func<int,Vector2[],int,bool> validate,out float scale,out int packedSide,bool allowLargerCanvas=false,float? fixedScale=null,Func<Vector2[][],int,HashSet<int>> validateAtlas=null,FootprintCache footprints=null)
+        {
+            using var packTiming = options.performance?.Measure("Native family packing trial");
             var result=TryPackAttempt(source,side,options,token,validate,out scale,out packedSide,
-                allowLargerCanvas,fixedScale,validateAtlas,true);
+                allowLargerCanvas,fixedScale,validateAtlas,true,footprints);
             if(options.frozenShellCascade && !options.preserveProjectedOverlap && options.rotateChartsToAxis)
             {
                 if(result==null) UvtLog.Info(UvtLog.Category.Repack,"[ReverseUV] Axis-aligned family trial refused; retry the same whole families with 90-degree placement rotations.");
                 var orthogonal=TryPackAttempt(source,side,options,token,validate,out float orthogonalScale,out int orthogonalSide,
-                    allowLargerCanvas,fixedScale,validateAtlas,false);
+                    allowLargerCanvas,fixedScale,validateAtlas,false,footprints);
                 double Cost(Vector2[][] uv,float density)
                 {
                     var points=uv.SelectMany(p=>p).ToArray();var lo=points.Aggregate(Vector2.Min);var hi=points.Aggregate(Vector2.Max);
@@ -34,7 +77,7 @@ namespace SashaRX.UnityMeshLab
 
         static Vector2[][] TryPackAttempt(Vector2[][] source,int side,ReverseUvTransfer.Options options,
             CancellationToken token,Func<int,Vector2[],int,bool> validate,out float scale,out int packedSide,
-            bool allowLargerCanvas,float? fixedScale,Func<Vector2[][],int,HashSet<int>> validateAtlas,bool alignFootprints)
+            bool allowLargerCanvas,float? fixedScale,Func<Vector2[][],int,HashSet<int>> validateAtlas,bool alignFootprints,FootprintCache footprints)
         {
             scale=1;packedSide=side;
             var precision=new HashSet<int>();
@@ -46,10 +89,10 @@ namespace SashaRX.UnityMeshLab
                 var refused=new List<int>();
                 bool ValidRegular(int g,Vector2[] p,int canvas)=>validate==null || validate(regular[g],p,canvas);
                 var native=TryPackCore(regular.Select(g=>source[g]).ToArray(),side,options,token,ValidRegular,
-                    out scale,out packedSide,allowLargerCanvas,refused,fixedScale,alignFootprints:alignFootprints);
+                    out scale,out packedSide,allowLargerCanvas,refused,fixedScale,alignFootprints:alignFootprints,footprints:footprints);
                 if(native==null)
                     native=TryPackCore(regular.Select(g=>source[g]).ToArray(),side,options,token,ValidRegular,
-                        out scale,out packedSide,allowLargerCanvas,refused,fixedScale,false,alignFootprints);
+                        out scale,out packedSide,allowLargerCanvas,refused,fixedScale,false,alignFootprints,footprints);
                 if(native==null) return null;
                 if(refused.Count>0)
                 {
@@ -98,10 +141,10 @@ namespace SashaRX.UnityMeshLab
                     return true;
                 }
                 var completed=TryPackCore(anchored,side,options,token,ValidAnchored,out float anchoredScale,out int canvas,
-                    allowLargerCanvas,anchoredRefusals,commonScale,alignFootprints:alignFootprints);
+                    allowLargerCanvas,anchoredRefusals,commonScale,alignFootprints:alignFootprints,footprints:footprints);
                 if(completed==null)
                     completed=TryPackCore(anchored,side,options,token,ValidAnchored,out anchoredScale,out canvas,
-                        allowLargerCanvas,anchoredRefusals,commonScale,false,alignFootprints);
+                        allowLargerCanvas,anchoredRefusals,commonScale,false,alignFootprints,footprints);
                 if(completed==null) return null;
                 if(anchoredRefusals.Count>0)
                 {
@@ -123,7 +166,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         static Vector2[][] TryPackCore(Vector2[][] source,int side,ReverseUvTransfer.Options options,
-            CancellationToken token,Func<int,Vector2[],int,bool> validate,out float scale,out int packedSide,bool allowLargerCanvas,List<int> refusedFamilies=null,float? fixedScale=null,bool simplifyFootprints=true,bool alignFootprints=true)
+            CancellationToken token,Func<int,Vector2[],int,bool> validate,out float scale,out int packedSide,bool allowLargerCanvas,List<int> refusedFamilies=null,float? fixedScale=null,bool simplifyFootprints=true,bool alignFootprints=true,FootprintCache footprints=null)
         {
             scale=1;packedSide=side;
             if(!XatlasRepack.TryAcquireNativeSession()) return null;
@@ -132,8 +175,9 @@ namespace SashaRX.UnityMeshLab
             {
                 token.ThrowIfCancellationRequested();
                 RemeshNative.CheckAvailable();
-                var hulls=source.Select(p=>Footprint(p,token,simplifyFootprints,
-                    options.frozenShellCascade && !options.preserveProjectedOverlap)).ToArray();
+                bool concave = options.frozenShellCascade && !options.preserveProjectedOverlap;
+                var hulls=source.Select(p=>footprints == null ? Footprint(p,token,simplifyFootprints,concave)
+                    : footprints.Get(p,token,simplifyFootprints,concave)).ToArray();
                 if(hulls.Any(h=>h.Length<3)) return Refused("collapsed family envelope");
                 var points=new List<Vector2>();var indices=new List<uint>();var materials=new List<uint>();
                 var starts=new int[source.Length];
@@ -147,12 +191,15 @@ namespace SashaRX.UnityMeshLab
                     for(int k=0;k<hulls[g].Length;k+=3)
                     {indices.Add((uint)(starts[g]+k));indices.Add((uint)(starts[g]+k+1));indices.Add((uint)(starts[g]+k+2));materials.Add((uint)g);}
                 }
+                long discoveryStarted = options.performance == null ? 0 : System.Diagnostics.Stopwatch.GetTimestamp();
                 XatlasNative.xatlasCreate();
                 created=true;
                 var flat=points.SelectMany(p=>new[] {p.x,p.y}).ToArray();
-                if(XatlasNative.xatlasAddUvMesh(flat,(uint)points.Count,indices.ToArray(),(uint)indices.Count,
-                    materials.ToArray(),(uint)materials.Count)!=0) return Refused("native input");
+                var indexArray=indices.ToArray();var materialArray=materials.ToArray();
+                if(XatlasNative.xatlasAddUvMesh(flat,(uint)points.Count,indexArray,(uint)indices.Count,
+                    materialArray,(uint)materials.Count)!=0) return Refused("native input");
                 XatlasNative.xatlasComputeCharts();
+                options.performance?.Record("Native chart discovery", System.Diagnostics.Stopwatch.GetTimestamp() - discoveryStarted);
                 // Resolution chooses one common density. PreserveShape disables
                 // native per-axis extent rounding, which would stretch charts.
                 double area=0;
@@ -165,22 +212,27 @@ namespace SashaRX.UnityMeshLab
                 int estimate=fixedScale.HasValue?Mathf.NextPowerOfTwo((int)Math.Ceiling(Math.Sqrt(Math.Max(1,area/.75))*fixedScale.Value)):side;
                 bool bruteForce=(long)source.Length*estimate*estimate<=500000000L;
                 bool align=alignFootprints && options.frozenShellCascade && !options.preserveProjectedOverlap && options.rotateChartsToAxis;
-                XatlasNative.xatlasPackChartsPreserveShape(0,(uint)options.padding,fixedScale ?? 0,
-                    fixedScale.HasValue?0u:(uint)(side-options.padding*2),
-                    1,0,bruteForce?1:0,options.rotateCharts?1:0,align?1:0);
+                using (options.performance?.Measure("Native chart placement"))
+                    XatlasNative.xatlasPackChartsPreserveShape(0,(uint)options.padding,fixedScale ?? 0,
+                        fixedScale.HasValue?0u:(uint)(side-options.padding*2),
+                        1,0,bruteForce?1:0,options.rotateCharts?1:0,align?1:0);
                 token.ThrowIfCancellationRequested();
-                uint width=XatlasNative.xatlasGetAtlasWidth(),height=XatlasNative.xatlasGetAtlasHeight();
+                var replay=options.performance?.CaptureNativePacking(flat,indexArray,materialArray,(uint)options.padding,
+                    fixedScale??0,fixedScale.HasValue?0u:(uint)(side-options.padding*2),bruteForce,options.rotateCharts,align);
+                token.ThrowIfCancellationRequested();
+                uint width=replay?.width??XatlasNative.xatlasGetAtlasWidth(),height=replay?.height??XatlasNative.xatlasGetAtlasHeight();
+                uint chartCount=replay?.chartCount??XatlasNative.xatlasGetChartCount();
                 int extent=(int)Math.Max(width,height);
                 // Ordinary Repack retains native's actual rectangle. A forced
                 // power-of-two normalization adds a blank quadrant even after
                 // dense packing, and is not a second packing operation.
                 int canvas=Math.Max(side,options.frozenShellCascade && !options.preserveProjectedOverlap
                     ?extent:Mathf.NextPowerOfTwo(extent));
-                if(XatlasNative.xatlasGetChartCount()!=source.Length || canvas>(allowLargerCanvas?options.maxAtlasSize:side))
-                    return Refused($"canvas {width}x{height}, charts {XatlasNative.xatlasGetChartCount()}/{source.Length}");
-                int count=XatlasNative.xatlasGetOutputVertexCount(0);
-                var xrefs=new uint[count];var packed=new float[count*2];var charts=new uint[count];
-                if(XatlasNative.xatlasGetOutputVertexData(0,xrefs,packed,charts,count)!=count) return Refused("incomplete native output");
+                if(chartCount!=source.Length || canvas>(allowLargerCanvas?options.maxAtlasSize:side))
+                    return Refused($"canvas {width}x{height}, charts {chartCount}/{source.Length}");
+                int count=replay?.references.Length??XatlasNative.xatlasGetOutputVertexCount(0);
+                var xrefs=replay?.references??new uint[count];var packed=replay?.uv??new float[count*2];var charts=replay?.charts??new uint[count];
+                if(replay==null && XatlasNative.xatlasGetOutputVertexData(0,xrefs,packed,charts,count)!=count) return Refused("incomplete native output");
                 var mapped=new Vector2[points.Count];var seen=new bool[points.Count];
                 for(int v=0;v<count;++v)
                 {

@@ -14,6 +14,7 @@ namespace SashaRX.UnityMeshLab
         /// complete previously inherited regions.</summary>
         internal static async Task<Result> Build(Level[] levels, Options options, bool useAsync = false, CancellationToken token = default)
         {
+            using var buildTiming = options?.performance?.Measure("Reverse total");
             var result=await BuildRefined(levels,options,useAsync,token);
             try
             {
@@ -123,6 +124,15 @@ namespace SashaRX.UnityMeshLab
         }
 
         static Options TrialOptions(Options options, bool split) => new Options {
+            performance = options.performance,
+            cachePackingFootprints = options.cachePackingFootprints,
+            indexFootprintSearch = options.indexFootprintSearch,
+            cacheCollisionRows = options.cacheCollisionRows,
+            nativeFootprintSearch = options.nativeFootprintSearch,
+            reuseOccupancySnapshots = options.reuseOccupancySnapshots,
+            burstFootprintRaster = options.burstFootprintRaster,
+            footprintSearchApi = options.footprintSearchApi,
+            queryBackend=options.queryBackend, queryApi=options.queryApi,
             seedResolution = options.seedResolution, padding = options.padding, maxAtlasSize = options.maxAtlasSize,
             projectionReach = options.projectionReach, normalDot = options.normalDot, maxAnisotropy = options.maxAnisotropy,
             boundaryToleranceTexels = options.boundaryToleranceTexels, relativeStretchTolerance = options.relativeStretchTolerance,

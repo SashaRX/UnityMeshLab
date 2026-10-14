@@ -23,6 +23,7 @@ namespace SashaRX.UnityMeshLab
             ReverseUvTransfer.Options options, bool prepareSeed, float density, bool useAsync = false,
             CancellationToken token = default)
         {
+            using var workflowTiming = options.performance?.Measure("Reverse workflow total");
             if(options.regroupPreparedAtlas) return await BuildOne(sources,options,false,density,false,useAsync,token,false);
             if (!prepareSeed) return await BuildOne(sources,options,false,density,false,useAsync,token,false);
             // Seed charts have not yet been published. Choose their topology
@@ -53,11 +54,23 @@ namespace SashaRX.UnityMeshLab
             try
             {
                 if(UvProgress.IsActive) UvProgress.Report(.12f,compact?"Normalize seed and test compact packing":"Normalize and repair coarsest LOD");
-                state.inputs = ReverseUvInputs.Prepare(sources, token);
-                int size = prepareSeed && !options.regroupPreparedAtlas ? state.inputs.PrepareSeed(options.seedResolution, options.padding, density, token, cuts,
-                    options.rotateCharts, options.rotateChartsToAxis, compact, options.rebuildSeedWithUnity)
-                    : options.seedResolution;
+                using (options.performance?.Measure("Input cleanup"))
+                    state.inputs = ReverseUvInputs.Prepare(sources, token);
+                int size;
+                using (options.performance?.Measure("Seed preparation"))
+                    size = prepareSeed && !options.regroupPreparedAtlas ? state.inputs.PrepareSeed(options.seedResolution, options.padding, density, token, cuts,
+                        options.rotateCharts, options.rotateChartsToAxis, compact, options.rebuildSeedWithUnity)
+                        : options.seedResolution;
                 var trial = new ReverseUvTransfer.Options { seedResolution = size, padding = options.padding,
+                    performance = options.performance,
+                    cachePackingFootprints = options.cachePackingFootprints,
+                    indexFootprintSearch = options.indexFootprintSearch,
+                    cacheCollisionRows = options.cacheCollisionRows,
+                    nativeFootprintSearch = options.nativeFootprintSearch,
+                    reuseOccupancySnapshots = options.reuseOccupancySnapshots,
+                    burstFootprintRaster = options.burstFootprintRaster,
+                    footprintSearchApi = options.footprintSearchApi,
+                    queryBackend=options.queryBackend, queryApi=options.queryApi,
                     maxAtlasSize = options.maxAtlasSize, projectionReach = options.projectionReach, normalDot = options.normalDot,
                     maxAnisotropy = options.maxAnisotropy, preserveProjectedOverlap = options.preserveProjectedOverlap,
                     boundaryToleranceTexels = options.boundaryToleranceTexels, relativeStretchTolerance = options.relativeStretchTolerance,
@@ -74,6 +87,7 @@ namespace SashaRX.UnityMeshLab
                 state.result.report.seedPreparation=options.frozenShellCascade && !options.preserveProjectedOverlap?"frozen-forward-last-lod"
                     :options.regroupPreparedAtlas?"ordinary-transfer-charts":prepareSeed?(options.rebuildSeedWithUnity?"unity-unwrapping":"source-charts-local-repair"):"existing-uv2";
                 state.result.report.seedChartRotation=prepareSeed && compact && options.rotateCharts;
+                using var auditTiming = options.performance?.Measure("Final layout validation");
                 for(int level=0;level<state.result.meshes.Count;++level)
                     for(int node=0;node<state.result.meshes[level].Length;++node)
                     {

@@ -24,6 +24,16 @@
 
 static xatlas::Atlas* s_atlas = nullptr;
 
+// Diagnostic for the explicit private oneTBB experiment, zero in normal builds.
+EXPORT uint64_t meshLabParallelPackingBatches()
+{
+#ifdef MESHLAB_TBB_PACKING
+    return xatlas::internal::parallelPackingBatches.load();
+#else
+    return 0;
+#endif
+}
+
 static void validateUvFaces(xatlas::internal::UvMesh& mesh)
 {
     // Upstream uses an absolute FLT_EPSILON area cutoff. Density normalization

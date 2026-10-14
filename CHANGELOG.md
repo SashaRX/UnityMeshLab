@@ -3,6 +3,15 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-10-14
+
+### Changed
+
+- Reverse UV can select an optional Embree discovery backend for large centre-query batches. One donor tree discovers candidates across charts; original managed chart BVHs retain nearest-hit arithmetic, face ties, ambiguity checks and work budgets. Bounded query/result/scratch buffers and the donor scene are reused across face blocks and disposed at the end of projection. Missing native libraries, unsupported input and candidate overflow retain the existing managed path; the Embree runtime remains unpublished.
+- Reverse UV final packing reuses bounded immutable family footprints across density and rotation trials. Fallback placement scans compiled occupancy spans, reuses interval bounds and indexes repeated row collisions; a native occupancy search batches occupied candidates and yields for cancellation, with managed fallback for older plugins. Native xatlas checks occupancy and builds padded masks by 64-bit words. Candidate order, work budgets, padding pixels and UV audits remain unchanged. Optional benchmark timings and native replay separate preparation, correspondence, grouping, packing, placement search and validation.
+- Native occupancy rows are shared between rotations of one family and recreated after placement changes. An optional Burst/Collections Editor assembly computes raster spans in Strict mode, with scalar fallback for small or oversized masks. The private benchmark can bind the whole xatlas/search pipeline to one rebuilt library and verifies actual Burst execution without changing user EditorPrefs.
+- An opt-in oneTBB native experiment parallelizes large read-only chart searches with stable first-fit/tie reduction, bounded concurrency and in-flight pruning. Paired corpus replay retains exact UVs; whole Cafe reverse solves improve 36–41%, while Kitchen/Kamaz gains are small. The backend remains OFF in normal builds and requires private build output until native dependency publication is integrated.
+
 ## [Unreleased]
 
 - Isolated 3D previews disable material camera-directed vertex offsets per draw, so UV fill, topology highlights and picking stay on the displayed surface without changing scene materials.

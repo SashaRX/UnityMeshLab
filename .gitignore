@@ -54,3 +54,7 @@ commitmsg.txt
 
 # Tools~/compile_check.py build directory
 .compile-check/
+
+# Private chat attachments and Python bytecode
+.codex-remote-attachments/
+__pycache__/
