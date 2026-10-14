@@ -621,12 +621,14 @@ namespace SashaRX.UnityMeshLab
 
             /// <returns>Null when every chart must be scanned: no charts, an
             /// unbounded reach or non-finite chart bounds.</returns>
-            internal static ChartBoundsIndex Create(List<Chart> charts, float reach)
+            internal static ChartBoundsIndex Create(List<Chart> charts, float reach, CancellationToken token = default)
             {
+                token.ThrowIfCancellationRequested();
                 if (charts.Count == 0 || !Finite(reach) || !Finite(reach * reach)) return null;
                 var corners = new Vector3[charts.Count * 3];
                 for (int i = 0; i < charts.Count; ++i)
                 {
+                    if ((i & 4095) == 0) token.ThrowIfCancellationRequested();
                     var min = charts[i].bounds.min; var max = charts[i].bounds.max;
                     float scale = Math.Max(Math.Max(Math.Max(Math.Abs(min.x), Math.Abs(min.y)), Math.Abs(min.z)),
                         Math.Max(Math.Max(Math.Abs(max.x), Math.Abs(max.y)), Math.Abs(max.z)));
@@ -654,7 +656,7 @@ namespace SashaRX.UnityMeshLab
             using var projectionTiming = options.performance?.Measure("Face projection", targets[0].lod);
             long candidates = 0, footprintTicks = 0, footprintCalls = 0;
             using var batch=new ProjectionBatch(charts,options,token);
-            var chartIndex = ChartBoundsIndex.Create(charts, options.projectionReach);
+            var chartIndex = ChartBoundsIndex.Create(charts, options.projectionReach, token);
             foreach (var target in targets)
                 for (int f = 0; f < target.faces.Length; ++f)
                 {
