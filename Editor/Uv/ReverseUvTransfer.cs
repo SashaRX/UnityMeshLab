@@ -775,7 +775,10 @@ namespace SashaRX.UnityMeshLab
                 index.CollectOverlapping(new Vector3(min.x, min.y, 0), new Vector3(max.x, max.y, 0), candidates);
                 candidates.Sort();
                 foreach (int f in candidates)
+                {
+                    token.ThrowIfCancellationRequested();
                     if (parent.layers[f] == layer) covered += ClippedCoverage(parent, f, triangle, min, max);
+                }
             }
             else
                 for (int f = 0; f < faceCount; ++f)
