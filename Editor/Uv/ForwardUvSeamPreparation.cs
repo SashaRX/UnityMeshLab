@@ -129,6 +129,15 @@ namespace SashaRX.UnityMeshLab
             internal List<int> validFaces;
             internal Surface projected;
             internal long queries;
+            DonorSeamIndex seamIndex;
+
+            // Built on first use, inside the first pass's projection work.
+            internal DonorSeamIndex SeamIndex(Options options,CancellationToken token)
+            {
+                if (seamIndex==null)
+                    using (options.performance?.Accumulated("Projection donor seam index")) seamIndex=DonorSeamIndex.Build(donor,token);
+                return seamIndex;
+            }
 
             internal void Prepare(Mesh source,Mesh target,int resolution,Matrix4x4 renderedFrame,CancellationToken token)
             {
@@ -232,7 +241,7 @@ namespace SashaRX.UnityMeshLab
             {
                 if (pass.projected==null) await RunProjection(t=>pass.ProjectInitial(options,t),useAsync,token);
                 targets=new[] {pass.CopyProjected()};
-                await RunProjection(t=>ProjectAfterInitial(pass.donor,targets,pass.charts,options,pass.queries,t),useAsync,token);
+                await RunProjection(t=>ProjectAfterInitial(pass.donor,targets,pass.charts,options,pass.queries,t,pass.SeamIndex(options,t)),useAsync,token);
             }
             var surface=targets[0];
             if (!surface.faces.Any(f=>f.inherited)) return (null,null);

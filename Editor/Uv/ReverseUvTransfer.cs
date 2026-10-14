@@ -588,7 +588,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         static void ProjectAfterInitial(Surface[] donor, Surface[] targets, List<Chart> charts, Options options,
-            long queries, CancellationToken token)
+            long queries, CancellationToken token, DonorSeamIndex seamIndex = null)
         {
             var performance = options.performance;
             foreach(var target in targets)
@@ -599,13 +599,54 @@ namespace SashaRX.UnityMeshLab
             if (options.splitDonorSeams)
             {
                 foreach (var s in targets) foreach (var face in s.faces) face.protectedInheritance |= face.inherited;
-                using (performance?.Accumulated("Projection donor seam refinement")) RefineAtDonorSeams(donor, targets, options, token);
+                using (performance?.Accumulated("Projection donor seam refinement")) RefineAtDonorSeams(donor, targets, options, token, seamIndex);
                 if (targets.Any(s => s.sourceBarycentrics != null))
                     using (performance?.Accumulated("Projection refined faces"))
                         ProjectFaces(donor, targets.Where(s => s.sourceBarycentrics != null).ToArray(), charts, options, ref queries, token);
             }
             using (performance?.Accumulated("Projection corner snapping")) SnapContinuousCorners(targets, options);
             using (performance?.Accumulated("Projection overlap resolution")) ResolveOverlaps(targets, options, token);
+        }
+
+        /// <summary>Ordered superset of the charts whose bounds lie within reach of a
+        /// point. Each chart is a degenerate triangle spanning its bounds plus a
+        /// margin far above Float32 rounding of the distance test. Callers still
+        /// apply that exact test to every candidate, in chart order, so the
+        /// accepted charts and their order equal a scan of every chart.</summary>
+        internal sealed class ChartBoundsIndex
+        {
+            readonly TriangleBvh bvh;
+            readonly List<int> nearby = new List<int>();
+            ChartBoundsIndex(TriangleBvh bvh) { this.bvh = bvh; }
+
+            static bool Finite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
+
+            /// <returns>Null when every chart must be scanned: no charts, an
+            /// unbounded reach or non-finite chart bounds.</returns>
+            internal static ChartBoundsIndex Build(List<Chart> charts, float reach)
+            {
+                if (charts.Count == 0 || !Finite(reach) || !Finite(reach * reach)) return null;
+                var corners = new Vector3[charts.Count * 3];
+                for (int i = 0; i < charts.Count; ++i)
+                {
+                    var min = charts[i].bounds.min; var max = charts[i].bounds.max;
+                    float scale = Math.Max(Math.Max(Math.Max(Math.Abs(min.x), Math.Abs(min.y)), Math.Abs(min.z)),
+                        Math.Max(Math.Max(Math.Abs(max.x), Math.Abs(max.y)), Math.Abs(max.z)));
+                    if (!Finite(scale)) return null;
+                    var pad = Vector3.one * (reach * 1.01f + 1e-5f * (1 + scale));
+                    corners[i * 3] = min - pad; corners[i * 3 + 1] = corners[i * 3 + 2] = max + pad;
+                }
+                return new ChartBoundsIndex(new TriangleBvh(corners, Enumerable.Range(0, corners.Length).ToArray()));
+            }
+
+            /// <summary>Candidate chart indices in ascending order; reused per call.</summary>
+            internal List<int> Near(Vector3 point)
+            {
+                nearby.Clear();
+                bvh.CollectOverlapping(new Bounds(point, Vector3.zero), nearby);
+                nearby.Sort();
+                return nearby;
+            }
         }
 
         static void ProjectFaces(Surface[] donor, Surface[] targets, List<Chart> charts, Options options,
@@ -615,6 +656,7 @@ namespace SashaRX.UnityMeshLab
             using var projectionTiming = options.performance?.Measure("Face projection", targets[0].lod);
             long candidates = 0, footprintTicks = 0, footprintCalls = 0;
             using var batch=new ProjectionBatch(charts,options,token);
+            var chartIndex = ChartBoundsIndex.Build(charts, options.projectionReach);
             foreach (var target in targets)
                 for (int f = 0; f < target.faces.Length; ++f)
                 {
@@ -628,8 +670,11 @@ namespace SashaRX.UnityMeshLab
                     Chart winner = null;
                     var best = new TriangleBvh.HitResult { triangleIndex = -1, distSq = float.MaxValue };
                     bool ambiguous = false;
-                    foreach (var chart in charts)
+                    var nearby = chartIndex?.Near(center);
+                    int count = nearby?.Count ?? charts.Count;
+                    for (int n = 0; n < count; ++n)
                     {
+                        var chart = charts[nearby == null ? n : nearby[n]];
                         ++candidates;
                         if (chart.bounds.SqrDistance(center) > options.projectionReach * options.projectionReach) continue;
                         if (++queries > options.comparisonBudget) throw new InvalidOperationException("Reverse UV projection query budget exceeded.");
