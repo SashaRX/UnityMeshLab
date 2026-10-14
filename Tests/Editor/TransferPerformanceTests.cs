@@ -45,8 +45,11 @@ namespace SashaRX.UnityMeshLab.Tests
                     Assert.AreEqual(JsonUtility.ToJson(baseline.report),JsonUtility.ToJson(actual.report));
                     for(int l=0;l<levels.Length;++l)
                         CollectionAssert.AreEqual(TransferMeshSnapshot.Capture(baseline.meshes[l][0]),TransferMeshSnapshot.Capture(actual.meshes[l][0]));
-                    Assert.IsFalse(options.performance.samples.Any(s=>s.stage=="Burst footprint raster spans"),
-                        "Async final packing must retain scalar rasterization on its worker.");
+                    // Worker threads cannot schedule jobs; every qualifying mask
+                    // must still run through the Burst direct call there.
+                    long Count(string stage)=>options.performance.samples.Where(s=>s.stage==stage).Sum(s=>s.count);
+                    Assert.AreEqual(Count("Burst raster qualifying triangles"),Count("Burst footprint raster spans"),
+                        "Async final packing must execute qualifying masks through the Burst direct call: "+ReverseUvRasterAcceleration.LastRefusal);
                 }
                 CollectionAssert.AreEqual(before[0],TransferMeshSnapshot.Capture(source));
                 CollectionAssert.AreEqual(before[1],TransferMeshSnapshot.Capture(target));
@@ -55,7 +58,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        public void BackgroundPackingDeclinesBurstBeforeSchedulingAndPreservesMainThreadExecution()
+        public void BackgroundPackingUsesBurstDirectCallAndPreservesMainThreadExecution()
         {
             if(!ReverseUvRasterAcceleration.Available)
             {
@@ -64,16 +67,18 @@ namespace SashaRX.UnityMeshLab.Tests
             }
             using var compiler=ReverseUvRasterAcceleration.beginTestScope?.Invoke();
             var points=Enumerable.Range(0,32).SelectMany(_=>Rectangle(1,1,8,8)).ToArray();
+            // A worker never reaches the job API; it runs the direct call instead.
             var result=System.Threading.Tasks.Task.Run(()=>ReverseUvRasterAcceleration.TryRasterize(points,16,16,2,default))
                 .GetAwaiter().GetResult();
-            Assert.IsNull(result,"Background packing must use scalar rasterization.");
-            StringAssert.Contains("main thread",ReverseUvRasterAcceleration.LastRefusal);
+            Assert.NotNull(result,"Background packing must execute the Burst direct call: "+ReverseUvRasterAcceleration.LastRefusal);
+            Assert.IsTrue(result.burstExecuted);
             using var cancellation=new CancellationTokenSource();cancellation.Cancel();
             Assert.Throws<OperationCanceledException>(()=>System.Threading.Tasks.Task.Run(
                 ()=>ReverseUvRasterAcceleration.TryRasterize(points,16,16,2,cancellation.Token)).GetAwaiter().GetResult());
             var main=ReverseUvRasterAcceleration.TryRasterize(points,16,16,2,default);
-            Assert.NotNull(main,"Declining a background call must keep main-thread Burst available.");
+            Assert.NotNull(main,"A background call must keep main-thread Burst available.");
             Assert.IsTrue(main.burstExecuted);
+            CollectionAssert.AreEqual(main.spans,result.spans,"Direct-call spans must equal the job's.");
         }
 
         [Test]
@@ -124,6 +129,11 @@ namespace SashaRX.UnityMeshLab.Tests
                 var actual=ReverseUvRasterAcceleration.TryRasterize(points,w,h,radius,default);
                 Assert.NotNull(actual,"Configured provider must execute Burst: "+ReverseUvRasterAcceleration.LastRefusal);
                 Assert.IsTrue(actual.burstExecuted);CollectionAssert.AreEqual(expected,actual.spans,$"trial {trial}");
+                // Asynchronous Reverse packs on a worker, where jobs cannot be scheduled.
+                var worker=System.Threading.Tasks.Task.Run(()=>ReverseUvRasterAcceleration.TryRasterize(points,w,h,radius,default));
+                Assert.IsTrue(worker.Wait(TimeSpan.FromSeconds(60)),"Worker raster did not finish.");
+                Assert.NotNull(worker.Result,"Worker threads must execute the Burst direct call: "+ReverseUvRasterAcceleration.LastRefusal);
+                Assert.IsTrue(worker.Result.burstExecuted);CollectionAssert.AreEqual(expected,worker.Result.spans,$"worker trial {trial}");
             }
             using var cancellation=new CancellationTokenSource();cancellation.Cancel();
             Assert.Throws<OperationCanceledException>(()=>ReverseUvRasterAcceleration.TryRasterize(

@@ -1,5 +1,52 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Async Reverse: Burst footprint raster on worker threads — 2026-10-14
+
+Asynchronous Reverse (the editor UI path) runs final packing in `Task.Run`, where
+Unity jobs cannot be scheduled, so the Burst raster job is a main-thread-only
+path. On a worker the optional Burst assembly now runs the same per-triangle
+kernel through a Burst direct call in thread-pool chunks; each chunk writes its
+own output range and the caller still merges spans in triangle/row order. The
+job and the direct call share one scan-line function (`RasterMath.Row`) in
+Strict mode, and the BurstDiscard witness still refuses managed execution, so a
+direct call that is not compiled falls back to scalar rasterization. The kernel
+is compiled after editor load through `delayCall`. The Burst assembly now allows
+unsafe code (pinned arrays for the direct call). The synchronous benchmark does
+not exercise this path; `BurstRasterSpansMatchScalarEdgesIncludingClippingAndRoundoff`
+now also rasterizes every trial on a worker and requires compiled execution.
+
+### Measured on the synchronous and asynchronous paths
+
+The paired benchmark's `-AsyncReverse` runs Reverse exactly as the hub does:
+`ReverseUvJunctionTrial.Build(..., useAsync: true)`, final packing on workers.
+Batch tests have no running editor loop, so the test installs a main-thread
+queue context that the waiting test thread drains in order. Four arms on the
+current branch (shared seam passes included), three alternating rounds each:
+sync and async, each with `-RequireBurstRaster` and with `-DisableBurstRaster`.
+All 12 runs keep the 120 exports byte-identical. In both async and sync Burst
+arms, all 326,588 Kamaz and 57,151 Kitchen qualifying overlap triangles run
+compiled. In the async arms that is the direct call on workers.
+
+| Median (s) | Sync scalar | Sync Burst | Async scalar | Async Burst |
+|---|---:|---:|---:|---:|
+| Kamaz overlap: footprint raster masks | 1.283 | 1.042 | 1.254 | 0.934 |
+| Kamaz overlap: Reverse total | 34.03 | 34.92 | 32.99 | 33.41 |
+| Kitchen overlap: footprint raster masks | 0.225 | 0.188 | 0.222 | 0.203 |
+| Kitchen overlap: Reverse total | 6.14 | 5.91 | 6.13 | 6.71 |
+
+Burst consistently shortens the raster stage it accelerates. On Kamaz the
+reduction is 19% sync and 26% async; each Burst run is faster than every
+scalar run of the same path. The direct call on workers is at least as
+effective as the main-thread job. That stage is under 4% of Kamaz overlap
+reverse time, though. A saving of about 0.3 s is far below the 2–4 s
+run-to-run spread of the whole solve, so no Reverse total change is
+attributable to Burst. Even with Burst, raster masks take 0.9–1.0 s, of which
+the compiled span work and merge is 0.33–0.37 s. The rest is mask assembly
+outside the kernel, the remaining target in this stage. The async path itself
+adds no measurable overhead over sync (scalar arms 32.99 vs 34.03 s).
+Artifacts: `_results~/transfer-performance-20261014-eighth/burst/`
+(`summary-all.json`, `burst-medians.json`).
+
 ## Reverse final packing: concurrent family and atlas audits — 2026-10-14
 
 Packing and its audits dominate Kamaz reverse time. An exact cache of family
