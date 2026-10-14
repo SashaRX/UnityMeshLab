@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using UnityEngine;
@@ -10,8 +11,59 @@ namespace SashaRX.UnityMeshLab
     /// quality scores do not understand intentional overlap.</summary>
     internal static class ReverseUvAudit
     {
+        /// <summary>Audit reports a Verbose run keeps on disk; older ones in the same directory are deleted.</summary>
+        internal const int KeptReports = 20;
+
         [Serializable] internal sealed class NodeKey { public int lod, node; public string key; }
+
+        /// <summary>
+        /// One node's reverse ancestry as the sidecar and the viewer keep it (schema 3): per face,
+        /// the bits the overlap audit reads and the chart, packed, with the chain and the overlap
+        /// relations. The node's whole report, with its face decisions and source partition, is
+        /// the audit's (<see cref="Audit"/>), not the entry's.
+        /// </summary>
         [Serializable] internal sealed class ProvenanceEntry
+        {
+            internal const int CurrentSchema = 3;
+            /// <summary>Bits of a <see cref="faceFlags"/> value; the layer sits above <see cref="LayerShift"/>.</summary>
+            internal const int Inherited = 1, ProjectionSupport = 2, IntentionalOverlap = 4, LayerShift = 3;
+
+            public int schema = CurrentSchema, atlasSize, seedResolution;
+            public float texelsPerUnit;
+            /// <summary>The node: its LOD, its key (the mesh name) and the face count of its result mesh.</summary>
+            public int lod; public string key; public int faceCount;
+            /// <summary>Per face: <see cref="Inherited"/>, <see cref="ProjectionSupport"/>, <see cref="IntentionalOverlap"/> and the layer above <see cref="LayerShift"/>.</summary>
+            public int[] faceFlags;
+            /// <summary>Per face: the chart; an intentional overlap must share the chart of the face under it.</summary>
+            public int[] faceChart;
+            /// <summary>Pre-cleanup source faces the result does not contain.</summary>
+            public int[] removedSourceFaces;
+            public NodeKey[] chain;
+            public ReverseUvTransfer.OverlapRelation[] overlaps;
+
+            internal static int Pack(bool inherited, bool projectionSupport, bool intentionalOverlap, int layer)
+                => (inherited ? Inherited : 0) | (projectionSupport ? ProjectionSupport : 0) | (intentionalOverlap ? IntentionalOverlap : 0)
+                    | (Math.Max(0, layer) << LayerShift);
+            internal static int Pack(ReverseUvTransfer.Face face) => Pack(face.inherited, face.projectionSupport, face.intentionalOverlap, face.layer);
+
+            /// <summary>The entry of node <paramref name="key"/> at <paramref name="lod"/> with <paramref name="faces"/>; chain, overlaps and the atlas figures are the caller's.</summary>
+            internal static ProvenanceEntry Of(int lod, string key, ReverseUvTransfer.Face[] faces, int[] removedSourceFaces = null) => new ProvenanceEntry {
+                lod = lod, key = key, faceCount = faces.Length,
+                faceFlags = Array.ConvertAll(faces, Pack), faceChart = Array.ConvertAll(faces, face => face.chart),
+                removedSourceFaces = removedSourceFaces ?? Array.Empty<int>() };
+
+            /// <summary>True when the entry is complete and describes a mesh of <paramref name="faces"/> faces.</summary>
+            internal bool Describes(int faces) => schema == CurrentSchema && faceCount == faces && faceFlags != null && faceChart != null
+                && faceFlags.Length == faces && faceChart.Length == faces;
+            internal bool IsInherited(int face) => (faceFlags[face] & Inherited) != 0;
+            internal bool HasProjectionSupport(int face) => (faceFlags[face] & ProjectionSupport) != 0;
+            internal bool IsIntentionalOverlap(int face) => (faceFlags[face] & IntentionalOverlap) != 0;
+            internal int Layer(int face) => faceFlags[face] >> LayerShift;
+            internal int Chart(int face) => faceChart[face];
+        }
+
+        /// <summary>The shape of schema 2, as sidecars written before schema 3 hold it: the node's whole report. Read only.</summary>
+        [Serializable] internal sealed class LegacyProvenanceEntry
         {
             public int schema = 2, atlasSize, seedResolution;
             public float texelsPerUnit;
@@ -19,6 +71,32 @@ namespace SashaRX.UnityMeshLab
             public NodeKey[] chain;
             public ReverseUvTransfer.OverlapRelation[] overlaps;
         }
+
+        /// <summary>
+        /// The entry <paramref name="json"/> holds, or null when it holds none. A schema 2 record is
+        /// converted (<paramref name="upgraded"/>), so a sidecar written before schema 3 still restores.
+        /// </summary>
+        internal static ProvenanceEntry ParseProvenance(string json, out bool upgraded)
+        {
+            upgraded = false;
+            if (string.IsNullOrEmpty(json)) return null;
+            ProvenanceEntry entry;
+            try { entry = JsonUtility.FromJson<ProvenanceEntry>(json); }
+            catch (ArgumentException) { return null; }
+            if (entry == null) return null;
+            if (entry.schema == ProvenanceEntry.CurrentSchema) return entry;
+            if (entry.schema != 2) return null;
+            LegacyProvenanceEntry legacy;
+            try { legacy = JsonUtility.FromJson<LegacyProvenanceEntry>(json); }
+            catch (ArgumentException) { return null; }
+            if (legacy?.surface?.faces == null) return null;
+            var converted = ProvenanceEntry.Of(legacy.surface.lod, legacy.surface.key, legacy.surface.faces, legacy.surface.removedSourceFaces);
+            converted.atlasSize = legacy.atlasSize; converted.seedResolution = legacy.seedResolution; converted.texelsPerUnit = legacy.texelsPerUnit;
+            converted.chain = legacy.chain; converted.overlaps = legacy.overlaps;
+            upgraded = true;
+            return converted;
+        }
+        internal static ProvenanceEntry ParseProvenance(string json) => ParseProvenance(json, out _);
         [Serializable] internal sealed class Measurement
         {
             public int lod; public string key;
@@ -42,6 +120,7 @@ namespace SashaRX.UnityMeshLab
             public int splitSourceFaces, refusedCutFaces, groups, charts;
         }
 
+        /// <summary>One compact <see cref="ProvenanceEntry"/> per node of <paramref name="report"/>, as JSON, in node order.</summary>
         internal static string[] Provenance(ReverseUvTransfer.Report report)
         {
             var keys = new NodeKey[report.nodes.Count];
@@ -55,10 +134,14 @@ namespace SashaRX.UnityMeshLab
             }
             var json = new string[keys.Length];
             for (int i = 0; i < json.Length; ++i)
-                json[i] = JsonUtility.ToJson(new ProvenanceEntry { atlasSize = report.atlasSize,
-                    seedResolution = report.seedResolution, texelsPerUnit = report.texelsPerUnit,
-                    surface = report.nodes[i], chain = keys, overlaps = report.overlaps.Where(r => r.lod == keys[i].lod
-                        && (r.underMesh == keys[i].node || r.overMesh == keys[i].node)).ToArray() });
+            {
+                var surface = report.nodes[i];
+                var entry = ProvenanceEntry.Of(keys[i].lod, surface.key, surface.faces ?? Array.Empty<ReverseUvTransfer.Face>(), surface.removedSourceFaces);
+                entry.atlasSize = report.atlasSize; entry.seedResolution = report.seedResolution; entry.texelsPerUnit = report.texelsPerUnit;
+                entry.chain = keys;
+                entry.overlaps = report.overlaps.Where(r => r.lod == keys[i].lod && (r.underMesh == keys[i].node || r.overMesh == keys[i].node)).ToArray();
+                json[i] = JsonUtility.ToJson(entry);
+            }
             return json;
         }
 
@@ -72,7 +155,12 @@ namespace SashaRX.UnityMeshLab
             internal LevelAudit(int lod) => measurement = new LevelMeasurement { lod = lod, texelsPerUnitMin = double.MaxValue };
         }
 
-        internal static string Write(ReverseUvTransfer.Result result, ReverseUvTransfer.Level[] inputs)
+        /// <summary>
+        /// The audit of a result, and its publish gate: every node's final metric and source
+        /// partition and every level's overlap classification are checked, and a failure throws
+        /// before anything is published.
+        /// </summary>
+        internal static Audit Measure(ReverseUvTransfer.Result result, ReverseUvTransfer.Level[] inputs)
         {
             var audit = new Audit { report = result.report };
             int reportNode = 0;
@@ -84,12 +172,41 @@ namespace SashaRX.UnityMeshLab
                 AuditLevel(result, state);
                 audit.levels.Add(state.measurement);
             }
+            return audit;
+        }
+
+        /// <summary>
+        /// Writes <paramref name="audit"/> as pretty JSON under the benchmark output override or
+        /// <c>BenchmarkReports/ReverseUV</c> and returns the path. With <paramref name="keepLast"/>
+        /// above zero, the directory's older <c>reverse_*.json</c> files beyond that many are deleted.
+        /// </summary>
+        internal static string Save(Audit audit, int keepLast = 0)
+        {
             string directory = BenchmarkRecorder.OutputDirectoryOverride
                 ?? Path.Combine(Path.GetDirectoryName(Application.dataPath), "BenchmarkReports", "ReverseUV");
             Directory.CreateDirectory(directory);
-            string path = Path.Combine(directory, "reverse_" + DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff") + "_" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".json");
+            string path = Path.Combine(directory, "reverse_" + DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff", CultureInfo.InvariantCulture)
+                + "_" + Guid.NewGuid().ToString("N").Substring(0, 8) + ".json");
             File.WriteAllText(path, JsonUtility.ToJson(audit, true));
+            if (keepLast > 0) Prune(directory, keepLast);
             return path;
+        }
+
+        /// <summary>Measure, then Save: the benchmark's and the tests' one call.</summary>
+        internal static string Write(ReverseUvTransfer.Result result, ReverseUvTransfer.Level[] inputs) => Save(Measure(result, inputs));
+
+        // The file names sort by their UTC stamp; a file another process holds is left, and said so at Verbose.
+        static void Prune(string directory, int keepLast)
+        {
+            var stale = Directory.GetFiles(directory, "reverse_*.json").OrderByDescending(p => Path.GetFileName(p), StringComparer.Ordinal).Skip(keepLast);
+            foreach (string path in stale)
+            {
+                try { File.Delete(path); }
+                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+                {
+                    UvtLog.Verbose($"[Reverse UV] The older audit report '{Path.GetFileName(path)}' stays: {ex.Message}");
+                }
+            }
         }
 
         static void AuditNode(ReverseUvTransfer.Result result, ReverseUvTransfer.Level[] inputs, int level, int node,

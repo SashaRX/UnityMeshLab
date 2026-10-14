@@ -118,7 +118,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var allowed = LightmapUvQuality.Measure(new[] { under, over });
             Assert.AreEqual(2, allowed.allowedOverlapPairs); Assert.AreEqual(0, allowed.unexpectedOverlapPairs);
             Assert.AreEqual(100, allowed.score); Assert.AreEqual(1, allowed.fill);
-            over.provenance.surface.faces[0].intentionalOverlap = false;
+            over.provenance.faceFlags[0] = ReverseUvAudit.ProvenanceEntry.Pack(inherited: true, projectionSupport: false, intentionalOverlap: false, layer: 1);
             Assert.Greater(LightmapUvQuality.Measure(new[] { under, over }).unexpectedOverlapPairs, 0);
         }
 
@@ -128,21 +128,22 @@ namespace SashaRX.UnityMeshLab.Tests
                 new ReverseUvAudit.NodeKey { lod = 1, node = 1, key = over.key } };
             var relations = Enumerable.Range(0, 2).Select(f => new ReverseUvTransfer.OverlapRelation {
                 lod = 1, underMesh = 0, underFace = f, overMesh = 1, overFace = f }).ToArray();
-            under.provenance = new ReverseUvAudit.ProvenanceEntry { chain = chain, overlaps = relations,
-                surface = new ReverseUvTransfer.NodeReport { lod = 1, key = under.key,
-                    faces = Enumerable.Range(0, 2).Select(_ => new ReverseUvTransfer.Face { inherited = true, chart = 3 }).ToArray() } };
-            over.provenance = new ReverseUvAudit.ProvenanceEntry { chain = chain, overlaps = relations,
-                surface = new ReverseUvTransfer.NodeReport { lod = 1, key = over.key,
-                    faces = Enumerable.Range(0, 2).Select(_ => new ReverseUvTransfer.Face { inherited = true, chart = 3, layer = 1, intentionalOverlap = true }).ToArray() } };
+            under.provenance = ReverseUvAudit.ProvenanceEntry.Of(1, under.key,
+                Enumerable.Range(0, 2).Select(_ => new ReverseUvTransfer.Face { inherited = true, chart = 3 }).ToArray());
+            under.provenance.chain = chain; under.provenance.overlaps = relations;
+            over.provenance = ReverseUvAudit.ProvenanceEntry.Of(1, over.key,
+                Enumerable.Range(0, 2).Select(_ => new ReverseUvTransfer.Face { inherited = true, chart = 3, layer = 1, intentionalOverlap = true }).ToArray());
+            over.provenance.chain = chain; over.provenance.overlaps = relations;
         }
 
         [Test]
         public void StaleOrUnorderedProvenanceDoesNotWhitelistOverlap()
         {
             var under = Rectangle(); var over = Rectangle(); over.key = "detail"; SetProvenance(under, over);
-            over.provenance.surface.key = "wrong";
+            over.provenance.key = "wrong";
             Assert.AreEqual(2, LightmapUvQuality.Measure(new[] { under, over }).unexpectedOverlapPairs);
-            over.provenance.surface.key = over.key; over.provenance.surface.faces[0].layer = 0;
+            over.provenance.key = over.key;
+            over.provenance.faceFlags[0] = ReverseUvAudit.ProvenanceEntry.Pack(inherited: true, projectionSupport: false, intentionalOverlap: true, layer: 0);
             Assert.AreEqual(1, LightmapUvQuality.Measure(new[] { under, over }).unexpectedOverlapPairs);
         }
 
@@ -387,13 +388,13 @@ namespace SashaRX.UnityMeshLab.Tests
                 return new LightmapUvQuality.Part { positions = layout.positions, metricPositions = layout.metricPositions,
                     metricToWorld = layout.metricToWorld, uv = layout.uv, triangles = layout.indices,
                     sourceKey = layout.key, key = UvToolContext.ExtractGroupKey(layout.key),
-                    provenance = provenance.Single(p => p.surface.lod == layout.lod && p.surface.key == layout.key) };
+                    provenance = provenance.Single(p => p.lod == layout.lod && p.key == layout.key) };
             }).ToArray();
             string output = Environment.GetEnvironmentVariable("MESHLAB_QUALITY_SCORE_OUTPUT");
             Assert.IsNotEmpty(output); Directory.CreateDirectory(output);
             foreach (var level in audit.levels) {
-                var selected = parts.Where(p => p.provenance.surface.lod == level.lod).ToArray();
-                var r = LightmapUvQuality.Measure(selected, level.lod == 0 ? null : parts.Where(p => p.provenance.surface.lod == 0).ToArray());
+                var selected = parts.Where(p => p.provenance.lod == level.lod).ToArray();
+                var r = LightmapUvQuality.Measure(selected, level.lod == 0 ? null : parts.Where(p => p.provenance.lod == 0).ToArray());
                 Assert.IsTrue(r.complete); Assert.AreEqual(0, r.invalidFaces + r.collapsedFaces + r.unexpectedOverlapPairs);
                 Assert.AreEqual(level.allowedOverlapPairs, r.allowedOverlapPairs, "Must use the same ordered face ancestry, not a global overlap toggle.");
                 File.WriteAllText(Path.Combine(output, "Reverse_Table_" + overlap + "_LOD" + level.lod + ".json"), JsonUtility.ToJson(r, true));

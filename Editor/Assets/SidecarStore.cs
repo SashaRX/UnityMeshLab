@@ -375,13 +375,12 @@ namespace SashaRX.UnityMeshLab
             var current = entry.Baseline;
             if (!raw || !current) return;
             if (saved == null || saved.targetUvChannel != 1 || string.IsNullOrEmpty(saved.reverseTransferJson)) return;
-            ReverseUvAudit.ProvenanceEntry provenance;
-            try { provenance = JsonUtility.FromJson<ReverseUvAudit.ProvenanceEntry>(saved.reverseTransferJson); }
-            catch (ArgumentException) { return; }
-            if (provenance?.schema != 2 || provenance.surface?.key != raw.name || provenance.surface.faces == null
-                || saved.optimizedTriangles == null || provenance.surface.faces.Length != saved.optimizedTriangles.Length / 3
+            var provenance = ReverseUvAudit.ParseProvenance(saved.reverseTransferJson, out bool upgraded);
+            if (provenance == null || provenance.key != raw.name || saved.optimizedTriangles == null
+                || !provenance.Describes(saved.optimizedTriangles.Length / 3)
                 || provenance.atlasSize <= 0 || !ReverseTopologyMatches(current, saved, verifyLayout: true)) return;
-            entry.reverseTransferJson = saved.reverseTransferJson;
+            // A record in the earlier whole-report schema carries on in the compact one.
+            entry.reverseTransferJson = upgraded ? JsonUtility.ToJson(provenance) : saved.reverseTransferJson;
             entry.repackedAtlasWidth = entry.repackedAtlasHeight = (uint)provenance.atlasSize;
         }
 

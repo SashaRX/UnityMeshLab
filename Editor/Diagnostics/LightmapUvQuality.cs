@@ -203,7 +203,7 @@ namespace SashaRX.UnityMeshLab
                 if (!ValidProvenance(parts[i])) continue;
                 var p = parts[i].provenance; int node = Node(p);
                 if (node < 0) continue;
-                var key = (p.surface.lod, node);
+                var key = (p.lod, node);
                 if (nodes.ContainsKey(key)) duplicates.Add(key); else nodes.Add(key, i);
             }
             foreach (var key in duplicates) nodes.Remove(key); // Ambiguous identity must not authorize an overlap.
@@ -214,20 +214,19 @@ namespace SashaRX.UnityMeshLab
                     token.ThrowIfCancellationRequested();
                     if (relation == null || !nodes.TryGetValue((relation.lod, relation.underMesh), out int under)
                         || under != i || !nodes.TryGetValue((relation.lod, relation.overMesh), out int over)) continue;
-                    var lower = p.surface.faces; var upper = parts[over].provenance.surface.faces;
-                    if ((uint)relation.underFace >= (uint)lower.Length || (uint)relation.overFace >= (uint)upper.Length) continue;
-                    var a = lower[relation.underFace]; var b = upper[relation.overFace];
-                    if (a != null && b != null && (a.inherited || a.projectionSupport) && b.inherited && b.intentionalOverlap
-                        && a.layer < b.layer && a.chart == b.chart)
-                        allowed.Add((under, relation.underFace, over, relation.overFace));
+                    var upper = parts[over].provenance; int a = relation.underFace, b = relation.overFace;
+                    if ((uint)a >= (uint)p.faceCount || (uint)b >= (uint)upper.faceCount) continue;
+                    if ((p.IsInherited(a) || p.HasProjectionSupport(a)) && upper.IsInherited(b) && upper.IsIntentionalOverlap(b)
+                        && p.Layer(a) < upper.Layer(b) && p.Chart(a) == upper.Chart(b))
+                        allowed.Add((under, a, over, b));
                 }
             }
             return allowed;
         }
 
-        static bool ValidProvenance(Part p) => p.provenance?.schema == 2 && p.provenance.surface?.faces != null
-            && p.provenance.surface.faces.Length == p.triangles.Length / 3 && p.provenance.surface.key == (p.sourceKey ?? p.key);
-        static int Node(ReverseUvAudit.ProvenanceEntry p) => p.chain?.FirstOrDefault(n => n.lod == p.surface.lod && n.key == p.surface.key)?.node ?? -1;
+        static bool ValidProvenance(Part p) => p.provenance != null && p.provenance.Describes(p.triangles.Length / 3)
+            && p.provenance.key == (p.sourceKey ?? p.key);
+        static int Node(ReverseUvAudit.ProvenanceEntry p) => p.chain?.FirstOrDefault(n => n.lod == p.lod && n.key == p.key)?.node ?? -1;
 
         static void CompareLods(Report report, Part[] parts, Part[] reference, CancellationToken token)
         {
