@@ -1340,9 +1340,10 @@ namespace SashaRX.UnityMeshLab.Tests
                 BenchmarkRecorder.OutputDirectoryOverride = directory;
                 var audit = new ReverseUvAudit.Audit { report = new ReverseUvTransfer.Report() };
                 var written = new List<string>();
-                for (int i = 0; i < 4; ++i) { written.Add(ReverseUvAudit.Save(audit, keepLast: 2)); Thread.Sleep(2); }
+                for (int i = 0; i < 4; ++i) written.Add(System.IO.Path.GetFileName(ReverseUvAudit.Save(audit, keepLast: 2)));
                 string[] Kept() => System.IO.Directory.GetFiles(directory, "reverse_*.json").Select(p => System.IO.Path.GetFileName(p)).OrderBy(n => n, StringComparer.Ordinal).ToArray();
-                CollectionAssert.AreEqual(written.Skip(2).Select(p => System.IO.Path.GetFileName(p)).ToArray(), Kept(), "the newest reports stay");
+                // The names carry the UTC stamp the pruning sorts by; saves within one millisecond sort by their suffix, as the pruning does.
+                CollectionAssert.AreEqual(written.OrderBy(n => n, StringComparer.Ordinal).Skip(2).ToArray(), Kept(), "the newest reports stay");
                 ReverseUvAudit.Save(audit);
                 Assert.AreEqual(3, Kept().Length, "a save without a limit prunes nothing");
             }

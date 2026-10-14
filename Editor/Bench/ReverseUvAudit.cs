@@ -195,15 +195,17 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Measure, then Save: the benchmark's and the tests' one call.</summary>
         internal static string Write(ReverseUvTransfer.Result result, ReverseUvTransfer.Level[] inputs) => Save(Measure(result, inputs));
 
-        // The file names sort by their UTC stamp; a file another process holds is left.
+        // The file names sort by their UTC stamp; a file another process holds is left, and said so at Verbose.
         static void Prune(string directory, int keepLast)
         {
             var stale = Directory.GetFiles(directory, "reverse_*.json").OrderByDescending(p => Path.GetFileName(p), StringComparer.Ordinal).Skip(keepLast);
             foreach (string path in stale)
             {
                 try { File.Delete(path); }
-                catch (IOException) { }
-                catch (UnauthorizedAccessException) { }
+                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException)
+                {
+                    UvtLog.Verbose($"[Reverse UV] The older audit report '{Path.GetFileName(path)}' stays: {ex.Message}");
+                }
             }
         }
 
