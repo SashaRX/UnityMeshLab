@@ -737,7 +737,8 @@ namespace SashaRX.UnityMeshLab
             }
             catch (PostCommitException ex)
             {
-                Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath);
+                // The new file is installed: the marker stays so the import that follows skips
+                // the stale sidecar over the channels just written.
                 UvtLog.Error("[FBX Export] Isolated channel export: " + ex.Message + " The import of the written file did not run; fix the cause and save again.");
                 return false;
             }

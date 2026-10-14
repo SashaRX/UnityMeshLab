@@ -1088,8 +1088,14 @@ namespace SashaRX.UnityMeshLab
                 LodGroupUtility.ClearGeneratedLods(ctx);
 
             // UV2 is baked into the FBX AND kept in the sidecar (for re-application after
-            // third-party postprocessors like Bakery); the sidecar entries stay.
-            AssetDatabase.Refresh();
+            // third-party postprocessors like Bakery); the sidecar entries stay. A batch with a
+            // failed group imports only the files whose write and .meta restore succeeded: a file
+            // whose .meta could not be restored must not be imported before it is, or it takes a
+            // new GUID.
+            if (allGroupsSucceeded) AssetDatabase.Refresh();
+            else
+                foreach (string fbxPath in batch.ImportReadyFbxPaths)
+                    AssetDatabase.ImportAsset(fbxPath, ImportAssetOptions.ForceUpdate);
 
             // Unity recreates sub-asset meshes on reimport; old MeshFilter references go
             // Missing even when names did not change. Every renderer noted before the write
@@ -1127,6 +1133,8 @@ namespace SashaRX.UnityMeshLab
         internal sealed class HierarchyExportBatch
         {
             public readonly HashSet<string> OverwrittenFbxPaths = new HashSet<string>();
+            /// <summary>The overwritten files whose write and .meta restore both succeeded: the ones a partly failed batch imports.</summary>
+            public readonly HashSet<string> ImportReadyFbxPaths = new HashSet<string>();
             /// <summary>The renderers showing each overwritten file's meshes, noted before the write that recreates them.</summary>
             public readonly Dictionary<string, FbxExport.SceneMeshBindings> BindingsByFbx = new Dictionary<string, FbxExport.SceneMeshBindings>(StringComparer.OrdinalIgnoreCase);
             public readonly Dictionary<string, List<MeshUv2Entry>> TransientReplayEntriesByPath = new Dictionary<string, List<MeshUv2Entry>>();
@@ -1205,6 +1213,7 @@ namespace SashaRX.UnityMeshLab
             // A completed write needs replay even if restoring its importer metadata failed.
             if (overwriteSource && written) StoreHierarchyExportSidecars(sourceFbxPath, entries, true, batch);
             if (overwriteSource && !(written && !failed)) UnmarkSceneEditsSaved(sourceFbxPath);
+            if (overwriteSource && written && !failed) batch.ImportReadyFbxPaths.Add(sourceFbxPath);
             return written && !failed;
         }
 

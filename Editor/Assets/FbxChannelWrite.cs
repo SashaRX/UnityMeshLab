@@ -240,8 +240,10 @@ namespace SashaRX.UnityMeshLab
             if (validationOnly) return true;
             if (uv1Changed) Uv2AssetPostprocessor.fbxOverwritePaths.Add(targetFbxPath);
 
+            // A write that did not happen takes its marker back; a written file whose steps after the
+            // replacement failed keeps it, so the import that follows skips the stale sidecar.
             try { document.SaveAtomic(Path.GetFullPath(targetFbxPath), shadingSelection?.mediaOwnership); }
-            catch { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); throw; }
+            catch (Exception ex) when (!(ex is FbxExport.PostCommitException)) { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); throw; }
             string format = $"FBX {document.Major}.{document.Minor}, {FbxWriteSettings.FromProject().FormatName}";
             if (meshesWritten > 0)
                 UvtLog.Info($"[FBX Export] {meshesWritten} mesh(es), {cornersWritten} corner value(s) of {string.Join(", ", channelsWritten.OrderBy(c => c))} -> {targetFbxPath} " +
