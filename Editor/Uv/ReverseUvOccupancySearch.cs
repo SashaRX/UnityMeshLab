@@ -61,7 +61,7 @@ namespace SashaRX.UnityMeshLab
             readonly List<(int start,int end)>[] rows;
             IntPtr handle;
             Snapshot(Api api,IntPtr handle,List<(int start,int end)>[] rows) {this.api=api;this.handle=handle;this.rows=rows;}
-            internal static Snapshot TryCreate(List<(int start,int end)>[] rows,CancellationToken token,
+            internal static Snapshot TryCapture(List<(int start,int end)>[] rows,CancellationToken token,
                 TransferPerformanceProfile profile,Api testApi=null)
             {
                 token.ThrowIfCancellationRequested();var binding=testApi??plugin;

@@ -30,21 +30,21 @@ namespace SashaRX.UnityMeshLab.Tests
                     searchFromSnapshot=Function<ReverseUvOccupancySearch.SearchFromSnapshot>("meshLabFootprintSearchFromSnapshot"),
                     destroySnapshot=Function<ReverseUvOccupancySearch.Destroy>("meshLabFootprintSnapshotDestroy")};
                 packing=new XatlasNative.Api {
-                    xatlasCreate=Function<XatlasNative.Api.xatlasCreateDelegate>("xatlasCreate"),
-                    xatlasDestroy=Function<XatlasNative.Api.xatlasDestroyDelegate>("xatlasDestroy"),
-                    xatlasAddUvMesh=Function<XatlasNative.Api.xatlasAddUvMeshDelegate>("xatlasAddUvMesh"),
-                    xatlasAddMesh=Function<XatlasNative.Api.xatlasAddMeshDelegate>("xatlasAddMesh"),
-                    xatlasComputeCharts=Function<XatlasNative.Api.xatlasComputeChartsDelegate>("xatlasComputeCharts"),
-                    xatlasPackCharts=Function<XatlasNative.Api.xatlasPackChartsDelegate>("xatlasPackCharts"),
-                    xatlasGetMeshCount=Function<XatlasNative.Api.xatlasGetMeshCountDelegate>("xatlasGetMeshCount"),
-                    xatlasGetAtlasWidth=Function<XatlasNative.Api.xatlasGetAtlasWidthDelegate>("xatlasGetAtlasWidth"),
-                    xatlasGetAtlasHeight=Function<XatlasNative.Api.xatlasGetAtlasHeightDelegate>("xatlasGetAtlasHeight"),
-                    xatlasGetChartCount=Function<XatlasNative.Api.xatlasGetChartCountDelegate>("xatlasGetChartCount"),
-                    xatlasGetOutputVertexCount=Function<XatlasNative.Api.xatlasGetOutputVertexCountDelegate>("xatlasGetOutputVertexCount"),
-                    xatlasGetOutputIndexCount=Function<XatlasNative.Api.xatlasGetOutputIndexCountDelegate>("xatlasGetOutputIndexCount"),
-                    xatlasGetOutputVertexData=Function<XatlasNative.Api.xatlasGetOutputVertexDataDelegate>("xatlasGetOutputVertexData"),
-                    xatlasPackChartsPreserveShape=Function<XatlasNative.Api.xatlasPackChartsPreserveShapeDelegate>("xatlasPackChartsPreserveShape"),
-                    xatlasGetOutputIndices=Function<XatlasNative.Api.xatlasGetOutputIndicesDelegate>("xatlasGetOutputIndices")
+                    create=Function<XatlasNative.Api.xatlasCreateDelegate>("xatlasCreate"),
+                    destroy=Function<XatlasNative.Api.xatlasDestroyDelegate>("xatlasDestroy"),
+                    addUvMesh=Function<XatlasNative.Api.xatlasAddUvMeshDelegate>("xatlasAddUvMesh"),
+                    addMesh=Function<XatlasNative.Api.xatlasAddMeshDelegate>("xatlasAddMesh"),
+                    computeCharts=Function<XatlasNative.Api.xatlasComputeChartsDelegate>("xatlasComputeCharts"),
+                    packCharts=Function<XatlasNative.Api.xatlasPackChartsDelegate>("xatlasPackCharts"),
+                    getMeshCount=Function<XatlasNative.Api.xatlasGetMeshCountDelegate>("xatlasGetMeshCount"),
+                    getAtlasWidth=Function<XatlasNative.Api.xatlasGetAtlasWidthDelegate>("xatlasGetAtlasWidth"),
+                    getAtlasHeight=Function<XatlasNative.Api.xatlasGetAtlasHeightDelegate>("xatlasGetAtlasHeight"),
+                    getChartCount=Function<XatlasNative.Api.xatlasGetChartCountDelegate>("xatlasGetChartCount"),
+                    getOutputVertexCount=Function<XatlasNative.Api.xatlasGetOutputVertexCountDelegate>("xatlasGetOutputVertexCount"),
+                    getOutputIndexCount=Function<XatlasNative.Api.xatlasGetOutputIndexCountDelegate>("xatlasGetOutputIndexCount"),
+                    getOutputVertexData=Function<XatlasNative.Api.xatlasGetOutputVertexDataDelegate>("xatlasGetOutputVertexData"),
+                    packChartsPreserveShape=Function<XatlasNative.Api.xatlasPackChartsPreserveShapeDelegate>("xatlasPackChartsPreserveShape"),
+                    getOutputIndices=Function<XatlasNative.Api.xatlasGetOutputIndicesDelegate>("xatlasGetOutputIndices")
                 };
             }
             catch {Dispose();throw;}

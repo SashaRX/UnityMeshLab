@@ -208,7 +208,7 @@ namespace SashaRX.UnityMeshLab.Tests
             if(library==null) Assert.Ignore("Optional private native search build is not configured.");
             var rows=Enumerable.Range(0,8).Select(_=>new System.Collections.Generic.List<(int start,int end)>()).ToArray();
             rows[0].Add((0,3));
-            using var snapshot=ReverseUvOccupancySearch.Snapshot.TryCreate(rows,default,null,library.api);
+            using var snapshot=ReverseUvOccupancySearch.Snapshot.TryCapture(rows,default,null,library.api);
             Assert.NotNull(snapshot);
             using var first=snapshot.CreateSearch(2,1,new[] {(row:0,start:0,end:1)},rows,default);
             using var second=snapshot.CreateSearch(2,1,new[] {(row:0,start:1,end:2)},rows,default);
@@ -217,7 +217,7 @@ namespace SashaRX.UnityMeshLab.Tests
             long a=0,b=0;
             Assert.IsTrue(first.Next(int.MaxValue,ref a,default,out _));Assert.AreEqual(3,first.x);Assert.AreEqual(2,a);
             Assert.IsTrue(second.Next(int.MaxValue,ref b,default,out _));Assert.AreEqual(2,second.x);Assert.AreEqual(2,b);
-            using var fresh=ReverseUvOccupancySearch.Snapshot.TryCreate(rows,default,null,library.api);
+            using var fresh=ReverseUvOccupancySearch.Snapshot.TryCapture(rows,default,null,library.api);
             using var next=fresh.CreateSearch(2,1,new[] {(row:0,start:0,end:1)},rows,default);long c=0;
             Assert.IsTrue(next.Next(int.MaxValue,ref c,default,out _));Assert.AreEqual(0,next.x);Assert.AreEqual(1,c);
             snapshot.Dispose();snapshot.Dispose();
@@ -227,8 +227,8 @@ namespace SashaRX.UnityMeshLab.Tests
         [Test]
         public void NativePackingBindingsRestoreNestedScopesAndRefuseActiveAtlases()
         {
-            var first=new XatlasNative.Api {xatlasGetAtlasWidth=()=>123};
-            var second=new XatlasNative.Api {xatlasGetAtlasWidth=()=>456};
+            var first=new XatlasNative.Api {getAtlasWidth=()=>123};
+            var second=new XatlasNative.Api {getAtlasWidth=()=>456};
             using var outer=XatlasNative.UseForTests(first);Assert.AreEqual(123,XatlasNative.xatlasGetAtlasWidth());
             using(var inner=XatlasNative.UseForTests(second)) {Assert.AreEqual(456,XatlasNative.xatlasGetAtlasWidth());}
             Assert.AreEqual(123,XatlasNative.xatlasGetAtlasWidth());

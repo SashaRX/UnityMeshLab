@@ -592,7 +592,7 @@ namespace SashaRX.UnityMeshLab
             ReverseUvTransfer.Options options,CancellationToken token)
             =>options.nativeFootprintSearch && options.reuseOccupancySnapshots &&
                 variants.Any(m=>m.width<=rows.Length && m.height<=rows.Length)
-                ?ReverseUvOccupancySearch.Snapshot.TryCreate(rows,token,options.performance,options.footprintSearchApi):null;
+                ?ReverseUvOccupancySearch.Snapshot.TryCapture(rows,token,options.performance,options.footprintSearchApi):null;
 
         static int NextPosition(Mask mask,(int row,int start,int end)[] spans,List<(int start,int end)>[] rows,
             RowCursor[] cursors,int x,int y,ref long work,CollisionRowIndex rowIndex=null)

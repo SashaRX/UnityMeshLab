@@ -22,10 +22,10 @@ namespace SashaRX.UnityMeshLab
             internal Span[] spans;
             internal bool burstExecuted;
         }
-        internal static Func<Triangle[],int,int,double,CancellationToken,Output> evaluate;
+        internal static Func<Triangle[],int,int,double,CancellationToken,Output> evaluate {get;set;}
         internal static bool Available => evaluate!=null;
-        internal static string LastRefusal;
-        internal static Func<IDisposable> beginTestScope;
+        internal static string LastRefusal {get;set;}
+        internal static Func<IDisposable> beginTestScope {get;set;}
 
         internal static Output TryRasterize(Vector2[] local,int width,int height,double radius,CancellationToken token)
         {
