@@ -1089,9 +1089,9 @@ namespace SashaRX.UnityMeshLab
 
             // UV2 is baked into the FBX AND kept in the sidecar (for re-application after
             // third-party postprocessors like Bakery); the sidecar entries stay. A batch with a
-            // failed group imports only the files whose write and .meta restore succeeded: a file
-            // whose .meta could not be restored must not be imported before it is, or it takes a
-            // new GUID.
+            // failed group imports only the files whose write (and, for an overwrite, .meta
+            // restore) succeeded: a file whose .meta could not be restored must not be imported
+            // before it is, or it takes a new GUID.
             if (allGroupsSucceeded) AssetDatabase.Refresh();
             else
                 foreach (string fbxPath in batch.ImportReadyFbxPaths)
@@ -1100,10 +1100,12 @@ namespace SashaRX.UnityMeshLab
             // Unity recreates sub-asset meshes on reimport; old MeshFilter references go
             // Missing even when names did not change. Every renderer noted before the write
             // takes the recreated mesh of the name it showed; the by-name pass then covers the
-            // nodes the export renamed and what the bindings could not place.
-            if (overwriteSource && allGroupsSucceeded)
+            // nodes the export renamed and what the bindings could not place. Every overwritten
+            // file that was imported is relinked, in a partly failed batch too.
+            var imported = batch.ImportReadyFbxPaths.Where(batch.OverwrittenFbxPaths.Contains).ToList();
+            if (overwriteSource)
             {
-                foreach (string fbxPath in batch.OverwrittenFbxPaths)
+                foreach (string fbxPath in imported)
                 {
                     if (batch.BindingsByFbx.TryGetValue(fbxPath, out var bindings)) bindings.Relink(fbxPath);
                     if (ctx?.LodGroup == null) continue;
@@ -1114,9 +1116,9 @@ namespace SashaRX.UnityMeshLab
 
             // Stale "Lit" / "No Name" material remaps the importer created for collision-
             // only nodes must not survive an overwrite.
-            if (overwriteSource && allGroupsSucceeded)
+            if (overwriteSource)
             {
-                foreach (string fbxPath in batch.OverwrittenFbxPaths)
+                foreach (string fbxPath in imported)
                     FbxExport.RemoveDefaultMaterialRemaps(fbxPath, () => batch.ReArm(fbxPath));
             }
 
@@ -1133,7 +1135,7 @@ namespace SashaRX.UnityMeshLab
         internal sealed class HierarchyExportBatch
         {
             public readonly HashSet<string> OverwrittenFbxPaths = new HashSet<string>();
-            /// <summary>The overwritten files whose write and .meta restore both succeeded: the ones a partly failed batch imports.</summary>
+            /// <summary>The project files whose write (and, for an overwrite, .meta restore) succeeded: the ones a partly failed batch imports and relinks.</summary>
             public readonly HashSet<string> ImportReadyFbxPaths = new HashSet<string>();
             /// <summary>The renderers showing each overwritten file's meshes, noted before the write that recreates them.</summary>
             public readonly Dictionary<string, FbxExport.SceneMeshBindings> BindingsByFbx = new Dictionary<string, FbxExport.SceneMeshBindings>(StringComparer.OrdinalIgnoreCase);
@@ -1213,9 +1215,13 @@ namespace SashaRX.UnityMeshLab
             // A completed write needs replay even if restoring its importer metadata failed.
             if (overwriteSource && written) StoreHierarchyExportSidecars(sourceFbxPath, entries, true, batch);
             if (overwriteSource && !(written && !failed)) UnmarkSceneEditsSaved(sourceFbxPath);
-            if (overwriteSource && written && !failed) batch.ImportReadyFbxPaths.Add(sourceFbxPath);
+            // A new file outside the project is not an asset; nothing imports it.
+            if (written && !failed && IsProjectAssetPath(exportPath)) batch.ImportReadyFbxPaths.Add(exportPath);
             return written && !failed;
         }
+
+        static bool IsProjectAssetPath(string path) =>
+            path != null && (path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase) || path.StartsWith("Assets\\", StringComparison.OrdinalIgnoreCase));
 
         // A source is replaced in one rename once its new file is complete and checked
         // (FbxExport.WriteAtomic); a new file is written in place.

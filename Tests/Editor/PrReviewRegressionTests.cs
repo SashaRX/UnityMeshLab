@@ -409,6 +409,38 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 #endif
 
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        [Test]
+        public void ANewFbxWrittenUnderAssetsIsImportedByAPartlyFailedBatch()
+        {
+            // A non-overwrite export records the file it wrote when it is a project asset, so a batch
+            // another group failed imports it; a file written outside the project is no asset.
+            AssetDatabase.CreateFolder("Assets", "__MeshLabReviewTests");
+            string path = Scratch + "/Review.fbx", exported = Scratch + "/Review_uv2.fbx";
+            string outside = Path.Combine(Path.GetTempPath(), "MeshLab-export-review-" + Guid.NewGuid().ToString("N") + ".fbx");
+            var root = Root(); var mesh = Plane("Review");
+            root.AddComponent<MeshFilter>().sharedMesh = mesh; root.AddComponent<MeshRenderer>();
+            FbxExport.Write(path, root); AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
+            try {
+                var ctx = new UvToolContext { StandaloneMesh = true };
+                var operations = ctx.Assets;
+                operations.HierarchyWriter = (output, exportRoot) => FbxExport.Write(output, exportRoot);
+                var entries = new List<(MeshEntry, Mesh)> { (new MeshEntry { originalMesh = mesh, fbxMesh = mesh }, mesh) };
+                var batch = new MeshAssetOperations.HierarchyExportBatch();
+                Assert.IsTrue(operations.ExportHierarchyGroupPrepared(path, entries, false, batch, exported, null, Path.GetFullPath(path), "Backup"));
+                CollectionAssert.AreEquivalent(new[] { exported }, batch.ImportReadyFbxPaths, "the new project file is imported by a partly failed batch");
+                Assert.IsEmpty(batch.OverwrittenFbxPaths, "a new file is not an overwrite to relink");
+                batch = new MeshAssetOperations.HierarchyExportBatch();
+                Assert.IsTrue(operations.ExportHierarchyGroupPrepared(path, entries, false, batch, outside, null, Path.GetFullPath(path), "Backup"));
+                Assert.IsEmpty(batch.ImportReadyFbxPaths, "a file outside the project is not an asset to import");
+            }
+            finally {
+                if (File.Exists(outside)) File.Delete(outside);
+                AssetDatabase.DeleteAsset(exported);
+            }
+        }
+#endif
+
         static void ExpectError(string expected, Action action)
         {
             // The licence-free compile references omit LogAssert; Unity's real runner supplies it.
