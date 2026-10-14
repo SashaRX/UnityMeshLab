@@ -770,8 +770,8 @@ A Burst ablation on both paths keeps all 120 exports byte-identical in 12 runs.
 Burst shortens the Kamaz footprint raster stage from 1.28 s to 1.04 s on the
 sync path and from 1.25 s to 0.93 s on the async path, where it runs as a
 direct call. That stage is under 4% of the overlap solve, so the whole Reverse
-total shows no change beyond run-to-run spread. See EXPERIMENTS.md ("Burst
-raster on the synchronous and asynchronous paths — measured").
+total shows no change beyond run-to-run spread. See EXPERIMENTS.md ("Async
+Reverse: Burst footprint raster on worker threads").
 
 ### Forward stage profile
 
