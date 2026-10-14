@@ -8,12 +8,13 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <new>
 #include <random>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
-static void check(IppStatus status){if(status!=ippStsNoErr)throw std::runtime_error(ippGetStatusString(status));}
+static void check(IppStatus status){if(status<ippStsNoErr)throw std::runtime_error(ippGetStatusString(status));}
 static uint8_t reverse(uint8_t value){value=((value&0x55)<<1)|((value>>1)&0x55);value=((value&0x33)<<2)|((value>>2)&0x33);return uint8_t((value<<4)|(value>>4));}
 struct Morph
 {
