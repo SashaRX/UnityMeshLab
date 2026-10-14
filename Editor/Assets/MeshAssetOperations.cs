@@ -244,9 +244,12 @@ namespace SashaRX.UnityMeshLab
                 bool sourceSave = string.IsNullOrEmpty(output) || string.Equals(output, group.Key, StringComparison.OrdinalIgnoreCase);
                 var bindings = sourceSave ? FbxExport.CaptureSceneMeshReferences(group.Key,
                     collisionData == null ? copies : Array.Empty<MeshEntry>()) : null;
-                if (!ExportFbxIsolatedCore(group.Key, copies, intent, output, refreshContext: false, collisionData: collisionData)) continue;
-                written.Add(group.Key);
+                bool ok = ExportFbxIsolatedCore(group.Key, copies, intent, output, refreshContext: false, collisionData: collisionData);
+                // After a failure past the replacement an importer restore may have imported the
+                // written file: the renderers noted take its meshes, and keep theirs otherwise.
                 bindings?.Relink(group.Key);
+                if (!ok) continue;
+                written.Add(group.Key);
             }
             UvtLog.Info($"[FBX Export] Tool results: {written.Count}/{groups.Count} file(s) written.");
 #else
@@ -689,10 +692,13 @@ namespace SashaRX.UnityMeshLab
             }
             catch (FbxExport.PostCommitException ex)
             {
-                // The file is written: the sidecars take what is in it; the import, the relink
-                // and the scene follow the save that finishes the job.
+                // The file is written: the sidecars take what is in it; the scene follows the save
+                // that finishes the job. The clone path's importer restore may have imported the
+                // written file on the way out: the renderers noted take its meshes then, and keep
+                // theirs when no import ran.
                 AfterPostCommitFailure(sourceFbxPath, ex, sidecar);
                 SaveCollisionSidecar();
+                RelinkStandalone();
                 exported = false;
             }
             if (!exported) { standaloneRelinks.Clear(); return false; }
@@ -1208,6 +1214,10 @@ namespace SashaRX.UnityMeshLab
             var tempMeshes = new List<Mesh>();
             try
             {
+                // Every import below recreates the file's meshes, the importer preparation's included:
+                // the renderers showing them are noted first, by name, to take the recreated ones
+                // after the last one (FinishHierarchyExports).
+                if (overwriteSource) batch.BindingsByFbx[sourceFbxPath] = FbxExport.CaptureSceneMeshReferences(sourceFbxPath, entries.Select(p => p.entry));
                 if (overwriteSource)
                     Uv2AssetPostprocessor.PrepareImportSettings(sourceFbxPath, force: true, lockForFbxOverwrite: true);
                 importer = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
@@ -1226,9 +1236,6 @@ namespace SashaRX.UnityMeshLab
                 tempRoot.name = prefab.name;
                 FbxExport.PromoteRootMeshToLod0Child(tempRoot);
                 int collisions = PrepareExportHierarchy(tempRoot, sourceFbxPath, entries, tempMeshes, batch);
-                // The import that follows recreates the file's meshes: the renderers showing them
-                // are noted now, by name, to take the recreated ones (FinishHierarchyExports).
-                if (overwriteSource) batch.BindingsByFbx[sourceFbxPath] = FbxExport.CaptureSceneMeshReferences(sourceFbxPath, entries.Select(p => p.entry));
                 try { WriteHierarchyExport(exportPath, tempRoot, overwriteSource); }
                 catch (FbxExport.PostCommitException ex)
                 {
