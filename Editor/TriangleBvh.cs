@@ -64,11 +64,6 @@ namespace SashaRX.UnityMeshLab
         internal void CollectOverlapping(Bounds bounds, System.Collections.Generic.List<int> output)
             => CollectOverlapping(0, bounds.min, bounds.max, output);
 
-        /// <summary>Exact box corners, without the center/extent rounding of Bounds.
-        /// Inclusive: a triangle whose bounds touch the box is returned.</summary>
-        internal void CollectOverlapping(Vector3 min, Vector3 max, System.Collections.Generic.List<int> output)
-            => CollectOverlapping(0, min, max, output);
-
         void CollectOverlapping(int nodeIndex, Vector3 min, Vector3 max, System.Collections.Generic.List<int> output)
         {
             var node = nodes[nodeIndex];

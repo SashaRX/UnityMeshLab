@@ -132,36 +132,6 @@ namespace SashaRX.UnityMeshLab
             // Captured on the editor thread: Unity mesh accessors are main-thread only.
             Surface pristineTarget;
             DonorSeamIndex seamIndex;
-            int[] targetIndices, sourceFaceShells;
-            Vector3[] targetPositions;
-            bool legacyAudited;
-            HashSet<(int,int)> legacyContacts;
-
-            internal int[] TargetIndices(Mesh target) => targetIndices ??= target.triangles;
-            internal Vector3[] TargetPositions(Mesh target) => targetPositions ??= target.vertices;
-
-            internal int[] SourceFaceShells(Mesh source)
-            {
-                if (sourceFaceShells!=null) return sourceFaceShells;
-                var shells=UvShellExtractor.Extract(source.uv,source.triangles);
-                var faceShells=new int[source.triangles.Length/3];
-                foreach(var shell in shells) foreach(int f in shell.faceIndices) faceShells[f]=shell.shellId;
-                return sourceFaceShells=faceShells;
-            }
-
-            /// <summary>Contacts the legacy layout already has, as ordered face pairs;
-            /// null when that audit is incomplete. Every pass audits the same legacy UVs.</summary>
-            internal HashSet<(int,int)> LegacyContacts(Vector2[] legacyUv,int[] indices,CancellationToken token,TransferPerformanceProfile performance)
-            {
-                if (legacyAudited) return legacyContacts;
-                UvAtlasDiagnostics.Report report;
-                using(performance?.Accumulated("Forward seam contact audits"))
-                    report=UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {uv=legacyUv,indices=indices,
-                        charts=new int[legacyUv.Length]},token,comparisonBudget:2000000,collectConflicts:true);
-                legacyContacts=report.complete?new HashSet<(int,int)>(report.conflicts.Select(p=>(Math.Min(p.a,p.b),Math.Max(p.a,p.b)))):null;
-                legacyAudited=true;
-                return legacyContacts;
-            }
 
             // Built on first use, inside the first pass's projection work.
             internal DonorSeamIndex SeamIndex(Options options,CancellationToken token)
@@ -281,10 +251,12 @@ namespace SashaRX.UnityMeshLab
             }
             var surface=targets[0];
             if (!surface.faces.Any(f=>f.inherited)) return (null,null);
-            var originalIndices=pass.TargetIndices(target);
-            var originalPositions=pass.TargetPositions(target);
+            var originalIndices=target.triangles;
+            var originalPositions=target.vertices;
             var cornerUv=new Vector2[surface.pixels.Length];
-            var sourceFaceShells=pass.SourceFaceShells(source);
+            var sourceShells=UvShellExtractor.Extract(source.uv,source.triangles);
+            var sourceFaceShells=new int[source.triangles.Length/3];
+            foreach(var shell in sourceShells) foreach(int f in shell.faceIndices) sourceFaceShells[f]=shell.shellId;
             var cornerSources=new int[cornerUv.Length];
             var originalFaces=new int[surface.faces.Length];var projectedFaces=new HashSet<int>();
             for(int f=0;f<surface.faces.Length;++f)
@@ -321,8 +293,12 @@ namespace SashaRX.UnityMeshLab
                             +legacyUv[originalIndices[originalFace*3+2]]*bary.z;
                 }
             }
-            var allowed=pass.LegacyContacts(legacyUv,originalIndices,token,performance);
-            if (allowed==null) return (null,null);
+            UvAtlasDiagnostics.Report oldContacts;
+            using(performance?.Accumulated("Forward seam contact audits"))
+                oldContacts=UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {uv=legacyUv,indices=originalIndices,
+                    charts=new int[legacyUv.Length]},token,comparisonBudget:2000000,collectConflicts:true);
+            if (!oldContacts.complete) return (null,null);
+            var allowed=new HashSet<(int,int)>(oldContacts.conflicts.Select(p=>(Math.Min(p.a,p.b),Math.Max(p.a,p.b))));
             while(true)
             {
                 token.ThrowIfCancellationRequested();

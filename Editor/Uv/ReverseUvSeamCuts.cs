@@ -68,7 +68,6 @@ namespace SashaRX.UnityMeshLab
             // Forward recovery retains their old UVs and validates actual mapped
             // Float32 triangles, so the future-new-chart altitude bound does not apply.
             double minimumPixelAltitude=options.projectExistingAtlasOnly?0:options.seedResolution*1.1920928955078125e-7;
-            var planning = options.performance?.Accumulated("Seam cut planning");
             foreach (var s in targets)
                 for (int f = 0; f < s.faces.Length; ++f)
                 {
@@ -116,10 +115,8 @@ namespace SashaRX.UnityMeshLab
                     }
                     plan.split = plan.polygons.Count > 1;
                 }
-            planning?.Dispose();
             if (!plans.Any(p => p.split)) return;
             Dictionary<(Vector3, Vector3), SortedSet<double>> edgePoints;
-            var validation = options.performance?.Accumulated("Seam cut validation");
             while (true)
             {
                 token.ThrowIfCancellationRequested();
@@ -143,10 +140,8 @@ namespace SashaRX.UnityMeshLab
                         (plan.precisionRefusal??PlanEdges(plan).Where(reasons.ContainsKey).Select(edge=>reasons[edge]).FirstOrDefault());
                 }
             }
-            validation?.Dispose();
-            using (options.performance?.Accumulated("Seam cut application"))
-                foreach (var surface in targets)
-                    ApplyCuts(surface, plans.Where(p => p.surface == surface).ToArray(), edgePoints, token);
+            foreach (var surface in targets)
+                ApplyCuts(surface, plans.Where(p => p.surface == surface).ToArray(), edgePoints, token);
         }
 
         static IEnumerable<(Vector3, Vector3)> PlanEdges(CutFace plan)
