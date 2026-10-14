@@ -240,18 +240,21 @@ namespace SashaRX.UnityMeshLab
             if (ctx?.MeshEntries == null) return;
             foreach (var e in ctx.MeshEntries)
             {
-                if (e.meshFilter != null && e.fbxMesh != null) {
+                // A scene edit (MeshEntry.sceneEdit) is the renderer's mesh now: previews and
+                // pipeline copies swap back to it, not to the imported mesh, and it stays alive.
+                var baseline = e.sceneEdit && e.originalMesh != null ? e.originalMesh : e.fbxMesh;
+                if (e.meshFilter != null && baseline != null) {
                     var current = e.meshFilter.sharedMesh;
                     bool ownedSwap = current != null && (current == e.transferredMesh || current == e.repackedMesh ||
-                        e.originalMesh != e.fbxMesh && current == e.originalMesh);
+                        !e.sceneEdit && e.originalMesh != e.fbxMesh && current == e.originalMesh);
                     // A scene result assigned by a tool/Undo must survive context refresh and window close.
-                    if (ownedSwap) e.meshFilter.sharedMesh = e.fbxMesh;
+                    if (ownedSwap) e.meshFilter.sharedMesh = baseline;
                 }
                 if (e.transferredMesh != null) { DestroyImmediate(e.transferredMesh); e.transferredMesh = null; }
                 if (e.repackedMesh != null) { DestroyImmediate(e.repackedMesh); e.repackedMesh = null; }
                 e.repackedAtlasWidth = 0;
                 e.repackedAtlasHeight = 0;
-                if (e.originalMesh != null && e.originalMesh != e.fbxMesh) { DestroyImmediate(e.originalMesh); e.originalMesh = null; }
+                if (!e.sceneEdit && e.originalMesh != null && e.originalMesh != e.fbxMesh) { DestroyImmediate(e.originalMesh); e.originalMesh = null; }
             }
         }
 

@@ -78,6 +78,49 @@ namespace SashaRX.UnityMeshLab.Tests
             finally {LightmapSettings.lightmaps=previousLightmaps;}
         }
 
+        [Test]
+        public void ContextRefreshKeepsCleanupSceneEditsAndTheirFileReference([Values(false,true)] bool standalone)
+        {
+            // Cleanup's fixes clone the imported mesh onto the renderer with Undo. That clone is
+            // a scene edit, not a pipeline working copy: a refresh must neither swap the imported
+            // mesh back nor destroy the clone, and the rebuilt entry keeps the imported mesh as
+            // its file reference so a save can still write the edited faces into the FBX.
+            const string folder="Assets/__MeshLabSceneEditTests";
+            var group=Group(true,out var renderer,out _); var filter=renderer.GetComponent<MeshFilter>(); var imported=filter.sharedMesh;
+            if (!UnityEditor.AssetDatabase.IsValidFolder(folder)) UnityEditor.AssetDatabase.CreateFolder("Assets",folder.Substring("Assets/".Length));
+            UnityEditor.AssetDatabase.CreateAsset(imported,folder+"/imported.asset");
+            try {
+                var ctx=Open(group);
+                if (standalone) ctx.RefreshStandalone(renderer);
+                var entry=ctx.MeshEntries.Find(e=>e.renderer==renderer);
+                Assert.AreSame(imported,entry.fbxMesh);
+                var importedBytes=TransferMeshSnapshot.Capture(imported);
+                Assert.IsTrue(MeshHygieneUtility.PrepareWritable(entry,"Scene edit",out var edited));
+                owned.Add(edited);
+                Assert.AreNotSame(imported,edited); Assert.IsTrue(entry.sceneEdit);
+                edited.vertices=edited.vertices.Select(v=>v*2).ToArray(); edited.RecalculateBounds();
+                var editedBytes=TransferMeshSnapshot.Capture(edited);
+                Assert.AreSame(edited,filter.sharedMesh);
+
+                Call(hub,"RestoreWorkingMeshes");
+                Assert.AreSame(edited,filter.sharedMesh,"restoring working meshes keeps the scene edit on the renderer");
+                if (standalone) ctx.RefreshStandalone(renderer); else ctx.Refresh(group);
+                Assert.IsTrue(edited,"a context refresh must not destroy the scene edit");
+                Assert.AreSame(edited,filter.sharedMesh);
+                entry=ctx.MeshEntries.Find(e=>e.renderer==renderer);
+                Assert.AreSame(edited,entry.originalMesh);
+                Assert.AreSame(imported,entry.fbxMesh,"the rebuilt entry keeps the imported mesh as its file reference");
+                Assert.IsTrue(entry.sceneEdit);
+                CollectionAssert.AreEqual(editedBytes,TransferMeshSnapshot.Capture(edited));
+                CollectionAssert.AreEqual(importedBytes,TransferMeshSnapshot.Capture(imported));
+
+                // Another model, then back: the renderer still shows the edit.
+                ctx.Refresh(Group(true,out _,out _));
+                Assert.IsTrue(edited); Assert.AreSame(edited,filter.sharedMesh);
+            }
+            finally { UnityEditor.AssetDatabase.DeleteAsset(folder); }
+        }
+
         const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
         readonly List<Object> owned = new List<Object>();
         UvToolHub hub;

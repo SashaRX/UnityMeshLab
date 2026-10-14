@@ -303,6 +303,7 @@ namespace SashaRX.UnityMeshLab
         public void Refresh(LODGroup lodGroup)
         {
             BeforeRefresh?.Invoke();
+            var sceneEdits = SceneEdits();
             MeshEntries.Clear();
             HasRepack = HasTransfer = false;
             SrcCache.Clear();
@@ -334,13 +335,16 @@ namespace SashaRX.UnityMeshLab
                     var fbm = mf.sharedMesh;
                     var uv2Check = new List<Vector2>();
                     fbm.GetUVs(1, uv2Check);
+                    Mesh imported = null;
+                    bool sceneEdit = sceneEdits != null && sceneEdits.TryGetValue(mf, out imported);
                     MeshEntries.Add(new MeshEntry
                     {
                         lodIndex = li,
                         renderer = r,
                         meshFilter = mf,
                         originalMesh = fbm,
-                        fbxMesh = fbm,
+                        fbxMesh = sceneEdit ? imported : fbm,
+                        sceneEdit = sceneEdit,
                         hasExistingUv2 = uv2Check.Count > 0,
                         meshGroupKey = ExtractGroupKey(r.name)
                     });
@@ -377,12 +381,28 @@ namespace SashaRX.UnityMeshLab
             OnMeshEntriesChanged?.Invoke();
         }
 
+        // The scene edits among the current entries (MeshEntry.sceneEdit), by renderer: the
+        // renderer still shows the edited mesh, so the entry a refresh rebuilds for it keeps
+        // the imported mesh as its file reference instead of taking the edit for the import.
+        Dictionary<MeshFilter, Mesh> SceneEdits()
+        {
+            Dictionary<MeshFilter, Mesh> edits = null;
+            foreach (var e in MeshEntries)
+            {
+                if (!e.sceneEdit || e.meshFilter == null || e.fbxMesh == null || e.originalMesh == null
+                    || e.originalMesh == e.fbxMesh || e.meshFilter.sharedMesh != e.originalMesh) continue;
+                (edits ??= new Dictionary<MeshFilter, Mesh>())[e.meshFilter] = e.fbxMesh;
+            }
+            return edits;
+        }
+
         /// <summary>
         /// Populate context from a single MeshRenderer without LODGroup (view-only UV inspection).
         /// </summary>
         public void RefreshStandalone(MeshRenderer mr)
         {
             BeforeRefresh?.Invoke();
+            var sceneEdits = SceneEdits();
             MeshEntries.Clear();
             HasRepack = HasTransfer = false;
             SrcCache.Clear();
@@ -407,13 +427,16 @@ namespace SashaRX.UnityMeshLab
             var fbm = mf.sharedMesh;
             var uv2Check = new List<Vector2>();
             fbm.GetUVs(1, uv2Check);
+            Mesh imported = null;
+            bool sceneEdit = sceneEdits != null && sceneEdits.TryGetValue(mf, out imported);
             MeshEntries.Add(new MeshEntry
             {
                 lodIndex = 0,
                 renderer = mr,
                 meshFilter = mf,
                 originalMesh = fbm,
-                fbxMesh = fbm,
+                fbxMesh = sceneEdit ? imported : fbm,
+                sceneEdit = sceneEdit,
                 hasExistingUv2 = uv2Check.Count > 0,
                 meshGroupKey = ExtractGroupKey(mr.name)
             });

@@ -219,12 +219,17 @@ namespace SashaRX.UnityMeshLab
             {
                 var clone = UnityEngine.Object.Instantiate(source);
                 clone.name = source.name;
+                // The clone is the renderer's new mesh, not a pipeline working copy: Undo
+                // destroys it together with the swap, and a context refresh keeps it
+                // (MeshEntry.sceneEdit) instead of restoring the imported mesh over it.
+                Undo.RegisterCreatedObjectUndo(clone, undoLabel);
                 if (entry.meshFilter != null)
                 {
                     Undo.RecordObject(entry.meshFilter, undoLabel);
                     entry.meshFilter.sharedMesh = clone;
                 }
                 entry.originalMesh = clone;
+                entry.sceneEdit = true;
                 mesh = clone;
             }
             else
