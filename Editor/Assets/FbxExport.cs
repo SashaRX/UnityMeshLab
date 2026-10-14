@@ -1002,9 +1002,10 @@ namespace SashaRX.UnityMeshLab
                 throw;
             }
             // The target holds the new file from here on: nothing below can un-write it, so every
-            // step runs, and the first failure is thrown at the end as what it is.
-            string failure = null; Exception cause = null;
-            void Failed(string what, Exception ex) { if (cause == null) { failure = what; cause = ex; } UvtLog.Verbose(ex.ToString()); }
+            // step runs; every failure is named in the one exception thrown at the end (the first
+            // one as its cause), so the message carries each recovery the user has to do by hand.
+            var failures = new List<string>(); Exception cause = null;
+            void Failed(string what, Exception ex) { failures.Add(what); cause ??= ex; UvtLog.Verbose(ex.ToString()); }
             try
             {
                 // From this point the installed FBX owns its new external media,
@@ -1040,17 +1041,19 @@ namespace SashaRX.UnityMeshLab
                 }
             }
             // The previous file stays recoverable until the .meta restore and the housekeeping
-            // are done; a step that failed leaves it where it is, named in the message.
+            // are done; a step that failed leaves it where it is, named in the message. A copy that
+            // merely could not be deleted (a scanner holding it) is a warning: the written file and
+            // its .meta are whole, and the save goes on.
             if (fbxBak != null && File.Exists(fbxBak))
             {
-                if (!housekeepingDone) failure += $"; the previous file is kept at '{fbxBak}'";
+                if (!housekeepingDone) failures.Add($"the previous file is kept at '{fbxBak}'");
                 else
                 {
                     try { File.Delete(fbxBak); }
-                    catch (Exception ex) { Failed($"the previous file is left at '{fbxBak}': {ex.Message}", ex); }
+                    catch (Exception ex) { UvtLog.Warn($"[FBX Export] '{targetFbxPath}' was written; the previous file is left at '{fbxBak}': {ex.Message}"); }
                 }
             }
-            if (cause != null) throw new PostCommitException($"'{targetFbxPath}' was written, but {failure}.", cause);
+            if (cause != null) throw new PostCommitException($"'{targetFbxPath}' was written, but {string.Join("; ", failures)}.", cause);
         }
 
         // ─────────────────────────────────────────────────────────────────
