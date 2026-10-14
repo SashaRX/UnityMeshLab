@@ -619,6 +619,14 @@ namespace SashaRX.UnityMeshLab
             if (FbxChannelWrite.Handles(intent))
             {
                 try { return FbxChannelWrite.Write(sourceFbxPath, entries, intent, outputFbxPath, sceneRoot, shadingSelection: shadingSelection); }
+                catch (PostCommitException ex)
+                {
+                    // The file is written; the import and relink that follow it did not run, so the
+                    // caller keeps its working copies and the next import brings the file in.
+                    UvtLog.Error($"[FBX Export] {ex.Message} The import of the written file and the scene relink did not run; fix the cause and save again.");
+                    UvtLog.Verbose(ex.ToString());
+                    return false;
+                }
                 catch (Exception ex)
                 {
                     string outcome = shadingSelection?.allowSourceOverwrite == true ? "overwrite did not complete" : "was not written";
@@ -726,6 +734,12 @@ namespace SashaRX.UnityMeshLab
                 WriteAtomic(targetFbxPath, tempRoot, (intent & FbxExportIntent.Hierarchy) != 0);
                 UvtLog.Info($"[FBX Export] Isolated channels {intent} ({updated} updates) -> {targetFbxPath}");
                 exported = true;
+            }
+            catch (PostCommitException ex)
+            {
+                Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath);
+                UvtLog.Error("[FBX Export] Isolated channel export: " + ex.Message + " The import of the written file did not run; fix the cause and save again.");
+                return false;
             }
             catch (Exception ex)
             {
@@ -926,13 +940,26 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
+        /// Thrown by <see cref="ReplaceAtomically"/> for a failure after the target was replaced
+        /// (the committed hook, the `.meta` restore, the housekeeping): the file on disk is the new
+        /// one, the message says what is left to do by hand, and a caller must not report the
+        /// write as not done or restore an older file over it.
+        /// </summary>
+        internal sealed class PostCommitException : IOException
+        {
+            internal PostCommitException(string message, Exception inner) : base(message, inner) { }
+        }
+
+        /// <summary>
         /// Lets <paramref name="write"/> produce the file at `<target>.tmp`, verifies it (an FBX
         /// header, not just bytes), and replaces the target in one rename (a plain move for a
         /// new path), keeping the target's `.meta` as it was. If the writer throws or writes an
         /// empty or non-FBX file the target on disk is untouched, and this throws after removing
-        /// the temp file. Once the target is replaced the write has happened: a failure of what
-        /// follows (<paramref name="committed"/>, the `.meta` restore, the housekeeping) is
-        /// logged as a warning naming what is left to do by hand, and does not throw.
+        /// the temp file. Once the target is replaced the write has happened: what follows
+        /// (<paramref name="committed"/>, the `.meta` restore, the housekeeping) runs to the end
+        /// whatever fails, the previous file is kept beside the target while its `.meta` restore
+        /// or the housekeeping failed, and the first failure is then thrown as a
+        /// <see cref="PostCommitException"/> naming what is left to do by hand.
         /// </summary>
         internal static void ReplaceAtomically(string targetFbxPath, Action<string> write, Action committed = null)
         {
@@ -974,19 +1001,17 @@ namespace SashaRX.UnityMeshLab
                 catch { /* the leftover .tmp is cosmetic; the exception below is the real error */ }
                 throw;
             }
-            // The target holds the new file from here on: what follows cannot un-write it, so
-            // its failures are reported as what they are, with what is left to do by hand.
+            // The target holds the new file from here on: nothing below can un-write it, so every
+            // step runs, and the first failure is thrown at the end as what it is.
+            string failure = null; Exception cause = null;
+            void Failed(string what, Exception ex) { if (cause == null) { failure = what; cause = ex; } UvtLog.Verbose(ex.ToString()); }
             try
             {
                 // From this point the installed FBX owns its new external media,
                 // even if later metadata restoration or housekeeping fails.
                 committed?.Invoke();
             }
-            catch (Exception ex)
-            {
-                UvtLog.Warn($"[FBX Export] '{targetFbxPath}' was written; the step after the write failed: {ex.Message}");
-                UvtLog.Verbose(ex.ToString());
-            }
+            catch (Exception ex) { Failed($"the step after the write failed: {ex.Message}", ex); }
             bool housekeepingDone = true;
             try
             {
@@ -998,7 +1023,7 @@ namespace SashaRX.UnityMeshLab
             catch (Exception ex)
             {
                 housekeepingDone = false;
-                UvtLog.Warn($"[FBX Export] '{targetFbxPath}' was written; delete the leftover '{tmpAbsPath + MetaExtension}' by hand: {ex.Message}");
+                Failed($"delete the leftover '{tmpAbsPath + MetaExtension}' by hand: {ex.Message}", ex);
             }
             if (metaBackedUp && File.Exists(metaBak))
             {
@@ -1011,20 +1036,21 @@ namespace SashaRX.UnityMeshLab
                 {
                     // Without its .meta the asset would take a new GUID on import.
                     housekeepingDone = false;
-                    UvtLog.Warn($"[FBX Export] '{targetFbxPath}' was written, but its .meta could not be restored from '{metaBak}': {ex.Message}. Copy it back by hand before the next import so the asset keeps its GUID.");
+                    Failed($"its .meta could not be restored from '{metaBak}': {ex.Message}. Copy it back by hand before the next import so the asset keeps its GUID", ex);
                 }
             }
             // The previous file stays recoverable until the .meta restore and the housekeeping
-            // are done; a step that failed leaves it where it is, named in the warning.
+            // are done; a step that failed leaves it where it is, named in the message.
             if (fbxBak != null && File.Exists(fbxBak))
             {
-                if (!housekeepingDone) UvtLog.Warn($"[FBX Export] '{targetFbxPath}': the previous file is kept at '{fbxBak}' until the steps above are done by hand.");
+                if (!housekeepingDone) failure += $"; the previous file is kept at '{fbxBak}'";
                 else
                 {
                     try { File.Delete(fbxBak); }
-                    catch (Exception ex) { UvtLog.Warn($"[FBX Export] '{targetFbxPath}' was written; the previous file is left at '{fbxBak}': {ex.Message}"); }
+                    catch (Exception ex) { Failed($"the previous file is left at '{fbxBak}': {ex.Message}", ex); }
                 }
             }
+            if (cause != null) throw new PostCommitException($"'{targetFbxPath}' was written, but {failure}.", cause);
         }
 
         // ─────────────────────────────────────────────────────────────────
@@ -1716,6 +1742,7 @@ namespace SashaRX.UnityMeshLab
                         if (child.name != kvp.Key) continue;
                         Undo.RecordObject(child.gameObject, "Rename to match FBX");
                         child.name = kvp.Value;
+                        if (PrefabUtility.IsPartOfPrefabInstance(child.gameObject)) PrefabUtility.RecordPrefabInstancePropertyModifications(child.gameObject);
                         break;
                     }
                 }

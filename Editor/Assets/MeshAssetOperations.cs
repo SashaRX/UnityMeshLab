@@ -1182,7 +1182,12 @@ namespace SashaRX.UnityMeshLab
                 // The import that follows recreates the file's meshes: the renderers showing them
                 // are noted now, by name, to take the recreated ones (FinishHierarchyExports).
                 if (overwriteSource) batch.BindingsByFbx[sourceFbxPath] = FbxExport.CaptureSceneMeshReferences(sourceFbxPath, entries.Select(p => p.entry));
-                WriteHierarchyExport(exportPath, tempRoot, overwriteSource);
+                try { WriteHierarchyExport(exportPath, tempRoot, overwriteSource); }
+                catch (FbxExport.PostCommitException ex)
+                {
+                    // The file is written; the .meta backup restored below covers a failed .meta restore.
+                    UvtLog.Warn("[FBX Export] " + ex.Message);
+                }
                 written = true;
                 if (overwriteSource) batch.OverwrittenFbxPaths.Add(sourceFbxPath);
                 UvtLog.Info($"[FBX Export] Exported ({FbxWriteSettings.FromProject().FormatName}) {entries.Count + collisions} mesh(es) -> {exportPath}");

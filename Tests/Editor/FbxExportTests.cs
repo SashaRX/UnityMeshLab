@@ -397,10 +397,11 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        public void ReplaceAtomicallyReportsAFailureAfterTheCommitOnAWrittenFile()
+        public void ReplaceAtomicallyFinishesTheHousekeepingBeforeReportingAFailureAfterTheCommit()
         {
-            // Once the target is replaced the write has happened: a step after it that fails is a
-            // warning, the caller sees a written file, and the .meta is still restored.
+            // Once the target is replaced the write has happened: a step after it that fails is
+            // reported as a PostCommitException after the .meta is restored and the housekeeping
+            // is done, and the file on disk is the new one.
             string dir = Path.Combine(Path.GetTempPath(), "meshlab-replace-" + System.Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(dir);
             try
@@ -408,12 +409,13 @@ namespace SashaRX.UnityMeshLab.Tests
                 string target = Path.Combine(dir, "model.fbx");
                 File.WriteAllText(target, "; FBX 7.4.0 project file\noriginal");
                 File.WriteAllText(target + ".meta", "guid: 1");
-                Assert.DoesNotThrow(() => FbxExport.ReplaceAtomically(target, tmp => File.WriteAllText(tmp, "; FBX 7.4.0 project file\nreplaced"),
+                var error = Assert.Throws<FbxExport.PostCommitException>(() => FbxExport.ReplaceAtomically(target, tmp => File.WriteAllText(tmp, "; FBX 7.4.0 project file\nreplaced"),
                     () => throw new System.InvalidOperationException("the media step failed")));
+                StringAssert.Contains("was written", error.Message); StringAssert.Contains("the media step failed", error.Message);
                 Assert.AreEqual("; FBX 7.4.0 project file\nreplaced", File.ReadAllText(target));
-                Assert.AreEqual("guid: 1", File.ReadAllText(target + ".meta"));
+                Assert.AreEqual("guid: 1", File.ReadAllText(target + ".meta"), "the .meta is restored before the failure is reported");
                 Assert.IsFalse(File.Exists(target + ".tmp"));
-                Assert.IsEmpty(Directory.GetFiles(dir, "*.bak"));
+                Assert.IsEmpty(Directory.GetFiles(dir, "*.bak"), "the housekeeping succeeded, so the previous file is not kept");
             }
             finally { Directory.Delete(dir, true); }
         }
