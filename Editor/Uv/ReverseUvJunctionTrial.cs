@@ -69,6 +69,7 @@ namespace SashaRX.UnityMeshLab
                     nativeFootprintSearch = options.nativeFootprintSearch,
                     reuseOccupancySnapshots = options.reuseOccupancySnapshots,
                     burstFootprintRaster = options.burstFootprintRaster,
+                    parallelFamilyValidation = options.parallelFamilyValidation,
                     footprintSearchApi = options.footprintSearchApi,
                     queryBackend=options.queryBackend, queryApi=options.queryApi,
                     maxAtlasSize = options.maxAtlasSize, projectionReach = options.projectionReach, normalDot = options.normalDot,

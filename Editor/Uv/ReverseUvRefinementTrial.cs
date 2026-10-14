@@ -131,6 +131,7 @@ namespace SashaRX.UnityMeshLab
             nativeFootprintSearch = options.nativeFootprintSearch,
             reuseOccupancySnapshots = options.reuseOccupancySnapshots,
             burstFootprintRaster = options.burstFootprintRaster,
+            parallelFamilyValidation = options.parallelFamilyValidation,
             footprintSearchApi = options.footprintSearchApi,
             queryBackend=options.queryBackend, queryApi=options.queryApi,
             seedResolution = options.seedResolution, padding = options.padding, maxAtlasSize = options.maxAtlasSize,

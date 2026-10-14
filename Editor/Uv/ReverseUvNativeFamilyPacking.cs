@@ -257,6 +257,11 @@ namespace SashaRX.UnityMeshLab
                 if(fixedScale.HasValue) density=fixedScale.Value;
                 if(double.IsNaN(density) || double.IsInfinity(density) || density<=0) return Refused("invalid common scale");
                 var output=new Vector2[source.Length][];
+                // Shape and transform recovery stay in family order: the first
+                // family that changes shape refuses the trial, and only the
+                // families before it are validated, as in one sequential pass.
+                var place=new Func<double,double,Vector2[]>[source.Length];
+                int shaped=source.Length;string shapeRefusal=null;
                 for(int g=0;g<source.Length;++g)
                 {
                     token.ThrowIfCancellationRequested();int first=starts[g];
@@ -271,15 +276,39 @@ namespace SashaRX.UnityMeshLab
                         :Transform(p,turn,density,mapped[first]);
                     double shapeError=Math.Sqrt(Enumerable.Range(0,hulls[g].Length).Max(k=>(MoveProxy(hulls[g][k]-hulls[g][0])
                         -mapped[first+k]).sqrMagnitude));
-                    if(shapeError>.01) return Refused($"family {g} changes shape ({shapeError:G6} texels, scale {density:G6}, orientation {(align?BestTurn():turn)})");
-                    Vector2[] Place(double x,double y)=>source[g].Select(p=>align
-                        ?TransformAligned((double)p.x-origin.x-hulls[g][0].x,(double)p.y-origin.y-hulls[g][0].y,
+                    if(shapeError>.01)
+                    {
+                        shaped=g;shapeRefusal=$"family {g} changes shape ({shapeError:G6} texels, scale {density:G6}, orientation {(align?BestTurn():turn)})";
+                        break;
+                    }
+                    int family=g;var hull=hulls[g][0];
+                    place[g]=(x,y)=>source[family].Select(p=>align
+                        ?TransformAligned((double)p.x-origin.x-hull.x,(double)p.y-origin.y-hull.y,
                             rotation,density,mapped[first],x,y)
-                        :TransformFrom(p,origin,hulls[g][0],turn,density,mapped[first],x,y)).ToArray();
-                    bool Fits(Vector2[] p)=>p.All(v=>v.x>=0 && v.y>=0 && v.x<=canvas && v.y<=canvas)
-                        && (validate==null || validate(g,p,canvas));
-                    output[g]=Place(0,0);
-                    if(Fits(output[g])) continue;
+                        :TransformFrom(p,origin,hull,turn,density,mapped[first],x,y)).ToArray();
+                }
+                bool Fits(int g,Vector2[] p)=>p.All(v=>v.x>=0 && v.y>=0 && v.x<=canvas && v.y<=canvas)
+                    && (validate==null || validate(g,p,canvas));
+                // Each family's validation reads only its own placement, so the
+                // initial placements are validated concurrently and consumed in
+                // family order below. Without a refusal list a failed family
+                // ends the trial, so later families are validated only on demand.
+                bool speculative=options.parallelFamilyValidation && refusedFamilies!=null && shaped>1;
+                var fits=new bool[shaped];var failures=new Exception[shaped];
+                if(speculative)
+                    using(options.performance?.Measure("Native family parallel validation"))
+                        System.Threading.Tasks.Parallel.For(0,shaped,g=>{
+                            try {token.ThrowIfCancellationRequested();output[g]=place[g](0,0);fits[g]=Fits(g,output[g]);}
+                            catch(Exception error) {failures[g]=error;}
+                        });
+                for(int g=0;g<shaped;++g)
+                {
+                    token.ThrowIfCancellationRequested();
+                    // A failure surfaces where the sequential pass would raise it:
+                    // after every earlier family, including its rescue phases.
+                    if(failures[g]!=null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failures[g]).Throw();
+                    if(!speculative) {output[g]=place[g](0,0);fits[g]=Fits(g,output[g]);}
+                    if(fits[g]) continue;
                     // Evaluate sub-ULP phases before rounding, rather than add
                     // an already rounded Float32 offset. This is one common
                     // translation of the complete family, below 0.01 texel,
@@ -291,8 +320,8 @@ namespace SashaRX.UnityMeshLab
                     {
                         // Phase (0,0) is the placement that has just failed.
                         if(x==0 && y==0) continue;
-                        token.ThrowIfCancellationRequested();var candidate=Place(x*spacing/8,y*spacing/8);
-                        if(!Fits(candidate)) continue;
+                        token.ThrowIfCancellationRequested();var candidate=place[g](x*spacing/8,y*spacing/8);
+                        if(!Fits(g,candidate)) continue;
                         output[g]=candidate;rescued=true;break;
                     }
                     if(!rescued)
@@ -301,6 +330,7 @@ namespace SashaRX.UnityMeshLab
                         refusedFamilies.Add(g);
                     }
                 }
+                if(shapeRefusal!=null) return Refused(shapeRefusal);
                 scale=(float)density;packedSide=canvas;return output;
             }
             catch(DllNotFoundException) {return null;}

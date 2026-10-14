@@ -37,6 +37,8 @@ namespace SashaRX.UnityMeshLab
             internal bool nativeFootprintSearch = true;
             internal bool reuseOccupancySnapshots = true;
             internal bool burstFootprintRaster = true;
+            // Opt-in: exact, but no corpus gain and slower on Kamaz exclusive (EXPERIMENTS.md).
+            internal bool parallelFamilyValidation = false;
             internal ReverseUvOccupancySearch.Api footprintSearchApi;
             internal ReverseUvQueryBackend.Mode queryBackend=ReverseUvQueryBackend.Mode.Auto;
             internal ReverseUvQueryBackend.Api queryApi;
