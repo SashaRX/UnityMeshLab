@@ -45,6 +45,20 @@ per-face provenance from `report.json`. Analysis scripts and atlas renders:
   LOD1 has 560 instead of 708 islands, alignment 83.3 → 83.8%, but Fill atlas
   reaches only 96 instead of 128 tex/m. Kamaz fill drops 0.5%. The cuts buy
   density, not alignment; Kitchen's remaining misalignment has another cause.
+- **Rejected: rigid merge of spanned coarser groups.** On Kitchen, 387 of 426
+  LOD0 islands that have extension faces lie over several LOD1 groups (Kamaz:
+  243 of 405). 2289 of 3148 Kitchen extension faces sit over a different LOD1
+  group than their island's anchors. The experiment moved such a group B into
+  the frame of the island's group A, by the similarity fitting B's projected
+  coordinates to the island, and restored the island's ancestry over B. It
+  required the whole-island fit tolerance, a density scale within 5% and no
+  same-LOD contact. Kitchen LOD0 merged 8 of 1295 pairs; 674 were refused for
+  scale, because exclusive normalizes density per island, and 613 for
+  contact, because B's LOD1 layout does not fit the finer island's shape. Kamaz
+  merged 55 of 310. Alignment did not change (Kitchen 83.3%, Kamaz LOD2
+  90.8 → 91.0%), and the larger Kitchen families lowered Fill atlas from 128
+  to 96 tex/m. Reverted. Finer islands that keep their own seams cannot follow
+  a coarser LOD cut at different seams by rigid placement alone.
 - **Remaining causes, not fixed here.**
   - Overlap mode repacks intact forward islands apart from their coarser
     counterparts. Kitchen LOD1 alignment is 74% (forward 87%).
