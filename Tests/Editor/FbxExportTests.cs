@@ -361,6 +361,91 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { AssetDatabase.DeleteAsset(folder); }
         }
 
+        [TestCase("Kaydara FBX Binary  ", true)]
+        [TestCase("; FBX 7.4.0 project file\n", true)]
+        [TestCase("not an fbx at all", false)]
+        [TestCase("", false)]
+        public void LooksLikeFbxReadsTheHeader(string content, bool fbx)
+        {
+            string path = Path.Combine(Path.GetTempPath(), "meshlab-header-" + System.Guid.NewGuid().ToString("N") + ".fbx");
+            try { File.WriteAllText(path, content); Assert.AreEqual(fbx, FbxExport.LooksLikeFbx(path)); }
+            finally { File.Delete(path); }
+            Assert.IsFalse(FbxExport.LooksLikeFbx(path), "a missing file is no FBX");
+        }
+
+        [Test]
+        public void ReplaceAtomicallyRefusesANonFbxFileAndKeepsTheTarget()
+        {
+            // A writer that leaves bytes that are no FBX fails the write; the target and its .meta
+            // are as they were, the temp file is gone and nothing was committed.
+            string dir = Path.Combine(Path.GetTempPath(), "meshlab-replace-" + System.Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            try
+            {
+                string target = Path.Combine(dir, "model.fbx");
+                File.WriteAllText(target, "; FBX 7.4.0 project file\noriginal");
+                File.WriteAllText(target + ".meta", "guid: 1");
+                bool committed = false;
+                Assert.Throws<IOException>(() => FbxExport.ReplaceAtomically(target, tmp => File.WriteAllText(tmp, "junk that is no FBX"), () => committed = true));
+                Assert.IsFalse(committed);
+                Assert.AreEqual("; FBX 7.4.0 project file\noriginal", File.ReadAllText(target));
+                Assert.AreEqual("guid: 1", File.ReadAllText(target + ".meta"));
+                Assert.IsFalse(File.Exists(target + ".tmp"));
+                Assert.IsEmpty(Directory.GetFiles(dir, "*.bak"));
+            }
+            finally { Directory.Delete(dir, true); }
+        }
+
+        [Test]
+        public void ReplaceAtomicallyReportsAFailureAfterTheCommitOnAWrittenFile()
+        {
+            // Once the target is replaced the write has happened: a step after it that fails is a
+            // warning, the caller sees a written file, and the .meta is still restored.
+            string dir = Path.Combine(Path.GetTempPath(), "meshlab-replace-" + System.Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            try
+            {
+                string target = Path.Combine(dir, "model.fbx");
+                File.WriteAllText(target, "; FBX 7.4.0 project file\noriginal");
+                File.WriteAllText(target + ".meta", "guid: 1");
+                Assert.DoesNotThrow(() => FbxExport.ReplaceAtomically(target, tmp => File.WriteAllText(tmp, "; FBX 7.4.0 project file\nreplaced"),
+                    () => throw new System.InvalidOperationException("the media step failed")));
+                Assert.AreEqual("; FBX 7.4.0 project file\nreplaced", File.ReadAllText(target));
+                Assert.AreEqual("guid: 1", File.ReadAllText(target + ".meta"));
+                Assert.IsFalse(File.Exists(target + ".tmp"));
+                Assert.IsEmpty(Directory.GetFiles(dir, "*.bak"));
+            }
+            finally { Directory.Delete(dir, true); }
+        }
+
+        [Test]
+        public void RelinkLeavesAMissingRendererAloneRatherThanGuessingBySubstring()
+        {
+            // A renderer whose mesh went Missing takes the file's mesh of its own name, never a
+            // neighbour's for sharing letters ("Wheel" is not "Wheel_COL").
+            string folderName = "MeshLabFbxRelink_" + System.Guid.NewGuid().ToString("N");
+            string folder = "Assets/" + folderName;
+            AssetDatabase.CreateFolder("Assets", folderName);
+            try
+            {
+                var exported = Node("Wheel_COL", null, Quad("Wheel_COL"), renderer: true);
+                string path = folder + "/wheel.fbx";
+                FbxExport.Write(path, exported);
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                Mesh fresh = null;
+                foreach (var asset in AssetDatabase.LoadAllAssetsAtPath(path)) if (asset is Mesh m && m.name == "Wheel_COL") fresh = m;
+                Assert.IsNotNull(fresh);
+                var root = Node("Car", null); var group = root.AddComponent<LODGroup>();
+                var wheel = Node("Wheel", root.transform, renderer: true); var wheelFilter = wheel.AddComponent<MeshFilter>();
+                var collider = Node("Wheel_COL", root.transform, renderer: true); var colliderFilter = collider.AddComponent<MeshFilter>();
+                group.SetLODs(new[] { new LOD(.5f, new Renderer[] { wheel.GetComponent<MeshRenderer>(), collider.GetComponent<MeshRenderer>() }) });
+                FbxExport.RelinkSceneMeshReferences(path, null, group);
+                Assert.IsNull(wheelFilter.sharedMesh, "'Wheel' does not take 'Wheel_COL' for sharing letters");
+                Assert.AreSame(fresh, colliderFilter.sharedMesh, "a Missing renderer takes the mesh of its own name");
+            }
+            finally { AssetDatabase.DeleteAsset(folder); }
+        }
+
         [Test]
         public void FailedNormalizedAtomicWriteLeavesExistingFbxBytesAndMetaUntouched()
         {

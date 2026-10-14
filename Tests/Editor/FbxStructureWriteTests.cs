@@ -540,6 +540,37 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Structure_CollisionReplaceRefusesUnrelatedChildrenBeforeRemovingTheOldNode()
+        {
+            // The `{key}_COL` node a collision write replaces is audited like a superseded one: a
+            // child that is not this tool's collision refuses the save before the document changes.
+            using var document = FbxSourceDocument.Load(WriteSource());
+            var scene = document.Scene;
+            var old = FbxStructureEdit.FindNodes(scene, "Rock_LOD0_COL").Single();
+            old.AddChild(FbxNode.Create(scene, "AuthoredMarker"));
+            var (positions, triangles) = SimulatedImport(document.Meshes[0]);
+            var tagged = new Dictionary<string, FbxChannelWrite.Tagged> {
+                ["Rock_LOD0"] = new FbxChannelWrite.Tagged {
+                    ordinal = 0, cornerPositions = positions, submeshCorners = new[] { triangles }, submeshFaceSizes = new[] { 3 }
+                }
+            };
+            using var plan = new FbxStructurePlan();
+            var mesh = new UnityEngine.Mesh();
+            var vertices = new UnityEngine.Vector3[positions.Length / 3];
+            for (int i = 0; i < vertices.Length; i++)
+                vertices[i] = new UnityEngine.Vector3(positions[i*3], positions[i*3+1], positions[i*3+2]);
+            mesh.vertices = vertices; mesh.triangles = triangles.Take(3).ToArray();
+            plan.collisions.Add(("Rock_LOD0", new List<UnityEngine.Mesh> { mesh }, false));
+            plan.collisionSources["Rock_LOD0"] = new CollisionMeshEntry { sourceMeshName = "Rock_LOD0", sourceHierarchyPath = "Group[0]/Rock_LOD0[0]" };
+            var error = Assert.Throws<FbxStructureRefusalException>(() => FbxStructureWrite.Apply(document, tagged, plan,
+                new FbxStructureWrite.Options { preserveHierarchy = true }, new List<string>()));
+            StringAssert.Contains("AuthoredMarker", error.Message);
+            Assert.AreEqual(1, FbxStructureEdit.FindNodes(scene, "Rock_LOD0_COL").Count);
+            Assert.AreEqual(1, FbxStructureEdit.FindNodes(scene, "AuthoredMarker").Count);
+            Assert.AreEqual(1, FbxStructureEdit.FindNodes(scene, "Rock_LOD0_COL_Hull0").Count, "the old hull stays with its container");
+        }
+
+        [Test]
         public void Structure_MigrationRefusesUnrelatedChildrenBeforeRemovingOldCollision()
         {
             using var document = FbxSourceDocument.Load(WriteSource());

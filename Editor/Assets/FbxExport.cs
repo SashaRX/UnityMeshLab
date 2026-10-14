@@ -789,12 +789,28 @@ namespace SashaRX.UnityMeshLab
             var settings = FbxWriteSettings.FromProject(embedTextures);
             ExportFile(fbxPath, root, settings, normalizedTransforms);
             if (normalizedTransforms) ConvertNormalizedFile(fbxPath, settings);
-            var info = new FileInfo(Path.GetFullPath(fbxPath));
-            if (!info.Exists || info.Length == 0)
-                throw new IOException($"FBX Exporter produced an empty/missing file at '{fbxPath}'.");
+            RequireFbxFile(fbxPath);
 #else
             throw new InvalidOperationException("FBX Exporter package not installed.");
 #endif
+        }
+
+        /// <summary>The file exists, is not empty and starts like an FBX file (binary magic or the ASCII header).</summary>
+        internal static bool LooksLikeFbx(string path)
+        {
+            var info = new FileInfo(Path.GetFullPath(path));
+            if (!info.Exists || info.Length == 0) return false;
+            var head = new byte[18];
+            int read;
+            using (var stream = info.OpenRead()) read = stream.Read(head, 0, head.Length);
+            string text = System.Text.Encoding.ASCII.GetString(head, 0, read);
+            return text.StartsWith("Kaydara FBX Binary", StringComparison.Ordinal) || text.StartsWith("; FBX", StringComparison.Ordinal);
+        }
+
+        static void RequireFbxFile(string path)
+        {
+            if (!LooksLikeFbx(path))
+                throw new IOException($"The FBX writer produced an empty, missing or non-FBX file at '{path}'.");
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
@@ -819,11 +835,14 @@ namespace SashaRX.UnityMeshLab
                         MeshTransform.BakeMatrix(mesh, orientation);
                     }
                 }
-                UnityEditor.Formats.Fbx.Exporter.ModelExporter.ExportObjects(path, new Object[] { exportRoot },
+                // The exporter reports a failure by returning nothing (it logs the cause itself).
+                string exported = UnityEditor.Formats.Fbx.Exporter.ModelExporter.ExportObjects(path, new Object[] { exportRoot },
                     new UnityEditor.Formats.Fbx.Exporter.ExportModelOptions {
                         ExportFormat = settings.Binary ? UnityEditor.Formats.Fbx.Exporter.ExportFormat.Binary
                             : UnityEditor.Formats.Fbx.Exporter.ExportFormat.ASCII,
                         EmbedTextures = settings.EmbedTextures });
+                if (string.IsNullOrEmpty(exported))
+                    throw new IOException($"FBX Exporter did not write '{path}'.");
             }
             finally {
                 if (exportRoot != root) Object.DestroyImmediate(exportRoot);
@@ -907,10 +926,13 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
-        /// Lets <paramref name="write"/> produce the file at `<target>.tmp`, verifies it, and
-        /// replaces the target in one rename (a plain move for a new path), keeping the
-        /// target's `.meta` as it was. If the writer throws or writes an empty file the
-        /// target on disk is untouched. Throws on failure after removing the temp file.
+        /// Lets <paramref name="write"/> produce the file at `<target>.tmp`, verifies it (an FBX
+        /// header, not just bytes), and replaces the target in one rename (a plain move for a
+        /// new path), keeping the target's `.meta` as it was. If the writer throws or writes an
+        /// empty or non-FBX file the target on disk is untouched, and this throws after removing
+        /// the temp file. Once the target is replaced the write has happened: a failure of what
+        /// follows (<paramref name="committed"/>, the `.meta` restore, the housekeeping) is
+        /// logged as a warning naming what is left to do by hand, and does not throw.
         /// </summary>
         internal static void ReplaceAtomically(string targetFbxPath, Action<string> write, Action committed = null)
         {
@@ -929,9 +951,7 @@ namespace SashaRX.UnityMeshLab
             try
             {
                 write(tmpRelPath);
-                var tmpInfo = new FileInfo(tmpAbsPath);
-                if (!tmpInfo.Exists || tmpInfo.Length == 0)
-                    throw new IOException($"FBX writer produced an empty/missing file at '{tmpRelPath}'.");
+                RequireFbxFile(tmpRelPath);
 
                 // File.Replace needs an existing target (overwrite + backup); a fresh path
                 // is a move.
@@ -945,22 +965,6 @@ namespace SashaRX.UnityMeshLab
                 {
                     File.Move(tmpAbsPath, fullPath);
                 }
-                // From this point the installed FBX owns its new external media,
-                // even if later metadata restoration or housekeeping fails.
-                committed?.Invoke();
-
-                // The exporter may have generated a .meta for the .tmp — strip it so the
-                // AssetDatabase does not pick up a ghost asset on the next refresh.
-                string tmpMetaPath = tmpAbsPath + MetaExtension;
-                if (File.Exists(tmpMetaPath)) File.Delete(tmpMetaPath);
-
-                if (metaBackedUp && File.Exists(metaBak))
-                {
-                    File.Copy(metaBak, fullPath + MetaExtension, true);
-                    File.Delete(metaBak);
-                }
-                // Keep the original recoverable until metadata restoration succeeds.
-                if (fbxBak != null && File.Exists(fbxBak)) File.Delete(fbxBak);
             }
             catch
             {
@@ -969,6 +973,46 @@ namespace SashaRX.UnityMeshLab
                 try { if (File.Exists(tmpAbsPath)) File.Delete(tmpAbsPath); }
                 catch { /* the leftover .tmp is cosmetic; the exception below is the real error */ }
                 throw;
+            }
+            // The target holds the new file from here on: what follows cannot un-write it, so
+            // its failures are reported as what they are, with what is left to do by hand.
+            try
+            {
+                // From this point the installed FBX owns its new external media,
+                // even if later metadata restoration or housekeeping fails.
+                committed?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                UvtLog.Warn($"[FBX Export] '{targetFbxPath}' was written; the step after the write failed: {ex.Message}");
+                UvtLog.Verbose(ex.ToString());
+            }
+            try
+            {
+                // The exporter may have generated a .meta for the .tmp — strip it so the
+                // AssetDatabase does not pick up a ghost asset on the next refresh.
+                string tmpMetaPath = tmpAbsPath + MetaExtension;
+                if (File.Exists(tmpMetaPath)) File.Delete(tmpMetaPath);
+            }
+            catch (Exception ex) { UvtLog.Warn($"[FBX Export] '{targetFbxPath}' was written; delete the leftover '{tmpAbsPath + MetaExtension}' by hand: {ex.Message}"); }
+            if (metaBackedUp && File.Exists(metaBak))
+            {
+                try
+                {
+                    File.Copy(metaBak, fullPath + MetaExtension, true);
+                    File.Delete(metaBak);
+                }
+                catch (Exception ex)
+                {
+                    // Without its .meta the asset would take a new GUID on import.
+                    UvtLog.Warn($"[FBX Export] '{targetFbxPath}' was written, but its .meta could not be restored from '{metaBak}': {ex.Message}. Copy it back by hand before the next import so the asset keeps its GUID.");
+                }
+            }
+            // Keep the original recoverable until metadata restoration succeeds.
+            if (fbxBak != null && File.Exists(fbxBak))
+            {
+                try { File.Delete(fbxBak); }
+                catch (Exception ex) { UvtLog.Warn($"[FBX Export] '{targetFbxPath}' was written; the previous file is left at '{fbxBak}': {ex.Message}"); }
             }
         }
 
@@ -1557,17 +1601,29 @@ namespace SashaRX.UnityMeshLab
         /// <summary>
         /// Re-binds the MeshFilters and MeshColliders under <paramref name="lodGroup"/> to
         /// the reimported FBX's sub-assets (Unity recreates them, so old references go
-        /// Missing even when names did not change), by mesh name, node name, the
-        /// <paramref name="renameMap"/> (optional) or a fuzzy name match, and renames
-        /// scene nodes that the export renamed. Records Undo for every change.
+        /// Missing even when names did not change), by mesh name, node name or the
+        /// <paramref name="renameMap"/> (optional), and renames scene nodes that the export
+        /// renamed. A name several meshes of the file share binds nothing, and a renderer whose
+        /// mesh cannot be named stays Missing and is reported: a guess would bind it to a
+        /// neighbour's mesh. Records Undo for every change.
         /// </summary>
         internal static void RelinkSceneMeshReferences(string fbxPath, Dictionary<string, string> renameMap, LODGroup lodGroup)
         {
             if (lodGroup == null) return;
 
             var meshByName = new Dictionary<string, Mesh>(StringComparer.OrdinalIgnoreCase);
+            var ambiguous = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var asset in AssetDatabase.LoadAllAssetsAtPath(fbxPath))
-                if (asset is Mesh mesh && !meshByName.ContainsKey(mesh.name)) meshByName[mesh.name] = mesh;
+            {
+                if (!(asset is Mesh mesh)) continue;
+                if (meshByName.ContainsKey(mesh.name)) ambiguous.Add(mesh.name);
+                else meshByName[mesh.name] = mesh;
+            }
+            foreach (string name in ambiguous)
+            {
+                meshByName.Remove(name);
+                UvtLog.Warn($"[FBX Export] '{fbxPath}' has several meshes named '{name}'; renderers showing one keep their reference.");
+            }
             if (meshByName.Count == 0) return;
 
             int relinked = 0;
@@ -1614,16 +1670,7 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
                 if (mf.sharedMesh == null)
-                {
-                    foreach (var kvp in meshByName)
-                    {
-                        if (!goName.Contains(kvp.Key) && !kvp.Key.Contains(goName)) continue;
-                        Undo.RecordObject(mf, RelinkUndoLabel);
-                        mf.sharedMesh = kvp.Value;
-                        relinked++;
-                        break;
-                    }
-                }
+                    UvtLog.Warn($"[FBX Export] '{goName}' shows no mesh after the save of '{fbxPath}' and no mesh of the file carries its name; assign it by hand.");
             }
 
             foreach (var mc in root.GetComponentsInChildren<MeshCollider>(true))

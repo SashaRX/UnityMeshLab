@@ -371,6 +371,44 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 #endif
 
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        [Test]
+        public void SuccessfulHierarchyOverwriteKeepsTheBackupTheDialogPromises()
+        {
+            // The source is replaced in one rename; the copy of the original under Library/MeshLab
+            // stays after the save, as the dialog says, and only the .meta backup is consumed.
+            AssetDatabase.CreateFolder("Assets", "__MeshLabReviewTests");
+            string path = Scratch + "/Review.fbx";
+            var root = Root(); var mesh = Plane("Review");
+            root.AddComponent<MeshFilter>().sharedMesh = mesh; root.AddComponent<MeshRenderer>();
+            FbxExport.Write(path, root); AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
+            byte[] original = File.ReadAllBytes(path), metadata = File.ReadAllBytes(path + ".meta");
+            string directory = Path.Combine(Path.GetTempPath(), "MeshLab-export-review-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try {
+                File.WriteAllBytes(Path.Combine(directory, "Backup.bak"), original);
+                File.WriteAllBytes(Path.Combine(directory, "Backup.meta.bak"), metadata);
+                var ctx = new UvToolContext { StandaloneMesh = true };
+                var operations = ctx.Assets;
+                operations.HierarchyWriter = (output, exportRoot) => FbxExport.WriteAtomic(output, exportRoot);
+                var batch = new MeshAssetOperations.HierarchyExportBatch();
+                var entries = new List<(MeshEntry, Mesh)> { (new MeshEntry { originalMesh = mesh, fbxMesh = mesh }, mesh) };
+                Assert.IsTrue(operations.ExportHierarchyGroupPrepared(path, entries, true, batch, path, directory, Path.GetFullPath(path), "Backup"));
+                Assert.IsTrue(FbxExport.LooksLikeFbx(path));
+                CollectionAssert.AreEqual(original, File.ReadAllBytes(Path.Combine(directory, "Backup.bak")), "the backup of the original stays");
+                Assert.IsFalse(File.Exists(Path.Combine(directory, "Backup.meta.bak")), "the .meta backup is consumed by its restore");
+                Assert.IsFalse(File.Exists(path + ".tmp"));
+                CollectionAssert.Contains(batch.OverwrittenFbxPaths, path);
+            }
+            finally {
+                Directory.Delete(directory, true);
+                Uv2AssetPostprocessor.managedImportPaths.Remove(path);
+                Uv2AssetPostprocessor.transientReplayPaths.Remove(path);
+                Uv2AssetPostprocessor.bypassPaths.Remove(path);
+            }
+        }
+#endif
+
         static void ExpectError(string expected, Action action)
         {
             // The licence-free compile references omit LogAssert; Unity's real runner supplies it.

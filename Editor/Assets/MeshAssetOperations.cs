@@ -1092,11 +1092,14 @@ namespace SashaRX.UnityMeshLab
             AssetDatabase.Refresh();
 
             // Unity recreates sub-asset meshes on reimport; old MeshFilter references go
-            // Missing even when names did not change. Relink every overwritten FBX.
+            // Missing even when names did not change. Every renderer noted before the write
+            // takes the recreated mesh of the name it showed; the by-name pass then covers the
+            // nodes the export renamed and what the bindings could not place.
             if (overwriteSource && allGroupsSucceeded && ctx?.LodGroup != null)
             {
                 foreach (string fbxPath in batch.OverwrittenFbxPaths)
                 {
+                    if (batch.BindingsByFbx.TryGetValue(fbxPath, out var bindings)) bindings.Relink(fbxPath);
                     batch.MeshRenamesByFbx.TryGetValue(fbxPath, out var renameMap);
                     FbxExport.RelinkSceneMeshReferences(fbxPath, renameMap, ctx.LodGroup);
                 }
@@ -1123,6 +1126,8 @@ namespace SashaRX.UnityMeshLab
         internal sealed class HierarchyExportBatch
         {
             public readonly HashSet<string> OverwrittenFbxPaths = new HashSet<string>();
+            /// <summary>The renderers showing each overwritten file's meshes, noted before the write that recreates them.</summary>
+            public readonly Dictionary<string, FbxExport.SceneMeshBindings> BindingsByFbx = new Dictionary<string, FbxExport.SceneMeshBindings>(StringComparer.OrdinalIgnoreCase);
             public readonly Dictionary<string, List<MeshUv2Entry>> TransientReplayEntriesByPath = new Dictionary<string, List<MeshUv2Entry>>();
             public readonly Dictionary<string, Dictionary<string, string>> MeshRenamesByFbx = new Dictionary<string, Dictionary<string, string>>();
             public readonly bool PersistentSidecarMode = PostprocessorDefineManager.IsEnabled();
@@ -1173,7 +1178,10 @@ namespace SashaRX.UnityMeshLab
                 tempRoot.name = prefab.name;
                 FbxExport.PromoteRootMeshToLod0Child(tempRoot);
                 int collisions = PrepareExportHierarchy(tempRoot, sourceFbxPath, entries, tempMeshes, batch);
-                WriteHierarchyExport(exportPath, tempRoot);
+                // The import that follows recreates the file's meshes: the renderers showing them
+                // are noted now, by name, to take the recreated ones (FinishHierarchyExports).
+                if (overwriteSource) batch.BindingsByFbx[sourceFbxPath] = FbxExport.CaptureSceneMeshReferences(sourceFbxPath, entries.Select(p => p.entry));
+                WriteHierarchyExport(exportPath, tempRoot, overwriteSource);
                 written = true;
                 if (overwriteSource) batch.OverwrittenFbxPaths.Add(sourceFbxPath);
                 UvtLog.Info($"[FBX Export] Exported ({FbxWriteSettings.FromProject().FormatName}) {entries.Count + collisions} mesh(es) -> {exportPath}");
@@ -1194,9 +1202,12 @@ namespace SashaRX.UnityMeshLab
             return written && !failed;
         }
 
-        void WriteHierarchyExport(string path, GameObject root)
+        // A source is replaced in one rename once its new file is complete and checked
+        // (FbxExport.WriteAtomic); a new file is written in place.
+        void WriteHierarchyExport(string path, GameObject root, bool overwriteSource)
         {
             if (HierarchyWriter != null) HierarchyWriter(path, root);
+            else if (overwriteSource) FbxExport.WriteAtomic(path, root);
             else FbxExport.Write(path, root);
         }
 
@@ -1213,6 +1224,10 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        // After a write that did not complete the source and its .meta come back from the backup
+        // (the atomic replace leaves the source as it was; the copy is a belt and braces) and the
+        // backup goes; after a completed one the .meta is restored and the backup of the original
+        // stays where the dialog said it would, one per source file, replaced by the next save.
         internal static bool RestoreHierarchyBackup(string directory, string name, string fullSourcePath, string assetPath, bool written)
         {
             string fbxBackup = System.IO.Path.Combine(directory, name + ".bak");
@@ -1224,7 +1239,8 @@ namespace SashaRX.UnityMeshLab
                 if (!written && !string.IsNullOrEmpty(assetPath))
                     FbxExport.ReimportWithoutSidecars(assetPath, () => AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate));
                 if (System.IO.File.Exists(metaBackup)) System.IO.File.Delete(metaBackup);
-                if (System.IO.File.Exists(fbxBackup)) System.IO.File.Delete(fbxBackup);
+                if (!written && System.IO.File.Exists(fbxBackup)) System.IO.File.Delete(fbxBackup);
+                if (written) UvtLog.Info($"[FBX Export] The original of '{assetPath}' is kept at '{fbxBackup}' until the next save of this file.");
                 return true;
             }
             catch (Exception ex) {
@@ -1248,7 +1264,7 @@ namespace SashaRX.UnityMeshLab
             if (overwriteSource)
             {
                 if (!EditorUtility.DisplayDialog("Overwrite Source FBX",
-                    "This will overwrite:\n" + sourceFbxPath + "\n\nA backup (.fbx.bak) will be created. Continue?",
+                    "This will overwrite:\n" + sourceFbxPath + "\n\nThe original is kept as a .fbx.bak under Library/MeshLab until the next save of this file. Continue?",
                     "Overwrite", CancelButton))
                 {
                     return false;
