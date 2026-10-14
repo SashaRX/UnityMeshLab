@@ -198,8 +198,9 @@ namespace SashaRX.UnityMeshLab
         /// <list type="bullet">
         /// <item>Resolves writable mesh (<c>originalMesh ?? fbxMesh</c>).</item>
         /// <item>Bails out with a warning if missing or non-readable.</item>
-        /// <item>Clones asset-backed meshes and pipeline working copies and re-wires <c>MeshFilter</c> +
-        /// <c>entry.originalMesh</c>: the clone is <c>entry.sceneEditMesh</c>, which no reset destroys.</item>
+        /// <item>Clones asset-backed meshes, pipeline working copies and a scene edit another renderer
+        /// shows too (a duplicated object), and re-wires <c>MeshFilter</c> + <c>entry.originalMesh</c>: the
+        /// clone is <c>entry.sceneEditMesh</c>, which no reset destroys.</item>
         /// <item>Records the resulting mesh and its filter for Undo under <paramref name="undoLabel"/>.</item>
         /// </list>
         /// Returns <c>false</c> when the entry cannot be safely mutated.
@@ -216,7 +217,11 @@ namespace SashaRX.UnityMeshLab
                 return false;
             }
 
-            if (AssetDatabase.Contains(source))
+            // A scene edit another renderer shows too (the object was duplicated with it on) is
+            // copied before it is edited: the edit on this renderer must leave the other as it is.
+            bool shared = source == entry.sceneEditMesh && source != entry.fbxMesh
+                && LodGroupUtility.IsMeshReferenced(source, entry.meshFilter);
+            if (AssetDatabase.Contains(source) || shared)
             {
                 var clone = UnityEngine.Object.Instantiate(source);
                 clone.name = source.name;
@@ -234,7 +239,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 entry.originalMesh = clone;
                 entry.sceneEditMesh = clone;
-                SceneEditRegistry.Register(entry.meshFilter, source, clone);
+                SceneEditRegistry.Register(entry.meshFilter, shared ? entry.fbxMesh : source, clone);
                 mesh = clone;
             }
             else if (source != entry.fbxMesh && source != entry.sceneEditMesh)
@@ -259,8 +264,11 @@ namespace SashaRX.UnityMeshLab
                 }
                 SceneEditRegistry.Register(entry.meshFilter, entry.fbxMesh, source, workingCopy: true, baseline: prior);
                 SceneEditRegistry.Register(entry.meshFilter, entry.fbxMesh, clone);
-                Undo.DestroyObjectImmediate(source);
-                if (prior != null && prior != entry.fbxMesh && !AssetDatabase.Contains(prior)) Undo.DestroyObjectImmediate(prior);
+                // The copy and the earlier edit go through Undo unless another renderer still shows
+                // them (the object was duplicated while they were on it).
+                if (!LodGroupUtility.IsMeshReferenced(source)) Undo.DestroyObjectImmediate(source);
+                if (prior != null && prior != entry.fbxMesh && !AssetDatabase.Contains(prior) && !LodGroupUtility.IsMeshReferenced(prior))
+                    Undo.DestroyObjectImmediate(prior);
                 entry.originalMesh = clone;
                 entry.sceneEditMesh = clone;
                 mesh = clone;

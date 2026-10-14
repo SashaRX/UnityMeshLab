@@ -824,10 +824,10 @@ namespace SashaRX.UnityMeshLab
         }
 
         // The scene edits a save wrote into their file go the way of every saved working copy:
-        // the renderer takes the file's mesh and the edit is destroyed, both through Undo like
-        // the edit itself; the registry keeps the edit's link to the written mesh, so an Undo of
-        // the save brings the edit back as what it was. An edit whose written mesh cannot be
-        // found stays, and says so.
+        // every renderer showing the edit takes the file's mesh and the edit is destroyed, both
+        // through Undo like the edit itself; the registry keeps the edit's links to the written
+        // mesh, so an Undo of the save brings the edit back as what it was. An edit whose written
+        // mesh cannot be found stays, and says so.
         void ReleaseSavedSceneEdits()
         {
             foreach (var (entry, fbxPath, meshName, localId) in savedSceneEdits)
@@ -840,14 +840,20 @@ namespace SashaRX.UnityMeshLab
                     UvtLog.Warn($"[FBX Export] '{meshName}' was not found in '{fbxPath}' after the save; the scene keeps its edited mesh.");
                     continue;
                 }
-                if (entry.meshFilter != null && edit != null && entry.meshFilter.sharedMesh == edit)
+                if (edit != null)
                 {
-                    Undo.RecordObject(entry.meshFilter, "Save FBX");
-                    entry.meshFilter.sharedMesh = fresh;
-                    if (PrefabUtility.IsPartOfPrefabInstance(entry.meshFilter))
-                        PrefabUtility.RecordPrefabInstancePropertyModifications(entry.meshFilter);
+                    // Every renderer showing the edit takes the file's mesh (a duplicated object
+                    // shares it), each with its link for the Undo of the save; then the edit goes.
+                    foreach (var filter in LodGroupUtility.FiltersShowing(edit))
+                    {
+                        Undo.RecordObject(filter, "Save FBX");
+                        filter.sharedMesh = fresh;
+                        if (PrefabUtility.IsPartOfPrefabInstance(filter))
+                            PrefabUtility.RecordPrefabInstancePropertyModifications(filter);
+                        SceneEditRegistry.Register(filter, fresh, edit);
+                    }
+                    SceneEditRegistry.Register(entry.meshFilter, fresh, edit);
                 }
-                if (edit != null) SceneEditRegistry.Register(entry.meshFilter, fresh, edit);
                 entry.sceneEditMesh = null;
                 if (entry.originalMesh == edit || entry.originalMesh == null) entry.originalMesh = fresh;
                 entry.fbxMesh = fresh;
