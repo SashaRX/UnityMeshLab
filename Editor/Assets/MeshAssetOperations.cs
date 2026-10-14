@@ -699,6 +699,8 @@ namespace SashaRX.UnityMeshLab
                 AfterPostCommitFailure(sourceFbxPath, ex, sidecar);
                 SaveCollisionSidecar();
                 RelinkStandalone();
+                if (!isVariantExport && refreshContext && ctx?.LodGroup != null)
+                    FbxExport.RelinkSceneMeshReferences(sourceFbxPath, null, ctx.LodGroup);
                 exported = false;
             }
             if (!exported) { standaloneRelinks.Clear(); return false; }
@@ -1208,7 +1210,7 @@ namespace SashaRX.UnityMeshLab
         internal bool ExportHierarchyGroupPrepared(string sourceFbxPath, List<(MeshEntry entry, Mesh resultMesh)> entries,
             bool overwriteSource, HierarchyExportBatch batch, string exportPath, string tempDir, string fullSourcePath, string backupName)
         {
-            bool written = false, failed = false, madeReadable = false;
+            bool written = false, failed = false, madeReadable = false, importReady = false;
             GameObject tempRoot = null;
             ModelImporter importer = null;
             var tempMeshes = new List<Mesh>();
@@ -1251,8 +1253,13 @@ namespace SashaRX.UnityMeshLab
             {
                 if (tempRoot != null) UnityEngine.Object.DestroyImmediate(tempRoot);
                 FbxExport.DestroyTempMeshes(tempMeshes);
+                // An overwrite is ready for import once its .meta is back; a new file as soon as it
+                // is written. The source importer's readability is restored separately: its failure
+                // fails the group, not the file the group wrote.
+                bool restored = true;
                 if (overwriteSource)
-                    failed |= !RestoreHierarchyBackup(tempDir, backupName, fullSourcePath, sourceFbxPath, written);
+                    failed |= !(restored = RestoreHierarchyBackup(tempDir, backupName, fullSourcePath, sourceFbxPath, written));
+                importReady = written && restored;
                 if (madeReadable && importer != null)
                     failed |= !RestoreHierarchyReadability(importer, sourceFbxPath);
             }
@@ -1260,7 +1267,7 @@ namespace SashaRX.UnityMeshLab
             if (overwriteSource && written) StoreHierarchyExportSidecars(sourceFbxPath, entries, true, batch);
             if (overwriteSource && !(written && !failed)) UnmarkSceneEditsSaved(sourceFbxPath);
             // A new file outside the project is not an asset; nothing imports it.
-            if (written && !failed && IsProjectAssetPath(exportPath)) batch.ImportReadyFbxPaths.Add(exportPath);
+            if (importReady && IsProjectAssetPath(exportPath)) batch.ImportReadyFbxPaths.Add(exportPath);
             return written && !failed;
         }
 
