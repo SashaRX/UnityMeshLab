@@ -663,3 +663,14 @@ Further local ISPC, Embree and IPP trials and the oneMKL applicability assessmen
 [INTEL_LIBRARY_BENCHMARKS.md](INTEL_LIBRARY_BENCHMARKS.md). ISPC and IPP do not
 qualify as packing upgrades; Embree query speed is promising but seam/vertex
 compatibility fails, so no query backend was replaced.
+
+## Eighth continuation: concurrent packing audits — 2026-10-14
+
+Each native family trial validates every family's initial placement through
+the managed metric, precision and contact audits. These validations read only
+their own family, so they run concurrently and are consumed in family order;
+transform/shape recovery, rescue phases, refusals and exceptions keep the
+sequential order. Atlas audits scan LOD levels concurrently and merge in level
+order. Control: `-DisableParallelValidation`. New timing sample: `Native family
+parallel validation` (nested inside `Native family packing trial`). Exactness
+must be shown with the usual 120-export comparison; measurements follow.

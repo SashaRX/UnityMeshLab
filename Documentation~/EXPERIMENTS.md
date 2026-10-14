@@ -1,5 +1,41 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Reverse final packing: concurrent family and atlas audits — 2026-10-14
+
+Packing and its audits dominate Kamaz reverse time. An exact cache of family
+audits across trials would rarely hit: every density, orientation and precision
+retry moves families, so their Float32 coordinates differ. The audits are,
+however, independent per family and per LOD level:
+
+- `TryPackCore` keeps transform recovery and shape checks in family order (the
+  first changed family still refuses the trial before later ones). The initial
+  placement of every family is then validated concurrently; results are
+  consumed in family order with the original sub-ULP rescue phases, refusal
+  list and exception order. Only trials with a refusal list (every
+  `TryPackAttempt` call) speculate; a pass that ends at its first failed family
+  validates on demand as before.
+- `Valid` writes only per-family state (scan buffers, `Stabilize` output); the
+  refusal table is locked and the small-scan intersection scratch is per call.
+  A completely failed frozen pack lists refusals by family index, because
+  concurrent insertion order is not deterministic. That text exists only when no
+  atlas is published.
+- `AuditAtlas` scans LOD levels concurrently and merges failures, logs and
+  exceptions in level order. Level face lists and index arrays are built once
+  per pack instead of once per audit.
+- `ReverseUvShellPrecision.Stabilize` builds its snapshot and corner aliases
+  only for the first face that needs repair, before any corner moves.
+
+`parallelFamilyValidation` (default on) is the internal switch; the benchmark's
+`-DisableParallelValidation` / `MESHLAB_DISABLE_PARALLEL_VALIDATION=1` keeps
+sequential validation for the control arm. `Native family parallel
+validation` times the concurrent phase. A synthetic six-island test compares
+reports and mesh streams for both overlap policies. Corpus timing and the
+120-export exactness check are pending a local Unity run.
+
+Not pursued now: incremental occupancy rows. Snapshot construction plus search
+setup already costs about 0.83s of 33.9s on Kamaz overlap (sixth continuation),
+which bounds that gain and does not apply to exclusive packing.
+
 ## Forward transfer: per-shell work without whole-mesh copies — 2026-10-14
 
 The paired performance runs exclude ordinary (forward) Transfer, and a code

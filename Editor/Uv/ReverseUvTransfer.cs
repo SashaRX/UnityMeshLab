@@ -37,6 +37,7 @@ namespace SashaRX.UnityMeshLab
             internal bool nativeFootprintSearch = true;
             internal bool reuseOccupancySnapshots = true;
             internal bool burstFootprintRaster = true;
+            internal bool parallelFamilyValidation = true;
             internal ReverseUvOccupancySearch.Api footprintSearchApi;
             internal ReverseUvQueryBackend.Mode queryBackend=ReverseUvQueryBackend.Mode.Auto;
             internal ReverseUvQueryBackend.Api queryApi;

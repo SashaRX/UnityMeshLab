@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using NUnit.Framework;
@@ -325,6 +326,43 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsTrue(profile.samples.Any(s=>s.stage=="Reverse total" && s.milliseconds>0));
                 Assert.IsTrue(profile.samples.Any(s=>s.stage=="Packing footprint construction" && s.count>0));
                 if(fill) Assert.IsTrue(profile.samples.Any(s=>s.stage=="Packing footprint cache hits" && s.count>0));
+            }
+            finally {UnityEngine.Object.DestroyImmediate(a);UnityEngine.Object.DestroyImmediate(b);}
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void ParallelFamilyValidationIsByteIdenticalWithBothOverlapPolicies(bool overlap)
+        {
+            // Separate quads with their own UV2 islands: several packing families.
+            var vertices = new List<Vector3>(); var uv2 = new List<Vector2>(); var triangles = new List<int>();
+            for(int i=0;i<6;++i)
+            {
+                int start=vertices.Count;float size=.06f+.02f*i;var corner=new Vector2(.05f+.15f*i,.1f+.12f*(i%3));
+                vertices.AddRange(new[] {new Vector3(2*i,0,0),new Vector3(2*i+1,0,0),new Vector3(2*i+1,1+i*.25f,0),new Vector3(2*i,1+i*.25f,0)});
+                uv2.AddRange(new[] {corner,corner+new Vector2(size,0),corner+new Vector2(size,size*(1+i*.25f)),corner+new Vector2(0,size*(1+i*.25f))});
+                triangles.AddRange(new[] {start,start+1,start+2,start,start+2,start+3});
+            }
+            var a = new Mesh { name = "Panels", vertices = vertices.ToArray(), triangles = triangles.ToArray(), uv2 = uv2.ToArray() };
+            var b = UnityEngine.Object.Instantiate(a);
+            try
+            {
+                var levels = new[] {new ReverseUvTransfer.Level {lod=1,inputs=new[] {new ReverseUvTransfer.Input {mesh=a,key="Panels",usePreparedUv2=true}}},
+                    new ReverseUvTransfer.Level {lod=0,inputs=new[] {new ReverseUvTransfer.Input {mesh=b,key="Panels",usePreparedUv2=true}}}};
+                var before = new[] {a,b}.Select(TransferMeshSnapshot.Capture).ToArray();
+                var profile = new TransferPerformanceProfile();
+                ReverseUvTransfer.Options Options(bool parallel) => new ReverseUvTransfer.Options {seedResolution=128,seedDensity=32,
+                    regroupPreparedAtlas=true,frozenShellCascade=!overlap,preserveProjectedOverlap=overlap,repackFinalAtlas=true,
+                    fillFinalAtlas=true,parallelFamilyValidation=parallel,performance=parallel?profile:null};
+                using var sequential = ReverseUvTransfer.Build(levels,Options(false)).GetAwaiter().GetResult();
+                using var parallel = ReverseUvTransfer.Build(levels,Options(true)).GetAwaiter().GetResult();
+                Assert.AreEqual(JsonUtility.ToJson(sequential.report),JsonUtility.ToJson(parallel.report));
+                for(int l=0;l<levels.Length;++l)
+                    CollectionAssert.AreEqual(TransferMeshSnapshot.Capture(sequential.meshes[l][0]),TransferMeshSnapshot.Capture(parallel.meshes[l][0]));
+                CollectionAssert.AreEqual(before[0],TransferMeshSnapshot.Capture(a));
+                CollectionAssert.AreEqual(before[1],TransferMeshSnapshot.Capture(b));
+                if(profile.samples.Any(s=>s.stage=="Native chart placement" && s.count>0))
+                    Assert.IsTrue(profile.samples.Any(s=>s.stage=="Native family parallel validation" && s.count>0),
+                        "Multi-family native trials must validate their families concurrently.");
             }
             finally {UnityEngine.Object.DestroyImmediate(a);UnityEngine.Object.DestroyImmediate(b);}
         }
