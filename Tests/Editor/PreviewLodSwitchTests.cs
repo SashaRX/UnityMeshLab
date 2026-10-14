@@ -1565,11 +1565,12 @@ namespace SashaRX.UnityMeshLab.Tests
             coarse.originalMesh.uv2=Enumerable.Repeat(Vector2.one*.7f,coarse.originalMesh.vertexCount).ToArray();
             originalSeedUvs=coarse.originalMesh.uv2;
             var prior = fine.transferredMesh = Object.Instantiate(fine.originalMesh);
-            var previousDirectory = BenchmarkRecorder.OutputDirectoryOverride;
+            var previousDirectory = BenchmarkRecorder.OutputDirectoryOverride; var previousLevel = UvtLog.Current;
             string directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(),"MeshLabReversePreview_"+System.Guid.NewGuid().ToString("N"));
             try
             {
                 BenchmarkRecorder.OutputDirectoryOverride = directory;
+                UvtLog.Current = UvtLog.Level.Verbose; // the audit report is written only at Verbose
                 Call(hub,"CollectCanvasEntries"); SetPreviewFrame(); Call(hub,"ApplyPreviewMode",UvCanvasView.PreviewMode.Checker);
                 workflow.RunReverseTransfer(false).GetAwaiter().GetResult();
                 Assert.IsTrue(prior == null);Assert.IsTrue(existingCoarse==null); Assert.AreEqual(oldSource,ctx.SourceLodIndex);
@@ -1598,7 +1599,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 CollectionAssert.AreEqual(originalFineIndices, fine.originalMesh.triangles);
                 Assert.AreEqual(originalCoarseIndices.Length - 3, coarse.repackedMesh.triangles.Length);
                 Assert.AreEqual(originalFineIndices.Length - 3, fine.transferredMesh.triangles.Length);
-                Assert.AreEqual(1, JsonUtility.FromJson<ReverseUvAudit.ProvenanceEntry>(fine.reverseTransferJson).surface.removedSourceFaces.Length);
+                Assert.AreEqual(1, ReverseUvAudit.ParseProvenance(fine.reverseTransferJson).removedSourceFaces.Length);
                 Call(hub,"CollectCanvasEntries"); AssertFreshPreview(ctx,fine,UvCanvasView.PreviewMode.Checker); AssertPreviewFrame();
                 Assert.AreEqual(1,System.IO.Directory.GetFiles(directory,"*.json").Length);
                 var saved = SidecarStore.TryBuildEntry(fine,fine.transferredMesh,false,SidecarStore.AoUvTarget.None,out var sidecar);
@@ -1607,7 +1608,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }
             finally
             {
-                BenchmarkRecorder.OutputDirectoryOverride = previousDirectory;
+                BenchmarkRecorder.OutputDirectoryOverride = previousDirectory; UvtLog.Current = previousLevel;
                 if(System.IO.Directory.Exists(directory)) System.IO.Directory.Delete(directory,true);
                 ctx.SourceLodIndex = oldSource;
             }

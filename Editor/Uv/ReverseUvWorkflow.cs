@@ -94,10 +94,17 @@ namespace SashaRX.UnityMeshLab
                 foreach (var level in levels)
                     foreach (var input in level.inputs) removed += input.removedSourceFaces.Length;
                 cancellation.Token.ThrowIfCancellationRequested();
-                // Serialize and write the audit before publishing any mesh. A failed
-                // write or validation cannot leave a partly updated LOD chain.
+                // Serialize and audit before publishing any mesh: a failed validation cannot
+                // leave a partly updated LOD chain. The audit's report goes to disk only at the
+                // Verbose log level, and a failed write is logged, never a reason to withhold the result.
                 var json = ReverseUvAudit.Provenance(result.report);
-                string auditPath = ReverseUvAudit.Write(result, levels);
+                var audit = ReverseUvAudit.Measure(result, levels);
+                string auditPath = null;
+                if (UvtLog.Current >= UvtLog.Level.Verbose)
+                {
+                    try { auditPath = ReverseUvAudit.Save(audit, ReverseUvAudit.KeptReports); }
+                    catch (Exception ex) { UvtLog.Warn("[ReverseUV] Audit report not written: " + ex.Message); }
+                }
                 ClearReverseSummary();
                 int reportNode = 0;
                 for (int level = 0; level < groups.Count; ++level)
@@ -122,7 +129,7 @@ namespace SashaRX.UnityMeshLab
                 if (result.report.finalPackingRefusal != null) reverseSummary += " · " + result.report.finalPackingRefusal;
                 if (prepared.refusal != null) reverseSummary += " · retained safer layout: " + prepared.refusal;
                 if (result.report.refinementRefusal != null) reverseSummary += " · donor seam cuts skipped: " + result.report.refinementRefusal;
-                UvtLog.Info($"[ReverseUV] {reverseSummary}. Audit: {auditPath}");
+                UvtLog.Info($"[ReverseUV] {reverseSummary}." + (auditPath != null ? $" Audit: {auditPath}" : string.Empty));
                 if (ownsProgress) UvProgress.End();
             }
             catch (OperationCanceledException)

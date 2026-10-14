@@ -88,7 +88,7 @@ namespace SashaRX.UnityMeshLab.Tests
                         metricPositions=s.indices.Select(i=>original.metricPositions[i]).ToArray(),metricToWorld=original.metricToWorld,
                         uv=s.pixels.Select(p=>p/side).ToArray(),triangles=Enumerable.Range(0,s.pixels.Length).ToArray(),
                         sourceKey=s.input.key,key=UvToolContext.ExtractGroupKey(s.input.key),
-                        provenance=provenance.Single(p=>p.surface.lod==s.lod && p.surface.key==s.input.key)};
+                        provenance=provenance.Single(p=>p.lod==s.lod && p.key==s.input.key)};
                     parts.Add(p);
                     File.WriteAllText(Path.Combine(target,s.input.key+".layout.json"),JsonUtility.ToJson(new Layout {lod=s.lod,key=s.input.key,
                         positions=p.positions,metricPositions=p.metricPositions,metricToWorld=p.metricToWorld,uv=p.uv,indices=p.triangles}));

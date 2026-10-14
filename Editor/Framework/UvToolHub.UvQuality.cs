@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEditor;
@@ -58,7 +59,9 @@ namespace SashaRX.UnityMeshLab
                     var item = viewportItems[i]; var entry = viewportEntries[i];
                     key = key * 397 + (item.mesh ? item.mesh.GetInstanceID() : 0);
                     key = key * 397 + item.matrix.GetHashCode();
-                    key = key * 397 + (entry?.reverseTransferJson?.GetHashCode() ?? 0);
+                    // The ancestry string is replaced whole, never edited: its identity is its
+                    // version, where hashing its content every frame would cost O(faces).
+                    key = key * 397 + (entry?.reverseTransferJson != null ? RuntimeHelpers.GetHashCode(entry.reverseTransferJson) : 0);
                 }
                 foreach (var entry in ctx.MeshEntries.Where(e => e.include && e.lodIndex == 0)) {
                     var mesh = ctx.DMesh(entry);
@@ -111,9 +114,7 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
             }
-            ReverseUvAudit.ProvenanceEntry provenance = null;
-            if (channel == 1 && !string.IsNullOrEmpty(entry?.reverseTransferJson))
-                provenance = JsonUtility.FromJson<ReverseUvAudit.ProvenanceEntry>(entry.reverseTransferJson);
+            var provenance = channel == 1 ? ReverseUvAudit.ParseProvenance(entry?.reverseTransferJson) : null;
             return new LightmapUvQuality.Part { positions = positions, metricPositions = metricPositions, metricToWorld = transform,
                 uv = coordinates.ToArray(), triangles = indices.ToArray(),
                 key = entry?.meshGroupKey ?? mesh.name, sourceKey = entry?.fbxMesh ? entry.fbxMesh.name : mesh.name, provenance = provenance };

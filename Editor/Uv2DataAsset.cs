@@ -99,7 +99,7 @@ namespace SashaRX.UnityMeshLab
     public class MeshUv2Entry
     {
         public string meshName;
-        /// <summary>Optional reverse UV face ancestry and intentional overlap layers (JSON schema 1).</summary>
+        /// <summary>Optional Reverse UV ancestry: per-face overlap flags and charts, chain keys and overlap relations (compact JSON, ReverseUvAudit.ProvenanceEntry schema 3; schema 2 records are read and rewritten on restore).</summary>
         public string reverseTransferJson;
         public Vector2[] uv2;
         /// <summary>If true, postprocessor must run meshopt dedup (WeldInPlace) before applying UV2.</summary>
