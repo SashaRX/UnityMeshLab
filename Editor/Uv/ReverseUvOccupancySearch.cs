@@ -134,7 +134,7 @@ namespace SashaRX.UnityMeshLab
         internal bool Next(int best,ref long work,CancellationToken token,out bool exhausted)
         {
             if(handle==IntPtr.Zero) throw new ObjectDisposedException(nameof(ReverseUvOccupancySearch));
-            for(;;)
+            while(true)
             {
                 token.ThrowIfCancellationRequested();
                 int status=api.advance(handle,ref x,ref y,best,ref work,65536);
