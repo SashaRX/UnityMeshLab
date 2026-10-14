@@ -410,14 +410,29 @@ namespace SashaRX.UnityMeshLab
         // destination is a copy (the Unix implementation links first) and is dropped.
         internal static void RestoreReplaced(string destination, string backup)
         {
-            if (!File.Exists(backup)) return;
-            if (File.Exists(destination)) { Discard(backup); return; }
-            try { File.Move(backup, destination); }
+            try
+            {
+                if (!File.Exists(backup)) return;
+                if (!File.Exists(destination)) { File.Move(backup, destination); return; }
+                // The destination survived. The backup is the copy the Unix implementations
+                // make first when its content matches; otherwise it may be the only copy of
+                // the original and stays, named in the log.
+                if (SameContent(ContentHash(backup), ContentHash(destination))) Discard(backup);
+                else UvtLog.Warn("Texture export: '" + destination + "' and its backup '" + backup + "' differ after a failed replace; the backup is kept.");
+            }
             catch (Exception exception)
             {
-                UvtLog.Error("Texture export: the original '" + destination + "' is at '" + backup +
-                    "' and could not be moved back: " + exception.Message);
+                // The replace's own exception is what the caller rethrows; this one must not replace it.
+                UvtLog.Error("Texture export: the original of '" + destination + "' may be at '" + backup +
+                    "' and could not be restored: " + exception.Message);
             }
+        }
+
+        private static bool SameContent(byte[] left, byte[] right)
+        {
+            if (left == null || right == null || left.Length != right.Length) return false;
+            for (int i = 0; i < left.Length; i++) if (left[i] != right[i]) return false;
+            return true;
         }
 
         private static void DiscardBackups(IList<PendingFile> files)
