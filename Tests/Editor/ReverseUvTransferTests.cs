@@ -663,7 +663,7 @@ namespace SashaRX.UnityMeshLab.Tests
             foreach (var mesh in result.meshes[1]) Clean(mesh);
             var json = ReverseUvAudit.Provenance(result.report);
             var saved = JsonUtility.FromJson<ReverseUvAudit.ProvenanceEntry>(json[2]);
-            Assert.AreEqual(3, saved.chain.Length); Assert.AreEqual(allow, saved.surface.faces[0].intentionalOverlap);
+            Assert.AreEqual(3, saved.chain.Length); Assert.AreEqual(allow, saved.IsIntentionalOverlap(0));
             Assert.AreEqual(allow, saved.overlaps.Length > 0);
         }
 
@@ -1301,6 +1301,59 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { Object.DestroyImmediate(asset); }
         }
 
+        [Test] public void LegacyReverseProvenanceIsUpgradedToTheCompactSchemaOnRestore()
+        {
+            var original = Quad();
+            var mesh = ReverseUvMesh.Copy(original, original.triangles,
+                new[] { Vector2.zero, Vector2.right * .2f, Vector2.one * .2f, Vector2.one * .6f, Vector2.one * .8f, Vector2.up * .8f });
+            owned.Add(mesh);
+            var faces = new[] { new ReverseUvTransfer.Face { chart = 3, inherited = true, layer = 1, intentionalOverlap = true },
+                new ReverseUvTransfer.Face { chart = 4, projectionSupport = true } };
+            string legacy = JsonUtility.ToJson(new ReverseUvAudit.LegacyProvenanceEntry { atlasSize = 64, seedResolution = 32, texelsPerUnit = 8,
+                surface = new ReverseUvTransfer.NodeReport { lod = 1, key = mesh.name, faces = faces, removedSourceFaces = new[] { 7 } },
+                chain = new[] { new ReverseUvAudit.NodeKey { lod = 1, node = 0, key = mesh.name } },
+                overlaps = new[] { new ReverseUvTransfer.OverlapRelation { lod = 1, underFace = 0, overFace = 1 } } });
+            var parsed = ReverseUvAudit.ParseProvenance(legacy, out bool upgraded);
+            Assert.IsTrue(upgraded); Assert.AreEqual(ReverseUvAudit.ProvenanceEntry.CurrentSchema, parsed.schema); Assert.IsTrue(parsed.Describes(2));
+            Assert.AreEqual(1, parsed.lod); Assert.AreEqual(mesh.name, parsed.key); Assert.AreEqual(64, parsed.atlasSize); Assert.AreEqual(8, parsed.texelsPerUnit);
+            Assert.IsTrue(parsed.IsInherited(0)); Assert.IsTrue(parsed.IsIntentionalOverlap(0)); Assert.IsFalse(parsed.HasProjectionSupport(0));
+            Assert.AreEqual(1, parsed.Layer(0)); Assert.AreEqual(3, parsed.Chart(0));
+            Assert.IsFalse(parsed.IsInherited(1)); Assert.IsTrue(parsed.HasProjectionSupport(1)); Assert.AreEqual(0, parsed.Layer(1)); Assert.AreEqual(4, parsed.Chart(1));
+            CollectionAssert.AreEqual(new[] { 7 }, parsed.removedSourceFaces); Assert.AreEqual(1, parsed.chain.Length); Assert.AreEqual(1, parsed.overlaps.Length);
+            Assert.IsNull(ReverseUvAudit.ParseProvenance("not JSON", out _)); Assert.IsNull(ReverseUvAudit.ParseProvenance(null, out _));
+            var saved = new MeshUv2Entry { targetUvChannel = 1, vertPositions = mesh.vertices, vertUv0 = mesh.uv, uv2 = mesh.uv2,
+                optimizedTriangles = mesh.triangles, submeshTriangleCounts = new[] { mesh.triangles.Length }, reverseTransferJson = legacy };
+            var entry = new MeshEntry { fbxMesh = mesh, originalMesh = mesh };
+            SidecarStore.RestoreReverseProvenance(entry, saved);
+            var restored = ReverseUvAudit.ParseProvenance(entry.reverseTransferJson, out upgraded);
+            Assert.IsFalse(upgraded, "the restored history is rewritten in the compact schema");
+            Assert.IsTrue(restored.Describes(2)); Assert.AreEqual(64u, entry.repackedAtlasWidth);
+            Assert.Less(entry.reverseTransferJson.Length, legacy.Length);
+        }
+
+        [Test] public void AuditSaveKeepsOnlyTheLastReports()
+        {
+            string directory = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "MeshLabReverseAudit_" + Guid.NewGuid().ToString("N"));
+            var previous = BenchmarkRecorder.OutputDirectoryOverride;
+            try
+            {
+                BenchmarkRecorder.OutputDirectoryOverride = directory;
+                var audit = new ReverseUvAudit.Audit { report = new ReverseUvTransfer.Report() };
+                var written = new List<string>();
+                for (int i = 0; i < 4; ++i) written.Add(System.IO.Path.GetFileName(ReverseUvAudit.Save(audit, keepLast: 2)));
+                string[] Kept() => System.IO.Directory.GetFiles(directory, "reverse_*.json").Select(p => System.IO.Path.GetFileName(p)).OrderBy(n => n, StringComparer.Ordinal).ToArray();
+                // The names carry the UTC stamp the pruning sorts by; saves within one millisecond sort by their suffix, as the pruning does.
+                CollectionAssert.AreEqual(written.OrderBy(n => n, StringComparer.Ordinal).Skip(2).ToArray(), Kept(), "the newest reports stay");
+                ReverseUvAudit.Save(audit);
+                Assert.AreEqual(3, Kept().Length, "a save without a limit prunes nothing");
+            }
+            finally
+            {
+                BenchmarkRecorder.OutputDirectoryOverride = previous;
+                if (System.IO.Directory.Exists(directory)) System.IO.Directory.Delete(directory, true);
+            }
+        }
+
         [Test] public void ReverseSidecarRefusesSplitSeamsAndRemovedFacesWithoutChangingSource()
         {
             var source = Quad(); var before = TransferMeshSnapshot.Capture(source);
@@ -1329,8 +1382,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 targetUvChannel = 1, vertPositions = mesh.vertices, vertUv0 = mesh.uv, uv2 = mesh.uv2,
                 optimizedTriangles = mesh.triangles, submeshTriangleCounts = new[] { mesh.triangles.Length },
                 reverseTransferJson = JsonUtility.ToJson(new ReverseUvAudit.ProvenanceEntry {
-                    atlasSize = 128, surface = new ReverseUvTransfer.NodeReport { key = mesh.name,
-                        faces = new[] { new ReverseUvTransfer.Face { chart = 0 }, new ReverseUvTransfer.Face { chart = 1 } } }
+                    atlasSize = 128, key = mesh.name, faceCount = 2, faceFlags = new int[2], faceChart = new[] { 0, 1 }
                 })
             };
             if (change == "vertex order") {
@@ -1368,8 +1420,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 targetUvChannel = 1, vertPositions = mesh.vertices, vertUv0 = mesh.uv, uv2 = mesh.uv2,
                 optimizedTriangles = mesh.triangles, submeshTriangleCounts = new[] { mesh.triangles.Length },
                 reverseTransferJson = JsonUtility.ToJson(new ReverseUvAudit.ProvenanceEntry {
-                    atlasSize = 128, surface = new ReverseUvTransfer.NodeReport { key = mesh.name,
-                        faces = new[] { new ReverseUvTransfer.Face { chart = 0 }, new ReverseUvTransfer.Face { chart = 1 } } }
+                    atlasSize = 128, key = mesh.name, faceCount = 2, faceFlags = new int[2], faceChart = new[] { 0, 1 }
                 })
             };
             var reshaped = Object.Instantiate(mesh); reshaped.name = mesh.name; owned.Add(reshaped);

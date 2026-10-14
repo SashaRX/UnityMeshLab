@@ -28,7 +28,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 .Select(JsonUtility.FromJson<ReverseUvAudit.ProvenanceEntry>).ToArray();
             var parts = inputs.Select((level, l) => level.inputs.Select((input, n) => {
                 var part = Capture(result.meshes[l][n], input.key, input.toWorld);
-                part.provenance = provenance.Single(p => p.surface.lod == level.lod && p.surface.key == input.key);
+                part.provenance = provenance.Single(p => p.lod == level.lod && p.key == input.key);
                 WriteLayout(directory, level.lod, input.key, part);
                 return part;
             }).ToArray()).ToArray();

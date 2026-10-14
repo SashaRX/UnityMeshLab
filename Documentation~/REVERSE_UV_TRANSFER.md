@@ -74,9 +74,9 @@ LOD number and advances toward LOD0. The existing forward solver is unchanged.
   reimport an unreadable model when MeshData is unavailable and restores its
   Read/Write setting; importer precision preparation remains a separate
   forward-pipeline operation.
-- Outputs are staged before replacing the visible chain. Failed validation,
-  cancellation or failed audit writes publish no new chain. Temporary cleaned
-  inputs and prepared seed meshes are destroyed on success, failure or cancellation.
+- Outputs are staged before replacing the visible chain. Failed validation or
+  cancellation publishes no new chain. Temporary cleaned inputs and prepared seed
+  meshes are destroyed on success, failure or cancellation.
 
 ## Intentional overlap
 
@@ -85,9 +85,11 @@ Shared-edge folds are still rejected. Previous layers take precedence over
 projection distance, so a closer detail cannot reorder its parent layer.
 
 Reports retain root chart, previous LOD/node/representative face, current layer and
-every positive-area under/over face relationship. Each node's face decisions, chain
-keys and overlap relationships are saved in the optional `reverseTransferJson`
-sidecar field where legacy topology replay remains safe. Changed topology or UV2
+every positive-area under/over face relationship. Each node's per-face overlap flags
+and charts, chain keys and overlap relationships are saved, compactly (schema 3;
+records of the earlier whole-report schema are read and rewritten on restore), in
+the optional `reverseTransferJson` sidecar field where legacy topology replay
+remains safe. Changed topology or UV2
 seam splits require a mesh asset or new FBX export; see Current limits below.
 Legacy pipeline mutations and sidecar replacement clear stale reverse metadata.
 Supported sidecar/export paths retain the result's UV2 when the working mesh
@@ -99,10 +101,13 @@ it does not change Bakery or the bake server's write order.
 
 ## Diagnostics and benchmark
 
-Successful runs write JSON under `BenchmarkReports/ReverseUV/` or the benchmark
-output override. Reports contain face decisions, per-mesh quality, complete per-LOD
-overlap classification, density extrema, atlas size and local fallback counts.
-Incomplete bounded overlap scans are refused.
+Every run is audited in memory before it publishes; incomplete bounded overlap
+scans are refused. At the Verbose log level (Diagnostics → log filters) a successful
+run also writes the audit JSON under `BenchmarkReports/ReverseUV/`, keeping the last
+20; the benchmark writes every audit into its output override. A failed write is
+logged and does not change the result. Reports contain face decisions, per-mesh
+quality, complete per-LOD overlap classification, density extrema, atlas size and
+local fallback counts.
 Each node also records `sourceFaces` (output face to pre-cleanup input face) and
 `removedSourceFaces`. Parent/overlay face indices continue to use output order;
 resolve the parent's `sourceFaces` map to find its pre-cleanup face. These refer

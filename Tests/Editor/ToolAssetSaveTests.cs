@@ -212,13 +212,12 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             var faces = Enumerable.Range(0, mesh.triangles.Length / 3).Select(face => new ReverseUvTransfer.Face {
                 chart = 0, layer = face, inherited = true, intentionalOverlap = overlap && face > 0 }).ToArray();
-            return JsonUtility.ToJson(new ReverseUvAudit.ProvenanceEntry {
-                atlasSize = 128, seedResolution = 128, texelsPerUnit = 32,
-                surface = new ReverseUvTransfer.NodeReport { lod = 0, key = mesh.name, faces = faces },
-                chain = new[] { new ReverseUvAudit.NodeKey { lod = 0, node = 0, key = mesh.name } },
-                overlaps = overlap ? new[] { new ReverseUvTransfer.OverlapRelation {
-                    lod = 0, underMesh = 0, overMesh = 0, underFace = 0, overFace = 1 } } : Array.Empty<ReverseUvTransfer.OverlapRelation>()
-            });
+            var history = ReverseUvAudit.ProvenanceEntry.Of(0, mesh.name, faces);
+            history.atlasSize = 128; history.seedResolution = 128; history.texelsPerUnit = 32;
+            history.chain = new[] { new ReverseUvAudit.NodeKey { lod = 0, node = 0, key = mesh.name } };
+            history.overlaps = overlap ? new[] { new ReverseUvTransfer.OverlapRelation {
+                lod = 0, underMesh = 0, overMesh = 0, underFace = 0, overFace = 1 } } : Array.Empty<ReverseUvTransfer.OverlapRelation>();
+            return JsonUtility.ToJson(history);
         }
 
         [TestCase(false, false)] [TestCase(true, false)]
@@ -240,7 +239,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var result = Object.Instantiate(mesh); owned.Add(result);
             result.uv2 = mesh.uv2.Select(uv => uv * .75f).ToArray(); entry.repackedMesh = result;
             var history = JsonUtility.FromJson<ReverseUvAudit.ProvenanceEntry>(ReverseHistory(result));
-            history.surface.key = mesh.name; history.chain[0].key = mesh.name; history.texelsPerUnit = 24;
+            history.key = mesh.name; history.chain[0].key = mesh.name; history.texelsPerUnit = 24;
             entry.reverseTransferJson = JsonUtility.ToJson(history);
             string expected = entry.reverseTransferJson;
             var bytes = File.ReadAllBytes(source.path); var guid = AssetDatabase.AssetPathToGUID(source.path);
@@ -297,8 +296,8 @@ namespace SashaRX.UnityMeshLab.Tests
             if (change == "corrupt JSON") saved.reverseTransferJson = "not JSON";
             if (change == "surface identity" || change == "face count") {
                 var report = JsonUtility.FromJson<ReverseUvAudit.ProvenanceEntry>(saved.reverseTransferJson);
-                if (change == "surface identity") report.surface.key = "Other";
-                else report.surface.faces = report.surface.faces.Take(1).ToArray();
+                if (change == "surface identity") report.key = "Other";
+                else { report.faceCount = 1; report.faceFlags = report.faceFlags.Take(1).ToArray(); report.faceChart = report.faceChart.Take(1).ToArray(); }
                 saved.reverseTransferJson = JsonUtility.ToJson(report);
             }
             var context = new UvToolContext(); context.RefreshStandalone((MeshRenderer)source.entry.renderer);
