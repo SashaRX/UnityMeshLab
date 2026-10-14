@@ -42,14 +42,17 @@ namespace SashaRX.UnityMeshLab
         public Mesh fbxMesh;
 
         /// <summary>
-        /// <see cref="originalMesh"/> is an edit of the renderer's mesh made through a tool
-        /// with Undo (Cleanup's weld, degenerate removal, channel strip, …) and assigned to
-        /// the renderer as its new mesh. Unlike a pipeline working copy it is never swapped
-        /// back to <see cref="fbxMesh"/> or destroyed when the context refreshes, and
-        /// <see cref="fbxMesh"/> stays the imported mesh so a save can still write the
-        /// edited faces into the FBX.
+        /// An edit of the renderer's mesh made through a tool with Undo (Cleanup's weld,
+        /// degenerate removal, channel strip, …) and assigned to the renderer as its new mesh;
+        /// null while the renderer shows its imported mesh. It is the entry's
+        /// <see cref="Baseline"/>: pipeline working copies start from it and reset to it, never
+        /// to <see cref="fbxMesh"/>, and nothing but Undo destroys it. <see cref="fbxMesh"/>
+        /// stays the imported mesh so a save can still write the edited faces into the FBX.
         /// </summary>
-        public bool sceneEdit;
+        public Mesh sceneEditMesh;
+
+        /// <summary>The mesh the renderer shows when no tool result is applied: the scene edit, else the imported mesh.</summary>
+        public Mesh Baseline => sceneEditMesh != null ? sceneEditMesh : fbxMesh;
 
         public bool include = true;
 

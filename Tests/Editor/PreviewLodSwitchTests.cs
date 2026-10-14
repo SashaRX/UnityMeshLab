@@ -85,9 +85,9 @@ namespace SashaRX.UnityMeshLab.Tests
             // a scene edit, not a pipeline working copy: a refresh must neither swap the imported
             // mesh back nor destroy the clone, and the rebuilt entry keeps the imported mesh as
             // its file reference so a save can still write the edited faces into the FBX.
-            const string folder="Assets/__MeshLabSceneEditTests";
+            string folder="Assets/__MeshLabSceneEditTests_"+System.Guid.NewGuid().ToString("N");
             var group=Group(true,out var renderer,out _); var filter=renderer.GetComponent<MeshFilter>(); var imported=filter.sharedMesh;
-            if (!UnityEditor.AssetDatabase.IsValidFolder(folder)) UnityEditor.AssetDatabase.CreateFolder("Assets",folder.Substring("Assets/".Length));
+            UnityEditor.AssetDatabase.CreateFolder("Assets",folder.Substring("Assets/".Length));
             UnityEditor.AssetDatabase.CreateAsset(imported,folder+"/imported.asset");
             try {
                 var ctx=Open(group);
@@ -95,9 +95,9 @@ namespace SashaRX.UnityMeshLab.Tests
                 var entry=ctx.MeshEntries.Find(e=>e.renderer==renderer);
                 Assert.AreSame(imported,entry.fbxMesh);
                 var importedBytes=TransferMeshSnapshot.Capture(imported);
-                Assert.IsTrue(MeshHygieneUtility.PrepareWritable(entry,"Scene edit",out var edited));
+                Assert.IsTrue(MeshHygieneUtility.PrepareWritable(entry,"Scene edit",out var edited,ctx));
                 owned.Add(edited);
-                Assert.AreNotSame(imported,edited); Assert.IsTrue(entry.sceneEdit);
+                Assert.AreNotSame(imported,edited); Assert.AreSame(edited,entry.sceneEditMesh); Assert.AreSame(edited,entry.Baseline);
                 edited.vertices=edited.vertices.Select(v=>v*2).ToArray(); edited.RecalculateBounds();
                 var editedBytes=TransferMeshSnapshot.Capture(edited);
                 Assert.AreSame(edited,filter.sharedMesh);
@@ -110,13 +110,24 @@ namespace SashaRX.UnityMeshLab.Tests
                 entry=ctx.MeshEntries.Find(e=>e.renderer==renderer);
                 Assert.AreSame(edited,entry.originalMesh);
                 Assert.AreSame(imported,entry.fbxMesh,"the rebuilt entry keeps the imported mesh as its file reference");
-                Assert.IsTrue(entry.sceneEdit);
+                Assert.AreSame(edited,entry.sceneEditMesh);
                 CollectionAssert.AreEqual(editedBytes,TransferMeshSnapshot.Capture(edited));
                 CollectionAssert.AreEqual(importedBytes,TransferMeshSnapshot.Capture(imported));
 
-                // Another model, then back: the renderer still shows the edit.
+                // The transfer pipeline takes its working copy from the edit and resets to it.
+                typeof(UvTransferWorkflow).GetMethod("EnsureTransferWorkingMesh",BindingFlags.Static|BindingFlags.NonPublic).Invoke(null,new object[] {entry});
+                var working=entry.originalMesh; owned.Add(working);
+                Assert.AreNotSame(edited,working); Assert.AreSame(edited,entry.sceneEditMesh);
+                Call(hub,"RestoreWorkingMeshes");
+                Assert.IsFalse(working,"the pipeline copy is released"); Assert.IsTrue(edited); Assert.AreSame(edited,filter.sharedMesh);
+
+                // Another model, then back: the renderer still shows the edit and the rebuilt
+                // entry still knows which imported mesh it stands for.
                 ctx.Refresh(Group(true,out _,out _));
                 Assert.IsTrue(edited); Assert.AreSame(edited,filter.sharedMesh);
+                if (standalone) ctx.RefreshStandalone(renderer); else ctx.Refresh(group);
+                entry=ctx.MeshEntries.Find(e=>e.renderer==renderer);
+                Assert.AreSame(edited,entry.originalMesh); Assert.AreSame(imported,entry.fbxMesh); Assert.AreSame(edited,entry.sceneEditMesh);
             }
             finally { UnityEditor.AssetDatabase.DeleteAsset(folder); }
         }
