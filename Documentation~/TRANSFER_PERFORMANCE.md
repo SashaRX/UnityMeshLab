@@ -446,6 +446,14 @@ the original triangle/row order. Local point transforms, rounding, dilation
 radius and final UV placement are unchanged. Masks below 32 triangles and
 temporary buffers above two million spans retain scalar rasterization.
 
+PR review added a main-thread scheduling guard. Unity's job scheduling is only
+supported from the editor main thread; async final packing runs on a Task worker
+and retains scalar rasterization before any NativeArray allocation or job API.
+The timing tables below were measured by the synchronous benchmark path and do
+not establish a Burst gain for async editor actions. Regression coverage compares
+complete synchronous/async Reverse outputs with both overlap policies and checks
+background refusal, cancellation and subsequent main-thread Burst execution.
+
 The job writes a per-triangle BurstDiscard witness: managed execution is never
 counted as accelerated. The benchmark enables compilation only inside its test
 scope, suppressing the editor-option persistence callback while changing runtime

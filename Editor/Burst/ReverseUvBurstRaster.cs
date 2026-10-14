@@ -14,8 +14,15 @@ namespace SashaRX.UnityMeshLab
     [InitializeOnLoad]
     internal static class ReverseUvBurstRaster
     {
+        // InitializeOnLoad runs this constructor on the editor main thread,
+        // before registering the evaluator that background packing can call.
+        static readonly int mainThreadId;
         static ReverseUvBurstRaster()
-        {ReverseUvRasterAcceleration.evaluate=Evaluate;ReverseUvRasterAcceleration.beginTestScope=()=>new CompilerTestScope();}
+        {
+            mainThreadId=Thread.CurrentThread.ManagedThreadId;
+            ReverseUvRasterAcceleration.evaluate=Evaluate;
+            ReverseUvRasterAcceleration.beginTestScope=()=>new CompilerTestScope();
+        }
 
         // Only the explicit test hook uses this scope. Mute the editor option
         // persister while toggling runtime flags; no user EditorPrefs are written.
@@ -41,6 +48,11 @@ namespace SashaRX.UnityMeshLab
             int capacity,int width,double radius,CancellationToken token)
         {
             token.ThrowIfCancellationRequested();
+            if(Thread.CurrentThread.ManagedThreadId!=mainThreadId)
+            {
+                ReverseUvRasterAcceleration.LastRefusal="Burst job scheduling requires the editor main thread";
+                return null;
+            }
             if(!BurstCompiler.IsEnabled) {ReverseUvRasterAcceleration.LastRefusal="Burst compilation is disabled";return null;}
             using var input=new NativeArray<ReverseUvRasterAcceleration.Triangle>(triangles,Allocator.TempJob);
             using var spans=new NativeArray<ReverseUvRasterAcceleration.Span>(capacity,Allocator.TempJob);
