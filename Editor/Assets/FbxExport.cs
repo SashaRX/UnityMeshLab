@@ -987,6 +987,7 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Warn($"[FBX Export] '{targetFbxPath}' was written; the step after the write failed: {ex.Message}");
                 UvtLog.Verbose(ex.ToString());
             }
+            bool housekeepingDone = true;
             try
             {
                 // The exporter may have generated a .meta for the .tmp — strip it so the
@@ -994,7 +995,11 @@ namespace SashaRX.UnityMeshLab
                 string tmpMetaPath = tmpAbsPath + MetaExtension;
                 if (File.Exists(tmpMetaPath)) File.Delete(tmpMetaPath);
             }
-            catch (Exception ex) { UvtLog.Warn($"[FBX Export] '{targetFbxPath}' was written; delete the leftover '{tmpAbsPath + MetaExtension}' by hand: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                housekeepingDone = false;
+                UvtLog.Warn($"[FBX Export] '{targetFbxPath}' was written; delete the leftover '{tmpAbsPath + MetaExtension}' by hand: {ex.Message}");
+            }
             if (metaBackedUp && File.Exists(metaBak))
             {
                 try
@@ -1005,14 +1010,20 @@ namespace SashaRX.UnityMeshLab
                 catch (Exception ex)
                 {
                     // Without its .meta the asset would take a new GUID on import.
+                    housekeepingDone = false;
                     UvtLog.Warn($"[FBX Export] '{targetFbxPath}' was written, but its .meta could not be restored from '{metaBak}': {ex.Message}. Copy it back by hand before the next import so the asset keeps its GUID.");
                 }
             }
-            // Keep the original recoverable until metadata restoration succeeds.
+            // The previous file stays recoverable until the .meta restore and the housekeeping
+            // are done; a step that failed leaves it where it is, named in the warning.
             if (fbxBak != null && File.Exists(fbxBak))
             {
-                try { File.Delete(fbxBak); }
-                catch (Exception ex) { UvtLog.Warn($"[FBX Export] '{targetFbxPath}' was written; the previous file is left at '{fbxBak}': {ex.Message}"); }
+                if (!housekeepingDone) UvtLog.Warn($"[FBX Export] '{targetFbxPath}': the previous file is kept at '{fbxBak}' until the steps above are done by hand.");
+                else
+                {
+                    try { File.Delete(fbxBak); }
+                    catch (Exception ex) { UvtLog.Warn($"[FBX Export] '{targetFbxPath}' was written; the previous file is left at '{fbxBak}': {ex.Message}"); }
+                }
             }
         }
 
@@ -1624,7 +1635,8 @@ namespace SashaRX.UnityMeshLab
                 meshByName.Remove(name);
                 UvtLog.Warn($"[FBX Export] '{fbxPath}' has several meshes named '{name}'; renderers showing one keep their reference.");
             }
-            if (meshByName.Count == 0) return;
+            // With no mesh to bind (none imported, or every name shared) the passes below bind
+            // nothing, and the nodes the export renamed are still renamed to match the file.
 
             int relinked = 0;
             var root = lodGroup.transform;

@@ -1095,11 +1095,12 @@ namespace SashaRX.UnityMeshLab
             // Missing even when names did not change. Every renderer noted before the write
             // takes the recreated mesh of the name it showed; the by-name pass then covers the
             // nodes the export renamed and what the bindings could not place.
-            if (overwriteSource && allGroupsSucceeded && ctx?.LodGroup != null)
+            if (overwriteSource && allGroupsSucceeded)
             {
                 foreach (string fbxPath in batch.OverwrittenFbxPaths)
                 {
                     if (batch.BindingsByFbx.TryGetValue(fbxPath, out var bindings)) bindings.Relink(fbxPath);
+                    if (ctx?.LodGroup == null) continue;
                     batch.MeshRenamesByFbx.TryGetValue(fbxPath, out var renameMap);
                     FbxExport.RelinkSceneMeshReferences(fbxPath, renameMap, ctx.LodGroup);
                 }
@@ -1249,6 +1250,14 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        /// <summary>Eight hex digits of the path's SHA-256: the same in every process and runtime, unlike string.GetHashCode.</summary>
+        internal static string StablePathHash(string fullPath)
+        {
+            using var sha = System.Security.Cryptography.SHA256.Create();
+            var digest = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(fullPath));
+            return System.BitConverter.ToString(digest, 0, 4).Replace("-", "");
+        }
+
         static bool TryPrepareHierarchyExportPath(string sourceFbxPath, bool overwriteSource,
             out string exportPath, out string backupDirectory, out string fullSourcePath, out string backupName)
         {
@@ -1257,10 +1266,10 @@ namespace SashaRX.UnityMeshLab
                 System.IO.Path.GetDirectoryName(Application.dataPath), "Library", "MeshLab");
             // Hash the full path so two FBX files with the same filename
             // (e.g. Assets/A/Chair.fbx and Assets/B/Chair.fbx) get distinct
-            // backup names and never overwrite each other.
+            // backup names and never overwrite each other. The backup stays after the save,
+            // so the hash is one that does not change between editor sessions.
             fullSourcePath = System.IO.Path.GetFullPath(sourceFbxPath);
-            backupName = System.IO.Path.GetFileName(fullSourcePath) + "." +
-                unchecked((uint)fullSourcePath.GetHashCode()).ToString("X8");
+            backupName = System.IO.Path.GetFileName(fullSourcePath) + "." + StablePathHash(fullSourcePath);
             if (overwriteSource)
             {
                 if (!EditorUtility.DisplayDialog("Overwrite Source FBX",
