@@ -13,6 +13,7 @@ namespace SashaRX.UnityMeshLab
     public partial class UvTransferWorkflow : IBenchmarkHost
     {
         const string CancelButton = "Cancel";
+        const string AutoTuneMeshCopiesTiming = "Forward auto-tune mesh copies";
 
         UvToolContext ctx;
         UvCanvasView canvas;
@@ -1732,7 +1733,7 @@ namespace SashaRX.UnityMeshLab
             // ── Auto-tune: try multiple SymSplit configs, pick best ──
             // Save working copies so we can restore between attempts.
             var savedMeshes = new Dictionary<MeshEntry, Mesh>();
-            using (ForwardPerformance?.Accumulated("Forward auto-tune mesh copies"))
+            using (ForwardPerformance?.Accumulated(AutoTuneMeshCopiesTiming))
                 foreach (var e in ctx.MeshEntries)
                     if (e.originalMesh != null)
                         savedMeshes[e] = UnityEngine.Object.Instantiate(e.originalMesh);
@@ -1750,7 +1751,7 @@ namespace SashaRX.UnityMeshLab
             {
                 aborted = await RunAutoTuneAttempts(separationConfigs, savedMeshes, best, hasTransferTargets, useAsync);
                 if (best.Meshes.Count > 0 && !aborted)
-                    using (ForwardPerformance?.Accumulated("Forward auto-tune mesh copies")) RestoreAutoTuneChoice(best);
+                    using (ForwardPerformance?.Accumulated(AutoTuneMeshCopiesTiming)) RestoreAutoTuneChoice(best);
                 ctx.DiagnosticCapture?.StageSafe(this, "selected-final");
             }
             finally
@@ -1943,7 +1944,7 @@ namespace SashaRX.UnityMeshLab
                 if (ci > 0)
                 {
                     UvtLog.Info($"[Pipeline] Auto-tune retry #{ci} (separation={sepThresh:P0})...");
-                    using (ForwardPerformance?.Accumulated("Forward auto-tune mesh copies")) RestoreAutoTuneStartingMeshes(savedMeshes);
+                    using (ForwardPerformance?.Accumulated(AutoTuneMeshCopiesTiming)) RestoreAutoTuneStartingMeshes(savedMeshes);
                 }
 
                 using (ForwardPerformance?.Accumulated("Forward symmetry split")) RunSymmetryStage(sepThresh);
@@ -1994,7 +1995,7 @@ namespace SashaRX.UnityMeshLab
                 best.Issues = totalIssues;
                 best.Coverage = coverage;
                 best.ConfigIndex = ci;
-                using (ForwardPerformance?.Accumulated("Forward auto-tune mesh copies")) CaptureAutoTuneChoice(best);
+                using (ForwardPerformance?.Accumulated(AutoTuneMeshCopiesTiming)) CaptureAutoTuneChoice(best);
             }
 
 

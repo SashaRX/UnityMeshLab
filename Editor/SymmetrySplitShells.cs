@@ -351,7 +351,10 @@ namespace SashaRX.UnityMeshLab
             bool ShellHasUv0Overlap(int shellIndex)
             {
                 if (!uv0Overlap.TryGetValue(shellIndex, out bool overlap))
-                    uv0Overlap.Add(shellIndex, overlap = HasUv0Overlap(shells[shellIndex], uv0, tris));
+                {
+                    overlap = HasUv0Overlap(shells[shellIndex], uv0, tris);
+                    uv0Overlap.Add(shellIndex, overlap);
+                }
                 return overlap;
             }
 

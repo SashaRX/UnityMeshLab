@@ -165,24 +165,23 @@ namespace SashaRX.UnityMeshLab
             internal DonorSeamIndex SeamIndex(Options options,CancellationToken token)
             {
                 if (seamIndex==null)
-                    using (options.performance?.Accumulated("Projection donor seam index")) seamIndex=DonorSeamIndex.Build(donor,token);
+                    using (options.performance?.Accumulated("Projection donor seam index")) seamIndex=DonorSeamIndex.Create(donor,token);
                 return seamIndex;
             }
 
             internal void Prepare(Mesh source,Mesh target,int resolution,Matrix4x4 renderedFrame,CancellationToken token)
             {
-                prepared=true;
                 inputs=ReverseUvInputs.Prepare(new[] {new Level {lod=1,inputs=new[] {new Input {mesh=source,key=source.name}}},
                     new Level {lod=0,inputs=new[] {new Input {mesh=target,key=target.name}}}},token);
                 var cleanSource=inputs.levels[0].inputs[0].mesh;
                 var vertices=cleanSource.vertices;var indices=cleanSource.triangles;var uv=cleanSource.uv2;
-                if (uv.Length!=vertices.Length) {unusable=true;return;}
+                if (uv.Length!=vertices.Length) {unusable=prepared=true;return;}
                 var valid=new List<int>(); validFaces=new List<int>();
                 for(int t=0;t<indices.Length;t+=3)
                     if (ForwardAnisotropy(vertices[indices[t]],vertices[indices[t+1]],vertices[indices[t+2]],
                         uv[indices[t]],uv[indices[t+1]],uv[indices[t+2]],renderedFrame)<=4)
                     {valid.AddRange(new[] {indices[t],indices[t+1],indices[t+2]});validFaces.Add(inputs.levels[0].inputs[0].sourceFaces[t/3]);}
-                if (valid.Count==0) {unusable=true;return;}
+                if (valid.Count==0) {unusable=prepared=true;return;}
                 donorMesh=UnityEngine.Object.Instantiate(cleanSource);
                 donorMesh.subMeshCount=1;donorMesh.triangles=valid.ToArray();
                 donor=Capture(new Level {lod=1,inputs=new[] {new Input {mesh=donorMesh,key=source.name}}},Vector3.zero);
@@ -192,11 +191,13 @@ namespace SashaRX.UnityMeshLab
                     for(int i=0;i<s.indices.Length;++i) s.pixels[i]=uv[s.indices[i]]*resolution;
                     AssignCharts(s,Enumerable.Range(0,s.faces.Length).ToArray(),ref next);
                 }
+                // Only a completed preparation is reused by later passes.
+                prepared=true;
             }
 
             // Runs once, off the editor thread when asynchronous. A failed or
             // cancelled run caches nothing, so the next pass repeats it.
-            internal void ProjectInitial(Options options,CancellationToken token)
+            internal void ProjectInitialShared(Options options,CancellationToken token)
             {
                 List<Chart> built;
                 using (options.performance?.Accumulated("Projection donor charts")) built=Charts(donor);
@@ -269,7 +270,7 @@ namespace SashaRX.UnityMeshLab
             Surface[] targets;
             using(performance?.Accumulated("Forward seam projection"))
             {
-                if (pass.projected==null) await RunProjection(t=>pass.ProjectInitial(options,t),useAsync,token);
+                if (pass.projected==null) await RunProjection(t=>pass.ProjectInitialShared(options,t),useAsync,token);
                 targets=new[] {pass.CopyProjected()};
                 await RunProjection(t=>ProjectAfterInitial(pass.donor,targets,pass.charts,options,pass.queries,t,pass.SeamIndex(options,t)),useAsync,token);
             }
