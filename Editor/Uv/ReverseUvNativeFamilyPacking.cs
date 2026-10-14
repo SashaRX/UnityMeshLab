@@ -261,14 +261,17 @@ namespace SashaRX.UnityMeshLab
                 {
                     token.ThrowIfCancellationRequested();int first=starts[g];
                     var origin=source[g].Aggregate(Vector2.Min);
-                    int turn=Enumerable.Range(0,options.rotateCharts?8:1).OrderBy(t=>Enumerable.Range(0,hulls[g].Length)
+                    int BestTurn()=>Enumerable.Range(0,options.rotateCharts?8:1).OrderBy(t=>Enumerable.Range(0,hulls[g].Length)
                         .Sum(k=>(Transform(hulls[g][k]-hulls[g][0],t,density,mapped[first])-mapped[first+k]).sqrMagnitude)).First();
+                    // Aligned placement recovers its exact rotation; the nearest
+                    // of the eight turns then only names a refused orientation.
+                    int turn=align?-1:BestTurn();
                     var rotation=align?RecoverRotation(hulls[g],mapped,first,density):default;
                     Vector2 MoveProxy(Vector2 p)=>align?TransformAligned(p,rotation,density,mapped[first],0,0)
                         :Transform(p,turn,density,mapped[first]);
                     double shapeError=Math.Sqrt(Enumerable.Range(0,hulls[g].Length).Max(k=>(MoveProxy(hulls[g][k]-hulls[g][0])
                         -mapped[first+k]).sqrMagnitude));
-                    if(shapeError>.01) return Refused($"family {g} changes shape ({shapeError:G6} texels, scale {density:G6}, orientation {turn})");
+                    if(shapeError>.01) return Refused($"family {g} changes shape ({shapeError:G6} texels, scale {density:G6}, orientation {(align?BestTurn():turn)})");
                     Vector2[] Place(double x,double y)=>source[g].Select(p=>align
                         ?TransformAligned((double)p.x-origin.x-hulls[g][0].x,(double)p.y-origin.y-hulls[g][0].y,
                             rotation,density,mapped[first],x,y)
@@ -286,6 +289,8 @@ namespace SashaRX.UnityMeshLab
                     bool rescued=false;
                     for(int x=0;x<8 && !rescued;++x) for(int y=0;y<8;++y)
                     {
+                        // Phase (0,0) is the placement that has just failed.
+                        if(x==0 && y==0) continue;
                         token.ThrowIfCancellationRequested();var candidate=Place(x*spacing/8,y*spacing/8);
                         if(!Fits(candidate)) continue;
                         output[g]=candidate;rescued=true;break;

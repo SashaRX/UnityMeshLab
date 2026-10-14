@@ -23,6 +23,13 @@ read of that path found per-shell work that scales with the whole mesh:
   query per target face, used only for a Verbose log) runs only when that log
   is enabled.
 
+Reverse final packing gets three equally exact trims: an axis-aligned family no
+longer ranks eight rotations it never uses (the nearest turn is computed only
+for a refusal message), the sub-ULP rescue loop skips phase (0,0) — the
+placement whose validation has just failed (`Place` is deterministic and
+validation keeps only the first refusal reason) — and the cross-LOD join
+parses each surface's group key once instead of once per face.
+
 No transfer decision, UV, ordering or tolerance changes. Timing on the private
 corpus is not yet measured; the forward pipeline still needs stage timing in
 `TransferPerformanceProfile` before larger forward changes (source analysis

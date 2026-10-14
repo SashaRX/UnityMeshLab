@@ -383,8 +383,12 @@ namespace SashaRX.UnityMeshLab
             Dictionary<ReverseUvTransfer.Surface,int> offsets,DisjointSet families,int side,
             ReverseUvTransfer.Options options,CancellationToken token)
         {
+            // One name parse per surface, not per face.
+            var groupKeys=new Dictionary<ReverseUvTransfer.Surface,string>();
+            foreach(var s in surfaces)
+                if(!groupKeys.ContainsKey(s)) groupKeys.Add(s,UvToolContext.ExtractGroupKey(s.input.key));
             foreach(var part in surfaces.SelectMany(s=>Enumerable.Range(0,s.faces.Length).Select(f=>(s,f)))
-                .GroupBy(p=>(UvToolContext.ExtractGroupKey(p.s.input.key),p.s.faces[p.f].coordinateDomain)))
+                .GroupBy(p=>(groupKeys[p.s],p.s.faces[p.f].coordinateDomain)))
             {
                 if(part.Select(p=>p.s.lod).Distinct().Count()<2) continue;
                 var faces=part.ToArray();
