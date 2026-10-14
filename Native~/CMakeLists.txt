@@ -139,8 +139,8 @@ if(MESHLAB_EMBREE_QUERIES)
     add_library(meshlab-queries SHARED src/embree_queries.cpp)
     target_link_libraries(meshlab-queries PRIVATE embree)
     target_compile_options(meshlab-queries PRIVATE
-        $<$<CXX_COMPILER_ID:MSVC>:/O2 /fp:strict>
-        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O2 -ffp-contract=off>)
+        "$<$<CXX_COMPILER_ID:MSVC>:/O2;/fp:strict>"
+        "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-O2;-ffp-contract=off>")
     if(WIN32)
         foreach(runtime embree4 tbb12 tbbmalloc)
             add_custom_command(TARGET meshlab-queries POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
