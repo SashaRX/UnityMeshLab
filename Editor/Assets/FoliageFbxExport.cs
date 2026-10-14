@@ -53,6 +53,7 @@ namespace SashaRX.UnityMeshLab
                     selection.importAsset = (path, options) => { importAttempted = true; importer(path, options); };
                     bool written;
                     try { written = FbxExport.WriteChannels(group.source, group.entries, FbxExportIntent.Normals | FbxExportIntent.Tangents, null, null, null, selection); }
+                    catch (FbxExport.PostCommitException ex) { UvtLog.Error("[FBX Export] " + ex.Message); written = false; }
                     finally { if (importAttempted) RelinkSourceMeshes(group.source, relinks); }
                     if (!written) throw new InvalidOperationException($"Foliage FBX overwrite did not complete for '{group.source}'. If import failed after writing, fix the import and reimport this FBX; see the Mesh Lab log.");
                     paths.Add(group.source);
@@ -129,7 +130,10 @@ namespace SashaRX.UnityMeshLab
             PrepareGroup(source, targets, importAsset, out var entries, out var selection);
             paths.Add(output);
             ownership.Add(selection.mediaOwnership);
-            if (!FbxExport.WriteChannels(source, entries, FbxExportIntent.Normals | FbxExportIntent.Tangents, output, null, null, selection))
+            bool written;
+            try { written = FbxExport.WriteChannels(source, entries, FbxExportIntent.Normals | FbxExportIntent.Tangents, output, null, null, selection); }
+            catch (FbxExport.PostCommitException ex) { UvtLog.Error("[FBX Export] " + ex.Message); written = false; }
+            if (!written)
                 throw new InvalidOperationException($"FBX export failed for '{source}'. See the Mesh Lab log; no result was accepted.");
         }
 

@@ -2,6 +2,7 @@
 // naming rules, UV channel carry-over, the AO target mapping, the LOD-rebuild
 // hierarchy passes on a scratch hierarchy, and collision entry validation.
 using System.Collections.Generic;
+using System.Linq;
 using NUnit.Framework;
 using UnityEngine;
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
@@ -444,6 +445,37 @@ namespace SashaRX.UnityMeshLab.Tests
                 FbxExport.RelinkSceneMeshReferences(path, null, group);
                 Assert.IsNull(wheelFilter.sharedMesh, "'Wheel' does not take 'Wheel_COL' for sharing letters");
                 Assert.AreSame(fresh, colliderFilter.sharedMesh, "a Missing renderer takes the mesh of its own name");
+            }
+            finally { AssetDatabase.DeleteAsset(folder); }
+        }
+
+        [Test]
+        public void BindingsRelinkByTheNameTheExportGaveTheMesh()
+        {
+            // A renderer noted before the write showed "Chair"; the normalisation wrote that mesh
+            // as "Chair_LOD0". With the rename map the renderer takes it, with no LODGroup involved.
+            string folderName = "MeshLabFbxBindings_" + System.Guid.NewGuid().ToString("N");
+            string folder = "Assets/" + folderName;
+            AssetDatabase.CreateFolder("Assets", folderName);
+            try
+            {
+                string path = folder + "/chair.fbx";
+                FbxExport.Write(path, Node("Chair", null, Quad("Chair"), renderer: true));
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                Mesh imported = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().Single(m => m.name == "Chair");
+                var shown = Node("Chair", null, renderer: true); var filter = shown.AddComponent<MeshFilter>();
+                filter.sharedMesh = imported;
+                var bindings = new FbxExport.SceneMeshBindings();
+                bindings.Capture(path, filter);
+
+                FbxExport.Write(path, Node("Chair_LOD0", null, Quad("Chair_LOD0"), renderer: true));
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                Mesh renamed = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().Single(m => m.name == "Chair_LOD0");
+
+                bindings.Relink(path);
+                Assert.AreNotSame(renamed, filter.sharedMesh, "without the rename map the noted name finds no mesh");
+                bindings.Relink(path, new Dictionary<string, string> { { "Chair", "Chair_LOD0" } });
+                Assert.AreSame(renamed, filter.sharedMesh, "the rename map leads the noted name to the written mesh");
             }
             finally { AssetDatabase.DeleteAsset(folder); }
         }

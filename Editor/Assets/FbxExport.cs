@@ -618,16 +618,10 @@ namespace SashaRX.UnityMeshLab
             // else in the file is rebuilt (see FbxChannelWrite).
             if (FbxChannelWrite.Handles(intent))
             {
+                // A PostCommitException passes through: the file is written, and the caller
+                // decides what of its own follow-up (sidecar, scene) still applies.
                 try { return FbxChannelWrite.Write(sourceFbxPath, entries, intent, outputFbxPath, sceneRoot, shadingSelection: shadingSelection); }
-                catch (PostCommitException ex)
-                {
-                    // The file is written; the import and relink that follow it did not run, so the
-                    // caller keeps its working copies and the next import brings the file in.
-                    UvtLog.Error($"[FBX Export] {ex.Message} The import of the written file and the scene relink did not run; fix the cause and save again.");
-                    UvtLog.Verbose(ex.ToString());
-                    return false;
-                }
-                catch (Exception ex)
+                catch (Exception ex) when (!(ex is PostCommitException))
                 {
                     string outcome = shadingSelection?.allowSourceOverwrite == true ? "overwrite did not complete" : "was not written";
                     UvtLog.Error($"[FBX Export] '{sourceFbxPath}' {outcome}: {ex.Message}");
@@ -735,14 +729,9 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Info($"[FBX Export] Isolated channels {intent} ({updated} updates) -> {targetFbxPath}");
                 exported = true;
             }
-            catch (PostCommitException ex)
-            {
-                // The new file is installed: the marker stays so the import that follows skips
-                // the stale sidecar over the channels just written.
-                UvtLog.Error("[FBX Export] Isolated channel export: " + ex.Message + " The import of the written file did not run; fix the cause and save again.");
-                return false;
-            }
-            catch (Exception ex)
+            // A PostCommitException passes through: the new file is installed, and the marker
+            // stays so the import that follows skips the stale sidecar over the channels written.
+            catch (Exception ex) when (!(ex is PostCommitException))
             {
                 Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath);
                 UvtLog.Error("[FBX Export] Isolated channel export failed: " + ex);
@@ -1585,7 +1574,11 @@ namespace SashaRX.UnityMeshLab
                 _ => null,
             };
 
-            internal void Relink(string path)
+            /// <summary>
+            /// Every noted component takes the file's mesh of the name it showed, or of the name the
+            /// export gave that mesh (<paramref name="renameMap"/>, the normalisation's renames).
+            /// </summary>
+            internal void Relink(string path, Dictionary<string, string> renameMap = null)
             {
                 var meshes = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>()
                     .GroupBy(mesh => mesh.name, StringComparer.Ordinal).Where(group => group.Count() == 1)
@@ -1597,7 +1590,10 @@ namespace SashaRX.UnityMeshLab
                     foreach (var binding in bindings)
                     {
                         var component = binding.Key;
-                        if (component == null || !meshes.TryGetValue(binding.Value.name, out var fresh)) continue;
+                        if (component == null) continue;
+                        string name = binding.Value.name;
+                        if (renameMap != null && renameMap.TryGetValue(name, out string renamed)) name = renamed;
+                        if (!meshes.TryGetValue(name, out var fresh)) continue;
                         var current = CurrentMesh(component);
                         if (current == fresh || (current != null && current != binding.Value.previous)) continue;
                         Undo.RecordObject(component, RelinkUndoLabel);

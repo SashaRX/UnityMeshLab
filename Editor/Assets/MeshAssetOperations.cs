@@ -543,6 +543,18 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Info($"[FBX Export] Updated {saved} and removed {removed} UV2 entr(ies) in '{SidecarStore.PathFor(sync.fbxPath)}' to match the saved FBX.");
         }
 
+        // A save whose file is written but whose steps after the replacement failed (media, .meta,
+        // housekeeping): the import and the relink did not run. The persistent sidecar must still
+        // hold the written UVs, or an import after the one the marker covers would replay the old
+        // ones over them; the scene keeps its working copies, and a save once the cause is fixed
+        // finishes the import and the relink.
+        static void AfterPostCommitFailure(string sourceFbxPath, FbxExport.PostCommitException ex, SidecarSync sidecar)
+        {
+            UvtLog.Error($"[FBX Export] {ex.Message} The import of the written file and the scene relink did not run; fix the cause and save '{sourceFbxPath}' again.");
+            UvtLog.Verbose(ex.ToString());
+            ApplySidecarSync(sidecar);
+        }
+
         static bool TryChooseNarrowExportPath(string sourceFbxPath, FbxExportIntent intent, bool overwriteSource, out string outputFbxPath)
         {
             outputFbxPath = null;
@@ -658,10 +670,21 @@ namespace SashaRX.UnityMeshLab
                     exported = false;
                 }
             }
-            else exported = FbxExport.WriteChannels(
-                sourceFbxPath, list, intent, outputFbxPathOverride,
-                FbxExport.FirstRealMaterial(refreshContext ? ctx?.MeshEntries : list),
-                isVariantExport || !refreshContext ? null : ctx?.LodGroup);
+            else
+            {
+                try
+                {
+                    exported = FbxExport.WriteChannels(
+                        sourceFbxPath, list, intent, outputFbxPathOverride,
+                        FbxExport.FirstRealMaterial(refreshContext ? ctx?.MeshEntries : list),
+                        isVariantExport || !refreshContext ? null : ctx?.LodGroup);
+                }
+                catch (FbxExport.PostCommitException ex)
+                {
+                    AfterPostCommitFailure(sourceFbxPath, ex, sidecar);
+                    exported = false;
+                }
+            }
             if (!exported) { standaloneRelinks.Clear(); return false; }
             ApplySidecarSync(sidecar);
             if (!isVariantExport)
@@ -1037,6 +1060,14 @@ namespace SashaRX.UnityMeshLab
                         else MarkUnsaved(kv.Value);
                         continue;
                     }
+                    catch (FbxExport.PostCommitException ex)
+                    {
+                        // The file is written, its import and relink did not run: the sidecar takes
+                        // the written UVs now, the scene keeps its working copies for the save that
+                        // finishes the job.
+                        AfterPostCommitFailure(sourceFbxPath, ex, sidecar);
+                        written = false;
+                    }
                     catch (Exception ex)
                     {
                         UnmarkSceneEditsSaved(sourceFbxPath);
@@ -1099,17 +1130,18 @@ namespace SashaRX.UnityMeshLab
 
             // Unity recreates sub-asset meshes on reimport; old MeshFilter references go
             // Missing even when names did not change. Every renderer noted before the write
-            // takes the recreated mesh of the name it showed; the by-name pass then covers the
-            // nodes the export renamed and what the bindings could not place. Every overwritten
-            // file that was imported is relinked, in a partly failed batch too.
+            // takes the recreated mesh of the name it showed, or of the name the normalisation gave
+            // it; under a LODGroup the by-name pass then covers the nodes the export renamed and
+            // what the bindings could not place. Every overwritten file that was imported is
+            // relinked, in a partly failed batch too.
             var imported = batch.ImportReadyFbxPaths.Where(batch.OverwrittenFbxPaths.Contains).ToList();
             if (overwriteSource)
             {
                 foreach (string fbxPath in imported)
                 {
-                    if (batch.BindingsByFbx.TryGetValue(fbxPath, out var bindings)) bindings.Relink(fbxPath);
-                    if (ctx?.LodGroup == null) continue;
                     batch.MeshRenamesByFbx.TryGetValue(fbxPath, out var renameMap);
+                    if (batch.BindingsByFbx.TryGetValue(fbxPath, out var bindings)) bindings.Relink(fbxPath, renameMap);
+                    if (ctx?.LodGroup == null) continue;
                     FbxExport.RelinkSceneMeshReferences(fbxPath, renameMap, ctx.LodGroup);
                 }
             }
@@ -1259,15 +1291,21 @@ namespace SashaRX.UnityMeshLab
                 if (System.IO.File.Exists(metaBackup)) System.IO.File.Copy(metaBackup, fullSourcePath + ".meta", true);
                 if (!written && !string.IsNullOrEmpty(assetPath))
                     FbxExport.ReimportWithoutSidecars(assetPath, () => AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate));
-                if (System.IO.File.Exists(metaBackup)) System.IO.File.Delete(metaBackup);
-                if (!written && System.IO.File.Exists(fbxBackup)) System.IO.File.Delete(fbxBackup);
-                if (written) UvtLog.Info($"[FBX Export] The original of '{assetPath}' is kept at '{fbxBackup}' until the next save of this file.");
-                return true;
             }
             catch (Exception ex) {
                 UvtLog.Error($"[FBX Export] Backup restore failed; copies kept in {directory}: {ex.Message}");
                 return false;
             }
+            // The source and its .meta are as they should be from here: a backup copy that cannot be
+            // deleted is housekeeping, not a failed restore.
+            try
+            {
+                if (System.IO.File.Exists(metaBackup)) System.IO.File.Delete(metaBackup);
+                if (!written && System.IO.File.Exists(fbxBackup)) System.IO.File.Delete(fbxBackup);
+            }
+            catch (Exception ex) { UvtLog.Warn($"[FBX Export] Backup copies left in {directory}: {ex.Message}"); }
+            if (written) UvtLog.Info($"[FBX Export] The original of '{assetPath}' is kept at '{fbxBackup}' until the next save of this file.");
+            return true;
         }
 
         /// <summary>Eight hex digits of the path's SHA-256: the same in every process and runtime, unlike string.GetHashCode.</summary>
