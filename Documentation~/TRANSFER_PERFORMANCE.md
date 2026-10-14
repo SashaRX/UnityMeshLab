@@ -671,8 +671,10 @@ the managed metric, precision and contact audits. These validations read only
 their own family, so they run concurrently and are consumed in family order;
 transform/shape recovery, rescue phases, refusals and exceptions keep the
 sequential order. Atlas audits scan LOD levels concurrently and merge in level
-order. Control: `-DisableParallelValidation`. New timing sample: `Native family
-parallel validation` (nested inside `Native family packing trial`).
+order. It was measured default on, with `-DisableParallelValidation` as the
+control. After those measurements it defaults to off; opt in with
+`-ParallelValidation` / `MESHLAB_PARALLEL_VALIDATION=1`. New timing sample:
+`Native family parallel validation` (nested inside `Native family packing trial`).
 
 Measured candidate: `3552a3c5` (forward per-shell trims `ab575bc`, reverse
 packing trims `b58d9e3`, concurrent audits `cf74766`, worker Burst raster
@@ -699,9 +701,12 @@ Package Plugins are unchanged. Arms alternate per round, one repetition each:
 
 The a → b gain is the exact reverse trims; concurrent validation (b → c) gives no
 measurable gain. On Kamaz exclusive it is slower and noisier: b spans
-15.17–15.52 s, c 15.26–17.40 s (median +6.5%). Its cause is unconfirmed; do not
-count `parallelFamilyValidation` as a speedup. Cafe exclusive differences are
-within run-to-run spread.
+15.17–15.52 s, c 15.26–17.40 s (median +6.5%). Its cause is unconfirmed. Cafe
+exclusive differences are within run-to-run spread. `parallelFamilyValidation`
+therefore now defaults to off. One check pair on the opt-in source keeps all
+120 exports identical: zero concurrent-phase samples by default, 68 with
+`-ParallelValidation`. Its single Kamaz exclusive result (15.29 s sequential,
+14.82 s concurrent) confirms that the difference is run-to-run variation.
 
 Ordinary Transfer is timed as `Forward pipeline` (export excluded). Medians
 a / b / c: Cafe 0.53 / 0.46 / 0.47 s, Kitchen 4.40 / 3.86 / 3.84 s, Kamaz
@@ -727,11 +732,11 @@ Reproduce (one round; the driver alternates arms and switches the project's
 ```powershell
 & 'Tools~/run-transfer-performance.ps1' -UnityEditor $editor -ProjectPath $project `
     -OutputRoot $arm -Repetitions 1 -Density 32 -CombinedNative `
-    -NativeFootprintLibrary $privateDll -RequireBurstRaster [-DisableParallelValidation]
+    -NativeFootprintLibrary $privateDll -RequireBurstRaster [-ParallelValidation]
 python -I 'Tools~/compare-transfer-performance.py' --baseline $a1Models `
     --control $aModels1 $aModels2 $aModels3 --candidate $cModels1 $cModels2 $cModels3 --output $summary
 ```
 
 Artifacts: `_results~/transfer-performance-20261014-eighth/` (`arm-a|b|c/`,
 `summary-a-vs-c.json`, `summary-b-vs-c-5pairs.json`, `summary-historical*.json`,
-`stage-medians.json`, `regression-candidate*/`).
+`stage-medians.json`, `regression-candidate*/`, `optin-check/`).

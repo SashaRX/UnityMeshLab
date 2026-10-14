@@ -25,11 +25,13 @@ however, independent per family and per LOD level:
 - `ReverseUvShellPrecision.Stabilize` builds its snapshot and corner aliases
   only for the first face that needs repair, before any corner moves.
 
-`parallelFamilyValidation` (default on) is the internal switch; the benchmark's
-`-DisableParallelValidation` / `MESHLAB_DISABLE_PARALLEL_VALIDATION=1` keeps
-sequential validation for the control arm. `Native family parallel
-validation` times the concurrent phase. A synthetic six-island test compares
-reports and mesh streams for both overlap policies.
+`parallelFamilyValidation` is the internal switch. It was measured as default
+on, with `-DisableParallelValidation` as the control. After the measurements
+below it defaults to off; the benchmark's `-ParallelValidation` /
+`MESHLAB_PARALLEL_VALIDATION=1` opts in. The level face lists and lazy
+`Stabilize` snapshot stay unconditional. `Native family parallel validation`
+times the concurrent phase. A synthetic six-island test compares reports and
+mesh streams for both overlap policies.
 
 Measured on candidate `3552a3c5` (Intel Core i9-14900K, Unity 6000.2.6f2, Burst
 1.8.28 / Collections 2.5.7, 32 tex/m, 2 px padding, Fill atlas). Every arm uses
@@ -54,9 +56,19 @@ small too. On Kamaz without overlap it is slower and noisier: b spans
 15.17–15.52 s over five runs, c 15.26–17.40 s (median +6.5%); its packing-trial
 median rises 12.74 → 13.41 s. Kamaz overlap is +1%, inside run-to-run spread.
 The cause (thread-pool contention with the native packer, or GC pressure from
-concurrent scan buffers) is unconfirmed. Keep `parallelFamilyValidation`
-under review; it should not be counted as a speedup. The a → b gain comes from
-the two exact trims below, not from concurrency.
+concurrent scan buffers) is unconfirmed. The a → b gain comes from the exact
+trims (the two below, plus level lists built once and the lazy `Stabilize`
+snapshot), not from concurrency.
+
+Decision: `parallelFamilyValidation` now defaults to off. Its upside is capped
+by the short phase it parallelizes, and it adds worker threads and timing
+variance. A check pair on the opt-in source (default, then `-ParallelValidation`)
+keeps all 120 exports and counts identical. It records zero concurrent-phase
+samples by default and 68 with the switch. `TransferPerformanceTests` passes
+40/40 with the private search library. In that single pair Kamaz exclusive measures 15.29 s
+sequential and 14.82 s concurrent, the opposite sign of the five-pair median.
+The effect is dominated by run-to-run variation, not a reliable speedup.
+Artifacts: `_results~/transfer-performance-20261014-eighth/optin-check/`.
 
 All 14 runs execute and pass the three required model cases. All 120 exported
 geometry/UV/ancestry/quality files are byte-identical (SHA256) to arm a round 1

@@ -1289,7 +1289,7 @@ namespace SashaRX.UnityMeshLab.Tests
                             nativeFootprintSearch = System.Environment.GetEnvironmentVariable("MESHLAB_DISABLE_NATIVE_FOOTPRINT_SEARCH") != "1",
                             reuseOccupancySnapshots = System.Environment.GetEnvironmentVariable("MESHLAB_DISABLE_OCCUPANCY_SNAPSHOT_REUSE") != "1",
                             burstFootprintRaster = System.Environment.GetEnvironmentVariable("MESHLAB_DISABLE_BURST_RASTER") != "1",
-                            parallelFamilyValidation = System.Environment.GetEnvironmentVariable("MESHLAB_DISABLE_PARALLEL_VALIDATION") != "1",
+                            parallelFamilyValidation = System.Environment.GetEnvironmentVariable("MESHLAB_PARALLEL_VALIDATION") == "1",
                             footprintSearchApi = nativeSearch?.api,
                             queryApi=nativeQuery?.api,
                             queryBackend=System.Environment.GetEnvironmentVariable("MESHLAB_QUERY_BACKEND")=="legacy"
