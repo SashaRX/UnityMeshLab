@@ -75,6 +75,23 @@ per-face provenance from `report.json`. Analysis scripts and atlas renders:
   Reverted. The cause is Forward shell matching on transferred LODs, not
   reverse grouping; Kamaz overlap mode is already at Forward level
   (87.9 / 89.7%).
+- **Rejected: distance caps in Forward shell matching.** Temporary trace dumps
+  (`TransferMatchTrace` per pair) show where far source shells come from.
+  `RescoreMergedShells` rescues merged shells to UV0-identical copies up to
+  6 m away (20 cases, all large Kamaz errors). Its distance term is worth only
+  0.15 and is nearly flat. The opposed-normal override in `FindBestSourceShell`
+  picks a compatible chart at any distance (Kitchen Backsplash: 1.6 m, while
+  the nearest candidate is 6 mm away). Cafe LOD2's near sources are missing
+  from the centroid-ranked candidate list. Kitchen Main's far matches come
+  from dedup and Phase 3 reassignments. Two caps were tried: rescue only
+  within 10% of the diagonal, and the thin-sheet override only within 2% of
+  it. SEVERE matches fell sharply (Kamaz LOD1 6 → 0, max 6.05 → 0.74 m;
+  Backsplash 8 → 1), but no LOD score moved (Kitchen overlap 74, Kamaz
+  88 / 83). Forward overlaps rose: the rescore cap alone raised Kamaz LOD2
+  from 142 to 190 pairs. Reverted. Far matches are rare outliers; the Kitchen
+  Main overlaps behind overlap-mode loss need the per-vertex UV0 lookup of
+  merged shells (`globalUv0Bvh`, where identical UV0 on a far copy wins)
+  examined next.
 - **Remaining causes, not fixed here.**
   - Overlap mode repacks intact forward islands apart from their coarser
     counterparts. Kitchen LOD1 alignment is 74% (forward 87%).
