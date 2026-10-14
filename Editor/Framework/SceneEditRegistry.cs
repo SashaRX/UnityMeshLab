@@ -16,12 +16,17 @@ namespace SashaRX.UnityMeshLab
     /// entry with the imported mesh as its file reference instead of taking the edit for the
     /// import. A link outlives its objects: an edit or a renderer destroyed by Undo, by a save or
     /// by Split comes back through Undo as what it was, and an imported mesh a reimport recreated
-    /// is found again by its file, local id and name. Links go only when the registry is full,
-    /// oldest first, or when their imported mesh is gone for good.
+    /// is found again by its file, local id and name. Links go when their imported mesh is gone for
+    /// good; beyond the capacity, the oldest links whose edit is gone go first, and a link to a
+    /// living edit is never dropped.
     /// </summary>
     sealed class SceneEditRegistry : ScriptableSingleton<SceneEditRegistry>
     {
-        /// <summary>Links the registry keeps; beyond that the oldest go first.</summary>
+        /// <summary>
+        /// Links the registry keeps before it evicts: beyond that, a new link takes the place of the
+        /// oldest one whose edit is gone (destroyed, waiting for an Undo that may never come). Links to
+        /// living edits are never evicted, so the registry grows past the capacity while they fill it.
+        /// </summary>
         internal const int Capacity = 1024;
 
         [Serializable]
@@ -40,6 +45,9 @@ namespace SashaRX.UnityMeshLab
 
         [SerializeField] List<Link> links = new List<Link>();
 
+        /// <summary>How many links the registry holds.</summary>
+        internal static int Count => instance.links.Count;
+
         /// <summary>
         /// Records that <paramref name="edit"/> on <paramref name="filter"/> stands for the imported
         /// <paramref name="imported"/>; <paramref name="workingCopy"/> marks a pipeline copy rather than a
@@ -52,7 +60,7 @@ namespace SashaRX.UnityMeshLab
             var link = links.Find(candidate => candidate.filter == filter && candidate.edit == edit);
             if (link == null)
             {
-                if (links.Count >= Capacity) links.RemoveAt(0);
+                if (links.Count >= Capacity) Evict(links);
                 link = new Link { filter = filter, edit = edit };
                 links.Add(link);
             }
@@ -99,6 +107,14 @@ namespace SashaRX.UnityMeshLab
                     && e.meshFilter.sharedMesh == e.sceneEditMesh)
                     Register(e.meshFilter, e.fbxMesh, e.sceneEditMesh);
             instance.links.RemoveAll(link => Imported(link) == null);
+        }
+
+        // Drops the oldest link whose edit is gone. A living edit is what the next refresh asks about,
+        // so the registry grows instead when every link has one.
+        static void Evict(List<Link> links)
+        {
+            int index = links.FindIndex(link => link.edit == null);
+            if (index >= 0) links.RemoveAt(index);
         }
 
         // The link's imported mesh, found again by file, local id and name when a reimport recreated it.

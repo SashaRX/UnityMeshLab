@@ -285,6 +285,37 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void AFullRegistryEvictsOnlyLinksWhoseEditIsGone()
+        {
+            // The oldest link is a living edit and the registry fills with links whose edits are gone
+            // (saved edits, Undo histories cleared): the next link takes a dead one's place, never the
+            // living edit's; once every link has a living edit the registry grows instead.
+            SceneEditRegistry.Collect(Enumerable.Empty<MeshEntry>()); // what earlier tests left behind
+            var go=new GameObject("registry"); owned.Add(go); var filter=go.AddComponent<MeshFilter>();
+            var imported=new Mesh {name="imported"}; owned.Add(imported);
+            try {
+                var first=new Mesh {name="first edit"}; owned.Add(first);
+                SceneEditRegistry.Register(filter,imported,first);
+                while (SceneEditRegistry.Count<SceneEditRegistry.Capacity) {
+                    var gone=new Mesh(); SceneEditRegistry.Register(filter,imported,gone); Object.DestroyImmediate(gone);
+                }
+                var second=new Mesh {name="second edit"}; owned.Add(second);
+                SceneEditRegistry.Register(filter,imported,second);
+                Assert.AreEqual(SceneEditRegistry.Capacity,SceneEditRegistry.Count,"a link whose edit is gone made room");
+                Assert.IsTrue(SceneEditRegistry.TryGetImported(filter,first,out var behind),"the oldest link, to a living edit, stays"); Assert.AreSame(imported,behind);
+                Assert.IsTrue(SceneEditRegistry.TryGetImported(filter,second,out behind)); Assert.AreSame(imported,behind);
+
+                var living=new List<Mesh> {first,second};
+                while (living.Count<=SceneEditRegistry.Capacity) {
+                    var edit=new Mesh(); owned.Add(edit); living.Add(edit); SceneEditRegistry.Register(filter,imported,edit);
+                }
+                Assert.GreaterOrEqual(SceneEditRegistry.Count,living.Count,"with every link to a living edit the registry grows past its capacity");
+                foreach (var edit in living) { Assert.IsTrue(SceneEditRegistry.TryGetImported(filter,edit,out behind),edit.name); Assert.AreSame(imported,behind); }
+            }
+            finally { Object.DestroyImmediate(imported); SceneEditRegistry.Collect(Enumerable.Empty<MeshEntry>()); }
+        }
+
+        [Test]
         public void CleanupOnACopyOfAnEarlierEditKeepsThatEditAsTheBaselineThroughUndo()
         {
             // Edit A, then the pipeline's copy of A, then Cleanup on the copy: the fix goes into a
