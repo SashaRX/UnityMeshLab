@@ -1258,7 +1258,10 @@ namespace SashaRX.UnityMeshLab
                 // fails the group, not the file the group wrote.
                 bool restored = true;
                 if (overwriteSource)
-                    failed |= !(restored = RestoreHierarchyBackup(tempDir, backupName, fullSourcePath, sourceFbxPath, written));
+                {
+                    restored = RestoreHierarchyBackup(tempDir, backupName, fullSourcePath, sourceFbxPath, written);
+                    failed |= !restored;
+                }
                 importReady = written && restored;
                 if (madeReadable && importer != null)
                     failed |= !RestoreHierarchyReadability(importer, sourceFbxPath);
