@@ -1,5 +1,44 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Reverse final packing: exact trims — 2026-10-14
+
+Repeated work in final family packing that cannot change any placement:
+
+- An axis-aligned family no longer ranks eight rotations it never uses; the
+  nearest turn is computed only to name the orientation in a refusal message.
+- The sub-ULP rescue loop skips phase (0,0), the placement whose validation has
+  just failed (`Place` is deterministic and validation keeps only the first
+  refusal reason).
+- The cross-LOD correspondence join parses each surface's group key once instead
+  of once per face.
+- `AuditAtlas` builds each LOD level's face list and index array once per pack
+  instead of once per audit.
+- `ReverseUvShellPrecision.Stabilize` builds its snapshot and corner aliases
+  only for the first face that needs repair, before any corner moves.
+
+Measured on the private three-model corpus (Intel Core i9-14900K, Unity
+6000.2.6f2, Burst 1.8.28 / Collections 2.5.7, 32 tex/m, 2 px padding, Fill
+atlas, one private combined native library, `-RequireBurstRaster`): a =
+`a5c5deb`; b = `3552a3c5` with sequential validation, which also carries the
+forward per-shell change (not called by reverse) and the async-only Burst
+direct call (not reached by the synchronous benchmark). Medians of three runs
+of a and five of b, seconds:
+
+| Model | Policy | Reverse a | Reverse b | Packing trial b |
+|---|---|---:|---:|---:|
+| Cafe_Table_A_01 | no overlap | 1.09 | 1.13 | 1.04 |
+| Cafe_Table_A_01 | overlap | 2.96 | 2.88 | 1.75 |
+| Modern_Kitchen_A | no overlap | 6.50 | 6.04 | 5.34 |
+| Modern_Kitchen_A | overlap | 6.59 | 5.90 | 1.55 |
+| Kamaz (`kamaz_Off`) | no overlap | 16.46 | 15.39 | 12.74 |
+| Kamaz (`kamaz_Off`) | overlap | 34.66 | 32.22 | 15.84 |
+
+Kitchen gains 7–10% and Kamaz 6–7%; Cafe is within run-to-run spread. All 120
+exported geometry/UV/ancestry/quality files are byte-identical (SHA256) to arm
+a in every run, with unchanged input hashes/frames, atlas sizes, native pack,
+candidate search and placement-audit counts, logical work and refused/retained
+orders. Artifacts: `_results~/transfer-performance-20261014-eighth/`.
+
 ## Forward transfer: per-shell work without whole-mesh copies — 2026-10-14
 
 The paired performance runs exclude ordinary (forward) Transfer, and a code
