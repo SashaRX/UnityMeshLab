@@ -1354,6 +1354,38 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { if (owns) Object.DestroyImmediate(readable); }
         }
 
+        [Test] public void ReverseProvenanceIsRestoredForTheSceneEditNotTheImport()
+        {
+            // Cleanup's scene edit is the mesh the entry works from: a record that describes the
+            // import's faces is not restored onto an edit with other faces (the save would then skip
+            // the edit as a result the file already has); it is onto an edit with the same faces.
+            var original = Quad();
+            var mesh = ReverseUvMesh.Copy(original, original.triangles,
+                new[] { Vector2.zero, Vector2.right * .2f, Vector2.one * .2f,
+                    Vector2.one * .6f, Vector2.one * .8f, Vector2.up * .8f });
+            owned.Add(mesh);
+            var saved = new MeshUv2Entry {
+                targetUvChannel = 1, vertPositions = mesh.vertices, vertUv0 = mesh.uv, uv2 = mesh.uv2,
+                optimizedTriangles = mesh.triangles, submeshTriangleCounts = new[] { mesh.triangles.Length },
+                reverseTransferJson = JsonUtility.ToJson(new ReverseUvAudit.ProvenanceEntry {
+                    atlasSize = 128, surface = new ReverseUvTransfer.NodeReport { key = mesh.name,
+                        faces = new[] { new ReverseUvTransfer.Face { chart = 0 }, new ReverseUvTransfer.Face { chart = 1 } } }
+                })
+            };
+            var reshaped = Object.Instantiate(mesh); reshaped.name = mesh.name; owned.Add(reshaped);
+            reshaped.triangles = mesh.triangles.Take(3).ToArray(); // a face removed
+            var entry = new MeshEntry { fbxMesh = mesh, originalMesh = reshaped, sceneEditMesh = reshaped };
+            SidecarStore.RestoreReverseProvenance(entry, saved);
+            Assert.IsNull(entry.reverseTransferJson, "the record describes the import's faces, not the edit's");
+            Assert.AreEqual(0u, entry.repackedAtlasWidth);
+            var recoloured = Object.Instantiate(mesh); recoloured.name = mesh.name; owned.Add(recoloured);
+            recoloured.colors = Enumerable.Repeat(Color.red, mesh.vertexCount).ToArray(); // the faces and the layout as recorded
+            entry = new MeshEntry { fbxMesh = mesh, originalMesh = recoloured, sceneEditMesh = recoloured };
+            SidecarStore.RestoreReverseProvenance(entry, saved);
+            Assert.AreEqual(saved.reverseTransferJson, entry.reverseTransferJson);
+            Assert.AreEqual(128u, entry.repackedAtlasWidth);
+        }
+
         [TestCase(false,false,false)] [TestCase(true,false,false)] [TestCase(false,true,false)] [TestCase(false,false,true)]
         public void ReverseSidecarChecksTheReplayPositionBucket(bool distinctBucket, bool distinctUv0, bool sameUv2)
         {

@@ -79,20 +79,11 @@ namespace SashaRX.UnityMeshLab
                 foreach (string path in bypassed) Uv2AssetPostprocessor.bypassPaths.Remove(path);
             }
 
-            var imported = paths.ToDictionary(path => path,
-                path => AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().ToArray(), StringComparer.Ordinal);
             foreach (var binding in bindings)
             {
-                var meshes = imported[binding.path];
-                binding.mesh = meshes.FirstOrDefault(mesh =>
-                    AssetDatabase.TryGetGUIDAndLocalFileIdentifier(mesh, out string _, out long id) && id == binding.id);
-                if (!binding.mesh)
-                {
-                    // Some importers regenerate sub-asset IDs after changing welding.
-                    // A name fallback is allowed only when it is unique in this file.
-                    var named = meshes.Where(mesh => mesh.name == binding.name).ToArray();
-                    if (named.Length == 1) binding.mesh = named[0];
-                }
+                // By local id, else by a name unique in the file: some importers regenerate
+                // sub-asset ids after changing welding.
+                binding.mesh = SceneEditRegistry.FindImported(binding.path, binding.id, binding.name);
                 if (!binding.mesh)
                     throw new InvalidOperationException($"Cannot uniquely rebind UV input '{binding.name}' in '{binding.path}'. Run Setup again.");
                 if (!(AssetImporter.GetAtPath(binding.path) is ModelImporter importer) || NeedsPreparation(importer))
@@ -100,17 +91,32 @@ namespace SashaRX.UnityMeshLab
             }
             // Resolve every binding before publishing any of them. Excluded entries in
             // the same FBX must also follow the replacement sub-assets.
-            foreach (var binding in bindings)
+            foreach (var binding in bindings) Rebind(binding.entry, binding.mesh);
+        }
+
+        /// <summary>
+        /// Gives <paramref name="entry"/> the reimported <paramref name="imported"/> as its file
+        /// reference and, while the renderer shows the imported mesh, as its working mesh and the
+        /// renderer's. A scene edit (<see cref="MeshEntry.sceneEditMesh"/>) stays the renderer's
+        /// mesh and the entry's baseline: the pipeline keeps working from the edited geometry, and
+        /// the edit now stands for the reimported mesh.
+        /// </summary>
+        internal static void Rebind(MeshEntry entry, Mesh imported)
+        {
+            entry.fbxMesh = imported;
+            if (entry.sceneEditMesh != null)
             {
-                var entry = binding.entry;
-                entry.fbxMesh = entry.originalMesh = binding.mesh;
-                if (entry.meshFilter && entry.meshFilter.sharedMesh != binding.mesh)
-                {
-                    Undo.RecordObject(entry.meshFilter, "Prepare UV transfer input");
-                    entry.meshFilter.sharedMesh = binding.mesh;
-                    if (PrefabUtility.IsPartOfPrefabInstance(entry.meshFilter))
-                        PrefabUtility.RecordPrefabInstancePropertyModifications(entry.meshFilter);
-                }
+                entry.originalMesh = entry.sceneEditMesh;
+                SceneEditRegistry.Register(entry.meshFilter, imported, entry.sceneEditMesh);
+                return;
+            }
+            entry.originalMesh = imported;
+            if (entry.meshFilter && entry.meshFilter.sharedMesh != imported)
+            {
+                Undo.RecordObject(entry.meshFilter, "Prepare UV transfer input");
+                entry.meshFilter.sharedMesh = imported;
+                if (PrefabUtility.IsPartOfPrefabInstance(entry.meshFilter))
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(entry.meshFilter);
             }
         }
     }

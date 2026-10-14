@@ -198,7 +198,9 @@ namespace SashaRX.UnityMeshLab
         /// <list type="bullet">
         /// <item>Resolves writable mesh (<c>originalMesh ?? fbxMesh</c>).</item>
         /// <item>Bails out with a warning if missing or non-readable.</item>
-        /// <item>Clones asset-backed meshes and re-wires <c>MeshFilter</c> + <c>entry.originalMesh</c>.</item>
+        /// <item>Clones asset-backed meshes, pipeline working copies and a scene edit another renderer
+        /// shows too (a duplicated object), and re-wires <c>MeshFilter</c> + <c>entry.originalMesh</c>: the
+        /// clone is <c>entry.sceneEditMesh</c>, which no reset destroys.</item>
         /// <item>Records the resulting mesh and its filter for Undo under <paramref name="undoLabel"/>.</item>
         /// </list>
         /// Returns <c>false</c> when the entry cannot be safely mutated.
@@ -215,16 +217,60 @@ namespace SashaRX.UnityMeshLab
                 return false;
             }
 
-            if (AssetDatabase.Contains(source))
+            // A scene edit another renderer shows too (the object was duplicated with it on) is
+            // copied before it is edited: the edit on this renderer must leave the other as it is.
+            bool shared = source == entry.sceneEditMesh && source != entry.fbxMesh
+                && LodGroupUtility.IsMeshReferenced(source, entry.meshFilter);
+            if (AssetDatabase.Contains(source) || shared)
             {
                 var clone = UnityEngine.Object.Instantiate(source);
                 clone.name = source.name;
+                // The clone is the renderer's new mesh, not a pipeline working copy: Undo
+                // destroys it together with the swap, and a context refresh keeps it
+                // (MeshEntry.sceneEditMesh) instead of restoring the imported mesh over it.
+                // The registry tells every later context which imported mesh it stands for.
+                Undo.RegisterCreatedObjectUndo(clone, undoLabel);
                 if (entry.meshFilter != null)
                 {
                     Undo.RecordObject(entry.meshFilter, undoLabel);
                     entry.meshFilter.sharedMesh = clone;
+                    if (PrefabUtility.IsPartOfPrefabInstance(entry.meshFilter))
+                        PrefabUtility.RecordPrefabInstancePropertyModifications(entry.meshFilter);
                 }
                 entry.originalMesh = clone;
+                entry.sceneEditMesh = clone;
+                SceneEditRegistry.Register(entry.meshFilter, shared ? entry.fbxMesh : source, clone);
+                mesh = clone;
+            }
+            else if (source != entry.fbxMesh && source != entry.sceneEditMesh)
+            {
+                // A pipeline working copy (the transfer workflow's weld or symmetry split) is not
+                // Undo's to keep, so the edit goes into a clone that is: the clone is the renderer's
+                // scene edit, which no reset destroys, and the copy goes through Undo, registered as
+                // the working copy it was, of the scene edit it was taken from when there was one,
+                // so an Undo of the edit brings the pipeline state back as it stood instead of
+                // leaving a stray mesh on the renderer. That earlier edit, now part of the clone,
+                // goes through Undo with the copy.
+                var prior = entry.sceneEditMesh;
+                var clone = UnityEngine.Object.Instantiate(source);
+                clone.name = entry.fbxMesh != null ? entry.fbxMesh.name : source.name;
+                Undo.RegisterCreatedObjectUndo(clone, undoLabel);
+                if (entry.meshFilter != null)
+                {
+                    Undo.RecordObject(entry.meshFilter, undoLabel);
+                    entry.meshFilter.sharedMesh = clone;
+                    if (PrefabUtility.IsPartOfPrefabInstance(entry.meshFilter))
+                        PrefabUtility.RecordPrefabInstancePropertyModifications(entry.meshFilter);
+                }
+                SceneEditRegistry.Register(entry.meshFilter, entry.fbxMesh, source, workingCopy: true, baseline: prior);
+                SceneEditRegistry.Register(entry.meshFilter, entry.fbxMesh, clone);
+                // The copy and the earlier edit go through Undo unless another renderer still shows
+                // them (the object was duplicated while they were on it).
+                if (!LodGroupUtility.IsMeshReferenced(source)) Undo.DestroyObjectImmediate(source);
+                if (prior != null && prior != entry.fbxMesh && !AssetDatabase.Contains(prior) && !LodGroupUtility.IsMeshReferenced(prior))
+                    Undo.DestroyObjectImmediate(prior);
+                entry.originalMesh = clone;
+                entry.sceneEditMesh = clone;
                 mesh = clone;
             }
             else

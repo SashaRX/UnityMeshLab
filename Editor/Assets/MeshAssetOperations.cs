@@ -32,6 +32,22 @@ namespace SashaRX.UnityMeshLab
         void RestoreAllPreviews() => BeforeWrite?.Invoke();
         void SwitchToPostApplyView(Dictionary<string, List<MeshUv2Entry>> applied = null)
         {
+            if (applied != null)
+                foreach (var entry in ctx.MeshEntries)
+                {
+                    if (entry?.sceneEditMesh == null) continue;
+                    // The import that applied the channels may have recreated the imported mesh.
+                    var imported = ImportOf(entry);
+                    if (imported == null) continue;
+                    string path = AssetDatabase.GetAssetPath(imported);
+                    if (string.IsNullOrEmpty(path) || !applied.TryGetValue(path, out var saved)) continue;
+                    var payload = saved.FirstOrDefault(item => item != null && item.meshName == imported.name);
+                    if (payload == null) continue;
+                    var intent = UvIntent(payload.targetUvChannel)
+                        | (payload.auxiliaryUv != null ? UvIntent(payload.auxiliaryTargetUvChannel) : FbxExportIntent.None)
+                        | (payload.optimizedColors != null ? FbxExportIntent.VertexColors : FbxExportIntent.None);
+                    SyncSceneEditChannels(entry, GetResultMesh(entry), intent, "Apply UV2");
+                }
             if (ctx.LodGroup != null) ctx.Refresh(ctx.LodGroup);
             else if (ctx.StandaloneMesh)
             {
@@ -89,8 +105,10 @@ namespace SashaRX.UnityMeshLab
                 }
                 foreach (var e in ctx.MeshEntries)
                 {
-                    if (e.meshFilter != null && e.meshFilter.sharedMesh != null)
-                        e.fbxMesh = e.meshFilter.sharedMesh;
+                    if (e.meshFilter == null || e.meshFilter.sharedMesh == null) continue;
+                    // A scene edit on the renderer keeps the imported mesh, found again after the reimport, as the file reference.
+                    var shown = e.meshFilter.sharedMesh;
+                    e.fbxMesh = SceneEditRegistry.TryGetImported(e.meshFilter, shown, out var imported) ? imported : shown;
                 }
             }
         }
@@ -152,7 +170,14 @@ namespace SashaRX.UnityMeshLab
         public Mesh GetResultMesh(MeshEntry e)
         {
             if (!string.IsNullOrEmpty(e.reverseTransferJson))
-                return e.repackedMesh ?? e.transferredMesh;
+            {
+                // A reverse transfer's result is its repacked or transferred mesh. Restored from the
+                // sidecar after a refresh, the file has the result and an import has nothing to
+                // write; a scene edit (checked against the record when it was restored) is still
+                // the renderer's unsaved mesh.
+                var reverse = e.repackedMesh ?? e.transferredMesh;
+                if (reverse != null || e.sceneEditMesh == null) return reverse;
+            }
             // Source LOD: prefer repacked mesh
             if (e.lodIndex == ctx.SourceLodIndex && e.repackedMesh != null)
                 return e.repackedMesh;
@@ -639,6 +664,8 @@ namespace SashaRX.UnityMeshLab
                 isVariantExport || !refreshContext ? null : ctx?.LodGroup);
             if (!exported) { standaloneRelinks.Clear(); return false; }
             ApplySidecarSync(sidecar);
+            if (!isVariantExport)
+                foreach (var e in list) SyncSceneEditChannels(e, WorkingMesh(e), intent, "FBX Export");
             string collisionTarget = isVariantExport ? outputFbxPathOverride : sourceFbxPath;
             if (collisionData != null && collisionTarget.StartsWith("Assets/", StringComparison.Ordinal))
             {
@@ -663,11 +690,34 @@ namespace SashaRX.UnityMeshLab
         // the batch then ends without freeing, adopting or reloading anything.
         bool sourceSavesOpen, sceneReloadPending, lodAdoptionPending, workLeftUnsaved;
 
+        // The scene edits (MeshEntry.sceneEditMesh) whose geometry a save writes into the file, with
+        // the file, local id and name that find the written mesh after the import. They are marked
+        // before the write, while the imported mesh is still there to name, and unmarked when the
+        // write does not happen. Only these are released after the save: a save of channels alone
+        // leaves an edit the only record of its faces, so it stays on the renderer.
+        readonly List<(MeshEntry entry, string fbxPath, string meshName, long localId)> savedSceneEdits = new List<(MeshEntry, string, string, long)>();
+
         void BeginSourceSaves()
         {
             sourceSavesOpen = true;
             sceneReloadPending = lodAdoptionPending = workLeftUnsaved = false;
+            savedSceneEdits.Clear();
         }
+
+        /// <summary>Records, before the write, that a save writes the scene edits of the <paramref name="entries"/> that <paramref name="written"/> accepts into <paramref name="fbxPath"/>.</summary>
+        internal void MarkSceneEditsSaved(string fbxPath, IEnumerable<MeshEntry> entries, Func<MeshEntry, bool> written)
+        {
+            foreach (var e in entries)
+            {
+                if (e?.sceneEditMesh == null || e.fbxMesh == null || !written(e) || savedSceneEdits.Any(saved => saved.entry == e)) continue;
+                long localId = AssetDatabase.TryGetGUIDAndLocalFileIdentifier(e.fbxMesh, out string _, out long id) ? id : 0;
+                savedSceneEdits.Add((e, fbxPath, e.fbxMesh.name, localId));
+            }
+        }
+
+        /// <summary>Forgets the marks of <paramref name="fbxPath"/>: its write did not happen.</summary>
+        internal void UnmarkSceneEditsSaved(string fbxPath)
+            => savedSceneEdits.RemoveAll(saved => string.Equals(saved.fbxPath, fbxPath, StringComparison.OrdinalIgnoreCase));
 
         void MarkUnsaved(List<(MeshEntry entry, Mesh resultMesh)> group)
         {
@@ -689,6 +739,7 @@ namespace SashaRX.UnityMeshLab
                             "Save again to finish (the files already written keep what they got).");
                 standaloneRelinks.Clear();
                 lodAdoptionPending = false;
+                ReleaseSavedSceneEdits();
                 RestoreWorkingCopiesToScene();
                 AfterWrite?.Invoke();
                 return;
@@ -736,7 +787,8 @@ namespace SashaRX.UnityMeshLab
             {
                 if (filter == null) continue;
                 var fresh = AssetDatabase.LoadAllAssetsAtPath(fbxPath).OfType<Mesh>().FirstOrDefault(m => m.name == meshName);
-                if (fresh == null || filter.sharedMesh == fresh) continue;
+                // A scene edit the save did not write stays the renderer's mesh, as does a working copy of one.
+                if (fresh == null || filter.sharedMesh == fresh || SceneEditRegistry.KeepsRenderer(filter, filter.sharedMesh)) continue;
                 Undo.RecordObject(filter, "Relink Saved Mesh");
                 filter.sharedMesh = fresh;
             }
@@ -746,22 +798,109 @@ namespace SashaRX.UnityMeshLab
         static Mesh WorkingMesh(MeshEntry e) => e.repackedMesh ?? e.transferredMesh ?? e.originalMesh ?? e.fbxMesh;
 
         // After a source re-save the working copies are in the file, and the refresh that
-        // follows drops the entries holding them: give the renderers their asset meshes
-        // back and free the copies instead of leaking them.
-        void ReleaseWorkingMeshes()
+        // follows drops the entries holding them: give the renderers their baseline meshes
+        // back and free the copies instead of leaking them. A scene edit is a baseline, not a
+        // copy: it goes only when this save wrote its geometry (MarkSceneEditsSaved).
+        internal void ReleaseWorkingMeshes()
         {
             if (ctx?.MeshEntries == null) return;
             foreach (var e in ctx.MeshEntries)
             {
-                var copies = new[] { e.transferredMesh, e.repackedMesh, e.originalMesh != e.fbxMesh ? e.originalMesh : null };
+                // The import the save recreated took the entry's baseline with it: a working copy
+                // on the renderer that the registry knows still names what it is released to.
+                var baseline = e.Baseline;
+                if (baseline == null) baseline = SceneEditRegistry.BaselineBehindWorkingCopy(e);
+                var copies = new[] { e.transferredMesh, e.repackedMesh,
+                    e.originalMesh != e.fbxMesh && e.originalMesh != e.sceneEditMesh ? e.originalMesh : null };
                 foreach (var copy in copies)
                 {
                     if (copy == null || EditorUtility.IsPersistent(copy)) continue;
-                    if (e.meshFilter != null && e.fbxMesh != null && e.meshFilter.sharedMesh == copy) e.meshFilter.sharedMesh = e.fbxMesh;
+                    if (e.meshFilter != null && baseline != null && e.meshFilter.sharedMesh == copy) e.meshFilter.sharedMesh = baseline;
                     UnityEngine.Object.DestroyImmediate(copy);
                 }
                 e.transferredMesh = e.repackedMesh = null;
             }
+            ReleaseSavedSceneEdits();
+        }
+
+        // The scene edits a save wrote into their file go the way of every saved working copy:
+        // every renderer showing the edit takes the file's mesh and the edit is destroyed, both
+        // through Undo like the edit itself; the registry keeps the edit's links to the written
+        // mesh, so an Undo of the save brings the edit back as what it was. An edit whose written
+        // mesh cannot be found stays, and says so.
+        void ReleaseSavedSceneEdits()
+        {
+            foreach (var (entry, fbxPath, meshName, localId) in savedSceneEdits)
+            {
+                var edit = entry.sceneEditMesh;
+                // The import may have recreated the sub-asset: find it again by its identity.
+                var fresh = entry.fbxMesh != null ? entry.fbxMesh : SceneEditRegistry.FindImported(fbxPath, localId, meshName);
+                if (fresh == null)
+                {
+                    UvtLog.Warn($"[FBX Export] '{meshName}' was not found in '{fbxPath}' after the save; the scene keeps its edited mesh.");
+                    continue;
+                }
+                if (edit != null)
+                {
+                    // Every renderer showing the edit takes the file's mesh (a duplicated object
+                    // shares it), each with its link for the Undo of the save; then the edit goes.
+                    foreach (var filter in LodGroupUtility.FiltersShowing(edit))
+                    {
+                        Undo.RecordObject(filter, "Save FBX");
+                        filter.sharedMesh = fresh;
+                        if (PrefabUtility.IsPartOfPrefabInstance(filter))
+                            PrefabUtility.RecordPrefabInstancePropertyModifications(filter);
+                        SceneEditRegistry.Register(filter, fresh, edit);
+                    }
+                    SceneEditRegistry.Register(entry.meshFilter, fresh, edit);
+                }
+                entry.sceneEditMesh = null;
+                if (entry.originalMesh == edit || entry.originalMesh == null) entry.originalMesh = fresh;
+                entry.fbxMesh = fresh;
+                if (edit != null && !EditorUtility.IsPersistent(edit)) Undo.DestroyObjectImmediate(edit);
+            }
+            savedSceneEdits.Clear();
+        }
+
+        // A scene edit kept through a save (its faces were not written) takes the channels the
+        // save wrote, from the result they were taken from, while the result still has the edit's
+        // vertices: otherwise the renderer would show, and the next save write, the channels the
+        // save has just replaced. A result with other vertices (a weld or a split ran) cannot be
+        // mapped back and says so; the file has the channels, the edit keeps its own.
+        internal static void SyncSceneEditChannels(MeshEntry e, Mesh written, FbxExportIntent intent, string label)
+        {
+            var edit = e?.sceneEditMesh;
+            intent &= FbxExportIntent.AnyUv | FbxExportIntent.VertexColors | FbxExportIntent.Normals | FbxExportIntent.Tangents;
+            if (edit == null || written == null || written == edit || intent == FbxExportIntent.None) return;
+            if (written.vertexCount != edit.vertexCount || !written.vertices.SequenceEqual(edit.vertices))
+            {
+                UvtLog.Warn($"[{label}] '{edit.name}': the scene edit keeps its vertex channels; the ones written were made for other vertices (the file has them). Save the FBX document to write the edited faces with them.");
+                return;
+            }
+            Undo.RecordObject(edit, label);
+            var uvs = new List<Vector4>();
+            for (int channel = 0; channel < 8; ++channel)
+            {
+                if (!intent.IncludesUv(channel)) continue;
+                written.GetUVs(channel, uvs);
+                edit.SetUVs(channel, uvs);
+            }
+            if ((intent & FbxExportIntent.VertexColors) != 0) VertexChannels.SetColors(edit, written.colors);
+            if ((intent & FbxExportIntent.Normals) != 0) edit.normals = written.normals;
+            if ((intent & FbxExportIntent.Tangents) != 0) edit.tangents = written.tangents;
+            VertexChannels.RaiseChanged(edit);
+        }
+
+        static FbxExportIntent UvIntent(int channel) => (uint)channel > 7u ? FbxExportIntent.None : (FbxExportIntent)(1 << channel);
+
+        // The entry's file reference, found again through its scene edit's link when a reimport the
+        // entry has not been refreshed for recreated the imported mesh.
+        static Mesh ImportOf(MeshEntry entry)
+        {
+            if (entry.fbxMesh == null && entry.sceneEditMesh != null
+                && SceneEditRegistry.TryGetImported(entry.meshFilter, entry.sceneEditMesh, out var imported))
+                entry.fbxMesh = imported;
+            return entry.fbxMesh;
         }
 
         string ResolveFbxPath()
@@ -876,6 +1015,13 @@ namespace SashaRX.UnityMeshLab
                         : outputFbxPath.StartsWith("Assets/", StringComparison.Ordinal) ? outputFbxPath : null;
                     var sidecar = sidecarFbx == null ? null : PrepareSidecarSync(sidecarFbx, kv.Value);
                     if (!isVariant) PrepareStandaloneRelink(sourceFbxPath);
+                    // The structure step writes these meshes whole: their scene edits will be in the file.
+                    // Marked now, while the import that follows the write cannot have replaced the
+                    // meshes they are named after; the other scene edits take the channels the channel
+                    // step writes, after it.
+                    var reshaped = new HashSet<MeshEntry>(kv.Value.Select(p => p.entry)
+                        .Where(e => e.fbxMesh != null && plan.reshaped.Any(r => r.name == e.fbxMesh.name)));
+                    if (!isVariant) MarkSceneEditsSaved(sourceFbxPath, reshaped, _ => true);
 
                     bool written;
                     try
@@ -885,6 +1031,7 @@ namespace SashaRX.UnityMeshLab
                     }
                     catch (FbxStructureRefusalException refusal)
                     {
+                        UnmarkSceneEditsSaved(sourceFbxPath);
                         written = ExportAfterRefusal(sourceFbxPath, kv.Value, entries, outputFbxPath, overwriteSource, refusal.Message, rebuilds);
                         if (written) okCount++;
                         else MarkUnsaved(kv.Value);
@@ -892,15 +1039,18 @@ namespace SashaRX.UnityMeshLab
                     }
                     catch (Exception ex)
                     {
+                        UnmarkSceneEditsSaved(sourceFbxPath);
                         UvtLog.Error($"[FBX Export] '{sourceFbxPath}' was not written: {ex.Message}");
                         UvtLog.Verbose(ex.ToString());
                         MarkUnsaved(kv.Value);
                         continue;
                     }
-                    if (!written) { standaloneRelinks.Clear(); MarkUnsaved(kv.Value); continue; }
+                    if (!written) { UnmarkSceneEditsSaved(sourceFbxPath); standaloneRelinks.Clear(); MarkUnsaved(kv.Value); continue; }
                     okCount++;
                     ApplySidecarSync(sidecar);
                     if (isVariant) continue;
+                    foreach (var (entry, resultMesh) in kv.Value)
+                        if (!reshaped.Contains(entry)) SyncSceneEditChannels(entry, resultMesh, FbxChannelWrite.Supported, "FBX Export");
                     AfterSourceSave(plan.lods.Count > 0);
                 }
             }
@@ -960,6 +1110,10 @@ namespace SashaRX.UnityMeshLab
                     FbxExport.RemoveDefaultMaterialRemaps(fbxPath, () => batch.ReArm(fbxPath));
             }
 
+            // A rebuild writes every mesh from the scene: the scene edits of the files it
+            // overwrote are in them, and their renderers take the written meshes.
+            ReleaseSavedSceneEdits();
+
             if (allGroupsSucceeded)
                 SwitchToPostApplyView();
         }
@@ -1012,6 +1166,9 @@ namespace SashaRX.UnityMeshLab
                 }
                 var prefab = HierarchyPrefabLoader != null ? HierarchyPrefabLoader(sourceFbxPath) : AssetDatabase.LoadAssetAtPath<GameObject>(sourceFbxPath);
                 if (prefab == null) throw new InvalidOperationException("Cannot load FBX prefab: " + sourceFbxPath);
+                // The rebuild writes every mesh from the scene: the scene edits of an overwritten file
+                // are in it. Marked before the write, while their imported meshes are there to name.
+                if (overwriteSource) MarkSceneEditsSaved(sourceFbxPath, entries.Select(p => p.entry), _ => true);
                 tempRoot = UnityEngine.Object.Instantiate(prefab);
                 tempRoot.name = prefab.name;
                 FbxExport.PromoteRootMeshToLod0Child(tempRoot);
@@ -1033,6 +1190,7 @@ namespace SashaRX.UnityMeshLab
             }
             // A completed write needs replay even if restoring its importer metadata failed.
             if (overwriteSource && written) StoreHierarchyExportSidecars(sourceFbxPath, entries, true, batch);
+            if (overwriteSource && !(written && !failed)) UnmarkSceneEditsSaved(sourceFbxPath);
             return written && !failed;
         }
 

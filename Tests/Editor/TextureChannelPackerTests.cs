@@ -431,6 +431,55 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { TexturePackingFiles.Discard(staged); Directory.Delete(directory, true); }
         }
 
+        [Test]
+        public void PartialReplaceRecoveryMovesTheOriginalBack()
+        {
+            string directory = Path.Combine(Path.GetTempPath(), "MeshLabReplace-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            string destination = Path.Combine(directory, "output.tga");
+            string backup = Path.Combine(directory, ".meshlab-texture-backup.tmp");
+            try
+            {
+                // ReplaceFile failed after it moved the original to the backup name: the
+                // original goes back where it was and the backup name is free again.
+                File.WriteAllBytes(backup, new byte[] { 1, 2, 3 });
+                TexturePackingFiles.RestoreReplaced(destination, backup);
+                CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, File.ReadAllBytes(destination));
+                Assert.IsFalse(File.Exists(backup));
+                // A backup with the destination's content is the copy the Unix implementations
+                // make first and is dropped.
+                File.WriteAllBytes(backup, new byte[] { 1, 2, 3 });
+                TexturePackingFiles.RestoreReplaced(destination, backup);
+                CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, File.ReadAllBytes(destination));
+                Assert.IsFalse(File.Exists(backup));
+                // Nothing was moved: nothing happens.
+                TexturePackingFiles.RestoreReplaced(destination, Path.Combine(directory, "absent.tmp"));
+                Assert.AreEqual(1, Directory.GetFiles(directory).Length);
+            }
+            finally { Directory.Delete(directory, true); }
+        }
+
+        [Test]
+        public void PartialReplaceRecoveryKeepsADifferingBackup()
+        {
+            string directory = Path.Combine(Path.GetTempPath(), "MeshLabReplace-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            string destination = Path.Combine(directory, "output.tga");
+            string backup = Path.Combine(directory, ".meshlab-texture-backup.tmp");
+            try
+            {
+                // A backup whose content differs from the surviving destination may be the
+                // only copy of the original: both stay, and the log names the backup.
+                File.WriteAllBytes(destination, new byte[] { 1, 2, 3 });
+                File.WriteAllBytes(backup, new byte[] { 4 });
+                LogAssert.Expect(LogType.Warning, new System.Text.RegularExpressions.Regex("differ after a failed replace; the backup is kept"));
+                TexturePackingFiles.RestoreReplaced(destination, backup);
+                CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, File.ReadAllBytes(destination));
+                CollectionAssert.AreEqual(new byte[] { 4 }, File.ReadAllBytes(backup));
+            }
+            finally { Directory.Delete(directory, true); }
+        }
+
         [UnityTest]
         public IEnumerator ReloadRetainsEarlyFailuresWhenLaterSourcesAreValid()
         {

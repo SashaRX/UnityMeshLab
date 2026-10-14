@@ -151,8 +151,13 @@ namespace SashaRX.UnityMeshLab
                 ValidateUnchanged();
                 if (existed)
                 {
-                    backup = TemporaryPath(Destination);
-                    File.Replace(Staged, Destination, backup);
+                    // The backup joins the batch (and its cleanup) only once the replace
+                    // succeeded: a replace that failed halfway may have left the original
+                    // under the backup name, and that file must go back, not away.
+                    string candidate = TemporaryPath(Destination);
+                    try { File.Replace(Staged, Destination, candidate); }
+                    catch { RestoreReplaced(Destination, candidate); throw; }
+                    backup = candidate;
                 }
                 else File.Move(Staged, Destination); // Fails rather than replacing a late-arriving file.
                 committed = true;
@@ -397,6 +402,37 @@ namespace SashaRX.UnityMeshLab
             else resolved = ResolveUnixPath(path);
             for (int i = remaining.Count - 1; i >= 0; i--) resolved = Path.Combine(resolved, remaining[i]);
             return resolved;
+        }
+
+        // ReplaceFile can fail after it moved the original to the backup name
+        // (ERROR_UNABLE_TO_MOVE_REPLACEMENT_2): put the original back so the batch cleanup,
+        // which deletes backups, never deletes the only copy. A backup next to an intact
+        // destination is a copy (the Unix implementation links first) and is dropped.
+        internal static void RestoreReplaced(string destination, string backup)
+        {
+            try
+            {
+                if (!File.Exists(backup)) return;
+                if (!File.Exists(destination)) { File.Move(backup, destination); return; }
+                // The destination survived. The backup is the copy the Unix implementations
+                // make first when its content matches; otherwise it may be the only copy of
+                // the original and stays, named in the log.
+                if (SameContent(ContentHash(backup), ContentHash(destination))) Discard(backup);
+                else UvtLog.Warn("Texture export: '" + destination + "' and its backup '" + backup + "' differ after a failed replace; the backup is kept.");
+            }
+            catch (Exception exception)
+            {
+                // The replace's own exception is what the caller rethrows; this one must not replace it.
+                UvtLog.Error("Texture export: the original of '" + destination + "' may be at '" + backup +
+                    "' and could not be restored: " + exception.Message);
+            }
+        }
+
+        private static bool SameContent(byte[] left, byte[] right)
+        {
+            if (left == null || right == null || left.Length != right.Length) return false;
+            for (int i = 0; i < left.Length; i++) if (left[i] != right[i]) return false;
+            return true;
         }
 
         private static void DiscardBackups(IList<PendingFile> files)

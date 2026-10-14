@@ -161,6 +161,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 var parts = new List<(Mesh mesh, Matrix4x4 toFirst)>();
                 var destroy = new List<GameObject>();
+                var absorbedEdits = new List<(Mesh edit, MeshFilter filter)>();
                 Matrix4x4 worldToFirst = first.renderer.transform.worldToLocalMatrix;
                 foreach (var e in group.entries)
                 {
@@ -169,6 +170,7 @@ namespace SashaRX.UnityMeshLab
                     if (!mesh.isReadable) { UvtLog.Warn($"Merge: '{e.renderer.name}' is not readable and is skipped."); continue; }
                     parts.Add((mesh, worldToFirst * e.renderer.transform.localToWorldMatrix));
                     if (e != first) destroy.Add(e.renderer.gameObject);
+                    if (e.sceneEditMesh != null && !EditorUtility.IsPersistent(e.sceneEditMesh)) absorbedEdits.Add((e.sceneEditMesh, e.meshFilter));
                 }
                 if (parts.Count < 2) continue;
 
@@ -182,8 +184,10 @@ namespace SashaRX.UnityMeshLab
                 first.renderer.sharedMaterials = new[] { group.material };
                 first.renderer.gameObject.name = name;
                 // Refresh restores the context before rebuilding entries. The merge is
-                // the new scene baseline, so restoration must keep it alive.
+                // the new scene baseline, so restoration must keep it alive; a scene edit it
+                // absorbed is no longer this entry's (its link stays for the Undo that brings it back).
                 first.fbxMesh = first.originalMesh = mergedMesh;
+                first.sceneEditMesh = null;
                 RemoveFromLodGroup(ctx.LodGroup, destroy, undoLabel);
                 foreach (var go in destroy)
                 {
@@ -191,6 +195,11 @@ namespace SashaRX.UnityMeshLab
                     UvtLog.Info($"Merged: {go.name}");
                     Undo.DestroyObjectImmediate(go);
                 }
+                // The scene edits the merge absorbed go through Undo with it: the merged state keeps
+                // no copy of them, and the Undo of the merge brings them back onto their renderers.
+                // One that another renderer still shows (a duplicate) stays.
+                foreach (var (edit, filter) in absorbedEdits)
+                    if (edit != null && !LodGroupUtility.IsMeshReferenced(edit, filter)) Undo.DestroyObjectImmediate(edit);
                 if (PrefabUtility.IsPartOfPrefabInstance(first.renderer))
                 {
                     PrefabUtility.RecordPrefabInstancePropertyModifications(first.renderer);

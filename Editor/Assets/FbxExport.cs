@@ -1576,6 +1576,10 @@ namespace SashaRX.UnityMeshLab
             foreach (var mf in root.GetComponentsInChildren<MeshFilter>(true))
             {
                 if (mf == null) continue;
+                // A scene edit (MeshEntry.sceneEditMesh) carries the name of the imported mesh it
+                // replaced; it stays on the renderer until a save writes its geometry, as does a
+                // pipeline working copy taken from one, whose release returns the renderer to it.
+                if (SceneEditRegistry.KeepsRenderer(mf, mf.sharedMesh)) continue;
                 if (mf.sharedMesh != null)
                 {
                     string meshName = mf.sharedMesh.name;
