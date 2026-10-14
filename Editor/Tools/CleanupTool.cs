@@ -1792,7 +1792,7 @@ namespace SashaRX.UnityMeshLab
 
             foreach (var e in meshReport.weldCandidates)
             {
-                if (!MeshHygieneUtility.PrepareWritable(e, "Batch Weld", out var mesh, ctx))
+                if (!MeshHygieneUtility.PrepareWritable(e, "Batch Weld", out var mesh))
                     continue;
 
                 if (Uv0Analyzer.WeldInPlace(mesh))
@@ -1818,7 +1818,7 @@ namespace SashaRX.UnityMeshLab
 
             foreach (var entry in meshReport.degenerateEntries)
             {
-                if (!MeshHygieneUtility.PrepareWritable(entry.entry, "Remove Degenerate Triangles", out var mesh, ctx))
+                if (!MeshHygieneUtility.PrepareWritable(entry.entry, "Remove Degenerate Triangles", out var mesh))
                     continue;
                 int removed = MeshHygieneUtility.RemoveDegenerateTriangles(mesh);
                 if (removed > 0)
@@ -1849,7 +1849,7 @@ namespace SashaRX.UnityMeshLab
                     UvtLog.Warn($"[Cleanup] Skipped '{entry.entry.originalMesh?.name}' — blend shapes present.");
                     continue;
                 }
-                if (!MeshHygieneUtility.PrepareWritable(entry.entry, "Remove Unused Vertices", out var mesh, ctx))
+                if (!MeshHygieneUtility.PrepareWritable(entry.entry, "Remove Unused Vertices", out var mesh))
                     continue;
                 int removed = MeshHygieneUtility.CompactVertices(mesh);
                 if (removed > 0)
@@ -1884,7 +1884,7 @@ namespace SashaRX.UnityMeshLab
             foreach (var e in ctx.MeshEntries)
             {
                 if (!e.include) continue;
-                if (!MeshHygieneUtility.PrepareWritable(e, label, out var mesh, ctx))
+                if (!MeshHygieneUtility.PrepareWritable(e, label, out var mesh))
                     continue;
                 switch (kind)
                 {
@@ -1907,7 +1907,7 @@ namespace SashaRX.UnityMeshLab
             foreach (var e in ctx.MeshEntries)
             {
                 if (!e.include) continue;
-                if (!MeshHygieneUtility.PrepareWritable(e, "Optimize Mesh", out var mesh, ctx))
+                if (!MeshHygieneUtility.PrepareWritable(e, "Optimize Mesh", out var mesh))
                     continue;
                 var result = MeshOptimizer.Optimize(mesh);
                 if (result.ok)
@@ -1935,7 +1935,7 @@ namespace SashaRX.UnityMeshLab
             {
                 var entry = uvEntry.entry;
                 var channels = uvEntry.channels;
-                if (!MeshHygieneUtility.PrepareWritable(entry, "Strip Empty Channels", out var mesh, ctx))
+                if (!MeshHygieneUtility.PrepareWritable(entry, "Strip Empty Channels", out var mesh))
                     continue;
 
                 foreach (int ch in channels)
@@ -2321,7 +2321,7 @@ namespace SashaRX.UnityMeshLab
 
                 if (!needsChange) continue;
 
-                if (!MeshHygieneUtility.PrepareWritable(entry, "Apply Attributes", out var mesh, ctx))
+                if (!MeshHygieneUtility.PrepareWritable(entry, "Apply Attributes", out var mesh))
                     continue;
 
                 int vertCount = mesh.vertexCount;

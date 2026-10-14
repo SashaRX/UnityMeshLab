@@ -203,7 +203,7 @@ namespace SashaRX.UnityMeshLab
         /// </list>
         /// Returns <c>false</c> when the entry cannot be safely mutated.
         /// </summary>
-        public static bool PrepareWritable(MeshEntry entry, string undoLabel, out Mesh mesh, UvToolContext ctx = null)
+        public static bool PrepareWritable(MeshEntry entry, string undoLabel, out Mesh mesh)
         {
             mesh = null;
             if (entry == null) return false;
@@ -222,6 +222,7 @@ namespace SashaRX.UnityMeshLab
                 // The clone is the renderer's new mesh, not a pipeline working copy: Undo
                 // destroys it together with the swap, and a context refresh keeps it
                 // (MeshEntry.sceneEditMesh) instead of restoring the imported mesh over it.
+                // The registry tells every later context which imported mesh it stands for.
                 Undo.RegisterCreatedObjectUndo(clone, undoLabel);
                 if (entry.meshFilter != null)
                 {
@@ -232,7 +233,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 entry.originalMesh = clone;
                 entry.sceneEditMesh = clone;
-                ctx?.RegisterSceneEdit(entry.meshFilter, source, clone);
+                SceneEditRegistry.Register(entry.meshFilter, source, clone);
                 mesh = clone;
             }
             else

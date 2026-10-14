@@ -303,7 +303,7 @@ namespace SashaRX.UnityMeshLab
         public void Refresh(LODGroup lodGroup)
         {
             BeforeRefresh?.Invoke();
-            CollectSceneEdits();
+            SceneEditRegistry.Collect(MeshEntries);
             MeshEntries.Clear();
             HasRepack = HasTransfer = false;
             SrcCache.Clear();
@@ -335,7 +335,8 @@ namespace SashaRX.UnityMeshLab
                     var fbm = mf.sharedMesh;
                     var uv2Check = new List<Vector2>();
                     fbm.GetUVs(1, uv2Check);
-                    bool sceneEdit = TrySceneEdit(mf, fbm, out var imported);
+                    // A scene edit (MeshEntry.sceneEditMesh) on the renderer keeps the imported mesh as the entry's file reference.
+                    bool sceneEdit = SceneEditRegistry.TryGetImported(mf, fbm, out var imported);
                     MeshEntries.Add(new MeshEntry
                     {
                         lodIndex = li,
@@ -380,49 +381,13 @@ namespace SashaRX.UnityMeshLab
             OnMeshEntriesChanged?.Invoke();
         }
 
-        // ── Scene edits ──
-        // Edits of a renderer's mesh made through a tool with Undo (MeshEntry.sceneEditMesh),
-        // by renderer. The registry outlives the entry list: it survives a switch to another
-        // model and back, and Undo/Redo of the edit. While the renderer shows the edit, the
-        // entry a refresh rebuilds for it keeps the imported mesh as its file reference
-        // instead of taking the edit for the import. A renderer that is gone takes its edit with it.
-        readonly Dictionary<MeshFilter, (Mesh imported, Mesh edit)> sceneEdits = new Dictionary<MeshFilter, (Mesh imported, Mesh edit)>();
-
-        /// <summary>Records that <paramref name="edit"/> on <paramref name="filter"/> replaces the imported <paramref name="imported"/>.</summary>
-        internal void RegisterSceneEdit(MeshFilter filter, Mesh imported, Mesh edit)
-        {
-            if (filter == null || imported == null || edit == null) return;
-            sceneEdits[filter] = (imported, edit);
-        }
-
-        // Entries flagged without the registry (a tool that has no context) join it here;
-        // renderers and imported meshes that no longer exist leave it.
-        void CollectSceneEdits()
-        {
-            foreach (var e in MeshEntries)
-                if (e.sceneEditMesh != null && e.meshFilter != null && e.fbxMesh != null && e.sceneEditMesh != e.fbxMesh)
-                    sceneEdits[e.meshFilter] = (e.fbxMesh, e.sceneEditMesh);
-            List<MeshFilter> gone = null;
-            foreach (var pair in sceneEdits)
-                if (pair.Key == null || pair.Value.imported == null) (gone ??= new List<MeshFilter>()).Add(pair.Key);
-            if (gone != null) foreach (var filter in gone) sceneEdits.Remove(filter);
-        }
-
-        bool TrySceneEdit(MeshFilter filter, Mesh shown, out Mesh imported)
-        {
-            imported = null;
-            if (!sceneEdits.TryGetValue(filter, out var edit) || edit.edit == null || shown != edit.edit || edit.imported == null) return false;
-            imported = edit.imported;
-            return true;
-        }
-
         /// <summary>
         /// Populate context from a single MeshRenderer without LODGroup (view-only UV inspection).
         /// </summary>
         public void RefreshStandalone(MeshRenderer mr)
         {
             BeforeRefresh?.Invoke();
-            CollectSceneEdits();
+            SceneEditRegistry.Collect(MeshEntries);
             MeshEntries.Clear();
             HasRepack = HasTransfer = false;
             SrcCache.Clear();
@@ -447,7 +412,7 @@ namespace SashaRX.UnityMeshLab
             var fbm = mf.sharedMesh;
             var uv2Check = new List<Vector2>();
             fbm.GetUVs(1, uv2Check);
-            bool sceneEdit = TrySceneEdit(mf, fbm, out var imported);
+            bool sceneEdit = SceneEditRegistry.TryGetImported(mf, fbm, out var imported);
             MeshEntries.Add(new MeshEntry
             {
                 lodIndex = 0,

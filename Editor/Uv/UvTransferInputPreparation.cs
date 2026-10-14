@@ -100,17 +100,32 @@ namespace SashaRX.UnityMeshLab
             }
             // Resolve every binding before publishing any of them. Excluded entries in
             // the same FBX must also follow the replacement sub-assets.
-            foreach (var binding in bindings)
+            foreach (var binding in bindings) Rebind(binding.entry, binding.mesh);
+        }
+
+        /// <summary>
+        /// Gives <paramref name="entry"/> the reimported <paramref name="imported"/> as its file
+        /// reference and, while the renderer shows the imported mesh, as its working mesh and the
+        /// renderer's. A scene edit (<see cref="MeshEntry.sceneEditMesh"/>) stays the renderer's
+        /// mesh and the entry's baseline: the pipeline keeps working from the edited geometry, and
+        /// the edit now stands for the reimported mesh.
+        /// </summary>
+        internal static void Rebind(MeshEntry entry, Mesh imported)
+        {
+            entry.fbxMesh = imported;
+            if (entry.sceneEditMesh != null)
             {
-                var entry = binding.entry;
-                entry.fbxMesh = entry.originalMesh = binding.mesh;
-                if (entry.meshFilter && entry.meshFilter.sharedMesh != binding.mesh)
-                {
-                    Undo.RecordObject(entry.meshFilter, "Prepare UV transfer input");
-                    entry.meshFilter.sharedMesh = binding.mesh;
-                    if (PrefabUtility.IsPartOfPrefabInstance(entry.meshFilter))
-                        PrefabUtility.RecordPrefabInstancePropertyModifications(entry.meshFilter);
-                }
+                entry.originalMesh = entry.sceneEditMesh;
+                SceneEditRegistry.Register(entry.meshFilter, imported, entry.sceneEditMesh);
+                return;
+            }
+            entry.originalMesh = imported;
+            if (entry.meshFilter && entry.meshFilter.sharedMesh != imported)
+            {
+                Undo.RecordObject(entry.meshFilter, "Prepare UV transfer input");
+                entry.meshFilter.sharedMesh = imported;
+                if (PrefabUtility.IsPartOfPrefabInstance(entry.meshFilter))
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(entry.meshFilter);
             }
         }
     }

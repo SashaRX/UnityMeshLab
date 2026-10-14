@@ -95,7 +95,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 var entry=ctx.MeshEntries.Find(e=>e.renderer==renderer);
                 Assert.AreSame(imported,entry.fbxMesh);
                 var importedBytes=TransferMeshSnapshot.Capture(imported);
-                Assert.IsTrue(MeshHygieneUtility.PrepareWritable(entry,"Scene edit",out var edited,ctx));
+                Assert.IsTrue(MeshHygieneUtility.PrepareWritable(entry,"Scene edit",out var edited));
                 owned.Add(edited);
                 Assert.AreNotSame(imported,edited); Assert.AreSame(edited,entry.sceneEditMesh); Assert.AreSame(edited,entry.Baseline);
                 edited.vertices=edited.vertices.Select(v=>v*2).ToArray(); edited.RecalculateBounds();
@@ -128,6 +128,73 @@ namespace SashaRX.UnityMeshLab.Tests
                 if (standalone) ctx.RefreshStandalone(renderer); else ctx.Refresh(group);
                 entry=ctx.MeshEntries.Find(e=>e.renderer==renderer);
                 Assert.AreSame(edited,entry.originalMesh); Assert.AreSame(imported,entry.fbxMesh); Assert.AreSame(edited,entry.sceneEditMesh);
+
+                // A context built after the window reopens or scripts reload still knows which
+                // imported mesh the edit stands for.
+                var reopened=new UvToolContext();
+                if (standalone) reopened.RefreshStandalone(renderer); else reopened.Refresh(group);
+                entry=reopened.MeshEntries.Find(e=>e.renderer==renderer);
+                Assert.AreSame(imported,entry.fbxMesh,"a new context takes the edit's imported mesh from the registry");
+                Assert.AreSame(edited,entry.sceneEditMesh); Assert.AreSame(edited,entry.originalMesh);
+            }
+            finally { UnityEditor.AssetDatabase.DeleteAsset(folder); }
+        }
+
+        [Test]
+        public void ReimportRebindingKeepsTheSceneEditAsTheBaseline([Values(false,true)] bool sceneEdit)
+        {
+            // Precision preparation reimports the model and rebinds each entry to the fresh sub-asset.
+            // A scene edit stays the renderer's mesh and the working baseline; only the entry's file
+            // reference moves, and the edit now stands for the fresh import.
+            string folder="Assets/__MeshLabSceneEditTests_"+System.Guid.NewGuid().ToString("N");
+            var group=Group(true,out var renderer,out _); var filter=renderer.GetComponent<MeshFilter>(); var imported=filter.sharedMesh;
+            UnityEditor.AssetDatabase.CreateFolder("Assets",folder.Substring("Assets/".Length));
+            UnityEditor.AssetDatabase.CreateAsset(imported,folder+"/imported.asset");
+            try {
+                var ctx=Open(group); var entry=ctx.MeshEntries.Find(e=>e.renderer==renderer);
+                Mesh edited=null;
+                if (sceneEdit) { Assert.IsTrue(MeshHygieneUtility.PrepareWritable(entry,"Scene edit",out edited)); owned.Add(edited); }
+                var fresh=Object.Instantiate(imported); fresh.name=imported.name; owned.Add(fresh); // stands for the reimported sub-asset
+                UvTransferInputPreparation.Rebind(entry,fresh);
+                Assert.AreSame(fresh,entry.fbxMesh);
+                if (!sceneEdit) {
+                    Assert.AreSame(fresh,entry.originalMesh); Assert.AreSame(fresh,filter.sharedMesh);
+                    return;
+                }
+                Assert.AreSame(edited,entry.originalMesh); Assert.AreSame(edited,entry.Baseline); Assert.AreSame(edited,filter.sharedMesh);
+                Assert.IsTrue(SceneEditRegistry.TryGetImported(filter,edited,out var behind)); Assert.AreSame(fresh,behind);
+                ctx.Refresh(group); entry=ctx.MeshEntries.Find(e=>e.renderer==renderer);
+                Assert.AreSame(fresh,entry.fbxMesh); Assert.AreSame(edited,entry.sceneEditMesh); Assert.AreSame(edited,entry.originalMesh);
+            }
+            finally { UnityEditor.AssetDatabase.DeleteAsset(folder); }
+        }
+
+        [Test]
+        public void SourceSaveReleasesASceneEditOnlyWhenItWroteTheEditedGeometry()
+        {
+            // After a source save the working copies are released. A scene edit is released only
+            // when the save wrote its geometry into the file; a save of channels alone leaves it
+            // on the renderer as the only record of its faces.
+            string folder="Assets/__MeshLabSceneEditTests_"+System.Guid.NewGuid().ToString("N"); string asset=folder+"/imported.asset";
+            var group=Group(true,out var renderer,out _); var filter=renderer.GetComponent<MeshFilter>(); var imported=filter.sharedMesh;
+            UnityEditor.AssetDatabase.CreateFolder("Assets",folder.Substring("Assets/".Length));
+            UnityEditor.AssetDatabase.CreateAsset(imported,asset);
+            try {
+                var ctx=Open(group); var entry=ctx.MeshEntries.Find(e=>e.renderer==renderer);
+                Assert.IsTrue(MeshHygieneUtility.PrepareWritable(entry,"Scene edit",out var edited)); owned.Add(edited);
+                var copy=Object.Instantiate(edited); copy.name=edited.name+"_wc"; owned.Add(copy);
+                entry.originalMesh=copy; filter.sharedMesh=copy; // the pipeline's working copy, as during a save
+
+                ctx.Assets.ReleaseWorkingMeshes(); // a channel save: nothing of the edit's faces reached the file
+                Assert.IsFalse(copy,"the pipeline copy is released"); Assert.IsTrue(edited,"the scene edit stays");
+                Assert.AreSame(edited,filter.sharedMesh); Assert.AreSame(edited,entry.sceneEditMesh);
+                Assert.IsTrue(SceneEditRegistry.TryGetImported(filter,edited,out var behind)); Assert.AreSame(imported,behind);
+
+                ctx.Assets.MarkSceneEditsSaved(asset,new[] {entry},_=>true);
+                ctx.Assets.ReleaseWorkingMeshes(); // a document save wrote the edited faces
+                Assert.IsFalse(edited,"the written edit is released"); Assert.AreSame(imported,filter.sharedMesh);
+                Assert.IsNull(entry.sceneEditMesh); Assert.AreSame(imported,entry.fbxMesh); Assert.AreSame(imported,entry.originalMesh);
+                Assert.IsFalse(SceneEditRegistry.TryGetImported(filter,imported,out _));
             }
             finally { UnityEditor.AssetDatabase.DeleteAsset(folder); }
         }
