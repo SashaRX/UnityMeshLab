@@ -59,6 +59,22 @@ per-face provenance from `report.json`. Analysis scripts and atlas renders:
   90.8 → 91.0%), and the larger Kitchen families lowered Fill atlas from 128
   to 96 tex/m. Reverted. Finer islands that keep their own seams cannot follow
   a coarser LOD cut at different seams by rigid placement alone.
+- **Overlap mode: detached repairs of overlapping transferred shells.** In
+  overlap mode every LOD starts in the shared Forward frame. Kitchen LOD1 loses
+  alignment (74% against Forward 87%) because shells repaired by
+  `InitializePreparedChain` move to local coordinate domains, and
+  `JoinPreparedCorrespondence` joins only equal domains. These shells cover
+  21% of LOD1 and 18.9% is misaligned. 18.1% of that area is repaired for
+  contact alone, without a single stretched face. Ordinary Transfer overlaps
+  those LOD1 islands: Main_LOD1 has 290 overlapping face pairs, 164 of them at
+  4 px² or more (up to 2700 px²). The overlapping islands are different
+  panels, 0.15–0.97 m apart and in perpendicular planes, mapped into each
+  other's UV region by shell matching. A rejected experiment moved
+  contact-only shells rigidly by at most the boundary tolerance to keep them in
+  the shared frame: it rescued 6 small shells and changed no alignment.
+  Reverted. The cause is Forward shell matching on transferred LODs, not
+  reverse grouping; Kamaz overlap mode is already at Forward level
+  (87.9 / 89.7%).
 - **Remaining causes, not fixed here.**
   - Overlap mode repacks intact forward islands apart from their coarser
     counterparts. Kitchen LOD1 alignment is 74% (forward 87%).
