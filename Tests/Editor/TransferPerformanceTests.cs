@@ -93,7 +93,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 // around box faces, edges and corners near the reach boundary.
                 var charts=Enumerable.Range(0,400).Select(i=>new ReverseUvTransfer.Chart {bounds=new Bounds(
                     new Vector3(Next(),Next(),Next())*scale,i%7==0?Vector3.zero:new Vector3(Next(),Next(),Next())*scale*.02f)}).ToList();
-                var index=ReverseUvTransfer.ChartBoundsIndex.Build(charts,reach);
+                var index=ReverseUvTransfer.ChartBoundsIndex.Create(charts,reach);
                 Assert.NotNull(index);
                 for(int q=0;q<4000;++q)
                 {
@@ -108,8 +108,8 @@ namespace SashaRX.UnityMeshLab.Tests
                 }
             }
             var finite=new List<ReverseUvTransfer.Chart> {new ReverseUvTransfer.Chart {bounds=new Bounds(Vector3.zero,Vector3.one)}};
-            Assert.IsNull(ReverseUvTransfer.ChartBoundsIndex.Build(finite,float.PositiveInfinity),"Unbounded reach scans every chart.");
-            Assert.IsNull(ReverseUvTransfer.ChartBoundsIndex.Build(new List<ReverseUvTransfer.Chart> {new ReverseUvTransfer.Chart {
+            Assert.IsNull(ReverseUvTransfer.ChartBoundsIndex.Create(finite,float.PositiveInfinity),"Unbounded reach scans every chart.");
+            Assert.IsNull(ReverseUvTransfer.ChartBoundsIndex.Create(new List<ReverseUvTransfer.Chart> {new ReverseUvTransfer.Chart {
                 bounds=new Bounds(new Vector3(float.NaN,0,0),Vector3.one)}},.05f),"Non-finite bounds scan every chart.");
         }
 

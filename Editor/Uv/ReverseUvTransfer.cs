@@ -628,11 +628,9 @@ namespace SashaRX.UnityMeshLab
             readonly List<int> nearby = new List<int>();
             ChartBoundsIndex(TriangleBvh bvh) { this.bvh = bvh; }
 
-            static bool Finite(float value) => !float.IsNaN(value) && !float.IsInfinity(value);
-
             /// <returns>Null when every chart must be scanned: no charts, an
             /// unbounded reach or non-finite chart bounds.</returns>
-            internal static ChartBoundsIndex Build(List<Chart> charts, float reach)
+            internal static ChartBoundsIndex Create(List<Chart> charts, float reach)
             {
                 if (charts.Count == 0 || !Finite(reach) || !Finite(reach * reach)) return null;
                 var corners = new Vector3[charts.Count * 3];
@@ -665,7 +663,7 @@ namespace SashaRX.UnityMeshLab
             using var projectionTiming = options.performance?.Measure("Face projection", targets[0].lod);
             long candidates = 0, footprintTicks = 0, footprintCalls = 0;
             using var batch=new ProjectionBatch(charts,options,token);
-            var chartIndex = ChartBoundsIndex.Build(charts, options.projectionReach);
+            var chartIndex = ChartBoundsIndex.Create(charts, options.projectionReach);
             foreach (var target in targets)
                 for (int f = 0; f < target.faces.Length; ++f)
                 {
@@ -747,7 +745,7 @@ namespace SashaRX.UnityMeshLab
         // coverage without counting overlapping detail layers twice.
         // Charts below this face count keep the plain scan; the index only pays off
         // on larger parents. Internal so tests can force either path.
-        internal static int CoverageIndexMinimumFaces = 64;
+        internal static int CoverageIndexMinimumFaces { get; set; } = 64;
         [ThreadStatic] static List<int> coverageCandidates;
 
         internal static bool CoveredByParentLayer(Chart parent, int layer, Vector2[] pixels, int start,

@@ -40,7 +40,7 @@ namespace SashaRX.UnityMeshLab
             internal TriangleBvh bvh;
             internal float density;
 
-            internal static DonorSeamIndex Build(Surface[] donor, CancellationToken token)
+            internal static DonorSeamIndex Create(Surface[] donor, CancellationToken token)
             {
                 var graph = ReverseUvCorrespondenceGraph.Build(donor, token);
                 var index = new DonorSeamIndex { seams = graph.links.Where(l => l.reason != "continuous" && l.reason != "nonmanifold").ToArray() };
@@ -57,7 +57,7 @@ namespace SashaRX.UnityMeshLab
         static void RefineAtDonorSeams(Surface[] donor, Surface[] targets, Options options, CancellationToken token,
             DonorSeamIndex index = null)
         {
-            index ??= DonorSeamIndex.Build(donor, token);
+            index ??= DonorSeamIndex.Create(donor, token);
             var seams = index.seams;
             if (seams.Length == 0) return;
             var bvh = index.bvh;

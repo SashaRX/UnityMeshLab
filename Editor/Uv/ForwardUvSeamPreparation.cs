@@ -165,7 +165,7 @@ namespace SashaRX.UnityMeshLab
             internal DonorSeamIndex SeamIndex(Options options,CancellationToken token)
             {
                 if (seamIndex==null)
-                    using (options.performance?.Accumulated("Projection donor seam index")) seamIndex=DonorSeamIndex.Build(donor,token);
+                    using (options.performance?.Accumulated("Projection donor seam index")) seamIndex=DonorSeamIndex.Create(donor,token);
                 return seamIndex;
             }
 
@@ -196,7 +196,7 @@ namespace SashaRX.UnityMeshLab
 
             // Runs once, off the editor thread when asynchronous. A failed or
             // cancelled run caches nothing, so the next pass repeats it.
-            internal void ProjectInitial(Options options,CancellationToken token)
+            internal void ProjectInitialShared(Options options,CancellationToken token)
             {
                 List<Chart> built;
                 using (options.performance?.Accumulated("Projection donor charts")) built=Charts(donor);
@@ -269,7 +269,7 @@ namespace SashaRX.UnityMeshLab
             Surface[] targets;
             using(performance?.Accumulated("Forward seam projection"))
             {
-                if (pass.projected==null) await RunProjection(t=>pass.ProjectInitial(options,t),useAsync,token);
+                if (pass.projected==null) await RunProjection(t=>pass.ProjectInitialShared(options,t),useAsync,token);
                 targets=new[] {pass.CopyProjected()};
                 await RunProjection(t=>ProjectAfterInitial(pass.donor,targets,pass.charts,options,pass.queries,t,pass.SeamIndex(options,t)),useAsync,token);
             }
