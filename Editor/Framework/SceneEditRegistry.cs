@@ -34,15 +34,18 @@ namespace SashaRX.UnityMeshLab
             public long localId;
             /// <summary>The edit is a pipeline working copy an Undo brought back, not a scene edit: a refresh takes it as the working mesh, not the baseline.</summary>
             public bool workingCopy;
+            /// <summary>For a working copy: the scene edit it was taken from, which stays the baseline; null when it was taken from the import.</summary>
+            public Mesh baseline;
         }
 
         [SerializeField] List<Link> links = new List<Link>();
 
         /// <summary>
         /// Records that <paramref name="edit"/> on <paramref name="filter"/> stands for the imported
-        /// <paramref name="imported"/>; <paramref name="workingCopy"/> marks a pipeline copy rather than a scene edit.
+        /// <paramref name="imported"/>; <paramref name="workingCopy"/> marks a pipeline copy rather than a
+        /// scene edit, taken from the scene edit <paramref name="baseline"/> when there was one.
         /// </summary>
-        internal static void Register(MeshFilter filter, Mesh imported, Mesh edit, bool workingCopy = false)
+        internal static void Register(MeshFilter filter, Mesh imported, Mesh edit, bool workingCopy = false, Mesh baseline = null)
         {
             if (filter == null || imported == null || edit == null) return;
             var links = instance.links;
@@ -55,6 +58,7 @@ namespace SashaRX.UnityMeshLab
             }
             link.imported = imported;
             link.workingCopy = workingCopy;
+            link.baseline = workingCopy ? baseline : null;
             link.assetPath = AssetDatabase.GetAssetPath(imported);
             link.meshName = imported.name;
             link.localId = AssetDatabase.TryGetGUIDAndLocalFileIdentifier(imported, out string _, out long localId) ? localId : 0;
@@ -65,21 +69,34 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>As <see cref="TryGetImported(MeshFilter, Mesh, out Mesh)"/>, telling a pipeline working copy from a scene edit.</summary>
         internal static bool TryGetImported(MeshFilter filter, Mesh shown, out Mesh imported, out bool workingCopy)
+            => TryGetImported(filter, shown, out imported, out workingCopy, out _);
+
+        /// <summary>
+        /// As <see cref="TryGetImported(MeshFilter, Mesh, out Mesh)"/>, telling a pipeline working copy from a
+        /// scene edit and giving the scene edit a working copy was taken from (null for one taken from the import, or gone).
+        /// </summary>
+        internal static bool TryGetImported(MeshFilter filter, Mesh shown, out Mesh imported, out bool workingCopy, out Mesh baseline)
         {
-            imported = null; workingCopy = false;
+            imported = null; workingCopy = false; baseline = null;
             if (filter == null || shown == null) return false;
             var link = instance.links.Find(candidate => candidate.filter == filter && candidate.edit == shown);
             if (link == null) return false;
             imported = Imported(link);
             workingCopy = link.workingCopy;
+            baseline = workingCopy && link.baseline != null ? link.baseline : null;
             return imported != null;
         }
 
-        /// <summary>Takes the edits the entries carry into the registry and drops the links whose imported mesh is gone for good.</summary>
+        /// <summary>
+        /// Takes the edits the entries' renderers show into the registry and drops the links whose
+        /// imported mesh is gone for good. An edit a renderer no longer shows (Merge replaced it) keeps
+        /// the provenance it had, for the Undo that brings it back.
+        /// </summary>
         internal static void Collect(IEnumerable<MeshEntry> entries)
         {
             foreach (var e in entries)
-                if (e != null && e.sceneEditMesh != null && e.meshFilter != null && e.fbxMesh != null && e.sceneEditMesh != e.fbxMesh)
+                if (e != null && e.sceneEditMesh != null && e.meshFilter != null && e.fbxMesh != null && e.sceneEditMesh != e.fbxMesh
+                    && e.meshFilter.sharedMesh == e.sceneEditMesh)
                     Register(e.meshFilter, e.fbxMesh, e.sceneEditMesh);
             instance.links.RemoveAll(link => Imported(link) == null);
         }

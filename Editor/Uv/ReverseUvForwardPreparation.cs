@@ -48,7 +48,8 @@ namespace SashaRX.UnityMeshLab
                     foreach (var entry in entries)
                     {
                         token.ThrowIfCancellationRequested();
-                        var source=entry.fbxMesh ? entry.fbxMesh : entry.originalMesh;
+                        // The renderer's baseline: a scene edit (MeshEntry.sceneEditMesh) when there is one, else the import.
+                        var baseline=entry.Baseline; var source=baseline ? baseline : entry.originalMesh;
                         if(!source.isReadable && (source.blendShapeCount>0
                             || source.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.BlendWeight)
                             || source.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.BlendIndices)))

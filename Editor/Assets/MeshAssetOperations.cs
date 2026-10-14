@@ -32,6 +32,19 @@ namespace SashaRX.UnityMeshLab
         void RestoreAllPreviews() => BeforeWrite?.Invoke();
         void SwitchToPostApplyView(Dictionary<string, List<MeshUv2Entry>> applied = null)
         {
+            if (applied != null)
+                foreach (var entry in ctx.MeshEntries)
+                {
+                    if (entry?.sceneEditMesh == null || entry.fbxMesh == null) continue;
+                    string path = AssetDatabase.GetAssetPath(entry.fbxMesh);
+                    if (string.IsNullOrEmpty(path) || !applied.TryGetValue(path, out var saved)) continue;
+                    var payload = saved.FirstOrDefault(item => item != null && item.meshName == entry.fbxMesh.name);
+                    if (payload == null) continue;
+                    var intent = UvIntent(payload.targetUvChannel)
+                        | (payload.auxiliaryUv != null ? UvIntent(payload.auxiliaryTargetUvChannel) : FbxExportIntent.None)
+                        | (payload.optimizedColors != null ? FbxExportIntent.VertexColors : FbxExportIntent.None);
+                    SyncSceneEditChannels(entry, GetResultMesh(entry), intent, "Apply UV2");
+                }
             if (ctx.LodGroup != null) ctx.Refresh(ctx.LodGroup);
             else if (ctx.StandaloneMesh)
             {
@@ -641,6 +654,8 @@ namespace SashaRX.UnityMeshLab
                 isVariantExport || !refreshContext ? null : ctx?.LodGroup);
             if (!exported) { standaloneRelinks.Clear(); return false; }
             ApplySidecarSync(sidecar);
+            if (!isVariantExport)
+                foreach (var e in list) SyncSceneEditChannels(e, WorkingMesh(e), intent, "FBX Export");
             string collisionTarget = isVariantExport ? outputFbxPathOverride : sourceFbxPath;
             if (collisionData != null && collisionTarget.StartsWith("Assets/", StringComparison.Ordinal))
             {
@@ -820,6 +835,37 @@ namespace SashaRX.UnityMeshLab
             savedSceneEdits.Clear();
         }
 
+        // A scene edit kept through a save (its faces were not written) takes the channels the
+        // save wrote, from the result they were taken from, while the result still has the edit's
+        // vertices: otherwise the renderer would show, and the next save write, the channels the
+        // save has just replaced. A result with other vertices (a weld or a split ran) cannot be
+        // mapped back and says so; the file has the channels, the edit keeps its own.
+        internal static void SyncSceneEditChannels(MeshEntry e, Mesh written, FbxExportIntent intent, string label)
+        {
+            var edit = e?.sceneEditMesh;
+            intent &= FbxExportIntent.AnyUv | FbxExportIntent.VertexColors | FbxExportIntent.Normals | FbxExportIntent.Tangents;
+            if (edit == null || written == null || written == edit || intent == FbxExportIntent.None) return;
+            if (written.vertexCount != edit.vertexCount || !written.vertices.SequenceEqual(edit.vertices))
+            {
+                UvtLog.Warn($"[{label}] '{edit.name}': the scene edit keeps its vertex channels; the ones written were made for other vertices (the file has them). Save the FBX document to write the edited faces with them.");
+                return;
+            }
+            Undo.RecordObject(edit, label);
+            var uvs = new List<Vector4>();
+            for (int channel = 0; channel < 8; ++channel)
+            {
+                if (!intent.IncludesUv(channel)) continue;
+                written.GetUVs(channel, uvs);
+                edit.SetUVs(channel, uvs);
+            }
+            if ((intent & FbxExportIntent.VertexColors) != 0) VertexChannels.SetColors(edit, written.colors);
+            if ((intent & FbxExportIntent.Normals) != 0) edit.normals = written.normals;
+            if ((intent & FbxExportIntent.Tangents) != 0) edit.tangents = written.tangents;
+            VertexChannels.RaiseChanged(edit);
+        }
+
+        static FbxExportIntent UvIntent(int channel) => (uint)channel > 7u ? FbxExportIntent.None : (FbxExportIntent)(1 << channel);
+
         string ResolveFbxPath()
             => !string.IsNullOrEmpty(ctx.SourceFbxPath) ? ctx.SourceFbxPath
              : FbxExport.ResolveSourceFbxPath(ctx.MeshEntries, null, null);
@@ -958,7 +1004,11 @@ namespace SashaRX.UnityMeshLab
                     ApplySidecarSync(sidecar);
                     if (isVariant) continue;
                     // The structure step wrote these meshes whole: their scene edits are in the file.
+                    // The other scene edits take the channels the channel step wrote.
                     MarkSceneEditsSaved(sourceFbxPath, kv.Value.Select(p => p.entry), e => plan.reshaped.Any(r => r.name == e.fbxMesh.name));
+                    foreach (var (entry, resultMesh) in kv.Value)
+                        if (entry.fbxMesh == null || !plan.reshaped.Any(r => r.name == entry.fbxMesh.name))
+                            SyncSceneEditChannels(entry, resultMesh, FbxChannelWrite.Supported, "FBX Export");
                     AfterSourceSave(plan.lods.Count > 0);
                 }
             }

@@ -182,8 +182,10 @@ namespace SashaRX.UnityMeshLab
                 first.renderer.sharedMaterials = new[] { group.material };
                 first.renderer.gameObject.name = name;
                 // Refresh restores the context before rebuilding entries. The merge is
-                // the new scene baseline, so restoration must keep it alive.
+                // the new scene baseline, so restoration must keep it alive; a scene edit it
+                // absorbed is no longer this entry's (its link stays for the Undo that brings it back).
                 first.fbxMesh = first.originalMesh = mergedMesh;
+                first.sceneEditMesh = null;
                 RemoveFromLodGroup(ctx.LodGroup, destroy, undoLabel);
                 foreach (var go in destroy)
                 {

@@ -242,8 +242,11 @@ namespace SashaRX.UnityMeshLab
                 // A pipeline working copy (the transfer workflow's weld or symmetry split) is not
                 // Undo's to keep, so the edit goes into a clone that is: the clone is the renderer's
                 // scene edit, which no reset destroys, and the copy goes through Undo, registered as
-                // the working copy it was, so an Undo of the edit brings the pipeline state back as
-                // it stood instead of leaving a stray mesh on the renderer.
+                // the working copy it was, of the scene edit it was taken from when there was one,
+                // so an Undo of the edit brings the pipeline state back as it stood instead of
+                // leaving a stray mesh on the renderer. That earlier edit, now part of the clone,
+                // goes through Undo with the copy.
+                var prior = entry.sceneEditMesh;
                 var clone = UnityEngine.Object.Instantiate(source);
                 clone.name = entry.fbxMesh != null ? entry.fbxMesh.name : source.name;
                 Undo.RegisterCreatedObjectUndo(clone, undoLabel);
@@ -254,9 +257,10 @@ namespace SashaRX.UnityMeshLab
                     if (PrefabUtility.IsPartOfPrefabInstance(entry.meshFilter))
                         PrefabUtility.RecordPrefabInstancePropertyModifications(entry.meshFilter);
                 }
-                SceneEditRegistry.Register(entry.meshFilter, entry.fbxMesh, source, workingCopy: true);
+                SceneEditRegistry.Register(entry.meshFilter, entry.fbxMesh, source, workingCopy: true, baseline: prior);
                 SceneEditRegistry.Register(entry.meshFilter, entry.fbxMesh, clone);
                 Undo.DestroyObjectImmediate(source);
+                if (prior != null && prior != entry.fbxMesh && !AssetDatabase.Contains(prior)) Undo.DestroyObjectImmediate(prior);
                 entry.originalMesh = clone;
                 entry.sceneEditMesh = clone;
                 mesh = clone;
