@@ -244,9 +244,12 @@ namespace SashaRX.UnityMeshLab
                 bool sourceSave = string.IsNullOrEmpty(output) || string.Equals(output, group.Key, StringComparison.OrdinalIgnoreCase);
                 var bindings = sourceSave ? FbxExport.CaptureSceneMeshReferences(group.Key,
                     collisionData == null ? copies : Array.Empty<MeshEntry>()) : null;
-                if (!ExportFbxIsolatedCore(group.Key, copies, intent, output, refreshContext: false, collisionData: collisionData)) continue;
-                written.Add(group.Key);
+                bool ok = ExportFbxIsolatedCore(group.Key, copies, intent, output, refreshContext: false, collisionData: collisionData);
+                // After a failure past the replacement an importer restore may have imported the
+                // written file: the renderers noted take its meshes, and keep theirs otherwise.
                 bindings?.Relink(group.Key);
+                if (!ok) continue;
+                written.Add(group.Key);
             }
             UvtLog.Info($"[FBX Export] Tool results: {written.Count}/{groups.Count} file(s) written.");
 #else
@@ -543,6 +546,18 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Info($"[FBX Export] Updated {saved} and removed {removed} UV2 entr(ies) in '{SidecarStore.PathFor(sync.fbxPath)}' to match the saved FBX.");
         }
 
+        // A save whose file is written but whose steps after the replacement failed (media, .meta,
+        // housekeeping): the import and the relink did not run. The persistent sidecar must still
+        // hold the written UVs, or an import after the one the marker covers would replay the old
+        // ones over them; the scene keeps its working copies, and a save once the cause is fixed
+        // finishes the import and the relink.
+        static void AfterPostCommitFailure(string writtenFbxPath, FbxExport.PostCommitException ex, SidecarSync sidecar)
+        {
+            UvtLog.Error($"[FBX Export] {ex.Message} The import of the written file and the scene relink did not run; fix the cause and save '{writtenFbxPath}' again.");
+            UvtLog.Verbose(ex.ToString());
+            ApplySidecarSync(sidecar);
+        }
+
         static bool TryChooseNarrowExportPath(string sourceFbxPath, FbxExportIntent intent, bool overwriteSource, out string outputFbxPath)
         {
             outputFbxPath = null;
@@ -646,34 +661,53 @@ namespace SashaRX.UnityMeshLab
             var sidecar = sidecarFbx == null ? null
                 : PrepareSidecarSync(sidecarFbx, list.Select(e => (e, WorkingMesh(e))).Where(p => p.Item2 != null).ToList());
             if (!isVariantExport && refreshContext) PrepareStandaloneRelink(sourceFbxPath);
-            bool exported;
-            if (collisionData != null)
-            {
-                using var plan = FbxStructureWrite.CollisionPlan(collisionData);
-                try { exported = FbxChannelWrite.Write(sourceFbxPath, Array.Empty<MeshEntry>(), FbxExportIntent.None, outputFbxPathOverride, null, plan); }
-                catch (Exception ex)
-                {
-                    UvtLog.Error($"[FBX Export] '{sourceFbxPath}' was not written: {ex.Message}");
-                    UvtLog.Verbose(ex.ToString());
-                    exported = false;
-                }
-            }
-            else exported = FbxExport.WriteChannels(
-                sourceFbxPath, list, intent, outputFbxPathOverride,
-                FbxExport.FirstRealMaterial(refreshContext ? ctx?.MeshEntries : list),
-                isVariantExport || !refreshContext ? null : ctx?.LodGroup);
-            if (!exported) { standaloneRelinks.Clear(); return false; }
-            ApplySidecarSync(sidecar);
-            if (!isVariantExport)
-                foreach (var e in list) SyncSceneEditChannels(e, WorkingMesh(e), intent, "FBX Export");
+            // The written file's collision is what the sidecar must hold from here on.
             string collisionTarget = isVariantExport ? outputFbxPathOverride : sourceFbxPath;
-            if (collisionData != null && collisionTarget.StartsWith("Assets/", StringComparison.Ordinal))
+            void SaveCollisionSidecar()
             {
+                if (collisionData == null || !collisionTarget.StartsWith("Assets/", StringComparison.Ordinal)) return;
                 var saved = SidecarStore.LoadOrCreate(collisionTarget);
                 Undo.RecordObject(saved, "Save Collision Sidecar");
                 saved.collisionEntries = new List<CollisionMeshEntry>(collisionData.collisionEntries);
                 SidecarStore.Save(saved);
             }
+            bool exported;
+            try
+            {
+                if (collisionData != null)
+                {
+                    using var plan = FbxStructureWrite.CollisionPlan(collisionData);
+                    try { exported = FbxChannelWrite.Write(sourceFbxPath, Array.Empty<MeshEntry>(), FbxExportIntent.None, outputFbxPathOverride, null, plan); }
+                    catch (Exception ex) when (!(ex is FbxExport.PostCommitException))
+                    {
+                        UvtLog.Error($"[FBX Export] '{sourceFbxPath}' was not written: {ex.Message}");
+                        UvtLog.Verbose(ex.ToString());
+                        exported = false;
+                    }
+                }
+                else exported = FbxExport.WriteChannels(
+                    sourceFbxPath, list, intent, outputFbxPathOverride,
+                    FbxExport.FirstRealMaterial(refreshContext ? ctx?.MeshEntries : list),
+                    isVariantExport || !refreshContext ? null : ctx?.LodGroup);
+            }
+            catch (FbxExport.PostCommitException ex)
+            {
+                // The file is written: the sidecars take what is in it; the scene follows the save
+                // that finishes the job. The clone path's importer restore may have imported the
+                // written file on the way out: the renderers noted take its meshes then, and keep
+                // theirs when no import ran.
+                AfterPostCommitFailure(collisionTarget, ex, sidecar);
+                SaveCollisionSidecar();
+                RelinkStandalone();
+                if (!isVariantExport && refreshContext && ctx?.LodGroup != null)
+                    FbxExport.RelinkSceneMeshReferences(sourceFbxPath, null, ctx.LodGroup);
+                exported = false;
+            }
+            if (!exported) { standaloneRelinks.Clear(); return false; }
+            ApplySidecarSync(sidecar);
+            if (!isVariantExport)
+                foreach (var e in list) SyncSceneEditChannels(e, WorkingMesh(e), intent, "FBX Export");
+            SaveCollisionSidecar();
             if (!isVariantExport && refreshContext) AfterSourceSave();
             return true;
 #else
@@ -1037,6 +1071,14 @@ namespace SashaRX.UnityMeshLab
                         else MarkUnsaved(kv.Value);
                         continue;
                     }
+                    catch (FbxExport.PostCommitException ex)
+                    {
+                        // The file is written, its import and relink did not run: the sidecar takes
+                        // the written UVs now, the scene keeps its working copies for the save that
+                        // finishes the job.
+                        AfterPostCommitFailure(isVariant ? outputFbxPath : sourceFbxPath, ex, sidecar);
+                        written = false;
+                    }
                     catch (Exception ex)
                     {
                         UnmarkSceneEditsSaved(sourceFbxPath);
@@ -1080,7 +1122,7 @@ namespace SashaRX.UnityMeshLab
             return ok;
         }
 
-        void FinishHierarchyExports(HierarchyExportBatch batch, bool overwriteSource, bool allGroupsSucceeded)
+        internal void FinishHierarchyExports(HierarchyExportBatch batch, bool overwriteSource, bool allGroupsSucceeded)
         {
             // Generated scene LOD objects are embedded in the exported FBX
             // now and would duplicate on reimport.
@@ -1088,26 +1130,64 @@ namespace SashaRX.UnityMeshLab
                 LodGroupUtility.ClearGeneratedLods(ctx);
 
             // UV2 is baked into the FBX AND kept in the sidecar (for re-application after
-            // third-party postprocessors like Bakery); the sidecar entries stay.
-            AssetDatabase.Refresh();
-
-            // Unity recreates sub-asset meshes on reimport; old MeshFilter references go
-            // Missing even when names did not change. Relink every overwritten FBX.
-            if (overwriteSource && allGroupsSucceeded && ctx?.LodGroup != null)
-            {
-                foreach (string fbxPath in batch.OverwrittenFbxPaths)
+            // third-party postprocessors like Bakery); the sidecar entries stay. A batch with a
+            // failed group imports only the files whose write (and, for an overwrite, .meta
+            // restore) succeeded: a file whose .meta could not be restored must not be imported
+            // before it is, or it takes a new GUID.
+            var ready = new List<string>();
+            if (allGroupsSucceeded) { AssetDatabase.Refresh(); ready.AddRange(batch.ImportReadyFbxPaths); }
+            else
+                foreach (string fbxPath in batch.ImportReadyFbxPaths)
                 {
-                    batch.MeshRenamesByFbx.TryGetValue(fbxPath, out var renameMap);
-                    FbxExport.RelinkSceneMeshReferences(fbxPath, renameMap, ctx.LodGroup);
+                    // One import that throws (a third-party postprocessor) leaves the others to run.
+                    try { AssetDatabase.ImportAsset(fbxPath, ImportAssetOptions.ForceUpdate); ready.Add(fbxPath); }
+                    catch (Exception ex)
+                    {
+                        // Its scene edits stay on their renderers: the release below would hand them
+                        // the meshes of the import that did not happen.
+                        UnmarkSceneEditsSaved(fbxPath);
+                        UvtLog.Error($"[FBX Export] '{fbxPath}' was written, but its import failed: {ex.Message} Fix the cause and reimport it.");
+                        UvtLog.Verbose(ex.ToString());
+                    }
+                }
+
+            var imported = ready.Where(batch.OverwrittenFbxPaths.Contains).ToList();
+            // Stale "Lit" / "No Name" material remaps the importer created for collision-
+            // only nodes must not survive an overwrite. Removing one reimports the file, so
+            // this goes before the relink.
+            if (overwriteSource)
+            {
+                foreach (string fbxPath in imported.ToList())
+                {
+                    // One reimport that throws leaves the other files, and the relink below, to run;
+                    // the file itself waits for the reimport that finishes, with its scene edits.
+                    try { FbxExport.RemoveDefaultMaterialRemaps(fbxPath, () => batch.ReArm(fbxPath)); }
+                    catch (Exception ex)
+                    {
+                        imported.Remove(fbxPath);
+                        UnmarkSceneEditsSaved(fbxPath);
+                        UvtLog.Error($"[FBX Export] '{fbxPath}': removing the default material remaps failed: {ex.Message} Reimport it once the cause is fixed.");
+                        UvtLog.Verbose(ex.ToString());
+                    }
                 }
             }
 
-            // Stale "Lit" / "No Name" material remaps the importer created for collision-
-            // only nodes must not survive an overwrite.
-            if (overwriteSource && allGroupsSucceeded)
+            // Unity recreates sub-asset meshes on reimport; old MeshFilter references go
+            // Missing even when names did not change. Every renderer noted before the write
+            // takes the recreated mesh of the name it showed, or of the name the normalisation gave
+            // it; under a LODGroup the by-name pass then covers the nodes the export renamed and
+            // what the bindings could not place. Every overwritten file that was imported is
+            // relinked, in a partly failed batch too, after the remap removal's reimport, which
+            // recreates the meshes once more.
+            if (overwriteSource)
             {
-                foreach (string fbxPath in batch.OverwrittenFbxPaths)
-                    FbxExport.RemoveDefaultMaterialRemaps(fbxPath, () => batch.ReArm(fbxPath));
+                foreach (string fbxPath in imported)
+                {
+                    batch.MeshRenamesByFbx.TryGetValue(fbxPath, out var renameMap);
+                    if (batch.BindingsByFbx.TryGetValue(fbxPath, out var bindings)) bindings.Relink(fbxPath, renameMap);
+                    if (ctx?.LodGroup == null) continue;
+                    FbxExport.RelinkSceneMeshReferences(fbxPath, renameMap, ctx.LodGroup);
+                }
             }
 
             // A rebuild writes every mesh from the scene: the scene edits of the files it
@@ -1123,6 +1203,10 @@ namespace SashaRX.UnityMeshLab
         internal sealed class HierarchyExportBatch
         {
             public readonly HashSet<string> OverwrittenFbxPaths = new HashSet<string>();
+            /// <summary>The project files whose write (and, for an overwrite, .meta restore) succeeded: the ones a partly failed batch imports and relinks.</summary>
+            public readonly HashSet<string> ImportReadyFbxPaths = new HashSet<string>();
+            /// <summary>The renderers showing each overwritten file's meshes, noted before the write that recreates them.</summary>
+            public readonly Dictionary<string, FbxExport.SceneMeshBindings> BindingsByFbx = new Dictionary<string, FbxExport.SceneMeshBindings>(StringComparer.OrdinalIgnoreCase);
             public readonly Dictionary<string, List<MeshUv2Entry>> TransientReplayEntriesByPath = new Dictionary<string, List<MeshUv2Entry>>();
             public readonly Dictionary<string, Dictionary<string, string>> MeshRenamesByFbx = new Dictionary<string, Dictionary<string, string>>();
             public readonly bool PersistentSidecarMode = PostprocessorDefineManager.IsEnabled();
@@ -1149,12 +1233,16 @@ namespace SashaRX.UnityMeshLab
         internal bool ExportHierarchyGroupPrepared(string sourceFbxPath, List<(MeshEntry entry, Mesh resultMesh)> entries,
             bool overwriteSource, HierarchyExportBatch batch, string exportPath, string tempDir, string fullSourcePath, string backupName)
         {
-            bool written = false, failed = false, madeReadable = false;
+            bool written = false, failed = false, madeReadable = false, importReady = false;
             GameObject tempRoot = null;
             ModelImporter importer = null;
             var tempMeshes = new List<Mesh>();
             try
             {
+                // Every import below recreates the file's meshes, the importer preparation's included:
+                // the renderers showing them are noted first, by name, to take the recreated ones
+                // after the last one (FinishHierarchyExports).
+                if (overwriteSource) batch.BindingsByFbx[sourceFbxPath] = FbxExport.CaptureSceneMeshReferences(sourceFbxPath, entries.Select(p => p.entry));
                 if (overwriteSource)
                     Uv2AssetPostprocessor.PrepareImportSettings(sourceFbxPath, force: true, lockForFbxOverwrite: true);
                 importer = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
@@ -1173,7 +1261,12 @@ namespace SashaRX.UnityMeshLab
                 tempRoot.name = prefab.name;
                 FbxExport.PromoteRootMeshToLod0Child(tempRoot);
                 int collisions = PrepareExportHierarchy(tempRoot, sourceFbxPath, entries, tempMeshes, batch);
-                WriteHierarchyExport(exportPath, tempRoot);
+                try { WriteHierarchyExport(exportPath, tempRoot, overwriteSource); }
+                catch (FbxExport.PostCommitException ex)
+                {
+                    // The file is written; the .meta backup restored below covers a failed .meta restore.
+                    UvtLog.Warn("[FBX Export] " + ex.Message);
+                }
                 written = true;
                 if (overwriteSource) batch.OverwrittenFbxPaths.Add(sourceFbxPath);
                 UvtLog.Info($"[FBX Export] Exported ({FbxWriteSettings.FromProject().FormatName}) {entries.Count + collisions} mesh(es) -> {exportPath}");
@@ -1183,20 +1276,37 @@ namespace SashaRX.UnityMeshLab
             {
                 if (tempRoot != null) UnityEngine.Object.DestroyImmediate(tempRoot);
                 FbxExport.DestroyTempMeshes(tempMeshes);
+                // An overwrite is ready for import once its .meta is back; a new file as soon as it
+                // is written. The source importer's readability is restored separately: its failure
+                // fails the group, not the file the group wrote.
+                bool restored = true;
                 if (overwriteSource)
-                    failed |= !RestoreHierarchyBackup(tempDir, backupName, fullSourcePath, sourceFbxPath, written);
+                {
+                    restored = RestoreHierarchyBackup(tempDir, backupName, fullSourcePath, sourceFbxPath, written);
+                    failed |= !restored;
+                }
+                importReady = written && restored;
                 if (madeReadable && importer != null)
                     failed |= !RestoreHierarchyReadability(importer, sourceFbxPath);
             }
             // A completed write needs replay even if restoring its importer metadata failed.
             if (overwriteSource && written) StoreHierarchyExportSidecars(sourceFbxPath, entries, true, batch);
             if (overwriteSource && !(written && !failed)) UnmarkSceneEditsSaved(sourceFbxPath);
+            // A new file outside the project is not an asset; nothing imports it.
+            if (importReady && IsProjectAssetPath(exportPath)) batch.ImportReadyFbxPaths.Add(exportPath);
             return written && !failed;
         }
 
-        void WriteHierarchyExport(string path, GameObject root)
+        static bool IsProjectAssetPath(string path) =>
+            path != null && (path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase) || path.StartsWith("Assets\\", StringComparison.OrdinalIgnoreCase)
+                || path.StartsWith("Packages/", StringComparison.OrdinalIgnoreCase) || path.StartsWith("Packages\\", StringComparison.OrdinalIgnoreCase));
+
+        // A source is replaced in one rename once its new file is complete and checked
+        // (FbxExport.WriteAtomic); a new file is written in place.
+        void WriteHierarchyExport(string path, GameObject root, bool overwriteSource)
         {
             if (HierarchyWriter != null) HierarchyWriter(path, root);
+            else if (overwriteSource) FbxExport.WriteAtomic(path, root);
             else FbxExport.Write(path, root);
         }
 
@@ -1213,6 +1323,10 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        // After a write that did not complete the source and its .meta come back from the backup
+        // (the atomic replace leaves the source as it was; the copy is a belt and braces) and the
+        // backup goes; after a completed one the .meta is restored and the backup of the original
+        // stays where the dialog said it would, one per source file, replaced by the next save.
         internal static bool RestoreHierarchyBackup(string directory, string name, string fullSourcePath, string assetPath, bool written)
         {
             string fbxBackup = System.IO.Path.Combine(directory, name + ".bak");
@@ -1223,14 +1337,29 @@ namespace SashaRX.UnityMeshLab
                 if (System.IO.File.Exists(metaBackup)) System.IO.File.Copy(metaBackup, fullSourcePath + ".meta", true);
                 if (!written && !string.IsNullOrEmpty(assetPath))
                     FbxExport.ReimportWithoutSidecars(assetPath, () => AssetDatabase.ImportAsset(assetPath, ImportAssetOptions.ForceUpdate));
-                if (System.IO.File.Exists(metaBackup)) System.IO.File.Delete(metaBackup);
-                if (System.IO.File.Exists(fbxBackup)) System.IO.File.Delete(fbxBackup);
-                return true;
             }
             catch (Exception ex) {
                 UvtLog.Error($"[FBX Export] Backup restore failed; copies kept in {directory}: {ex.Message}");
                 return false;
             }
+            // The source and its .meta are as they should be from here: a backup copy that cannot be
+            // deleted is housekeeping, not a failed restore.
+            try
+            {
+                if (System.IO.File.Exists(metaBackup)) System.IO.File.Delete(metaBackup);
+                if (!written && System.IO.File.Exists(fbxBackup)) System.IO.File.Delete(fbxBackup);
+            }
+            catch (Exception ex) { UvtLog.Warn($"[FBX Export] Backup copies left in {directory}: {ex.Message}"); }
+            if (written) UvtLog.Info($"[FBX Export] The original of '{assetPath}' is kept at '{fbxBackup}' until the next save of this file.");
+            return true;
+        }
+
+        /// <summary>Eight hex digits of the path's SHA-256: the same in every process and runtime, unlike string.GetHashCode.</summary>
+        internal static string StablePathHash(string fullPath)
+        {
+            using var sha = System.Security.Cryptography.SHA256.Create();
+            var digest = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(fullPath));
+            return System.BitConverter.ToString(digest, 0, 4).Replace("-", "");
         }
 
         static bool TryPrepareHierarchyExportPath(string sourceFbxPath, bool overwriteSource,
@@ -1241,14 +1370,14 @@ namespace SashaRX.UnityMeshLab
                 System.IO.Path.GetDirectoryName(Application.dataPath), "Library", "MeshLab");
             // Hash the full path so two FBX files with the same filename
             // (e.g. Assets/A/Chair.fbx and Assets/B/Chair.fbx) get distinct
-            // backup names and never overwrite each other.
+            // backup names and never overwrite each other. The backup stays after the save,
+            // so the hash is one that does not change between editor sessions.
             fullSourcePath = System.IO.Path.GetFullPath(sourceFbxPath);
-            backupName = System.IO.Path.GetFileName(fullSourcePath) + "." +
-                unchecked((uint)fullSourcePath.GetHashCode()).ToString("X8");
+            backupName = System.IO.Path.GetFileName(fullSourcePath) + "." + StablePathHash(fullSourcePath);
             if (overwriteSource)
             {
                 if (!EditorUtility.DisplayDialog("Overwrite Source FBX",
-                    "This will overwrite:\n" + sourceFbxPath + "\n\nA backup (.fbx.bak) will be created. Continue?",
+                    "This will overwrite:\n" + sourceFbxPath + "\n\nThe original is kept as a .fbx.bak under Library/MeshLab until the next save of this file. Continue?",
                     "Overwrite", CancelButton))
                 {
                     return false;
@@ -1273,9 +1402,10 @@ namespace SashaRX.UnityMeshLab
                 {
                     return false;
                 }
-                string dataPath = Application.dataPath;
-                if (exportPath.StartsWith(dataPath))
-                    exportPath = "Assets" + exportPath.Substring(dataPath.Length);
+                // A destination inside the project (Assets, an embedded or local package) is an
+                // asset path from here on; one outside stays a file path.
+                string relative = FileUtil.GetProjectRelativePath(exportPath.Replace('\\', '/'));
+                if (!string.IsNullOrEmpty(relative)) exportPath = relative;
             }
 
             return true;

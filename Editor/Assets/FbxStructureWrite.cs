@@ -435,6 +435,9 @@ namespace SashaRX.UnityMeshLab
                 var source = CollisionRef(key);
                 RequireSiblingRoom(scene, source, preserveHierarchy);
                 foreach (var mesh in meshes) RequirePlaceable(source, mesh, key + "_COL");
+                // The `{key}_COL` subtree the write replaces must be this tool's, as for a superseded one.
+                foreach (var old in FbxStructureEdit.ChildrenNamed(source.node.GetParent(), key + "_COL"))
+                    RequireOwnedCollisionSubtree(old, key);
             }
             foreach (var (name, mesh) in plan.reshaped) RequirePlaceable(Ref(name), mesh, name);
             foreach (var lod in plan.lods.Where(l => l.materials != null))

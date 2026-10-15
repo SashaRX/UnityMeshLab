@@ -371,6 +371,84 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 #endif
 
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        [Test]
+        public void SuccessfulHierarchyOverwriteKeepsTheBackupTheDialogPromises()
+        {
+            // The source is replaced in one rename; the copy of the original under Library/MeshLab
+            // stays after the save, as the dialog says, and only the .meta backup is consumed.
+            AssetDatabase.CreateFolder("Assets", "__MeshLabReviewTests");
+            string path = Scratch + "/Review.fbx";
+            var root = Root(); var mesh = Plane("Review");
+            root.AddComponent<MeshFilter>().sharedMesh = mesh; root.AddComponent<MeshRenderer>();
+            FbxExport.Write(path, root); AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
+            byte[] original = File.ReadAllBytes(path), metadata = File.ReadAllBytes(path + ".meta");
+            string directory = Path.Combine(Path.GetTempPath(), "MeshLab-export-review-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(directory);
+            try {
+                File.WriteAllBytes(Path.Combine(directory, "Backup.bak"), original);
+                File.WriteAllBytes(Path.Combine(directory, "Backup.meta.bak"), metadata);
+                var ctx = new UvToolContext { StandaloneMesh = true };
+                var operations = ctx.Assets;
+                operations.HierarchyWriter = (output, exportRoot) => FbxExport.WriteAtomic(output, exportRoot);
+                var batch = new MeshAssetOperations.HierarchyExportBatch();
+                var entries = new List<(MeshEntry, Mesh)> { (new MeshEntry { originalMesh = mesh, fbxMesh = mesh }, mesh) };
+                Assert.IsTrue(operations.ExportHierarchyGroupPrepared(path, entries, true, batch, path, directory, Path.GetFullPath(path), "Backup"));
+                Assert.IsTrue(FbxExport.LooksLikeFbx(path));
+                CollectionAssert.AreEqual(original, File.ReadAllBytes(Path.Combine(directory, "Backup.bak")), "the backup of the original stays");
+                Assert.IsFalse(File.Exists(Path.Combine(directory, "Backup.meta.bak")), "the .meta backup is consumed by its restore");
+                Assert.IsFalse(File.Exists(path + ".tmp"));
+                CollectionAssert.Contains(batch.OverwrittenFbxPaths, path);
+            }
+            finally {
+                Directory.Delete(directory, true);
+                Uv2AssetPostprocessor.managedImportPaths.Remove(path);
+                Uv2AssetPostprocessor.transientReplayPaths.Remove(path);
+                Uv2AssetPostprocessor.bypassPaths.Remove(path);
+            }
+        }
+#endif
+
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        [Test]
+        public void ANewFbxWrittenUnderAssetsIsImportedByAPartlyFailedBatch()
+        {
+            // A non-overwrite export records the file it wrote when it is a project asset, so a batch
+            // another group failed imports it; a file written outside the project is no asset.
+            AssetDatabase.CreateFolder("Assets", "__MeshLabReviewTests");
+            string path = Scratch + "/Review.fbx", exported = Scratch + "/Review_uv2.fbx", failed = Scratch + "/Review_failed.fbx";
+            string outside = Path.Combine(Path.GetTempPath(), "MeshLab-export-review-" + Guid.NewGuid().ToString("N") + ".fbx");
+            var root = Root(); var mesh = Plane("Review");
+            root.AddComponent<MeshFilter>().sharedMesh = mesh; root.AddComponent<MeshRenderer>();
+            FbxExport.Write(path, root); AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
+            try {
+                var ctx = new UvToolContext { StandaloneMesh = true };
+                var operations = ctx.Assets;
+                operations.HierarchyWriter = (output, exportRoot) => {
+                    if (string.Equals(output, failed, StringComparison.OrdinalIgnoreCase)) throw new IOException("injected exporter failure");
+                    FbxExport.Write(output, exportRoot);
+                };
+                var entries = new List<(MeshEntry, Mesh)> { (new MeshEntry { originalMesh = mesh, fbxMesh = mesh }, mesh) };
+                var batch = new MeshAssetOperations.HierarchyExportBatch();
+                Assert.IsTrue(operations.ExportHierarchyGroupPrepared(path, entries, false, batch, exported, null, Path.GetFullPath(path), "Backup"));
+                ExpectError("[FBX Export] Export failed", () => Assert.IsFalse(operations.ExportHierarchyGroupPrepared(
+                    path, entries, false, batch, failed, null, Path.GetFullPath(path), "Backup")));
+                Assert.IsTrue(operations.ExportHierarchyGroupPrepared(path, entries, false, batch, outside, null, Path.GetFullPath(path), "Backup"));
+                CollectionAssert.AreEquivalent(new[] { exported }, batch.ImportReadyFbxPaths,
+                    "the written project file is the one a partly failed batch imports: not the failed one, not the file outside the project");
+                Assert.IsEmpty(batch.OverwrittenFbxPaths, "a new file is not an overwrite to relink");
+                operations.FinishHierarchyExports(batch, false, false);
+                Assert.IsNotNull(AssetDatabase.LoadAssetAtPath<GameObject>(exported), "the partly failed batch imported the written file");
+                Assert.IsNull(AssetDatabase.LoadAssetAtPath<GameObject>(failed), "nothing of the failed group is imported");
+            }
+            finally {
+                if (File.Exists(outside)) File.Delete(outside);
+                AssetDatabase.DeleteAsset(exported);
+                AssetDatabase.DeleteAsset(failed);
+            }
+        }
+#endif
+
         static void ExpectError(string expected, Action action)
         {
             // The licence-free compile references omit LogAssert; Unity's real runner supplies it.

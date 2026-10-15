@@ -140,6 +140,10 @@ namespace SashaRX.UnityMeshLab
                 throw new FbxStructureRefusalException(
                     $"'{Path.GetFileName(targetFbxPath)}' is written outside the project: the changed materials could only go in as names, without the importer remap that maps them to their assets");
 
+            // The import that follows a source save recreates the file's meshes: the renderers
+            // showing them are noted now, by name, so a node whose name differs from its mesh's
+            // (Wheel_LOD0 showing Wheel) takes the recreated mesh after the import.
+            var bindings = !isVariant && sceneRoot != null && !validationOnly ? FbxExport.CaptureSceneMeshReferences(sourceFbxPath, entries) : null;
             var importer = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
             bool swapUv = importer != null && importer.swapUVChannels;
             bool generatedUv1 = importer != null && importer.generateSecondaryUV;
@@ -240,8 +244,10 @@ namespace SashaRX.UnityMeshLab
             if (validationOnly) return true;
             if (uv1Changed) Uv2AssetPostprocessor.fbxOverwritePaths.Add(targetFbxPath);
 
+            // A write that did not happen takes its marker back; a written file whose steps after the
+            // replacement failed keeps it, so the import that follows skips the stale sidecar.
             try { document.SaveAtomic(Path.GetFullPath(targetFbxPath), shadingSelection?.mediaOwnership); }
-            catch { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); throw; }
+            catch (Exception ex) when (!(ex is FbxExport.PostCommitException)) { Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath); throw; }
             string format = $"FBX {document.Major}.{document.Minor}, {FbxWriteSettings.FromProject().FormatName}";
             if (meshesWritten > 0)
                 UvtLog.Info($"[FBX Export] {meshesWritten} mesh(es), {cornersWritten} corner value(s) of {string.Join(", ", channelsWritten.OrderBy(c => c))} -> {targetFbxPath} " +
@@ -294,7 +300,11 @@ namespace SashaRX.UnityMeshLab
                     });
                     if (configured) ReimportVariant(targetFbxPath, uv1Changed, shadingSelection);
                 }
-                else if (sceneRoot != null) FbxExport.RelinkSceneMeshReferences(sourceFbxPath, null, sceneRoot);
+                else if (sceneRoot != null)
+                {
+                    bindings?.Relink(sourceFbxPath);
+                    FbxExport.RelinkSceneMeshReferences(sourceFbxPath, null, sceneRoot);
+                }
             }
             catch (Exception ex)
             {
