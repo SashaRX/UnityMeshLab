@@ -1155,7 +1155,15 @@ namespace SashaRX.UnityMeshLab
             if (overwriteSource)
             {
                 foreach (string fbxPath in imported)
-                    FbxExport.RemoveDefaultMaterialRemaps(fbxPath, () => batch.ReArm(fbxPath));
+                {
+                    // One reimport that throws leaves the other files, and the relink below, to run.
+                    try { FbxExport.RemoveDefaultMaterialRemaps(fbxPath, () => batch.ReArm(fbxPath)); }
+                    catch (Exception ex)
+                    {
+                        UvtLog.Error($"[FBX Export] '{fbxPath}': removing the default material remaps failed: {ex.Message} Reimport it once the cause is fixed.");
+                        UvtLog.Verbose(ex.ToString());
+                    }
+                }
             }
 
             // Unity recreates sub-asset meshes on reimport; old MeshFilter references go

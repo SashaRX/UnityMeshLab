@@ -647,6 +647,10 @@ namespace SashaRX.UnityMeshLab
                 return false;
             }
 
+            // The imports below recreate the file's meshes: the renderers showing them are noted
+            // first, by name, to take the recreated ones after the last import.
+            var bindings = !isVariantExport && sceneRoot != null ? CaptureSceneMeshReferences(sourceFbxPath, entries) : null;
+
             // ── Phase 1: importer ──
             using var importerRestore = new ImporterRestoreScope(sourceFbxPath);
             var srcImporter = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
@@ -769,7 +773,9 @@ namespace SashaRX.UnityMeshLab
             {
                 // renameMap is non-null only when the intent included Hierarchy; narrow
                 // per-vertex intents re-bind purely by sub-asset name.
-                RelinkSceneMeshReferences(sourceFbxPath, renameMap != null && renameMap.Count > 0 ? renameMap : null, sceneRoot);
+                var renames = renameMap != null && renameMap.Count > 0 ? renameMap : null;
+                bindings?.Relink(sourceFbxPath, renames);
+                RelinkSceneMeshReferences(sourceFbxPath, renames, sceneRoot);
             }
             return exported;
 #else
