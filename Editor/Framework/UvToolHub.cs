@@ -898,11 +898,11 @@ namespace SashaRX.UnityMeshLab
                 GUILayout.Space(4);
 
                 // ── LOD tri count ──
-                int lodTris = 0;
+                long lodTris = 0;
                 foreach (var e in ctx.ForLod(ctx.PreviewLod))
                 {
                     Mesh m = e.repackedMesh ?? e.originalMesh ?? e.fbxMesh;
-                    if (m != null) lodTris += m.triangles.Length / 3;
+                    if (m != null) lodTris += MeshInspection.TriangleCount(m);
                 }
                 var triStyle = new GUIStyle(EditorStyles.toolbarButton) {
                     normal = { textColor = new Color(.3f, 1f, .5f) },
@@ -1562,7 +1562,7 @@ namespace SashaRX.UnityMeshLab
 
             // ── Status info ──
             var ee = canvas.Entries(ctx);
-            int tV = 0, tT = 0;
+            long tV = 0, tT = 0;
             foreach (var e in ee)
             {
                 Mesh m = canvas.DisplayMesh(ctx, e);
@@ -1572,7 +1572,7 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 tV += m.vertexCount;
-                tT += m.triangles.Length / 3;
+                tT += MeshInspection.TriangleCount(m);
             }
             string hoverInfo = canvas.HoverHitValid
                 ? $" | UV:{canvas.UvSpot.x:F3},{canvas.UvSpot.y:F3} S:{canvas.HoveredShellId}"

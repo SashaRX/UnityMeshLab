@@ -93,11 +93,15 @@ namespace SashaRX.UnityMeshLab
             return reports[id] = text.ToString();
         }
 
-        static long TriangleCount(Mesh mesh)
+        internal static long TriangleCount(Mesh mesh)
         {
             long triangles = 0;
             for (int sub = 0; sub < mesh.subMeshCount; ++sub)
-                if (mesh.GetTopology(sub) == MeshTopology.Triangles) triangles += (long)mesh.GetIndexCount(sub) / 3;
+            {
+                var topology = mesh.GetTopology(sub);
+                if (topology == MeshTopology.Triangles) triangles += (long)mesh.GetIndexCount(sub) / 3;
+                else if (topology == MeshTopology.Quads) triangles += (long)mesh.GetIndexCount(sub) / 4 * 2;
+            }
             return triangles;
         }
 
