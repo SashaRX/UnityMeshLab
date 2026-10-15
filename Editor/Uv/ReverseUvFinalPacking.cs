@@ -131,11 +131,12 @@ namespace SashaRX.UnityMeshLab
                     return surface.packingFrames!=null?surface.packingFrames[t/3]
                         :ReverseUvTransfer.TriangleFrame(surface.positions[surface.indices[t]],surface.positions[surface.indices[t+1]],surface.positions[surface.indices[t+2]]);
                 }).ToArray()).ToArray();
-                var intersection=new UvAtlasDiagnostics.IntersectionTest();
+                // Valid runs concurrently for different families (one family per
+                // thread at a time); every write it makes is per family.
                 var refusals=new Dictionary<int,string>();
                 bool Refuse(int group,string reason)
                 {
-                    if(!refusals.ContainsKey(group)) refusals.Add(group,reason);
+                    lock(refusals) if(!refusals.ContainsKey(group)) refusals.Add(group,reason);
                     return false;
                 }
                 bool Valid(int group,Vector2[] uv,int side)
@@ -164,6 +165,7 @@ namespace SashaRX.UnityMeshLab
                             for(int k=0;k<3;++k) geometry.uv[f*3+k]=uv[faceIds[f]*3+k]/side;
                         if(faceIds.Length<=24 && !options.regroupPreparedAtlas)
                         {
+                            var intersection=new UvAtlasDiagnostics.IntersectionTest();
                             long comparisons=0;
                             for(int a=0;a<faceIds.Length;++a)
                             {
@@ -197,16 +199,32 @@ namespace SashaRX.UnityMeshLab
                 var levelIndices=levelFaces.Select(faces=>Enumerable.Range(0,faces.Length*3).ToArray()).ToArray();
                 HashSet<int> AuditAtlas(Vector2[][] placement,int canvas)
                 {
+                    // Levels are scanned concurrently; results are consumed in
+                    // level order, so failures, logs and exceptions keep that order.
+                    var levelScans=new UvAtlasDiagnostics.Report[levelFaces.Length];
+                    var failures=new Exception[levelFaces.Length];
+                    void Scan(int l)
+                    {
+                        try
+                        {
+                            var faces=levelFaces[l];
+                            var uv=faces.SelectMany(x=>Enumerable.Range(0,3).Select(k=>placement[x.id][x.f*3+k]/canvas)).ToArray();
+                            var min=uv.Aggregate(Vector2.Min);var max=uv.Aggregate(Vector2.Max);
+                            double span=Math.Max((double)max.x-min.x,(double)max.y-min.y);
+                            levelScans[l]=UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {uv=uv,
+                                indices=levelIndices[l],charts=new int[uv.Length]},token,
+                                comparisonBudget:options.comparisonBudget,collectConflicts:true,coordinateOrigin:min,coordinateScale:1/span);
+                        }
+                        catch(Exception error) {failures[l]=error;}
+                    }
+                    if(options.parallelFamilyValidation && levelFaces.Length>1)
+                        System.Threading.Tasks.Parallel.For(0,levelFaces.Length,Scan);
+                    else for(int l=0;l<levelFaces.Length;++l) {Scan(l);if(failures[l]!=null) break;}
                     var failed=new HashSet<int>();
                     for(int l=0;l<levelFaces.Length;++l)
                     {
-                        var faces=levelFaces[l];
-                        var uv=faces.SelectMany(x=>Enumerable.Range(0,3).Select(k=>placement[x.id][x.f*3+k]/canvas)).ToArray();
-                        var min=uv.Aggregate(Vector2.Min);var max=uv.Aggregate(Vector2.Max);
-                        double span=Math.Max((double)max.x-min.x,(double)max.y-min.y);
-                        var scan=UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {uv=uv,
-                            indices=levelIndices[l],charts=new int[uv.Length]},token,
-                            comparisonBudget:options.comparisonBudget,collectConflicts:true,coordinateOrigin:min,coordinateScale:1/span);
+                        if(failures[l]!=null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(failures[l]).Throw();
+                        var faces=levelFaces[l];var scan=levelScans[l];
                         if(!scan.complete || scan.invalidFaces>0 || scan.degenerateFaces>0)
                             throw new InvalidOperationException("Classic Repack atlas audit is incomplete or contains invalid faces.");
                         int cross=0,same=0;
@@ -228,7 +246,7 @@ namespace SashaRX.UnityMeshLab
                     packed=ReverseUvNativeFamilyPacking.TryPack(coordinates,16,options,token,Valid,
                         out scale,out side,allowLargerCanvas:true,fixedScale:1,validateAtlas:AuditAtlas,footprints:footprints);
                     if(packed==null) throw new InvalidOperationException("Classic frozen-group Repack failed; no atlas or shell fragments were published. "
-                        +string.Join("; ",refusals.Take(12).Select(p=>$"family {p.Key} '{groups[p.Key][0].surface.input.key}': {p.Value}")));
+                        +string.Join("; ",refusals.OrderBy(p=>p.Key).Take(12).Select(p=>$"family {p.Key} '{groups[p.Key][0].surface.input.key}': {p.Value}")));
                     if(options.fillFinalAtlas)
                         foreach(float density in new[] {2f,3f,4f,6f,8f})
                         {

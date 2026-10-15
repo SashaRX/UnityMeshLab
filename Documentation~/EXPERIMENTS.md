@@ -1,5 +1,95 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Reverse final packing: concurrent family and atlas audits — 2026-10-14
+
+Packing and its audits dominate Kamaz reverse time. An exact cache of family
+audits across trials would rarely hit: every density, orientation and precision
+retry moves families, so their Float32 coordinates differ. The audits are,
+however, independent per family and per LOD level:
+
+- `TryPackCore` keeps transform recovery and shape checks in family order (the
+  first changed family still refuses the trial before later ones). The initial
+  placement of every family is then validated concurrently; results are
+  consumed in family order with the original sub-ULP rescue phases, refusal
+  list and exception order. Only trials with a refusal list (every
+  `TryPackAttempt` call) speculate; a pass that ends at its first failed family
+  validates on demand as before.
+- `Valid` writes only per-family state (scan buffers, `Stabilize` output); the
+  refusal table is locked and the small-scan intersection scratch is per call.
+  A completely failed frozen pack lists refusals by family index, because
+  concurrent insertion order is not deterministic. That text exists only when no
+  atlas is published.
+- `AuditAtlas` scans LOD levels concurrently and merges failures, logs and
+  exceptions in level order.
+
+`parallelFamilyValidation` is the internal switch. It was measured as default
+on, with `-DisableParallelValidation` as the control. After the measurements
+below it defaults to off; the benchmark's `-ParallelValidation` /
+`MESHLAB_PARALLEL_VALIDATION=1` opts in. `Native family parallel validation`
+times the concurrent phase. A synthetic six-island test compares reports and
+mesh streams for both overlap policies.
+
+Measured on candidate `3552a3c5` (Intel Core i9-14900K, Unity 6000.2.6f2, Burst
+1.8.28 / Collections 2.5.7, 32 tex/m, 2 px padding, Fill atlas). Every arm uses
+the same private combined native library (`-CombinedNative`, SHA256
+`15C512B4…51783`) and `-RequireBurstRaster`; package Plugins are unchanged.
+Arms: (a) package at `a5c5deb`, (b) head with `-DisableParallelValidation`,
+(c) head default. Arms alternate per round, one repetition each; a has three
+rounds, b and c five (rounds 4–5 are supplementary b/c pairs). Medians, seconds:
+
+| Model | Policy | Reverse a | Reverse b | Reverse c | Packing trial b | Packing trial c | Parallel validation c |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Cafe_Table_A_01 | no overlap | 1.09 | 1.13 | 1.15 | 1.04 | 1.05 | 0.03 |
+| Cafe_Table_A_01 | overlap | 2.96 | 2.88 | 2.88 | 1.75 | 1.74 | 0.02 |
+| Modern_Kitchen_A | no overlap | 6.50 | 6.04 | 6.06 | 5.34 | 5.32 | 0.24 |
+| Modern_Kitchen_A | overlap | 6.59 | 5.90 | 5.87 | 1.55 | 1.53 | 0.12 |
+| Kamaz (`kamaz_Off`) | no overlap | 16.46 | 15.39 | 16.39 | 12.74 | 13.41 | 0.62 |
+| Kamaz (`kamaz_Off`) | overlap | 34.66 | 32.22 | 32.56 | 15.84 | 16.23 | 0.53 |
+
+Concurrent validation gives no measurable gain on this corpus. The concurrent
+phase itself is short (at most 0.62 s), so the sequential work it replaces is
+small too. On Kamaz without overlap it is slower and noisier: b spans
+15.17–15.52 s over five runs, c 15.26–17.40 s (median +6.5%); its packing-trial
+median rises 12.74 → 13.41 s. Kamaz overlap is +1%, inside run-to-run spread.
+The cause (thread-pool contention with the native packer, or GC pressure from
+concurrent scan buffers) is unconfirmed. The a → b gain comes from the exact
+packing trims ("Reverse final packing: exact trims"), not from concurrency.
+
+Decision: `parallelFamilyValidation` now defaults to off. Its upside is capped
+by the short phase it parallelizes, and it adds worker threads and timing
+variance. A check pair on the opt-in source (default, then `-ParallelValidation`)
+keeps all 120 exports and counts identical. It records zero concurrent-phase
+samples by default and 68 with the switch. `TransferPerformanceTests` passes
+40/40 with the private search library. In that single pair Kamaz exclusive measures 15.29 s
+sequential and 14.82 s concurrent, the opposite sign of the five-pair median.
+The effect is dominated by run-to-run variation, not a reliable speedup.
+Artifacts: `_results~/transfer-performance-20261014-eighth/optin-check/`.
+
+All 14 runs execute and pass the three required model cases. All 120 exported
+geometry/UV/ancestry/quality files are byte-identical (SHA256) to arm a round 1
+in every run. Input hashes/frames, atlas sizes, native pack, candidate search
+and placement-audit counts, logical work and refused/retained orders also
+match. Against the earlier `tbb-final-control` baseline, the same 120 files keep
+exact binary numeric values; eight differ only in JSON last-digit formatting.
+Kitchen and Kamaz overlap execute 57,151 and 326,588 genuinely compiled Burst
+triangles in every arm.
+
+Candidate EditMode regression (Burst required): 385 tests, 348 pass, 0 fail,
+37 skip (optional private fixtures/libraries). `TransferPerformanceTests` 27 pass
+/ 10 skip; rerun with the private native-search library, 37 pass / 0 skip.
+`BurstRasterSpansMatchScalarEdgesIncludingClippingAndRoundoff`, including the
+worker-thread direct-call assertions, and both
+`ParallelFamilyValidationIsByteIdenticalWithBothOverlapPolicies` cases pass.
+ReverseUv fixtures: FamilyPacking 19/0, FootprintPacking 16/0, FrozenCascade
+18/0, PackingReplay 0/6, QueryBackend 2/4, Seam 16/4, ShellPrecision 3/0,
+Transfer 150/2 (pass/skip). `UvJunctionCutsTests` 31/11,
+`TransferQualityRegressionTests` 66/0. The async hub UI path was not timed.
+Artifacts: `_results~/transfer-performance-20261014-eighth/`.
+
+Not pursued now: incremental occupancy rows. Snapshot construction plus search
+setup already costs about 0.83s of 33.9s on Kamaz overlap (sixth continuation),
+which bounds that gain and does not apply to exclusive packing.
+
 ## Reverse final packing: exact trims — 2026-10-14
 
 Repeated work in final family packing that cannot change any placement:
