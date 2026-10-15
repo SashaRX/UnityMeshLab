@@ -162,12 +162,13 @@ namespace SashaRX.UnityMeshLab
         public Material ShellOverlayMat;
         RenderTexture canvasRT;
         readonly UvPreviewGeometry geometry = new UvPreviewGeometry();
+        static readonly int OpacityId = Shader.PropertyToID("_Opacity");
         readonly ShellPreviewColors shellColors = new ShellPreviewColors();
         internal int ShellColorRevision(MeshEntry entry, int channel) => shellColors.Revision(entry, channel);
         // Fill callbacks may provide their own immutable UV arrays. Completion is
         // independent of array identity so a 3D layer never caches a pending blank.
         internal int DrawBufferRevision => geometry.Generation;
-        internal PreviewShellData PreparedShells(UvToolContext ctx, Mesh mesh, int channel)
+        internal static PreviewShellData PreparedShells(UvToolContext ctx, Mesh mesh, int channel)
         {
             ctx.PreviewShellDataCache.TryGetValue(((long)mesh.GetInstanceID() << 8) ^ (uint)channel, out var data);
             return data;
@@ -193,9 +194,9 @@ namespace SashaRX.UnityMeshLab
         {
             var batch = geometry.Get(uv, source, kind, state, topology, build, uv is Vector2[] data && data.Length > 2048);
             if (!batch) return;
-            GlMat.SetFloat("_Opacity", opacity); GlMat.SetPass(0);
+            GlMat.SetFloat(OpacityId, opacity); GlMat.SetPass(0);
             try { Graphics.DrawMeshNow(batch, UvPreviewGeometry.Matrix(x, y, size)); }
-            finally { GlMat.SetFloat("_Opacity", 1); GlMat.SetPass(0); }
+            finally { GlMat.SetFloat(OpacityId, 1); GlMat.SetPass(0); }
         }
 
         // Request repaint
@@ -840,12 +841,12 @@ namespace SashaRX.UnityMeshLab
                         builder.Vertex(new Vector2(x0, y0)); builder.Vertex(new Vector2(x1, y1)); builder.Vertex(new Vector2(x0, y1));
                     }
             });
-            GlMat.SetFloat("_Opacity", alpha); GlMat.SetPass(0);
+            GlMat.SetFloat(OpacityId, alpha); GlMat.SetPass(0);
             try {
                 if (occupiedTiles == null) DrawTile(Vector2Int.zero);
                 else foreach (var tile in occupiedTiles) DrawTile(tile);
             }
-            finally { GlMat.SetFloat("_Opacity", 1); GlMat.SetPass(0); }
+            finally { GlMat.SetFloat(OpacityId, 1); GlMat.SetPass(0); }
             void DrawTile(Vector2Int tile) => Graphics.DrawMeshNow(batch, UvPreviewGeometry.Matrix(ox + tile.x * sz, oy - tile.y * sz, sz));
         }
 

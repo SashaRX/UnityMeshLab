@@ -87,7 +87,9 @@ namespace SashaRX.UnityMeshLab
             var sourceMatrix = reference.renderer ? ctx.PreviewMatrix(reference.renderer.transform) : Matrix4x4.identity;
             var matrix = sourceMatrix.inverse * (entry.renderer ? ctx.PreviewMatrix(entry.renderer.transform) : Matrix4x4.identity);
             if (immediate) {
-                binding.colors = Match(source.data, shells, shells.positions ?? mesh.vertices, matrix, provenance);
+                var positions = shells.positions ?? mesh.vertices;
+                var map = provenance != null && provenance.Length == positions.Length ? provenance : null;
+                binding.colors = Match(source.data, shells, positions, matrix, map);
                 binding.revision = ++revision; ready = true;
                 return binding.colors;
             }
@@ -158,8 +160,10 @@ namespace SashaRX.UnityMeshLab
 
         public void Dispose()
         {
-            foreach (var source in sources.Values) source.Dispose(); sources.Clear();
-            foreach (var binding in bindings.Values) binding.Dispose(); bindings.Clear();
+            foreach (var source in sources.Values) source.Dispose();
+            sources.Clear();
+            foreach (var binding in bindings.Values) binding.Dispose();
+            bindings.Clear();
             referenceGroups.Clear(); members.Clear(); context = null;
         }
     }

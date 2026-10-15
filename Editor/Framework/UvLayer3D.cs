@@ -20,7 +20,7 @@ namespace SashaRX.UnityMeshLab
                 bool colorChecker, bool r, bool g, float exposure, int channel, int mask, int selected, int size) state;
             internal LayerState(UvCanvasView canvas, UvToolContext ctx, Mesh mesh, MeshEntry entry, int size)
             {
-                state = (canvas.PreparedShells(ctx, mesh, ctx.PreviewUvChannel), canvas.ShellColorRevision(entry, ctx.PreviewUvChannel), canvas.DrawBufferRevision,
+                state = (UvCanvasView.PreparedShells(ctx, mesh, ctx.PreviewUvChannel), canvas.ShellColorRevision(entry, ctx.PreviewUvChannel), canvas.DrawBufferRevision,
                     canvas.ActiveFillModeIndex, canvas.FillHidden, canvas.FillAlpha, (int)canvas.CurrentPreviewMode,
                     canvas.CheckerEnabled, canvas.CheckerColorMode, canvas.CheckerShowR, canvas.CheckerShowG, canvas.LmExposure,
                     ctx.PreviewUvChannel, (int)canvas.ValidationFilterMask,

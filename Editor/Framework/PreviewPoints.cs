@@ -35,8 +35,13 @@ namespace SashaRX.UnityMeshLab
             if (!source) return null;
             if (entries.TryGetValue(source, out var entry) && entry.vertices == source.vertexCount) return entry.mesh;
             entry?.Dispose(); entry = new Entry { vertices = source.vertexCount }; entries[source] = entry;
-            entry.work.Enqueue(() => { var points = source.vertices; return token => Build(points, token); },
-                data => { entry.mesh = data.Upload(); Ready?.Invoke(); });
+            entry.work.Enqueue(() => {
+                if (!source) return token => null;
+                var points = source.vertices; return token => Build(points, token);
+            }, data => {
+                if (!source || data == null) return;
+                entry.mesh = data.Upload(); Ready?.Invoke();
+            });
             return null;
         }
         internal static Data Build(Vector3[] points, CancellationToken token = default)
@@ -58,6 +63,10 @@ namespace SashaRX.UnityMeshLab
             foreach (var pair in entries) if (!pair.Key) stale.Add(pair.Key);
             foreach (var key in stale) { entries[key].Dispose(); entries.Remove(key); }
         }
-        public void Dispose() { foreach (var entry in entries.Values) entry.Dispose(); entries.Clear(); }
+        public void Dispose()
+        {
+            foreach (var entry in entries.Values) entry.Dispose();
+            entries.Clear();
+        }
     }
 }

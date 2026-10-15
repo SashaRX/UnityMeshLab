@@ -38,7 +38,11 @@ chosen channel, and restores previous renderer meshes/materials when disabled.
 Correspondence survives switching the displayed LOD, including a hidden source,
 and rebuilds on context, source LOD, mesh, topology or provenance replacement.
 Camera/object motion does not trigger matching. Standalone tool content without
-a source group uses local connected-island IDs. Transfer algorithms are unchanged.
+a source group uses local connected-island IDs. Small scene previews (up to 2,048
+vertices, with a small source) retain immediate preparation; dense previews use
+workers. The current Viewer's antialiased point material, X-Ray policy, shared
+highlight colors and model-relative preview coordinates are retained.
+Transfer algorithms are unchanged.
 
 UV picking queries a prepared triangle BVH, replacing the limited face scan and
 bounding-box fallback. It finds faces beyond the old 6,000-face budget and rejects
@@ -75,7 +79,7 @@ project manifest, then launch Unity with:
 -logFile <absolute-editor.log>
 ```
 
-Run the same replay against baseline `313fc3a2` and the candidate package. It uses a
+Run the same replay against baseline `4fdccda6` and the candidate package. It uses a
 316 x 316 grid (199,712 triangles), a 1024 x 768 viewport, five-second warmup and
 96 measured repaints with matching motion. The four modes draw status fill plus UV
 wire, a 3D surface with full antialiased wire/grid/axes, shell fill with continuously
@@ -89,10 +93,10 @@ pipeline, NVIDIA GTX 980 Ti. Baseline already includes analytic line AA.
 
 | CPU repaint submission | Baseline median / p95 (ms) | Candidate median / p95 (ms) |
 | --- | ---: | ---: |
-| UV pan and zoom | 64.4345 / 72.7308 | 0.0187 / 0.0234 |
-| 3D orbit and translation | 0.3492 / 0.4694 | 0.1702 / 0.2535 |
-| Shell fill and opacity | 36.6317 / 37.2892 | 0.0175 / 0.0586 |
-| 3D + diagnostic points and lines | 9.3829 / 11.7225 | 0.1832 / 0.2377 |
+| UV pan and zoom | 64.3084 / 65.4345 | 0.0185 / 0.0273 |
+| 3D orbit and translation | 0.3494 / 0.4858 | 0.1742 / 0.2415 |
+| Shell fill and opacity | 36.5346 / 37.4649 | 0.0180 / 0.0246 |
+| 3D + diagnostic points and lines | 9.3596 / 13.8858 | 0.2011 / 0.3043 |
 
 These are warmed **CPU submission** costs, not total frame time or isolated GPU
 timings, and do not establish FPS for a consumer project. Dense analytic wire still
@@ -122,9 +126,16 @@ compact highlight lifetime, point buffer lifetime/pixel size, and shell/checker
 blending against immediate drawing. `PreviewLodSwitchTests` also checks scene
 preview completion with mixed channel availability and mesh restoration.
 
-The final Built-in run on Unity 6000.2.6f2 / D3D11 passed **178 tests**, with
-**2 skipped** (the URP integration case and Android DXT5nm packing).
-The URP 17.2 run on the same Unity version/API passed **179 tests**, with **1 skipped**
-(Android DXT5nm packing, outside this Windows-target fixture). It includes the
-viewport integration case with asset MSAA Off/2x/4x. C# compilation passes with and
+After rebasing onto main `4fdccda6`, expanded Built-in and URP 17.2 runs on Unity
+6000.2.6f2 / D3D11 each executed **406 tests**: Built-in **383 passed, 15 skipped,
+8 failed**; URP **385 passed, 13 skipped, 8 failed**. All eight save/import
+mesh-identity lifecycle failures reproduce with the same messages on unchanged
+main in this scratch project; they are not new viewport regressions. The skips
+cover 11 optional private transfer/FBX fixtures, an imported-model fixture and
+Android DXT5nm packing, plus two URP integration cases in the Built-in run.
+The expanded suites include current material inspection, topology, overlay/X-Ray,
+model-relative coordinates and LOD lifecycle tests. Relevant viewport regressions
+and URP integration with asset MSAA Off/2x/4x pass. C# compilation passes with and
 without the FBX exporter define; identifier and tool-dependency guards pass.
+The post-review focused URP run passes 19 tests, including a point source destroyed
+before its deferred snapshot and stale transfer provenance on a small scene preview.

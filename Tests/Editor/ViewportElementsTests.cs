@@ -67,7 +67,8 @@ namespace SashaRX.UnityMeshLab.Tests
             var source = new Mesh { name = "Part_LOD0", vertices = Positions, uv = Uv, triangles = Triangles };
             var target = new Mesh { name = "Part_LOD1", vertices = Positions, uv = Uv, uv2 = Uv, triangles = new[] { 3, 4, 5, 0, 1, 2 } };
             var ctx = new UvToolContext { PreviewUvChannel = 1 };
-            var entry = new MeshEntry { originalMesh = target, lodIndex = 1, meshGroupKey = "Part" };
+            var entry = new MeshEntry { originalMesh = target, lodIndex = 1, meshGroupKey = "Part",
+                shellTransferResult = new GroupedShellTransfer.TransferResult { vertexToSourceShell = new[] { 1, 1, 1 } } };
             ctx.MeshEntries.Add(new MeshEntry { originalMesh = source, lodIndex = 0, meshGroupKey = "Part", include = false });
             ctx.MeshEntries.Add(entry);
             var canvas = new UvCanvasView(); canvas.Init();
@@ -198,6 +199,17 @@ namespace SashaRX.UnityMeshLab.Tests
                 Object.DestroyImmediate(source); cache.Prune(); Assert.IsFalse(mesh);
             }
             finally { if (source) Object.DestroyImmediate(source); }
+        }
+
+        [UnityTest]
+        public IEnumerator PointPreparationAcceptsASourceDestroyedBeforeTheSnapshot()
+        {
+            using var cache = new PreviewPoints();
+            var source = new Mesh { vertices = new[] { Vector3.zero } };
+            cache.Get(source); Object.DestroyImmediate(source);
+            yield return null; yield return null; yield return null;
+            cache.Prune();
+            Assert.IsNull(cache.Get(source));
         }
 
         [Test]
