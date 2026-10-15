@@ -191,18 +191,21 @@ namespace SashaRX.UnityMeshLab
                     }
                     return true;
                 }
+                // Level face lists depend only on the families; build them once per pack.
+                var levelFaces=levels.Select(level=>groups.SelectMany((g,id)=>Enumerable.Range(0,g.Count/3)
+                    .Where(f=>g[f*3].surface.lod==level[0].lod).Select(f=>(id,f,corner:g[f*3]))).ToArray()).ToArray();
+                var levelIndices=levelFaces.Select(faces=>Enumerable.Range(0,faces.Length*3).ToArray()).ToArray();
                 HashSet<int> AuditAtlas(Vector2[][] placement,int canvas)
                 {
                     var failed=new HashSet<int>();
-                    foreach(var level in levels)
+                    for(int l=0;l<levelFaces.Length;++l)
                     {
-                        var faces=groups.SelectMany((g,id)=>Enumerable.Range(0,g.Count/3)
-                            .Where(f=>g[f*3].surface.lod==level[0].lod).Select(f=>(id,f,corner:g[f*3]))).ToArray();
+                        var faces=levelFaces[l];
                         var uv=faces.SelectMany(x=>Enumerable.Range(0,3).Select(k=>placement[x.id][x.f*3+k]/canvas)).ToArray();
                         var min=uv.Aggregate(Vector2.Min);var max=uv.Aggregate(Vector2.Max);
                         double span=Math.Max((double)max.x-min.x,(double)max.y-min.y);
                         var scan=UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {uv=uv,
-                            indices=Enumerable.Range(0,uv.Length).ToArray(),charts=new int[uv.Length]},token,
+                            indices=levelIndices[l],charts=new int[uv.Length]},token,
                             comparisonBudget:options.comparisonBudget,collectConflicts:true,coordinateOrigin:min,coordinateScale:1/span);
                         if(!scan.complete || scan.invalidFaces>0 || scan.degenerateFaces>0)
                             throw new InvalidOperationException("Classic Repack atlas audit is incomplete or contains invalid faces.");
@@ -213,7 +216,7 @@ namespace SashaRX.UnityMeshLab
                             if(allowed.Contains((a.corner.surface.faces[a.corner.corner/3],b.corner.surface.faces[b.corner.corner/3]))) continue;
                             failed.Add(a.id);failed.Add(b.id);if(a.id==b.id) ++same;else ++cross;
                         }
-                        if(same+cross>0) UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Classic placement audit LOD{level[0].lod}: {same} internal / {cross} cross-family contacts; retry {failed.Count} families.");
+                        if(same+cross>0) UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Classic placement audit LOD{levels[l][0].lod}: {same} internal / {cross} cross-family contacts; retry {failed.Count} families.");
                     }
                     return failed;
                 }
@@ -383,8 +386,12 @@ namespace SashaRX.UnityMeshLab
             Dictionary<ReverseUvTransfer.Surface,int> offsets,DisjointSet families,int side,
             ReverseUvTransfer.Options options,CancellationToken token)
         {
+            // One name parse per surface, not per face.
+            var groupKeys=new Dictionary<ReverseUvTransfer.Surface,string>();
+            foreach(var s in surfaces)
+                if(!groupKeys.ContainsKey(s)) groupKeys.Add(s,UvToolContext.ExtractGroupKey(s.input.key));
             foreach(var part in surfaces.SelectMany(s=>Enumerable.Range(0,s.faces.Length).Select(f=>(s,f)))
-                .GroupBy(p=>(UvToolContext.ExtractGroupKey(p.s.input.key),p.s.faces[p.f].coordinateDomain)))
+                .GroupBy(p=>(groupKeys[p.s],p.s.faces[p.f].coordinateDomain)))
             {
                 if(part.Select(p=>p.s.lod).Distinct().Count()<2) continue;
                 var faces=part.ToArray();
