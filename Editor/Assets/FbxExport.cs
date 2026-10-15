@@ -524,8 +524,21 @@ namespace SashaRX.UnityMeshLab
                 if (importer == null || (!readable && !quads)) return;
                 if (readable) importer.isReadable = false;
                 if (quads) importer.keepQuads = false;
-                ReimportWithoutSidecars(path, importer.SaveAndReimport);
-                AfterReimport?.Invoke();
+                // The import recreates the meshes before a postprocessor can throw: the relink
+                // runs either way, and a failure of its own does not hide the import's.
+                try { ReimportWithoutSidecars(path, importer.SaveAndReimport); }
+                finally
+                {
+                    if (AfterReimport != null)
+                    {
+                        try { AfterReimport(); }
+                        catch (Exception ex)
+                        {
+                            UvtLog.Error($"[FBX Export] Relink after the import of '{path}' failed: {ex.Message}");
+                            UvtLog.Verbose(ex.ToString());
+                        }
+                    }
+                }
             }
         }
 
@@ -1620,6 +1633,9 @@ namespace SashaRX.UnityMeshLab
                     {
                         var component = binding.Key;
                         if (component == null) continue;
+                        // A scene edit stays on its renderer until a save writes its geometry, as does
+                        // a working copy taken from one (the by-name pass keeps them the same way).
+                        if (component is MeshFilter edited && SceneEditRegistry.KeepsRenderer(edited, edited.sharedMesh)) continue;
                         string name = binding.Value.name;
                         if (renameMap != null && renameMap.TryGetValue(name, out string renamed)) name = renamed;
                         if (!meshes.TryGetValue(name, out var fresh)) continue;
