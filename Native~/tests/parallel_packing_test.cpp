@@ -82,7 +82,10 @@ int main()
         verify(0, 0, 256, 128, 40, 30, step, true, 512,
             [](int r, int x, int y) {return r == 1 && x == 32 && y == 80;});
     }
-    if (xatlas::internal::parallelPackingBatches.load() == 0) return 1;
+    if (xatlas::internal::parallelPackingBatches.load() == 0) {
+        std::cerr << "no parallel packing batch was executed\n";
+        return 1;
+    }
     const auto scalar = xatlas::internal::parallelChartLocation(0, 0, 16, 16, 4, 4, 1, true, 16,
         [](int, int, int) {return true;});
     if (scalar.handled) return 1;
