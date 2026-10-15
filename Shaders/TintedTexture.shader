@@ -10,7 +10,7 @@ Shader "Hidden/UnityMeshLab/TintedTexture"
         Tags { "Queue"="Transparent" "RenderType"="Transparent" }
         ZWrite Off
         Cull Off
-        Blend SrcAlpha OneMinusSrcAlpha
+        Blend SrcAlpha OneMinusSrcAlpha, One OneMinusSrcAlpha
 
         Pass
         {

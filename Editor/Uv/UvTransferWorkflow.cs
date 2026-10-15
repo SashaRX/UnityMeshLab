@@ -324,7 +324,7 @@ namespace SashaRX.UnityMeshLab
 
         public IEnumerable<UvCanvasView.FillModeEntry> GetFillModes()
         {
-            yield return new UvCanvasView.FillModeEntry { name = "Shells", drawCallback = DrawFillShells };
+            yield return new UvCanvasView.FillModeEntry { name = "Shells", drawCallback = DrawFillShells, shellColors = true };
             yield return new UvCanvasView.FillModeEntry { name = "Status", drawCallback = DrawFillStatus };
             yield return new UvCanvasView.FillModeEntry { name = "Shell Match", drawCallback = DrawFillShellMatch };
             yield return new UvCanvasView.FillModeEntry { name = "Validation", drawCallback = DrawFillValidation };

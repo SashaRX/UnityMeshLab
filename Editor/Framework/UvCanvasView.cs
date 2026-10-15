@@ -17,6 +17,7 @@ namespace SashaRX.UnityMeshLab
         {
             public string name;
             public Action<UvCanvasView, float, float, float, Mesh, MeshEntry> drawCallback;
+            internal bool shellColors;
         }
 
         public enum PreviewMode { Off, Checker, Shells3D, Lightmap }
@@ -165,6 +166,10 @@ namespace SashaRX.UnityMeshLab
         static readonly int OpacityId = Shader.PropertyToID("_Opacity");
         readonly ShellPreviewColors shellColors = new ShellPreviewColors();
         internal int ShellColorRevision(MeshEntry entry, int channel) => shellColors.Revision(entry, channel);
+        internal Dictionary<int, int> ShellColorKeys(UvToolContext ctx, Mesh mesh, PreviewShellData data, MeshEntry entry, out bool ready)
+            => shellColors.Get(ctx, mesh, data, entry, out ready);
+        internal bool GeometryShellFill => !CheckerEnabled && (CurrentPreviewMode == PreviewMode.Shells3D ||
+            (CurrentPreviewMode == PreviewMode.Off && !FillHidden && ActiveFillModeIndex >= 0 && ActiveFillModeIndex < FillModes.Count && FillModes[ActiveFillModeIndex].shellColors));
         // Fill callbacks may provide their own immutable UV arrays. Completion is
         // independent of array identity so a 3D layer never caches a pending blank.
         internal int DrawBufferRevision => geometry.Generation;
@@ -347,6 +352,8 @@ namespace SashaRX.UnityMeshLab
                 {
                     if (canvasRT) { canvasRT.Release(); UnityEngine.Object.DestroyImmediate(canvasRT); }
                     canvasRT = new RenderTexture(rtW, rtH, 0, RenderTextureFormat.ARGB32);
+                    canvasRT.antiAliasing = 4;
+                    canvasRT.antiAliasing = SystemInfo.GetRenderTextureSupportedMSAASampleCount(canvasRT.descriptor);
                     canvasRT.hideFlags = HideFlags.HideAndDontSave;
                 }
 
@@ -474,6 +481,8 @@ namespace SashaRX.UnityMeshLab
             {
                 if (target) { target.Release(); UnityEngine.Object.DestroyImmediate(target); }
                 target = new RenderTexture(size, size, 0, RenderTextureFormat.ARGB32) { hideFlags = HideFlags.HideAndDontSave, wrapMode = TextureWrapMode.Repeat, filterMode = FilterMode.Bilinear };
+                target.antiAliasing = 4;
+                target.antiAliasing = SystemInfo.GetRenderTextureSupportedMSAASampleCount(target.descriptor);
             }
             var prevRT = RenderTexture.active;
             RenderTexture.active = target;
@@ -1207,19 +1216,30 @@ namespace SashaRX.UnityMeshLab
                     if (mask != TransferValidator.TriIssue.None && (fl & mask) == 0) continue;
                     int a0 = t[f*3], a1 = t[f*3+1], a2 = t[f*3+2];
                     if (!TOk(uv, uN, a0, a1, a2)) continue;
-                    Color nc;
-                    if      ((fl & TransferValidator.TriIssue.ZeroArea) != 0)    nc = cValZero;
-                    else if ((fl & TransferValidator.TriIssue.Stretched) != 0)   nc = cValStretch;
-                    else if ((fl & TransferValidator.TriIssue.Overlap) != 0)     nc = cValOverlap;
-                    else if ((fl & TransferValidator.TriIssue.OutOfBounds) != 0) nc = cValOOB;
-                    else if ((fl & TransferValidator.TriIssue.TexelDensity) != 0)nc = cValTexel;
-                    else if ((fl & TransferValidator.TriIssue.Inverted) != 0)    nc = cValInverted;
-                    else continue;
+                    Color nc = ValidationOverlayColor(fl, mask);
+                    if (nc.a == 0) continue;
                     batch.SetColor(nc);
                     batch.Vertex(uv[a0]); batch.Vertex(uv[a1]); batch.Vertex(uv[a2]);
                     tot++;
                 }
             });
+        }
+
+        internal static Color ValidationOverlayColor(TransferValidator.TriIssue flags, TransferValidator.TriIssue mask)
+            => ValidationOverlayPalette[ValidationOverlayIndex(flags,mask)];
+
+        internal static readonly Color[] ValidationOverlayPalette = { Color.clear, cValZero, cValStretch, cValOverlap, cValOOB, cValTexel, cValInverted };
+
+        internal static int ValidationOverlayIndex(TransferValidator.TriIssue flags, TransferValidator.TriIssue mask)
+        {
+            if (mask != TransferValidator.TriIssue.None && (flags & mask) == 0) return 0;
+            if ((flags & TransferValidator.TriIssue.ZeroArea) != 0) return 1;
+            if ((flags & TransferValidator.TriIssue.Stretched) != 0) return 2;
+            if ((flags & TransferValidator.TriIssue.Overlap) != 0) return 3;
+            if ((flags & TransferValidator.TriIssue.OutOfBounds) != 0) return 4;
+            if ((flags & TransferValidator.TriIssue.TexelDensity) != 0) return 5;
+            if ((flags & TransferValidator.TriIssue.Inverted) != 0) return 6;
+            return 0;
         }
 
         // ════════════════════════════════════════════════════════════
