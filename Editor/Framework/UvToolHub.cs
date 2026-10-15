@@ -421,6 +421,7 @@ namespace SashaRX.UnityMeshLab
             // Detect LODGroup structural changes (e.g. LOD deleted externally, renderer removed)
             RefreshLodStructure();
 
+            canvas.SyncSnapshotVersion(ctx);
             DrawHubToolbar();
 
             if (ActiveTool is IUvToolFullWindow fullWindow)
@@ -1094,7 +1095,7 @@ namespace SashaRX.UnityMeshLab
             var names = new List<string>(MeshViewport3D.ShadingNames.Length);
             for (int mode = 0; mode < MeshViewport3D.ShadingNames.Length; ++mode) {
                 var shading = (MeshViewport3D.Shading)mode;
-                int present = viewportItems.Count(item => MeshInspection.Supports(item.mesh, shading));
+                int present = viewportItems.Count(item => inspection.SupportsMode(item.mesh, shading));
                 if (present == 0 && shading != viewport.Mode) continue;
                 string label = MeshViewport3D.ShadingNames[mode];
                 // The (n/m) count marks partial support across several meshes; the
@@ -1118,7 +1119,7 @@ namespace SashaRX.UnityMeshLab
             if (UseGeometry2D && !canvas3D && planarProjection == 0)
                 GUILayout.Label("UV layout unavailable · XY geometry", EditorStyles.miniLabel);
             else if (!canvas3D && planarProjection == 0) {
-                int mapped = viewportItems.Count(item => MeshInspection.Supports(item.mesh, MeshViewport3D.Shading.UV0 + ctx.PreviewUvChannel));
+                int mapped = viewportItems.Count(item => inspection.SupportsMode(item.mesh, MeshViewport3D.Shading.UV0 + ctx.PreviewUvChannel));
                 if (mapped < viewportItems.Count) GUILayout.Label($"UV{ctx.PreviewUvChannel}: {mapped}/{viewportItems.Count} meshes", EditorStyles.miniLabel);
             }
             GUILayout.FlexibleSpace();
@@ -1341,8 +1342,12 @@ namespace SashaRX.UnityMeshLab
 
         // Spot mode in 3D: the face under the mouse (camera ray against the context
         // meshes) feeds the same hover/selection state the UV canvas and the tools read.
+        bool pendingShellPreview;
+
         void OnPreviewReady()
         {
+            if (pendingShellPreview && canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Shells3D)
+                ApplyPreviewMode(UvCanvasView.PreviewMode.Shells3D);
             if (canvas3D && canvas.SpotMode && viewportSpotPointerValid && !canvas.SpotSelectionLocked && !topologyPreview.Active)
                 RefreshViewportSpot();
         }
@@ -2135,25 +2140,23 @@ namespace SashaRX.UnityMeshLab
 
         void ApplyShellPreview()
         {
-            var shellEntries = new List<(Renderer renderer, Mesh sourceMesh)>();
+            var shellEntries = new List<(Renderer renderer, Mesh sourceMesh, int[] faceColorKeys)>();
             bool hasShellUv = canvas.HasPreviewChannel(ctx, ctx.PreviewUvChannel);
-            foreach (var e in canvas.Entries(ctx))
-            {
+            pendingShellPreview = false;
+            foreach (var e in canvas.Entries(ctx)) {
                 if (e == null || !e.include || e.renderer == null) continue;
-                Mesh mesh = ctx.DMesh(e);
-                if (mesh != null) shellEntries.Add((e.renderer, mesh));
+                var mesh = canvas.DisplayMesh(ctx, e);
+                if (!mesh || !UvTopology.HasUv(mesh, ctx.PreviewUvChannel) || !MeshInspection.HasOnlyTriangles(mesh)) continue;
+                var colors = canvas.FaceColorKeys(ctx, mesh, e);
+                if (colors == null) pendingShellPreview = true;
+                else shellEntries.Add((e.renderer, mesh, colors));
             }
-            if (hasShellUv)
-            {
-                if (shellEntries.Count > 0) {
-                    var cache = new ShellColorModelPreview.PreviewShellCache(ctx.PreviewUvChannel);
-                    ShellColorModelPreview.Apply(shellEntries, shellPalette, cache);
-                }
+            if (hasShellUv) {
+                // Apply the complete cohort together after background preparation.
+                if (!pendingShellPreview && shellEntries.Count > 0)
+                    ShellColorModelPreview.Apply(shellEntries, shellPalette);
             }
-            else
-            {
-                UvtLog.Warn($"[Shells3D] No meshes with UV{ctx.PreviewUvChannel}.");
-            }
+            else UvtLog.Warn($"[Shells3D] No meshes with UV{ctx.PreviewUvChannel}.");
         }
 
         void ApplyLightmapPreview()

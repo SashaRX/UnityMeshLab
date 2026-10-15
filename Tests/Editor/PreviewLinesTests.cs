@@ -80,6 +80,41 @@ namespace SashaRX.UnityMeshLab.Tests
         static readonly int[] SampleCounts = { 1, 2, 4 };
 
         [UnityTest]
+        public IEnumerator UniformWireIgnoresSourceColorsWhileLineOverlaysRetainThem()
+        {
+            using (var render = new LineRender(1))
+            using (var cache = new PreviewLines()) {
+                var a = new Vector3(-.8f, -.13f, 2); var b = new Vector3(.8f, .13f, 2);
+                var source = new Mesh { vertices = new[] { a, b }, colors32 = new Color32[] { Color.red, Color.red } };
+                try {
+                    source.SetIndices(new[] { 0, 1 }, MeshTopology.Lines, 0);
+                    Mesh uniform = null, colored = null;
+                    double deadline = EditorApplication.timeSinceStartup + 10;
+                    while ((!uniform || !colored) && EditorApplication.timeSinceStartup < deadline) {
+                        uniform = cache.Get(source, false); colored = cache.Get(source);
+                        yield return null;
+                    }
+                    Assert.IsTrue(uniform); Assert.IsTrue(colored); Assert.AreNotSame(uniform, colored);
+                    var whitePixels = render.Draw(a, b, 1, cached: uniform);
+                    yield return null;
+                    var redPixels = render.Draw(a, b, 1, cached: colored);
+                    float whiteGreen = 0, redGreen = 0, redRed = 0;
+                    for (int i = 0; i < whitePixels.Length; ++i) {
+                        whiteGreen += whitePixels[i].g; redGreen += redPixels[i].g; redRed += redPixels[i].r;
+                    }
+                    Assert.Greater(whiteGreen, 30);
+                    Assert.Greater(redRed, 30); Assert.Less(redGreen, whiteGreen * .01f);
+                    cache.Remove(source);
+                    Assert.IsFalse(uniform); Assert.IsFalse(colored);
+                }
+                finally { Object.DestroyImmediate(source); }
+            }
+            // Let Unity recreate the restored SRP instance before subsequent
+            // synchronous tests request URP Lit materials and render immediately.
+            yield return null;
+        }
+
+        [UnityTest]
         public IEnumerator SlopedLineHasContinuousCoverageAndSubpixelEnergy([ValueSource(nameof(SampleCounts))] int samples)
         {
             using var render = new LineRender(samples);
@@ -201,9 +236,9 @@ namespace SashaRX.UnityMeshLab.Tests
                 material = new Material(shader); material.SetVector("_ViewportSize", new Vector4(128, 128, 0, 0));
                 solid = new Material(Shader.Find("Hidden/MeshLab/RemeshPreview")); solid.SetColor("_Color", Color.black); solid.SetFloat("_Lit", 0);
             }
-            internal Color[] Draw(Vector3 a, Vector3 b, float width, bool occlude = false, bool xRay = false)
+            internal Color[] Draw(Vector3 a, Vector3 b, float width, bool occlude = false, bool xRay = false, Mesh cached = null)
             {
-                var mesh = PreviewLines.Build(new[] { a, b }, new[] { 0, 1 }, null).Upload();
+                var mesh = cached ? cached : PreviewLines.Build(new[] { a, b }, new[] { 0, 1 }, null).Upload();
                 var previous = RenderTexture.active; Mesh plane = null;
                 GameObject lineObject = null, planeObject = null;
                 try {
@@ -225,7 +260,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     RenderTexture.active = previous;
                     if (lineObject) Object.DestroyImmediate(lineObject);
                     if (planeObject) Object.DestroyImmediate(planeObject);
-                    Object.DestroyImmediate(mesh); if (plane) Object.DestroyImmediate(plane);
+                    if (!cached) Object.DestroyImmediate(mesh); if (plane) Object.DestroyImmediate(plane);
                 }
             }
             static GameObject RenderObject(Mesh mesh, Material material)

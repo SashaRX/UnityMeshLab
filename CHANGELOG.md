@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- UV viewport fill, wire, borders and highlights reuse GPU geometry while panning and zooming. The 3D viewport reuses floor/axis ribbons and draw-property blocks, prepares wire directly from the source on a worker, and keeps analytic wire antialiasing. See `Documentation~/VIEWPORT_PERFORMANCE.md` for measured CPU costs and validation.
+- Dense UV fills prepare on workers; shell opacity and checker motion reuse their buffers. Corresponding LOD islands share source-connected shell colors through transfer provenance or cached surface matching in UV and scene previews. UV picking uses a triangle BVH; 3D shell highlights retain compact meshes, and diagnostic edges/unused-vertex points reuse GPU buffers during camera movement.
 - Forward Transfer no longer copies whole-mesh streams per shell: symmetry-split snapshots read vertices/normals once per mesh state, prescribed splits memoize a shell's UV0 overlap until the next split, and per-shell overlap scans use compact shell geometry. The diagnostic-only 3D coverage pass runs only when its Verbose log is enabled. Transfer decisions and UVs are unchanged.
 - Reverse UV: the audit report is written only at the Verbose log level (the last 20 are kept) and a failed write no longer fails the transfer; the audit itself still gates every result. The ancestry kept per mesh and saved in the sidecar is a compact record of per-face overlap flags, charts, chain keys and overlap relations instead of the node's whole report (earlier sidecars are read and rewritten on restore), and the viewer's quality check no longer hashes it every frame.
 

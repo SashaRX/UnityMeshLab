@@ -121,6 +121,8 @@ namespace SashaRX.UnityMeshLab
 
     public class PreviewShellData
     {
+        internal Vector3[] positions;
+        internal TriangleBvh2D uvBvh;
         public List<UvShell> shells;
         public Dictionary<int, int> faceToShell;
         public Dictionary<int, UvShell> shellById;

@@ -17,7 +17,8 @@ Mesh geometry, UVs, baking and exported assets are unchanged.
 - Persistent line meshes use the existing cancellable preview-work queue. Unity
   mesh snapshots and upload happen on the editor thread; ribbon construction happens
   in the background. Cache invalidation, source destruction and viewport disposal
-  release the uploaded meshes. Small transient floor/axis lists live for one frame.
+  release the uploaded meshes. Floor/axis ribbons are cached independently of camera
+  movement and translated with the content; see `VIEWPORT_PERFORMANCE.md`.
 - The shader uses vertex/fragment stages only, without geometry shaders.
 
 ## MSAA policy and observed engine failures

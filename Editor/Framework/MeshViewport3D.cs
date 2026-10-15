@@ -118,8 +118,12 @@ namespace SashaRX.UnityMeshLab
         sealed class WireData { public Vector3[] vertices; public List<int> indices; public string name; }
         readonly Dictionary<int, WirePreview> wireCache = new Dictionary<int, WirePreview>();
         readonly PreviewLines lineRibbons = new PreviewLines();
+        readonly PreviewPoints pointSprites = new PreviewPoints();
         readonly List<Mesh> frameMeshes = new List<Mesh>();   // transient meshes built for this frame
         readonly Dictionary<(Material, int), Material> materialLayerMaterials = new Dictionary<(Material, int), Material>();
+        Mesh gridMesh, axesMesh;
+        (Vector3 size, float radius, Projection plane, bool perspective) gridKey;
+        float axesRadius;
 
         public MeshViewport3D() { VertexChannels.Changed += InvalidateMesh; }
 
@@ -171,8 +175,10 @@ namespace SashaRX.UnityMeshLab
             utility.ambientColor = new Color(0.25f, 0.25f, 0.25f, 1f);
 
             drawing = true;
+            usedBlocks = 0;
             lineRibbons.Repaint = RequestRepaint;
             lineRibbons.Prune();
+            pointSprites.Prune();
             // The preview utility's own target has no anti-aliasing and a 16-bit depth
             // buffer: one-pixel lines come out jagged, and the wire fights the surface it
             // outlines. The frame renders into a 24-bit-depth target of the same size and
@@ -211,7 +217,7 @@ namespace SashaRX.UnityMeshLab
                 if (own) camera.targetTexture = target;
                 GUI.DrawTexture(rect, utility.EndPreview(), ScaleMode.StretchToFill, false);
                 foreach (var mesh in frameMeshes) if (mesh) Object.DestroyImmediate(mesh);
-                frameMeshes.Clear(); frameBlocks.Clear();
+                frameMeshes.Clear();
             }
         }
 
@@ -355,7 +361,12 @@ namespace SashaRX.UnityMeshLab
         // values (a colour, a texture) travel in property blocks, never on the shared
         // materials — otherwise the last value set would paint every queued draw.
         readonly List<MaterialPropertyBlock> frameBlocks = new List<MaterialPropertyBlock>();
-        MaterialPropertyBlock Block() { var block = new MaterialPropertyBlock(); frameBlocks.Add(block); return block; }
+        int usedBlocks;
+        MaterialPropertyBlock Block()
+        {
+            if (usedBlocks == frameBlocks.Count) frameBlocks.Add(new MaterialPropertyBlock());
+            var block = frameBlocks[usedBlocks++]; block.Clear(); return block;
+        }
         internal static Texture BindSurfaceTexture(Material material, MaterialPropertyBlock block)
         {
             var albedo = MaterialChannelPreview.Read(material, Shading.Albedo);
@@ -415,8 +426,11 @@ namespace SashaRX.UnityMeshLab
         public void DrawWire(Mesh mesh, Matrix4x4 matrix, Color color)
         {
             if (!drawing || !mesh) return;
-            var edges = WireOf(mesh);
-            if (edges) DrawLineMesh(edges, matrix, color);
+            // Build directly from the source: avoid an intermediate line mesh and a
+            // second editor snapshot/upload before constructing the same ribbons.
+            // Surface vertex colours must not tint the uniform wire. Coloured line
+            // overlays use a separate cache entry even when given the same mesh.
+            DrawRibbons(lineRibbons.Get(mesh, false), matrix, color);
         }
 
         /// <summary>Draws a prebuilt line-topology mesh in one colour (cage shells, edge sets).</summary>
@@ -519,11 +533,32 @@ namespace SashaRX.UnityMeshLab
         // content's size, fading toward the rim, every fifth line brighter.
         void DrawGrid(Bounds bounds)
         {
+            var mesh = GridMesh(bounds);
+            var origin = bounds.center;
+            float sx = GridProjection == Projection.YZ ? bounds.size.z : bounds.size.x;
+            float sy = GridProjection == Projection.XZ ? bounds.size.z : bounds.size.y;
+            float step = NiceStep(Mathf.Max(sx, sy) / 8f);
+            if (step <= 0f || !mesh) return;
+            if (GridProjection == Projection.YZ) origin.z = Mathf.Round(origin.z / step) * step;
+            else origin.x = Mathf.Round(origin.x / step) * step;
+            if (GridProjection == Projection.XZ) origin.z = Mathf.Round(origin.z / step) * step;
+            else origin.y = Mathf.Round(origin.y / step) * step;
+            DrawRibbons(mesh, Matrix4x4.Translate(origin), Color.white);
+        }
+
+        internal Mesh GridMesh(Bounds bounds)
+        {
+            var key = (bounds.size, radius, GridProjection, ViewProjection == Projection.Perspective);
+            if (gridMesh && gridKey.Equals(key)) return gridMesh;
+            if (gridMesh) Object.DestroyImmediate(gridMesh);
+            gridMesh = null; gridKey = key;
+            // Translation, including the snapped floor origin, is a draw transform.
+            bounds.center = Vector3.zero;
             bool xy = GridProjection == Projection.XY, yz = GridProjection == Projection.YZ;
             float sx = yz ? bounds.size.z : bounds.size.x, sy = xy || yz ? bounds.size.y : bounds.size.z;
             float ex = yz ? bounds.extents.z : bounds.extents.x, ey = xy || yz ? bounds.extents.y : bounds.extents.z;
             float step = NiceStep(Mathf.Max(sx, sy) / 8f);
-            if (step <= 0f) return;
+            if (step <= 0f) return null;
             int half = Mathf.Clamp(Mathf.CeilToInt(Mathf.Max(ex, ey) * 2.5f / step), 4, 60);
             float cx = Mathf.Round((yz ? bounds.center.z : bounds.center.x) / step) * step;
             float cz = Mathf.Round((xy || yz ? bounds.center.y : bounds.center.z) / step) * step;
@@ -538,24 +573,41 @@ namespace SashaRX.UnityMeshLab
                 pairs.Add(GridPoint(bounds, cx + o, cz - reach)); pairs.Add(GridPoint(bounds, cx + o, cz + reach)); colors.Add(c);
                 pairs.Add(GridPoint(bounds, cx - reach, cz + o)); pairs.Add(GridPoint(bounds, cx + reach, cz + o)); colors.Add(c);
             }
-            DrawLines(pairs, colors, Matrix4x4.identity);
+            return gridMesh = BuildColoredLines(pairs, colors);
         }
 
         // The pivot's axes: X red, Y green, Z blue, a quarter of the content radius long.
         void DrawAxes(Bounds bounds)
         {
+            DrawRibbons(AxesMesh(), Matrix4x4.Translate(bounds.center), Color.white);
+        }
+
+        internal Mesh AxesMesh()
+        {
+            if (axesMesh && Mathf.Approximately(axesRadius, radius)) return axesMesh;
+            if (axesMesh) Object.DestroyImmediate(axesMesh);
+            axesMesh = null; axesRadius = radius;
             float length = radius * 0.25f;
-            if (length <= 0f) return;
-            Vector3 o = bounds.center;
+            if (length <= 0f) return null;
+            Vector3 o = Vector3.zero;
             float head = length * 0.12f;
             Vector3[] dirs = { Vector3.right, Vector3.up, Vector3.forward };
             Color[] cols = { new Color(0.95f, 0.3f, 0.3f), new Color(0.45f, 0.9f, 0.3f), new Color(0.3f, 0.55f, 1f) };
+            var pairs = new List<Vector3>(); var colors = new List<Color>();
             for (int i = 0; i < 3; ++i) {
                 Vector3 d = dirs[i], tip = o + d * length;
                 Vector3 side = i == 1 ? Vector3.right : Vector3.up;
-                var pairs = new List<Vector3> { o, tip, tip, tip - d * head + side * head * 0.5f, tip, tip - d * head - side * head * 0.5f };
-                DrawLines(pairs, Matrix4x4.identity, cols[i]);
+                pairs.AddRange(new[] { o, tip, tip, tip - d * head + side * head * 0.5f, tip, tip - d * head - side * head * 0.5f });
+                colors.Add(cols[i]); colors.Add(cols[i]); colors.Add(cols[i]);
             }
+            return axesMesh = BuildColoredLines(pairs, colors);
+        }
+
+        static Mesh BuildColoredLines(IList<Vector3> pairs, IList<Color> colors)
+        {
+            var indices = new int[pairs.Count]; var vertexColors = new Color32[pairs.Count];
+            for (int i = 0; i < pairs.Count; ++i) { indices[i] = i; vertexColors[i] = colors[i / 2]; }
+            return PreviewLines.Build(pairs, indices, vertexColors).Upload();
         }
 
         static float NiceStep(float raw)
@@ -590,6 +642,14 @@ namespace SashaRX.UnityMeshLab
             frameMeshes.Add(mesh);
             var block = Block(); block.SetColor(ColorId, Color.white); block.SetFloat(UseVertexColorId, 1);
             utility.DrawMesh(mesh, Matrix4x4.identity, XRay ? overlayXRay : overlaySurface, 0, block);
+        }
+
+        internal void DrawPointCloud(Mesh source, Matrix4x4 matrix, Color color, float sizePixels)
+        {
+            if (!drawing || !source) return;
+            pointSprites.Ready = RequestRepaint;
+            var mesh = pointSprites.Get(source);
+            if (mesh) DrawPointMesh(mesh, matrix, color, sizePixels * EditorGUIUtility.pixelsPerPoint);
         }
 
         /// <summary>A material of the viewport's own shader: flat colour, optional
@@ -849,7 +909,7 @@ namespace SashaRX.UnityMeshLab
             return EdgeIndices(indices, topology, CancellationToken.None);
         }
 
-        static void SnapshotIndices(Mesh mesh, out int[][] indices, out MeshTopology[] topology)
+        internal static void SnapshotIndices(Mesh mesh, out int[][] indices, out MeshTopology[] topology)
         {
             indices = new int[mesh.subMeshCount][];
             topology = new MeshTopology[indices.Length];
@@ -859,7 +919,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static List<int> EdgeIndices(int[][] submeshes, MeshTopology[] topology, CancellationToken token)
+        internal static List<int> EdgeIndices(int[][] submeshes, MeshTopology[] topology, CancellationToken token)
         {
             var pairs = new List<int>();
             for (int sub = 0; sub < submeshes.Length; ++sub) {
@@ -897,7 +957,11 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Drops cached encodings and wires (call when source meshes change).</summary>
         public void InvalidateCaches()
         {
+            if (gridMesh) Object.DestroyImmediate(gridMesh);
+            if (axesMesh) Object.DestroyImmediate(axesMesh);
+            gridMesh = axesMesh = null;
             lineRibbons.Dispose();
+            pointSprites.Dispose();
             foreach (var mesh in encodedCache.Values) if (mesh) Object.DestroyImmediate(mesh);
             foreach (var preview in wireCache.Values) {
                 preview.work.Dispose();
@@ -912,6 +976,7 @@ namespace SashaRX.UnityMeshLab
         {
             if (!mesh) return;
             lineRibbons.Remove(mesh);
+            pointSprites.Remove(mesh);
             if (wireCache.TryGetValue(mesh.GetInstanceID(), out var preview)) {
                 preview.work.Dispose();
                 lineRibbons.Remove(preview.mesh);
