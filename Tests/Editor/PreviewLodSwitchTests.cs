@@ -1821,8 +1821,15 @@ namespace SashaRX.UnityMeshLab.Tests
             {
                 var forward = new PairedTransferMode {mode = "forward"}; comparison.modes.Add(forward);
                 BenchmarkRecorder.OutputDirectoryOverride = System.IO.Path.Combine(directory, forward.mode);
-                using (forward.performance.Measure("Forward pipeline"))
-                    ((System.Threading.Tasks.Task)CallWorkflow("ExecFullPipelineImpl", "paired-forward", false)).GetAwaiter().GetResult();
+                hub.DiagnosticWorkflow.ForwardPerformance = forward.performance;
+                try
+                {
+                    using (forward.performance.Measure("Forward pipeline"))
+                        ((System.Threading.Tasks.Task)CallWorkflow("ExecFullPipelineImpl", "paired-forward", false)).GetAwaiter().GetResult();
+                }
+                finally { hub.DiagnosticWorkflow.ForwardPerformance = null; }
+                Assert.IsTrue(forward.performance.samples.Any(s => s.stage == "Forward shell transfer" && s.count > 0),
+                    "Ordinary Transfer must record its stage timings.");
                 Assert.IsTrue(ctx.HasRepack && ctx.HasTransfer);
                 System.IO.Directory.CreateDirectory(BenchmarkRecorder.OutputDirectoryOverride);
                 TransferBenchmarkExport.Forward(BenchmarkRecorder.OutputDirectoryOverride, ctx);
