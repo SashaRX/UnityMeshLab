@@ -153,6 +153,7 @@ namespace SashaRX.UnityMeshLab
             internal Vector3[] positions;
             internal int[] indices;
             internal Vector3[] sourcePositions;
+            internal Vector3 projectionOrigin;
             internal int[] sourceIndices;
             internal Vector2[] sourceUvCorners;
             internal int[] preparedRegions;
@@ -419,10 +420,7 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < local.Length; ++i)
             {
                 var p = local[i];
-                positions[i] = new Vector3(
-                    (float)((double)m.m00 * p.x + (double)m.m01 * p.y + (double)m.m02 * p.z + ((double)m.m03 - origin.x)),
-                    (float)((double)m.m10 * p.x + (double)m.m11 * p.y + (double)m.m12 * p.z + ((double)m.m13 - origin.y)),
-                    (float)((double)m.m20 * p.x + (double)m.m21 * p.y + (double)m.m22 * p.z + ((double)m.m23 - origin.z)));
+                positions[i] = RelativePosition(m,p,origin);
             }
             for (int f = 0; f < indices.Length; f += 3)
                 if (!MeshGeometry.HasArea(positions[indices[f]], positions[indices[f + 1]], positions[indices[f + 2]]))
@@ -430,6 +428,11 @@ namespace SashaRX.UnityMeshLab
                         + "check transform scale and geometry precision. No result was published.");
             return positions;
         }
+
+        internal static Vector3 RelativePosition(Matrix4x4 m,Vector3 p,Vector3 origin)
+            =>new Vector3((float)((double)m.m00*p.x+(double)m.m01*p.y+(double)m.m02*p.z+((double)m.m03-origin.x)),
+                (float)((double)m.m10*p.x+(double)m.m11*p.y+(double)m.m12*p.z+((double)m.m13-origin.y)),
+                (float)((double)m.m20*p.x+(double)m.m21*p.y+(double)m.m22*p.z+((double)m.m23-origin.z)));
 
         static Surface[] Capture(Level level, Vector3 origin)
         {
@@ -441,7 +444,7 @@ namespace SashaRX.UnityMeshLab
                 if (indices.Length == 0 || indices.Length > 750000)
                     throw new InvalidOperationException("Reverse UV prototype supports 1–250000 triangles per input.");
                 var positions = RelativePositions(input, origin, level.lod);
-                surfaces[node] = new Surface { input = input, indices = indices, positions = positions,
+                surfaces[node] = new Surface { input = input, indices = indices, positions = positions,projectionOrigin=origin,
                     sourcePositions = input.mesh.vertices, sourceIndices = indices.ToArray(),
                     pixels = new Vector2[indices.Length], faces = Enumerable.Range(0, indices.Length / 3).Select(_ => new Face()).ToArray(),
                     sourceFaces = Enumerable.Range(0, indices.Length / 3).ToArray(),
@@ -464,7 +467,7 @@ namespace SashaRX.UnityMeshLab
                 for(int k=0;k<3;++k)
                 {
                     var b=surface.sourceBarycentrics==null?(k==0?Vector3.right:k==1?Vector3.up:Vector3.forward):surface.sourceBarycentrics[f*3+k];
-                    local[k]=vertices[triangles[source]]*b.x+vertices[triangles[source+1]]*b.y+vertices[triangles[source+2]]*b.z;
+                    local[k]=ReverseUvRefinedMesh.InterpolatePosition(vertices[triangles[source]],vertices[triangles[source+1]],vertices[triangles[source+2]],b);
                 }
                 surface.metricFrames[f]=TransferUvQuality.WorldFrame(local[0],local[1],local[2],surface.input.toWorld);
             }

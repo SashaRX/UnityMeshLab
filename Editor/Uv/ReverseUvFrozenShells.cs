@@ -120,12 +120,22 @@ namespace SashaRX.UnityMeshLab
                 bool Match(Vector2[] shape,out Vector2[] placement,out int group)
                 {
                     placement=null;group=-1;
+                    // Preserve successful rigid correspondence before considering
+                    // deformation, including a lower-ranked rigid donor.
+                    foreach(bool affine in new[] {false,true})
                     foreach(var candidate in faces.Where(f=>records[s][f].inherited).GroupBy(f=>records[s][f].chart)
                         .OrderByDescending(g=>g.Sum(f=>s.metricFrames[f].length*s.metricFrames[f].y)).ThenBy(g=>g.Key))
                     {
                         var anchors=candidate.SelectMany(f=>Enumerable.Range(f*3,3)).ToArray();
-                        var trial=FitFrozenShell(shape,anchors.Select(c=>shape[cornerIndex[c]]).ToArray(),
-                            anchors.Select(c=>proposed[s][c]).ToArray(),fitTolerance,out double residual);
+                        var anchorShape=anchors.Select(c=>shape[cornerIndex[c]]).ToArray();
+                        var anchorTargets=anchors.Select(c=>proposed[s][c]).ToArray();
+                        double residual=double.PositiveInfinity;
+                        var trial=affine?FitFrozenAffine(shape,anchorShape,anchorTargets,fitTolerance,token):
+                            FitFrozenShell(shape,anchorShape,anchorTargets,fitTolerance,out residual)
+                            ??FitFrozenConsensus(shape,anchorShape,anchorTargets,
+                                candidate.Select(f=>s.metricFrames[f].length*s.metricFrames[f].y).ToArray(),
+                                fitTolerance,token);
+                        if(affine && (trial==null || !FrozenDeformationFits(s,faces,shape,trial,options))) continue;
                         if(trial==null) {refusals.Add($"chart {candidate.Key}: anchor residual {residual:G6} px ({candidate.Count()} faces)");continue;}
                         if(!ValidFrozenShell(s,faces,trial,options,token)) {refusals.Add($"chart {candidate.Key}: whole-island quality");continue;}
                         if(accepted.TryGetValue(candidate.Key,out var earlier) && HasFrozenContact(earlier,trial,options,token))
@@ -168,7 +178,8 @@ namespace SashaRX.UnityMeshLab
                 for(int i=0;i<faces.Length;++i)
                 {
                     int f=faces[i];var record=records[s][f];
-                    if(record.chart!=parent)
+                    bool anchorFits=FrozenAnchorFits(placed,i*3,proposed[s],f*3,fitTolerance);
+                    if(record.chart!=parent || !anchorFits)
                     {
                         record.inherited=false;record.parentLod=record.parentMesh=record.parentFace=-1;
                         if(record.rejection!="new-whole-island") record.rejection="whole-island-extension";
@@ -221,6 +232,92 @@ namespace SashaRX.UnityMeshLab
 
         static double Distance(Vector2 a,Vector2 b)
         {double x=(double)a.x-b.x,y=(double)a.y-b.y;return Math.Sqrt(x*x+y*y);}
+
+        // A single full-rank affine map keeps shared points and the complete
+        // island topology. It is only a proposal: all anchors, per-face metric,
+        // self-contact and sibling-contact audits still have to pass.
+        internal static Vector2[] FitFrozenAffine(Vector2[] whole,Vector2[] source,Vector2[] target,
+            float tolerance,CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            if(source.Length<3 || source.Length!=target.Length) return null;
+            double sx=source.Average(p=>(double)p.x),sy=source.Average(p=>(double)p.y);
+            double tx=target.Average(p=>(double)p.x),ty=target.Average(p=>(double)p.y);
+            double xx=0,xy=0,yy=0,xu=0,yu=0,xv=0,yv=0;
+            for(int i=0;i<source.Length;++i)
+            {
+                token.ThrowIfCancellationRequested();
+                double x=source[i].x-sx,y=source[i].y-sy,u=target[i].x-tx,v=target[i].y-ty;
+                xx+=x*x;xy+=x*y;yy+=y*y;xu+=x*u;yu+=y*u;xv+=x*v;yv+=y*v;
+            }
+            double det=xx*yy-xy*xy;
+            if(!(det>Math.Max(xx,yy)*Math.Max(xx,yy)*1e-12)) return null;
+            double a=(xu*yy-yu*xy)/det,b=(yu*xx-xu*xy)/det;
+            double c=(xv*yy-yv*xy)/det,d=(yv*xx-xv*xy)/det;
+            double determinant=a*d-b*c;
+            if(!(Math.Abs(determinant)>0) || double.IsInfinity(determinant)) return null;
+            Vector2 Move(Vector2 p)=>new Vector2((float)(a*(p.x-sx)+b*(p.y-sy)+tx),
+                (float)(c*(p.x-sx)+d*(p.y-sy)+ty));
+            for(int i=0;i<source.Length;++i)
+                if(!(Distance(Move(source[i]),target[i])<=tolerance)) return null;
+            var result=whole.Select(Move).ToArray();
+            return result.All(p=>Finite(p.x) && Finite(p.y))?result:null;
+        }
+
+        static bool FrozenDeformationFits(Surface surface,int[] faces,Vector2[] before,Vector2[] after,Options options)
+        {
+            for(int i=0;i<faces.Length;++i)
+            {
+                var frame=surface.metricFrames[faces[i]];int t=i*3;
+                double oldMetric=TriangleAnisotropy(frame,before[t],before[t+1],before[t+2]);
+                double metric=TriangleAnisotropy(frame,after[t],after[t+1],after[t+2]);
+                if(!UvTransferTolerance.MetricFits(metric,oldMetric,options.relativeStretchTolerance)) return false;
+            }
+            return true;
+        }
+
+        static bool FrozenAnchorFits(Vector2[] placed,int start,Vector2[] anchors,int anchorStart,float tolerance)
+        {
+            for(int k=0;k<3;++k)
+                if(!(Distance(placed[start+k],anchors[anchorStart+k])<=tolerance)) return false;
+            return true;
+        }
+
+        static List<int> FrozenSupport(Vector2[] placed,int offset,Vector2[] anchors,int faces,float tolerance)
+        {
+            var supported=new List<int>();
+            for(int f=0;f<faces;++f)
+                if(FrozenAnchorFits(placed,offset+f*3,anchors,f*3,tolerance)) supported.Add(f);
+            return supported;
+        }
+
+        internal static Vector2[] FitFrozenConsensus(Vector2[] whole,Vector2[] source,Vector2[] target,
+            double[] faceAreas,float tolerance,CancellationToken token)
+        {
+            // A bevel can supply many tiny, inconsistent face anchors. Require
+            // agreement over at least 80% of the candidate's surface area, fit
+            // one similarity to that support, and leave other faces extensions.
+            // The caller still audits the complete island and sibling contacts.
+            const double minimumSupport=.8;
+            double total=faceAreas.Sum(),bestArea=0;
+            var points=whole.Concat(source).ToArray();
+            Vector2[] best=null;
+            foreach(int seed in Enumerable.Range(0,faceAreas.Length).OrderByDescending(f=>faceAreas[f]).Take(32))
+            {
+                token.ThrowIfCancellationRequested();
+                var trial=FitFrozenShell(points,source.Skip(seed*3).Take(3).ToArray(),target.Skip(seed*3).Take(3).ToArray(),
+                    tolerance,out _);
+                if(trial==null) continue;
+                var supported=FrozenSupport(trial,whole.Length,target,faceAreas.Length,tolerance);
+                double area=supported.Sum(f=>faceAreas[f]);
+                if(area<total*minimumSupport || area<=bestArea) continue;
+                var corners=supported.SelectMany(f=>Enumerable.Range(f*3,3)).ToArray();
+                var fitted=FitFrozenShell(whole,corners.Select(c=>source[c]).ToArray(),corners.Select(c=>target[c]).ToArray(),
+                    tolerance,out _);
+                if(fitted!=null) {best=fitted;bestArea=area;}
+            }
+            return best;
+        }
 
         static bool ValidFrozenShell(Surface surface,int[] faces,Vector2[] uv,Options options,CancellationToken token)
         {

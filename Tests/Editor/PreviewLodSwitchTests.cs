@@ -1788,11 +1788,16 @@ namespace SashaRX.UnityMeshLab.Tests
         [TestCase("Assets/TransferBenchmarkInputs/Modern_Kitchen_A.fbx", 32)]
         [TestCase("Assets/KamazFixtures/kamaz_Off.fbx", 10)]
         [TestCase("Assets/KamazFixtures/kamaz_Off.fbx", 32)]
+        [TestCase("Assets/TransferDiagnostics/Kamaz_Typhoon.fbx", 32)]
+        [TestCase("Assets/TransferDiagnostics/CementWall.fbx", 32)]
         [Timeout(600000)]
         public void FrozenForwardReverseComparison(string asset, int density)
         {
             string output = System.Environment.GetEnvironmentVariable("MESHLAB_PAIRED_TRANSFER_OUTPUT");
             if (string.IsNullOrEmpty(output)) Assert.Ignore("Optional private paired transfer fixtures are not configured.");
+            if(asset.StartsWith("Assets/TransferDiagnostics/",System.StringComparison.Ordinal)
+                && System.Environment.GetEnvironmentVariable("MESHLAB_TRANSFER_USER_SETTINGS")!="1")
+                Assert.Ignore("Current-project transfer diagnostics are not configured.");
             using var nativeSearch=NativeFootprintTestLibrary.OpenFromEnvironment();
             using var nativeQuery=NativeQueryTestLibrary.OpenFromEnvironment();
             using var burstCompiler=System.Environment.GetEnvironmentVariable("MESHLAB_REQUIRE_BURST_RASTER")=="1"
@@ -1814,6 +1819,13 @@ namespace SashaRX.UnityMeshLab.Tests
             ctx.RepackPerMesh = false; ctx.ShellPaddingPx = 2; ctx.BorderPaddingPx = 0;
             ctx.CutNarrowUvJunctions = ctx.XatlasRotateCharts = ctx.XatlasRotateChartsToAxis = true;
             hub.DiagnosticWorkflow.SymmetrySplitMode = SymmetrySplitShells.ThresholdMode.Adaptive;
+            if (System.Environment.GetEnvironmentVariable("MESHLAB_TRANSFER_USER_SETTINGS") == "1")
+            {
+                hub.DiagnosticWorkflow.SymmetrySplitMode = SymmetrySplitShells.ThresholdMode.LegacyFixed;
+                ctx.CaptureNextTransfer = true;
+                ctx.PipeSettings.saveNewMeshAssets = false;
+                ctx.CutNarrowUvJunctions = System.Environment.GetEnvironmentVariable("MESHLAB_TRANSFER_NO_JUNCTION_CUTS") != "1";
+            }
             float tolerance = UvTransferTolerance.BoundaryTexels;
             if (float.TryParse(System.Environment.GetEnvironmentVariable("MESHLAB_TRANSFER_BOUNDARY_TEXELS"),
                 System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var configured)) tolerance = configured;
@@ -1848,6 +1860,15 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsTrue(ctx.HasRepack && ctx.HasTransfer);
                 System.IO.Directory.CreateDirectory(BenchmarkRecorder.OutputDirectoryOverride);
                 TransferBenchmarkExport.Forward(BenchmarkRecorder.OutputDirectoryOverride, ctx);
+                if(System.Environment.GetEnvironmentVariable("MESHLAB_TRANSFER_USER_SETTINGS")=="1")
+                {
+                    var sources=entries.Where(e=>e.lodIndex==ctx.SourceLodIndex).ToArray();
+                    using(forward.performance.Measure("Legacy synchronous source guard"))
+                        foreach(var entry in sources) Assert.IsNotNull(GroupedShellTransfer.AnalyzeSource(entry.repackedMesh));
+                    var check=typeof(UvTransferWorkflow).GetMethod("HasSourceUvChannels",BindingFlags.NonPublic|BindingFlags.Static);
+                    using(forward.performance.Measure("Metadata source guard (reflection included)"))
+                        foreach(var entry in sources) Assert.IsTrue((bool)check.Invoke(null,new object[] {entry.repackedMesh}));
+                }
                 forward.completed = true;
                 forward.atlasWidth = (int)entries.Max(e => e.repackedAtlasWidth);
                 forward.atlasHeight = (int)entries.Max(e => e.repackedAtlasHeight);
@@ -1871,7 +1892,7 @@ namespace SashaRX.UnityMeshLab.Tests
                         }
                 }
                 foreach(bool prepareSeed in includeExisting?new[] {true,false}:new[] {true})
-                foreach (bool overlap in new[] {false, true})
+                foreach (bool overlap in System.Environment.GetEnvironmentVariable("MESHLAB_TRANSFER_USER_SETTINGS") == "1" ? new[] {false} : new[] {false, true})
                 {
                     var reverse = new PairedTransferMode {mode = (prepareSeed?"reverse-":"reverse-existing-")
                         +(overlap?"overlap":"exclusive")}; comparison.modes.Add(reverse);

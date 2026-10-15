@@ -236,8 +236,6 @@ namespace SashaRX.UnityMeshLab
             new List<(GameObject, int, int, int)>();
 
         // ── Transfer cache ──
-        readonly Dictionary<int, GroupedShellTransfer.SourceShellInfo[]> shellTransformCache =
-            new Dictionary<int, GroupedShellTransfer.SourceShellInfo[]>();
         sealed class CrossLodHintState
         {
             public readonly Mesh sourceMesh;
@@ -298,7 +296,6 @@ namespace SashaRX.UnityMeshLab
         internal void InvalidateTransferSource(Mesh mesh)
         {
             if (!mesh) return;
-            shellTransformCache.Remove(mesh.GetInstanceID());
             var keys = crossLodHints.Where(kv => kv.Value.sourceMesh == mesh).Select(kv => kv.Key).ToArray();
             foreach (var key in keys) crossLodHints.Remove(key);
         }
@@ -307,7 +304,6 @@ namespace SashaRX.UnityMeshLab
         {
             uv0Reports.Clear();
             uv0Analyzed = uv0Welded = false;
-            shellTransformCache.Clear();
             crossLodHints.Clear();
             setupLodSelectionId = -1;
             setupRendererSelectionId = -1;
@@ -1686,7 +1682,6 @@ namespace SashaRX.UnityMeshLab
 
             ctx.ClearAllCaches();
             crossLodHints.Clear();
-            shellTransformCache.Clear();
             ctx.HasRepack = false;
             ctx.HasTransfer = false;
             uv0Welded = false;
@@ -1879,7 +1874,6 @@ namespace SashaRX.UnityMeshLab
             }
             ctx.ClearAllCaches();
             crossLodHints.Clear();
-            shellTransformCache.Clear();
             ctx.HasRepack = false;
             ctx.HasTransfer = false;
         }
@@ -2029,7 +2023,6 @@ namespace SashaRX.UnityMeshLab
                 kv.Key.validationReport = kv.Value.validation;
             }
             ctx.ClearAllCaches();
-            shellTransformCache.Clear();
             crossLodHints.Clear();
             // Ownership has moved to the entries. Cancel/error paths instead
             // dispose the still-owned snapshot when the pipeline scope exits.
@@ -2391,7 +2384,7 @@ namespace SashaRX.UnityMeshLab
                 crossLodHints[hintKey] = hintState;
             }
 
-            if (!HasSourceShellTransforms(srcMesh)) return;
+            if (!HasSourceUvChannels(srcMesh)) return;
 
             UvProgress.Report(-1f, $"Transfer LOD{tLod} ← '{tgt.renderer.name}'");
             var pair = ctx.DiagnosticCapture?.BeforePair(srcEntry, tgt, srcMesh, tgtMesh, hintState.overlapHints, hintState.matchHints, TransferBoundaryToleranceTexels);
@@ -2465,16 +2458,15 @@ namespace SashaRX.UnityMeshLab
             ctx.DiagnosticCapture?.AfterPair(pair, tgt, tr);
         }
 
-        bool HasSourceShellTransforms(Mesh srcMesh)
+        static bool HasSourceUvChannels(Mesh source)
         {
-            int srcId = srcMesh.GetInstanceID();
-            if (!shellTransformCache.TryGetValue(srcId, out var srcInfos))
-            {
-                srcInfos = GroupedShellTransfer.AnalyzeSource(srcMesh);
-                if (srcInfos != null) shellTransformCache[srcId] = srcInfos;
-            }
-            return srcInfos != null;
-
+            // The worker builds its own shell descriptors. This guard only
+            // needs channel presence; rebuilding all streams here did discarded
+            // synchronous work before the first transfer await.
+            if(source.vertexCount==0 || (source.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.TexCoord0)
+                && source.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.TexCoord1))) return true;
+            UvtLog.Error("[GroupedTransfer] Source mesh has missing or incomplete UV0/UV2");
+            return false;
         }
 
         void ApplyTransferResult(MeshEntry tgt, Mesh tgtMesh, GroupedShellTransfer.TransferResult tr, int tLod)
@@ -2612,7 +2604,6 @@ namespace SashaRX.UnityMeshLab
             uv0Analyzed = uv0Welded = false;
             uv0Reports.Clear();
             ctx.ClearAllCaches();
-            shellTransformCache.Clear();
             canvas.ClearHoverState(false);
             RequestRepaint?.Invoke();
         }

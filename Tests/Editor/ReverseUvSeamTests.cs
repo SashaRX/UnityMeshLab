@@ -188,6 +188,32 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void RefinedMetricAuditsThePublishedFloat32Positions()
+        {
+            var source=new Mesh {vertices=new[] {
+                new Vector3(.5111950635910034f,1.0575240850448608f,-3.877652406692505f),
+                new Vector3(-.39329954981803894f,1.1646249294281006f,-3.877653121948242f),
+                new Vector3(.39330077171325684f,1.1646249294281006f,-3.877653121948242f)},
+                triangles=new[] {0,1,2}};owned.Add(source);
+            var bary=new[] {Vector3.right,new Vector3(.9999999403953552f,5.211720832676292e-8f,0),
+                new Vector3(.9999997019767761f,0,3.231721734664461e-7f)};
+            var before=Snapshot(source);
+            var output=ReverseUvRefinedMesh.Copy(source,new[] {0},bary,new[] {Vector2.zero,Vector2.right,Vector2.up});owned.Add(output);
+            var positions=output.vertices;
+            Assert.IsTrue(MeshGeometry.HasArea(positions[0],positions[1],positions[2]));
+            var surface=new ReverseUvTransfer.Surface {input=new ReverseUvTransfer.Input {toWorld=Matrix4x4.identity},
+                sourcePositions=source.vertices,sourceIndices=source.triangles,sourceFaces=new[] {0},
+                faces=new[] {new ReverseUvTransfer.Face()},sourceBarycentrics=bary};
+            ReverseUvTransfer.RefreshMetricFrames(surface);
+            var expected=TransferUvQuality.WorldFrame(positions[0],positions[1],positions[2],Matrix4x4.identity);
+            Assert.Greater(surface.metricFrames[0].y,0,"The validator must not collapse a triangle that Copy publishes intact.");
+            Assert.AreEqual(expected.length,surface.metricFrames[0].length,1e-20);
+            Assert.AreEqual(expected.x,surface.metricFrames[0].x,1e-20);
+            Assert.AreEqual(expected.y,surface.metricFrames[0].y,1e-20);
+            CollectionAssert.AreEqual(before,Snapshot(source));
+        }
+
+        [Test]
         public void RefinedCopyNormalizesNewShadingFramesAndPreservesOriginalCorners()
         {
             var source=Quad();

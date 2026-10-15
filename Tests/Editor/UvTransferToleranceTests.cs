@@ -51,6 +51,24 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsFalse(UvTransferTolerance.Covers(outside,new[] {donor},.5,ref work,10000,default));
         }
 
+        [TestCase(false)] [TestCase(true)]
+        public void DenseDonorTessellationPreservesCoverageAndInteriorHoles(bool hole)
+        {
+            var donors=new System.Collections.Generic.List<Vector2[]>();
+            const int side=32;
+            for(int y=0;y<side;++y)
+                for(int x=0;x<side;++x)
+                {
+                    if(hole && x>=8 && x<12 && y>=8 && y<12) continue;
+                    var a=new Vector2(x,y);var b=new Vector2(x+1,y);
+                    var c=new Vector2(x+1,y+1);var d=new Vector2(x,y+1);
+                    donors.Add(new[] {a,b,c});donors.Add(new[] {a,c,d});
+                }
+            long work=0;
+            Assert.AreEqual(!hole,UvTransferTolerance.Covers(
+                new[] {Vector2.zero,new Vector2(side,0),new Vector2(0,side)},donors,.01,ref work,2000000,default));
+        }
+
         [Test]
         public void BandHonoursWorkBudgetAndCancellation()
         {

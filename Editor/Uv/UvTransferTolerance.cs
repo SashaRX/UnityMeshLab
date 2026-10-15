@@ -100,15 +100,22 @@ namespace SashaRX.UnityMeshLab
                 foreach(var polygon in remaining)
                 {
                     var inside=polygon;
+                    var fragments=new List<List<Point>>();
                     for(int e=0;e<hull.Count && inside.Count>=3;++e)
                     {
                         token.ThrowIfCancellationRequested();
                         if(++work>budget) throw new InvalidOperationException("UV boundary tolerance comparison budget exceeded.");
                         var a=hull[e];var b=hull[(e+1)%hull.Count];
                         var part=Half(inside,a,b,false);
-                        if(part.Count>=3 && Area(part)>area*1e-12) outside.Add(part);
+                        if(part.Count>=3 && Area(part)>area*1e-12) fragments.Add(part);
                         inside=Half(inside,a,b,true);
                     }
+                    // An extended hull edge can cross a remainder even when
+                    // the bounded donor does not. Keep that remainder intact;
+                    // publishing its artificial fragments exhausts the partition
+                    // budget on densely triangulated, otherwise valid donors.
+                    if(inside.Count<3 || !(Area(inside)>0)) outside.Add(polygon);
+                    else outside.AddRange(fragments);
                 }
                 remaining=outside;
                 if(remaining.Count>2048) throw new InvalidOperationException("UV boundary tolerance partition budget exceeded.");
