@@ -168,7 +168,7 @@ namespace SashaRX.UnityMeshLab
         internal int ShellColorRevision(MeshEntry entry, int channel) => shellColors.Revision(entry, channel);
         internal Dictionary<int, int> ShellColorKeys(UvToolContext ctx, Mesh mesh, PreviewShellData data, MeshEntry entry, out bool ready)
             => shellColors.Get(ctx, mesh, data, entry, out ready);
-        internal bool GeometryShellFill => !CheckerEnabled && (CurrentPreviewMode == PreviewMode.Shells3D ||
+        internal bool GeometryShellFill => InspectionShading == MeshViewport3D.Shading.Shaded && !CheckerEnabled && (CurrentPreviewMode == PreviewMode.Shells3D ||
             (CurrentPreviewMode == PreviewMode.Off && !FillHidden && ActiveFillModeIndex >= 0 && ActiveFillModeIndex < FillModes.Count && FillModes[ActiveFillModeIndex].shellColors));
         // Fill callbacks may provide their own immutable UV arrays. Completion is
         // independent of array identity so a 3D layer never caches a pending blank.

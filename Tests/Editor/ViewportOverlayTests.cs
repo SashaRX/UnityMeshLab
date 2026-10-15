@@ -13,6 +13,48 @@ namespace SashaRX.UnityMeshLab.Tests
     public class ViewportOverlayTests
     {
         [UnityTest]
+        public IEnumerator InspectionColorsSurviveShellFillSelectionAndCacheInvalidation()
+        {
+            if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) Assert.Ignore("Requires GPU preview rendering.");
+            var window = ScriptableObject.CreateInstance<ModelOverlayWindow>();
+            var mesh = new Mesh { vertices = new[] { new Vector3(-1,-1,0),new Vector3(1,-1,0),new Vector3(1,1,0),new Vector3(-1,1,0) },
+                uv = new[] {Vector2.zero,Vector2.right,Vector2.one,Vector2.up}, triangles = new[] {0,1,2,0,2,3} };
+            mesh.RecalculateNormals();
+            var material = new Material(Shader.Find("Unlit/Color")) {color = new Color(.2f,.7f,.3f)};
+            var owner = new GameObject("Shell inspection fixture") {hideFlags = HideFlags.HideAndDontSave};
+            var renderer = owner.AddComponent<MeshRenderer>(); renderer.sharedMaterial = material;
+            var entry = new MeshEntry {originalMesh = mesh,renderer = renderer,include = true};
+            try {
+                window.context.PreviewUvChannel = 0; window.context.MeshEntries.Add(entry);
+                window.items.Add(new MeshViewport3D.Item(mesh,Matrix4x4.identity,new[] {material})); window.entries.Add(entry);
+                window.canvas.FillAlpha = 1; window.view.ViewProjection = MeshViewport3D.Projection.XY;
+                window.view.Frame(mesh.bounds); window.Show(); window.position = new Rect(0,0,256,256);
+                foreach (var shading in new[] {MeshViewport3D.Shading.Normals,MeshViewport3D.Shading.UV0,MeshViewport3D.Shading.Albedo}) {
+                    // Exercise the layer's own priority, including the frame where the
+                    // toolbar has changed viewport shading before the canvas syncs it.
+                    window.canvas.InspectionShading = shading;
+                    window.canvas.CurrentPreviewMode = UvCanvasView.PreviewMode.Off;
+                    window.canvas.SetFillModes(new List<UvCanvasView.FillModeEntry> {new UvCanvasView.FillModeEntry {name = "None"}});
+                    window.layer.Invalidate();
+                    for (int frame = 0; frame < 40; ++frame) {window.Repaint(); yield return null;}
+                    var expected = Capture(window,window.view,null);
+                    foreach (var preview in new[] {UvCanvasView.PreviewMode.Off,UvCanvasView.PreviewMode.Shells3D}) {
+                        window.canvas.SetFillModes(new List<UvCanvasView.FillModeEntry> {new UvCanvasView.FillModeEntry {
+                            name = "Shells", shellColors = true,
+                            drawCallback = (c,x,y,s,m,e) => c.GlFillSh(window.context,x,y,s,m,2,4,e,-1,-1)}});
+                        window.canvas.CurrentPreviewMode = preview; window.layer.Invalidate();
+                        for (int frame = 0; frame < 40; ++frame) {window.Repaint(); yield return null;}
+                        var actual = Capture(window,window.view,null);
+                        Assert.That(actual.r,Is.EqualTo(expected.r).Within(.035f),shading + " / " + preview);
+                        Assert.That(actual.g,Is.EqualTo(expected.g).Within(.035f),shading + " / " + preview);
+                        Assert.That(actual.b,Is.EqualTo(expected.b).Within(.035f),shading + " / " + preview);
+                    }
+                }
+            }
+            finally {window.Close(); Object.DestroyImmediate(owner); Object.DestroyImmediate(material); Object.DestroyImmediate(mesh);}
+        }
+
+        [UnityTest]
         public IEnumerator ImportedModelUvFillMatchesTheAuthoredSurfaceAcrossLods()
         {
             string path = System.Environment.GetEnvironmentVariable("MESHLAB_VIEWPORT_MODEL");
