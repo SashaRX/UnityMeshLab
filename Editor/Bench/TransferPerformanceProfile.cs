@@ -29,7 +29,11 @@ namespace SashaRX.UnityMeshLab
             internal uint[] references,charts;
             internal float[] uv;
         }
-        internal IDisposable Measure(string stage, int lod = -1) => new Scope(this, stage, lod);
+        internal IDisposable Measure(string stage, int lod = -1) => new Scope(this, stage, lod, false);
+
+        /// <summary>Like <see cref="Measure"/>, but repeated scopes add to one
+        /// sample whose count is the number of completed scopes.</summary>
+        internal IDisposable Accumulated(string stage, int lod = -1) => new Scope(this, stage, lod, true);
 
         internal void Record(string stage, long ticks, long count = 1, int lod = -1)
         {
@@ -108,13 +112,16 @@ namespace SashaRX.UnityMeshLab
             TransferPerformanceProfile owner;
             readonly string stage;
             readonly int lod;
+            readonly bool accumulate;
             readonly long started = Stopwatch.GetTimestamp();
-            internal Scope(TransferPerformanceProfile owner, string stage, int lod)
-            { this.owner = owner; this.stage = stage; this.lod = lod; }
+            internal Scope(TransferPerformanceProfile owner, string stage, int lod, bool accumulate)
+            { this.owner = owner; this.stage = stage; this.lod = lod; this.accumulate = accumulate; }
             public void Dispose()
             {
                 if (owner == null) return;
-                owner.Record(stage, Stopwatch.GetTimestamp() - started, lod: lod);
+                long ticks = Stopwatch.GetTimestamp() - started;
+                if (accumulate) owner.Accumulate(stage, ticks, 1, lod);
+                else owner.Record(stage, ticks, lod: lod);
                 owner = null;
             }
         }

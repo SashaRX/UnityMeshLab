@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using NUnit.Framework;
@@ -44,8 +45,11 @@ namespace SashaRX.UnityMeshLab.Tests
                     Assert.AreEqual(JsonUtility.ToJson(baseline.report),JsonUtility.ToJson(actual.report));
                     for(int l=0;l<levels.Length;++l)
                         CollectionAssert.AreEqual(TransferMeshSnapshot.Capture(baseline.meshes[l][0]),TransferMeshSnapshot.Capture(actual.meshes[l][0]));
-                    Assert.IsFalse(options.performance.samples.Any(s=>s.stage=="Burst footprint raster spans"),
-                        "Async final packing must retain scalar rasterization on its worker.");
+                    // Worker threads cannot schedule jobs; every qualifying mask
+                    // must still run through the Burst direct call there.
+                    long Count(string stage)=>options.performance.samples.Where(s=>s.stage==stage).Sum(s=>s.count);
+                    Assert.AreEqual(Count("Burst raster qualifying triangles"),Count("Burst footprint raster spans"),
+                        "Async final packing must execute qualifying masks through the Burst direct call: "+ReverseUvRasterAcceleration.LastRefusal);
                 }
                 CollectionAssert.AreEqual(before[0],TransferMeshSnapshot.Capture(source));
                 CollectionAssert.AreEqual(before[1],TransferMeshSnapshot.Capture(target));
@@ -54,7 +58,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        public void BackgroundPackingDeclinesBurstBeforeSchedulingAndPreservesMainThreadExecution()
+        public void BackgroundPackingUsesBurstDirectCallAndPreservesMainThreadExecution()
         {
             if(!ReverseUvRasterAcceleration.Available)
             {
@@ -63,16 +67,97 @@ namespace SashaRX.UnityMeshLab.Tests
             }
             using var compiler=ReverseUvRasterAcceleration.beginTestScope?.Invoke();
             var points=Enumerable.Range(0,32).SelectMany(_=>Rectangle(1,1,8,8)).ToArray();
+            // A worker never reaches the job API; it runs the direct call instead.
             var result=System.Threading.Tasks.Task.Run(()=>ReverseUvRasterAcceleration.TryRasterize(points,16,16,2,default))
                 .GetAwaiter().GetResult();
-            Assert.IsNull(result,"Background packing must use scalar rasterization.");
-            StringAssert.Contains("main thread",ReverseUvRasterAcceleration.LastRefusal);
+            Assert.NotNull(result,"Background packing must execute the Burst direct call: "+ReverseUvRasterAcceleration.LastRefusal);
+            Assert.IsTrue(result.burstExecuted);
             using var cancellation=new CancellationTokenSource();cancellation.Cancel();
             Assert.Throws<OperationCanceledException>(()=>System.Threading.Tasks.Task.Run(
                 ()=>ReverseUvRasterAcceleration.TryRasterize(points,16,16,2,cancellation.Token)).GetAwaiter().GetResult());
             var main=ReverseUvRasterAcceleration.TryRasterize(points,16,16,2,default);
-            Assert.NotNull(main,"Declining a background call must keep main-thread Burst available.");
+            Assert.NotNull(main,"A background call must keep main-thread Burst available.");
             Assert.IsTrue(main.burstExecuted);
+            CollectionAssert.AreEqual(main.spans,result.spans,"Direct-call spans must equal the job's.");
+        }
+
+        [Test]
+        public void ChartBoundsIndexKeepsEveryChartWithinReachInOrder()
+        {
+            var random=new System.Random(0x5eed);
+            float Next() => (float)random.NextDouble();
+            foreach(float scale in new[] {1f,100f,5000f})
+            foreach(float reach in new[] {.05f,.5f})
+            {
+                // Degenerate (point) bounds and boxes of mixed size; queries cluster
+                // around box faces, edges and corners near the reach boundary.
+                var charts=Enumerable.Range(0,400).Select(i=>new ReverseUvTransfer.Chart {bounds=new Bounds(
+                    new Vector3(Next(),Next(),Next())*scale,i%7==0?Vector3.zero:new Vector3(Next(),Next(),Next())*scale*.02f)}).ToList();
+                var index=ReverseUvTransfer.ChartBoundsIndex.Create(charts,reach);
+                Assert.NotNull(index);
+                for(int q=0;q<4000;++q)
+                {
+                    var box=charts[random.Next(charts.Count)].bounds;
+                    var lo=box.min-Vector3.one*reach*1.2f;var hi=box.max+Vector3.one*reach*1.2f;
+                    var point=new Vector3(Mathf.Lerp(lo.x,hi.x,Next()),Mathf.Lerp(lo.y,hi.y,Next()),Mathf.Lerp(lo.z,hi.z,Next()));
+                    var expected=Enumerable.Range(0,charts.Count).Where(i=>!(charts[i].bounds.SqrDistance(point)>reach*reach)).ToList();
+                    var near=index.Near(point);
+                    CollectionAssert.IsOrdered(near);
+                    CollectionAssert.AreEqual(expected,near.Where(i=>!(charts[i].bounds.SqrDistance(point)>reach*reach)).ToList(),
+                        $"scale {scale}, reach {reach}, point {point:R}");
+                }
+            }
+            var finite=new List<ReverseUvTransfer.Chart> {new ReverseUvTransfer.Chart {bounds=new Bounds(Vector3.zero,Vector3.one)}};
+            Assert.IsNull(ReverseUvTransfer.ChartBoundsIndex.Create(finite,float.PositiveInfinity),"Unbounded reach scans every chart.");
+            Assert.IsNull(ReverseUvTransfer.ChartBoundsIndex.Create(new List<ReverseUvTransfer.Chart> {new ReverseUvTransfer.Chart {
+                bounds=new Bounds(new Vector3(float.NaN,0,0),Vector3.one)}},.05f),"Non-finite bounds scan every chart.");
+        }
+
+        [Test]
+        public void IndexedParentCoverageMatchesTheFullScan()
+        {
+            var random=new System.Random(0xc0fe);
+            float Next() => (float)random.NextDouble();
+            int saved=ReverseUvTransfer.CoverageIndexMinimumFaces;
+            try
+            {
+                for(int trial=0;trial<40;++trial)
+                {
+                    // A grid of parent triangles over two layers, with shared edges,
+                    // plus scattered slivers; queries straddle cells, edges and gaps.
+                    int n=4+trial%9;float cell=8;var pixels=new List<Vector2>();var layers=new List<int>();
+                    for(int y=0;y<n;++y) for(int x=0;x<n;++x)
+                    {
+                        var o=new Vector2(x,y)*cell;int layer=(x+y+trial)%2;
+                        pixels.AddRange(new[] {o,o+new Vector2(cell,0),o+new Vector2(cell,cell)});layers.Add(layer);
+                        pixels.AddRange(new[] {o,o+new Vector2(cell,cell),o+new Vector2(0,cell)});layers.Add(layer);
+                    }
+                    for(int s=0;s<20;++s)
+                    {
+                        var o=new Vector2(Next(),Next())*n*cell;
+                        pixels.AddRange(new[] {o,o+new Vector2(Next()*3,0),o+new Vector2(0,Next()*.01f)});layers.Add(s%2);
+                    }
+                    ReverseUvTransfer.Chart Parent() => new ReverseUvTransfer.Chart {pixels=pixels.ToArray(),layers=layers.ToArray()};
+                    for(int q=0;q<60;++q)
+                    {
+                        var a=new Vector2(Next(),Next())*n*cell;
+                        var query=new[] {a,a+new Vector2(Next()*cell*2-cell,Next()*cell*2-cell),a+new Vector2(Next()*cell*2-cell,Next()*cell*2-cell)};
+                        int layer=q%2;long budget=q%10==0?pixels.Count/6:long.MaxValue/2;
+                        var options=new ReverseUvTransfer.Options {comparisonBudget=budget,boundaryToleranceTexels=.01f};
+                        (bool? covered,long comparisons,string error) Run(int minimum)
+                        {
+                            ReverseUvTransfer.CoverageIndexMinimumFaces=minimum;long comparisons=3;
+                            try {return (ReverseUvTransfer.CoveredByParentLayer(Parent(),layer,query,0,options,ref comparisons,CancellationToken.None),comparisons,null);}
+                            catch(InvalidOperationException error) {return (null,comparisons,error.Message);}
+                        }
+                        var scan=Run(int.MaxValue);var indexed=Run(1);
+                        Assert.AreEqual(scan.covered,indexed.covered,$"trial {trial} query {q}");
+                        Assert.AreEqual(scan.error,indexed.error,$"trial {trial} query {q}");
+                        if(scan.error==null) Assert.AreEqual(scan.comparisons,indexed.comparisons,$"trial {trial} query {q}");
+                    }
+                }
+            }
+            finally {ReverseUvTransfer.CoverageIndexMinimumFaces=saved;}
         }
 
         [Test]
@@ -123,6 +208,11 @@ namespace SashaRX.UnityMeshLab.Tests
                 var actual=ReverseUvRasterAcceleration.TryRasterize(points,w,h,radius,default);
                 Assert.NotNull(actual,"Configured provider must execute Burst: "+ReverseUvRasterAcceleration.LastRefusal);
                 Assert.IsTrue(actual.burstExecuted);CollectionAssert.AreEqual(expected,actual.spans,$"trial {trial}");
+                // Asynchronous Reverse packs on a worker, where jobs cannot be scheduled.
+                var worker=System.Threading.Tasks.Task.Run(()=>ReverseUvRasterAcceleration.TryRasterize(points,w,h,radius,default));
+                Assert.IsTrue(worker.Wait(TimeSpan.FromSeconds(60)),"Worker raster did not finish.");
+                Assert.NotNull(worker.Result,"Worker threads must execute the Burst direct call: "+ReverseUvRasterAcceleration.LastRefusal);
+                Assert.IsTrue(worker.Result.burstExecuted);CollectionAssert.AreEqual(expected,worker.Result.spans,$"worker trial {trial}");
             }
             using var cancellation=new CancellationTokenSource();cancellation.Cancel();
             Assert.Throws<OperationCanceledException>(()=>ReverseUvRasterAcceleration.TryRasterize(
@@ -389,5 +479,6 @@ namespace SashaRX.UnityMeshLab.Tests
             }
             finally {UnityEngine.Object.DestroyImmediate(a);UnityEngine.Object.DestroyImmediate(b);}
         }
+
     }
 }

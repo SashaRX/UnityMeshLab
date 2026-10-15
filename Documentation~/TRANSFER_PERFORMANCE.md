@@ -1,5 +1,153 @@
 # Transfer performance replay
 
+## 2026-10-15: local integration of the forward acceleration stack
+
+At the checked main `1945a383` (1.2.10), PR247's Reverse packing work and
+PR252's reduced per-shell copying are present. The later forward stack was
+merged into intermediate branches: PR257 targets
+`ccr-73114d2a-p5-forward-stage-profile`, and PR260 targets
+`ccr-73114d2a-p7-projection-indexes`. Its merge `0b01c314` is not an ancestor
+of this main. A merged PR in that stack does not establish main integration.
+
+This unpublished continuation ports the managed shared-prefix, donor-seam and
+chart indexes, original contact cache and exact parent-coverage index from that
+stack. It retains the current main lifecycle and the local correspondence,
+continuity and published-position precision fixes. Mutable target arrays and
+faces are copied for each retry; the shared preparation lives for one operation.
+Indexes retain candidate order and the existing logical work budgets.
+
+### Audit of the earlier PR stack
+
+GitHub PR metadata and commit ancestry were rechecked against main `1945a383`.
+The status below distinguishes a merge into main from a merge into another
+branch of the stack.
+
+| PR | Work | State at this continuation |
+|---|---|---|
+| [247](https://github.com/SashaRX/UnityMeshLab/pull/247) | Footprint caches, native search, shared occupancy and optional query/Burst backends | Already in main |
+| [252](https://github.com/SashaRX/UnityMeshLab/pull/252) | Avoid whole-mesh copies in per-shell Forward work | Already in main |
+| [253](https://github.com/SashaRX/UnityMeshLab/pull/253) | Reuse final-packing face/index lists, defer precision snapshots, avoid repeated orientation/rescue work | Still in the stack; not included in this port |
+| [254](https://github.com/SashaRX/UnityMeshLab/pull/254) | Opt-in concurrent family and per-LOD atlas validation | Still in the stack; not included in this port |
+| [255](https://github.com/SashaRX/UnityMeshLab/pull/255) | Burst direct calls on async workers | Ported here, including actual-execution tests |
+| [256](https://github.com/SashaRX/UnityMeshLab/pull/256) | Ordinary Forward stage profiling | Ported here |
+| [257](https://github.com/SashaRX/UnityMeshLab/pull/257) | Share the Forward seam projection prefix | Ported here with the current quality/precision fixes |
+| [258](https://github.com/SashaRX/UnityMeshLab/pull/258) | Donor-seam and chart-bounds indexes | Ported here |
+| [259](https://github.com/SashaRX/UnityMeshLab/pull/259) | Native Embree build flags and missing-batch error reporting | Already in main; this does not publish the optional Intel runtime |
+| [260](https://github.com/SashaRX/UnityMeshLab/pull/260) | Cache original seam contacts and index parent coverage | Ported here |
+
+The remaining PR253/254 implementations and their associated concurrency tests
+are not claimed as part of the current result. The presence of an option field
+alone is not evidence that its concurrent implementation runs. Their prior
+experiments are retained in `EXPERIMENTS.md` and the stack commits.
+
+Intel experiments also remain available, with their distinct outcomes:
+
+| Backend | Retained result | Production decision |
+|---|---|---|
+| oneTBB | Exact output; useful Cafe gains, no substantial complete-workflow Kamaz gain | Optional native build, OFF |
+| ISPC | Exact mask backend; no consistent packing gain | OFF |
+| Embree | Later compatible adapter passes exact comparisons and speeds some large query batches, but complete Reverse does not improve | Runtime remains experimental/OFF |
+| IPP | Byte-mask conversion path is slower; packed-bit prototype fails exact comparison | Not adopted |
+| oneMKL | Applicability inspected; not benchmarked or integrated | No speedup claim |
+
+The later compatible Embree work supersedes the first incompatible prototype
+as correctness evidence; it does not establish a whole-workflow performance
+gain. See `EMBREE_COMPATIBILITY.md`, `REVERSE_QUERY_BACKEND.md` and
+`INTEL_LIBRARY_BENCHMARKS.md`. The old private native builds, model fixtures and
+benchmark artifacts remain separate from the current default-plugin runs.
+
+### Controlled comparison
+
+Three alternating control/candidate pairs use Unity 6000.2.6f2, the same copied
+Kamaz_Typhoon and CementWall FBX files **and their importer metadata**. Both arms
+use Legacy Fixed symmetry, pre-optimization, narrow-junction cuts, 32 tex/m,
+2 px shell padding, zero border and exclusive Reverse with reach 0.05 and Fill
+atlas. The control is main plus the same local quality fixes, frozen before
+this performance integration; it is not an untouched main benchmark.
+
+Headless CPU timings exclude editor startup, result export and asset saving.
+Diagnostic transfer capture is enabled in both arms and its in-pipeline work is
+included. No viewport/GPU timing or live-project save/import performance is
+established. The installed project and its assets were not updated.
+
+| Model / stage | Control median (s) | Integrated median (s) | Reduction |
+|---|---:|---:|---:|
+| Kamaz / ordinary full pipeline | 35.037 | 21.059 | 39.9% |
+| Kamaz / detached preparation for Reverse | 30.581 | 16.496 | 46.1% |
+| Kamaz / Reverse solve alone | 24.504 | 24.033 | within timing variation |
+| Kamaz / preparation plus Reverse | 55.085 | 40.397 | 26.7% |
+| CementWall / ordinary full pipeline | 1.427 | 1.027 | 28.1% |
+| CementWall / detached preparation for Reverse | 1.026 | 0.667 | 35.0% |
+| CementWall / Reverse solve alone | 2.101 | 2.097 | within timing variation |
+| CementWall / preparation plus Reverse | 3.137 | 2.774 | 11.6% |
+
+The last stage for each model is the median of each run's two disjoint phases.
+Nested profile stages are not added. All six model pairs retain exact input
+hashes/frames and all 150 stable exported layout, quality and ancestry JSON files
+byte for byte (37 Kamaz + 13 CementWall per pair). Timestamped diagnostic file
+names and timing samples are not stable result files.
+
+These measurements use the package's existing native binaries. Intel oneTBB,
+ISPC, Embree and IPP experimental backends are OFF. Burst is installed, but
+neither of these exclusive-mode runs records executed Burst raster spans; this
+gain is shared preparation and spatial indexing, not measured Burst execution.
+The earlier optional Intel results below and in `INTEL_LIBRARY_BENCHMARKS.md`
+remain separate experiments.
+
+The same integration audit found PR255 (`10032dc4`, worker Burst direct calls)
+merged into `ccr-73114d2a-p3-parallel-validation`, also outside this main's
+ancestry. Its implementation is now restored locally. The optional Burst
+assembly permits unsafe code for pinned kernel buffers; its dependency/version
+gates and Editor-only platform stay unchanged. The editor thread schedules jobs;
+workers call the same strict-float kernel in independent thread-pool chunks.
+The test scope changes global compilation options only temporarily, with
+EditorPrefs callbacks disabled and the original options restored afterward.
+
+The real Kamaz asynchronous overlap run records 288111 qualifying triangle
+visits and 288111 executed Burst triangle visits (repeated masks, not distinct
+model triangles). The recorded raster work, including span assembly, is 0.261 s;
+Reverse solve is 33.820 s and the complete Reverse workflow 33.860 s, excluding
+the separate 16.857 s preparation. All publication/Viewer audits pass. This is
+one execution proof, not a median or a measured whole-workflow Burst speedup.
+The three-pair table above measures exclusive mode, which does not call this
+raster path. Evidence: `async-burst.xml` and `async-burst/` in the same directory.
+
+The matching asynchronous scalar control passes too. All 37 stable Kamaz result
+files, input hashes and frames are byte-identical. Scalar mask work is 1.037 s
+versus 0.714 s total mask work with Burst (0.261 s of that is recorded bulk
+raster/span assembly). Complete solve times are 34.584 s / 33.820 s. A single
+pair establishes output equivalence and executed Burst, with a modest observed
+whole-solve difference; it is not a statistically resolved speedup estimate.
+Evidence: `async-burst-summary.json` and `async-scalar.xml`.
+
+Final focused Unity regression suite: 387 passed, 0 failed, 16 optional private
+cases skipped, with Burst required. It includes worker/job/scalar spans,
+asynchronous Reverse under both overlap policies, shared/independent seam passes,
+indexed/full-scan coverage, asynchronous contact audit equivalence and waiting
+for cancelled workers before releasing data. Both FBX compile-check variants,
+identifier and dependency guards pass. No native source or binary changed.
+
+An integrated Kamaz sample attributes 12.19 s to the donor-seam trial, including
+8.39 s of projection and 2.72 s of contact audits. The ordinary shell-transfer
+stage itself is 2.99 s. These nested figures explain the remaining bottleneck;
+they must not be summed. Interactive original/candidate contact audits now use
+the existing cancellable worker helper over captured managed arrays. Workers
+exit before their operation's owned meshes are disposed. This scheduling change
+is separate from the synchronous timings above.
+
+Quality limits and output defects are unchanged by this acceleration. Kamaz
+ordinary LOD2 still reports 59 collapsed faces and 134 unexpected overlap pairs;
+exclusive Reverse publishes zero collapsed faces or unexpected overlaps and no finer cuts.
+The preceding whole-island correspondence work gives CementWall 1079 inherited
+faces / 1522 px rather than 388 / 2142 px. Those are quality improvements from
+the control's shared fixes, not effects of the performance port.
+
+Private evidence: `_results~/transfer-speed-audit/summary.json`, six run XML/log
+sets, `control-provenance.json`, `performance-source.diff` and the frozen control
+package. The owned project's manifest and lock are restored byte for byte.
+
+## Replay harness
+
 The opt-in paired model test records a `performance.samples` list in each
 mode of `comparison.json`. Timings use `Stopwatch` wall time, including awaited
 worker execution. Nested stages overlap and must not be summed. `count` records
