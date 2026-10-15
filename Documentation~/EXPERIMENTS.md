@@ -162,6 +162,19 @@ the existing overlap predicates; an uncertifiable trial retains the original
 successful recovery. Interactive execution runs this additional CPU work on a
 worker and awaits cancellation before releasing owned data.
 
+Review follow-up: stretch and absolute area do not detect a reflected face.
+Preserve the sign of each healthy face's UV area both before accepting a shared
+point and in the final continuity audit. Existing mirrored winding remains valid;
+no metric, contact, padding or work limits change. Six orientation cases expose
+four failures before the fix and pass afterward, including both winding signs
+and unchanged-winding controls. The CPU-only publication suite passes 439 tests,
+fails zero and skips 16 optional cases with Burst required. All 50 stable model
+files retain identical decoded values, including double bits; four JSON files
+differ only in equivalent final-digit numeric formatting. Both FBX compile
+variants and identifier/dependency guards pass. Evidence:
+`_results~/forward-winding-review/`. This guard does not remove the existing
+ordinary Kamaz collapsed-UV and overlap defects.
+
 On the copied Kamaz, body LOD2 has 726 UV2 connected components instead of 788,
 and the checked front points have no new discontinuities. Body triangles remain
 3148 (3264 across all five meshes). Native donor-seam subdivision is not disabled.

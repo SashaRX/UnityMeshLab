@@ -467,17 +467,20 @@ namespace SashaRX.UnityMeshLab
             if(faces.Any(f=>UvAtlasDiagnostics.IntersectionTest.Degenerate(geometry,f))) return;
             var metrics=faces.Select(f=>ForwardAnisotropy(positions[f*3],positions[f*3+1],positions[f*3+2],
                 uv[f*3],uv[f*3+1],uv[f*3+2],frame)).ToArray();
+            var orientations=faces.Select(f=>ForwardSignedUvArea(uv,f*3)).ToArray();
             var previous=corners.Select(c=>uv[c]).ToArray();
             foreach(int corner in corners) uv[corner]=shared;
-            if(!ForwardPointMetricsFit(faces,positions,uv,metrics,frame))
+            if(!ForwardPointMetricsFit(faces,positions,uv,metrics,orientations,frame))
                 for(int i=0;i<corners.Count;++i) uv[corners[i]]=previous[i];
         }
 
-        static bool ForwardPointMetricsFit(int[] faces,Vector3[] positions,Vector2[] uv,double[] before,Matrix4x4 frame)
+        static bool ForwardPointMetricsFit(int[] faces,Vector3[] positions,Vector2[] uv,double[] before,double[] orientations,Matrix4x4 frame)
         {
             for(int i=0;i<faces.Length;++i)
             {
                 int t=faces[i]*3;
+                double area=ForwardSignedUvArea(uv,t);
+                if(orientations[i]>0 && area<0 || orientations[i]<0 && area>0) return false;
                 double metric=ForwardAnisotropy(positions[t],positions[t+1],positions[t+2],uv[t],uv[t+1],uv[t+2],frame);
                 if(!(metric<=4) || !UvTransferTolerance.MetricFits(metric,before[i])) return false;
             }
@@ -511,10 +514,16 @@ namespace SashaRX.UnityMeshLab
                 if(after[t+k].x < -1e-4f || after[t+k].x>1.0001f || after[t+k].y < -1e-4f || after[t+k].y>1.0001f) return false;
             var a=surface.positions[surface.indices[t]];var b=surface.positions[surface.indices[t+1]];
             var c=surface.positions[surface.indices[t+2]];
+            double beforeArea=ForwardSignedUvArea(before,t),afterArea=ForwardSignedUvArea(after,t);
+            if(beforeArea>0 && afterArea<0 || beforeArea<0 && afterArea>0) return false;
             double current=ForwardAnisotropy(a,b,c,after[t],after[t+1],after[t+2],frame);
             return (originalMetric>4 || current<=4) && UvTransferTolerance.MetricFits(current,originalMetric)
                 && UvTransferTolerance.MetricFits(current,ForwardAnisotropy(a,b,c,before[t],before[t+1],before[t+2],frame));
         }
+
+        static double ForwardSignedUvArea(Vector2[] uv,int t)
+            => ((double)uv[t+1].x-uv[t].x)*((double)uv[t+2].y-uv[t].y)
+                -((double)uv[t+1].y-uv[t].y)*((double)uv[t+2].x-uv[t].x);
 
         // Transform edges rather than absolute positions: translation must not
         // introduce Float32 cancellation into the rendered stretch comparison.
