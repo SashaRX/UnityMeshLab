@@ -43,6 +43,26 @@ namespace SashaRX.UnityMeshLab
             internal readonly List<Vector4> validation = new List<Vector4>();
             internal readonly List<Vector3> neighbors = new List<Vector3>(), barycentrics = new List<Vector3>(), normals = new List<Vector3>();
             internal readonly List<int> indices = new List<int>();
+            internal void AppendFace(int[] triangles, Vector3[] sourcePositions, int face, Color color, Color issue,
+                (Vector3[] neighbors, Vector3[] normals) seams, Dictionary<(int, Color, Color), int> vertices)
+            {
+                var neighbor = seams.neighbors[face];
+                bool antialias = neighbor.x >= 0 || neighbor.y >= 0 || neighbor.z >= 0;
+                for (int corner = 0; corner < 3; ++corner) {
+                    int index = triangles[face * 3 + corner];
+                    var key = (index, color, issue);
+                    int compact;
+                    if (antialias || !vertices.TryGetValue(key, out compact)) {
+                        compact = positions.Count; if (!antialias) vertices.Add(key, compact);
+                        positions.Add(sourcePositions[index]); colors.Add(color); validation.Add(issue);
+                        neighbors.Add(neighbor); normals.Add(antialias ? seams.normals[face] : Vector3.zero);
+                        var barycentric = Vector3.zero;
+                        if (antialias) barycentric[corner] = 1;
+                        barycentrics.Add(barycentric);
+                    }
+                    indices.Add(compact);
+                }
+            }
             internal Mesh Upload()
             {
                 var mesh = new Mesh { name = "MeshLab shell fill", hideFlags = HideFlags.HideAndDontSave,
@@ -196,49 +216,66 @@ namespace SashaRX.UnityMeshLab
             int selected, bool solid, System.Threading.CancellationToken token = default,
             TransferValidator.TriIssue[] issues = null, TransferValidator.TriIssue mask = TransferValidator.TriIssue.None)
         {
-            var result = new FillData(); var vertices = new Dictionary<(int, Color, Color), int>();
+            var styles = PrepareFillStyles(data, colors, selected, solid, token, issues, mask);
+            var seams = ShellFillSeams.Build(data.triangles,positions,styles,token);
+            return BuildFillGeometry(data, positions, colors, selected, solid, token, issues, mask, seams);
+        }
+
+        static int ShellColorKey(UvShell shell, Dictionary<int, int> colors) =>
+            colors != null && colors.TryGetValue(shell.shellId, out int mapped) ? mapped : shell.shellId;
+
+        static int[] PrepareFillStyles(PreviewShellData data, Dictionary<int, int> colors, int selected, bool solid,
+            System.Threading.CancellationToken token, TransferValidator.TriIssue[] issues, TransferValidator.TriIssue mask)
+        {
             var styles = new int[data.triangles.Length/3];
             for (int i = 0; i < styles.Length; ++i) styles[i] = -1;
             int prepared = 0;
             foreach (var shell in data.shells) {
-                int key = colors != null && colors.TryGetValue(shell.shellId,out int mapped) ? mapped : shell.shellId;
+                int key = ShellColorKey(shell, colors);
                 int style = UvHashUtil.NonNegativeColorKey(key) % UvCanvasView.pal.Length;
                 if (shell.shellId == selected) style += 16 + (solid ? 0 : 32);
-                foreach (int face in shell.faceIndices) {
-                    token.ThrowIfCancellationRequested();
-                    if (prepared++ >= UvCanvasView.MAX_TRI) break;
-                    int issue = issues != null && face < issues.Length ? UvCanvasView.ValidationOverlayIndex(issues[face],mask) : 0;
-                    styles[face] = style + issue * 64;
-                }
+                PrepareShellStyles(shell, styles, style, ref prepared, token, issues, mask);
                 if (prepared >= UvCanvasView.MAX_TRI) break;
             }
-            var seams = ShellFillSeams.Build(data.triangles,positions,styles,token);
+            return styles;
+        }
+
+        static void PrepareShellStyles(UvShell shell, int[] styles, int style, ref int prepared,
+            System.Threading.CancellationToken token, TransferValidator.TriIssue[] issues, TransferValidator.TriIssue mask)
+        {
+            foreach (int face in shell.faceIndices) {
+                token.ThrowIfCancellationRequested();
+                if (prepared++ >= UvCanvasView.MAX_TRI) break;
+                int issue = issues != null && face < issues.Length ? UvCanvasView.ValidationOverlayIndex(issues[face],mask) : 0;
+                styles[face] = style + issue * 64;
+            }
+        }
+
+        static FillData BuildFillGeometry(PreviewShellData data, Vector3[] positions, Dictionary<int, int> colors,
+            int selected, bool solid, System.Threading.CancellationToken token, TransferValidator.TriIssue[] issues,
+            TransferValidator.TriIssue mask, (Vector3[] neighbors, Vector3[] normals) seams)
+        {
+            var result = new FillData(); var vertices = new Dictionary<(int, Color, Color), int>();
             int total = 0;
             foreach (var shell in data.shells) {
-                int colorKey = colors != null && colors.TryGetValue(shell.shellId, out int mapped) ? mapped : shell.shellId;
-                Color color = UvCanvasView.pal[UvHashUtil.NonNegativeColorKey(colorKey) % UvCanvasView.pal.Length];
-                if (shell.shellId == selected) color = Color.Lerp(color, Color.white, .45f);
-                color.a = !solid && shell.shellId == selected ? 1.85f : 1;
+                Color color = FillColor(shell, colors, selected, solid);
                 foreach (int face in shell.faceIndices) {
                     token.ThrowIfCancellationRequested();
                     if (total++ >= UvCanvasView.MAX_TRI) return result;
                     var issue = issues != null && face < issues.Length ? UvCanvasView.ValidationOverlayColor(issues[face], mask) : Color.clear;
-                    var neighbor = seams.neighbors[face]; bool antialias = neighbor.x >= 0 || neighbor.y >= 0 || neighbor.z >= 0;
-                    for (int corner = 0; corner < 3; ++corner) {
-                        int index = data.triangles[face * 3 + corner];
-                        var key = (index, color, issue);
-                        int compact;
-                        if (antialias || !vertices.TryGetValue(key, out compact)) {
-                            compact = result.positions.Count; if (!antialias) vertices.Add(key, compact);
-                            result.positions.Add(positions[index]); result.colors.Add(color); result.validation.Add(issue);
-                            result.neighbors.Add(neighbor); result.normals.Add(antialias ? seams.normals[face] : Vector3.zero);
-                            result.barycentrics.Add(antialias ? (corner == 0 ? Vector3.right : corner == 1 ? Vector3.up : Vector3.forward) : Vector3.zero);
-                        }
-                        result.indices.Add(compact);
-                    }
+                    result.AppendFace(data.triangles, positions, face, color, issue, seams, vertices);
                 }
             }
             return result;
+        }
+
+        static Color FillColor(UvShell shell, Dictionary<int, int> colors, int selected, bool solid)
+        {
+            int colorKey = ShellColorKey(shell, colors);
+            Color color = UvCanvasView.pal[UvHashUtil.NonNegativeColorKey(colorKey) % UvCanvasView.pal.Length];
+            if (shell.shellId == selected) color = Color.Lerp(color, Color.white, .45f);
+            color.a = !solid && shell.shellId == selected ? 1.85f : 1;
+            return color;
         }
 
         void DrawShell(MeshViewport3D view, UvCanvasView canvas, UvToolContext ctx, MeshViewport3D.Item item, int shellId, Color color, bool selected)
