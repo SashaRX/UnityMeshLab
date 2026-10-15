@@ -126,7 +126,8 @@ compact highlight lifetime, point buffer lifetime/pixel size, and shell/checker
 blending against immediate drawing. `PreviewLodSwitchTests` also checks scene
 preview completion with mixed channel availability and mesh restoration.
 
-After rebasing onto main `4fdccda6`, expanded Built-in and URP 17.2 runs on Unity
+At candidate `abf58c20`, after rebasing onto main `4fdccda6`, expanded Built-in
+and URP 17.2 runs on Unity
 6000.2.6f2 / D3D11 each executed **406 tests**: Built-in **383 passed, 15 skipped,
 8 failed**; URP **385 passed, 13 skipped, 8 failed**. All eight save/import
 mesh-identity lifecycle failures reproduce with the same messages on unchanged
@@ -139,3 +140,7 @@ and URP integration with asset MSAA Off/2x/4x pass. C# compilation passes with a
 without the FBX exporter define; identifier and tool-dependency guards pass.
 The post-review focused URP run passes 19 tests, including a point source destroyed
 before its deferred snapshot and stale transfer provenance on a small scene preview.
+A later Built-in follow-up passes eight channel/cache tests. A scratch replay with
+the readiness deadline forcibly expired after the first accepted sample completes
+all four phases and 96 samples per phase; ready buffers do not time out during
+measurement. The timeout remains active while required buffers are pending.

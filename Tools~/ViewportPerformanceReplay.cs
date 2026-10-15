@@ -111,9 +111,13 @@ public sealed class ViewportPerformanceReplay : EditorWindow
             if (phase == 0 || phase == 2) DrawUv(angle);
             else view.Draw(new Rect(0, 0, 1024, 768), items, phase == 3 ? (Action<MeshViewport3D>)DrawDiagnostics : null);
             timer.Stop(); long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
-            if (EditorApplication.timeSinceStartup > deadline) throw new TimeoutException("Viewport wire did not become ready.");
-            if (EditorApplication.timeSinceStartup < warmUntil || ((phase == 1 || phase == 3) && !WireReady()) ||
-                ((phase == 0 || phase == 2) && !BuffersReady(canvas, "geometry")) || (phase == 3 && !BuffersReady(view, "pointSprites"))) return;
+            if (EditorApplication.timeSinceStartup < warmUntil) return;
+            bool ready = !((phase == 1 || phase == 3) && !WireReady()) &&
+                !((phase == 0 || phase == 2) && !BuffersReady(canvas, "geometry")) && !(phase == 3 && !BuffersReady(view, "pointSprites"));
+            if (!ready) {
+                if (EditorApplication.timeSinceStartup > deadline) throw new TimeoutException("Viewport draw buffers did not become ready.");
+                return;
+            }
             samples.Add(timer.Elapsed.TotalMilliseconds); allocations.Add(allocated);
             if (samples.Count < 96) return;
             samples.Sort(); allocations.Sort();

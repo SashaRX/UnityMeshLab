@@ -591,15 +591,23 @@ namespace SashaRX.UnityMeshLab.Tests
         [Test]
         public void SceneShellCacheUsesRequestedPreviewUvChannel()
         {
-            var mesh = Quad();
+            var mesh = new Mesh { hideFlags = HideFlags.HideAndDontSave };
             try {
-                mesh.uv = new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.one };
-                mesh.SetUVs(2, new List<Vector2> { Vector2.one, Vector2.one + Vector2.right,
-                    Vector2.one + Vector2.up, Vector2.one * 2 });
+                mesh.vertices = new[] { Vector3.zero, Vector3.right, Vector3.up, Vector3.right, Vector3.one, Vector3.up };
+                mesh.triangles = new[] { 0, 1, 2, 3, 4, 5 };
+                // Connectivity follows shared vertex indices. Omit UV0 so reading
+                // the wrong channel cannot accidentally produce the same shell IDs.
+                var layout = new List<Vector2> { Vector2.zero, Vector2.right, Vector2.up, Vector2.right, Vector2.one, Vector2.up };
+                for (int i = 3; i < layout.Count; ++i) layout[i] += Vector2.one * 2;
+                mesh.SetUVs(2, layout);
                 var uv0 = new ShellColorModelPreview.PreviewShellCache(0).GetOrBuild(mesh);
                 var uv2 = new ShellColorModelPreview.PreviewShellCache(2).GetOrBuild(mesh);
-                Assert.AreEqual(uv0[0], uv0[1], "continuous chart");
-                CollectionAssert.AreEqual(uv0, uv2, "moving UV bounds must not recolour the same connected islands");
+                Assert.AreEqual(uv0[0], uv0[1], "a missing UV0 channel uses the uniform fallback");
+                Assert.AreNotEqual(uv2[0], uv2[1], "the requested channel contains two disconnected islands");
+                for (int i = 0; i < layout.Count; ++i) layout[i] += Vector2.one;
+                mesh.SetUVs(2, layout);
+                var shifted = new ShellColorModelPreview.PreviewShellCache(2).GetOrBuild(mesh);
+                CollectionAssert.AreEqual(uv2, shifted, "moving UV bounds must not recolour the same connected islands");
             }
             finally { Object.DestroyImmediate(mesh); }
         }

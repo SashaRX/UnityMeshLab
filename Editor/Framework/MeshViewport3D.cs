@@ -584,7 +584,7 @@ namespace SashaRX.UnityMeshLab
 
         internal Mesh AxesMesh()
         {
-            if (axesMesh && axesRadius.Equals(radius)) return axesMesh;
+            if (axesMesh && Mathf.Approximately(axesRadius, radius)) return axesMesh;
             if (axesMesh) Object.DestroyImmediate(axesMesh);
             axesMesh = null; axesRadius = radius;
             float length = radius * 0.25f;
