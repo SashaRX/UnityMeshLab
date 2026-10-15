@@ -62,6 +62,24 @@ namespace SashaRX.UnityMeshLab
         }
 
         List<UnusedVertData> unusedVertOverlays;
+        readonly List<(Mesh mesh, Matrix4x4 matrix)> edgeBuffers = new List<(Mesh, Matrix4x4)>();
+        readonly List<(Mesh mesh, Matrix4x4 matrix)> pointBuffers = new List<(Mesh, Matrix4x4)>();
+        bool pointBuffersReady;
+        static void ClearBuffers(List<(Mesh mesh, Matrix4x4 matrix)> buffers)
+        {
+            foreach (var buffer in buffers) if (buffer.mesh) Object.DestroyImmediate(buffer.mesh);
+            buffers.Clear();
+        }
+        static Mesh OverlayMesh(List<Vector3> positions, List<Color> colors, MeshTopology topology)
+        {
+            var mesh = new Mesh { name = "MeshLab diagnostic source", hideFlags = HideFlags.HideAndDontSave, indexFormat = IndexFormat.UInt32 };
+            var indices = new int[positions.Count];
+            for (int i = 0; i < indices.Length; ++i) indices[i] = i;
+            mesh.SetVertices(positions);
+            if (colors != null) mesh.SetColors(colors);
+            mesh.SetIndices(indices, topology, 0);
+            return mesh;
+        }
 
         public bool HasUnusedVertOverlays => unusedVertOverlays != null && unusedVertOverlays.Count > 0;
 
@@ -403,6 +421,7 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Build edge overlay data for all mesh entries (call once, draw every frame).</summary>
         public void BuildEdgeOverlays(UvToolContext ctx)
         {
+            ClearBuffers(edgeBuffers);
             edgeOverlays = new List<(List<EdgeSegment>, Matrix4x4, Matrix4x4)>();
             if (ctx?.MeshEntries == null) return;
 
@@ -467,31 +486,33 @@ namespace SashaRX.UnityMeshLab
         public void DrawEdgeWireframe(MeshViewport3D view)
         {
             if (edgeOverlays == null) return;
-            foreach (var (segments, _, matrix) in edgeOverlays)
-            {
-                var pairs = new List<Vector3>(segments.Count * 2);
-                var colors = new List<Color>(segments.Count);
-                foreach (var seg in segments)
-                {
-                    var color = GetEdgeColor(seg.flags);
-                    if (color.a < 0.2f) continue;   // interior edges stay out of the 3D paint; the Wire toggle shows them
-                    pairs.Add(seg.a); pairs.Add(seg.b); colors.Add(color);
+            if (edgeBuffers.Count == 0) {
+                foreach (var (segments, _, matrix) in edgeOverlays) {
+                    var positions = new List<Vector3>(); var colors = new List<Color>();
+                    foreach (var segment in segments) {
+                        var color = GetEdgeColor(segment.flags);
+                        if (color.a < .2f) continue;
+                        positions.Add(segment.a); positions.Add(segment.b); colors.Add(color); colors.Add(color);
+                    }
+                    edgeBuffers.Add((OverlayMesh(positions, colors, MeshTopology.Lines), matrix));
                 }
-                view.DrawLines(pairs, colors, matrix);
             }
+            foreach (var buffer in edgeBuffers) view.DrawLineMesh(buffer.mesh, buffer.matrix, Color.white);
         }
 
-        /// <summary>The unused-vertex dots in the shared 3D canvas.</summary>
+        /// <summary>Unused-vertex dots: one cached cloud, billboard expansion on the GPU.</summary>
         public void DrawUnusedVertexDots(MeshViewport3D view)
         {
             if (unusedVertOverlays == null) return;
-            foreach (var data in unusedVertOverlays)
-            {
-                var points = new List<Vector3>();
-                for (int i = 0; i < data.mask.Length && i < data.positions.Length; i++)
-                    if (data.mask[i]) points.Add(data.positions[i]);
-                view.DrawPoints(points, data.localToPreview, new Color(1f, 0.86f, 0.16f, 0.9f), 6f);
+            if (!pointBuffersReady) {
+                foreach (var data in unusedVertOverlays) {
+                    var positions = new List<Vector3>();
+                    for (int i = 0; i < data.mask.Length && i < data.positions.Length; ++i) if (data.mask[i]) positions.Add(data.positions[i]);
+                    pointBuffers.Add((OverlayMesh(positions, null, MeshTopology.Points), data.localToPreview));
+                }
+                pointBuffersReady = true;
             }
+            foreach (var buffer in pointBuffers) view.DrawPointCloud(buffer.mesh, buffer.matrix, new Color(1f, .86f, .16f, .9f), 6);
         }
 
         /// <summary>Draw yellow dots for unused vertices. Call from OnSceneGUI.</summary>
@@ -547,6 +568,7 @@ namespace SashaRX.UnityMeshLab
                 if (mesh != null) Object.DestroyImmediate(mesh);
             ownedMeshes.Clear();
 
+            ClearBuffers(edgeBuffers); ClearBuffers(pointBuffers); pointBuffersReady = false;
             edgeOverlays = null;
             unusedVertOverlays = null;
 

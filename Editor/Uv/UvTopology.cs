@@ -215,7 +215,7 @@ namespace SashaRX.UnityMeshLab
         /// face → shell and id → shell maps and each shell's UV bounds (in shell order).
         /// Null when the layout has no triangles or the extraction fails.
         /// </summary>
-        internal static PreviewShellData BuildShellData(Vector2[] uv, int[] triangles)
+        internal static PreviewShellData BuildShellData(Vector2[] uv, int[] triangles, bool buildPicking = true)
         {
             if (uv == null || triangles == null || triangles.Length < 3) return null;
 
@@ -248,7 +248,21 @@ namespace SashaRX.UnityMeshLab
                 }
                 bounds[i] = b;
             }
-            return new PreviewShellData { shells = shells, faceToShell = faceToShell, shellById = shellById, shellBounds = bounds, triangles = triangles, uvs = uv };
+            return new PreviewShellData { shells = shells, faceToShell = faceToShell, shellById = shellById, shellBounds = bounds, triangles = triangles, uvs = uv,
+                uvBvh = buildPicking ? BuildUvBvh(uv, triangles) : null };
+        }
+
+        internal static TriangleBvh2D BuildUvBvh(Vector2[] uv, int[] triangles)
+        {
+            int count = triangles.Length / 3;
+            var a = new Vector2[count]; var b = new Vector2[count]; var c = new Vector2[count];
+            var valid = new List<int>(count);
+            for (int f = 0; f < count; ++f) {
+                int x = triangles[f * 3], y = triangles[f * 3 + 1], z = triangles[f * 3 + 2];
+                if (!UvCanvasView.TOk(uv, uv.Length, x, y, z)) continue;
+                a[f] = uv[x]; b[f] = uv[y]; c[f] = uv[z]; valid.Add(f);
+            }
+            return new TriangleBvh2D(a, b, c, valid.ToArray());
         }
 
         /// <summary>The UDIM tiles (floor of u, floor of v) the finite UVs in <paramref name="uv"/> fall into, added to <paramref name="into"/>.</summary>

@@ -12,6 +12,7 @@ namespace SashaRX.UnityMeshLab
     {
         readonly Dictionary<int, Mesh> copies = new Dictionary<int, Mesh>();
         readonly Dictionary<int, string> reports = new Dictionary<int, string>();
+        readonly Dictionary<int, int> supportedModes = new Dictionary<int, int>();
         sealed class PickData
         {
             public Vector3[] vertices;
@@ -53,6 +54,18 @@ namespace SashaRX.UnityMeshLab
                     int channel = mode - MeshViewport3D.Shading.UV0;
                     return channel >= 0 && channel < 8 && mesh.HasVertexAttribute((VertexAttribute)((int)VertexAttribute.TexCoord0 + channel));
             }
+        }
+
+        internal bool SupportsMode(Mesh mesh, MeshViewport3D.Shading mode)
+        {
+            if (!mesh) return false;
+            int id = mesh.GetInstanceID();
+            if (!supportedModes.TryGetValue(id, out int mask)) {
+                for (int i = 0; i < MeshViewport3D.ShadingNames.Length; ++i)
+                    if (Supports(mesh, (MeshViewport3D.Shading)i)) mask |= 1 << i;
+                supportedModes[id] = mask;
+            }
+            return (mask & (1 << (int)mode)) != 0;
         }
 
         // A model-level summary: only the data the mesh actually carries gets a line,
@@ -199,7 +212,7 @@ namespace SashaRX.UnityMeshLab
         void Invalidate(Mesh mesh) { Clear(); }
         public void InvalidateData()
         {
-            reports.Clear(); bvhs.Clear();
+            reports.Clear(); bvhs.Clear(); supportedModes.Clear();
         }
 
         public void Prune(IReadOnlyList<MeshViewport3D.Item> items)
@@ -210,6 +223,7 @@ namespace SashaRX.UnityMeshLab
             PruneCopies(active, dropped);
             PruneCache(reports, active, dropped);
             PruneCache(bvhs, active, dropped);
+            PruneCache(supportedModes, active, dropped);
         }
 
         void PruneCopies(HashSet<int> active, List<int> dropped)

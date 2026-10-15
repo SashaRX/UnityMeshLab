@@ -161,6 +161,42 @@ namespace SashaRX.UnityMeshLab
         public Material SpotMat;
         public Material ShellOverlayMat;
         RenderTexture canvasRT;
+        readonly UvPreviewGeometry geometry = new UvPreviewGeometry();
+        readonly ShellPreviewColors shellColors = new ShellPreviewColors();
+        internal int ShellColorRevision(MeshEntry entry, int channel) => shellColors.Revision(entry, channel);
+        // Fill callbacks may provide their own immutable UV arrays. Completion is
+        // independent of array identity so a 3D layer never caches a pending blank.
+        internal int DrawBufferRevision => geometry.Generation;
+        internal PreviewShellData PreparedShells(UvToolContext ctx, Mesh mesh, int channel)
+        {
+            ctx.PreviewShellDataCache.TryGetValue(((long)mesh.GetInstanceID() << 8) ^ (uint)channel, out var data);
+            return data;
+        }
+        readonly Dictionary<MeshEntry, (Vector2[] source, Vector4 transform, Vector2[] display)> displayUvs =
+            new Dictionary<MeshEntry, (Vector2[], Vector4, Vector2[])>();
+
+        internal Vector2[] DisplayUvs(UvToolContext ctx, MeshEntry entry, Vector2[] uv)
+        {
+            if (CurrentPreviewMode != PreviewMode.Lightmap || ctx.PreviewUvChannel != 1 || entry?.renderer == null || entry.renderer.lightmapIndex < 0) return uv;
+            var transform = entry.renderer.lightmapScaleOffset;
+            if (displayUvs.TryGetValue(entry, out var cached) && ReferenceEquals(cached.source, uv) && cached.transform.Equals(transform)) return cached.display;
+            var display = new Vector2[uv.Length];
+            for (int i = 0; i < uv.Length; ++i) display[i] = new Vector2(uv[i].x * transform.x + transform.z, uv[i].y * transform.y + transform.w);
+            // Replacing an array must also release the batches that held the old one.
+            if (cached.display != null) geometry.InvalidateUv(cached.display);
+            displayUvs[entry] = (uv, transform, display);
+            return display;
+        }
+
+        void DrawGeometry(object uv, object source, string kind, object state, MeshTopology topology,
+            float x, float y, float size, Action<UvPreviewGeometry.Builder> build, float opacity = 1f)
+        {
+            var batch = geometry.Get(uv, source, kind, state, topology, build, uv is Vector2[] data && data.Length > 2048);
+            if (!batch) return;
+            GlMat.SetFloat("_Opacity", opacity); GlMat.SetPass(0);
+            try { Graphics.DrawMeshNow(batch, UvPreviewGeometry.Matrix(x, y, size)); }
+            finally { GlMat.SetFloat("_Opacity", 1); GlMat.SetPass(0); }
+        }
 
         // Request repaint
         public Action RequestRepaint;
@@ -168,19 +204,17 @@ namespace SashaRX.UnityMeshLab
 
         // Mesh snapshots retained until explicit invalidation (never cleared by painting).
         readonly Dictionary<UvToolContext, int> snapshotVersions = new Dictionary<UvToolContext, int>();
-        void SyncSnapshotVersion(UvToolContext ctx)
+        readonly HashSet<UvToolContext> previewContexts = new HashSet<UvToolContext>();
+        internal void SyncSnapshotVersion(UvToolContext ctx)
         {
+            previewContexts.Add(ctx);
             if (snapshotVersions.TryGetValue(ctx, out int version) && version == ctx.PreviewCacheVersion) return;
             snapshotVersions[ctx] = ctx.PreviewCacheVersion;
-            cachedTriangles.Clear(); cachedUvs.Clear();
+            cachedTriangles.Clear(); cachedUvs.Clear(); geometry.Dispose(); displayUvs.Clear();
         }
         readonly Dictionary<int, int[]> cachedTriangles = new Dictionary<int, int[]>();
         readonly Dictionary<long, Vector2[]> cachedUvs = new Dictionary<long, Vector2[]>();
 
-        // Hit tracking
-        int lastHitMeshId = -1;
-        int lastHitShellId = -1;
-        const int TRI_PICK_BUDGET = 6000;
 
         static void SetPreviewUpdates(EditorApplication.CallbackFunction callback, bool enabled)
         {
@@ -191,11 +225,13 @@ namespace SashaRX.UnityMeshLab
         public void Init()
         {
             disposed = false;
+            geometry.Ready = () => RequestRepaint?.Invoke();
+            shellColors.Ready = () => { ++PreviewRevision; PreviewReady?.Invoke(); RequestRepaint?.Invoke(); };
             SetPreviewUpdates(PollPreviewJobs, true);
             VertexChannels.Changed += InvalidateInspection;
             var sh = Shader.Find("Hidden/Internal-Colored");
             if (sh == null) return;
-            GlMat = new Material(sh) { hideFlags = HideFlags.HideAndDontSave };
+            GlMat = new Material(Shader.Find("Hidden/MeshLab/UvPreviewFill") ?? sh) { hideFlags = HideFlags.HideAndDontSave };
             GlMat.SetInt("_SrcBlend", (int)BlendMode.SrcAlpha);
             GlMat.SetInt("_DstBlend", (int)BlendMode.OneMinusSrcAlpha);
             GlMat.SetInt("_Cull", (int)CullMode.Off);
@@ -221,9 +257,10 @@ namespace SashaRX.UnityMeshLab
         public void Cleanup()
         {
             disposed = true;
+            geometry.Ready = null;
             SetPreviewUpdates(PollPreviewJobs, false);
             ClearFrameCaches();
-            ForgetUvSpotPointer(); PreviewReady = null;
+            ForgetUvSpotPointer(); PreviewReady = null; shellColors.Ready = null; shellColors.Dispose(); previewContexts.Clear();
             VertexChannels.Changed -= InvalidateInspection;
             inspectionColors.Clear();
             DisplayMeshes.Clear();
@@ -256,8 +293,6 @@ namespace SashaRX.UnityMeshLab
             HasSelectedShell = false;
             HoveredShellDebug = null;
             SelectedShellDebug = null;
-            lastHitMeshId = -1;
-            lastHitShellId = -1;
             if (repaint) RequestRepaint?.Invoke();
         }
 
@@ -374,13 +409,7 @@ namespace SashaRX.UnityMeshLab
                         var tri = GetTrianglesCached(mesh);
                         if (uvs == null || tri == null) continue;
 
-                        if (CurrentPreviewMode == PreviewMode.Lightmap && ctx.PreviewUvChannel == 1 && entry.renderer != null && entry.renderer.lightmapIndex >= 0)
-                        {
-                            var transformed = new Vector2[uvs.Length];
-                            for (int vi = 0; vi < uvs.Length; vi++)
-                                transformed[vi] = DisplayUv(ctx, entry, uvs[vi]);
-                            uvs = transformed;
-                        }
+                        uvs = DisplayUvs(ctx, entry, uvs);
 
                         int uN = uvs.Length, fN = tri.Length / 3;
 
@@ -492,13 +521,7 @@ namespace SashaRX.UnityMeshLab
             var uvs = RdUvCached(mesh, ctx.PreviewUvChannel);
             var tri = GetTrianglesCached(mesh);
             if (uvs == null || tri == null) return;
-            if (CurrentPreviewMode == PreviewMode.Lightmap && ctx.PreviewUvChannel == 1 && entry?.renderer != null && entry.renderer.lightmapIndex >= 0)
-            {
-                var transformed = new Vector2[uvs.Length];
-                for (int vi = 0; vi < uvs.Length; vi++)
-                    transformed[vi] = DisplayUv(ctx, entry, uvs[vi]);
-                uvs = transformed;
-            }
+            uvs = DisplayUvs(ctx, entry, uvs);
             int uN = uvs.Length, fN = tri.Length / 3;
             bool hasFill = !CheckerEnabled && !FillHidden && FillModes.Count > 0 && ActiveFillModeIndex >= 0 && ActiveFillModeIndex < FillModes.Count;
             if (MeshViewport3D.IsMaterialMode(InspectionShading)) GlMaterialFill(cx, cy, sz, mesh, entry, uvs);
@@ -737,7 +760,7 @@ namespace SashaRX.UnityMeshLab
         public void ClearFrameCaches()
         {
             ++previewGeneration;
-            cachedTriangles.Clear(); cachedUvs.Clear();
+            cachedTriangles.Clear(); cachedUvs.Clear(); geometry.Dispose(); displayUvs.Clear();
             previewRequests.Clear(); queuedPreviews.Clear(); snapshotVersions.Clear();
             // A running job owns only arrays. Let it finish without waiting; its
             // generation check prevents it from publishing stale data.
@@ -805,24 +828,25 @@ namespace SashaRX.UnityMeshLab
         public void GlCheckerBg(float ox, float oy, float sz, int cells, float alpha, bool neutralGray = false, HashSet<Vector2Int> occupiedTiles = null)
         {
             if (cells <= 0 || alpha <= 0f) return;
-            float cell = sz / cells;
-            GL.Begin(GL.QUADS);
-            Color darkColor = neutralGray ? new Color(.24f,.24f,.24f,alpha) : new Color(.20f,.20f,.20f,alpha);
-            Color lightColor = neutralGray ? new Color(.32f,.32f,.32f,alpha) : new Color(.38f,.38f,.38f,alpha);
-            var tilesToDraw = occupiedTiles ?? new HashSet<Vector2Int> { new Vector2Int(0, 0) };
-            foreach (var tile in tilesToDraw)
-            {
-                float tox = ox + tile.x * sz, toy = oy - tile.y * sz;
+            var batch = geometry.Get(this, this, "Checker", (cells, neutralGray), MeshTopology.Triangles, builder => {
+                Color darkColor = neutralGray ? new Color(.24f,.24f,.24f,1) : new Color(.20f,.20f,.20f,1);
+                Color lightColor = neutralGray ? new Color(.32f,.32f,.32f,1) : new Color(.38f,.38f,.38f,1);
                 for (int y = 0; y < cells; y++)
-                    for (int x = 0; x < cells; x++)
-                    {
-                        bool dark = ((x + y) & 1) == 0;
-                        GL.Color(dark ? darkColor : lightColor);
-                        float x0 = tox + x * cell, y0 = toy + y * cell;
-                        GL.Vertex3(x0, y0, 0); GL.Vertex3(x0+cell, y0, 0); GL.Vertex3(x0+cell, y0+cell, 0); GL.Vertex3(x0, y0+cell, 0);
+                    for (int x = 0; x < cells; x++) {
+                        builder.SetColor(((x + y) & 1) == 0 ? darkColor : lightColor);
+                        float x0 = (float)x / cells, x1 = (float)(x + 1) / cells;
+                        float y0 = 1f - (float)y / cells, y1 = 1f - (float)(y + 1) / cells;
+                        builder.Vertex(new Vector2(x0, y0)); builder.Vertex(new Vector2(x1, y0)); builder.Vertex(new Vector2(x1, y1));
+                        builder.Vertex(new Vector2(x0, y0)); builder.Vertex(new Vector2(x1, y1)); builder.Vertex(new Vector2(x0, y1));
                     }
+            });
+            GlMat.SetFloat("_Opacity", alpha); GlMat.SetPass(0);
+            try {
+                if (occupiedTiles == null) DrawTile(Vector2Int.zero);
+                else foreach (var tile in occupiedTiles) DrawTile(tile);
             }
-            GL.End();
+            finally { GlMat.SetFloat("_Opacity", 1); GlMat.SetPass(0); }
+            void DrawTile(Vector2Int tile) => Graphics.DrawMeshNow(batch, UvPreviewGeometry.Matrix(ox + tile.x * sz, oy - tile.y * sz, sz));
         }
 
         void GlUvColorBg(float ox, float oy, float sz, float alpha, HashSet<Vector2Int> tiles)
@@ -893,7 +917,21 @@ namespace SashaRX.UnityMeshLab
             GL.End();
         }
 
-        void InvalidateInspection(Mesh mesh) { ClearInspectionCache(); ClearFrameCaches(); }
+        void InvalidateInspection(Mesh mesh)
+        {
+            if (mesh) {
+                int id = mesh.GetInstanceID();
+                foreach (var ctx in previewContexts) {
+                    ++ctx.PreviewCacheVersion;
+                    ctx.PreviewBvhCache.Remove(id); ctx.Uv0ShellMapCache.Remove(id); ctx.UvPreviewShellCache.Clear();
+                    for (int channel = 0; channel < 8; ++channel) {
+                        long key = ((long)id << 8) ^ (uint)channel;
+                        ctx.PreviewShellDataCache.Remove(key); ctx.UvBoundaryEdgeCache.Remove(key); ctx.OccupiedTilesPerMesh.Remove(key);
+                    }
+                }
+            }
+            ClearInspectionCache(); ClearFrameCaches(); shellColors.Dispose();
+        }
         internal void ClearInspectionCache() => inspectionColors.Clear();
 
         void GlMaterialFill(float ox, float oy, float sz, Mesh mesh, MeshEntry entry, Vector2[] layout)
@@ -950,14 +988,15 @@ namespace SashaRX.UnityMeshLab
                 colors = MeshViewport3D.EncodeColors(mesh, InspectionShading);
                 inspectionColors[key] = colors;
             }
-            GL.Begin(GL.TRIANGLES);
-            foreach (int vertex in triangles) {
-                if (vertex < 0 || vertex >= uv.Length) continue;
-                var color = colors != null ? (Color)colors[vertex] : new Color(.72f, .72f, .72f);
-                color.a = 1;
-                GL.Color(color); GL.Vertex3(ox + uv[vertex].x * sz, oy + (1 - uv[vertex].y) * sz, 0);
-            }
-            GL.End();
+            DrawGeometry(uv, mesh, "Attribute", (triangles, InspectionShading, colors), MeshTopology.Triangles, ox, oy, sz, batch =>
+            {
+                foreach (int vertex in triangles) {
+                    if (vertex < 0 || vertex >= uv.Length) continue;
+                    var color = colors != null ? (Color)colors[vertex] : new Color(.72f, .72f, .72f);
+                    color.a = 1;
+                    batch.SetColor(color); batch.Vertex(uv[vertex]);
+                }
+            });
         }
 
         public void GlFillSh(UvToolContext ctx, float ox, float oy, float sz, Mesh mesh, int fN, int uN, MeshEntry entry, int hoverShellId, int selectedShellId, Vector2[] uvOverride = null)
@@ -967,30 +1006,30 @@ namespace SashaRX.UnityMeshLab
             var uv = uvOverride ?? cache.uvs;
             var t = cache.triangles;
 
-            int tot=0, b=0;
-            GL.Begin(GL.TRIANGLES);
-            foreach (var s in cache.shells)
+            var keys = shellColors.Get(ctx, mesh, cache, entry, out _);
+            bool solid = CurrentPreviewMode == PreviewMode.Shells3D;
+            int tot = 0;
+            DrawGeometry(uv, (object)entry ?? mesh, "Shell", (cache, keys, ctx.PreviewUvChannel, solid, selectedShellId, uN, fN), MeshTopology.Triangles, ox, oy, sz, batch =>
             {
-                if (tot>=MAX_TRI) break;
-                int colorKey = GetShellColorKey(ctx, s, entry);
-                Color c = pal[UvHashUtil.NonNegativeColorKey(colorKey) % pal.Length];
-                if (s.shellId == selectedShellId)
-                    c = Color.Lerp(c, Color.white, 0.45f);
-                c.a = FillAlpha;
-                if (CurrentPreviewMode == PreviewMode.Shells3D) c.a = 1f;
-                else if (s.shellId == selectedShellId) c.a = Mathf.Clamp01(FillAlpha * 1.85f);
-                GL.Color(c);
-                foreach (int f in s.faceIndices)
+                foreach (var s in cache.shells)
                 {
                     if (tot>=MAX_TRI) break;
-                    int a0=t[f*3],a1=t[f*3+1],a2=t[f*3+2];
-                    if (!TOk(uv,uN,a0,a1,a2)) continue;
-                    Vx(ox,oy,sz,uv[a0]); Vx(ox,oy,sz,uv[a1]); Vx(ox,oy,sz,uv[a2]);
-                    tot++; b++; if (b>=BATCH){GL.End();GL.Begin(GL.TRIANGLES);GL.Color(c);b=0;}
+                    int colorKey = keys != null && keys.TryGetValue(s.shellId, out int mapped) ? mapped : s.shellId;
+                    Color c = pal[UvHashUtil.NonNegativeColorKey(colorKey) % pal.Length];
+                    if (s.shellId == selectedShellId)
+                        c = Color.Lerp(c, Color.white, 0.45f);
+                    c.a = !solid && s.shellId == selectedShellId ? 1.85f : 1f;
+                    batch.SetColor(c);
+                    foreach (int f in s.faceIndices)
+                    {
+                        if (tot>=MAX_TRI) break;
+                        int a0=t[f*3],a1=t[f*3+1],a2=t[f*3+2];
+                        if (!TOk(uv,uN,a0,a1,a2)) continue;
+                        batch.Vertex(uv[a0]); batch.Vertex(uv[a1]); batch.Vertex(uv[a2]);
+                        tot++;
+                    }
                 }
-            }
-            GL.End();
-
+            }, solid ? 1f : FillAlpha);
         }
 
         void DrawSpotOutlines(UvToolContext ctx, List<ValueTuple<Mesh, MeshEntry, int>> draws, float x, float y, float size)
@@ -1008,47 +1047,52 @@ namespace SashaRX.UnityMeshLab
 
         public void GlFillSt(float ox, float oy, float sz, Vector2[] uv, int[] t, int fN, int uN, TriangleStatus[] st)
         {
-            int tot=0,b=0; GL.Begin(GL.TRIANGLES);
-            for (int f=0; f<fN&&tot<MAX_TRI; f++)
+            int tot = 0;
+            DrawGeometry(uv, t, "Status", (st, fN, uN), MeshTopology.Triangles, ox, oy, sz, batch =>
             {
-                int a0=t[f*3],a1=t[f*3+1],a2=t[f*3+2];
-                if (!TOk(uv,uN,a0,a1,a2)) continue;
-                GL.Color(f<st.Length ? SC(st[f]) : cAccept);
-                Vx(ox,oy,sz,uv[a0]); Vx(ox,oy,sz,uv[a1]); Vx(ox,oy,sz,uv[a2]);
-                tot++; b++; if (b>=BATCH){GL.End();GL.Begin(GL.TRIANGLES);b=0;}
-            }
-            GL.End();
+                for (int f=0; f<fN&&tot<MAX_TRI; f++)
+                {
+                    int a0=t[f*3],a1=t[f*3+1],a2=t[f*3+2];
+                    if (!TOk(uv,uN,a0,a1,a2)) continue;
+                    batch.SetColor(f<st.Length ? SC(st[f]) : cAccept);
+                    batch.Vertex(uv[a0]); batch.Vertex(uv[a1]); batch.Vertex(uv[a2]);
+                    tot++;
+                }
+            });
         }
 
         public void GlBdr(float ox, float oy, float sz, Vector2[] uv, int[] t, int fN, int uN, HashSet<int> bp)
         {
-            int b=0; Color c=new Color(1f,.3f,0f,.35f);
-            GL.Begin(GL.TRIANGLES); GL.Color(c);
-            foreach (int f in bp)
+            Color c=new Color(1f,.3f,0f,.35f);
+            DrawGeometry(uv, t, "Transfer border", (bp, bp.Count, fN, uN), MeshTopology.Triangles, ox, oy, sz, batch =>
             {
-                if (f>=fN) continue;
-                int a0=t[f*3],a1=t[f*3+1],a2=t[f*3+2];
-                if (!TOk(uv,uN,a0,a1,a2)) continue;
-                Vx(ox,oy,sz,uv[a0]); Vx(ox,oy,sz,uv[a1]); Vx(ox,oy,sz,uv[a2]);
-                b++; if (b>=BATCH){GL.End();GL.Begin(GL.TRIANGLES);GL.Color(c);b=0;}
-            }
-            GL.End();
+                batch.SetColor(c);
+                foreach (int f in bp)
+                {
+                    if (f>=fN) continue;
+                    int a0=t[f*3],a1=t[f*3+1],a2=t[f*3+2];
+                    if (!TOk(uv,uN,a0,a1,a2)) continue;
+                    batch.Vertex(uv[a0]); batch.Vertex(uv[a1]); batch.Vertex(uv[a2]);
+                }
+            });
         }
 
         public void GlWr(float ox, float oy, float sz, Vector2[] uv, int[] t, int fN, int uN)
         {
-            int tot=0,b=0; Color c=new Color(.3f,.8f,1f,.35f);
-            GL.Begin(GL.LINES); GL.Color(c);
-            for (int f=0; f<fN&&tot<MAX_TRI; f++)
+            int tot = 0; Color c=new Color(.3f,.8f,1f,.35f);
+            DrawGeometry(uv, t, "Wire", (fN, uN), MeshTopology.Lines, ox, oy, sz, batch =>
             {
-                int a0=t[f*3],a1=t[f*3+1],a2=t[f*3+2];
-                if (!TOk(uv,uN,a0,a1,a2)) continue;
-                Vx(ox,oy,sz,uv[a0]); Vx(ox,oy,sz,uv[a1]);
-                Vx(ox,oy,sz,uv[a1]); Vx(ox,oy,sz,uv[a2]);
-                Vx(ox,oy,sz,uv[a2]); Vx(ox,oy,sz,uv[a0]);
-                tot++; b++; if (b>=BATCH){GL.End();GL.Begin(GL.LINES);GL.Color(c);b=0;}
-            }
-            GL.End();
+                batch.SetColor(c);
+                for (int f=0; f<fN&&tot<MAX_TRI; f++)
+                {
+                    int a0=t[f*3],a1=t[f*3+1],a2=t[f*3+2];
+                    if (!TOk(uv,uN,a0,a1,a2)) continue;
+                    batch.Vertex(uv[a0]); batch.Vertex(uv[a1]);
+                    batch.Vertex(uv[a1]); batch.Vertex(uv[a2]);
+                    batch.Vertex(uv[a2]); batch.Vertex(uv[a0]);
+                    tot++;
+                }
+            });
         }
 
         public void GlUvBoundary(UvToolContext ctx, float ox, float oy, float sz, Mesh mesh, Vector2[] uv, int[] tri, int uN)
@@ -1056,16 +1100,17 @@ namespace SashaRX.UnityMeshLab
             if (mesh == null || uv == null || tri == null || tri.Length < 3) return;
             var pairs = GetPreviewBoundary(ctx, mesh, ctx.PreviewUvChannel);
             if (pairs == null || pairs.Length == 0) return;
-            GL.Begin(GL.LINES);
-            GL.Color(ViewportHighlight.Border);
-            for (int i = 0; i + 1 < pairs.Length; i += 2)
+            DrawGeometry(uv, tri, "Boundary", (pairs, uN), MeshTopology.Lines, ox, oy, sz, batch =>
             {
-                int a = pairs[i], b = pairs[i + 1];
-                if (a < 0 || b < 0 || a >= uN || b >= uN) continue;
-                if (!UOk(uv[a]) || !UOk(uv[b])) continue;
-                Vx(ox, oy, sz, uv[a]); Vx(ox, oy, sz, uv[b]);
-            }
-            GL.End();
+                batch.SetColor(ViewportHighlight.Border);
+                for (int i = 0; i + 1 < pairs.Length; i += 2)
+                {
+                    int a = pairs[i], b = pairs[i + 1];
+                    if (a < 0 || b < 0 || a >= uN || b >= uN) continue;
+                    if (!UOk(uv[a]) || !UOk(uv[b])) continue;
+                    batch.Vertex(uv[a]); batch.Vertex(uv[b]);
+                }
+            });
         }
 
         public void GlOutlineShell(float ox, float oy, float sz, Vector2[] uv, int[] t, int uN, PreviewShellData cache, int shellId, Color color)
@@ -1076,98 +1121,100 @@ namespace SashaRX.UnityMeshLab
         {
             if (cache == null || cache.shellById == null) return;
             if (!cache.shellById.TryGetValue(shellId, out var shell)) return;
-            GL.Begin(GL.LINES);
-            GL.Color(color);
-            foreach (int fi in shell.faceIndices)
+            var transform = ctx != null && CurrentPreviewMode == PreviewMode.Lightmap && ctx.PreviewUvChannel == 1 && entry?.renderer != null && entry.renderer.lightmapIndex >= 0 ? entry.renderer.lightmapScaleOffset : new Vector4(1, 1, 0, 0);
+            DrawGeometry(uv, (object)entry ?? cache, "Outline " + color.ToString(), (cache, shellId, color, uN, transform), MeshTopology.Lines, ox, oy, sz, batch =>
             {
-                int a0=t[fi*3],a1=t[fi*3+1],a2=t[fi*3+2];
-                if (!TOk(uv,uN,a0,a1,a2)) continue;
-                Vector2 p0 = ctx == null ? uv[a0] : DisplayUv(ctx, entry, uv[a0]);
-                Vector2 p1 = ctx == null ? uv[a1] : DisplayUv(ctx, entry, uv[a1]);
-                Vector2 p2 = ctx == null ? uv[a2] : DisplayUv(ctx, entry, uv[a2]);
-                Vx(ox,oy,sz,p0); Vx(ox,oy,sz,p1);
-                Vx(ox,oy,sz,p1); Vx(ox,oy,sz,p2);
-                Vx(ox,oy,sz,p2); Vx(ox,oy,sz,p0);
-            }
-            GL.End();
+                batch.SetColor(color);
+                foreach (int fi in shell.faceIndices)
+                {
+                    int a0=t[fi*3],a1=t[fi*3+1],a2=t[fi*3+2];
+                    if (!TOk(uv,uN,a0,a1,a2)) continue;
+                    Vector2 p0 = new Vector2(uv[a0].x * transform.x + transform.z, uv[a0].y * transform.y + transform.w);
+                    Vector2 p1 = new Vector2(uv[a1].x * transform.x + transform.z, uv[a1].y * transform.y + transform.w);
+                    Vector2 p2 = new Vector2(uv[a2].x * transform.x + transform.z, uv[a2].y * transform.y + transform.w);
+                    batch.Vertex(p0); batch.Vertex(p1);
+                    batch.Vertex(p1); batch.Vertex(p2);
+                    batch.Vertex(p2); batch.Vertex(p0);
+                }
+            });
         }
 
         public void GlFillShellMatch(float ox, float oy, float sz, Vector2[] uv, int[] t, int fN, int uN, int[] vertShellMap)
         {
             if (vertShellMap == null) return;
-            int tot = 0, b = 0;
-            GL.Begin(GL.TRIANGLES);
-            for (int f = 0; f < fN && tot < MAX_TRI; f++)
+            int tot = 0;
+            DrawGeometry(uv, t, "Shell match", (vertShellMap, fN, uN), MeshTopology.Triangles, ox, oy, sz, batch =>
             {
-                int a0 = t[f*3], a1 = t[f*3+1], a2 = t[f*3+2];
-                if (!TOk(uv, uN, a0, a1, a2)) continue;
-                int sh = UvTopology.VoteBestShell(vertShellMap, a0, a1, a2);
-                Color nc = sh < 0
-                    ? new Color(0.3f, 0.3f, 0.3f, FillAlpha)
-                    : new Color(pal[sh % pal.Length].r, pal[sh % pal.Length].g, pal[sh % pal.Length].b, FillAlpha * 1.5f);
-                GL.Color(nc);
-                Vx(ox, oy, sz, uv[a0]); Vx(ox, oy, sz, uv[a1]); Vx(ox, oy, sz, uv[a2]);
-                tot++; b++;
-                if (b >= BATCH) { GL.End(); GL.Begin(GL.TRIANGLES); b = 0; }
-            }
-            GL.End();
+                for (int f = 0; f < fN && tot < MAX_TRI; f++)
+                {
+                    int a0 = t[f*3], a1 = t[f*3+1], a2 = t[f*3+2];
+                    if (!TOk(uv, uN, a0, a1, a2)) continue;
+                    int sh = UvTopology.VoteBestShell(vertShellMap, a0, a1, a2);
+                    Color nc = sh < 0
+                        ? new Color(0.3f, 0.3f, 0.3f, 1)
+                        : new Color(pal[sh % pal.Length].r, pal[sh % pal.Length].g, pal[sh % pal.Length].b, 1.5f);
+                    batch.SetColor(nc);
+                    batch.Vertex(uv[a0]); batch.Vertex(uv[a1]); batch.Vertex(uv[a2]);
+                    tot++;
+                }
+            }, FillAlpha);
         }
 
         public void GlFillValidation(float ox, float oy, float sz, Vector2[] uv, int[] t, int fN, int uN, TransferValidator.TriIssue[] perTri)
         {
             if (perTri == null) return;
             var mask = ValidationFilterMask;
-            int tot = 0, b = 0;
-            GL.Begin(GL.TRIANGLES);
-            for (int f = 0; f < fN && tot < MAX_TRI; f++)
+            int tot = 0;
+            DrawGeometry(uv, t, "Validation", (perTri, mask, fN, uN), MeshTopology.Triangles, ox, oy, sz, batch =>
             {
-                int a0 = t[f*3], a1 = t[f*3+1], a2 = t[f*3+2];
-                if (!TOk(uv, uN, a0, a1, a2)) continue;
-                var fl = (f < perTri.Length) ? perTri[f] : TransferValidator.TriIssue.None;
-                if (mask != TransferValidator.TriIssue.None && (fl & mask) == 0) continue;
-                Color nc;
-                if      ((fl & TransferValidator.TriIssue.ZeroArea) != 0)    nc = cValZero;
-                else if ((fl & TransferValidator.TriIssue.Stretched) != 0)   nc = cValStretch;
-                else if ((fl & TransferValidator.TriIssue.Overlap) != 0)     nc = cValOverlap;
-                else if ((fl & TransferValidator.TriIssue.OutOfBounds) != 0) nc = cValOOB;
-                else if ((fl & TransferValidator.TriIssue.TexelDensity) != 0)nc = cValTexel;
-                else if ((fl & TransferValidator.TriIssue.Inverted) != 0)    nc = cValInverted;
-                else nc = cValClean;
-                GL.Color(nc);
-                Vx(ox, oy, sz, uv[a0]); Vx(ox, oy, sz, uv[a1]); Vx(ox, oy, sz, uv[a2]);
-                tot++; b++;
-                if (b >= BATCH) { GL.End(); GL.Begin(GL.TRIANGLES); b = 0; }
-            }
-            GL.End();
+                for (int f = 0; f < fN && tot < MAX_TRI; f++)
+                {
+                    int a0 = t[f*3], a1 = t[f*3+1], a2 = t[f*3+2];
+                    if (!TOk(uv, uN, a0, a1, a2)) continue;
+                    var fl = (f < perTri.Length) ? perTri[f] : TransferValidator.TriIssue.None;
+                    if (mask != TransferValidator.TriIssue.None && (fl & mask) == 0) continue;
+                    Color nc;
+                    if      ((fl & TransferValidator.TriIssue.ZeroArea) != 0)    nc = cValZero;
+                    else if ((fl & TransferValidator.TriIssue.Stretched) != 0)   nc = cValStretch;
+                    else if ((fl & TransferValidator.TriIssue.Overlap) != 0)     nc = cValOverlap;
+                    else if ((fl & TransferValidator.TriIssue.OutOfBounds) != 0) nc = cValOOB;
+                    else if ((fl & TransferValidator.TriIssue.TexelDensity) != 0)nc = cValTexel;
+                    else if ((fl & TransferValidator.TriIssue.Inverted) != 0)    nc = cValInverted;
+                    else nc = cValClean;
+                    batch.SetColor(nc);
+                    batch.Vertex(uv[a0]); batch.Vertex(uv[a1]); batch.Vertex(uv[a2]);
+                    tot++;
+                }
+            });
         }
 
         public void GlFillValidationOverlay(float ox, float oy, float sz, Vector2[] uv, int[] t, int fN, int uN, TransferValidator.TriIssue[] perTri)
         {
             if (perTri == null) return;
             var mask = ValidationFilterMask;
-            int tot = 0, b = 0;
-            GL.Begin(GL.TRIANGLES);
-            for (int f = 0; f < fN && tot < MAX_TRI; f++)
+            int tot = 0;
+            DrawGeometry(uv, t, "Validation overlay", (perTri, mask, fN, uN), MeshTopology.Triangles, ox, oy, sz, batch =>
             {
-                var fl = (f < perTri.Length) ? perTri[f] : TransferValidator.TriIssue.None;
-                if (fl == TransferValidator.TriIssue.None) continue;
-                if (mask != TransferValidator.TriIssue.None && (fl & mask) == 0) continue;
-                int a0 = t[f*3], a1 = t[f*3+1], a2 = t[f*3+2];
-                if (!TOk(uv, uN, a0, a1, a2)) continue;
-                Color nc;
-                if      ((fl & TransferValidator.TriIssue.ZeroArea) != 0)    nc = cValZero;
-                else if ((fl & TransferValidator.TriIssue.Stretched) != 0)   nc = cValStretch;
-                else if ((fl & TransferValidator.TriIssue.Overlap) != 0)     nc = cValOverlap;
-                else if ((fl & TransferValidator.TriIssue.OutOfBounds) != 0) nc = cValOOB;
-                else if ((fl & TransferValidator.TriIssue.TexelDensity) != 0)nc = cValTexel;
-                else if ((fl & TransferValidator.TriIssue.Inverted) != 0)    nc = cValInverted;
-                else continue;
-                GL.Color(nc);
-                Vx(ox, oy, sz, uv[a0]); Vx(ox, oy, sz, uv[a1]); Vx(ox, oy, sz, uv[a2]);
-                tot++; b++;
-                if (b >= BATCH) { GL.End(); GL.Begin(GL.TRIANGLES); b = 0; }
-            }
-            GL.End();
+                for (int f = 0; f < fN && tot < MAX_TRI; f++)
+                {
+                    var fl = (f < perTri.Length) ? perTri[f] : TransferValidator.TriIssue.None;
+                    if (fl == TransferValidator.TriIssue.None) continue;
+                    if (mask != TransferValidator.TriIssue.None && (fl & mask) == 0) continue;
+                    int a0 = t[f*3], a1 = t[f*3+1], a2 = t[f*3+2];
+                    if (!TOk(uv, uN, a0, a1, a2)) continue;
+                    Color nc;
+                    if      ((fl & TransferValidator.TriIssue.ZeroArea) != 0)    nc = cValZero;
+                    else if ((fl & TransferValidator.TriIssue.Stretched) != 0)   nc = cValStretch;
+                    else if ((fl & TransferValidator.TriIssue.Overlap) != 0)     nc = cValOverlap;
+                    else if ((fl & TransferValidator.TriIssue.OutOfBounds) != 0) nc = cValOOB;
+                    else if ((fl & TransferValidator.TriIssue.TexelDensity) != 0)nc = cValTexel;
+                    else if ((fl & TransferValidator.TriIssue.Inverted) != 0)    nc = cValInverted;
+                    else continue;
+                    batch.SetColor(nc);
+                    batch.Vertex(uv[a0]); batch.Vertex(uv[a1]); batch.Vertex(uv[a2]);
+                    tot++;
+                }
+            });
         }
 
         // ════════════════════════════════════════════════════════════
@@ -1260,6 +1307,7 @@ namespace SashaRX.UnityMeshLab
                     var uv = RdUv(mesh, request.channel);
                     var triangles = mesh.triangles;
                     var vertices = mesh.vertices;
+                    if (cachedUvs.TryGetValue(request.key, out var previousUv)) geometry.InvalidateUv(previousUv);
                     cachedUvs[request.key] = uv;
                     cachedTriangles[mesh.GetInstanceID()] = triangles;
                     activePreview = request;
@@ -1287,12 +1335,14 @@ namespace SashaRX.UnityMeshLab
                 descriptors = new ShellDescriptor[shells.shells.Count];
                 for (int i = 0; i < shells.shells.Count; ++i) {
                     var shell = shells.shells[i];
-                    colors[shell.shellId] = ShellBBoxHash(shell, uv);
+                    colors[shell.shellId] = shell.shellId;
                     descriptors[i] = shell.descriptor;
                     foreach (int vertex in shell.vertexIndices) if (vertex >= 0 && vertex < vertexShells.Length) vertexShells[vertex] = i;
                 }
             }
-            if (shells != null) shells.colorKeys = colors;
+            if (shells != null) {
+                shells.colorKeys = colors; shells.positions = vertices;
+            }
             return new PreviewResult { shells = shells, tiles = tiles, colors = colors, vertexShells = vertexShells, descriptors = descriptors,
                 boundaries = UvTopology.UvBoundaryEdgePairs(vertices, uv, triangles),
                 bvh = new TriangleBvh(vertices, triangles) };
@@ -1300,6 +1350,7 @@ namespace SashaRX.UnityMeshLab
 
         public PreviewShellData GetPreviewShellCache(UvToolContext ctx, Mesh mesh, int channel)
         {
+            previewContexts.Add(ctx);
             if (mesh == null) return null;
             long key = ((long)mesh.GetInstanceID() << 8) ^ (uint)channel;
             if (ctx.PreviewShellDataCache.TryGetValue(key, out var cached)) return cached;
@@ -1333,52 +1384,36 @@ namespace SashaRX.UnityMeshLab
             return tiles;
         }
 
-        /// <summary>
-        /// Compute a UV bounding-box hash for the shell — stable across LODs because
-        /// UV2 is transferred from source, and the bbox corners (min/max) are determined
-        /// by extreme vertices which survive simplification, unlike the centroid which
-        /// shifts when interior vertices are removed non-uniformly.
-        /// </summary>
-        static int ShellBBoxHash(UvShell shell, Vector2[] uvs)
-        {
-            if (shell?.vertexIndices == null || shell.vertexIndices.Count == 0 || uvs == null)
-                return shell?.shellId ?? 0;
-            Vector2 mn = new Vector2(float.MaxValue, float.MaxValue);
-            Vector2 mx = new Vector2(float.MinValue, float.MinValue);
-            foreach (int vi in shell.vertexIndices)
-            {
-                if (vi < 0 || vi >= uvs.Length) continue;
-                var uv = uvs[vi];
-                if (uv.x < mn.x) mn.x = uv.x; if (uv.y < mn.y) mn.y = uv.y;
-                if (uv.x > mx.x) mx.x = uv.x; if (uv.y > mx.y) mx.y = uv.y;
-            }
-            // Hash bbox center — quantize at 100x for robustness
-            Vector2 center = (mn + mx) * 0.5f;
-            int qx = Mathf.RoundToInt(center.x * 100f);
-            int qy = Mathf.RoundToInt(center.y * 100f);
-            // Include bbox size to distinguish overlapping shells of different sizes
-            int qw = Mathf.RoundToInt((mx.x - mn.x) * 100f);
-            int qh = Mathf.RoundToInt((mx.y - mn.y) * 100f);
-            int hash = unchecked((qx * 73856093) ^ (qy * 19349663) ^ (qw * 83492791) ^ (qh * 41729381));
-            return UvHashUtil.NonNegativeColorKey(hash);
-        }
-
         public int GetShellColorKey(UvToolContext ctx, UvShell shell, MeshEntry entry)
         {
-            int meshId = 0;
             var mesh = entry != null ? DisplayMesh(ctx, entry) : null;
-            if (mesh != null) meshId = mesh.GetInstanceID();
-            // Each UV channel owns its colors together with its shell topology.
-            // Switching back to a cached channel must not reuse another channel's keys.
-            long cacheKey = ((long)meshId << 8) ^ (uint)ctx.PreviewUvChannel;
-            if (ctx.PreviewShellDataCache.TryGetValue(cacheKey, out var cached) &&
-                cached.colorKeys != null && cached.colorKeys.TryGetValue(shell.shellId, out int cc)) return cc;
+            var data = mesh ? GetPreviewShellCache(ctx, mesh, ctx.PreviewUvChannel) : null;
+            var keys = data != null ? shellColors.Get(ctx, mesh, data, entry, out _) : null;
+            return keys != null && keys.TryGetValue(shell.shellId, out int key) ? key : shell.shellId;
+        }
 
-            // Always use UV bounding-box hash for maximum cross-LOD consistency.
-            // Previous strategies (shellTransferResult, UV0 shell map) produced
-            // extraction-order-dependent keys that changed between LODs.
-            if (mesh) QueuePreview(ctx, mesh, ctx.PreviewUvChannel);
-            return shell.shellId;
+        internal int[] FaceColorKeys(UvToolContext ctx, Mesh mesh, MeshEntry entry)
+        {
+            bool immediate = mesh.vertexCount <= 2048;
+            long key = ((long)mesh.GetInstanceID() << 8) ^ (uint)ctx.PreviewUvChannel;
+            if (!ctx.PreviewShellDataCache.TryGetValue(key, out var data) && immediate) {
+                // Retain the immediate scene-preview behavior for small meshes.
+                // Dense meshes still prepare outside the paint loop on workers.
+                data = PreparePreview(mesh.vertices, RdUvCached(mesh, ctx.PreviewUvChannel), mesh.triangles).shells;
+                previewContexts.Add(ctx); ctx.PreviewShellDataCache[key] = data;
+            }
+            if (!immediate) data = GetPreviewShellCache(ctx, mesh, ctx.PreviewUvChannel);
+            if (data == null) {
+                return ctx.PreviewShellDataCache.ContainsKey(key) ? Array.Empty<int>() : null;
+            }
+            var keys = shellColors.Get(ctx, mesh, data, entry, out bool ready, immediate);
+            if (!ready) return null;
+            var result = new int[data.triangles.Length / 3];
+            foreach (var shell in data.shells) {
+                int colorKey = keys != null && keys.TryGetValue(shell.shellId, out int mapped) ? mapped : shell.shellId;
+                foreach (int face in shell.faceIndices) result[face] = colorKey;
+            }
+            return result;
         }
 
         public (int[] vertToShell, ShellDescriptor[] descs) GetUv0ShellMap(UvToolContext ctx, Mesh mesh)
@@ -1396,55 +1431,23 @@ namespace SashaRX.UnityMeshLab
 
         public bool TryPickUvHit(UvToolContext ctx, Vector2 uv, ref ShellUvHit hit)
         {
-            var ee = FilteredEntries(ctx);
-            int checkedTri = 0;
-            bool fallbackAssigned = false;
-            ShellUvHit fallback = default;
-            foreach (var entry in ee)
-            {
-                Mesh mesh = DisplayMesh(ctx, entry);
-                if (mesh == null) continue;
-                var cache = GetPreviewShellCache(ctx, mesh, ctx.PreviewUvChannel);
-                if (cache == null || cache.shells == null) continue;
-                if (mesh.GetInstanceID() == lastHitMeshId && lastHitShellId >= 0)
-                    if (TryPickInShell(entry, cache, uv, lastHitShellId, ref checkedTri, ref hit)) return true;
-                for (int si = 0; si < cache.shells.Count; si++)
-                {
-                    var sb = cache.shellBounds[si];
-                    if (sb.size == Vector3.zero) continue;
-                    if (uv.x < sb.min.x || uv.x > sb.max.x || uv.y < sb.min.y || uv.y > sb.max.y) continue;
-                    int shellId = cache.shells[si].shellId;
-                    if (TryPickInShell(entry, cache, uv, shellId, ref checkedTri, ref hit)) return true;
-                    if (!fallbackAssigned)
-                    {
-                        fallbackAssigned = true;
-                        fallback = new ShellUvHit { meshEntry = entry, shellId = shellId, faceIndex = -1, uvHit = uv, barycentric = new Vector3(1f/3f, 1f/3f, 1f/3f) };
-                    }
+            foreach (var entry in FilteredEntries(ctx)) {
+                var mesh = DisplayMesh(ctx, entry);
+                if (!mesh) continue;
+                var data = GetPreviewShellCache(ctx, mesh, ctx.PreviewUvChannel);
+                if (data == null) continue;
+                if (data.uvBvh == null) { QueuePreview(ctx, mesh, ctx.PreviewUvChannel); continue; }
+                var point = uv;
+                if (CurrentPreviewMode == PreviewMode.Lightmap && ctx.PreviewUvChannel == 1 && entry.renderer && entry.renderer.lightmapIndex >= 0) {
+                    var transform = entry.renderer.lightmapScaleOffset;
+                    if (Mathf.Abs(transform.x) < 1e-8f || Mathf.Abs(transform.y) < 1e-8f) continue;
+                    point = new Vector2((point.x - transform.z) / transform.x, (point.y - transform.w) / transform.y);
                 }
-                if (checkedTri >= TRI_PICK_BUDGET) break;
-            }
-            if (fallbackAssigned) { hit = fallback; var m = DisplayMesh(ctx, fallback.meshEntry); lastHitMeshId = m != null ? m.GetInstanceID() : -1; lastHitShellId = fallback.shellId; return true; }
-            return false;
-        }
-
-        bool TryPickInShell(MeshEntry entry, PreviewShellData cache, Vector2 uv, int shellId, ref int checkedTri, ref ShellUvHit hit)
-        {
-            if (!cache.shellById.TryGetValue(shellId, out var shell)) return false;
-            foreach (int fi in shell.faceIndices)
-            {
-                if (checkedTri++ >= TRI_PICK_BUDGET) return false;
-                int t0 = fi * 3;
-                if (t0 + 2 >= cache.triangles.Length) continue;
-                int a = cache.triangles[t0], b = cache.triangles[t0+1], c = cache.triangles[t0+2];
-                if (!TOk(cache.uvs, cache.uvs.Length, a, b, c)) continue;
-                if (TryBarycentric(uv, cache.uvs[a], cache.uvs[b], cache.uvs[c], out Vector3 bary))
-                {
-                    hit = new ShellUvHit { meshEntry = entry, shellId = shellId, faceIndex = fi, uvHit = uv, barycentric = bary };
-                    var m = entry.originalMesh;
-                    lastHitMeshId = m != null ? m.GetInstanceID() : -1;
-                    lastHitShellId = shellId;
-                    return true;
-                }
+                var nearest = data.uvBvh.FindNearest(point);
+                if (nearest.faceIndex < 0 || nearest.distSq > 1e-10f || !data.faceToShell.TryGetValue(nearest.faceIndex, out int shell)) continue;
+                hit = new ShellUvHit { meshEntry = entry, shellId = shell, faceIndex = nearest.faceIndex,
+                    uvHit = point, barycentric = new Vector3(nearest.u, nearest.v, nearest.w) };
+                return true;
             }
             return false;
         }

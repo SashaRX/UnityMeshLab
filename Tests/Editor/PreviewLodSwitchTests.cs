@@ -8,6 +8,7 @@ using System.Reflection;
 using NUnit.Framework;
 using UnityEngine;
 using UnityEngine.TestTools;
+using UnityEditor;
 using Object = UnityEngine.Object;
 
 namespace SashaRX.UnityMeshLab.Tests
@@ -1262,6 +1263,27 @@ namespace SashaRX.UnityMeshLab.Tests
             SwitchLod(0);
             Assert.That(ShowsChecker(lod0), Is.True);
             Assert.That(ShowsChecker(lod1), Is.False);
+        }
+
+        [UnityTest]
+        public IEnumerator ShellPreviewCompletesWhenAnotherVisibleMeshLacksTheChannel()
+        {
+            var group = Group(lod1HasUv1: true, out var lod0, out var lod1);
+            var missing = Lod(group.transform, "Other_LOD0", Quad("Other_LOD0", false));
+            group.SetLODs(new[] { new LOD(.5f, new Renderer[] { lod0, missing }), new LOD(.1f, new Renderer[] { lod1 }) });
+            Open(group);
+            var canvas = Get<UvCanvasView>(hub, "canvas");
+            var original = lod0.GetComponent<MeshFilter>().sharedMesh;
+            var missingMaterial = missing.sharedMaterial;
+            Call(hub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Shells3D);
+            double deadline = EditorApplication.timeSinceStartup + 10;
+            while (lod0.GetComponent<MeshFilter>().sharedMesh == original && EditorApplication.timeSinceStartup < deadline) {
+                canvas.PollPreviewJobs(); yield return null;
+            }
+            Assert.AreNotSame(original, lod0.GetComponent<MeshFilter>().sharedMesh, "a missing channel must not keep the complete cohort pending");
+            Assert.AreSame(missingMaterial, missing.sharedMaterial);
+            Call(hub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Off);
+            Assert.AreSame(original, lod0.GetComponent<MeshFilter>().sharedMesh);
         }
 
         [Test]

@@ -27,7 +27,7 @@ Shader "Hidden/MeshLab/PreviewLines"
             float4 _ViewportSize;
             float _LineWidth;
             struct appdata { float4 vertex : POSITION; float3 end : TEXCOORD1; float2 corner : TEXCOORD0; float4 color : COLOR; };
-            struct v2f { float4 pos : SV_POSITION; float4 segment : TEXCOORD0; float4 color : COLOR; };
+            struct v2f { float4 pos : SV_POSITION; float4 segment : TEXCOORD0; float4 color : COLOR; float segmentLength : TEXCOORD1; };
 
             float2 Pixel(float4 clip)
             {
@@ -46,6 +46,7 @@ Shader "Hidden/MeshLab/PreviewLines"
                 float nearZ = -_ProjectionParams.y;
                 o.color = v.color * _Color;
                 o.segment = 0;
+                o.segmentLength = 0;
                 o.pos = float4(0, 0, 0, 1);
                 // Clip in view space before division by w. An edge passing behind the
                 // eye must not expand into a giant ribbon across the viewport.
@@ -62,15 +63,25 @@ Shader "Hidden/MeshLab/PreviewLines"
                 o.pos = lerp(ca, cb, v.corner.x);
                 float2 expansion = (along * (v.corner.x * 2 - 1) + across * v.corner.y) * radius;
                 o.pos.xy += expansion * (2.0 / _ViewportSize.xy) * o.pos.w;
-                o.segment = float4(Pixel(ca), Pixel(cb));
+                // The segment's orthonormal pixel basis is constant over the ribbon.
+                // Compute it per vertex instead of dividing by length squared in every
+                // blended fragment of a dense wireframe.
+                float2 pixelAlong = along;
+                #if UNITY_UV_STARTS_AT_TOP
+                    pixelAlong.y = -pixelAlong.y;
+                #endif
+                o.segment = float4(Pixel(ca), pixelAlong);
+                o.segmentLength = len * 0.5;
                 return o;
             }
 
             float4 frag(v2f i) : SV_Target
             {
-                float2 ab = i.segment.zw - i.segment.xy;
-                float t = saturate(dot(i.pos.xy - i.segment.xy, ab) / max(dot(ab, ab), 1e-8));
-                float distance = length(i.pos.xy - (i.segment.xy + ab * t));
+                float2 p = i.pos.xy - i.segment.xy;
+                float along = dot(p, i.segment.zw);
+                float cap = max(max(-along, along - i.segmentLength), 0);
+                float across = p.x * i.segment.w - p.y * i.segment.z;
+                float distance = length(float2(cap, across));
                 float coverage = saturate(max(_LineWidth, 1.0) * 0.5 + 0.5 - distance) * saturate(_LineWidth);
                 float alpha = i.color.a * coverage;
                 return float4(i.color.rgb * alpha, alpha);

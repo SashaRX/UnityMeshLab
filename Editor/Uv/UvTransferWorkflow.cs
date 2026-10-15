@@ -338,15 +338,7 @@ namespace SashaRX.UnityMeshLab
             if (uvs == null || tri == null) return;
             int uN = uvs.Length, fN = tri.Length / 3;
 
-            // Lightmap UV transform
-            Vector2[] displayUvs = uvs;
-            if (canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Lightmap && ctx.PreviewUvChannel == 1 && entry.renderer != null && entry.renderer.lightmapIndex >= 0)
-            {
-                var so = entry.renderer.lightmapScaleOffset;
-                displayUvs = new Vector2[uvs.Length];
-                for (int vi = 0; vi < uvs.Length; vi++)
-                    displayUvs[vi] = new Vector2(uvs[vi].x * so.x + so.z, uvs[vi].y * so.y + so.w);
-            }
+            var displayUvs = cv.DisplayUvs(ctx, entry, uvs);
 
             int hoverShellId = canvas.HasHoveredShell && canvas.HoveredShell.meshEntry == entry ? canvas.HoveredShell.shellId : -1;
             int selectedShellId = canvas.HasSelectedShell && canvas.SelectedShell.meshEntry == entry ? canvas.SelectedShell.shellId : -1;

@@ -599,7 +599,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 var uv0 = new ShellColorModelPreview.PreviewShellCache(0).GetOrBuild(mesh);
                 var uv2 = new ShellColorModelPreview.PreviewShellCache(2).GetOrBuild(mesh);
                 Assert.AreEqual(uv0[0], uv0[1], "continuous chart");
-                Assert.AreNotEqual(uv0[0], uv2[0], "shell colour key is taken from the requested channel");
+                CollectionAssert.AreEqual(uv0, uv2, "moving UV bounds must not recolour the same connected islands");
             }
             finally { Object.DestroyImmediate(mesh); }
         }
