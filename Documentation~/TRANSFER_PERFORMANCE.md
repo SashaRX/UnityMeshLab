@@ -247,28 +247,30 @@ is not called. Timing excludes startup/import, final export and saving assets.
 
 | Model / stage | Control median (s) | Reuse median (s) | Control range (s) | Reuse range (s) |
 |---|---:|---:|---:|---:|
-| Kamaz ordinary Forward | 20.736 | 20.763 | 20.694–20.874 | 20.590–20.843 |
-| Kamaz detached preparation | 16.272 | 16.256 | 16.252–16.316 | 16.105–16.273 |
-| Kamaz exclusive Reverse | 21.595 | 21.303 | 21.441–21.621 | 21.259–21.477 |
-| Kamaz preparation + Reverse | 37.893 | 37.516 | 37.693–37.911 | 37.409–37.750 |
-| CementWall ordinary Forward | 1.013 | 1.015 | 1.006–1.037 | 1.000–1.017 |
-| CementWall detached preparation | 0.647 | 0.652 | 0.644–0.655 | 0.647–0.661 |
-| CementWall exclusive Reverse | 2.070 | 2.048 | 2.063–2.074 | 2.027–2.060 |
-| CementWall preparation + Reverse | 2.717 | 2.700 | 2.707–2.729 | 2.687–2.707 |
+| Kamaz ordinary Forward | 20.742 | 21.076 | 20.681–21.551 | 21.018–21.379 |
+| Kamaz detached preparation | 16.229 | 16.210 | 16.136–16.487 | 16.124–16.495 |
+| Kamaz exclusive Reverse | 21.688 | 21.172 | 21.253–22.141 | 20.948–21.377 |
+| Kamaz preparation + Reverse | 37.917 | 37.296 | 37.389–38.629 | 37.158–37.873 |
+| CementWall ordinary Forward | 1.027 | 1.023 | 1.017–1.077 | 1.013–1.032 |
+| CementWall detached preparation | 0.655 | 0.653 | 0.650–0.660 | 0.650–0.659 |
+| CementWall exclusive Reverse | 2.067 | 2.030 | 2.058–2.105 | 2.028–2.039 |
+| CementWall preparation + Reverse | 2.717 | 2.689 | 2.713–2.765 | 2.678–2.692 |
 
-The observed Reverse medians improve by 1.35% / 1.06%; including preparation,
-0.99% / 0.64%. This is a small measured difference with overlapping Kamaz ranges,
-not evidence of a substantial workflow acceleration. Ordinary Forward is
-effectively unchanged. All 150 stable export files match byte for byte, including
+The observed Reverse medians improve by 2.38% / 1.78%; including preparation,
+1.64% / 1.03%. This is a small measured difference with overlapping Kamaz ranges,
+not evidence of a substantial workflow acceleration. Ordinary Forward uses the
+same algorithm; its noisy timings do not establish a gain or regression. All
+150 stable export files match byte for byte, including
 UV coordinates, reports, geometry, atlas dimensions and ancestry; input hashes
 and frames match. All six run XML files execute both required models successfully.
 
-The native input+chart preparation scope falls from 1.279 to 1.085 s on Kamaz and
-17.27 to 1.53 ms on CementWall. This scope includes C# input-buffer construction
+The native input+chart preparation scope falls from 1.423 to 1.078 s on Kamaz and
+17.70 to 1.50 ms on CementWall. This scope includes C# input-buffer construction
 in both arms, unlike the older narrow discovery timer. Its control-only timer
-movement is saved in `control-instrumentation.diff`. Native placement remains
-7.766 / 7.770 s on Kamaz and 1.537 / 1.548 s on CementWall; exact envelope audits
-remain 4.875 / 4.939 s and 0.0427 / 0.0437 s. Nested stage times must not be added.
+movement is saved in `control-instrumentation.diff` of the earlier comparison.
+Native placement remains 7.810 / 7.714 s on Kamaz and 1.532 / 1.534 s on
+CementWall; exact envelope audits remain 4.945 / 4.863 s and 0.0437 / 0.0425 s.
+Nested stage times must not be added.
 
 Earlier artifacts remain distinct. Charts-only reuse in
 `_results~/native-chart-reuse-audit/` retained exact output without a resolved
@@ -277,11 +279,17 @@ stopped after two complete exact pairs: a GPU refactor had dropped cached CPU
 triangle reads and regressed the CPU loop. That loop was restored before these
 final measurements. Its `superseded.json` excludes those timings from conclusions.
 
-Final evidence: `_results~/native-chart-reuse-final/summary.json`, `protocol.json`,
-source hashes, frozen packages, six run XML/log sets and `final-integrity.json`.
-All nine plugin files match the control, and manifest/lock are restored exactly.
-Ordinary Kamaz's previously documented quality defects remain unchanged; reuse
-is not a fix for those defects. The live project was not updated by the benchmark.
+Publication-only evidence: `_results~/native-chart-publication-check/summary.json`,
+`provenance.json`, source hashes, frozen packages, six run XML/log sets and the
+additional broad regression XML: 433 passed, zero failed, 16 optional skips with
+Burst required. This snapshot excludes the experimental GPU code and restores
+the original CPU audit implementation. Its frozen commit is `6ff840aa`; the
+later S3973 correction only adds an outer foreach block. The earlier combined
+cache/GPU comparison in `native-chart-reuse-final` retains its own measurements,
+source hashes and test outcomes. All nine plugin files match the control, and
+manifest/lock are restored exactly. Ordinary Kamaz's previously documented
+quality defects remain unchanged; reuse is not a fix for those defects. The
+live project was not updated by these benchmarks.
 
 ## Replay harness
 
