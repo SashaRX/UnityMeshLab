@@ -224,6 +224,65 @@ Evidence: `_results~/transfer-packing-audit/`, `protocol.json`, `summary.json`,
 source hashes, the frozen control and instrumentation diff, six model-run XML/log
 sets. Manifest and lock were restored byte for byte. All changes are local.
 
+### Native chart and input reuse: final controlled comparison
+
+One resident xatlas context now lives for a final exclusive frozen-family pack.
+Its existing global lease prevents other xatlas callers from replacing prepared
+charts. Changed UV Float32 bits, indices or face materials rebuild the atlas;
+identical operation-owned immutable footprints reuse both charts and their input
+buffers. Preparation failures are not retained. Cancellation/error disposal
+releases native ownership. This uses the existing ABI and package plugins.
+
+Kamaz has 6 hits and 16 chart preparations instead of 22 preparations. CementWall
+has 11 hits and one preparation instead of 12. PackCharts still executes every
+trial (22 / 12); changed precision masks cannot reuse unrelated prepared charts.
+Multiple resident native contexts are not supported by the current singleton
+bridge. No density candidate, packing attempt or quality audit was removed.
+
+The final comparison freezes the preceding quality/shared-prefix/async-Burst/
+PR253 work as its control. It includes no new Intel runtime. Three alternating
+control/candidate pairs run sequentially in headless Unity 6000.2.6f2 using copied
+FBX/import metadata and the preceding 32 tex/m settings. The experimental GPU API
+is not called. Timing excludes startup/import, final export and saving assets.
+
+| Model / stage | Control median (s) | Reuse median (s) | Control range (s) | Reuse range (s) |
+|---|---:|---:|---:|---:|
+| Kamaz ordinary Forward | 20.736 | 20.763 | 20.694–20.874 | 20.590–20.843 |
+| Kamaz detached preparation | 16.272 | 16.256 | 16.252–16.316 | 16.105–16.273 |
+| Kamaz exclusive Reverse | 21.595 | 21.303 | 21.441–21.621 | 21.259–21.477 |
+| Kamaz preparation + Reverse | 37.893 | 37.516 | 37.693–37.911 | 37.409–37.750 |
+| CementWall ordinary Forward | 1.013 | 1.015 | 1.006–1.037 | 1.000–1.017 |
+| CementWall detached preparation | 0.647 | 0.652 | 0.644–0.655 | 0.647–0.661 |
+| CementWall exclusive Reverse | 2.070 | 2.048 | 2.063–2.074 | 2.027–2.060 |
+| CementWall preparation + Reverse | 2.717 | 2.700 | 2.707–2.729 | 2.687–2.707 |
+
+The observed Reverse medians improve by 1.35% / 1.06%; including preparation,
+0.99% / 0.64%. This is a small measured difference with overlapping Kamaz ranges,
+not evidence of a substantial workflow acceleration. Ordinary Forward is
+effectively unchanged. All 150 stable export files match byte for byte, including
+UV coordinates, reports, geometry, atlas dimensions and ancestry; input hashes
+and frames match. All six run XML files execute both required models successfully.
+
+The native input+chart preparation scope falls from 1.279 to 1.085 s on Kamaz and
+17.27 to 1.53 ms on CementWall. This scope includes C# input-buffer construction
+in both arms, unlike the older narrow discovery timer. Its control-only timer
+movement is saved in `control-instrumentation.diff`. Native placement remains
+7.766 / 7.770 s on Kamaz and 1.537 / 1.548 s on CementWall; exact envelope audits
+remain 4.875 / 4.939 s and 0.0427 / 0.0437 s. Nested stage times must not be added.
+
+Earlier artifacts remain distinct. Charts-only reuse in
+`_results~/native-chart-reuse-audit/` retained exact output without a resolved
+whole-solve gain. `_results~/native-chart-buffer-reuse-audit/` was intentionally
+stopped after two complete exact pairs: a GPU refactor had dropped cached CPU
+triangle reads and regressed the CPU loop. That loop was restored before these
+final measurements. Its `superseded.json` excludes those timings from conclusions.
+
+Final evidence: `_results~/native-chart-reuse-final/summary.json`, `protocol.json`,
+source hashes, frozen packages, six run XML/log sets and `final-integrity.json`.
+All nine plugin files match the control, and manifest/lock are restored exactly.
+Ordinary Kamaz's previously documented quality defects remain unchanged; reuse
+is not a fix for those defects. The live project was not updated by the benchmark.
+
 ## Replay harness
 
 The opt-in paired model test records a `performance.samples` list in each

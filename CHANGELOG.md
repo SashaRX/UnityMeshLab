@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Exclusive Reverse packing reuses one operation's native charts and owned input buffers across identical trials, rebuilding them when footprint data changes. Three paired Kamaz/CementWall runs retain exact outputs and show about 1% lower Reverse time; native placement and all quality audits still run.
 - Reverse final packing reuses per-LOD face/index lists and mesh group keys, defers shared-corner precision snapshots until a repair is needed, and avoids unused orientation searches and duplicate failed rescue phases. Placement order, quality gates and native binaries are unchanged.
 - Optional Burst footprint rasterization also executes on asynchronous Reverse workers through compiled direct-call chunks; the editor thread retains its Job System path, and scalar rasterization remains available. Worker/job/scalar regression comparisons require actual Burst execution when the optional packages are installed.
 - Forward donor-seam recovery reuses one operation's clean meshes, donor charts, initial projection and original contact audit across its retries. Ordered spatial indexes narrow chart, seam and exact parent-coverage queries without changing transfer decisions. Interactive contact audits run on workers and finish cancellation before their data is released. See `Documentation~/TRANSFER_PERFORMANCE.md` for the controlled comparison and remaining quality limitations.

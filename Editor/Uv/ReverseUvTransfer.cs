@@ -32,6 +32,7 @@ namespace SashaRX.UnityMeshLab
             internal Action<Result> beforeFinalPacking;
             internal TransferPerformanceProfile performance;
             internal bool cachePackingFootprints = true;
+            internal bool cacheNativeCharts = true;
             internal bool indexFootprintSearch = true;
             internal bool cacheCollisionRows = true;
             internal bool nativeFootprintSearch = true;

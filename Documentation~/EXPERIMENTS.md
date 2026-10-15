@@ -1,5 +1,43 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Exclusive Reverse: reuse resident native charts and buffers — 2026-10-15
+
+The existing xatlas API permits another PackCharts call after ComputeCharts.
+Keep one resident atlas for one final exclusive frozen-family packing operation,
+under its existing global native lease. Exact UV Float32 bits, indices and face
+materials determine chart reuse. Operation-owned immutable footprint identities
+also reuse the prepared flat/index/material arrays. Changed masks invalidate the
+resident entry; failed preparation is never cached. Disposal, errors and
+cancellation release the atlas/lease. No native ABI or plugin changes are needed.
+
+Three alternating pairs use the same frozen quality/shared-prefix/Burst/PR253
+control, copied FBX/import metadata, 32 tex/m, 2 px padding, narrow cuts, reach
+0.05 and exclusive Reverse with Fill atlas. Kamaz still executes 22 placements,
+but prepares charts 16 times with 6 cache hits; CementWall executes 12 placements
+with 1 preparation and 11 hits. All 150 stable outputs, inputs and quality reports
+match byte for byte. The input+chart preparation timer includes array construction
+in both arms; its boundary is explicitly instrumented in the frozen control.
+
+| Model | Reverse control / reuse (s) | Including preparation (s) | Input+chart preparation (s) |
+|---|---:|---:|---:|
+| Kamaz_Typhoon | 21.595 / 21.303 | 37.893 / 37.516 | 1.279 / 1.085 |
+| CementWall | 2.070 / 2.048 | 2.717 / 2.700 | 0.0173 / 0.0015 |
+
+The observed whole-Reverse reduction is only 1.35% / 1.06%; Kamaz timing ranges
+overlap. Charts-only reuse had no resolved whole-solve gain. Buffer reuse removes
+additional setup work, but placement and exact audits remain dominant. This is
+not a large acceleration of the transfer or a live FPS measurement. Keep the
+bounded resident implementation; a multi-context cache needs a different native
+ownership API, not more live instances of the current singleton bridge.
+
+Final regression evidence combines 454 distinct passing cases and 16 optional
+skips across the broad run and a targeted rerun correcting a NaN immutability
+assertion. Both FBX compile variants and identifier/dependency guards pass. Six
+additional timed model runs each pass both required models without skips.
+Evidence: `_results~/native-chart-reuse-final/` and
+`_results~/gpu-envelope-audit/verification.json`. Plugins and the owned project's
+manifest/lock remain identical. The benchmark was local; package binaries were not changed.
+
 ## Reverse final packing: port exact work trims — 2026-10-15
 
 Port the managed PR253 trims onto local integration `846d08f5`, retaining its

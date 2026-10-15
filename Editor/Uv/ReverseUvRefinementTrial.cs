@@ -126,6 +126,7 @@ namespace SashaRX.UnityMeshLab
         static Options TrialOptions(Options options, bool split) => new Options {
             performance = options.performance,
             cachePackingFootprints = options.cachePackingFootprints,
+                    cacheNativeCharts = options.cacheNativeCharts,
             indexFootprintSearch = options.indexFootprintSearch,
             cacheCollisionRows = options.cacheCollisionRows,
             nativeFootprintSearch = options.nativeFootprintSearch,
