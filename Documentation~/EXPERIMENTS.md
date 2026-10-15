@@ -1,5 +1,40 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Legacy audit cache, refinement sub-stages and parent coverage index — 2026-10-14
+
+Three further exact changes:
+
+- Every seam pass audited the same legacy layout for its allowed contacts. It
+  also re-read the target triangles/vertices through the Mesh API and
+  re-extracted source UV shells. `ForwardSeamShared` now keeps all three. This
+  removes only 20 of 279 audits: the cost lies in the per-pass contact loop,
+  which rescans the whole corner layout after each refusal (about 233 scans).
+- `RefineAtDonorSeams` records `Seam cut planning`, `Seam cut validation` and
+  `Seam cut application`. On Kamaz forward they take 1.75, 0.98 and 0.26 s.
+- `CoveredByParentLayer` scanned every face of the winning parent chart.
+  Parents with at least 64 faces and finite pixels now query a pixel-space
+  `TriangleBvh`, built once per chart. `CollectOverlapping(min, max)` takes
+  exact corners, without the rounding of `Bounds`. Candidates come in ascending
+  face order through the original bounds and layer tests, so clipped areas are
+  summed in the scan's order. All comparisons are charged first, which throws
+  exactly when the scan would. `IndexedParentCoverageMatchesTheFullScan`
+  compares both paths, including results, comparison counts and budget
+  refusals.
+
+Alternating A/B against `f189fde7` (three rounds, 120 exports byte-identical in
+all six): Kamaz parent coverage 1.41 → 1.23 s and forward 15.35 → 14.94 s
+(−2.7%), with every candidate run faster than every control run. Kitchen and
+reverse are unchanged within noise. Their coverage cost is the clipping
+itself, not the face scan. A modest gain; the remaining forward cost on Kamaz is
+refined-face projection (about 3.8 s), the contact loop (2.6 s) and cut planning
+(1.75 s). Regression groups: 366 pass, 0 fail, 17 optional skips. Artifacts:
+`coverage-ab/`, `forward-legacy-cache/`, `forward-coverage-regression/`.
+
+Review follow-up: the seam-cut planning and validation timers close in
+`finally`, so refused or cancelled passes still record their time, and the
+parent-coverage path checks cancellation and the comparison budget before the
+first query builds a chart's BVH (the scan throws in exactly the same cases).
+
 ## Projection and seam refinement indexes — 2026-10-14
 
 ### Donor seam index and ordered chart prefilter
