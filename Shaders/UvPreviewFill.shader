@@ -12,7 +12,7 @@ Shader "Hidden/MeshLab/UvPreviewFill"
     SubShader
     {
         Cull [_Cull] ZWrite [_ZWrite] ZTest Always
-        Blend [_SrcBlend] [_DstBlend]
+        Blend [_SrcBlend] [_DstBlend], One OneMinusSrcAlpha
         Pass
         {
             CGPROGRAM

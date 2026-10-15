@@ -247,6 +247,195 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void ShellFillKeepsOverlappingUvFacesIndependentAndSplitsColorSeams()
+        {
+            var data = new PreviewShellData {
+                triangles = new[] { 0, 1, 2, 0, 2, 3 },
+                shells = new List<UvShell> {
+                    new UvShell { shellId = 7, faceIndices = new List<int> { 0 } },
+                    new UvShell { shellId = 9, faceIndices = new List<int> { 1 } }
+                }
+            };
+            var positions = new[] { Vector3.zero, Vector3.right, Vector3.one, Vector3.up };
+            var keys = new Dictionary<int, int> { [7] = 0, [9] = 1 };
+            var fill = UvLayer3D.BuildFillData(data, positions, keys, -1, false);
+            Assert.AreEqual(6, fill.positions.Count, "shared corners split only where face colours differ");
+            Assert.AreEqual(UvCanvasView.pal[0], fill.colors[fill.indices[0]]);
+            Assert.AreEqual(UvCanvasView.pal[1], fill.colors[fill.indices[3]]);
+            Assert.AreEqual(positions[0], fill.positions[fill.indices[0]]);
+            Assert.AreEqual(positions[0], fill.positions[fill.indices[3]]);
+            keys[9] = 0;
+            Assert.AreEqual(4, UvLayer3D.BuildFillData(data, positions, keys, -1, false).positions.Count,
+                "corresponding source-shell keys reuse the same palette colour and corners");
+        }
+
+        [Test]
+        public void ShellSeamsReconnectUvSplitCornersButExcludeCreasesAndNonManifoldEdges()
+        {
+            var p = new[] { Vector3.zero, Vector3.right, Vector3.one-Vector3.forward, Vector3.zero,
+                Vector3.one-Vector3.forward, Vector3.up, new Vector3(.5f,-.5f,0) };
+            var triangles = new[] {0,1,2,3,4,5};
+            var seam = ShellFillSeams.Build(triangles,p,new[] {0,1},default);
+            Assert.AreEqual(1,seam.neighbors[0].y); Assert.AreEqual(0,seam.neighbors[1].z);
+            var duplicate = ShellFillSeams.Build(new[] {0,1,2,0,1,2},p,new[] {0,1},default);
+            Assert.AreEqual(new Vector3(-1,-1,-1),duplicate.neighbors[0], "coincident overlapping faces are not opposite sides of a seam");
+            p[5] = Vector3.forward;
+            var crease = ShellFillSeams.Build(triangles,p,new[] {0,1},default);
+            Assert.AreEqual(new Vector3(-1,-1,-1),crease.neighbors[0]);
+            p[5] = Vector3.up;
+            var nonManifold = ShellFillSeams.Build(new[] {0,1,2,3,4,5,0,2,6},p,new[] {0,1,2},default);
+            Assert.AreEqual(new Vector3(-1,-1,-1),nonManifold.neighbors[0]);
+            Assert.AreEqual(new Vector3(-1,-1,-1),nonManifold.neighbors[1]);
+        }
+
+        [TestCase(.4f)]
+        [TestCase(1f)]
+        public void ShellBoundaryCoverageMixesAdjacentColorsWithoutAffectingInterior(float opacity)
+        {
+            if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) Assert.Ignore("Requires graphics.");
+            var p = new[] { Vector3.zero,Vector3.right,new Vector3(1,1,0),Vector3.up };
+            var data = new PreviewShellData { triangles = new[] {0,1,2,0,2,3}, shells = new List<UvShell> {
+                new UvShell {shellId=0,faceIndices=new List<int>{0}},new UvShell {shellId=1,faceIndices=new List<int>{1}} } };
+            var mesh = UvLayer3D.BuildFillData(data,p,null,-1,false).Upload();
+            var mat = new Material(Shader.Find("Hidden/MeshLab/ViewportOverlay")); MeshViewport3D.BindShellFillPalette(mat);
+            mat.SetFloat("_ShellFill",1); mat.SetFloat("_ShellAA",1); mat.SetFloat("_ShellOpacity",opacity);
+            mat.SetFloat("_UseVertexColor",1); mat.SetFloat("_ZTest",(float)CompareFunction.Always); mat.SetColor("_Color",Color.white);
+            var target = new RenderTexture(32,32,0,RenderTextureFormat.ARGB32,RenderTextureReadWrite.Linear);
+            var pixels = new Texture2D(32,32,TextureFormat.RGBA32,false,true);
+            var previous = RenderTexture.active; bool srgb = GL.sRGBWrite; var camera = Shader.GetGlobalVector("_WorldSpaceCameraPos");
+            try {
+                target.Create(); RenderTexture.active=target; GL.sRGBWrite=false; GL.Clear(false,true,Color.white);
+                GL.PushMatrix();
+                try { GL.LoadOrtho(); GL.modelview=Matrix4x4.identity; Shader.SetGlobalVector("_WorldSpaceCameraPos",new Vector4(.5f,.5f,10,1)); mat.SetPass(0); Graphics.DrawMeshNow(mesh,Matrix4x4.identity); }
+                finally {GL.PopMatrix();}
+                pixels.ReadPixels(new Rect(0,0,32,32),0,0); pixels.Apply();
+                var actual=pixels.GetPixel(16,16); var expected=Color.Lerp(Color.white,Color.Lerp(UvCanvasView.pal[0],UvCanvasView.pal[1],.5f),opacity);
+                Assert.That(actual.r,Is.EqualTo(expected.r).Within(.02f));
+                Assert.That(actual.g,Is.EqualTo(expected.g).Within(.02f));
+                Assert.That(actual.b,Is.EqualTo(expected.b).Within(.02f));
+                var interior=pixels.GetPixel(24,8); var baseColor=Color.Lerp(Color.white,UvCanvasView.pal[0],opacity);
+                Assert.That(interior.r,Is.EqualTo(baseColor.r).Within(.015f));
+                Assert.That(interior.b,Is.EqualTo(baseColor.b).Within(.015f));
+            }
+            finally {
+                Shader.SetGlobalVector("_WorldSpaceCameraPos",camera); GL.sRGBWrite=srgb; RenderTexture.active=previous;
+                target.Release(); Object.DestroyImmediate(target); Object.DestroyImmediate(pixels); Object.DestroyImmediate(mat); Object.DestroyImmediate(mesh);
+            }
+        }
+
+        [UnityTest]
+        public IEnumerator ShellFillReusesBuffersAcrossOpacityAndReleasesOnInvalidation()
+        {
+            var mesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, Vector3.up },
+                uv = new[] { Vector2.zero, Vector2.right, Vector2.up }, triangles = new[] { 0, 1, 2 } };
+            var original = TransferMeshSnapshot.Capture(mesh);
+            var context = new UvToolContext { PreviewUvChannel = 0 };
+            var entry = new MeshEntry { originalMesh = mesh }; context.MeshEntries.Add(entry);
+            var canvas = new UvCanvasView(); canvas.Init();
+            using var layer = new UvLayer3D();
+            try {
+                Mesh fill = null;
+                for (int i = 0; i < 300 && !fill; ++i) { fill = layer.FillMesh(canvas, context, mesh, entry, null); yield return null; }
+                Assert.IsNotNull(fill);
+                for (int i = 0; i < 120; ++i) {
+                    canvas.FillAlpha = i / 120f; canvas.Pan = new Vector2(i, -i); canvas.Zoom = i + 1;
+                    Assert.AreSame(fill, layer.FillMesh(canvas, context, mesh, entry, null));
+                }
+                CollectionAssert.AreEqual(original, TransferMeshSnapshot.Capture(mesh));
+                layer.Invalidate(); Assert.IsFalse(fill);
+            }
+            finally { canvas.Cleanup(); Object.DestroyImmediate(mesh); }
+        }
+
+        [TestCase(.25f, false)]
+        [TestCase(.4f, false)]
+        [TestCase(.8f, false)]
+        [TestCase(.25f, true)]
+        [TestCase(.4f, true)]
+        [TestCase(.8f, true)]
+        public void TransparentShellLayerCompositesOnceWithTheRequestedOpacity(float alpha, bool ownedAntialiasedTarget)
+        {
+            if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) Assert.Ignore("Requires graphics.");
+            var mesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, Vector3.up },
+                uv = new[] { Vector2.zero, Vector2.right, Vector2.up }, triangles = new[] { 0, 1, 2 } };
+            var ctx = new UvToolContext { PreviewUvChannel = 0 }; var entry = new MeshEntry { originalMesh = mesh };
+            var canvas = new UvCanvasView { FillAlpha = alpha }; canvas.Init();
+            var overlay = new Material(Shader.Find("Hidden/MeshLab/UvOverlay")); overlay.SetFloat("_Premultiplied", 1);
+            RenderTexture layer = null;
+            var readback = new RenderTexture(32, 32, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var composite = new RenderTexture(32, 32, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
+            var pixels = new Texture2D(32, 32, TextureFormat.RGBA32, false, true);
+            var previous = RenderTexture.active;
+            try {
+                ctx.PreviewShellDataCache[(long)mesh.GetInstanceID() << 8] = UvTopology.BuildShellData(mesh.uv, mesh.triangles);
+                canvas.SetFillModes(new List<UvCanvasView.FillModeEntry> { new UvCanvasView.FillModeEntry {
+                    name = "Shells", drawCallback = (c,x,y,s,m,e) => c.GlFillSh(ctx,x,y,s,m,1,3,e,-1,-1) } });
+                if (!ownedAntialiasedTarget) { layer = new RenderTexture(32,32,0,RenderTextureFormat.ARGB32,RenderTextureReadWrite.Linear); layer.Create(); }
+                composite.Create(); readback.Create(); layer = canvas.RenderUvLayer(ctx, mesh, entry, layer, 32, false);
+                Graphics.Blit(layer,readback);
+                RenderTexture.active = readback; pixels.ReadPixels(new Rect(0,0,32,32),0,0); pixels.Apply();
+                var stored = pixels.GetPixel(8,8);
+                Assert.That(stored.a, Is.EqualTo(alpha).Within(.01f));
+                Assert.That(stored.b, Is.EqualTo(alpha).Within(.01f), "UV target carries premultiplied colour");
+                if (ownedAntialiasedTarget && layer.antiAliasing > 1)
+                    Assert.IsTrue(Array.Exists(pixels.GetPixels32(), value => value.a > 0 && value.a < alpha * 255 - 2), "AA creates fractional edge coverage");
+                RenderTexture.active = composite; GL.Clear(false, true, Color.white);
+                Graphics.Blit(layer, composite, overlay);
+                RenderTexture.active = composite; pixels.ReadPixels(new Rect(0,0,32,32),0,0); pixels.Apply();
+                var actual = pixels.GetPixel(8,8); var expected = Color.Lerp(Color.white, UvCanvasView.pal[0], alpha);
+                Assert.That(actual.r, Is.EqualTo(expected.r).Within(.015f));
+                Assert.That(actual.g, Is.EqualTo(expected.g).Within(.015f));
+                Assert.That(actual.b, Is.EqualTo(expected.b).Within(.015f));
+                Assert.That(actual.a, Is.EqualTo(1).Within(.01f));
+            }
+            finally {
+                RenderTexture.active = previous; canvas.Cleanup(); if (layer) { layer.Release(); Object.DestroyImmediate(layer); }
+                composite.Release(); readback.Release(); Object.DestroyImmediate(readback);
+                Object.DestroyImmediate(composite); Object.DestroyImmediate(pixels);
+                Object.DestroyImmediate(overlay); Object.DestroyImmediate(mesh);
+            }
+        }
+
+        [TestCase(.4f, .7f, TransferValidator.TriIssue.Overlap, TransferValidator.TriIssue.None)]
+        [TestCase(0f, 1f, TransferValidator.TriIssue.Overlap, TransferValidator.TriIssue.None)]
+        [TestCase(.8f, .5f, TransferValidator.TriIssue.ZeroArea, TransferValidator.TriIssue.Overlap)]
+        [TestCase(.25f, 1f, TransferValidator.TriIssue.None, TransferValidator.TriIssue.None)]
+        public void GeometryShellFillCompositesValidationAndSurfaceOpacity(float opacity, float surfaceOpacity,
+            TransferValidator.TriIssue flags, TransferValidator.TriIssue mask)
+        {
+            if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) Assert.Ignore("Requires graphics.");
+            var positions = new[] { Vector3.zero, Vector3.right, Vector3.up };
+            var data = new PreviewShellData { triangles = new[] { 0,1,2 },
+                shells = new List<UvShell> { new UvShell { shellId = 0, faceIndices = new List<int> { 0 } } } };
+            var mesh = UvLayer3D.BuildFillData(data, positions, null, -1, false, issues: new[] { flags }, mask: mask).Upload();
+            var material = new Material(Shader.Find("Hidden/MeshLab/ViewportOverlay"));
+            material.SetFloat("_ShellFill",1); material.SetFloat("_ShellOpacity",opacity); material.SetFloat("_UseVertexColor",1);
+            material.SetFloat("_ZTest",(float)CompareFunction.Always); material.SetColor("_Color",new Color(1,1,1,surfaceOpacity));
+            var target = new RenderTexture(32,32,0,RenderTextureFormat.ARGB32,RenderTextureReadWrite.Linear);
+            var pixels = new Texture2D(32,32,TextureFormat.RGBA32,false,true);
+            var previous = RenderTexture.active; bool previousSrgb = GL.sRGBWrite;
+            try {
+                target.Create(); RenderTexture.active = target; GL.sRGBWrite = false; GL.Clear(false,true,Color.white);
+                GL.PushMatrix();
+                try { GL.LoadOrtho(); GL.modelview = Matrix4x4.identity; material.SetPass(0); Graphics.DrawMeshNow(mesh,Matrix4x4.identity); }
+                finally { GL.PopMatrix(); }
+                pixels.ReadPixels(new Rect(0,0,32,32),0,0); pixels.Apply();
+                var actual = pixels.GetPixel(8,8); var issue = UvCanvasView.ValidationOverlayColor(flags,mask);
+                float alpha = issue.a + opacity * (1-issue.a);
+                var premultiplied = issue * issue.a + UvCanvasView.pal[0] * (opacity * (1-issue.a));
+                var expected = Color.white * (1-alpha*surfaceOpacity) + premultiplied * surfaceOpacity;
+                Assert.That(actual.r, Is.EqualTo(expected.r).Within(.015f));
+                Assert.That(actual.g, Is.EqualTo(expected.g).Within(.015f));
+                Assert.That(actual.b, Is.EqualTo(expected.b).Within(.015f));
+            }
+            finally {
+                GL.sRGBWrite = previousSrgb; RenderTexture.active = previous;
+                target.Release(); Object.DestroyImmediate(target); Object.DestroyImmediate(pixels);
+                Object.DestroyImmediate(material); Object.DestroyImmediate(mesh);
+            }
+        }
+
+        [Test]
         public void ShellOpacityChangesMatchLegacyPixelsWithoutReplacingTheGeometry()
         {
             if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.Null) Assert.Ignore("Requires graphics.");

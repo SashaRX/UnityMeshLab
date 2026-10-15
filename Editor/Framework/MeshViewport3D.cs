@@ -454,11 +454,32 @@ namespace SashaRX.UnityMeshLab
         }
 
         internal void DrawHighlightMesh(Mesh mesh, Matrix4x4 matrix, Color color, bool vertexColors = false)
+            => DrawColoredOverlay(mesh, matrix, color, vertexColors, XRay);
+
+        internal void DrawShellFillMesh(Mesh mesh, Matrix4x4 matrix, float opacity)
+        {
+            if (!drawing || !mesh) return;
+            var block = Block(); block.SetColor(ColorId, new Color(1, 1, 1, Mathf.Clamp01(SurfaceOpacity)));
+            block.SetFloat(UseVertexColorId, 1); block.SetFloat("_ShellFill", 1); block.SetFloat("_ShellOpacity", opacity);
+            block.SetFloat("_ShellAA", offscreen && offscreen.antiAliasing > 1 ? 0 : 1);
+            utility.DrawMesh(mesh, matrix, overlaySurface, 0, block);
+        }
+
+        internal static void BindShellFillPalette(Material material)
+        {
+            var palette = new Vector4[16];
+            for (int i = 0; i < UvCanvasView.pal.Length; ++i) palette[i] = UvCanvasView.pal[i];
+            var validation = new Vector4[UvCanvasView.ValidationOverlayPalette.Length];
+            for (int i = 0; i < validation.Length; ++i) validation[i] = UvCanvasView.ValidationOverlayPalette[i];
+            material.SetVectorArray("_ShellPalette",palette); material.SetVectorArray("_IssuePalette",validation);
+        }
+
+        void DrawColoredOverlay(Mesh mesh, Matrix4x4 matrix, Color color, bool vertexColors, bool xray)
         {
             if (!drawing || !mesh) return;
             var block = Block(); block.SetColor(ColorId, color);
             block.SetFloat(UseVertexColorId, vertexColors ? 1 : 0);
-            utility.DrawMesh(mesh, matrix, XRay ? overlayXRay : overlaySurface, 0, block);
+            utility.DrawMesh(mesh, matrix, xray ? overlayXRay : overlaySurface, 0, block);
         }
 
         internal void DrawPointMesh(Mesh mesh, Matrix4x4 matrix, Color color, float size)
@@ -773,6 +794,7 @@ namespace SashaRX.UnityMeshLab
             wireXRay.renderQueue = 3030;
             translucentSurface = new Material(overlayShader) { hideFlags = HideFlags.HideAndDontSave, renderQueue = 3005 };
             overlaySurface = new Material(overlayShader) { hideFlags = HideFlags.HideAndDontSave };
+            BindShellFillPalette(overlaySurface);
             overlayXRay = new Material(overlayShader) { hideFlags = HideFlags.HideAndDontSave };
             overlayXRay.SetFloat("_ZTest", (float)CompareFunction.Always);
             overlayXRay.renderQueue = 3020;

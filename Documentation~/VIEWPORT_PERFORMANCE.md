@@ -144,3 +144,55 @@ A later Built-in follow-up passes eight channel/cache tests. A scratch replay wi
 the readiness deadline forcibly expired after the first accepted sample completes
 all four phases and 96 samples per phase; ready buffers do not time out during
 measurement. The timeout remains active while required buffers are pending.
+
+## Shell fill quality and cost, 2026-10-15
+
+The 3D Shells overlay now caches per-face colour geometry instead of sampling a
+1024-pixel UV layer. This removes magnified UV-raster fringes and keeps overlapping
+UV faces independent. The existing source-connected LOD colour map is reused.
+UV targets use supported 4x MSAA, with correct premultiplied-alpha composition.
+Smooth colour seams have analytic coverage when the 3D target has no MSAA;
+triangles without seams skip that work. Sharp creases, open/non-manifold edges,
+duplicate faces and grazing surfaces do not mix neighbouring colours. Native
+one-pixel silhouette aliasing can still remain in the URP preview. Wire rendering
+and atlas padding are unchanged.
+
+An isolated Unity 6000.2.6f2 / D3D11 project compared baseline `70fd8da3` with this
+change on an i9-14900K / GTX 980 Ti. Kamaz_Typhoon LOD0 has 16,041 triangles,
+18,791 vertices and five mesh parts. The UV2 Transfer/Repack window was 1024x768
+points at DPI 1.25; its 3D target was 897x802 pixels. A follow-up URP orbit probe
+used identical camera positions by sample number, real MouseDrag events, one
+Wire pass, a neutral preview surface, five seconds of warm-up and 2,048 samples.
+The baseline ran first, then the final candidate. The original user Editor
+remained open, so background system load can affect timings.
+The user subsequently reported moving the viewport to a lower-resolution,
+lower-refresh-rate second display during measurement. The exact time was not
+recorded. The harness forced DPI 1.25 and both runs recorded the same 897x802
+render target, but display conditions and the live Editor's background load
+were not controlled. The timing comparison below is provisional.
+
+| Metric | Baseline | Shell fill with AA |
+| --- | ---: | ---: |
+| Repaint CPU median / p95 | 1.978 / 2.509 ms | 2.308 / 3.565 ms |
+| CPU through GPU completion median / p95 | 2.475 / 3.050 ms | 2.935 / 4.352 ms |
+| Retained 3D fill resources, five parts | 20.98 MB UV textures | 3.42 MB meshes |
+| Total Editor frame GC, median | 182,556 bytes | 182,710 bytes |
+
+Completion includes a resolve/copy and blocking one-pixel GPU readback. These are
+scratch-project timings, not presented FPS in the original scene. The observed
+whole-change difference was about 0.33 ms CPU and 0.46 ms through completion in
+this probe; it cannot be attributed precisely to AA under the uncontrolled
+display conditions. UV panning differed by about 0.3–0.6 ms through completion
+in the full comparison, also provisional. A stable-display paired measurement
+is required before treating these differences as the change's performance cost
+or claiming that interactive stutters are absent.
+Opacity, pan, zoom and orbit reuse the fill buffers; no mesh upload or UV texture
+regeneration is needed during those interactions.
+
+The quality fixture reproduces the screenshot's Volvo LOD0: 5,796 triangles,
+7,508 vertices, generated UV1 and opacity 0.4. GPU tests check fractional boundary
+coverage, alpha composition, validation colours and unchanged face interiors.
+Cache tests check reuse and cleanup without modifying the source mesh. Focused
+viewport suites execute 141 cases in each pipeline: URP 140 pass / one optional
+external-material fixture skip; Built-in 138 pass / three skips, including two
+URP-only cases. Both FBX compilation variants and identifier/dependency guards pass.

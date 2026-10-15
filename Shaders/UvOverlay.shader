@@ -13,6 +13,7 @@ Shader "Hidden/MeshLab/UvOverlay"
         _UVChannel ("UV Channel", Float) = 0
         _UvScaleOffset ("UV scale/offset", Vector) = (1,1,0,0)
         _UseVertexColor ("Use vertex colour", Float) = 0
+        _Premultiplied ("Premultiplied input", Float) = 0
     }
     SubShader
     {
@@ -20,7 +21,7 @@ Shader "Hidden/MeshLab/UvOverlay"
         ZWrite Off
         Cull Off
         Offset -1, -1
-        Blend SrcAlpha OneMinusSrcAlpha
+        Blend One OneMinusSrcAlpha
         Pass
         {
             CGPROGRAM
@@ -32,6 +33,7 @@ Shader "Hidden/MeshLab/UvOverlay"
             float _UVChannel;
             float4 _UvScaleOffset;
             float _UseVertexColor;
+            float _Premultiplied;
             struct appdata { float4 vertex : POSITION; float2 uv0 : TEXCOORD0; float2 uv1 : TEXCOORD1; float2 uv2 : TEXCOORD2; float2 uv3 : TEXCOORD3; float2 uv4 : TEXCOORD4; float2 uv5 : TEXCOORD5; float2 uv6 : TEXCOORD6; float2 uv7 : TEXCOORD7; float4 color : COLOR; };
             struct v2f { float4 pos : SV_POSITION; float2 uv : TEXCOORD0; float4 color : COLOR; };
             v2f vert(appdata v)
@@ -46,9 +48,10 @@ Shader "Hidden/MeshLab/UvOverlay"
             }
             fixed4 frag(v2f i) : SV_Target
             {
-                fixed4 t = tex2D(_MainTex, i.uv) * _Color;
-                if (_UseVertexColor > 0.5) t *= i.color;
-                return t;
+                fixed4 t = tex2D(_MainTex, i.uv);
+                fixed4 tint = _Color;
+                if (_UseVertexColor > 0.5) tint *= i.color;
+                return fixed4(t.rgb * tint.rgb * tint.a * (_Premultiplied > 0.5 ? 1 : t.a), t.a * tint.a);
             }
             ENDCG
         }

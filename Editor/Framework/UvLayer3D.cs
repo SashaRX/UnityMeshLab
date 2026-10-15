@@ -1,6 +1,6 @@
 // UvLayer3D.cs — the UV viewer laid over the model in the 3D canvas: the active fill
-// mode and preview background rendered per mesh into a UV-space texture
-// and drawn through the preview UV channel; UV borders and wire as true 3D
+// mode and preview background. Shell colours use cached face geometry; other
+// modes use a UV-space texture through the preview channel. Borders and wire are 3D
 // lines; spot-mode picking (ray → face → shell) feeding the same hover/selection
 // state the UV canvas and the tools read; hovered/selected shells highlighted on
 // the surface.
@@ -29,6 +29,32 @@ namespace SashaRX.UnityMeshLab
             public bool Equals(LayerState other) => state.Equals(other.state);
         }
         sealed class Layer { public RenderTexture texture; public LayerState key; }
+        sealed class FillPreview : IDisposable
+        {
+            internal Mesh mesh;
+            internal (PreviewShellData data, object colors, int channel, int selected, bool solid, object issues, int mask) key;
+            internal readonly PreviewWork<FillData> work = new PreviewWork<FillData>("Shell fill");
+            public void Dispose() { work.Dispose(); if (mesh) Object.DestroyImmediate(mesh); }
+        }
+        internal sealed class FillData
+        {
+            internal readonly List<Vector3> positions = new List<Vector3>();
+            internal readonly List<Color> colors = new List<Color>();
+            internal readonly List<Vector4> validation = new List<Vector4>();
+            internal readonly List<Vector3> neighbors = new List<Vector3>(), barycentrics = new List<Vector3>(), normals = new List<Vector3>();
+            internal readonly List<int> indices = new List<int>();
+            internal Mesh Upload()
+            {
+                var mesh = new Mesh { name = "MeshLab shell fill", hideFlags = HideFlags.HideAndDontSave,
+                    indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
+                try {
+                    mesh.SetVertices(positions); mesh.SetColors(colors); mesh.SetNormals(normals);
+                    mesh.SetUVs(1, validation); mesh.SetUVs(2, neighbors); mesh.SetUVs(3, barycentrics); mesh.SetIndices(indices, MeshTopology.Triangles, 0);
+                    mesh.UploadMeshData(true); return mesh;
+                }
+                catch { Object.DestroyImmediate(mesh); throw; }
+            }
+        }
         sealed class ShellPreview : IDisposable
         {
             internal Mesh mesh;
@@ -53,6 +79,7 @@ namespace SashaRX.UnityMeshLab
         public int LayerSize = 1024;
 
         readonly Dictionary<(int, MeshEntry), Layer> layers = new Dictionary<(int, MeshEntry), Layer>();
+        readonly Dictionary<(int, MeshEntry), FillPreview> fills = new Dictionary<(int, MeshEntry), FillPreview>();
         readonly Dictionary<(int, int, bool), ShellPreview> shellMeshes = new Dictionary<(int, int, bool), ShellPreview>();
         readonly Dictionary<long, Mesh> boundaryMeshes = new Dictionary<long, Mesh>();
         Material overlay;
@@ -66,6 +93,7 @@ namespace SashaRX.UnityMeshLab
             var shader = Shader.Find("Hidden/MeshLab/UvOverlay");
             if (!shader) return false;
             overlay = new Material(shader) { hideFlags = HideFlags.HideAndDontSave };
+            overlay.SetFloat("_Premultiplied", 1);
             return true;
         }
 
@@ -93,18 +121,19 @@ namespace SashaRX.UnityMeshLab
                 if (entry == null) continue;
                 if (layerVisible && UvTopology.HasUv(item.mesh, ctx.PreviewUvChannel) && MeshInspection.HasOnlyTriangles(item.mesh))
                 {
-                    var id = (item.mesh.GetInstanceID(), entry);
-                    var key = new LayerState(canvas, ctx, item.mesh, entry, size);
-                    if (!layers.TryGetValue(id, out var layer)) layers[id] = layer = new Layer();
-                    if (!layer.key.Equals(key) || layer.texture == null)
+                    bool geometryFill = canvas.GeometryShellFill;
+                    if (geometryFill)
                     {
-                        layer.texture = canvas.RenderUvLayer(ctx, item.mesh, entry, layer.texture, size, false, view.SceneLightmaps);
-                        layer.key = key;
+                        var id = (item.mesh.GetInstanceID(), entry);
+                        if (layers.TryGetValue(id, out var previous)) {
+                            if (previous.texture) { previous.texture.Release(); Object.DestroyImmediate(previous.texture); }
+                            layers.Remove(id);
+                        }
+                        var fill = FillMesh(canvas, ctx, item.mesh, entry, view.RequestRepaint);
+                        float alpha = canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Shells3D ? 1 : Mathf.Clamp01(canvas.FillAlpha);
+                        if (fill) view.DrawShellFillMesh(fill, item.matrix, alpha);
                     }
-                    var uvScaleOffset = canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Lightmap &&
-                                        ctx.PreviewUvChannel == 1 && entry.renderer && entry.renderer.lightmapIndex >= 0
-                        ? entry.renderer.lightmapScaleOffset : new Vector4(1, 1, 0, 0);
-                    if (layer.texture) view.DrawTextured(item.mesh, item.matrix, overlay, layer.texture, Color.white, ctx.PreviewUvChannel, uvScaleOffset);
+                    else DrawTextureLayer(view, canvas, ctx, item, entry, size);
                 }
                 if (canvas.ShowBorder) {
                     long boundaryKey = ((long)item.mesh.GetInstanceID() << 8) ^ (uint)ctx.PreviewUvChannel;
@@ -123,6 +152,93 @@ namespace SashaRX.UnityMeshLab
                         DrawShell(view, canvas, ctx, item, canvas.HoveredShell.shellId, ViewportHighlight.Fill(ViewportHighlight.Hover), false);
                 }
             }
+        }
+
+        void DrawTextureLayer(MeshViewport3D view, UvCanvasView canvas, UvToolContext ctx, MeshViewport3D.Item item, MeshEntry entry, int size)
+        {
+            var id = (item.mesh.GetInstanceID(), entry);
+            var key = new LayerState(canvas, ctx, item.mesh, entry, size);
+            if (!layers.TryGetValue(id, out var layer)) layers[id] = layer = new Layer();
+            if (!layer.key.Equals(key) || layer.texture == null)
+            {
+                layer.texture = canvas.RenderUvLayer(ctx, item.mesh, entry, layer.texture, size, false, view.SceneLightmaps);
+                layer.key = key;
+            }
+            var uvScaleOffset = canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Lightmap &&
+                                ctx.PreviewUvChannel == 1 && entry.renderer && entry.renderer.lightmapIndex >= 0
+                ? entry.renderer.lightmapScaleOffset : new Vector4(1, 1, 0, 0);
+            if (layer.texture) view.DrawTextured(item.mesh, item.matrix, overlay, layer.texture, Color.white, ctx.PreviewUvChannel, uvScaleOffset);
+        }
+
+        internal Mesh FillMesh(UvCanvasView canvas, UvToolContext ctx, Mesh source, MeshEntry entry, Action repaint)
+        {
+            var data = canvas.GetPreviewShellCache(ctx, source, ctx.PreviewUvChannel);
+            if (data == null) return null;
+            var colors = canvas.ShellColorKeys(ctx, source, data, entry, out bool ready);
+            if (!ready) return null;
+            bool solid = canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Shells3D;
+            int selected = !solid && canvas.HasSelectedShell && canvas.SelectedShell.meshEntry == entry ? canvas.SelectedShell.shellId : -1;
+            var issues = solid ? null : entry.validationReport?.perTriangle;
+            var key = (data, (object)colors, ctx.PreviewUvChannel, selected, solid, (object)issues, (int)canvas.ValidationFilterMask);
+            var id = (source.GetInstanceID(), entry);
+            if (fills.TryGetValue(id, out var cached) && cached.key.Equals(key)) return cached.mesh;
+            cached?.Dispose(); cached = new FillPreview {key = key}; fills[id] = cached;
+            var result = cached;
+            result.work.Enqueue(() => {
+                var positions = data.positions ?? source.vertices;
+                var mask = canvas.ValidationFilterMask;
+                return token => BuildFillData(data, positions, colors, selected, solid, token, issues, mask);
+            }, built => { result.mesh = built.Upload(); repaint?.Invoke(); });
+            return null;
+        }
+
+        internal static FillData BuildFillData(PreviewShellData data, Vector3[] positions, Dictionary<int, int> colors,
+            int selected, bool solid, System.Threading.CancellationToken token = default,
+            TransferValidator.TriIssue[] issues = null, TransferValidator.TriIssue mask = TransferValidator.TriIssue.None)
+        {
+            var result = new FillData(); var vertices = new Dictionary<(int, Color, Color), int>();
+            var styles = new int[data.triangles.Length/3];
+            for (int i = 0; i < styles.Length; ++i) styles[i] = -1;
+            int prepared = 0;
+            foreach (var shell in data.shells) {
+                int key = colors != null && colors.TryGetValue(shell.shellId,out int mapped) ? mapped : shell.shellId;
+                int style = UvHashUtil.NonNegativeColorKey(key) % UvCanvasView.pal.Length;
+                if (shell.shellId == selected) style += 16 + (solid ? 0 : 32);
+                foreach (int face in shell.faceIndices) {
+                    token.ThrowIfCancellationRequested();
+                    if (prepared++ >= UvCanvasView.MAX_TRI) break;
+                    int issue = issues != null && face < issues.Length ? UvCanvasView.ValidationOverlayIndex(issues[face],mask) : 0;
+                    styles[face] = style + issue * 64;
+                }
+                if (prepared >= UvCanvasView.MAX_TRI) break;
+            }
+            var seams = ShellFillSeams.Build(data.triangles,positions,styles,token);
+            int total = 0;
+            foreach (var shell in data.shells) {
+                int colorKey = colors != null && colors.TryGetValue(shell.shellId, out int mapped) ? mapped : shell.shellId;
+                Color color = UvCanvasView.pal[UvHashUtil.NonNegativeColorKey(colorKey) % UvCanvasView.pal.Length];
+                if (shell.shellId == selected) color = Color.Lerp(color, Color.white, .45f);
+                color.a = !solid && shell.shellId == selected ? 1.85f : 1;
+                foreach (int face in shell.faceIndices) {
+                    token.ThrowIfCancellationRequested();
+                    if (total++ >= UvCanvasView.MAX_TRI) return result;
+                    var issue = issues != null && face < issues.Length ? UvCanvasView.ValidationOverlayColor(issues[face], mask) : Color.clear;
+                    var neighbor = seams.neighbors[face]; bool antialias = neighbor.x >= 0 || neighbor.y >= 0 || neighbor.z >= 0;
+                    for (int corner = 0; corner < 3; ++corner) {
+                        int index = data.triangles[face * 3 + corner];
+                        var key = (index, color, issue);
+                        int compact;
+                        if (antialias || !vertices.TryGetValue(key, out compact)) {
+                            compact = result.positions.Count; if (!antialias) vertices.Add(key, compact);
+                            result.positions.Add(positions[index]); result.colors.Add(color); result.validation.Add(issue);
+                            result.neighbors.Add(neighbor); result.normals.Add(antialias ? seams.normals[face] : Vector3.zero);
+                            result.barycentrics.Add(antialias ? (corner == 0 ? Vector3.right : corner == 1 ? Vector3.up : Vector3.forward) : Vector3.zero);
+                        }
+                        result.indices.Add(compact);
+                    }
+                }
+            }
+            return result;
         }
 
         void DrawShell(MeshViewport3D view, UvCanvasView canvas, UvToolContext ctx, MeshViewport3D.Item item, int shellId, Color color, bool selected)
@@ -232,6 +348,8 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Drops everything derived from the meshes (call when the mesh entries change).</summary>
         public void Invalidate()
         {
+            foreach (var fill in fills.Values) fill.Dispose();
+            fills.Clear();
             foreach (var layer in layers.Values) if (layer.texture) { layer.texture.Release(); Object.DestroyImmediate(layer.texture); }
             layers.Clear();
             foreach (var mesh in shellMeshes.Values) mesh.Dispose();
