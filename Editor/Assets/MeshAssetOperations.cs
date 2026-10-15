@@ -551,9 +551,9 @@ namespace SashaRX.UnityMeshLab
         // hold the written UVs, or an import after the one the marker covers would replay the old
         // ones over them; the scene keeps its working copies, and a save once the cause is fixed
         // finishes the import and the relink.
-        static void AfterPostCommitFailure(string sourceFbxPath, FbxExport.PostCommitException ex, SidecarSync sidecar)
+        static void AfterPostCommitFailure(string writtenFbxPath, FbxExport.PostCommitException ex, SidecarSync sidecar)
         {
-            UvtLog.Error($"[FBX Export] {ex.Message} The import of the written file and the scene relink did not run; fix the cause and save '{sourceFbxPath}' again.");
+            UvtLog.Error($"[FBX Export] {ex.Message} The import of the written file and the scene relink did not run; fix the cause and save '{writtenFbxPath}' again.");
             UvtLog.Verbose(ex.ToString());
             ApplySidecarSync(sidecar);
         }
@@ -696,7 +696,7 @@ namespace SashaRX.UnityMeshLab
                 // that finishes the job. The clone path's importer restore may have imported the
                 // written file on the way out: the renderers noted take its meshes then, and keep
                 // theirs when no import ran.
-                AfterPostCommitFailure(sourceFbxPath, ex, sidecar);
+                AfterPostCommitFailure(collisionTarget, ex, sidecar);
                 SaveCollisionSidecar();
                 RelinkStandalone();
                 if (!isVariantExport && refreshContext && ctx?.LodGroup != null)
@@ -1076,7 +1076,7 @@ namespace SashaRX.UnityMeshLab
                         // The file is written, its import and relink did not run: the sidecar takes
                         // the written UVs now, the scene keeps its working copies for the save that
                         // finishes the job.
-                        AfterPostCommitFailure(sourceFbxPath, ex, sidecar);
+                        AfterPostCommitFailure(isVariant ? outputFbxPath : sourceFbxPath, ex, sidecar);
                         written = false;
                     }
                     catch (Exception ex)
@@ -1143,6 +1143,9 @@ namespace SashaRX.UnityMeshLab
                     try { AssetDatabase.ImportAsset(fbxPath, ImportAssetOptions.ForceUpdate); ready.Add(fbxPath); }
                     catch (Exception ex)
                     {
+                        // Its scene edits stay on their renderers: the release below would hand them
+                        // the meshes of the import that did not happen.
+                        UnmarkSceneEditsSaved(fbxPath);
                         UvtLog.Error($"[FBX Export] '{fbxPath}' was written, but its import failed: {ex.Message} Fix the cause and reimport it.");
                         UvtLog.Verbose(ex.ToString());
                     }
@@ -1292,7 +1295,8 @@ namespace SashaRX.UnityMeshLab
         }
 
         static bool IsProjectAssetPath(string path) =>
-            path != null && (path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase) || path.StartsWith("Assets\\", StringComparison.OrdinalIgnoreCase));
+            path != null && (path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase) || path.StartsWith("Assets\\", StringComparison.OrdinalIgnoreCase)
+                || path.StartsWith("Packages/", StringComparison.OrdinalIgnoreCase) || path.StartsWith("Packages\\", StringComparison.OrdinalIgnoreCase));
 
         // A source is replaced in one rename once its new file is complete and checked
         // (FbxExport.WriteAtomic); a new file is written in place.
