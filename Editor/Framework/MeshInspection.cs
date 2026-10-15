@@ -93,7 +93,7 @@ namespace SashaRX.UnityMeshLab
             return reports[id] = text.ToString();
         }
 
-        static long TriangleCount(Mesh mesh)
+        internal static long TriangleCount(Mesh mesh)
         {
             long triangles = 0;
             for (int sub = 0; sub < mesh.subMeshCount; ++sub)

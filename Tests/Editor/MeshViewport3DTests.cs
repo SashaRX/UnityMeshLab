@@ -360,6 +360,24 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { Object.DestroyImmediate(mesh); }
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void TriangleCountTracksSubmeshChangesWithoutCpuIndexAccess(bool unreadable)
+        {
+            var mesh = Quad();
+            try {
+                mesh.subMeshCount = 3;
+                mesh.SetIndices(new[] { 0, 1, 2 }, MeshTopology.Triangles, 0);
+                mesh.SetIndices(new[] { 0, 1, 2, 1, 3, 2 }, MeshTopology.Triangles, 1);
+                mesh.SetIndices(new[] { 0, 1, 1, 2, 2, 3 }, MeshTopology.Lines, 2);
+                Assert.AreEqual(3, MeshInspection.TriangleCount(mesh));
+                mesh.SetIndices(new[] { 1, 3, 2 }, MeshTopology.Triangles, 1);
+                if (unreadable) mesh.UploadMeshData(true);
+                Assert.AreEqual(2, MeshInspection.TriangleCount(mesh));
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
+
         [Test]
         public void LineAndQuadTopologyRemainInspectable()
         {
