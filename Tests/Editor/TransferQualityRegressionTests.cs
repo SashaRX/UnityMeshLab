@@ -114,6 +114,51 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(before,uv);
         }
 
+        [TestCase(false)] [TestCase(true)]
+        public void ForwardContinuityCannotReflectAHealthyTriangle(bool mirrored)
+        {
+            float h=1f/1024;
+            var shared=new Vector2(.5f,.5f-h);
+            var legacy=new[] {shared,new Vector2(.625f,.375f),new Vector2(.375f,.375f),
+                shared,new Vector2(.5f-h,.5f),new Vector2(.5f+h,.5f)};
+            var uv=(Vector2[])legacy.Clone();uv[3]=new Vector2(.5f,.5f+h);
+            if(mirrored)
+                for(int i=0;i<uv.Length;++i) {legacy[i].x=1-legacy[i].x;uv[i].x=1-uv[i].x;}
+            var positions=legacy.Select(p=>new Vector3(p.x,p.y,0)).ToArray();
+            var before=(Vector2[])uv.Clone();
+            ReverseUvTransfer.KeepForwardContinuity(positions,legacy,new[] {true,true},new HashSet<int> {1},
+                uv,new int[6],.01f,Matrix4x4.identity);
+            CollectionAssert.AreEqual(before,uv,"A reflected placement has unchanged stretch but must not be used to join the point.");
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void ForwardContinuityFinalAuditRefusesAReflectedFace(bool mirrored)
+        {
+            Assert.IsFalse(ContinuityOrientationTrial(mirrored,true));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void ForwardContinuityFinalAuditKeepsExistingWinding(bool mirrored)
+        {
+            Assert.IsTrue(ContinuityOrientationTrial(mirrored,false));
+        }
+
+        static bool ContinuityOrientationTrial(bool mirrored,bool reflect)
+        {
+            float h=1f/1024;
+            var before=new[] {new Vector2(.5f,.5f-h),new Vector2(.5f-h,.5f),new Vector2(.5f+h,.5f)};
+            if(mirrored) for(int i=0;i<before.Length;++i) before[i].x=1-before[i].x;
+            var after=(Vector2[])before.Clone();
+            if(reflect) after[0].y=.5f+h;
+            else for(int i=0;i<after.Length;++i) after[i]+=Vector2.one/8192;
+            var surface=new ReverseUvTransfer.Surface {positions=before.Select(p=>new Vector3(p.x,p.y,0)).ToArray(),
+                indices=new[] {0,1,2},faces=new[] {new ReverseUvTransfer.Face()}};
+            var audit=typeof(ReverseUvTransfer).GetMethod("ForwardContinuityFits",BindingFlags.Static|BindingFlags.NonPublic);
+            Assert.IsNotNull(audit);
+            return (bool)audit.Invoke(null,new object[] {surface,new[] {1d},before,after,Matrix4x4.identity,
+                System.Threading.CancellationToken.None});
+        }
+
         [Test]
         public void OverlapAreaRetainsTheSameDefectWhenBothFacesAreSubdivided()
         {
