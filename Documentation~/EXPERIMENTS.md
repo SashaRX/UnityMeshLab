@@ -1,5 +1,44 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Repair malformed frozen-foundation UV topology — 2026-10-16
+
+Old_Sofa LOD2 contains a connected chart with a branched UV boundary and Euler
+characteristic zero, although its geometric quotient is an orientable manifold
+disk. A stretch/contact-only input audit leaves this internal UV slit in place.
+Before cutting the frozen Reverse foundation, weld detached UV unknowns only
+when their geometric quotient is a manifold disk and their existing UV topology
+is not. Edge orientation, vertex fans and boundary topology reject geometric
+holes, non-manifold contacts and required cuts on closed surfaces. Valid UV disks
+are retained. Positions, texture UV0, triangle order and original meshes survive.
+
+Use the existing ARAP iterations, with seed UV area expressed in the rest
+geometry's units during the solve, then restore coordinate units. This prevents
+texel density from tripping ARAP's existing area-collapse test. Every face retains
+the caller's metric limit, existing relative tolerance and winding; complete
+local contact and existing final atlas/padding/work audits remain mandatory.
+
+A portable connected twelve-face disk reproduces the internal hole: its
+integration test fails on the old foundation and passes after preparation. All
+13 portable controls pass, including reflected/scaled UVs, real holes, closed
+surface cuts, cancellation and the comparison budget. Both FBX variants compile.
+The full CPU suite requires actual Burst: 453 passed, zero failed, 16 optional
+fixture/backend skips. Ordinary and Reverse runs include Kamaz, CementWall and
+Old_Sofa. All 76,510 published triangles match unchanged geometry. Ordinary
+outputs and both Kamaz/CementWall Reverse layouts retain their decoded values.
+
+Old_Sofa Reverse LOD2 loses the malformed internal three-edge slit; maximum
+stretch falls 3.553 to 2.959, P95 1.629 to 1.314, aligned area 50.77% to 56.58%,
+with zero collapsed faces and unexpected overlaps. The only relative derivative
+exception is a sub-0.001-texel face in an otherwise unchanged 847-face family:
+all its corners fit one common similarity within 0.000167 texel, inside the
+existing 0.01-texel precision policy. No tolerance is changed.
+
+With the same Fill atlas setting, final packing selects 8x instead of 6x density
+and a 1422 instead of 999 pixel atlas. This is a real output-size tradeoff, not
+a fixed-resolution performance result. This slice prepares only the coarsest
+frozen Reverse foundation. Ordinary Kamaz defects and four collapsed ordinary
+Old_Sofa LOD2 faces remain. Local evidence: `_results~/forward-winding-review/`.
+
 ## Exclusive Reverse: reuse resident native charts and buffers — 2026-10-15
 
 The existing xatlas API permits another PackCharts call after ComputeCharts.

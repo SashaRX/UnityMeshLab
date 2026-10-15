@@ -40,6 +40,13 @@ namespace SashaRX.UnityMeshLab
                     var original=corners.Select(c=>uv[surface.indices[c]]).ToArray();
                     var frames=faces.Select(f=>surface.metricFrames[f]).ToArray();
                     var local=NormalizeFrozenDensity(original,frames,requested);
+                    if(surface.lod==chain[0][0].lod)
+                    {
+                        var patch=corners.Select(c=>surface.positions[surface.indices[c]]).ToArray();
+                        var healed=UvShellTopologyRepair.TryRepair(patch,local,RepackOptions.Default.arapIterations,token,
+                            out _,frames,options.maxAnisotropy,options.comparisonBudget);
+                        if(healed!=null) local=NormalizeFrozenDensity(healed,frames,requested);
+                    }
                     if(surface.lod==chain[0][0].lod && !ValidFrozenShell(surface,faces,local,options,token))
                     {
                         var patch=corners.Select(c=>surface.positions[surface.indices[c]]).ToArray();
