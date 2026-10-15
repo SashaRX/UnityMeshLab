@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Reverse UV final packing skips the unused rotation ranking of axis-aligned families and the duplicate first sub-ULP rescue phase, and parses mesh group keys once per surface in the cross-LOD join. Packing decisions and UVs are unchanged.
 - Reverse UV final packing builds atlas LOD face lists once per pack, and precision repair allocates its snapshot only when a face needs it. Packing decisions and UVs are unchanged.
 - An internal Reverse UV option validates family placements and scans atlas LOD levels concurrently, consuming results in the original order; it is off by default because corpus measurements showed no reliable gain, and the benchmark's `-ParallelValidation` opts in. Packing decisions and UVs are unchanged; a failed frozen pack lists refusals by family index.
+- The paired transfer benchmark can run Reverse through the asynchronous editor path (`-AsyncReverse`), and a sync/async Burst ablation confirms compiled worker rasterization with unchanged output.
 - Reverse UV: the audit report is written only at the Verbose log level (the last 20 are kept) and a failed write no longer fails the transfer; the audit itself still gates every result. The ancestry kept per mesh and saved in the sidecar is a compact record of per-face overlap flags, charts, chain keys and overlap relations instead of the node's whole report (earlier sidecars are read and rewritten on restore), and the viewer's quality check no longer hashes it every frame.
 
 ### Fixed
@@ -95,7 +96,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 
-- Async Reverse UV retains scalar footprint rasterization on background packing workers. The optional Burst provider refuses before allocating job buffers or scheduling from a worker, preserves cancellation, and remains available on the editor main thread.
+- Async Reverse UV runs the optional Burst footprint raster on background packing workers through a Burst direct call; the job API is used only on the editor main thread. Spans, merge order, cancellation and the scalar fallback are unchanged, and async results equal synchronous ones for both overlap policies.
 - FBX UV saves no longer refuse models whose untouched collision meshes carry UVs or vertex colours. Those collision nodes and channels remain intact; explicit collision replacement and rebuild still strip surface data.
 - PR #225 review: preflight the required native chart-packing export, retain boundary tolerance in replacement captures and UInt16 base vertices during Reverse UV cleanup, invalidate stale UV2 before the first replacement FBX import, identify seam splits independently of geometry names, restore matching Reverse UV provenance on context refresh, cache edge-to-rim lookup and require generated collision results for export. Simplify the nine Sonar advisory methods without changing the rule policy.
 - Foliage normal direction arrows obey their visibility toggle in every comparison mode, including Side by side. All Foliage display controls live in its Preview section and repaint immediately when changed.
