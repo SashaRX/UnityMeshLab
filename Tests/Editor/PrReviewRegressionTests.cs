@@ -416,7 +416,7 @@ namespace SashaRX.UnityMeshLab.Tests
             // A non-overwrite export records the file it wrote when it is a project asset, so a batch
             // another group failed imports it; a file written outside the project is no asset.
             AssetDatabase.CreateFolder("Assets", "__MeshLabReviewTests");
-            string path = Scratch + "/Review.fbx", exported = Scratch + "/Review_uv2.fbx";
+            string path = Scratch + "/Review.fbx", exported = Scratch + "/Review_uv2.fbx", failed = Scratch + "/Review_failed.fbx";
             string outside = Path.Combine(Path.GetTempPath(), "MeshLab-export-review-" + Guid.NewGuid().ToString("N") + ".fbx");
             var root = Root(); var mesh = Plane("Review");
             root.AddComponent<MeshFilter>().sharedMesh = mesh; root.AddComponent<MeshRenderer>();
@@ -424,19 +424,27 @@ namespace SashaRX.UnityMeshLab.Tests
             try {
                 var ctx = new UvToolContext { StandaloneMesh = true };
                 var operations = ctx.Assets;
-                operations.HierarchyWriter = (output, exportRoot) => FbxExport.Write(output, exportRoot);
+                operations.HierarchyWriter = (output, exportRoot) => {
+                    if (string.Equals(output, failed, StringComparison.OrdinalIgnoreCase)) throw new IOException("injected exporter failure");
+                    FbxExport.Write(output, exportRoot);
+                };
                 var entries = new List<(MeshEntry, Mesh)> { (new MeshEntry { originalMesh = mesh, fbxMesh = mesh }, mesh) };
                 var batch = new MeshAssetOperations.HierarchyExportBatch();
                 Assert.IsTrue(operations.ExportHierarchyGroupPrepared(path, entries, false, batch, exported, null, Path.GetFullPath(path), "Backup"));
-                CollectionAssert.AreEquivalent(new[] { exported }, batch.ImportReadyFbxPaths, "the new project file is imported by a partly failed batch");
-                Assert.IsEmpty(batch.OverwrittenFbxPaths, "a new file is not an overwrite to relink");
-                batch = new MeshAssetOperations.HierarchyExportBatch();
+                ExpectError("[FBX Export] Export failed", () => Assert.IsFalse(operations.ExportHierarchyGroupPrepared(
+                    path, entries, false, batch, failed, null, Path.GetFullPath(path), "Backup")));
                 Assert.IsTrue(operations.ExportHierarchyGroupPrepared(path, entries, false, batch, outside, null, Path.GetFullPath(path), "Backup"));
-                Assert.IsEmpty(batch.ImportReadyFbxPaths, "a file outside the project is not an asset to import");
+                CollectionAssert.AreEquivalent(new[] { exported }, batch.ImportReadyFbxPaths,
+                    "the written project file is the one a partly failed batch imports: not the failed one, not the file outside the project");
+                Assert.IsEmpty(batch.OverwrittenFbxPaths, "a new file is not an overwrite to relink");
+                operations.FinishHierarchyExports(batch, false, false);
+                Assert.IsNotNull(AssetDatabase.LoadAssetAtPath<GameObject>(exported), "the partly failed batch imported the written file");
+                Assert.IsNull(AssetDatabase.LoadAssetAtPath<GameObject>(failed), "nothing of the failed group is imported");
             }
             finally {
                 if (File.Exists(outside)) File.Delete(outside);
                 AssetDatabase.DeleteAsset(exported);
+                AssetDatabase.DeleteAsset(failed);
             }
         }
 #endif

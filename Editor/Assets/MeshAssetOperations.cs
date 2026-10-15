@@ -1122,7 +1122,7 @@ namespace SashaRX.UnityMeshLab
             return ok;
         }
 
-        void FinishHierarchyExports(HierarchyExportBatch batch, bool overwriteSource, bool allGroupsSucceeded)
+        internal void FinishHierarchyExports(HierarchyExportBatch batch, bool overwriteSource, bool allGroupsSucceeded)
         {
             // Generated scene LOD objects are embedded in the exported FBX
             // now and would duplicate on reimport.
@@ -1134,12 +1134,21 @@ namespace SashaRX.UnityMeshLab
             // failed group imports only the files whose write (and, for an overwrite, .meta
             // restore) succeeded: a file whose .meta could not be restored must not be imported
             // before it is, or it takes a new GUID.
-            if (allGroupsSucceeded) AssetDatabase.Refresh();
+            var ready = new List<string>();
+            if (allGroupsSucceeded) { AssetDatabase.Refresh(); ready.AddRange(batch.ImportReadyFbxPaths); }
             else
                 foreach (string fbxPath in batch.ImportReadyFbxPaths)
-                    AssetDatabase.ImportAsset(fbxPath, ImportAssetOptions.ForceUpdate);
+                {
+                    // One import that throws (a third-party postprocessor) leaves the others to run.
+                    try { AssetDatabase.ImportAsset(fbxPath, ImportAssetOptions.ForceUpdate); ready.Add(fbxPath); }
+                    catch (Exception ex)
+                    {
+                        UvtLog.Error($"[FBX Export] '{fbxPath}' was written, but its import failed: {ex.Message} Fix the cause and reimport it.");
+                        UvtLog.Verbose(ex.ToString());
+                    }
+                }
 
-            var imported = batch.ImportReadyFbxPaths.Where(batch.OverwrittenFbxPaths.Contains).ToList();
+            var imported = ready.Where(batch.OverwrittenFbxPaths.Contains).ToList();
             // Stale "Lit" / "No Name" material remaps the importer created for collision-
             // only nodes must not survive an overwrite. Removing one reimports the file, so
             // this goes before the relink.
