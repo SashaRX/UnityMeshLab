@@ -123,24 +123,26 @@ namespace SashaRX.UnityMeshLab
                     // Preserve successful rigid correspondence before considering
                     // deformation, including a lower-ranked rigid donor.
                     foreach(bool affine in new[] {false,true})
-                    foreach(var candidate in faces.Where(f=>records[s][f].inherited).GroupBy(f=>records[s][f].chart)
-                        .OrderByDescending(g=>g.Sum(f=>s.metricFrames[f].length*s.metricFrames[f].y)).ThenBy(g=>g.Key))
                     {
-                        var anchors=candidate.SelectMany(f=>Enumerable.Range(f*3,3)).ToArray();
-                        var anchorShape=anchors.Select(c=>shape[cornerIndex[c]]).ToArray();
-                        var anchorTargets=anchors.Select(c=>proposed[s][c]).ToArray();
-                        double residual=double.PositiveInfinity;
-                        var trial=affine?FitFrozenAffine(shape,anchorShape,anchorTargets,fitTolerance,token):
-                            FitFrozenShell(shape,anchorShape,anchorTargets,fitTolerance,out residual)
-                            ??FitFrozenConsensus(shape,anchorShape,anchorTargets,
-                                candidate.Select(f=>s.metricFrames[f].length*s.metricFrames[f].y).ToArray(),
-                                fitTolerance,token);
-                        if(affine && (trial==null || !FrozenDeformationFits(s,faces,shape,trial,options))) continue;
-                        if(trial==null) {refusals.Add($"chart {candidate.Key}: anchor residual {residual:G6} px ({candidate.Count()} faces)");continue;}
-                        if(!ValidFrozenShell(s,faces,trial,options,token)) {refusals.Add($"chart {candidate.Key}: whole-island quality");continue;}
-                        if(accepted.TryGetValue(candidate.Key,out var earlier) && HasFrozenContact(earlier,trial,options,token))
-                        {refusals.Add($"chart {candidate.Key}: sibling contact");continue;}
-                        placement=trial;group=candidate.Key;return true;
+                        foreach(var candidate in faces.Where(f=>records[s][f].inherited).GroupBy(f=>records[s][f].chart)
+                            .OrderByDescending(g=>g.Sum(f=>s.metricFrames[f].length*s.metricFrames[f].y)).ThenBy(g=>g.Key))
+                        {
+                            var anchors=candidate.SelectMany(f=>Enumerable.Range(f*3,3)).ToArray();
+                            var anchorShape=anchors.Select(c=>shape[cornerIndex[c]]).ToArray();
+                            var anchorTargets=anchors.Select(c=>proposed[s][c]).ToArray();
+                            double residual=double.PositiveInfinity;
+                            var trial=affine?FitFrozenAffine(shape,anchorShape,anchorTargets,fitTolerance,token):
+                                FitFrozenShell(shape,anchorShape,anchorTargets,fitTolerance,out residual)
+                                ??FitFrozenConsensus(shape,anchorShape,anchorTargets,
+                                    candidate.Select(f=>s.metricFrames[f].length*s.metricFrames[f].y).ToArray(),
+                                    fitTolerance,token);
+                            if(affine && (trial==null || !FrozenDeformationFits(s,faces,shape,trial,options))) continue;
+                            if(trial==null) {refusals.Add($"chart {candidate.Key}: anchor residual {residual:G6} px ({candidate.Count()} faces)");continue;}
+                            if(!ValidFrozenShell(s,faces,trial,options,token)) {refusals.Add($"chart {candidate.Key}: whole-island quality");continue;}
+                            if(accepted.TryGetValue(candidate.Key,out var earlier) && HasFrozenContact(earlier,trial,options,token))
+                            {refusals.Add($"chart {candidate.Key}: sibling contact");continue;}
+                            placement=trial;group=candidate.Key;return true;
+                        }
                     }
                     return false;
                 }
