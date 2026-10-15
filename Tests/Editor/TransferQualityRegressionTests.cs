@@ -52,9 +52,13 @@ namespace SashaRX.UnityMeshLab.Tests
                 },true,cancellation.Token);
                 while(!entered.IsSet && !pending.IsCompleted) yield return null;
                 cancellation.Cancel();
+                // Give the editor continuation several worker-poll intervals
+                // while the worker still owns its data and cannot exit.
+                double observeUntil=UnityEditor.EditorApplication.timeSinceStartup+.25;
+                while(UnityEditor.EditorApplication.timeSinceStartup<observeUntil && !pending.IsCompleted) yield return null;
                 bool returnedBeforeRelease=pending.IsCompleted;
                 release.Set();
-                while(!pending.IsCompleted) yield return null;
+                while(!pending.IsCompleted || !exited) yield return null;
                 Assert.Catch<System.OperationCanceledException>(()=>pending.GetAwaiter().GetResult());
                 Assert.IsFalse(returnedBeforeRelease,"The owner must keep its data until the cancelled worker exits.");
                 Assert.IsTrue(exited);
