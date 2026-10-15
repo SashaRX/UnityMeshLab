@@ -146,6 +146,84 @@ Private evidence: `_results~/transfer-speed-audit/summary.json`, six run XML/log
 sets, `control-provenance.json`, `performance-source.diff` and the frozen control
 package. The owned project's manifest and lock are restored byte for byte.
 
+### Final-packing continuation: exact work reuse from PR253
+
+The next local continuation ports PR253's three managed-source changes on top of
+`846d08f5`. Per-LOD face/index lists and surface group keys are prepared once per
+pack; aligned native placement ranks discrete turns only to describe a shape
+refusal; phase (0,0) is not validated twice after it fails. Float32 repair clones
+coordinates and builds shared-corner aliases only when the first face actually
+needs repair. Validated faces before that repair still participate in its aliases.
+No density, placement, repair order, tolerance or work budget changes. The older
+PR254 concurrent implementation is deliberately not imported: its five-pair
+experiment found no gain and +6.5% median Kamaz exclusive time. Its existing option
+field is not evidence of an integrated concurrent path.
+
+Three new alternating pairs compare against the preceding committed integration
+`846d08f5`, not main and not the earlier pre-integration control. Both arms add
+the same opt-in timing scopes. Inputs/import metadata/settings match the earlier
+32 tex/m exclusive test. All 150 stable output files and input hashes/frames are
+identical. Native placement counts remain 22 per Kamaz solve and 12 per CementWall
+solve; Kamaz whole-atlas audits remain 13. Family validation drops 61706 -> 61643
+only by removing repeated failed phase (0,0).
+
+| Model / stage | Control median (s) | Trims median (s) | Control range / trims range (s) |
+|---|---:|---:|---|
+| Kamaz / Reverse solve | 28.275 | 26.137 | 24.482-39.209 / 22.525-28.086 |
+| Kamaz / preparation + Reverse | 45.890 | 43.956 | 41.182-62.855 / 39.516-51.368 |
+| CementWall / Reverse solve | 2.131 | 2.229 | 2.122-4.754 / 2.109-2.247 |
+| CementWall / preparation + Reverse | 2.800 | 2.916 | 2.797-6.824 / 2.784-2.974 |
+
+These full-workflow numbers are preliminary under external workstation load.
+WinDirStat and the user's open Unity were active; no user application was stopped.
+Even unchanged Forward work varies substantially between runs. The Kamaz solve
+median is 7.6% lower in this series; preparation plus solve is 4.2% lower. This
+is not a clean estimate of a small end-to-end gain. CementWall has no measured
+whole-solve gain (its native placement, untouched by the patch, is slightly slower).
+Do not combine these medians with the earlier table as one simultaneous baseline.
+
+The directly affected Kamaz stage is more consistent:
+
+| Stage | Control median (s) | Trims median (s) |
+|---|---:|---:|
+| Native placement | 8.986 | 8.825 |
+| Native envelope audit | 5.601 | 5.711 |
+| Family transforms and validation | 5.316 | 2.933 |
+| Family validation (nested) | 1.617 | 1.143 |
+| Float32 stabilization (nested) | 0.459 | 0.057 |
+| Whole-atlas audits | 0.869 | 0.778 |
+
+These intervals are nested and must not be added. Native placement and envelope
+audits now dominate; family-level validation is a small part of the solve. Simply
+parallelizing that small phase is not supported by the old PR254 evidence. In
+exclusive mode these native packing/audit operations do not call the optional
+Burst raster kernel. The previously verified async Burst path remains integrated;
+Intel runtime experiments remain OFF and all nine plugin files match the control.
+
+The next profiling target is the actual native request sequence: repeated density,
+axis/orthogonal and precision trials, and its exact envelope broad phase. Any
+new cache or broad phase must preserve real Float32 contacts, cancellation and
+budget/refusal ordering; reducing audited output quality is not a speedup.
+Ordinary Forward still spends most of its transfer work on donor-seam projection
+and contact audits, with the previously documented unresolved Kamaz faces unchanged.
+
+A separate diagnostic capture confirms 22 native requests: density 1/2/3/4/6/8
+uses 2/2/6/4/4/4 calls, including orientation and precision retries. The first
+request has 98122 proxy triangles for 2762 families; the published three-LOD
+chain has 31842 triangles. Of those proxy triangles, 66736 have altitude at most
+0.01001 in the base packing coordinates. They are packing masks/guards, not
+new exported faces. Leaner equivalent proxies or an exact envelope broad phase
+are hypotheses to test; these counts do not justify discarding protective geometry.
+All 37 stable capture outputs and input hashes/frames match the timed candidate.
+Its extra capture I/O is excluded from the six-run timing table.
+
+Validation: 426 passed / 0 failed / 16 optional private fixture skips with Burst
+required; both compile-check FBX variants and identifier/dependency guards pass.
+The healthy-face-before-repair regression covers deferred alias construction.
+Evidence: `_results~/transfer-packing-audit/`, `protocol.json`, `summary.json`,
+source hashes, the frozen control and instrumentation diff, six model-run XML/log
+sets. Manifest and lock were restored byte for byte. All changes are local.
+
 ## Replay harness
 
 The opt-in paired model test records a `performance.samples` list in each

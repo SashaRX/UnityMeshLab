@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Reverse final packing reuses per-LOD face/index lists and mesh group keys, defers shared-corner precision snapshots until a repair is needed, and avoids unused orientation searches and duplicate failed rescue phases. Placement order, quality gates and native binaries are unchanged.
 - Optional Burst footprint rasterization also executes on asynchronous Reverse workers through compiled direct-call chunks; the editor thread retains its Job System path, and scalar rasterization remains available. Worker/job/scalar regression comparisons require actual Burst execution when the optional packages are installed.
 - Forward donor-seam recovery reuses one operation's clean meshes, donor charts, initial projection and original contact audit across its retries. Ordered spatial indexes narrow chart, seam and exact parent-coverage queries without changing transfer decisions. Interactive contact audits run on workers and finish cancellation before their data is released. See `Documentation~/TRANSFER_PERFORMANCE.md` for the controlled comparison and remaining quality limitations.
 - UV viewport fill, wire, borders and highlights reuse GPU geometry while panning and zooming. The 3D viewport reuses floor/axis ribbons and draw-property blocks, prepares wire directly from the source on a worker, and keeps analytic wire antialiasing. See `Documentation~/VIEWPORT_PERFORMANCE.md` for measured CPU costs and validation.
