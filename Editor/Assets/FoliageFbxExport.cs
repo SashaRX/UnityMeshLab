@@ -132,7 +132,14 @@ namespace SashaRX.UnityMeshLab
             ownership.Add(selection.mediaOwnership);
             bool written;
             try { written = FbxExport.WriteChannels(source, entries, FbxExportIntent.Normals | FbxExportIntent.Tangents, output, null, null, selection); }
-            catch (FbxExport.PostCommitException ex) { UvtLog.Error("[FBX Export] " + ex.Message); written = false; }
+            catch (FbxExport.PostCommitException ex)
+            {
+                // The output is committed and owns its media: the failed-save cleanup leaves it
+                // alone and removes only the groups before it.
+                paths.RemoveAt(paths.Count - 1);
+                ownership.RemoveAt(ownership.Count - 1);
+                throw new InvalidOperationException($"FBX export for '{source}' wrote '{output}', but {ex.Message} Fix the cause and reimport it; earlier outputs of this save were removed.", ex);
+            }
             if (!written)
                 throw new InvalidOperationException($"FBX export failed for '{source}'. See the Mesh Lab log; no result was accepted.");
         }
