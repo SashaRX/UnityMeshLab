@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Reverse UV: the audit report is written only at the Verbose log level (the last 20 are kept) and a failed write no longer fails the transfer; the audit itself still gates every result. The ancestry kept per mesh and saved in the sidecar is a compact record of per-face overlap flags, charts, chain keys and overlap relations instead of the node's whole report (earlier sidecars are read and rewritten on restore), and the viewer's quality check no longer hashes it every frame.
 
 ### Fixed
+- Forward continuity preserves each healthy face's UV winding when joining shared points. Reflections with unchanged stretch are rejected locally and by the final audit; existing mirrored islands remain valid.
 - Donor seam validation and projection geometry use the same single-rounding position interpolation as the published mesh, avoiding false zero-area refusals caused by repeated Float32 arithmetic. Shared projection points are reconstructed from their original face and barycentrics.
 - Forward donor-seam recovery can retain originally continuous UV2 points across UV0/normal boundaries when the same donor samples differ only within the texel band. Real seams remain separate; local metric and changed-face overlap audits reject unsafe snaps, and the additional CPU trial runs on a worker during interactive transfer.
 - Transfer source preflight checks UV channel metadata instead of synchronously rebuilding shell descriptors that only the worker needs.
