@@ -31,18 +31,39 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Cut rejected target faces in their own plane, using local donor
         /// rims/seams. Edge subdivisions propagate to every incident target face.
         /// No source position is moved and no donor seam is welded away.</summary>
-        static void RefineAtDonorSeams(Surface[] donor, Surface[] targets, Options options, CancellationToken token)
+        /// <summary>Everything seam refinement derives from the donor alone: its
+        /// seam links, their edge BVH and its pixel density. Read-only once built,
+        /// so passes over one donor can share it.</summary>
+        internal sealed class DonorSeamIndex
         {
-            var graph = ReverseUvCorrespondenceGraph.Build(donor, token);
-            var seams = graph.links.Where(l => l.reason != "continuous" && l.reason != "nonmanifold").ToArray();
+            internal ReverseUvCorrespondenceGraph.Link[] seams;
+            internal TriangleBvh bvh;
+            internal float density;
+
+            internal static DonorSeamIndex Create(Surface[] donor, CancellationToken token)
+            {
+                var graph = ReverseUvCorrespondenceGraph.Build(donor, token);
+                var index = new DonorSeamIndex { seams = graph.links.Where(l => l.reason != "continuous" && l.reason != "nonmanifold").ToArray() };
+                if (index.seams.Length == 0) return index;
+                var edgePositions = new Vector3[index.seams.Length * 3];
+                for (int i = 0; i < index.seams.Length; ++i)
+                { edgePositions[i * 3] = index.seams[i].a; edgePositions[i * 3 + 1] = edgePositions[i * 3 + 2] = index.seams[i].b; }
+                index.bvh = new TriangleBvh(edgePositions, Enumerable.Range(0, edgePositions.Length).ToArray());
+                index.density = Density(donor);
+                return index;
+            }
+        }
+
+        static void RefineAtDonorSeams(Surface[] donor, Surface[] targets, Options options, CancellationToken token,
+            DonorSeamIndex index = null)
+        {
+            index ??= DonorSeamIndex.Create(donor, token);
+            var seams = index.seams;
             if (seams.Length == 0) return;
-            var edgePositions = new Vector3[seams.Length * 3];
-            for (int i = 0; i < seams.Length; ++i)
-            { edgePositions[i * 3] = seams[i].a; edgePositions[i * 3 + 1] = edgePositions[i * 3 + 2] = seams[i].b; }
-            var bvh = new TriangleBvh(edgePositions, Enumerable.Range(0, edgePositions.Length).ToArray());
+            var bvh = index.bvh;
             var plans = new List<CutFace>(); long work = 0;
             var unpropagatedEdges=new Dictionary<(Vector3,Vector3),SortedSet<double>>();
-            float density = Density(donor);
+            float density = index.density;
             // Reverse UV must also unwrap unsupported pieces into new charts.
             // Forward recovery retains their old UVs and validates actual mapped
             // Float32 triangles, so the future-new-chart altitude bound does not apply.
