@@ -1402,9 +1402,10 @@ namespace SashaRX.UnityMeshLab
                 {
                     return false;
                 }
-                string dataPath = Application.dataPath;
-                if (exportPath.StartsWith(dataPath))
-                    exportPath = "Assets" + exportPath.Substring(dataPath.Length);
+                // A destination inside the project (Assets, an embedded or local package) is an
+                // asset path from here on; one outside stays a file path.
+                string relative = FileUtil.GetProjectRelativePath(exportPath.Replace('\\', '/'));
+                if (!string.IsNullOrEmpty(relative)) exportPath = relative;
             }
 
             return true;
