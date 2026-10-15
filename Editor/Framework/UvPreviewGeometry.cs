@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -77,8 +78,7 @@ namespace SashaRX.UnityMeshLab
 
         internal void InvalidateUv(object uv)
         {
-            var stale = new List<(object, object, string)>();
-            foreach (var pair in entries) if (ReferenceEquals(pair.Key.uv, uv)) stale.Add(pair.Key);
+            var stale = entries.Keys.Where(key => ReferenceEquals(key.uv, uv)).ToArray();
             foreach (var key in stale) { entries[key].Dispose(); entries.Remove(key); }
             if (uv != null) revisions.Remove(uv);
         }

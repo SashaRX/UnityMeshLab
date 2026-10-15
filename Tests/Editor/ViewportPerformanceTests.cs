@@ -121,6 +121,28 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.Less(Render(() => canvas.GlFillValidation(0, 0, 32, uv, triangles, 1, 3, issues)).r, .01f);
                 issues = new[] { TransferValidator.TriIssue.Inverted };
                 Assert.Greater(Render(() => canvas.GlFillValidation(0, 0, 32, uv, triangles, 1, 3, issues)).r, .05f);
+                canvas.ValidationFilterMask = TransferValidator.TriIssue.None;
+                foreach (var issue in new[] { TransferValidator.TriIssue.ZeroArea, TransferValidator.TriIssue.Stretched,
+                    TransferValidator.TriIssue.Overlap, TransferValidator.TriIssue.OutOfBounds,
+                    TransferValidator.TriIssue.TexelDensity, TransferValidator.TriIssue.Inverted }) {
+                    var overlay = Render(() => canvas.GlFillValidationOverlay(0, 0, 32, uv, triangles, 1, 3, new[] { issue }));
+                    Assert.Greater(Mathf.Max(overlay.r, Mathf.Max(overlay.g, overlay.b)), .05f, "each validation issue must paint the surface");
+                }
+                Assert.Less(Render(() => canvas.GlFillValidationOverlay(0, 0, 32, uv, triangles, 1, 3,
+                    new[] { TransferValidator.TriIssue.None })).r, .01f, "clean faces have no validation overlay");
+                ctx.UvBoundaryEdgeCache[(long)mesh.GetInstanceID() << 8] = UvTopology.UvBoundaryEdgePairs(mesh, 0);
+                Render(() => canvas.GlUvBoundary(ctx, 0, 0, 32, mesh, uv, triangles, 3));
+                int boundaryPixels = 0;
+                foreach (var pixel in pixels.GetPixels()) if (pixel.r > .1f) ++boundaryPixels;
+                Assert.Greater(boundaryPixels, 20, "the cached UV boundary must remain visible");
+
+                var border = Render(() => canvas.GlBdr(0, 0, 32, uv, triangles, 1, 3, new HashSet<int> { 0 }));
+                Assert.Greater(border.r, border.g + .1f, "transfer-border faces remain orange");
+                Assert.Less(Render(() => canvas.GlBdr(0, 0, 32, uv, triangles, 1, 3, new HashSet<int>())).r, .01f);
+                var matched = Render(() => canvas.GlFillShellMatch(0, 0, 32, uv, triangles, 1, 3, new[] { 0, 0, 0 }));
+                var unmatched = Render(() => canvas.GlFillShellMatch(0, 0, 32, uv, triangles, 1, 3, new[] { -1, -1, -1 }));
+                Assert.Greater(Mathf.Abs(matched.r - matched.g), .05f, "matched shells use their palette colour");
+                Assert.That(unmatched.r, Is.EqualTo(unmatched.g).Within(.01f), "unmatched shells stay neutral");
 
                 var original = canvas.RdUvCached(mesh, 0);
                 var statuses = new[] { TriangleStatus.Accepted };

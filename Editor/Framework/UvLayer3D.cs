@@ -158,22 +158,25 @@ namespace SashaRX.UnityMeshLab
             cached = new ShellPreview { data = cache, shell = shellId }; shellMeshes[key] = cached;
             cached.work.Enqueue(() => {
                 var positions = cache.positions ?? source.vertices;
-                return token => {
-                    var data = new ShellData(); var remap = new Dictionary<int, int>();
-                    foreach (int f in shell.faceIndices) {
-                        token.ThrowIfCancellationRequested();
-                        for (int c = 0; c < 3; ++c) {
-                            int index = cache.triangles[f * 3 + c];
-                            if (!remap.TryGetValue(index, out int compact)) {
-                                compact = data.positions.Count; remap.Add(index, compact); data.positions.Add(positions[index]);
-                            }
-                            data.indices.Add(compact);
-                        }
-                    }
-                    return data;
-                };
+                return token => BuildShellData(cache, shell, positions, token);
             }, data => { cached.mesh = data.Upload(); repaint?.Invoke(); });
             return null;
+        }
+
+        static ShellData BuildShellData(PreviewShellData cache, UvShell shell, Vector3[] positions, System.Threading.CancellationToken token)
+        {
+            var data = new ShellData(); var remap = new Dictionary<int, int>();
+            foreach (int f in shell.faceIndices) {
+                token.ThrowIfCancellationRequested();
+                for (int c = 0; c < 3; ++c) {
+                    int index = cache.triangles[f * 3 + c];
+                    if (!remap.TryGetValue(index, out int compact)) {
+                        compact = data.positions.Count; remap.Add(index, compact); data.positions.Add(positions[index]);
+                    }
+                    data.indices.Add(compact);
+                }
+            }
+            return data;
         }
 
         /// <summary>The face under a GUI point: the nearest triangle of any context item

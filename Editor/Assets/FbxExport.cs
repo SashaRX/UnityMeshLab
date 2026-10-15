@@ -1630,28 +1630,30 @@ namespace SashaRX.UnityMeshLab
                 try
                 {
                     foreach (var binding in bindings)
-                    {
-                        var component = binding.Key;
-                        if (component == null) continue;
-                        // A scene edit stays on its renderer until a save writes its geometry, as does
-                        // a working copy taken from one (the by-name pass keeps them the same way).
-                        if (component is MeshFilter edited && SceneEditRegistry.KeepsRenderer(edited, edited.sharedMesh)) continue;
-                        string name = binding.Value.name;
-                        if (renameMap != null && renameMap.TryGetValue(name, out string renamed)) name = renamed;
-                        if (!meshes.TryGetValue(name, out var fresh)) continue;
-                        var current = CurrentMesh(component);
-                        if (current == fresh || (current != null && current != binding.Value.previous)) continue;
-                        Undo.RecordObject(component, RelinkUndoLabel);
-                        switch (component)
-                        {
-                            case MeshFilter filter: filter.sharedMesh = fresh; break;
-                            case SkinnedMeshRenderer skin: skin.sharedMesh = fresh; break;
-                            case MeshCollider collider: collider.sharedMesh = fresh; break;
-                        }
-                        PrefabUtility.RecordPrefabInstancePropertyModifications(component);
-                    }
+                        RelinkComponent(binding.Key, binding.Value.name, binding.Value.previous, meshes, renameMap);
                 }
                 finally { Undo.CollapseUndoOperations(undoGroup); }
+            }
+
+            static void RelinkComponent(Component component, string name, Mesh previous,
+                Dictionary<string, Mesh> meshes, Dictionary<string, string> renameMap)
+            {
+                if (component == null) return;
+                // A scene edit stays on its renderer until a save writes its geometry, as does
+                // a working copy taken from one (the by-name pass keeps them the same way).
+                if (component is MeshFilter edited && SceneEditRegistry.KeepsRenderer(edited, edited.sharedMesh)) return;
+                if (renameMap != null && renameMap.TryGetValue(name, out string renamed)) name = renamed;
+                if (!meshes.TryGetValue(name, out var fresh)) return;
+                var current = CurrentMesh(component);
+                if (current == fresh || (current != null && current != previous)) return;
+                Undo.RecordObject(component, RelinkUndoLabel);
+                switch (component)
+                {
+                    case MeshFilter filter: filter.sharedMesh = fresh; break;
+                    case SkinnedMeshRenderer skin: skin.sharedMesh = fresh; break;
+                    case MeshCollider collider: collider.sharedMesh = fresh; break;
+                }
+                PrefabUtility.RecordPrefabInstancePropertyModifications(component);
             }
 
             internal void Capture(string path, Component component)

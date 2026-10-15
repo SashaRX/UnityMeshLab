@@ -10,6 +10,7 @@ namespace SashaRX.UnityMeshLab
     public sealed class MeshAssetOperations
     {
         const string CancelButton = "Cancel";
+        const string AssetPathPrefix = "Assets/";
         readonly UvToolContext ctx;
         internal Action BeforeWrite, AfterWrite, WriteFinished;
         int previewWriteDepth;
@@ -655,9 +656,7 @@ namespace SashaRX.UnityMeshLab
             var list = entries as IList<MeshEntry> ?? entries.ToList();
             // Every UV1 save leaves a persistent sidecar replaying the same: the source's, or a
             // variant's written into the project that may already have one of its own.
-            string sidecarFbx = !intent.IncludesUv(1) ? null
-                : !isVariantExport ? sourceFbxPath
-                : outputFbxPathOverride.StartsWith("Assets/", StringComparison.Ordinal) ? outputFbxPathOverride : null;
+            string sidecarFbx = intent.IncludesUv(1) ? SidecarFbxPath(sourceFbxPath, outputFbxPathOverride, isVariantExport) : null;
             var sidecar = sidecarFbx == null ? null
                 : PrepareSidecarSync(sidecarFbx, list.Select(e => (e, WorkingMesh(e))).Where(p => p.Item2 != null).ToList());
             if (!isVariantExport && refreshContext) PrepareStandaloneRelink(sourceFbxPath);
@@ -665,7 +664,7 @@ namespace SashaRX.UnityMeshLab
             string collisionTarget = isVariantExport ? outputFbxPathOverride : sourceFbxPath;
             void SaveCollisionSidecar()
             {
-                if (collisionData == null || !collisionTarget.StartsWith("Assets/", StringComparison.Ordinal)) return;
+                if (collisionData == null || !collisionTarget.StartsWith(AssetPathPrefix, StringComparison.Ordinal)) return;
                 var saved = SidecarStore.LoadOrCreate(collisionTarget);
                 Undo.RecordObject(saved, "Save Collision Sidecar");
                 saved.collisionEntries = new List<CollisionMeshEntry>(collisionData.collisionEntries);
@@ -1045,8 +1044,7 @@ namespace SashaRX.UnityMeshLab
                     RestoreAllPreviews();
                     // The source's persistent sidecar, or a variant's written into the project that
                     // may already have one of its own.
-                    string sidecarFbx = !isVariant ? sourceFbxPath
-                        : outputFbxPath.StartsWith("Assets/", StringComparison.Ordinal) ? outputFbxPath : null;
+                    string sidecarFbx = SidecarFbxPath(sourceFbxPath, outputFbxPath, isVariant);
                     var sidecar = sidecarFbx == null ? null : PrepareSidecarSync(sidecarFbx, kv.Value);
                     if (!isVariant) PrepareStandaloneRelink(sourceFbxPath);
                     // The structure step writes these meshes whole: their scene edits will be in the file.
@@ -1134,22 +1132,7 @@ namespace SashaRX.UnityMeshLab
             // failed group imports only the files whose write (and, for an overwrite, .meta
             // restore) succeeded: a file whose .meta could not be restored must not be imported
             // before it is, or it takes a new GUID.
-            var ready = new List<string>();
-            if (allGroupsSucceeded) { AssetDatabase.Refresh(); ready.AddRange(batch.ImportReadyFbxPaths); }
-            else
-                foreach (string fbxPath in batch.ImportReadyFbxPaths)
-                {
-                    // One import that throws (a third-party postprocessor) leaves the others to run.
-                    try { AssetDatabase.ImportAsset(fbxPath, ImportAssetOptions.ForceUpdate); ready.Add(fbxPath); }
-                    catch (Exception ex)
-                    {
-                        // Its scene edits stay on their renderers: the release below would hand them
-                        // the meshes of the import that did not happen.
-                        UnmarkSceneEditsSaved(fbxPath);
-                        UvtLog.Error($"[FBX Export] '{fbxPath}' was written, but its import failed: {ex.Message} Fix the cause and reimport it.");
-                        UvtLog.Verbose(ex.ToString());
-                    }
-                }
+            var ready = ImportHierarchyExports(batch, allGroupsSucceeded);
 
             var imported = ready.Where(batch.OverwrittenFbxPaths.Contains).ToList();
             // Stale "Lit" / "No Name" material remaps the importer created for collision-
@@ -1157,19 +1140,7 @@ namespace SashaRX.UnityMeshLab
             // this goes before the relink.
             if (overwriteSource)
             {
-                foreach (string fbxPath in imported.ToList())
-                {
-                    // One reimport that throws leaves the other files, and the relink below, to run;
-                    // the file itself waits for the reimport that finishes, with its scene edits.
-                    try { FbxExport.RemoveDefaultMaterialRemaps(fbxPath, () => batch.ReArm(fbxPath)); }
-                    catch (Exception ex)
-                    {
-                        imported.Remove(fbxPath);
-                        UnmarkSceneEditsSaved(fbxPath);
-                        UvtLog.Error($"[FBX Export] '{fbxPath}': removing the default material remaps failed: {ex.Message} Reimport it once the cause is fixed.");
-                        UvtLog.Verbose(ex.ToString());
-                    }
-                }
+                RemoveHierarchyMaterialRemaps(batch, imported);
             }
 
             // Unity recreates sub-asset meshes on reimport; old MeshFilter references go
@@ -1197,6 +1168,52 @@ namespace SashaRX.UnityMeshLab
             if (allGroupsSucceeded)
                 SwitchToPostApplyView();
         }
+
+        void RemoveHierarchyMaterialRemaps(HierarchyExportBatch batch, List<string> imported)
+        {
+            foreach (string fbxPath in imported.ToList())
+            {
+                // One reimport that throws leaves the other files, and the relink below, to run;
+                // the file itself waits for the reimport that finishes, with its scene edits.
+                try { FbxExport.RemoveDefaultMaterialRemaps(fbxPath, () => batch.ReArm(fbxPath)); }
+                catch (Exception ex)
+                {
+                    imported.Remove(fbxPath);
+                    UnmarkSceneEditsSaved(fbxPath);
+                    UvtLog.Error($"[FBX Export] '{fbxPath}': removing the default material remaps failed: {ex.Message} Reimport it once the cause is fixed.");
+                    UvtLog.Verbose(ex.ToString());
+                }
+            }
+        }
+
+        static string SidecarFbxPath(string sourceFbxPath, string outputFbxPath, bool isVariant)
+        {
+            if (!isVariant) return sourceFbxPath;
+            return outputFbxPath.StartsWith(AssetPathPrefix, StringComparison.Ordinal) ? outputFbxPath : null;
+        }
+
+        List<string> ImportHierarchyExports(HierarchyExportBatch batch, bool allGroupsSucceeded)
+        {
+            var ready = new List<string>();
+            if (allGroupsSucceeded) { AssetDatabase.Refresh(); ready.AddRange(batch.ImportReadyFbxPaths); }
+            else
+                foreach (string fbxPath in batch.ImportReadyFbxPaths)
+                {
+                    // One import that throws (a third-party postprocessor) leaves the others to run.
+                    try { AssetDatabase.ImportAsset(fbxPath, ImportAssetOptions.ForceUpdate); ready.Add(fbxPath); }
+                    catch (Exception ex)
+                    {
+                        // Its scene edits stay on their renderers: the release below would hand them
+                        // the meshes of the import that did not happen.
+                        UnmarkSceneEditsSaved(fbxPath);
+                        UvtLog.Error($"[FBX Export] '{fbxPath}' was written, but its import failed: {ex.Message} Fix the cause and reimport it.");
+                        UvtLog.Verbose(ex.ToString());
+                    }
+                }
+
+            return ready;
+        }
+
 #endif
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
@@ -1298,7 +1315,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         static bool IsProjectAssetPath(string path) =>
-            path != null && (path.StartsWith("Assets/", StringComparison.OrdinalIgnoreCase) || path.StartsWith("Assets\\", StringComparison.OrdinalIgnoreCase)
+            path != null && (path.StartsWith(AssetPathPrefix, StringComparison.OrdinalIgnoreCase) || path.StartsWith("Assets\\", StringComparison.OrdinalIgnoreCase)
                 || path.StartsWith("Packages/", StringComparison.OrdinalIgnoreCase) || path.StartsWith("Packages\\", StringComparison.OrdinalIgnoreCase));
 
         // A source is replaced in one rename once its new file is complete and checked
