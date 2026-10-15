@@ -1195,10 +1195,13 @@ namespace SashaRX.UnityMeshLab
                 Mesh mesh = ctx.DMesh(e);
                 if (mesh == null) continue;
                 var matrix = ctx.PreviewMatrix(e.renderer ? e.renderer.transform : null);
-                var materials = e.renderer != null ? OriginalPreviewMaterials(e.renderer) : null;
                 // Surface retains the active Checker/Lightmap scene preview; channel
-                // inspection always samples the authored material beneath it.
-                if (!MeshViewport3D.IsMaterialMode(viewport.Mode) && e.renderer != null) materials = e.renderer.sharedMaterials;
+                // inspection samples the authored material beneath it. Avoid resolving
+                // authored materials only to discard them for ordinary Surface draws:
+                // without an active override that lookup scans all MeshLab windows.
+                Material[] materials = null;
+                if (e.renderer != null) materials = MeshViewport3D.IsMaterialMode(viewport.Mode)
+                    ? OriginalPreviewMaterials(e.renderer) : e.renderer.sharedMaterials;
                 viewportItems.Add(new MeshViewport3D.Item(mesh, matrix, materials));
 
                 viewportEntries.Add(e);
