@@ -511,6 +511,9 @@ namespace SashaRX.UnityMeshLab
 
             public ImporterRestoreScope(string path) { this.path = path; }
 
+            /// <summary>Runs after the restore's reimport, when there is one: the relink of what that import recreated.</summary>
+            public Action AfterReimport;
+
             /// <summary>isReadable was flipped on for the export; put it back off.</summary>
             public void RestoreReadable(ModelImporter source) { importer = source; readable = true; }
             /// <summary>keepQuads was toggled on for the export; put it back off.</summary>
@@ -522,6 +525,7 @@ namespace SashaRX.UnityMeshLab
                 if (readable) importer.isReadable = false;
                 if (quads) importer.keepQuads = false;
                 ReimportWithoutSidecars(path, importer.SaveAndReimport);
+                AfterReimport?.Invoke();
             }
         }
 
@@ -650,9 +654,21 @@ namespace SashaRX.UnityMeshLab
             // The imports below recreate the file's meshes: the renderers showing them are noted
             // first, by name, to take the recreated ones after the last import.
             var bindings = !isVariantExport && sceneRoot != null ? CaptureSceneMeshReferences(sourceFbxPath, entries) : null;
+            Dictionary<string, string> renameMap = null;
 
             // ── Phase 1: importer ──
-            using var importerRestore = new ImporterRestoreScope(sourceFbxPath);
+            // The restore's reimport, on the way out, recreates the meshes once more, after a
+            // failure past the replacement too: the renderers noted take them then.
+            using var importerRestore = new ImporterRestoreScope(sourceFbxPath)
+            {
+                AfterReimport = () =>
+                {
+                    if (bindings == null) return;
+                    var renames = renameMap != null && renameMap.Count > 0 ? renameMap : null;
+                    bindings.Relink(sourceFbxPath, renames);
+                    RelinkSceneMeshReferences(sourceFbxPath, renames, sceneRoot);
+                },
+            };
             var srcImporter = AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter;
             if (!isVariantExport)
             {
@@ -703,7 +719,6 @@ namespace SashaRX.UnityMeshLab
             tempRoot.name = fbxAsset.name;
 
             bool exported = false;
-            Dictionary<string, string> renameMap = null;
             var tempMeshes = new List<Mesh>();
             try
             {

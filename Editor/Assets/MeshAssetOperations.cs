@@ -1157,12 +1157,15 @@ namespace SashaRX.UnityMeshLab
             // this goes before the relink.
             if (overwriteSource)
             {
-                foreach (string fbxPath in imported)
+                foreach (string fbxPath in imported.ToList())
                 {
-                    // One reimport that throws leaves the other files, and the relink below, to run.
+                    // One reimport that throws leaves the other files, and the relink below, to run;
+                    // the file itself waits for the reimport that finishes, with its scene edits.
                     try { FbxExport.RemoveDefaultMaterialRemaps(fbxPath, () => batch.ReArm(fbxPath)); }
                     catch (Exception ex)
                     {
+                        imported.Remove(fbxPath);
+                        UnmarkSceneEditsSaved(fbxPath);
                         UvtLog.Error($"[FBX Export] '{fbxPath}': removing the default material remaps failed: {ex.Message} Reimport it once the cause is fixed.");
                         UvtLog.Verbose(ex.ToString());
                     }
