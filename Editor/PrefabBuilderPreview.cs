@@ -67,7 +67,8 @@ namespace SashaRX.UnityMeshLab
         bool pointBuffersReady;
         static void ClearBuffers(List<(Mesh mesh, Matrix4x4 matrix)> buffers)
         {
-            foreach (var buffer in buffers) if (buffer.mesh) Object.DestroyImmediate(buffer.mesh);
+            for (int i = 0; i < buffers.Count; ++i)
+                if (buffers[i].mesh) Object.DestroyImmediate(buffers[i].mesh);
             buffers.Clear();
         }
         static Mesh OverlayMesh(List<Vector3> positions, List<Color> colors, MeshTopology topology)

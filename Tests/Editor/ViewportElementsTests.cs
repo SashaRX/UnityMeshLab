@@ -19,6 +19,40 @@ namespace SashaRX.UnityMeshLab.Tests
         static readonly int[] Triangles = { 0, 1, 2, 3, 4, 5 };
 
         [Test]
+        public void DiagnosticBuffersAreReusedAndRestoreReleasesThemWithoutChangingTheSource()
+        {
+            var mesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, Vector3.up, Vector3.one * 9 },
+                uv = new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.one }, triangles = new[] { 0, 1, 2 } };
+            var owner = new GameObject("Diagnostic preview");
+            var filter = owner.AddComponent<MeshFilter>(); filter.sharedMesh = mesh;
+            var renderer = owner.AddComponent<MeshRenderer>();
+            var ctx = new UvToolContext();
+            ctx.MeshEntries.Add(new MeshEntry { originalMesh = mesh, meshFilter = filter, renderer = renderer });
+            using var preview = new PrefabBuilderPreview(); using var view = new MeshViewport3D();
+            try {
+                preview.ActivateProblemPreview(ctx); preview.BuildEdgeOverlays(ctx);
+                preview.DrawEdgeWireframe(view); preview.DrawUnusedVertexDots(view);
+                var edges = Buffers("edgeBuffers"); var points = Buffers("pointBuffers");
+                Assert.AreEqual(1, edges.Count); Assert.AreEqual(1, points.Count);
+                var edge = edges[0].mesh; var point = points[0].mesh;
+                Assert.AreEqual(MeshTopology.Lines, edge.GetTopology(0)); Assert.AreEqual(6, edge.vertexCount);
+                Assert.AreEqual(1, point.vertexCount); Assert.AreEqual(Vector3.one * 9, point.vertices[0]);
+                Assert.AreNotSame(mesh, filter.sharedMesh);
+                preview.DrawEdgeWireframe(view); preview.DrawUnusedVertexDots(view);
+                Assert.AreSame(edge, edges[0].mesh); Assert.AreSame(point, points[0].mesh);
+                preview.Restore();
+                Assert.IsFalse(edge); Assert.IsFalse(point); Assert.AreSame(mesh, filter.sharedMesh);
+                Assert.AreEqual(0, edges.Count); Assert.AreEqual(0, points.Count);
+                Assert.AreEqual(4, mesh.vertexCount); Assert.AreEqual(0, mesh.colors.Length);
+            }
+            finally { preview.Restore(); Object.DestroyImmediate(owner); Object.DestroyImmediate(mesh); }
+
+            List<(Mesh mesh, Matrix4x4 matrix)> Buffers(string field) =>
+                (List<(Mesh mesh, Matrix4x4 matrix)>)typeof(PrefabBuilderPreview).GetField(field,
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(preview);
+        }
+
+        [Test]
         public void DisconnectedOverlappingUvIslandsHaveDistinctColorsAndLodOrderDoesNotMatter()
         {
             var source = new ShellPreviewColors.SourceData(Positions, Uv, Triangles);

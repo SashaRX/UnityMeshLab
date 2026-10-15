@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -59,8 +60,7 @@ namespace SashaRX.UnityMeshLab
         internal void Remove(Mesh source) { if (source && entries.Remove(source, out var entry)) entry.Dispose(); }
         internal void Prune()
         {
-            var stale = new List<Mesh>();
-            foreach (var pair in entries) if (!pair.Key) stale.Add(pair.Key);
+            var stale = entries.Keys.Where(key => !key).ToArray();
             foreach (var key in stale) { entries[key].Dispose(); entries.Remove(key); }
         }
         public void Dispose()

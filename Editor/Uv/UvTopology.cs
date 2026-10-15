@@ -230,26 +230,31 @@ namespace SashaRX.UnityMeshLab
             {
                 var shell = shells[i];
                 shellById[shell.shellId] = shell;
-                bool hasPoint = false;
-                var b = new Bounds(Vector3.zero, Vector3.zero);
-                foreach (int fi in shell.faceIndices)
-                {
-                    faceToShell[fi] = shell.shellId;
-                    int t0 = fi * 3;
-                    if (t0 + 2 >= triangles.Length) continue;
-                    for (int k = 0; k < 3; k++)
-                    {
-                        int vi = triangles[t0 + k];
-                        if (vi < 0 || vi >= uv.Length) continue;
-                        Vector3 p = uv[vi];
-                        if (!hasPoint) { b = new Bounds(p, Vector3.zero); hasPoint = true; }
-                        else b.Encapsulate(p);
-                    }
-                }
-                bounds[i] = b;
+                bounds[i] = ShellBounds(shell, uv, triangles, faceToShell);
             }
             return new PreviewShellData { shells = shells, faceToShell = faceToShell, shellById = shellById, shellBounds = bounds, triangles = triangles, uvs = uv,
                 uvBvh = buildPicking ? BuildUvBvh(uv, triangles) : null };
+        }
+
+        static Bounds ShellBounds(UvShell shell, Vector2[] uv, int[] triangles, Dictionary<int, int> faceToShell)
+        {
+            bool hasPoint = false;
+            var bounds = new Bounds(Vector3.zero, Vector3.zero);
+            foreach (int fi in shell.faceIndices)
+            {
+                faceToShell[fi] = shell.shellId;
+                int t0 = fi * 3;
+                if (t0 + 2 >= triangles.Length) continue;
+                for (int k = 0; k < 3; k++)
+                {
+                    int vi = triangles[t0 + k];
+                    if (vi < 0 || vi >= uv.Length) continue;
+                    Vector3 point = uv[vi];
+                    if (!hasPoint) { bounds = new Bounds(point, Vector3.zero); hasPoint = true; }
+                    else bounds.Encapsulate(point);
+                }
+            }
+            return bounds;
         }
 
         internal static TriangleBvh2D BuildUvBvh(Vector2[] uv, int[] triangles)

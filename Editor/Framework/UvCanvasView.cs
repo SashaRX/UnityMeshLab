@@ -829,18 +829,8 @@ namespace SashaRX.UnityMeshLab
         public void GlCheckerBg(float ox, float oy, float sz, int cells, float alpha, bool neutralGray = false, HashSet<Vector2Int> occupiedTiles = null)
         {
             if (cells <= 0 || alpha <= 0f) return;
-            var batch = geometry.Get(this, this, "Checker", (cells, neutralGray), MeshTopology.Triangles, builder => {
-                Color darkColor = neutralGray ? new Color(.24f,.24f,.24f,1) : new Color(.20f,.20f,.20f,1);
-                Color lightColor = neutralGray ? new Color(.32f,.32f,.32f,1) : new Color(.38f,.38f,.38f,1);
-                for (int y = 0; y < cells; y++)
-                    for (int x = 0; x < cells; x++) {
-                        builder.SetColor(((x + y) & 1) == 0 ? darkColor : lightColor);
-                        float x0 = (float)x / cells, x1 = (float)(x + 1) / cells;
-                        float y0 = 1f - (float)y / cells, y1 = 1f - (float)(y + 1) / cells;
-                        builder.Vertex(new Vector2(x0, y0)); builder.Vertex(new Vector2(x1, y0)); builder.Vertex(new Vector2(x1, y1));
-                        builder.Vertex(new Vector2(x0, y0)); builder.Vertex(new Vector2(x1, y1)); builder.Vertex(new Vector2(x0, y1));
-                    }
-            });
+            var batch = geometry.Get(this, this, "Checker", (cells, neutralGray), MeshTopology.Triangles,
+                builder => BuildChecker(builder, cells, neutralGray));
             GlMat.SetFloat(OpacityId, alpha); GlMat.SetPass(0);
             try {
                 if (occupiedTiles == null) DrawTile(Vector2Int.zero);
@@ -848,6 +838,20 @@ namespace SashaRX.UnityMeshLab
             }
             finally { GlMat.SetFloat(OpacityId, 1); GlMat.SetPass(0); }
             void DrawTile(Vector2Int tile) => Graphics.DrawMeshNow(batch, UvPreviewGeometry.Matrix(ox + tile.x * sz, oy - tile.y * sz, sz));
+        }
+
+        static void BuildChecker(UvPreviewGeometry.Builder builder, int cells, bool neutralGray)
+        {
+            Color darkColor = neutralGray ? new Color(.24f,.24f,.24f,1) : new Color(.20f,.20f,.20f,1);
+            Color lightColor = neutralGray ? new Color(.32f,.32f,.32f,1) : new Color(.38f,.38f,.38f,1);
+            for (int y = 0; y < cells; y++)
+                for (int x = 0; x < cells; x++) {
+                    builder.SetColor(((x + y) & 1) == 0 ? darkColor : lightColor);
+                    float x0 = (float)x / cells, x1 = (float)(x + 1) / cells;
+                    float y0 = 1f - (float)y / cells, y1 = 1f - (float)(y + 1) / cells;
+                    builder.Vertex(new Vector2(x0, y0)); builder.Vertex(new Vector2(x1, y0)); builder.Vertex(new Vector2(x1, y1));
+                    builder.Vertex(new Vector2(x0, y0)); builder.Vertex(new Vector2(x1, y1)); builder.Vertex(new Vector2(x0, y1));
+                }
         }
 
         void GlUvColorBg(float ox, float oy, float sz, float alpha, HashSet<Vector2Int> tiles)

@@ -51,9 +51,14 @@ try {
         'TexturePackingTiffTests','TexturePackingFormatIntegrationTests','WindowPreferencesTests')
     $assetTransferSuites = @('ToolAssetSaveTests','FbxExportTests','FoliageFbxExportTests','PrReviewRegressionTests',
         'ReverseUvTransferTests','TransferCaptureTests','MeshNamingTests','MeshAccessTests')
-    $viewportSuites = @('ViewportOverlayTests')
+    $viewportSuites = @('ViewportOverlayTests','ViewportElementsTests','ViewportPerformanceTests',
+        'ViewportTopologyTests','MeshViewport3DTests','PreviewLinesTests',
+        'PreviewSpaceTests','MaterialChannelPreviewTests')
+    $viewportRegressions = @('ShellPreviewCompletesWhenAnotherVisibleMeshLacksTheChannel',
+        'ThreeDSpotCompletesTheFirstClickAfterPreviewPreparation')
     $requiredSuites = $texturePackingSuites + $assetTransferSuites + $viewportSuites
     $testFilter = 'LodHardEdgeTests;LodSmoothingRegionTests;LodQslimTransferTests;LodAttributeCorrectionTests;LodQualitySelectionTests;LodGenerationToolTests;LodLoopSimplifierTests;LodSmallPartsTests;LodScreenAcceptanceTests;LodScreenValidationTests;LodProjectVisualQualityTests;CollisionElementTests;CollisionMeshToolTests;LodSharedUvTransferTests;LodPaintRetriangulationTests;' + ($requiredSuites -join ';')
+    $testFilter += ';' + (($viewportRegressions | ForEach-Object { "PreviewLodSwitchTests.$_" }) -join ';')
     $arguments = @('-batchmode','-projectPath',$consumer,'-runTests','-testPlatform','EditMode','-testFilter',$testFilter,
         '-testResults',(Join-Path $results 'tests.xml'),'-logFile',(Join-Path $results 'unity.log'),
         '-enableCodeCoverage','-debugCodeOptimization','-coverageResultsPath',(Join-Path $results 'coverage'),
@@ -81,6 +86,10 @@ try {
     foreach ($suite in $requiredSuites) {
         $executed = $tests.SelectNodes("//test-suite[@name='$suite']//test-case[@result='Passed']")
         if ($executed.Count -eq 0) { throw "Required coverage suite did not execute successfully: $suite" }
+    }
+    foreach ($regression in $viewportRegressions) {
+        $executed = $tests.SelectNodes("//test-suite[@name='PreviewLodSwitchTests']//test-case[@name='$regression' and @result='Passed']")
+        if ($executed.Count -eq 0) { throw "Required viewport regression did not execute successfully: $regression" }
     }
     $viewportRegression = $tests.SelectNodes("//test-suite[@name='ViewportOverlayTests']//test-case[@name='UvFillStaysOnTheSurfaceWithCameraDirectedMaterialOffsets' and @result='Passed']")
     if ($viewportRegression.Count -eq 0) { throw 'Required viewport GPU regression did not pass' }

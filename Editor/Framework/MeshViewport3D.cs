@@ -560,8 +560,6 @@ namespace SashaRX.UnityMeshLab
             float step = NiceStep(Mathf.Max(sx, sy) / 8f);
             if (step <= 0f) return null;
             int half = Mathf.Clamp(Mathf.CeilToInt(Mathf.Max(ex, ey) * 2.5f / step), 4, 60);
-            float cx = Mathf.Round((yz ? bounds.center.z : bounds.center.x) / step) * step;
-            float cz = Mathf.Round((xy || yz ? bounds.center.y : bounds.center.z) / step) * step;
             float reach = half * step;
             var pairs = new List<Vector3>(half * 8 + 4); var colors = new List<Color>(half * 4 + 2);
             var tone = new Color(0.62f, 0.70f, 0.82f);
@@ -570,8 +568,8 @@ namespace SashaRX.UnityMeshLab
                 float fade = 1f - Mathf.Abs(o) / reach;
                 float a = (i % 5 == 0 ? 0.40f : 0.18f) * fade;
                 var c = new Color(tone.r, tone.g, tone.b, a);
-                pairs.Add(GridPoint(bounds, cx + o, cz - reach)); pairs.Add(GridPoint(bounds, cx + o, cz + reach)); colors.Add(c);
-                pairs.Add(GridPoint(bounds, cx - reach, cz + o)); pairs.Add(GridPoint(bounds, cx + reach, cz + o)); colors.Add(c);
+                pairs.Add(GridPoint(bounds, o, -reach)); pairs.Add(GridPoint(bounds, o, reach)); colors.Add(c);
+                pairs.Add(GridPoint(bounds, -reach, o)); pairs.Add(GridPoint(bounds, reach, o)); colors.Add(c);
             }
             return gridMesh = BuildColoredLines(pairs, colors);
         }
