@@ -1,0 +1,41 @@
+#pragma kernel FindPairs
+
+StructuredBuffer<float4> _Bounds;
+StructuredBuffer<int4> _Cells;
+StructuredBuffer<uint> _Members;
+// Absolute member index, cell end, cell x, cell y.
+StructuredBuffer<uint4> _Rows;
+RWStructuredBuffer<uint> _OwnedCounts;
+RWStructuredBuffer<uint> _Counter;
+// Triangle indices, row index, one-based owned-pair rank within that row.
+RWStructuredBuffer<uint4> _Pairs;
+uint _RowCount;
+uint _Capacity;
+
+[numthreads(64, 1, 1)]
+void FindPairs(uint3 id : SV_DispatchThreadID)
+{
+    uint rowIndex=id.x;
+    if(rowIndex>=_RowCount) return;
+    uint4 row=_Rows[rowIndex];
+    uint i=_Members[row.x];
+    int4 aCell=_Cells[i];
+    float4 a=_Bounds[i];
+    uint owned=0;
+    for(uint n=row.x+1;n<row.y;++n)
+    {
+        uint j=_Members[n];
+        int4 bCell=_Cells[j];
+        // Same unique ownership rule and visit order as the CPU grid.
+        if(max(aCell.x,bCell.x)!=(int)row.z || max(aCell.y,bCell.y)!=(int)row.w) continue;
+        ++owned;
+        float4 b=_Bounds[j];
+        // Inclusive, outward-rounded boxes: touching and uncertain pairs stay.
+        if(a.z<b.x || b.z<a.x || a.w<b.y || b.w<a.y) continue;
+        uint slot;
+        InterlockedAdd(_Counter[0],1,slot);
+        if(slot<_Capacity) _Pairs[slot]=uint4(i,j,rowIndex,owned);
+        else InterlockedOr(_Counter[1],1);
+    }
+    _OwnedCounts[rowIndex]=owned;
+}

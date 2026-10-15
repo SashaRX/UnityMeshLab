@@ -5,6 +5,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- Experimental asynchronous GPU AABB pair selection for UV atlas diagnostics retains exact CPU predicates and report ordering. It remains outside normal Transfer: the GTX 980 Ti comparison was slower than CPU.
+
 ### Changed
 - Exclusive Reverse packing reuses one operation's native charts and owned input buffers across identical trials, rebuilding them when footprint data changes. Three paired Kamaz/CementWall runs retain exact outputs and show about 1% lower Reverse time; native placement and all quality audits still run.
 - Reverse final packing reuses per-LOD face/index lists and mesh group keys, defers shared-corner precision snapshots until a repair is needed, and avoids unused orientation searches and duplicate failed rescue phases. Placement order, quality gates and native binaries are unchanged.

@@ -26,6 +26,7 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [TestCase("BvhQueries", "Raycast", "Nearest")]
+        [TestCase("UvAtlasPairs", "FindPairs", "FindPairs")]
         [TestCase("SourceAORayTrace", "BakeAO", "FinalizeAO")]
         [TestCase("VertexAORayTrace", "BakeAO", "FinalizeAO")]
         public void PackageImportCompilesSharedBvhIncludeAndEveryKernel(string shaderName, string firstKernel, string secondKernel)
