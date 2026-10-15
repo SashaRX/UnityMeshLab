@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Forward Transfer no longer copies whole-mesh streams per shell: symmetry-split snapshots read vertices/normals once per mesh state, prescribed splits memoize a shell's UV0 overlap until the next split, and per-shell overlap scans use compact shell geometry. The diagnostic-only 3D coverage pass runs only when its Verbose log is enabled. Transfer decisions and UVs are unchanged.
 - Reverse UV: the audit report is written only at the Verbose log level (the last 20 are kept) and a failed write no longer fails the transfer; the audit itself still gates every result. The ancestry kept per mesh and saved in the sidecar is a compact record of per-face overlap flags, charts, chain keys and overlap relations instead of the node's whole report (earlier sidecars are read and rewritten on restore), and the viewer's quality check no longer hashes it every frame.
 
 ### Fixed
