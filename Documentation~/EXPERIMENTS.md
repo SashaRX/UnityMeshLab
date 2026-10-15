@@ -41,6 +41,37 @@ manifest/lock remain identical. Earlier combined cache/GPU measurements and
 their separate NaN assertion rerun remain in `native-chart-reuse-final` and
 `gpu-envelope-audit`; they are not the publication-only test count.
 
+## GPU atlas pair selection: exact hybrid audit experiment — 2026-10-15
+
+Separate experimental slice: an explicit async entry point builds the same grid,
+selects conservatively widened AABB candidates on GPU and returns their original
+owned-comparison ordinals. The existing CPU double predicates, area thresholds,
+budget accounting, conflict limit and report ordering remain authoritative.
+Overflow, unsupported hardware or readback errors fall back to the complete CPU
+scan. Cancellation retires submitted readbacks before releasing GPU buffers.
+Normal Transfer does not call this experimental backend.
+
+On GTX 980 Ti / DX11, three rounds replay all 22 captured Kamaz native proxy
+requests and all three CementWall published LOD layouts: 75 exact report
+comparisons, zero fallbacks. Additional controls cover touching/one-ULP edges,
+degenerate/non-finite/subnormal and very large coordinates, comparison budgets,
+same-chart filtering, overflow fallback and cancellation/reuse.
+
+| Input set, median sum per round | CPU audit | GPU selection + exact CPU audit |
+|---|---:|---:|
+| 22 Kamaz native envelopes | 4.892 s | 7.590 s |
+| 3 CementWall published layouts | 2.143 ms | 18.965 ms |
+
+These wall times include preparation, upload, asynchronous readback, sorting and
+the retained exact audit; they are not kernel-only or complete Reverse timings.
+Kamaz still returns 18.8 million candidates across its 22 requests. Transfer and
+sorting costs outweigh AABB filtering; the GPU prototype is 55% slower there.
+Do not integrate it into publication gates as an accelerator. Retain the explicit
+prototype and equivalence tests for further experiments; quality gates are not
+weakened. Any later publication should keep this experiment separate from native
+chart reuse. Evidence: `_results~/gpu-envelope-audit/measurements.json` and
+`summary.json`; final CPU control also retains its original cached triangle reads.
+
 ## Reverse final packing: port exact work trims — 2026-10-15
 
 Port the managed PR253 trims onto local integration `846d08f5`, retaining its

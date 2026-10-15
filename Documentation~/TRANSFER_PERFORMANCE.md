@@ -291,6 +291,52 @@ manifest/lock are restored exactly. Ordinary Kamaz's previously documented
 quality defects remain unchanged; reuse is not a fix for those defects. The
 live project was not updated by these benchmarks.
 
+### GPU pair-selection experiment: exact output, slower wall time
+
+An explicit experimental `MeasureGpuAsync` snapshots managed input, constructs
+the same CPU grid, and asks a compute shader for a conservative superset of AABB
+pairs. Outward Float32 bounds retain touching and uncertain pairs. GPU records
+unique grid ownership and each candidate's original comparison ordinal; readback
+sorting preserves work budgets and deterministic sample order. The CPU still
+executes the original double SAT/clipping/area predicates and conflict limit.
+Unsupported hardware, overflow or errors use the complete CPU path. Cancellation
+waits for submitted readbacks before releasing buffers. Normal Transfer and its
+publication gates stay on CPU; the experiment has no automatic registration.
+
+Three DX11 rounds on NVIDIA GeForce GTX 980 Ti replay 22 actual Kamaz native proxy
+envelopes and three CementWall published LOD layouts. All 75 reports match CPU
+exactly, with no fallback; the CementWall inputs are layouts, not native proxies.
+Median sums per round:
+
+| Input set | CPU (ms) | Hybrid including setup/readback/sort/exact CPU (ms) |
+|---|---:|---:|
+| Kamaz, 22 envelopes | 4891.95 | 7590.49 |
+| CementWall, 3 layouts | 2.143 | 18.965 |
+
+Kamaz's 33.1 million charged comparisons still produce 18.8 million conservative
+GPU candidates. Its exact CPU phase alone remains about 4.60 s, plus about
+0.77 s preparation and 2.26 s selection/upload/readback/sorting. Those are separate
+component medians; their sum need not equal the median total. Selection is an
+end-to-end wall timer, not GPU kernel time. The hybrid audit is 55% slower and
+does not qualify as a production accelerator on this hardware. CementWall is too
+small to amortize dispatch/readback. No whole-Reverse GPU speedup is claimed.
+
+Analytic tests cover edge contacts, one-ULP differences, slivers, non-finite and
+subnormal coordinates, wide coordinates, finite work budgets, same-chart filters,
+overflow fallback and cancellation/resource reuse. Native-cache tests cover exact
+keys, immutable buffer identity/order, failed preparation, lease exclusion and
+disposal. The broad run passed 453 cases with one NaN assertion failure and 16
+optional skips; unchanged NaN coordinates compare unequal as ordinary Vector2s.
+After changing that immutability assertion to compare Float32 bits, its targeted
+rerun and the native-cache tests passed all six cases. The combined distinct
+results are 454 passed, zero unresolved failures and 16 optional skips, not a
+claim that the first broad run was entirely green. Both FBX compile variants and
+identifier/dependency guards pass. See `_results~/gpu-envelope-audit/verification.json`,
+`measurements.json`, `summary.json` and run XML/logs. Keep this prototype separate
+from the native chart-reuse experiment when preparing future PRs.
+
+CUDA is a possible separate follow-up backend. It has not been implemented or measured. Any trial must compare the same exact CPU reports, retain every quality gate, and include transfer/readback overhead. Transfer correctness takes priority over further parallelization experiments.
+
 ## Replay harness
 
 The opt-in paired model test records a `performance.samples` list in each

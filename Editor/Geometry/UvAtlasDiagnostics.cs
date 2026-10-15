@@ -7,7 +7,7 @@ namespace SashaRX.UnityMeshLab
 {
     /// <summary>Read-only UV triangle intersection diagnostics, including folded neighbours.
     /// Shared edges and corners are legal only when intersection area is zero.</summary>
-    internal static class UvAtlasDiagnostics
+    internal static partial class UvAtlasDiagnostics
     {
         /// <summary>Capture source geometry and exact settings; rounded inspector
         /// values and UV-only repack dumps cannot reproduce simplification output.
@@ -73,6 +73,10 @@ namespace SashaRX.UnityMeshLab
         internal static Report Measure(RemeshNative.Geometry g, CancellationToken token,
             bool sameChartOnly = false, long comparisonBudget = -1, bool collectConflicts = false,
             Vector2 coordinateOrigin=default,double coordinateScale=1)
+            =>MeasureCore(g,token,sameChartOnly,comparisonBudget,collectConflicts,coordinateOrigin,coordinateScale,null);
+
+        static Report MeasureCore(RemeshNative.Geometry g,CancellationToken token,bool sameChartOnly,
+            long comparisonBudget,bool collectConflicts,Vector2 coordinateOrigin,double coordinateScale,GpuScan gpu)
         {
             token.ThrowIfCancellationRequested();
             var report = new Report();
@@ -152,9 +156,15 @@ namespace SashaRX.UnityMeshLab
             // are those whose bounding boxes all overlap (a fan of thousands of triangles
             // around one vertex) — valid atlases that a budget would refuse to certify, which
             // is the failure this scan replaces. An explicit budget still applies.
+            if(gpu?.capture==true)
+            {
+                gpu.input=CaptureGpuInput(triangles,cells,members,offsets,resX);
+                return report; // Private preparation pass; never published as an audit.
+            }
             if (comparisonBudget < 0) comparisonBudget = long.MaxValue;
             var bufferA = new Point[8]; var bufferB = new Point[8];
-            Scan();
+            if(gpu?.selection!=null) ScanSelected(gpu.selection);
+            else Scan();
             // Deterministic whatever the grid: the repair's greedy cover walks this list.
             report.conflicts.Sort((x, y) => x.a != y.a ? x.a.CompareTo(y.a) : x.b.CompareTo(y.b));
             return report;
@@ -172,7 +182,7 @@ namespace SashaRX.UnityMeshLab
                     int begin = offsets[c], end = offsets[c + 1];
                     for (int m = begin; m < end; ++m)
                     {
-                        int i = members[m]; var a = triangles[i];
+                        int i = members[m];var a=triangles[i];
                         for (int n = m + 1; n < end; ++n)
                         {
                             if ((++visits & 4095) == 0) token.ThrowIfCancellationRequested();
@@ -182,25 +192,49 @@ namespace SashaRX.UnityMeshLab
                             // triangles meets in many cells, which must not count many times.
                             if (Math.Max(cells[i * 4], cells[j * 4]) != cx || Math.Max(cells[i * 4 + 1], cells[j * 4 + 1]) != cy) continue;
                             if (++report.comparisons > comparisonBudget) { report.complete = false; return; }
-                            var b = triangles[j];
-                            if (sameChartOnly && a.chart != b.chart || b.minX >= a.maxX || a.minX >= b.maxX || b.minY >= a.maxY || a.minY >= b.maxY) continue;
-                            if (Separated(a, b)) continue;
-                            double area = IntersectionArea(a, b, bufferA, bufferB);
-                            // Ignore numerical slivers, not all neighbours. Relative tolerance
-                            // scales with the smaller triangle; absolute floor is in UV units².
-                            if (area <= Math.Max(1e-16, Math.Min(a.area, b.area) * 1e-8)) continue;
-                            // The memory guard: an atlas with millions of overlapping pairs is
-                            // beyond repair anyway, and its list must not grow without bound.
-                            if (report.pairs >= MaxConflicts) { report.complete = false; return; }
-                            ++report.pairs;
-                            if (collectConflicts) report.conflicts.Add((Math.Min(a.face, b.face), Math.Max(a.face, b.face)));
-                            if (a.chart == b.chart) ++report.sameChartPairs; else ++report.crossChartPairs;
-                            report.pairAreaSum += area;
-                            if (report.samples.Count < 8)
-                                report.samples.Add(FormattableString.Invariant($"faces={a.face}/{b.face} charts={a.chart}/{b.chart} area={area:G6}"));
+                            var b=triangles[j];
+                            if (sameChartOnly && a.chart != b.chart || b.minX >= a.maxX || a.minX >= b.maxX
+                                || b.minY >= a.maxY || a.minY >= b.maxY) continue;
+                            if(!TestPair(in a,in b)) return;
                         }
                     }
                 }
+            }
+
+            void ScanSelected(CandidateSelection selection)
+            {
+                foreach(var pair in selection.pairs)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if(pair.ordinal>comparisonBudget)
+                    {report.comparisons=comparisonBudget+1;report.complete=false;return;}
+                    report.comparisons=pair.ordinal;
+                    var a=triangles[pair.a];var b=triangles[pair.b];
+                    if(sameChartOnly && a.chart!=b.chart || b.minX>=a.maxX || a.minX>=b.maxX || b.minY>=a.maxY || a.minY>=b.maxY) continue;
+                    if(!TestPair(in a,in b)) return;
+                }
+                report.comparisons=selection.comparisons;
+                if(selection.comparisons>comparisonBudget)
+                {report.comparisons=comparisonBudget+1;report.complete=false;}
+            }
+
+            bool TestPair(in Triangle a,in Triangle b)
+            {
+                if (Separated(a, b)) return true;
+                double area = IntersectionArea(a, b, bufferA, bufferB);
+                // Ignore numerical slivers, not all neighbours. Relative tolerance
+                // scales with the smaller triangle; absolute floor is in UV units².
+                if (area <= Math.Max(1e-16, Math.Min(a.area, b.area) * 1e-8)) return true;
+                // The memory guard: an atlas with millions of overlapping pairs is
+                // beyond repair anyway, and its list must not grow without bound.
+                if (report.pairs >= MaxConflicts) { report.complete = false; return false; }
+                ++report.pairs;
+                if (collectConflicts) report.conflicts.Add((Math.Min(a.face, b.face), Math.Max(a.face, b.face)));
+                if (a.chart == b.chart) ++report.sameChartPairs; else ++report.crossChartPairs;
+                report.pairAreaSum += area;
+                if (report.samples.Count < 8)
+                    report.samples.Add(FormattableString.Invariant($"faces={a.face}/{b.face} charts={a.chart}/{b.chart} area={area:G6}"));
+                return true;
             }
         }
 
