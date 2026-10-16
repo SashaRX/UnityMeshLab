@@ -110,6 +110,7 @@ namespace SashaRX.UnityMeshLab
         {
             changes=new Dictionary<int,Vector2>();var included=new HashSet<int>(corners);
             var shared=new Dictionary<Vector3,Vector2>();
+            var incident=new Dictionary<(Vector3 point,Vector2 current),Vector2>();
             for(int i=0;i<corners.Length;++i)
             {
                 int vertex=surface.indices[corners[i]];var next=proposal[i]/state.resolution;
@@ -117,10 +118,16 @@ namespace SashaRX.UnityMeshLab
                 var point=surface.positions[vertex];
                 if(shared.TryGetValue(point,out previous) && !previous.Equals(next)) return false;
                 shared[point]=next;changes[vertex]=next;
+                incident[(point,state.current[vertex])]=next;
             }
+            // Duplicated mesh vertices can still represent one continuous UV
+            // point. A different authored UV is already a separate seam side.
             for(int c=0;c<surface.indices.Length;++c)
-                if(!included.Contains(c) && changes.TryGetValue(surface.indices[c],out var next)
-                    && !state.current[surface.indices[c]].Equals(next)) return false;
+            {
+                int vertex=surface.indices[c];
+                if(!included.Contains(c) && incident.TryGetValue((surface.positions[vertex],state.current[vertex]),out var next)
+                    && !state.current[vertex].Equals(next)) return false;
+            }
             return true;
         }
     }

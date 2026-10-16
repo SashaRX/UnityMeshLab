@@ -13,24 +13,37 @@ namespace SashaRX.UnityMeshLab
             internal float x,y,rowHeight,width;
         }
 
+        static void LoadPreparedFrozenCoordinates(Surface[][] chain,Dictionary<Surface,Vector2[]> preparedUv,int resolution)
+        {
+            foreach(var surface in chain.SelectMany(l=>l))
+            {
+                var uv=preparedUv[surface];
+                if(!surface.input.usePreparedUv2 || uv.Length!=surface.positions.Length)
+                    throw new InvalidOperationException("Frozen reverse requires ordinary Transfer UVs on every LOD.");
+                surface.pixels=surface.indices.Select(i=>uv[i]*resolution).ToArray();
+            }
+        }
+
         static void InitializeFrozenShellChain(Surface[][] chain,Options options,Report report,
             ref int nextChart,ref float width,ref float height,CancellationToken token,
             Dictionary<Surface,Vector2[]> preparedUv)
         {
             // Ordinary Transfer is an immutable reference for every finer LOD.
             // Only the coarsest foundation is prepared before correspondence.
+            LoadPreparedFrozenCoordinates(chain,preparedUv,options.seedResolution);
+            // Manual resolution supplies no requested density. Measure the
+            // complete prepared foundation before any repair or chart split.
+            float requested=options.seedDensity>0?options.seedDensity:Density(chain[0]);
+            options.seedDensity=requested;
             foreach(var surface in chain.SelectMany(l=>l))
             {
                 var uv=preparedUv[surface];
-                if(!surface.input.usePreparedUv2 || uv.Length!=surface.positions.Length)
-                    throw new InvalidOperationException("Frozen reverse requires ordinary Transfer UVs on every LOD.");
                 if(surface.lod==chain[0][0].lod)
                     preparedUv[surface]=uv=RepairForwardReference(surface,uv,options,token);
                 surface.pixels=surface.indices.Select(i=>uv[i]*options.seedResolution).ToArray();
                 AssignCharts(surface,Enumerable.Range(0,surface.faces.Length).ToArray(),ref nextChart);
                 surface.preparedRegions=surface.faces.Select(f=>f.chart).ToArray();
             }
-            float requested=options.seedDensity>0?options.seedDensity:Density(chain[0]);
             foreach(var surface in chain.SelectMany(l=>l))
             {
                 var uv=preparedUv[surface];

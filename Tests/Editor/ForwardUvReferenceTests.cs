@@ -33,6 +33,40 @@ namespace SashaRX.UnityMeshLab.Tests
 
         [TearDown] public void Cleanup() {if(mesh) UnityEngine.Object.DestroyImmediate(mesh);}
 
+        [Test] public void ManualResolutionDerivesDensityBeforeReferenceRepair()
+        {
+            var surface=Surface();surface.lod=2;surface.input.usePreparedUv2=true;
+            var before=mesh.uv2;
+            var prepared=new System.Collections.Generic.Dictionary<ReverseUvTransfer.Surface,Vector2[]> {{surface,before}};
+            var options=new ReverseUvTransfer.Options {seedDensity=0,seedResolution=512};
+            typeof(ReverseUvTransfer).GetMethod("InitializeFrozenShellChain",BindingFlags.Static|BindingFlags.NonPublic)
+                .Invoke(null,new object[] {new[] {new[] {surface}},options,new ReverseUvTransfer.Report(),0,0f,0f,default(CancellationToken),prepared});
+            Assert.Greater(options.seedDensity,0,"Manual resolution must derive the existing prepared atlas density");
+            Assert.AreNotSame(before,prepared[surface]);
+            Assert.AreEqual(prepared[surface][1],prepared[surface][3]);
+            Assert.AreEqual(prepared[surface][2],prepared[surface][5]);
+            Assert.IsTrue(surface.pixels.All(p=>!float.IsNaN(p.x) && !float.IsNaN(p.y)));
+            CollectionAssert.AreEqual(before,mesh.uv2);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void DuplicatedOutsidePointPreservesExistingUvContinuityAndAuthoredSeams(bool authoredSeam)
+        {
+            var outside=authoredSeam?new Vector2(9,9):new Vector2(1,0);
+            var extraUv=new[] {outside,new Vector2(5,5),new Vector2(6,5)};
+            var surface=AppendFace(Surface(),new[] {new Vector3(1,0,0),new Vector3(2,-1,0),new Vector3(2,0,0)},extraUv,extraUv);
+            var before=mesh.uv2;
+            var after=ReverseUvTransfer.RepairForwardReference(surface,before,new ReverseUvTransfer.Options {seedDensity=10},default);
+            if(authoredSeam)
+            {
+                Assert.AreNotSame(before,after,"A separate authored UV seam is an independent outside corner");
+                Assert.AreEqual(after[1],after[3]);Assert.AreEqual(after[2],after[5]);
+                CollectionAssert.AreEqual(before.Skip(6),after.Skip(6));
+            }
+            else Assert.AreSame(before,after,"A duplicated mesh vertex must not hide an existing UV-continuous outside point");
+            CollectionAssert.AreEqual(before,mesh.uv2);
+        }
+
         [Test] public void GeneratedSplitAroundRescuedCollapsedFaceUsesWholeReference()
         {
             var surface=Surface();var before=mesh.uv2;var snapshot=mesh.vertices;
