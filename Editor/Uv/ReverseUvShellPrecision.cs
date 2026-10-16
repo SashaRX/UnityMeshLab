@@ -36,7 +36,11 @@ namespace SashaRX.UnityMeshLab
         internal static bool Stabilize(Vector2[] source,Vector2[] placed,
             (double length,double x,double y)[] frames,double limit,CancellationToken token)
         {
-            var initial=(Vector2[])placed.Clone();
+            // Nearly every placement already fits: the snapshot and corner
+            // aliases are built only once a face needs repair, before any
+            // corner has moved.
+            Vector2[] initial=null;
+            Dictionary<Vector2,List<int>> aliases=null;
             int orientation=1;
             for(int f=0;f<frames.Length;++f)
             {
@@ -44,18 +48,22 @@ namespace SashaRX.UnityMeshLab
                 double after=Area(placed[t],placed[t+1],placed[t+2]);
                 if(before!=0 && after!=0) {orientation=Math.Sign(before)*Math.Sign(after);break;}
             }
-            var aliases=new Dictionary<Vector2,List<int>>();
-            for(int c=0;c<source.Length;++c)
-            {
-                if(!aliases.TryGetValue(source[c],out var corners))
-                {corners=new List<int>();aliases.Add(source[c],corners);}
-                corners.Add(c);
-            }
             for(int f=0;f<frames.Length;++f)
             {
                 token.ThrowIfCancellationRequested();int t=f*3;
                 if(Fits(frames[f],placed[t],placed[t+1],placed[t+2],limit)) continue;
                 if(!ResolutionLimited(frames[f],placed[t],placed[t+1],placed[t+2])) return false;
+                if(aliases==null)
+                {
+                    initial=(Vector2[])placed.Clone();
+                    aliases=new Dictionary<Vector2,List<int>>();
+                    for(int c=0;c<source.Length;++c)
+                    {
+                        if(!aliases.TryGetValue(source[c],out var corners))
+                        {corners=new List<int>();aliases.Add(source[c],corners);}
+                        corners.Add(c);
+                    }
+                }
                 bool accepted=false;
                 foreach(float step in new[] {.00001f,.0001f,.001f,.005f})
                 {

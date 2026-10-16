@@ -6,17 +6,21 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class ReverseUvShellPrecisionTests
     {
-        [Test]
-        public void SubTexelFaceRemainsConnectedAtLargeAtlasOffset()
+        [TestCase(false)] [TestCase(true)]
+        public void SubTexelFaceRemainsConnectedAtLargeAtlasOffset(bool healthyFaceFirst)
         {
             var a=Vector3.zero;var b=new Vector3(.25f,1e-7f,0);
             var c=Vector3.right;var d=new Vector3(.4f,1,0);
-            var vertices=new[] {a,b,c,b,d,c};
+            // Delayed repair must include aliases in faces already validated.
+            var vertices=healthyFaceFirst?new[] {b,d,c,a,b,c}:new[] {a,b,c,b,d,c};
             var source=vertices.Select(p=>new Vector2(p.x,p.y)).ToArray();
             var output=source.Select(p=>p+Vector2.one*500).ToArray();
             var frames=Enumerable.Range(0,2).Select(f=>ReverseUvTransfer.TriangleFrame(vertices[f*3],vertices[f*3+1],vertices[f*3+2])).ToArray();
             Assert.IsTrue(ReverseUvShellPrecision.Stabilize(source,output,frames,4,default));
-            Assert.AreEqual(output[1],output[3]);Assert.AreEqual(output[2],output[5]);
+            if(healthyFaceFirst)
+            {Assert.AreEqual(output[0],output[4]);Assert.AreEqual(output[2],output[5]);}
+            else
+            {Assert.AreEqual(output[1],output[3]);Assert.AreEqual(output[2],output[5]);}
             for(int f=0;f<2;++f)
                 Assert.IsTrue(ReverseUvShellPrecision.Fits(frames[f],output[f*3],output[f*3+1],output[f*3+2],4));
             for(int i=0;i<output.Length;++i)

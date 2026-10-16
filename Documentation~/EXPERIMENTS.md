@@ -1,5 +1,42 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Reverse final packing: port exact work trims — 2026-10-15
+
+Port the managed PR253 trims onto local integration `846d08f5`, retaining its
+whole-island matching, continuity and published-position quality fixes. Reuse
+per-LOD face/index lists and surface group keys, avoid unused discrete orientation
+ranking on aligned trials, skip the just-failed (0,0) rescue phase, and defer the
+Float32 snapshot/shared-corner alias map until repair is needed. Repair order,
+padding, Float32 and metric gates, density candidates and logical budgets stay
+unchanged. A reordered precision test ensures already-validated faces still join
+the aliases when a later face first needs correction.
+
+Three alternating copied Kamaz/CementWall pairs retain all 150 stable output files
+byte for byte and the input hashes/frames. Kamaz transform/validation median is
+5.316 -> 2.933 s; nested Float32 stabilization is 0.459 -> 0.057 s. Native calls
+remain 22, whole-atlas audits 13, and 63 duplicate failed family validations are
+removed. Whole Reverse median is 28.275 -> 26.137 s, but workstation CPU/disk load
+causes wide ranges, so the 7.6% difference is preliminary. CementWall shows no
+whole-solve gain (2.131 -> 2.229 s). See `TRANSFER_PERFORMANCE.md` for all ranges.
+
+Do not import PR254 concurrency as a proven accelerator: its older five-pair
+study found no corpus gain and Kamaz exclusive was 6.5% slower. Keep its path out
+of this continuation. Default native plugins are unchanged; Intel experiments
+remain OFF. Burst direct-call/job/scalar integration from the preceding commit
+is retained, but exclusive native family packing does not execute Burst raster.
+Next inspect native placement/envelope work; do not reduce quality audits or
+skip density candidates merely to lower runtime.
+An independent capture records 22 requests (density 1/2/3/4/6/8: 2/2/6/4/4/4
+calls). Its first proxy has 98122 triangles for 2762 families versus 31842
+published chain triangles, and 66736 proxy faces have altitude <=0.01001 base
+texel. These guards/connectors are not exported faces or a safe removal list.
+The capture keeps all 37 stable Kamaz outputs identical and is excluded from
+performance medians.
+
+426 regression tests pass, 0 fail, 16 optional private skips, Burst required.
+Both FBX compile variants and identifier/dependency guards pass. Test project
+manifest/lock restored exactly. Artifacts: `_results~/transfer-packing-audit/`.
+
 ## Whole-island correspondence with inconsistent bevel anchors — 2026-10-15
 
 Baseline: main `1945a383` (1.2.10). The reported CementWall case reproduces
