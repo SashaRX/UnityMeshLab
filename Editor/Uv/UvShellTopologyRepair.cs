@@ -11,7 +11,7 @@ namespace SashaRX.UnityMeshLab
     internal static class UvShellTopologyRepair
     {
         internal static Vector2[] TryRepair(Vector3[] corners,Vector2[] original,int iterations,
-            CancellationToken token,out string reason,(double length,double x,double y)[] metricFrames=null, double maxAnisotropy=4, long comparisonBudget=20000000)
+            CancellationToken token,out string reason,(double length,double x,double y)[] metricFrames=null, double maxAnisotropy=4, long comparisonBudget=20000000, double relativeStretchTolerance=UvTransferTolerance.RelativeStretch)
         {
             token.ThrowIfCancellationRequested();reason="invalid input";
             if(corners==null || original==null || corners.Length!=original.Length || corners.Length%3!=0 || iterations<=0) return null;
@@ -75,7 +75,7 @@ namespace SashaRX.UnityMeshLab
             {flat[i*2]=(float)((flat[i*2]-centerX)*unitScale);flat[i*2+1]=(float)((flat[i*2+1]-centerY)*unitScale);}
             reason="ARAP did not converge";
             token.ThrowIfCancellationRequested();
-            if(!ArapParameterization.Reparameterize(input,indices,faces,Enumerable.Range(0,input.Length).ToArray(),flat,iterations,out _)) return null;
+            if(!ArapParameterization.Reparameterize(input,indices,faces,Enumerable.Range(0,input.Length).ToArray(),flat,iterations,out _,token)) return null;
             token.ThrowIfCancellationRequested();
             var candidate=indices.Select(i=>new Vector2((float)(flat[i*2]/unitScale+centerX),
                 (float)((flat[i*2+1]/unitScale+centerY)*(winding<0?-1:1)))).ToArray();
@@ -85,7 +85,7 @@ namespace SashaRX.UnityMeshLab
                 int c=f*3;var frame=metricFrames==null?Frame(corners[c],corners[c+1],corners[c+2]):metricFrames[f];
                 double before=ReverseUvTransfer.TriangleAnisotropy(frame,original[c],original[c+1],original[c+2]);
                 double after=ReverseUvTransfer.TriangleAnisotropy(frame,candidate[c],candidate[c+1],candidate[c+2]);
-                if(!double.IsFinite(after) || after>maxAnisotropy || !UvTransferTolerance.MetricFits(after,before))
+                if(!double.IsFinite(after) || after>maxAnisotropy || !UvTransferTolerance.MetricFits(after,before,relativeStretchTolerance))
                 {reason=$"face {f} metric {before:G8}->{after:G8}";return null;}
                 if(winding!=0 && Math.Sign(Area(candidate[c],candidate[c+1],candidate[c+2]))!=winding)
                 {reason="winding change";return null;}

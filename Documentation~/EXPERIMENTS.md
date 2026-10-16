@@ -17,11 +17,18 @@ texel density from tripping ARAP's existing area-collapse test. Every face retai
 the caller's metric limit, existing relative tolerance and winding; complete
 local contact and existing final atlas/padding/work audits remain mandatory.
 
+Interactive preparation captures Unity UV arrays on the editor thread and runs
+the numeric frozen initialization on its worker. ARAP and its conjugate-gradient
+and Tutte solves observe cancellation before committing coordinates. The chart
+acceptance check uses the caller's configured relative-stretch tolerance. A
+strict-zero fixture and cancellation controls reject private mutants that ignore
+these contracts; async preparation retains the synchronous output.
+
 A portable connected twelve-face disk reproduces the internal hole: its
 integration test fails on the old foundation and passes after preparation. All
-13 portable controls pass, including reflected/scaled UVs, real holes, closed
+17 portable controls pass, including reflected/scaled UVs, real holes, closed
 surface cuts, cancellation and the comparison budget. Both FBX variants compile.
-The full CPU suite requires actual Burst: 453 passed, zero failed, 16 optional
+The full CPU suite requires actual Burst: 457 passed, zero failed, 16 optional
 fixture/backend skips. Ordinary and Reverse runs include Kamaz, CementWall and
 Old_Sofa. All 76,510 published triangles match unchanged geometry. Ordinary
 outputs and both Kamaz/CementWall Reverse layouts retain their decoded values.

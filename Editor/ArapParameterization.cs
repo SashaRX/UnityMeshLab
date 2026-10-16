@@ -15,6 +15,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using UnityEngine;
 
 namespace SashaRX.UnityMeshLab
@@ -56,9 +57,10 @@ namespace SashaRX.UnityMeshLab
             ICollection<int> shellVertexIndices,
             float[] uvFlat,
             int iterations,
-            out int initialFlipCount)
+            out int initialFlipCount, CancellationToken token = default)
         {
             initialFlipCount = 0;
+            token.ThrowIfCancellationRequested();
 
             if (positions == null || globalTris == null || uvFlat == null ||
                 shellTriIndices == null || shellVertexIndices == null ||
@@ -123,6 +125,7 @@ namespace SashaRX.UnityMeshLab
             int triValidCount = 0;
             for (int t = 0; t < triCount; t++)
             {
+                token.ThrowIfCancellationRequested();
                 int f = shellTriIndices[t];
                 int baseIdx = f * 3;
                 if ((uint)baseIdx + 2 >= (uint)globalTris.Length) { degenerateTris++; continue; }
@@ -305,6 +308,7 @@ namespace SashaRX.UnityMeshLab
             var uLocal = new double[n];
             var vLocal = new double[n];
             double cx = 0.0, cy = 0.0;
+            token.ThrowIfCancellationRequested();
             for (int i = 0; i < n; i++)
             {
                 int gi = globalOf[i];
@@ -384,7 +388,7 @@ namespace SashaRX.UnityMeshLab
                     // Closed shell or no usable boundary — ARAP cannot proceed.
                     return false;
                 }
-                if (!TutteEmbed(boundaryLoop, rowMaps, diag, n, uLocal, vLocal))
+                if (!TutteEmbed(boundaryLoop, rowMaps, diag, n, uLocal, vLocal, token))
                     return false;
                 // Pin must be a boundary vertex for the Tutte solution to be
                 // consistent with subsequent ARAP iterations (we pin to (0,0)
@@ -429,6 +433,7 @@ namespace SashaRX.UnityMeshLab
 
             for (int iter = 0; iter < iterations; iter++)
             {
+                token.ThrowIfCancellationRequested();
                 itersDone = iter + 1;
                 // Local step: best 2x2 rotation per triangle.
                 for (int t = 0; t < triValidCount; t++)
@@ -507,8 +512,8 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 // Solve L_FF · x = bX (and same for Y) — Jacobi-preconditioned CG.
-                ConjugateGradientSolve(csrRowPtr, csrCol, csrVal, csrDiag, bX, solX, kCgMaxIter, kCgRelTol);
-                ConjugateGradientSolve(csrRowPtr, csrCol, csrVal, csrDiag, bY, solY, kCgMaxIter, kCgRelTol);
+                ConjugateGradientSolve(csrRowPtr, csrCol, csrVal, csrDiag, bX, solX, kCgMaxIter, kCgRelTol, token);
+                ConjugateGradientSolve(csrRowPtr, csrCol, csrVal, csrDiag, bY, solY, kCgMaxIter, kCgRelTol, token);
 
                 // Write back into uLocal/vLocal; pinned vertex stays at 0.
                 for (int i = 0; i < n; i++)
@@ -623,6 +628,7 @@ namespace SashaRX.UnityMeshLab
                     Math.Abs(outU[i]) > float.MaxValue || Math.Abs(outV[i]) > float.MaxValue)
                     return false;
             }
+            token.ThrowIfCancellationRequested();
             for (int i = 0; i < n; i++)
             {
                 int gi = globalOf[i];
@@ -812,7 +818,7 @@ namespace SashaRX.UnityMeshLab
             double[] diag,
             int n,
             double[] outU,
-            double[] outV)
+            double[] outV, CancellationToken token = default)
         {
             if (boundaryLoop == null || boundaryLoop.Count < 3) return false;
 
@@ -909,8 +915,8 @@ namespace SashaRX.UnityMeshLab
 
             var solU = new double[nInner];
             var solV = new double[nInner];
-            ConjugateGradientSolve(rowPtr, col, val, diagFree, rhsU, solU, kCgMaxIter, kCgRelTol);
-            ConjugateGradientSolve(rowPtr, col, val, diagFree, rhsV, solV, kCgMaxIter, kCgRelTol);
+            ConjugateGradientSolve(rowPtr, col, val, diagFree, rhsU, solU, kCgMaxIter, kCgRelTol, token);
+            ConjugateGradientSolve(rowPtr, col, val, diagFree, rhsV, solV, kCgMaxIter, kCgRelTol, token);
 
             for (int i = 0; i < n; i++)
             {
@@ -931,7 +937,7 @@ namespace SashaRX.UnityMeshLab
         static bool ConjugateGradientSolve(
             int[] rowPtr, int[] col, double[] val, double[] diag,
             double[] b, double[] x,
-            int maxIter, double relTol)
+            int maxIter, double relTol, CancellationToken token = default)
         {
             int n = b.Length;
             if (n == 0) return true;
@@ -965,6 +971,7 @@ namespace SashaRX.UnityMeshLab
 
             for (int it = 0; it < maxIter; it++)
             {
+                token.ThrowIfCancellationRequested();
                 SpMv(rowPtr, col, val, diag, p, Ap);
                 double pAp = 0.0;
                 for (int i = 0; i < n; i++) pAp += p[i] * Ap[i];
