@@ -1,5 +1,46 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Exclusive Reverse: reuse resident native charts and buffers — 2026-10-15
+
+The existing xatlas API permits another PackCharts call after ComputeCharts.
+Keep one resident atlas for one final exclusive frozen-family packing operation,
+under its existing global native lease. Exact UV Float32 bits, indices and face
+materials determine chart reuse. Operation-owned immutable footprint identities
+also reuse the prepared flat/index/material arrays. Changed masks invalidate the
+resident entry; failed preparation is never cached. Disposal, errors and
+cancellation release the atlas/lease. No native ABI or plugin changes are needed.
+
+Three alternating pairs use the same frozen quality/shared-prefix/Burst/PR253
+control, copied FBX/import metadata, 32 tex/m, 2 px padding, narrow cuts, reach
+0.05 and exclusive Reverse with Fill atlas. Kamaz still executes 22 placements,
+but prepares charts 16 times with 6 cache hits; CementWall executes 12 placements
+with 1 preparation and 11 hits. All 150 stable outputs, inputs and quality reports
+match byte for byte. The input+chart preparation timer includes array construction
+in both arms; its boundary is explicitly instrumented in the frozen control.
+
+| Model | Reverse control / reuse (s) | Including preparation (s) | Input+chart preparation (s) |
+|---|---:|---:|---:|
+| Kamaz_Typhoon | 21.688 / 21.172 | 37.917 / 37.296 | 1.423 / 1.078 |
+| CementWall | 2.067 / 2.030 | 2.717 / 2.689 | 0.0177 / 0.0015 |
+
+The observed whole-Reverse reduction is only 2.38% / 1.78%; Kamaz timing ranges
+overlap. Charts-only reuse had no resolved whole-solve gain. Buffer reuse removes
+additional setup work, but placement and exact audits remain dominant. This is
+not a large acceleration of the transfer or a live FPS measurement. Keep the
+bounded resident implementation; a multi-context cache needs a different native
+ownership API, not more live instances of the current singleton bridge.
+
+The publication-only native/transfer regression suite passes 433 cases, fails
+zero and skips 16 optional cases with actual Burst execution required. Six
+additional timed runs each execute both required models without skips. The
+published CPU candidate excludes the separate GPU prototype and its CPU scan
+refactor; the later Sonar S3973 fix adds only an outer foreach block. CI compiles
+both FBX variants and checks identifiers/dependencies. Evidence:
+`_results~/native-chart-publication-check/`. Plugins and the owned project's
+manifest/lock remain identical. Earlier combined cache/GPU measurements and
+their separate NaN assertion rerun remain in `native-chart-reuse-final` and
+`gpu-envelope-audit`; they are not the publication-only test count.
+
 ## Reverse final packing: port exact work trims — 2026-10-15
 
 Port the managed PR253 trims onto local integration `846d08f5`, retaining its

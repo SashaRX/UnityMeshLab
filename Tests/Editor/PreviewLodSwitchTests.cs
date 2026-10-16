@@ -1915,6 +1915,7 @@ namespace SashaRX.UnityMeshLab.Tests
                         var options = new ReverseUvTransfer.Options {
                             performance = reverse.performance,
                             cachePackingFootprints = System.Environment.GetEnvironmentVariable("MESHLAB_DISABLE_FOOTPRINT_CACHE") != "1",
+                            cacheNativeCharts = System.Environment.GetEnvironmentVariable("MESHLAB_DISABLE_NATIVE_CHART_CACHE") != "1",
                             indexFootprintSearch = System.Environment.GetEnvironmentVariable("MESHLAB_DISABLE_FOOTPRINT_SEARCH_INDEX") != "1",
                             cacheCollisionRows = System.Environment.GetEnvironmentVariable("MESHLAB_DISABLE_COLLISION_ROW_CACHE") != "1",
                             nativeFootprintSearch = System.Environment.GetEnvironmentVariable("MESHLAB_DISABLE_NATIVE_FOOTPRINT_SEARCH") != "1",

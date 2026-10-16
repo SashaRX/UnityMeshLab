@@ -64,6 +64,7 @@ namespace SashaRX.UnityMeshLab
                 var trial = new ReverseUvTransfer.Options { seedResolution = size, padding = options.padding,
                     performance = options.performance,
                     cachePackingFootprints = options.cachePackingFootprints,
+                    cacheNativeCharts = options.cacheNativeCharts,
                     indexFootprintSearch = options.indexFootprintSearch,
                     cacheCollisionRows = options.cacheCollisionRows,
                     nativeFootprintSearch = options.nativeFootprintSearch,

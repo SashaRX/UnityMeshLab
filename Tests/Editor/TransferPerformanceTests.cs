@@ -489,7 +489,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 var profile = new TransferPerformanceProfile();
                 ReverseUvTransfer.Options Options(bool cache) => new ReverseUvTransfer.Options {seedResolution=128,seedDensity=32,
                     regroupPreparedAtlas=true,frozenShellCascade=!overlap,preserveProjectedOverlap=overlap,repackFinalAtlas=true,
-                    fillFinalAtlas=fill,cachePackingFootprints=cache,performance=cache?profile:null};
+                    fillFinalAtlas=fill,cachePackingFootprints=cache,cacheNativeCharts=cache,performance=cache?profile:null};
                 using var baseline = ReverseUvTransfer.Build(levels,Options(false)).GetAwaiter().GetResult();
                 using var cached = ReverseUvTransfer.Build(levels,Options(true)).GetAwaiter().GetResult();
                 Assert.AreEqual(JsonUtility.ToJson(baseline.report),JsonUtility.ToJson(cached.report));
@@ -500,6 +500,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsTrue(profile.samples.Any(s=>s.stage=="Reverse total" && s.milliseconds>0));
                 Assert.IsTrue(profile.samples.Any(s=>s.stage=="Packing footprint construction" && s.count>0));
                 if(fill) Assert.IsTrue(profile.samples.Any(s=>s.stage=="Packing footprint cache hits" && s.count>0));
+                if(!overlap && fill) Assert.IsTrue(profile.samples.Any(s=>s.stage=="Native chart cache hits" && s.count>0));
             }
             finally {UnityEngine.Object.DestroyImmediate(a);UnityEngine.Object.DestroyImmediate(b);}
         }
