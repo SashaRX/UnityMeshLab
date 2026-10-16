@@ -216,8 +216,13 @@ namespace SashaRX.UnityMeshLab
             var found=new HashSet<int> {seed};var stack=new Stack<int>();stack.Push(seed);
             while(stack.Count>0)
                 if(neighbors.TryGetValue(stack.Pop(),out var next))
-                    foreach(int f in next.Where(f=>allowed.Contains(f) && found.Add(f))) stack.Push(f);
+                    foreach(int f in next) VisitIfAllowed(f,allowed,found,stack);
             return found;
+        }
+
+        static void VisitIfAllowed(int face,ISet<int> allowed,HashSet<int> found,Stack<int> stack)
+        {
+            if(allowed.Contains(face) && found.Add(face)) stack.Push(face);
         }
 
         static Vector2[] RestoreSeed(int[] indices,float[] flat,
