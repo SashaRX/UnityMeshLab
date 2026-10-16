@@ -1855,8 +1855,15 @@ namespace SashaRX.UnityMeshLab.Tests
             {
                 var forward = new PairedTransferMode {mode = "forward"}; comparison.modes.Add(forward);
                 BenchmarkRecorder.OutputDirectoryOverride = System.IO.Path.Combine(directory, forward.mode);
-                using (forward.performance.Measure("Forward pipeline"))
-                    ((System.Threading.Tasks.Task)CallWorkflow("ExecFullPipelineImpl", "paired-forward", false)).GetAwaiter().GetResult();
+                hub.DiagnosticWorkflow.ForwardPerformance = forward.performance;
+                try
+                {
+                    using (forward.performance.Measure("Forward pipeline"))
+                        ((System.Threading.Tasks.Task)CallWorkflow("ExecFullPipelineImpl", "paired-forward", false)).GetAwaiter().GetResult();
+                }
+                finally { hub.DiagnosticWorkflow.ForwardPerformance = null; }
+                Assert.IsTrue(forward.performance.samples.Any(s => s.stage == "Forward shell transfer" && s.count > 0),
+                    "Ordinary Transfer must record its stage timings.");
                 Assert.IsTrue(ctx.HasRepack && ctx.HasTransfer);
                 System.IO.Directory.CreateDirectory(BenchmarkRecorder.OutputDirectoryOverride);
                 TransferBenchmarkExport.Forward(BenchmarkRecorder.OutputDirectoryOverride, ctx);
@@ -1892,7 +1899,8 @@ namespace SashaRX.UnityMeshLab.Tests
                         }
                 }
                 foreach(bool prepareSeed in includeExisting?new[] {true,false}:new[] {true})
-                foreach (bool overlap in System.Environment.GetEnvironmentVariable("MESHLAB_TRANSFER_USER_SETTINGS") == "1" ? new[] {false} : new[] {false, true})
+                foreach (bool overlap in System.Environment.GetEnvironmentVariable("MESHLAB_TRANSFER_USER_SETTINGS") == "1"
+                    ? new[] {System.Environment.GetEnvironmentVariable("MESHLAB_PAIRED_OVERLAP")=="1"} : new[] {false, true})
                 {
                     var reverse = new PairedTransferMode {mode = (prepareSeed?"reverse-":"reverse-existing-")
                         +(overlap?"overlap":"exclusive")}; comparison.modes.Add(reverse);
@@ -1938,8 +1946,12 @@ namespace SashaRX.UnityMeshLab.Tests
                         }
                         var existingSnapshots=existing?.levels.SelectMany(l=>l.inputs)
                             .Select(i=>TransferMeshSnapshot.Capture(i.mesh)).ToArray();
-                        using var prepared = ReverseUvJunctionTrial.Build(existing?.levels??reverseSources, options,
-                            prepareSeed, density).GetAwaiter().GetResult();
+                        // The editor UI runs Reverse asynchronously: final packing on workers,
+                        // continuations on the editor context. The benchmark can measure that path.
+                        bool asyncReverse = System.Environment.GetEnvironmentVariable("MESHLAB_PAIRED_ASYNC_REVERSE") == "1";
+                        System.Threading.Tasks.Task<ReverseUvJunctionTrial.PreparedResult> Build() =>
+                            ReverseUvJunctionTrial.Build(existing?.levels??reverseSources, options, prepareSeed, density, useAsync: asyncReverse);
+                        using var prepared = asyncReverse ? RunOnMainThreadQueue(Build) : Build().GetAwaiter().GetResult();
                         TransferBenchmarkExport.Reverse(BenchmarkRecorder.OutputDirectoryOverride, prepared.result, prepared.inputs.levels);
                         ReverseUvAudit.Write(prepared.result, prepared.inputs.levels);
                         Assert.AreEqual("shared-chart-families",prepared.result.report.finalPacking,prepared.result.report.finalPackingRefusal);
@@ -1954,8 +1966,9 @@ namespace SashaRX.UnityMeshLab.Tests
                         {
                             Assert.IsTrue(ReverseUvRasterAcceleration.Available,"Required Burst assembly must register.");
                             if(reverse.performance.samples.Any(s=>s.stage=="Burst raster qualifying triangles" && s.count>0))
-                                Assert.IsTrue(reverse.performance.samples.Any(s=>s.stage=="Burst footprint raster spans" && s.count>0),
-                                    "Qualifying model masks must execute compiled Burst jobs.");
+                                Assert.AreEqual(reverse.performance.samples.Where(s=>s.stage=="Burst raster qualifying triangles").Sum(s=>s.count),
+                                    reverse.performance.samples.Where(s=>s.stage=="Burst footprint raster spans").Sum(s=>s.count),
+                                    "Every qualifying model mask must execute compiled Burst: "+ReverseUvRasterAcceleration.LastRefusal);
                         }
                         reverse.completed = true;
                     }
@@ -2307,6 +2320,37 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.Greater(greenPixels, 30, "The second instance must not reuse the first instance's UV-layer texture.");
             }
             finally { window.Input = null; window.Close(); Object.DestroyImmediate(window); canvas.Cleanup(); LightmapSettings.lightmaps = previousLightmaps; }
+        }
+
+        // Async editor work resumes its continuations on the main thread. Batch
+        // tests have no running editor loop, so this context queues them and the
+        // waiting test thread runs them in order, as the editor loop would.
+        sealed class MainThreadQueue : System.Threading.SynchronizationContext
+        {
+            readonly System.Collections.Concurrent.BlockingCollection<(System.Threading.SendOrPostCallback callback, object state)> queue =
+                new System.Collections.Concurrent.BlockingCollection<(System.Threading.SendOrPostCallback, object)>();
+            public override void Post(System.Threading.SendOrPostCallback callback, object state) => queue.Add((callback, state));
+            public override void Send(System.Threading.SendOrPostCallback callback, object state) =>
+                throw new System.NotSupportedException("Synchronous dispatch to the test thread would deadlock.");
+            internal void RunUntilComplete(System.Threading.Tasks.Task task)
+            {
+                while (!task.IsCompleted)
+                    if (queue.TryTake(out var item, 1)) item.callback(item.state);
+            }
+        }
+
+        static T RunOnMainThreadQueue<T>(System.Func<System.Threading.Tasks.Task<T>> start)
+        {
+            var previous = System.Threading.SynchronizationContext.Current;
+            var context = new MainThreadQueue();
+            System.Threading.SynchronizationContext.SetSynchronizationContext(context);
+            try
+            {
+                var task = start();
+                context.RunUntilComplete(task);
+                return task.GetAwaiter().GetResult();
+            }
+            finally { System.Threading.SynchronizationContext.SetSynchronizationContext(previous); }
         }
 
         object CallWorkflow(string method, params object[] args) => typeof(UvTransferWorkflow).GetMethod(method, Private).Invoke(hub.DiagnosticWorkflow, args);

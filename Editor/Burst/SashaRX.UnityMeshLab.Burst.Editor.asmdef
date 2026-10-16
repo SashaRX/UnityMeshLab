@@ -4,7 +4,7 @@
   "references": ["SashaRX.UnityMeshLab.Editor", "Unity.Burst", "Unity.Collections"],
   "includePlatforms": ["Editor"],
   "excludePlatforms": [],
-  "allowUnsafeCode": false,
+  "allowUnsafeCode": true,
   "autoReferenced": false,
   "defineConstraints": ["MESHLAB_BURST", "MESHLAB_COLLECTIONS"],
   "versionDefines": [

@@ -13,6 +13,7 @@ namespace SashaRX.UnityMeshLab
     public partial class UvTransferWorkflow : IBenchmarkHost
     {
         const string CancelButton = "Cancel";
+        const string AutoTuneMeshCopiesTiming = "Forward auto-tune mesh copies";
 
         UvToolContext ctx;
         UvCanvasView canvas;
@@ -1720,9 +1721,10 @@ namespace SashaRX.UnityMeshLab
             // ── Auto-tune: try multiple SymSplit configs, pick best ──
             // Save working copies so we can restore between attempts.
             var savedMeshes = new Dictionary<MeshEntry, Mesh>();
-            foreach (var e in ctx.MeshEntries)
-                if (e.originalMesh != null)
-                    savedMeshes[e] = UnityEngine.Object.Instantiate(e.originalMesh);
+            using (ForwardPerformance?.Accumulated(AutoTuneMeshCopiesTiming))
+                foreach (var e in ctx.MeshEntries)
+                    if (e.originalMesh != null)
+                        savedMeshes[e] = UnityEngine.Object.Instantiate(e.originalMesh);
 
             float[] separationConfigs = { 0.10f, 0.05f, 0.20f };
             bool hasTransferTargets = HasIncludedTransferTargets(ctx.MeshEntries, ctx.SourceLodIndex);
@@ -1736,7 +1738,8 @@ namespace SashaRX.UnityMeshLab
             try
             {
                 aborted = await RunAutoTuneAttempts(separationConfigs, savedMeshes, best, hasTransferTargets, useAsync);
-                if (best.Meshes.Count > 0 && !aborted) RestoreAutoTuneChoice(best);
+                if (best.Meshes.Count > 0 && !aborted)
+                    using (ForwardPerformance?.Accumulated(AutoTuneMeshCopiesTiming)) RestoreAutoTuneChoice(best);
                 ctx.DiagnosticCapture?.StageSafe(this, "selected-final");
             }
             finally
@@ -1765,7 +1768,11 @@ namespace SashaRX.UnityMeshLab
             if (stageRunAnalyzeUv0)
             {
                 stageOutcome[1] = StageStatus.Running;
-                try { ExecAnalyzeUv0(); stageOutcome[1] = StageStatus.Success; }
+                try
+                {
+                    using (ForwardPerformance?.Measure("Forward analyze UV0")) ExecAnalyzeUv0();
+                    stageOutcome[1] = StageStatus.Success;
+                }
                 catch { stageOutcome[1] = StageStatus.Failed; throw; }
             }
             else
@@ -1778,7 +1785,11 @@ namespace SashaRX.UnityMeshLab
             if (stageRunWeldUv0)
             {
                 stageOutcome[2] = StageStatus.Running;
-                try { ExecWeldUv0(runMeshoptFirst: stageWeldRunMeshopt); stageOutcome[2] = StageStatus.Success; }
+                try
+                {
+                    using (ForwardPerformance?.Measure("Forward weld UV0")) ExecWeldUv0(runMeshoptFirst: stageWeldRunMeshopt);
+                    stageOutcome[2] = StageStatus.Success;
+                }
                 catch { stageOutcome[2] = StageStatus.Failed; throw; }
             }
             else
@@ -1920,12 +1931,12 @@ namespace SashaRX.UnityMeshLab
                 if (ci > 0)
                 {
                     UvtLog.Info($"[Pipeline] Auto-tune retry #{ci} (separation={sepThresh:P0})...");
-                    RestoreAutoTuneStartingMeshes(savedMeshes);
+                    using (ForwardPerformance?.Accumulated(AutoTuneMeshCopiesTiming)) RestoreAutoTuneStartingMeshes(savedMeshes);
                 }
 
-                RunSymmetryStage(sepThresh);
+                using (ForwardPerformance?.Accumulated("Forward symmetry split")) RunSymmetryStage(sepThresh);
                 ctx.DiagnosticCapture?.StageSafe(this, $"attempt-{ci}-symmetry-separation-{sepThresh:R}");
-                await RunRepackStage(useAsync);
+                using (ForwardPerformance?.Accumulated("Forward repack")) await RunRepackStage(useAsync);
                 ctx.DiagnosticCapture?.StageSafe(this, $"attempt-{ci}-repack");
                 if (UvProgress.CancelRequested) return true;
                 if (stageOutcome[4] == StageStatus.Failed)
@@ -1935,13 +1946,15 @@ namespace SashaRX.UnityMeshLab
                     UvtLog.Error("[Pipeline] Repack failed for one or more included source meshes; transfer and auto-tune stopped.");
                     return true;
                 }
-                await RunTransferStage(useAsync, hasTransferTargets);
+                using (ForwardPerformance?.Accumulated("Forward transfer")) await RunTransferStage(useAsync, hasTransferTargets);
                 ctx.DiagnosticCapture?.StageSafe(this, $"attempt-{ci}-transfer");
 
                 if (!hasTransferTargets)
                     break;
 
-                if (EvaluateAutoTuneChoice(best, ci, sepThresh)) break;
+                bool perfect;
+                using (ForwardPerformance?.Accumulated("Forward auto-tune evaluation")) perfect = EvaluateAutoTuneChoice(best, ci, sepThresh);
+                if (perfect) break;
             }
             return false;
         }
@@ -1969,7 +1982,7 @@ namespace SashaRX.UnityMeshLab
                 best.Issues = totalIssues;
                 best.Coverage = coverage;
                 best.ConfigIndex = ci;
-                CaptureAutoTuneChoice(best);
+                using (ForwardPerformance?.Accumulated(AutoTuneMeshCopiesTiming)) CaptureAutoTuneChoice(best);
             }
 
 
@@ -2313,7 +2326,7 @@ namespace SashaRX.UnityMeshLab
                 UvProgress.SetPhase($"Transfer → LOD{li}",
                                     fraction: targetLodCount > 0 ? (float)processed / targetLodCount : 0f,
                                     detail: $"LOD{li}");
-                await ExecTransferLodImpl(li, useAsync);
+                using (ForwardPerformance?.Accumulated("Forward transfer LOD", li)) await ExecTransferLodImpl(li, useAsync);
                 processed++;
             }
         }
@@ -2330,6 +2343,10 @@ namespace SashaRX.UnityMeshLab
         }
 
         internal float TransferBoundaryToleranceTexels = UvTransferTolerance.BoundaryTexels;
+
+        // Opt-in benchmark wall times of ordinary Transfer stages; null outside the
+        // paired performance test. Nested stages overlap and must not be summed.
+        internal TransferPerformanceProfile ForwardPerformance;
 
         static Task<GroupedShellTransfer.TransferResult> TransferMesh(Mesh target, Mesh source,
             List<GroupedShellTransfer.OverlapSourceHint> overlapHints,
@@ -2388,26 +2405,31 @@ namespace SashaRX.UnityMeshLab
 
             UvProgress.Report(-1f, $"Transfer LOD{tLod} ← '{tgt.renderer.name}'");
             var pair = ctx.DiagnosticCapture?.BeforePair(srcEntry, tgt, srcMesh, tgtMesh, hintState.overlapHints, hintState.matchHints, TransferBoundaryToleranceTexels);
-            var tr = await TransferMesh(tgtMesh, srcMesh,
-                hintState.overlapHints.Count > 0 ? hintState.overlapHints : null,
-                hintState.matchHints.Count > 0 ? hintState.matchHints : null,
-                srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
-                srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0, useAsync, pair?.trace,TransferBoundaryToleranceTexels);
+            GroupedShellTransfer.TransferResult tr;
+            using (ForwardPerformance?.Accumulated("Forward shell transfer"))
+                tr = await TransferMesh(tgtMesh, srcMesh,
+                    hintState.overlapHints.Count > 0 ? hintState.overlapHints : null,
+                    hintState.matchHints.Count > 0 ? hintState.matchHints : null,
+                    srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
+                    srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0, useAsync, pair?.trace,TransferBoundaryToleranceTexels);
             if (tr.uv2 == null) {
                 ctx.DiagnosticCapture?.AfterPair(pair, tgt, tr);
                 UvtLog.Warn($"[Transfer] Failed for '{tgt.renderer.name}'"); return;
             }
 
             var renderedFrame=ctx.PreviewMatrix(tgt.renderer ? tgt.renderer.transform : null);
-            var beforeQuality=TransferUvQuality.Measure(tgtMesh,tr.uv2,Vector2.one,renderedFrame);
+            TransferUvQuality beforeQuality;
+            using (ForwardPerformance?.Accumulated("Forward quality measure"))
+                beforeQuality=TransferUvQuality.Measure(tgtMesh,tr.uv2,Vector2.one,renderedFrame);
             if (beforeQuality.worstAnisotropy>4 || beforeQuality.overlapPairs>0 || beforeQuality.degenerateFaces>0)
             {
+                using var seamTiming = ForwardPerformance?.Accumulated("Forward donor seam trial");
                 Mesh prepared=null;
                 try
                 {
                     var projection=await ReverseUvTransfer.PrepareForwardSeamsAsync(srcMesh,tgtMesh,tr.uv2,tr.vertexToSourceShell,
                         Mathf.Max(16,(int)Math.Max(srcEntry.repackedAtlasWidth,srcEntry.repackedAtlasHeight)),useAsync,trace:pair?.trace,
-                        boundaryToleranceTexels:TransferBoundaryToleranceTexels,targetLocalToWorld:renderedFrame);
+                        boundaryToleranceTexels:TransferBoundaryToleranceTexels,targetLocalToWorld:renderedFrame,performance:ForwardPerformance);
                     prepared=projection.mesh;var projectedSources=projection.sources;
                     if (prepared)
                     {
@@ -2490,7 +2512,8 @@ namespace SashaRX.UnityMeshLab
 
             // Validation
             BenchmarkRecorder.Current?.StageBegin("validate");
-            tgt.validationReport = TransferValidator.Validate(tgtMesh, tr.uv2, tr);
+            using (ForwardPerformance?.Accumulated("Forward validation"))
+                tgt.validationReport = TransferValidator.Validate(tgtMesh, tr.uv2, tr);
             BenchmarkRecorder.Current?.StageEnd("validate");
 
             float pct = tr.verticesTotal > 0 ? tr.verticesTransferred * 100f / tr.verticesTotal : 0;
