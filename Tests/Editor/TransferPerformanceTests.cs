@@ -18,6 +18,27 @@ namespace SashaRX.UnityMeshLab.Tests
         [UnityEngine.TestTools.UnityTest]
         public System.Collections.IEnumerator AsyncReversePackingMatchesSynchronousWithBothOverlapPolicies()
         {
+            if(!ReverseUvRasterAcceleration.Available &&
+                Environment.GetEnvironmentVariable("MESHLAB_REQUIRE_BURST_RASTER")=="1")
+                Assert.Fail("Required Burst assembly did not register.");
+            return CompareAsyncReversePackingWithBothOverlapPolicies();
+        }
+
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator AsyncReversePackingMatchesSynchronousWithoutOptionalProvider()
+        {
+            var previous=ReverseUvRasterAcceleration.evaluate;
+            try
+            {
+                ReverseUvRasterAcceleration.evaluate=null;
+                yield return CompareAsyncReversePackingWithBothOverlapPolicies();
+            }
+            finally {ReverseUvRasterAcceleration.evaluate=previous;}
+        }
+
+        static System.Collections.IEnumerator CompareAsyncReversePackingWithBothOverlapPolicies()
+        {
+            bool burstAvailable=ReverseUvRasterAcceleration.Available;
             var vertices=Enumerable.Range(0,81).Select(i=>new Vector3(i%9/8f,i/9/8f,0)).ToArray();
             var indices=Enumerable.Range(0,64).SelectMany(i=>{
                 int a=i%8+i/8*9;return new[] {a,a+1,a+10,a,a+10,a+9};
@@ -31,7 +52,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     new ReverseUvTransfer.Level {lod=1,inputs=new[] {new ReverseUvTransfer.Input {mesh=source,key="Grid",usePreparedUv2=true}}},
                     new ReverseUvTransfer.Level {lod=0,inputs=new[] {new ReverseUvTransfer.Input {mesh=target,key="Grid",usePreparedUv2=true}}}};
                 var before=new[] {source,target}.Select(TransferMeshSnapshot.Capture).ToArray();
-                using var compiler=ReverseUvRasterAcceleration.beginTestScope?.Invoke();
+                using var compiler=burstAvailable?ReverseUvRasterAcceleration.beginTestScope?.Invoke():null;
                 foreach(bool overlap in new[] {false,true})
                 {
                     ReverseUvTransfer.Options Options() => new ReverseUvTransfer.Options {seedResolution=128,seedDensity=32,
@@ -45,11 +66,14 @@ namespace SashaRX.UnityMeshLab.Tests
                     Assert.AreEqual(JsonUtility.ToJson(baseline.report),JsonUtility.ToJson(actual.report));
                     for(int l=0;l<levels.Length;++l)
                         CollectionAssert.AreEqual(TransferMeshSnapshot.Capture(baseline.meshes[l][0]),TransferMeshSnapshot.Capture(actual.meshes[l][0]));
-                    // Worker threads cannot schedule jobs; every qualifying mask
-                    // must still run through the Burst direct call there.
+                    // Worker threads cannot schedule jobs; an installed Burst
+                    // provider must execute every qualifying mask by direct call.
                     long Count(string stage)=>options.performance.samples.Where(s=>s.stage==stage).Sum(s=>s.count);
-                    Assert.AreEqual(Count("Burst raster qualifying triangles"),Count("Burst footprint raster spans"),
-                        "Async final packing must execute qualifying masks through the Burst direct call: "+ReverseUvRasterAcceleration.LastRefusal);
+                    long qualifying=Count("Burst raster qualifying triangles");
+                    if(overlap) Assert.Greater(qualifying,0,"The shared-overlap fixture must exercise qualifying raster masks.");
+                    Assert.AreEqual(burstAvailable?qualifying:0,Count("Burst footprint raster spans"),
+                        burstAvailable?"Async final packing must execute qualifying masks through the Burst direct call: "+ReverseUvRasterAcceleration.LastRefusal:
+                            "Without the optional provider, async packing must use the scalar fallback.");
                 }
                 CollectionAssert.AreEqual(before[0],TransferMeshSnapshot.Capture(source));
                 CollectionAssert.AreEqual(before[1],TransferMeshSnapshot.Capture(target));
