@@ -18,19 +18,9 @@ namespace SashaRX.UnityMeshLab
             token.ThrowIfCancellationRequested();
             if(trial.Length!=positions.Length || trial.Length!=anchors.Length || trial.Length!=anchored.Length)
                 throw new ArgumentException("Shared-boundary arrays must have matching corner counts.");
-            double dx=0,dy=0;bool found=false;
-            for(int c=0;c<trial.Length;++c)
-            {
-                token.ThrowIfCancellationRequested();
-                if(!anchored[c] || !earlier.TryGetValue(positions[c],out var value)) continue;
-                if(!value.HasValue) return null;
-                var target=value.Value;
-                if(!(Distance(target,anchors[c])<=fitTolerance)) return null;
-                double x=(double)target.x-trial[c].x,y=(double)target.y-trial[c].y;
-                if(!found) {dx=x;dy=y;found=true;}
-                else if(!(Math.Sqrt((x-dx)*(x-dx)+(y-dy)*(y-dy))<=boundaryTolerance)) return null;
-            }
-            if(!found || !(Math.Sqrt(dx*dx+dy*dy)<=fitTolerance)) return null;
+            if(!TryGetFrozenSharedOffset(trial,positions,anchors,anchored,earlier,
+                (fitTolerance,boundaryTolerance,token),out var offset)) return null;
+            var (dx,dy)=offset;
             var result=new Vector2[trial.Length];
             for(int c=0;c<trial.Length;++c)
             {
@@ -42,6 +32,29 @@ namespace SashaRX.UnityMeshLab
                 result[c]=p;
             }
             return result;
+        }
+
+        static bool TryGetFrozenSharedOffset(Vector2[] trial,Vector3[] positions,Vector2[] anchors,
+            bool[] anchored,IReadOnlyDictionary<Vector3,Vector2?> earlier,
+            (float fitTolerance,float boundaryTolerance,CancellationToken token) policy,out (double dx,double dy) offset)
+        {
+            var (fitTolerance,boundaryTolerance,token)=policy;
+            offset=default;
+            double dx=0,dy=0;bool found=false;
+            for(int c=0;c<trial.Length;++c)
+            {
+                token.ThrowIfCancellationRequested();
+                if(!anchored[c] || !earlier.TryGetValue(positions[c],out var value)) continue;
+                if(!value.HasValue) return false;
+                var target=value.Value;
+                if(!(Distance(target,anchors[c])<=fitTolerance)) return false;
+                double x=(double)target.x-trial[c].x,y=(double)target.y-trial[c].y;
+                if(!found) {dx=x;dy=y;found=true;}
+                else if(!(Math.Sqrt((x-dx)*(x-dx)+(y-dy)*(y-dy))<=boundaryTolerance)) return false;
+            }
+            if(!found || !(Math.Sqrt(dx*dx+dy*dy)<=fitTolerance)) return false;
+            offset=(dx,dy);
+            return true;
         }
     }
 }
