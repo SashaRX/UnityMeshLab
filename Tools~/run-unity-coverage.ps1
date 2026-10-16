@@ -6,7 +6,9 @@ param(
     [Parameter(Mandatory)][string]$Output,
     [string]$ModelCases,
     [string]$ScreenInput,
-    [int]$TimeoutSeconds = 1800
+    # Full measured model/viewport suites can exceed 30 minutes on the runner.
+    # Keep five minutes inside the 40-minute job for setup, cleanup and upload.
+    [int]$TimeoutSeconds = 2100
 )
 $ErrorActionPreference = 'Stop'
 $Root = (Resolve-Path -LiteralPath $Root).Path
