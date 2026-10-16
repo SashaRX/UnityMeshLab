@@ -1,5 +1,126 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Whole-island correspondence with inconsistent bevel anchors — 2026-10-15
+
+Baseline: main `1945a383` (1.2.10). The reported CementWall case reproduces
+with ordinary preparation, Legacy Fixed symmetry, 32 tex/m, 2 px padding,
+narrow junction cuts enabled, and exclusive frozen Reverse UV at reach 0.05.
+Baseline: 388 inherited / 1750 new faces, 2142 px atlas. A failed whole-island
+similarity mixes anchors from large surfaces and inconsistent small bevels;
+rejecting that proposal makes otherwise corresponding whole charts new families.
+
+Keep the existing complete-anchor fit first. On failure, test at most 32
+triangle-seeded similarities, ordered by anchor surface area. A proposal needs
+complete three-corner agreement on at least 80% of that candidate's geometric
+anchor area; refit that support together. The complete island retains one
+similarity/reflection, with unchanged metric and sibling-contact audits. Faces
+whose anchors do not fit are extensions, never fabricated inherited faces.
+Successful similarity matches retain priority across all candidate donors.
+If none passes, one full-rank affine fit may deform the complete island using
+all of a candidate's face anchors. Every anchor must fit within the existing
+projection budget. Every face must also retain the existing absolute metric
+limit and at most the existing 1% relative stretch increase; complete-island and
+sibling-contact audits still apply. Singular/non-finite proposals are refused.
+No finer triangle subdivision, tolerance relaxation or native plugin changes
+are introduced.
+
+The same reproduction exposed an independent bounded-footprint subtraction bug:
+an infinite supporting edge fragmented remainders even when the bounded donor
+had no positive-area intersection. Keep such a remainder intact. Dense 32x32
+donor controls, with and without a real interior hole, exhaust the old 2048-piece
+limit at 72927 comparisons; the corrected subtraction completes both without
+changing that limit, the work budget or the texel band.
+
+The CementWall trial completes with 1079 inherited / 1059 new faces and a
+1522 px atlas. The large LOD0 islands have whole-island correspondences; new face
+counts include extensions and do not mean every such face is a separate island.
+The existing publication quality audits pass. Private FBX files are not committed;
+the opt-in paired harness retains model hashes and verifies input immutability.
+Artifacts and rejected controls: `_results~/transfer-shell-diagnostics/`.
+
+Kamaz's current importer settings reproduce ordinary donor-seam recovery changing
+the total LOD2 triangle count from 3158 to 3264. Reverse repeats that preparation.
+Two retained front points acquire differences of 1.19e-7 and 1.79e-7 UV, with the
+same donor labels. Vertex splitting at these numeric discrepancies can fragment
+an intact UV2 island; UV0/normal boundaries do not necessarily bound that island.
+
+The recovery trial now preserves shared original position/UV2 points for the same
+donor. Only healthy, originally non-overlapping faces qualify. Samples must agree
+within the existing texel band; incompatible samples and distinct donor seams
+stay separate. Every snapped point retains the absolute and relative metric
+checks. A bounded audit checks all changed faces against every other face using
+the existing overlap predicates; an uncertifiable trial retains the original
+successful recovery. Interactive execution runs this additional CPU work on a
+worker and awaits cancellation before releasing owned data.
+
+Review follow-up: stretch and absolute area do not detect a reflected face.
+Preserve the sign of each healthy face's UV area both before accepting a shared
+point and in the final continuity audit. Existing mirrored winding remains valid;
+no metric, contact, padding or work limits change. Six orientation cases expose
+four failures before the fix and pass afterward, including both winding signs
+and unchanged-winding controls. The CPU-only publication suite passes 439 tests,
+fails zero and skips 16 optional cases with Burst required. All 50 stable model
+files retain identical decoded values, including double bits; four JSON files
+differ only in equivalent final-digit numeric formatting. Both FBX compile
+variants and identifier/dependency guards pass. Evidence:
+`_results~/forward-winding-review/`. This guard does not remove the existing
+ordinary Kamaz collapsed-UV and overlap defects.
+
+On the copied Kamaz, body LOD2 has 726 UV2 connected components instead of 788,
+and the checked front points have no new discontinuities. Body triangles remain
+3148 (3264 across all five meshes). Native donor-seam subdivision is not disabled.
+The unified Forward LOD2 audit retains the previous 59 collapsed faces and 134
+unexpected overlap pairs: those remaining defects are not claimed solved here.
+Reverse publication audits pass, with no new fine triangle splits.
+
+The seam validator also used repeated Float32 vector operations for barycentric
+positions, while the actual mesh writer accumulates decoded attributes in double
+and rounds once. A copied Kamaz triangle supplies a regression where the former
+validator collapses two corners but the published mesh retains positive area.
+The validator, refreshed metric frames and shared projection positions now use
+the writer's interpolation. New projection positions are reconstructed from the
+original face/barycentric map and the captured projection origin. No precision
+or quality limit is relaxed, and original corners/streams remain unchanged.
+Kamaz LOD1 has 12537 triangles rather than 12546; LOD2 remains at 3264. Its 59
+collapsed UV faces / 134 unexpected overlap pairs remain unresolved. Reverse
+after this correction has 15312 inherited faces / 2762 packing families, a
+4519 px atlas, and no overlaps or finer cuts.
+
+With the affine fallback, Kamaz inherits 15311 faces rather than 15295, with
+2763 rather than 2766 packing families. The atlas is 4519 rather than 4507 px;
+this is a correspondence improvement, not a packing-size or speed claim.
+CementWall remains at 1079 inherited faces / 1522 px. These comparisons use the
+same copied inputs and settings; all Reverse overlap and split counts are zero.
+
+The discarded synchronous source guard built complete shell descriptors and
+streams only to check channel presence. Metadata now supplies that check; worker
+transfer analysis and cache invalidation of LOD hints remain intact. One copied
+Kamaz sample measured the old guard at 22.1 ms versus 0.17 ms including reflection
+for metadata. Diagnostic full-pipeline samples were 36.10 / 37.81 s, and detached
+preparation 31.42 / 32.46 s. These include capture/validation and are not a claim
+of live responsiveness or a statistically resolved total speed improvement.
+
+Validation: 194 passed / 4 optional private-fixture skips in the full model and
+focused regression run; a subsequent 131-test worker/capture/CementWall run also
+passes. Both compile-check FBX configurations pass. Original input snapshots
+remain unchanged. A trial protecting healthy faces increased subdivisions
+elsewhere; unconditional seam retention caused an extra overlap; limiting each
+cut to its local segment risks internal T-junctions. Those trials are not retained.
+The expanded affine/position regression and copied-model run passes 204 tests
+with 4 optional private-fixture skips. A partition-backtracking trial and a
+planar boundary projection trial did not reduce the remaining forward defects;
+neither is retained.
+A subtexel cut-line snapping trial also failed the existing unsafe-corner
+regression (it introduced a cut where complete inherited triangles must stay
+intact). It is discarded, with that regression and the cut precision limits
+unchanged.
+Final exact-source regression run (including the broader Reverse UV suite):
+300 passed / 6 optional fixture skips / 0 failed. Both FBX compile variants,
+identifier guard and tool dependency checks pass. The copied-model results
+above are from `published-position`; `final-transfer` contains the final
+regression XML/log. New front discontinuities remain zero, with 726 connected
+body UV2 components on Kamaz LOD2.
+
 ## Forward transfer: per-shell work without whole-mesh copies — 2026-10-14
 
 The paired performance runs exclude ordinary (forward) Transfer, and a code

@@ -8,6 +8,74 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public sealed class ReverseUvFrozenCascadeTests
     {
+        [TestCase(1)] [TestCase(-1)]
+        public void AffineProposalUsesEveryAnchorAndPreservesSharedPoints(int orientation)
+        {
+            var source=new[] {Vector2.zero,Vector2.right,Vector2.one,Vector2.zero,Vector2.one,Vector2.up};
+            Vector2 Move(Vector2 p)=>new Vector2(10+2*p.x+.2f*p.y,5+orientation*p.y);
+            var fitted=ReverseUvTransfer.FitFrozenAffine(source,source,source.Select(Move).ToArray(),.001f,default);
+            Assert.IsNotNull(fitted);
+            for(int i=0;i<source.Length;++i) Assert.Less(Vector2.Distance(Move(source[i]),fitted[i]),.001f);
+            Assert.AreEqual(fitted[0],fitted[3]);Assert.AreEqual(fitted[2],fitted[4]);
+            var conflicting=source.Select(Move).ToArray();conflicting[3]+=Vector2.one;
+            Assert.IsNull(ReverseUvTransfer.FitFrozenAffine(source,source,conflicting,.001f,default));
+        }
+
+        [Test]
+        public void AffineProposalRejectsSingularAndNonFiniteAnchorsAndCancellation()
+        {
+            var points=new[] {Vector2.zero,Vector2.right,Vector2.up};
+            Assert.IsNull(ReverseUvTransfer.FitFrozenAffine(points,points,new Vector2[3],.001f,default));
+            Assert.IsNull(ReverseUvTransfer.FitFrozenAffine(points,new[] {Vector2.zero,Vector2.right,Vector2.right*2},points,.001f,default));
+            var invalid=points.ToArray();invalid[1]=new Vector2(float.NaN,0);
+            Assert.IsNull(ReverseUvTransfer.FitFrozenAffine(points,points,invalid,.001f,default));
+            using var cancellation=new System.Threading.CancellationTokenSource();cancellation.Cancel();
+            Assert.Throws<OperationCanceledException>(()=>ReverseUvTransfer.FitFrozenAffine(points,points,points,.001f,cancellation.Token));
+        }
+
+        [TestCase(1)] [TestCase(-1)]
+        public void DominantSurfaceAnchorsKeepOneWholeIslandSimilarity(int orientation)
+        {
+            var source=new[] {Vector2.zero,Vector2.right,Vector2.up,Vector2.one,Vector2.up,Vector2.right,
+                new Vector2(2,0),new Vector2(3,0),new Vector2(2,1)};
+            Vector2 Move(Vector2 p)=>new Vector2(7-2*p.y,11+orientation*2*p.x);
+            var target=source.Select(Move).ToArray();
+            // Three misleading bevel anchors must not outweigh the main faces.
+            for(int i=6;i<9;++i) target[i]+=new Vector2(40,-30);
+            var whole=source.Concat(new[] {new Vector2(5,4)}).ToArray();
+            var fitted=ReverseUvTransfer.FitFrozenConsensus(whole,source,target,new[] {1d,1d,.01},.001f,default);
+            Assert.IsNotNull(fitted);
+            for(int i=0;i<whole.Length;++i) Assert.Less(Vector2.Distance(Move(whole[i]),fitted[i]),.001f);
+        }
+
+        [Test]
+        public void ConflictingLargeSurfaceAnchorsDoNotCreateAWholeIslandMatch()
+        {
+            var source=new[] {Vector2.zero,Vector2.right,Vector2.up,Vector2.one,Vector2.up,Vector2.right};
+            var target=source.ToArray();
+            for(int i=3;i<6;++i) target[i]+=Vector2.one*20;
+            Assert.IsNull(ReverseUvTransfer.FitFrozenConsensus(source,source,target,new[] {1d,1d},.001f,default));
+        }
+
+        [TestCase(.8,true)] [TestCase(.79,false)]
+        public void WholeIslandConsensusNeedsEightyPercentOfTheAnchorSurface(double supportedArea,bool expected)
+        {
+            var source=new[] {Vector2.zero,Vector2.right,Vector2.up,Vector2.one,Vector2.up,Vector2.right};
+            var target=source.ToArray();for(int i=3;i<6;++i) target[i]+=Vector2.one*20;
+            var fitted=ReverseUvTransfer.FitFrozenConsensus(source,source,target,
+                new[] {supportedArea,1-supportedArea},.001f,default);
+            Assert.AreEqual(expected,fitted!=null);
+        }
+
+        [Test]
+        public void WholeIslandAnchorSearchHonorsCancellation()
+        {
+            var points=new[] {Vector2.zero,Vector2.right,Vector2.up};
+            using var cancellation=new System.Threading.CancellationTokenSource();cancellation.Cancel();
+            Assert.Throws<OperationCanceledException>(()=>ReverseUvTransfer.FitFrozenConsensus(
+                points,points,points,new[] {1d},.001f,cancellation.Token));
+        }
+
         readonly List<Mesh> owned=new List<Mesh>();
         [TearDown] public void Cleanup() {foreach(var mesh in owned) if(mesh) UnityEngine.Object.DestroyImmediate(mesh);owned.Clear();}
 
@@ -23,6 +91,39 @@ namespace SashaRX.UnityMeshLab.Tests
         static ReverseUvTransfer.Result Build(params ReverseUvTransfer.Level[] levels)=>ReverseUvTransfer.Build(levels,
             new ReverseUvTransfer.Options {seedResolution=128,seedDensity=32,projectionReach=.1f,
                 regroupPreparedAtlas=true,frozenShellCascade=true,repackFinalAtlas=true}).GetAwaiter().GetResult();
+
+        [TestCase(false)] [TestCase(true)]
+        public void AffineWholeIslandMatchMustRespectRelativeStretch(bool worsensMetric)
+        {
+            var coarse=Quad();var fine=Quad();
+            var distorted=worsensMetric?coarse:fine;
+            distorted.uv2=distorted.uv2.Select(p=>new Vector2(p.x*2,p.y)).ToArray();
+            var before=TransferMeshSnapshot.Capture(fine);
+            using var result=Build(Level(1,coarse),Level(0,fine));
+            var node=result.report.nodes.Single(n=>n.lod==0);
+            Assert.AreEqual(worsensMetric?0:2,node.inheritedFaces);
+            Assert.AreEqual(worsensMetric?2:1,result.report.finalPackingFamilies);
+            Assert.AreEqual(0,result.report.splitSourceFaces+result.report.overlapFaces);
+            if(!worsensMetric)
+            {
+                var mesh=result.meshes[1][0];
+                Assert.Less(TransferUvQuality.Measure(mesh,mesh.uv2,Vector2.one,Matrix4x4.identity).worstAnisotropy,1.001);
+                Assert.AreEqual(1,UvShellExtractor.Extract(mesh.uv2,mesh.triangles).Count);
+            }
+            CollectionAssert.AreEqual(before,TransferMeshSnapshot.Capture(fine));
+        }
+
+        [Test]
+        public void AffineWholeIslandMatchDoesNotAdmitSiblingOverlap()
+        {
+            var coarse=Quad();var a=Quad();var b=Quad();
+            foreach(var fine in new[] {a,b}) fine.uv2=fine.uv2.Select(p=>new Vector2(p.x*2,p.y)).ToArray();
+            using var result=Build(Level(1,coarse),Level(0,a,b));
+            Assert.AreEqual(2,result.report.finalPackingFamilies);
+            Assert.AreEqual(2,result.report.inheritedFaces);
+            Assert.AreEqual(0,result.report.overlapFaces+result.report.splitSourceFaces);
+            Assert.AreNotEqual(result.report.nodes[1].faces[0].chart,result.report.nodes[2].faces[0].chart);
+        }
 
         [Test]
         public void OneCoarseIslandContainsSeveralWholeFineIslands()
@@ -125,7 +226,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [Test]
         public void RepairedWholeIslandRetriesItsDonorBeforeBecomingNew()
         {
-            var coarse=Quad();var fine=Quad();fine.uv2=fine.uv2.Select(p=>new Vector2(p.x,p.y*.0001f)).ToArray();
+            var coarse=Quad();var fine=Quad();fine.uv2=fine.uv2.Select(p=>new Vector2(p.x,0)).ToArray();
             using var result=Build(Level(1,coarse),Level(0,fine));
             var node=result.report.nodes.Single(n=>n.lod==0);
             Assert.AreEqual(2,node.inheritedFaces);Assert.AreEqual(2,node.localFallbackFaces);

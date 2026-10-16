@@ -12,6 +12,14 @@ namespace SashaRX.UnityMeshLab
     /// Positions use float32 so imported position quantization cannot bend a cut.</summary>
     internal static class ReverseUvRefinedMesh
     {
+        // Match CopyStreams: accumulate decoded source positions in double and
+        // round once into the published Float32 stream. Validators and cutters
+        // must not judge a different, repeatedly rounded interpolation.
+        internal static Vector3 InterpolatePosition(Vector3 a,Vector3 b,Vector3 c,Vector3 weights)
+            =>new Vector3((float)((double)a.x*weights.x+(double)b.x*weights.y+(double)c.x*weights.z),
+                (float)((double)a.y*weights.x+(double)b.y*weights.y+(double)c.y*weights.z),
+                (float)((double)a.z*weights.x+(double)b.z*weights.y+(double)c.z*weights.z));
+
         readonly struct Sample
         {
             internal readonly int a, b, c;

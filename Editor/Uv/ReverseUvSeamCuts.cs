@@ -159,8 +159,8 @@ namespace SashaRX.UnityMeshLab
                         if(s.sourceBarycentrics!=null)
                             b=s.sourceBarycentrics[start]*b.x+s.sourceBarycentrics[start+1]*b.y+s.sourceBarycentrics[start+2]*b.z;
                         int source=s.sourceFaces[plan.face]*3;
-                        p[k]=s.sourcePositions[s.sourceIndices[source]]*b.x
-                            +s.sourcePositions[s.sourceIndices[source+1]]*b.y+s.sourcePositions[s.sourceIndices[source+2]]*b.z;
+                        p[k]=ReverseUvRefinedMesh.InterpolatePosition(s.sourcePositions[s.sourceIndices[source]],
+                            s.sourcePositions[s.sourceIndices[source+1]],s.sourcePositions[s.sourceIndices[source+2]],b);
                     }
                     if (!MeshGeometry.HasArea(p[0], p[1], p[2])) return Refuse("zero-area-geometry");
                     if (altered)
@@ -284,9 +284,13 @@ namespace SashaRX.UnityMeshLab
                         for (int k = 0; k < 3; ++k)
                         {
                             var bary = triangles[t + k].Bary;
-                            barycentrics.Add(s.sourceBarycentrics==null?bary:
-                                s.sourceBarycentrics[start]*bary.x+s.sourceBarycentrics[start+1]*bary.y+s.sourceBarycentrics[start+2]*bary.z);
-                            positions.Add(s.positions[s.indices[start]] * bary.x + s.positions[s.indices[start + 1]] * bary.y + s.positions[s.indices[start + 2]] * bary.z);
+                            var originalBary=s.sourceBarycentrics==null?bary:
+                                s.sourceBarycentrics[start]*bary.x+s.sourceBarycentrics[start+1]*bary.y+s.sourceBarycentrics[start+2]*bary.z;
+                            barycentrics.Add(originalBary);
+                            int source=s.sourceFaces[plan.face]*3;
+                            var local=ReverseUvRefinedMesh.InterpolatePosition(s.sourcePositions[s.sourceIndices[source]],
+                                s.sourcePositions[s.sourceIndices[source+1]],s.sourcePositions[s.sourceIndices[source+2]],originalBary);
+                            positions.Add(RelativePosition(s.input.toWorld,local,s.projectionOrigin));
                             pixels.Add(s.pixels[start] * bary.x + s.pixels[start + 1] * bary.y + s.pixels[start + 2] * bary.z);
                         }
                     }

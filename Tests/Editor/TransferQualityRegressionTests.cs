@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using NUnit.Framework;
 using UnityEngine;
@@ -7,6 +8,126 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class TransferQualityRegressionTests
     {
+        [UnityEngine.TestTools.UnityTest]
+        public System.Collections.IEnumerator ForwardCpuWorkRunsOffTheEditorThread()
+        {
+            int editorThread=System.Threading.Thread.CurrentThread.ManagedThreadId;
+            UvProgress.Begin("Forward CPU worker regression",cancelable:true);
+            try
+            {
+                var task=ReverseUvTransfer.RunForwardCpuWork(_=>System.Threading.Thread.CurrentThread.ManagedThreadId,true,default);
+                while(!task.IsCompleted) yield return null;
+                Assert.AreNotEqual(editorThread,task.GetAwaiter().GetResult());
+            }
+            finally {UvProgress.End();}
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void CancelledForwardCpuWorkDoesNotTouchOwnedData(bool useAsync)
+        {
+            using var cancellation=new System.Threading.CancellationTokenSource();cancellation.Cancel();bool touched=false;
+            var task=ReverseUvTransfer.RunForwardCpuWork(_=>{touched=true;return 1;},useAsync,cancellation.Token);
+            Assert.Catch<System.OperationCanceledException>(()=>task.GetAwaiter().GetResult());
+            Assert.IsFalse(touched);
+        }
+
+        [TestCase(false,false)] [TestCase(true,false)] [TestCase(false,true)]
+        public void PartialForwardRecoveryKeepsSharedPointsButRespectsRealSeams(bool donorSeam,bool existingSeam)
+        {
+            var positions=new[] {Vector3.zero,Vector3.right,Vector3.up,Vector3.zero,Vector3.up,new Vector3(-1,0,0)};
+            var legacy=new[] {Vector2.zero,Vector2.right,Vector2.up,Vector2.zero,Vector2.up,Vector2.left};
+            if(existingSeam) {legacy[3]+=Vector2.one*10;legacy[4]+=Vector2.one*10;}
+            var uv=(Vector2[])legacy.Clone();for(int i=0;i<3;++i) uv[i]+=Vector2.one*(donorSeam?2:.005f);
+            var sources=new[] {0,0,0,donorSeam?1:0,donorSeam?1:0,donorSeam?1:0};
+            ReverseUvTransfer.KeepForwardContinuity(positions,legacy,
+                new[] {true,true},new HashSet<int> {0},uv,sources,.01f,Matrix4x4.identity);
+            if(donorSeam || existingSeam) Assert.Greater(Vector2.Distance(uv[0],uv[3]),1);
+            else {Assert.AreEqual(legacy[0],uv[0]);Assert.AreEqual(uv[0],uv[3]);Assert.AreEqual(uv[2],uv[4]);}
+            Assert.AreEqual(legacy[3],uv[3]);Assert.AreEqual(legacy[4],uv[4]);
+        }
+
+        [Test]
+        public void CompatibleProjectedCornersShareOneValueWithinTheTexelBand()
+        {
+            var positions=new[] {Vector3.zero,Vector3.right,Vector3.up,Vector3.zero,Vector3.up,new Vector3(-1,0,0)};
+            var legacy=new[] {Vector2.zero,Vector2.right,Vector2.up,Vector2.zero,Vector2.up,Vector2.left};
+            var uv=System.Array.ConvertAll(legacy,p=>p+Vector2.one);uv[3]+=Vector2.one*.001f;uv[4]+=Vector2.one*.001f;
+            var sources=new int[6];
+            ReverseUvTransfer.KeepForwardContinuity(positions,legacy,
+                new[] {true,true},new HashSet<int> {0,1},uv,sources,.01f,Matrix4x4.identity);
+            Assert.AreEqual(Vector2.one,uv[0]);Assert.AreEqual(uv[0],uv[3]);Assert.AreEqual(uv[2],uv[4]);
+        }
+
+        [Test]
+        public void ContinuityDoesNotForceIncompatibleSamplesBackToLegacyUvs()
+        {
+            var positions=new[] {Vector3.zero,Vector3.right,Vector3.up,Vector3.zero,Vector3.up,Vector3.left};
+            var legacy=new[] {Vector2.zero,Vector2.right,Vector2.up,Vector2.zero,Vector2.up,Vector2.left};
+            var uv=(Vector2[])legacy.Clone();for(int i=0;i<3;++i) uv[i]+=Vector2.one*2;
+            var before=(Vector2[])uv.Clone();
+            ReverseUvTransfer.KeepForwardContinuity(positions,legacy,new[] {true,true},
+                new HashSet<int> {0},uv,new int[6],.01f,Matrix4x4.identity);
+            CollectionAssert.AreEqual(before,uv,"A large mismatch needs a real recovery candidate, not a forced weld.");
+        }
+
+        [Test]
+        public void ContinuityCannotCollapseASmallHealthyTriangle()
+        {
+            var positions=new[] {Vector3.zero,Vector3.right,Vector3.up,Vector3.zero,Vector3.up,Vector3.left};
+            var legacy=new[] {Vector2.zero,Vector2.right*1e-6f,Vector2.up*1e-6f,
+                Vector2.zero,Vector2.up*1e-6f,Vector2.left*1e-6f};
+            var uv=(Vector2[])legacy.Clone();uv[3]=Vector2.one*5e-7f;
+            var before=(Vector2[])uv.Clone();
+            ReverseUvTransfer.KeepForwardContinuity(positions,legacy,new[] {true,true},new HashSet<int> {0},
+                uv,new int[6],1e-6f,Matrix4x4.identity);
+            CollectionAssert.AreEqual(before,uv);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void ForwardContinuityCannotReflectAHealthyTriangle(bool mirrored)
+        {
+            float h=1f/1024;
+            var shared=new Vector2(.5f,.5f-h);
+            var legacy=new[] {shared,new Vector2(.625f,.375f),new Vector2(.375f,.375f),
+                shared,new Vector2(.5f-h,.5f),new Vector2(.5f+h,.5f)};
+            var uv=(Vector2[])legacy.Clone();uv[3]=new Vector2(.5f,.5f+h);
+            if(mirrored)
+                for(int i=0;i<uv.Length;++i) {legacy[i].x=1-legacy[i].x;uv[i].x=1-uv[i].x;}
+            var positions=legacy.Select(p=>new Vector3(p.x,p.y,0)).ToArray();
+            var before=(Vector2[])uv.Clone();
+            ReverseUvTransfer.KeepForwardContinuity(positions,legacy,new[] {true,true},new HashSet<int> {1},
+                uv,new int[6],.01f,Matrix4x4.identity);
+            CollectionAssert.AreEqual(before,uv,"A reflected placement has unchanged stretch but must not be used to join the point.");
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void ForwardContinuityFinalAuditRefusesAReflectedFace(bool mirrored)
+        {
+            Assert.IsFalse(ContinuityOrientationTrial(mirrored,true));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void ForwardContinuityFinalAuditKeepsExistingWinding(bool mirrored)
+        {
+            Assert.IsTrue(ContinuityOrientationTrial(mirrored,false));
+        }
+
+        static bool ContinuityOrientationTrial(bool mirrored,bool reflect)
+        {
+            float h=1f/1024;
+            var before=new[] {new Vector2(.5f,.5f-h),new Vector2(.5f-h,.5f),new Vector2(.5f+h,.5f)};
+            if(mirrored) for(int i=0;i<before.Length;++i) before[i].x=1-before[i].x;
+            var after=(Vector2[])before.Clone();
+            if(reflect) after[0].y=.5f+h;
+            else for(int i=0;i<after.Length;++i) after[i]+=Vector2.one/8192;
+            var surface=new ReverseUvTransfer.Surface {positions=before.Select(p=>new Vector3(p.x,p.y,0)).ToArray(),
+                indices=new[] {0,1,2},faces=new[] {new ReverseUvTransfer.Face()}};
+            var audit=typeof(ReverseUvTransfer).GetMethod("ForwardContinuityFits",BindingFlags.Static|BindingFlags.NonPublic);
+            Assert.IsNotNull(audit);
+            return (bool)audit.Invoke(null,new object[] {surface,new[] {1d},before,after,Matrix4x4.identity,
+                System.Threading.CancellationToken.None});
+        }
+
         [Test]
         public void OverlapAreaRetainsTheSameDefectWhenBothFacesAreSubdivided()
         {

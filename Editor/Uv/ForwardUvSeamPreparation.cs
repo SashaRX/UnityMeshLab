@@ -163,7 +163,10 @@ namespace SashaRX.UnityMeshLab
                 var sourceFaceShells=new int[source.triangles.Length/3];
                 foreach(var shell in sourceShells) foreach(int f in shell.faceIndices) sourceFaceShells[f]=shell.shellId;
                 var cornerSources=new int[cornerUv.Length];
+                var legacyCorners=new Vector2[cornerUv.Length];var legacyCornerSources=new int[cornerUv.Length];
                 var originalFaces=new int[surface.faces.Length];var projectedFaces=new HashSet<int>();
+                var healthyFaces=new bool[surface.faces.Length];
+                var originalMetrics=new double[surface.faces.Length];
                 for(int f=0;f<surface.faces.Length;++f)
                 {
                     int cleanFace=surface.sourceFaces[f];
@@ -172,6 +175,8 @@ namespace SashaRX.UnityMeshLab
                     int old=originalFace*3,start=f*3;
                     double oldMetric=ForwardAnisotropy(originalPositions[originalIndices[old]],originalPositions[originalIndices[old+1]],
                         originalPositions[originalIndices[old+2]],legacyUv[originalIndices[old]],legacyUv[originalIndices[old+1]],legacyUv[originalIndices[old+2]],renderedFrame);
+                    healthyFaces[f]=oldMetric<=4;
+                    originalMetrics[f]=oldMetric;
                     double metric=ForwardAnisotropy(surface.positions[surface.indices[start]],surface.positions[surface.indices[start+1]],
                         surface.positions[surface.indices[start+2]],surface.pixels[start],surface.pixels[start+1],surface.pixels[start+2],renderedFrame);
                     if (trace != null && oldMetric > 4)
@@ -191,17 +196,21 @@ namespace SashaRX.UnityMeshLab
                         int corner=f*3+k;
                         var bary=surface.sourceBarycentrics==null ? k==0?Vector3.right:k==1?Vector3.up:Vector3.forward : surface.sourceBarycentrics[corner];
                         int oldCorner=bary.x>=bary.y && bary.x>=bary.z?0:bary.y>=bary.z?1:2;
+                        legacyCornerSources[corner]=legacySources[originalIndices[originalFace*3+oldCorner]];
+                        legacyCorners[corner]=legacyUv[originalIndices[originalFace*3]]*bary.x
+                            +legacyUv[originalIndices[originalFace*3+1]]*bary.y+legacyUv[originalIndices[originalFace*3+2]]*bary.z;
                         cornerSources[corner]=surface.faces[f].inherited?sourceFaceShells[validFaces[surface.faces[f].parentFace]]:
-                            legacySources[originalIndices[originalFace*3+oldCorner]];
-                        cornerUv[corner]=surface.faces[f].inherited?surface.pixels[corner]/resolution:
-                            legacyUv[originalIndices[originalFace*3]]*bary.x+legacyUv[originalIndices[originalFace*3+1]]*bary.y
-                                +legacyUv[originalIndices[originalFace*3+2]]*bary.z;
+                            legacyCornerSources[corner];
+                        cornerUv[corner]=surface.faces[f].inherited?surface.pixels[corner]/resolution:legacyCorners[corner];
                     }
                 }
+                var points=surface.indices.Select(i=>surface.positions[i]).ToArray();
                 var oldContacts=UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {uv=legacyUv,indices=originalIndices,
                     charts=new int[legacyUv.Length]},token,comparisonBudget:2000000,collectConflicts:true);
                 if (!oldContacts.complete) return (null,null);
                 var allowed=new HashSet<(int,int)>(oldContacts.conflicts.Select(p=>(Math.Min(p.a,p.b),Math.Max(p.a,p.b))));
+                var overlapFaces=new HashSet<int>(oldContacts.conflicts.SelectMany(p=>new[] {p.a,p.b}));
+                for(int f=0;f<healthyFaces.Length;++f) healthyFaces[f] &= !overlapFaces.Contains(originalFaces[f]);
                 while(true)
                 {
                     token.ThrowIfCancellationRequested();
@@ -262,6 +271,16 @@ namespace SashaRX.UnityMeshLab
                     if(!extended) return (null,null);
                     return await PrepareForwardSeamsCore(source,target,legacyUv,legacySources,resolution,useAsync,token,protectedFaces,attempt+1,trace,incrementalCuts,existingAtlasOnly,boundaryToleranceTexels,renderedFrame);
                 }
+                var previousUv=cornerUv;
+                cornerUv=await RunForwardCpuWork(trialToken=>
+                {
+                    var candidate=(Vector2[])previousUv.Clone();
+                    KeepForwardContinuity(points,legacyCorners,healthyFaces,projectedFaces,candidate,cornerSources,
+                        boundaryToleranceTexels/resolution,renderedFrame,trialToken);
+                    if(candidate.SequenceEqual(previousUv)) return previousUv;
+                    return ForwardContinuityFits(surface,originalMetrics,previousUv,candidate,renderedFrame,trialToken)
+                        ?candidate:previousUv;
+                },useAsync,token);
                 var vertexSources=new List<int>();
                 var barycentrics=surface.sourceBarycentrics ?? Enumerable.Range(0,cornerUv.Length)
                     .Select(i=>i%3==0?Vector3.right:i%3==1?Vector3.up:Vector3.forward).ToArray();
@@ -272,6 +291,114 @@ namespace SashaRX.UnityMeshLab
             }
             finally {UnityEngine.Object.DestroyImmediate(donorMesh);}
         }
+
+        internal static async Task<T> RunForwardCpuWork<T>(Func<CancellationToken,T> work,bool useAsync,CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            if(!useAsync) return work(token);
+            using var cancellation=CancellationTokenSource.CreateLinkedTokenSource(token);
+            var worker=Task.Run(()=>work(cancellation.Token),cancellation.Token);
+            while(!worker.IsCompleted)
+            {
+                if(UvProgress.CancelRequested) cancellation.Cancel();
+                // Await worker completion before releasing any owned mesh data.
+                await Task.WhenAny(worker,Task.Delay(25,CancellationToken.None));
+            }
+            return await worker;
+        }
+
+        internal static void KeepForwardContinuity(Vector3[] positions,Vector2[] legacy,
+            bool[] healthyFaces,HashSet<int> projectedFaces,Vector2[] uv,int[] sources,float band,Matrix4x4 frame,
+            CancellationToken token=default)
+        {
+            // Join only points already shared in the original UV2 map.
+            // A real pre-existing seam has another legacy UV; a real donor seam
+            // has another source label. Both stay separate.
+            var groups=new Dictionary<(Vector3,Vector2,int),List<int>>();
+            var geometry=new RemeshNative.Geometry {uv=uv,indices=Enumerable.Range(0,uv.Length).ToArray()};
+            for(int c=0;c<uv.Length;++c)
+            {
+                if((c&1023)==0) token.ThrowIfCancellationRequested();
+                var key=(positions[c],legacy[c],sources[c]);
+                if(!groups.TryGetValue(key,out var corners)) {corners=new List<int>();groups.Add(key,corners);}
+                corners.Add(c);
+            }
+            foreach(var corners in groups.Values)
+            {
+                token.ThrowIfCancellationRequested();
+                if(corners.Count<2 || corners.Any(c=>!healthyFaces[c/3])) continue;
+                KeepSharedForwardPoint(corners,positions,projectedFaces,uv,geometry,band,frame);
+            }
+        }
+
+        static void KeepSharedForwardPoint(List<int> corners,Vector3[] positions,HashSet<int> projectedFaces,Vector2[] uv,
+            RemeshNative.Geometry geometry,float band,Matrix4x4 frame)
+        {
+            int retained=corners.FindIndex(c=>!projectedFaces.Contains(c/3));
+            int first=retained>=0?corners[retained]:corners[0];var shared=uv[first];
+            if(corners.All(c=>uv[c].Equals(shared))) return;
+            if(corners.Any(c=>!((uv[c]-shared).magnitude<=band))) return;
+            var faces=corners.Select(c=>c/3).Distinct().ToArray();
+            if(faces.Any(f=>UvAtlasDiagnostics.IntersectionTest.Degenerate(geometry,f))) return;
+            var metrics=faces.Select(f=>ForwardAnisotropy(positions[f*3],positions[f*3+1],positions[f*3+2],
+                uv[f*3],uv[f*3+1],uv[f*3+2],frame)).ToArray();
+            var orientations=faces.Select(f=>ForwardSignedUvArea(uv,f*3)).ToArray();
+            var previous=corners.Select(c=>uv[c]).ToArray();
+            foreach(int corner in corners) uv[corner]=shared;
+            if(!ForwardPointMetricsFit(faces,positions,uv,metrics,orientations,frame))
+                for(int i=0;i<corners.Count;++i) uv[corners[i]]=previous[i];
+        }
+
+        static bool ForwardPointMetricsFit(int[] faces,Vector3[] positions,Vector2[] uv,double[] before,double[] orientations,Matrix4x4 frame)
+        {
+            for(int i=0;i<faces.Length;++i)
+            {
+                int t=faces[i]*3;
+                double area=ForwardSignedUvArea(uv,t);
+                if(orientations[i]>0 && area<0 || orientations[i]<0 && area>0) return false;
+                double metric=ForwardAnisotropy(positions[t],positions[t+1],positions[t+2],uv[t],uv[t+1],uv[t+2],frame);
+                if(!(metric<=4) || !UvTransferTolerance.MetricFits(metric,before[i])) return false;
+            }
+            return true;
+        }
+
+        static bool ForwardContinuityFits(Surface surface,double[] originalMetrics,Vector2[] before,Vector2[] after,
+            Matrix4x4 frame,CancellationToken token)
+        {
+            var changed=Enumerable.Range(0,surface.faces.Length).Where(f=>Enumerable.Range(f*3,3)
+                .Any(c=>!before[c].Equals(after[c]))).ToArray();
+            if((long)changed.Length*surface.faces.Length>2000000) return false;
+            if(changed.Any(f=>!ForwardContinuityFaceFits(surface,f,originalMetrics[f],before,after,frame,token))) return false;
+            var geometry=new RemeshNative.Geometry {uv=after,indices=Enumerable.Range(0,after.Length).ToArray()};
+            var intersection=new UvAtlasDiagnostics.IntersectionTest();
+            foreach(int f in changed)
+            {
+                token.ThrowIfCancellationRequested();
+                if(UvAtlasDiagnostics.IntersectionTest.Degenerate(geometry,f)) return false;
+                for(int other=0;other<surface.faces.Length;++other)
+                    if(other!=f && intersection.OverlapsInAtlas(geometry,f,other)) return false;
+            }
+            return true;
+        }
+
+        static bool ForwardContinuityFaceFits(Surface surface,int face,double originalMetric,Vector2[] before,Vector2[] after,
+            Matrix4x4 frame,CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();int t=face*3;
+            for(int k=0;k<3;++k)
+                if(after[t+k].x < -1e-4f || after[t+k].x>1.0001f || after[t+k].y < -1e-4f || after[t+k].y>1.0001f) return false;
+            var a=surface.positions[surface.indices[t]];var b=surface.positions[surface.indices[t+1]];
+            var c=surface.positions[surface.indices[t+2]];
+            double beforeArea=ForwardSignedUvArea(before,t),afterArea=ForwardSignedUvArea(after,t);
+            if(beforeArea>0 && afterArea<0 || beforeArea<0 && afterArea>0) return false;
+            double current=ForwardAnisotropy(a,b,c,after[t],after[t+1],after[t+2],frame);
+            return (originalMetric>4 || current<=4) && UvTransferTolerance.MetricFits(current,originalMetric)
+                && UvTransferTolerance.MetricFits(current,ForwardAnisotropy(a,b,c,before[t],before[t+1],before[t+2],frame));
+        }
+
+        static double ForwardSignedUvArea(Vector2[] uv,int t)
+            => ((double)uv[t+1].x-uv[t].x)*((double)uv[t+2].y-uv[t].y)
+                -((double)uv[t+1].y-uv[t].y)*((double)uv[t+2].x-uv[t].x);
 
         // Transform edges rather than absolute positions: translation must not
         // introduce Float32 cancellation into the rendered stretch comparison.
