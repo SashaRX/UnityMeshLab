@@ -65,7 +65,7 @@ namespace SashaRX.UnityMeshLab
         internal static async Task<(Mesh mesh,int[] sources)> PrepareForwardSeamsAsync(Mesh source,Mesh target,
             Vector2[] legacyUv,int[] legacySources,int resolution,bool useAsync,CancellationToken token=default,
             HashSet<int> protectedFaces=null,int attempt=0,TransferMatchTrace trace=null,float boundaryToleranceTexels=UvTransferTolerance.BoundaryTexels,
-            Matrix4x4? targetLocalToWorld=null,TransferPerformanceProfile performance=null,bool shareSeamPasses=true)
+            Matrix4x4? targetLocalToWorld=null,TransferPerformanceProfile performance=null,bool shareSeamPasses=true,Action<ForwardUvReference> captureReference=null)
         {
             var renderedFrame=targetLocalToWorld ?? Matrix4x4.identity;
             // Without sharing (the regression control) every pass prepares its own prefix.
@@ -75,17 +75,23 @@ namespace SashaRX.UnityMeshLab
                 using(performance?.Accumulated("Forward seam quality measures"))
                     return TransferUvQuality.Measure(mesh,uv,Vector2.one,renderedFrame);
             }
+            ForwardUvReference selectedReference=null;
+            (Mesh mesh,int[] sources) Finish((Mesh mesh,int[] sources) selected)
+            {captureReference?.Invoke(selectedReference);return selected;}
             var stable=await PrepareForwardSeamsCore(source,target,legacyUv,legacySources,resolution,useAsync,token,
-                protectedFaces,attempt,trace,false,false,boundaryToleranceTexels,renderedFrame,performance,shared);
+                protectedFaces,attempt,trace,false,false,boundaryToleranceTexels,renderedFrame,performance,shared,
+                captureReference==null?null:value=>selectedReference=value);
             if (stable.mesh && Quality(stable.mesh,stable.mesh.uv2).worstAnisotropy<=4)
-                return stable;
+                return Finish(stable);
             foreach(bool existingAtlasOnly in new[] {false,true})
             {
                 Mesh candidate=null;
                 try
                 {
+                    ForwardUvReference incrementalReference=null;
                     var incremental=await PrepareForwardSeamsCore(source,target,legacyUv,legacySources,resolution,useAsync,token,
-                        protectedFaces,attempt,trace,true,existingAtlasOnly,boundaryToleranceTexels,renderedFrame,performance,shared);
+                        protectedFaces,attempt,trace,true,existingAtlasOnly,boundaryToleranceTexels,renderedFrame,performance,shared,
+                        captureReference==null?null:value=>incrementalReference=value);
                     candidate=incremental.mesh;
                     if (!candidate) continue;
                     var after=Quality(candidate,candidate.uv2);
@@ -96,8 +102,8 @@ namespace SashaRX.UnityMeshLab
                         && (after.degenerateFaces<before.degenerateFaces || after.areaWeightedAnisotropy<before.areaWeightedAnisotropy*.999999))
                     {
                         if (stable.mesh) UnityEngine.Object.DestroyImmediate(stable.mesh);
-                        candidate=null;stable=incremental;
-                        if(after.worstAnisotropy<=4) return stable;
+                        candidate=null;stable=incremental;selectedReference=incrementalReference;
+                        if(after.worstAnisotropy<=4) return Finish(stable);
                     }
                 }
                 catch (InvalidOperationException error)
@@ -111,7 +117,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 finally {if(candidate) UnityEngine.Object.DestroyImmediate(candidate);}
             }
-            return stable;
+            return Finish(stable);
         }
 
         // Everything a seam pass computes before its own options take effect:
@@ -257,7 +263,7 @@ namespace SashaRX.UnityMeshLab
         static async Task<(Mesh mesh,int[] sources)> PrepareForwardSeamsCore(Mesh source,Mesh target,
             Vector2[] legacyUv,int[] legacySources,int resolution,bool useAsync,CancellationToken token,
             HashSet<int> protectedFaces,int attempt,TransferMatchTrace trace,bool incrementalCuts,bool existingAtlasOnly,float boundaryToleranceTexels,
-            Matrix4x4 renderedFrame,TransferPerformanceProfile performance,ForwardSeamShared shared)
+            Matrix4x4 renderedFrame,TransferPerformanceProfile performance,ForwardSeamShared shared,Action<ForwardUvReference> captureReference)
         {
             using var owned=shared==null?new ForwardSeamShared():null;
             var pass=shared ?? owned;
@@ -365,7 +371,7 @@ namespace SashaRX.UnityMeshLab
                     bool extended = false;
                     foreach(int face in legacyContacts) extended |= protectedFaces.Add(originalFaces[face]);
                     if (!extended) return (null,null);
-                    return await PrepareForwardSeamsCore(source,target,legacyUv,legacySources,resolution,useAsync,token,protectedFaces,attempt+1,trace,incrementalCuts,existingAtlasOnly,boundaryToleranceTexels,renderedFrame,performance,shared);
+                    return await PrepareForwardSeamsCore(source,target,legacyUv,legacySources,resolution,useAsync,token,protectedFaces,attempt+1,trace,incrementalCuts,existingAtlasOnly,boundaryToleranceTexels,renderedFrame,performance,shared,captureReference);
                 }
                 for(int f=0;f<surface.faces.Length;++f)
                     if(refused.Contains(f))
@@ -396,7 +402,7 @@ namespace SashaRX.UnityMeshLab
                 bool extended=false;
                 foreach(int face in metricFailures) extended |= protectedFaces.Add(face);
                 if(!extended) return (null,null);
-                return await PrepareForwardSeamsCore(source,target,legacyUv,legacySources,resolution,useAsync,token,protectedFaces,attempt+1,trace,incrementalCuts,existingAtlasOnly,boundaryToleranceTexels,renderedFrame,performance,shared);
+                return await PrepareForwardSeamsCore(source,target,legacyUv,legacySources,resolution,useAsync,token,protectedFaces,attempt+1,trace,incrementalCuts,existingAtlasOnly,boundaryToleranceTexels,renderedFrame,performance,shared,captureReference);
             }
             var previousUv=cornerUv;
             cornerUv=await RunForwardCpuWork(trialToken=>
@@ -420,6 +426,8 @@ namespace SashaRX.UnityMeshLab
             var mesh=ReverseUvRefinedMesh.Copy(surface.input.mesh,output.sourceFaces,output.barycentrics,output.uv,
                 (vertex,corner)=>vertexSources.Add(output.sources[corner]));
             mesh.name=target.name+"_forwardSeams";
+            captureReference?.Invoke(ForwardUvReference.Capture(mesh,originalIndices,legacyUv,legacySources,
+                output.originalFaces,output.barycentrics,new HashSet<int>(projectedFaces.Select(f=>originalFaces[f]))));
             return (mesh,vertexSources.ToArray());
         }
 

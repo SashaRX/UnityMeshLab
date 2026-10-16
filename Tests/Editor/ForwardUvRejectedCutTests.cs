@@ -186,7 +186,11 @@ namespace SashaRX.UnityMeshLab.Tests
             {
                 // Both projected donor charts hit distant, unchanged target blockers.
                 // All pieces must be rejected, and their generated subdivisions removed.
-                actual=ReverseUvTransfer.PrepareForwardSeams(source,target,legacy,new int[positions.Length],128,out var labels);
+                ForwardUvReference selectedReference=null;
+                var prepared=ReverseUvTransfer.PrepareForwardSeamsAsync(source,target,legacy,new int[positions.Length],128,false,
+                    captureReference:value=>selectedReference=value).GetAwaiter().GetResult();
+                actual=prepared.mesh;var labels=prepared.sources;
+                Assert.IsNotNull(selectedReference);Assert.IsTrue(selectedReference.Matches(actual));
                 Assert.NotNull(actual);Assert.AreEqual(indices.Length,actual.triangles.Length);
                 var actualIndices=actual.triangles;var vertices=actual.vertices;var actualUv=actual.uv;var uv2=actual.uv2;
                 var actualNormals=actual.normals;var actualColors=actual.colors;
@@ -194,6 +198,8 @@ namespace SashaRX.UnityMeshLab.Tests
                 {
                     int old=indices[c],v=actualIndices[c];
                     Assert.AreEqual(positions[old],vertices[v]);Assert.AreEqual(uv0[old],actualUv[v]);
+                    Assert.AreEqual(positions[old],selectedReference.positions[c]);
+                    Assert.AreEqual(legacy[old],selectedReference.legacy[c]);Assert.AreEqual(0,selectedReference.donors[c]);
                     Assert.AreEqual(legacy[old],uv2[v]);Assert.AreEqual(0,labels[v]);
                     Assert.AreEqual(normals[old],actualNormals[v]);Assert.AreEqual(colors[old],actualColors[v]);
                 }
