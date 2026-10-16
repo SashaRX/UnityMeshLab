@@ -56,6 +56,16 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
+        // Publication can clamp UVs without changing the chosen legacy/donor
+        // provenance. Reapply only that exact policy, never refresh arbitrary
+        // stale coordinates into a supposedly matching reference.
+        internal ForwardUvReference ClampPublishedCoordinates(Mesh prepared)
+        {
+            if(!Matches(prepared)) return null;
+            var published=(Vector2[])current.Clone();XatlasRepack.ClampUvsToUnit(published);
+            return new ForwardUvReference(positions,legacy,published,donors,rescued);
+        }
+
         internal ForwardUvReference RetainFaces(int[] faces)
         {
             var corners=faces.SelectMany(f=>Enumerable.Range(f*3,3)).ToArray();

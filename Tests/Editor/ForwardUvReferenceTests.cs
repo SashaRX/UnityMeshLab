@@ -67,6 +67,51 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(before,mesh.uv2);
         }
 
+        [TestCase(true,false)] [TestCase(false,false)] [TestCase(true,true)]
+        public void PublishedAtlasCoordinatesRetainOnlyTheSelectedLegacyReference(bool clamp,bool stale)
+        {
+            Surface();mesh.uv=mesh.vertices.Select(p=>new Vector2(p.x,p.y)).ToArray();
+            mesh.uv2=mesh.uv.Select(p=>p*1.00002f-Vector2.one*.00001f).ToArray();
+            var selected=ForwardUvReference.Capture(mesh,mesh.triangles,legacy,Enumerable.Repeat(7,6).ToArray(),new[] {0,1},
+                new[] {Vector3.right,Vector3.up,Vector3.forward,Vector3.right,Vector3.up,Vector3.forward},
+                new System.Collections.Generic.HashSet<int> {1});
+            if(stale) {var changed=mesh.uv2;changed[0]+=Vector2.right*.1f;mesh.uv2=changed;}
+            var prepared=mesh.uv2;var savedCurrent=(Vector2[])selected.current.Clone();
+            var go=new GameObject("Published reference regression");
+            var entry=new MeshEntry {fbxMesh=mesh,originalMesh=mesh,renderer=go.AddComponent<MeshRenderer>(),forwardUvReference=selected};
+            var workflow=new UvTransferWorkflow();var context=new UvToolContext {ClampLightmapToUnit=clamp};context.MeshEntries.Add(entry);
+            typeof(UvTransferWorkflow).GetField("ctx",BindingFlags.Instance|BindingFlags.NonPublic).SetValue(workflow,context);
+            try
+            {
+                var result=new GroupedShellTransfer.TransferResult {uv2=mesh.uv2,vertexToSourceShell=Enumerable.Repeat(7,6).ToArray(),
+                    verticesTotal=6,verticesTransferred=6};
+                typeof(UvTransferWorkflow).GetMethod("ApplyTransferResult",BindingFlags.Instance|BindingFlags.NonPublic)
+                    .Invoke(workflow,new object[] {entry,mesh,result,1});
+                CollectionAssert.AreEqual(prepared,mesh.uv2,"Publishing must not mutate the prepared source");
+                CollectionAssert.AreEqual(savedCurrent,selected.current,"The selected reference remains immutable");
+                if(!stale) Assert.IsTrue(entry.forwardUvReference.Matches(entry.transferredMesh),"Reference must describe the actual published UVs after clamp");
+                var input=new ReverseUvTransfer.Input {mesh=entry.transferredMesh,usePreparedUv2=true,forwardReference=entry.forwardUvReference};
+                using var detached=ReverseUvInputs.Prepare(new[] {new ReverseUvTransfer.Level {inputs=new[] {input}}});
+                var actual=detached.levels[0].inputs[0];
+                if(stale) Assert.IsNull(actual.forwardReference,"Clamp must not revive a stale legacy reference");
+                else
+                {
+                    Assert.IsNotNull(actual.forwardReference);
+                    Assert.IsTrue(actual.forwardReference.Matches(actual.mesh));
+                    CollectionAssert.AreEqual(selected.legacy,actual.forwardReference.legacy);
+                    CollectionAssert.AreEqual(selected.donors,actual.forwardReference.donors);
+                    CollectionAssert.AreEqual(selected.rescued,actual.forwardReference.rescued);
+                    var expected=(Vector2[])prepared.Clone();if(clamp) XatlasRepack.ClampUvsToUnit(expected);
+                    CollectionAssert.AreEqual(expected,entry.transferredMesh.uv2);
+                }
+            }
+            finally
+            {
+                if(entry.transferredMesh) UnityEngine.Object.DestroyImmediate(entry.transferredMesh);
+                UnityEngine.Object.DestroyImmediate(go);
+            }
+        }
+
         [Test] public void GeneratedSplitAroundRescuedCollapsedFaceUsesWholeReference()
         {
             var surface=Surface();var before=mesh.uv2;var snapshot=mesh.vertices;

@@ -3314,3 +3314,10 @@ Before foundation chart assignment and independent density normalization, only r
 Manual atlas resolution derives the existing prepared foundation density before reference repair. Outside incident aliases are checked by exact geometric position and current UV as well as mesh vertex identity: duplicating a UV-continuous point cannot hide an outside constraint. A pre-existing authored UV seam remains an independent side and is left untouched.
 
 Portable regression cases cover generated splits, authored seams and winding, stale or missing provenance, cleanup remapping, nonmanifold input, outside incident corners, cancellation, and the actual Forward handoff after rejected subdivisions are restored. Private full-pipeline controls checked three actual models in both directions without publishing their assets. The targeted coarsest seam closed with exact endpoint UV agreement and unchanged output triangle geometry; the other two models retained all stable numeric outputs. This experiment does not resolve other layout or startup issues.
+
+The selected reference also follows the existing final clamp-to-unit publication
+policy. Its legacy coordinates, donor identities and rescued-face flags remain
+unchanged; only the captured current coordinates receive the same clamp. Exact
+prepared-mesh validation refuses stale provenance before this update. An actual
+workflow publication and detached Reverse-input regression covers clamped,
+unclamped and stale inputs without mutating the prepared mesh or selected record.
