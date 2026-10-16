@@ -3264,3 +3264,40 @@ coarsest cuts do not imply every finer chart is an I strip. Kitchen's larger
 Fill candidates can still fail the precision/contact audit. Ordered overlap
 baking is unchanged and unfinished. Zero defects do not establish complete
 matching or optimal packing.
+
+
+## Rejected forward seam subdivisions (2026-10-16)
+
+Forward projection could keep generated vertices and triangles after rejecting
+all projected pieces of an original face. Restore an original triangle only
+when every piece retains its exact legacy UV and donor labels. Keep a whole
+connected cut frontier whenever an accepted or changed neighbor still needs it;
+nonmanifold edges refuse restoration. Original geometry, material slots and
+vertex streams are copied through the existing refined-mesh path.
+
+The restoration rechecks each changed face against the original winding,
+absolute stretch and relative metric limits, then audits the complete output
+against the original allowed contacts with the unchanged comparison budget.
+Unchanged, already validated projected pieces retain their exact coordinates and
+provenance. Cancellation cannot publish a partial result.
+
+Private CPU NullDevice verification: 474 passed, zero failed, 16 optional skips,
+including the new restoration regressions and both Transfer directions on a
+vehicle at Adaptive / 10 tex/m. Its LOD1 count decreases from 12,733 to 11,566:
+228 original triangles replace 1,395 rejected pieces, removing 1,167 generated
+triangles without dropping any original geometric face. Exact captured output
+confirms unchanged UV/donor labels on restored faces and exact barycentrics,
+UVs and donors on every retained piece. Final Reverse has zero collapsed faces
+and unexpected contacts. All final packing metric flags fit the existing
+precision policies with one shared similarity per complete cross-LOD family;
+maximum residual is below 0.0001 texel. No precision or quality limits change.
+
+A wall control retains all 13 stable numeric outputs exactly. A material-correct
+2:1 sofa control completes both directions without new quality defects; its
+LOD counts change from 2,156/1,418/607 to 2,156/1,388/597. The separate sofa seat
+seam, wall layout fragmentation/alignment and synchronous startup imports remain
+open. This experiment does not claim to fix those problems or optimal packing.
+Both FBX compilation variants pass; the new helper has no SonarAnalyzer 10.35
+findings with the existing complexity and loop rules enabled. The measured
+coverage selection includes the new regression suite and retains all existing
+required suites, including viewport checks.
