@@ -411,8 +411,14 @@ namespace SashaRX.UnityMeshLab
             var vertexSources=new List<int>();
             var barycentrics=surface.sourceBarycentrics ?? Enumerable.Range(0,cornerUv.Length)
                 .Select(i=>i%3==0?Vector3.right:i%3==1?Vector3.up:Vector3.forward).ToArray();
-            var mesh=ReverseUvRefinedMesh.Copy(surface.input.mesh,surface.sourceFaces,barycentrics,cornerUv,
-                (vertex,corner)=>vertexSources.Add(cornerSources[corner]));
+            var output=new RejectedForwardOutput {sourceFaces=surface.sourceFaces,originalFaces=originalFaces,
+                barycentrics=barycentrics,uv=cornerUv,sources=cornerSources};
+            var rejected=new RejectedForwardInput {positions=surface.input.mesh.vertices,indices=surface.input.mesh.triangles,
+                originalIndices=originalIndices,legacyUv=legacyUv,legacySources=legacySources,legacyCorners=legacyCorners,
+                legacyCornerSources=legacyCornerSources,projected=projectedFaces,output=output};
+            output=await RunForwardCpuWork(t=>RestoreRejectedForwardCuts(rejected,allowed,renderedFrame,t),useAsync,token) ?? output;
+            var mesh=ReverseUvRefinedMesh.Copy(surface.input.mesh,output.sourceFaces,output.barycentrics,output.uv,
+                (vertex,corner)=>vertexSources.Add(output.sources[corner]));
             mesh.name=target.name+"_forwardSeams";
             return (mesh,vertexSources.ToArray());
         }
