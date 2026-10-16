@@ -603,10 +603,7 @@ namespace SashaRX.UnityMeshLab
             long queries, CancellationToken token, DonorSeamIndex seamIndex = null)
         {
             var performance = options.performance;
-            foreach(var target in targets)
-                if(options.seamCutExclusions!=null && options.seamCutExclusions.TryGetValue((target.lod,target.node),out var protectedSources))
-                    for(int f=0;f<target.faces.Length;++f)
-                        target.faces[f].protectedInheritance=protectedSources.Contains(target.input.sourceFaces==null?f:target.input.sourceFaces[f]);
+            MarkProtectedSeamInheritance(targets, options);
             using (performance?.Accumulated("Projection overlap resolution")) ResolveOverlaps(targets, options, token);
             if (options.splitDonorSeams)
             {
@@ -618,6 +615,14 @@ namespace SashaRX.UnityMeshLab
             }
             using (performance?.Accumulated("Projection corner snapping")) SnapContinuousCorners(targets, options);
             using (performance?.Accumulated("Projection overlap resolution")) ResolveOverlaps(targets, options, token);
+        }
+
+        static void MarkProtectedSeamInheritance(Surface[] targets, Options options)
+        {
+            foreach (var target in targets)
+                if (options.seamCutExclusions != null && options.seamCutExclusions.TryGetValue((target.lod, target.node), out var protectedSources))
+                    for (int face = 0; face < target.faces.Length; ++face)
+                        target.faces[face].protectedInheritance = protectedSources.Contains(target.input.sourceFaces == null ? face : target.input.sourceFaces[face]);
         }
 
         /// <summary>Ordered superset of the charts whose bounds lie within reach of a

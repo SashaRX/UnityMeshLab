@@ -56,7 +56,19 @@ try {
         'PreviewSpaceTests','MaterialChannelPreviewTests')
     $viewportRegressions = @('ShellPreviewCompletesWhenAnotherVisibleMeshLacksTheChannel',
         'ThreeDSpotCompletesTheFirstClickAfterPreviewPreparation')
-    $requiredSuites = $texturePackingSuites + $assetTransferSuites + $viewportSuites
+    $transferPreparationSuites = @('TransferQualityRegressionTests','TransferPerformanceTests',
+        'ReverseUvFrozenCascadeTests','ReverseUvSeamTests','UvTransferToleranceTests')
+    # Keep new public stages in the stacked Transfer series measured as their
+    # regression fixtures arrive, and require execution whenever a fixture exists.
+    $transferStageSuites = @('ReverseUvShellPrecisionTests','ReverseUvNativeChartSessionTests',
+        'UvShellTopologyRepairTests','ForwardUvContinuityTests',
+        'ReverseUvBoundaryPriorityTests','ReverseUvSharedBoundaryTests')
+    foreach ($suite in $transferStageSuites) {
+        if (Test-Path -LiteralPath (Join-Path $packageRoot "Tests/Editor/$suite.cs")) {
+            $transferPreparationSuites += $suite
+        }
+    }
+    $requiredSuites = $texturePackingSuites + $assetTransferSuites + $viewportSuites + $transferPreparationSuites
     $testFilter = 'LodHardEdgeTests;LodSmoothingRegionTests;LodQslimTransferTests;LodAttributeCorrectionTests;LodQualitySelectionTests;LodGenerationToolTests;LodLoopSimplifierTests;LodSmallPartsTests;LodScreenAcceptanceTests;LodScreenValidationTests;LodProjectVisualQualityTests;CollisionElementTests;CollisionMeshToolTests;LodSharedUvTransferTests;LodPaintRetriangulationTests;' + ($requiredSuites -join ';')
     $testFilter += ';' + (($viewportRegressions | ForEach-Object { "PreviewLodSwitchTests.$_" }) -join ';')
     $arguments = @('-batchmode','-projectPath',$consumer,'-runTests','-testPlatform','EditMode','-testFilter',$testFilter,
