@@ -394,8 +394,8 @@ namespace SashaRX.UnityMeshLab
         {
             // One name parse per surface, not per face.
             var groupKeys=new Dictionary<ReverseUvTransfer.Surface,string>();
-            foreach(var s in surfaces)
-                if(!groupKeys.ContainsKey(s)) groupKeys.Add(s,UvToolContext.ExtractGroupKey(s.input.key));
+            foreach(var s in surfaces.Where(s=>!groupKeys.ContainsKey(s)))
+                groupKeys.Add(s,UvToolContext.ExtractGroupKey(s.input.key));
             foreach(var part in surfaces.SelectMany(s=>Enumerable.Range(0,s.faces.Length).Select(f=>(s,f)))
                 .GroupBy(p=>(groupKeys[p.s],p.s.faces[p.f].coordinateDomain)))
             {
