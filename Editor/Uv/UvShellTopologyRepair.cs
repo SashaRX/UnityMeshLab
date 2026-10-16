@@ -58,6 +58,18 @@ namespace SashaRX.UnityMeshLab
         static double Area(Vector2 a,Vector2 b,Vector2 c)
             =>((double)b.x-a.x)*((double)c.y-a.y)-((double)b.y-a.y)*((double)c.x-a.x);
 
+        internal static bool IsGeometricDisk(Vector3[] corners,CancellationToken token)
+        {
+            if(corners==null || corners.Length<3 || corners.Length%3!=0) return false;
+            var points=new Dictionary<Vector3,int>();var indices=new int[corners.Length];
+            for(int c=0;c<corners.Length;++c)
+            {
+                if(!points.TryGetValue(corners[c],out int v)) {v=points.Count;points.Add(corners[c],v);}
+                indices[c]=v;
+            }
+            return Disk(indices,points.Count,token);
+        }
+
         static bool Disk(int[] ix,int vertices,CancellationToken token)
         {
             var edges=new Dictionary<(int,int),List<(int face,int a,int b)>>();

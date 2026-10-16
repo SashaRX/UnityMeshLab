@@ -24,6 +24,8 @@ namespace SashaRX.UnityMeshLab
                 var uv=preparedUv[surface];
                 if(!surface.input.usePreparedUv2 || uv.Length!=surface.positions.Length)
                     throw new InvalidOperationException("Frozen reverse requires ordinary Transfer UVs on every LOD.");
+                if(surface.lod==chain[0][0].lod)
+                    preparedUv[surface]=uv=RepairForwardReference(surface,uv,options,token);
                 surface.pixels=surface.indices.Select(i=>uv[i]*options.seedResolution).ToArray();
                 AssignCharts(surface,Enumerable.Range(0,surface.faces.Length).ToArray(),ref nextChart);
                 surface.preparedRegions=surface.faces.Select(f=>f.chart).ToArray();

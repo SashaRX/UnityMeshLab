@@ -61,6 +61,7 @@ namespace SashaRX.UnityMeshLab
             internal Matrix4x4 toWorld = Matrix4x4.identity;
             internal string key;
             internal bool usePreparedUv2;
+            internal ForwardUvReference forwardReference;
             internal int[] sourceFaces, removedSourceFaces;
             internal Vector3[] sourceBarycentrics;
             internal int splitSourceFaces;

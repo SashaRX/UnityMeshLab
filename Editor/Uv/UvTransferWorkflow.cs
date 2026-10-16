@@ -297,6 +297,7 @@ namespace SashaRX.UnityMeshLab
         internal void InvalidateTransferSource(Mesh mesh)
         {
             if (!mesh) return;
+            if(ctx?.MeshEntries!=null) foreach(var entry in ctx.MeshEntries) entry.forwardUvReference=null;
             var keys = crossLodHints.Where(kv => kv.Value.sourceMesh == mesh).Select(kv => kv.Key).ToArray();
             foreach (var key in keys) crossLodHints.Remove(key);
         }
@@ -1646,6 +1647,7 @@ namespace SashaRX.UnityMeshLab
             {
                 if (e == null) continue;
 
+                e.forwardUvReference=null;
                 // Drop derived meshes produced by an earlier run.
                 if (e.transferredMesh != null)
                 {
@@ -1897,8 +1899,8 @@ namespace SashaRX.UnityMeshLab
             internal readonly Dictionary<MeshEntry, Mesh> Meshes = new Dictionary<MeshEntry, Mesh>();
             internal readonly Dictionary<MeshEntry, (Mesh mesh, uint width, uint height, uint packedWidth, uint packedHeight)> Atlases =
                 new Dictionary<MeshEntry, (Mesh, uint, uint, uint, uint)>();
-            internal readonly Dictionary<MeshEntry, (bool symmetrySplit, TransferValidator.ValidationReport validation)> States =
-                new Dictionary<MeshEntry, (bool, TransferValidator.ValidationReport)>();
+            internal readonly Dictionary<MeshEntry, (bool symmetrySplit, TransferValidator.ValidationReport validation, ForwardUvReference forwardReference)> States =
+                new Dictionary<MeshEntry, (bool, TransferValidator.ValidationReport, ForwardUvReference)>();
             internal readonly Dictionary<MeshEntry, (Mesh transferred, GroupedShellTransfer.TransferResult tr)> Transfers = new Dictionary<MeshEntry, (Mesh, GroupedShellTransfer.TransferResult)>();
 
             public void Dispose()
@@ -2002,7 +2004,7 @@ namespace SashaRX.UnityMeshLab
                 if (e.repackedMesh != null)
                     best.Atlases[e] = (UnityEngine.Object.Instantiate(e.repackedMesh), e.repackedAtlasWidth, e.repackedAtlasHeight,
                         e.diagnosticPackedAtlasWidth, e.diagnosticPackedAtlasHeight);
-                best.States[e] = (e.wasSymmetrySplit, e.validationReport);
+                best.States[e] = (e.wasSymmetrySplit, e.validationReport, e.forwardUvReference);
                 if (e.transferredMesh != null)
                     best.Transfers[e] = (UnityEngine.Object.Instantiate(e.transferredMesh),
                         e.shellTransferResult);
@@ -2034,6 +2036,7 @@ namespace SashaRX.UnityMeshLab
             {
                 kv.Key.wasSymmetrySplit = kv.Value.symmetrySplit;
                 kv.Key.validationReport = kv.Value.validation;
+                kv.Key.forwardUvReference = kv.Value.forwardReference;
             }
             ctx.ClearAllCaches();
             crossLodHints.Clear();
@@ -2044,6 +2047,7 @@ namespace SashaRX.UnityMeshLab
 
         static void ReleaseAttemptMeshes(MeshEntry entry)
         {
+            entry.forwardUvReference=null;
             DestroyWorkingMesh(ref entry.transferredMesh);
             DestroyWorkingMesh(ref entry.repackedMesh);
             if (entry.originalMesh != entry.fbxMesh && entry.originalMesh != entry.sceneEditMesh) DestroyWorkingMesh(ref entry.originalMesh);
@@ -2418,6 +2422,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             var renderedFrame=ctx.PreviewMatrix(tgt.renderer ? tgt.renderer.transform : null);
+            tgt.forwardUvReference=null;
             TransferUvQuality beforeQuality;
             using (ForwardPerformance?.Accumulated("Forward quality measure"))
                 beforeQuality=TransferUvQuality.Measure(tgtMesh,tr.uv2,Vector2.one,renderedFrame);
@@ -2425,11 +2430,12 @@ namespace SashaRX.UnityMeshLab
             {
                 using var seamTiming = ForwardPerformance?.Accumulated("Forward donor seam trial");
                 Mesh prepared=null;
+                ForwardUvReference selectedReference=null;
                 try
                 {
                     var projection=await ReverseUvTransfer.PrepareForwardSeamsAsync(srcMesh,tgtMesh,tr.uv2,tr.vertexToSourceShell,
                         Mathf.Max(16,(int)Math.Max(srcEntry.repackedAtlasWidth,srcEntry.repackedAtlasHeight)),useAsync,trace:pair?.trace,
-                        boundaryToleranceTexels:TransferBoundaryToleranceTexels,targetLocalToWorld:renderedFrame,performance:ForwardPerformance);
+                        boundaryToleranceTexels:TransferBoundaryToleranceTexels,targetLocalToWorld:renderedFrame,performance:ForwardPerformance,captureReference:value=>selectedReference=value);
                     prepared=projection.mesh;var projectedSources=projection.sources;
                     if (prepared)
                     {
@@ -2449,6 +2455,7 @@ namespace SashaRX.UnityMeshLab
                             var supersededResult = tr;
                             if(tgt.originalMesh!=tgt.fbxMesh) DestroyWorkingMesh(ref tgt.originalMesh);
                             tgt.originalMesh=prepared;prepared=null;
+                            tgt.forwardUvReference=selectedReference;
                             tgtMesh=tgt.originalMesh;tr=ReverseUvTransfer.DescribeForwardProjection(tgtMesh,srcMesh,projectedSources);
                             hintState.overlapHints.Clear();hintState.matchHints.Clear();
                             pair=ctx.DiagnosticCapture?.ReplacePair(pair,srcEntry,tgt,srcMesh,tgtMesh,supersededResult,TransferBoundaryToleranceTexels,projectedSources);

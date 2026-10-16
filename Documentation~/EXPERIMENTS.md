@@ -3301,3 +3301,14 @@ Both FBX compilation variants pass; the new helper has no SonarAnalyzer 10.35
 findings with the existing complexity and loop rules enabled. The measured
 coverage selection includes the new regression suite and retains all existing
 required suites, including viewport checks.
+
+
+## Preserve selected Forward reference when preparing the Reverse foundation
+
+Ordinary Transfer can rescue a formerly collapsed UV face with a projected donor while its healthy neighbors retain their prior coordinates. Treating the resulting UV islands independently can preserve a newly generated split on the coarsest Reverse foundation.
+
+The selected Forward result now carries managed, nonserialized per-corner legacy UV and donor provenance alongside its exact ordered output geometry and UVs. Cleanup remaps retained faces. Missing or stale references retain the existing behavior; no static mesh cache or asset data is introduced.
+
+Before foundation chart assignment and independent density normalization, only reference-connected components containing such a rescued face are considered. Original UV and donor discontinuities, mixed reference winding, nonmanifold or point-branch topology, ambiguous shared vertices and changes to outside incident corners are refused. Whole-component parameterization must retain reference winding and pass every current per-face absolute and relative metric, contact and work guard. Final cross-LOD packing validation remains unchanged.
+
+Portable regression cases cover generated splits, authored seams and winding, stale or missing provenance, cleanup remapping, nonmanifold input, outside incident corners, cancellation, and the actual Forward handoff after rejected subdivisions are restored. Private full-pipeline controls checked three actual models in both directions without publishing their assets. The targeted coarsest seam closed with exact endpoint UV agreement and unchanged output triangle geometry; the other two models retained all stable numeric outputs. This experiment does not resolve other layout or startup issues.

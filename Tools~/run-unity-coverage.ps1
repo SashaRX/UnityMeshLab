@@ -63,7 +63,7 @@ try {
     # Keep new public stages in the stacked Transfer series measured as their
     # regression fixtures arrive, and require execution whenever a fixture exists.
     $transferStageSuites = @('ReverseUvShellPrecisionTests','ReverseUvNativeChartSessionTests',
-        'UvShellTopologyRepairTests','ForwardUvContinuityTests','ForwardUvRejectedCutTests',
+        'UvShellTopologyRepairTests','ForwardUvContinuityTests','ForwardUvRejectedCutTests','ForwardUvReferenceTests',
         'ReverseUvBoundaryPriorityTests','ReverseUvSharedBoundaryTests')
     foreach ($suite in $transferStageSuites) {
         if (Test-Path -LiteralPath (Join-Path $packageRoot "Tests/Editor/$suite.cs")) {
