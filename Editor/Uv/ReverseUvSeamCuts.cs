@@ -60,9 +60,7 @@ namespace SashaRX.UnityMeshLab
             index ??= DonorSeamIndex.Create(donor, token);
             var seams = index.seams;
             if (seams.Length == 0) return;
-            var bvh = index.bvh;
-            var plans = new List<CutFace>(); long work = 0;
-            var unpropagatedEdges=new Dictionary<(Vector3,Vector3),SortedSet<double>>();
+            List<CutFace> plans;
             float density = index.density;
             // Reverse UV must also unwrap unsupported pieces into new charts.
             // Forward recovery retains their old UVs and validates actual mapped
@@ -72,53 +70,7 @@ namespace SashaRX.UnityMeshLab
             var planning = options.performance?.Accumulated("Seam cut planning");
             try
             {
-                foreach (var s in targets)
-                    for (int f = 0; f < s.faces.Length; ++f)
-                    {
-                        token.ThrowIfCancellationRequested();
-                        var plan = new CutFace { surface = s, face = f, polygons = new List<List<CutPoint>> { WholeTriangle.ToList() } };
-                        plans.Add(plan);
-                        int sourceFace = s.input.sourceFaces == null ? f : s.input.sourceFaces[f];
-                        plan.locked = options.seamCutExclusions != null && options.seamCutExclusions.TryGetValue((s.lod, s.node), out var excluded) && excluded.Contains(sourceFace);
-                        if (plan.locked) { s.faces[f].cutRefusal = "preserved-inheritance-or-metric"; continue; }
-                        if (s.faces[f].inherited || s.faces[f].rejection == "overlap") continue;
-                        int t = f * 3;
-                        var a = s.positions[s.indices[t]]; var b = s.positions[s.indices[t + 1]]; var c = s.positions[s.indices[t + 2]];
-                        var bounds = new Bounds(a, Vector3.zero); bounds.Encapsulate(b); bounds.Encapsulate(c);
-                        bounds.Expand(options.projectionReach * 2);
-                        var candidates = new List<int>(); bvh.CollectOverlapping(bounds, candidates); candidates.Sort();
-                        var normal = Normal(s, f);
-                        foreach (int edge in candidates)
-                        {
-                            token.ThrowIfCancellationRequested();
-                            if (++work > options.comparisonBudget) throw new InvalidOperationException("Reverse UV donor seam budget exceeded.");
-                            var seam = seams[edge];
-                            if (!seam.uses.Any(u => Vector3.Dot(Normal(u.surface, u.face), normal) >= options.normalDot)) continue;
-                            var x = InTargetPlane(seam.a, a, b, c); var y = InTargetPlane(seam.b, a, b, c);
-                            if (!SegmentInTriangle(x, y)) continue;
-                            var divided = new List<List<CutPoint>>();
-                            foreach (var polygon in plan.polygons)
-                            {
-                                var positive = ClipHalf(polygon, x, y, 1); var negative = ClipHalf(polygon, x, y, -1);
-                                if (Area(positive) > 1e-12 && Area(negative) > 1e-12)
-                                { divided.Add(positive); divided.Add(negative); }
-                                else divided.Add(polygon);
-                            }
-                            // Optional refinement is bounded per input face. Keep the
-                            // original complete face if its local arrangement explodes.
-                            if (divided.Count > 128) { plan.polygons = new List<List<CutPoint>> { WholeTriangle.ToList() }; break; }
-                            // Nearly coincident donor rims can make a later line
-                            // create an unrepresentable sliver. Keep the earlier
-                            // valid partition and refuse only this optional line.
-                            if (options.validateCutsIncrementally)
-                            {
-                                var trial = new CutFace {surface=s,face=f,polygons=divided,split=divided.Count>1};
-                                if (!ValidPlan(trial,unpropagatedEdges,density,minimumPixelAltitude,options.maxAnisotropy,options.stretchFrame)) continue;
-                            }
-                            plan.polygons = divided;
-                        }
-                        plan.split = plan.polygons.Count > 1;
-                    }
+                plans = PlanDonorSeamCuts(targets, index, density, minimumPixelAltitude, options, token);
             }
             finally { planning?.Dispose(); }
             if (!plans.Any(p => p.split)) return;
@@ -126,34 +78,130 @@ namespace SashaRX.UnityMeshLab
             var validation = options.performance?.Accumulated("Seam cut validation");
             try
             {
-                while (true)
-                {
-                    token.ThrowIfCancellationRequested();
-                    edgePoints = new Dictionary<(Vector3, Vector3), SortedSet<double>>();
-                    foreach (var plan in plans.Where(p => p.split))
-                        foreach (var point in plan.polygons.SelectMany(p => p)) CollectEdgePoint(plan, point, edgePoints);
-                    var invalid = plans.Where(p => (p.locked && PlanEdges(p).Any(edgePoints.ContainsKey))
-                        || !ValidPlan(p, edgePoints, density, minimumPixelAltitude, options.maxAnisotropy,options.stretchFrame)).ToArray();
-                    if (invalid.Length == 0) break;
-                    var refusedEdges = new HashSet<(Vector3, Vector3)>(invalid.SelectMany(PlanEdges));
-                    var reasons=new Dictionary<(Vector3,Vector3),string>();
-                    foreach(var failed in invalid)
-                        foreach(var edge in PlanEdges(failed))
-                            if(!reasons.ContainsKey(edge)) reasons.Add(edge,$"LOD{failed.surface.lod}/node{failed.surface.node}/face{failed.face}:{failed.precisionRefusal??"locked-face"}");
-                    var refused = plans.Where(p => p.split && (invalid.Contains(p) || PlanEdges(p).Any(refusedEdges.Contains))).ToArray();
-                    if (refused.Length == 0) throw new InvalidOperationException("Reverse UV uncut surface cannot be represented at float precision.");
-                    foreach (var plan in refused)
-                    {
-                        plan.polygons = new List<List<CutPoint>> { WholeTriangle.ToList() }; plan.split = false;
-                        plan.surface.faces[plan.face].cutRefusal = "seam-precision:"+
-                            (plan.precisionRefusal??PlanEdges(plan).Where(reasons.ContainsKey).Select(edge=>reasons[edge]).FirstOrDefault());
-                    }
-                }
+                edgePoints = ValidateDonorSeamCuts(plans, density, minimumPixelAltitude, options, token);
             }
             finally { validation?.Dispose(); }
             using (options.performance?.Accumulated("Seam cut application"))
                 foreach (var surface in targets)
                     ApplyCuts(surface, plans.Where(p => p.surface == surface).ToArray(), edgePoints, token);
+        }
+
+        static List<CutFace> PlanDonorSeamCuts(Surface[] targets, DonorSeamIndex index, float density,
+            double minimumPixelAltitude, Options options, CancellationToken token)
+        {
+            var plans = new List<CutFace>(); long work = 0;
+            var unpropagatedEdges = new Dictionary<(Vector3, Vector3), SortedSet<double>>();
+            foreach (var surface in targets)
+                for (int face = 0; face < surface.faces.Length; ++face)
+                {
+                    token.ThrowIfCancellationRequested();
+                    var plan = CreateDonorSeamCutPlan(surface, face, options);
+                    plans.Add(plan);
+                    if (plan.locked || surface.faces[face].inherited || surface.faces[face].rejection == "overlap") continue;
+                    DivideFaceAtDonorSeams(plan, index, unpropagatedEdges, density, minimumPixelAltitude, options, ref work, token);
+                    plan.split = plan.polygons.Count > 1;
+                }
+            return plans;
+        }
+
+        static CutFace CreateDonorSeamCutPlan(Surface surface, int face, Options options)
+        {
+            var plan = new CutFace { surface = surface, face = face, polygons = new List<List<CutPoint>> { WholeTriangle.ToList() } };
+            int sourceFace = surface.input.sourceFaces == null ? face : surface.input.sourceFaces[face];
+            plan.locked = options.seamCutExclusions != null
+                && options.seamCutExclusions.TryGetValue((surface.lod, surface.node), out var excluded) && excluded.Contains(sourceFace);
+            if (plan.locked) surface.faces[face].cutRefusal = "preserved-inheritance-or-metric";
+            return plan;
+        }
+
+        static void DivideFaceAtDonorSeams(CutFace plan, DonorSeamIndex index,
+            Dictionary<(Vector3, Vector3), SortedSet<double>> unpropagatedEdges, float density,
+            double minimumPixelAltitude, Options options, ref long work, CancellationToken token)
+        {
+            var surface = plan.surface; int face = plan.face; int t = face * 3;
+            var a = surface.positions[surface.indices[t]]; var b = surface.positions[surface.indices[t + 1]]; var c = surface.positions[surface.indices[t + 2]];
+            var bounds = new Bounds(a, Vector3.zero); bounds.Encapsulate(b); bounds.Encapsulate(c);
+            bounds.Expand(options.projectionReach * 2);
+            var candidates = new List<int>(); index.bvh.CollectOverlapping(bounds, candidates); candidates.Sort();
+            var normal = Normal(surface, face);
+            foreach (int edge in candidates)
+            {
+                token.ThrowIfCancellationRequested();
+                if (++work > options.comparisonBudget) throw new InvalidOperationException("Reverse UV donor seam budget exceeded.");
+                var seam = index.seams[edge];
+                if (!seam.uses.Any(u => Vector3.Dot(Normal(u.surface, u.face), normal) >= options.normalDot)) continue;
+                var x = InTargetPlane(seam.a, a, b, c); var y = InTargetPlane(seam.b, a, b, c);
+                if (!SegmentInTriangle(x, y)) continue;
+                var divided = DivideCutPolygons(plan.polygons, x, y);
+                // Optional refinement is bounded per input face. Keep the
+                // original complete face if its local arrangement explodes.
+                if (divided.Count > 128) { plan.polygons = new List<List<CutPoint>> { WholeTriangle.ToList() }; break; }
+                // Keep the earlier valid partition when a later optional line
+                // would create an unrepresentable sliver.
+                if (!OptionalSeamDivisionFits(plan, divided, unpropagatedEdges, density, minimumPixelAltitude, options)) continue;
+                plan.polygons = divided;
+            }
+        }
+
+        static List<List<CutPoint>> DivideCutPolygons(List<List<CutPoint>> polygons, CutPoint x, CutPoint y)
+        {
+            var divided = new List<List<CutPoint>>();
+            foreach (var polygon in polygons)
+            {
+                var positive = ClipHalf(polygon, x, y, 1); var negative = ClipHalf(polygon, x, y, -1);
+                if (Area(positive) > 1e-12 && Area(negative) > 1e-12)
+                { divided.Add(positive); divided.Add(negative); }
+                else divided.Add(polygon);
+            }
+            return divided;
+        }
+
+        static bool OptionalSeamDivisionFits(CutFace plan, List<List<CutPoint>> divided,
+            Dictionary<(Vector3, Vector3), SortedSet<double>> unpropagatedEdges, float density,
+            double minimumPixelAltitude, Options options)
+        {
+            if (!options.validateCutsIncrementally) return true;
+            var trial = new CutFace { surface = plan.surface, face = plan.face, polygons = divided, split = divided.Count > 1 };
+            return ValidPlan(trial, unpropagatedEdges, density, minimumPixelAltitude, options.maxAnisotropy, options.stretchFrame);
+        }
+
+        static Dictionary<(Vector3, Vector3), SortedSet<double>> ValidateDonorSeamCuts(List<CutFace> plans,
+            float density, double minimumPixelAltitude, Options options, CancellationToken token)
+        {
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+                var edgePoints = CollectDonorSeamCutEdgePoints(plans);
+                var invalid = plans.Where(p => (p.locked && PlanEdges(p).Any(edgePoints.ContainsKey))
+                    || !ValidPlan(p, edgePoints, density, minimumPixelAltitude, options.maxAnisotropy, options.stretchFrame)).ToArray();
+                if (invalid.Length == 0) return edgePoints;
+                RefuseInvalidDonorSeamCuts(plans, invalid);
+            }
+        }
+
+        static Dictionary<(Vector3, Vector3), SortedSet<double>> CollectDonorSeamCutEdgePoints(List<CutFace> plans)
+        {
+            var edgePoints = new Dictionary<(Vector3, Vector3), SortedSet<double>>();
+            foreach (var plan in plans.Where(p => p.split))
+                foreach (var point in plan.polygons.SelectMany(p => p)) CollectEdgePoint(plan, point, edgePoints);
+            return edgePoints;
+        }
+
+        static void RefuseInvalidDonorSeamCuts(List<CutFace> plans, CutFace[] invalid)
+        {
+            var refusedEdges = new HashSet<(Vector3, Vector3)>(invalid.SelectMany(PlanEdges));
+            var reasons = new Dictionary<(Vector3, Vector3), string>();
+            foreach (var failed in invalid)
+                foreach (var edge in PlanEdges(failed))
+                    if (!reasons.ContainsKey(edge)) reasons.Add(edge, $"LOD{failed.surface.lod}/node{failed.surface.node}/face{failed.face}:{failed.precisionRefusal ?? "locked-face"}");
+            var refused = plans.Where(p => p.split && (invalid.Contains(p) || PlanEdges(p).Any(refusedEdges.Contains))).ToArray();
+            if (refused.Length == 0) throw new InvalidOperationException("Reverse UV uncut surface cannot be represented at float precision.");
+            foreach (var plan in refused)
+            {
+                plan.polygons = new List<List<CutPoint>> { WholeTriangle.ToList() }; plan.split = false;
+                plan.surface.faces[plan.face].cutRefusal = "seam-precision:" +
+                    (plan.precisionRefusal ?? PlanEdges(plan).Where(reasons.ContainsKey).Select(edge => reasons[edge]).FirstOrDefault());
+            }
         }
 
         static IEnumerable<(Vector3, Vector3)> PlanEdges(CutFace plan)
