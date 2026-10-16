@@ -1354,7 +1354,7 @@ namespace SashaRX.UnityMeshLab
                 { candidate[v * 2] = uvFlat[v * 2]; candidate[v * 2 + 1] = uvFlat[v * 2 + 1]; }
                 if (ArapParameterization.Reparameterize(
                         positions, tris, shellTriIndices, shell.vertexIndices,
-                        candidate, opts.arapIterations, out _))
+                        candidate, opts.arapIterations, out _, token))
                 {
                     before = TransferCandidateQuality.Measure(shell, tris, positions, Coordinates(uvFlat));
                     var after = TransferCandidateQuality.Measure(shell, tris, positions, Coordinates(candidate));

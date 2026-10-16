@@ -211,7 +211,15 @@ namespace SashaRX.UnityMeshLab
                 if(preparedChain!=null)
                 {
                     if(options.frozenShellCascade && !options.preserveProjectedOverlap)
-                        InitializeFrozenShellChain(preparedChain,options,result.report,ref nextChart,ref width,ref height,token);
+                    {
+                        // Unity mesh access stays on the editor thread. Every
+                        // normalization/repair/cut below uses these owned arrays.
+                        var preparedUv=preparedChain.SelectMany(l=>l).ToDictionary(s=>s,s=>s.input.mesh.uv2);
+                        void PrepareFrozen()=>InitializeFrozenShellChain(preparedChain,options,result.report,
+                            ref nextChart,ref width,ref height,token,preparedUv);
+                        if(useAsync) await Task.Run(PrepareFrozen,token);
+                        else PrepareFrozen();
+                    }
                     else InitializePreparedChain(preparedChain,options,ref nextChart,ref width,ref height,token);
                 }
                 var seed = preparedChain==null?Capture(levels[0], origin):preparedChain[0];

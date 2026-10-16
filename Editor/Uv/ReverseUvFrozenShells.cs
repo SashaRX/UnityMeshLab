@@ -14,13 +14,14 @@ namespace SashaRX.UnityMeshLab
         }
 
         static void InitializeFrozenShellChain(Surface[][] chain,Options options,Report report,
-            ref int nextChart,ref float width,ref float height,CancellationToken token)
+            ref int nextChart,ref float width,ref float height,CancellationToken token,
+            Dictionary<Surface,Vector2[]> preparedUv)
         {
             // Ordinary Transfer is an immutable reference for every finer LOD.
             // Only the coarsest foundation is prepared before correspondence.
             foreach(var surface in chain.SelectMany(l=>l))
             {
-                var uv=surface.input.mesh.uv2;
+                var uv=preparedUv[surface];
                 if(!surface.input.usePreparedUv2 || uv.Length!=surface.positions.Length)
                     throw new InvalidOperationException("Frozen reverse requires ordinary Transfer UVs on every LOD.");
                 surface.pixels=surface.indices.Select(i=>uv[i]*options.seedResolution).ToArray();
@@ -30,7 +31,7 @@ namespace SashaRX.UnityMeshLab
             float requested=options.seedDensity>0?options.seedDensity:Density(chain[0]);
             foreach(var surface in chain.SelectMany(l=>l))
             {
-                var uv=surface.input.mesh.uv2;
+                var uv=preparedUv[surface];
                 foreach(var island in Enumerable.Range(0,surface.faces.Length).GroupBy(f=>surface.preparedRegions[f]))
                 {
                     token.ThrowIfCancellationRequested();
@@ -40,6 +41,13 @@ namespace SashaRX.UnityMeshLab
                     var original=corners.Select(c=>uv[surface.indices[c]]).ToArray();
                     var frames=faces.Select(f=>surface.metricFrames[f]).ToArray();
                     var local=NormalizeFrozenDensity(original,frames,requested);
+                    if(surface.lod==chain[0][0].lod)
+                    {
+                        var patch=corners.Select(c=>surface.positions[surface.indices[c]]).ToArray();
+                        var healed=UvShellTopologyRepair.TryRepair(patch,local,RepackOptions.Default.arapIterations,token,
+                            out _,frames,options.maxAnisotropy,options.comparisonBudget,options.relativeStretchTolerance);
+                        if(healed!=null) local=NormalizeFrozenDensity(healed,frames,requested);
+                    }
                     if(surface.lod==chain[0][0].lod && !ValidFrozenShell(surface,faces,local,options,token))
                     {
                         var patch=corners.Select(c=>surface.positions[surface.indices[c]]).ToArray();
