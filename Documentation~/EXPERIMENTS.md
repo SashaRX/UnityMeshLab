@@ -1,5 +1,47 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Shared UV points and adjacent whole-island correspondence — 2026-10-16
+
+Ordinary Transfer can leave a one-ULP split at a shared lightmap point when an
+incident face retains an old overlap flag even though its projected UVs are now
+healthy. Two established healthy neighbours may authorize a proposal for the
+complete exact position/legacy-UV/donor group. Every incident face still passes
+the current degeneracy, absolute/relative metric and winding checks; the existing
+independent full-mesh contact audit decides whether the proposal is published.
+The correction retains real legacy UV seams and different donor branches.
+
+Frozen Reverse can then encounter adjacent fine islands whose independent fits
+overlap. After all existing rigid and affine matches have failed, offer one rigid
+translation of the complete later island using an exact shared surface point.
+Only inherited, unambiguous same-parent boundary points provide constraints.
+Disagreeing constraints are refused; accepted neighbours remain unchanged. All
+original anchor-reach, relative/absolute metric, contact and work checks remain.
+The rescue runs last so it cannot displace a successful affine correspondence.
+No coordinate rounding, tolerance increase, face deletion or native change is used.
+
+The unchanged copied inputs/settings run ordinary and exclusive Reverse on
+Kamaz_Typhoon, CementWall and Old_Sofa. The CPU suite passes 471 tests, fails zero
+and skips 16 optional cases, with Burst required. All 76510 output triangles match
+exact geometry. Kamaz changes two ordinary UV triangles: both complete shared
+edges at the LOD2 cabin now have equal endpoints. Its remaining 116/372 and 59/134
+ordinary collapsed-face/overlap counts are unchanged. Reverse inherits 15346
+faces versus 15312, with a 4509 versus 4519 px atlas at the same 256 tex/m; all
+Reverse final atlases retain zero collapsed faces and unexpected overlaps.
+CementWall and Old_Sofa retain all 26 stable outputs decoded-identical in both
+directions, including the preceding Sofa topology repair.
+
+Seven raw relative metric flags qualify under the existing precision policies:
+complete cross-LOD family membership is identical, and one common similarity per
+whole family has at most 0.000632 texel residual. One microscopic face uses the
+existing 0.01 texel resolution rule; the other faces meet the existing rigid-family
+altitude rule. A visible regression from premature rescue is rejected: an isolated
+three-source/three-target bevel fixture fails before the ordering fix and passes
+after it. Portable controls cover stale flags, genuine degeneracy/seams/donors,
+boundary ambiguity, reach, cancellation and preservation of the affine result.
+Both FBX compile configurations pass. Private capture hooks and imported models
+are excluded from publication. These correctness runs are not a new performance
+benchmark. Evidence: `_results~/forward-winding-review/boundaryprioritytrial-*`.
+
 ## Repair malformed frozen-foundation UV topology — 2026-10-16
 
 Old_Sofa LOD2 contains a connected chart with a branched UV boundary and Euler

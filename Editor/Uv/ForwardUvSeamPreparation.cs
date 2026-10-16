@@ -451,7 +451,11 @@ namespace SashaRX.UnityMeshLab
             foreach(var corners in groups.Values)
             {
                 token.ThrowIfCancellationRequested();
-                if(corners.Count<2 || corners.Any(c=>!healthyFaces[c/3])) continue;
+                // Legacy overlap flags may be stale after projection. Two
+                // established healthy neighbours authorize a proposal for the
+                // complete shared point; current face metrics, winding and the
+                // independent global contact audit still decide acceptance.
+                if(corners.Count(c=>healthyFaces[c/3])<2) continue;
                 KeepSharedForwardPoint(corners,positions,projectedFaces,uv,geometry,band,frame);
             }
         }
