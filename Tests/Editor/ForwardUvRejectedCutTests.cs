@@ -161,6 +161,49 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void ForwardPipelinePublishesRestoredTrianglesAndOriginalVertexStreams()
+        {
+            var source=new Mesh {vertices=new[] {Vector3.zero,new Vector3(.5f,0,0),new Vector3(.5f,1,0),Vector3.up,
+                new Vector3(.5f,0,0),Vector3.right,new Vector3(1,1,0),new Vector3(.5f,1,0)},
+                triangles=new[] {0,1,2,0,2,3,4,5,6,4,6,7},
+                uv=new[] {Vector2.zero,Vector2.right,Vector2.one,Vector2.up,Vector2.zero,Vector2.right,Vector2.one,Vector2.up},
+                uv2=new[] {new Vector2(.1f,.1f),new Vector2(.3f,.1f),new Vector2(.3f,.5f),new Vector2(.1f,.5f),
+                    new Vector2(.6f,.1f),new Vector2(.8f,.1f),new Vector2(.8f,.5f),new Vector2(.6f,.5f)}};
+            var positions=new[] {Vector3.zero,Vector3.right,new Vector3(1,1,0),Vector3.up,
+                new Vector3(3,0,0),new Vector3(3.5f,0,0),new Vector3(3.5f,1,0),new Vector3(3,1,0),
+                new Vector3(5,0,0),new Vector3(5.5f,0,0),new Vector3(5.5f,1,0),new Vector3(5,1,0)};
+            var indices=new[] {0,1,2,0,2,3,4,5,6,4,6,7,8,9,10,8,10,11};
+            var legacy=new[] {new Vector2(.2f,.65f),new Vector2(.4f,.65f),new Vector2(.4f,.85f),new Vector2(.2f,.85f),
+                new Vector2(.1f,.1f),new Vector2(.3f,.1f),new Vector2(.3f,.5f),new Vector2(.1f,.5f),
+                new Vector2(.6f,.1f),new Vector2(.8f,.1f),new Vector2(.8f,.5f),new Vector2(.6f,.5f)};
+            var uv0=positions.Select(p=>new Vector2(p.x,p.y)).ToArray();
+            var normals=positions.Select(_=>Vector3.forward).ToArray();
+            var colors=positions.Select((_,i)=>new Color(i/16f,.25f,.75f,1)).ToArray();
+            var target=new Mesh {vertices=positions,triangles=indices,uv=uv0,normals=normals,colors=colors};
+            Mesh actual=null;
+            var sourceBefore=TransferMeshSnapshot.Capture(source);var targetBefore=TransferMeshSnapshot.Capture(target);
+            try
+            {
+                // Both projected donor charts hit distant, unchanged target blockers.
+                // All pieces must be rejected, and their generated subdivisions removed.
+                actual=ReverseUvTransfer.PrepareForwardSeams(source,target,legacy,new int[positions.Length],128,out var labels);
+                Assert.NotNull(actual);Assert.AreEqual(indices.Length,actual.triangles.Length);
+                var actualIndices=actual.triangles;var vertices=actual.vertices;var actualUv=actual.uv;var uv2=actual.uv2;
+                var actualNormals=actual.normals;var actualColors=actual.colors;
+                for(int c=0;c<indices.Length;++c)
+                {
+                    int old=indices[c],v=actualIndices[c];
+                    Assert.AreEqual(positions[old],vertices[v]);Assert.AreEqual(uv0[old],actualUv[v]);
+                    Assert.AreEqual(legacy[old],uv2[v]);Assert.AreEqual(0,labels[v]);
+                    Assert.AreEqual(normals[old],actualNormals[v]);Assert.AreEqual(colors[old],actualColors[v]);
+                }
+                CollectionAssert.AreEqual(sourceBefore,TransferMeshSnapshot.Capture(source));
+                CollectionAssert.AreEqual(targetBefore,TransferMeshSnapshot.Capture(target));
+            }
+            finally {if(actual) Object.DestroyImmediate(actual);Object.DestroyImmediate(source);Object.DestroyImmediate(target);}
+        }
+
+        [Test]
         public void CancelledRestorationCannotProduceAnOutput()
         {
             using var cancellation=new CancellationTokenSource();cancellation.Cancel();
