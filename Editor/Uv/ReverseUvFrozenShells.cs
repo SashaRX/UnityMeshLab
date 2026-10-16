@@ -113,6 +113,7 @@ namespace SashaRX.UnityMeshLab
                 .GroupBy(f=>s.preparedRegions[f]).Select(g=>(surface:s,faces:g.ToArray())))
                 .OrderByDescending(p=>p.faces.Sum(f=>p.surface.metricFrames[f].length*p.surface.metricFrames[f].y)).ToArray();
             var accepted=new Dictionary<int,List<Vector2>>();int matches=0,newborn=0;
+            var sharedPoints=new Dictionary<int,Dictionary<Vector3,Vector2?>>();
             foreach(var shell in shells)
             {
                 token.ThrowIfCancellationRequested();var s=shell.surface;var faces=shell.faces;
@@ -129,9 +130,11 @@ namespace SashaRX.UnityMeshLab
                 {
                     placement=null;group=-1;
                     // Preserve successful rigid correspondence before considering
-                    // deformation, including a lower-ranked rigid donor.
-                    foreach(bool affine in new[] {false,true})
+                    // deformation, including a lower-ranked rigid donor. Boundary
+                    // rescue is last, so it cannot displace an existing affine match.
+                    foreach(var method in new[] {(affine:false,boundary:false),(affine:true,boundary:false),(affine:false,boundary:true)})
                     {
+                        bool affine=method.affine;
                         foreach(var candidate in faces.Where(f=>records[s][f].inherited).GroupBy(f=>records[s][f].chart)
                             .OrderByDescending(g=>g.Sum(f=>s.metricFrames[f].length*s.metricFrames[f].y)).ThenBy(g=>g.Key))
                         {
@@ -148,7 +151,18 @@ namespace SashaRX.UnityMeshLab
                             if(trial==null) {refusals.Add($"chart {candidate.Key}: anchor residual {residual:G6} px ({candidate.Count()} faces)");continue;}
                             if(!ValidFrozenShell(s,faces,trial,options,token)) {refusals.Add($"chart {candidate.Key}: whole-island quality");continue;}
                             if(accepted.TryGetValue(candidate.Key,out var earlier) && HasFrozenContact(earlier,trial,options,token))
-                            {refusals.Add($"chart {candidate.Key}: sibling contact");continue;}
+                            {
+                                if(!method.boundary) {refusals.Add($"chart {candidate.Key}: sibling contact");continue;}
+                                var positions=corners.Select(c=>s.positions[s.indices[c]]).ToArray();
+                                var anchorFlags=corners.Select(c=>records[s][c/3].inherited && records[s][c/3].chart==candidate.Key).ToArray();
+                                var anchorPixels=corners.Select(c=>proposed[s][c]).ToArray();
+                                var boundary=FitFrozenSharedTranslation(trial,positions,anchorPixels,anchorFlags,
+                                    sharedPoints[candidate.Key],fitTolerance,options.boundaryToleranceTexels,token);
+                                if(boundary==null || !FrozenDeformationFits(s,faces,shape,boundary,options)
+                                    || !ValidFrozenShell(s,faces,boundary,options,token) || HasFrozenContact(earlier,boundary,options,token))
+                                {refusals.Add($"chart {candidate.Key}: sibling contact");continue;}
+                                trial=boundary;
+                            }
                             placement=trial;group=candidate.Key;return true;
                         }
                     }
@@ -199,6 +213,15 @@ namespace SashaRX.UnityMeshLab
                     s.faces[f]=record;
                     for(int k=0;k<3;++k) s.pixels[f*3+k]=placed[i*3+k];
                 }
+                if(!sharedPoints.TryGetValue(parent,out var shared))
+                {shared=new Dictionary<Vector3,Vector2?>();sharedPoints.Add(parent,shared);}
+                foreach(int f in faces.Where(f=>s.faces[f].inherited))
+                    for(int k=0;k<3;++k)
+                    {
+                        int c=f*3+k;var position=s.positions[s.indices[c]];var pixel=s.pixels[c];
+                        if(!shared.TryGetValue(position,out var previous)) shared.Add(position,pixel);
+                        else if(previous.HasValue && !previous.Value.Equals(pixel)) shared[position]=null;
+                    }
             }
             UvtLog.Info(UvtLog.Category.General,$"[ReverseUV] Frozen cascade LOD{donor[0].lod} -> LOD{targets[0].lod}: {matches} whole-island matches, {newborn} new islands; all become the next donors; {queries} anchor queries. No finer cuts or per-face placement.");
         }
