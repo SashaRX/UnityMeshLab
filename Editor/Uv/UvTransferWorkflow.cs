@@ -262,8 +262,12 @@ namespace SashaRX.UnityMeshLab
         bool lightmapPreviewActive;
         readonly Dictionary<Renderer, Material[]> lightmapBackups = new Dictionary<Renderer, Material[]>();
 
-        internal bool TryGetOriginalLightmapMaterials(Renderer renderer, out Material[] materials)
-            => lightmapBackups.TryGetValue(renderer, out materials);
+        internal bool TryGetOriginalLightmapMaterials(Renderer renderer, out Material[] materials, bool forAssetWrite = false)
+        {
+            if (!lightmapBackups.TryGetValue(renderer, out materials)) return false;
+            if (forAssetWrite) materials = PreviewSafetyGuard.MaterialsForWrite(renderer, materials, lightmapPreviewMat);
+            return true;
+        }
 
         // ── Scene ──
         double sceneSpotLastRaycastTime;

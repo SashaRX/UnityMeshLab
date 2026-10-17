@@ -2040,19 +2040,35 @@ namespace SashaRX.UnityMeshLab
 
         // Read authored materials without suspending the user's preview or replacing
         // renderer references. Texture metrics must not use checker/lightmap textures.
-        internal static Material[] OriginalPreviewMaterials(Renderer renderer)
+        internal static Material[] OriginalPreviewMaterials(Renderer renderer, bool forAssetWrite = false)
         {
-            if (CheckerTexturePreview.TryGetOriginalMaterials(renderer, out var materials)
-                || ShellColorModelPreview.TryGetOriginalMaterials(renderer, out materials))
+            if (CheckerTexturePreview.TryGetOriginalMaterials(renderer, out var materials, forAssetWrite)
+                || ShellColorModelPreview.TryGetOriginalMaterials(renderer, out materials, forAssetWrite))
                 return materials;
             foreach (var hub in Resources.FindObjectsOfTypeAll<UvToolHub>()) {
-                foreach (var backup in hub.lightmapBackups)
-                    if (backup.renderer == renderer) return backup.origMaterials;
+                materials = hub.OriginalLightmapMaterials(renderer, forAssetWrite);
+                if (materials != null) return materials;
                 if (hub.ActiveTool is UvTransferWorkflow workflow
-                    && workflow.TryGetOriginalLightmapMaterials(renderer, out materials))
+                    && workflow.TryGetOriginalLightmapMaterials(renderer, out materials, forAssetWrite))
                     return materials;
             }
             return renderer.sharedMaterials;
+        }
+
+        Material[] OriginalLightmapMaterials(Renderer renderer, bool forAssetWrite)
+        {
+            Material[] materials = null;
+            // Repeated entries form an override stack. Unwind the newest first;
+            // the earliest backup holds the actual authored slots.
+            for (int i = lightmapBackups.Count - 1; i >= 0; i--)
+            {
+                var backup = lightmapBackups[i];
+                if (backup.renderer != renderer) continue;
+                materials = forAssetWrite
+                    ? PreviewSafetyGuard.MaterialsForWrite(materials ?? renderer.sharedMaterials, backup.origMaterials, backup.tempMat)
+                    : backup.origMaterials;
+            }
+            return materials;
         }
 
         // ── Shell color palette ──
@@ -2237,8 +2253,9 @@ namespace SashaRX.UnityMeshLab
 
         void RestoreLightmapPreview()
         {
-            foreach (var b in lightmapBackups)
+            for (int i = lightmapBackups.Count - 1; i >= 0; i--)
             {
+                var b = lightmapBackups[i];
                 if (b.renderer != null) b.renderer.sharedMaterials = b.origMaterials;
                 if (b.meshFilter != null && b.origMesh != null && b.meshFilter.sharedMesh == b.tempMesh)
                     b.meshFilter.sharedMesh = b.origMesh;

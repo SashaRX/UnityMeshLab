@@ -55,9 +55,17 @@ try {
         'ReverseUvTransferTests','TransferCaptureTests','MeshNamingTests','MeshAccessTests')
     $viewportSuites = @('ViewportOverlayTests','ViewportElementsTests','ViewportPerformanceTests',
         'ViewportTopologyTests','MeshViewport3DTests','PreviewLinesTests',
-        'PreviewSpaceTests','MaterialChannelPreviewTests')
+        'PreviewSpaceTests','MaterialChannelPreviewTests','PreviewMaterialRestoreTests')
     $viewportRegressions = @('ShellPreviewCompletesWhenAnotherVisibleMeshLacksTheChannel',
-        'ThreeDSpotCompletesTheFirstClickAfterPreviewPreparation')
+        'ThreeDSpotCompletesTheFirstClickAfterPreviewPreparation','DuplicateLightmapPreviewRestoresAuthoredSlotsAndMeshes')
+    $assetPreviewRegressions = [ordered]@{
+        DocumentWrite_CheckerPreviewKeepsAuthoredMaterialsAndUntouchedChannels = 2
+        DocumentWrite_CheckerPreviewKeepsPersistentMaterialOverride = 2
+        DocumentWrite_GeneratedLodComparesBothAuthoredMaterialsUnderChecker = 2
+        DocumentWrite_CheckerPreviewStillRefusesTrueNonAssetMaterial = 2
+        DocumentWrite_MaterialChangedAfterCheckerApplyUsesCurrentSlot = 2
+        MaterialPlanSnapshotsAuthoredPreviewSlotsForSourceAndGeneratedLod = 1
+    }
     $transferPreparationSuites = @('TransferQualityRegressionTests','TransferPerformanceTests',
         'ReverseUvFrozenCascadeTests','ReverseUvSeamTests','UvTransferToleranceTests')
     # Keep new public stages in the stacked Transfer series measured as their
@@ -73,6 +81,7 @@ try {
     $requiredSuites = $texturePackingSuites + $assetTransferSuites + $viewportSuites + $transferPreparationSuites
     $testFilter = 'LodHardEdgeTests;LodSmoothingRegionTests;LodQslimTransferTests;LodAttributeCorrectionTests;LodQualitySelectionTests;LodGenerationToolTests;LodLoopSimplifierTests;LodSmallPartsTests;LodScreenAcceptanceTests;LodScreenValidationTests;LodProjectVisualQualityTests;CollisionElementTests;CollisionMeshToolTests;LodSharedUvTransferTests;LodPaintRetriangulationTests;' + ($requiredSuites -join ';')
     $testFilter += ';' + (($viewportRegressions | ForEach-Object { "PreviewLodSwitchTests.$_" }) -join ';')
+    $testFilter += ';' + (($assetPreviewRegressions.Keys | ForEach-Object { "FbxChannelWriteTests.$_" }) -join ';')
     $arguments = @('-batchmode','-projectPath',$consumer,'-runTests','-testPlatform','EditMode','-testFilter',$testFilter,
         '-testResults',(Join-Path $results 'tests.xml'),'-logFile',(Join-Path $results 'unity.log'),
         '-enableCodeCoverage','-debugCodeOptimization','-coverageResultsPath',(Join-Path $results 'coverage'),
@@ -102,8 +111,13 @@ try {
         if ($executed.Count -eq 0) { throw "Required coverage suite did not execute successfully: $suite" }
     }
     foreach ($regression in $viewportRegressions) {
-        $executed = $tests.SelectNodes("//test-suite[@name='PreviewLodSwitchTests']//test-case[@name='$regression' and @result='Passed']")
-        if ($executed.Count -eq 0) { throw "Required viewport regression did not execute successfully: $regression" }
+        $executed = $tests.SelectNodes("//test-suite[@name='PreviewLodSwitchTests']//test-case[(@name='$regression' or starts-with(@name,'$regression(')) and @result='Passed']")
+        $expected = if ($regression -eq 'DuplicateLightmapPreviewRestoresAuthoredSlotsAndMeshes') { 2 } else { 1 }
+        if ($executed.Count -ne $expected) { throw "Required viewport regression cases did not all pass: $regression" }
+    }
+    foreach ($regression in $assetPreviewRegressions.Keys) {
+        $executed = $tests.SelectNodes("//test-suite[@name='FbxChannelWriteTests']//test-case[starts-with(@name,'$regression') and @result='Passed']")
+        if ($executed.Count -ne $assetPreviewRegressions[$regression]) { throw "Required FBX preview regression cases did not all pass: $regression" }
     }
     $viewportRegression = $tests.SelectNodes("//test-suite[@name='ViewportOverlayTests']//test-case[@name='UvFillStaysOnTheSurfaceWithCameraDirectedMaterialOffsets' and @result='Passed']")
     if ($viewportRegression.Count -eq 0) { throw 'Required viewport GPU regression did not pass' }

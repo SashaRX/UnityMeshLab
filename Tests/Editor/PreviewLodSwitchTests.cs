@@ -898,6 +898,61 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        [Test]
+        public void DuplicateLightmapPreviewRestoresAuthoredSlotsAndMeshes([Values(false, true)] bool editAfterApply)
+        {
+            var group = Group(true, out var renderer, out var otherRenderer);
+            var authored = new[] { renderer.sharedMaterial, null, otherRenderer.sharedMaterial };
+            renderer.sharedMaterials = authored;
+            var context = Open(group);
+            var entry = context.MeshEntries.Find(value => value.renderer == renderer);
+            var filter = renderer.GetComponent<MeshFilter>();
+            var originalMesh = filter.sharedMesh;
+            var originalBytes = TransferMeshSnapshot.Capture(originalMesh);
+            var previousLightmaps = LightmapSettings.lightmaps;
+            try {
+                AssignLightmap(renderer);
+                Call(hub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Lightmap);
+                var firstMesh = filter.sharedMesh;
+                var firstMaterial = renderer.sharedMaterial;
+                Call(hub, "ApplyLightmapPreviewEntry", entry);
+                var secondMesh = filter.sharedMesh;
+                var secondMaterial = renderer.sharedMaterial;
+                Assert.AreNotSame(originalMesh, firstMesh);
+                Assert.AreNotSame(firstMesh, secondMesh);
+                Assert.AreNotSame(authored[0], firstMaterial);
+                Assert.AreNotSame(firstMaterial, secondMaterial);
+
+                Material[] expected = authored;
+                if (editAfterApply) {
+                    var replacement = new Material(authored[0]); owned.Add(replacement);
+                    renderer.sharedMaterials = new[] { secondMaterial, null, replacement, authored[2] };
+                    expected = new[] { authored[0], null, replacement, authored[2] };
+                }
+                var shown = renderer.sharedMaterials;
+                CollectionAssert.AreEqual(expected, UvToolHub.OriginalPreviewMaterials(renderer, forAssetWrite: true),
+                    "Unwind both owned preview materials while keeping later real slot edits.");
+                CollectionAssert.AreEqual(authored, UvToolHub.OriginalPreviewMaterials(renderer),
+                    "The texture metric resolver still reads the first authored slots.");
+                CollectionAssert.AreEqual(shown, renderer.sharedMaterials, "Taking an export snapshot must not change the preview.");
+                Assert.AreSame(secondMesh, filter.sharedMesh);
+                Assert.IsTrue(firstMesh && firstMaterial && secondMesh && secondMaterial);
+
+                Call(hub, "RestoreLightmapPreview");
+                CollectionAssert.AreEqual(authored, renderer.sharedMaterials);
+                Assert.AreSame(originalMesh, filter.sharedMesh);
+                Assert.IsFalse(firstMesh, "The superseded owned lightmap mesh is released.");
+                Assert.IsFalse(secondMesh, "The final owned lightmap mesh is released.");
+                Assert.IsFalse(firstMaterial, "The superseded owned lightmap material is released.");
+                Assert.IsFalse(secondMaterial, "The final owned lightmap material is released.");
+                CollectionAssert.AreEqual(originalBytes, TransferMeshSnapshot.Capture(originalMesh));
+                Call(hub, "RestoreLightmapPreview");
+                CollectionAssert.AreEqual(authored, renderer.sharedMaterials);
+                Assert.AreSame(originalMesh, filter.sharedMesh);
+            }
+            finally { LightmapSettings.lightmaps = previousLightmaps; }
+        }
+
         [TestCase(UvCanvasView.PreviewMode.Off)]
         [TestCase(UvCanvasView.PreviewMode.Shells3D)]
         [TestCase(UvCanvasView.PreviewMode.Lightmap)]

@@ -88,10 +88,16 @@ namespace SashaRX.UnityMeshLab
 
         static readonly List<RendererBackup> backups = new List<RendererBackup>();
 
-        internal static bool TryGetOriginalMaterials(Renderer renderer, out Material[] materials)
+        internal static bool TryGetOriginalMaterials(Renderer renderer, out Material[] materials, bool forAssetWrite = false)
         {
             foreach (var backup in backups)
-                if (backup.renderer == renderer) { materials = backup.origMaterials; return true; }
+                if (backup.renderer == renderer)
+                {
+                    materials = forAssetWrite
+                        ? PreviewSafetyGuard.MaterialsForWrite(renderer, backup.origMaterials, vertexColorMaterial)
+                        : backup.origMaterials;
+                    return true;
+                }
             materials = null;
             return false;
         }
@@ -110,6 +116,7 @@ namespace SashaRX.UnityMeshLab
             if (vertexColorMaterial == null || entries == null || entries.Count == 0) return;
 
             backups.Clear();
+            var captured = new Dictionary<Renderer, int>();
             for (int i = 0; i < entries.Count; i++)
             {
                 var renderer = entries[i].renderer;
@@ -119,7 +126,7 @@ namespace SashaRX.UnityMeshLab
                 Mesh tempMesh = BuildColorizedClone(sourceMesh, palette, entries[i].faceColorKeys);
                 if (tempMesh == null) continue;
 
-                ApplyToRenderer(renderer, tempMesh);
+                ApplyToRenderer(renderer, tempMesh, captured);
             }
 
             isActive = backups.Count > 0;
@@ -133,6 +140,7 @@ namespace SashaRX.UnityMeshLab
             if (vertexColorMaterial == null || entries == null || entries.Count == 0) return;
 
             backups.Clear();
+            var captured = new Dictionary<Renderer, int>();
             for (int i = 0; i < entries.Count; i++)
             {
                 var renderer = entries[i].renderer;
@@ -142,7 +150,7 @@ namespace SashaRX.UnityMeshLab
                 Mesh tempMesh = BuildColorizedClone(sourceMesh, palette, cache);
                 if (tempMesh == null) continue;
 
-                ApplyToRenderer(renderer, tempMesh);
+                ApplyToRenderer(renderer, tempMesh, captured);
             }
 
             isActive = backups.Count > 0;
@@ -172,20 +180,22 @@ namespace SashaRX.UnityMeshLab
             vertexColorMaterial = null;
         }
 
-        static void ApplyToRenderer(Renderer renderer, Mesh tempMesh)
+        static void ApplyToRenderer(Renderer renderer, Mesh tempMesh, Dictionary<Renderer, int> captured)
         {
-            var backup = new RendererBackup
+            bool alreadyCaptured = captured.TryGetValue(renderer, out int at);
+            var backup = alreadyCaptured ? backups[at] : new RendererBackup
             {
                 renderer = renderer,
-                origMaterials = renderer.sharedMaterials,
-                tempMesh = tempMesh
+                origMaterials = renderer.sharedMaterials
             };
+            var previousPreview = backup.tempMesh;
+            backup.tempMesh = tempMesh;
 
             var mf = renderer.GetComponent<MeshFilter>();
             if (mf != null)
             {
                 backup.meshFilter = mf;
-                backup.origMeshFilterMesh = mf.sharedMesh;
+                if (!alreadyCaptured) backup.origMeshFilterMesh = mf.sharedMesh;
                 mf.sharedMesh = tempMesh;
             }
 
@@ -193,14 +203,18 @@ namespace SashaRX.UnityMeshLab
             if (skinned != null)
             {
                 backup.skinnedRenderer = skinned;
-                backup.origSkinnedMesh = skinned.sharedMesh;
+                if (!alreadyCaptured) backup.origSkinnedMesh = skinned.sharedMesh;
                 skinned.sharedMesh = tempMesh;
             }
 
             var mats = new Material[renderer.sharedMaterials.Length];
             for (int m = 0; m < mats.Length; m++) mats[m] = vertexColorMaterial;
             renderer.sharedMaterials = mats;
-            backups.Add(backup);
+            if (alreadyCaptured) backups[at] = backup;
+            else { captured.Add(renderer, backups.Count); backups.Add(backup); }
+            // Only this preview's superseded clone is owned here. Never record
+            // it as the renderer's original mesh or leave it alive after replacement.
+            if (previousPreview != null) Object.DestroyImmediate(previousPreview);
         }
 
         static Mesh BuildColorizedClone(Mesh sourceMesh, Color32[] palette, int[] faceColorKeys)

@@ -134,12 +134,7 @@ namespace SashaRX.UnityMeshLab
                     // The node starts with its source node's materials; a generated renderer
                     // given others since takes them into its own slots.
                     var source = group.Select(p => p.entry).FirstOrDefault(e => InFile(e) && e.lodIndex == sourceLodIndex && e.fbxMesh.name == from[0]);
-                    if (entry.renderer != null && source?.renderer != null && ImportsMaterials(fbxPath)
-                        && !entry.renderer.sharedMaterials.SequenceEqual(source.renderer.sharedMaterials))
-                    {
-                        lod.materials = entry.renderer.sharedMaterials;
-                        lod.replaced = source.renderer.sharedMaterials;
-                    }
+                    CaptureGeneratedLodMaterials(lod, entry, source, fbxPath);
                     plan.lods.Add(lod);
                 }
                 else plan.refusals.Add($"'{name}' cannot be paired with the LOD{sourceLodIndex} mesh of '{System.IO.Path.GetFileName(fbxPath)}' it was generated from");
@@ -151,6 +146,16 @@ namespace SashaRX.UnityMeshLab
             // including their surface channels. Only an explicit collision replacement
             // or rebuild strips those channels; their presence must not block a UV save.
             return plan;
+        }
+
+        static void CaptureGeneratedLodMaterials(FbxStructurePlan.NewLod lod, MeshEntry entry, MeshEntry source, string fbxPath)
+        {
+            if (entry.renderer == null || source?.renderer == null || !ImportsMaterials(fbxPath)) return;
+            var materials = UvToolHub.OriginalPreviewMaterials(entry.renderer, forAssetWrite: true);
+            var sourceMaterials = UvToolHub.OriginalPreviewMaterials(source.renderer, forAssetWrite: true);
+            if (materials.SequenceEqual(sourceMaterials)) return;
+            lod.materials = (Material[])materials.Clone();
+            lod.replaced = (Material[])sourceMaterials.Clone();
         }
 
         // Instances of one FBX mesh share it: the same new geometry twice is one replacement,
@@ -192,7 +197,9 @@ namespace SashaRX.UnityMeshLab
             if (entry?.renderer == null || entry.fbxMesh == null) return null;
             string path = AssetDatabase.GetAssetPath(entry.fbxMesh);
             if (!ImportsMaterials(path)) return null;
-            var materials = entry.renderer.sharedMaterials;
+            // A save can run without a hub callback, or while a preview is
+            // active. Read its captured authored slots without touching the scene.
+            var materials = UvToolHub.OriginalPreviewMaterials(entry.renderer, forAssetWrite: true);
             Material[] model;
             var source = PrefabUtility.GetCorrespondingObjectFromSource(entry.renderer);
             if (source != null) model = source.sharedMaterials;
@@ -213,7 +220,7 @@ namespace SashaRX.UnityMeshLab
                 // A prefab instance's child may be renamed, at any level of nested prefabs: its
                 // model node is its original source's name.
                 { meshName = entry.fbxMesh.name, nodeName = source != null ? PrefabUtility.GetCorrespondingObjectFromOriginalSource(entry.renderer).name : entry.renderer.name,
-                  nameOnly = source == null, materials = materials, replaced = model };
+                  nameOnly = source == null, materials = (Material[])materials.Clone(), replaced = (Material[])model.Clone() };
         }
 
         /// <summary>

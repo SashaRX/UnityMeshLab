@@ -169,7 +169,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual("OtherPart", document.Scene.GetRootNode().GetChild(1).GetName());
         }
 
-        string WriteSource(bool binary, string version = "FBX201400", bool withCollision = false)
+        string WriteSource(bool binary, string version = "FBX201400", bool withCollision = false, bool withMaterial = false)
         {
             string path = Path.Combine(folder, "source.fbx");
             using var manager = FbxManager.Create();
@@ -187,9 +187,15 @@ namespace SashaRX.UnityMeshLab.Tests
                 foreach (int i in polygon) mesh.AddPolygon(i);
                 mesh.EndPolygon();
             }
-            var node = FbxNode.Create(scene, "Part");
+            var node = FbxNode.Create(scene, withMaterial ? "Part_LOD0" : "Part");
             node.SetNodeAttribute(mesh);
-            scene.GetRootNode().AddChild(node);
+            if (withMaterial)
+            {
+                var modelRoot = FbxNode.Create(scene, "ModelRoot");
+                scene.GetRootNode().AddChild(modelRoot);
+                modelRoot.AddChild(node);
+            }
+            else scene.GetRootNode().AddChild(node);
             mesh.CreateLayer();
             var uv = FbxLayerElementUV.Create(mesh, "map1");
             uv.SetMappingMode(FbxLayerElement.EMappingMode.eByPolygonVertex);
@@ -204,6 +210,15 @@ namespace SashaRX.UnityMeshLab.Tests
             colors.SetReferenceMode(FbxLayerElement.EReferenceMode.eDirect);
             for (int c = 0; c < 9; c++) colors.GetDirectArray().Add(new FbxColor(0.123456789 + c * 0.01, 0.5, 0.25, 1));
             mesh.GetLayer(0).SetVertexColors(colors);
+            if (withMaterial)
+            {
+                node.AddMaterial(FbxSurfacePhong.Create(scene, "AuthoredStone"));
+                var materials = FbxLayerElementMaterial.Create(mesh, "Materials");
+                materials.SetMappingMode(FbxLayerElement.EMappingMode.eAllSame);
+                materials.SetReferenceMode(FbxLayerElement.EReferenceMode.eIndexToDirect);
+                materials.GetIndexArray().Add(0);
+                mesh.GetLayer(0).SetMaterials(materials);
+            }
             if (withCollision)
             {
                 var data = new FbxMeshData {
@@ -220,6 +235,272 @@ namespace SashaRX.UnityMeshLab.Tests
             int format = manager.GetIOPluginRegistry().FindWriterIDByDescription(binary ? "FBX binary (*.fbx)" : "FBX ascii (*.fbx)");
             Assert.IsTrue(exporter.Initialize(path, format, io) && exporter.SetFileExportVersion(version) && exporter.Export(scene));
             return path;
+        }
+
+        sealed class PreviewMaterialAsset : IDisposable
+        {
+            readonly List<UnityEngine.Object> owned = new List<UnityEngine.Object>();
+            internal readonly string assetFolder = "Assets/MeshLabPreviewMaterials_" + Guid.NewGuid().ToString("N");
+            internal string Path => assetFolder + "/source.fbx";
+            internal string Output => assetFolder + "/saved.fbx";
+            internal MeshEntry entry;
+
+            internal PreviewMaterialAsset(string source)
+            {
+                try
+                {
+                    AssetDatabase.CreateFolder("Assets", assetFolder.Substring(7));
+                    File.WriteAllBytes(Path, File.ReadAllBytes(source));
+                    AssetDatabase.ImportAsset(Path, ImportAssetOptions.ForceSynchronousImport);
+                    var importer = (ModelImporter)AssetImporter.GetAtPath(Path);
+                    importer.isReadable = true;
+                    importer.generateSecondaryUV = false;
+                    importer.meshCompression = ModelImporterMeshCompression.Off;
+                    importer.materialImportMode = ModelImporterMaterialImportMode.ImportStandard;
+                    importer.materialLocation = ModelImporterMaterialLocation.InPrefab;
+                    importer.SaveAndReimport();
+                    var instance = (GameObject)PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(Path));
+                    owned.Add(instance);
+                    var renderer = instance.GetComponentsInChildren<MeshRenderer>(true).Single();
+                    var filter = renderer.GetComponent<MeshFilter>();
+                    Assert.That(renderer.sharedMaterials.Length, Is.EqualTo(1));
+                    Assert.IsTrue(EditorUtility.IsPersistent(renderer.sharedMaterial));
+                    var working = Own(UnityEngine.Object.Instantiate(filter.sharedMesh));
+                    working.uv2 = working.uv.Select(uv => uv * .5f).ToArray();
+                    entry = new MeshEntry { renderer = renderer, meshFilter = filter,
+                        fbxMesh = filter.sharedMesh, originalMesh = working, lodIndex = 0 };
+                }
+                catch { Dispose(); throw; }
+            }
+
+            internal T Own<T>(T value) where T : UnityEngine.Object
+            {
+                owned.Add(value);
+                return value;
+            }
+
+            internal Material Override(string name)
+            {
+                var material = Own(new Material(Shader.Find("Standard")) { name = name });
+                AssetDatabase.CreateAsset(material, assetFolder + "/" + name + ".mat");
+                return material;
+            }
+
+            internal MeshEntry Generated(Material material)
+            {
+                string name = MeshNaming.StripLod(MeshNaming.StripPipelineSuffixes(entry.fbxMesh.name)) + "_LOD1";
+                var mesh = Own(UnityEngine.Object.Instantiate(entry.originalMesh));
+                mesh.name = name;
+                var go = Own(new GameObject(name));
+                var filter = go.AddComponent<MeshFilter>();
+                filter.sharedMesh = mesh;
+                var renderer = go.AddComponent<MeshRenderer>();
+                renderer.sharedMaterial = material;
+                return new MeshEntry { renderer = renderer, meshFilter = filter, originalMesh = mesh, lodIndex = 1 };
+            }
+
+            internal static Material Preview(params Renderer[] renderers)
+            {
+                CheckerTexturePreview.Apply(renderers.Select(r => (r, (Mesh)null)).ToList());
+                var preview = renderers[0].sharedMaterial;
+                Assert.AreEqual("Hidden/UnityMeshLab/CheckerUV2", preview.shader.name);
+                Assert.IsFalse(EditorUtility.IsPersistent(preview));
+                Assert.IsTrue(renderers.All(r => r.sharedMaterial == preview));
+                return preview;
+            }
+
+            internal FbxStructurePlan Plan(params MeshEntry[] additional)
+                => FbxStructureWrite.Plan(Path, new[] { entry }.Concat(additional)
+                    .Select(e => (e, e.originalMesh)).ToList(), 0);
+
+            public void Dispose()
+            {
+                try { CheckerTexturePreview.Restore(); }
+                finally
+                {
+                    try
+                    {
+                        for (int i = owned.Count - 1; i >= 0; --i)
+                            if (owned[i] && !EditorUtility.IsPersistent(owned[i])) UnityEngine.Object.DestroyImmediate(owned[i]);
+                    }
+                    finally { AssetDatabase.DeleteAsset(assetFolder); }
+                }
+            }
+        }
+
+        static void AssertPersistentMaterial(Material expected, Material actual)
+        {
+            Assert.IsNotNull(expected);
+            Assert.IsNotNull(actual);
+            Assert.IsTrue(AssetDatabase.TryGetGUIDAndLocalFileIdentifier(expected, out string expectedGuid, out long expectedId));
+            Assert.IsTrue(AssetDatabase.TryGetGUIDAndLocalFileIdentifier(actual, out string actualGuid, out long actualId));
+            Assert.AreEqual(AssetDatabase.GetAssetPath(expected), AssetDatabase.GetAssetPath(actual), "Reimport must retain the exact material asset path.");
+            Assert.AreEqual(expectedGuid, actualGuid, "Reimport must retain the material GUID, not an embedded material with the same name.");
+            Assert.AreEqual(expectedId, actualId, "Reimport must retain the exact material subasset.");
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void DocumentWrite_CheckerPreviewKeepsAuthoredMaterialsAndUntouchedChannels(bool overwrite)
+        {
+            using var asset = new PreviewMaterialAsset(WriteSource(true, withMaterial: true));
+            var sourceBytes = File.ReadAllBytes(asset.Path);
+            var sourceMeta = File.ReadAllBytes(asset.Path + ".meta");
+            using var source = FbxSourceDocument.Load(System.IO.Path.GetFullPath(asset.Path));
+            var preview = PreviewMaterialAsset.Preview(asset.entry.renderer);
+            using var plan = asset.Plan();
+            Assert.IsTrue(plan.IsEmpty, "The preview must not become a material or geometry edit.");
+            string output = overwrite ? asset.Path : asset.Output;
+            Assert.IsTrue(FbxChannelWrite.Write(asset.Path, new[] { asset.entry }, FbxExportIntent.UV1, output, null, plan));
+            Assert.AreSame(preview, asset.entry.renderer.sharedMaterial, "Saving must not suspend the preview.");
+            if (!overwrite)
+            {
+                CollectionAssert.AreEqual(sourceBytes, File.ReadAllBytes(asset.Path));
+                CollectionAssert.AreEqual(sourceMeta, File.ReadAllBytes(asset.Path + ".meta"));
+            }
+            using var written = FbxSourceDocument.Load(System.IO.Path.GetFullPath(output));
+            var before = source.Meshes.Single(); var after = written.Meshes.Single();
+            var original = new FbxLayerChannels.Topology(before); var result = new FbxLayerChannels.Topology(after);
+            CollectionAssert.AreEqual(FbxStructureEdit.ControlPoints(before), FbxStructureEdit.ControlPoints(after));
+            CollectionAssert.AreEqual(original.polygonSizes, result.polygonSizes);
+            CollectionAssert.AreEqual(original.cornerControlPoint, result.cornerControlPoint);
+            AssertUntouchedLayers(before, original, after, result, null);
+            Assert.AreEqual(1, after.GetNode(0).GetMaterialCount());
+            Assert.AreEqual(before.GetNode(0).GetMaterial(0).GetName(), after.GetNode(0).GetMaterial(0).GetName());
+            var imported = AssetDatabase.LoadAllAssetsAtPath(output).OfType<Mesh>().Single();
+            CollectionAssert.AreEqual(TriangleUvRecords(asset.entry.originalMesh), TriangleUvRecords(imported));
+            var renderer = AssetDatabase.LoadAssetAtPath<GameObject>(output).GetComponentsInChildren<MeshRenderer>(true).Single();
+            Assert.AreEqual("AuthoredStone", renderer.sharedMaterial.name);
+            Assert.IsTrue(EditorUtility.IsPersistent(renderer.sharedMaterial));
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void DocumentWrite_CheckerPreviewKeepsPersistentMaterialOverride(bool overwrite)
+        {
+            using var asset = new PreviewMaterialAsset(WriteSource(true, withMaterial: true));
+            var authored = asset.entry.renderer.sharedMaterial;
+            var replacement = asset.Override("ChosenStone");
+            asset.entry.renderer.sharedMaterial = replacement;
+            var preview = PreviewMaterialAsset.Preview(asset.entry.renderer);
+            using var plan = asset.Plan();
+            Assert.That(plan.materials, Has.Count.EqualTo(1));
+            CollectionAssert.AreEqual(new[] { replacement }, plan.materials[0].materials);
+            CollectionAssert.AreEqual(new[] { authored }, plan.materials[0].replaced);
+            string output = overwrite ? asset.Path : asset.Output;
+            Assert.IsTrue(FbxChannelWrite.Write(asset.Path, new[] { asset.entry }, FbxExportIntent.UV1, output, null, plan));
+            var renderer = AssetDatabase.LoadAssetAtPath<GameObject>(output).GetComponentsInChildren<MeshRenderer>(true).Single();
+            AssertPersistentMaterial(replacement, renderer.sharedMaterial);
+            Assert.AreSame(preview, asset.entry.renderer.sharedMaterial);
+            CheckerTexturePreview.Restore();
+            if (replacement) AssertPersistentMaterial(replacement, asset.entry.renderer.sharedMaterial);
+            else Assert.IsNull(asset.entry.renderer.sharedMaterial);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void DocumentWrite_GeneratedLodComparesBothAuthoredMaterialsUnderChecker(bool different)
+        {
+            using var asset = new PreviewMaterialAsset(WriteSource(true, withMaterial: true));
+            var sourceMaterial = asset.Override("SourceStone");
+            var lodMaterial = different ? asset.Override("LodStone") : sourceMaterial;
+            asset.entry.renderer.sharedMaterial = sourceMaterial;
+            var generated = asset.Generated(lodMaterial);
+            var preview = PreviewMaterialAsset.Preview(asset.entry.renderer, generated.renderer);
+            using var plan = asset.Plan(generated);
+            Assert.IsEmpty(plan.refusals);
+            Assert.That(plan.lods, Has.Count.EqualTo(1));
+            if (different)
+            {
+                CollectionAssert.AreEqual(new[] { lodMaterial }, plan.lods[0].materials);
+                CollectionAssert.AreEqual(new[] { sourceMaterial }, plan.lods[0].replaced);
+            }
+            else Assert.IsNull(plan.lods[0].materials, "Equal authored slots need no generated-LOD material edit.");
+            Assert.IsTrue(FbxChannelWrite.Write(asset.Path, new[] { asset.entry, generated }, FbxExportIntent.UV1, asset.Output, null, plan));
+            var renderers = AssetDatabase.LoadAssetAtPath<GameObject>(asset.Output).GetComponentsInChildren<MeshRenderer>(true);
+            Assert.That(renderers, Has.Length.EqualTo(2));
+            var lod = renderers.Single(r => r.name == generated.renderer.name);
+            AssertPersistentMaterial(lodMaterial, lod.sharedMaterial);
+            AssertPersistentMaterial(sourceMaterial, renderers.Single(r => r != lod).sharedMaterial);
+            Assert.AreSame(preview, asset.entry.renderer.sharedMaterial);
+            Assert.AreSame(preview, generated.renderer.sharedMaterial);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void DocumentWrite_CheckerPreviewStillRefusesTrueNonAssetMaterial(bool overwrite)
+        {
+            using var asset = new PreviewMaterialAsset(WriteSource(true, withMaterial: true));
+            var transient = asset.Own(new Material(Shader.Find("Standard")) { name = "UnsavedStone" });
+            asset.entry.renderer.sharedMaterial = transient;
+            var preview = PreviewMaterialAsset.Preview(asset.entry.renderer);
+            using var plan = asset.Plan();
+            Assert.That(plan.materials, Has.Count.EqualTo(1));
+            Assert.AreSame(transient, plan.materials[0].materials.Single());
+            var sourceBytes = File.ReadAllBytes(asset.Path);
+            var sourceMeta = File.ReadAllBytes(asset.Path + ".meta");
+            string output = overwrite ? asset.Path : asset.Output;
+            var error = Assert.Throws<FbxStructureRefusalException>(() =>
+                FbxChannelWrite.Write(asset.Path, new[] { asset.entry }, FbxExportIntent.UV1, output, null, plan));
+            StringAssert.Contains("UnsavedStone", error.Message);
+            StringAssert.Contains("not an asset", error.Message);
+            CollectionAssert.AreEqual(sourceBytes, File.ReadAllBytes(asset.Path));
+            CollectionAssert.AreEqual(sourceMeta, File.ReadAllBytes(asset.Path + ".meta"));
+            Assert.IsFalse(File.Exists(asset.Output));
+            Assert.AreSame(preview, asset.entry.renderer.sharedMaterial);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void DocumentWrite_MaterialChangedAfterCheckerApplyUsesCurrentSlot(bool clearSlot)
+        {
+            using var asset = new PreviewMaterialAsset(WriteSource(true, withMaterial: true));
+            var authored = asset.entry.renderer.sharedMaterial;
+            PreviewMaterialAsset.Preview(asset.entry.renderer);
+            var replacement = clearSlot ? null : asset.Override("ChangedWhilePreviewing");
+            asset.entry.renderer.sharedMaterials = new[] { replacement };
+            using var plan = asset.Plan();
+            Assert.That(plan.materials, Has.Count.EqualTo(1));
+            CollectionAssert.AreEqual(new[] { replacement }, plan.materials[0].materials);
+            CollectionAssert.AreEqual(new[] { authored }, plan.materials[0].replaced);
+            var sourceBytes = File.ReadAllBytes(asset.Path);
+            var sourceMeta = File.ReadAllBytes(asset.Path + ".meta");
+            if (clearSlot)
+            {
+                var error = Assert.Throws<FbxStructureRefusalException>(() => FbxChannelWrite.Write(asset.Path,
+                    new[] { asset.entry }, FbxExportIntent.UV1, asset.Output, null, plan));
+                StringAssert.Contains("has no material", error.Message);
+                Assert.IsFalse(File.Exists(asset.Output));
+            }
+            else
+            {
+                Assert.IsTrue(FbxChannelWrite.Write(asset.Path, new[] { asset.entry }, FbxExportIntent.UV1, asset.Output, null, plan));
+                var renderer = AssetDatabase.LoadAssetAtPath<GameObject>(asset.Output).GetComponentsInChildren<MeshRenderer>(true).Single();
+                AssertPersistentMaterial(replacement, renderer.sharedMaterial);
+            }
+            CollectionAssert.AreEqual(sourceBytes, File.ReadAllBytes(asset.Path));
+            CollectionAssert.AreEqual(sourceMeta, File.ReadAllBytes(asset.Path + ".meta"));
+            if (replacement) AssertPersistentMaterial(replacement, asset.entry.renderer.sharedMaterial);
+            else Assert.IsNull(asset.entry.renderer.sharedMaterial);
+        }
+
+        [Test]
+        public void MaterialPlanSnapshotsAuthoredPreviewSlotsForSourceAndGeneratedLod()
+        {
+            using var asset = new PreviewMaterialAsset(WriteSource(true, withMaterial: true));
+            var sourceMaterial = asset.Override("SourceStone");
+            var lodMaterial = asset.Override("LodStone");
+            var laterMaterial = asset.Override("LaterStone");
+            asset.entry.renderer.sharedMaterial = sourceMaterial;
+            var generated = asset.Generated(lodMaterial);
+            PreviewMaterialAsset.Preview(asset.entry.renderer, generated.renderer);
+            using var plan = asset.Plan(generated);
+            // A later scene edit must not change a document plan already captured.
+            asset.entry.renderer.sharedMaterials = new[] { laterMaterial };
+            generated.renderer.sharedMaterials = new[] { laterMaterial };
+            CollectionAssert.AreEqual(new[] { sourceMaterial }, plan.materials.Single().materials);
+            CollectionAssert.AreEqual(new[] { lodMaterial }, plan.lods.Single().materials);
+            CollectionAssert.AreEqual(new[] { sourceMaterial }, plan.lods.Single().replaced);
+            Assert.IsTrue(FbxChannelWrite.Write(asset.Path, new[] { asset.entry, generated }, FbxExportIntent.UV1, asset.Output, null, plan));
+            var renderers = AssetDatabase.LoadAssetAtPath<GameObject>(asset.Output).GetComponentsInChildren<MeshRenderer>(true);
+            var lod = renderers.Single(r => r.name == generated.renderer.name);
+            AssertPersistentMaterial(lodMaterial, lod.sharedMaterial);
+            AssertPersistentMaterial(sourceMaterial, renderers.Single(r => r != lod).sharedMaterial);
         }
 
         [TestCase(true, FbxExportIntent.UV1, true)]
