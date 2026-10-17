@@ -1,5 +1,64 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Combined ready Transfer corrections (2026-10-17)
+
+This PR combines the qualified selected-reference, complete donor attachment,
+family alignment/packing, exact selected-shell vertex recovery and prepared
+coarsest-rim corrections. It supersedes the earlier isolated local snapshots
+below; their numbers describe their respective historical sources.
+
+Current combined verification: 550 passed, zero failed, 16 optional skips across
+three real models in both directions with Burst required; 85 clean public
+regressions; both FBX compile variants. All 37,080 Reverse triangles preserve
+ordered Float32 geometry, and every original quality, winding, provenance,
+contact, precision and work gate remains in force. The affected wall retains
+7/7/5 islands, aligned finest shells and a 428 px atlas at 80 texels/metre.
+Its coarse Reverse maximum anisotropy improves from 2.19 to 1.17.
+
+Remaining limitations are explicit: 313 middle-LOD per-face anisotropy increases
+relative to the older independent native unwrap are real; the ordinary coarse
+projection still has a face with anisotropy about 113. Full common-contour
+correspondence for partial contributors is not established. Another model's
+atlas placement and worst correspondence error change within existing gates.
+This is a bounded correctness improvement, not completion of every Transfer
+defect or the separate startup responsiveness work. Rejected private trials
+and diagnostic capture hooks are excluded.
+
+## Prepared Reverse foundation: recover a complete damaged rim — 2026-10-17
+
+An existing shared-corner recovery can repair an extremely stretched face while
+worsening its healthy neighbour. Prepare a complete damaged rim before freezing
+the coarsest LOD. Keep the largest healthy connected main unchanged; develop the
+complete smaller triangle-tree donor from its intrinsic geometry and weld only
+its side of the existing common boundary. Refuse authored seams, nonmanifold
+input, contacts, winding changes and incomplete development. This repairs the
+shape of the entire damaged donor; it is not arbitrary per-vertex stitching.
+
+Evaluate the established repair first. The alternative must fit every original
+and established per-face metric and preserve the established exact corner-alias
+partition in both directions. New contact trials use only the original budget
+remaining after the established outer audits. Finer newborn-island repair keeps
+the previous implementation. Existing density, precision and final packing
+checks remain authoritative; no threshold or work limit is increased.
+
+A local full run passed 546 tests, failed zero and skipped 16 optional cases,
+including three real models in both Transfer directions with Burst required.
+The clean portable package passed 81 cases; both FBX compile variants passed.
+The new helper has zero analyzer findings with S3776/S3267 enabled, and the
+complete analyzer diagnostic multiset matches the previous implementation.
+A meaningful seam-continuity control fails on the preceding private candidate.
+
+On the affected coarse model, worst Reverse anisotropy falls from 2.19 to 1.17;
+its repaired rim faces are approximately 1.0. The atlas remains 428 pixels at
+80 texels/metre, with the original triangle count, shells and continuous edges.
+This is a partial local correction: the separate ordinary coarse projection
+failure and finer comparative distortion remain unresolved. Other-model atlas
+placement changes; unchanged-source subpixel exceptions require complete family
+precision proofs. Passing these tests does not establish a complete contour
+solution for every contributing shell across the LOD chain.
+
+
+
 ## Shared UV points and adjacent whole-island correspondence — 2026-10-16
 
 Ordinary Transfer can leave a one-ULP split at a shared lightmap point when an
@@ -3301,3 +3360,114 @@ Both FBX compilation variants pass; the new helper has no SonarAnalyzer 10.35
 findings with the existing complexity and loop rules enabled. The measured
 coverage selection includes the new regression suite and retains all existing
 required suites, including viewport checks.
+
+
+## Preserve selected Forward reference when preparing the Reverse foundation
+
+Ordinary Transfer can rescue a formerly collapsed UV face with a projected donor while its healthy neighbors retain their prior coordinates. Treating the resulting UV islands independently can preserve a newly generated split on the coarsest Reverse foundation.
+
+The selected Forward result now carries managed, nonserialized per-corner legacy UV and donor provenance alongside its exact ordered output geometry and UVs. Cleanup remaps retained faces. Missing or stale references retain the existing behavior; no static mesh cache or asset data is introduced.
+
+Before foundation chart assignment and independent density normalization, only reference-connected components containing such a rescued face are considered. Original UV and donor discontinuities, mixed reference winding, nonmanifold or point-branch topology, ambiguous shared vertices and changes to outside incident corners are refused. Whole-component parameterization must retain reference winding and pass every current per-face absolute and relative metric, contact and work guard. Final cross-LOD packing validation remains unchanged.
+
+Manual atlas resolution derives the existing prepared foundation density before reference repair. Outside incident aliases are checked by exact geometric position and current UV as well as mesh vertex identity: duplicating a UV-continuous point cannot hide an outside constraint. A pre-existing authored UV seam remains an independent side and is left untouched.
+
+Portable regression cases cover generated splits, authored seams and winding, stale or missing provenance, cleanup remapping, nonmanifold input, outside incident corners, cancellation, and the actual Forward handoff after rejected subdivisions are restored. Private full-pipeline controls checked three actual models in both directions without publishing their assets. The targeted coarsest seam closed with exact endpoint UV agreement and unchanged output triangle geometry; the other two models retained all stable numeric outputs. This experiment does not resolve other layout or startup issues.
+
+The selected reference also follows the existing final clamp-to-unit publication
+policy. Its legacy coordinates, donor identities and rescued-face flags remain
+unchanged; only the captured current coordinates receive the same clamp. Exact
+prepared-mesh validation refuses stale provenance before this update. An actual
+workflow publication and detached Reverse-input regression covers clamped,
+unclamped and stale inputs without mutating the prepared mesh or selected record.
+
+
+## Attach complete generated Reverse shells at compatible full edges (2026-10-17)
+
+Native preparation of an invalid ordinary-Transfer island can split a large
+surface into many disconnected charts. After that existing native fallback,
+attach only complete generated charts. Prefer the longest compatible geometric
+edge, keep the larger main chart immutable, move the whole donor by one
+orientation-preserving similarity, then weld only donor-side endpoint aliases.
+Equal face counts use metric area and stable face identity. No vertex averaging,
+reflection, face removal or independent finer-LOD deformation is introduced.
+
+A per-operation snapshot checks the complete original surface, not just the
+current patch: exact source UV and available selected donor identities preserve
+authored boundaries; outside position/UV aliases remain anchored, including
+duplicated vertex indices. The full geometric edge must have exactly two uses.
+Missing/stale patch context retains the existing native result. This managed
+snapshot owns no Unity objects, static cache or serialized state.
+
+An unanchored independent native chart blocking the donor may move only by one
+translation. Contacts with the immutable main always refuse the attachment.
+Each proposal and the complete patch retain winding, the original density-scale
+bounds, absolute metrics and relative metrics measured against the original
+native result, so successive joins cannot accumulate extra stretch. Complete
+contact scans share the unchanged comparison budget; exhaustion publishes no
+partial attachment. Final packing still validates complete cross-LOD families.
+
+Verification includes actual ordinary and Reverse runs on three real inputs,
+525 passed, zero failed, 16 optional skips; ordinary numeric outputs remain
+exact and all 37,080 Reverse triangles retain exact Float32 geometry. A wall
+LOD1 has 17 islands instead of 24, with 7 small islands instead of 12. All seven
+LOD0 primary shells are axis-aligned and its atlas is 446 pixels at the same
+80 texels/metre, below the fragmented baseline's 459 pixels (and the attachment
+implementation's previous 473). All final atlases have zero collapsed/invalid
+faces or unexpected contacts; the targeted seat seam stays closed. Rounding
+flags fit existing precision policies using one transform for every corner of
+each complete cross-LOD family. No quality or work limit is relaxed.
+
+The frozen exclusive final pack now also considers conservative triangle
+footprints at the already selected density. Choose the largest prepared island
+on the finest LOD to orient each complete family, then move all descendants
+together. Try permitted first-family quarter-turns because locally equal square
+extents can leave different usable regions. Every order shares the existing
+search/validation budgets; the candidate canvas can only shrink. Keep the
+existing audited native result on refusal. Two procedural L-plus-rectangles
+controls fail in the old search and pass with the bounded alternatives, for
+both managed and native occupancy search. Private model references and passive
+diagnostics are not part of this implementation.
+
+Necessary seams remain when compatible full-edge poses intersect the immutable
+main or fail the existing normal gate. Startup responsiveness remains separate.
+
+
+### Remaining middle-LOD continuity defect (2026-10-17 follow-up)
+
+The alignment and atlas measurements above qualify only those parts of the
+change. They do not establish complete chain continuity. In the actual middle
+LOD, a 292-face geometric/reference-edge region remains split into 253, 37 and
+2-face UV pieces; a 196-face region remains split into 186, 8 and 2-face pieces.
+Common packing-family labels retain their placement relationship but do not
+make their UV edge topology continuous. These remaining cuts have not been
+proved necessary under a jointly rebuilt chain layout. Full visual/correctness
+acceptance is therefore still open.
+
+Private whole-piece pre-matching and selected-legacy seam-provenance trials
+passed their model checks but did not close this defect and are excluded from
+this implementation. Direct finest-LOD UV replacement was rejected for large
+comparative stretch regressions. No quality, winding, provenance or work check
+was relaxed. A separate saved-data continuity acceptance check reproduces both
+broken regions and must pass before the complete task is called finished.
+
+## Recover exact selected-shell vertices before Reverse freezing
+
+Contact-invalid ordinary interpolation can force Reverse to re-unwrap a whole
+otherwise usable island. Before classification, try exact geometry vertices in
+the actually selected source shell. Refuse ambiguous source UVs and incomplete
+alias groups. Restore complete original alias groups on any original per-face
+metric or winding refusal. Publish only after a complete zero-contact scan;
+before and after scans share the existing bounded comparison budget. Healthy
+inputs stay unchanged. UV0 remains correspondence evidence, not replacement UV2.
+No new geometry, indices, cuts, metric allowances or native ownership are added.
+
+The private three-model run passed 537 tests with 16 optional skips, in both
+directions. The target middle LOD retains seven ordinary islands through Reverse
+instead of the previous seventeen; the final atlas shrinks at the same density.
+Whole-shell preservation is measured against prepared ordinary input. It does
+not assert metric equality with the previously substituted native unwrap. An
+existing coarse ordinary stretching defect remains outside this correction.
+This section records the earlier local qualification; the ready correction is included in the combined PR.
+
+Review follow-up: compare cumulative density against every original native face, not only the latest join; preserve an unchanged stretched face while recovering unrelated valid contacts. Changed faces retain all metric/winding checks and the final full-mesh audit. Extract the native stage without changing its lease or audit ordering. Two old cumulative-scale controls and one independent-recovery control fail as expected; the current full three-model and clean public runs pass with identical stable numeric outputs.

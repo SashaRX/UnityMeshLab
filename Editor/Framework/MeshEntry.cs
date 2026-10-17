@@ -18,6 +18,7 @@ namespace SashaRX.UnityMeshLab
             var copy = (MeshEntry)MemberwiseClone();
             copy.originalMesh = displayMesh;
             copy.repackedMesh = copy.transferredMesh = null;
+            copy.forwardUvReference = null;
             return copy;
         }
         public int lodIndex;
@@ -30,6 +31,7 @@ namespace SashaRX.UnityMeshLab
         /// Destroyed on reset only when it differs from fbxMesh (i.e. was cloned).
         /// </summary>
         public Mesh originalMesh;
+        internal ForwardUvReference forwardUvReference;
 
         /// <summary>UV0 is temporary planar data, awaiting a real unwrap.</summary>
         public bool draftUv => MeshUvState.IsDraft(originalMesh);

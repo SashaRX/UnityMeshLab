@@ -83,7 +83,10 @@ namespace SashaRX.UnityMeshLab
                 copy.SetTriangles(parts[sub], sub, false, checked((int)mesh.GetBaseVertex(sub)));
             copy.bounds = source.mesh.bounds;
             MeshUvState.SetDraft(copy, MeshUvState.IsDraft(source.mesh));
+            var reference=source.forwardReference;
+            if(reference!=null && !reference.Matches(mesh)) reference=null;
             return new ReverseUvTransfer.Input { mesh = copy, key = source.key, toWorld = source.toWorld,
+                forwardReference=reference?.RetainFaces(retained.ToArray()),
                 usePreparedUv2=source.usePreparedUv2, sourceFaces = retained.ToArray(), removedSourceFaces = removed.ToArray() };
         }
 

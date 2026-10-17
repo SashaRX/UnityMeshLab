@@ -18,6 +18,7 @@ namespace SashaRX.UnityMeshLab
                 if(!surface.input.usePreparedUv2 || uv.Length!=surface.positions.Length)
                     throw new InvalidOperationException("Reverse regrouping requires the complete ordinary Transfer output.");
                 surface.pixels=surface.indices.Select(i=>uv[i]*options.seedResolution).ToArray();
+                surface.attachmentSource=CaptureShellAttachmentSource(surface,uv,token);
             }
             float density=Density(chain[0]);
             if(!(density>0)) density=options.seedDensity>0?options.seedDensity:options.seedResolution;
@@ -44,7 +45,8 @@ namespace SashaRX.UnityMeshLab
                     var coordinates=faces.SelectMany(f=>Enumerable.Range(f*3,3).Select(c=>surface.pixels[c])).ToArray();
                     var frames=faces.Select(f=>surface.metricFrames[f]).ToArray();
                     var original=(Vector2[])coordinates.Clone();
-                    coordinates=RepairPreparedShell(patch,coordinates,frames,options,token);
+                    var attachmentCorners=faces.SelectMany(f=>Enumerable.Range(f*3,3)).ToArray();
+                    coordinates=RepairPreparedShell(patch,coordinates,frames,options,token,surface.attachmentSource?.ForPatch(attachmentCorners,coordinates,token));
                     double worldArea=frames.Sum(f=>f.length*f.y),uvArea=0;
                     for(int t=0;t<coordinates.Length;t+=3)
                         uvArea+=Math.Abs(((double)coordinates[t+1].x-coordinates[t].x)*((double)coordinates[t+2].y-coordinates[t].y)
@@ -145,7 +147,23 @@ namespace SashaRX.UnityMeshLab
         }
 
         static Vector2[] RepairPreparedShell(Vector3[] corners,Vector2[] uv,
-            (double length,double x,double y)[] frames,Options options,CancellationToken token)
+            (double length,double x,double y)[] frames,Options options,CancellationToken token,ReverseUvAttachmentSource.Scope attachmentScope=null,
+            bool allowPreparedRim=false)
+        {
+            // A different valid seed can worsen a later whole-shell match.
+            // Keep the established repair unless every face also fits its result.
+            long comparisons=0;
+            var baseline=RepairPreparedShellExisting(corners,uv,frames,options,token,
+                count=>comparisons+=count,attachmentScope);
+            long remaining=options.comparisonBudget-comparisons;
+            if(allowPreparedRim && remaining>0 && TryRepairPreparedRim(corners,uv,frames,options,token,out var wholeRim,remaining)
+                && PreparedRimFitsBaseline(corners,wholeRim,baseline,frames,options)) return wholeRim;
+            return baseline;
+        }
+
+        static Vector2[] RepairPreparedShellExisting(Vector3[] corners,Vector2[] uv,
+            (double length,double x,double y)[] frames,Options options,CancellationToken token,
+            Action<long> recordComparisons,ReverseUvAttachmentSource.Scope attachmentScope)
         {
             string refusal=null;
             bool Valid(Vector2[] candidate)
@@ -159,6 +177,7 @@ namespace SashaRX.UnityMeshLab
                 var scan=UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {uv=candidate,
                     indices=Enumerable.Range(0,candidate.Length).ToArray(),charts=new int[candidate.Length]},token,
                     comparisonBudget:options.comparisonBudget);
+                recordComparisons(scan.comparisons);
                 refusal=$"contacts {scan.pairs}, collapsed {scan.degenerateFaces}, complete {scan.complete}";
                 return scan.complete && scan.pairs==0 && scan.degenerateFaces==0;
             }
@@ -183,6 +202,14 @@ namespace SashaRX.UnityMeshLab
             }
             var arap=ReverseUvSeed.RepairAuthoredCharts(corners,(Vector2[])uv.Clone(),new int[uv.Length],token,out _);
             if(Valid(arap)) return arap;
+            return ParameterizePreparedShell(corners,uv,frames,options,token,attachmentScope,origin,span,Valid,()=>refusal);
+        }
+
+        static Vector2[] ParameterizePreparedShell(Vector3[] corners,Vector2[] uv,
+            (double length,double x,double y)[] frames,Options options,CancellationToken token,
+            ReverseUvAttachmentSource.Scope attachmentScope,Vector3 origin,double span,
+            Func<Vector2[],bool> valid,Func<string> refusal)
+        {
             // Rebuild only the failed shell, using native chart parameterization.
             // The original triangle count and corner identities must survive.
             if(!XatlasRepack.TryAcquireNativeSession()) throw new InvalidOperationException("An xatlas operation is already in progress.");
@@ -190,12 +217,7 @@ namespace SashaRX.UnityMeshLab
             try
             {
                 token.ThrowIfCancellationRequested();
-                var vertices=new List<Vector3>();var unique=new Dictionary<Vector3,uint>();var indices=new uint[corners.Length];
-                for(int i=0;i<corners.Length;++i)
-                {
-                    if(!unique.TryGetValue(corners[i],out uint vertex)) {vertex=(uint)vertices.Count;vertices.Add(corners[i]);unique.Add(corners[i],vertex);}
-                    indices[i]=vertex;
-                }
+                var indices=PreparedNativeIndices(corners,out var vertices);
                 // xatlas has an absolute area epsilon. Use a detached,
                 // recentered chart-sized metric so small genuine input faces
                 // are not silently ignored as zero-area native faces.
@@ -222,17 +244,29 @@ namespace SashaRX.UnityMeshLab
                         throw new InvalidOperationException("Reverse shell parameterization changed source face identity.");
                     candidate[i]=new Vector2(coordinates[output[i]*2]*width,coordinates[output[i]*2+1]*height);
                 }
-                if(Valid(candidate)) return candidate;
+                if(valid(candidate))
+                    return AttachPreparedShells(corners,uv,candidate,frames,options,token,out _,attachmentScope);
                 var stitched=RepairPreparedSharedCorners(corners,candidate,frames,options.maxAnisotropy,token);
-                if(Valid(stitched)) return stitched;
+                if(valid(stitched)) return stitched;
                 // Native parameterization may inflate a near-collinear face
                 // for rasterization. Relax the connected output chart rather
                 // than detach that face into an intrinsic triangle island.
                 var relaxed=ReverseUvSeed.RepairAuthoredCharts(corners,candidate,new int[candidate.Length],token,out _);
-                if(Valid(relaxed)) return relaxed;
-                throw new InvalidOperationException("Connected reverse shell repair failed its metric/contact audit: "+refusal+"; no triangle-island fallback was published.");
+                if(valid(relaxed)) return relaxed;
+                throw new InvalidOperationException("Connected reverse shell repair failed its metric/contact audit: "+refusal()+"; no triangle-island fallback was published.");
             }
             finally {try {if(created) XatlasNative.xatlasDestroy();} finally {XatlasRepack.ReleaseNativeSession();}}
+        }
+
+        static uint[] PreparedNativeIndices(Vector3[] corners,out List<Vector3> vertices)
+        {
+                vertices=new List<Vector3>();var unique=new Dictionary<Vector3,uint>();var indices=new uint[corners.Length];
+                for(int i=0;i<corners.Length;++i)
+                {
+                    if(!unique.TryGetValue(corners[i],out uint vertex)) {vertex=(uint)vertices.Count;vertices.Add(corners[i]);unique.Add(corners[i],vertex);}
+                    indices[i]=vertex;
+                }
+            return indices;
         }
 
         internal static Vector2[] RepairPreparedSharedCorners(Vector3[] corners,Vector2[] uv,

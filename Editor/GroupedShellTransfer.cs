@@ -986,6 +986,36 @@ namespace SashaRX.UnityMeshLab
 
         // Pure-compute body — operates only on the plain arrays passed in;
         // safe to invoke from a background thread via Task.Run.
+        static bool RecoverFinalProjection(TransferResult result,
+            (List<UvShell> shells,int[] indices,Vector3[] positions) target,
+            (List<UvShell> shells,int[] indices,Vector3[] positions,Vector2[] uv) source,
+            TransferMatchTrace trace,int atlasSize,float boundaryToleranceTexels)
+        {
+            int planarRecovered = PlanarTransferRecovery.Apply(result,target.shells,target.indices,target.positions,
+                source.shells,source.indices,source.positions,source.uv,trace,atlasSize,boundaryToleranceTexels);
+            if (planarRecovered>0)
+            {
+                result.shellsGeometryFallback+=planarRecovered;
+                UvtLog.Info($"[GroupedTransfer] Recovered {planarRecovered} planar charts in the donor's world metric.");
+            }
+
+            if (UvProgress.CancelRequested) return false;
+            try
+            {
+                if (ForwardUvExactFamilyProjection.TryImprove(source.positions,source.uv,source.shells,
+                    target.positions,target.indices,result.uv2,result.vertexToSourceShell,out var improved,out _))
+                {
+                    result.uv2 = improved;
+                    UvtLog.Info("[GroupedTransfer] Exact selected-shell vertices recovered complete contact-free UVs without new cuts.");
+                }
+                return true;
+            }
+            catch (System.OperationCanceledException)
+            {
+                return false;
+            }
+        }
+
         static TransferResult TransferCore(
             Vector3[] srcVerts, int[] srcTris,
             Vector2[] srcUv0, Vector2[] srcUv2,
@@ -3868,13 +3898,10 @@ namespace SashaRX.UnityMeshLab
             result.topologyFixed      = LastTopologyFixed;
             result.topologyCapHit     = LastTopologyCapHit;
 
-            int planarRecovered = PlanarTransferRecovery.Apply(result,tgtShells,tgtTris,tVerts,
-                srcShells,srcTris,srcVerts,srcUv2,trace,System.Math.Max(sourceAtlasWidth,sourceAtlasHeight),boundaryToleranceTexels);
-            if (planarRecovered>0)
-            {
-                result.shellsGeometryFallback+=planarRecovered;
-                UvtLog.Info($"[GroupedTransfer] Recovered {planarRecovered} planar charts in the donor's world metric.");
-            }
+            if (!RecoverFinalProjection(result,(tgtShells,tgtTris,tVerts),
+                (srcShells,srcTris,srcVerts,srcUv2),trace,
+                System.Math.Max(sourceAtlasWidth,sourceAtlasHeight),boundaryToleranceTexels))
+                return CancelTransfer(result);
 
             // ── Classify all shells ──
             int statusAccepted = 0, statusDegraded = 0, statusPoor = 0, statusRejected = 0, statusUnmatched = 0;
