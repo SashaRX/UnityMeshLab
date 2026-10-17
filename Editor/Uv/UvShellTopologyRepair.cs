@@ -47,6 +47,12 @@ namespace SashaRX.UnityMeshLab
             return scan.complete && scan.pairs==0 && scan.degenerateFaces==0 && scan.invalidFaces==0?candidate:null;
         }
 
+        internal static bool IsUvDisk(Vector3[] corners,Vector2[] uv,CancellationToken token)
+        {
+            var indices=BuildUvQuotient(corners,uv,out int vertices);
+            return Disk(indices,vertices,token);
+        }
+
         static (double length,double x,double y) Frame(Vector3 a,Vector3 b,Vector3 c)
         {
             double x=(double)b.x-a.x,y=(double)b.y-a.y,z=(double)b.z-a.z;

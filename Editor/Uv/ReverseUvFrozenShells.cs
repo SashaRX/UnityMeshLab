@@ -13,7 +13,7 @@ namespace SashaRX.UnityMeshLab
             internal float x,y,rowHeight,width;
         }
 
-        static void LoadPreparedFrozenCoordinates(Surface[][] chain,Dictionary<Surface,Vector2[]> preparedUv,int resolution)
+        static void LoadPreparedFrozenCoordinates(Surface[][] chain,Dictionary<Surface,Vector2[]> preparedUv,int resolution,CancellationToken token)
         {
             foreach(var surface in chain.SelectMany(l=>l))
             {
@@ -21,6 +21,7 @@ namespace SashaRX.UnityMeshLab
                 if(!surface.input.usePreparedUv2 || uv.Length!=surface.positions.Length)
                     throw new InvalidOperationException("Frozen reverse requires ordinary Transfer UVs on every LOD.");
                 surface.pixels=surface.indices.Select(i=>uv[i]*resolution).ToArray();
+                surface.attachmentSource=CaptureShellAttachmentSource(surface,uv,token);
             }
         }
 
@@ -30,7 +31,7 @@ namespace SashaRX.UnityMeshLab
         {
             // Ordinary Transfer is an immutable reference for every finer LOD.
             // Only the coarsest foundation is prepared before correspondence.
-            LoadPreparedFrozenCoordinates(chain,preparedUv,options.seedResolution);
+            LoadPreparedFrozenCoordinates(chain,preparedUv,options.seedResolution,token);
             // Manual resolution supplies no requested density. Measure the
             // complete prepared foundation before any repair or chart split.
             float requested=options.seedDensity>0?options.seedDensity:Density(chain[0]);
@@ -66,7 +67,7 @@ namespace SashaRX.UnityMeshLab
                     if(surface.lod==chain[0][0].lod && !ValidFrozenShell(surface,faces,local,options,token))
                     {
                         var patch=corners.Select(c=>surface.positions[surface.indices[c]]).ToArray();
-                        local=RepairPreparedShell(patch,local,frames,options,token);
+                        local=RepairPreparedShell(patch,local,frames,options,token,surface.attachmentSource?.ForPatch(corners,local,token),allowPreparedRim:true);
                         local=NormalizeFrozenDensity(local,frames,requested);
                         foreach(int f in faces) surface.faces[f].localFallback=true;
                     }
@@ -194,7 +195,7 @@ namespace SashaRX.UnityMeshLab
                         // and their descendants are never repaired afterwards.
                         var patch=corners.Select(c=>s.positions[s.indices[c]]).ToArray();
                         var frames=faces.Select(f=>s.metricFrames[f]).ToArray();
-                        placed=RepairPreparedShell(patch,placed,frames,options,token);
+                        placed=RepairPreparedShell(patch,placed,frames,options,token,s.attachmentSource?.ForPatch(corners,placed,token));
                         placed=NormalizeFrozenDensity(placed,frames,options.seedDensity);
                         for(int i=0;i<faces.Length;++i) records[s][faces[i]].localFallback=true;
                     }

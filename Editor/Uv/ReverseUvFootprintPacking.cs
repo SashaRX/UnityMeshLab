@@ -335,6 +335,49 @@ namespace SashaRX.UnityMeshLab
             return filled;
         }
 
+        // Reuse the existing conservative masks and bounded search at a fixed
+        // density. Never enlarge the supplied canvas or scale families to fit.
+        internal static bool TryPackWithin(Vector2[][] source,int side,float scale,ReverseUvTransfer.Options options,
+            CancellationToken token,Func<int,Vector2[],int,bool> validate,out Vector2[][] placement,out int packedSide)
+        {
+            token.ThrowIfCancellationRequested();
+            placement=null;packedSide=side;
+            if((long)side*side>16777216) return false;
+            var masks=PackingMasks(source,options,scale,token);
+            long work=0,validations=0;
+            foreach(var order in PackingOrders(source,masks).SelectMany(PackingStarts))
+            {
+                token.ThrowIfCancellationRequested();
+                var candidate=TryPack(order,side,options,token,validate,ref work,ref validations,null);
+                if(candidate==null) continue;
+                int extent=Math.Max(16,(int)Math.Ceiling(candidate.SelectMany(p=>p).Max(p=>Math.Max(p.x,p.y))+options.padding));
+                if(extent>packedSide || !FitsCanvas(candidate,extent,validate)) continue;
+                placement=candidate;packedSide=extent;
+            }
+            return placement!=null;
+        }
+
+        // Locally equal square extents can hide very different free regions.
+        // Try each permitted first-family quarter-turn, sharing the same work
+        // and validation counters across every order. No larger canvas or scale.
+        static IEnumerable<Mask[][]> PackingStarts(Mask[][] order)
+        {
+            if(order.Length==0) yield break;
+            for(int start=0;start<order[0].Length;++start)
+            {
+                var trial=(Mask[][])order.Clone();
+                trial[0]=order[0].Skip(start).Concat(order[0].Take(start)).ToArray();
+                yield return trial;
+            }
+        }
+
+        static bool FitsCanvas(Vector2[][] candidate,int side,Func<int,Vector2[],int,bool> validate)
+        {
+            for(int g=0;g<candidate.Length;++g)
+                if(validate!=null && !validate(g,candidate[g],side)) return false;
+            return true;
+        }
+
         // Used only when rectangle reservations fail. There is no projection
         // layout to pin here: each order places every family on an empty canvas.
         internal static Vector2[][] PackFresh(Vector2[][] source, int initialSide, ReverseUvTransfer.Options options,

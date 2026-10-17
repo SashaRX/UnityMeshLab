@@ -153,6 +153,7 @@ namespace SashaRX.UnityMeshLab
 
         internal sealed class Surface
         {
+            internal ReverseUvAttachmentSource attachmentSource;
             internal Input input;
             internal Vector3[] positions;
             internal int[] indices;

@@ -8,7 +8,7 @@ namespace SashaRX.UnityMeshLab
 {
     /// <summary>Pack chart families once for the whole completed chain. Every
     /// descendant and intentional overlay receives its parent's rigid move.</summary>
-    internal static class ReverseUvFinalPacking
+    internal static partial class ReverseUvFinalPacking
     {
         internal static int Pack(List<ReverseUvTransfer.Surface[]> levels, ReverseUvTransfer.Options options,
             ReverseUvTransfer.Report report, int previousSide, CancellationToken token)
@@ -249,6 +249,7 @@ namespace SashaRX.UnityMeshLab
                             if(candidate!=null && BoundsCost(candidate,candidateScale)<BoundsCost(packed,scale))
                             {packed=candidate;scale=candidateScale;side=candidateSide;}
                         }
+                    (packed,side)=AlignAndCompactFrozen(coordinates,groups,options,token,(packed,side,scale),Valid,AuditAtlas);
                     search.nativePacked=true;footprintImproved=true;
                     UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Frozen groups: classic Repack of {groups.Length} families, {side}px, {options.seedDensity*scale:G6} tex/m, final padding {options.padding}px.");
                 }
