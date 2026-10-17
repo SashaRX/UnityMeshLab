@@ -82,6 +82,19 @@ namespace SashaRX.UnityMeshLab
             foreach (var h in hubs)
                 h.RestoreLightmapPreviewSafe();
         }
+
+        // Only replace slots still owned by this preview. A real assignment,
+        // null slot or changed slot count after Apply belongs to the caller.
+        internal static Material[] MaterialsForWrite(Renderer renderer, Material[] captured, Material preview)
+            => MaterialsForWrite(renderer.sharedMaterials, captured, preview);
+
+        internal static Material[] MaterialsForWrite(Material[] materials, Material[] captured, Material preview)
+        {
+            if (preview == null) return materials;
+            for (int i = 0; i < materials.Length && i < captured.Length; i++)
+                if (materials[i] == preview) materials[i] = captured[i];
+            return materials;
+        }
     }
 
     public static class CheckerTexturePreview
@@ -120,10 +133,16 @@ namespace SashaRX.UnityMeshLab
 
         public static bool IsActive => isActive;
 
-        internal static bool TryGetOriginalMaterials(Renderer renderer, out Material[] materials)
+        internal static bool TryGetOriginalMaterials(Renderer renderer, out Material[] materials, bool forAssetWrite = false)
         {
             foreach (var backup in backups)
-                if (backup.renderer == renderer) { materials = backup.origMaterials; return true; }
+                if (backup.renderer == renderer)
+                {
+                    materials = forAssetWrite
+                        ? PreviewSafetyGuard.MaterialsForWrite(renderer, backup.origMaterials, checkerMat)
+                        : backup.origMaterials;
+                    return true;
+                }
             materials = null;
             return false;
         }
@@ -161,11 +180,13 @@ namespace SashaRX.UnityMeshLab
             checkerMat.SetFloat("_ShowR", showR ? 1f : 0f);
             checkerMat.SetFloat("_ShowG", showG ? 1f : 0f);
 
+            var captured = new Dictionary<Renderer, int>();
             foreach (var (r, uvMesh) in entries)
             {
                 if (r == null) continue;
 
-                var backup = new RendererBackup
+                bool alreadyCaptured = captured.TryGetValue(r, out int at);
+                var backup = alreadyCaptured ? backups[at] : new RendererBackup
                 {
                     renderer = r,
                     origMaterials = r.sharedMaterials
@@ -177,14 +198,17 @@ namespace SashaRX.UnityMeshLab
                     var mf = r.GetComponent<MeshFilter>();
                     if (mf != null)
                     {
+                        if (backup.meshFilter == null) backup.origMesh = mf.sharedMesh;
                         backup.meshFilter = mf;
-                        backup.origMesh = mf.sharedMesh;
                         backup.previewMesh = uvMesh;
                         mf.sharedMesh = uvMesh;
                     }
                 }
 
-                backups.Add(backup);
+                // A renderer can occur in more than one entry. Keep its first
+                // authored state while the last supplied preview mesh wins.
+                if (alreadyCaptured) backups[at] = backup;
+                else { captured.Add(r, backups.Count); backups.Add(backup); }
 
                 // Replace all material slots with checker
                 var mats = new Material[r.sharedMaterials.Length];
