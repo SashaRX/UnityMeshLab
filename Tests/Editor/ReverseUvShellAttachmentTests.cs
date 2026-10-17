@@ -92,6 +92,28 @@ namespace SashaRX.UnityMeshLab.Tests
             var scope=source.ForPatch(Enumerable.Range(0,Points.Length).ToArray(),Reference(),default);
             var before=Current();Assert.AreSame(before,RunWithScope(scope,Reference(),before,out int count));Assert.AreEqual(0,count);
         }
+        static Vector3[] DensityChainPoints()=>new[] {
+            new Vector3(0,0,0),new Vector3(0,2,0),new Vector3(1,0,0),
+            new Vector3(-1,0,0),new Vector3(-1,2,0),new Vector3(0,0,0),
+            new Vector3(-1,2,0),new Vector3(0,2,0),new Vector3(0,0,0)}
+            .Concat(Enumerable.Range(0,2).SelectMany(y=>new[] {
+                new Vector3(0,-y-1,0),new Vector3(0,-y,0),new Vector3(1,-y-1,0),
+                new Vector3(0,-y,0),new Vector3(1,-y,0),new Vector3(1,-y-1,0)})).ToArray();
+
+        [TestCase(1.5f,1)]
+        [TestCase(0.6666667f,1)]
+        [TestCase(1.25f,2)]
+        public void SequentialAttachmentsRespectOriginalDensity(float step,int expectedJoins)
+        {
+            var points=DensityChainPoints();var reference=points.Select(p=>new Vector2(p.x,p.y)).ToArray();
+            var before=reference.Select((p,c)=>p*(c<3?1:c<9?step:step*step)
+                +new Vector2(c<3?30:c<9?10:20,0)).ToArray();
+            var saved=(Vector2[])before.Clone();var after=Run(points,reference,before,out int count);
+            Assert.AreEqual(expectedJoins,count,"Check the cumulative scale of the original chart, not only the latest join.");
+            CollectionAssert.AreEqual(saved,before);
+            if(expectedJoins==1) CollectionAssert.AreEqual(before.Skip(9),after.Skip(9));
+        }
+
         [Test] public void MovesWholeDonorAndWeldsOntoImmutableMain()
         {
             var before=Current();var snapshot=(Vector2[])before.Clone();

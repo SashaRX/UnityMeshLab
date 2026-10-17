@@ -72,6 +72,15 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(result,Is.Not.Null);CollectionAssert.AreEqual(Source(),result.Take(6));CollectionAssert.AreEqual(old.Skip(6),result.Skip(6));
         }
 
+        [Test] public void UnchangedStretchedFaceDoesNotBlockIndependentContactRecovery()
+        {
+            var p=Positions(3);var source=Source(3);source[7]=new Vector2(14,0);
+            var old=Overlap().Concat(source.Skip(6)).ToArray();var saved=(Vector2[])old.Clone();
+            var result=Improve(p,source,Shells(3),p,Enumerable.Range(0,9).ToArray(),old,Donors(3),out _);
+            Assert.That(result,Is.Not.Null);CollectionAssert.AreEqual(Source(),result.Take(6));
+            CollectionAssert.AreEqual(old.Skip(6),result.Skip(6));CollectionAssert.AreEqual(saved,old);
+        }
+
         [Test] public void HealthyOrdinaryOutputIsNotRepositioned()
         {
             var source=Source().Select(u=>u+new Vector2(10,0)).ToArray();

@@ -135,6 +135,7 @@ namespace SashaRX.UnityMeshLab
             {
                 Check(token);int face=queue.Dequeue();queued[face]=false;int c=face*3;
                 int a=indices[c],b=indices[c+1],d=indices[c+2];
+                if(proposal[a].Equals(original[a]) && proposal[b].Equals(original[b]) && proposal[d].Equals(original[d])) continue;
                 if(Fits(positions[a],positions[b],positions[d],original[a],original[b],original[d],proposal[a],proposal[b],proposal[d])) continue;
                 if(!RestoreFace(c,positions,indices,original,proposal,aliases,incident,queue,queued)) return false;
             }

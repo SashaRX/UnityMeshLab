@@ -7,8 +7,8 @@ family alignment/packing, exact selected-shell vertex recovery and prepared
 coarsest-rim corrections. It supersedes the earlier isolated local snapshots
 below; their numbers describe their respective historical sources.
 
-Current combined verification: 546 passed, zero failed, 16 optional skips across
-three real models in both directions with Burst required; 81 clean public
+Current combined verification: 550 passed, zero failed, 16 optional skips across
+three real models in both directions with Burst required; 85 clean public
 regressions; both FBX compile variants. All 37,080 Reverse triangles preserve
 ordered Float32 geometry, and every original quality, winding, provenance,
 contact, precision and work gate remains in force. The affected wall retains
@@ -3469,3 +3469,5 @@ Whole-shell preservation is measured against prepared ordinary input. It does
 not assert metric equality with the previously substituted native unwrap. An
 existing coarse ordinary stretching defect remains outside this correction.
 This section records the earlier local qualification; the ready correction is included in the combined PR.
+
+Review follow-up: compare cumulative density against every original native face, not only the latest join; preserve an unchanged stretched face while recovering unrelated valid contacts. Changed faces retain all metric/winding checks and the final full-mesh audit. Extract the native stage without changing its lease or audit ordering. Two old cumulative-scale controls and one independent-recovery control fail as expected; the current full three-model and clean public runs pass with identical stable numeric outputs.

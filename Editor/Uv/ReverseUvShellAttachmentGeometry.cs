@@ -131,6 +131,15 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
+        // Compare every original native face, including charts carried through
+        // earlier joins. Anisotropy alone cannot detect accumulated uniform scale.
+        static bool WholeDonorDensityFits(double originalArea,double finalArea)
+        {
+            double scaleSquared=Math.Abs(finalArea/originalArea);
+            return scaleSquared>=UvChartMerge.MinDensityScale*UvChartMerge.MinDensityScale
+                && scaleSquared<=UvChartMerge.MaxDensityScale*UvChartMerge.MaxDensityScale;
+        }
+
         static bool WholeDonorMetrics(Vector2[] before,Vector2[] after,int[] faces,
             (double length,double x,double y)[] frames,Options options)
         {
@@ -141,8 +150,9 @@ namespace SashaRX.UnityMeshLab
                 double metric=TriangleAnisotropy(frames[f],after[t],after[t+1],after[t+2]);
                 if(!double.IsFinite(metric) || metric>options.maxAnisotropy
                     || !UvTransferTolerance.MetricFits(metric,old,options.relativeStretchTolerance)) return false;
-                if(Math.Sign(ForwardUvReference.Area(before[t],before[t+1],before[t+2]))
-                    !=Math.Sign(ForwardUvReference.Area(after[t],after[t+1],after[t+2]))) return false;
+                double originalArea=ForwardUvReference.Area(before[t],before[t+1],before[t+2]);
+                double finalArea=ForwardUvReference.Area(after[t],after[t+1],after[t+2]);
+                if(Math.Sign(originalArea)!=Math.Sign(finalArea) || !WholeDonorDensityFits(originalArea,finalArea)) return false;
             }
             return true;
         }
