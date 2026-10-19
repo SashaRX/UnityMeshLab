@@ -250,6 +250,61 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        Mesh NearbyLightmapSeamMesh()
+        {
+            var original = Quad("Surface");
+            var corners = original.triangles;
+            var mesh = new Mesh {name = "Surface", vertices = corners.Select(i => original.vertices[i]).ToArray(),
+                triangles = Enumerable.Range(0, 6).ToArray(), uv = corners.Select(i => original.uv[i]).ToArray()};
+            scratch.Add(mesh);
+            var uv = mesh.uv.Select(p => p * .4f + Vector2.one * .1f).ToArray();
+            for (int i = 3; i < 6; ++i) uv[i] += new Vector2(.0002f, .0003f);
+            mesh.uv2 = uv;
+            mesh.RecalculateNormals(); mesh.RecalculateTangents();
+            return mesh;
+        }
+
+        [TestCase(false, false, false)] [TestCase(false, false, true)]
+        [TestCase(false, true, false)] [TestCase(false, true, true)]
+        [TestCase(true, false, false)] [TestCase(true, false, true)]
+        [TestCase(true, true, false)] [TestCase(true, true, true)]
+        public void NewFbxExportRetainsNearbyLightmapSeams(bool normalized, bool atomic, bool binary)
+        {
+            string name = "MeshLabNewFbxSeams_" + System.Guid.NewGuid().ToString("N");
+            string folder = "Assets/" + name;
+            AssetDatabase.CreateFolder("Assets", name);
+            var settings = MeshLabProjectSettings.Instance;
+            var previousFormat = settings.fbxFormat;
+            settings.fbxFormat = binary ? MeshLabFbxFormat.Binary : MeshLabFbxFormat.ASCII;
+            try {
+                var mesh = NearbyLightmapSeamMesh();
+                var snapshot = TransferMeshSnapshot.Capture(mesh);
+                var root = Node("Surface", null, mesh, renderer: true);
+                string path = folder + "/result.fbx";
+                if (atomic) FbxExport.WriteAtomic(path, root, normalizedTransforms: normalized);
+                else FbxExport.Write(path, root, normalizedTransforms: normalized);
+                using (var document = FbxSourceDocument.Load(Path.GetFullPath(path))) Assert.AreEqual(binary, document.Binary);
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.isReadable = true; importer.generateSecondaryUV = false;
+                importer.weldVertices = importer.optimizeMeshPolygons = importer.optimizeMeshVertices = false;
+                importer.meshCompression = ModelImporterMeshCompression.Off;
+                importer.SaveAndReimport();
+                var imported = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().Single();
+                var actual0 = imported.uv; var actual1 = imported.uv2;
+                Assert.AreEqual(6, imported.triangles.Length);
+                string[] Records(Mesh value, Vector2[] first, Vector2[] second) => value.triangles.Select(i =>
+                    string.Join("/", new[] {first[i].x, first[i].y, second[i].x, second[i].y}
+                        .Select(f => System.BitConverter.SingleToInt32Bits(f).ToString("X8")))).OrderBy(s => s, System.StringComparer.Ordinal).ToArray();
+                CollectionAssert.AreEqual(Records(mesh, mesh.uv, mesh.uv2), Records(imported, actual0, actual1));
+                CollectionAssert.AreEqual(snapshot, TransferMeshSnapshot.Capture(mesh));
+            }
+            finally {
+                settings.fbxFormat = previousFormat;
+                AssetDatabase.DeleteAsset(folder);
+            }
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void NormalizedFbxHasMeterUnitsIdentityNodesAndPreservesSizeOnReimport(bool atomic)
@@ -503,13 +558,13 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { AssetDatabase.DeleteAsset(folder); }
         }
 
-        [Test]
-        public void NormalizedFbxUsesProjectEmbeddingAfterDeletingTheOriginalMap()
+        [TestCase(false)] [TestCase(true)]
+        public void NormalizedFbxUsesProjectEmbeddingAfterDeletingTheOriginalMap(bool overrideEmbedding)
         {
             var settings = MeshLabProjectSettings.Instance;
             var previousFormat = settings.fbxFormat;
             bool previousEmbed = settings.embedFbxTextures;
-            settings.fbxFormat = MeshLabFbxFormat.Binary; settings.embedFbxTextures = true;
+            settings.fbxFormat = MeshLabFbxFormat.Binary; settings.embedFbxTextures = !overrideEmbedding;
             string folderName = "MeshLabFbxEmbedded_" + System.Guid.NewGuid().ToString("N");
             string folder = "Assets/" + folderName;
             AssetDatabase.CreateFolder("Assets", folderName);
@@ -524,10 +579,10 @@ namespace SashaRX.UnityMeshLab.Tests
                 var material = new Material(Shader.Find("Standard"));
                 scratch.Add(material);
                 material.mainTexture = AssetDatabase.LoadAssetAtPath<Texture2D>(mapPath);
-                var root = Node("Embedded", null, Quad("Embedded"), renderer: true);
+                var root = Node("Embedded", null, NearbyLightmapSeamMesh(), renderer: true);
                 root.GetComponent<MeshRenderer>().sharedMaterial = material;
                 string path = folder + "/embedded.fbx";
-                FbxExport.Write(path, root, normalizedTransforms: true);
+                FbxExport.Write(path, root, embedTextures: overrideEmbedding ? true : (bool?)null, normalizedTransforms: true);
                 AssetDatabase.DeleteAsset(mapPath);
                 AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
                 AssetDatabase.CreateFolder(folder, "Extracted");
