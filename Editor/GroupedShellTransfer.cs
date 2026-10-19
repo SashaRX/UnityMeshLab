@@ -658,8 +658,10 @@ namespace SashaRX.UnityMeshLab
                 if (index++ % step != 0) continue;
                 float distance = float.MaxValue;
                 if (bvh != null) distance = bvh.FindNearest(positions[vertex]).distSq;
-                else foreach (int face in sourceFaces)
-                    distance = Mathf.Min(distance, PointToTri3D(positions[vertex], a[face], b[face], c[face], out _, out _, out _));
+                else {
+                    foreach (int face in sourceFaces)
+                        distance = Mathf.Min(distance, PointToTri3D(positions[vertex], a[face], b[face], c[face], out _, out _, out _));
+                }
                 sum += distance;
                 ++count;
             }
