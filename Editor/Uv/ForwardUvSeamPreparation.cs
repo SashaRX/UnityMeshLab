@@ -135,7 +135,10 @@ namespace SashaRX.UnityMeshLab
                         recovered = null;
                     }
                 }
-                catch {if (stable.mesh) UnityEngine.Object.DestroyImmediate(stable.mesh); throw;}
+                catch {
+                    if (stable.mesh) UnityEngine.Object.DestroyImmediate(stable.mesh);
+                    throw;
+                }
                 finally {if (recovered) UnityEngine.Object.DestroyImmediate(recovered);}
             }
             return Finish(stable);
