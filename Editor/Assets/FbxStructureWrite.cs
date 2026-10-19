@@ -256,7 +256,25 @@ namespace SashaRX.UnityMeshLab
         // re-triangulated quad, a flipped or moved face, or a submesh change is geometry.
         internal static bool GeometryDiffers(Mesh imported, Mesh result)
         {
-            if (result == null || result == imported || !imported.isReadable || !result.isReadable) return false;
+            if (result == null || result == imported) return false;
+            Mesh source = null, target = null;
+            bool ownsSource = false, ownsTarget = false;
+            try {
+                // Transfer seam recovery may change faces even when the source FBX
+                // has Read/Write disabled. Compare its Editor snapshot rather than
+                // treating inaccessible runtime buffers as unchanged geometry.
+                source = MeshAccess.Readable(imported, out ownsSource);
+                target = MeshAccess.Readable(result, out ownsTarget);
+                return ReadableGeometryDiffers(source, target);
+            }
+            finally {
+                if (ownsTarget) UnityEngine.Object.DestroyImmediate(target);
+                if (ownsSource) UnityEngine.Object.DestroyImmediate(source);
+            }
+        }
+
+        static bool ReadableGeometryDiffers(Mesh imported, Mesh result)
+        {
             if (imported.subMeshCount != result.subMeshCount) return true;
             var importedVertices = imported.vertices;
             var resultVertices = result.vertices;

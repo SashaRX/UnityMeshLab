@@ -409,6 +409,83 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        [TestCase(false, false, false)] [TestCase(false, false, true)]
+        [TestCase(false, true, false)] [TestCase(false, true, true)]
+        [TestCase(true, false, false)] [TestCase(true, false, true)]
+        [TestCase(true, true, false)] [TestCase(true, true, true)]
+        public void DocumentWriteDetectsTransferGeometryWithoutEnablingReadWrite(bool readable, bool subdivide, bool variant)
+        {
+            using var asset = new PreviewMaterialAsset(WriteSource(true, withMaterial: true));
+            var original = asset.entry.originalMesh;
+            var faces = Enumerable.Range(0, original.triangles.Length / 3)
+                .SelectMany(f => Enumerable.Repeat(f, subdivide && f == 0 ? 3 : 1)).ToArray();
+            var barycentrics = new List<Vector3>();
+            for (int f = 0; f < original.triangles.Length / 3; ++f) {
+                if (subdivide && f == 0) {
+                    var center = Vector3.one / 3;
+                    barycentrics.AddRange(new[] {Vector3.right, Vector3.up, center,
+                        Vector3.up, Vector3.forward, center, Vector3.forward, Vector3.right, center});
+                }
+                else barycentrics.AddRange(new[] {Vector3.right, Vector3.up, Vector3.forward});
+            }
+            var positions = original.vertices; var triangles = original.triangles;
+            var uv = barycentrics.Select((w, c) => TransferredUv(positions[triangles[faces[c / 3] * 3]] * w.x
+                + positions[triangles[faces[c / 3] * 3 + 1]] * w.y + positions[triangles[faces[c / 3] * 3 + 2]] * w.z)).ToArray();
+            var working = asset.Own(ReverseUvRefinedMesh.Copy(original, faces, barycentrics.ToArray(), uv));
+            asset.entry.transferredMesh = working;
+            var snapshot = TransferMeshSnapshot.Capture(working);
+            var importer = (ModelImporter)AssetImporter.GetAtPath(asset.Path);
+            importer.isReadable = readable;
+            importer.SaveAndReimport();
+            asset.entry.fbxMesh = AssetDatabase.LoadAllAssetsAtPath(asset.Path).OfType<Mesh>().Single();
+            byte[] source = File.ReadAllBytes(asset.Path);
+            string guid = AssetDatabase.AssetPathToGUID(asset.Path);
+            int meshes = Resources.FindObjectsOfTypeAll<Mesh>().Length;
+            using var plan = FbxStructureWrite.Plan(asset.Path, new List<(MeshEntry, Mesh)> {(asset.entry, working)}, 0);
+            Assert.AreEqual(subdivide ? 1 : 0, plan.reshaped.Count, "Read/Write must not hide changed triangles or turn UV-only seams into geometry edits.");
+            Assert.AreEqual(meshes, Resources.FindObjectsOfTypeAll<Mesh>().Length, "Geometry comparison owns its temporary readable snapshots.");
+            string target = variant ? asset.Output : asset.Path;
+            Assert.IsTrue(FbxChannelWrite.Write(asset.Path, new[] {asset.entry.PreviewCopy(working)},
+                FbxChannelWrite.Supported, target, null, plan));
+            Assert.AreEqual(readable, ((ModelImporter)AssetImporter.GetAtPath(asset.Path)).isReadable);
+            Assert.AreEqual(guid, AssetDatabase.AssetPathToGUID(asset.Path));
+            if (variant) CollectionAssert.AreEqual(source, File.ReadAllBytes(asset.Path));
+            using (var document = FbxSourceDocument.Load(System.IO.Path.GetFullPath(target))) {
+                var sizes = new FbxLayerChannels.Topology(document.Meshes.Single()).polygonSizes;
+                if (subdivide) Assert.IsTrue(sizes.All(n => n == 3));
+                else CollectionAssert.AreEqual(new[] {4, 5}, sizes, "UV-only work preserves source polygons.");
+            }
+            for (int pass = 0; pass < 2; ++pass) {
+                var saved = AssetDatabase.LoadAllAssetsAtPath(target).OfType<Mesh>().Single();
+                var read = MeshAccess.Readable(saved, out bool owns);
+                try {
+                    AssertTransferredTriangles(working, read);
+                }
+                finally {if (owns) UnityEngine.Object.DestroyImmediate(read);}
+                AssetDatabase.ImportAsset(target, ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate);
+            }
+            CollectionAssert.AreEqual(snapshot, TransferMeshSnapshot.Capture(working));
+        }
+
+        static void AssertTransferredTriangles(Mesh expected, Mesh actual)
+        {
+            var ei = expected.triangles; var ai = actual.triangles;
+            var ep = expected.vertices; var ap = actual.vertices;
+            var eu = expected.uv; var au = actual.uv; var el = expected.uv2; var al = actual.uv2;
+            Assert.AreEqual(ei.Length, ai.Length);
+            var used = new HashSet<int>();
+            for (int face = 0; face < ei.Length / 3; ++face) {
+                int match = Enumerable.Range(0, ai.Length / 3).Where(f => !used.Contains(f)
+                    && Enumerable.Range(0, 3).Any(shift => Enumerable.Range(0, 3).All(c => {
+                        int e = ei[face * 3 + c], a = ai[f * 3 + (c + shift) % 3];
+                        return Vector3.Distance(ep[e], ap[a]) < 1e-6 && Vector2.Distance(eu[e], au[a]) < 1e-6
+                            && Vector2.Distance(el[e], al[a]) < 1e-6;
+                    }))).DefaultIfEmpty(-1).First();
+                Assert.GreaterOrEqual(match, 0, "Geometry and both UV channels must survive per ordered triangle.");
+                used.Add(match);
+            }
+        }
+
         static Vector2 TransferredUv(Vector3 position) => new Vector2(0.23f + position.x * 0.2f, 0.67f + position.y * 0.3f);
 
         [Test]
