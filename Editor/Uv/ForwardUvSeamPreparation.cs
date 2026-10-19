@@ -65,7 +65,8 @@ namespace SashaRX.UnityMeshLab
         internal static async Task<(Mesh mesh,int[] sources)> PrepareForwardSeamsAsync(Mesh source,Mesh target,
             Vector2[] legacyUv,int[] legacySources,int resolution,bool useAsync,CancellationToken token=default,
             HashSet<int> protectedFaces=null,int attempt=0,TransferMatchTrace trace=null,float boundaryToleranceTexels=UvTransferTolerance.BoundaryTexels,
-            Matrix4x4? targetLocalToWorld=null,TransferPerformanceProfile performance=null,bool shareSeamPasses=true,Action<ForwardUvReference> captureReference=null)
+            Matrix4x4? targetLocalToWorld=null,TransferPerformanceProfile performance=null,bool shareSeamPasses=true,Action<ForwardUvReference> captureReference=null,
+            long recoveryComparisonBudget=20000000)
         {
             var renderedFrame=targetLocalToWorld ?? Matrix4x4.identity;
             // Without sharing (the regression control) every pass prepares its own prefix.
@@ -125,7 +126,7 @@ namespace SashaRX.UnityMeshLab
                 Mesh recovered = null;
                 try {
                     var alternative = await RecoverForwardSurfaceAsync(source, target, legacyUv, legacySources, resolution,
-                        useAsync, renderedFrame, token, performance);
+                        useAsync, renderedFrame, token, performance, recoveryComparisonBudget);
                     recovered = alternative.mesh;
                     if (recovered) {
                         if (stable.mesh) UnityEngine.Object.DestroyImmediate(stable.mesh);
@@ -134,6 +135,9 @@ namespace SashaRX.UnityMeshLab
                         if (trace != null) trace.forwardSeamRefusal = null;
                         recovered = null;
                     }
+                }
+                catch (InvalidOperationException error) {
+                    if (trace != null) trace.forwardSeamRefusal = "Oriented surface recovery: " + error.Message;
                 }
                 catch {
                     if (stable.mesh) UnityEngine.Object.DestroyImmediate(stable.mesh);

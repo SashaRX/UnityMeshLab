@@ -22,9 +22,13 @@ invalid faces, not a change to the absolute quality limits.
 The detached copy preserves ordered Float32 triangles and every original corner
 attribute except UV2. It carries the selected donor reference into subsequent
 work. Projection runs off the editor thread in async mode and owns its inputs
-through cancellation. Seven portable cases cover the failing overlap control,
+through cancellation. Eight portable cases cover the failing overlap control,
 unsupported and opposed surfaces, healthy-face protection, unchanged healthy
 atlases, synchronous/asynchronous equivalence, and cancellation without leaks.
+A bounded recovery refusal keeps the previously prepared mesh and its donor
+reference instead of discarding it. The budget-one control reproduces the thrown
+donor-tie comparison refusal before this guard; cancellation and unexpected errors
+still propagate and clean up owned meshes.
 
 Private Shelf_C validation separates asset repair from solver changes. Its LOD1
 has four internal duplicate cap triangles and two bridge triangles without an
@@ -38,6 +42,7 @@ diagnostic probes are not included in the package change.
 
 Local Unity 6000.2.6f2 validation: 577 passed, zero failed, 19 optional skips,
 including transfer, recovery, capture, performance and FBX round-trip suites.
+The budget-refusal follow-up passes 146 related Transfer cases with zero failures.
 The Playground control retains the preceding experiment's triangle counts,
 0/12/911 overlap pairs, stretch and aligned-area measurements at LOD0/1/2.
 It is deliberately not accepted as a partly repaired atlas. The separate Shelf_C

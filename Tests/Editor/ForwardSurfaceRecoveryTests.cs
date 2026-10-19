@@ -137,6 +137,24 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void RecoveryBudgetRefusalKeepsThePreparedMesh()
+        {
+            var legacy = OverlappingUv();
+            var before = TransferMeshSnapshot.Capture(target);
+            var trace = new TransferMatchTrace();
+            ForwardUvReference reference = null;
+            var result = ReverseUvTransfer.PrepareForwardSeamsAsync(source, target, legacy, new int[8], 256, false,
+                trace: trace, captureReference: value => reference = value, recoveryComparisonBudget: 1).GetAwaiter().GetResult();
+            output = result.mesh;
+            Assert.NotNull(output, "A refused optional recovery must not destroy the prepared result.");
+            Assert.IsTrue(reference.Matches(output));
+            Assert.Greater(TransferUvQuality.Measure(output, output.uv2, Vector2.one, Matrix4x4.identity).overlapPairs, 0);
+            StringAssert.Contains("Oriented surface recovery:", trace.forwardSeamRefusal);
+            StringAssert.Contains("budget", trace.forwardSeamRefusal);
+            CollectionAssert.AreEqual(before, TransferMeshSnapshot.Capture(target));
+        }
+
+        [Test]
         public void HealthyAtlasIsLeftUntouched()
         {
             var result = ReverseUvTransfer.RecoverForwardSurfaceAsync(source, target, source.uv2, new int[8],

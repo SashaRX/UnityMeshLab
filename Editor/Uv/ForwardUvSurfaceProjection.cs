@@ -15,7 +15,7 @@ namespace SashaRX.UnityMeshLab
         internal static async Task<(Mesh mesh, int[] sources, ForwardUvReference reference)> RecoverForwardSurfaceAsync(
             Mesh source, Mesh target, Vector2[] legacyUv, int[] legacySources, int resolution,
             bool useAsync, Matrix4x4 renderedFrame, CancellationToken token = default,
-            TransferPerformanceProfile performance = null)
+            TransferPerformanceProfile performance = null, long comparisonBudget = 20000000)
         {
             token.ThrowIfCancellationRequested();
             var indices = target.triangles;
@@ -28,7 +28,7 @@ namespace SashaRX.UnityMeshLab
             if (pass.unusable) return default;
             var donorShells = pass.SourceFaceShells(source);
             var options = new Options {seedResolution = resolution, maxAtlasSize = resolution,
-                projectionReach = .05f, normalDot = .9f, comparisonBudget = 20000000,
+                projectionReach = .05f, normalDot = .9f, comparisonBudget = comparisonBudget,
                 stretchFrame = renderedFrame, performance = performance};
             var projectedFaces = new HashSet<int>();
             Vector2[] uv = null;
