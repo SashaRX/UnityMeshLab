@@ -1,5 +1,35 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Bound merged-shell rescoring by geometric correspondence — 2026-10-20
+
+UV0 coverage could replace an exact geometric donor with a distant chart during
+merged-shell rescoring. Two identical quads ten units apart reproduce the error
+when only the target material UVs move to the other chart. The accepted rescore
+also stored centroid distance in the surface-distance field, misleading later
+deduplication and diagnostics.
+
+Bound each alternative by sampled vertex and face-interior surface distance,
+using the existing hint allowance (four times the original squared distance,
+with a mesh-relative numerical floor). UV0 still ranks physically compatible
+alternatives. Record the accepted surface metric rather than its centroid gap.
+No projection, atlas, normal or quality thresholds are changed in this experiment.
+
+All seven portable regressions fail on the previous implementation and pass
+with the bound. They cover matching at scales 0.001/1/1000, complete UV output at
+0.01/1/1000, an admissible coincident alternative with a different centroid, and
+unchanged input mesh snapshots. The millimetre case tests matching only; this
+experiment does not claim to repair every downstream projection limitation.
+
+Local Unity 6000.2.6f2 validation: 416 passed, zero failed, 14 optional skips.
+The Playground full-pipeline comparison retains 15,532/8,246/5,673 triangles,
+0/12/911 overlap pairs and maximum anisotropy 2.557/2.493/380.866 at LOD0/1/2.
+LOD1 aligned area increases from 0.9901909 to 0.9902186; other listed quality
+metrics are unchanged. Existing coarse Playground defects remain explicit.
+
+Shelf_C also contains incompatible/duplicate LOD1 surfaces, and its remaining
+projection failures are a separate experiment. This bound alone is not a claim
+that the original Shelf_C atlas is clean.
+
 ## Combined ready Transfer corrections (2026-10-17)
 
 This PR combines the qualified selected-reference, complete donor attachment,
