@@ -101,6 +101,17 @@ namespace SashaRX.UnityMeshLab
             materials = null;
             return false;
         }
+
+        internal static void CollectMaterialLayers(
+            Renderer renderer, List<PreviewSafetyGuard.MaterialLayer> layers)
+        {
+            foreach (var backup in backups)
+                if (backup.renderer == renderer)
+                {
+                    layers.Add(new PreviewSafetyGuard.MaterialLayer(vertexColorMaterial, backup.origMaterials));
+                    return;
+                }
+        }
         static Material vertexColorMaterial;
         static bool isActive;
 

@@ -2042,33 +2042,27 @@ namespace SashaRX.UnityMeshLab
         // renderer references. Texture metrics must not use checker/lightmap textures.
         internal static Material[] OriginalPreviewMaterials(Renderer renderer, bool forAssetWrite = false)
         {
-            if (CheckerTexturePreview.TryGetOriginalMaterials(renderer, out var materials, forAssetWrite)
-                || ShellColorModelPreview.TryGetOriginalMaterials(renderer, out materials, forAssetWrite))
-                return materials;
+            // Different preview systems, and different Mesh Lab windows, can put
+            // their layers on one renderer. Collect every layer and unwind them
+            // transitively; stopping at the first system can return another
+            // preview material as the authored one.
+            var layers = new List<PreviewSafetyGuard.MaterialLayer>();
+            CheckerTexturePreview.CollectMaterialLayers(renderer, layers);
+            ShellColorModelPreview.CollectMaterialLayers(renderer, layers);
             foreach (var hub in Resources.FindObjectsOfTypeAll<UvToolHub>()) {
-                materials = hub.OriginalLightmapMaterials(renderer, forAssetWrite);
-                if (materials != null) return materials;
-                if (hub.ActiveTool is UvTransferWorkflow workflow
-                    && workflow.TryGetOriginalLightmapMaterials(renderer, out materials, forAssetWrite))
-                    return materials;
+                hub.CollectLightmapMaterialLayers(renderer, layers);
+                if (hub.ActiveTool is UvTransferWorkflow workflow)
+                    workflow.CollectLightmapMaterialLayers(renderer, layers);
             }
-            return renderer.sharedMaterials;
+            return PreviewSafetyGuard.ResolveOriginalMaterials(renderer.sharedMaterials, layers, forAssetWrite);
         }
 
-        Material[] OriginalLightmapMaterials(Renderer renderer, bool forAssetWrite)
+        void CollectLightmapMaterialLayers(
+            Renderer renderer, List<PreviewSafetyGuard.MaterialLayer> layers)
         {
-            Material[] materials = null;
-            // Repeated entries form an override stack. Unwind the newest first;
-            // the earliest backup holds the actual authored slots.
-            for (int i = lightmapBackups.Count - 1; i >= 0; i--)
-            {
-                var backup = lightmapBackups[i];
-                if (backup.renderer != renderer) continue;
-                materials = forAssetWrite
-                    ? PreviewSafetyGuard.MaterialsForWrite(materials ?? renderer.sharedMaterials, backup.origMaterials, backup.tempMat)
-                    : backup.origMaterials;
-            }
-            return materials;
+            foreach (var backup in lightmapBackups)
+                if (backup.renderer == renderer)
+                    layers.Add(new PreviewSafetyGuard.MaterialLayer(backup.tempMat, backup.origMaterials));
         }
 
         // ── Shell color palette ──

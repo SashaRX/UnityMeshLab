@@ -198,6 +198,41 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void AssetWriteSnapshotUnwindsPreviewLayersFromDifferentSystems(
+            [Values(false, true)] bool shellFirst)
+        {
+            var mesh = Triangle("Preview stack input", 1);
+            var authored = AuthoredMaterials();
+            var renderer = CreateRenderer(false, mesh, authored);
+            try {
+                var first = ApplyPreview(shellFirst, renderer, mesh);
+                var second = ApplyPreview(!shellFirst, renderer, mesh);
+                Assert.AreNotSame(first, second, "each preview system installs its own material");
+                var shown = renderer.sharedMaterials;
+
+                CollectionAssert.AreEqual(authored, UvToolHub.OriginalPreviewMaterials(renderer, forAssetWrite: true),
+                    "Both preview layers must be unwound, whatever order they were applied in.");
+                CollectionAssert.AreEqual(authored, UvToolHub.OriginalPreviewMaterials(renderer),
+                    "The authored snapshot unwinds the same layers.");
+                CollectionAssert.AreEqual(shown, renderer.sharedMaterials, "Taking a snapshot must not change either preview.");
+
+                var replacement = Own(new Material(authored[0]) { name = "Later stacked assignment" });
+                renderer.sharedMaterials = new[] { shown[0], replacement, shown[2] };
+                var current = renderer.sharedMaterials;
+                CollectionAssert.AreEqual(new[] { authored[0], replacement, authored[2] },
+                    UvToolHub.OriginalPreviewMaterials(renderer, forAssetWrite: true),
+                    "A real assignment between two preview slots survives the export snapshot.");
+                CollectionAssert.AreEqual(authored, UvToolHub.OriginalPreviewMaterials(renderer),
+                    "The authored snapshot still ignores assignments made after preview.");
+                CollectionAssert.AreEqual(current, renderer.sharedMaterials);
+            }
+            finally {
+                if (shellFirst) { CheckerTexturePreview.Restore(); ShellColorModelPreview.Restore(); }
+                else { ShellColorModelPreview.Restore(); CheckerTexturePreview.Restore(); }
+            }
+        }
+
+        [Test]
         public void AssetWriteSnapshotKeepsTheCurrentSlotCount(
             [Values(false, true)] bool shells, [Values(false, true)] bool extend)
         {

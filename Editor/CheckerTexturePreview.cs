@@ -95,6 +95,81 @@ namespace SashaRX.UnityMeshLab
                 if (materials[i] == preview) materials[i] = captured[i];
             return materials;
         }
+
+        // One preview material and the slots it replaced. Layers can be applied
+        // by different preview systems (checker, shell, lightmap) to one renderer;
+        // a captured slot may itself hold an older layer's material.
+        internal readonly struct MaterialLayer
+        {
+            internal readonly Material preview;
+            internal readonly Material[] captured;
+
+            internal MaterialLayer(Material preview, Material[] captured)
+            {
+                this.preview = preview;
+                this.captured = captured;
+            }
+        }
+
+        // A save must not write any active preview. Resolve the layers transitively
+        // instead of stopping at the first preview system: with checker over another
+        // window's lightmap, the checker backup holds the lightmap material.
+        // forAssetWrite starts from the live slots so real assignments made after a
+        // preview are kept; authored reads start from the top layer's snapshot.
+        internal static Material[] ResolveOriginalMaterials(
+            Material[] current, List<MaterialLayer> layers, bool forAssetWrite)
+        {
+            if (layers == null || layers.Count == 0) return current;
+
+            Material[] source = forAssetWrite ? current : AuthoredSnapshot(current, layers);
+            if (source == null) return current;
+
+            var materials = (Material[])source.Clone();
+            for (int pass = 0; pass <= layers.Count; pass++)
+            {
+                bool changed = false;
+                foreach (var layer in layers)
+                {
+                    if (layer.preview == null || layer.captured == null) continue;
+                    int slots = Mathf.Min(materials.Length, layer.captured.Length);
+                    for (int i = 0; i < slots; i++)
+                    {
+                        if (materials[i] != layer.preview) continue;
+                        Material authored = layer.captured[i];
+                        if (authored == layer.preview) continue;
+                        materials[i] = authored;
+                        changed = true;
+                    }
+                }
+                if (!changed) break;
+            }
+            return materials;
+        }
+
+        static Material[] AuthoredSnapshot(Material[] current, List<MaterialLayer> layers)
+        {
+            // The top layer is the one whose preview material is still visible.
+            // Its snapshot is one step below it; resolving every known preview
+            // material walks the remaining layers back to the authored slots.
+            Material[] source = null;
+            int bestMatches = 0;
+            foreach (var layer in layers)
+            {
+                if (layer.preview == null || layer.captured == null) continue;
+                int matches = 0;
+                for (int i = 0; i < current.Length; i++)
+                    if (current[i] == layer.preview) matches++;
+                if (matches > bestMatches)
+                {
+                    source = layer.captured;
+                    bestMatches = matches;
+                }
+            }
+            if (source != null) return source;
+            foreach (var layer in layers)
+                if (layer.captured != null) return layer.captured;
+            return current;
+        }
     }
 
     public static class CheckerTexturePreview
@@ -145,6 +220,17 @@ namespace SashaRX.UnityMeshLab
                 }
             materials = null;
             return false;
+        }
+
+        internal static void CollectMaterialLayers(
+            Renderer renderer, List<PreviewSafetyGuard.MaterialLayer> layers)
+        {
+            foreach (var backup in backups)
+                if (backup.renderer == renderer)
+                {
+                    layers.Add(new PreviewSafetyGuard.MaterialLayer(checkerMat, backup.origMaterials));
+                    return;
+                }
         }
 
         /// <summary>
