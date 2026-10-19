@@ -65,7 +65,8 @@ namespace SashaRX.UnityMeshLab
         internal static async Task<(Mesh mesh,int[] sources)> PrepareForwardSeamsAsync(Mesh source,Mesh target,
             Vector2[] legacyUv,int[] legacySources,int resolution,bool useAsync,CancellationToken token=default,
             HashSet<int> protectedFaces=null,int attempt=0,TransferMatchTrace trace=null,float boundaryToleranceTexels=UvTransferTolerance.BoundaryTexels,
-            Matrix4x4? targetLocalToWorld=null,TransferPerformanceProfile performance=null,bool shareSeamPasses=true,Action<ForwardUvReference> captureReference=null)
+            Matrix4x4? targetLocalToWorld=null,TransferPerformanceProfile performance=null,bool shareSeamPasses=true,Action<ForwardUvReference> captureReference=null,
+            long recoveryComparisonBudget=20000000)
         {
             var renderedFrame=targetLocalToWorld ?? Matrix4x4.identity;
             // Without sharing (the regression control) every pass prepares its own prefix.
@@ -81,7 +82,10 @@ namespace SashaRX.UnityMeshLab
             var stable=await PrepareForwardSeamsCore(source,target,legacyUv,legacySources,resolution,useAsync,token,
                 protectedFaces,attempt,trace,false,false,boundaryToleranceTexels,renderedFrame,performance,shared,
                 captureReference==null?null:value=>selectedReference=value);
-            if (stable.mesh && Quality(stable.mesh,stable.mesh.uv2).worstAnisotropy<=4)
+            bool Complete(TransferUvQuality quality) => quality.overlapScanComplete && quality.worstAnisotropy <= 4
+                && quality.overlapPairs == 0 && quality.degenerateFaces == 0 && quality.invalidFaces == 0
+                && quality.outOfBoundsVertices == 0;
+            if (stable.mesh && Complete(Quality(stable.mesh,stable.mesh.uv2)))
                 return Finish(stable);
             foreach(bool existingAtlasOnly in new[] {false,true})
             {
@@ -103,7 +107,7 @@ namespace SashaRX.UnityMeshLab
                     {
                         if (stable.mesh) UnityEngine.Object.DestroyImmediate(stable.mesh);
                         candidate=null;stable=incremental;selectedReference=incrementalReference;
-                        if(after.worstAnisotropy<=4) return Finish(stable);
+                        if(Complete(after)) return Finish(stable);
                     }
                 }
                 catch (InvalidOperationException error)
@@ -116,6 +120,30 @@ namespace SashaRX.UnityMeshLab
                     throw;
                 }
                 finally {if(candidate) UnityEngine.Object.DestroyImmediate(candidate);}
+            }
+            var stableQuality = Quality(stable.mesh ? stable.mesh : target, stable.mesh ? stable.mesh.uv2 : legacyUv);
+            if (stableQuality.overlapPairs > 0 || stableQuality.degenerateFaces > 0) {
+                Mesh recovered = null;
+                try {
+                    var alternative = await RecoverForwardSurfaceAsync(source, target, legacyUv, legacySources, resolution,
+                        useAsync, renderedFrame, token, performance, recoveryComparisonBudget);
+                    recovered = alternative.mesh;
+                    if (recovered) {
+                        if (stable.mesh) UnityEngine.Object.DestroyImmediate(stable.mesh);
+                        stable = (recovered, alternative.sources);
+                        selectedReference = alternative.reference;
+                        if (trace != null) trace.forwardSeamRefusal = null;
+                        recovered = null;
+                    }
+                }
+                catch (InvalidOperationException error) {
+                    if (trace != null) trace.forwardSeamRefusal = "Oriented surface recovery: " + error.Message;
+                }
+                catch {
+                    if (stable.mesh) UnityEngine.Object.DestroyImmediate(stable.mesh);
+                    throw;
+                }
+                finally {if (recovered) UnityEngine.Object.DestroyImmediate(recovered);}
             }
             return Finish(stable);
         }

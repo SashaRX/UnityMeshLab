@@ -67,7 +67,8 @@ try {
         MaterialPlanSnapshotsAuthoredPreviewSlotsForSourceAndGeneratedLod = 1
     }
     $transferPreparationSuites = @('TransferQualityRegressionTests','TransferPerformanceTests',
-        'ReverseUvFrozenCascadeTests','ReverseUvSeamTests','UvTransferToleranceTests')
+        'ReverseUvFrozenCascadeTests','ReverseUvSeamTests','UvTransferToleranceTests',
+        'TransferRescoreTests','ForwardSurfaceRecoveryTests')
     # Keep new public stages in the stacked Transfer series measured as their
     # regression fixtures arrive, and require execution whenever a fixture exists.
     $transferStageSuites = @('ReverseUvShellPrecisionTests','ReverseUvNativeChartSessionTests',
