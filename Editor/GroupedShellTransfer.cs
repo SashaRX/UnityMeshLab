@@ -648,6 +648,26 @@ namespace SashaRX.UnityMeshLab
             return count > 0 ? (float)(sum / count) : 0;
         }
 
+        static float SampleSurfaceDistance(UvShell shell, int[] triangles, Vector3[] positions,
+            List<int> sourceFaces, TriangleBvh bvh, Vector3[] a, Vector3[] b, Vector3[] c)
+        {
+            int step = Mathf.Max(1, (shell.vertexIndices.Count + kMaxSampleVerts - 1) / kMaxSampleVerts);
+            double sum = 0;
+            int index = 0, count = 0;
+            foreach (int vertex in shell.vertexIndices) {
+                if (index++ % step != 0) continue;
+                float distance = float.MaxValue;
+                if (bvh != null) distance = bvh.FindNearest(positions[vertex]).distSq;
+                else foreach (int face in sourceFaces)
+                    distance = Mathf.Min(distance, PointToTri3D(positions[vertex], a[face], b[face], c[face], out _, out _, out _));
+                sum += distance;
+                ++count;
+            }
+            float vertexDistance = count > 0 ? (float)(sum / count) : float.MaxValue;
+            return Mathf.Max(vertexDistance,
+                SampleInteriorSurfaceDistance(shell, triangles, positions, sourceFaces, bvh, a, b, c));
+        }
+
         static float SampleInteriorUv0Distance(UvShell shell, int[] triangles, Vector2[] uv,
             List<int> sourceFaces, TriangleBvh2D bvh, Vector2[] a, Vector2[] b, Vector2[] c)
         {
@@ -763,6 +783,8 @@ namespace SashaRX.UnityMeshLab
             int[] tgtTris,
             Vector2[] triUv0A, Vector2[] triUv0B, Vector2[] triUv0C,
             TriangleBvh2D[] shellUv0Bvh,
+            Vector3[] triPosA, Vector3[] triPosB, Vector3[] triPosC,
+            TriangleBvh[] shellBvh3D,
             Vector3[] srcCentroid3D,
             Vector3[] srcAvgNormal,
             float[] srcUv0Area,
@@ -812,9 +834,25 @@ namespace SashaRX.UnityMeshLab
                 float bestScore = -1f;
                 float bestCoverage = 0f;
                 float bestDistSq = float.MaxValue;
+                float bestSurfaceDistSq = float.MaxValue;
+                int oldSrc = targetShellToSourceShell[tsi];
+                float originalSurfaceDistSq = oldSrc >= 0
+                    ? SampleSurfaceDistance(tShell, tgtTris, tVerts, srcShells[oldSrc].faceIndices,
+                        shellBvh3D[oldSrc], triPosA, triPosB, triPosC)
+                    : float.MaxValue;
+                // UV0 may move independently of geometry. It can disambiguate
+                // nearby donors, but cannot replace an exact surface with a
+                // remote chart. Use the same relative/noise allowance as hints.
+                float maxSurfaceDistSq = Mathf.Max(originalSurfaceDistSq * 4f,
+                    meshDiagonal * meshDiagonal * 1e-10f);
 
                 for (int si = 0; si < srcShells.Count; si++)
                 {
+                    float surfaceDistSq = si == oldSrc ? originalSurfaceDistSq
+                        : SampleSurfaceDistance(tShell, tgtTris, tVerts, srcShells[si].faceIndices,
+                            shellBvh3D[si], triPosA, triPosB, triPosC);
+                    if (surfaceDistSq > maxSurfaceDistSq) continue;
+
                     // 1. UV0 area ratio: min/max, 1.0 = same footprint
                     float sArea = srcUv0Area[si];
                     float areaScore = (tArea > 1e-10f && sArea > 1e-10f)
@@ -849,17 +887,16 @@ namespace SashaRX.UnityMeshLab
                         bestSrc = si;
                         bestCoverage = coverage;
                         bestDistSq = centDistSq;
+                        bestSurfaceDistSq = surfaceDistSq;
                     }
                 }
 
                 if (bestSrc >= 0 && bestCoverage >= kCoverageAcceptThreshold)
                 {
-                    int oldSrc = targetShellToSourceShell[tsi];
-
                     tgtIsMerged[tsi] = false;
                     targetShellToSourceShell[tsi] = bestSrc;
                     targetShellMatchDistSqr[tsi] = bestDistSq;
-                    tgtChosenAvg3D[tsi] = bestDistSq;
+                    tgtChosenAvg3D[tsi] = bestSurfaceDistSq;
                     rescued++;
 
                     UvtLog.Info($"[GroupedTransfer] Rescore: t{tsi} rescued from merged " +
@@ -1616,7 +1653,7 @@ namespace SashaRX.UnityMeshLab
                 tgtShells, srcShells,
                 tVerts, tUv0, tgtTris,
                 triUv0A, triUv0B, triUv0C,
-                shellUv0Bvh, srcCentroid3D,
+                shellUv0Bvh, triPosA, triPosB, triPosC, shellBvh3D, srcCentroid3D,
                 srcAvgNormal, srcUv0Area,
                 tgtAvgNormal, tgtUv0Area,
                 meshDiagonal, kUv0BadThreshold,
