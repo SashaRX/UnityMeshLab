@@ -43,6 +43,10 @@ diagnostic probes are not included in the package change.
 Local Unity 6000.2.6f2 validation: 577 passed, zero failed, 19 optional skips,
 including transfer, recovery, capture, performance and FBX round-trip suites.
 The budget-refusal follow-up passes 146 related Transfer cases with zero failures.
+The coverage job now requires TransferRescoreTests and ForwardSurfaceRecoveryTests.
+A measured local run passes all 15 cases and covers 103/108 changed executable
+lines across both Transfer fixes (95.4%), including all 26 rescoring lines that
+the previous CI filter left unmeasured. The 80% Sonar threshold is unchanged.
 The Playground control retains the preceding experiment's triangle counts,
 0/12/911 overlap pairs, stretch and aligned-area measurements at LOD0/1/2.
 It is deliberately not accepted as a partly repaired atlas. The separate Shelf_C
