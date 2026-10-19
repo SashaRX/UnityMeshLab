@@ -261,6 +261,45 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(0, context.MeshEntries.Single().repackedAtlasWidth);
         }
 
+        [TestCase(false, false)] [TestCase(false, true)]
+        [TestCase(true, false)] [TestCase(true, true)]
+        public void AppliedTransferWritesItsUvsFromAWorkingCopyIntoTheFbx(bool persistent, bool overwrite)
+        {
+            PostprocessorDefineManager.SetEnabled(persistent);
+            var source = Source("AppliedTransfer");
+            var context = new UvToolContext();
+            context.RefreshStandalone((MeshRenderer)source.entry.renderer);
+            var entry = context.MeshEntries.Single();
+            var transferred = Object.Instantiate(entry.fbxMesh); owned.Add(transferred);
+            var expected = new[] { new Vector2(.2f, .4f), new Vector2(.6f, .4f), new Vector2(.2f, .8f) };
+            transferred.uv2 = expected;
+            entry.transferredMesh = transferred;
+            var bytes = File.ReadAllBytes(source.path);
+            string guid = AssetDatabase.AssetPathToGUID(source.path);
+            context.Assets.ApplyUv2Public();
+            CollectionAssert.AreEqual(bytes, File.ReadAllBytes(source.path), "Apply does not change the FBX document.");
+            entry = context.MeshEntries.Single();
+            CollectionAssert.AreEqual(expected, entry.fbxMesh.uv2);
+
+            // Tools can hold a copy of an already-applied import. Equal UVs in that
+            // import do not mean they are present in the FBX bytes on disk.
+            var working = Object.Instantiate(entry.fbxMesh); owned.Add(working);
+            string output = overwrite ? source.path : Folder + "/saved-transfer.fbx";
+            var written = context.Assets.ExportToolEntries(new[] { entry.PreviewCopy(working) }, FbxExportIntent.UV1,
+                overwrite, (path, intent, replace) => output);
+            Assert.That(written, Has.Count.EqualTo(1));
+            Assert.IsTrue(File.Exists(output));
+            Assert.AreEqual(guid, AssetDatabase.AssetPathToGUID(source.path));
+            if (!overwrite) CollectionAssert.AreEqual(bytes, File.ReadAllBytes(source.path));
+            for (int pass = 0; pass < 2; pass++)
+            {
+                FbxExport.ReimportWithoutSidecars(output, () => AssetDatabase.ImportAsset(output,
+                    ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate));
+                var imported = AssetDatabase.LoadAllAssetsAtPath(output).OfType<Mesh>().Single();
+                CollectionAssert.AreEqual(expected, imported.uv2, "The FBX itself keeps the transferred UVs without sidecar replay.");
+            }
+        }
+
         [TestCase("geometry")] [TestCase("face order")] [TestCase("winding")]
         [TestCase("uv channel")] [TestCase("corrupt JSON")] [TestCase("surface identity")]
         [TestCase("face count")] [TestCase("valid")] [TestCase("vertex order")]

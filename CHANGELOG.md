@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Reverse UV: the audit report is written only at the Verbose log level (the last 20 are kept) and a failed write no longer fails the transfer; the audit itself still gates every result. The ancestry kept per mesh and saved in the sidecar is a compact record of per-face overlap flags, charts, chain keys and overlap relations instead of the node's whole report (earlier sidecars are read and rewritten on restore), and the viewer's quality check no longer hashes it every frame.
 
 ### Fixed
+- Saving a working copy after UV transfer and Apply now writes its lightmap UVs into the FBX even when they already match Unity's sidecar-applied import. Both overwrite and Save As retain the result on a fresh import without sidecar replay; unchanged Unity-generated lightmap UVs remain generated.
 - Preserve complete shared lightmap points after projected UV recovery and retain existing affine matches before shared-boundary Reverse rescue.
 - Frozen Reverse preparation heals malformed internal UV slits only when the unchanged geometric shell is a manifold disk; guarded weld/ARAP preserves texture UV0, real holes, required cuts, metrics and atlas checks.
 - Forward continuity preserves each healthy face's UV winding when joining shared points. Reflections with unchanged stretch are rejected locally and by the final audit; existing mirrored islands remain valid.
