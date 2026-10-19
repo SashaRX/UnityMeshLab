@@ -953,6 +953,42 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { LightmapSettings.lightmaps = previousLightmaps; }
         }
 
+        [Test]
+        public void LightmapPreviewsFromTwoWindowsResolveTheAuthoredMaterials()
+        {
+            var group = Group(true, out var renderer, out _);
+            var authored = renderer.sharedMaterials;
+            var ctx = Open(group);
+            var entry = ctx.MeshEntries.Find(value => value.renderer == renderer);
+            var second = ScriptableObject.CreateInstance<UvToolHub>();
+            owned.Add(second);
+            var secondCtx = Get<UvToolContext>(second, "ctx");
+            secondCtx.Refresh(group);
+            var secondEntry = secondCtx.MeshEntries.Find(value => value.renderer == renderer);
+            var previousLightmaps = LightmapSettings.lightmaps;
+            try {
+                AssignLightmap(renderer);
+                Call(hub, "ApplyLightmapPreviewEntry", entry);
+                var firstPreview = renderer.sharedMaterial;
+                Call(second, "ApplyLightmapPreviewEntry", secondEntry);
+                var secondPreview = renderer.sharedMaterial;
+                var shown = renderer.sharedMaterials;
+                Assert.AreNotSame(firstPreview, secondPreview);
+
+                CollectionAssert.AreEqual(authored, UvToolHub.OriginalPreviewMaterials(renderer, forAssetWrite: true),
+                    "Both windows' lightmap layers must be unwound to the authored slots.");
+                CollectionAssert.AreEqual(authored, UvToolHub.OriginalPreviewMaterials(renderer),
+                    "The authored snapshot uses the same stack.");
+                CollectionAssert.AreEqual(shown, renderer.sharedMaterials, "Taking a snapshot must not change the live preview.");
+            }
+            finally {
+                Call(second, "RestoreLightmapPreview");
+                Call(hub, "RestoreLightmapPreview");
+                LightmapSettings.lightmaps = previousLightmaps;
+                Object.DestroyImmediate(second);
+            }
+        }
+
         [TestCase(UvCanvasView.PreviewMode.Off)]
         [TestCase(UvCanvasView.PreviewMode.Shells3D)]
         [TestCase(UvCanvasView.PreviewMode.Lightmap)]

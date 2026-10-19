@@ -2049,10 +2049,13 @@ namespace SashaRX.UnityMeshLab
             var layers = new List<PreviewSafetyGuard.MaterialLayer>();
             CheckerTexturePreview.CollectMaterialLayers(renderer, layers);
             ShellColorModelPreview.CollectMaterialLayers(renderer, layers);
-            foreach (var hub in Resources.FindObjectsOfTypeAll<UvToolHub>()) {
-                hub.CollectLightmapMaterialLayers(renderer, layers);
-                if (hub.ActiveTool is UvTransferWorkflow workflow)
-                    workflow.CollectLightmapMaterialLayers(renderer, layers);
+            if (PreviewSafetyGuard.HasLightmapPreviewLayers)
+            {
+                foreach (var hub in Resources.FindObjectsOfTypeAll<UvToolHub>()) {
+                    hub.CollectLightmapMaterialLayers(renderer, layers);
+                    if (hub.ActiveTool is UvTransferWorkflow workflow)
+                        workflow.CollectLightmapMaterialLayers(renderer, layers);
+                }
             }
             return PreviewSafetyGuard.ResolveOriginalMaterials(renderer.sharedMaterials, layers, forAssetWrite);
         }
@@ -2208,6 +2211,7 @@ namespace SashaRX.UnityMeshLab
                 tempMesh = tempMesh,
                 tempMat = mat
             });
+            PreviewSafetyGuard.AddLightmapPreviewLayer();
             if (mf != null && tempMesh != null) mf.sharedMesh = tempMesh;
             var mats = new Material[e.renderer.sharedMaterials.Length];
             for (int i = 0; i < mats.Length; i++) mats[i] = mat;
@@ -2250,6 +2254,7 @@ namespace SashaRX.UnityMeshLab
             for (int i = lightmapBackups.Count - 1; i >= 0; i--)
             {
                 var b = lightmapBackups[i];
+                PreviewSafetyGuard.RemoveLightmapPreviewLayer();
                 if (b.renderer != null) b.renderer.sharedMaterials = b.origMaterials;
                 if (b.meshFilter != null && b.origMesh != null && b.meshFilter.sharedMesh == b.tempMesh)
                     b.meshFilter.sharedMesh = b.origMesh;

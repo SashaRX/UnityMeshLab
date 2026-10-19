@@ -126,24 +126,46 @@ namespace SashaRX.UnityMeshLab
 
             var materials = (Material[])source.Clone();
             for (int pass = 0; pass <= layers.Count; pass++)
-            {
-                bool changed = false;
-                foreach (var layer in layers)
-                {
-                    if (layer.preview == null || layer.captured == null) continue;
-                    int slots = Mathf.Min(materials.Length, layer.captured.Length);
-                    for (int i = 0; i < slots; i++)
-                    {
-                        if (materials[i] != layer.preview) continue;
-                        Material authored = layer.captured[i];
-                        if (authored == layer.preview) continue;
-                        materials[i] = authored;
-                        changed = true;
-                    }
-                }
-                if (!changed) break;
-            }
+                if (!ReplacePreviewSlots(materials, layers)) break;
             return materials;
+        }
+
+        static bool ReplacePreviewSlots(Material[] materials, List<MaterialLayer> layers)
+        {
+            bool changed = false;
+            foreach (var layer in layers)
+                changed |= ReplacePreviewSlots(materials, layer);
+            return changed;
+        }
+
+        static bool ReplacePreviewSlots(Material[] materials, MaterialLayer layer)
+        {
+            if (layer.preview == null || layer.captured == null) return false;
+            bool changed = false;
+            int slots = Mathf.Min(materials.Length, layer.captured.Length);
+            for (int i = 0; i < slots; i++)
+            {
+                if (materials[i] != layer.preview) continue;
+                Material authored = layer.captured[i];
+                if (authored == layer.preview) continue;
+                materials[i] = authored;
+                changed = true;
+            }
+            return changed;
+        }
+
+        static int lightmapPreviewLayers;
+
+        // A lightmap preview is the only layer that needs a global window scan.
+        // Keep the per-frame material inspection out of that scan while only
+        // checker or shell previews are active.
+        internal static bool HasLightmapPreviewLayers => lightmapPreviewLayers > 0;
+
+        internal static void AddLightmapPreviewLayer() => lightmapPreviewLayers++;
+
+        internal static void RemoveLightmapPreviewLayer()
+        {
+            if (lightmapPreviewLayers > 0) lightmapPreviewLayers--;
         }
 
         static Material[] AuthoredSnapshot(Material[] current, List<MaterialLayer> layers)
@@ -166,9 +188,8 @@ namespace SashaRX.UnityMeshLab
                 }
             }
             if (source != null) return source;
-            foreach (var layer in layers)
-                if (layer.captured != null) return layer.captured;
-            return current;
+            int at = layers.FindIndex(layer => layer.captured != null);
+            return at >= 0 ? layers[at].captured : current;
         }
     }
 
