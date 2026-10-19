@@ -431,6 +431,42 @@ namespace SashaRX.UnityMeshLab.Tests
                 "A colour-only edit must not bake the generated lightmap channel into the FBX.");
         }
 
+        [Test]
+        public void ChannelWrite_UnchangedAuthoredUv1SeparatesCoincidentFaces()
+        {
+            string source = Path.Combine(folder, "coincident.fbx");
+            using (var manager = FbxManager.Create())
+            {
+                var io = FbxIOSettings.Create(manager, Globals.IOSROOT); manager.SetIOSettings(io);
+                var scene = FbxScene.Create(manager, "Coincident");
+                var data = new FbxMeshData {
+                    controlPoints = new double[] { 0,0,0, 10,0,0, 0,10,0 },
+                    polygonSizes = new[] { 3,3 }, polygonVertices = new[] { 0,1,2, 0,1,2 },
+                    polygonMaterials = new[] { 0,0 }
+                };
+                data.uvNames.Add("map1"); data.uvs.Add(new double[] { 0,0, 1,0, 0,1, 0,0, 1,0, 0,1 });
+                data.uvNames.Add("lightmap"); data.uvs.Add(new double[] { .1,.1, .3,.1, .1,.3, .6,.6, .8,.6, .6,.8 });
+                var node = FbxNode.Create(scene, "Part_LOD0");
+                node.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, "PartMesh", data));
+                node.AddMaterial(FbxSurfacePhong.Create(scene, "AuthoredStone"));
+                scene.GetRootNode().AddChild(node);
+                using var exporter = FbxExporter.Create(manager, "Write");
+                int format = manager.GetIOPluginRegistry().FindWriterIDByDescription("FBX binary (*.fbx)");
+                Assert.IsTrue(exporter.Initialize(source, format, io) && exporter.Export(scene));
+            }
+            using var asset = new PreviewMaterialAsset(source);
+            var imported = asset.entry.fbxMesh;
+            var working = asset.Own(UnityEngine.Object.Instantiate(imported));
+            working.colors = working.uv2.Select(uv => uv.x < .5f ? Color.red : Color.blue).ToArray();
+            var entry = new MeshEntry { fbxMesh = imported, originalMesh = working };
+
+            Assert.IsTrue(FbxChannelWrite.Write(asset.Path, new[] { entry },
+                FbxExportIntent.UV1 | FbxExportIntent.VertexColors, asset.Path, null));
+            var saved = AssetDatabase.LoadAllAssetsAtPath(asset.Path).OfType<Mesh>().Single();
+            for (int v = 0; v < saved.vertexCount; v++)
+                Assert.AreEqual(saved.uv2[v].x < .5f ? Color.red : Color.blue, saved.colors[v]);
+        }
+
         static void AssertPersistentMaterial(Material expected, Material actual)
         {
             Assert.IsNotNull(expected);

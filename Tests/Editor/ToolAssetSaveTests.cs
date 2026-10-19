@@ -261,9 +261,10 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(0, context.MeshEntries.Single().repackedAtlasWidth);
         }
 
-        [TestCase(false, false)] [TestCase(false, true)]
-        [TestCase(true, false)] [TestCase(true, true)]
-        public void AppliedTransferWritesItsUvsFromAWorkingCopyIntoTheFbx(bool persistent, bool overwrite)
+        [TestCase(false, false, false)] [TestCase(false, true, false)]
+        [TestCase(true, false, false)] [TestCase(true, true, false)]
+        [TestCase(true, false, true)] [TestCase(true, true, true)]
+        public void AppliedTransferWritesItsUvsFromAWorkingCopyIntoTheFbx(bool persistent, bool overwrite, bool regenerate)
         {
             PostprocessorDefineManager.SetEnabled(persistent);
             var source = Source("AppliedTransfer");
@@ -278,6 +279,13 @@ namespace SashaRX.UnityMeshLab.Tests
             string guid = AssetDatabase.AssetPathToGUID(source.path);
             context.Assets.ApplyUv2Public();
             CollectionAssert.AreEqual(bytes, File.ReadAllBytes(source.path), "Apply does not change the FBX document.");
+            if (regenerate)
+            {
+                var importer = (ModelImporter)AssetImporter.GetAtPath(source.path);
+                importer.generateSecondaryUV = true;
+                importer.SaveAndReimport();
+                Assert.IsTrue(importer.generateSecondaryUV, "Sidecar replay does not change the importer setting.");
+            }
             entry = context.MeshEntries.Single();
             CollectionAssert.AreEqual(expected, entry.fbxMesh.uv2);
 
