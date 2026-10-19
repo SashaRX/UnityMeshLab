@@ -328,6 +328,145 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        [TestCase(false, false, false, false)]
+        [TestCase(false, false, true, false)]
+        [TestCase(false, true, false, false)]
+        [TestCase(false, true, true, false)]
+        [TestCase(true, false, false, false)]
+        [TestCase(true, false, true, false)]
+        [TestCase(true, true, false, false)]
+        [TestCase(true, true, true, false)]
+        [TestCase(false, false, false, true)]
+        [TestCase(false, false, true, true)]
+        public void Write_TransferredUvSurvivesSaveAndRepeatedImport(bool swap, bool generated, bool variant, bool sidecar)
+        {
+            string assetFolder = "Assets/MeshLabTransferSave_" + Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", Path.GetFileName(assetFolder));
+            Mesh transferred = null;
+            Mesh working = null;
+            bool previousSidecarMode = PostprocessorDefineManager.IsEnabled();
+            try
+            {
+                string source = assetFolder + "/source.fbx", target = variant ? assetFolder + "/saved.fbx" : source;
+                using (var document = FbxSourceDocument.Load(WriteSource(true)))
+                {
+                    var mesh = document.Meshes[0];
+                    var topology = new FbxLayerChannels.Topology(mesh);
+                    FbxLayerChannels.WriteUv(mesh, 1, topology,
+                        Enumerable.Repeat(0.1, topology.CornerCount * 2).ToArray(),
+                        Enumerable.Repeat(true, topology.CornerCount).ToArray());
+                    document.Save(Path.GetFullPath(source));
+                }
+                AssetDatabase.ImportAsset(source, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(source);
+                importer.isReadable = true;
+                importer.swapUVChannels = swap;
+                importer.generateSecondaryUV = generated;
+                importer.meshCompression = ModelImporterMeshCompression.Off;
+                importer.SaveAndReimport();
+                var imported = AssetDatabase.LoadAllAssetsAtPath(source).OfType<Mesh>().Single();
+                transferred = UnityEngine.Object.Instantiate(imported);
+                // A result channel with a different value at each position, independent of
+                // vertex numbering and of the importer's generated lightmap UVs.
+                transferred.uv2 = transferred.vertices.Select(TransferredUv).ToArray();
+                var entry = new MeshEntry { fbxMesh = imported, originalMesh = imported, transferredMesh = transferred };
+                MeshUv2Entry sync = null;
+                if (sidecar)
+                {
+                    PostprocessorDefineManager.SetEnabled(true);
+                    working = UnityEngine.Object.Instantiate(imported);
+                    entry.originalMesh = working;
+                    // The hub captures its sidecar before the write, then stores it after
+                    // the FBX imports. The next import must replay the same transferred UVs.
+                    Assert.IsTrue(SidecarStore.TryBuildEntry(entry, transferred, false, default, out sync));
+                }
+                var sourceBytes = File.ReadAllBytes(source);
+                string sourceGuid = AssetDatabase.AssetPathToGUID(source);
+
+                Assert.IsTrue(FbxChannelWrite.Write(source, new[] { entry }, FbxExportIntent.UV1, target, null));
+                if (sync != null) SidecarStore.SaveEntries(target, new[] { sync });
+                Assert.AreEqual(sourceGuid, AssetDatabase.AssetPathToGUID(source), "source GUID");
+                if (variant) CollectionAssert.AreEqual(sourceBytes, File.ReadAllBytes(source), "save-as preserves source");
+                Assert.IsFalse(((ModelImporter)AssetImporter.GetAtPath(target)).generateSecondaryUV);
+                for (int pass = 0; pass < 2; pass++)
+                {
+                    var saved = AssetDatabase.LoadAllAssetsAtPath(target).OfType<Mesh>().Single();
+                    Assert.AreEqual(saved.vertexCount, saved.uv2.Length, "written lightmap channel");
+                    for (int v = 0; v < saved.vertexCount; v++)
+                        Assert.That(Vector2.Distance(TransferredUv(saved.vertices[v]), saved.uv2[v]), Is.LessThan(1e-6f), $"import {pass}, vertex {v}");
+                    AssetDatabase.ImportAsset(target, ImportAssetOptions.ForceSynchronousImport | ImportAssetOptions.ForceUpdate);
+                }
+                using var written = FbxSourceDocument.Load(Path.GetFullPath(target));
+                CollectionAssert.AreEqual(new[] { 4, 5 }, new FbxLayerChannels.Topology(written.Meshes[0]).polygonSizes,
+                    "the transfer save preserves source polygons");
+            }
+            finally
+            {
+                if (transferred != null) UnityEngine.Object.DestroyImmediate(transferred);
+                if (working != null) UnityEngine.Object.DestroyImmediate(working);
+                if (sidecar) PostprocessorDefineManager.SetEnabled(previousSidecarMode);
+                AssetDatabase.DeleteAsset(assetFolder);
+            }
+        }
+
+        static Vector2 TransferredUv(Vector3 position) => new Vector2(0.23f + position.x * 0.2f, 0.67f + position.y * 0.3f);
+
+        [Test]
+        public void ChannelWrite_LeavesUnchangedGeneratedLightmapUvsGenerated()
+        {
+            using var asset = new PreviewMaterialAsset(WriteSource(true, withMaterial: true));
+            var importer = (ModelImporter)AssetImporter.GetAtPath(asset.Path);
+            importer.generateSecondaryUV = true;
+            importer.SaveAndReimport();
+            var imported = AssetDatabase.LoadAllAssetsAtPath(asset.Path).OfType<Mesh>().Single();
+            var working = asset.Own(UnityEngine.Object.Instantiate(imported));
+            working.colors = Enumerable.Repeat(Color.red, working.vertexCount).ToArray();
+            var entry = new MeshEntry { fbxMesh = imported, originalMesh = working };
+
+            Assert.IsTrue(FbxChannelWrite.Write(asset.Path, new[] { entry },
+                FbxExportIntent.UV1 | FbxExportIntent.VertexColors, asset.Path, null));
+            Assert.IsTrue(((ModelImporter)AssetImporter.GetAtPath(asset.Path)).generateSecondaryUV);
+            using var document = FbxSourceDocument.Load(System.IO.Path.GetFullPath(asset.Path));
+            Assert.AreEqual(1, FbxLayerChannels.UvElements(document.Meshes.Single()).Count,
+                "A colour-only edit must not bake the generated lightmap channel into the FBX.");
+        }
+
+        [Test]
+        public void ChannelWrite_UnchangedAuthoredUv1SeparatesCoincidentFaces()
+        {
+            string source = Path.Combine(folder, "coincident.fbx");
+            using (var manager = FbxManager.Create())
+            {
+                var io = FbxIOSettings.Create(manager, Globals.IOSROOT); manager.SetIOSettings(io);
+                var scene = FbxScene.Create(manager, "Coincident");
+                var data = new FbxMeshData {
+                    controlPoints = new double[] { 0,0,0, 10,0,0, 0,10,0 },
+                    polygonSizes = new[] { 3,3 }, polygonVertices = new[] { 0,1,2, 0,1,2 },
+                    polygonMaterials = new[] { 0,0 }
+                };
+                data.uvNames.Add("map1"); data.uvs.Add(new double[] { 0,0, 1,0, 0,1, 0,0, 1,0, 0,1 });
+                data.uvNames.Add("lightmap"); data.uvs.Add(new double[] { .1,.1, .3,.1, .1,.3, .6,.6, .8,.6, .6,.8 });
+                var node = FbxNode.Create(scene, "Part_LOD0");
+                node.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, "PartMesh", data));
+                node.AddMaterial(FbxSurfacePhong.Create(scene, "AuthoredStone"));
+                scene.GetRootNode().AddChild(node);
+                using var exporter = FbxExporter.Create(manager, "Write");
+                int format = manager.GetIOPluginRegistry().FindWriterIDByDescription("FBX binary (*.fbx)");
+                Assert.IsTrue(exporter.Initialize(source, format, io) && exporter.Export(scene));
+            }
+            using var asset = new PreviewMaterialAsset(source);
+            var imported = asset.entry.fbxMesh;
+            var working = asset.Own(UnityEngine.Object.Instantiate(imported));
+            working.colors = working.uv2.Select(uv => uv.x < .5f ? Color.red : Color.blue).ToArray();
+            var entry = new MeshEntry { fbxMesh = imported, originalMesh = working };
+
+            Assert.IsTrue(FbxChannelWrite.Write(asset.Path, new[] { entry },
+                FbxExportIntent.UV1 | FbxExportIntent.VertexColors, asset.Path, null));
+            var saved = AssetDatabase.LoadAllAssetsAtPath(asset.Path).OfType<Mesh>().Single();
+            for (int v = 0; v < saved.vertexCount; v++)
+                Assert.AreEqual(saved.uv2[v].x < .5f ? Color.red : Color.blue, saved.colors[v]);
+        }
+
         static void AssertPersistentMaterial(Material expected, Material actual)
         {
             Assert.IsNotNull(expected);

@@ -156,6 +156,7 @@ namespace SashaRX.UnityMeshLab
                 fileNormals = shadingSelection != null || fileNormals,
                 fileTangents = shadingSelection != null || (fileNormals && importer.importTangents == ModelImporterTangents.Import),
                 shadingSelection = shadingSelection,
+                uv1Baseline = intent.IncludesUv(1) ? ImportUv1Baseline(sourceFbxPath) : null,
             };
             var donors = CaptureDonors(entries, capture, skip);
             // Writing UV1 switches 'Generate Lightmap UVs' off for the whole model, so every
@@ -343,8 +344,31 @@ namespace SashaRX.UnityMeshLab
             public bool fileNormals, fileTangents;
 
             public FbxExport.ShadingSelection shadingSelection;
+            public Dictionary<string, Uv1Baseline> uv1Baseline;
             public Capture WithBake(bool bake) => new Capture
-                { intent = intent, generatedUv1 = generatedUv1, bakeUv1 = bake, fileNormals = fileNormals, fileTangents = fileTangents, shadingSelection = shadingSelection };
+                { intent = intent, generatedUv1 = generatedUv1, bakeUv1 = bake, fileNormals = fileNormals, fileTangents = fileTangents,
+                    shadingSelection = shadingSelection, uv1Baseline = uv1Baseline };
+        }
+
+        sealed class Uv1Baseline
+        {
+            readonly Vector3[] positions;
+            readonly Vector2[] uvs;
+            readonly int[] faces, faceSizes;
+
+            public Uv1Baseline(Mesh mesh)
+            {
+                positions = mesh.vertices;
+                uvs = mesh.uv2;
+                ReadFaces(mesh, out faces, out faceSizes);
+            }
+
+            public bool Matches(Mesh mesh, List<Vector2> values)
+            {
+                if (!uvs.SequenceEqual(values) || !positions.SequenceEqual(mesh.vertices)) return false;
+                ReadFaces(mesh, out var otherFaces, out var otherSizes);
+                return faces.SequenceEqual(otherFaces) && faceSizes.SequenceEqual(otherSizes);
+            }
         }
 
         static void RequireSelectedInstances(Autodesk.Fbx.FbxMesh mesh, string name, FbxExport.ShadingSelection selection)
@@ -398,7 +422,7 @@ namespace SashaRX.UnityMeshLab
         static Donor CaptureDonor(MeshEntry entry, string name, Mesh working, Mesh mesh, Capture capture)
         {
             var intent = capture.intent;
-            bool generatedUv1 = capture.generatedUv1, bakeUv1 = capture.bakeUv1;
+            bool generatedUv1 = capture.generatedUv1;
             var donor = new Donor { name = name };
             if (capture.shadingSelection != null)
             {
@@ -407,17 +431,15 @@ namespace SashaRX.UnityMeshLab
                 donor.submeshVertices = new HashSet<int>[mesh.subMeshCount];
                 for (int s = 0; s < mesh.subMeshCount; s++) donor.submeshVertices[s] = new HashSet<int>(mesh.GetIndices(s));
             }
-            // A channel the working copy holds exactly as the current import does was not
-            // edited here (e.g. lightmap UVs Unity generates on import): leave it out. A
+            // Most channels matching the current import were not edited here and can be
+            // left out. Lightmap UVs use an import without sidecars: Apply/replay can
+            // replace them even while Generate Lightmap UVs is enabled. A
             // mesh edited in place (the working copy is the asset mesh) cannot be told
             // apart, so its channels go on to the per-corner comparison.
             bool inPlace = working == entry.fbxMesh;
             var imported = entry.fbxMesh != null && !inPlace && entry.fbxMesh.isReadable
                 && entry.fbxMesh.vertexCount == mesh.vertexCount ? entry.fbxMesh : null;
-            // The asset mesh's UV1 is Unity's own when 'Generate Lightmap UVs' is on: not an
-            // edit, and no signature either (the file holds something else there).
-            bool skipUv1 = generatedUv1 && inPlace && !bakeUv1;
-            bool any = CaptureUvs(donor, mesh, imported, intent, skipUv1, generatedUv1, bakeUv1);
+            bool any = CaptureUvs(donor, mesh, imported, capture);
             if ((intent & FbxExportIntent.VertexColors) != 0) any |= CaptureColors(donor, mesh, imported);
             any |= CaptureRemovals(donor, mesh, inPlace ? null : entry.fbxMesh, intent, generatedUv1);
             any |= CaptureShading(donor, mesh, imported, inPlace ? null : entry.fbxMesh, capture);
@@ -439,26 +461,40 @@ namespace SashaRX.UnityMeshLab
             return donor;
         }
 
-        static bool CaptureUvs(Donor donor, Mesh mesh, Mesh imported, FbxExportIntent intent, bool skipUv1, bool generatedUv1, bool bakeUv1)
+        static bool CaptureUvs(Donor donor, Mesh mesh, Mesh imported, Capture capture)
         {
             bool any = false;
+            bool generatedUv1 = capture.generatedUv1;
             var list = new List<Vector2>();
             var importedList = new List<Vector2>();
             for (int ch = 0; ch < 8; ch++)
             {
                 mesh.GetUVs(ch, list);
                 if (list.Count != mesh.vertexCount) continue;
-                if (!intent.IncludesUv(ch) || (ch == 1 && skipUv1))
+                if (!capture.intent.IncludesUv(ch))
                 {
                     if (ch != 1 || !generatedUv1) donor.signatureUvs[ch] = list.ToArray();
                     continue;
                 }
-                if (imported != null && !(ch == 1 && bakeUv1))
+                // The current import is not a baseline for UV1: sidecar replay may
+                // already have changed it. Compare with a disposable import using
+                // the same settings, including Unity's generation, but no sidecar.
+                if (ch == 1)
+                {
+                    if (!capture.bakeUv1 && capture.uv1Baseline != null
+                        && capture.uv1Baseline.TryGetValue(donor.name, out var baseline)
+                        && baseline != null && baseline.Matches(mesh, list))
+                    {
+                        if (!generatedUv1) donor.signatureUvs[ch] = list.ToArray();
+                        continue;
+                    }
+                }
+                else if (imported != null)
                 {
                     imported.GetUVs(ch, importedList);
                     if (importedList.SequenceEqual(list))
                     {
-                        if (ch != 1 || !generatedUv1) donor.signatureUvs[ch] = list.ToArray();
+                        donor.signatureUvs[ch] = list.ToArray();
                         continue;
                     }
                 }
@@ -617,6 +653,40 @@ namespace SashaRX.UnityMeshLab
         }
 
         // ── Tagged import ──
+
+        // Corner tags split vertices and can change Unity's generated unwrap. Use an
+        // untagged copy to identify unchanged UV1; the source asset is never reimported.
+        static Dictionary<string, Uv1Baseline> ImportUv1Baseline(string sourceFbxPath)
+        {
+            if (!AssetDatabase.IsValidFolder(TempFolder)) AssetDatabase.CreateFolder("Assets", TempFolder.Substring("Assets/".Length));
+            string tempPath = $"{TempFolder}/uv1_baseline_{Guid.NewGuid():N}.fbx";
+            Uv2AssetPostprocessor.bypassPaths.Add(tempPath);
+            try
+            {
+                if (!AssetDatabase.CopyAsset(sourceFbxPath, tempPath))
+                    throw new InvalidOperationException("Could not copy the source FBX for lightmap UV comparison.");
+                FbxExport.ReimportWithoutSidecars(tempPath, () => AssetDatabase.ImportAsset(tempPath, ImportAssetOptions.ForceSynchronousImport));
+                var importer = AssetImporter.GetAtPath(tempPath) as ModelImporter;
+                if (importer == null) throw new InvalidOperationException("The lightmap UV baseline did not import as a model.");
+                importer.isReadable = true;
+                importer.importAnimation = false;
+                importer.materialImportMode = ModelImporterMaterialImportMode.None;
+                FbxExport.ReimportWithoutSidecars(tempPath, importer.SaveAndReimport);
+
+                var baselines = new Dictionary<string, Uv1Baseline>(StringComparer.Ordinal);
+                foreach (var mesh in AssetDatabase.LoadAllAssetsAtPath(tempPath).OfType<Mesh>())
+                    // Duplicate mesh names cannot provide a safe equality shortcut.
+                    baselines[mesh.name] = baselines.ContainsKey(mesh.name) ? null : new Uv1Baseline(mesh);
+                return baselines;
+            }
+            finally
+            {
+                Uv2AssetPostprocessor.bypassPaths.Remove(tempPath);
+                AssetDatabase.DeleteAsset(tempPath);
+                if (AssetDatabase.IsValidFolder(TempFolder) && AssetDatabase.FindAssets(string.Empty, new[] { TempFolder }).Length == 0)
+                    AssetDatabase.DeleteAsset(TempFolder);
+            }
+        }
 
         internal static Dictionary<string, Tagged> ImportTagged(string sourceFbxPath, bool swapUv, out HashSet<string> importedNames, bool uncompressed = false)
         {
