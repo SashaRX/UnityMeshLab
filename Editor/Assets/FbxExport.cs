@@ -881,11 +881,21 @@ namespace SashaRX.UnityMeshLab
                         EmbedTextures = settings.EmbedTextures });
                 if (string.IsNullOrEmpty(exported))
                     throw new IOException($"FBX Exporter did not write '{path}'.");
+                PreserveExportedLightmapSeams(path, settings);
             }
             finally {
                 if (exportRoot != root) Object.DestroyImmediate(exportRoot);
                 DestroyTempMeshes(copies);
             }
+        }
+
+        // New/rebuilt files need the same close-seam protection as channel writes.
+        // Unity can merge nearby UV values even with weld and compression disabled.
+        static void PreserveExportedLightmapSeams(string path, FbxWriteSettings settings)
+        {
+            using var document = FbxSourceDocument.Load(Path.GetFullPath(path));
+            var names = document.Meshes.Select(mesh => mesh.GetName()).ToHashSet();
+            if (document.PreserveSmallUvSeams(names, 1) > 0) document.Save(Path.GetFullPath(path), settings);
         }
 
         // Unity's exporter always writes centimeters/Y-up. A meter-based Max scene

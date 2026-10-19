@@ -111,6 +111,9 @@ namespace SashaRX.UnityMeshLab
         public void Save(string path)
             => SaveWithSettings(path, FbxWriteSettings.FromProject(), false);
 
+        internal void Save(string path, FbxWriteSettings settings)
+            => SaveWithSettings(path, settings, false);
+
         internal void SaveAtomic(string path, MediaOwnership ownership = null)
             => SaveWithOwnership(path, FbxWriteSettings.FromProject(), true, null, null, ownership);
 
