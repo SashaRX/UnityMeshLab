@@ -59,6 +59,7 @@ try {
     $viewportRegressions = @('ShellPreviewCompletesWhenAnotherVisibleMeshLacksTheChannel',
         'ThreeDSpotCompletesTheFirstClickAfterPreviewPreparation','DuplicateLightmapPreviewRestoresAuthoredSlotsAndMeshes')
     $assetPreviewRegressions = [ordered]@{
+        DocumentWriteDetectsTransferGeometryWithoutEnablingReadWrite = 8
         DocumentWrite_CheckerPreviewKeepsAuthoredMaterialsAndUntouchedChannels = 2
         DocumentWrite_CheckerPreviewKeepsPersistentMaterialOverride = 2
         DocumentWrite_GeneratedLodComparesBothAuthoredMaterialsUnderChecker = 2
