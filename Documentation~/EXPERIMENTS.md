@@ -1,5 +1,49 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Recover an invalid forward atlas from oriented surfaces — 2026-10-20
+
+An overlapped UV result can have an apparently ideal stretch of 1. The ordinary
+seam recovery then vetoes the correct donor with stretch 2 because it compares
+against this invalid layout. Its early return also treated low stretch as
+completion even when contacts remained. A two-quad control fails on the previous
+seam preparation and passes with this recovery.
+
+After the existing seam trials, try their established source projection with a
+stricter normal agreement of 0.9. Retain the existing ambiguity, interior, parent
+footprint, winding, source-quality and query-budget checks. Unsupported faces
+keep their legacy coordinates. Healthy legacy faces retain their individual
+metric bound; overlapped faces may use the existing absolute anisotropy limit 4.
+Accept only a complete output with no overlap, invalid/degenerate triangles or
+out-of-bounds UVs and maximum anisotropy at most 4. A partly repaired atlas is
+refused. The caller can accept this clean result even when the invalid baseline's
+scalar stretch looked better. This is an explicit change to comparison against
+invalid faces, not a change to the absolute quality limits.
+
+The detached copy preserves ordered Float32 triangles and every original corner
+attribute except UV2. It carries the selected donor reference into subsequent
+work. Projection runs off the editor thread in async mode and owns its inputs
+through cancellation. Seven portable cases cover the failing overlap control,
+unsupported and opposed surfaces, healthy-face protection, unchanged healthy
+atlases, synchronous/asynchronous equivalence, and cancellation without leaks.
+
+Private Shelf_C validation separates asset repair from solver changes. Its LOD1
+has four internal duplicate cap triangles and two bridge triangles without an
+LOD0 counterpart. In a separate copy these six faces are removed and material
+UV0 is projected from LOD0; the remaining positions and winding are retained.
+Ordinary Full Pipeline on the complete body plus both doors produces 472 source
+and 310 target triangles, with zero collapsed triangles and zero UV overlaps.
+The target viewer score is 84/100 (body alone 85/100), maximum anisotropy 3.980
+inherited from the door source and aligned area 0.999973. Model assets and private
+diagnostic probes are not included in the package change.
+
+Local Unity 6000.2.6f2 validation: 577 passed, zero failed, 19 optional skips,
+including transfer, recovery, capture, performance and FBX round-trip suites.
+The Playground control retains the preceding experiment's triangle counts,
+0/12/911 overlap pairs, stretch and aligned-area measurements at LOD0/1/2.
+It is deliberately not accepted as a partly repaired atlas. The separate Shelf_C
+FBX copy passes per-triangle geometry, UV0, UV1 and submesh checks after import;
+the existing small-UV-seam document pass is needed for the new FBX's close seams.
+
 ## Bound merged-shell rescoring by geometric correspondence — 2026-10-20
 
 UV0 coverage could replace an exact geometric donor with a distant chart during

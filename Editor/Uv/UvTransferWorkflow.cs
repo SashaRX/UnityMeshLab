@@ -2450,9 +2450,15 @@ namespace SashaRX.UnityMeshLab
                             // Subdivision can multiply the number of contacts
                             // inside an existing pair without adding an overlap.
                             && after.overlapPairArea<=before.overlapPairArea*1.001+1e-14
-                            && UvTransferTolerance.MetricFits(after.worstAnisotropy,before.worstAnisotropy)
-                            && (after.degenerateFaces<before.degenerateFaces || after.invalidFaces<before.invalidFaces
-                                || after.areaWeightedAnisotropy<before.areaWeightedAnisotropy*.99);
+                            // An invalid atlas is not a meaningful stretch baseline
+                            // for its bad faces. Preparation still bounds healthy
+                            // faces individually and proves every changed donor.
+                            && (((before.overlapPairs>0 || before.degenerateFaces>0)
+                                    && after.overlapPairs==0 && after.degenerateFaces==0 && after.invalidFaces==0
+                                    && after.worstAnisotropy<=4)
+                                || (UvTransferTolerance.MetricFits(after.worstAnisotropy,before.worstAnisotropy)
+                                    && (after.degenerateFaces<before.degenerateFaces || after.invalidFaces<before.invalidFaces
+                                        || after.areaWeightedAnisotropy<before.areaWeightedAnisotropy*.99)));
                         if(pair?.trace!=null) pair.trace.projectedSeamQuality=quality;
                         if (Improves(quality,beforeQuality))
                         {
@@ -2463,7 +2469,7 @@ namespace SashaRX.UnityMeshLab
                             tgtMesh=tgt.originalMesh;tr=ReverseUvTransfer.DescribeForwardProjection(tgtMesh,srcMesh,projectedSources);
                             hintState.overlapHints.Clear();hintState.matchHints.Clear();
                             pair=ctx.DiagnosticCapture?.ReplacePair(pair,srcEntry,tgt,srcMesh,tgtMesh,supersededResult,TransferBoundaryToleranceTexels,projectedSources);
-                            UvtLog.Info($"[Transfer] '{tgt.renderer.name}': donor seam subdivision reduced average stretch {beforeQuality.areaWeightedAnisotropy:G5} → {quality.areaWeightedAnisotropy:G5}.");
+                            UvtLog.Info($"[Transfer] '{tgt.renderer.name}': surface projection: overlaps {beforeQuality.overlapPairs} → {quality.overlapPairs}, collapsed faces {beforeQuality.degenerateFaces} → {quality.degenerateFaces}, average stretch {beforeQuality.areaWeightedAnisotropy:G5} → {quality.areaWeightedAnisotropy:G5}.");
                         }
                         else if(pair?.trace!=null) pair.trace.forwardSeamRefusal="Whole-mesh quality did not improve without regressions.";
                     }
