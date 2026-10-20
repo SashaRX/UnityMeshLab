@@ -1322,6 +1322,7 @@ namespace SashaRX.UnityMeshLab
             return uvFlat;
         }
 
+        /// <summary>Copies Unity triangle indices into the unsigned buffer expected by the native packer.</summary>
         static uint[] NativeTriangleIndices(int[] tris)
         {
             uint[] indices = new uint[tris.Length];
@@ -1399,6 +1400,7 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
+        /// <summary>Maps packed chart output back to mesh vertices, applies configured UV corrections and records the single-mesh result.</summary>
         static void ReadSingleRepackOutput(Mesh mesh, RepackOptions opts, ref RepackResult result,
             int[] tris, Vector3[] positions, List<UvShell> shells, uint[] faceShellIds)
         {

@@ -168,6 +168,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }).OrderBy(s => s, System.StringComparer.Ordinal).ToArray();
         }
 
+        /// <summary>Verifies that asynchronous forward-transfer CPU work executes outside the editor thread and always closes its progress scope.</summary>
         [UnityEngine.TestTools.UnityTest]
         public System.Collections.IEnumerator ForwardCpuWorkRunsOffTheEditorThread()
         {

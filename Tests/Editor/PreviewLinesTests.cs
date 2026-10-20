@@ -44,6 +44,7 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { RenderTexture.active = previous; Object.DestroyImmediate(pixels); target.Release(); Object.DestroyImmediate(target); resolved.Release(); Object.DestroyImmediate(resolved); }
         }
 
+        /// <summary>Deduplicates coincident edges regardless of direction while retaining distinct overlay colours, endpoint bounds and cancellation.</summary>
         [Test]
         public void SplitVerticesAndReversedEdgesDoNotDoubleTheCoverage()
         {
@@ -73,6 +74,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     || System.Array.Exists(data.ends, p => p.Equals(point)));
         }
 
+        /// <summary>Reuses an asynchronously built ribbon mesh and releases it when its source mesh is destroyed.</summary>
         [UnityTest]
         public IEnumerator CachedRibbonsAreReusedAndReleasedWhenTheSourceDies()
         {

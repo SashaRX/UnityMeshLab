@@ -1136,6 +1136,7 @@ namespace SashaRX.UnityMeshLab
             return triangles;
         }
 
+        /// <summary>Remaps submesh triangles to split polygon corners, triangulating quads and preserving each triangle's corner order.</summary>
         static int[] ExpandSubmeshCorners(int[] original, int size, FbxPolygonSplit plan, int[] first,
             Dictionary<(int,int,int),int[]> splitTriangles)
         {
@@ -1159,7 +1160,7 @@ namespace SashaRX.UnityMeshLab
                 (c, v) => SignatureMatches(donor, tag, c, v),
                 (a, b) => SameWrittenValues(donor, a, b), tag.TriangleCorners());
 
-        // Every FBX corner's vertex in the working mesh; refuses ambiguity that a local split cannot resolve.
+        /// <summary>Returns working-mesh vertices for FBX corners, refusing conflicts or unmatched faces and retaining missing degenerate corners as -1.</summary>
         static int[] PairCorners(Donor donor, Tagged tag, in FbxLayerChannels.Topology topology)
         {
             var match = MatchCorners(donor, tag, topology);

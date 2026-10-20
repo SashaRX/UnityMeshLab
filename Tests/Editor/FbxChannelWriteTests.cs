@@ -19,6 +19,7 @@ namespace SashaRX.UnityMeshLab.Tests
     {
         static float[] Positions(params (float x, float y)[] points) => points.SelectMany(p => new[] { p.x, p.y, 0f }).ToArray();
 
+        /// <summary>Resolves all quad corners after vertex reordering, triangulation and Unity's mirrored import winding.</summary>
         [Test]
         public void Match_PairsEveryCornerOfAWeldedTriangulatedQuad()
         {
@@ -880,6 +881,7 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { if (working) UnityEngine.Object.DestroyImmediate(working); AssetDatabase.DeleteAsset(assetFolder); }
         }
 
+        /// <summary>Splitting small UV seams preserves skin weights and blend-shape deltas through an FBX round trip.</summary>
         [Test]
         public void SmallUvPointSplitsPreserveSkinAndBlendShapeBindings()
         {
@@ -1049,6 +1051,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }).Distinct().ToArray();
         }
 
+        /// <summary>Round-trips independent triangle UVs on the optional Kamaz fixture while preserving other FBX data and the original files.</summary>
         [Test]
         public void ChannelWrite_RealKamazRoundTripPreservesTriangleUvSeamsAndSource()
         {

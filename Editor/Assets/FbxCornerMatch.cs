@@ -69,6 +69,7 @@ namespace SashaRX.UnityMeshLab
         readonly struct Candidate
         {
             public readonly int vertex, orientation;
+            /// <summary>Records a candidate result vertex and its polygon-normal or imported-triangle orientation.</summary>
             public Candidate(int vertex, int orientation) { this.vertex = vertex; this.orientation = orientation; }
         }
 
@@ -153,6 +154,7 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
+            /// <summary>Learns the import's winding relation, then resolves corner candidates using preserved attributes and written values.</summary>
             public Result Run(int[] polygonSizes, Func<int, int, bool> signatureMatches, Func<int, int, bool> sameWrittenValues)
             {
                 // Pass 1: every face of the result mesh lying on the polygon's own corners is a
@@ -276,6 +278,7 @@ namespace SashaRX.UnityMeshLab
                 return polygonFaces;
             }
 
+            /// <summary>Counts selected polygon positions in a subset mask so only triangle and quad face keys are queried.</summary>
             static int BitCount(int v)
             {
                 int count = 0;
