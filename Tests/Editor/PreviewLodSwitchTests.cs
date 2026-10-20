@@ -953,6 +953,181 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { LightmapSettings.lightmaps = previousLightmaps; }
         }
 
+        /// <summary>Verifies both snapshot modes unwind lightmap layers from two windows without changing the live preview.</summary>
+        [Test]
+        public void LightmapPreviewsFromTwoWindowsResolveTheAuthoredMaterials()
+        {
+            var group = Group(true, out var renderer, out _);
+            var authored = renderer.sharedMaterials;
+            var ctx = Open(group);
+            var entry = ctx.MeshEntries.Find(value => value.renderer == renderer);
+            var second = ScriptableObject.CreateInstance<UvToolHub>();
+            owned.Add(second);
+            var secondCtx = Get<UvToolContext>(second, "ctx");
+            secondCtx.Refresh(group);
+            var secondEntry = secondCtx.MeshEntries.Find(value => value.renderer == renderer);
+            var previousLightmaps = LightmapSettings.lightmaps;
+            try {
+                AssignLightmap(renderer);
+                Call(hub, "ApplyLightmapPreviewEntry", entry);
+                var firstPreview = renderer.sharedMaterial;
+                Call(second, "ApplyLightmapPreviewEntry", secondEntry);
+                var secondPreview = renderer.sharedMaterial;
+                var shown = renderer.sharedMaterials;
+                Assert.AreNotSame(firstPreview, secondPreview);
+
+                CollectionAssert.AreEqual(authored, UvToolHub.OriginalPreviewMaterials(renderer, forAssetWrite: true),
+                    "Both windows' lightmap layers must be unwound to the authored slots.");
+                CollectionAssert.AreEqual(authored, UvToolHub.OriginalPreviewMaterials(renderer),
+                    "The authored snapshot uses the same stack.");
+                CollectionAssert.AreEqual(shown, renderer.sharedMaterials, "Taking a snapshot must not change the live preview.");
+            }
+            finally {
+                Call(second, "RestoreLightmapPreview");
+                Call(hub, "RestoreLightmapPreview");
+                LightmapSettings.lightmaps = previousLightmaps;
+                Object.DestroyImmediate(second);
+            }
+        }
+
+        [Test]
+        public void LightmapAndModelPreviewSnapshotsUnwindInBothApplyOrders(
+            [Values(false, true)] bool shells, [Values(false, true)] bool lightmapFirst)
+        {
+            var group = Group(true, out var renderer, out var other);
+            var authored = new[] { renderer.sharedMaterial, null, other.sharedMaterial };
+            renderer.sharedMaterials = authored;
+            var ctx = Open(group);
+            var entry = ctx.MeshEntries.Find(value => value.renderer == renderer);
+            var mesh = renderer.GetComponent<MeshFilter>().sharedMesh;
+            var previousLightmaps = LightmapSettings.lightmaps;
+            try {
+                AssignLightmap(renderer);
+                if (lightmapFirst) Call(hub, "ApplyLightmapPreviewEntry", entry);
+                if (shells)
+                    ShellColorModelPreview.Apply(new List<(Renderer, Mesh, int[])> { (renderer, mesh, new[] { 0, 0 }) },
+                        new[] { new Color32(255, 0, 0, 255) });
+                else
+                    CheckerTexturePreview.Apply(new List<(Renderer, Mesh)> { (renderer, mesh) });
+                if (!lightmapFirst) Call(hub, "ApplyLightmapPreviewEntry", entry);
+                var shown = renderer.sharedMaterials;
+                var shownMesh = renderer.GetComponent<MeshFilter>().sharedMesh;
+
+                CollectionAssert.AreEqual(authored, UvToolHub.OriginalPreviewMaterials(renderer, forAssetWrite: true));
+                CollectionAssert.AreEqual(authored, UvToolHub.OriginalPreviewMaterials(renderer));
+                var replacement = new Material(authored[0]); owned.Add(replacement);
+                renderer.sharedMaterials = new[] { shown[0], replacement, shown[2] };
+                CollectionAssert.AreEqual(new[] { authored[0], replacement, authored[2] },
+                    UvToolHub.OriginalPreviewMaterials(renderer, forAssetWrite: true),
+                    "A later live assignment survives resolving both lightmap and model previews.");
+                CollectionAssert.AreEqual(authored, UvToolHub.OriginalPreviewMaterials(renderer));
+                CollectionAssert.AreEqual(new[] { shown[0], replacement, shown[2] }, renderer.sharedMaterials);
+                Assert.AreSame(shownMesh, renderer.GetComponent<MeshFilter>().sharedMesh);
+            }
+            finally {
+                // Remove the upper layer first so each system restores its own input.
+                if (!lightmapFirst) Call(hub, "RestoreLightmapPreview");
+                if (shells) ShellColorModelPreview.Restore();
+                else CheckerTexturePreview.Restore();
+                if (lightmapFirst) Call(hub, "RestoreLightmapPreview");
+                LightmapSettings.lightmaps = previousLightmaps;
+            }
+            CollectionAssert.AreEqual(authored, renderer.sharedMaterials);
+            Assert.AreSame(mesh, renderer.GetComponent<MeshFilter>().sharedMesh);
+        }
+
+        [Test]
+        public void LightmapLayerTrackingKeepsOtherWindowsDiscoverableAfterOneRestores()
+        {
+            var group = Group(true, out var first, out var second);
+            var ctx = Open(group);
+            var otherHub = ScriptableObject.CreateInstance<UvToolHub>(); owned.Add(otherHub);
+            var otherCtx = Get<UvToolContext>(otherHub, "ctx");
+            otherCtx.Refresh(group);
+            var authored = second.sharedMaterials;
+            var previousLightmaps = LightmapSettings.lightmaps;
+            Assert.IsFalse(PreviewSafetyGuard.HasLightmapPreviewLayers);
+            try {
+                AssignLightmap(first, second);
+                Call(hub, "ApplyLightmapPreviewEntry", ctx.MeshEntries.Find(value => value.renderer == first));
+                Call(otherHub, "ApplyLightmapPreviewEntry", otherCtx.MeshEntries.Find(value => value.renderer == second));
+                Assert.IsTrue(PreviewSafetyGuard.HasLightmapPreviewLayers);
+
+                Call(hub, "RestoreLightmapPreview");
+                Call(hub, "RestoreLightmapPreview");
+                Assert.IsTrue(PreviewSafetyGuard.HasLightmapPreviewLayers,
+                    "Restoring one window twice must not hide the other window's active layer.");
+                CollectionAssert.AreEqual(first.sharedMaterials, UvToolHub.OriginalPreviewMaterials(first),
+                    "Another renderer's lightmap backup must not affect this renderer.");
+                CollectionAssert.AreEqual(authored, UvToolHub.OriginalPreviewMaterials(second, forAssetWrite: true));
+
+                Call(otherHub, "RestoreLightmapPreview");
+                Assert.IsFalse(PreviewSafetyGuard.HasLightmapPreviewLayers);
+                Call(otherHub, "RestoreLightmapPreview");
+                Assert.IsFalse(PreviewSafetyGuard.HasLightmapPreviewLayers);
+
+                Call(hub, "ApplyLightmapPreviewEntry", ctx.MeshEntries.Find(value => value.renderer == first));
+                Assert.IsTrue(PreviewSafetyGuard.HasLightmapPreviewLayers, "A new preview is discoverable after the count returned to zero.");
+            }
+            finally {
+                Call(otherHub, "RestoreLightmapPreview");
+                Call(hub, "RestoreLightmapPreview");
+                LightmapSettings.lightmaps = previousLightmaps;
+                Object.DestroyImmediate(otherHub);
+            }
+            Assert.IsFalse(PreviewSafetyGuard.HasLightmapPreviewLayers);
+        }
+
+        [Test]
+        public void FailedLightmapPreviewDoesNotRegisterALayer([Values(false, true)] bool missingUv2)
+        {
+            var group = Group(!missingUv2, out _, out var renderer);
+            var ctx = Open(group);
+            var authored = renderer.sharedMaterials;
+            var mesh = renderer.GetComponent<MeshFilter>().sharedMesh;
+            var previousLightmaps = LightmapSettings.lightmaps;
+            Assert.IsFalse(PreviewSafetyGuard.HasLightmapPreviewLayers);
+            try {
+                AssignLightmap(renderer);
+                if (!missingUv2) renderer.lightmapIndex = -1;
+                Call(hub, "ApplyLightmapPreviewEntry", ctx.MeshEntries.Find(value => value.renderer == renderer));
+
+                Assert.IsFalse(PreviewSafetyGuard.HasLightmapPreviewLayers);
+                CollectionAssert.AreEqual(authored, renderer.sharedMaterials);
+                Assert.AreSame(mesh, renderer.GetComponent<MeshFilter>().sharedMesh);
+                CollectionAssert.AreEqual(authored, UvToolHub.OriginalPreviewMaterials(renderer, forAssetWrite: true));
+            }
+            finally {
+                Call(hub, "RestoreLightmapPreview");
+                LightmapSettings.lightmaps = previousLightmaps;
+            }
+        }
+
+        [Test]
+        public void TransferWorkflowCollectsOnlyTheRequestedLightmapLayer()
+        {
+            Group(true, out var renderer, out var other);
+            var authored = renderer.sharedMaterials;
+            var preview = new Material(authored[0]); owned.Add(preview);
+            var workflow = new UvTransferWorkflow();
+            Set(workflow, "lightmapPreviewMat", preview);
+            var backups = Get<Dictionary<Renderer, Material[]>>(workflow, "lightmapBackups");
+            backups.Add(renderer, authored);
+            var sentinel = new PreviewSafetyGuard.MaterialLayer(other.sharedMaterial, other.sharedMaterials);
+            var layers = new List<PreviewSafetyGuard.MaterialLayer> { sentinel };
+
+            workflow.CollectLightmapMaterialLayers(other, layers);
+            Assert.AreEqual(1, layers.Count);
+            workflow.CollectLightmapMaterialLayers(renderer, layers);
+
+            Assert.AreEqual(2, layers.Count);
+            Assert.AreSame(sentinel.preview, layers[0].preview);
+            Assert.AreSame(preview, layers[1].preview);
+            CollectionAssert.AreEqual(authored, layers[1].captured);
+            CollectionAssert.AreEqual(authored, renderer.sharedMaterials, "Collecting a layer must not change the renderer.");
+            Assert.AreEqual(1, backups.Count, "Collecting a layer must leave the restoration backup available.");
+        }
+
         [TestCase(UvCanvasView.PreviewMode.Off)]
         [TestCase(UvCanvasView.PreviewMode.Shells3D)]
         [TestCase(UvCanvasView.PreviewMode.Lightmap)]

@@ -83,17 +83,136 @@ namespace SashaRX.UnityMeshLab
                 h.RestoreLightmapPreviewSafe();
         }
 
-        // Only replace slots still owned by this preview. A real assignment,
-        // null slot or changed slot count after Apply belongs to the caller.
+        /// <summary>Returns live renderer slots with this preview replaced by captured materials.</summary>
+        /// <remarks>Preserves later assignments, null slots and changes to the live slot count.</remarks>
         internal static Material[] MaterialsForWrite(Renderer renderer, Material[] captured, Material preview)
             => MaterialsForWrite(renderer.sharedMaterials, captured, preview);
 
+        /// <summary>Replaces matching preview slots in the supplied array with captured materials, in place.</summary>
+        /// <returns>The supplied array, preserving slots no longer owned by this preview.</returns>
         internal static Material[] MaterialsForWrite(Material[] materials, Material[] captured, Material preview)
         {
             if (preview == null) return materials;
             for (int i = 0; i < materials.Length && i < captured.Length; i++)
                 if (materials[i] == preview) materials[i] = captured[i];
             return materials;
+        }
+
+        /// <summary>
+        /// A preview material and the slots it replaced, which may contain an older preview layer.
+        /// </summary>
+        internal readonly struct MaterialLayer
+        {
+            internal readonly Material preview;
+            internal readonly Material[] captured;
+
+            /// <summary>Pairs a preview material with the material slots captured before it was applied.</summary>
+            /// <param name="preview">The material installed by this preview layer.</param>
+            /// <param name="captured">The prior slots, including any underlying preview materials.</param>
+            internal MaterialLayer(Material preview, Material[] captured)
+            {
+                this.preview = preview;
+                this.captured = captured;
+            }
+        }
+
+        /// <summary>
+        /// Resolves stacked preview materials transitively without changing the input slots or backups.
+        /// </summary>
+        /// <param name="current">The renderer's live material slots.</param>
+        /// <param name="layers">Known preview materials and their captured slots, in any apply order.</param>
+        /// <param name="forAssetWrite">
+        /// When true, starts from live slots to preserve later assignments; otherwise starts from an authored snapshot.
+        /// </param>
+        /// <returns>
+        /// A resolved copy of the selected slots, or the current array when no layers or source slots are available.
+        /// Slots without a captured counterpart are left unchanged.
+        /// </returns>
+        internal static Material[] ResolveOriginalMaterials(
+            Material[] current, List<MaterialLayer> layers, bool forAssetWrite)
+        {
+            if (layers == null || layers.Count == 0) return current;
+
+            Material[] source = forAssetWrite ? current : AuthoredSnapshot(current, layers);
+            if (source == null) return current;
+
+            var materials = (Material[])source.Clone();
+            for (int pass = 0; pass <= layers.Count; pass++)
+                if (!ReplacePreviewSlots(materials, layers)) break;
+            return materials;
+        }
+
+        /// <summary>Replaces matching preview slots in place once for each known layer.</summary>
+        /// <returns>True if any slot changed; further passes may be needed to unwind nested previews.</returns>
+        static bool ReplacePreviewSlots(Material[] materials, List<MaterialLayer> layers)
+        {
+            bool changed = false;
+            foreach (var layer in layers)
+                changed |= ReplacePreviewSlots(materials, layer);
+            return changed;
+        }
+
+        /// <summary>Replaces slots still owned by a layer with its captured values, leaving other slots intact.</summary>
+        /// <returns>True if at least one slot changed; false for unusable or self-referencing captures.</returns>
+        static bool ReplacePreviewSlots(Material[] materials, MaterialLayer layer)
+        {
+            if (layer.preview == null || layer.captured == null) return false;
+            bool changed = false;
+            int slots = Mathf.Min(materials.Length, layer.captured.Length);
+            for (int i = 0; i < slots; i++)
+            {
+                if (materials[i] != layer.preview) continue;
+                Material authored = layer.captured[i];
+                if (authored == layer.preview) continue;
+                materials[i] = authored;
+                changed = true;
+            }
+            return changed;
+        }
+
+        static int lightmapPreviewLayers;
+
+        /// <summary>
+        /// Whether tracked lightmap layers require a global window scan when resolving preview materials.
+        /// </summary>
+        internal static bool HasLightmapPreviewLayers => lightmapPreviewLayers > 0;
+
+        /// <summary>Registers one lightmap preview layer so material resolution scans open windows.</summary>
+        internal static void AddLightmapPreviewLayer() => lightmapPreviewLayers++;
+
+        /// <summary>Unregisters one lightmap preview layer without letting the count fall below zero.</summary>
+        internal static void RemoveLightmapPreviewLayer()
+        {
+            if (lightmapPreviewLayers > 0) lightmapPreviewLayers--;
+        }
+
+        /// <summary>Selects the captured slots of the layer matching the most live material slots.</summary>
+        /// <returns>
+        /// The selected capture by reference, taking the first on ties. If no preview matches,
+        /// returns the first non-null capture, or the current slots when no capture exists.
+        /// </returns>
+        static Material[] AuthoredSnapshot(Material[] current, List<MaterialLayer> layers)
+        {
+            // The top layer is the one whose preview material is still visible.
+            // Its snapshot is one step below it; resolving every known preview
+            // material walks the remaining layers back to the authored slots.
+            Material[] source = null;
+            int bestMatches = 0;
+            foreach (var layer in layers)
+            {
+                if (layer.preview == null || layer.captured == null) continue;
+                int matches = 0;
+                for (int i = 0; i < current.Length; i++)
+                    if (current[i] == layer.preview) matches++;
+                if (matches > bestMatches)
+                {
+                    source = layer.captured;
+                    bestMatches = matches;
+                }
+            }
+            if (source != null) return source;
+            int at = layers.FindIndex(layer => layer.captured != null);
+            return at >= 0 ? layers[at].captured : current;
         }
     }
 
@@ -133,6 +252,11 @@ namespace SashaRX.UnityMeshLab
 
         public static bool IsActive => isActive;
 
+        /// <summary>Tries to read the renderer's captured slots for the checker preview.</summary>
+        /// <param name="renderer">The renderer whose preview backup is requested.</param>
+        /// <param name="materials">Captured slots, or live slots with this preview removed for asset writes; null if no backup exists.</param>
+        /// <param name="forAssetWrite">Whether to preserve assignments made after the preview was applied.</param>
+        /// <returns>True if a backup exists for the renderer.</returns>
         internal static bool TryGetOriginalMaterials(Renderer renderer, out Material[] materials, bool forAssetWrite = false)
         {
             foreach (var backup in backups)
@@ -145,6 +269,20 @@ namespace SashaRX.UnityMeshLab
                 }
             materials = null;
             return false;
+        }
+
+        /// <summary>Appends the checker preview layer captured for the renderer, if one exists.</summary>
+        /// <param name="renderer">The renderer whose preview backup is requested.</param>
+        /// <param name="layers">The destination list; existing entries are retained.</param>
+        internal static void CollectMaterialLayers(
+            Renderer renderer, List<PreviewSafetyGuard.MaterialLayer> layers)
+        {
+            foreach (var backup in backups)
+                if (backup.renderer == renderer)
+                {
+                    layers.Add(new PreviewSafetyGuard.MaterialLayer(checkerMat, backup.origMaterials));
+                    return;
+                }
         }
 
         /// <summary>

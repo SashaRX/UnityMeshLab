@@ -262,11 +262,15 @@ namespace SashaRX.UnityMeshLab
         bool lightmapPreviewActive;
         readonly Dictionary<Renderer, Material[]> lightmapBackups = new Dictionary<Renderer, Material[]>();
 
-        internal bool TryGetOriginalLightmapMaterials(Renderer renderer, out Material[] materials, bool forAssetWrite = false)
+        /// <summary>Appends this workflow's lightmap preview layer for the renderer, if one exists.</summary>
+        /// <param name="renderer">The renderer whose preview backup is requested.</param>
+        /// <param name="layers">The destination list; existing entries are retained.</param>
+        /// <exception cref="System.ArgumentNullException"><paramref name="renderer"/> is null.</exception>
+        internal void CollectLightmapMaterialLayers(
+            Renderer renderer, List<PreviewSafetyGuard.MaterialLayer> layers)
         {
-            if (!lightmapBackups.TryGetValue(renderer, out materials)) return false;
-            if (forAssetWrite) materials = PreviewSafetyGuard.MaterialsForWrite(renderer, materials, lightmapPreviewMat);
-            return true;
+            if (lightmapBackups.TryGetValue(renderer, out var materials))
+                layers.Add(new PreviewSafetyGuard.MaterialLayer(lightmapPreviewMat, materials));
         }
 
         // ── Scene ──

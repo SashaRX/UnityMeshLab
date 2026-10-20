@@ -2038,37 +2038,43 @@ namespace SashaRX.UnityMeshLab
         readonly List<LightmapBackup> lightmapBackups = new List<LightmapBackup>();
         Material lightmapPreviewMat;
 
-        // Read authored materials without suspending the user's preview or replacing
-        // renderer references. Texture metrics must not use checker/lightmap textures.
+        /// <summary>
+        /// Resolves checker, shell and lightmap layers across open windows without altering the live preview.
+        /// </summary>
+        /// <param name="renderer">The renderer whose authored materials are requested.</param>
+        /// <param name="forAssetWrite">
+        /// When true, preserves later assignments and the live slot count; otherwise uses captured authored slots.
+        /// </param>
+        /// <returns>Material slots with known preview layers unwound.</returns>
         internal static Material[] OriginalPreviewMaterials(Renderer renderer, bool forAssetWrite = false)
         {
-            if (CheckerTexturePreview.TryGetOriginalMaterials(renderer, out var materials, forAssetWrite)
-                || ShellColorModelPreview.TryGetOriginalMaterials(renderer, out materials, forAssetWrite))
-                return materials;
-            foreach (var hub in Resources.FindObjectsOfTypeAll<UvToolHub>()) {
-                materials = hub.OriginalLightmapMaterials(renderer, forAssetWrite);
-                if (materials != null) return materials;
-                if (hub.ActiveTool is UvTransferWorkflow workflow
-                    && workflow.TryGetOriginalLightmapMaterials(renderer, out materials, forAssetWrite))
-                    return materials;
+            // Different preview systems, and different Mesh Lab windows, can put
+            // their layers on one renderer. Collect every layer and unwind them
+            // transitively; stopping at the first system can return another
+            // preview material as the authored one.
+            var layers = new List<PreviewSafetyGuard.MaterialLayer>();
+            CheckerTexturePreview.CollectMaterialLayers(renderer, layers);
+            ShellColorModelPreview.CollectMaterialLayers(renderer, layers);
+            if (PreviewSafetyGuard.HasLightmapPreviewLayers)
+            {
+                foreach (var hub in Resources.FindObjectsOfTypeAll<UvToolHub>()) {
+                    hub.CollectLightmapMaterialLayers(renderer, layers);
+                    if (hub.ActiveTool is UvTransferWorkflow workflow)
+                        workflow.CollectLightmapMaterialLayers(renderer, layers);
+                }
             }
-            return renderer.sharedMaterials;
+            return PreviewSafetyGuard.ResolveOriginalMaterials(renderer.sharedMaterials, layers, forAssetWrite);
         }
 
-        Material[] OriginalLightmapMaterials(Renderer renderer, bool forAssetWrite)
+        /// <summary>Appends every lightmap preview layer this window captured for the renderer.</summary>
+        /// <param name="renderer">The renderer whose preview backups are requested.</param>
+        /// <param name="layers">The destination list; existing entries are retained.</param>
+        void CollectLightmapMaterialLayers(
+            Renderer renderer, List<PreviewSafetyGuard.MaterialLayer> layers)
         {
-            Material[] materials = null;
-            // Repeated entries form an override stack. Unwind the newest first;
-            // the earliest backup holds the actual authored slots.
-            for (int i = lightmapBackups.Count - 1; i >= 0; i--)
-            {
-                var backup = lightmapBackups[i];
-                if (backup.renderer != renderer) continue;
-                materials = forAssetWrite
-                    ? PreviewSafetyGuard.MaterialsForWrite(materials ?? renderer.sharedMaterials, backup.origMaterials, backup.tempMat)
-                    : backup.origMaterials;
-            }
-            return materials;
+            foreach (var backup in lightmapBackups)
+                if (backup.renderer == renderer)
+                    layers.Add(new PreviewSafetyGuard.MaterialLayer(backup.tempMat, backup.origMaterials));
         }
 
         // ── Shell color palette ──
@@ -2184,6 +2190,14 @@ namespace SashaRX.UnityMeshLab
             if (lightmapBackups.Count == 0) UvtLog.Warn("[Lightmap] No lightmapped meshes found.");
         }
 
+        /// <summary>Applies a lightmap preview to an eligible mesh entry and registers its material layer.</summary>
+        /// <remarks>
+        /// Captures the current materials and mesh for restoration; entries without usable lightmap data are skipped.
+        /// Missing shaders or incomplete UV2 data also skip the preview; mesh read and import failures propagate.
+        /// </remarks>
+        /// <exception cref="System.InvalidOperationException">
+        /// The source mesh has invalid vertex data, or requires a readable fallback but has no model importer.
+        /// </exception>
         void ApplyLightmapPreviewEntry(MeshEntry e)
         {
             if (e.renderer == null) return;
@@ -2214,6 +2228,7 @@ namespace SashaRX.UnityMeshLab
                 tempMesh = tempMesh,
                 tempMat = mat
             });
+            PreviewSafetyGuard.AddLightmapPreviewLayer();
             if (mf != null && tempMesh != null) mf.sharedMesh = tempMesh;
             var mats = new Material[e.renderer.sharedMaterials.Length];
             for (int i = 0; i < mats.Length; i++) mats[i] = mat;
@@ -2251,11 +2266,17 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        /// <summary>Restores captured lightmap layers in reverse order and unregisters each layer.</summary>
+        /// <remarks>
+        /// Releases temporary meshes and materials, then clears this window's backups.
+        /// Restores a saved mesh only if it still exists and its preview mesh remains assigned.
+        /// </remarks>
         void RestoreLightmapPreview()
         {
             for (int i = lightmapBackups.Count - 1; i >= 0; i--)
             {
                 var b = lightmapBackups[i];
+                PreviewSafetyGuard.RemoveLightmapPreviewLayer();
                 if (b.renderer != null) b.renderer.sharedMaterials = b.origMaterials;
                 if (b.meshFilter != null && b.origMesh != null && b.meshFilter.sharedMesh == b.tempMesh)
                     b.meshFilter.sharedMesh = b.origMesh;
