@@ -1158,9 +1158,11 @@ namespace SashaRX.UnityMeshLab
                 s.pixels[t], s.pixels[t+1], s.pixels[t+2], stretchFrame ?? Matrix4x4.identity);
         }
 
+        /// <summary>Measures intrinsic UV stretch from stored geometry corners without a render transform.</summary>
         internal static double TriangleAnisotropy(Vector3 p, Vector3 q, Vector3 r, Vector2 aUv, Vector2 bUv, Vector2 cUv)
             => TriangleAnisotropy(TriangleFrame(p, q, r), aUv, bUv, cUv);
 
+        /// <summary>Measures stretch in a render frame, promoting stored positions before edge transformation.</summary>
         internal static double TriangleAnisotropy(Vector3 p, Vector3 q, Vector3 r, Vector2 aUv, Vector2 bUv, Vector2 cUv, Matrix4x4 frame)
         {
             double ex = (double)q.x - p.x, ey = (double)q.y - p.y, ez = (double)q.z - p.z;
@@ -1175,6 +1177,7 @@ namespace SashaRX.UnityMeshLab
             return TriangleAnisotropy(transformed, aUv, bUv, cUv);
         }
 
+        /// <summary>Returns UV stretch in an intrinsic frame, or infinity for collapsed UVs and invalid ratios.</summary>
         internal static double TriangleAnisotropy((double length, double x, double y) frame, Vector2 aUv, Vector2 bUv, Vector2 cUv)
         {
             var (length, x, y) = frame;

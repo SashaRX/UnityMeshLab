@@ -40,6 +40,7 @@ namespace SashaRX.UnityMeshLab
             return report;
         }
 
+        /// <summary>Classifies one face and accumulates finite stretch using its transformed geometry area.</summary>
         static void MeasureFace(TransferUvQuality report, int f, Vector3[] positions, int[] triangles, Vector2[] uv,
             Vector2 metric, Matrix4x4 localToWorld, ref double weighted, ref double totalArea)
         {
@@ -107,6 +108,7 @@ namespace SashaRX.UnityMeshLab
                 matrix.m20*dx+matrix.m21*dy+matrix.m22*dz);
         }
 
+        /// <summary>Measures UV stretch against two geometry edges, rejecting singular geometry and stored UVs.</summary>
         internal static double TriangleAnisotropy(Vector3 e1, Vector3 e2, Vector2 a, Vector2 b, Vector2 c)
         {
             var frame=ReverseUvTransfer.TriangleFrame(e1.x,e1.y,e1.z,e2.x,e2.y,e2.z);
