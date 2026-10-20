@@ -3702,3 +3702,38 @@ captures/scans and mismatched inputs, inventories, resolution or schema, reports
 every changed model/LOD/variant, and keeps tradeoffs visible. Twelve portable
 report tests cover this behavior, including CLI exit codes and saved evidence.
 See `FURNITURE_TRANSFER_RESEARCH.md` for measurements and remaining limitations.
+
+### Target boundary continuation: immutable anchors and actual donor coverage
+
+Continue PR #292 with a narrowly qualified target repair. Reuse intrinsic bevel
+development after ordinary topology correction, freezing healthy vertices and
+requiring every changed face to recover below anisotropy four. Check whole-face
+coverage against the union of the selected donor's triangles at the actual
+packed atlas size, retaining the existing quarter-texel band. Shared vertices,
+mixed donors and rejected shells cannot enter this recovery.
+
+Before/after full-atlas scans permit unrelated existing defects but refuse any
+new contact. Faces participating in old contacts cannot move, so an unchanged
+pair count cannot conceal increased overlap area. The UV buffer is published
+only after complete checks and cancellation; source preparation and native
+packing are unchanged.
+
+The full 80-FBX / 255-pair / 2295-row corpus gives four better rows and 2291
+unchanged rows with no worse/tradeoff rows or incomplete scans. The dressing-table
+shelf loses one of seven collapsed faces in all three profiles; the blanket
+loses one of 3074 in the no-reparameterization control. All source and alternate
+projection rows retain their measured quality. The comparison CLI exits zero.
+
+The kitchen probe also exposed a false experimental assumption: its requested
+512 resolution produces a packed atlas side of 2344. A free-corner development
+extends about 0.7 actual texel beyond the source, so the production check correctly
+refuses it. Its collapsed face and the shelving target's four collapsed faces
+remain. Portable controls cover actual atlas size, overlapping donor coverage,
+unchanged anchors, unrelated/new contacts, ambiguous ownership, cancellation and
+incomplete audits. See `FURNITURE_TRANSFER_RESEARCH.md` for the measured scope.
+
+Local verification: 601 Unity regression tests pass with 45 optional fixture
+skips, followed by 18 focused checks (14 target-recovery controls plus shelving
+geometry/three symmetry modes), all passing. The corpus and kitchen symmetry
+checks pass as well. Both FBX compile variants and dependency/identifier guards
+pass. No proprietary assets or probe captures are committed.

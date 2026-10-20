@@ -1041,6 +1041,13 @@ namespace SashaRX.UnityMeshLab
             if (UvProgress.CancelRequested) return false;
             try
             {
+                int bevelRecovered = TargetBevelUvRecovery.Apply(result, target.shells, target.indices, target.positions,
+                    source.shells, source.indices, source.uv, atlasSize, boundaryToleranceTexels, trace);
+                if (bevelRecovered > 0)
+                {
+                    result.shellsGeometryFallback += bevelRecovered;
+                    UvtLog.Info($"[GroupedTransfer] Recovered {bevelRecovered} boundary bevel charts within their donor footprints.");
+                }
                 if (ForwardUvExactFamilyProjection.TryImprove(source.positions,source.uv,source.shells,
                     target.positions,target.indices,result.uv2,result.vertexToSourceShell,out var improved,out _))
                 {

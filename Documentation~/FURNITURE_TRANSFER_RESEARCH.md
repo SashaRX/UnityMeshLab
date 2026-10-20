@@ -141,6 +141,44 @@ regressions or tradeoffs. This reproduces the rejection of both trials instead o
 relying on an overall average. The corrected stored-area diagnostics remain in
 production; no new transfer/packing default is selected by this experiment.
 
+## Target boundary recovery — accepted within the existing footprint
+
+The next continuation applies intrinsic boundary development to ordinary target
+UVs after topology correction. Healthy vertices stay fixed. Every changed face
+must replace effective collapse with finite anisotropy at most four; a shared
+vertex, rejected shell or mixed donor assignment refuses the candidate. The
+complete changed triangles must fit the union of their selected donor's UV
+footprints, including the existing quarter-texel boundary band measured using
+the actual packed atlas size. Overlapping donor faces cannot count coverage twice.
+
+Complete before/after target scans retain unrelated existing contacts. Changed
+faces may not participate in an existing contact, because retaining the pair
+alone would not prove its area stayed fixed. Any new contact, invalid or
+degenerate face, out-of-bounds increase or incomplete scan refuses publication.
+The original UV buffer remains intact until accepted repairs and cancellation
+checks finish. Source preparation, geometry, indices and native packing stay
+unchanged.
+
+The full 80-file / 255-pair / 2,295-row repeat passes the baseline regression gate
+with four better rows and 2,291 unchanged rows; no tradeoffs or worse rows occur.
+All intersection scans complete and there are no processing errors.
+
+| Target | Profile | Collapsed UV faces before → after | Overlap pairs before → after |
+|---|---|---:|---:|
+| Modern_DressingTable_B_Shelf_LOD1 | default | 7 → 6 | 4 → 4 |
+| Modern_DressingTable_B_Shelf_LOD1 | no-reparameterization | 7 → 6 | 4 → 4 |
+| Modern_DressingTable_B_Shelf_LOD1 | oversample-8 | 7 → 6 | 4 → 4 |
+| Modern_Bed_A_Blanket_LOD2 | no-reparameterization | 3074 → 3073 | 808 → 808 |
+
+The countertop remains a documented refusal, not a repaired fixture. Developing
+its free corner removes the collapsed face geometrically, but moves it about
+0.7 texel beyond the donor at its actual atlas side of 2344. Testing against the
+requested 512 instead would incorrectly treat that displacement as only 0.153
+texel. The production check retains the 0.25-texel limit and its original one
+collapsed face. The shelving fixture's four collapsed UV faces also remain.
+Moving a healthy neighbour could offer another candidate, but is outside this
+accepted immutable-anchor repair and requires separate qualification.
+
 ## Algorithm investigation
 
 **SLIM with an injective seed** is a relevant source-parameterization candidate:
