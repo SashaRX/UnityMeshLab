@@ -490,6 +490,7 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { UnityEngine.Object.DestroyImmediate(mesh); }
         }
 
+        /// <summary>Uniformly tiny geometry must not hide a singular geometry or UV triangle.</summary>
         [TestCase(true)] [TestCase(false)]
         public void Quality_StillRejectsSingularGeometryAndUv(bool geometry)
         {
@@ -502,6 +503,7 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { UnityEngine.Object.DestroyImmediate(mesh); }
         }
 
+        /// <summary>Legacy captures use the default boundary band while current captures can request zero.</summary>
         [Test]
         public void LegacyCaptureDefaultsBoundaryToleranceButExplicitZeroIsPreserved()
         {
@@ -572,6 +574,7 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { UnityEngine.Object.DestroyImmediate(mesh); }
         }
 
+        /// <summary>Area-preserving distortion remains visible unless the texture metric compensates for it.</summary>
         [Test]
         public void Quality_DetectsAxisStretchEvenWhenUvAreaIsUnchanged()
         {

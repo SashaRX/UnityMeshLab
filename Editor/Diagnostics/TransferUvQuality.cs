@@ -18,6 +18,7 @@ namespace SashaRX.UnityMeshLab
         public double overlapPairArea;
         public List<string> overlapSamples = new List<string>();
 
+        /// <summary>Audits per-face metric stretch and atlas contacts without modifying the mesh or UV buffer.</summary>
         internal static TransferUvQuality Measure(Mesh mesh, Vector2[] uv, Vector2 metric, Matrix4x4 localToWorld)
         {
             var report = new TransferUvQuality();
@@ -78,8 +79,7 @@ namespace SashaRX.UnityMeshLab
                 (vy - uy * frame.x / frame.length) / frame.y);
         }
 
-        // Normalize the Jacobian before squaring: anisotropy depends on shape,
-        // not on the absolute world or UV scale of a nonsingular triangle.
+        /// <summary>Normalizes the Jacobian before squaring so nonsingular stretch is independent of uniform scale.</summary>
         static double JacobianAnisotropy(double j00, double j10, double j01, double j11)
         {
             if (!Finite(j00) || !Finite(j10) || !Finite(j01) || !Finite(j11)) return double.NaN;
@@ -93,11 +93,10 @@ namespace SashaRX.UnityMeshLab
             return min > 0 ? Math.Sqrt(max / min) : double.PositiveInfinity;
         }
 
+        /// <summary>Separates nonfinite input from finite values that may represent a collapsed face.</summary>
         static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
 
-        // Promote stored Float32 corners before subtracting and transforming.
-        // Float32 dot products add false shear to nearly collinear triangles.
-        // The packer and exported-mesh audit use the same intrinsic frame.
+        /// <summary>Builds the shared intrinsic frame in double precision to avoid Float32 shear on thin triangles.</summary>
         internal static (double length,double x,double y) WorldFrame(Vector3 a,Vector3 b,Vector3 c,Matrix4x4 matrix)
         {
             double ex=(double)b.x-a.x,ey=(double)b.y-a.y,ez=(double)b.z-a.z;
