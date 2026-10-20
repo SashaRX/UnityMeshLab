@@ -1,5 +1,65 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Separate overlapped source branches at a single UV point — 2026-10-20
+
+Some furniture charts join several edge-connected patches through only one
+vertex. Their individual triangles can be isometric while the patches overlap,
+so a stretch-only early exit misses the defect. Ordinary ARAP also lacks a
+unique relative orientation at such a junction. A square with an overlapping
+isometric triangle reproduces this in both mirrored and ordinary UVs.
+
+After the existing ARAP/bevel passes, partition each chart by full indexed
+edges. Keep the largest patch fixed. A branch may rotate only when it has one
+shared anchor; exact position/UV aliases across duplicated vertex streams also
+count as anchors. Apply one orientation-preserving rigid transform to the whole
+branch. Never change positions, triangle indices, material UV0 or the shared
+anchor. Charts with nonmanifold edges, invalid UVs or collapsed UV faces are
+refused by this additional pass.
+
+Try quarter turns before finer angles, at most 31 orientations per branch.
+Check every moved face against its original intrinsic anisotropy (the existing
+1% relative tolerance) and winding after Float32 rounding. The whole-chart
+contact scan must complete, remove every contact between the moved branch and
+the rest of the chart, and retain only pairs already present in the original
+chart. Reducing pair count while leaving the branch covered is not accepted.
+All attempts share 200,000 pair comparisons;
+budget exhaustion or cancellation publishes no partial chart. Existing quality
+thresholds and the native plugins are unchanged. Contacts whose area fits within
+a Float32 coordinate-rounding band along the two triangle perimeters do not
+trigger a rigid branch rotation. They remain in diagnostics and need precision
+repair; the pair probes use the same shared comparison budget.
+
+The supplied shelving LOD0 now has 25 overlap pairs instead of 33 and maximum
+anisotropy about 152 instead of 171. Its frame retains zero contacts and zero
+collapsed UV faces. The ordinary grouped-transfer LOD1 result has zero overlap
+pairs instead of one; its pre-existing four degenerate faces and extreme
+stretch remain. The kitchen countertop's near-contact is below the rounding
+band, so its existing eight source/four target overlap pairs and extreme
+stretch are retained. These source results agree
+in off, legacy and adaptive symmetry modes. This is a bounded improvement,
+not acceptance of either furniture model's complete lightmap layout.
+
+Two portable overlap controls and all three private shelving modes fail before
+the integration and pass after it. Kitchen controls additionally protect the
+downstream target from regression. Copy-only source/export checks preserve exact oriented geometry and
+authored FBX UV0; original fixture files remain untouched. Additional controls
+cover clean charts, mirrored winding, cancellation, exhausted initial/search
+budgets, nonmanifold edges, invalid input, duplicated anchor aliases and contact
+slivers that must stay reported without a large rigid displacement. A covered
+branch control reproduced a misleading pair-count improvement before the
+complete-separation guard and now refuses the unchanged overlap atomically.
+
+Exploration: replacing ARAP's Float32 rest frames with double/cross-product
+frames recovered seven previously ignored narrow countertop triangles, but the
+final packed result gained contacts and a collapsed face, so that change was
+discarded. Forced boundary initialization and whole-chart planar projection did
+not provide a clean general repair and are also excluded. Remaining continuous
+chart folds and packed thin-triangle distortion need a separate experiment.
+Rotating the kitchen's numerical contact initially reduced source overlap from
+eight pairs to seven but increased ordinary target overlap from four to eleven;
+even small-angle trials produced five. That regression is excluded by the
+coordinate-uncertainty eligibility check, not by relaxing any diagnostic.
+
 ## Recover an invalid forward atlas from oriented surfaces — 2026-10-20
 
 An overlapped UV result can have an apparently ideal stretch of 1. The ordinary
