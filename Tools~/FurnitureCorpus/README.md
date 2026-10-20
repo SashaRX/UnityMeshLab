@@ -21,7 +21,7 @@ matching file/pair/error counts and all nine measurements per pair are required 
 the summary's `complete` flag. Errors and incomplete intersection scans remain
 visible. A completed audit is **not** a clean-UV certification.
 
-The six portable report checks also run in `meta-check.yml` without private meshes,
+The seven portable report checks also run in `meta-check.yml` without private meshes,
 Unity licensing or SLIM dependencies. The private corpus audit remains local.
 An additional optional solver test rejects a closed low-stretch patch before the
 probe threshold; it runs with the SLIM environment and is explicitly skipped without it.
@@ -44,7 +44,9 @@ Every transfer uses the same final unit-square clamp. `rawOutOfBounds` records t
 number of vertices outside before that clamp. The source scan uses packed UV2.
 `geometryDegenerateFaces` counts exact zero-area stored 3D triangles independently
 of `uvDegenerateFaces`. Both can apply to the same face. The existing quality
-report's `degenerateFaces` remains its combined counter.
+report's `degenerateFaces` remains its combined counter. A nearly singular
+Jacobian computation can miss an exactly zero stored UV area; comparison therefore
+also includes both direct degeneracy counters instead of trusting only that metric.
 
 `uvTriangleAreaSum` is a sum with multiplicity, **not occupied atlas area** when
 triangles overlap. `atlasSide` is the normalized pack raster size. Timings are

@@ -16,8 +16,9 @@ def compare(candidate, baseline):
     if not all(row["quality"].get("overlapScanComplete") for row in (candidate, baseline)):
         return "incomplete"
     better = worse = False
-    for key in METRICS:
-        value, original = candidate["quality"][key], baseline["quality"][key]
+    values = [(candidate["quality"][key], baseline["quality"][key]) for key in METRICS]
+    values += [(candidate[key], baseline[key]) for key in ("geometryDegenerateFaces", "uvDegenerateFaces")]
+    for value, original in values:
         if not math.isfinite(value) or not math.isfinite(original):
             return "invalid"
         tolerance = 1e-6 * max(abs(value), abs(original), 1e-12) if isinstance(value, float) else 0

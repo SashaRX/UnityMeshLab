@@ -8,6 +8,7 @@ def row(profile="default", method="grouped"):
     """Create a complete, clean measurement for one fixed input pair."""
     return dict(status="measured", model="chair", source="chair_LOD0", target="chair_LOD1",
                 profile=profile, method=method, inputHash="same",
+                geometryDegenerateFaces=0, uvDegenerateFaces=0,
                 quality=dict.fromkeys(METRICS, 0) | {"overlapScanComplete": True})
 
 
@@ -25,6 +26,12 @@ class ReportTests(unittest.TestCase):
         baseline["quality"]["overlapPairs"] = 10
         candidate["quality"]["overlapScanComplete"] = False
         self.assertEqual(compare(candidate, baseline), "incomplete")
+
+    def test_direct_uv_collapse_count_overrides_rounded_jacobian_metric(self):
+        """A singular stored UV triangle must count even if the Jacobian looks finite."""
+        baseline, candidate = row(), row()
+        candidate["uvDegenerateFaces"] = 1
+        self.assertEqual(compare(candidate, baseline), "worse")
 
     def test_missing_variants_and_missing_terminal_marker(self):
         """Partial variant sets and interrupted captures must not look complete."""

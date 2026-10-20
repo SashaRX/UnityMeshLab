@@ -36,6 +36,14 @@ not zero-area geometry. Extreme anisotropy remains a separate issue even in
 results with zero detected overlaps. The two original fixtures alone substantially
 underrepresent failures in curved and coarse geometry.
 
+There is also a diagnostic discrepancy worth a separate production fix:
+`Modern_Kitchen_A_Countertop_LOD1` has one exactly zero stored UV-area face in the
+direct counter, while the existing Jacobian-based `degenerateFaces` reports zero.
+Its finite worst anisotropy is about 5.94e15. A finite singular-value ratio alone
+must not establish that a face survived. The corpus comparison includes both
+direct degeneracy counters as well as the existing quality metrics; the table's
+outcomes are unchanged by this extra guard. The production metric is not changed here.
+
 ## Compared alternatives
 
 Each row below compares 255 target pairs against default grouped transfer.
@@ -111,7 +119,8 @@ This is a research direction, not an implementation in this change.
 
 ## Next acceptance targets
 
-1. Preserve thin source triangles after packing and Float32 storage, with exact
+1. Fix the exact-area/Jacobian degeneracy discrepancy in the production quality
+   checks, then preserve thin source triangles after packing and Float32 storage, with exact
    geometry/UV0 preservation and both source and downstream target checks.
 2. Improve donor selection near seams using geometric and normal compatibility
    plus face-interior evidence. The nearest-point controls demonstrate that simply
