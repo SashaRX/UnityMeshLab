@@ -21,7 +21,7 @@ matching file/pair/error counts and all nine measurements per pair are required 
 the summary's `complete` flag. Errors and incomplete intersection scans remain
 visible. A completed audit is **not** a clean-UV certification.
 
-The seven portable report checks also run in `meta-check.yml` without private meshes,
+The twelve portable report checks also run in `meta-check.yml` without private meshes,
 Unity licensing or SLIM dependencies. The private corpus audit remains local.
 An additional optional solver test rejects a closed low-stretch patch before the
 probe threshold; it runs with the SLIM environment and is explicitly skipped without it.
@@ -62,6 +62,21 @@ same, incomplete, invalid or tradeoff. Float comparisons use relative 1e-6
 tolerance; integer defects must agree exactly. These comparisons are diagnostic,
 not the production candidate acceptance rule. Source rows repeat for each target;
 deduplicate `(model, source)` before claiming a count of unique source meshes.
+
+To compare an algorithm change against an earlier capture, use the same corpus
+and settings, then run:
+
+```powershell
+python Tools~/FurnitureCorpus/report.py after.jsonl --baseline before.jsonl --out comparison --require-no-regressions
+```
+
+Both captures must be complete with complete intersection scans, identical
+model/LOD/variant inventories, input hashes, resolutions and schema versions.
+`baselineComparison` in `summary.json` records per-variant counts and every changed
+model/LOD result. The optional gate exits with code 1 for any worse, tradeoff or
+invalid comparison, preserving the report for inspection. Omitting the flag only
+reports differences. Passing means no measured regression relative to the chosen
+baseline; it does not certify a defect-free atlas or correct correspondence.
 
 ## Optional SLIM control
 

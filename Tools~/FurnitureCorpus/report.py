@@ -65,10 +65,37 @@ def summarize(rows):
                 comparisons={key: dict(value) for key, value in sorted(comparisons.items())})
 
 
-def export(rows, destination):
+def compare_runs(rows, baseline_rows):
+    """Compare complete captures of the same corpus without hiding per-model regressions."""
+    summaries = [summarize(capture) for capture in (rows, baseline_rows)]
+    if any(not s["complete"] or s["incompleteScans"] for s in summaries):
+        raise ValueError("Both captures must be complete with complete intersection scans.")
+    fields = ("model", "source", "target", "profile", "method")
+    indices = [{tuple(r[k] for k in fields): r for r in capture if r["status"] == "measured"}
+               for capture in (rows, baseline_rows)]
+    inventories = [{r["model"] for r in capture if r.get("model")} for capture in (rows, baseline_rows)]
+    if indices[0].keys() != indices[1].keys() or inventories[0] != inventories[1]:
+        raise ValueError("Captures contain different model/LOD/variant inventories.")
+    counts = collections.defaultdict(collections.Counter)
+    changed = []
+    for key, candidate in sorted(indices[0].items()):
+        baseline = indices[1][key]
+        if any(candidate[field] != baseline[field] for field in ("inputHash", "resolution", "schema")):
+            raise ValueError("Changed input hash, resolution or schema for " + str(key))
+        result = compare(candidate, baseline)
+        counts["/".join(key[-2:])][result] += 1
+        if result != "same":
+            changed.append(dict(zip(fields, key)) | {"comparison": result})
+    return dict(measuredRows=len(indices[0]), comparisons={key: dict(value) for key, value in sorted(counts.items())},
+                changed=changed)
+
+
+def export(rows, destination, baseline_rows=None):
     """Write a flat scoreboard and machine-readable completion/comparison summary."""
     destination.mkdir(parents=True, exist_ok=True)
     summary = summarize(rows)
+    if baseline_rows is not None:
+        summary["baselineComparison"] = compare_runs(rows, baseline_rows)
     (destination / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     fields = ["model", "source", "target", "profile", "method", "inputHash", "atlasSide", "milliseconds",
               "geometryDegenerateFaces", "uvDegenerateFaces", "uvTriangleAreaSum", "rawOutOfBounds", "misses", "fallbackVertices"]
@@ -83,15 +110,23 @@ def export(rows, destination):
     return summary
 
 
-def main():
+def main(argv=None):
     """Convert one captured run to CSV and a completeness-aware JSON summary."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("capture", type=Path)
     parser.add_argument("--out", type=Path, required=True)
-    args = parser.parse_args()
+    parser.add_argument("--baseline", type=Path, help="Compare against a complete earlier capture of identical inputs.")
+    parser.add_argument("--require-no-regressions", action="store_true", help="Fail on any worse, tradeoff or invalid baseline comparison.")
+    args = parser.parse_args(argv)
+    if args.require_no_regressions and args.baseline is None:
+        parser.error("--require-no-regressions requires --baseline")
     rows = [json.loads(line) for line in args.capture.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
-    summary = export(rows, args.out)
+    baseline = None if args.baseline is None else [json.loads(line) for line in
+                args.baseline.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
+    summary = export(rows, args.out, baseline)
     print(json.dumps({k: v for k, v in summary.items() if k not in ("errors", "exclusions", "missing")}, indent=2))
+    if args.require_no_regressions and any(row["comparison"] != "better" for row in summary["baselineComparison"]["changed"]):
+        parser.exit(1, "The baseline comparison contains regressions or tradeoffs; see summary.json.\n")
 
 
 if __name__ == "__main__":

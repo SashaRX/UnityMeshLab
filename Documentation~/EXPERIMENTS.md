@@ -3675,3 +3675,30 @@ through the same manifold-anchor, metric, finite-area and winding checks instead
 of leaving it pending. Two traversal-order controls reproduce the refusal before
 the fix; both now pass. A distorted closure still refuses the complete candidate.
 All 15 focused shelving/export/recovery tests pass after this correction.
+
+## Stored-UV checks and thin-triangle candidate scoring (2026-10-21)
+
+PR #292 first checks stored UV degeneracy before frame conversion in diagnostic
+and Reverse metrics. On the furniture corpus this exposes 174 missed collapsed
+faces across 30 ordinary transfer results; it does not repair those UVs.
+
+A continuation tested removing the grouped candidate's absolute `1e-10` UV-area
+floor, with and without promoted geometry/area arithmetic. A tiny isometric
+triangle reproduces a false issue and an oblique isometric bevel reproduces false
+stretch (~1.526). Correcting both passes the portable controls, but candidate
+quality also controls source ARAP and downstream selection.
+
+Both trials complete 80 private FBX files / 255 LOD pairs / 2295 rows. Default
+targets classify as 249 unchanged, 2 better and 4 tradeoffs in each trial. Blanket
+LOD2 loses 42 degenerate faces but gains 152 overlaps; an ottoman frame gains a
+degenerate face while losing four overlaps. Better source metrics do not establish
+a better LOD chain. The full trial passes 538 Unity tests with 35 optional skips;
+the area-only trial passes 100. Neither trial is accepted, no quality policy is
+relaxed, and the candidate-scoring changes are not included in production.
+
+The accepted continuation adds capture-to-capture comparisons and an optional
+regression exit gate to `Tools~/FurnitureCorpus/report.py`. It rejects incomplete
+captures/scans and mismatched inputs, inventories, resolution or schema, reports
+every changed model/LOD/variant, and keeps tradeoffs visible. Twelve portable
+report tests cover this behavior, including CLI exit codes and saved evidence.
+See `FURNITURE_TRANSFER_RESEARCH.md` for measurements and remaining limitations.

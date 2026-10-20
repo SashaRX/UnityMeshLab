@@ -104,6 +104,43 @@ The original 49 degeneracy-positive default targets become 53. The corrected
 metric can refuse candidates that previously appeared nonsingular; this guard
 does not implement a new repair algorithm or validate every UI workflow.
 
+## Candidate-scoring experiment — rejected
+
+Two controlled trials used the corrected diagnostic baseline above. The first
+promoted grouped candidate geometry/frame and area-weighting arithmetic to double
+precision and replaced the absolute `1e-10` UV-area issue threshold with a direct
+zero-area test. The second retained only the area-threshold change. The existing
+10000:1 effective-collapse threshold and overlap checks were retained in both.
+
+Portable probes exposed two real scoring defects: a valid uniformly scaled
+triangle at UV scale `1e-6` is counted as an issue, and an isometric oblique bevel
+reports stretch about 1.526 rather than 1. Both corrected controls passed in the
+full trial. However, this score also drives source ARAP selection and transfer
+decisions; correcting it is not behavior-neutral.
+
+Each trial completed 80 files / 255 pairs / 2,295 measurements without processing
+errors or incomplete scans. Both yield the same default target classifications:
+249 unchanged, 2 improvements and 4 tradeoffs. Representative full-trial results:
+
+| Target | Before | Trial |
+|---|---|---|
+| Modern_Bed_A_Blanket_LOD2 | 3083 degenerate faces, 780 overlaps | 3041 degenerate faces, 932 overlaps |
+| Modern_Dresser_B_Frame_LOD1 | 11 overlaps | 12 overlaps |
+| Modern_OttomanBench_A_Frame_LOD2 | 33 degenerate faces, 81 overlaps | 34 degenerate faces, 77 overlaps |
+| Modern_OttomanBench_A_Main_LOD2 | 31 overlaps | 51 overlaps |
+
+The full trial passed 538 local Unity checks (35 optional fixture skips); the
+area-only trial passed 100. Those passing tests do not override the measured
+corpus regressions. Both changes are excluded from production. The original
+small-area heuristic and grouped geometry metric remain known limitations.
+Two source rows improve while downstream results include regressions, reinforcing
+the need to qualify source preparation and every target LOD together.
+
+The report tool now compares two complete captures and can fail explicitly on
+regressions or tradeoffs. This reproduces the rejection of both trials instead of
+relying on an overall average. The corrected stored-area diagnostics remain in
+production; no new transfer/packing default is selected by this experiment.
+
 ## Algorithm investigation
 
 **SLIM with an injective seed** is a relevant source-parameterization candidate:
