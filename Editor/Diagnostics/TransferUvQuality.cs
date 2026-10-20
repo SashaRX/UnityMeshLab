@@ -51,17 +51,30 @@ namespace SashaRX.UnityMeshLab
             double cross=length*frame.y;
             if (!Finite(cross)) { ++report.invalidFaces; return; }
             if (cross <= 0) { ++report.degenerateFaces; return; }
-            double ux=((double)uv[b].x-uv[a].x)*metric.x,uy=((double)uv[b].y-uv[a].y)*metric.y;
-            double vx=((double)uv[c].x-uv[a].x)*metric.x,vy=((double)uv[c].y-uv[a].y)*metric.y;
-            double j00=ux/length,j10=uy/length;
-            double j01=(vx-ux*frame.x/length)/frame.y,j11=(vy-uy*frame.x/length)/frame.y;
-            double ratio = JacobianAnisotropy(j00, j10, j01, j11);
+            double ratio = UvAnisotropy(frame, uv[a], uv[b], uv[c], metric);
             if (double.IsNaN(ratio)) { ++report.invalidFaces; return; }
             if (double.IsInfinity(ratio)) { ++report.degenerateFaces; report.faceAnisotropy[f] = float.MaxValue; return; }
             report.faceAnisotropy[f] = (float)Math.Min(ratio, float.MaxValue);
             report.worstAnisotropy = Math.Max(report.worstAnisotropy, ratio);
             if (ratio > 1.25) ++report.stretchedFaces;
             weighted += ratio * cross; totalArea += cross;
+        }
+
+        /// <summary>Checks stored UV degeneracy before frame conversion, preserving nonfinite-input classification.</summary>
+        static double UvAnisotropy((double length, double x, double y) frame, Vector2 a, Vector2 b, Vector2 c, Vector2 metric)
+        {
+            double ux = (double)b.x - a.x, uy = (double)b.y - a.y;
+            double vx = (double)c.x - a.x, vy = (double)c.y - a.y;
+            if (!Finite(ux) || !Finite(uy) || !Finite(vx) || !Finite(vy) || !Finite(metric.x) || !Finite(metric.y))
+                return double.NaN;
+            // Test stored UVs before metric scaling and geometry shear: rounding those
+            // operations can turn a zero determinant into a tiny nonzero value.
+            // No area epsilon: very thin but nonzero faces still have measurable stretch.
+            if (ux * vy - uy * vx == 0) return double.PositiveInfinity;
+            ux *= metric.x; uy *= metric.y; vx *= metric.x; vy *= metric.y;
+            return JacobianAnisotropy(ux / frame.length, uy / frame.length,
+                (vx - ux * frame.x / frame.length) / frame.y,
+                (vy - uy * frame.x / frame.length) / frame.y);
         }
 
         // Normalize the Jacobian before squaring: anisotropy depends on shape,
@@ -99,10 +112,7 @@ namespace SashaRX.UnityMeshLab
             var frame=ReverseUvTransfer.TriangleFrame(e1.x,e1.y,e1.z,e2.x,e2.y,e2.z);
             if (!Finite(frame.length) || !Finite(frame.y) || frame.length <= 0 || frame.y <= 0)
                 return double.PositiveInfinity;
-            double ux = (double)b.x - a.x, uy = (double)b.y - a.y;
-            return JacobianAnisotropy(ux / frame.length, uy / frame.length,
-                ((double)c.x - a.x - ux * frame.x / frame.length) / frame.y,
-                ((double)c.y - a.y - uy * frame.x / frame.length) / frame.y);
+            return UvAnisotropy(frame, a, b, c, Vector2.one);
         }
     }
 }

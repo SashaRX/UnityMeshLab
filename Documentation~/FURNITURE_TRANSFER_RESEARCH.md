@@ -18,7 +18,8 @@ metric definitions: [corpus tools](../Tools~/FurnitureCorpus/README.md).
 
 Among 247 unique prepared source submeshes, 23 have UV overlaps and 16 have
 degenerate faces. Among 255 ordinary transfer results, 69 have overlaps and 49
-have degenerate faces; none have nonfinite/invalid faces. These categories overlap
+have degenerate faces under the original Jacobian-only metric; the corrected
+stored-area check finds 53. None have nonfinite/invalid faces. These categories overlap
 and must not be added to infer the number of defective meshes.
 
 | Target | Overlap pairs | Exact 3D zero-area faces | Zero-area UV faces |
@@ -36,13 +37,14 @@ not zero-area geometry. Extreme anisotropy remains a separate issue even in
 results with zero detected overlaps. The two original fixtures alone substantially
 underrepresent failures in curved and coarse geometry.
 
-There is also a diagnostic discrepancy worth a separate production fix:
+The original audit also exposed a diagnostic discrepancy:
 `Modern_Kitchen_A_Countertop_LOD1` has one exactly zero stored UV-area face in the
-direct counter, while the existing Jacobian-based `degenerateFaces` reports zero.
+direct counter, while the original Jacobian-based `degenerateFaces` reports zero.
 Its finite worst anisotropy is about 5.94e15. A finite singular-value ratio alone
 must not establish that a face survived. The corpus comparison includes both
 direct degeneracy counters as well as the existing quality metrics; the table's
-outcomes are unchanged by this extra guard. The production metric is not changed here.
+outcomes were unchanged by that independent comparison guard. The production
+correction and a repeat of the corpus are recorded below.
 
 ## Compared alternatives
 
@@ -54,11 +56,15 @@ Overlap pair area participates even for small contacts; no diagnostic is suppres
 
 | Alternative | Better | Worse | Tradeoff | Same |
 |---|---:|---:|---:|---:|
-| UV0 nearest | 2 | 180 | 55 | 18 |
+| UV0 nearest | 2 | 181 | 54 | 18 |
 | Surface nearest | 0 | 193 | 61 | 1 |
 | Surface nearest with normal filtering | 1 | 189 | 62 | 3 |
-| Disable source reparameterization | 17 | 158 | 67 | 13 |
-| Request internal oversampling 8× | 65 | 61 | 129 | 0 |
+| Disable source reparameterization | 19 | 163 | 60 | 13 |
+| Request internal oversampling 8× | 70 | 60 | 125 | 0 |
+
+This table uses the corrected stored-area metric from the repeat below. Finite
+stretch statistics exclude collapsed faces, whose defects remain explicit in
+`degenerateFaces`; a lower worst stretch alone is not a repaired layout.
 
 No alternative is a justified global replacement. Disabling reparameterization
 never dominates the default source quality in these 255 pair-associated source
@@ -71,6 +77,32 @@ Source rows repeat for models with several lower LODs. The comparison table is
 pair-weighted; it is not a count of independent FBX models. Timings are single
 samples and do not support performance claims. Triangle area sums are not atlas
 occupancy in overlapped layouts; padding and gutter quality are not certified.
+
+## Stored-UV degeneracy correction
+
+The quality report and Reverse UV triangle metric now check the determinant of
+stored UV edges before geometry-frame conversion. The diagnostic checks finite
+UVs and metric values first. No area epsilon is introduced. A synthetic oblique
+triangle reproduced the failure in seven of twelve winding/corner-order cases;
+all twelve now pass, along with two thin nonzero-area controls and four nonfinite
+input controls. The checks cover both repeated UV corners and three distinct
+collinear UV corners.
+
+A repeat of all 80 files / 255 pairs / 2,295 rows completes without processing
+errors or incomplete intersection scans. 136 rows correct their degeneracy and
+finite-stretch statistics, including 30 default grouped target results. The
+combined degeneracy count no longer falls below either independent geometry or
+UV counter in any row. All other recorded fields except execution time match
+the previous run exactly: overlaps, bounds, direct degeneracy counts, UV area
+sums, atlas sizes, misses and input hashes. This is not a bytewise comparison of
+output UV buffers, which the corpus does not record.
+
+The countertop now reports its one collapsed UV face in every symmetry mode;
+its worst remaining finite anisotropy is about 2.21e10 instead of 5.94e15. This
+decrease comes from excluding the collapsed face, not from repairing its UVs.
+The original 49 degeneracy-positive default targets become 53. The corrected
+metric can refuse candidates that previously appeared nonsingular; this guard
+does not implement a new repair algorithm or validate every UI workflow.
 
 ## Algorithm investigation
 
@@ -119,8 +151,8 @@ This is a research direction, not an implementation in this change.
 
 ## Next acceptance targets
 
-1. Fix the exact-area/Jacobian degeneracy discrepancy in the production quality
-   checks, then preserve thin source triangles after packing and Float32 storage, with exact
+1. With stored-UV degeneracy checked before frame conversion, preserve thin source
+   triangles after packing and Float32 storage, with exact
    geometry/UV0 preservation and both source and downstream target checks.
 2. Improve donor selection near seams using geometric and normal compatibility
    plus face-interior evidence. The nearest-point controls demonstrate that simply
@@ -131,5 +163,6 @@ This is a research direction, not an implementation in this change.
 4. Add shared-atlas padding/occupancy and full Forward/Reverse runs before making
    claims about end-to-end lightmap quality or changing production defaults.
 
-This change adds reproducible diagnostics and algorithm evidence. It does not
-silently select a new production solver or declare the listed defects repaired.
+These measurements do not select a new production solver or establish that the
+listed UV defects have been repaired. Correcting a diagnostic changes which
+defects are reported; it does not by itself repair the affected atlas.

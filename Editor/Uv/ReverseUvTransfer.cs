@@ -1182,6 +1182,9 @@ namespace SashaRX.UnityMeshLab
             // order-dependent shear on nearly collinear captured triangles.
             double ux = (double)bUv.x - aUv.x, uy = (double)bUv.y - aUv.y;
             double vx = (double)cUv.x - aUv.x, vy = (double)cUv.y - aUv.y;
+            // Reject collapsed stored UVs before geometry shear can introduce a
+            // rounding residual in an otherwise zero Jacobian determinant.
+            if (ux * vy - uy * vx == 0) return double.PositiveInfinity;
             double j00 = ux / length, j10 = uy / length, j01 = (vx - ux * x / length) / y, j11 = (vy - uy * x / length) / y;
             double a = j00 * j00 + j10 * j10, b = j01 * j01 + j11 * j11, c = j00 * j01 + j10 * j11;
             double max = (a + b + Math.Sqrt(Math.Max(0, (a - b) * (a - b) + 4 * c * c))) * .5;

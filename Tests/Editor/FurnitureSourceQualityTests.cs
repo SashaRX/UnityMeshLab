@@ -41,9 +41,11 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.LessOrEqual(sourceQuality.overlapPairs, shelf ? 25 : 8);
                 Assert.LessOrEqual(sourceQuality.worstAnisotropy, shelf ? 153 : 56497);
                 Assert.LessOrEqual(targetQuality.overlapPairs, shelf ? 0 : 4);
-                Assert.LessOrEqual(targetQuality.degenerateFaces, shelf ? 4 : 0);
+                // The countertop already contains one collapsed UV face; the former
+                // sheared-Jacobian metric misreported it as finite stretch (~5.94e15).
+                Assert.AreEqual(shelf ? 4 : 1, targetQuality.degenerateFaces);
                 Assert.AreEqual(0, targetQuality.invalidFaces);
-                Assert.LessOrEqual(targetQuality.worstAnisotropy, shelf ? 51561202 : 5.943e15);
+                Assert.LessOrEqual(targetQuality.worstAnisotropy, shelf ? 51561202 : 22127683743);
                 CollectionAssert.AreEqual(original, File.ReadAllBytes(path));
                 CollectionAssert.AreEqual(original, File.ReadAllBytes(fixture));
             }

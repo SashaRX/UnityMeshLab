@@ -44,9 +44,10 @@ Every transfer uses the same final unit-square clamp. `rawOutOfBounds` records t
 number of vertices outside before that clamp. The source scan uses packed UV2.
 `geometryDegenerateFaces` counts exact zero-area stored 3D triangles independently
 of `uvDegenerateFaces`. Both can apply to the same face. The existing quality
-report's `degenerateFaces` remains its combined counter. A nearly singular
-Jacobian computation can miss an exactly zero stored UV area; comparison therefore
-also includes both direct degeneracy counters instead of trusting only that metric.
+report's `degenerateFaces` remains its combined counter. The original audit found
+that a nearly singular Jacobian computation could miss a zero stored UV area;
+production quality checks now test that area before geometry-frame conversion.
+Comparison retains both independent degeneracy counters for regression detection.
 
 `uvTriangleAreaSum` is a sum with multiplicity, **not occupied atlas area** when
 triangles overlap. `atlasSide` is the normalized pack raster size. Timings are

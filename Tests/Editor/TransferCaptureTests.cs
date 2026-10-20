@@ -511,6 +511,67 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(0, current.BoundaryToleranceTexels);
         }
 
+        /// <summary>Both metrics reject repeated and collinear corners for every winding and starting vertex.</summary>
+        [TestCase(0, true)] [TestCase(1, true)] [TestCase(2, true)]
+        [TestCase(3, true)] [TestCase(4, true)] [TestCase(5, true)]
+        [TestCase(0, false)] [TestCase(1, false)] [TestCase(2, false)]
+        [TestCase(3, false)] [TestCase(4, false)] [TestCase(5, false)]
+        public void Quality_RejectsCollapsedUvBeforeGeometryShear(int order, bool repeatedCorner)
+        {
+            var positions = new[] { Vector3.zero, new Vector3(1, 1, 0), new Vector3(1, 2, 0) };
+            var uv = new[] { Vector2.zero, new Vector2(.125f, .375f),
+                repeatedCorner ? new Vector2(.125f, .375f) : new Vector2(.25f, .75f) };
+            int a = order % 3, b = (a + (order < 3 ? 1 : 2)) % 3, c = 3 - a - b;
+            var mesh = new Mesh { vertices = positions, triangles = new[] { a, b, c } };
+            try {
+                var report = TransferUvQuality.Measure(mesh, uv, new Vector2(.3f, .7f), Matrix4x4.identity);
+                Assert.AreEqual(0, report.invalidFaces);
+                Assert.AreEqual(1, report.degenerateFaces);
+                Assert.AreEqual(float.MaxValue, report.faceAnisotropy[0]);
+                Assert.AreEqual(double.PositiveInfinity, TransferUvQuality.TriangleAnisotropy(
+                    positions[b] - positions[a], positions[c] - positions[a], uv[a], uv[b], uv[c]));
+                Assert.AreEqual(double.PositiveInfinity, ReverseUvTransfer.TriangleAnisotropy(
+                    positions[a], positions[b], positions[c], uv[a], uv[b], uv[c]));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
+        /// <summary>A one-Float32-step separation remains valid even at a tiny uniform UV scale.</summary>
+        [TestCase(1f)] [TestCase(1e-20f)]
+        public void Quality_PreservesThinNonzeroUvTriangles(float scale)
+        {
+            var mesh = new Mesh { vertices = new[] { Vector3.zero, new Vector3(1, 1, 0), new Vector3(1, 2, 0) },
+                triangles = new[] { 0, 1, 2 } };
+            var uv = new[] { Vector2.zero, new Vector2(.125f, .375f) * scale,
+                new Vector2(.125f, .37500003f) * scale };
+            try {
+                var report = TransferUvQuality.Measure(mesh, uv, Vector2.one, Matrix4x4.identity);
+                Assert.AreEqual(0, report.invalidFaces + report.degenerateFaces);
+                Assert.Greater(report.worstAnisotropy, 1e6);
+                Assert.IsFalse(double.IsInfinity(TransferUvQuality.TriangleAnisotropy(
+                    mesh.vertices[1], mesh.vertices[2], uv[0], uv[1], uv[2])));
+                Assert.IsFalse(double.IsInfinity(ReverseUvTransfer.TriangleAnisotropy(
+                    Vector3.zero, mesh.vertices[1], mesh.vertices[2], uv[0], uv[1], uv[2])));
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
+        /// <summary>Nonfinite UVs and metrics are invalid, including when finite corners would coincide.</summary>
+        [TestCase(float.NaN, false)] [TestCase(float.PositiveInfinity, false)]
+        [TestCase(float.NaN, true)] [TestCase(float.PositiveInfinity, true)]
+        public void Quality_DoesNotClassifyInvalidInputAsCollapsed(float invalid, bool invalidMetric)
+        {
+            var mesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, Vector3.up },
+                triangles = new[] { 0, 1, 2 } };
+            var uv = new[] { Vector2.zero, Vector2.one, new Vector2(invalidMetric ? 1 : invalid, 1) };
+            try {
+                var report = TransferUvQuality.Measure(mesh, uv, new Vector2(invalidMetric ? invalid : 1, 1), Matrix4x4.identity);
+                Assert.AreEqual(1, report.invalidFaces);
+                Assert.AreEqual(0, report.degenerateFaces);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
         [Test]
         public void Quality_DetectsAxisStretchEvenWhenUvAreaIsUnchanged()
         {
