@@ -80,6 +80,11 @@ def probe(path, destination):
         if np.any(cross == 0):
             rows.append(row | dict(status="geometry-degenerate"))
             continue
+        try:
+            DiskSlim.validate_disk(points, local)
+        except ValueError as error:
+            rows.append(row | dict(status="refused", error=str(error)))
+            continue
         row["before"] = worst_stretch(points, local, original)
         if row["before"] is not None and row["before"] <= 4:
             rows.append(row | dict(status="below-probe-threshold"))
@@ -103,6 +108,7 @@ def probe(path, destination):
 
 
 def main():
+    """Run the optional chart probe into a fresh directory with retained buffers."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("capture", type=Path)
     parser.add_argument("--out", type=Path, required=True)

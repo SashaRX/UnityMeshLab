@@ -45,8 +45,8 @@ def validate_atlas(path):
 
 class DiskSlim:
     @staticmethod
-    def parameterize_chart(vertices, faces, face_ids, arap_iters=0):
-        faces = np.asarray(faces[face_ids], dtype=np.int64)
+    def validate_disk(vertices, faces):
+        """Require the solver's manifold-disk topology before classifying or solving a patch."""
         edge_pairs = np.sort(np.concatenate((faces[:, [0, 1]], faces[:, [1, 2]],
                                             faces[:, [2, 0]])), axis=1)
         edges, counts = np.unique(edge_pairs, axis=0, return_counts=True)
@@ -54,6 +54,13 @@ class DiskSlim:
         if (len(vertices) - len(edges) + len(faces) != 1 or len(boundary) != np.sum(counts == 1)
                 or np.any(counts > 2)):
             raise ValueError("SLIM control requires a manifold disk with one boundary loop")
+        return edges, boundary
+
+    @staticmethod
+    def parameterize_chart(vertices, faces, face_ids, arap_iters=0):
+        """Optimize an injective disk seed, keeping only globally validated checkpoints."""
+        faces = np.asarray(faces[face_ids], dtype=np.int64)
+        edges, boundary = DiskSlim.validate_disk(vertices, faces)
         # Positive uniform weights + convex boundary establish an injective seed.
         # No authored UV values are used for coordinates or initialization.
         angle = np.arange(len(boundary)) * (2 * np.pi / len(boundary))

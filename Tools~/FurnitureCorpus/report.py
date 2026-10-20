@@ -83,6 +83,7 @@ def export(rows, destination):
 
 
 def main():
+    """Convert one captured run to CSV and a completeness-aware JSON summary."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("capture", type=Path)
     parser.add_argument("--out", type=Path, required=True)

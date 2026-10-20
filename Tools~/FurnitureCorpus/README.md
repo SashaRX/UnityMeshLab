@@ -23,6 +23,8 @@ visible. A completed audit is **not** a clean-UV certification.
 
 The six portable report checks also run in `meta-check.yml` without private meshes,
 Unity licensing or SLIM dependencies. The private corpus audit remains local.
+An additional optional solver test rejects a closed low-stretch patch before the
+probe threshold; it runs with the SLIM environment and is explicitly skipped without it.
 
 The fixed experiment uses 512 resolution, square texture metric, symmetry off,
 UV0 edge welding and triangle pre-optimization. It calls imported-asset preparation
