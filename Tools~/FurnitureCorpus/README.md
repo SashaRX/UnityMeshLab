@@ -21,6 +21,9 @@ matching file/pair/error counts and all nine measurements per pair are required 
 the summary's `complete` flag. Errors and incomplete intersection scans remain
 visible. A completed audit is **not** a clean-UV certification.
 
+The six portable report checks also run in `meta-check.yml` without private meshes,
+Unity licensing or SLIM dependencies. The private corpus audit remains local.
+
 The fixed experiment uses 512 resolution, square texture metric, symmetry off,
 UV0 edge welding and triangle pre-optimization. It calls imported-asset preparation
 and ordinary grouped transfer, **not** UI auto-tune, the complete Forward/Reverse
