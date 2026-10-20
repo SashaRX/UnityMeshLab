@@ -29,7 +29,11 @@ namespace SashaRX.UnityMeshLab
                 {
                     int u = indices[face * 3 + k], v = indices[face * 3 + (k + 1) % 3];
                     var key = u < v ? (u, v) : (v, u);
-                    if (!edges.TryGetValue(key, out var uses)) edges.Add(key, uses = new List<(int, int)>());
+                    if (!edges.TryGetValue(key, out var uses))
+                    {
+                        uses = new List<(int, int)>();
+                        edges.Add(key, uses);
+                    }
                     uses.Add((face, indices[face * 3 + (k + 2) % 3]));
                 }
             }
@@ -76,6 +80,7 @@ namespace SashaRX.UnityMeshLab
                 if (!double.IsFinite(metric) || metric > 4) continue;
                 double before = Area(original[a], original[b], original[c]);
                 double after = Area(candidate[a], candidate[b], point);
+                if (!double.IsFinite(before) || !double.IsFinite(after)) continue;
                 if (before != 0 && Math.Sign(before) != Math.Sign(after)) continue;
                 candidate[c] = point;
                 fixedVertices.Add(c);

@@ -3591,7 +3591,7 @@ UV-degenerate surfaces. Procedural controls cover mirrored/partially stretched
 boundaries, refusal without partial publication, winding and seam conflicts,
 and preservation of distinct thin wire edges.
 
-Local Unity 6000.2.6f2 / Direct3D 11 verification: 264 passed, zero failed,
+Local Unity 6000.2.6f2 / Direct3D 11 verification on the main-based PR: 284 passed, zero failed,
 7 optional fixture skips across FBX, transfer quality, source/group/hierarchical
 repack, and viewport/rendering suites. Both FBX compile variants, identifier and
 tool-dependency guards, and metadata coverage pass. Set
@@ -3603,3 +3603,8 @@ degenerate meshes still exercise ordinary and prepared channel writes.
 The kitchen's Main retains four original geometry-degenerate faces; its
 Countertop still has contact/stretch defects. Successful channel export
 does not certify an otherwise perfect lightmap layout.
+
+Review follow-up: reject nonfinite original UV areas before the winding-sign
+comparison, so invalid input cannot throw or publish a partial recovery. Both
+NaN and infinity refusal controls pass, alongside the kitchen round trips and
+source preparation (12/12 focused tests).

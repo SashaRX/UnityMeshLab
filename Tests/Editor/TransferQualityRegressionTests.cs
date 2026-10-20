@@ -49,6 +49,22 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(before, flat, "A refused candidate must never publish partial changes.");
         }
 
+        [TestCase(float.NaN)] [TestCase(float.PositiveInfinity)]
+        public void BoundaryBevelRecoveryRefusesNonfiniteOriginalCoordinates(float invalid)
+        {
+            var positions = new[] { Vector3.zero, Vector3.right, Vector3.up, new Vector3(1, 1, .1f) };
+            var uv = new[] { Vector2.zero, Vector2.right, Vector2.up, new Vector2(invalid, .5f) };
+            var indices = new[] { 0, 1, 2, 2, 1, 3 };
+            var flat = uv.SelectMany(p => new[] { p.x, p.y }).ToArray();
+            var before = (float[])flat.Clone();
+            var shell = new UvShell {
+                faceIndices = new List<int> { 0, 1 },
+                vertexIndices = new HashSet<int> { 0, 1, 2, 3 }
+            };
+            Assert.IsFalse(XatlasRepack.RecoverBoundaryBevel(shell, indices, positions, flat, default));
+            CollectionAssert.AreEqual(before, flat);
+        }
+
         [Test]
         public void BoundaryBevelRecoveryRefusesANonmanifoldAnchor()
         {
