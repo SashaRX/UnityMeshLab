@@ -8,6 +8,111 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class TransferQualityRegressionTests
     {
+        [TestCase(false, 1f)] [TestCase(true, 1f)] [TestCase(false, .2f)]
+        public void BoundaryBevelRecoveryRetainsTheHealthyFaceAndUnfoldsTheCompleteStrip(bool mirrored, float width)
+        {
+            var positions = new[] { Vector3.zero, Vector3.right, Vector3.up,
+                new Vector3(1,1,.1f), new Vector3(0,2,.1f) };
+            var indices = new[] { 0,1,2, 2,1,3, 2,3,4 };
+            var original = new[] { Vector2.zero, Vector2.right, Vector2.up, new Vector2(.5f,.5f), Vector2.up };
+            original = original.Select(p => new Vector2(p.x * width * (mirrored ? -1 : 1), p.y)).ToArray();
+            var flat = original.SelectMany(p => new[] {p.x,p.y}).ToArray();
+            var shell = UvShellExtractor.Extract(original, indices).Single();
+            Assert.IsTrue(XatlasRepack.RecoverBoundaryBevel(shell, indices, positions, flat, default));
+            CollectionAssert.AreEqual(original.Take(3).SelectMany(p => new[] {p.x,p.y}).ToArray(),flat.Take(6).ToArray());
+            for (int f = 3; f < indices.Length; f += 3)
+            {
+                int a = indices[f], b = indices[f+1], c = indices[f+2];
+                Assert.Less(ReverseUvTransfer.TriangleAnisotropy(positions[a],positions[b],positions[c],
+                    new Vector2(flat[a*2],flat[a*2+1]),new Vector2(flat[b*2],flat[b*2+1]),new Vector2(flat[c*2],flat[c*2+1])),1.001);
+            }
+            using var cancelled = new System.Threading.CancellationTokenSource(); cancelled.Cancel();
+            var snapshot = (float[])flat.Clone();
+            Assert.Throws<System.OperationCanceledException>(() => XatlasRepack.RecoverBoundaryBevel(shell,indices,positions,flat,cancelled.Token));
+            CollectionAssert.AreEqual(snapshot,flat);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void BoundaryBevelRecoveryRefusesContactsAndIncompleteStrips(bool contact)
+        {
+            var positions = new[] { Vector3.zero, Vector3.right, Vector3.up,
+                new Vector3(1, 1, .1f), new Vector3(1, 1, 0), new Vector3(.8f, 1, 0) };
+            var uv = new[] { Vector2.zero, Vector2.right, Vector2.up,
+                new Vector2(.5f, .5f), new Vector2(1, 1), new Vector2(.8f, 1) };
+            var indices = contact ? new[] { 0, 1, 2, 2, 1, 3, 1, 4, 5 }
+                : new[] { 0, 1, 2, 2, 1, 3, 3, 4, 5 };
+            if (!contact) uv[4] = uv[5] = uv[3];
+            var flat = uv.SelectMany(p => new[] { p.x, p.y }).ToArray();
+            var before = (float[])flat.Clone();
+            var shell = UvShellExtractor.Extract(uv, indices).Single();
+            Assert.IsFalse(XatlasRepack.RecoverBoundaryBevel(shell, indices, positions, flat, default));
+            CollectionAssert.AreEqual(before, flat, "A refused candidate must never publish partial changes.");
+        }
+
+        [Test]
+        public void BoundaryBevelRecoveryRefusesANonmanifoldAnchor()
+        {
+            var positions = new[] { Vector3.zero, Vector3.right, Vector3.up,
+                new Vector3(1, 1, .1f), new Vector3(.2f, .2f, -.1f) };
+            var uv = new[] { Vector2.zero, Vector2.right, Vector2.up,
+                new Vector2(.5f, .5f), new Vector2(.2f, .2f) };
+            var indices = new[] { 0, 1, 2, 2, 1, 3, 4, 1, 2 };
+            var flat = uv.SelectMany(p => new[] { p.x, p.y }).ToArray();
+            var before = (float[])flat.Clone();
+            var shell = UvShellExtractor.Extract(uv, indices).Single();
+            Assert.IsFalse(XatlasRepack.RecoverBoundaryBevel(shell, indices, positions, flat, default));
+            CollectionAssert.AreEqual(before, flat);
+        }
+
+        [Test]
+        public void PrivateBevelSourcePreparationPreservesGeometry()
+        {
+            string fixture = System.Environment.GetEnvironmentVariable("MESHLAB_FBX_SEAM_FIXTURE");
+            if (string.IsNullOrEmpty(fixture)) Assert.Ignore("Optional furniture fixture is not configured.");
+            string folder = "Assets/MeshLabBevel_" + System.Guid.NewGuid().ToString("N");
+            UnityEditor.AssetDatabase.CreateFolder("Assets", folder.Substring(7));
+            string path = folder + "/source.fbx";
+            var problems = new List<string>();
+            try
+            {
+                System.IO.File.WriteAllBytes(path, System.IO.File.ReadAllBytes(fixture));
+                UnityEditor.AssetDatabase.ImportAsset(path, UnityEditor.ImportAssetOptions.ForceSynchronousImport);
+                var importer = (UnityEditor.ModelImporter)UnityEditor.AssetImporter.GetAtPath(path);
+                importer.isReadable = true; importer.generateSecondaryUV = false;
+                importer.weldVertices = false; importer.SaveAndReimport();
+                foreach (var mode in new[] { "off", "legacy", "adaptive" })
+                foreach (var pair in TransferBenchmarkAssets.Pairs(new TransferBenchmarkAssets.Case {
+                    asset = path, symmetry = mode, weldUv0 = true, preOptimize = true }))
+                {
+                    using var prepared = TransferBenchmarkAssets.Prepare(pair);
+                    var before = GeometryCorners(pair.source);
+                    var after = GeometryCorners(prepared.source);
+                    bool changed = !before.SequenceEqual(after);
+                    var quality = TransferUvQuality.Measure(prepared.source, prepared.source.uv2, Vector2.one, Matrix4x4.identity);
+                    int collapsed = quality.faceAnisotropy.Count(v => v == float.MaxValue);
+                    TestContext.WriteLine($"{pair.source.name} / {mode}: geometry changed={changed}, collapsed UV={collapsed}, degenerate geometry={quality.degenerateFaces - collapsed}, overlaps={quality.overlapPairs}, worst={quality.worstAnisotropy}");
+                    if (changed) problems.Add(pair.source.name + " / " + mode + ": source geometry changed");
+                    if (collapsed != 0 || quality.invalidFaces != 0) problems.Add(pair.source.name + " / " + mode + ": collapsed/invalid UV2");
+                }
+                Assert.IsEmpty(problems, string.Join("\n", problems));
+            }
+            finally { UnityEditor.AssetDatabase.DeleteAsset(folder); }
+        }
+
+        static string[] GeometryCorners(Mesh mesh)
+        {
+            var positions = mesh.vertices;
+            var corners = mesh.triangles.Select(v => positions[v]).Select(p =>
+                System.BitConverter.SingleToInt32Bits(p.x) + ":" +
+                System.BitConverter.SingleToInt32Bits(p.y) + ":" +
+                System.BitConverter.SingleToInt32Bits(p.z)).ToArray();
+            return Enumerable.Range(0, corners.Length / 3).Select(f => {
+                var triangle = corners.Skip(f * 3).Take(3).ToArray();
+                return Enumerable.Range(0, 3).Select(k => string.Join("/", triangle.Skip(k).Concat(triangle.Take(k))))
+                    .OrderBy(s => s, System.StringComparer.Ordinal).First();
+            }).OrderBy(s => s, System.StringComparer.Ordinal).ToArray();
+        }
+
         [UnityEngine.TestTools.UnityTest]
         public System.Collections.IEnumerator ForwardCpuWorkRunsOffTheEditorThread()
         {

@@ -59,6 +59,19 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.Throws<System.OperationCanceledException>(() => PreviewLines.Build(p, new[] { 0, 1 }, null, cancellation.Token));
         }
 
+        [Test]
+        public void ThinBevelEdgesKeepDistinctEndpoints()
+        {
+            // Below Vector3.operator=='s tolerance: only exact duplicates may be removed.
+            var positions = new[] { Vector3.zero, Vector3.right,
+                new Vector3(0, .000001f, 0), new Vector3(1, .000001f, 0) };
+            var data = PreviewLines.Build(positions, new[] { 0, 1, 2, 3, 0, 2, 1, 3 }, null);
+            Assert.AreEqual(24, data.indices.Length, "Both long edges and both short bevel edges must survive.");
+            foreach (var point in positions)
+                Assert.IsTrue(System.Array.Exists(data.starts, p => p.Equals(point))
+                    || System.Array.Exists(data.ends, p => p.Equals(point)));
+        }
+
         [UnityTest]
         public IEnumerator CachedRibbonsAreReusedAndReleasedWhenTheSourceDies()
         {

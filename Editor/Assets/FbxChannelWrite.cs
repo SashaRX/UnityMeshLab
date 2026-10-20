@@ -1156,7 +1156,7 @@ namespace SashaRX.UnityMeshLab
         static FbxCornerMatch.Result MatchCorners(Donor donor, Tagged tag, in FbxLayerChannels.Topology topology)
             => FbxCornerMatch.Match(topology.polygonSizes, CornerPositions(donor, tag, topology), donor.positions, donor.faces, donor.faceSizes,
                 (c, v) => SignatureMatches(donor, tag, c, v),
-                (a, b) => SameWrittenValues(donor, a, b));
+                (a, b) => SameWrittenValues(donor, a, b), tag.TriangleCorners());
 
         // Every FBX corner's vertex in the working mesh; refuses ambiguity that a local split cannot resolve.
         static int[] PairCorners(Donor donor, Tagged tag, in FbxLayerChannels.Topology topology)

@@ -32,15 +32,16 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(new[] { 1, 3, 0, 2 }, result.cornerToVertex);
         }
 
-        [Test]
-        public void Match_RefusesAValueSeamInsideAPolygon()
+        [TestCase(false)] [TestCase(true)]
+        public void Match_RefusesAValueSeamInsideAPolygon(bool imported)
         {
             // The quad's diagonal is a seam: corners 0 and 2 get different values from its two triangles.
             var corners = Positions((0, 0), (-1, 0), (-1, 1), (0, 1));
             var vertices = Positions((0, 0), (-1, 0), (-1, 1), (0, 1), (0, 0), (-1, 1));
             int[] triangles = { 0, 2, 1, 4, 3, 5 };
             float[] value = { 0, 1, 2, 3, 9, 8 };
-            var result = FbxCornerMatch.Match(new[] { 4 }, corners, vertices, triangles, new[] { 3, 3 }, null, (a, b) => value[a] == value[b]);
+            var result = FbxCornerMatch.Match(new[] { 4 }, corners, vertices, triangles, new[] { 3, 3 }, null,
+                (a, b) => value[a] == value[b], imported ? new[] { 0, 2, 1, 0, 3, 2 } : null);
             Assert.AreEqual(2, result.conflicts);
             Assert.AreEqual(-1, result.cornerToVertex[0]);
             Assert.AreEqual(-1, result.cornerToVertex[2]);
@@ -49,13 +50,25 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        public void Match_SeparatesDoubleSidedFacesByWinding()
+        public void Match_ImportedTriangleWindingRetainsFoldedPolygonCorners()
+        {
+            var positions = Positions((0, 0), (-1, 0), (0, 1), (-.4f, .4f));
+            int[] triangles = { 0, 2, 1, 0, 3, 2 };
+            var result = FbxCornerMatch.Match(new[] { 4 }, positions, positions, triangles,
+                new[] { 3, 3 }, null, (a,b) => a == b, triangles);
+            Assert.AreEqual(0, result.unresolved + result.conflicts + result.missing);
+            CollectionAssert.AreEqual(new[] { 0, 1, 2, 3 }, result.cornerToVertex);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void Match_SeparatesDoubleSidedFacesByWinding(bool imported)
         {
             var corners = Positions((0, 0), (-1, 0), (-1, 1), (0, 0), (-1, 1), (-1, 0));
             var vertices = Positions((0, 0), (-1, 0), (-1, 1), (0, 0), (-1, 1), (-1, 0));
             int[] triangles = { 0, 2, 1, 3, 5, 4 };
             float[] value = { 1, 2, 3, 7, 8, 9 };
-            var result = FbxCornerMatch.Match(new[] { 3, 3 }, corners, vertices, triangles, new[] { 3, 3 }, null, (a, b) => value[a] == value[b]);
+            var result = FbxCornerMatch.Match(new[] { 3, 3 }, corners, vertices, triangles, new[] { 3, 3 }, null,
+                (a, b) => value[a] == value[b], imported ? triangles : null);
             CollectionAssert.AreEqual(new[] { 0, 1, 2, 3, 4, 5 }, result.cornerToVertex);
         }
 
@@ -915,6 +928,118 @@ namespace SashaRX.UnityMeshLab.Tests
                 }
             }
             finally { if (working) UnityEngine.Object.DestroyImmediate(working); AssetDatabase.DeleteAsset(assetFolder); }
+        }
+
+        [TestCase(false, false)] [TestCase(true, false)] [TestCase(false, true)]
+        public void ChannelWrite_PrivateModelRetainsTriangleSeams(bool independentSeams, bool prepareSource)
+        {
+            string fixture = Environment.GetEnvironmentVariable("MESHLAB_FBX_SEAM_FIXTURE");
+            if (string.IsNullOrEmpty(fixture)) Assert.Ignore("Optional FBX seam fixture is not configured.");
+            byte[] original = File.ReadAllBytes(fixture);
+            string assetFolder = "Assets/MeshLabSeamFixture_" + Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", assetFolder.Substring(7));
+            var working = new List<Mesh>();
+            try
+            {
+                string path = assetFolder + "/source.fbx", output = assetFolder + "/result.fbx";
+                File.WriteAllBytes(path, original);
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.isReadable = true; importer.keepQuads = false;
+                importer.weldVertices = false;
+                importer.generateSecondaryUV = false; importer.meshCompression = ModelImporterMeshCompression.Off;
+                importer.SaveAndReimport();
+                var entries = new List<MeshEntry>();
+                int seamMeshes = 0;
+                var pairs = prepareSource ? TransferBenchmarkAssets.Pairs(new TransferBenchmarkAssets.Case {
+                    asset = path, weldUv0 = true, preOptimize = true }) : new List<TransferBenchmarkAssets.Pair>();
+                foreach (var mesh in AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>())
+                {
+                    if (MeshNaming.IsCollision(mesh.name)) continue;
+                    // Distinct edits on coincident degenerate faces are ambiguous.
+                    // Those meshes still exercise ordinary and prepared UV writes.
+                    bool seams = independentSeams && !HasDegenerateGeometry(mesh);
+                    if (seams) seamMeshes++;
+                    var donor = seams ? MakeTriangleSeams(mesh, FbxExportIntent.UV1, onlyQuad: false)
+                        : UnityEngine.Object.Instantiate(mesh);
+                    if (!seams) donor.uv2 = mesh.uv.Select(uv => uv * .4f + new Vector2(.1f,.1f)).ToArray();
+                    working.Add(donor);
+                    var sourcePair = pairs.FirstOrDefault(pair => pair.source == mesh);
+                    if (sourcePair != null)
+                    {
+                        using var prepared = TransferBenchmarkAssets.Prepare(sourcePair);
+                        var preparedCopy = UnityEngine.Object.Instantiate(prepared.source);
+                        working.Add(preparedCopy);
+                        donor = preparedCopy;
+                    }
+                    entries.Add(new MeshEntry { fbxMesh = mesh, originalMesh = donor });
+                }
+                Assert.IsNotEmpty(entries);
+                if (independentSeams) Assert.Greater(seamMeshes, 0, "The fixture must exercise actual triangle seams.");
+                var expectedUv0 = new Dictionary<int, (double, double, double, double, double)[]>();
+                using (var document = FbxSourceDocument.Load(Path.GetFullPath(path)))
+                    for (int i = 0; i < document.Meshes.Count; ++i)
+                        expectedUv0.Add(i, AuthoredUv0Records(document.Meshes[i]));
+                Assert.IsTrue(FbxChannelWrite.Write(path, entries, FbxExportIntent.UV1, output, null));
+                var restored = AssetDatabase.LoadAllAssetsAtPath(output).OfType<Mesh>().ToDictionary(m => m.name);
+                foreach (var entry in entries)
+                {
+                    CollectionAssert.AreEqual(PositionLightmapRecords(entry.originalMesh),
+                        PositionLightmapRecords(restored[entry.fbxMesh.name]), entry.fbxMesh.name);
+                }
+                // Unity can choose a different UV0 at a welded corner after a new
+                // UV1 seam separates it. The authored FBX UV0 must remain exact.
+                using (var document = FbxSourceDocument.Load(Path.GetFullPath(output)))
+                    foreach (var pair in expectedUv0)
+                    {
+                        var mesh = document.Meshes[pair.Key];
+                        CollectionAssert.AreEquivalent(pair.Value, AuthoredUv0Records(mesh));
+                    }
+                CollectionAssert.AreEqual(original, File.ReadAllBytes(path));
+                CollectionAssert.AreEqual(original, File.ReadAllBytes(fixture));
+            }
+            finally
+            {
+                foreach (var mesh in working) UnityEngine.Object.DestroyImmediate(mesh);
+                AssetDatabase.DeleteAsset(assetFolder);
+            }
+        }
+
+        static string[] PositionLightmapRecords(Mesh mesh)
+        {
+            var positions = mesh.vertices; var uv = mesh.uv2; var triangles = mesh.triangles;
+            var corners = triangles.Select(v => string.Join("/", new[] {
+                positions[v].x, positions[v].y, positions[v].z, uv[v].x, uv[v].y
+            }.Select(value => BitConverter.SingleToInt32Bits(value).ToString("X8")))).ToArray();
+            return Enumerable.Range(0, triangles.Length / 3).Select(f => {
+                var triangle = corners.Skip(f * 3).Take(3).ToArray();
+                return Enumerable.Range(0, 3).Select(k => string.Join("|", triangle.Skip(k).Concat(triangle.Take(k))))
+                    .OrderBy(s => s, StringComparer.Ordinal).First();
+            }).OrderBy(s => s, StringComparer.Ordinal).ToArray();
+        }
+
+        static bool HasDegenerateGeometry(Mesh mesh)
+        {
+            var positions = mesh.vertices; var indices = mesh.triangles;
+            for (int t = 0; t < indices.Length; t += 3)
+            {
+                var frame = TransferUvQuality.WorldFrame(positions[indices[t]], positions[indices[t + 1]],
+                    positions[indices[t + 2]], Matrix4x4.identity);
+                if (!(frame.length > 0 && frame.y > 0)) return true;
+            }
+            return false;
+        }
+
+        static (double, double, double, double, double)[] AuthoredUv0Records(FbxMesh mesh)
+        {
+            var topology = new FbxLayerChannels.Topology(mesh);
+            var elements = FbxLayerChannels.UvElements(mesh);
+            if (elements.Count == 0) return Array.Empty<(double, double, double, double, double)>();
+            var uv = FbxLayerChannels.ReadUv(elements[0], topology);
+            return Enumerable.Range(0, topology.CornerCount).Select(c => {
+                var p = mesh.GetControlPointAt(topology.cornerControlPoint[c]);
+                return (p.X, p.Y, p.Z, uv[c * 2], uv[c * 2 + 1]);
+            }).Distinct().ToArray();
         }
 
         [Test]
