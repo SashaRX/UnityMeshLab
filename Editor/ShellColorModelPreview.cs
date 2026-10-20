@@ -88,6 +88,11 @@ namespace SashaRX.UnityMeshLab
 
         static readonly List<RendererBackup> backups = new List<RendererBackup>();
 
+        /// <summary>Tries to read the renderer's captured slots for the shell color preview.</summary>
+        /// <param name="renderer">The renderer whose preview backup is requested.</param>
+        /// <param name="materials">Captured slots, or live slots with this preview removed for asset writes; null if no backup exists.</param>
+        /// <param name="forAssetWrite">Whether to preserve assignments made after the preview was applied.</param>
+        /// <returns>True if a backup exists for the renderer.</returns>
         internal static bool TryGetOriginalMaterials(Renderer renderer, out Material[] materials, bool forAssetWrite = false)
         {
             foreach (var backup in backups)
@@ -102,6 +107,9 @@ namespace SashaRX.UnityMeshLab
             return false;
         }
 
+        /// <summary>Appends the shell color preview layer captured for the renderer, if one exists.</summary>
+        /// <param name="renderer">The renderer whose preview backup is requested.</param>
+        /// <param name="layers">The destination list; existing entries are retained.</param>
         internal static void CollectMaterialLayers(
             Renderer renderer, List<PreviewSafetyGuard.MaterialLayer> layers)
         {

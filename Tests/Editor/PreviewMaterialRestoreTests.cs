@@ -197,6 +197,8 @@ namespace SashaRX.UnityMeshLab.Tests
             AssertWriteSnapshot(shells, renderer, captured, new[] { captured[0], replacement, unknownPreview, null });
         }
 
+        /// <summary>Verifies checker and shell layers resolve in either order while asset writes preserve later assignments.</summary>
+        /// <param name="shellFirst">Whether the shell color preview is applied before the checker preview.</param>
         [Test]
         public void AssetWriteSnapshotUnwindsPreviewLayersFromDifferentSystems(
             [Values(false, true)] bool shellFirst)

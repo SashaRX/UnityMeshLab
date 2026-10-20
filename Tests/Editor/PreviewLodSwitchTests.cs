@@ -953,6 +953,7 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { LightmapSettings.lightmaps = previousLightmaps; }
         }
 
+        /// <summary>Verifies both snapshot modes unwind lightmap layers from two windows without changing the live preview.</summary>
         [Test]
         public void LightmapPreviewsFromTwoWindowsResolveTheAuthoredMaterials()
         {

@@ -2038,8 +2038,14 @@ namespace SashaRX.UnityMeshLab
         readonly List<LightmapBackup> lightmapBackups = new List<LightmapBackup>();
         Material lightmapPreviewMat;
 
-        // Read authored materials without suspending the user's preview or replacing
-        // renderer references. Texture metrics must not use checker/lightmap textures.
+        /// <summary>
+        /// Resolves checker, shell and lightmap layers across open windows without altering the live preview.
+        /// </summary>
+        /// <param name="renderer">The renderer whose authored materials are requested.</param>
+        /// <param name="forAssetWrite">
+        /// When true, preserves later assignments and the live slot count; otherwise uses captured authored slots.
+        /// </param>
+        /// <returns>Material slots with known preview layers unwound.</returns>
         internal static Material[] OriginalPreviewMaterials(Renderer renderer, bool forAssetWrite = false)
         {
             // Different preview systems, and different Mesh Lab windows, can put
@@ -2060,6 +2066,9 @@ namespace SashaRX.UnityMeshLab
             return PreviewSafetyGuard.ResolveOriginalMaterials(renderer.sharedMaterials, layers, forAssetWrite);
         }
 
+        /// <summary>Appends every lightmap preview layer this window captured for the renderer.</summary>
+        /// <param name="renderer">The renderer whose preview backups are requested.</param>
+        /// <param name="layers">The destination list; existing entries are retained.</param>
         void CollectLightmapMaterialLayers(
             Renderer renderer, List<PreviewSafetyGuard.MaterialLayer> layers)
         {
@@ -2181,6 +2190,8 @@ namespace SashaRX.UnityMeshLab
             if (lightmapBackups.Count == 0) UvtLog.Warn("[Lightmap] No lightmapped meshes found.");
         }
 
+        /// <summary>Applies a lightmap preview to an eligible mesh entry and registers its material layer.</summary>
+        /// <remarks>Captures the current materials and mesh for restoration; entries without usable lightmap data are skipped.</remarks>
         void ApplyLightmapPreviewEntry(MeshEntry e)
         {
             if (e.renderer == null) return;
@@ -2249,6 +2260,8 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        /// <summary>Restores captured lightmap layers in reverse order and unregisters each layer.</summary>
+        /// <remarks>Releases temporary meshes and materials, then clears this window's backups.</remarks>
         void RestoreLightmapPreview()
         {
             for (int i = lightmapBackups.Count - 1; i >= 0; i--)
