@@ -67,6 +67,8 @@ namespace SashaRX.UnityMeshLab
         /// <see cref="stretchThreshold"/> or local triangle anisotropy 1.25.
         /// Accept only detached ARAP candidates that improve the metric without
         /// introducing collapsed faces or contacts.
+        /// Also separates genuine overlaps at point-connected chart branches,
+        /// even when their triangle stretch is already low.
         /// </summary>
         public bool reparameterizeStretchedShells;
 
@@ -1331,7 +1333,7 @@ namespace SashaRX.UnityMeshLab
             return indices;
         }
 
-        /// <summary>Tries audited ARAP improvements and boundary recovery on unpacked charts, preserving refused charts.</summary>
+        /// <summary>Repairs unpacked charts through audited ARAP, bevel development and rigid point-branch separation.</summary>
         internal static void ReparameterizeStretchedShells(RepackOptions opts, List<UvShell> shells, int[] tris, Vector3[] positions, float[] uvFlat,
             System.Threading.CancellationToken token = default)
         {
@@ -1377,6 +1379,16 @@ namespace SashaRX.UnityMeshLab
                 else if (RecoverBoundaryBevel(shell, tris, positions, uvFlat, token)) converged++;
                 else
                     skipped++;
+            }
+            foreach (var shell in shells)
+            {
+                if (shell?.vertexIndices == null || shell.vertexIndices.Count < 3) continue;
+                var original = shell.vertexIndices.ToDictionary(v => v, v => new Vector2(uvFlat[v * 2], uvFlat[v * 2 + 1]));
+                var recovered = UvPointJunctionRecovery.TryRecover(shell, tris, positions, original, token);
+                if (recovered == null) continue;
+                token.ThrowIfCancellationRequested();
+                foreach (var pair in recovered)
+                { uvFlat[pair.Key * 2] = pair.Value.x; uvFlat[pair.Key * 2 + 1] = pair.Value.y; }
             }
             if (stretchedFound > 0)
                 UvtLog.Info(UvtLog.Category.Repack,
