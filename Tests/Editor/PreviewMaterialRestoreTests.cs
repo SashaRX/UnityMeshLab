@@ -235,6 +235,183 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void MaterialResolverWithoutLayersKeepsLiveAssignments(
+            [Values(false, true)] bool nullLayers, [Values(false, true)] bool forAssetWrite)
+        {
+            var current = AuthoredMaterials();
+            var layers = nullLayers ? null : new List<PreviewSafetyGuard.MaterialLayer>();
+
+            CollectionAssert.AreEqual(current, PreviewSafetyGuard.ResolveOriginalMaterials(current, layers, forAssetWrite));
+        }
+
+        [Test]
+        public void MaterialResolverUnwindsThreeLayersInAnyCollectionOrder(
+            [Values(0, 1, 2, 3, 4, 5)] int order, [Values(false, true)] bool forAssetWrite)
+        {
+            var authored = AuthoredMaterials();
+            var first = Own(new Material(authored[0]) { name = "First preview layer" });
+            var second = Own(new Material(authored[0]) { name = "Second preview layer" });
+            var third = Own(new Material(authored[0]) { name = "Third preview layer" });
+            var snapshots = new[] { authored, new[] { first, first, first }, new[] { second, second, second } };
+            var previews = new[] { first, second, third };
+            var orders = new[] {
+                new[] { 0, 1, 2 }, new[] { 0, 2, 1 }, new[] { 1, 0, 2 },
+                new[] { 1, 2, 0 }, new[] { 2, 0, 1 }, new[] { 2, 1, 0 }
+            };
+            var layers = orders[order].Select(i => new PreviewSafetyGuard.MaterialLayer(previews[i], snapshots[i])).ToList();
+            var current = new[] { third, third, third };
+
+            var result = PreviewSafetyGuard.ResolveOriginalMaterials(current, layers, forAssetWrite);
+
+            CollectionAssert.AreEqual(authored, result, "Layer discovery order must not affect authored slots, including null.");
+            CollectionAssert.AreEqual(new[] { third, third, third }, current);
+            CollectionAssert.AreEqual(new[] { first, first, first }, snapshots[1]);
+            CollectionAssert.AreEqual(new[] { second, second, second }, snapshots[2]);
+            result[0] = null;
+            CollectionAssert.AreEqual(authored, PreviewSafetyGuard.ResolveOriginalMaterials(current, layers, forAssetWrite),
+                "Mutating the returned snapshot must not affect live slots or any layer's backup.");
+            Assert.IsNotNull(authored[0], "The returned snapshot must not alias the original authored array.");
+        }
+
+        [Test]
+        public void MaterialResolverUsesTheVisibleLayersSnapshotForAuthoredReads([Values(false, true)] bool lowerStillVisible)
+        {
+            var authored = AuthoredMaterials();
+            var lower = Own(new Material(authored[0]) { name = "Lower preview" });
+            var upper = Own(new Material(authored[0]) { name = "Upper preview" });
+            var replacement = Own(new Material(authored[0]) { name = "Assignment between previews" });
+            var later = Own(new Material(authored[0]) { name = "Assignment after previews" });
+            var upperSnapshot = new[] { lower, replacement, lower };
+            var layers = new List<PreviewSafetyGuard.MaterialLayer> {
+                new PreviewSafetyGuard.MaterialLayer(lower, authored),
+                new PreviewSafetyGuard.MaterialLayer(upper, upperSnapshot)
+            };
+            var current = lowerStillVisible ? new[] { lower, upper, upper } : new[] { upper, later, upper };
+            var expectedWrite = lowerStillVisible
+                ? new[] { authored[0], replacement, authored[2] }
+                : new[] { authored[0], later, authored[2] };
+
+            CollectionAssert.AreEqual(new[] { authored[0], replacement, authored[2] },
+                PreviewSafetyGuard.ResolveOriginalMaterials(current, layers, forAssetWrite: false),
+                "The visible layer's backup retains the assignment made between previews.");
+            CollectionAssert.AreEqual(expectedWrite,
+                PreviewSafetyGuard.ResolveOriginalMaterials(current, layers, forAssetWrite: true));
+            CollectionAssert.AreEqual(lowerStillVisible ? new[] { lower, upper, upper } : new[] { upper, later, upper }, current);
+            CollectionAssert.AreEqual(new[] { lower, replacement, lower }, upperSnapshot);
+        }
+
+        [Test]
+        public void MaterialResolverFallsBackToCapturedSlotsWhenNoPreviewIsVisible()
+        {
+            var authored = AuthoredMaterials();
+            var lower = Own(new Material(authored[0]));
+            var upper = Own(new Material(authored[0]));
+            var current = new[] { Own(new Material(authored[0])), null };
+            var layers = new List<PreviewSafetyGuard.MaterialLayer> {
+                new PreviewSafetyGuard.MaterialLayer(upper, null),
+                new PreviewSafetyGuard.MaterialLayer(upper, new[] { lower, lower, lower }),
+                new PreviewSafetyGuard.MaterialLayer(lower, authored)
+            };
+
+            CollectionAssert.AreEqual(authored, PreviewSafetyGuard.ResolveOriginalMaterials(current, layers, forAssetWrite: false));
+            CollectionAssert.AreEqual(current, PreviewSafetyGuard.ResolveOriginalMaterials(current, layers, forAssetWrite: true),
+                "A write keeps all live assignments even if every preview slot was replaced.");
+        }
+
+        [Test]
+        public void MaterialResolverKeepsLiveSlotCountAcrossStackedSnapshots(
+            [Values(0, 1, 5)] int slotCount, [Values(false, true)] bool forAssetWrite)
+        {
+            var authored = AuthoredMaterials();
+            var lower = Own(new Material(authored[0]));
+            var upper = Own(new Material(authored[0]));
+            var layers = new List<PreviewSafetyGuard.MaterialLayer> {
+                new PreviewSafetyGuard.MaterialLayer(lower, authored),
+                new PreviewSafetyGuard.MaterialLayer(upper, new[] { lower, lower, lower, null })
+            };
+            var current = Enumerable.Repeat(upper, slotCount).ToArray();
+            var expected = forAssetWrite
+                ? new[] { authored[0], null, authored[2], null, upper }.Take(slotCount).ToArray()
+                : new[] { authored[0], null, authored[2], null };
+            // With no visible preview, the first captured snapshot is the authored fallback.
+            if (!forAssetWrite && slotCount == 0) expected = authored;
+
+            CollectionAssert.AreEqual(expected, PreviewSafetyGuard.ResolveOriginalMaterials(current, layers, forAssetWrite));
+            CollectionAssert.AreEqual(Enumerable.Repeat(upper, slotCount), current);
+        }
+
+        [Test]
+        public void MaterialResolverSkipsMissingAndDestroyedLayers([Values(false, true)] bool forAssetWrite)
+        {
+            var authored = AuthoredMaterials();
+            var valid = Own(new Material(authored[0]));
+            var missingSnapshot = Own(new Material(authored[0]));
+            var destroyed = Own(new Material(authored[0]));
+            Object.DestroyImmediate(destroyed);
+            var layers = new List<PreviewSafetyGuard.MaterialLayer> {
+                new PreviewSafetyGuard.MaterialLayer(null, new[] { authored[2], authored[2], authored[2] }),
+                new PreviewSafetyGuard.MaterialLayer(destroyed, new[] { authored[2], authored[2], authored[2] }),
+                new PreviewSafetyGuard.MaterialLayer(missingSnapshot, null),
+                new PreviewSafetyGuard.MaterialLayer(valid, authored)
+            };
+            var current = new[] { valid, valid, valid };
+
+            CollectionAssert.AreEqual(authored, PreviewSafetyGuard.ResolveOriginalMaterials(current, layers, forAssetWrite));
+        }
+
+        [Test]
+        public void MaterialResolverWithoutAnySnapshotKeepsCurrentSlots([Values(false, true)] bool forAssetWrite)
+        {
+            var current = AuthoredMaterials();
+            var layers = new List<PreviewSafetyGuard.MaterialLayer> {
+                new PreviewSafetyGuard.MaterialLayer(current[0], null)
+            };
+
+            CollectionAssert.AreEqual(current, PreviewSafetyGuard.ResolveOriginalMaterials(current, layers, forAssetWrite));
+            Assert.IsNull(PreviewSafetyGuard.ResolveOriginalMaterials(null, layers, forAssetWrite: true));
+        }
+
+        [Test]
+        public void MaterialResolverPreservesSelfReferencesAndUnownedMaterials()
+        {
+            var authored = AuthoredMaterials();
+            var preview = Own(new Material(authored[0]));
+            var unowned = Own(new Material(preview));
+            var captured = new[] { preview, authored[2], authored[2] };
+            var layers = new List<PreviewSafetyGuard.MaterialLayer> {
+                new PreviewSafetyGuard.MaterialLayer(preview, captured)
+            };
+            var current = new[] { preview, unowned, null };
+
+            CollectionAssert.AreEqual(current, PreviewSafetyGuard.ResolveOriginalMaterials(current, layers, forAssetWrite: true),
+                "Neither a self-referencing slot, a material sharing the preview shader, nor a live null is replaceable.");
+        }
+
+        [Test]
+        public void PreviewLayerCollectorsAppendOnlyTheRequestedRenderersBackup([Values(false, true)] bool shells)
+        {
+            var mesh = Triangle("Layer collector input", 1);
+            var authored = AuthoredMaterials();
+            var renderer = CreateRenderer(false, mesh, authored);
+            var other = CreateRenderer(false, mesh, new[] { authored[2] });
+            var preview = ApplyPreview(shells, renderer, mesh);
+            var sentinel = new PreviewSafetyGuard.MaterialLayer(authored[2], new[] { authored[0] });
+            var layers = new List<PreviewSafetyGuard.MaterialLayer> { sentinel };
+
+            if (shells) ShellColorModelPreview.CollectMaterialLayers(other, layers);
+            else CheckerTexturePreview.CollectMaterialLayers(other, layers);
+            Assert.AreEqual(1, layers.Count, "An unrelated renderer must not contribute a layer.");
+            if (shells) ShellColorModelPreview.CollectMaterialLayers(renderer, layers);
+            else CheckerTexturePreview.CollectMaterialLayers(renderer, layers);
+
+            Assert.AreEqual(2, layers.Count);
+            Assert.AreSame(sentinel.preview, layers[0].preview, "Collection appends to existing layers.");
+            Assert.AreSame(preview, layers[1].preview);
+            CollectionAssert.AreEqual(authored, layers[1].captured);
+            CollectionAssert.AreEqual(new[] { preview, preview, preview }, renderer.sharedMaterials);
+        }
+
+        [Test]
         public void AssetWriteSnapshotKeepsTheCurrentSlotCount(
             [Values(false, true)] bool shells, [Values(false, true)] bool extend)
         {
