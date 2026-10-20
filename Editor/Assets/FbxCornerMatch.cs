@@ -69,28 +69,36 @@ namespace SashaRX.UnityMeshLab
         readonly struct Candidate
         {
             public readonly int vertex, orientation;
+            /// <summary>Records a candidate result vertex and its polygon-normal or imported-triangle orientation.</summary>
             public Candidate(int vertex, int orientation) { this.vertex = vertex; this.orientation = orientation; }
         }
 
+        /// <summary>Maps polygon corners to compatible result vertices, reporting missing, unresolved and conflicting values separately.</summary>
         /// <param name="polygonSizes">Corner count of each FBX polygon, in polygon order.</param>
         /// <param name="cornerPositions">xyz per corner in result-mesh space; NaN x for a corner the tagged import has no vertex for.</param>
         /// <param name="positions">xyz per result-mesh vertex.</param>
         /// <param name="faceIndices">Result-mesh faces, flattened; <paramref name="faceSizes"/> gives each face's corner count.</param>
+        /// <param name="faceSizes">Corner count of each result-mesh face.</param>
         /// <param name="signatureMatches">(corner, vertex) → whether attributes the write leaves alone agree; null skips the check.</param>
         /// <param name="sameWrittenValues">(vertex, vertex) → whether two vertices carry the same values in every channel being written.</param>
+        /// <param name="importedTriangles">Optional tagged-import triangle indices in FBX corner space, with Unity's imported winding.</param>
         internal static Result Match(int[] polygonSizes, float[] cornerPositions, float[] positions,
-            int[] faceIndices, int[] faceSizes, Func<int, int, bool> signatureMatches, Func<int, int, bool> sameWrittenValues)
+            int[] faceIndices, int[] faceSizes, Func<int, int, bool> signatureMatches, Func<int, int, bool> sameWrittenValues,
+            int[] importedTriangles = null)
         {
             if (polygonSizes == null) throw new ArgumentNullException(nameof(polygonSizes));
             if (cornerPositions == null) throw new ArgumentNullException(nameof(cornerPositions));
             if (positions == null) throw new ArgumentNullException(nameof(positions));
             if (faceIndices == null || faceSizes == null) throw new ArgumentNullException(nameof(faceIndices));
             if (sameWrittenValues == null) throw new ArgumentNullException(nameof(sameWrittenValues));
-            return new Matcher(cornerPositions, positions, faceIndices, faceSizes).Run(polygonSizes, signatureMatches, sameWrittenValues);
+            return new Matcher(cornerPositions, positions, faceIndices, faceSizes, importedTriangles).Run(polygonSizes, signatureMatches, sameWrittenValues);
         }
 
         sealed class Matcher
         {
+            // +/-1 compares with the polygon normal; +/-2 compares directly with
+            // the imported triangle, which already includes Unity's axis conversion.
+            const int ImportedSameOrientation = 2;
             readonly float[] cornerPositions, positions;
             readonly int[] faceIndices, faceSizes, faceStarts;
             readonly Dictionary<PositionKey, List<(int face, int slot)>> facesAt = new Dictionary<PositionKey, List<(int face, int slot)>>();
@@ -100,13 +108,25 @@ namespace SashaRX.UnityMeshLab
             readonly List<Candidate>[] candidates;
             readonly List<PositionKey> polygonKeys = new List<PositionKey>(8);
             readonly List<int> distinct = new List<int>(4);
+            readonly Dictionary<int, List<int>> importedFaces = new Dictionary<int, List<int>>();
+            readonly int[] importedTriangles;
 
-            public Matcher(float[] cornerPositions, float[] positions, int[] faceIndices, int[] faceSizes)
+            /// <summary>Indexes result faces and optional imported triangles without altering either input mesh.</summary>
+            public Matcher(float[] cornerPositions, float[] positions, int[] faceIndices, int[] faceSizes, int[] importedTriangles)
             {
                 this.cornerPositions = cornerPositions;
                 this.positions = positions;
                 this.faceIndices = faceIndices;
                 this.faceSizes = faceSizes;
+                this.importedTriangles = importedTriangles;
+                if (importedTriangles != null)
+                    for (int t = 0; t + 2 < importedTriangles.Length; t += 3)
+                        for (int k = 0; k < 3; ++k)
+                        {
+                            int corner = importedTriangles[t + k];
+                            if (!importedFaces.TryGetValue(corner, out var faces)) importedFaces[corner] = faces = new List<int>();
+                            faces.Add(t);
+                        }
                 faceStarts = new int[faceSizes.Length];
                 for (int f = 0, s = 0; f < faceSizes.Length; s += faceSizes[f], f++) faceStarts[f] = s;
                 candidates = new List<Candidate>[cornerPositions.Length / 3];
@@ -134,6 +154,7 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
+            /// <summary>Learns the import's winding relation, then resolves corner candidates using preserved attributes and written values.</summary>
             public Result Run(int[] polygonSizes, Func<int, int, bool> signatureMatches, Func<int, int, bool> sameWrittenValues)
             {
                 // Pass 1: every face of the result mesh lying on the polygon's own corners is a
@@ -155,7 +176,7 @@ namespace SashaRX.UnityMeshLab
                 return result;
             }
 
-            // Records the candidates of one polygon's corners; returns its orientation vote.
+            /// <summary>Records candidates for one polygon and returns its aggregate-normal winding vote.</summary>
             int CollectPolygon(int start, int size)
             {
                 polygonKeys.Clear();
@@ -171,19 +192,60 @@ namespace SashaRX.UnityMeshLab
                 foreach (int face in FacesOnPolygon())
                 {
                     int orientation = Orientation(positions, faceIndices, faceStarts[face], faceSizes[face], nx, ny, nz);
+                    int imported = ImportedOrientation(face, start, size);
                     for (int j = 0; j < faceSizes[face]; j++)
                     {
                         int vertex = faceIndices[faceStarts[face] + j];
                         var key = VertexKey(positions, vertex);
                         for (int c = start; c < start + size; c++)
                             if (HasPosition(cornerPositions, c) && CornerKey(cornerPositions, c).Equals(key))
-                                (candidates[c] ??= new List<Candidate>(2)).Add(new Candidate(vertex, orientation));
+                                (candidates[c] ??= new List<Candidate>(2)).Add(new Candidate(vertex,
+                                    imported != 0 ? imported * ImportedSameOrientation : orientation));
                     }
                     if (orientation > 0) forward++;
                     else if (orientation < 0) backward++;
                 }
                 if (forward == 0 && backward > 0) return -1;
                 return backward == 0 && forward > 0 ? 1 : 0;
+            }
+
+            /// <summary>
+            /// Compares an exact imported triangle's cyclic order, including folded
+            /// polygons whose triangle disagrees with the Newell normal. Returns zero
+            /// when the imported correspondence is absent or ambiguous.
+            /// </summary>
+            int ImportedOrientation(int face, int start, int size)
+            {
+                if (importedTriangles == null || faceSizes[face] != 3) return 0;
+                int result = 0;
+                var a = VertexKey(positions, faceIndices[faceStarts[face]]);
+                var b = VertexKey(positions, faceIndices[faceStarts[face] + 1]);
+                var c = VertexKey(positions, faceIndices[faceStarts[face] + 2]);
+                if (a == b || b == c || c == a) return 0;
+                for (int corner = start; corner < start + size; ++corner)
+                {
+                    if (!HasPosition(cornerPositions, corner) || CornerKey(cornerPositions, corner) != a
+                        || !importedFaces.TryGetValue(corner, out var faces)) continue;
+                    foreach (int t in faces)
+                    {
+                        int slot = -1;
+                        bool inside = true;
+                        for (int k = 0; k < 3; ++k)
+                        {
+                            int index = importedTriangles[t + k];
+                            inside &= index >= start && index < start + size;
+                            if (index == corner) slot = k;
+                        }
+                        if (!inside || slot < 0) continue;
+                        var next = CornerKey(cornerPositions, importedTriangles[t + (slot + 1) % 3]);
+                        var last = CornerKey(cornerPositions, importedTriangles[t + (slot + 2) % 3]);
+                        int sign = next == b && last == c ? 1 : next == c && last == b ? -1 : 0;
+                        if (sign == 0) continue;
+                        if (result != 0 && result != sign) return 0;
+                        result = sign;
+                    }
+                }
+                return result;
             }
 
             // The result faces made only of the polygon's positions. Up to 8 distinct positions
@@ -216,6 +278,7 @@ namespace SashaRX.UnityMeshLab
                 return polygonFaces;
             }
 
+            /// <summary>Counts selected polygon positions in a subset mask so only triangle and quad face keys are queried.</summary>
             static int BitCount(int v)
             {
                 int count = 0;
@@ -224,6 +287,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             // The vertex for corner c, or -1 with the reason counted in result.
+            /// <summary>Filters winding and preserved attributes, then refuses incompatible written values at one corner.</summary>
             int Settle(int c, int relation, Func<int, int, bool> signatureMatches, Func<int, int, bool> sameWrittenValues, Result result)
             {
                 if (!HasPosition(cornerPositions, c)) { result.missing++; return -1; }
@@ -231,7 +295,7 @@ namespace SashaRX.UnityMeshLab
 
                 distinct.Clear();
                 foreach (var cand in candidates[c])
-                    if ((cand.orientation == 0 || cand.orientation == relation) && !distinct.Contains(cand.vertex))
+                    if ((cand.orientation == ImportedSameOrientation || cand.orientation == 0 || cand.orientation == relation) && !distinct.Contains(cand.vertex))
                         distinct.Add(cand.vertex);
                 if (distinct.Count > 1 && signatureMatches != null)
                 {

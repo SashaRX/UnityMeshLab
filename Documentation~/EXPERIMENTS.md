@@ -3554,3 +3554,64 @@ existing coarse ordinary stretching defect remains outside this correction.
 This section records the earlier local qualification; the ready correction is included in the combined PR.
 
 Review follow-up: compare cumulative density against every original native face, not only the latest join; preserve an unchanged stretched face while recovering unrelated valid contacts. Changed faces retain all metric/winding checks and the final full-mesh audit. Extract the native stage without changing its lease or audit ordering. Two old cumulative-scale controls and one independent-recovery control fail as expected; the current full three-model and clean public runs pass with identical stable numeric outputs.
+
+## LOD0 boundary bevel recovery (2026-10-20)
+
+An optional furniture fixture reproduced collapsed bevel UVs in source preparation.
+The frame's authored UV0 has 39 collapsed faces. The existing ARAP stage repairs
+most, but its candidates for three remaining charts introduce contacts and are
+correctly refused. Changing the ARAP initialization did not repair those charts
+and was discarded.
+
+After an ARAP refusal, develop only effectively collapsed boundary triangles
+(nonfinite anisotropy or anisotropy above 10000) from an unchanged full edge.
+Each placement uses the triangle's intrinsic 3D metric and the opposite side of
+its already placed neighbour. Moderate existing stretch remains fixed; attempting
+to unfold every face above 4 blocked this repair at vertices shared with the
+healthy chart. Newly placed faces must themselves meet the existing limit of 4,
+retain any nonzero original winding, and have exactly one neighbour across the
+anchor edge. A queue propagates placements through the strip.
+
+Publish only a complete candidate after the existing chart quality/contact audit.
+An incomplete strip, ambiguous/nonmanifold anchor, new contact, or cancellation
+publishes nothing. No geometry, UV0, topology, native code, or quality policy is
+changed. On the supplied shelving frame, all three symmetry modes now produce
+zero collapsed UV faces and zero overlap pairs, with exact oriented geometry
+triangles retained. The shelf's existing 33 overlap pairs remain; this experiment
+does not establish that every authored furniture chart is contact-free.
+
+Related FBX diagnosis: a polygon's aggregate normal can disagree with an actual
+imported triangle in a folded polygon. Use exact tagged-import triangle winding
+when available, retaining the normal fallback for other topology. This removes
+unresolved corners that previously prevented the existing local seam split.
+Conflicting values still require a split; ambiguity is not silently accepted.
+Optional copy-only round trips cover shelving and kitchen furniture, including
+prepared LOD0 data. Geometry-degenerate triangles are reported separately from
+UV-degenerate surfaces. Procedural controls cover mirrored/partially stretched
+boundaries, refusal without partial publication, winding and seam conflicts,
+and preservation of distinct thin wire edges.
+
+Local Unity 6000.2.6f2 / Direct3D 11 verification on the main-based PR: 284 passed, zero failed,
+7 optional fixture skips across FBX, transfer quality, source/group/hierarchical
+repack, and viewport/rendering suites. Both FBX compile variants, identifier and
+tool-dependency guards, and metadata coverage pass. Set
+`MESHLAB_FBX_SEAM_FIXTURE` to a private FBX to run the copy-only source preparation
+and export cases; proprietary assets are not committed. Round trips compare
+exact cyclic triangle position/UV1 records and stored FBX position/UV0 values.
+Artificial per-triangle seam stress applies to meshes without zero-area geometry;
+degenerate meshes still exercise ordinary and prepared channel writes.
+The kitchen's Main retains four original geometry-degenerate faces; its
+Countertop still has contact/stretch defects. Successful channel export
+does not certify an otherwise perfect lightmap layout.
+
+Review follow-up: reject nonfinite original UV areas before the winding-sign
+comparison, so invalid input cannot throw or publish a partial recovery. Both
+NaN and infinity refusal controls pass, alongside the kitchen round trips and
+source preparation (12/12 focused tests).
+
+CodeRabbit follow-up: a welded multi-quad strip can reach a closing face whose
+three vertices were already placed by neighbours. Validate that existing pose
+through the same manifold-anchor, metric, finite-area and winding checks instead
+of leaving it pending. Two traversal-order controls reproduce the refusal before
+the fix; both now pass. A distorted closure still refuses the complete candidate.
+All 15 focused shelving/export/recovery tests pass after this correction.

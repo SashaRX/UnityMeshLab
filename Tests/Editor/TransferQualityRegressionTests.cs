@@ -8,6 +8,167 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class TransferQualityRegressionTests
     {
+        /// <summary>Recovers the full strip while retaining mirrored or moderately stretched anchors and atomic cancellation.</summary>
+        [TestCase(false, 1f)] [TestCase(true, 1f)] [TestCase(false, .2f)]
+        public void BoundaryBevelRecoveryRetainsTheHealthyFaceAndUnfoldsTheCompleteStrip(bool mirrored, float width)
+        {
+            var positions = new[] { Vector3.zero, Vector3.right, Vector3.up,
+                new Vector3(1,1,.1f), new Vector3(0,2,.1f) };
+            var indices = new[] { 0,1,2, 2,1,3, 2,3,4 };
+            var original = new[] { Vector2.zero, Vector2.right, Vector2.up, new Vector2(.5f,.5f), Vector2.up };
+            original = original.Select(p => new Vector2(p.x * width * (mirrored ? -1 : 1), p.y)).ToArray();
+            var flat = original.SelectMany(p => new[] {p.x,p.y}).ToArray();
+            var shell = UvShellExtractor.Extract(original, indices).Single();
+            Assert.IsTrue(XatlasRepack.RecoverBoundaryBevel(shell, indices, positions, flat, default));
+            CollectionAssert.AreEqual(original.Take(3).SelectMany(p => new[] {p.x,p.y}).ToArray(),flat.Take(6).ToArray());
+            for (int f = 3; f < indices.Length; f += 3)
+            {
+                int a = indices[f], b = indices[f+1], c = indices[f+2];
+                Assert.Less(ReverseUvTransfer.TriangleAnisotropy(positions[a],positions[b],positions[c],
+                    new Vector2(flat[a*2],flat[a*2+1]),new Vector2(flat[b*2],flat[b*2+1]),new Vector2(flat[c*2],flat[c*2+1])),1.001);
+            }
+            using var cancelled = new System.Threading.CancellationTokenSource(); cancelled.Cancel();
+            var snapshot = (float[])flat.Clone();
+            Assert.Throws<System.OperationCanceledException>(() => XatlasRepack.RecoverBoundaryBevel(shell,indices,positions,flat,cancelled.Token));
+            CollectionAssert.AreEqual(snapshot,flat);
+        }
+
+        /// <summary>Accepts valid closing faces independently of traversal order and refuses a distorted closure atomically.</summary>
+        [TestCase(false, false)] [TestCase(true, false)] [TestCase(false, true)]
+        public void BoundaryBevelRecoveryClosesWeldedQuads(bool reversed, bool distorted)
+        {
+            float height = distorted ? 10 : .1f;
+            var positions = new[] { Vector3.zero, Vector3.right, Vector3.right * 2,
+                new Vector3(0, 1, height), new Vector3(1, 1, height),
+                new Vector3(2, 1, distorted ? -height : height),
+                new Vector3(0, -1, 0), new Vector3(1, -1, 0), new Vector3(2, -1, 0) };
+            var uv = positions.Select(p => new Vector2(p.x, Mathf.Min(p.y, 0))).ToArray();
+            var faces = new[] { new[] { 0, 6, 7 }, new[] { 0, 7, 1 }, new[] { 1, 7, 8 }, new[] { 1, 8, 2 },
+                new[] { 0, 1, 4 }, new[] { 0, 4, 3 }, new[] { 1, 2, 5 }, new[] { 1, 5, 4 } };
+            var indices = (reversed ? faces.Reverse() : faces).SelectMany(f => f).ToArray();
+            var flat = uv.SelectMany(p => new[] { p.x, p.y }).ToArray();
+            var before = (float[])flat.Clone();
+            var shell = UvShellExtractor.Extract(uv, indices).Single();
+            Assert.AreEqual(!distorted, XatlasRepack.RecoverBoundaryBevel(shell, indices, positions, flat, default));
+            if (distorted) CollectionAssert.AreEqual(before, flat);
+            else
+            {
+                foreach (int v in new[] { 0, 1, 2, 6, 7, 8 })
+                {
+                    Assert.AreEqual(uv[v].x, flat[v * 2]);
+                    Assert.AreEqual(uv[v].y, flat[v * 2 + 1]);
+                }
+                var candidate = shell.vertexIndices.ToDictionary(v => v, v => new Vector2(flat[v * 2], flat[v * 2 + 1]));
+                var quality = TransferCandidateQuality.Measure(shell, indices, positions, candidate);
+                Assert.Less(quality.worstAnisotropy, 1.001);
+                Assert.AreEqual(0, quality.overlapPairs);
+                Assert.IsTrue(quality.overlapScanComplete);
+            }
+        }
+
+        /// <summary>Contact-producing and incomplete candidates leave every caller-owned UV untouched.</summary>
+        [TestCase(false)] [TestCase(true)]
+        public void BoundaryBevelRecoveryRefusesContactsAndIncompleteStrips(bool contact)
+        {
+            var positions = new[] { Vector3.zero, Vector3.right, Vector3.up,
+                new Vector3(1, 1, .1f), new Vector3(1, 1, 0), new Vector3(.8f, 1, 0) };
+            var uv = new[] { Vector2.zero, Vector2.right, Vector2.up,
+                new Vector2(.5f, .5f), new Vector2(1, 1), new Vector2(.8f, 1) };
+            var indices = contact ? new[] { 0, 1, 2, 2, 1, 3, 1, 4, 5 }
+                : new[] { 0, 1, 2, 2, 1, 3, 3, 4, 5 };
+            if (!contact) uv[4] = uv[5] = uv[3];
+            var flat = uv.SelectMany(p => new[] { p.x, p.y }).ToArray();
+            var before = (float[])flat.Clone();
+            var shell = UvShellExtractor.Extract(uv, indices).Single();
+            Assert.IsFalse(XatlasRepack.RecoverBoundaryBevel(shell, indices, positions, flat, default));
+            CollectionAssert.AreEqual(before, flat, "A refused candidate must never publish partial changes.");
+        }
+
+        /// <summary>Invalid original UV coordinates cause a refusal rather than a winding-sign exception.</summary>
+        [TestCase(float.NaN)] [TestCase(float.PositiveInfinity)]
+        public void BoundaryBevelRecoveryRefusesNonfiniteOriginalCoordinates(float invalid)
+        {
+            var positions = new[] { Vector3.zero, Vector3.right, Vector3.up, new Vector3(1, 1, .1f) };
+            var uv = new[] { Vector2.zero, Vector2.right, Vector2.up, new Vector2(invalid, .5f) };
+            var indices = new[] { 0, 1, 2, 2, 1, 3 };
+            var flat = uv.SelectMany(p => new[] { p.x, p.y }).ToArray();
+            var before = (float[])flat.Clone();
+            var shell = new UvShell {
+                faceIndices = new List<int> { 0, 1 },
+                vertexIndices = new HashSet<int> { 0, 1, 2, 3 }
+            };
+            Assert.IsFalse(XatlasRepack.RecoverBoundaryBevel(shell, indices, positions, flat, default));
+            CollectionAssert.AreEqual(before, flat);
+        }
+
+        /// <summary>Three incident faces cannot supply an unambiguous edge for unfolding.</summary>
+        [Test]
+        public void BoundaryBevelRecoveryRefusesANonmanifoldAnchor()
+        {
+            var positions = new[] { Vector3.zero, Vector3.right, Vector3.up,
+                new Vector3(1, 1, .1f), new Vector3(.2f, .2f, -.1f) };
+            var uv = new[] { Vector2.zero, Vector2.right, Vector2.up,
+                new Vector2(.5f, .5f), new Vector2(.2f, .2f) };
+            var indices = new[] { 0, 1, 2, 2, 1, 3, 4, 1, 2 };
+            var flat = uv.SelectMany(p => new[] { p.x, p.y }).ToArray();
+            var before = (float[])flat.Clone();
+            var shell = UvShellExtractor.Extract(uv, indices).Single();
+            Assert.IsFalse(XatlasRepack.RecoverBoundaryBevel(shell, indices, positions, flat, default));
+            CollectionAssert.AreEqual(before, flat);
+        }
+
+        /// <summary>Checks exact source geometry and UV degeneracy through all symmetry modes using a disposable private-fixture copy.</summary>
+        [Test]
+        public void PrivateBevelSourcePreparationPreservesGeometry()
+        {
+            string fixture = System.Environment.GetEnvironmentVariable("MESHLAB_FBX_SEAM_FIXTURE");
+            if (string.IsNullOrEmpty(fixture)) Assert.Ignore("Optional furniture fixture is not configured.");
+            string folder = "Assets/MeshLabBevel_" + System.Guid.NewGuid().ToString("N");
+            UnityEditor.AssetDatabase.CreateFolder("Assets", folder.Substring(7));
+            string path = folder + "/source.fbx";
+            var problems = new List<string>();
+            try
+            {
+                System.IO.File.WriteAllBytes(path, System.IO.File.ReadAllBytes(fixture));
+                UnityEditor.AssetDatabase.ImportAsset(path, UnityEditor.ImportAssetOptions.ForceSynchronousImport);
+                var importer = (UnityEditor.ModelImporter)UnityEditor.AssetImporter.GetAtPath(path);
+                importer.isReadable = true; importer.generateSecondaryUV = false;
+                importer.weldVertices = false; importer.SaveAndReimport();
+                foreach (var mode in new[] { "off", "legacy", "adaptive" })
+                foreach (var pair in TransferBenchmarkAssets.Pairs(new TransferBenchmarkAssets.Case {
+                    asset = path, symmetry = mode, weldUv0 = true, preOptimize = true }))
+                {
+                    using var prepared = TransferBenchmarkAssets.Prepare(pair);
+                    var before = GeometryCorners(pair.source);
+                    var after = GeometryCorners(prepared.source);
+                    bool changed = !before.SequenceEqual(after);
+                    var quality = TransferUvQuality.Measure(prepared.source, prepared.source.uv2, Vector2.one, Matrix4x4.identity);
+                    int collapsed = quality.faceAnisotropy.Count(v => v == float.MaxValue);
+                    TestContext.WriteLine($"{pair.source.name} / {mode}: geometry changed={changed}, collapsed UV={collapsed}, degenerate geometry={quality.degenerateFaces - collapsed}, overlaps={quality.overlapPairs}, worst={quality.worstAnisotropy}");
+                    if (changed) problems.Add(pair.source.name + " / " + mode + ": source geometry changed");
+                    if (collapsed != 0 || quality.invalidFaces != 0) problems.Add(pair.source.name + " / " + mode + ": collapsed/invalid UV2");
+                }
+                Assert.IsEmpty(problems, string.Join("\n", problems));
+            }
+            finally { UnityEditor.AssetDatabase.DeleteAsset(folder); }
+        }
+
+        /// <summary>Canonicalizes oriented geometry triangles without losing duplicate faces or Float32 coordinate bits.</summary>
+        static string[] GeometryCorners(Mesh mesh)
+        {
+            var positions = mesh.vertices;
+            var corners = mesh.triangles.Select(v => positions[v]).Select(p =>
+                System.BitConverter.SingleToInt32Bits(p.x) + ":" +
+                System.BitConverter.SingleToInt32Bits(p.y) + ":" +
+                System.BitConverter.SingleToInt32Bits(p.z)).ToArray();
+            return Enumerable.Range(0, corners.Length / 3).Select(f => {
+                var triangle = corners.Skip(f * 3).Take(3).ToArray();
+                return Enumerable.Range(0, 3).Select(k => string.Join("/", triangle.Skip(k).Concat(triangle.Take(k))))
+                    .OrderBy(s => s, System.StringComparer.Ordinal).First();
+            }).OrderBy(s => s, System.StringComparer.Ordinal).ToArray();
+        }
+
+        /// <summary>Verifies that asynchronous forward-transfer CPU work executes outside the editor thread and always closes its progress scope.</summary>
         [UnityEngine.TestTools.UnityTest]
         public System.Collections.IEnumerator ForwardCpuWorkRunsOffTheEditorThread()
         {

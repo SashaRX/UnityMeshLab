@@ -44,6 +44,7 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { RenderTexture.active = previous; Object.DestroyImmediate(pixels); target.Release(); Object.DestroyImmediate(target); resolved.Release(); Object.DestroyImmediate(resolved); }
         }
 
+        /// <summary>Deduplicates coincident edges regardless of direction while retaining distinct overlay colours, endpoint bounds and cancellation.</summary>
         [Test]
         public void SplitVerticesAndReversedEdgesDoNotDoubleTheCoverage()
         {
@@ -59,6 +60,21 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.Throws<System.OperationCanceledException>(() => PreviewLines.Build(p, new[] { 0, 1 }, null, cancellation.Token));
         }
 
+        /// <summary>Preserves both long edges and the short connecting edges below Vector3 operator-equality tolerance.</summary>
+        [Test]
+        public void ThinBevelEdgesKeepDistinctEndpoints()
+        {
+            // Below Vector3.operator=='s tolerance: only exact duplicates may be removed.
+            var positions = new[] { Vector3.zero, Vector3.right,
+                new Vector3(0, .000001f, 0), new Vector3(1, .000001f, 0) };
+            var data = PreviewLines.Build(positions, new[] { 0, 1, 2, 3, 0, 2, 1, 3 }, null);
+            Assert.AreEqual(24, data.indices.Length, "Both long edges and both short bevel edges must survive.");
+            foreach (var point in positions)
+                Assert.IsTrue(System.Array.Exists(data.starts, p => p.Equals(point))
+                    || System.Array.Exists(data.ends, p => p.Equals(point)));
+        }
+
+        /// <summary>Reuses an asynchronously built ribbon mesh and releases it when its source mesh is destroyed.</summary>
         [UnityTest]
         public IEnumerator CachedRibbonsAreReusedAndReleasedWhenTheSourceDies()
         {

@@ -1322,6 +1322,7 @@ namespace SashaRX.UnityMeshLab
             return uvFlat;
         }
 
+        /// <summary>Copies Unity triangle indices into the unsigned buffer expected by the native packer.</summary>
         static uint[] NativeTriangleIndices(int[] tris)
         {
             uint[] indices = new uint[tris.Length];
@@ -1330,6 +1331,7 @@ namespace SashaRX.UnityMeshLab
             return indices;
         }
 
+        /// <summary>Tries audited ARAP improvements and boundary recovery on unpacked charts, preserving refused charts.</summary>
         internal static void ReparameterizeStretchedShells(RepackOptions opts, List<UvShell> shells, int[] tris, Vector3[] positions, float[] uvFlat,
             System.Threading.CancellationToken token = default)
         {
@@ -1369,8 +1371,10 @@ namespace SashaRX.UnityMeshLab
                         UvtLog.Verbose(UvtLog.Category.Repack,
                             $"[Repack] ARAP: shell {si} L²={l2:F2}, worst stretch {before.worstAnisotropy:G5} → {after.worstAnisotropy:G5}");
                     }
+                    else if (RecoverBoundaryBevel(shell, tris, positions, uvFlat, token)) converged++;
                     else skipped++;
                 }
+                else if (RecoverBoundaryBevel(shell, tris, positions, uvFlat, token)) converged++;
                 else
                     skipped++;
             }
@@ -1379,6 +1383,24 @@ namespace SashaRX.UnityMeshLab
                     $"[Repack] ARAP: reparameterized {converged}/{stretchedFound} stretched shells (L²>{opts.stretchThreshold:F2} or local metric failure, skipped {skipped})");
         }
 
+        /// <summary>Publishes a complete bevel candidate only after chart metric/contact checks and the final cancellation check.</summary>
+        internal static bool RecoverBoundaryBevel(UvShell shell, int[] tris, Vector3[] positions,
+            float[] uvFlat, System.Threading.CancellationToken token)
+        {
+            var original = shell.vertexIndices.ToDictionary(v => v, v => new Vector2(uvFlat[v * 2], uvFlat[v * 2 + 1]));
+            var candidate = BevelUvRecovery.TryRecover(shell, tris, positions, original, token);
+            if (candidate == null) return false;
+            var before = TransferCandidateQuality.Measure(shell, tris, positions, original);
+            var after = TransferCandidateQuality.Measure(shell, tris, positions, candidate);
+            before.outOfBoundsVertices = after.outOfBoundsVertices = 0;
+            if (!after.Improves(before) || after.worstAnisotropy > 10000) return false;
+            token.ThrowIfCancellationRequested();
+            foreach (var pair in candidate)
+            { uvFlat[pair.Key * 2] = pair.Value.x; uvFlat[pair.Key * 2 + 1] = pair.Value.y; }
+            return true;
+        }
+
+        /// <summary>Maps packed chart output back to mesh vertices, applies configured UV corrections and records the single-mesh result.</summary>
         static void ReadSingleRepackOutput(Mesh mesh, RepackOptions opts, ref RepackResult result,
             int[] tris, Vector3[] positions, List<UvShell> shells, uint[] faceShellIds)
         {
