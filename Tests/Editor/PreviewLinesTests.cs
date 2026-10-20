@@ -59,6 +59,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.Throws<System.OperationCanceledException>(() => PreviewLines.Build(p, new[] { 0, 1 }, null, cancellation.Token));
         }
 
+        /// <summary>Preserves both long edges and the short connecting edges below Vector3 operator-equality tolerance.</summary>
         [Test]
         public void ThinBevelEdgesKeepDistinctEndpoints()
         {

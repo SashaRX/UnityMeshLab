@@ -9,6 +9,7 @@ namespace SashaRX.UnityMeshLab
     // new point is fixed by an existing full edge and the triangle's rest metric.
     internal static class BevelUvRecovery
     {
+        /// <summary>Develops collapsed faces from immutable anchors; returns a complete candidate or null without changing the input.</summary>
         internal static Dictionary<int, Vector2> TryRecover(UvShell shell, int[] indices,
             Vector3[] positions, Dictionary<int, Vector2> original, CancellationToken token)
         {
@@ -59,6 +60,7 @@ namespace SashaRX.UnityMeshLab
             return pending.Count == 0 ? candidate : null;
         }
 
+        /// <summary>Places one free corner or validates an already placed closing face across a manifold, completed neighbour.</summary>
         static bool TryPlace(int face, int[] indices, Vector3[] positions,
             Dictionary<int, Vector2> original, Dictionary<int, Vector2> candidate,
             HashSet<int> fixedVertices, Dictionary<(int, int), List<(int face, int opposite)>> edges,
@@ -68,13 +70,16 @@ namespace SashaRX.UnityMeshLab
             {
                 int a = indices[face * 3 + k], b = indices[face * 3 + (k + 1) % 3];
                 int c = indices[face * 3 + (k + 2) % 3];
-                if (!fixedVertices.Contains(a) || !fixedVertices.Contains(b) || fixedVertices.Contains(c)) continue;
+                if (!fixedVertices.Contains(a) || !fixedVertices.Contains(b)) continue;
                 var uses = edges[a < b ? (a, b) : (b, a)];
                 if (uses.Count != 2) continue;
                 var neighbour = uses[0].face == face ? uses[1] : uses[0];
                 if (pending.Contains(neighbour.face)) continue;
-                if (!Develop(positions[a], positions[b], positions[c], candidate[a], candidate[b],
-                    candidate[neighbour.opposite], out var point)) continue;
+                // Neighbouring quads can place all three corners before this
+                // closing face is visited. Validate that pose without moving it.
+                var point = candidate[c];
+                if (!fixedVertices.Contains(c) && !Develop(positions[a], positions[b], positions[c], candidate[a], candidate[b],
+                    candidate[neighbour.opposite], out point)) continue;
                 double metric = ReverseUvTransfer.TriangleAnisotropy(
                     positions[a], positions[b], positions[c], candidate[a], candidate[b], point);
                 if (!double.IsFinite(metric) || metric > 4) continue;
@@ -89,6 +94,7 @@ namespace SashaRX.UnityMeshLab
             return false;
         }
 
+        /// <summary>Unfolds the intrinsic 3D triangle across its existing UV edge, opposite the completed neighbour.</summary>
         static bool Develop(Vector3 a, Vector3 b, Vector3 c, Vector2 u, Vector2 v,
             Vector2 neighbour, out Vector2 point)
         {
@@ -104,6 +110,7 @@ namespace SashaRX.UnityMeshLab
             return float.IsFinite(point.x) && float.IsFinite(point.y);
         }
 
+        /// <summary>Returns signed double UV area, promoting coordinates before subtraction to preserve narrow triangles.</summary>
         static double Area(Vector2 a, Vector2 b, Vector2 c) =>
             ((double)b.x - a.x) * ((double)c.y - a.y) - ((double)b.y - a.y) * ((double)c.x - a.x);
     }

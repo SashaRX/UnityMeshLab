@@ -1153,6 +1153,7 @@ namespace SashaRX.UnityMeshLab
             return mapped;
         }
 
+        /// <summary>Pairs donor vertices with FBX corners using preserved attributes and the source import's winding.</summary>
         static FbxCornerMatch.Result MatchCorners(Donor donor, Tagged tag, in FbxLayerChannels.Topology topology)
             => FbxCornerMatch.Match(topology.polygonSizes, CornerPositions(donor, tag, topology), donor.positions, donor.faces, donor.faceSizes,
                 (c, v) => SignatureMatches(donor, tag, c, v),

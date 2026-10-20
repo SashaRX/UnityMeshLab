@@ -1330,6 +1330,7 @@ namespace SashaRX.UnityMeshLab
             return indices;
         }
 
+        /// <summary>Tries audited ARAP improvements and boundary recovery on unpacked charts, preserving refused charts.</summary>
         internal static void ReparameterizeStretchedShells(RepackOptions opts, List<UvShell> shells, int[] tris, Vector3[] positions, float[] uvFlat,
             System.Threading.CancellationToken token = default)
         {
@@ -1381,6 +1382,7 @@ namespace SashaRX.UnityMeshLab
                     $"[Repack] ARAP: reparameterized {converged}/{stretchedFound} stretched shells (L²>{opts.stretchThreshold:F2} or local metric failure, skipped {skipped})");
         }
 
+        /// <summary>Publishes a complete bevel candidate only after chart metric/contact checks and the final cancellation check.</summary>
         internal static bool RecoverBoundaryBevel(UvShell shell, int[] tris, Vector3[] positions,
             float[] uvFlat, System.Threading.CancellationToken token)
         {

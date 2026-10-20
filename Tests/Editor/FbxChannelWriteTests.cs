@@ -32,6 +32,7 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(new[] { 1, 3, 0, 2 }, result.cornerToVertex);
         }
 
+        /// <summary>Imported winding must not hide different values at a polygon's shared triangle corners.</summary>
         [TestCase(false)] [TestCase(true)]
         public void Match_RefusesAValueSeamInsideAPolygon(bool imported)
         {
@@ -49,6 +50,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(3, result.cornerToVertex[3]);
         }
 
+        /// <summary>Retains a valid imported triangle that faces against its polygon's aggregate normal.</summary>
         [Test]
         public void Match_ImportedTriangleWindingRetainsFoldedPolygonCorners()
         {
@@ -60,6 +62,7 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(new[] { 0, 1, 2, 3 }, result.cornerToVertex);
         }
 
+        /// <summary>Coincident front and back faces retain their own values with either winding source.</summary>
         [TestCase(false)] [TestCase(true)]
         public void Match_SeparatesDoubleSidedFacesByWinding(bool imported)
         {
@@ -930,6 +933,7 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { if (working) UnityEngine.Object.DestroyImmediate(working); AssetDatabase.DeleteAsset(assetFolder); }
         }
 
+        /// <summary>Round-trips copied private FBX fixtures with ordinary, independent-seam and prepared LOD0 UVs.</summary>
         [TestCase(false, false)] [TestCase(true, false)] [TestCase(false, true)]
         public void ChannelWrite_PrivateModelRetainsTriangleSeams(bool independentSeams, bool prepareSource)
         {
@@ -1005,6 +1009,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        /// <summary>Canonicalizes oriented position/UV1 triangles while retaining exact Float32 values and duplicate faces.</summary>
         static string[] PositionLightmapRecords(Mesh mesh)
         {
             var positions = mesh.vertices; var uv = mesh.uv2; var triangles = mesh.triangles;
@@ -1018,6 +1023,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }).OrderBy(s => s, StringComparer.Ordinal).ToArray();
         }
 
+        /// <summary>Detects zero-area geometry whose coincident triangle corners cannot carry distinguishable synthetic edits.</summary>
         static bool HasDegenerateGeometry(Mesh mesh)
         {
             var positions = mesh.vertices; var indices = mesh.triangles;
@@ -1030,6 +1036,7 @@ namespace SashaRX.UnityMeshLab.Tests
             return false;
         }
 
+        /// <summary>Reads exact authored position/UV0 pairs, ignoring duplicate corners introduced by seam splitting.</summary>
         static (double, double, double, double, double)[] AuthoredUv0Records(FbxMesh mesh)
         {
             var topology = new FbxLayerChannels.Topology(mesh);

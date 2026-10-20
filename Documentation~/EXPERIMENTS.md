@@ -3608,3 +3608,10 @@ Review follow-up: reject nonfinite original UV areas before the winding-sign
 comparison, so invalid input cannot throw or publish a partial recovery. Both
 NaN and infinity refusal controls pass, alongside the kitchen round trips and
 source preparation (12/12 focused tests).
+
+CodeRabbit follow-up: a welded multi-quad strip can reach a closing face whose
+three vertices were already placed by neighbours. Validate that existing pose
+through the same manifold-anchor, metric, finite-area and winding checks instead
+of leaving it pending. Two traversal-order controls reproduce the refusal before
+the fix; both now pass. A distorted closure still refuses the complete candidate.
+All 15 focused shelving/export/recovery tests pass after this correction.

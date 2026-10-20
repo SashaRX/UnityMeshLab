@@ -72,6 +72,7 @@ namespace SashaRX.UnityMeshLab
             public Candidate(int vertex, int orientation) { this.vertex = vertex; this.orientation = orientation; }
         }
 
+        /// <summary>Maps polygon corners to compatible result vertices, reporting missing, unresolved and conflicting values separately.</summary>
         /// <param name="polygonSizes">Corner count of each FBX polygon, in polygon order.</param>
         /// <param name="cornerPositions">xyz per corner in result-mesh space; NaN x for a corner the tagged import has no vertex for.</param>
         /// <param name="positions">xyz per result-mesh vertex.</param>
@@ -109,6 +110,7 @@ namespace SashaRX.UnityMeshLab
             readonly Dictionary<int, List<int>> importedFaces = new Dictionary<int, List<int>>();
             readonly int[] importedTriangles;
 
+            /// <summary>Indexes result faces and optional imported triangles without altering either input mesh.</summary>
             public Matcher(float[] cornerPositions, float[] positions, int[] faceIndices, int[] faceSizes, int[] importedTriangles)
             {
                 this.cornerPositions = cornerPositions;
@@ -172,7 +174,7 @@ namespace SashaRX.UnityMeshLab
                 return result;
             }
 
-            // Records the candidates of one polygon's corners; returns its orientation vote.
+            /// <summary>Records candidates for one polygon and returns its aggregate-normal winding vote.</summary>
             int CollectPolygon(int start, int size)
             {
                 polygonKeys.Clear();
@@ -205,9 +207,11 @@ namespace SashaRX.UnityMeshLab
                 return backward == 0 && forward > 0 ? 1 : 0;
             }
 
-            // A warped polygon can have a triangle facing against its Newell normal.
-            // When the import supplies that exact triangle, its cyclic order is the
-            // winding authority. Conflicting imported copies retain the ambiguity.
+            /// <summary>
+            /// Compares an exact imported triangle's cyclic order, including folded
+            /// polygons whose triangle disagrees with the Newell normal. Returns zero
+            /// when the imported correspondence is absent or ambiguous.
+            /// </summary>
             int ImportedOrientation(int face, int start, int size)
             {
                 if (importedTriangles == null || faceSizes[face] != 3) return 0;
@@ -280,6 +284,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             // The vertex for corner c, or -1 with the reason counted in result.
+            /// <summary>Filters winding and preserved attributes, then refuses incompatible written values at one corner.</summary>
             int Settle(int c, int relation, Func<int, int, bool> signatureMatches, Func<int, int, bool> sameWrittenValues, Result result)
             {
                 if (!HasPosition(cornerPositions, c)) { result.missing++; return -1; }
