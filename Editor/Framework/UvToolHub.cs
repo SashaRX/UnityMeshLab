@@ -2191,7 +2191,13 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>Applies a lightmap preview to an eligible mesh entry and registers its material layer.</summary>
-        /// <remarks>Captures the current materials and mesh for restoration; entries without usable lightmap data are skipped.</remarks>
+        /// <remarks>
+        /// Captures the current materials and mesh for restoration; entries without usable lightmap data are skipped.
+        /// Missing shaders or incomplete UV2 data also skip the preview; mesh read and import failures propagate.
+        /// </remarks>
+        /// <exception cref="System.InvalidOperationException">
+        /// The source mesh has invalid vertex data, or requires a readable fallback but has no model importer.
+        /// </exception>
         void ApplyLightmapPreviewEntry(MeshEntry e)
         {
             if (e.renderer == null) return;
@@ -2261,7 +2267,10 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>Restores captured lightmap layers in reverse order and unregisters each layer.</summary>
-        /// <remarks>Releases temporary meshes and materials, then clears this window's backups.</remarks>
+        /// <remarks>
+        /// Releases temporary meshes and materials, then clears this window's backups.
+        /// Restores a saved mesh only if it still exists and its preview mesh remains assigned.
+        /// </remarks>
         void RestoreLightmapPreview()
         {
             for (int i = lightmapBackups.Count - 1; i >= 0; i--)

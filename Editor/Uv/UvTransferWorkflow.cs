@@ -265,6 +265,7 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Appends this workflow's lightmap preview layer for the renderer, if one exists.</summary>
         /// <param name="renderer">The renderer whose preview backup is requested.</param>
         /// <param name="layers">The destination list; existing entries are retained.</param>
+        /// <exception cref="System.ArgumentNullException"><paramref name="renderer"/> is null.</exception>
         internal void CollectLightmapMaterialLayers(
             Renderer renderer, List<PreviewSafetyGuard.MaterialLayer> layers)
         {

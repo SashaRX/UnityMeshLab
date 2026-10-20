@@ -124,7 +124,10 @@ namespace SashaRX.UnityMeshLab
         /// <param name="forAssetWrite">
         /// When true, starts from live slots to preserve later assignments; otherwise starts from an authored snapshot.
         /// </param>
-        /// <returns>Resolved slots, or the current array when no layers or source slots are available.</returns>
+        /// <returns>
+        /// A resolved copy of the selected slots, or the current array when no layers or source slots are available.
+        /// Slots without a captured counterpart are left unchanged.
+        /// </returns>
         internal static Material[] ResolveOriginalMaterials(
             Material[] current, List<MaterialLayer> layers, bool forAssetWrite)
         {
@@ -184,7 +187,10 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>Selects the captured slots of the layer matching the most live material slots.</summary>
-        /// <returns>The selected capture, the first usable capture if none match, or the current slots.</returns>
+        /// <returns>
+        /// The selected capture by reference, taking the first on ties. If no preview matches,
+        /// returns the first non-null capture, or the current slots when no capture exists.
+        /// </returns>
         static Material[] AuthoredSnapshot(Material[] current, List<MaterialLayer> layers)
         {
             // The top layer is the one whose preview material is still visible.
