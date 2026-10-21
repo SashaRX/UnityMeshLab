@@ -1,5 +1,27 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Point-branch recovery: skip the contact scan without a single-point branch — 2026-10-21
+
+`UvPointJunctionRecovery` runs on every unpacked chart in
+`ReparameterizeStretchedShells`, both before packing and in the Reverse seed.
+Charts are partitioned by full indexed edges, so a hard normal edge splits one
+UV island into several edge-aliased patches. Those patches share two or more
+position/UV aliases with their neighbours and can never rotate, yet each such
+chart still paid one complete whole-chart contact scan with conflict
+collection before the branch loop skipped them.
+
+The anchors are now found first, from the same original coordinates, and the
+chart returns before the scan when no non-main patch has exactly one anchor.
+In that case the previous code also returned null, so UVs, refusals and the
+anchor chosen for a rotatable branch are unchanged. A rotatable chart pays the
+same scans and the same shared comparison budget as before. The early return
+checks cancellation first, so a cancelled token still throws where the skipped
+scan would have thrown.
+
+Measurement pending: `Tools~/run-transfer-performance.ps1 -Repetitions 3
+-Density 32` control (main) against this branch, with
+`compare-transfer-performance.py` confirming all exports are byte-identical.
+
 ## Separate overlapped source branches at a single UV point — 2026-10-20
 
 Some furniture charts join several edge-connected patches through only one
