@@ -2219,6 +2219,14 @@ namespace SashaRX.UnityMeshLab
             bool sourceAtlasRecoveryAllowed = sourceAtlas.complete && sourceAtlas.pairs == 0
                 && sourceAtlas.invalidFaces == 0 && sourceAtlas.degenerateFaces == 0
                 && sourceAtlas.outOfBoundsVertices == 0;
+            // EXPERIMENT ONLY (not for merge): open the gate whatever the source atlas holds.
+            if (System.Environment.GetEnvironmentVariable("MESHLAB_FORCE_SOURCE_RECOVERY") == "1" && sourceAtlas.complete)
+            {
+                if (!sourceAtlasRecoveryAllowed)
+                    UvtLog.Info($"[GroupedTransfer] EXPERIMENT: source-atlas recovery forced open for '{sourceMeshName}' " +
+                        $"(pairs={sourceAtlas.pairs}, invalid={sourceAtlas.invalidFaces}, degenerate={sourceAtlas.degenerateFaces}, oob={sourceAtlas.outOfBoundsVertices}).");
+                sourceAtlasRecoveryAllowed = true;
+            }
             if (trace != null) trace.sourceAtlasRecoveryAllowed = sourceAtlasRecoveryAllowed;
 
             // Track UV2 AABBs of placed force3D shells to prevent mutual overlap
