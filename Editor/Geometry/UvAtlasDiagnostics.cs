@@ -83,7 +83,10 @@ namespace SashaRX.UnityMeshLab
             foreach (var uv in g.uv)
                 if (Finite(uv) && (uv.x < -1e-4f || uv.x > 1.0001f || uv.y < -1e-4f || uv.y > 1.0001f))
                     ++report.outOfBoundsVertices;
-            var triangles = new List<Triangle>(g.indices.Length / 3);
+            // An array read through references: a Triangle is 96 bytes, and the pair loop
+            // and its predicates used to copy both triangles at every call.
+            var triangles = new Triangle[g.indices.Length / 3];
+            int count = 0;
             for (int f = 0; f < g.indices.Length / 3; ++f)
             {
                 if ((f & 4095) == 0) token.ThrowIfCancellationRequested();
@@ -96,9 +99,8 @@ namespace SashaRX.UnityMeshLab
                 t.minY=Math.Min(t.a.y,Math.Min(t.b.y,t.c.y));t.maxY=Math.Max(t.a.y,Math.Max(t.b.y,t.c.y));
                 t.area = Math.Abs(Cross(t.a, t.b, t.c)) * .5;
                 if (t.area <= 1e-16) { ++report.degenerateFaces; continue; }
-                triangles.Add(t);
+                triangles[count++] = t;
             }
-            int count = triangles.Count;
             if (count < 2) return report;
             // A grid over the atlas, each pair tested once from the lowest-index cell both
             // bounding boxes share. The former x-sweep visited every pair whose x-extents
@@ -111,8 +113,9 @@ namespace SashaRX.UnityMeshLab
             // per face whatever its size.
             double minX = double.PositiveInfinity, minY = double.PositiveInfinity, maxX = double.NegativeInfinity, maxY = double.NegativeInfinity;
             double extentX = 0, extentY = 0;
-            foreach (var t in triangles)
+            for (int i = 0; i < count; ++i)
             {
+                ref readonly var t = ref triangles[i];
                 minX = Math.Min(minX, t.minX); maxX = Math.Max(maxX, t.maxX); minY = Math.Min(minY, t.minY); maxY = Math.Max(maxY, t.maxY);
                 extentX += t.maxX - t.minX; extentY += t.maxY - t.minY;
             }
@@ -129,7 +132,7 @@ namespace SashaRX.UnityMeshLab
                 entries = 0; long spanX = 0, spanY = 0;
                 for (int i = 0; i < count; ++i)
                 {
-                    var t = triangles[i];
+                    ref readonly var t = ref triangles[i];
                     int cx0 = Cell(t.minX, minX, width, resX), cx1 = Cell(t.maxX, minX, width, resX);
                     int cy0 = Cell(t.minY, minY, height, resY), cy1 = Cell(t.maxY, minY, height, resY);
                     cells[i * 4] = cx0; cells[i * 4 + 1] = cy0; cells[i * 4 + 2] = cx1; cells[i * 4 + 3] = cy1;
@@ -176,7 +179,7 @@ namespace SashaRX.UnityMeshLab
                     int begin = offsets[c], end = offsets[c + 1];
                     for (int m = begin; m < end; ++m)
                     {
-                        int i = members[m]; var a = triangles[i];
+                        int i = members[m]; ref readonly var a = ref triangles[i];
                         for (int n = m + 1; n < end; ++n)
                         {
                             if ((++visits & 4095) == 0) token.ThrowIfCancellationRequested();
@@ -186,7 +189,7 @@ namespace SashaRX.UnityMeshLab
                             // triangles meets in many cells, which must not count many times.
                             if (Math.Max(cells[i * 4], cells[j * 4]) != cx || Math.Max(cells[i * 4 + 1], cells[j * 4 + 1]) != cy) continue;
                             if (++report.comparisons > comparisonBudget) { report.complete = false; return; }
-                            var b = triangles[j];
+                            ref readonly var b = ref triangles[j];
                             if ((sameChartOnly && a.chart != b.chart) || (crossChartOnly && a.chart == b.chart)
                                 || b.minX >= a.maxX || a.minX >= b.maxX || b.minY >= a.maxY || a.minY >= b.maxY) continue;
                             if (Separated(a, b)) continue;
@@ -245,11 +248,11 @@ namespace SashaRX.UnityMeshLab
         // shared edge, a common vertex) or does not meet projects onto disjoint or
         // touching intervals on one of them and is rejected here, far cheaper than
         // clipping; in a fan or a packed chart almost every candidate pair is such a pair.
-        static bool Separated(Triangle a, Triangle b)
+        static bool Separated(in Triangle a, in Triangle b)
             => SeparatedBy(a.a, a.b, a, b) || SeparatedBy(a.b, a.c, a, b) || SeparatedBy(a.c, a.a, a, b)
             || SeparatedBy(b.a, b.b, a, b) || SeparatedBy(b.b, b.c, a, b) || SeparatedBy(b.c, b.a, a, b);
 
-        static bool SeparatedBy(Point p, Point q, Triangle a, Triangle b)
+        static bool SeparatedBy(in Point p, in Point q, in Triangle a, in Triangle b)
         {
             double nx = p.y - q.y, ny = q.x - p.x;
             Project(a, nx, ny, out double aMin, out double aMax);
@@ -257,7 +260,7 @@ namespace SashaRX.UnityMeshLab
             return aMax <= bMin || bMax <= aMin;
         }
 
-        static void Project(Triangle t, double nx, double ny, out double min, out double max)
+        static void Project(in Triangle t, double nx, double ny, out double min, out double max)
         {
             double pa = t.a.x * nx + t.a.y * ny, pb = t.b.x * nx + t.b.y * ny, pc = t.c.x * nx + t.c.y * ny;
             min = Math.Min(pa, Math.Min(pb, pc)); max = Math.Max(pa, Math.Max(pb, pc));
@@ -309,10 +312,10 @@ namespace SashaRX.UnityMeshLab
         static bool Finite(Vector2 p)
             => !float.IsNaN(p.x) && !float.IsNaN(p.y) && !float.IsInfinity(p.x) && !float.IsInfinity(p.y);
 
-        static double Cross(Point a, Point b, Point p)
+        static double Cross(in Point a, in Point b, in Point p)
             => (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
 
-        static double IntersectionArea(Triangle a, Triangle b, Point[] bufferA, Point[] bufferB)
+        static double IntersectionArea(in Triangle a, in Triangle b, Point[] bufferA, Point[] bufferB)
         {
             bufferA[0] = a.a; bufferA[1] = a.b; bufferA[2] = a.c;
             int count = 3;
@@ -325,7 +328,7 @@ namespace SashaRX.UnityMeshLab
             return Math.Abs(twiceArea) * .5;
         }
 
-        static int Clip(Point[] input, int count, Point[] output, Point edgeA, Point edgeB, double sign)
+        static int Clip(Point[] input, int count, Point[] output, in Point edgeA, in Point edgeB, double sign)
         {
             if (count == 0) return 0;
             int written = 0;

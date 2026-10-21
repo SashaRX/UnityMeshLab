@@ -1,5 +1,36 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Atlas overlap scan: triangles by reference — 2026-10-21
+
+`UvAtlasDiagnostics.Measure` is the overlap scan behind every transfer quality
+measure, contact audit, envelope audit and packing validation. Its `Triangle`
+is a 96-byte struct (face, chart, three double points, bounds, area) held in a
+`List<Triangle>`. In the pair loop each charged pair copied `triangles[j]`, and
+the predicates took both triangles by value: `Separated` copied them once, each
+of its six `SeparatedBy` calls again, and each `Project` once more, so a
+candidate pair copied about 2.5 KB before any arithmetic; `IntersectionArea`,
+`Clip` and `Cross` also copied their points.
+
+The triangles now live in an array read through `ref readonly` locals, and the
+predicates take `in` parameters. The arithmetic and its order are unchanged, so
+reports are identical bit for bit.
+
+A standalone .NET 8 harness (Unity types shimmed) compared the previous and
+the new `Measure` on 72 configurations: 60² and 150² cell grids at jitter 0,
+0.6 and 2.5 cells (from a clean packed grid to heavy overlap), two seeds,
+budgets unbounded / 2,000,000 / 5,000, with and without `crossChartOnly`. Every
+report field matched, including the bits of `pairAreaSum`, the samples and the
+sorted conflicts. Scan time (two timed repetitions each, grid construction
+included): 3,698 → 2,827 ms (−24 %). Unity's Mono JIT handles large struct
+copies no better than RyuJIT, so the editor gain is expected to be at least
+as large.
+
+Measurement pending: `Tools~/run-transfer-performance.ps1 -Repetitions 3
+-Density 32`, control = main before this change, with
+`compare-transfer-performance.py` confirming all exports are byte-identical.
+The stages that run the scan include "Forward quality measure", "Forward seam
+quality measures", "Forward seam contact audits" and "Native envelope audit".
+
 ## Forward donor-seam trial: measure each layout once — 2026-10-21
 
 A Forward target whose shell transfer leaves overlaps, collapsed faces or
