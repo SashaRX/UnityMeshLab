@@ -1217,6 +1217,54 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        [Test]
+        public void ChannelWrite_BakingGeneratedUv1UnwrapsAnUnpairableUnloadedMeshAgain()
+        {
+            // An unloaded mesh whose imported lightmap UVs cannot be paired with the file's
+            // corners (compressed tags, coincident faces) is unwrapped again instead of
+            // refusing the save; pairing is switched off here to take that path.
+            string assetFolder = "Assets/MeshLabGeneratedUv1Unwrap_" + Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", assetFolder.Substring(7));
+            string path = assetFolder + "/source.fbx";
+            const string doorName = "Door_LOD0";
+            Mesh working = null;
+            try
+            {
+                File.WriteAllBytes(path, File.ReadAllBytes(WriteSource(true, withCollision: true, collisionName: doorName)));
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.isReadable = true; importer.generateSecondaryUV = true; importer.SaveAndReimport();
+                var meshes = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().ToArray();
+                var door = meshes.Single(m => m.name == doorName);
+                string partName = meshes.Single(m => m.name != doorName).name;
+                working = UnityEngine.Object.Instantiate(door);
+                working.uv2 = working.uv.Select(uv => uv * .5f).ToArray();
+                var entry = new MeshEntry { fbxMesh = door, originalMesh = working };
+
+                FbxChannelWrite.PairUnloadedUv1 = false;
+                try { Assert.IsTrue(FbxChannelWrite.Write(path, new[] { entry }, FbxExportIntent.UV1, path, null)); }
+                finally { FbxChannelWrite.PairUnloadedUv1 = true; }
+                Assert.IsFalse(((ModelImporter)AssetImporter.GetAtPath(path)).generateSecondaryUV);
+                meshes = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().ToArray();
+                CollectionAssert.AreEqual(TriangleUvRecords(working), TriangleUvRecords(meshes.Single(m => m.name == doorName)));
+                var part = meshes.Single(m => m.name == partName);
+                var lightmap = part.uv2;
+                Assert.AreEqual(part.vertexCount, lightmap.Length, "the unloaded mesh has lightmap UVs once Unity no longer generates them");
+                Assert.IsTrue(lightmap.All(uv => uv.x >= 0 && uv.x <= 1 && uv.y >= 0 && uv.y <= 1));
+                var triangles = part.triangles;
+                for (int t = 0; t < triangles.Length; t += 3)
+                {
+                    Vector2 a = lightmap[triangles[t]], b = lightmap[triangles[t + 1]], c = lightmap[triangles[t + 2]];
+                    Assert.Greater(Mathf.Abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)), 1e-8f, $"triangle {t / 3} has lightmap area");
+                }
+            }
+            finally
+            {
+                if (working) UnityEngine.Object.DestroyImmediate(working);
+                AssetDatabase.DeleteAsset(assetFolder);
+            }
+        }
+
         static void AssertCollisionUnchanged(string sourcePath, string outputPath)
         {
             using var source = FbxSourceDocument.Load(Path.GetFullPath(sourcePath));
