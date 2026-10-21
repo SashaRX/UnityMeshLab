@@ -223,7 +223,10 @@ namespace SashaRX.UnityMeshLab
             {
                 var nodes = new ForwardRunNode[entries.Length];
                 for (int i = 0; i < entries.Length; ++i)
-                    if (!start.nodes[i].SameInput(nodes[i] = CaptureForwardRunNode(entries[i]))) return;
+                {
+                    nodes[i] = CaptureForwardRunNode(entries[i]);
+                    if (!start.nodes[i].SameInput(nodes[i])) return;
+                }
                 lastForwardRun = new ForwardRun { settings = start.settings, nodes = nodes };
             }
         }
