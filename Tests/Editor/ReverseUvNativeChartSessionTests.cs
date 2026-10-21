@@ -95,15 +95,46 @@ namespace SashaRX.UnityMeshLab.Tests
             finally {XatlasRepack.ReleaseNativeSession();}
         }
 
+        /// <summary>
+        /// Signals when a worker logs that it waits for a busy session, so a test proves
+        /// that the wait path ran rather than a late worker finding the session free.
+        /// </summary>
+        sealed class BusyWaitWatch : IDisposable
+        {
+            internal readonly ManualResetEventSlim waiting=new ManualResetEventSlim();
+            readonly UvtLog.Level level=UvtLog.Current;
+            readonly UvtLog.Category categories=UvtLog.EnabledCategories;
+
+            internal BusyWaitWatch()
+            {
+                UvtLog.Current=UvtLog.Level.Info; UvtLog.SetCategoryEnabled(UvtLog.Category.Repack,true);
+                Application.logMessageReceivedThreaded+=OnLog;
+            }
+
+            void OnLog(string message,string stack,LogType type)
+            {
+                if(message.Contains("is waiting for the active xatlas session")) waiting.Set();
+            }
+
+            public void Dispose()
+            {
+                Application.logMessageReceivedThreaded-=OnLog;
+                UvtLog.Current=level; UvtLog.EnabledCategories=categories;
+                waiting.Dispose();
+            }
+        }
+
         /// <summary>A worker waits for the current owner instead of refusing its final pack.</summary>
         [Test]
         public void WorkerWaitsForABusySessionUntilItsOwnerReleases()
         {
+            using var watch=new BusyWaitWatch();
             Assert.IsTrue(XatlasRepack.TryAcquireNativeSession());
             System.Threading.Tasks.Task worker;
             try
             {
                 worker=System.Threading.Tasks.Task.Run(()=>{using var session=new ReverseUvNativeChartSession();session.Acquire(default);});
+                Assert.IsTrue(watch.waiting.Wait(10000),"The worker must reach the busy-session wait.");
                 Assert.IsFalse(worker.Wait(200),"The worker must not acquire a lease that is still owned.");
             }
             finally {XatlasRepack.ReleaseNativeSession();}
@@ -116,11 +147,13 @@ namespace SashaRX.UnityMeshLab.Tests
         [Test]
         public void WaitingWorkerCanBeCancelled()
         {
+            using var watch=new BusyWaitWatch();
             Assert.IsTrue(XatlasRepack.TryAcquireNativeSession());
             try
             {
                 using var cancel=new CancellationTokenSource();
                 var worker=System.Threading.Tasks.Task.Run(()=>XatlasRepack.AcquireNativeSessionForRequiredWork("test",cancel.Token));
+                Assert.IsTrue(watch.waiting.Wait(10000),"Cancellation must interrupt the wait, not precede it.");
                 Assert.IsFalse(worker.Wait(200));
                 cancel.Cancel();
                 var error=Assert.Throws<AggregateException>(()=>worker.Wait(10000));
