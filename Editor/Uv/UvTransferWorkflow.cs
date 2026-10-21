@@ -2513,8 +2513,12 @@ namespace SashaRX.UnityMeshLab
             {
                 // Score what is published: the unit clamp can collapse a face.
                 if (clamped > 0)
+                {
                     using (ForwardPerformance?.Accumulated("Forward quality measure"))
+                    {
                         finalQuality = TransferUvQuality.Measure(tgtMesh, tr.uv2, Vector2.one, renderedFrame);
+                    }
+                }
                 attemptScore.AddTarget(finalQuality, AutoTuneScore.GeometryDegenerateFaces(tgtMesh, renderedFrame));
             }
             ctx.DiagnosticCapture?.AfterPair(pair, tgt, tr);
