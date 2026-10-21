@@ -201,6 +201,10 @@ namespace SashaRX.UnityMeshLab
         const string kSessionBusyError =
             "An xatlas repack operation is already in progress.";
 
+        // Managed thread that last claimed the session (0 when free); only used
+        // to refuse a wait that could never end because the waiter owns the lease.
+        static int s_ownerThread;
+
         /// <summary>
         /// Claims the process-global atlas. Returns false when another repack
         /// already holds it — the public entry points report that through
@@ -209,16 +213,47 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         internal static bool TryAcquireNativeSession()
         {
-            return s_nativeSession.Wait(0);
+            if (!s_nativeSession.Wait(0)) return false;
+            System.Threading.Volatile.Write(ref s_ownerThread, System.Environment.CurrentManagedThreadId);
+            return true;
         }
 
         /// <summary>Waits on a worker for mandatory repair. The editor must remain
         /// free to finish an interactive owner's asynchronous native pack.</summary>
         internal static void AcquireNativeSession(System.Threading.CancellationToken token)
-            => s_nativeSession.Wait(token);
+        {
+            s_nativeSession.Wait(token);
+            System.Threading.Volatile.Write(ref s_ownerThread, System.Environment.CurrentManagedThreadId);
+        }
+
+        /// <summary>
+        /// Claims the session for work that must neither fail nor silently degrade
+        /// while another caller packs. A worker waits, cancellably, for the current
+        /// owner. The editor thread cannot wait, because an interactive owner's
+        /// asynchronous pack may need it to finish; and a thread cannot wait for a
+        /// lease it acquired itself. Both report the busy session instead.
+        /// </summary>
+        /// <param name="purpose">Names the waiting operation in the log and in the busy error.</param>
+        /// <param name="token">Cancels the wait.</param>
+        /// <exception cref="System.InvalidOperationException">The session is busy and cannot be awaited on this thread.</exception>
+        /// <exception cref="System.OperationCanceledException">The wait was cancelled.</exception>
+        internal static void AcquireNativeSessionForRequiredWork(string purpose, System.Threading.CancellationToken token)
+        {
+            token.ThrowIfCancellationRequested();
+            if (TryAcquireNativeSession()) return;
+            if (UnityEditorInternal.InternalEditorUtility.CurrentThreadIsMainThread()
+                || System.Threading.Volatile.Read(ref s_ownerThread) == System.Environment.CurrentManagedThreadId)
+                throw new System.InvalidOperationException($"{kSessionBusyError} {purpose} cannot wait for it on this thread.");
+            UvtLog.Info(UvtLog.Category.Repack, $"[Repack] {purpose} is waiting for the active xatlas session; cancellation remains available.");
+            AcquireNativeSession(token);
+            UvtLog.Info(UvtLog.Category.Repack, $"[Repack] {purpose} acquired the xatlas session.");
+        }
 
         internal static void ReleaseNativeSession()
-            => s_nativeSession.Release();
+        {
+            System.Threading.Volatile.Write(ref s_ownerThread, 0);
+            s_nativeSession.Release();
+        }
 
         const uint ORPHAN_CHART = uint.MaxValue;
         const long kBruteCostBudget = 500_000_000L;        // ~5-10s wall

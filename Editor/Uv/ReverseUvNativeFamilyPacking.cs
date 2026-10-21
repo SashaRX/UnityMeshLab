@@ -169,7 +169,9 @@ namespace SashaRX.UnityMeshLab
             CancellationToken token,Func<int,Vector2[],int,bool> validate,out float scale,out int packedSide,bool allowLargerCanvas,List<int> refusedFamilies=null,float? fixedScale=null,bool simplifyFootprints=true,bool alignFootprints=true,FootprintCache footprints=null,ReverseUvNativeChartSession chartSession=null)
         {
             scale=1;packedSide=side;
-            if(chartSession!=null?!chartSession.TryAcquire(token):!XatlasRepack.TryAcquireNativeSession()) return null;
+            // A busy session is not a packing refusal: wait on a worker, report it on the editor thread.
+            if(chartSession!=null) chartSession.Acquire(token);
+            else XatlasRepack.AcquireNativeSessionForRequiredWork("Reverse family packing",token);
             bool created=false;
             try
             {
