@@ -2288,7 +2288,9 @@ namespace SashaRX.UnityMeshLab
             {
                 if (!results[i].ok)
                 {
-                    UvtLog.Error("[Repack] " + validEntries[i].renderer.name + ": " + results[i].error);
+                    // A cancel request is the user's choice, not a failure of the pack.
+                    if (results[i].cancelled) UvtLog.Warn("[Repack] " + validEntries[i].renderer.name + ": cancelled");
+                    else UvtLog.Error("[Repack] " + validEntries[i].renderer.name + ": " + results[i].error);
                     UnityEngine.Object.DestroyImmediate(meshCopies[i]);
                     validEntries[i].repackedAtlasWidth = 0;
                     validEntries[i].repackedAtlasHeight = 0;
