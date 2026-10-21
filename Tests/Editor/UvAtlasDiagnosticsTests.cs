@@ -62,6 +62,32 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(1, UvAtlasDiagnostics.Measure(g, CancellationToken.None).pairs);
         }
 
+        /// <summary>
+        /// Same-chart pairs are charged to the budget but never clipped: completeness,
+        /// comparisons and cross-chart overlaps match the whole scan at every budget.
+        /// </summary>
+        [Test]
+        public void CrossChartScan_ChargesSameChartPairsButReportsOnlyCrossChartOverlaps()
+        {
+            // Two duplicate triangles in chart 0 and a shifted copy in chart 1 overlapping both.
+            var g = Geometry(new[] { new Vector2(0, 0), new Vector2(1, 0), new Vector2(0, 1),
+                new Vector2(0, 0), new Vector2(1, 0), new Vector2(0, 1),
+                new Vector2(.2f, .2f), new Vector2(1.2f, .2f), new Vector2(.2f, 1.2f) },
+                new[] { 0, 1, 2, 3, 4, 5, 6, 7, 8 }, new[] { 0, 0, 0, 0, 0, 0, 1, 1, 1 });
+            var whole = UvAtlasDiagnostics.Measure(g, CancellationToken.None);
+            var cross = UvAtlasDiagnostics.Measure(g, CancellationToken.None, crossChartOnly: true);
+            Assert.AreEqual(1, whole.sameChartPairs);
+            Assert.AreEqual(2, whole.crossChartPairs);
+            Assert.AreEqual(0, cross.sameChartPairs);
+            Assert.AreEqual(whole.crossChartPairs, cross.crossChartPairs);
+            Assert.AreEqual(cross.crossChartPairs, cross.pairs);
+            Assert.AreEqual(whole.comparisons, cross.comparisons);
+            for (long budget = 0; budget <= whole.comparisons; ++budget)
+                Assert.AreEqual(UvAtlasDiagnostics.Measure(g, CancellationToken.None, comparisonBudget: budget).complete,
+                    UvAtlasDiagnostics.Measure(g, CancellationToken.None, comparisonBudget: budget, crossChartOnly: true).complete,
+                    $"budget {budget}");
+        }
+
         [Test]
         public void ScanBudget_ReportsIncompleteRatherThanClean()
         {
