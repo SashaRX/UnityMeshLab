@@ -466,5 +466,112 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        /// <summary>
+        /// SHA-256 of what a mesh stores: vertex layout and raw vertex streams, every
+        /// submesh's topology, base vertex and indices, bounds, and, when readable, bind
+        /// poses and blend shapes. Read/Write is not needed for static meshes. Null when
+        /// the editor does not expose the buffers, or when skinning or blend shapes
+        /// cannot be read. Equal fingerprints mean equal content, not equal names. Main thread.
+        /// </summary>
+        internal static byte[] Fingerprint(Mesh mesh)
+        {
+            if (mesh == null) return null;
+            bool deformed = mesh.blendShapeCount > 0 || mesh.HasVertexAttribute(VertexAttribute.BlendWeight)
+                || mesh.HasVertexAttribute(VertexAttribute.BlendIndices);
+            if (deformed && !mesh.isReadable) return null;
+            using var hash = new FingerprintHash();
+            using (var data = MeshUtility.AcquireReadOnlyMeshData(mesh))
+            {
+                var md = data[0];
+                try { ValidateMeshData(mesh, md); }
+                catch (MeshDataUnavailableException) { return null; }
+                foreach (var attribute in mesh.GetVertexAttributes())
+                {
+                    hash.Add((int)attribute.attribute); hash.Add((int)attribute.format);
+                    hash.Add(attribute.dimension); hash.Add(attribute.stream);
+                }
+                hash.Add(md.vertexCount);
+                for (int stream = 0; stream < md.vertexBufferCount; ++stream) hash.Add(md.GetVertexData<byte>(stream));
+                hash.Add(md.subMeshCount);
+                for (int sub = 0; sub < md.subMeshCount; ++sub)
+                {
+                    hash.Add((int)mesh.GetTopology(sub)); hash.Add((int)mesh.GetBaseVertex(sub));
+                    var indices = ReadIndices(mesh, md, sub); hash.Add(indices.Length);
+                    foreach (int index in indices) hash.Add(index);
+                }
+            }
+            var bounds = mesh.bounds;
+            hash.Add(bounds.center); hash.Add(bounds.extents);
+            // A static mesh hashes the same with or without Read/Write; a deformed one is readable here.
+            if (!deformed) return hash.Finish();
+            var bindposes = mesh.bindposes; hash.Add(bindposes.Length);
+            foreach (var pose in bindposes) for (int i = 0; i < 16; ++i) hash.Add(pose[i]);
+            hash.Add(mesh.blendShapeCount);
+            var vertices = new Vector3[mesh.vertexCount]; var normals = new Vector3[mesh.vertexCount];
+            var tangents = new Vector3[mesh.vertexCount];
+            for (int shape = 0; shape < mesh.blendShapeCount; ++shape)
+            {
+                hash.Add(mesh.GetBlendShapeName(shape));
+                int frames = mesh.GetBlendShapeFrameCount(shape); hash.Add(frames);
+                for (int frame = 0; frame < frames; ++frame)
+                {
+                    hash.Add(mesh.GetBlendShapeFrameWeight(shape, frame));
+                    mesh.GetBlendShapeFrameVertices(shape, frame, vertices, normals, tangents);
+                    for (int v = 0; v < vertices.Length; ++v) { hash.Add(vertices[v]); hash.Add(normals[v]); hash.Add(tangents[v]); }
+                }
+            }
+            return hash.Finish();
+        }
+
+        /// <summary>Feeds SHA-256 through one 64 KiB block; floats by bit pattern.</summary>
+        sealed class FingerprintHash : IDisposable
+        {
+            readonly System.Security.Cryptography.SHA256 sha = System.Security.Cryptography.SHA256.Create();
+            readonly byte[] buffer = new byte[1 << 16];
+            int count;
+
+            internal void Add(int value)
+            {
+                if (count + 4 > buffer.Length) Flush();
+                buffer[count++] = (byte)value; buffer[count++] = (byte)(value >> 8);
+                buffer[count++] = (byte)(value >> 16); buffer[count++] = (byte)(value >> 24);
+            }
+
+            internal void Add(float value) => Add(BitConverter.SingleToInt32Bits(value));
+            internal void Add(Vector3 value) { Add(value.x); Add(value.y); Add(value.z); }
+
+            internal void Add(string value)
+            {
+                Add(value.Length);
+                foreach (char c in value) Add(c);
+            }
+
+            internal void Add(NativeArray<byte> bytes)
+            {
+                Add(bytes.Length);
+                for (int offset = 0; offset < bytes.Length;)
+                {
+                    if (count == buffer.Length) Flush();
+                    int length = Math.Min(buffer.Length - count, bytes.Length - offset);
+                    NativeArray<byte>.Copy(bytes, offset, buffer, count, length);
+                    count += length; offset += length;
+                }
+            }
+
+            internal byte[] Finish()
+            {
+                Flush();
+                sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+                return sha.Hash;
+            }
+
+            void Flush()
+            {
+                if (count > 0) sha.TransformBlock(buffer, 0, count, null, 0);
+                count = 0;
+            }
+
+            public void Dispose() => sha.Dispose();
+        }
     }
 }

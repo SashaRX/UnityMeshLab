@@ -1586,9 +1586,18 @@ namespace SashaRX.UnityMeshLab
                 splitTargetsInSymmetryStep, SymmetrySplitMode);
             BenchmarkRecorder.Current?.StageBegin("pipeline");
             bool completedSuccessfully = false;
+            string settings = reuseForwardRunForReverse ? PreparationSettings(ctx, this) : null;
             try
             {
                 completedSuccessfully = await ExecFullPipelineCoreImpl(useAsync);
+                // A fingerprint failure only costs Reverse its reuse; it never fails the pipeline.
+                if (completedSuccessfully && settings != null)
+                    try { RecordForwardRun(settings); }
+                    catch (Exception error)
+                    {
+                        lastForwardRun = null;
+                        UvtLog.Warn("[Pipeline] Full Pipeline result not recorded for Reverse reuse: " + error.Message);
+                    }
             }
             finally
             {
@@ -1650,6 +1659,7 @@ namespace SashaRX.UnityMeshLab
         void ResetWorkingMeshesToFbx()
         {
             ClearReverseSummary();
+            lastForwardRun = null;
             if (ctx?.MeshEntries == null) return;
             foreach (var e in ctx.MeshEntries)
             {

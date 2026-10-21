@@ -222,6 +222,25 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 #endif
 
+        /// <summary>The fingerprint follows stored content: not the name, and not Read/Write for a static mesh.</summary>
+        [Test]
+        public void FingerprintFollowsContentNotNameOrReadability()
+        {
+            var source = QuadTopology(); var renamed = Object.Instantiate(source); var unreadable = Object.Instantiate(source);
+            try {
+                renamed.name = "renamed";
+                unreadable.UploadMeshData(true); Assert.IsFalse(unreadable.isReadable);
+                var expected = MeshAccess.Fingerprint(source);
+                Assert.IsNotNull(expected);
+                CollectionAssert.AreEqual(expected, MeshAccess.Fingerprint(renamed));
+                CollectionAssert.AreEqual(expected, MeshAccess.Fingerprint(unreadable));
+                var uv = renamed.uv; uv[2].x = System.BitConverter.Int32BitsToSingle(System.BitConverter.SingleToInt32Bits(uv[2].x) - 1);
+                renamed.uv = uv;
+                CollectionAssert.AreNotEqual(expected, MeshAccess.Fingerprint(renamed), "One ulp of UV0 is a content change.");
+            }
+            finally { Object.DestroyImmediate(source); Object.DestroyImmediate(renamed); Object.DestroyImmediate(unreadable); }
+        }
+
         [Test]
         public void MirroredBakeRewindsQuadsAsQuads()
         {
