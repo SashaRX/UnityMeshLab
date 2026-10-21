@@ -41,7 +41,12 @@ namespace SashaRX.UnityMeshLab
                 anchors[p] = shared[0];
                 rotatable = true;
             }
-            if (!rotatable) return null;
+            if (!rotatable)
+            {
+                // The skipped scan would have observed cancellation.
+                token.ThrowIfCancellationRequested();
+                return null;
+            }
             var current = new Dictionary<int, Vector2>(original);
             var scan = Scan(shell, indices, current, token, ref comparisonBudget);
             if (!scan.complete || scan.pairs == 0 || scan.invalidFaces > 0 || scan.degenerateFaces > 0) return null;

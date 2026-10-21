@@ -14,9 +14,9 @@ The anchors are now found first, from the same original coordinates, and the
 chart returns before the scan when no non-main patch has exactly one anchor.
 In that case the previous code also returned null, so UVs, refusals and the
 anchor chosen for a rotatable branch are unchanged. A rotatable chart pays the
-same scans and the same shared comparison budget as before. The only
-difference is a token cancelled between the first check and the scan on a
-chart with no rotatable branch: it now surfaces at the next chart instead.
+same scans and the same shared comparison budget as before. The early return
+checks cancellation first, so a cancelled token still throws where the skipped
+scan would have thrown.
 
 Measurement pending: `Tools~/run-transfer-performance.ps1 -Repetitions 3
 -Density 32` control (main) against this branch, with
