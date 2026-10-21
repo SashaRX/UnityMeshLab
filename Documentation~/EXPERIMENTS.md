@@ -1,5 +1,40 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Merged-shell safety net: judge a shell's re-projection as one change — 2026-10-21
+
+After Phase 3, the safety net re-projects every merged vertex outside its
+source's UV2 bounds widened by 20% of their size, through the source's UV0 BVH,
+vertex by vertex: the rest of a moved vertex's faces stay, so a face can become a
+sliver or fold. Extending this to sources too small for a BVH (PR #310) failed the
+furniture corpus: overlaps fell in 6 pairs, but collapsed UV faces and anisotropy
+only rose (4 worse pairs, the rest tradeoffs; recorded in PR #316).
+
+Now a shell's re-projection is one change, scored by the corpus metrics on that
+shell (`ShellLayoutScore`): invalid, degenerate and exactly zero-area UV faces,
+out-of-bounds vertices, worst anisotropy, the whole mesh's area-weighted
+anisotropy, and the overlap pairs and area of the shell with itself and with
+every other face whose UV2 bounds meet it before or after. One layout dominates
+another when it is no worse in any of these and better in one, by the report's
+own rule (integers exactly, real values within a relative 1e-6). Main's behavior
+is the default, and only domination changes it:
+
+- through a BVH (main re-projects), the transferred layout is kept when it
+  dominates the re-projection;
+- for a source of 16 faces or fewer (main leaves the outliers), the source's
+  faces are scanned as in PR #310, and the re-projection is applied when it
+  dominates the transferred layout.
+
+So each shell's result is no worse than main's by the corpus metrics measured at
+this stage; later stages (overlap report, recovery, classification) may still
+react to a different layout. A rejected shell at (0,0) keeps main's result: its
+corner layout cannot dominate a re-projection and a re-projection with any finite
+stretch cannot dominate it. `ShellLayoutScoreTests` covers the domination rule;
+`SafetyNetScanOfASmallSourceFindsTheFaceItsBvhWould` the scan.
+
+Measurement pending: the furniture corpus against main with
+`report.py --baseline … --require-no-regressions`; rows must be better or same.
+Count `Post-fix:` (applied) and `Post-fix declined:` (kept, through a BVH) lines.
+
 ## Oversample 8: why a better source does not survive transfer — analysis — 2026-10-21
 
 The furniture corpus baseline on main (`491340a`, 80 files, 255 LOD pairs)
