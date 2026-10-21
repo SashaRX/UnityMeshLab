@@ -18,17 +18,12 @@ namespace SashaRX.UnityMeshLab
         public double overlapPairArea;
         public List<string> overlapSamples = new List<string>();
 
+        /// <summary>Audits per-face metric stretch and atlas contacts without modifying the mesh or UV buffer.</summary>
         internal static TransferUvQuality Measure(Mesh mesh, Vector2[] uv, Vector2 metric, Matrix4x4 localToWorld)
         {
-            var report = new TransferUvQuality();
             var positions = mesh.vertices; var triangles = mesh.triangles;
-            report.faces = triangles.Length / 3;
-            report.faceAnisotropy = new float[report.faces];
-            if (uv == null || uv.Length != positions.Length) { report.invalidFaces = report.faces; return report; }
-            double weighted = 0, totalArea = 0;
-            for (int f = 0; f < report.faces; ++f)
-                MeasureFace(report, f, positions, triangles, uv, metric, localToWorld, ref weighted, ref totalArea);
-            report.areaWeightedAnisotropy = totalArea > 0 ? weighted / totalArea : 0;
+            var report = MeasureTriangles(positions, triangles, uv, metric, localToWorld);
+            if (uv == null || uv.Length != positions.Length) return report;
             // Includes positive-area overlaps within the same shell/source; shared edges are legal.
             var atlas = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {
                 positions = positions, uv = uv, indices = triangles, charts = new int[positions.Length]
@@ -40,6 +35,22 @@ namespace SashaRX.UnityMeshLab
             return report;
         }
 
+        /// <summary>Measures intrinsic per-face metrics on plain arrays, independently of the separate atlas-contact audit.</summary>
+        internal static TransferUvQuality MeasureTriangles(Vector3[] positions, int[] triangles, Vector2[] uv,
+            Vector2 metric, Matrix4x4 localToWorld)
+        {
+            var report = new TransferUvQuality();
+            report.faces = triangles.Length / 3;
+            report.faceAnisotropy = new float[report.faces];
+            if (uv == null || uv.Length != positions.Length) { report.invalidFaces = report.faces; return report; }
+            double weighted = 0, totalArea = 0;
+            for (int f = 0; f < report.faces; ++f)
+                MeasureFace(report, f, positions, triangles, uv, metric, localToWorld, ref weighted, ref totalArea);
+            report.areaWeightedAnisotropy = totalArea > 0 ? weighted / totalArea : 0;
+            return report;
+        }
+
+        /// <summary>Classifies one face and accumulates finite stretch using its transformed geometry area.</summary>
         static void MeasureFace(TransferUvQuality report, int f, Vector3[] positions, int[] triangles, Vector2[] uv,
             Vector2 metric, Matrix4x4 localToWorld, ref double weighted, ref double totalArea)
         {
@@ -51,11 +62,7 @@ namespace SashaRX.UnityMeshLab
             double cross=length*frame.y;
             if (!Finite(cross)) { ++report.invalidFaces; return; }
             if (cross <= 0) { ++report.degenerateFaces; return; }
-            double ux=((double)uv[b].x-uv[a].x)*metric.x,uy=((double)uv[b].y-uv[a].y)*metric.y;
-            double vx=((double)uv[c].x-uv[a].x)*metric.x,vy=((double)uv[c].y-uv[a].y)*metric.y;
-            double j00=ux/length,j10=uy/length;
-            double j01=(vx-ux*frame.x/length)/frame.y,j11=(vy-uy*frame.x/length)/frame.y;
-            double ratio = JacobianAnisotropy(j00, j10, j01, j11);
+            double ratio = UvAnisotropy(frame, uv[a], uv[b], uv[c], metric);
             if (double.IsNaN(ratio)) { ++report.invalidFaces; return; }
             if (double.IsInfinity(ratio)) { ++report.degenerateFaces; report.faceAnisotropy[f] = float.MaxValue; return; }
             report.faceAnisotropy[f] = (float)Math.Min(ratio, float.MaxValue);
@@ -64,8 +71,24 @@ namespace SashaRX.UnityMeshLab
             weighted += ratio * cross; totalArea += cross;
         }
 
-        // Normalize the Jacobian before squaring: anisotropy depends on shape,
-        // not on the absolute world or UV scale of a nonsingular triangle.
+        /// <summary>Checks stored UV degeneracy before frame conversion, preserving nonfinite-input classification.</summary>
+        static double UvAnisotropy((double length, double x, double y) frame, Vector2 a, Vector2 b, Vector2 c, Vector2 metric)
+        {
+            double ux = (double)b.x - a.x, uy = (double)b.y - a.y;
+            double vx = (double)c.x - a.x, vy = (double)c.y - a.y;
+            if (!Finite(ux) || !Finite(uy) || !Finite(vx) || !Finite(vy) || !Finite(metric.x) || !Finite(metric.y))
+                return double.NaN;
+            // Test stored UVs before metric scaling and geometry shear: rounding those
+            // operations can turn a zero determinant into a tiny nonzero value.
+            // No area epsilon: very thin but nonzero faces still have measurable stretch.
+            if (ux * vy - uy * vx == 0) return double.PositiveInfinity;
+            ux *= metric.x; uy *= metric.y; vx *= metric.x; vy *= metric.y;
+            return JacobianAnisotropy(ux / frame.length, uy / frame.length,
+                (vx - ux * frame.x / frame.length) / frame.y,
+                (vy - uy * frame.x / frame.length) / frame.y);
+        }
+
+        /// <summary>Normalizes the Jacobian before squaring so nonsingular stretch is independent of uniform scale.</summary>
         static double JacobianAnisotropy(double j00, double j10, double j01, double j11)
         {
             if (!Finite(j00) || !Finite(j10) || !Finite(j01) || !Finite(j11)) return double.NaN;
@@ -79,11 +102,10 @@ namespace SashaRX.UnityMeshLab
             return min > 0 ? Math.Sqrt(max / min) : double.PositiveInfinity;
         }
 
+        /// <summary>Separates nonfinite input from finite values that may represent a collapsed face.</summary>
         static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
 
-        // Promote stored Float32 corners before subtracting and transforming.
-        // Float32 dot products add false shear to nearly collinear triangles.
-        // The packer and exported-mesh audit use the same intrinsic frame.
+        /// <summary>Builds the shared intrinsic frame in double precision to avoid Float32 shear on thin triangles.</summary>
         internal static (double length,double x,double y) WorldFrame(Vector3 a,Vector3 b,Vector3 c,Matrix4x4 matrix)
         {
             double ex=(double)b.x-a.x,ey=(double)b.y-a.y,ez=(double)b.z-a.z;
@@ -94,15 +116,13 @@ namespace SashaRX.UnityMeshLab
                 matrix.m20*dx+matrix.m21*dy+matrix.m22*dz);
         }
 
+        /// <summary>Measures UV stretch against two geometry edges, rejecting singular geometry and stored UVs.</summary>
         internal static double TriangleAnisotropy(Vector3 e1, Vector3 e2, Vector2 a, Vector2 b, Vector2 c)
         {
             var frame=ReverseUvTransfer.TriangleFrame(e1.x,e1.y,e1.z,e2.x,e2.y,e2.z);
             if (!Finite(frame.length) || !Finite(frame.y) || frame.length <= 0 || frame.y <= 0)
                 return double.PositiveInfinity;
-            double ux = (double)b.x - a.x, uy = (double)b.y - a.y;
-            return JacobianAnisotropy(ux / frame.length, uy / frame.length,
-                ((double)c.x - a.x - ux * frame.x / frame.length) / frame.y,
-                ((double)c.y - a.y - uy * frame.x / frame.length) / frame.y);
+            return UvAnisotropy(frame, a, b, c, Vector2.one);
         }
     }
 }
