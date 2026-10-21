@@ -99,6 +99,32 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(0, FbxSpaceFit.WindingRelation(quad, new[] { 0, 0, 1 }));
         }
 
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        [Test]
+        public void AStrayPreviewMaterialKeepsTheModelsSlot()
+        {
+            // A preview material copied onto a renderer its preview never captured has no backup
+            // to unwind it; the save must not take it for an authored assignment.
+            var wood = new UnityEngine.Material(UnityEngine.Shader.Find("Standard")) { name = "Wood" };
+            var stone = new UnityEngine.Material(UnityEngine.Shader.Find("Standard")) { name = "Stone" };
+            var preview = new UnityEngine.Material(UnityEngine.Shader.Find("Hidden/Internal-Colored")) { name = "Preview" };
+            try
+            {
+                var model = new[] { wood, stone };
+                CollectionAssert.AreEqual(model, FbxStructureWrite.WithoutStrayPreviews(new[] { preview, stone }, model, "Seat"));
+                Assert.IsNull(FbxStructureWrite.WithoutStrayPreviews(new[] { stone, preview }, new[] { stone }, "Seat")[1],
+                    "A slot the model does not have gets no material.");
+                var edited = new[] { stone, stone };
+                Assert.AreSame(edited, FbxStructureWrite.WithoutStrayPreviews(edited, model, "Seat"), "An authored change is left as it is.");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(wood); UnityEngine.Object.DestroyImmediate(stone);
+                UnityEngine.Object.DestroyImmediate(preview);
+            }
+        }
+#endif
+
         [Test]
         public void GeometryWriteKeepsThinNonzeroFaces()
         {

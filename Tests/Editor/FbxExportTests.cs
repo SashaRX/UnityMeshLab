@@ -240,6 +240,34 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void NormalizeHierarchyReadsAMeshWithReadWriteOff()
+        {
+            // A collision node the save did not load keeps its Read/Write-off import mesh.
+            var root = Node("Chair", null);
+            var turned = Quad("Chair_COL_Hull0");
+            var still = Quad("Chair_COL_Hull1");
+            turned.UploadMeshData(true); still.UploadMeshData(true);
+            Assert.IsFalse(turned.isReadable); Assert.IsFalse(still.isReadable);
+            var turnedNode = Node("Chair_COL_Hull0", root.transform, turned);
+            turnedNode.transform.localRotation = Quaternion.Euler(0, 0, 90);
+            var stillNode = Node("Chair_COL_Hull1", root.transform, still);
+            var sink = new List<Mesh>();
+
+            FbxExport.NormalizeExportHierarchy(root, sink);
+            scratch.AddRange(sink);
+
+            var baked = turnedNode.GetComponent<MeshFilter>().sharedMesh;
+            var copied = stillNode.GetComponent<MeshFilter>().sharedMesh;
+            Assert.AreEqual(2, sink.Count, "Both unreadable meshes are replaced by readable copies.");
+            Assert.IsTrue(baked.isReadable); Assert.IsTrue(copied.isReadable);
+            Assert.AreEqual("Chair_COL_Hull0", baked.name);
+            Assert.That((baked.vertices[1] - new Vector3(0, 1, 0)).magnitude, Is.LessThan(1e-6f), "The rotation is baked in.");
+            CollectionAssert.AreEqual(new[] { new Vector3(0, 0, 0), new Vector3(1, 0, 0), new Vector3(1, 1, 0), new Vector3(0, 1, 0) },
+                copied.vertices, "An identity node is copied, not moved.");
+            CollectionAssert.AreEqual(new[] { 0, 1, 2, 0, 2, 3 }, copied.triangles);
+        }
+
+        [Test]
         public void NormalizeHierarchyRejectsSkinBeforeChangingTransforms()
         {
             var root = Node("Animated", null);

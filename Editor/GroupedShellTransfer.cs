@@ -3717,6 +3717,10 @@ namespace SashaRX.UnityMeshLab
                 int srcForLog = chosenSrc >= 0 ? chosenSrc : -1;
                 if (chosenUv2 != null)
                 {
+                    // The overlap fall-through may have moved chosenSrc. The AABB safety
+                    // net, planar recovery, classification and next-LOD hints read the
+                    // shell's source: it is the one its written UV2 came from.
+                    result.targetShellToSourceShell[tsi] = chosenSrc;
                     foreach (var kv in chosenUv2)
                     {
                         result.uv2[kv.Key] = kv.Value;
@@ -3735,9 +3739,19 @@ namespace SashaRX.UnityMeshLab
             // Catch any vertex whose UV2 escaped the matched source's UV2 region.
             // This can happen through multiple code paths (overlap composite, standard
             // merged all-source fallback, 3D projection, etc.). Re-project outlier
-            // vertices using the source's UV0 BVH to bring them back into the correct region.
+            // vertices from the source's UV0 faces to bring them back into the correct region.
+            //
+            // Each vertex moves on its own while the rest of its faces stay, so a re-projection
+            // can turn faces into slivers. A shell's re-projection is therefore judged as one
+            // change by the corpus metrics (ShellLayoutScore): through the source's UV0 BVH it is
+            // kept unless the transferred layout is no worse in every metric and better in one;
+            // a source too small for a BVH is scanned, and its re-projection is kept only when
+            // it is that much better than the transferred layout.
             {
                 int totalOutlierVerts = 0;
+                ShellLayoutScore meshStretch = null;
+                int[] faceShell = null;
+                var moved = new List<(int vertex, Vector2 uv)>();
                 for (int tsi = 0; tsi < tgtShells.Count; tsi++)
                 {
                     if (result.targetShellMethod[tsi] != 2) continue; // only merged shells
@@ -3753,7 +3767,7 @@ namespace SashaRX.UnityMeshLab
                     Vector2 allowMax = sMax + new Vector2(padX, padY);
 
                     var tShell = tgtShells[tsi];
-                    int shellOutliers = 0;
+                    moved.Clear();
 
                     foreach (int vi in tShell.vertexIndices)
                     {
@@ -3763,33 +3777,57 @@ namespace SashaRX.UnityMeshLab
                             uv.y >= allowMin.y && uv.y <= allowMax.y)
                             continue; // within bounds
 
-                        // Outlier: re-project from source UV0 BVH
-                        if (vi < tUv0.Length && shellUv0Bvh[src] != null)
+                        // Outlier: re-project from the source's UV0 faces
+                        if (vi < tUv0.Length)
                         {
                             Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
                                 ? tNormals[vi] : Vector3.up;
-                            TriangleBvh2D.HitResult2D hit;
-                            if (tNrm.sqrMagnitude > 0.5f)
-                                hit = shellUv0Bvh[src].FindNearestNormalFiltered(
-                                    tUv0[vi], tNrm, triNormal, 0.0f);
-                            else
-                                hit = shellUv0Bvh[src].FindNearest(tUv0[vi]);
-
-                            if (hit.faceIndex >= 0)
-                            {
-                                int f = hit.faceIndex;
-                                result.uv2[vi] = triUv2A[f] * hit.u + triUv2B[f] * hit.v + triUv2C[f] * hit.w;
-                                shellOutliers++;
-                            }
+                            int f = NearestSourceUv0Face(tUv0[vi], tNrm, shellUv0Bvh[src], srcShells[src].faceIndices,
+                                triNormal, triUv0A, triUv0B, triUv0C, out float hitU, out float hitV, out float hitW);
+                            if (f >= 0)
+                                moved.Add((vi, triUv2A[f] * hitU + triUv2B[f] * hitV + triUv2C[f] * hitW));
                         }
                     }
+                    if (moved.Count == 0) continue;
 
-                    if (shellOutliers > 0)
+                    if (faceShell == null)
                     {
-                        UvtLog.Info($"[GroupedTransfer] Post-fix: t{tsi} — {shellOutliers} outlier " +
-                            $"verts re-projected to src{src} UV2 AABB");
-                        totalOutlierVerts += shellOutliers;
+                        faceShell = new int[tgtTris.Length / 3];
+                        for (int f = 0; f < faceShell.Length; f++) faceShell[f] = -1;
+                        for (int s = 0; s < tgtShells.Count; s++)
+                            foreach (int f in tgtShells[s].faceIndices) faceShell[f] = s;
+                        meshStretch = ShellLayoutScore.MeasureStretch(tgtTris, tVerts, result.uv2);
                     }
+                    var neighbours = SafetyNetNeighbours(tsi, tShell, moved, faceShell, tgtTris, result.uv2);
+                    var current = ShellLayoutScore.Measure(tShell.faceIndices, tShell.vertexIndices, neighbours,
+                        tgtTris, tVerts, result.uv2);
+                    for (int i = 0; i < moved.Count; i++)
+                    {
+                        var move = moved[i];
+                        moved[i] = (move.vertex, result.uv2[move.vertex]);
+                        result.uv2[move.vertex] = move.uv;
+                    }
+                    var reprojected = ShellLayoutScore.Measure(tShell.faceIndices, tShell.vertexIndices, neighbours,
+                        tgtTris, tVerts, result.uv2);
+                    double restWeighted = meshStretch.weightedAnisotropy - current.weightedAnisotropy;
+                    double restArea = meshStretch.weightedArea - current.weightedArea;
+                    bool indexed = shellUv0Bvh[src] != null;
+                    bool keep = indexed
+                        ? !ShellLayoutScore.Dominates(current, reprojected, restWeighted, restArea)
+                        : ShellLayoutScore.Dominates(reprojected, current, restWeighted, restArea);
+                    if (!keep)
+                    {
+                        foreach (var move in moved) result.uv2[move.vertex] = move.uv;
+                        if (indexed)
+                            UvtLog.Info($"[GroupedTransfer] Post-fix declined: t{tsi} — keeps its transferred layout, " +
+                                $"no worse than re-projecting {moved.Count} outlier verts to src{src}");
+                        continue;
+                    }
+                    meshStretch.weightedAnisotropy = restWeighted + reprojected.weightedAnisotropy;
+                    meshStretch.weightedArea = restArea + reprojected.weightedArea;
+                    UvtLog.Info($"[GroupedTransfer] Post-fix: t{tsi} — {moved.Count} outlier " +
+                        $"verts re-projected to src{src} UV2 AABB");
+                    totalOutlierVerts += moved.Count;
                 }
                 if (totalOutlierVerts > 0)
                     UvtLog.Info($"[GroupedTransfer] Post-fix total: {totalOutlierVerts} outlier verts corrected");
@@ -4616,6 +4654,42 @@ namespace SashaRX.UnityMeshLab
                 if (face >= 0) candidate[vertex] = a2[face] * u + b2[face] * v + c2[face] * w;
             }
             return candidate.Count == target.vertexIndices.Count;
+        }
+
+        /// <summary>The source face nearest a UV0 point: through the source's UV0 BVH, or by a
+        /// scan of its faces for a source too small for one. Like the BVH, the scan prefers
+        /// faces whose normal agrees and falls back to the nearest face of any orientation.</summary>
+        internal static int NearestSourceUv0Face(Vector2 point, Vector3 normal, TriangleBvh2D bvh, List<int> faces,
+            Vector3[] faceNormals, Vector2[] a, Vector2[] b, Vector2[] c, out float u, out float v, out float w)
+        {
+            if (bvh != null) return FindNearest2DSourceFaceBvh(point, normal, bvh, faceNormals, out u, out v, out w);
+            int face = FindNearest2DSourceFace(point, normal, faces, faceNormals, a, b, c, out u, out v, out w);
+            return face >= 0 ? face : FindNearest2DSourceFace(point, Vector3.zero, faces, faceNormals, a, b, c, out u, out v, out w);
+        }
+
+        /// <summary>The faces of other shells whose UV2 bounds meet the shell's bounds over both
+        /// its current layout and <paramref name="moved"/>: every face either layout could overlap.</summary>
+        static List<int> SafetyNetNeighbours(int shellIndex, UvShell shell, List<(int vertex, Vector2 uv)> moved,
+            int[] faceShell, int[] triangles, Vector2[] uv)
+        {
+            Vector2 min = new Vector2(float.PositiveInfinity, float.PositiveInfinity), max = -min;
+            void Include(Vector2 p)
+            {
+                if (float.IsNaN(p.x) || float.IsInfinity(p.x) || float.IsNaN(p.y) || float.IsInfinity(p.y)) return;
+                min = Vector2.Min(min, p); max = Vector2.Max(max, p);
+            }
+            foreach (int vertex in shell.vertexIndices) if (vertex < uv.Length) Include(uv[vertex]);
+            foreach (var move in moved) Include(move.uv);
+            var neighbours = new List<int>();
+            for (int f = 0; f < faceShell.Length; f++)
+            {
+                if (faceShell[f] == shellIndex) continue;
+                Vector2 a = uv[triangles[f * 3]], b = uv[triangles[f * 3 + 1]], c = uv[triangles[f * 3 + 2]];
+                if (Mathf.Max(a.x, Mathf.Max(b.x, c.x)) < min.x || Mathf.Min(a.x, Mathf.Min(b.x, c.x)) > max.x
+                    || Mathf.Max(a.y, Mathf.Max(b.y, c.y)) < min.y || Mathf.Min(a.y, Mathf.Min(b.y, c.y)) > max.y) continue;
+                neighbours.Add(f);
+            }
+            return neighbours;
         }
 
         static int FindNearest2DSourceFaceBvh(Vector2 point, Vector3 normal, TriangleBvh2D bvh,
