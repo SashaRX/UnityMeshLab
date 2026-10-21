@@ -173,28 +173,20 @@ namespace SashaRX.UnityMeshLab
             }
             else if (LodGroupUtility.HasAmbiguousLodChains(selected))
             {
-                EditorGUILayout.HelpBox("Multiple LOD chains detected. Select a mesh from the chain to create its LODGroup.", MessageType.Info);
+                EditorGUILayout.HelpBox("Multiple LOD chains detected. Select a mesh from the chain to create its LODGroup, " +
+                    "or gather every chain into one LODGroup here by the _LOD{N} names.", MessageType.Info);
+                EditorGUILayout.Space(6);
+                DrawAddLodGroupByNameButton(selected);
             }
             else if (selected != null && SelectionHasRenderers(selected))
             {
                 EditorGUILayout.HelpBox(
-                    "No LOD naming detected, but child renderers found.\n" +
-                    "Create a LODGroup with all renderers as LOD0.",
+                    "No LOD siblings detected, but child renderers found.\n" +
+                    "Add LOD Group gathers them into one LODGroup: names ending _LOD{N} go to LOD N, the rest to LOD0; " +
+                    "LODGroups below are replaced.",
                     MessageType.Info);
                 EditorGUILayout.Space(6);
-                var bgc = GUI.backgroundColor;
-                GUI.backgroundColor = new Color(.4f, .8f, .4f);
-                if (GUILayout.Button("Add LOD Group", GUILayout.Height(28)))
-                {
-                    var lodGroup = CreateLodGroupFromRenderers(selected);
-                    if (lodGroup != null)
-                    {
-                        ctx.Refresh(lodGroup);
-                        requestRepaint?.Invoke();
-                        UvtLog.Info($"[LOD Gen] Created LODGroup on '{selected.name}' with all renderers as LOD0.");
-                    }
-                }
-                GUI.backgroundColor = bgc;
+                DrawAddLodGroupByNameButton(selected);
             }
             else
             {
@@ -203,6 +195,24 @@ namespace SashaRX.UnityMeshLab
                     "Or select a GameObject with a LOD suffix (e.g. MyObject_LOD0) to auto-detect LOD siblings.",
                     MessageType.Info);
             }
+        }
+
+        void DrawAddLodGroupByNameButton(GameObject selected)
+        {
+            var bgc = GUI.backgroundColor;
+            GUI.backgroundColor = new Color(.4f, .8f, .4f);
+            if (GUILayout.Button("Add LOD Group", GUILayout.Height(28)))
+            {
+                var lodGroup = LodHierarchy.CreateByName(selected, out int levels, out int removed);
+                if (lodGroup != null)
+                {
+                    ctx.Refresh(lodGroup);
+                    requestRepaint?.Invoke();
+                    UvtLog.Info($"[LOD Gen] Created LODGroup on '{selected.name}': {levels} LOD level(s) by name" +
+                        (removed > 0 ? $", {removed} LODGroup(s) below replaced." : "."));
+                }
+            }
+            GUI.backgroundColor = bgc;
         }
 
         void DrawWorkflowHint()
