@@ -2396,7 +2396,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual("prior",fine.reverseTransferJson); Assert.IsTrue(ctx.HasTransfer); Assert.AreEqual(0,ctx.SourceLodIndex);
         }
 
-        // Two single-quad LODs on one plane: the smallest chain the Reverse regroup path accepts.
+        /// <summary>Two single-quad LODs on one plane: the smallest chain the Reverse regroup path accepts.</summary>
         UvToolContext OpenReverseRegroupFixture(out MeshEntry fine, out MeshEntry coarse)
         {
             var ctx=Open(Group(true,out var fineRenderer,out var coarseRenderer));
@@ -2408,8 +2408,25 @@ namespace SashaRX.UnityMeshLab.Tests
             return ctx;
         }
 
+        /// <summary>Each entry's published mesh, Reverse provenance and atlas size, in entry order.</summary>
         static (byte[] mesh,string provenance,uint atlas)[] PublishedChain(UvToolContext ctx) => ctx.MeshEntries
             .Select(e=>(TransferMeshSnapshot.Capture(ctx.Assets.GetResultMesh(e)),e.reverseTransferJson,e.repackedAtlasWidth)).ToArray();
+
+        /// <summary>
+        /// Waits for an asynchronous workflow run within a deadline. A run still going when the
+        /// test leaves it (a failed assertion or the deadline) is cancelled, so its operation
+        /// cannot carry into the next test.
+        /// </summary>
+        static IEnumerator AwaitRun(System.Threading.Tasks.Task task,double seconds=120)
+        {
+            double deadline=EditorApplication.timeSinceStartup+seconds;
+            try
+            {
+                while(!task.IsCompleted && EditorApplication.timeSinceStartup<deadline) yield return null;
+                Assert.IsTrue(task.IsCompleted,$"The run did not finish within {seconds} s.");
+            }
+            finally {if(!task.IsCompleted) UvProgress.RequestCancel();}
+        }
 
         /// <summary>
         /// The Run Reverse UV button's path: ordinary Transfer charts, regrouped on worker threads.
@@ -2433,12 +2450,13 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsFalse(UvProgress.IsActive,"A run must end the operation it began.");
             var expected=PublishedChain(ctx);
             Assert.IsTrue(expected.All(p=>!string.IsNullOrEmpty(p.provenance)));
+            Assert.IsTrue(expected.All(p=>p.mesh.Length>0&&p.atlas>0),"The synchronous chain must publish meshes and an atlas to compare.");
 
             Forward();
             int meshes=Resources.FindObjectsOfTypeAll<Mesh>().Length;
             var task=workflow.RunReverseTransfer(true);
             Assert.IsFalse(task.IsCompleted,"The button's path must return to the editor while its work runs.");
-            while(!task.IsCompleted) yield return null;
+            yield return AwaitRun(task);
             task.GetAwaiter().GetResult();
             Assert.IsFalse(UvProgress.IsActive,"A run must end the operation it began.");
             var actual=PublishedChain(ctx);
@@ -2455,7 +2473,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Call(hub,"CollectCanvasEntries");SetPreviewFrame();
             Call(hub,"ApplyPreviewMode",UvCanvasView.PreviewMode.Checker);
             task=workflow.RunReverseTransfer(true);
-            while(!task.IsCompleted) yield return null;
+            yield return AwaitRun(task);
             task.GetAwaiter().GetResult();
             Call(hub,"CollectCanvasEntries");
             AssertPreviewFrame();
@@ -2486,7 +2504,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsFalse(task.IsCompleted,"The button's path must return to the editor while its work runs.");
                 Assert.IsTrue(UvProgress.IsActive);
                 UvProgress.RequestCancel(); // what the Background Tasks cancel button does
-                while(!task.IsCompleted) yield return null;
+                yield return AwaitRun(task);
                 ended=!UvProgress.IsActive;
             }
             // A failed assertion must not leave a cancel request for the next test's operation.
