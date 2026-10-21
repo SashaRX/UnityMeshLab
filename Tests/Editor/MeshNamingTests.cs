@@ -75,6 +75,10 @@ namespace SashaRX.UnityMeshLab.Tests
         [TestCase("Wall_COL_Box", true)]
         [TestCase("Wall_Collider", true)]
         [TestCase("Wall_Collision", true)]
+        [TestCase("Wall_Collider_01", true)]
+        [TestCase("Wall-Collider 7", true)]
+        [TestCase("Wall_Collision2", true)]
+        [TestCase("Wall_Collider_A", false)]
         [TestCase("Wall_COLOR", false)]
         [TestCase("Wall_COLLECTION", false)]
         [TestCase("Collider", false)]
@@ -99,6 +103,7 @@ namespace SashaRX.UnityMeshLab.Tests
         [TestCase("Wall_LOD1_COL", "Wall")]
         [TestCase("Wall-Collider", "Wall")]
         [TestCase("Wall_COL_Box", "Wall_COL_Box")]   // only Hull{N} is a group suffix; other COL_* forms keep the key
+        [TestCase("Wall_Collider_01", "Wall_Collider_01")]   // so do numbered Collider / Collision forms
         [TestCase("Wall", "Wall")]
         public void GroupKey_PairsLodAndCollisionNodesOfOneAsset(string name, string expected)
             => Assert.AreEqual(expected, MeshNaming.GroupKey(name));
