@@ -53,6 +53,12 @@ namespace SashaRX.UnityMeshLab
                 activeApply = ready;
                 active = Task.Run(() => build(token), token);
             }
+            catch (OperationCanceledException) {
+                // The request's inputs are gone (a working mesh replaced since it was queued).
+                cancellation?.Dispose(); cancellation = null;
+                activeApply = null;
+                if (pending == null) Unsubscribe();
+            }
             catch (Exception exception) {
                 cancellation?.Dispose(); cancellation = null;
                 activeApply = null;
