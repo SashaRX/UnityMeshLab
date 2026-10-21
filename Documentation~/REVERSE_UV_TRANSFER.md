@@ -72,8 +72,14 @@ LOD number and advances toward LOD0. The existing forward solver is unchanged.
   Read/Write enabled because the shared readback cannot preserve those streams.
   Reverse UV leaves FBX files unchanged. The shared reader may temporarily
   reimport an unreadable model when MeshData is unavailable and restores its
-  Read/Write setting; importer precision preparation remains a separate
-  forward-pipeline operation.
+  Read/Write setting.
+- With **Prepare with ordinary Transfer**, Reverse first prepares included models
+  whose importer still compresses, optimizes or welds meshes, as the forward
+  pipeline does. That reimport changes the importer settings and resets the whole
+  working chain (weld, symmetry, repack, Transfer and Reverse results) without
+  undo, before the staged run starts. The **Run Reverse UV** button asks first
+  when the reset would discard a result. Regrouping the existing forward result
+  (preparation off) never reimports.
 - Outputs are staged before replacing the visible chain. Failed validation or
   cancellation publishes no new chain. Temporary cleaned inputs and prepared seed
   meshes are destroyed on success, failure or cancellation.
