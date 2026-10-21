@@ -59,6 +59,32 @@ class ReportTests(unittest.TestCase):
         failed.insert(-1, dict(status="error", model="broken"))
         self.assertFalse(summarize(failed)["complete"])
 
+    def test_profiles_compare_with_the_default_row_of_the_same_method(self):
+        """An extra transfer method is compared with the default profile's row of that method."""
+        rows = [row(method=m) for m in ("source", "grouped", "uv0-nearest", "surface-nearest", "surface-normal")]
+        rows += [row(p, m) for p in ("no-reparameterization", "oversample-8") for m in ("source", "grouped")]
+        control, candidate = row(method="grouped-at-resolution"), row("oversample-8", "grouped-at-resolution")
+        control["quality"]["overlapPairs"] = 3
+        candidate["quality"]["overlapPairs"] = 2
+        comparisons = summarize(rows + [control, candidate])["comparisons"]
+        self.assertEqual(comparisons["oversample-8/grouped-at-resolution"], {"better": 1})
+        self.assertEqual(comparisons["default/grouped-at-resolution"], {"worse": 1},
+                         "Another default-profile method is compared with default grouped transfer.")
+        self.assertEqual(comparisons["oversample-8/grouped"], {"same": 1})
+
+    def test_analysis_capture_needs_the_control_rows_for_every_pair(self):
+        """Once a capture has grouped-at-resolution rows, every pair must carry both."""
+        rows = [row(method=m) for m in ("source", "grouped", "uv0-nearest", "surface-nearest", "surface-normal")]
+        rows += [row(p, m) for p in ("no-reparameterization", "oversample-8") for m in ("source", "grouped")]
+        other = [dict(r, target="chair_LOD2") for r in rows]
+        controls = [row(p, "grouped-at-resolution") for p in ("default", "oversample-8")]
+        end = [dict(status="complete", fileCount=1, pairCount=2, errorCount=0)]
+        report = summarize(rows + controls + other + end)
+        self.assertFalse(report["complete"])
+        self.assertEqual(len(report["missing"]), 2)
+        other += [dict(r, target="chair_LOD2") for r in controls]
+        self.assertTrue(summarize(rows + controls + other + end)["complete"])
+
     def test_missing_whole_pair_or_entire_file_is_not_complete(self):
         """Terminal inventory detects missing groups even if all surviving rows exist."""
         rows = [row(method=m) for m in ("source", "grouped", "uv0-nearest", "surface-nearest", "surface-normal")]
