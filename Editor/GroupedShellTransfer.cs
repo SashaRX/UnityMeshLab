@@ -3427,6 +3427,18 @@ namespace SashaRX.UnityMeshLab
                                 }
                             }
                         }
+                        else if (CanReplaceUnwrittenShell(tShell, tgtTris, bestMergedUv2, bestMergedIssues))
+                        {
+                            // An unwritten shell keeps UV2 at (0,0): every face collapses onto
+                            // the atlas corner. A complete, fold-free candidate in the matched
+                            // region collapses fewer faces; it is written and classified with
+                            // the other shells, so final recovery can still improve it.
+                            chosenUv2 = bestMergedUv2;
+                            shellsMerged++;
+                            result.consistencyCorrected += bestMergedConsistencyFixes;
+                            UvtLog.Warn($"[GroupedTransfer]   t{tsi} rejected-merged fallback({faceCount}f): " +
+                                $"{bestMergedIssues} issues (>{faceCount / 2} threshold) — written instead of (0,0)");
+                        }
                         else
                         {
                             chosenUv2 = null; // prevent write
@@ -4658,6 +4670,19 @@ namespace SashaRX.UnityMeshLab
                     if (intersection.Overlaps(geometry, faceA, faceB)) return ShellUvOverlap.Confirmed;
                 }
             return ShellUvOverlap.None;
+        }
+
+        /// <summary>Whether a rejected merged shell's best candidate may replace the
+        /// unwritten (0,0) layout: it maps every shell vertex to a finite point,
+        /// collapses fewer faces than the shell has, and its complete self-overlap
+        /// scan is clean. A partial map would stretch faces from (0,0) across the atlas.</summary>
+        internal static bool CanReplaceUnwrittenShell(UvShell shell, int[] triangles, Dictionary<int, Vector2> candidate, int issues)
+        {
+            if (candidate == null || issues >= shell.faceIndices.Count) return false;
+            foreach (int vertex in shell.vertexIndices)
+                if (!candidate.TryGetValue(vertex, out var point) || !float.IsFinite(point.x) || !float.IsFinite(point.y))
+                    return false;
+            return !CandidateHasOverlap(shell, triangles, candidate);
         }
 
         static bool CandidateHasOverlap(UvShell shell, int[] triangles, Dictionary<int, Vector2> candidate)

@@ -1,5 +1,34 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Rejected merged shells: write a safe candidate instead of (0,0) — 2026-10-21
+
+`GroupedShellTransfer` rejects a merged target shell when more than half of
+its faces have issues (missing UV2, collapsed UV faces, or stretch above
+10,000:1) and it is not a force3D shell. The rejected shell's UV2 is not
+written, so all its vertices stay at (0,0): every face collapses onto the
+atlas corner and bakes from one corner texel. Only a warning recorded it, and
+final recovery, planar recovery and classification all skip `Rejected` shells.
+
+The shell's best merged candidate now replaces that layout when it is safe:
+it maps every shell vertex to a finite point (a partial map would stretch the
+remaining faces from (0,0) across the atlas), it has fewer issues than the
+shell has faces (fewer collapsed faces than the corner layout), and its
+complete self-overlap scan finds no positive-area overlap. Such a shell is
+written, gets the merged-shell AABB safety net, and is classified by its final
+quality like any other shell, so `RecoverFinalProjection` can still improve
+it. A shell without a safe candidate stays unwritten and `Rejected`, as before.
+force3D shells keep their existing degraded-write path.
+
+This changes outputs, so it is gated by the corpus rather than by bitwise
+comparison. `RejectedMergedShellReplacesItsCornerCollapseOnlyWithACompleteFoldFreeCandidate`
+covers the gate (complete, finite, fewer issues, no self-overlap).
+
+Measurement pending: the furniture corpus against main before this change
+(same profiles as PR #292), compared with `report.compare`: rows must be
+better or same, with no worse or tradeoff rows. Also the paired benchmark
+fixtures, where this change must not alter exports unless a merged shell was
+rejected there. Count `shellsRejected` and unwritten vertices before and after.
+
 ## Atlas overlap scan: triangles by reference — 2026-10-21
 
 `UvAtlasDiagnostics.Measure` is the overlap scan behind every transfer quality
