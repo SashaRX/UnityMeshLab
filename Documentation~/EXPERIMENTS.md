@@ -97,6 +97,7 @@ different source, so it is gated by the corpus rather than by bitwise
 comparison: a standard capture against main, compared with
 `report.py --baseline ... --require-no-regressions` (no worse, tradeoff or
 invalid rows). No synthetic fixture reproduces the fall-through yet.
+
 ## Merged-shell safety net: judge a shell's re-projection as one change — 2026-10-21
 
 After Phase 3, the safety net re-projects every merged vertex outside its
