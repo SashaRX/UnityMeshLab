@@ -50,6 +50,9 @@ def summarize(rows):
     pairs = {key[:3] for key in index}
     expected = [("default", method) for method in ("source", "grouped", "uv0-nearest", "surface-nearest", "surface-normal")]
     expected += [(profile, method) for profile in ("no-reparameterization", "oversample-8") for method in ("source", "grouped")]
+    # An oversample analysis capture (any grouped-at-resolution row) needs both control rows for every pair.
+    if any(key[-1] == "grouped-at-resolution" for key in index):
+        expected += [(profile, "grouped-at-resolution") for profile in ("default", "oversample-8")]
     missing = [pair + suffix for pair in sorted(pairs) for suffix in expected if pair + suffix not in index]
     model_count = len({r["model"] for r in rows if r.get("model")})
     counts_match = complete and rows[-1].get("fileCount") == model_count and rows[-1].get("pairCount") == len(pairs) and rows[-1].get("errorCount") == len(errors)

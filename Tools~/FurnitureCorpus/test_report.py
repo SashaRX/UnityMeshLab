@@ -72,6 +72,19 @@ class ReportTests(unittest.TestCase):
                          "Another default-profile method is compared with default grouped transfer.")
         self.assertEqual(comparisons["oversample-8/grouped"], {"same": 1})
 
+    def test_analysis_capture_needs_the_control_rows_for_every_pair(self):
+        """Once a capture has grouped-at-resolution rows, every pair must carry both."""
+        rows = [row(method=m) for m in ("source", "grouped", "uv0-nearest", "surface-nearest", "surface-normal")]
+        rows += [row(p, m) for p in ("no-reparameterization", "oversample-8") for m in ("source", "grouped")]
+        other = [dict(r, target="chair_LOD2") for r in rows]
+        controls = [row(p, "grouped-at-resolution") for p in ("default", "oversample-8")]
+        end = [dict(status="complete", fileCount=1, pairCount=2, errorCount=0)]
+        report = summarize(rows + controls + other + end)
+        self.assertFalse(report["complete"])
+        self.assertEqual(len(report["missing"]), 2)
+        other += [dict(r, target="chair_LOD2") for r in controls]
+        self.assertTrue(summarize(rows + controls + other + end)["complete"])
+
     def test_missing_whole_pair_or_entire_file_is_not_complete(self):
         """Terminal inventory detects missing groups even if all surviving rows exist."""
         rows = [row(method=m) for m in ("source", "grouped", "uv0-nearest", "surface-nearest", "surface-normal")]

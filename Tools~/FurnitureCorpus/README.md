@@ -79,7 +79,8 @@ then add a `grouped-at-resolution` row: the same source transferred against the
 requested resolution. Its `atlasSide` is that resolution. Grouped rows are also
 traced: `sourceAtlasRecoveryAllowed` is the source-atlas recovery gate and
 `recoveredShells` counts the target shells recovery ran on (among the first 10000,
-which the trace keeps); their times include the trace. A capture with these rows has eleven measurements per pair; compare it only
+which the trace keeps); their times include the trace. A capture with these rows has eleven measurements per pair, and `report.py`
+then counts it complete only when every pair has both control rows; compare it only
 with captures recorded the same way.
 
 ```powershell
