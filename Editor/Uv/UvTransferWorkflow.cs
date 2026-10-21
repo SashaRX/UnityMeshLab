@@ -258,6 +258,8 @@ namespace SashaRX.UnityMeshLab
         // runs neither measure nor retain anything for scoring.
         AutoTuneScore attemptScore;
         bool scoringAttempt;
+        // Whether the last full pipeline stopped at a cancel request rather than a failure.
+        bool fullPipelineCancelled;
 
         // ── Preview ──
         // Three mutually-exclusive preview modes. Only one should be active at a time.
@@ -1763,7 +1765,9 @@ namespace SashaRX.UnityMeshLab
             }
             finally
             {
-                if (UvProgress.CancelRequested) UvProgress.Cancel(); else UvProgress.End();
+                // Recorded before Cancel: ending the last open operation clears the request.
+                fullPipelineCancelled = UvProgress.CancelRequested;
+                if (fullPipelineCancelled) UvProgress.Cancel(); else UvProgress.End();
                 foreach (var m in savedMeshes.Values) UnityEngine.Object.DestroyImmediate(m);
             }
 
@@ -2288,7 +2292,9 @@ namespace SashaRX.UnityMeshLab
             {
                 if (!results[i].ok)
                 {
-                    UvtLog.Error("[Repack] " + validEntries[i].renderer.name + ": " + results[i].error);
+                    // A cancel request is the user's choice, not a failure of the pack.
+                    if (results[i].cancelled) UvtLog.Warn("[Repack] " + validEntries[i].renderer.name + ": cancelled");
+                    else UvtLog.Error("[Repack] " + validEntries[i].renderer.name + ": " + results[i].error);
                     UnityEngine.Object.DestroyImmediate(meshCopies[i]);
                     validEntries[i].repackedAtlasWidth = 0;
                     validEntries[i].repackedAtlasHeight = 0;
