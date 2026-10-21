@@ -32,22 +32,23 @@ The fallback records the source its candidate was built from (the overlap
 fall-through may have changed it), so the AABB safety net and next-LOD hints
 use that source. After the safety net and the topology pass, before final
 recovery, the same gate is applied to the measured layout; a shell that no
-longer passes returns to (0,0) and `Rejected` with its earlier source. Planar
-and exact-family recovery scan the whole target for new contacts, so a
+longer passes returns to (0,0) and `Rejected` with its earlier source. That is
+main's result when the source has no BVH or its allowance contains the origin;
+otherwise main would leave the safety net's re-projection there instead.
+Planar and exact-family recovery scan the whole target for new contacts, so a
 provisional fallback left in place would block another shell's recovery, and
 that recovery is not retried after a later withdrawal. A fallback recovery
 might have repaired is withdrawn as well; recovery skips `Rejected` shells.
-Classification checks the gate once more, in case recovery moved the shell. That is main's result when the source has no BVH or its
-allowance contains the origin; otherwise main would leave the safety net's
-re-projection there instead. A written fallback does not
-claim its source for overlap-group dedup and is not counted against force3D
-shells in the overlap report, so a withdrawn fallback leaves the other shells'
-donor choices and `shellsOverlapFixed` as they were.
+Classification checks the gate once more, in case recovery moved the shell.
+A written fallback does not claim its source for overlap-group dedup and is
+not counted against force3D shells in the overlap report, so a withdrawn
+fallback leaves the other shells' donor choices and `shellsOverlapFixed` as
+they were.
 
 An all-source candidate may reach into another source's UV2. The safety net
 re-projects such vertices only through the source's UV0 BVH, which a source of
 16 faces or fewer does not have, and it skips a shell without a source. So the
-fallback needs a matched source, and at classification its final layout must
+fallback needs a matched source, and at both checks its measured layout must
 also lie within the safety net's allowance (the source's UV2 bounds widened by
 20% of their size on each side); otherwise it is withdrawn the same way. The
 safety net reads the same allowance helper, so its own decisions are unchanged.
