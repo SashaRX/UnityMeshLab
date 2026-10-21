@@ -125,7 +125,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     var lo=box.min-Vector3.one*reach*1.2f;var hi=box.max+Vector3.one*reach*1.2f;
                     var point=new Vector3(Mathf.Lerp(lo.x,hi.x,Next()),Mathf.Lerp(lo.y,hi.y,Next()),Mathf.Lerp(lo.z,hi.z,Next()));
                     var expected=Enumerable.Range(0,charts.Count).Where(i=>!(charts[i].bounds.SqrDistance(point)>reach*reach)).ToList();
-                    var near=index.Near(point);
+                    var near=index.Near(point,new List<int>());
                     CollectionAssert.IsOrdered(near);
                     CollectionAssert.AreEqual(expected,near.Where(i=>!(charts[i].bounds.SqrDistance(point)>reach*reach)).ToList(),
                         $"scale {scale}, reach {reach}, point {point:R}");
@@ -135,6 +135,105 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsNull(ReverseUvTransfer.ChartBoundsIndex.Create(finite,float.PositiveInfinity),"Unbounded reach scans every chart.");
             Assert.IsNull(ReverseUvTransfer.ChartBoundsIndex.Create(new List<ReverseUvTransfer.Chart> {new ReverseUvTransfer.Chart {
                 bounds=new Bounds(new Vector3(float.NaN,0,0),Vector3.one)}},.05f),"Non-finite bounds scan every chart.");
+        }
+
+        // Rows [first, last) of a curved grid over [inset, 2 - inset]². The donor is
+        // cut into four charts around a hole; target faces start empty, every
+        // seventh already inherited, and the outer ring lies beyond reach.
+        static ReverseUvTransfer.Surface ProjectionGrid(bool donor,int cells,float inset,int first,int last)
+        {
+            var positions=new List<Vector3>();var pixels=new List<Vector2>();var faces=new List<ReverseUvTransfer.Face>();
+            float size=(2-2*inset)/cells;
+            for(int y=first;y<last;++y)
+                for(int x=0;x<cells;++x)
+                {
+                    var o=new Vector2(inset+x*size,inset+y*size);var center=o+Vector2.one*size/2;
+                    if(donor && center.x>.8f && center.x<1.1f && center.y>1.3f && center.y<1.5f) continue;
+                    var quad=new[] {o,o+new Vector2(size,0),o+Vector2.one*size,o+new Vector2(0,size)};
+                    foreach(int corner in new[] {0,1,2,0,2,3})
+                    {
+                        var p=quad[corner];
+                        positions.Add(new Vector3(p.x,p.y,.05f*Mathf.Sin(p.x*2)*Mathf.Cos(p.y*2)+(donor?0:.002f)));
+                        pixels.Add(donor?p*100:Vector2.zero);
+                    }
+                    int chart=(center.x<1?0:1)+(center.y<1?0:2);
+                    for(int k=0;k<2;++k)
+                        faces.Add(donor?new ReverseUvTransfer.Face {chart=chart,coordinateDomain=chart}
+                            :new ReverseUvTransfer.Face {inherited=faces.Count%7==3,chart=9});
+                }
+            return new ReverseUvTransfer.Surface {lod=donor?0:1,node=first,orientation=1,positions=positions.ToArray(),
+                indices=Enumerable.Range(0,positions.Count).ToArray(),pixels=pixels.ToArray(),faces=faces.ToArray()};
+        }
+
+        [Test]
+        public void ParallelFaceProjectionMatchesTheOrderedPassIncludingBudgetFailures()
+        {
+            var donor=new[] {ProjectionGrid(true,24,0,0,24)};
+            // An empty surface between two halves crosses every surface boundary.
+            ReverseUvTransfer.Surface[] Targets()=>new[] {ProjectionGrid(false,17,-.15f,0,9),
+                ProjectionGrid(false,17,-.15f,9,9),ProjectionGrid(false,17,-.15f,9,17)};
+            ReverseUvTransfer.Options Options(long budget)=>new ReverseUvTransfer.Options {comparisonBudget=budget,
+                queryBackend=ReverseUvQueryBackend.Mode.Managed};
+            var fields=typeof(ReverseUvTransfer.Face).GetFields(System.Reflection.BindingFlags.Instance
+                |System.Reflection.BindingFlags.Public|System.Reflection.BindingFlags.NonPublic);
+            void AssertSameState(ReverseUvTransfer.Surface[] expected,ReverseUvTransfer.Surface[] actual,string label)
+            {
+                for(int s=0;s<expected.Length;++s)
+                {
+                    CollectionAssert.AreEqual(expected[s].pixels,actual[s].pixels,$"{label}: surface {s} pixels");
+                    for(int f=0;f<expected[s].faces.Length;++f)
+                        foreach(var field in fields)
+                            Assert.AreEqual(field.GetValue(expected[s].faces[f]),field.GetValue(actual[s].faces[f]),
+                                $"{label}: surface {s} face {f} {field.Name}");
+                }
+            }
+            (ReverseUvTransfer.Surface[] targets,long queries,string error) Run(int minimum,long budget)
+            {
+                var targets=Targets();long queries=5;
+                ReverseUvTransfer.ParallelProjectionMinimumFaces=minimum;
+                try {ReverseUvTransfer.ProjectFaces(donor,targets,ReverseUvTransfer.Charts(donor),Options(budget),ref queries,CancellationToken.None);}
+                catch(InvalidOperationException error) {return (targets,-1,error.Message);}
+                return (targets,queries,null);
+            }
+            int saved=ReverseUvTransfer.ParallelProjectionMinimumFaces;
+            try
+            {
+                var baseline=Run(int.MaxValue,long.MaxValue/2);
+                var records=baseline.targets.SelectMany(s=>s.faces).ToArray();
+                Assert.Greater(records.Count(f=>f.inherited && f.chart!=9),0,"The fixture must inherit faces.");
+                Assert.Greater(records.Count(f=>f.rejection!=null),0,"The fixture must reject faces.");
+                long total=baseline.queries;
+                foreach(long budget in new[] {long.MaxValue/2,total,total-1,total/2,40})
+                {
+                    var ordered=Run(int.MaxValue,budget);var parallel=Run(0,budget);
+                    Assert.AreEqual(budget<total,ordered.error!=null,$"budget {budget} of {total}");
+                    Assert.AreEqual(ordered.error,parallel.error,$"budget {budget}");
+                    Assert.AreEqual(ordered.queries,parallel.queries,$"budget {budget}");
+                    AssertSameState(ordered.targets,parallel.targets,$"budget {budget}");
+                }
+                ReverseUvTransfer.ParallelProjectionMinimumFaces=0;
+                foreach(long budget in new[] {total,total-1,40})
+                {
+                    var targets=Targets();long queries=5;
+                    var projector=new ReverseUvTransfer.FaceProjector(donor,ReverseUvTransfer.Charts(donor),Options(budget),CancellationToken.None);
+                    var counters=projector.ProjectInParallel(targets,ref queries);
+                    if(budget==total)
+                    {
+                        Assert.NotNull(counters,"A pass within the budget must not fall back.");
+                        Assert.AreEqual(total,queries);
+                        AssertSameState(baseline.targets,targets,"parallel");
+                        continue;
+                    }
+                    Assert.IsNull(counters,$"budget {budget}: an exhausted budget repeats the pass in order.");
+                    Assert.AreEqual(5,queries);
+                    AssertSameState(Targets(),targets,$"budget {budget} restored");
+                }
+                using var cancellation=new CancellationTokenSource();
+                var cancelled=new ReverseUvTransfer.FaceProjector(donor,ReverseUvTransfer.Charts(donor),Options(total),cancellation.Token);
+                cancellation.Cancel();
+                Assert.Throws<OperationCanceledException>(()=>{long queries=5;cancelled.ProjectInParallel(Targets(),ref queries);});
+            }
+            finally {ReverseUvTransfer.ParallelProjectionMinimumFaces=saved;}
         }
 
         [Test]

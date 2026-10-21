@@ -1,5 +1,42 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Reverse face projection on worker threads — 2026-10-21
+
+`ProjectFaces` projected every target face in order on one thread: the chart
+search, three corner snaps, four interior probes and the parent-footprint
+coverage per face, for every LOD pass of Forward seam preparation and Reverse
+(initial and refined faces, frozen shells, prepared chains). A face reads only
+its own corners, the donor charts and their indexes, and writes only its own
+three pixels and its record, so faces are independent. The only shared state
+was the comparison budget counter, the chart-bounds candidate list and the
+optional native (Embree) batch, which keeps per-surface state between faces.
+
+Passes now run on worker threads when the native batch cannot be active
+(query backend Legacy/Managed, or no query library) and the pass has at least
+`ParallelProjectionMinimumFaces` (256) target faces. Each worker owns its
+candidate buffer; each face writes a copy of its record, published in face
+order afterwards. The budget stays exact: every face is charged from the
+pass's starting count, so a face that exceeds the budget here also exceeds it
+in order, and a pass whose total is within the budget passes every check of
+the ordered pass (each check compares a running count that is at most the
+total). When any face fails or the total exceeds the budget, the pixels are
+restored and the pass is repeated in order, which reproduces the same result,
+exception and message. Cancellation still surfaces as
+`OperationCanceledException`.
+
+`ParallelFaceProjectionMatchesTheOrderedPassIncludingBudgetFailures` compares
+pixels and every record field of both paths on a curved four-chart donor with
+a hole, at budgets that pass exactly, fail by one query, fail halfway and fail
+on the first face, and checks that an over-budget parallel pass leaves the
+targets untouched.
+
+Measurement pending: `Tools~/run-transfer-performance.ps1 -Repetitions 3
+-Density 32` with `-DisableParallelProjection` (control) against the default
+run, with `compare-transfer-performance.py` confirming all exports are
+byte-identical. The stages are "Face projection", "Projection initial faces"
+and "Projection refined faces". "Parent footprint coverage" now sums worker
+time, so it can exceed the wall time of its pass.
+
 ## Reverse preparation: reuse an unchanged Full Pipeline result — 2026-10-21
 
 Reverse with "Prepare with ordinary Transfer" ran the complete Full Pipeline

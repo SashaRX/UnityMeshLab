@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Reverse UV face projection runs its faces on worker threads when the native query batch is not in use and a pass has at least 256 target faces. Each face writes only its own pixels and record, and each is charged from the pass's starting query count; a pass that fails or would exceed the comparison budget is undone and repeated in order, so transferred UVs, rejections and budget failures are unchanged.
 - Reverse UV with "Prepare with ordinary Transfer" reuses the last Full Pipeline result instead of repeating the pipeline on detached copies, when its settings key, imported inputs, renderer frames, texture metric and published results (compared by reference and content fingerprint) still match what the detached preparation would use. Any change, a scene edit, per-mesh atlases or a non-finest source LOD repeats the preparation as before.
 - Full Pipeline auto-tune ranks separation attempts by the UV defects their targets actually carry (failed targets, incomplete scans, collapsed/invalid UV faces, rejected shells, overlap area) before the force3D overlap counter and vertex coverage, and stops early only when no such defect remains. Zero-area 3D faces are not counted.
 - Full Pipeline auto-tune skips repack and transfer for a separation whose symmetry split reproduces an earlier attempt's working meshes, reusing that attempt's result. The selected outputs are unchanged.
