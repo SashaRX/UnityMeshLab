@@ -2396,6 +2396,112 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual("prior",fine.reverseTransferJson); Assert.IsTrue(ctx.HasTransfer); Assert.AreEqual(0,ctx.SourceLodIndex);
         }
 
+        // Two single-quad LODs on one plane: the smallest chain the Reverse regroup path accepts.
+        UvToolContext OpenReverseRegroupFixture(out MeshEntry fine, out MeshEntry coarse)
+        {
+            var ctx=Open(Group(true,out var fineRenderer,out var coarseRenderer));
+            ctx.AtlasResolution=128;ctx.RepackResolutionMode=ResolutionMode.Manual;ctx.RepackPerMesh=false;
+            foreach(var entry in ctx.MeshEntries)
+                entry.originalMesh.vertices=new[] {Vector3.zero,Vector3.right,new Vector3(1,1,0),Vector3.up};
+            fine=ctx.MeshEntries.Find(e=>e.renderer==fineRenderer);
+            coarse=ctx.MeshEntries.Find(e=>e.renderer==coarseRenderer);
+            return ctx;
+        }
+
+        static (byte[] mesh,string provenance,uint atlas)[] PublishedChain(UvToolContext ctx) => ctx.MeshEntries
+            .Select(e=>(TransferMeshSnapshot.Capture(ctx.Assets.GetResultMesh(e)),e.reverseTransferJson,e.repackedAtlasWidth)).ToArray();
+
+        /// <summary>
+        /// The Run Reverse UV button's path: ordinary Transfer charts, regrouped on worker threads.
+        /// It publishes exactly the chain the synchronous path publishes, ends its operation,
+        /// releases every mesh it does not publish and keeps the preview and camera.
+        /// </summary>
+        [UnityTest]
+        public IEnumerator AsyncReverseFromForwardChartsPublishesTheSynchronousChain(
+            [Values(false,true)] bool prepareSeed,[Values(false,true)] bool preserveOverlap)
+        {
+            var ctx=OpenReverseRegroupFixture(out var fine,out _);
+            var workflow=hub.DiagnosticWorkflow;
+            Set(workflow,"reversePrepareSeed",prepareSeed);
+            Set(workflow,"reversePreserveOverlap",preserveOverlap);
+            var originals=ctx.MeshEntries.Select(e=>TransferMeshSnapshot.Capture(e.fbxMesh)).ToArray();
+            // Without preparation, Reverse regroups the published forward result; each run consumes it.
+            void Forward() {if(!prepareSeed) ((System.Threading.Tasks.Task)CallWorkflow("ExecFullPipelineImpl","async-reverse",false)).GetAwaiter().GetResult();}
+
+            Forward();
+            workflow.RunReverseTransfer(false).GetAwaiter().GetResult();
+            Assert.IsFalse(UvProgress.IsActive,"A run must end the operation it began.");
+            var expected=PublishedChain(ctx);
+            Assert.IsTrue(expected.All(p=>!string.IsNullOrEmpty(p.provenance)));
+
+            Forward();
+            int meshes=Resources.FindObjectsOfTypeAll<Mesh>().Length;
+            var task=workflow.RunReverseTransfer(true);
+            Assert.IsFalse(task.IsCompleted,"The button's path must return to the editor while its work runs.");
+            while(!task.IsCompleted) yield return null;
+            task.GetAwaiter().GetResult();
+            Assert.IsFalse(UvProgress.IsActive,"A run must end the operation it began.");
+            var actual=PublishedChain(ctx);
+            for(int i=0;i<expected.Length;++i)
+            {
+                CollectionAssert.AreEqual(expected[i].mesh,actual[i].mesh,"Worker threads must publish the synchronous mesh.");
+                Assert.AreEqual(expected[i].provenance,actual[i].provenance);
+                Assert.AreEqual(expected[i].atlas,actual[i].atlas);
+            }
+            Assert.AreEqual(meshes,Resources.FindObjectsOfTypeAll<Mesh>().Length,
+                "A repeated run must release the chain it replaces and every working mesh it does not publish.");
+
+            Forward();
+            Call(hub,"CollectCanvasEntries");SetPreviewFrame();
+            Call(hub,"ApplyPreviewMode",UvCanvasView.PreviewMode.Checker);
+            task=workflow.RunReverseTransfer(true);
+            while(!task.IsCompleted) yield return null;
+            task.GetAwaiter().GetResult();
+            Call(hub,"CollectCanvasEntries");
+            AssertPreviewFrame();
+            AssertFreshPreview(ctx,fine,UvCanvasView.PreviewMode.Checker);
+            Assert.IsTrue(ctx.HasRepack&&ctx.HasTransfer);Assert.AreEqual(0,ctx.SourceLodIndex);
+            for(int i=0;i<originals.Length;++i)
+                CollectionAssert.AreEqual(originals[i],TransferMeshSnapshot.Capture(ctx.MeshEntries[i].fbxMesh));
+        }
+
+        /// <summary>
+        /// Cancelling the button's path while ordinary Transfer prepares its detached copies publishes
+        /// nothing: the previous chain and its provenance stay, the operation ends and every working
+        /// mesh is released.
+        /// </summary>
+        [UnityTest]
+        public IEnumerator CancelledAsyncReverseKeepsThePreviousChainAndReleasesItsMeshes()
+        {
+            var ctx=OpenReverseRegroupFixture(out var fine,out var coarse);
+            fine.transferredMesh=Object.Instantiate(fine.originalMesh);coarse.repackedMesh=Object.Instantiate(coarse.originalMesh);
+            fine.reverseTransferJson="prior";var previousFine=fine.transferredMesh;var previousCoarse=coarse.repackedMesh;
+            var previousBytes=TransferMeshSnapshot.Capture(previousFine);
+            ctx.HasTransfer=true;ctx.HasRepack=true;
+            int meshes=Resources.FindObjectsOfTypeAll<Mesh>().Length;
+            var task=hub.DiagnosticWorkflow.RunReverseTransfer(true);
+            bool ended;
+            try
+            {
+                Assert.IsFalse(task.IsCompleted,"The button's path must return to the editor while its work runs.");
+                Assert.IsTrue(UvProgress.IsActive);
+                UvProgress.RequestCancel(); // what the Background Tasks cancel button does
+                while(!task.IsCompleted) yield return null;
+                ended=!UvProgress.IsActive;
+            }
+            // A failed assertion must not leave a cancel request for the next test's operation.
+            finally {while(UvProgress.IsActive) UvProgress.Cancel();}
+            var error=task.Exception?.GetBaseException();
+            Assert.IsTrue(task.IsCanceled||task.IsFaulted,"A cancelled run must not complete.");
+            TestContext.WriteLine($"Cancelled Reverse ended with {(task.IsCanceled?"cancellation":error?.GetType().Name)}: {error?.Message}");
+            Assert.IsTrue(ended,"The run must end the operation it began.");
+            Assert.AreSame(previousFine,fine.transferredMesh);Assert.AreSame(previousCoarse,coarse.repackedMesh);
+            CollectionAssert.AreEqual(previousBytes,TransferMeshSnapshot.Capture(fine.transferredMesh));
+            Assert.AreEqual("prior",fine.reverseTransferJson);Assert.IsTrue(ctx.HasTransfer&&ctx.HasRepack);
+            Assert.AreEqual(meshes,Resources.FindObjectsOfTypeAll<Mesh>().Length,
+                "Detached copies, prepared seeds and staged results must be destroyed on cancellation.");
+        }
+
         [Test]
         public void PreviewSurvivesResetUndoAndContextRefresh(
             [Values(UvCanvasView.PreviewMode.Checker, UvCanvasView.PreviewMode.Shells3D, UvCanvasView.PreviewMode.Lightmap)] UvCanvasView.PreviewMode mode,
