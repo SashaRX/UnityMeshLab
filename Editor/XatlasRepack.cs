@@ -188,12 +188,14 @@ namespace SashaRX.UnityMeshLab
         public int  snappedVertices;
         public int  flippedShells;
         public string error;
-        /// <summary>The pack stopped at a cancel request; <see cref="error"/> reads "cancelled".</summary>
+        /// <summary>The pack stopped at a cancel request, not at a refusal or failure; <see cref="error"/> reads "cancelled".</summary>
         public bool cancelled;
     }
 
     public static class XatlasRepack
     {
+        const string PackNotCompleted = "xatlas pack was refused or failed (see the [xatlas] log entry)";
+
         // The native bridge owns a single process-global atlas pointer. Keep
         // every managed xatlas session exclusive: async packing yields back
         // to the editor, so UI or API callers can otherwise destroy an atlas
@@ -1321,8 +1323,9 @@ namespace SashaRX.UnityMeshLab
                     opts.rotateChartsToAxis ? 1 : 0);
                 if (!packed)
                 {
-                    result.error = "cancelled";
-                    result.cancelled = true;
+                    // The pack also returns false when it was refused or failed; both log why.
+                    result.cancelled = UvProgress.CancelRequested;
+                    result.error = result.cancelled ? "cancelled" : PackNotCompleted;
                     return result;
                 }
 
@@ -1747,10 +1750,11 @@ namespace SashaRX.UnityMeshLab
                     opts.rotateChartsToAxis ? 1 : 0);
                 if (!packedM)
                 {
+                    bool cancelledM = UvProgress.CancelRequested;
                     for (int m = 0; m < meshCount; m++)
                     {
-                        results[m].error = "cancelled";
-                        results[m].cancelled = true;
+                        results[m].error = cancelledM ? "cancelled" : PackNotCompleted;
+                        results[m].cancelled = cancelledM;
                     }
                     return results;
                 }
