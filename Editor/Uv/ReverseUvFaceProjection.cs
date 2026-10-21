@@ -10,9 +10,11 @@ namespace SashaRX.UnityMeshLab
     internal static partial class ReverseUvTransfer
     {
         /// <summary>Passes over fewer target faces stay on the calling thread;
-        /// int.MaxValue keeps every pass in order. Internal so tests and the
-        /// performance control can force either path.</summary>
-        internal static int ParallelProjectionMinimumFaces { get; set; } = 256;
+        /// int.MaxValue (the default) keeps every pass in order. On the paired
+        /// benchmark the worker threads made Forward and Reverse 1.4–1.7× slower
+        /// (see EXPERIMENTS), so they stay off until the projection allocates less.
+        /// Internal so tests and the performance control can force either path.</summary>
+        internal static int ParallelProjectionMinimumFaces { get; set; } = int.MaxValue;
 
         /// <summary>What one thread of a projection pass owns: its chart buffer,
         /// the running query count and the counters the pass reports.</summary>

@@ -3717,6 +3717,10 @@ namespace SashaRX.UnityMeshLab
                 int srcForLog = chosenSrc >= 0 ? chosenSrc : -1;
                 if (chosenUv2 != null)
                 {
+                    // The overlap fall-through may have moved chosenSrc. The AABB safety
+                    // net, planar recovery, classification and next-LOD hints read the
+                    // shell's source: it is the one its written UV2 came from.
+                    result.targetShellToSourceShell[tsi] = chosenSrc;
                     foreach (var kv in chosenUv2)
                     {
                         result.uv2[kv.Key] = kv.Value;

@@ -259,7 +259,8 @@ namespace SashaRX.UnityMeshLab
         // give it (material import off, or a slot the save could not map) stay as an override.
         static void KeepMaterials(Renderer generated, Renderer imported)
         {
-            var materials = generated.sharedMaterials;
+            // Not a visible preview's material: the imported renderer has no backup to restore it from.
+            var materials = UvToolHub.OriginalPreviewMaterials(generated, forAssetWrite: true);
             if (materials.SequenceEqual(imported.sharedMaterials)) return;
             Undo.RecordObject(imported, "Adopt Written LODs");
             imported.sharedMaterials = materials;

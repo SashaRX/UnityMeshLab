@@ -73,6 +73,30 @@ move runs on main through the BVH; it is not measured separately.
 Do not repeat: extending the per-vertex re-projection to more shells. The
 follow-up treats a shell as one unit: re-project its outliers and keep the
 result only when the shell's collapsed faces and worst anisotropy do not grow.
+## Merged shells record the source their UV2 came from — 2026-10-21
+
+In Phase 3 of `GroupedShellTransfer`, a merged target shell in a source overlap
+group first tries a composite of the group's members. When the composite has
+too many issues, the shell falls through to the ordinary merged path with
+`chosenSrc = bestOverlapSrc`. The written UV2 and `vertexToSourceShell` then
+come from that source, but `targetShellToSourceShell[tsi]` kept the source
+matched before the overlap analysis. Four later readers used the stale value:
+the merged-shell AABB safety net (bounds and UV0 BVH for outlier
+re-projection), `PlanarTransferRecovery` (projection source), classification,
+and the next LOD's overlap and match hints.
+
+The UV2 write now records `chosenSrc` as the shell's source. `chosenSrc` changes
+only at that fall-through, so for every other shell the assignment is a no-op;
+a rejected shell writes no UV2 and keeps its earlier source. PR #305's fallback
+for rejected merged shells already records its candidate's source and restores
+the earlier one when the fallback is withdrawn, which stays consistent with
+this change.
+
+This changes outputs for merged shells that took the fall-through to a
+different source, so it is gated by the corpus rather than by bitwise
+comparison: a standard capture against main, compared with
+`report.py --baseline ... --require-no-regressions` (no worse, tradeoff or
+invalid rows). No synthetic fixture reproduces the fall-through yet.
 ## Merged-shell safety net: judge a shell's re-projection as one change — 2026-10-21
 
 After Phase 3, the safety net re-projects every merged vertex outside its
@@ -276,12 +300,23 @@ a hole, at budgets that pass exactly, fail by one query, fail halfway and fail
 on the first face, and checks that an over-budget parallel pass leaves the
 targets untouched.
 
-Measurement pending: `Tools~/run-transfer-performance.ps1 -Repetitions 3
--Density 32` with `-DisableParallelProjection` (control) against the default
-run, with `compare-transfer-performance.py` confirming all exports are
-byte-identical. The stages are "Face projection", "Projection initial faces"
-and "Projection refined faces". "Parent footprint coverage" now sums worker
-time, so it can exceed the wall time of its pass.
+Measured with `Tools~/run-transfer-performance.ps1 -Repetitions 3 -Density 32`
+(`d393c61` → `371d90d`, Cafe_Table_A_01 / Modern_Kitchen_A / kamaz_Off, i9-14900K,
+Unity 6000.2.6f2): every export is byte-identical, but the worker threads are
+slower on all three models. "Face projection" in Forward 0.021 → 0.084, 0.79 →
+2.36 and 4.84 → 8.68 s; "Forward pipeline" 0.45 → 0.68, 3.81 → 6.55 and 18.20 →
+27.33 s; Reverse total 1.3–1.5×. "Parent footprint coverage", summed over workers,
+rose 100–137× (Kamaz Forward 1.4 → 186 s over 50,429 calls), far beyond what
+32 threads sharing the work would explain: the workers wait on each other.
+The likely cause is allocation: the footprint check builds new lists for every
+clipped edge and a LINQ region list for the tolerance fallback, and Unity's Mono
+runtime uses the Boehm collector (`mono-2.0-bdwgc`), whose allocation lock and
+stop-the-world collections serialize allocating threads. Not verified.
+
+Result: rejected as the default. `ParallelProjectionMinimumFaces` defaults to
+`int.MaxValue`, so every pass runs in order as before; the parallel path and its
+equivalence test stay for a later attempt, which should first make the footprint
+check and corner probes allocation-free and measure again.
 
 ## Reverse envelope audit: clip only cross-family pairs — 2026-10-21
 
