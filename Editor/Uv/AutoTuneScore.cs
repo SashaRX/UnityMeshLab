@@ -45,16 +45,19 @@ namespace SashaRX.UnityMeshLab
         {
             var score = new AutoTuneScore { failedTargets = failedTargets, rejectedShells = rejectedShells,
                 overlapsFixed = overlapsFixed, coverage = coverage };
-            foreach (var (quality, geometryDegenerateFaces) in targets)
-            {
-                if (!quality.overlapScanComplete) ++score.incompleteScans;
-                // The same geometry degeneracy is present in every attempt and no
-                // configuration can repair it; it must not block a perfect result.
-                score.collapsedFaces += quality.invalidFaces + Math.Max(0, quality.degenerateFaces - geometryDegenerateFaces);
-                score.overlapArea += quality.overlapPairArea;
-                score.overlapPairs += quality.overlapPairs;
-            }
+            foreach (var (quality, geometryDegenerateFaces) in targets) score.AddTarget(quality, geometryDegenerateFaces);
             return score;
+        }
+
+        /// <summary>Adds one target's aggregate defects; nothing from the quality report is retained.</summary>
+        internal void AddTarget(TransferUvQuality quality, int geometryDegenerateFaces)
+        {
+            if (!quality.overlapScanComplete) ++incompleteScans;
+            // The same geometry degeneracy is present in every attempt and no
+            // configuration can repair it; it must not block a perfect result.
+            collapsedFaces += quality.invalidFaces + Math.Max(0, quality.degenerateFaces - geometryDegenerateFaces);
+            overlapArea += quality.overlapPairArea;
+            overlapPairs += quality.overlapPairs;
         }
 
         /// <summary>

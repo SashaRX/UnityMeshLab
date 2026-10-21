@@ -13,8 +13,11 @@ one that had a single force3D box overlap. The search also stopped as
 
 Every target's final `TransferUvQuality` is already measured in the rendered
 frame to decide the donor-seam trial. When the trial is accepted, the prepared
-mesh is measured as well. Auto-tune now records that final quality per target
-and compares attempts lexicographically (`AutoTuneScore`), in this order:
+mesh is measured as well. Auto-tune now records that final quality per target,
+re-measured after the publication clamp to [0,1] whenever the clamp moved a
+coordinate, because clamping can collapse a face. Only aggregates are kept,
+and only during an auto-tune attempt's transfer stage. Attempts are compared
+lexicographically (`AutoTuneScore`), in this order:
 
 1. targets whose transfer produced no UVs;
 2. incomplete overlap scans;

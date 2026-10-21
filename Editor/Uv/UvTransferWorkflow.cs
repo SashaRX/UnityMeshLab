@@ -253,11 +253,11 @@ namespace SashaRX.UnityMeshLab
         readonly Dictionary<(MeshEntry source, string meshGroupKey), CrossLodHintState> crossLodHints =
             new Dictionary<(MeshEntry, string), CrossLodHintState>();
 
-        // The current transfer stage's per-target final quality and failures,
-        // which auto-tune compares between attempts (see AutoTuneScore).
-        readonly List<(TransferUvQuality quality, int geometryDegenerateFaces)> attemptQualities =
-            new List<(TransferUvQuality, int)>();
-        int attemptFailedTargets;
+        // Aggregate defects of the running auto-tune attempt's transfer stage
+        // (see AutoTuneScore). Only that stage collects them; ordinary Transfer
+        // runs neither measure nor retain anything for scoring.
+        AutoTuneScore attemptScore;
+        bool scoringAttempt;
 
         // ── Preview ──
         // Three mutually-exclusive preview modes. Only one should be active at a time.
@@ -1859,18 +1859,19 @@ namespace SashaRX.UnityMeshLab
 
         async Task RunTransferStage(bool useAsync, bool hasTransferTargets)
         {
-            attemptQualities.Clear();
-            attemptFailedTargets = 0;
+            attemptScore = default;
             // 5. Transfer (skipped via Setup stage toggle)
             if (stageRunTransfer && ctx.HasRepack && hasTransferTargets)
             {
                 stageOutcome[5] = StageStatus.Running;
+                scoringAttempt = true;
                 try
                 {
                     await ExecTransferAllImpl(useAsync);
                     stageOutcome[5] = ctx.HasTransfer ? StageStatus.Success : StageStatus.Failed;
                 }
                 catch { stageOutcome[5] = StageStatus.Failed; throw; }
+                finally { scoringAttempt = false; }
             }
             else if (ctx.HasRepack)
             {
@@ -1983,7 +1984,8 @@ namespace SashaRX.UnityMeshLab
             // quality, before the shell-level counters and vertex coverage.
             var totals = GetTransferTotals(ctx.MeshEntries);
             float coverage = totals.vertices > 0 ? (float)totals.transferred / totals.vertices : 0f;
-            var score = AutoTuneScore.From(attemptQualities, attemptFailedTargets, totals.rejected, totals.overlaps, coverage);
+            var score = attemptScore;
+            score.rejectedShells = totals.rejected; score.overlapsFixed = totals.overlaps; score.coverage = coverage;
 
             UvtLog.Info($"[Pipeline] Config #{ci} (sep={sepThresh:P0}): {score}");
 
@@ -2400,7 +2402,7 @@ namespace SashaRX.UnityMeshLab
 
             Mesh srcMesh = srcEntry.repackedMesh ?? srcEntry.originalMesh;
             Mesh tgtMesh = tgt.originalMesh;
-            if (srcMesh == null || tgtMesh == null) { ++attemptFailedTargets; return; }
+            if (srcMesh == null || tgtMesh == null) { if (scoringAttempt) ++attemptScore.failedTargets; return; }
 
             string meshGroupKey = tgt.meshGroupKey ?? tgt.renderer.name;
             var hintKey = (source: srcEntry, meshGroupKey: meshGroupKey);
@@ -2412,7 +2414,7 @@ namespace SashaRX.UnityMeshLab
                 crossLodHints[hintKey] = hintState;
             }
 
-            if (!HasSourceUvChannels(srcMesh)) { ++attemptFailedTargets; return; }
+            if (!HasSourceUvChannels(srcMesh)) { if (scoringAttempt) ++attemptScore.failedTargets; return; }
 
             UvProgress.Report(-1f, $"Transfer LOD{tLod} ← '{tgt.renderer.name}'");
             var pair = ctx.DiagnosticCapture?.BeforePair(srcEntry, tgt, srcMesh, tgtMesh, hintState.overlapHints, hintState.matchHints, TransferBoundaryToleranceTexels);
@@ -2424,7 +2426,7 @@ namespace SashaRX.UnityMeshLab
                     srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
                     srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0, useAsync, pair?.trace,TransferBoundaryToleranceTexels);
             if (tr.uv2 == null) {
-                ++attemptFailedTargets;
+                if (scoringAttempt) ++attemptScore.failedTargets;
                 ctx.DiagnosticCapture?.AfterPair(pair, tgt, tr);
                 UvtLog.Warn($"[Transfer] Failed for '{tgt.renderer.name}'"); return;
             }
@@ -2498,8 +2500,15 @@ namespace SashaRX.UnityMeshLab
             if (tr.matchHints != null && tr.matchHints.Count > 0)
                 hintState.matchHints.AddRange(tr.matchHints);
 
-            attemptQualities.Add((finalQuality, AutoTuneScore.GeometryDegenerateFaces(tgtMesh, renderedFrame)));
-            ApplyTransferResult(tgt, tgtMesh, tr, tLod);
+            int clamped = ApplyTransferResult(tgt, tgtMesh, tr, tLod);
+            if (scoringAttempt)
+            {
+                // Score what is published: the unit clamp can collapse a face.
+                if (clamped > 0)
+                    using (ForwardPerformance?.Accumulated("Forward quality measure"))
+                        finalQuality = TransferUvQuality.Measure(tgtMesh, tr.uv2, Vector2.one, renderedFrame);
+                attemptScore.AddTarget(finalQuality, AutoTuneScore.GeometryDegenerateFaces(tgtMesh, renderedFrame));
+            }
             ctx.DiagnosticCapture?.AfterPair(pair, tgt, tr);
         }
 
@@ -2514,14 +2523,16 @@ namespace SashaRX.UnityMeshLab
             return false;
         }
 
-        void ApplyTransferResult(MeshEntry tgt, Mesh tgtMesh, GroupedShellTransfer.TransferResult tr, int tLod)
+        /// <summary>Publishes the transfer result; returns the number of UV2 coordinates the unit clamp moved.</summary>
+        int ApplyTransferResult(MeshEntry tgt, Mesh tgtMesh, GroupedShellTransfer.TransferResult tr, int tLod)
         {
             // Build output mesh with UV2 applied
             var om = UnityEngine.Object.Instantiate(tgtMesh);
             om.name = tgtMesh.name + "_uvTransfer";
+            int clamped = 0;
             if (ctx.ClampLightmapToUnit)
             {
-                int clamped = XatlasRepack.ClampUvsToUnit(tr.uv2);
+                clamped = XatlasRepack.ClampUvsToUnit(tr.uv2);
                 if (clamped > 0)
                 {
                     tgt.forwardUvReference=tgt.forwardUvReference?.ClampPublishedCoordinates(tgtMesh);
@@ -2545,6 +2556,7 @@ namespace SashaRX.UnityMeshLab
             float pct = tr.verticesTotal > 0 ? tr.verticesTransferred * 100f / tr.verticesTotal : 0;
             UvtLog.Info($"[Transfer] '{tgt.renderer.name}' LOD{tLod}: {tr.shellsMatched} shells, {pct:F0}% vertex coverage");
             ctx.ClearAllCaches();
+            return clamped;
         }
 
         void ApplyUv2ToFbx() => ctx.Assets.ApplyUv2Public();
