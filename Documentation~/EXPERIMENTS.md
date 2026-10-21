@@ -1,5 +1,37 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Auto-tune: reuse attempts whose symmetry split repeats — 2026-10-21
+
+Full Pipeline auto-tune runs symmetry split, repack and transfer for up to
+three binary-split separations (10%, 5%, 20%). It stops early only after a
+result with zero issues and at least 99% vertex coverage, which Kamaz never
+reaches. The separation is read only by `ApplyBinarySplit`. A model without a
+shell whose 3D separation ratio falls between the thresholds, a model whose
+splits are all N-fold, and every run with the symmetry step skipped give all
+attempts identical working meshes. Each such attempt still repeated the whole
+repack and transfer.
+
+After the symmetry stage, the pipeline hashes every included working mesh
+(`TransferMeshSnapshot.Capture`) together with its split flag. If an earlier
+attempt had the same hash, the attempt skips repack, transfer and evaluation.
+It restores that attempt's `HasRepack`/`HasTransfer` and stage outcomes, then
+continues. Repack and transfer are deterministic for identical meshes and
+settings, and a new best attempt requires a strict improvement, so a repeat
+can neither be selected nor stop the search. The chosen meshes are restored
+exactly as before. `UvTransferWorkflow.reuseIdenticalAutoTuneAttempts = false`
+keeps the old path. A differential test compares both paths on a quad LOD
+pair with transfer disabled: three repacks against one, with the same
+published atlas bytes and stage outcomes.
+
+Logs gain one Info line per reused attempt. Diagnostic captures omit that
+attempt's repack/transfer stages because they were not executed.
+
+Measurement pending: `Tools~/run-transfer-performance.ps1 -Repetitions 3
+-Density 32` control (main) against this branch, with all exports
+byte-identical through `compare-transfer-performance.py`, plus the
+`autoTuneDistinctInputs` field of the corpus variant matrix (PR #294) to show
+how often attempts repeat.
+
 ## Point-branch recovery: skip the contact scan without a single-point branch — 2026-10-21
 
 `UvPointJunctionRecovery` runs on every unpacked chart in
