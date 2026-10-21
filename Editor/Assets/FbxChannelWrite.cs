@@ -163,7 +163,11 @@ namespace SashaRX.UnityMeshLab
             // mesh's generated UV1 goes into the file with it, edited or not.
             bool bakeUv1 = generatedUv1 && intent.IncludesUv(1)
                 && (donors.Any(d => d.uvs[1] != null) || (hasStructure && structure.wholeMeshUv1Edited));
-            if (bakeUv1) donors = CaptureDonors(entries, capture.WithBake(true), skip);
+            if (bakeUv1)
+            {
+                donors = CaptureDonors(entries, capture.WithBake(true), skip);
+                donors.AddRange(CaptureUnloadedUv1(sourceFbxPath, donors, skip));
+            }
             if (donors.Count == 0 && !hasStructure)
             {
                 UvtLog.Warn($"[FBX Export] No meshes carry data for {intent}.");
@@ -316,8 +320,31 @@ namespace SashaRX.UnityMeshLab
             return configured;
         }
 
+        // A lit mesh of the model the save did not load (another object of the same file)
+        // keeps the lightmap UVs it imports with now: they go into the file as they are.
+        // A name several meshes share cannot be told apart and is left to RequireEveryUv1.
+        static List<Donor> CaptureUnloadedUv1(string sourceFbxPath, List<Donor> donors, ICollection<string> skip)
+        {
+            var loaded = new HashSet<string>(donors.Select(d => d.name), StringComparer.Ordinal);
+            var unloaded = AssetDatabase.LoadAllAssetsAtPath(sourceFbxPath).OfType<Mesh>()
+                .GroupBy(m => m.name, StringComparer.Ordinal)
+                .Where(g => g.Count() == 1 && !loaded.Contains(g.Key) && !MeshNaming.IsCollision(g.Key) && (skip == null || !skip.Contains(g.Key)))
+                .Select(g => g.Single());
+            var uv1Only = new Capture { intent = FbxExportIntent.UV1, generatedUv1 = true, bakeUv1 = true };
+            var captured = new List<Donor>();
+            foreach (var mesh in unloaded)
+            {
+                var donor = CaptureDonor(new MeshEntry { fbxMesh = mesh }, uv1Only);
+                if (donor?.uvs[1] != null) captured.Add(donor);
+            }
+            if (captured.Count > 0)
+                UvtLog.Info($"[FBX Export] 'Generate Lightmap UVs' goes off with this save; {string.Join(", ", captured.Select(d => $"'{d.name}'"))} " +
+                    "(not loaded here) keep the lightmap UVs they import with now, written into the file.");
+            return captured;
+        }
+
         // With generation switched off, a mesh whose UV1 is not in the file has none: refuse
-        // rather than drop the lightmap UVs of meshes the save did not see.
+        // rather than drop the lightmap UVs of meshes the save could not carry.
         static void RequireEveryUv1(string sourceFbxPath, List<Donor> donors, ICollection<string> wholeMeshes, HashSet<string> importedNames)
         {
             var withUv1 = new HashSet<string>(donors.Where(d => d.uvs[1] != null).Select(d => d.name), StringComparer.Ordinal);
@@ -326,7 +353,8 @@ namespace SashaRX.UnityMeshLab
             if (lost.Count == 0) return;
             throw new InvalidOperationException(
                 $"'Generate Lightmap UVs' is on for '{sourceFbxPath}'. Writing UV1 switches it off for the whole model, and " +
-                $"{string.Join(", ", lost.Select(n => $"'{n}'"))} would lose the lightmap UVs Unity generates for them (they are not loaded here). " +
+                $"{string.Join(", ", lost.Select(n => $"'{n}'"))} would lose the lightmap UVs Unity generates for them " +
+                "(their imported lightmap UVs could not be carried into the file: several meshes share the name, or the import has none). " +
                 "Load the whole model, or switch the setting off first; nothing was written.");
         }
 
