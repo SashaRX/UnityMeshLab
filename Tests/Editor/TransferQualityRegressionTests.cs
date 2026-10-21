@@ -555,6 +555,16 @@ namespace SashaRX.UnityMeshLab.Tests
                 "A layout that later folds onto itself is withdrawn.");
         }
 
+        [Test]
+        public void RejectedMergedFallbackMustEndInsideItsSourceAllowance()
+        {
+            // Source UV2 bounds (0.4,0.4)-(0.6,0.6): the safety net allows 20% of their size around them.
+            var sMin=new Vector2(.4f,.4f); var sMax=new Vector2(.6f,.6f);
+            Assert.IsTrue(GroupedShellTransfer.WithinSourceUv2Allowance(new[] {new Vector2(.5f,.5f),new Vector2(.63f,.37f)},sMin,sMax));
+            Assert.IsFalse(GroupedShellTransfer.WithinSourceUv2Allowance(new[] {new Vector2(.5f,.5f),new Vector2(.9f,.5f)},sMin,sMax),
+                "A vertex the safety net could not re-project into the source's region withdraws the fallback.");
+        }
+
         [TestCase(0f,false)]
         [TestCase(.00000012f,false)]
         [TestCase(0f,true)]
