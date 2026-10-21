@@ -3956,6 +3956,34 @@ namespace SashaRX.UnityMeshLab
             result.topologyFixed      = LastTopologyFixed;
             result.topologyCapHit     = LastTopologyCapHit;
 
+            // Restores the unwritten layout: (0,0), the earlier source, Rejected.
+            void WithdrawFallback(int tsi, int unwrittenSource, string stage)
+            {
+                result.targetShellToSourceShell[tsi] = unwrittenSource;
+                foreach (int vertex in tgtShells[tsi].vertexIndices)
+                {
+                    if (vertex >= result.uv2.Length) continue;
+                    result.uv2[vertex] = Vector2.zero;
+                    result.vertexToSourceShell[vertex] = -1;
+                    result.verticesTransferred--;
+                }
+                result.targetShellStatus[tsi] = ShellStatus.Rejected;
+                result.shellsRejected++;
+                UvtLog.Warn($"[GroupedTransfer]   t{tsi} rejected-merged fallback withdrawn {stage} — UV2 not written");
+            }
+
+            // Planar and exact-family recovery scan the whole target for new contacts.
+            // A fallback that the safety net or the topology pass left unsafe is
+            // withdrawn first, so it cannot block another shell's recovery.
+            foreach (var fallback in new List<KeyValuePair<int, int>>(rejectedFallbackShells))
+            {
+                int tsi = fallback.Key, src = result.targetShellToSourceShell[tsi];
+                var layout = ShellCandidate(tgtShells[tsi], result.uv2);
+                if (!FallbackStillSafe(tgtShells[tsi], layout,
+                        TransferCandidateQuality.Measure(tgtShells[tsi], tgtTris, tVerts, layout), srcUv2Min[src], srcUv2Max[src]))
+                    WithdrawFallback(tsi, fallback.Value, "before recovery");
+            }
+
             if (!RecoverFinalProjection(result,(tgtShells,tgtTris,tVerts),
                 (srcShells,srcTris,srcVerts,srcUv2),trace,
                 System.Math.Max(sourceAtlasWidth,sourceAtlasHeight),boundaryToleranceTexels))
@@ -3982,26 +4010,12 @@ namespace SashaRX.UnityMeshLab
 
                 var finalUv = ShellCandidate(tgtShells[tsi], result.uv2);
                 var finalQuality = TransferCandidateQuality.Measure(tgtShells[tsi], tgtTris, tVerts, finalUv);
-                // The AABB safety net and final recovery may have moved a fallback shell.
-                // If it no longer passes the fallback gate, or the safety net could not
-                // bring it into its source's region (no UV0 BVH for a source of 16 faces
-                // or fewer, or no hit), restore the unwritten layout.
+                // Final recovery may still have moved a fallback shell; check it again.
                 if (rejectedFallbackShells.TryGetValue(tsi, out int unwrittenSource)
-                    && (!StillReplacesUnwrittenShell(tgtShells[tsi], finalQuality)
-                        || !WithinSourceUv2Allowance(finalUv.Values, srcUv2Min[src], srcUv2Max[src])))
+                    && !FallbackStillSafe(tgtShells[tsi], finalUv, finalQuality, srcUv2Min[src], srcUv2Max[src]))
                 {
-                    result.targetShellToSourceShell[tsi] = unwrittenSource;
-                    foreach (int vertex in tgtShells[tsi].vertexIndices)
-                    {
-                        if (vertex >= result.uv2.Length) continue;
-                        result.uv2[vertex] = Vector2.zero;
-                        result.vertexToSourceShell[vertex] = -1;
-                        result.verticesTransferred--;
-                    }
-                    result.targetShellStatus[tsi] = ShellStatus.Rejected;
-                    result.shellsRejected++;
+                    WithdrawFallback(tsi, unwrittenSource, "after final checks");
                     statusRejected++;
-                    UvtLog.Warn($"[GroupedTransfer]   t{tsi} rejected-merged fallback withdrawn after final checks — UV2 not written");
                     continue;
                 }
                 int issues = Mathf.Max(finalQuality.issues, finalQuality.stretchedFaces + finalQuality.invalidFaces);
@@ -4721,6 +4735,12 @@ namespace SashaRX.UnityMeshLab
         internal static bool StillReplacesUnwrittenShell(UvShell shell, TransferCandidateQuality final)
             => final.invalidFaces == 0 && final.issues < shell.faceIndices.Count
                 && final.overlapScanComplete && final.overlapPairs == 0;
+
+        /// <summary>Whether a written fallback still passes the gate on its measured layout
+        /// and lies within the safety net's allowance around its source's UV2.</summary>
+        static bool FallbackStillSafe(UvShell shell, Dictionary<int, Vector2> layout,
+            TransferCandidateQuality quality, Vector2 sMin, Vector2 sMax)
+            => StillReplacesUnwrittenShell(shell, quality) && WithinSourceUv2Allowance(layout.Values, sMin, sMax);
 
         /// <summary>Whether every point of a layout lies in the merged-shell AABB safety
         /// net's allowance around a source shell's UV2 bounds.</summary>
