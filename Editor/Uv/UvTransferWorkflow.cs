@@ -1592,9 +1592,11 @@ namespace SashaRX.UnityMeshLab
                 splitTargetsInSymmetryStep, SymmetrySplitMode);
             BenchmarkRecorder.Current?.StageBegin("pipeline");
             bool completedSuccessfully = false;
+            var start = reuseForwardRunForReverse ? TryCaptureForwardRunStart() : null;
             try
             {
                 completedSuccessfully = await ExecFullPipelineCoreImpl(useAsync);
+                if (completedSuccessfully && start != null) TryRecordForwardRun(start);
             }
             finally
             {
@@ -1656,6 +1658,7 @@ namespace SashaRX.UnityMeshLab
         void ResetWorkingMeshesToFbx()
         {
             ClearReverseSummary();
+            lastForwardRun = null;
             if (ctx?.MeshEntries == null) return;
             foreach (var e in ctx.MeshEntries)
             {

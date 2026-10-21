@@ -1,5 +1,41 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Reverse preparation: reuse an unchanged Full Pipeline result — 2026-10-21
+
+Reverse with "Prepare with ordinary Transfer" ran the complete Full Pipeline
+again on detached copies of the imported meshes, even right after the user ran
+the same Full Pipeline on the scene entries. On Kamaz this detached preparation
+is 16.2 s of the 37.3 s Reverse workflow (`TRANSFER_PERFORMANCE.md`), and the
+paired benchmark already asserts that it reproduces the ordinary result byte
+for byte.
+
+A completed Full Pipeline now records, per included entry, the imported mesh
+it consumed and the result it published, each by reference and by a raw
+content fingerprint (`MeshAccess.Fingerprint`: vertex layout and streams,
+indices, bounds, and skinning/blend shapes when present), plus its renderer
+frame, source texture metric, forward UV reference and atlas size, and one
+settings key over every context and workflow setting the pipeline reads.
+The settings and inputs are taken before the run and must be unchanged after
+it, because the asynchronous stages read materials and transforms while the
+editor stays responsive.
+Reverse preparation reuses that result only when the key equals the key of
+the detached preparation it would build (shared atlas, finest included LOD as
+source, every stage on, same copied settings) and every recorded fact still
+holds. Otherwise it repeats the preparation exactly as before and logs why.
+Scene edits are never reused, because the detached copy would take the
+import's name. Reverse output is unchanged by construction: it receives copies
+of the same meshes the detached run would produce.
+
+`ForwardRunReuseTests` fail when a new context setting is neither keyed and
+copied into the detached preparation nor listed as view state. The workflow
+test checks reuse, a settings change and an in-place result edit.
+
+Measurement pending: `Tools~/run-transfer-performance.ps1 -Repetitions 3
+-Density 32` with `-DisableForwardReuse` (control) against the default run,
+with `compare-transfer-performance.py` confirming all exports are
+byte-identical. The cost of fingerprinting is the "Forward run fingerprint"
+sample of the Forward pipeline.
+
 ## Auto-tune: choose attempts by measured UV defects — 2026-10-21
 
 Full Pipeline auto-tune tries up to three binary-split separations and keeps

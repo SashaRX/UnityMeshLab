@@ -2100,6 +2100,8 @@ namespace SashaRX.UnityMeshLab.Tests
             if (float.TryParse(System.Environment.GetEnvironmentVariable("MESHLAB_TRANSFER_BOUNDARY_TEXELS"),
                 System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var configured)) tolerance = configured;
             hub.DiagnosticWorkflow.TransferBoundaryToleranceTexels = tolerance;
+            // The control repeats the detached preparation instead of reusing the forward result.
+            hub.DiagnosticWorkflow.reuseForwardRunForReverse = System.Environment.GetEnvironmentVariable("MESHLAB_DISABLE_FORWARD_REUSE") != "1";
             hub.DiagnosticWorkflow.PrepareTransferInputs();
             var entries = ctx.MeshEntries.Where(e => e.include).ToArray();
             var originals = entries.Select(e => PairedSnapshot(e.fbxMesh)).ToArray();
@@ -2339,6 +2341,38 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.AreEqual(entry.fbxMesh.triangles.Length,output.triangles.Length);
                 Assert.AreEqual(1,UvShellExtractor.Extract(output.uv2,output.triangles).Count);
             }
+        }
+
+        /// <summary>Reverse preparation reuses an unchanged Full Pipeline result and repeats it after any change.</summary>
+        [Test]
+        public void ReversePreparationReusesOnlyAnUnchangedFullPipelineResult()
+        {
+            var ctx=Open(Group(true,out _,out _));
+            ctx.AtlasResolution=128;ctx.RepackResolutionMode=ResolutionMode.Manual;ctx.RepackPerMesh=false;
+            foreach(var entry in ctx.MeshEntries)
+                entry.originalMesh.vertices=new[] {Vector3.zero,Vector3.right,new Vector3(1,1,0),Vector3.up};
+            var workflow=hub.DiagnosticWorkflow;
+            ((System.Threading.Tasks.Task)CallWorkflow("ExecFullPipelineImpl","reuse-forward",false)).GetAwaiter().GetResult();
+            byte[][] Prepare(bool reuse,out bool repeated)
+            {
+                workflow.reuseForwardRunForReverse=reuse;
+                using var inputs=workflow.PrepareForwardReverseInputs(true,false,default).GetAwaiter().GetResult();
+                repeated=inputs.workflow!=null;
+                return inputs.levels.SelectMany(l=>l.inputs).Select(i=>TransferMeshSnapshot.Capture(i.mesh)).ToArray();
+            }
+            var detached=Prepare(false,out bool repeated);
+            Assert.IsTrue(repeated);
+            CollectionAssert.AreEqual(detached,Prepare(true,out repeated),"Reuse must hand Reverse the detached preparation's meshes.");
+            Assert.IsFalse(repeated,"An unchanged Full Pipeline result must not be prepared again.");
+
+            ctx.ShellPaddingPx+=1;
+            Prepare(true,out repeated); Assert.IsTrue(repeated,"Changed settings must repeat the preparation.");
+            ctx.ShellPaddingPx-=1;
+            Prepare(true,out repeated); Assert.IsFalse(repeated,"Restored settings match the recorded run again.");
+
+            var target=ctx.MeshEntries.First(e=>e.transferredMesh);
+            var uv=target.transferredMesh.uv2; uv[0]+=Vector2.one*1e-3f; target.transferredMesh.uv2=uv;
+            Prepare(true,out repeated); Assert.IsTrue(repeated,"A result edited in place must not be reused.");
         }
 
         [Test] public void FailedReverseTransferKeepsThePreviousChainAndProvenance()
