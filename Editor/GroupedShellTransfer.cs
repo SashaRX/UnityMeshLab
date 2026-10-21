@@ -3744,6 +3744,9 @@ namespace SashaRX.UnityMeshLab
                     if (result.targetShellMethod[tsi] != 2) continue; // only merged shells
                     int src = result.targetShellToSourceShell[tsi];
                     if (src < 0) continue;
+                    // A rejected shell was left unwritten at (0,0). Through a BVH the net
+                    // has always re-projected it; the scan for small sources does not.
+                    if (shellUv0Bvh[src] == null && result.targetShellStatus[tsi] == ShellStatus.Rejected) continue;
 
                     Vector2 sMin = srcUv2Min[src];
                     Vector2 sMax = srcUv2Max[src];

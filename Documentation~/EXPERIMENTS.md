@@ -13,7 +13,17 @@ the rejected-merged fallback (PR #305), where the same gap applied.
 Without a BVH the safety net now scans the source's faces, with the BVH's rule:
 faces whose normal agrees with the target vertex are preferred, otherwise the
 nearest face of any orientation is used. Sources with a BVH take exactly the
-same path as before. `SafetyNetScanOfASmallSourceFindsTheFaceItsBvhWould`
+same path as before.
+
+The net also visits merged shells that the reject gate left unwritten
+(`Rejected`, UV2 at (0,0)): their method is already "merged". When the origin
+lies outside the source's allowance, every vertex is an outlier, and through a
+BVH the net re-projects the whole shell vertex by vertex without any quality
+check, while the shell stays `Rejected`. So on main a rejected merged shell
+stays at (0,0) only when its source has 16 faces or fewer or its allowance
+contains the origin. The new scan does not extend this to small sources: it
+skips `Rejected` shells. Whether the net should touch rejected shells at all
+is a separate decision; it changes what PR #305 replaces. `SafetyNetScanOfASmallSourceFindsTheFaceItsBvhWould`
 checks that the scan picks the BVH's face and barycentrics in the three normal
 cases.
 
