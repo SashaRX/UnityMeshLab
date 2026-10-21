@@ -166,7 +166,7 @@ namespace SashaRX.UnityMeshLab
             if (bakeUv1)
             {
                 donors = CaptureDonors(entries, capture.WithBake(true), skip);
-                donors.AddRange(CaptureUnloadedUv1(sourceFbxPath, donors, skip, capture));
+                donors.AddRange(CaptureUnloadedUv1(sourceFbxPath, donors, skip));
             }
             if (donors.Count == 0 && !hasStructure)
             {
@@ -323,7 +323,7 @@ namespace SashaRX.UnityMeshLab
         // A lit mesh of the model the save did not load (another object of the same file)
         // keeps the lightmap UVs it imports with now: they go into the file as they are.
         // A name several meshes share cannot be told apart and is left to RequireEveryUv1.
-        static List<Donor> CaptureUnloadedUv1(string sourceFbxPath, List<Donor> donors, ICollection<string> skip, Capture capture)
+        static List<Donor> CaptureUnloadedUv1(string sourceFbxPath, List<Donor> donors, ICollection<string> skip)
         {
             var loaded = new HashSet<string>(donors.Select(d => d.name), StringComparer.Ordinal);
             var unloaded = AssetDatabase.LoadAllAssetsAtPath(sourceFbxPath).OfType<Mesh>()
