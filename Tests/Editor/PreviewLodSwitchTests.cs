@@ -2460,8 +2460,9 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             var ctx=OpenReverseRegroupFixture(out var fine,out _);
             var workflow=hub.DiagnosticWorkflow;
-            Set(workflow,"reversePrepareSeed",prepareSeed);
-            Set(workflow,"reversePreserveOverlap",preserveOverlap);
+            // The hub's workflow is a LightmapTransferTool; the fields are private to its base.
+            typeof(UvTransferWorkflow).GetField("reversePrepareSeed",Private).SetValue(workflow,prepareSeed);
+            typeof(UvTransferWorkflow).GetField("reversePreserveOverlap",Private).SetValue(workflow,preserveOverlap);
             var originals=ctx.MeshEntries.Select(e=>TransferMeshSnapshot.Capture(e.fbxMesh)).ToArray();
             // Without preparation, Reverse regroups the published forward result; each run consumes it.
             void Forward() {if(!prepareSeed) ((System.Threading.Tasks.Task)CallWorkflow("ExecFullPipelineImpl","async-reverse",false)).GetAwaiter().GetResult();}
@@ -2507,8 +2508,8 @@ namespace SashaRX.UnityMeshLab.Tests
 
         /// <summary>
         /// Cancelling the button's path while ordinary Transfer prepares its detached copies publishes
-        /// nothing: the previous chain and its provenance stay, the operation ends and every working
-        /// mesh is released.
+        /// nothing: the run ends as cancelled, not failed, the previous chain and its provenance stay,
+        /// the operation ends and every working mesh is released.
         /// </summary>
         [UnityTest]
         public IEnumerator CancelledAsyncReverseKeepsThePreviousChainAndReleasesItsMeshes()
@@ -2533,8 +2534,8 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(yielded,"The button's path must return to the editor while its work runs.");
             Assert.IsTrue(active,"The run must begin its own operation.");
             var error=task.Exception?.GetBaseException();
-            Assert.IsTrue(task.IsCanceled||task.IsFaulted,"A cancelled run must not complete.");
             TestContext.WriteLine($"Cancelled Reverse ended with {(task.IsCanceled?"cancellation":error?.GetType().Name)}: {error?.Message}");
+            Assert.IsTrue(task.IsCanceled,$"A cancelled run must end as cancelled, not {error?.GetType().Name}: {error?.Message}");
             Assert.IsTrue(ended,"The run must end the operation it began.");
             Assert.AreSame(previousFine,fine.transferredMesh);Assert.AreSame(previousCoarse,coarse.repackedMesh);
             CollectionAssert.AreEqual(previousBytes,TransferMeshSnapshot.Capture(fine.transferredMesh));
