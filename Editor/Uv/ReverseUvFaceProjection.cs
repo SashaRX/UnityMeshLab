@@ -20,7 +20,7 @@ namespace SashaRX.UnityMeshLab
         {
             internal ProjectionBatch batch;
             internal readonly List<int> nearby = new List<int>();
-            internal long queries, charged, candidates, footprintTicks, footprintCalls;
+            internal long queries, candidates, footprintTicks, footprintCalls;
         }
 
         /// <summary>One face projection pass. Donor charts, their index and the
@@ -55,9 +55,13 @@ namespace SashaRX.UnityMeshLab
             }
 
             /// <summary>Projects every face on worker threads. Each face is charged
-            /// from the pass's starting count, so a face that runs out of budget
-            /// here also runs out in order; a pass whose total stays within the
-            /// budget passes every check of the ordered pass too.</summary>
+            /// from the pass's starting count plus the charges other faces have
+            /// published. That sum never exceeds the ordered pass's total, so a
+            /// face that runs out of budget here means the ordered pass runs out
+            /// too, and a pass whose total stays within the budget passes every
+            /// check of the ordered pass. Once the published charges exceed the
+            /// budget no further face starts, which keeps the budget a bound on
+            /// the work done before the pass repeats in order.</summary>
             /// <returns>Null when the pass must run in order: the native batch keeps
             /// per-surface state between faces, the pass is small, a face failed or
             /// the total exceeds the budget. The pixels are then restored and no
@@ -71,34 +75,36 @@ namespace SashaRX.UnityMeshLab
                 var pixels = Array.ConvertAll(targets, s => (Vector2[])s.pixels.Clone());
                 var records = new Face[starts[targets.Length]];
                 var workers = new ConcurrentQueue<ProjectionWorker>();
-                long start = queries;
-                bool failed = false;
+                long start = queries, charged = 0;
+                bool failed;
                 try
                 {
-                    Parallel.For(0, records.Length, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
-                        () => new ProjectionWorker(), (i, _, worker) =>
+                    failed = !Parallel.For(0, records.Length, new ParallelOptions { MaxDegreeOfParallelism = Environment.ProcessorCount },
+                        () => new ProjectionWorker(), (i, loop, worker) =>
                         {
                             token.ThrowIfCancellationRequested();
+                            long published = Interlocked.Read(ref charged);
+                            if (start + published > options.comparisonBudget) { loop.Stop(); return worker; }
                             int s = SurfaceAt(starts, i), f = i - starts[s];
                             if (targets[s].faces[f].inherited) return worker;
                             var record = targets[s].faces[f].Copy();
                             records[i] = record;
-                            worker.queries = start;
+                            worker.queries = start + published;
                             Project(targets[s], f, record, worker);
-                            worker.charged += worker.queries - start;
+                            Interlocked.Add(ref charged, worker.queries - start - published);
                             return worker;
                         },
-                        workers.Enqueue);
+                        workers.Enqueue).IsCompleted;
                 }
                 catch (AggregateException)
                 {
                     token.ThrowIfCancellationRequested();
                     failed = true;
                 }
-                var total = new ProjectionWorker { queries = start };
+                var total = new ProjectionWorker { queries = start + charged };
                 foreach (var worker in workers)
                 {
-                    total.queries += worker.charged; total.candidates += worker.candidates;
+                    total.candidates += worker.candidates;
                     total.footprintTicks += worker.footprintTicks; total.footprintCalls += worker.footprintCalls;
                 }
                 if (failed || total.queries > options.comparisonBudget)

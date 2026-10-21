@@ -16,12 +16,16 @@ Passes now run on worker threads when the native batch cannot be active
 `ParallelProjectionMinimumFaces` (256) target faces. Each worker owns its
 candidate buffer; each face writes a copy of its record, published in face
 order afterwards. The budget stays exact: every face is charged from the
-pass's starting count, so a face that exceeds the budget here also exceeds it
-in order, and a pass whose total is within the budget passes every check of
-the ordered pass (each check compares a running count that is at most the
-total). When any face fails or the total exceeds the budget, the pixels are
-restored and the pass is repeated in order, which reproduces the same result,
-exception and message. Cancellation still surfaces as
+pass's starting count plus the charges other faces have already published.
+That sum, plus the face's own running count, never exceeds the ordered pass's
+total, so a face that exceeds the budget here means the ordered pass exceeds
+it too, and a pass whose total is within the budget passes every check of the
+ordered pass (each check compares a running count that is at most the total).
+Once the published charges exceed the budget no further face starts, so an
+over-budget input still stops after about one budget of work (plus the faces
+already in flight) instead of projecting every face first. When any face
+fails or the total exceeds the budget, the pixels are restored and the pass is
+repeated in order, which reproduces the same result, exception and message. Cancellation still surfaces as
 `OperationCanceledException`.
 
 `ParallelFaceProjectionMatchesTheOrderedPassIncludingBudgetFailures` compares
