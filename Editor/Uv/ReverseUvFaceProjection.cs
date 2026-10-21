@@ -48,7 +48,7 @@ namespace SashaRX.UnityMeshLab
                     {
                         token.ThrowIfCancellationRequested();
                         if(f%ReverseUvQueryBackend.BatchSize==0) batch.Prepare(target,f);
-                        if (!target.faces[f].inherited) Project(target, f, target.faces[f], worker);
+                        if (!target.faces[f].inherited) ProjectFace(target, f, target.faces[f], worker);
                     }
                 queries = worker.queries;
                 return worker;
@@ -90,7 +90,7 @@ namespace SashaRX.UnityMeshLab
                             var record = targets[s].faces[f].Copy();
                             records[i] = record;
                             worker.queries = start + published;
-                            Project(targets[s], f, record, worker);
+                            ProjectFace(targets[s], f, record, worker);
                             Interlocked.Add(ref charged, worker.queries - start - published);
                             return worker;
                         },
@@ -145,7 +145,7 @@ namespace SashaRX.UnityMeshLab
                 return low;
             }
 
-            /// <summary>Every record field <see cref="Project"/> writes.</summary>
+            /// <summary>Every record field <see cref="ProjectFace"/> writes.</summary>
             static void CopyProjection(Face from, Face to)
             {
                 to.inherited = from.inherited; to.ambiguous = from.ambiguous; to.rejection = from.rejection;
@@ -164,7 +164,7 @@ namespace SashaRX.UnityMeshLab
                 record.ambiguous = true; record.rejection = rejection;
             }
 
-            internal void Project(Surface target, int f, Face record, ProjectionWorker worker)
+            internal void ProjectFace(Surface target, int f, Face record, ProjectionWorker worker)
             {
                 int t = f * 3;
                 var a = target.positions[target.indices[t]]; var b = target.positions[target.indices[t + 1]];
