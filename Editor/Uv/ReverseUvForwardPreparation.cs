@@ -66,12 +66,16 @@ namespace SashaRX.UnityMeshLab
             internal ForwardUvReference reference;
             internal uint atlasWidth, atlasHeight;
 
-            internal bool Matches(ForwardRunNode other) => other != null && ReferenceEquals(entry, other.entry)
+            /// <summary>The same entry with the same inputs: everything a detached preparation reads.</summary>
+            internal bool SameInput(ForwardRunNode other) => other != null && ReferenceEquals(entry, other.entry)
                 && lod == other.lod && groupKey == other.groupKey && textureMetric == other.textureMetric
                 && renderer == other.renderer && previewTexture == other.previewTexture && frame.Equals(other.frame)
-                && input == other.input && repacked == other.repacked && transferred == other.transferred
-                && inputHash.SequenceEqual(other.inputHash) && resultHash.SequenceEqual(other.resultHash)
-                && ReferenceEquals(reference, other.reference)
+                && input == other.input && inputHash.SequenceEqual(other.inputHash);
+
+            /// <summary>The same inputs and the same published result.</summary>
+            internal bool Matches(ForwardRunNode other) => SameInput(other)
+                && repacked == other.repacked && transferred == other.transferred
+                && resultHash.SequenceEqual(other.resultHash) && ReferenceEquals(reference, other.reference)
                 && atlasWidth == other.atlasWidth && atlasHeight == other.atlasHeight;
         }
 
@@ -189,21 +193,42 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
-        /// Fingerprints a completed Full Pipeline when a detached preparation of the
-        /// same entries would run with identical settings; otherwise records nothing.
+        /// The settings and inputs a Full Pipeline is about to consume, or null when a
+        /// detached preparation of the same entries would not run the same pipeline.
+        /// Taken before the run: the asynchronous stages read materials and transforms
+        /// while the editor stays responsive.
         /// </summary>
-        void RecordForwardRun(string settings)
+        ForwardRun CaptureForwardRunStart()
+        {
+            var entries = ReverseSourceEntries();
+            string settings = PreparationSettings(ctx, this);
+            if (entries.Select(e => e.lodIndex).Distinct().Count() < 2 || settings != DetachedPreparationSettings(ctx, this, entries)) return null;
+            using (ForwardPerformance?.Accumulated(ForwardRunFingerprintTiming))
+            {
+                var nodes = entries.Select(CaptureForwardRunInput).ToArray();
+                return nodes.All(node => node != null) ? new ForwardRun { settings = settings, nodes = nodes } : null;
+            }
+        }
+
+        /// <summary>
+        /// Records a completed Full Pipeline's result for Reverse reuse when its settings
+        /// and every input still equal what the run started with; otherwise records nothing.
+        /// </summary>
+        void RecordForwardRun(ForwardRun start)
         {
             lastForwardRun = null;
             var entries = ReverseSourceEntries();
-            if (entries.Select(e => e.lodIndex).Distinct().Count() < 2 || settings != PreparationSettings(ctx, this)
-                || settings != DetachedPreparationSettings(ctx, this, entries)) return;
-            using (ForwardPerformance?.Measure("Forward run fingerprint"))
+            if (start.settings != PreparationSettings(ctx, this) || entries.Length != start.nodes.Length) return;
+            using (ForwardPerformance?.Accumulated(ForwardRunFingerprintTiming))
             {
-                var nodes = entries.Select(CaptureForwardRunNode).ToArray();
-                if (nodes.All(node => node != null)) lastForwardRun = new ForwardRun { settings = settings, nodes = nodes };
+                var nodes = new ForwardRunNode[entries.Length];
+                for (int i = 0; i < entries.Length; ++i)
+                    if (!start.nodes[i].SameInput(nodes[i] = CaptureForwardRunNode(entries[i]))) return;
+                lastForwardRun = new ForwardRun { settings = start.settings, nodes = nodes };
             }
         }
+
+        const string ForwardRunFingerprintTiming = "Forward run fingerprint";
 
         /// <summary>Null when the last Full Pipeline result can stand in for a detached preparation of <paramref name="entries"/>, else why not.</summary>
         string ForwardRunRefusal(MeshEntry[] entries)
@@ -224,24 +249,33 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
-        /// Null when the entry cannot be compared: a scene edit or missing import (the
-        /// detached copy would differ in name or content from the ordinary input), a
-        /// missing result, or a mesh whose buffers cannot be fingerprinted.
+        /// The entry's inputs, or null when they cannot be compared: a scene edit or missing
+        /// import (the detached copy would differ in name or content from the ordinary
+        /// input), or an import whose buffers cannot be fingerprinted.
         /// </summary>
-        ForwardRunNode CaptureForwardRunNode(MeshEntry e)
+        ForwardRunNode CaptureForwardRunInput(MeshEntry e)
         {
-            if (!e.fbxMesh || e.sceneEditMesh || !string.IsNullOrEmpty(e.reverseTransferJson)) return null;
-            var result = e.repackedMesh ? e.repackedMesh : e.transferredMesh;
-            if (!result) return null;
-            var inputHash = MeshAccess.Fingerprint(e.fbxMesh); var resultHash = MeshAccess.Fingerprint(result);
-            if (inputHash == null || resultHash == null) return null;
+            if (!e.fbxMesh || e.sceneEditMesh) return null;
+            var inputHash = MeshAccess.Fingerprint(e.fbxMesh);
+            if (inputHash == null) return null;
             return new ForwardRunNode {
                 entry = e, lod = e.lodIndex, groupKey = e.meshGroupKey, renderer = e.renderer, previewTexture = e.previewTexture,
                 textureMetric = JsonUtility.ToJson(SourceTextureUvMetric.Resolve(e.renderer, e.previewTexture, e.fbxMesh)),
-                frame = ctx.PreviewMatrix(e.renderer ? e.renderer.transform : null),
-                input = e.fbxMesh, repacked = e.repackedMesh, transferred = e.transferredMesh,
-                inputHash = inputHash, resultHash = resultHash, reference = e.forwardUvReference,
-                atlasWidth = e.repackedAtlasWidth, atlasHeight = e.repackedAtlasHeight };
+                frame = ctx.PreviewMatrix(e.renderer ? e.renderer.transform : null), input = e.fbxMesh, inputHash = inputHash };
+        }
+
+        /// <summary>The entry's inputs and published forward result, or null when either cannot be compared.</summary>
+        ForwardRunNode CaptureForwardRunNode(MeshEntry e)
+        {
+            if (!string.IsNullOrEmpty(e.reverseTransferJson)) return null;
+            var result = e.repackedMesh ? e.repackedMesh : e.transferredMesh;
+            if (!result) return null;
+            var node = CaptureForwardRunInput(e);
+            var resultHash = node == null ? null : MeshAccess.Fingerprint(result);
+            if (resultHash == null) return null;
+            node.repacked = e.repackedMesh; node.transferred = e.transferredMesh; node.resultHash = resultHash;
+            node.reference = e.forwardUvReference; node.atlasWidth = e.repackedAtlasWidth; node.atlasHeight = e.repackedAtlasHeight;
+            return node;
         }
 
         static UvToolContext CopyReversePreparationSettings(UvToolContext ctx) => new UvToolContext {

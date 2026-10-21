@@ -15,6 +15,9 @@ content fingerprint (`MeshAccess.Fingerprint`: vertex layout and streams,
 indices, bounds, and skinning/blend shapes when present), plus its renderer
 frame, source texture metric, forward UV reference and atlas size, and one
 settings key over every context and workflow setting the pipeline reads.
+The settings and inputs are taken before the run and must be unchanged after
+it, because the asynchronous stages read materials and transforms while the
+editor stays responsive.
 Reverse preparation reuses that result only when the key equals the key of
 the detached preparation it would build (shared atlas, finest included LOD as
 source, every stage on, same copied settings) and every recorded fact still
