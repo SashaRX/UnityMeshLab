@@ -41,6 +41,34 @@ byte-identical. The stages are "Face projection", "Projection initial faces"
 and "Projection refined faces". "Parent footprint coverage" now sums worker
 time, so it can exceed the wall time of its pass.
 
+## Reverse envelope audit: clip only cross-family pairs — 2026-10-21
+
+After native placement, `ReverseUvNativeFamilyPacking.TryPackCore` scans the
+packed family envelopes with `UvAtlasDiagnostics.Measure` and collects every
+overlapping pair. Ancestors and their descendants share pixels in the packing
+proxy by design, so most overlapping pairs are within one family, and the
+decision then discarded them: only a cross-family conflict, an incomplete scan
+or an invalid face refuses the trial. On Kamaz this audit took 4.9 s of the
+exclusive Reverse solve (`TRANSFER_PERFORMANCE.md`).
+
+`Measure` gained `crossChartOnly`. The envelope's chart of each corner is now
+its face's family (material). A same-family pair is still charged to the
+comparison budget at the same place in the scan, but it is neither clipped nor
+counted. With the default budget (2,000,000) below `MaxConflicts` (4,194,304),
+an incomplete scan can only come from the budget, so completeness, the
+comparison count and every cross-family conflict match the whole scan: the
+refusal decision is identical. Only the refusal log changes, from all
+overlapping pairs to cross-family ones. `UvAtlasDiagnosticsTests` checks
+equal comparisons and completeness at every budget.
+
+The prepared cross-LOD footprint audit has the same shape, but its same-LOD
+pairs rarely pass the bounding-box test, so it is left unchanged.
+
+Measurement pending: `Tools~/run-transfer-performance.ps1 -Repetitions 3
+-Density 32` control (main) against this branch, with
+`compare-transfer-performance.py` confirming byte-identical exports; the gain
+is the "Native envelope audit" sample.
+
 ## Reverse preparation: reuse an unchanged Full Pipeline result — 2026-10-21
 
 Reverse with "Prepare with ordinary Transfer" ran the complete Full Pipeline
