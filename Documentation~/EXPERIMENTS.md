@@ -437,6 +437,15 @@ binary numeric values; sample counts match. Medians (s):
 The 1–5% differences stay within the run-to-run spread: exact, no regression,
 no resolved gain.
 
+Correction: "refusals are unchanged" did not hold for a chart with a
+non-finite UV. The old code reached the shared-point lookup only after the scan
+had refused such a chart (`invalidFaces > 0`). Looking the anchors up first
+asked the counts dictionary for a key with NaN, which never equals itself, and
+threw `KeyNotFoundException` instead of refusing.
+`UvPointJunctionRecoveryTests.RefusalIsAtomic("invalid")` failed from this
+commit on (local run on main, 2026-10-21). The lookup now uses `TryGetValue`:
+such a vertex is no anchor, and the scan refuses the chart as before.
+
 ## Separate overlapped source branches at a single UV point — 2026-10-20
 
 Some furniture charts join several edge-connected patches through only one
