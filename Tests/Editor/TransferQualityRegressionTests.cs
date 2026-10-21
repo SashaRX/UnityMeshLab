@@ -519,6 +519,42 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsNull(PlanarTransferRecovery.Project(target,indices,positions,missing,indices,positions,sourceUv));
         }
 
+        [Test]
+        public void RejectedMergedShellReplacesItsCornerCollapseOnlyWithACompleteFoldFreeCandidate()
+        {
+            // Two quads: the second collapses onto a line, as a merged 3D projection can.
+            var indices=new[] {0,1,2,0,2,3,4,5,6,4,6,7};
+            var positions=new[] {Vector3.zero,Vector3.right,new Vector3(1,1,0),Vector3.up,
+                new Vector3(2,0,0),new Vector3(3,0,0),new Vector3(3,1,0),new Vector3(2,1,0)};
+            var shell=new UvShell {faceIndices=new List<int> {0,1,2,3},vertexIndices=new HashSet<int> {0,1,2,3,4,5,6,7}};
+            Dictionary<int,Vector2> Candidate()=>new Dictionary<int,Vector2> {
+                [0]=new Vector2(.1f,.1f),[1]=new Vector2(.2f,.1f),[2]=new Vector2(.2f,.2f),[3]=new Vector2(.1f,.2f),
+                [4]=new Vector2(.3f,.1f),[5]=new Vector2(.4f,.1f),[6]=new Vector2(.4f,.1f),[7]=new Vector2(.3f,.1f)};
+            var candidate=Candidate();
+            Assert.AreEqual(2,GroupedShellTransfer.CountShellIssues(shell.faceIndices,indices,positions,candidate),
+                "The collapsed quad is the shell's only issue.");
+            Assert.IsTrue(GroupedShellTransfer.CanReplaceUnwrittenShell(shell,indices,positions,candidate),
+                "Two collapsed faces in place beat four collapsed at (0,0).");
+            Assert.IsTrue(GroupedShellTransfer.StillReplacesUnwrittenShell(shell,TransferCandidateQuality.Measure(shell,indices,positions,candidate)),
+                "The final check accepts the same layout.");
+            var collapsed=Candidate(); collapsed[2]=collapsed[1]; collapsed[3]=collapsed[0];
+            Assert.IsFalse(GroupedShellTransfer.CanReplaceUnwrittenShell(shell,indices,positions,collapsed),
+                "A candidate that collapses every face is no better than the corner.");
+            Assert.IsFalse(GroupedShellTransfer.StillReplacesUnwrittenShell(shell,TransferCandidateQuality.Measure(shell,indices,positions,collapsed)),
+                "A layout that later collapses every face is withdrawn.");
+            Assert.IsFalse(GroupedShellTransfer.CanReplaceUnwrittenShell(shell,indices,positions,null));
+            var partial=Candidate(); partial.Remove(7);
+            Assert.IsFalse(GroupedShellTransfer.CanReplaceUnwrittenShell(shell,indices,positions,partial),
+                "A missing vertex would stay at (0,0) and stretch its faces across the atlas.");
+            var nonFinite=Candidate(); nonFinite[3]=new Vector2(float.NaN,.2f);
+            Assert.IsFalse(GroupedShellTransfer.CanReplaceUnwrittenShell(shell,indices,positions,nonFinite));
+            var folded=Candidate(); folded[6]=new Vector2(.15f,.18f); folded[5]=new Vector2(.18f,.12f);
+            Assert.IsFalse(GroupedShellTransfer.CanReplaceUnwrittenShell(shell,indices,positions,folded),
+                "A candidate that folds onto itself is refused.");
+            Assert.IsFalse(GroupedShellTransfer.StillReplacesUnwrittenShell(shell,TransferCandidateQuality.Measure(shell,indices,positions,folded)),
+                "A layout that later folds onto itself is withdrawn.");
+        }
+
         [TestCase(0f,false)]
         [TestCase(.00000012f,false)]
         [TestCase(0f,true)]
