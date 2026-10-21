@@ -9,6 +9,15 @@ written, so all its vertices stay at (0,0): every face collapses onto the
 atlas corner and bakes from one corner texel. Only a warning recorded it, and
 final recovery, planar recovery and classification all skip `Rejected` shells.
 
+Correction (found while reviewing PR #310): the rejected shell keeps its
+"merged" method, so the AABB safety net still visits it. When the origin lies
+outside the source's allowance, every vertex is an outlier, and if the source
+has a UV0 BVH (more than 16 faces) the net re-projects the whole shell vertex
+by vertex, with no quality check, while the shell stays `Rejected`. So on main
+a rejected merged shell stays at (0,0) only when its source has 16 faces or
+fewer or its allowance contains the origin; otherwise this change replaces
+that unchecked re-projection.
+
 The shell's best merged candidate now replaces that layout when it is safe:
 it maps every shell vertex to a finite point (a partial map would stretch the
 remaining faces from (0,0) across the atlas), it has fewer issues than the
@@ -23,7 +32,9 @@ The fallback records the source its candidate was built from (the overlap
 fall-through may have changed it), so the AABB safety net and next-LOD hints
 use that source. At classification the same gate is applied to the final
 layout; a shell that no longer passes returns to (0,0) and `Rejected` with its
-earlier source, exactly as before this change. A written fallback does not
+earlier source. That is main's result when the source has no BVH or its
+allowance contains the origin; otherwise main would leave the safety net's
+re-projection there instead. A written fallback does not
 claim its source for overlap-group dedup and is not counted against force3D
 shells in the overlap report, so a withdrawn fallback leaves the other shells'
 donor choices and `shellsOverlapFixed` as they were.
