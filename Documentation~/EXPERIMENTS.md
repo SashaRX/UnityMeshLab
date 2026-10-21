@@ -23,7 +23,10 @@ The fallback records the source its candidate was built from (the overlap
 fall-through may have changed it), so the AABB safety net and next-LOD hints
 use that source. At classification the same gate is applied to the final
 layout; a shell that no longer passes returns to (0,0) and `Rejected` with its
-earlier source, exactly as before this change.
+earlier source, exactly as before this change. A written fallback does not
+claim its source for overlap-group dedup and is not counted against force3D
+shells in the overlap report, so a withdrawn fallback leaves the other shells'
+donor choices and `shellsOverlapFixed` as they were.
 
 An all-source candidate may reach into another source's UV2. The safety net
 re-projects such vertices only through the source's UV0 BVH, which a source of

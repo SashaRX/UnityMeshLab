@@ -3746,7 +3746,10 @@ namespace SashaRX.UnityMeshLab
 
                     // Claim source for overlap group dedup — prevents other
                     // targets from using the same source and creating UV2 overlap.
-                    if (chosenSrc >= 0 && srcShellOverlapMembers[chosenSrc] != null)
+                    // A rejected-merged fallback may still be withdrawn at
+                    // classification, so it does not steer later shells' donors.
+                    if (chosenSrc >= 0 && srcShellOverlapMembers[chosenSrc] != null
+                        && !rejectedFallbackShells.ContainsKey(tsi))
                         overlapClaimedSources.Add(chosenSrc);
                 }
             }
@@ -3852,7 +3855,9 @@ namespace SashaRX.UnityMeshLab
                     {
                         if (tsj == tsi) continue;
                         if (!shellHasUv2[tsj]) continue;
-                        if (tgtForce3DFallback[tsj]) continue;
+                        // Rejected-merged fallbacks may still be withdrawn; they are
+                        // left out like other fallback shells.
+                        if (tgtForce3DFallback[tsj] || rejectedFallbackShells.ContainsKey(tsj)) continue;
 
                         if (shellUv2Min[tsi].x < shellUv2Max[tsj].x &&
                             shellUv2Max[tsi].x > shellUv2Min[tsj].x &&
