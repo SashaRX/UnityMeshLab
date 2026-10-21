@@ -7,9 +7,9 @@ namespace SashaRX.UnityMeshLab
     /// The one place that reads and writes the package's naming conventions: the
     /// <c>Name_LOD{N}</c> LOD suffix (separator <c>_</c>, <c>-</c> or whitespace, case-insensitive),
     /// the collision suffixes (<c>_COL</c>, <c>_COL_Hull{N}</c>, <c>_COL_*</c>, <c>_Collider</c>,
-    /// <c>_Collision</c>), the pipeline suffixes the transfer tools append, and the group
-    /// key that pairs LOD and collision nodes of one asset. Every tool and library asks
-    /// here; none keeps a regex of its own.
+    /// <c>_Collision</c>, the last two optionally numbered), the pipeline suffixes the
+    /// transfer tools append, and the group key that pairs LOD and collision nodes of one
+    /// asset. Every tool and library asks here; none keeps a regex of its own.
     /// </summary>
     internal static class MeshNaming
     {
@@ -21,7 +21,7 @@ namespace SashaRX.UnityMeshLab
         // input); every name these patterns see matches in microseconds.
         static readonly TimeSpan MatchTimeout = TimeSpan.FromSeconds(1);
         static readonly Regex LodSuffix = new Regex(@"^(.*?)([_\-\s]+LOD(\d+)(?<instance>\.\d+)?)$", Ci, MatchTimeout);
-        static readonly Regex CollisionSuffix = new Regex(@"[_\-\s]+(?:COL(?:_\w+)?|Collider|Collision)(?<instance>\.\d+)?$", Ci, MatchTimeout);
+        static readonly Regex CollisionSuffix = new Regex(@"[_\-\s]+(?:COL(?:_\w+)?|(?:Collider|Collision)(?:[_\-\s]*\d+)?)(?<instance>\.\d+)?$", Ci, MatchTimeout);
         static readonly Regex LodOrCollisionSuffix = new Regex(@"[_\-\s]+(LOD\d+|COL\w*|Collider|Collision)(?:\.\d+)?$", Ci, MatchTimeout);
         static readonly Regex GroupSuffixes = new Regex(@"(?:[_\-\s]+(?:LOD\d+|COL(?:_Hull\d+)?|Collider|Collision))+(?<instance>\.\d+)?$", Ci, MatchTimeout);
         static readonly Regex PipelineSuffixes = new Regex(@"(_wc|_repack|_uvTransfer|_optimized|_LOD\d+)+$", RegexOptions.Compiled, MatchTimeout);
@@ -82,7 +82,8 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>
         /// Collision node or mesh: ends with <c>_COL</c>, <c>_COL_Hull{N}</c> or another
-        /// <c>_COL_*</c> form, <c>_Collider</c> or <c>_Collision</c> (case-insensitive). A
+        /// <c>_COL_*</c> form, <c>_Collider</c> or <c>_Collision</c>, either of the last two
+        /// optionally numbered (<c>_Collider_01</c>, <c>_Collision2</c>), case-insensitive. A
         /// word that merely starts with COL (<c>_COLOR</c>) is not one.
         /// </summary>
         public static bool IsCollision(string name) => !string.IsNullOrEmpty(name) && CollisionSuffix.IsMatch(name);
