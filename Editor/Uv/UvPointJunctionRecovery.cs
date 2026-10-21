@@ -34,12 +34,10 @@ namespace SashaRX.UnityMeshLab
             bool rotatable = false;
             for (int p = 0; p < patches.Count; ++p)
             {
-                anchors[p] = -1;
-                if (p == main) continue;
-                var shared = vertices[p].Where(v => counts[(positions[v], original[v])] > 1).Take(2).ToArray();
-                if (shared.Length != 1) continue;
-                anchors[p] = shared[0];
-                rotatable = true;
+                var shared = p == main ? Array.Empty<int>()
+                    : vertices[p].Where(v => counts[(positions[v], original[v])] > 1).Take(2).ToArray();
+                anchors[p] = shared.Length == 1 ? shared[0] : -1;
+                rotatable |= shared.Length == 1;
             }
             if (!rotatable)
             {
