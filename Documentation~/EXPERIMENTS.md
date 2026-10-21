@@ -42,9 +42,11 @@ Hypotheses, each with the measurement that settles it:
    collapsed faces or out-of-bounds UV2). Recovery then runs where it did not, which
    can trade one metric for another. A `better` source verdict does not open the
    gate by itself: the source may still keep a blocking defect. Settled by the traced
-   gate table: pairs whose gate goes from closed to open with more recovered shells
-   and a `tradeoff` or `worse` transfer point here; the retention table only shows
-   whether the source gain survives.
+   gate table: pairs whose gate goes from closed to open with a `tradeoff` or `worse`
+   transfer point here, and more clean-chart recoveries confirm it. The count misses
+   merged and overlap-group candidate selection, which the gate also enables, so an
+   unchanged count does not rule H2 out. The retention table only shows whether the
+   source gain survives.
 3. **Reached oversample (H3).** Some packs do not reach 8. Settled by the reached
    oversample distribution.
 4. **Metric noise (H4).** Many tradeoffs differ only in the area-weighted or worst
@@ -54,7 +56,7 @@ Hypotheses, each with the measurement that settles it:
 
 Tooling: `FurnitureCorpusTests` adds the `grouped-at-resolution` rows under
 `MESHLAB_CORPUS_OVERSAMPLE_ANALYSIS=1` and traces grouped transfer there
-(`sourceAtlasRecoveryAllowed`, `recoveredShells`); standard captures run untraced;
+(`sourceAtlasRecoveryAllowed`, `cleanChartRecoveries`); standard captures run untraced;
 `Tools~/FurnitureCorpus/oversample.py` writes the breakdown; `report.py` now
 compares each profile with the default row of the same method and shares its
 per-metric verdicts with the analysis.

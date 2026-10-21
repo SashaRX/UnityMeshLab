@@ -91,17 +91,19 @@ def retention(index, method, profile=PROFILE):
 
 
 def recovery_gate(index, method, profile=PROFILE):
-    """For each traced pair: the source-atlas recovery gate and the recovered shell count
-    from oversample 4 to 8, against the transfer verdict of `method`."""
+    """For each traced pair: the source-atlas recovery gate and the clean-chart recovery
+    count from oversample 4 to 8, against the transfer verdict of `method`. The gate also
+    lets merged and overlap-group candidate selection recover; that is not counted, so an
+    unchanged count does not rule out a gate effect when the gate itself changes."""
     table = collections.Counter()
     for pair in sorted({key[:3] for key in index}):
         base, row = index.get(pair + ("default", method)), index.get(pair + (profile, method))
         if base is None or row is None or not (base.get("traced") and row.get("traced")):
             continue
         gate = "->".join("open" if r["sourceAtlasRecoveryAllowed"] else "closed" for r in (base, row))
-        delta = row["recoveredShells"] - base["recoveredShells"]
+        delta = row["cleanChartRecoveries"] - base["cleanChartRecoveries"]
         shells = "more" if delta > 0 else "fewer" if delta < 0 else "same"
-        table[f"gate {gate}, recovered shells {shells} -> transfer {compare(row, base)}"] += 1
+        table[f"gate {gate}, clean-chart recoveries {shells} -> transfer {compare(row, base)}"] += 1
     return dict(sorted(table.items()))
 
 

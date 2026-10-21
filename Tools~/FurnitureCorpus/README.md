@@ -78,8 +78,10 @@ To separate the pack from the transfer side, record with
 then add a `grouped-at-resolution` row: the same source transferred against the
 requested resolution. Its `atlasSide` is that resolution. Grouped rows are also
 traced: `sourceAtlasRecoveryAllowed` is the source-atlas recovery gate and
-`recoveredShells` counts the target shells recovery ran on (among the first 10000,
-which the trace keeps); their times include the trace. A capture with these rows has eleven measurements per pair, and `report.py`
+`cleanChartRecoveries` counts the target shells clean-chart recovery ran on (among
+the first 10000, which the trace keeps). The gate also lets merged and overlap-group
+candidate selection recover; that path is not counted. Traced times include the
+trace. A capture with these rows has eleven measurements per pair, and `report.py`
 then counts it complete only when every pair has both control rows; compare it only
 with captures recorded the same way.
 
@@ -95,8 +97,8 @@ python Tools~/FurnitureCorpus/oversample.py D:/private-results/oversample.jsonl 
   the requested resolution, and the side change alone at oversample 4 and at 8;
 - per-metric better/worse/same counts and the most common tradeoff patterns;
 - a table of how each pair's packed-source verdict carries through each transfer;
-- a table of the recovery gate (closed/open at oversample 4 -> 8) and the recovered
-  shell count against each transfer verdict;
+- a table of the recovery gate (closed/open at oversample 4 -> 8) and the clean-chart
+  recovery count against each transfer verdict;
 - the oversample each pack reached (`atlasSide / resolution` per source mesh), which
   shows where the pack budget lowered the requested factor.
 

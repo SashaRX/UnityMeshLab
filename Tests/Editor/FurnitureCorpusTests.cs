@@ -22,9 +22,10 @@ namespace SashaRX.UnityMeshLab.Tests
             public double milliseconds, uvTriangleAreaSum;
             public int geometryDegenerateFaces, uvDegenerateFaces;
             // Traced grouped rows (oversample analysis only): the source-atlas recovery gate
-            // and the target shells recovery ran on.
+            // and the target shells clean-chart recovery ran on. The gate also lets merged and
+            // overlap-group candidate selection recover, which records no projection and is not counted.
             public bool traced, sourceAtlasRecoveryAllowed;
-            public int recoveredShells;
+            public int cleanChartRecoveries;
             public TransferUvQuality quality;
         }
 
@@ -177,9 +178,9 @@ namespace SashaRX.UnityMeshLab.Tests
                         row.rawOutOfBounds = outside; row.misses = misses; row.fallbackVertices = fallback;
                         if (trace != null)
                         {
-                            // Recovery records the legacy candidate first on every shell it runs on.
+                            // Clean-chart recovery records the legacy candidate first on every shell it runs on.
                             row.traced = true; row.sourceAtlasRecoveryAllowed = trace.sourceAtlasRecoveryAllowed;
-                            row.recoveredShells = trace.shells.Count(s => s.projections.Any(p => p.method == "legacy-selected"));
+                            row.cleanChartRecoveries = trace.shells.Count(s => s.projections.Any(p => p.method == "legacy-selected"));
                         }
                         row.milliseconds = elapsed; Write(writer, row);
                     }

@@ -66,11 +66,11 @@ class OversampleTests(unittest.TestCase):
 
     def test_recovery_gate_pairs_the_traced_gate_with_the_transfer_verdict(self):
         rows = self.capture()
-        rows[2] |= dict(traced=True, sourceAtlasRecoveryAllowed=False, recoveredShells=0)
-        rows[3] |= dict(traced=True, sourceAtlasRecoveryAllowed=True, recoveredShells=2)
+        rows[2] |= dict(traced=True, sourceAtlasRecoveryAllowed=False, cleanChartRecoveries=0)
+        rows[3] |= dict(traced=True, sourceAtlasRecoveryAllowed=True, cleanChartRecoveries=2)
         analysis = analyze(rows)
         self.assertEqual(analysis["recoveryGate"]["grouped"],
-                         {"gate closed->open, recovered shells more -> transfer tradeoff": 1})
+                         {"gate closed->open, clean-chart recoveries more -> transfer tradeoff": 1})
         self.assertEqual(analysis["recoveryGate"][AT_RESOLUTION], {}, "Untraced rows are left out.")
         self.assertIn("Source-atlas recovery gate and `grouped`", render(analysis))
 
