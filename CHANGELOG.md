@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- The UV atlas overlap scan behind every transfer and packing audit reads its 96-byte triangles by reference instead of copying both triangles into each candidate pair and every separating-axis and clipping call. Reports are unchanged.
 - Forward donor-seam preparation measures each layout once: the workflow's measure of the legacy UVs is reused by the seam passes and surface recovery, and the prepared mesh's measure is returned instead of being repeated. Surface recovery reuses the seam passes' clean inputs, donor, donor charts and legacy contact audit, projecting with its own options. Published meshes, references and refusals are unchanged.
 - Reverse UV face projection runs its faces on worker threads when the native query batch is not in use and a pass has at least 256 target faces. Each face writes only its own pixels and record, and each is charged from the pass's starting query count plus the charges other faces have already published; no further face starts once those exceed the comparison budget, and a pass that fails or exceeds the budget is undone and repeated in order, so transferred UVs, rejections and budget failures are unchanged.
 - Native Reverse family packing audits its packed envelopes only between different families: same-family pairs, which overlap by design, are still charged to the comparison budget but no longer clipped. Refusal decisions are unchanged; the refusal log reports cross-family overlaps.
