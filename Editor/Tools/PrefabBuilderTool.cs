@@ -485,7 +485,7 @@ namespace SashaRX.UnityMeshLab
                 if (rootMr != null)
                 {
                     var newMr = lod0Child.AddComponent<MeshRenderer>();
-                    newMr.sharedMaterials = rootMr.sharedMaterials;
+                    newMr.sharedMaterials = UvToolHub.OriginalPreviewMaterials(rootMr, forAssetWrite: true);
                     newMr.shadowCastingMode = rootMr.shadowCastingMode;
                     newMr.receiveShadows = rootMr.receiveShadows;
                     GameObjectUtility.SetStaticEditorFlags(lod0Child,

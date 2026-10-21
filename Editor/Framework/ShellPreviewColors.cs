@@ -95,6 +95,7 @@ namespace SashaRX.UnityMeshLab
                 return binding.colors;
             }
             binding.work.Enqueue(() => {
+                if (!mesh) throw new OperationCanceledException();
                 var positions = mesh.vertices;
                 var map = provenance != null && provenance.Length == positions.Length ? (int[])provenance.Clone() : null;
                 return token => Match(binding.source, shells, positions, matrix, map, token);
@@ -130,6 +131,7 @@ namespace SashaRX.UnityMeshLab
                 return source;
             }
             source.work.Enqueue(() => {
+                if (!mesh) throw new OperationCanceledException();
                 var readable = MeshAccess.Readable(mesh, out bool copy);
                 try {
                     var positions = readable.vertices; var uv = UvTopology.ReadUv(readable, channel); var triangles = readable.triangles;
