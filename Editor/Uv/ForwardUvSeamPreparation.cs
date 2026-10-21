@@ -66,26 +66,47 @@ namespace SashaRX.UnityMeshLab
             Vector2[] legacyUv,int[] legacySources,int resolution,bool useAsync,CancellationToken token=default,
             HashSet<int> protectedFaces=null,int attempt=0,TransferMatchTrace trace=null,float boundaryToleranceTexels=UvTransferTolerance.BoundaryTexels,
             Matrix4x4? targetLocalToWorld=null,TransferPerformanceProfile performance=null,bool shareSeamPasses=true,Action<ForwardUvReference> captureReference=null,
-            long recoveryComparisonBudget=20000000)
+            long recoveryComparisonBudget=20000000,TransferUvQuality legacyQuality=null,Action<TransferUvQuality> captureQuality=null)
         {
             var renderedFrame=targetLocalToWorld ?? Matrix4x4.identity;
             // Without sharing (the regression control) every pass prepares its own prefix.
             using var shared=shareSeamPasses?new ForwardSeamShared():null;
-            TransferUvQuality Quality(Mesh mesh,Vector2[] uv)
+            // Neither the target, its legacy UVs nor a prepared mesh changes once
+            // measured, so each layout is measured once. The caller may supply the
+            // legacy measure (same frame) and receive the returned mesh's.
+            var legacy=legacyQuality;
+            var measured=new Dictionary<Mesh,TransferUvQuality>();
+            TransferUvQuality Quality(Mesh mesh)
             {
-                using(performance?.Accumulated("Forward seam quality measures"))
-                    return TransferUvQuality.Measure(mesh,uv,Vector2.one,renderedFrame);
+                if(!measured.TryGetValue(mesh,out var quality))
+                {
+                    using(performance?.Accumulated("Forward seam quality measures"))
+                        quality=TransferUvQuality.Measure(mesh,mesh.uv2,Vector2.one,renderedFrame);
+                    measured.Add(mesh,quality);
+                }
+                return quality;
+            }
+            TransferUvQuality Legacy()
+            {
+                if(legacy==null)
+                    using(performance?.Accumulated("Forward seam quality measures"))
+                        legacy=TransferUvQuality.Measure(target,legacyUv,Vector2.one,renderedFrame);
+                return legacy;
             }
             ForwardUvReference selectedReference=null;
             (Mesh mesh,int[] sources) Finish((Mesh mesh,int[] sources) selected)
-            {captureReference?.Invoke(selectedReference);return selected;}
+            {
+                captureReference?.Invoke(selectedReference);
+                captureQuality?.Invoke(selected.mesh?Quality(selected.mesh):null);
+                return selected;
+            }
             var stable=await PrepareForwardSeamsCore(source,target,legacyUv,legacySources,resolution,useAsync,token,
                 protectedFaces,attempt,trace,false,false,boundaryToleranceTexels,renderedFrame,performance,shared,
                 captureReference==null?null:value=>selectedReference=value);
             bool Complete(TransferUvQuality quality) => quality.overlapScanComplete && quality.worstAnisotropy <= 4
                 && quality.overlapPairs == 0 && quality.degenerateFaces == 0 && quality.invalidFaces == 0
                 && quality.outOfBoundsVertices == 0;
-            if (stable.mesh && Complete(Quality(stable.mesh,stable.mesh.uv2)))
+            if (stable.mesh && Complete(Quality(stable.mesh)))
                 return Finish(stable);
             foreach(bool existingAtlasOnly in new[] {false,true})
             {
@@ -98,8 +119,8 @@ namespace SashaRX.UnityMeshLab
                         captureReference==null?null:value=>incrementalReference=value);
                     candidate=incremental.mesh;
                     if (!candidate) continue;
-                    var after=Quality(candidate,candidate.uv2);
-                    var before=Quality(stable.mesh?stable.mesh:target,stable.mesh?stable.mesh.uv2:legacyUv);
+                    var after=Quality(candidate);
+                    var before=stable.mesh?Quality(stable.mesh):Legacy();
                     if (after.overlapScanComplete && after.invalidFaces<=before.invalidFaces && after.degenerateFaces<=before.degenerateFaces
                         && after.outOfBoundsVertices<=before.outOfBoundsVertices && after.overlapPairArea<=before.overlapPairArea*1.001+1e-14
                         && UvTransferTolerance.MetricFits(after.worstAnisotropy,before.worstAnisotropy)
@@ -121,14 +142,15 @@ namespace SashaRX.UnityMeshLab
                 }
                 finally {if(candidate) UnityEngine.Object.DestroyImmediate(candidate);}
             }
-            var stableQuality = Quality(stable.mesh ? stable.mesh : target, stable.mesh ? stable.mesh.uv2 : legacyUv);
+            var stableQuality = stable.mesh ? Quality(stable.mesh) : Legacy();
             if (stableQuality.overlapPairs > 0 || stableQuality.degenerateFaces > 0) {
                 Mesh recovered = null;
                 try {
-                    var alternative = await RecoverForwardSurfaceAsync(source, target, legacyUv, legacySources, resolution,
-                        useAsync, renderedFrame, token, performance, recoveryComparisonBudget);
+                    var alternative = await RecoverForwardSurfaceCoreAsync(source, target, legacyUv, legacySources, resolution,
+                        useAsync, renderedFrame, token, performance, recoveryComparisonBudget, shared, legacy);
                     recovered = alternative.mesh;
                     if (recovered) {
+                        measured.Add(recovered, alternative.quality);
                         if (stable.mesh) UnityEngine.Object.DestroyImmediate(stable.mesh);
                         stable = (recovered, alternative.sources);
                         selectedReference = alternative.reference;
@@ -236,13 +258,23 @@ namespace SashaRX.UnityMeshLab
             // cancelled run caches nothing, so the next pass repeats it.
             internal void ProjectInitialShared(Options options,CancellationToken token)
             {
-                List<Chart> built;
-                using (options.performance?.Accumulated("Projection donor charts")) built=Charts(donor);
+                var initial=ProjectInitialCopy(options,token);
+                charts=initial.charts;queries=initial.queries;projected=initial.projected;
+            }
+
+            /// <summary>The initial projection with these options, on a copy of the
+            /// target; the shared projection is left as it is. Donor charts are built
+            /// once and only read.</summary>
+            internal (List<Chart> charts,long queries,Surface projected) ProjectInitialCopy(Options options,CancellationToken token)
+            {
+                var built=charts;
+                if(built==null)
+                    using (options.performance?.Accumulated("Projection donor charts")) built=Charts(donor);
                 // A copy, so a failed or cancelled run leaves the capture untouched.
                 var targets=new[] {CopySurface(pristineTarget)};
                 long count=0;
                 ReverseUvTransfer.ProjectInitial(donor,targets,built,options,ref count,token);
-                charts=built;queries=count;projected=targets[0];
+                return (built,count,targets[0]);
             }
 
             // Every array a pass may write in place is copied. Faces carry no

@@ -1,5 +1,42 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Forward donor-seam trial: measure each layout once — 2026-10-21
+
+A Forward target whose shell transfer leaves overlaps, collapsed faces or
+stretch above 4 runs the donor-seam trial (`PrepareForwardSeamsAsync`), and
+the same `TransferUvQuality.Measure` (per-face metric plus a whole-mesh
+2,000,000-comparison overlap scan) ran on identical input several times:
+
+- the legacy layout (target with the shell-transfer UVs): in the workflow, again
+  as the `before` of every incremental pass and of the final check when no
+  pass produced a mesh, and again at the start of surface recovery;
+- each prepared mesh: after its pass, again as the next pass's `before`, again
+  in the final check, and again in the workflow after it is returned.
+
+None of these inputs changes once measured (the target and legacy UVs are
+read-only here, and a prepared mesh is never edited after its pass), and the
+measure is deterministic, so each layout is now measured once per call. The
+workflow passes its legacy measure in and receives the returned mesh's.
+
+Surface recovery also built its own copy of everything the seam passes had
+already prepared: clean inputs, donor capture and charts, donor shells and the
+legacy contact audit (the same 2,000,000-comparison scan with conflicts). With
+shared passes (the default) it now reuses that preparation and projects with
+its own options on a copy of the target, leaving the shared projection as it
+is. Passes already share the donor and its charts because seam refinement only
+reads them. `shareSeamPasses: false` keeps the independent control.
+
+`SharedRecoveryAndReusedMeasuresMatchIndependentPreparation` compares the
+published mesh, sources and reference with the independent control, checks
+that the returned measure equals a fresh measure, and that recovery builds no
+second set of donor charts.
+
+Measurement pending: `Tools~/run-transfer-performance.ps1 -Repetitions 3
+-Density 32`, control = main before this change, with
+`compare-transfer-performance.py` confirming all exports are byte-identical.
+The stages are "Forward donor seam trial", "Forward seam quality measures" and
+"Forward seam contact audits".
+
 ## Reverse face projection on worker threads — 2026-10-21
 
 `ProjectFaces` projected every target face in order on one thread: the chart

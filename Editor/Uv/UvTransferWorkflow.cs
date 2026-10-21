@@ -2522,15 +2522,19 @@ namespace SashaRX.UnityMeshLab
                 using var seamTiming = ForwardPerformance?.Accumulated("Forward donor seam trial");
                 Mesh prepared=null;
                 ForwardUvReference selectedReference=null;
+                TransferUvQuality preparedQuality=null;
                 try
                 {
+                    // The preparation reuses this measure of the legacy layout and
+                    // returns its measure of the prepared mesh, in the same frame.
                     var projection=await ReverseUvTransfer.PrepareForwardSeamsAsync(srcMesh,tgtMesh,tr.uv2,tr.vertexToSourceShell,
                         Mathf.Max(16,(int)Math.Max(srcEntry.repackedAtlasWidth,srcEntry.repackedAtlasHeight)),useAsync,trace:pair?.trace,
-                        boundaryToleranceTexels:TransferBoundaryToleranceTexels,targetLocalToWorld:renderedFrame,performance:ForwardPerformance,captureReference:value=>selectedReference=value);
+                        boundaryToleranceTexels:TransferBoundaryToleranceTexels,targetLocalToWorld:renderedFrame,performance:ForwardPerformance,captureReference:value=>selectedReference=value,
+                        legacyQuality:beforeQuality,captureQuality:value=>preparedQuality=value);
                     prepared=projection.mesh;var projectedSources=projection.sources;
                     if (prepared)
                     {
-                        var quality=TransferUvQuality.Measure(prepared,prepared.uv2,Vector2.one,renderedFrame);
+                        var quality=preparedQuality??TransferUvQuality.Measure(prepared,prepared.uv2,Vector2.one,renderedFrame);
                         bool Improves(TransferUvQuality after,TransferUvQuality before)=>after.overlapScanComplete && after.invalidFaces<=before.invalidFaces
                             && after.degenerateFaces<=before.degenerateFaces && after.outOfBoundsVertices<=before.outOfBoundsVertices
                             // Preparation audits original face-pair identities.

@@ -12,19 +12,31 @@ namespace SashaRX.UnityMeshLab
         // Reuse the donor ambiguity, footprint, winding and affine checks with
         // stricter orientation. Healthy faces retain their metric bound. Only a
         // completely clean result may replace the invalid legacy atlas.
-        internal static async Task<(Mesh mesh, int[] sources, ForwardUvReference reference)> RecoverForwardSurfaceAsync(
+        /// <returns>The recovered mesh with its measured quality, or default.</returns>
+        internal static Task<(Mesh mesh, int[] sources, ForwardUvReference reference, TransferUvQuality quality)> RecoverForwardSurfaceAsync(
             Mesh source, Mesh target, Vector2[] legacyUv, int[] legacySources, int resolution,
             bool useAsync, Matrix4x4 renderedFrame, CancellationToken token = default,
             TransferPerformanceProfile performance = null, long comparisonBudget = 20000000)
+            => RecoverForwardSurfaceCoreAsync(source, target, legacyUv, legacySources, resolution, useAsync, renderedFrame, token,
+                performance, comparisonBudget, null, null);
+
+        // Seam preparation hands over the preparation its passes share (clean
+        // inputs, donor, donor charts, legacy contact audit) and its measure of
+        // the legacy layout. Recovery projects with its own options.
+        static async Task<(Mesh mesh, int[] sources, ForwardUvReference reference, TransferUvQuality quality)> RecoverForwardSurfaceCoreAsync(
+            Mesh source, Mesh target, Vector2[] legacyUv, int[] legacySources, int resolution,
+            bool useAsync, Matrix4x4 renderedFrame, CancellationToken token, TransferPerformanceProfile performance,
+            long comparisonBudget, ForwardSeamShared shared, TransferUvQuality legacyQuality)
         {
             token.ThrowIfCancellationRequested();
             var indices = target.triangles;
             var positions = target.vertices;
             if (legacyUv.Length != positions.Length || legacySources.Length != positions.Length) return default;
-            var before = TransferUvQuality.Measure(target, legacyUv, Vector2.one, renderedFrame);
+            var before = legacyQuality ?? TransferUvQuality.Measure(target, legacyUv, Vector2.one, renderedFrame);
             if (!before.overlapScanComplete || (before.overlapPairs == 0 && before.degenerateFaces == 0)) return default;
-            using var pass = new ForwardSeamShared();
-            pass.Prepare(source, target, resolution, renderedFrame, token);
+            using var owned = shared == null ? new ForwardSeamShared() : null;
+            var pass = shared ?? owned;
+            if (!pass.prepared) pass.Prepare(source, target, resolution, renderedFrame, token);
             if (pass.unusable) return default;
             var donorShells = pass.SourceFaceShells(source);
             var options = new Options {seedResolution = resolution, maxAtlasSize = resolution,
@@ -34,13 +46,10 @@ namespace SashaRX.UnityMeshLab
             Vector2[] uv = null;
             int[] cornerSources = null, faces = null;
             bool ready = await RunForwardCpuWork(cancellation => {
-                var audit = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {uv = legacyUv,
-                    indices = indices, charts = new int[positions.Length]}, cancellation,
-                    comparisonBudget: 2000000, collectConflicts: true);
-                if (!audit.complete) return false;
-                var conflicts = new HashSet<int>(audit.conflicts.SelectMany(p => new[] {p.a, p.b}));
-                pass.ProjectInitialShared(options, cancellation);
-                var projected = pass.CopyProjected();
+                var contacts = pass.LegacyContacts(legacyUv, indices, cancellation, performance);
+                if (contacts == null) return false;
+                var conflicts = new HashSet<int>(contacts.SelectMany(p => new[] {p.Item1, p.Item2}));
+                var projected = pass.ProjectInitialCopy(options, cancellation).projected;
                 faces = projected.sourceFaces.Select(f => pass.inputs.levels[1].inputs[0].sourceFaces[f]).ToArray();
                 // This recovery changes only UV seams, never the ordered triangles.
                 if (!faces.SequenceEqual(Enumerable.Range(0, indices.Length / 3))) return false;
@@ -79,7 +88,7 @@ namespace SashaRX.UnityMeshLab
                     faces, barycentrics, projectedFaces);
                 var output = candidate;
                 candidate = null;
-                return (output, sources.ToArray(), reference);
+                return (output, sources.ToArray(), reference, after);
             }
             finally {if (candidate) UnityEngine.Object.DestroyImmediate(candidate);}
         }
