@@ -12,6 +12,9 @@ import struct
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+# The three paired fixtures; the test's TransferDiagnostics cases are ignored without user settings.
+MODEL_CASE = re.compile(r'FrozenForwardReverseComparison\(.Assets/(JunctionFixtures|TransferBenchmarkInputs|KamazFixtures)/')
+
 
 def assert_same_values(actual, expected, float32=False, path=''):
     # Reports contain millions of ancestry fields. Compare leaves directly
@@ -71,7 +74,7 @@ def main():
         for root in directories:
             results = ET.parse(root.parent / 'tests.xml').getroot()
             model_cases = [case for case in results.iter('test-case')
-                           if 'FrozenForwardReverseComparison(' in case.attrib.get('fullname', '')]
+                           if MODEL_CASE.search(case.attrib.get('fullname', ''))]
             assert results.attrib['failed'] == '0' and len(model_cases) == 3
             assert all(case.attrib['result'] == 'Passed' for case in model_cases), root
             tests.append({'directory': str(root.parent), **{key: results.attrib[key]

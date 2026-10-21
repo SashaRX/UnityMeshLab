@@ -26,7 +26,10 @@ $perfProject=(Resolve-Path -LiteralPath $ProjectPath).Path
 if(Test-Path -LiteralPath (Join-Path $perfProject 'Temp/UnityLockfile')) {throw 'Use a closed, isolated test project.'}
 $perfRoot=[IO.Path]::GetFullPath($OutputRoot)
 New-Item -ItemType Directory -Path $perfRoot -Force | Out-Null
-$perfFilter="SashaRX.UnityMeshLab.Tests.PreviewLodSwitchTests.FrozenForwardReverseComparison.*$Density"
+# The three paired fixtures only: the TransferDiagnostics cases of the same test are ignored
+# without MESHLAB_TRANSFER_USER_SETTINGS and are not part of this comparison.
+$perfModelPattern="FrozenForwardReverseComparison\(.Assets/(JunctionFixtures|TransferBenchmarkInputs|KamazFixtures)/[^,]+,$Density\)"
+$perfFilter="SashaRX\.UnityMeshLab\.Tests\.PreviewLodSwitchTests\.$perfModelPattern"
 if($AdditionalTestFilter) {$perfFilter+=';'+$AdditionalTestFilter}
 $savedOutput=$env:MESHLAB_PAIRED_TRANSFER_OUTPUT
 $savedCache=$env:MESHLAB_DISABLE_FOOTPRINT_CACHE
@@ -92,10 +95,7 @@ try {
         $perfProcess.Refresh()
         if($perfProcess.ExitCode -ne 0) {throw "Unity failed with exit $($perfProcess.ExitCode). See $perfLog."}
         [xml]$perfResults=Get-Content -LiteralPath $perfXml -Raw
-        $perfCases=$perfResults.SelectNodes('//test-case')
-        if($AdditionalTestFilter) {
-            $perfCases=@($perfCases | Where-Object {$_.fullname -like '*FrozenForwardReverseComparison(*'})
-        }
+        $perfCases=@($perfResults.SelectNodes('//test-case') | Where-Object {$_.fullname -match $perfModelPattern})
         if($perfResults.'test-run'.failed -ne '0' -or $perfCases.Count -ne 3 -or @($perfCases | Where-Object {$_.result -ne 'Passed'}).Count -ne 0) {
             throw "All three model cases must execute and pass. See $perfXml."
         }
