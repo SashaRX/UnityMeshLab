@@ -2413,19 +2413,20 @@ namespace SashaRX.UnityMeshLab.Tests
             .Select(e=>(TransferMeshSnapshot.Capture(ctx.Assets.GetResultMesh(e)),e.reverseTransferJson,e.repackedAtlasWidth)).ToArray();
 
         /// <summary>
-        /// Waits for an asynchronous workflow run within a deadline. A run still going when the
-        /// test leaves it (a failed assertion or the deadline) is cancelled, so its operation
-        /// cannot carry into the next test.
+        /// Waits for an asynchronous workflow run within a deadline. A run past its deadline is
+        /// cancelled and drained before the test fails, so it cannot resume against the fixture
+        /// that teardown destroys or reach the next test's operation.
         /// </summary>
-        static IEnumerator AwaitRun(System.Threading.Tasks.Task task,double seconds=120)
+        static IEnumerator AwaitRun(System.Threading.Tasks.Task task,double seconds=120,double drainSeconds=30)
         {
             double deadline=EditorApplication.timeSinceStartup+seconds;
-            try
-            {
-                while(!task.IsCompleted && EditorApplication.timeSinceStartup<deadline) yield return null;
-                Assert.IsTrue(task.IsCompleted,$"The run did not finish within {seconds} s.");
-            }
-            finally {if(!task.IsCompleted) UvProgress.RequestCancel();}
+            while(!task.IsCompleted && EditorApplication.timeSinceStartup<deadline) yield return null;
+            if(task.IsCompleted) yield break;
+            UvProgress.RequestCancel();
+            deadline=EditorApplication.timeSinceStartup+drainSeconds;
+            while(!task.IsCompleted && EditorApplication.timeSinceStartup<deadline) yield return null;
+            Assert.Fail($"The run did not finish within {seconds} s"
+                +(task.IsCompleted?"; it ended after cancellation.":$" and still runs {drainSeconds} s after cancellation."));
         }
 
         /// <summary>
@@ -2455,8 +2456,9 @@ namespace SashaRX.UnityMeshLab.Tests
             Forward();
             int meshes=Resources.FindObjectsOfTypeAll<Mesh>().Length;
             var task=workflow.RunReverseTransfer(true);
-            Assert.IsFalse(task.IsCompleted,"The button's path must return to the editor while its work runs.");
+            bool yielded=!task.IsCompleted;
             yield return AwaitRun(task);
+            Assert.IsTrue(yielded,"The button's path must return to the editor while its work runs.");
             task.GetAwaiter().GetResult();
             Assert.IsFalse(UvProgress.IsActive,"A run must end the operation it began.");
             var actual=PublishedChain(ctx);
@@ -2498,17 +2500,18 @@ namespace SashaRX.UnityMeshLab.Tests
             ctx.HasTransfer=true;ctx.HasRepack=true;
             int meshes=Resources.FindObjectsOfTypeAll<Mesh>().Length;
             var task=hub.DiagnosticWorkflow.RunReverseTransfer(true);
-            bool ended;
+            bool yielded=!task.IsCompleted,active=UvProgress.IsActive,ended;
             try
             {
-                Assert.IsFalse(task.IsCompleted,"The button's path must return to the editor while its work runs.");
-                Assert.IsTrue(UvProgress.IsActive);
                 UvProgress.RequestCancel(); // what the Background Tasks cancel button does
                 yield return AwaitRun(task);
                 ended=!UvProgress.IsActive;
             }
-            // A failed assertion must not leave a cancel request for the next test's operation.
-            finally {while(UvProgress.IsActive) UvProgress.Cancel();}
+            // An operation the finished run left open must not reach the next test. A run still
+            // going keeps its cancel request: ending its operation would clear the request.
+            finally {if(task.IsCompleted) while(UvProgress.IsActive) UvProgress.Cancel();}
+            Assert.IsTrue(yielded,"The button's path must return to the editor while its work runs.");
+            Assert.IsTrue(active,"The run must begin its own operation.");
             var error=task.Exception?.GetBaseException();
             Assert.IsTrue(task.IsCanceled||task.IsFaulted,"A cancelled run must not complete.");
             TestContext.WriteLine($"Cancelled Reverse ended with {(task.IsCanceled?"cancellation":error?.GetType().Name)}: {error?.Message}");
