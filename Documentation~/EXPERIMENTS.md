@@ -1,5 +1,27 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Merged-shell safety net: small sources — 2026-10-21
+
+After Phase 3 writes the merged shells, a safety net re-projects every merged
+vertex that lies outside its source's UV2 bounds widened by 20% of their size:
+it looks up the nearest source face in UV0 and takes that face's UV2. The lookup
+went only through the source shell's UV0 BVH, which is built for shells of more
+than 16 faces (`kMinFacesForShellBvh`). For a smaller source the outlier stayed
+where it was, inside another chart's region of the atlas. Found while reviewing
+the rejected-merged fallback (PR #305), where the same gap applied.
+
+Without a BVH the safety net now scans the source's faces, with the BVH's rule:
+faces whose normal agrees with the target vertex are preferred, otherwise the
+nearest face of any orientation is used. Sources with a BVH take exactly the
+same path as before. `SafetyNetScanOfASmallSourceFindsTheFaceItsBvhWould`
+checks that the scan picks the BVH's face and barycentrics in the three normal
+cases.
+
+This changes outputs for merged shells matched to small sources, so it is gated
+by the corpus: the furniture corpus against main before this change, compared
+with `report.py --baseline … --require-no-regressions`; rows must be better or
+same. Also count the `Post-fix:` re-projection lines before and after.
+
 ## Oversample 8: why a better source does not survive transfer — analysis — 2026-10-21
 
 The furniture corpus baseline on main (`491340a`, 80 files, 255 LOD pairs)

@@ -3735,7 +3735,8 @@ namespace SashaRX.UnityMeshLab
             // Catch any vertex whose UV2 escaped the matched source's UV2 region.
             // This can happen through multiple code paths (overlap composite, standard
             // merged all-source fallback, 3D projection, etc.). Re-project outlier
-            // vertices using the source's UV0 BVH to bring them back into the correct region.
+            // vertices using the source's UV0 BVH, or a scan of its faces when it is
+            // too small for one, to bring them back into the correct region.
             {
                 int totalOutlierVerts = 0;
                 for (int tsi = 0; tsi < tgtShells.Count; tsi++)
@@ -3763,22 +3764,16 @@ namespace SashaRX.UnityMeshLab
                             uv.y >= allowMin.y && uv.y <= allowMax.y)
                             continue; // within bounds
 
-                        // Outlier: re-project from source UV0 BVH
-                        if (vi < tUv0.Length && shellUv0Bvh[src] != null)
+                        // Outlier: re-project from the source's UV0 faces
+                        if (vi < tUv0.Length)
                         {
                             Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
                                 ? tNormals[vi] : Vector3.up;
-                            TriangleBvh2D.HitResult2D hit;
-                            if (tNrm.sqrMagnitude > 0.5f)
-                                hit = shellUv0Bvh[src].FindNearestNormalFiltered(
-                                    tUv0[vi], tNrm, triNormal, 0.0f);
-                            else
-                                hit = shellUv0Bvh[src].FindNearest(tUv0[vi]);
-
-                            if (hit.faceIndex >= 0)
+                            int f = NearestSourceUv0Face(tUv0[vi], tNrm, shellUv0Bvh[src], srcShells[src].faceIndices,
+                                triNormal, triUv0A, triUv0B, triUv0C, out float hitU, out float hitV, out float hitW);
+                            if (f >= 0)
                             {
-                                int f = hit.faceIndex;
-                                result.uv2[vi] = triUv2A[f] * hit.u + triUv2B[f] * hit.v + triUv2C[f] * hit.w;
+                                result.uv2[vi] = triUv2A[f] * hitU + triUv2B[f] * hitV + triUv2C[f] * hitW;
                                 shellOutliers++;
                             }
                         }
@@ -4624,6 +4619,17 @@ namespace SashaRX.UnityMeshLab
             var hit = normal.sqrMagnitude > .5f ? bvh.FindNearestNormalFiltered(point, normal, faceNormals, 0) : bvh.FindNearest(point);
             u = hit.u; v = hit.v; w = hit.w;
             return hit.faceIndex;
+        }
+
+        /// <summary>The source face nearest a UV0 point: through the source's UV0 BVH, or by a
+        /// scan of its faces for a source too small for one. Like the BVH, the scan prefers
+        /// faces whose normal agrees and falls back to the nearest face of any orientation.</summary>
+        internal static int NearestSourceUv0Face(Vector2 point, Vector3 normal, TriangleBvh2D bvh, List<int> faces,
+            Vector3[] faceNormals, Vector2[] a, Vector2[] b, Vector2[] c, out float u, out float v, out float w)
+        {
+            if (bvh != null) return FindNearest2DSourceFaceBvh(point, normal, bvh, faceNormals, out u, out v, out w);
+            int face = FindNearest2DSourceFace(point, normal, faces, faceNormals, a, b, c, out u, out v, out w);
+            return face >= 0 ? face : FindNearest2DSourceFace(point, Vector3.zero, faces, faceNormals, a, b, c, out u, out v, out w);
         }
 
         static int FindNearest2DSourceFace(Vector2 point, Vector3 normal, List<int> sourceFaces,

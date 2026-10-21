@@ -640,6 +640,29 @@ namespace SashaRX.UnityMeshLab.Tests
         static Vector2[] FragmentUvs(float corner) => new[] { Vector2.zero, Vector2.right, Vector2.up,
             Vector2.one, new Vector2(corner, 1), new Vector2(1, corner) };
 
+        [TestCase(1f, 1f, 1)]   // both faces agree with the query: the near one
+        [TestCase(1f, -1f, 0)]  // only the far face agrees: it is preferred
+        [TestCase(-1f, -1f, 1)] // no face agrees: the nearest of any orientation
+        public void SafetyNetScanOfASmallSourceFindsTheFaceItsBvhWould(float farNormalZ, float nearNormalZ, int expected)
+        {
+            // A source too small for a UV0 BVH (16 faces or fewer) used to leave its outliers in place.
+            // Face 0 is 0.9 from the point, face 1 is 0.1 from it.
+            var a = new[] { Vector2.zero, new Vector2(2, 0) };
+            var b = new[] { Vector2.right, new Vector2(3, 0) };
+            var c = new[] { Vector2.up, new Vector2(2, 1) };
+            var normals = new[] { new Vector3(0, 0, farNormalZ), new Vector3(0, 0, nearNormalZ) };
+            var faces = new List<int> { 0, 1 };
+            var point = new Vector2(1.9f, .1f);
+            var query = Vector3.forward;
+            int scanned = GroupedShellTransfer.NearestSourceUv0Face(point, query, null, faces, normals, a, b, c,
+                out float u, out float v, out float w);
+            int indexed = GroupedShellTransfer.NearestSourceUv0Face(point, query, new TriangleBvh2D(a, b, c), faces, normals, a, b, c,
+                out float bu, out float bv, out float bw);
+            Assert.AreEqual(expected, scanned);
+            Assert.AreEqual(indexed, scanned, "The scan agrees with the BVH.");
+            Assert.AreEqual(bu, u, 1e-6f); Assert.AreEqual(bv, v, 1e-6f); Assert.AreEqual(bw, w, 1e-6f);
+        }
+
         [Test]
         public void DisjointUvFragmentsWithIntersectingBoundsKeepTheirSharedSource()
         {
