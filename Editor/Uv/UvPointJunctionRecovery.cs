@@ -27,6 +27,24 @@ namespace SashaRX.UnityMeshLab
             foreach (var patch in vertices)
                 foreach (var key in patch.Select(v => (positions[v], original[v])).Distinct())
                     counts[key] = counts.TryGetValue(key, out int count) ? count + 1 : 1;
+            // Only a branch held by exactly one shared point can rotate. Hard
+            // normal edges split many charts into edge-aliased patches; those
+            // never qualify, so skip their whole-chart contact scan.
+            var anchors = new int[patches.Count];
+            bool rotatable = false;
+            for (int p = 0; p < patches.Count; ++p)
+            {
+                var shared = p == main ? Array.Empty<int>()
+                    : vertices[p].Where(v => counts[(positions[v], original[v])] > 1).Take(2).ToArray();
+                anchors[p] = shared.Length == 1 ? shared[0] : -1;
+                rotatable |= shared.Length == 1;
+            }
+            if (!rotatable)
+            {
+                // The skipped scan would have observed cancellation.
+                token.ThrowIfCancellationRequested();
+                return null;
+            }
             var current = new Dictionary<int, Vector2>(original);
             var scan = Scan(shell, indices, current, token, ref comparisonBudget);
             if (!scan.complete || scan.pairs == 0 || scan.invalidFaces > 0 || scan.degenerateFaces > 0) return null;
@@ -36,14 +54,12 @@ namespace SashaRX.UnityMeshLab
             for (int p = 0; p < patches.Count; ++p)
             {
                 token.ThrowIfCancellationRequested();
-                if (p == main) continue;
-                var anchors = vertices[p].Where(v => counts[(positions[v], original[v])] > 1).ToArray();
-                if (anchors.Length != 1) continue;
+                if (anchors[p] < 0) continue;
                 var faces = new HashSet<int>(patches[p]);
                 bool? significant = SignificantContact(shell, indices, current, faces, scan, token, ref comparisonBudget);
                 if (!significant.HasValue) return null;
                 if (!significant.Value) continue;
-                int anchor = anchors[0];
+                int anchor = anchors[p];
                 var pivot = current[anchor];
                 Dictionary<int, Vector2> best = null;
                 var bestScan = scan;

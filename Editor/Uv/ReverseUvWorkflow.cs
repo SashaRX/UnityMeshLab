@@ -122,6 +122,7 @@ namespace SashaRX.UnityMeshLab
                         entry.reverseTransferJson = json[reportNode++];
                     }
                 ctx.HasRepack = ctx.HasTransfer = true;
+                lastForwardRun = null;
                 ctx.ClearAllCaches();
                 reverseSummary = $"Atlas {result.report.atlasSize}² · inherited {result.report.inheritedFaces} · new {result.report.newFaces}"
                     + $" · overlap {result.report.overlapFaces} · ambiguous {result.report.ambiguousFaces} · split source faces {result.report.splitSourceFaces} · removed zero-area {removed}";

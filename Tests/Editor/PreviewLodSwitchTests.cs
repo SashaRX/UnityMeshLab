@@ -664,11 +664,13 @@ namespace SashaRX.UnityMeshLab.Tests
         GameObject previousSelection;
         string previousHubPreferences;
         bool hadHubPreferences;
+        int previousParallelProjection;
 
         [SetUp]
         public void RememberSelection()
         {
             previousSelection = UnityEditor.Selection.activeGameObject;
+            previousParallelProjection = ReverseUvTransfer.ParallelProjectionMinimumFaces;
             string key = MeshLabWindowPreferences.Key("Hub");
             hadHubPreferences = UnityEditor.EditorPrefs.HasKey(key);
             previousHubPreferences = UnityEditor.EditorPrefs.GetString(key, "");
@@ -689,6 +691,7 @@ namespace SashaRX.UnityMeshLab.Tests
             string key = MeshLabWindowPreferences.Key("Hub");
             if (hadHubPreferences) UnityEditor.EditorPrefs.SetString(key, previousHubPreferences);
             else UnityEditor.EditorPrefs.DeleteKey(key);
+            ReverseUvTransfer.ParallelProjectionMinimumFaces = previousParallelProjection;
         }
 
         Mesh Quad(string name, bool withUv1)
@@ -1623,6 +1626,46 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsNotNull(source.repackedMesh); Assert.IsNotNull(target.transferredMesh);
         }
 
+        /// <summary>Repeated symmetry splits reuse the executed attempt and publish the same source atlas.</summary>
+        [Test]
+        public void AutoTuneReusesAttemptsWhoseSymmetrySplitRepeats()
+        {
+            // Transfer is off, so no attempt is perfect and all three separations
+            // run; two-triangle quads never split, so every attempt's input repeats.
+            var repeated = RunAutoTuneWithoutTransfer(false, out long repeatedRepacks, out var repeatedStages, out bool repeatedHasRepack);
+            var reused = RunAutoTuneWithoutTransfer(true, out long reusedRepacks, out var reusedStages, out bool reusedHasRepack);
+            Assert.AreEqual(3, repeatedRepacks);
+            Assert.AreEqual(1, reusedRepacks, "Identical attempts must not repack again.");
+            CollectionAssert.AreEqual(repeated, reused, "Reuse must publish the identical source atlas.");
+            Assert.AreEqual(repeatedHasRepack, reusedHasRepack);
+            CollectionAssert.AreEqual(repeatedStages, reusedStages);
+        }
+
+        /// <summary>Runs the auto-tune pipeline on a fresh quad LOD pair; returns the published source atlas bytes.</summary>
+        byte[] RunAutoTuneWithoutTransfer(bool reuse, out long repacks, out string[] stages, out bool hasRepack)
+        {
+            if (hub != null) Object.DestroyImmediate(hub);
+            var ctx = Open(Group(true, out var sourceRenderer, out _));
+            ctx.AtlasResolution = 64; ctx.InternalOversample = 1; ctx.RepackResolutionMode = ResolutionMode.Manual;
+            var workflow = hub.DiagnosticWorkflow;
+            foreach (string stage in new[] { "stageRunAnalyzeUv0", "stageRunWeldUv0", "stageRunTransfer" })
+                typeof(UvTransferWorkflow).GetField(stage, Private).SetValue(workflow, false);
+            workflow.reuseIdenticalAutoTuneAttempts = reuse;
+            var profile = new TransferPerformanceProfile();
+            workflow.ForwardPerformance = profile;
+            try
+            {
+                var completed = ((System.Threading.Tasks.Task<bool>)CallWorkflow("ExecFullPipelineCoreImpl", false)).GetAwaiter().GetResult();
+                Assert.IsTrue(completed);
+            }
+            finally { workflow.ForwardPerformance = null; }
+            repacks = profile.samples.Single(s => s.stage == "Forward repack").count;
+            stages = ((System.Array)typeof(UvTransferWorkflow).GetField("stageOutcome", Private).GetValue(workflow))
+                .Cast<object>().Select(s => s.ToString()).ToArray();
+            hasRepack = ctx.HasRepack;
+            return TransferMeshSnapshot.Capture(ctx.MeshEntries.Find(e => e.renderer == sourceRenderer).repackedMesh);
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void FullPipelineCannotTransferOrCompleteAfterFailedSourceRepack(bool partialSuccess)
@@ -2060,6 +2103,11 @@ namespace SashaRX.UnityMeshLab.Tests
             if (float.TryParse(System.Environment.GetEnvironmentVariable("MESHLAB_TRANSFER_BOUNDARY_TEXELS"),
                 System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var configured)) tolerance = configured;
             hub.DiagnosticWorkflow.TransferBoundaryToleranceTexels = tolerance;
+            // The control repeats the detached preparation instead of reusing the forward result.
+            hub.DiagnosticWorkflow.reuseForwardRunForReverse = System.Environment.GetEnvironmentVariable("MESHLAB_DISABLE_FORWARD_REUSE") != "1";
+            // The control projects every face pass in order, in Forward and Reverse alike.
+            if (System.Environment.GetEnvironmentVariable("MESHLAB_DISABLE_PARALLEL_PROJECTION") == "1")
+                ReverseUvTransfer.ParallelProjectionMinimumFaces = int.MaxValue;
             hub.DiagnosticWorkflow.PrepareTransferInputs();
             var entries = ctx.MeshEntries.Where(e => e.include).ToArray();
             var originals = entries.Select(e => PairedSnapshot(e.fbxMesh)).ToArray();
@@ -2299,6 +2347,38 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.AreEqual(entry.fbxMesh.triangles.Length,output.triangles.Length);
                 Assert.AreEqual(1,UvShellExtractor.Extract(output.uv2,output.triangles).Count);
             }
+        }
+
+        /// <summary>Reverse preparation reuses an unchanged Full Pipeline result and repeats it after any change.</summary>
+        [Test]
+        public void ReversePreparationReusesOnlyAnUnchangedFullPipelineResult()
+        {
+            var ctx=Open(Group(true,out _,out _));
+            ctx.AtlasResolution=128;ctx.RepackResolutionMode=ResolutionMode.Manual;ctx.RepackPerMesh=false;
+            foreach(var entry in ctx.MeshEntries)
+                entry.originalMesh.vertices=new[] {Vector3.zero,Vector3.right,new Vector3(1,1,0),Vector3.up};
+            var workflow=hub.DiagnosticWorkflow;
+            ((System.Threading.Tasks.Task)CallWorkflow("ExecFullPipelineImpl","reuse-forward",false)).GetAwaiter().GetResult();
+            byte[][] Prepare(bool reuse,out bool repeated)
+            {
+                workflow.reuseForwardRunForReverse=reuse;
+                using var inputs=workflow.PrepareForwardReverseInputs(true,false,default).GetAwaiter().GetResult();
+                repeated=inputs.workflow!=null;
+                return inputs.levels.SelectMany(l=>l.inputs).Select(i=>TransferMeshSnapshot.Capture(i.mesh)).ToArray();
+            }
+            var detached=Prepare(false,out bool repeated);
+            Assert.IsTrue(repeated);
+            CollectionAssert.AreEqual(detached,Prepare(true,out repeated),"Reuse must hand Reverse the detached preparation's meshes.");
+            Assert.IsFalse(repeated,"An unchanged Full Pipeline result must not be prepared again.");
+
+            ctx.ShellPaddingPx+=1;
+            Prepare(true,out repeated); Assert.IsTrue(repeated,"Changed settings must repeat the preparation.");
+            ctx.ShellPaddingPx-=1;
+            Prepare(true,out repeated); Assert.IsFalse(repeated,"Restored settings match the recorded run again.");
+
+            var target=ctx.MeshEntries.First(e=>e.transferredMesh);
+            var uv=target.transferredMesh.uv2; uv[0]+=Vector2.one*1e-3f; target.transferredMesh.uv2=uv;
+            Prepare(true,out repeated); Assert.IsTrue(repeated,"A result edited in place must not be reused.");
         }
 
         [Test] public void FailedReverseTransferKeepsThePreviousChainAndProvenance()

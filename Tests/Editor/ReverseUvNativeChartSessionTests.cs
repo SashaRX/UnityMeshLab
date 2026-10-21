@@ -15,7 +15,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 addUvMesh=(uv,v,indices,i,materials,f)=>0,computeCharts=()=>++computes};
             using var binding=XatlasNative.UseForTests(api);
             using var session=new ReverseUvNativeChartSession();
-            Assert.IsTrue(session.TryAcquire(default));
+            session.Acquire(default);
             var a=new[] {Vector2.zero,Vector2.right,Vector2.up};
             var b=new[] {Vector2.one,Vector2.right*2,Vector2.up*2};
             var first=session.Input(new[] {a,b},default);
@@ -38,7 +38,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var uv=new float[] {0,0,1,0,0,1};var triangles=new uint[] {0,1,2};var materials=new uint[] {0};
             try
             {
-                Assert.IsTrue(session.TryAcquire(default));
+                session.Acquire(default);
                 Assert.IsFalse(XatlasRepack.TryAcquireNativeSession(),"Resident charts must own the global atlas lease.");
                 Assert.AreEqual(0,session.Prepare(uv,triangles,materials,default));
                 Assert.AreEqual(0,session.Prepare((float[])uv.Clone(),(uint[])triangles.Clone(),(uint[])materials.Clone(),default));
@@ -56,7 +56,7 @@ namespace SashaRX.UnityMeshLab.Tests
             finally {session.Dispose();session.Dispose();}
             Assert.AreEqual(creates,destroys);
             Assert.IsTrue(XatlasRepack.TryAcquireNativeSession());XatlasRepack.ReleaseNativeSession();
-            Assert.Throws<ObjectDisposedException>(()=>session.TryAcquire(default));
+            Assert.Throws<ObjectDisposedException>(()=>session.Acquire(default));
         }
 
         [TestCase(false)] [TestCase(true)]
@@ -69,7 +69,7 @@ namespace SashaRX.UnityMeshLab.Tests
             using var binding=XatlasNative.UseForTests(api);
             using(var session=new ReverseUvNativeChartSession())
             {
-                Assert.IsTrue(session.TryAcquire(default));
+                session.Acquire(default);
                 for(int i=0;i<2;++i)
                 {
                     int Prepare()=>session.Prepare(new float[] {0,0,1,0,0,1},new uint[] {0,1,2},new uint[] {0},default);
@@ -81,16 +81,100 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(XatlasRepack.TryAcquireNativeSession());XatlasRepack.ReleaseNativeSession();
         }
 
+        /// <summary>The editor thread reports a busy session instead of blocking, and never releases another owner's lease.</summary>
         [Test]
         public void BusySessionDoesNotReleaseAnotherOwnersLease()
         {
             Assert.IsTrue(XatlasRepack.TryAcquireNativeSession());
             try
             {
-                using(var session=new ReverseUvNativeChartSession()) Assert.IsFalse(session.TryAcquire(default));
+                using(var session=new ReverseUvNativeChartSession())
+                    Assert.Throws<InvalidOperationException>(()=>session.Acquire(default));
                 Assert.IsFalse(XatlasRepack.TryAcquireNativeSession());
             }
             finally {XatlasRepack.ReleaseNativeSession();}
+        }
+
+        /// <summary>
+        /// Signals when a worker logs that it waits for a busy session, so a test proves
+        /// that the wait path ran rather than a late worker finding the session free.
+        /// </summary>
+        sealed class BusyWaitWatch : IDisposable
+        {
+            internal readonly ManualResetEventSlim waiting=new ManualResetEventSlim();
+            readonly UvtLog.Level level=UvtLog.Current;
+            readonly UvtLog.Category categories=UvtLog.EnabledCategories;
+
+            internal BusyWaitWatch()
+            {
+                UvtLog.Current=UvtLog.Level.Info; UvtLog.SetCategoryEnabled(UvtLog.Category.Repack,true);
+                Application.logMessageReceivedThreaded+=OnLog;
+            }
+
+            void OnLog(string message,string stack,LogType type)
+            {
+                if(message.Contains("is waiting for the active xatlas session")) waiting.Set();
+            }
+
+            public void Dispose()
+            {
+                Application.logMessageReceivedThreaded-=OnLog;
+                UvtLog.Current=level; UvtLog.EnabledCategories=categories;
+                waiting.Dispose();
+            }
+        }
+
+        /// <summary>A worker waits for the current owner instead of refusing its final pack.</summary>
+        [Test]
+        public void WorkerWaitsForABusySessionUntilItsOwnerReleases()
+        {
+            using var watch=new BusyWaitWatch();
+            Assert.IsTrue(XatlasRepack.TryAcquireNativeSession());
+            System.Threading.Tasks.Task worker;
+            try
+            {
+                worker=System.Threading.Tasks.Task.Run(()=>{using var session=new ReverseUvNativeChartSession();session.Acquire(default);});
+                Assert.IsTrue(watch.waiting.Wait(10000),"The worker must reach the busy-session wait.");
+                Assert.IsFalse(worker.Wait(200),"The worker must not acquire a lease that is still owned.");
+            }
+            finally {XatlasRepack.ReleaseNativeSession();}
+            Assert.IsTrue(worker.Wait(10000),"The worker acquires the session after its owner releases it.");
+            Assert.IsTrue(XatlasRepack.TryAcquireNativeSession(),"Disposing the worker's session releases its lease.");
+            XatlasRepack.ReleaseNativeSession();
+        }
+
+        /// <summary>Cancelling a waiting worker leaves the owner's lease intact.</summary>
+        [Test]
+        public void WaitingWorkerCanBeCancelled()
+        {
+            using var watch=new BusyWaitWatch();
+            Assert.IsTrue(XatlasRepack.TryAcquireNativeSession());
+            try
+            {
+                using var cancel=new CancellationTokenSource();
+                var worker=System.Threading.Tasks.Task.Run(()=>XatlasRepack.AcquireNativeSessionForRequiredWork("test",cancel.Token));
+                Assert.IsTrue(watch.waiting.Wait(10000),"Cancellation must interrupt the wait, not precede it.");
+                Assert.IsFalse(worker.Wait(200));
+                cancel.Cancel();
+                var error=Assert.Throws<AggregateException>(()=>worker.Wait(10000));
+                Assert.IsInstanceOf<OperationCanceledException>(error.InnerException);
+                Assert.IsFalse(XatlasRepack.TryAcquireNativeSession(),"The owner still holds its lease.");
+            }
+            finally {XatlasRepack.ReleaseNativeSession();}
+        }
+
+        /// <summary>A thread that already owns the lease is refused rather than waiting on itself forever.</summary>
+        [Test]
+        public void OwnerThreadIsRefusedInsteadOfWaitingForItself()
+        {
+            var worker=System.Threading.Tasks.Task.Run(()=>
+            {
+                Assert.IsTrue(XatlasRepack.TryAcquireNativeSession());
+                try {Assert.Throws<InvalidOperationException>(()=>XatlasRepack.AcquireNativeSessionForRequiredWork("test",default));}
+                finally {XatlasRepack.ReleaseNativeSession();}
+            });
+            Assert.IsTrue(worker.Wait(10000));
+            Assert.IsTrue(XatlasRepack.TryAcquireNativeSession());XatlasRepack.ReleaseNativeSession();
         }
     }
 }

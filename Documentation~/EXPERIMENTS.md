@@ -1,5 +1,302 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Atlas overlap scan: triangles by reference — 2026-10-21
+
+`UvAtlasDiagnostics.Measure` is the overlap scan behind every transfer quality
+measure, contact audit, envelope audit and packing validation. Its `Triangle`
+is a 96-byte struct (face, chart, three double points, bounds, area) held in a
+`List<Triangle>`. In the pair loop each charged pair copied `triangles[j]`, and
+the predicates took both triangles by value: `Separated` copied them once, each
+of its six `SeparatedBy` calls again, and each `Project` once more, so a
+candidate pair copied about 2.5 KB before any arithmetic; `IntersectionArea`,
+`Clip` and `Cross` also copied their points.
+
+The triangles now live in an array read through `ref readonly` locals, and the
+predicates take `in` parameters. The arithmetic and its order are unchanged, so
+reports are identical bit for bit.
+
+A standalone .NET 8 harness (Unity types shimmed) compared the previous and
+the new `Measure` on 72 configurations: 60² and 150² cell grids at jitter 0,
+0.6 and 2.5 cells (from a clean packed grid to heavy overlap), two seeds,
+budgets unbounded / 2,000,000 / 5,000, with and without `crossChartOnly`. Every
+report field matched, including the bits of `pairAreaSum`, the samples and the
+sorted conflicts. Scan time (two timed repetitions each, grid construction
+included): 3,698 → 2,827 ms (−24 %). Unity's Mono JIT handles large struct
+copies no better than RyuJIT, so the editor gain is expected to be at least
+as large.
+
+Measurement pending: `Tools~/run-transfer-performance.ps1 -Repetitions 3
+-Density 32`, control = main before this change, with
+`compare-transfer-performance.py` confirming all exports are byte-identical.
+The stages that run the scan include "Forward quality measure", "Forward seam
+quality measures", "Forward seam contact audits" and "Native envelope audit".
+
+## Forward donor-seam trial: measure each layout once — 2026-10-21
+
+A Forward target whose shell transfer leaves overlaps, collapsed faces or
+stretch above 4 runs the donor-seam trial (`PrepareForwardSeamsAsync`), and
+the same `TransferUvQuality.Measure` (per-face metric plus a whole-mesh
+2,000,000-comparison overlap scan) ran on identical input several times:
+
+- the legacy layout (target with the shell-transfer UVs): in the workflow, again
+  as the `before` of every incremental pass and of the final check when no
+  pass produced a mesh, and again at the start of surface recovery;
+- each prepared mesh: after its pass, again as the next pass's `before`, again
+  in the final check, and again in the workflow after it is returned.
+
+None of these inputs changes once measured (the target and legacy UVs are
+read-only here, and a prepared mesh is never edited after its pass), and the
+measure is deterministic, so each layout is now measured once per call. The
+workflow passes its legacy measure in and receives the returned mesh's.
+
+Surface recovery also built its own copy of everything the seam passes had
+already prepared: clean inputs, donor capture and charts, donor shells and the
+legacy contact audit (the same 2,000,000-comparison scan with conflicts). With
+shared passes (the default) it now reuses that preparation and projects with
+its own options on a copy of the target, leaving the shared projection as it
+is. Passes already share the donor and its charts because seam refinement only
+reads them. `shareSeamPasses: false` keeps the independent control.
+
+`SharedRecoveryAndReusedMeasuresMatchIndependentPreparation` compares the
+published mesh, sources and reference with the independent control, checks
+that the returned measure equals a fresh measure, and that recovery builds no
+second set of donor charts.
+
+Measurement pending: `Tools~/run-transfer-performance.ps1 -Repetitions 3
+-Density 32`, control = main before this change, with
+`compare-transfer-performance.py` confirming all exports are byte-identical.
+The stages are "Forward donor seam trial", "Forward seam quality measures" and
+"Forward seam contact audits".
+
+## Reverse face projection on worker threads — 2026-10-21
+
+`ProjectFaces` projected every target face in order on one thread: the chart
+search, three corner snaps, four interior probes and the parent-footprint
+coverage per face, for every LOD pass of Forward seam preparation and Reverse
+(initial and refined faces, frozen shells, prepared chains). A face reads only
+its own corners, the donor charts and their indexes, and writes only its own
+three pixels and its record, so faces are independent. The only shared state
+was the comparison budget counter, the chart-bounds candidate list and the
+optional native (Embree) batch, which keeps per-surface state between faces.
+
+Passes now run on worker threads when the native batch cannot be active
+(query backend Legacy/Managed, or no query library) and the pass has at least
+`ParallelProjectionMinimumFaces` (256) target faces. Each worker owns its
+candidate buffer; each face writes a copy of its record, published in face
+order afterwards. The budget stays exact: every face is charged from the
+pass's starting count plus the charges other faces have already published.
+That sum, plus the face's own running count, never exceeds the ordered pass's
+total, so a face that exceeds the budget here means the ordered pass exceeds
+it too, and a pass whose total is within the budget passes every check of the
+ordered pass (each check compares a running count that is at most the total).
+Once the published charges exceed the budget no further face starts, so an
+over-budget input still stops after about one budget of work (plus the faces
+already in flight) instead of projecting every face first. When any face
+fails or the total exceeds the budget, the pixels are restored and the pass is
+repeated in order, which reproduces the same result, exception and message. Cancellation still surfaces as
+`OperationCanceledException`.
+
+`ParallelFaceProjectionMatchesTheOrderedPassIncludingBudgetFailures` compares
+pixels and every record field of both paths on a curved four-chart donor with
+a hole, at budgets that pass exactly, fail by one query, fail halfway and fail
+on the first face, and checks that an over-budget parallel pass leaves the
+targets untouched.
+
+Measurement pending: `Tools~/run-transfer-performance.ps1 -Repetitions 3
+-Density 32` with `-DisableParallelProjection` (control) against the default
+run, with `compare-transfer-performance.py` confirming all exports are
+byte-identical. The stages are "Face projection", "Projection initial faces"
+and "Projection refined faces". "Parent footprint coverage" now sums worker
+time, so it can exceed the wall time of its pass.
+
+## Reverse envelope audit: clip only cross-family pairs — 2026-10-21
+
+After native placement, `ReverseUvNativeFamilyPacking.TryPackCore` scans the
+packed family envelopes with `UvAtlasDiagnostics.Measure` and collects every
+overlapping pair. Ancestors and their descendants share pixels in the packing
+proxy by design, so most overlapping pairs are within one family, and the
+decision then discarded them: only a cross-family conflict, an incomplete scan
+or an invalid face refuses the trial. On Kamaz this audit took 4.9 s of the
+exclusive Reverse solve (`TRANSFER_PERFORMANCE.md`).
+
+`Measure` gained `crossChartOnly`. The envelope's chart of each corner is now
+its face's family (material). A same-family pair is still charged to the
+comparison budget at the same place in the scan, but it is neither clipped nor
+counted. With the default budget (2,000,000) below `MaxConflicts` (4,194,304),
+an incomplete scan can only come from the budget, so completeness, the
+comparison count and every cross-family conflict match the whole scan: the
+refusal decision is identical. Only the refusal log changes, from all
+overlapping pairs to cross-family ones. `UvAtlasDiagnosticsTests` checks
+equal comparisons and completeness at every budget.
+
+The prepared cross-LOD footprint audit has the same shape, but its same-LOD
+pairs rarely pass the bounding-box test, so it is left unchanged.
+
+Measurement pending: `Tools~/run-transfer-performance.ps1 -Repetitions 3
+-Density 32` control (main) against this branch, with
+`compare-transfer-performance.py` confirming byte-identical exports; the gain
+is the "Native envelope audit" sample.
+
+## Reverse preparation: reuse an unchanged Full Pipeline result — 2026-10-21
+
+Reverse with "Prepare with ordinary Transfer" ran the complete Full Pipeline
+again on detached copies of the imported meshes, even right after the user ran
+the same Full Pipeline on the scene entries. On Kamaz this detached preparation
+is 16.2 s of the 37.3 s Reverse workflow (`TRANSFER_PERFORMANCE.md`), and the
+paired benchmark already asserts that it reproduces the ordinary result byte
+for byte.
+
+A completed Full Pipeline now records, per included entry, the imported mesh
+it consumed and the result it published, each by reference and by a raw
+content fingerprint (`MeshAccess.Fingerprint`: vertex layout and streams,
+indices, bounds, and skinning/blend shapes when present), plus its renderer
+frame, source texture metric, forward UV reference and atlas size, and one
+settings key over every context and workflow setting the pipeline reads.
+The settings and inputs are taken before the run and must be unchanged after
+it, because the asynchronous stages read materials and transforms while the
+editor stays responsive.
+Reverse preparation reuses that result only when the key equals the key of
+the detached preparation it would build (shared atlas, finest included LOD as
+source, every stage on, same copied settings) and every recorded fact still
+holds. Otherwise it repeats the preparation exactly as before and logs why.
+Scene edits are never reused, because the detached copy would take the
+import's name. Reverse output is unchanged by construction: it receives copies
+of the same meshes the detached run would produce.
+
+`ForwardRunReuseTests` fail when a new context setting is neither keyed and
+copied into the detached preparation nor listed as view state. The workflow
+test checks reuse, a settings change and an in-place result edit.
+
+Measurement pending: `Tools~/run-transfer-performance.ps1 -Repetitions 3
+-Density 32` with `-DisableForwardReuse` (control) against the default run,
+with `compare-transfer-performance.py` confirming all exports are
+byte-identical. The cost of fingerprinting is the "Forward run fingerprint"
+sample of the Forward pipeline.
+
+## Auto-tune: choose attempts by measured UV defects — 2026-10-21
+
+Full Pipeline auto-tune tries up to three binary-split separations and keeps
+the best attempt. It scored an attempt as `shellsRejected + shellsOverlapFixed`,
+with vertex coverage as the tie-break. `shellsOverlapFixed` only counts force3D
+shells whose UV2 bounding boxes overlap. Collapsed UV faces, overlap pairs and
+overlap area did not count at all, and seam-prepared targets always report zero
+for both counters. An attempt with collapsed faces could therefore beat a clean
+one that had a single force3D box overlap. The search also stopped as
+"perfect" while targets still carried collapsed faces or overlaps.
+
+Every target's final `TransferUvQuality` is already measured in the rendered
+frame to decide the donor-seam trial. When the trial is accepted, the prepared
+mesh is measured as well. Auto-tune now records that final quality per target,
+re-measured after the publication clamp to [0,1] whenever the clamp moved a
+coordinate, because clamping can collapse a face. Only aggregates are kept,
+and only during an auto-tune attempt's transfer stage. Attempts are compared
+lexicographically (`AutoTuneScore`), in this order:
+
+1. targets whose transfer produced no UVs;
+2. incomplete overlap scans;
+3. invalid plus collapsed UV faces;
+4. rejected shells;
+5. summed overlap area (relative tolerance 1e-6), not pair count, which seam
+   subdivision inflates;
+6. the previous force3D counter;
+7. vertex coverage.
+
+Selection still needs a strict improvement. A perfect result now also requires
+zero collapsed or invalid faces and zero overlap pairs. Zero-area 3D faces are
+counted with `TransferUvQuality.Measure`'s own predicate and excluded. They
+exist in every attempt and cannot be repaired by a separation.
+
+This can select a different separation than before, so outputs may change
+where attempts differ. The stricter perfect condition can also run more
+attempts. PR #295 removes attempts whose symmetry split repeats.
+
+Validation pending: Full Pipeline on the private corpus (PR #294 matrix,
+`autoTuneChosen`), comparing collapsed faces, overlap area and time per model
+against main. Unit tests cover the ordering, tolerance, perfect condition and
+the geometry-degenerate count.
+
+## Auto-tune: reuse attempts whose symmetry split repeats — 2026-10-21
+
+Full Pipeline auto-tune runs symmetry split, repack and transfer for up to
+three binary-split separations (10%, 5%, 20%). It stops early only after a
+result with zero issues and at least 99% vertex coverage, which Kamaz never
+reaches. The separation is read only by `ApplyBinarySplit`. A model without a
+shell whose 3D separation ratio falls between the thresholds, a model whose
+splits are all N-fold, and every run with the symmetry step skipped give all
+attempts identical working meshes. Each such attempt still repeated the whole
+repack and transfer.
+
+After the symmetry stage, the pipeline streams the content of every included
+working mesh (positions, normals, tangents, colours, all UV channels and
+indices, but not its name) into one SHA-256 hash together with its split flag.
+Names are excluded because retries restore "(Clone)"-suffixed copies; names
+only label derived meshes and logs. If hashing fails, the attempt runs in
+full. If an earlier attempt had the same hash, the attempt skips repack,
+transfer and evaluation.
+It restores that attempt's `HasRepack`/`HasTransfer` and stage outcomes, then
+continues. Repack and transfer are deterministic for identical meshes and
+settings, and a new best attempt requires a strict improvement, so a repeat
+can neither be selected nor stop the search. The chosen meshes are restored
+exactly as before. `UvTransferWorkflow.reuseIdenticalAutoTuneAttempts = false`
+keeps the old path. A differential test compares both paths on a quad LOD
+pair with transfer disabled: three repacks against one, with the same
+published atlas bytes and stage outcomes.
+
+Logs gain one Info line per reused attempt. Diagnostic captures omit that
+attempt's repack/transfer stages because they were not executed.
+
+Measured with the paired benchmark (`FrozenForwardReverseComparison`, density
+32, Cafe_Table_A_01 / Modern_Kitchen_A / kamaz_Off), Unity 6000.2.6f2 batchmode
+on an i9-14900K, three runs per arm, control `285147e` against `f2bcc88`.
+`compare-transfer-performance.py`: all 120 exports per run have identical binary
+numeric values; inputs, atlas dimensions and audit counts match. Medians (s):
+
+| Model | Forward pipeline | Detached forward preparation | Forward repack (samples / s) | Forward transfer (samples / s) |
+|---|---:|---:|---:|---:|
+| Cafe_Table_A_01 | 0.38 → 0.39 | 0.17 → 0.17 | 1 / 0.14 → 1 / 0.14 | 1 / 0.20 → 1 / 0.20 |
+| Modern_Kitchen_A | 3.11 → 3.15 | 3.14 → 3.07 | 1 / 0.42 → 1 / 0.43 | 1 / 2.60 → 1 / 2.62 |
+| kamaz_Off | 47.80 → 16.34 | 47.79 → 16.52 | 3 / 2.34 → 1 / 0.77 | 3 / 44.63 → 1 / 14.70 |
+
+On Kamaz all three separations produce the same symmetry split, so two of the
+three attempts are reused: shell transfer falls from 30 to 10 samples and the
+donor-seam trial from 18 to 6. Cafe and Kitchen stop after their first attempt
+and are unchanged. Reverse is unchanged (Kamaz exclusive 12.82 → 12.70 s,
+overlap 29.85 → 29.80 s). How often attempts repeat across the furniture corpus
+is left to the variant matrix's `autoTuneDistinctInputs` field (PR #294).
+
+## Point-branch recovery: skip the contact scan without a single-point branch — 2026-10-21
+
+`UvPointJunctionRecovery` runs on every unpacked chart in
+`ReparameterizeStretchedShells`, both before packing and in the Reverse seed.
+Charts are partitioned by full indexed edges, so a hard normal edge splits one
+UV island into several edge-aliased patches. Those patches share two or more
+position/UV aliases with their neighbours and can never rotate, yet each such
+chart still paid one complete whole-chart contact scan with conflict
+collection before the branch loop skipped them.
+
+The anchors are now found first, from the same original coordinates, and the
+chart returns before the scan when no non-main patch has exactly one anchor.
+In that case the previous code also returned null, so UVs, refusals and the
+anchor chosen for a rotatable branch are unchanged. A rotatable chart pays the
+same scans and the same shared comparison budget as before. The early return
+checks cancellation first, so a cancelled token still throws where the skipped
+scan would have thrown.
+
+Measured with the paired benchmark (density 32, Cafe_Table_A_01 /
+Modern_Kitchen_A / kamaz_Off), Unity 6000.2.6f2 batchmode on an i9-14900K,
+three runs per arm, control `76d1c36` against `285147e`.
+`compare-transfer-performance.py`: all 120 exports per run have identical
+binary numeric values; sample counts match. Medians (s):
+
+| Model | Forward pipeline | Forward transfer | Reverse exclusive | Reverse overlap |
+|---|---:|---:|---:|---:|
+| Cafe_Table_A_01 | 0.39 → 0.38 | 0.21 → 0.20 | 1.66 → 1.62 | 2.90 → 2.84 |
+| Modern_Kitchen_A | 3.18 → 3.11 | 2.66 → 2.60 | 4.32 → 4.27 | 5.78 → 5.66 |
+| kamaz_Off | 49.61 → 47.80 | 46.21 → 44.63 | 12.79 → 12.82 | 31.24 → 29.85 |
+
+The 1–5% differences stay within the run-to-run spread: exact, no regression,
+no resolved gain.
+
 ## Separate overlapped source branches at a single UV point — 2026-10-20
 
 Some furniture charts join several edge-connected patches through only one

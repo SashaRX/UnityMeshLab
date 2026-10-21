@@ -15,6 +15,8 @@ param(
     [switch]$DisableBurstRaster,
     [switch]$RequireBurstRaster,
     [switch]$CaptureNativePacking,
+    [switch]$DisableForwardReuse,
+    [switch]$DisableParallelProjection,
     [string]$NativePackingReplayExecutable='',
     [string]$AdditionalTestFilter='',
     [ValidateSet('legacy','auto')][string]$QueryBackend='auto',
@@ -26,7 +28,10 @@ $perfProject=(Resolve-Path -LiteralPath $ProjectPath).Path
 if(Test-Path -LiteralPath (Join-Path $perfProject 'Temp/UnityLockfile')) {throw 'Use a closed, isolated test project.'}
 $perfRoot=[IO.Path]::GetFullPath($OutputRoot)
 New-Item -ItemType Directory -Path $perfRoot -Force | Out-Null
-$perfFilter="SashaRX.UnityMeshLab.Tests.PreviewLodSwitchTests.FrozenForwardReverseComparison.*$Density"
+# The three paired fixtures only: the TransferDiagnostics cases of the same test are ignored
+# without MESHLAB_TRANSFER_USER_SETTINGS and are not part of this comparison.
+$perfModelPattern="FrozenForwardReverseComparison\(.Assets/(JunctionFixtures|TransferBenchmarkInputs|KamazFixtures)/[^,]+,$Density\)"
+$perfFilter="SashaRX\.UnityMeshLab\.Tests\.PreviewLodSwitchTests\.$perfModelPattern"
 if($AdditionalTestFilter) {$perfFilter+=';'+$AdditionalTestFilter}
 $savedOutput=$env:MESHLAB_PAIRED_TRANSFER_OUTPUT
 $savedCache=$env:MESHLAB_DISABLE_FOOTPRINT_CACHE
@@ -41,6 +46,8 @@ $savedRequireBurst=$env:MESHLAB_REQUIRE_BURST_RASTER
 $savedNativeCapture=$env:MESHLAB_CAPTURE_NATIVE_PACKING
 $savedNativeReplay=$env:MESHLAB_NATIVE_PACKING_REPLAY_EXECUTABLE
 $savedForward=$env:MESHLAB_REVERSE_FROM_FORWARD
+$savedForwardReuse=$env:MESHLAB_DISABLE_FORWARD_REUSE
+$savedParallelProjection=$env:MESHLAB_DISABLE_PARALLEL_PROJECTION
 $savedExisting=$env:MESHLAB_PAIRED_EXISTING_SEED
 $savedQuery=$env:MESHLAB_QUERY_BACKEND
 $savedQueryLibrary=$env:MESHLAB_NATIVE_QUERY_LIBRARY
@@ -69,6 +76,8 @@ try {
     $env:MESHLAB_DISABLE_FOOTPRINT_SEARCH_INDEX=if($DisableFootprintSearchIndex){'1'}else{'0'}
     $env:MESHLAB_DISABLE_COLLISION_ROW_CACHE=if($DisableCollisionRowCache){'1'}else{'0'}
     $env:MESHLAB_REVERSE_FROM_FORWARD='1'
+    $env:MESHLAB_DISABLE_FORWARD_REUSE=if($DisableForwardReuse){'1'}else{'0'}
+    $env:MESHLAB_DISABLE_PARALLEL_PROJECTION=if($DisableParallelProjection){'1'}else{'0'}
     $env:MESHLAB_PAIRED_EXISTING_SEED='0'
     for($perfRun=1;$perfRun -le $Repetitions;++$perfRun) {
         $perfDirectory=Join-Path $perfRoot ('run-'+$perfRun.ToString('00'))
@@ -92,10 +101,7 @@ try {
         $perfProcess.Refresh()
         if($perfProcess.ExitCode -ne 0) {throw "Unity failed with exit $($perfProcess.ExitCode). See $perfLog."}
         [xml]$perfResults=Get-Content -LiteralPath $perfXml -Raw
-        $perfCases=$perfResults.SelectNodes('//test-case')
-        if($AdditionalTestFilter) {
-            $perfCases=@($perfCases | Where-Object {$_.fullname -like '*FrozenForwardReverseComparison(*'})
-        }
+        $perfCases=@($perfResults.SelectNodes('//test-case') | Where-Object {$_.fullname -match $perfModelPattern})
         if($perfResults.'test-run'.failed -ne '0' -or $perfCases.Count -ne 3 -or @($perfCases | Where-Object {$_.result -ne 'Passed'}).Count -ne 0) {
             throw "All three model cases must execute and pass. See $perfXml."
         }
@@ -116,6 +122,8 @@ finally {
     $env:MESHLAB_CAPTURE_NATIVE_PACKING=$savedNativeCapture
     $env:MESHLAB_NATIVE_PACKING_REPLAY_EXECUTABLE=$savedNativeReplay
     $env:MESHLAB_REVERSE_FROM_FORWARD=$savedForward
+    $env:MESHLAB_DISABLE_FORWARD_REUSE=$savedForwardReuse
+    $env:MESHLAB_DISABLE_PARALLEL_PROJECTION=$savedParallelProjection
     $env:MESHLAB_PAIRED_EXISTING_SEED=$savedExisting
     $env:MESHLAB_QUERY_BACKEND=$savedQuery
     $env:MESHLAB_NATIVE_QUERY_LIBRARY=$savedQueryLibrary

@@ -169,7 +169,9 @@ namespace SashaRX.UnityMeshLab
             CancellationToken token,Func<int,Vector2[],int,bool> validate,out float scale,out int packedSide,bool allowLargerCanvas,List<int> refusedFamilies=null,float? fixedScale=null,bool simplifyFootprints=true,bool alignFootprints=true,FootprintCache footprints=null,ReverseUvNativeChartSession chartSession=null)
         {
             scale=1;packedSide=side;
-            if(chartSession!=null?!chartSession.TryAcquire(token):!XatlasRepack.TryAcquireNativeSession()) return null;
+            // A busy session is not a packing refusal: wait on a worker, report it on the editor thread.
+            if(chartSession!=null) chartSession.Acquire(token);
+            else XatlasRepack.AcquireNativeSessionForRequiredWork("Reverse family packing",token);
             bool created=false;
             try
             {
@@ -235,15 +237,20 @@ namespace SashaRX.UnityMeshLab
                     mapped[xrefs[v]]=new Vector2(packed[v*2]*width,packed[v*2+1]*height);seen[xrefs[v]]=true;
                 }
                 if(seen.Any(v=>!v)) return Refused("missing envelope corner");
+                // Each envelope corner's chart is its family (its face's material).
+                var families=new int[points.Length];
+                for(int f=0;f<materials.Length;++f)
+                    for(int k=0;k<3;++k) families[indexArray[f*3+k]]=(int)materials[f];
                 var envelope=new RemeshNative.Geometry {uv=mapped.Select(p=>p/canvas).ToArray(),
-                    indices=indexArray.Select(i=>(int)i).ToArray(),charts=new int[points.Length]};
+                    indices=indexArray.Select(i=>(int)i).ToArray(),charts=families};
                 UvAtlasDiagnostics.Report scan;
-                using(options.performance?.Accumulated("Native envelope audit"))
-                    scan=UvAtlasDiagnostics.Measure(envelope,token,comparisonBudget:options.comparisonBudget,collectConflicts:true);
                 // Ancestors and their descendants intentionally share pixels in
-                // the packing proxy. Different families must remain disjoint.
-                if(!scan.complete || scan.conflicts.Any(p=>materials[p.a]!=materials[p.b]) || scan.invalidFaces>0)
-                    return Refused($"envelope audit: overlap {scan.pairs}, invalid {scan.invalidFaces}, collapsed {scan.degenerateFaces}, complete {scan.complete}");
+                // the packing proxy, so same-family pairs are charged to the budget
+                // but never clipped. Different families must remain disjoint.
+                using(options.performance?.Accumulated("Native envelope audit"))
+                    scan=UvAtlasDiagnostics.Measure(envelope,token,comparisonBudget:options.comparisonBudget,crossChartOnly:true);
+                if(!scan.complete || scan.crossChartPairs>0 || scan.invalidFaces>0)
+                    return Refused($"envelope audit: cross-family overlap {scan.crossChartPairs}, invalid {scan.invalidFaces}, collapsed {scan.degenerateFaces}, complete {scan.complete}");
                 using var transformTiming=options.performance?.Accumulated("Native family transform and validation");
                 // Use a long, well-conditioned edge to recover the shared scale.
                 int reference=Enumerable.Range(0,hulls.Length).OrderByDescending(g=>hulls[g].Max(p=>p.sqrMagnitude)).First();

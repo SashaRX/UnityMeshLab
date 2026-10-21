@@ -186,6 +186,70 @@ namespace SashaRX.UnityMeshLab
             return BitConverter.ToString(sha.ComputeHash(data)).Replace("-", "").ToLowerInvariant();
         }
 
+        /// <summary>
+        /// Streams mesh content into SHA-256 in fixed 64 KiB blocks: positions,
+        /// normals, tangents, colours, all eight UV channels and every submesh's
+        /// topology and indices. Unlike <see cref="Capture"/> it omits the name and
+        /// has no snapshot size limit. Floats are hashed by their bit patterns.
+        /// </summary>
+        internal sealed class ContentHash : IDisposable
+        {
+            readonly SHA256 sha = SHA256.Create();
+            readonly byte[] buffer = new byte[1 << 16];
+            readonly List<Vector4> uvs = new List<Vector4>();
+            int count;
+
+            internal void Add(Mesh mesh)
+            {
+                var positions = mesh.vertices; Add(positions.Length);
+                foreach (var value in positions) { Add(value.x); Add(value.y); Add(value.z); }
+                var normals = mesh.normals; Add(normals.Length);
+                foreach (var value in normals) { Add(value.x); Add(value.y); Add(value.z); }
+                var tangents = mesh.tangents; Add(tangents.Length);
+                foreach (var value in tangents) { Add(value.x); Add(value.y); Add(value.z); Add(value.w); }
+                var colors = mesh.colors; Add(colors.Length);
+                foreach (var value in colors) { Add(value.r); Add(value.g); Add(value.b); Add(value.a); }
+                for (int channel = 0; channel < 8; ++channel)
+                {
+                    uvs.Clear(); mesh.GetUVs(channel, uvs);
+                    Add(uvs.Count == 0 ? 0 : mesh.GetVertexAttributeDimension((VertexAttribute)((int)VertexAttribute.TexCoord0 + channel)));
+                    Add(uvs.Count);
+                    foreach (var value in uvs) { Add(value.x); Add(value.y); Add(value.z); Add(value.w); }
+                }
+                Add(mesh.subMeshCount);
+                for (int sub = 0; sub < mesh.subMeshCount; ++sub)
+                {
+                    Add((int)mesh.GetTopology(sub));
+                    var indices = mesh.GetIndices(sub); Add(indices.Length);
+                    foreach (int index in indices) Add(index);
+                }
+            }
+
+            internal void Add(float value) => Add(BitConverter.SingleToInt32Bits(value));
+
+            internal void Add(int value)
+            {
+                if (count + 4 > buffer.Length) Flush();
+                buffer[count++] = (byte)value; buffer[count++] = (byte)(value >> 8);
+                buffer[count++] = (byte)(value >> 16); buffer[count++] = (byte)(value >> 24);
+            }
+
+            internal string Finish()
+            {
+                Flush();
+                sha.TransformFinalBlock(Array.Empty<byte>(), 0, 0);
+                return Convert.ToBase64String(sha.Hash);
+            }
+
+            void Flush()
+            {
+                if (count > 0) sha.TransformBlock(buffer, 0, count, null, 0);
+                count = 0;
+            }
+
+            public void Dispose() => sha.Dispose();
+        }
+
         internal static string UvHash(Vector2[] uv)
         {
             if (uv == null) return "";

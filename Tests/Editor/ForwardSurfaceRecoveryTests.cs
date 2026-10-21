@@ -67,6 +67,42 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        [Test]
+        public void SharedRecoveryAndReusedMeasuresMatchIndependentPreparation()
+        {
+            var legacy = OverlappingUv();
+            ForwardUvReference independentReference = null, sharedReference = null;
+            TransferUvQuality captured = null;
+            var profile = new TransferPerformanceProfile();
+            var independent = ReverseUvTransfer.PrepareForwardSeamsAsync(source, target, legacy, new int[8], 256, false,
+                shareSeamPasses: false, captureReference: value => independentReference = value).GetAwaiter().GetResult();
+            Mesh shared = null;
+            try
+            {
+                var legacyQuality = TransferUvQuality.Measure(target, legacy, Vector2.one, Matrix4x4.identity);
+                var result = ReverseUvTransfer.PrepareForwardSeamsAsync(source, target, legacy, new int[8], 256, false,
+                    performance: profile, captureReference: value => sharedReference = value,
+                    legacyQuality: legacyQuality, captureQuality: value => captured = value).GetAwaiter().GetResult();
+                shared = result.mesh;
+                Assert.NotNull(independent.mesh);
+                Assert.NotNull(shared);
+                CollectionAssert.AreEqual(TransferMeshSnapshot.Capture(independent.mesh), TransferMeshSnapshot.Capture(shared));
+                CollectionAssert.AreEqual(independent.sources, result.sources);
+                Assert.IsTrue(independentReference.Matches(shared) && sharedReference.Matches(independent.mesh));
+                Assert.AreEqual(JsonUtility.ToJson(TransferUvQuality.Measure(shared, shared.uv2, Vector2.one, Matrix4x4.identity)),
+                    JsonUtility.ToJson(captured), "The returned measure is the measure of the returned mesh.");
+                long Count(string stage) => profile.samples.Where(s => s.stage == stage).Sum(s => s.count);
+                Assert.LessOrEqual(Count("Forward seam quality measures"), Count("Forward seam passes"),
+                    "Each prepared mesh is measured once, and the supplied legacy measure is not repeated.");
+                Assert.AreEqual(1, Count("Projection donor charts"), "Recovery reuses the donor charts of the seam passes.");
+            }
+            finally
+            {
+                if (independent.mesh) Object.DestroyImmediate(independent.mesh);
+                if (shared) Object.DestroyImmediate(shared);
+            }
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void UnsupportedSurfaceCannotPublishAPartlyRepairedAtlas(bool opposed)
