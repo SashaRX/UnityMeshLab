@@ -73,6 +73,7 @@ move runs on main through the BVH; it is not measured separately.
 Do not repeat: extending the per-vertex re-projection to more shells. The
 follow-up treats a shell as one unit: re-project its outliers and keep the
 result only when the shell's collapsed faces and worst anisotropy do not grow.
+
 ## Merged shells record the source their UV2 came from — 2026-10-21
 
 In Phase 3 of `GroupedShellTransfer`, a merged target shell in a source overlap
@@ -132,6 +133,7 @@ stretch cannot dominate it. `ShellLayoutScoreTests` covers the domination rule;
 Measurement pending: the furniture corpus against main with
 `report.py --baseline … --require-no-regressions`; rows must be better or same.
 Count `Post-fix:` (applied) and `Post-fix declined:` (kept, through a BVH) lines.
+
 ## Auto-tune: stretch and out-of-bounds vertices are defects — 2026-10-21
 
 Item 1 of `TRANSFER_METRICS_AUDIT.md`. `AutoTuneScore` (PR #297) ranks attempts
@@ -161,6 +163,7 @@ and the tie order. The furniture corpus does not run auto-tune, so validation
 is the paired benchmark: `run-transfer-performance.ps1 -Repetitions 1
 -Density 32` against main, reporting per model the attempts run, the chosen
 configuration and the Forward pipeline time.
+
 ## Donor-seam trial: zero-area geometry alone does not start it — 2026-10-21
 
 Item 7 of `TRANSFER_METRICS_AUDIT.md`, the zero-area part of F5. After shell
