@@ -495,9 +495,12 @@ namespace SashaRX.UnityMeshLab
             if (mesh == null || shells == null || shellIndex < 0 || shellIndex >= shells.Count) return 0;
             if (axis < 0 || axis > 2) return 0;
 
-            var tris = mesh.triangles;
+            // Lines and points cannot be split through triangles.
+            var topology = SubmeshTopology.Capture(mesh);
+            if (topology == null) return 0;
+            var tris = topology.Triangles;
             var verts = mesh.vertices;
-            if (tris == null || tris.Length == 0 || verts == null || verts.Length == 0) return 0;
+            if (tris.Length == 0 || verts == null || verts.Length == 0) return 0;
 
             var shell = shells[shellIndex];
             if (shell.faceIndices == null || shell.faceIndices.Count < 2) return 0;
@@ -651,10 +654,6 @@ namespace SashaRX.UnityMeshLab
                         newTris[f * 3 + j] = ni;
                 }
 
-            int subCount = mesh.subMeshCount;
-            var subDescs = new UnityEngine.Rendering.SubMeshDescriptor[subCount];
-            for (int s = 0; s < subCount; s++)
-                subDescs[s] = mesh.GetSubMesh(s);
             var bindPoses = mesh.bindposes;
 
             mesh.Clear();
@@ -667,16 +666,7 @@ namespace SashaRX.UnityMeshLab
             for (int ch = 0; ch < 8; ch++)
                 if (hasUv[ch]) mesh.SetUVs(ch, newUvs[ch]);
 
-            mesh.subMeshCount = subCount;
-            int triOffset = 0;
-            for (int s = 0; s < subCount; s++)
-            {
-                int idxCount = subDescs[s].indexCount;
-                int[] subTris = new int[idxCount];
-                System.Array.Copy(newTris, triOffset, subTris, 0, idxCount);
-                mesh.SetTriangles(subTris, s);
-                triOffset += idxCount;
-            }
+            topology.Apply(mesh, newTris);
             mesh.RecalculateBounds();
 
             var finalUv0 = mesh.uv;
@@ -992,7 +982,10 @@ namespace SashaRX.UnityMeshLab
         {
             var shell = shells[shellIndex];
             var faces = shell.faceIndices;
-            var tris = mesh.triangles;
+            // Lines and points cannot be split through triangles.
+            var topology = SubmeshTopology.Capture(mesh);
+            if (topology == null) return 0;
+            var tris = topology.Triangles;
             var verts = mesh.vertices;
 
             // Assign faces to angular sectors
@@ -1145,11 +1138,7 @@ namespace SashaRX.UnityMeshLab
                     }
             }
 
-            // Capture submesh layout
-            int subCount = mesh.subMeshCount;
-            var subDescs = new UnityEngine.Rendering.SubMeshDescriptor[subCount];
-            for (int s = 0; s < subCount; s++)
-                subDescs[s] = mesh.GetSubMesh(s);
+            // Capture bind poses before Clear
             var bindPoses = mesh.bindposes;
 
             // Apply to mesh
@@ -1168,16 +1157,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             // Restore submeshes
-            mesh.subMeshCount = subCount;
-            int triOffset = 0;
-            for (int s = 0; s < subCount; s++)
-            {
-                int idxCount = subDescs[s].indexCount;
-                int[] subTris = new int[idxCount];
-                System.Array.Copy(newTris, triOffset, subTris, 0, idxCount);
-                mesh.SetTriangles(subTris, s);
-                triOffset += idxCount;
-            }
+            topology.Apply(mesh, newTris);
             mesh.RecalculateBounds();
 
             // Update shell list — sector 0 replaces original, sectors 1..N-1 are new
