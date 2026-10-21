@@ -25,9 +25,18 @@ use that source. At classification the same gate is applied to the final
 layout; a shell that no longer passes returns to (0,0) and `Rejected` with its
 earlier source, exactly as before this change.
 
+An all-source candidate may reach into another source's UV2. The safety net
+re-projects such vertices only through the source's UV0 BVH, which a source of
+16 faces or fewer does not have, and it skips a shell without a source. So the
+fallback needs a matched source, and at classification its final layout must
+also lie within the safety net's allowance (the source's UV2 bounds widened by
+20% of their size on each side); otherwise it is withdrawn the same way. The
+safety net reads the same allowance helper, so its own decisions are unchanged.
+
 This changes outputs, so it is gated by the corpus rather than by bitwise
 comparison. `RejectedMergedShellReplacesItsCornerCollapseOnlyWithACompleteFoldFreeCandidate`
-covers the gate (complete, finite, fewer issues, no self-overlap).
+covers the gate (complete, finite, fewer issues, no self-overlap);
+`RejectedMergedFallbackMustEndInsideItsSourceAllowance` covers the region check.
 
 Measurement pending: the furniture corpus against main before this change
 (same profiles as PR #292), compared with `report.compare`: rows must be

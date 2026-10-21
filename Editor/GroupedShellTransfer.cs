@@ -3430,12 +3430,13 @@ namespace SashaRX.UnityMeshLab
                                 }
                             }
                         }
-                        else if (CanReplaceUnwrittenShell(tShell, tgtTris, tVerts, bestMergedUv2))
+                        else if (chosenSrc >= 0 && CanReplaceUnwrittenShell(tShell, tgtTris, tVerts, bestMergedUv2))
                         {
                             // An unwritten shell keeps UV2 at (0,0): every face collapses onto
                             // the atlas corner. A complete, fold-free candidate in the matched
                             // region collapses fewer faces; it is written and classified with
-                            // the other shells, so final recovery can still improve it.
+                            // the other shells, so final recovery can still improve it. A shell
+                            // without a source has no region to keep the candidate in.
                             chosenUv2 = bestMergedUv2;
                             // The overlap fall-through may have moved chosenSrc; the AABB
                             // safety net and next-LOD hints read the shell's source.
@@ -3763,23 +3764,13 @@ namespace SashaRX.UnityMeshLab
                     int src = result.targetShellToSourceShell[tsi];
                     if (src < 0) continue;
 
-                    Vector2 sMin = srcUv2Min[src];
-                    Vector2 sMax = srcUv2Max[src];
-                    Vector2 sSize = sMax - sMin;
-                    float padX = sSize.x * 0.2f;
-                    float padY = sSize.y * 0.2f;
-                    Vector2 allowMin = sMin - new Vector2(padX, padY);
-                    Vector2 allowMax = sMax + new Vector2(padX, padY);
-
                     var tShell = tgtShells[tsi];
                     int shellOutliers = 0;
 
                     foreach (int vi in tShell.vertexIndices)
                     {
                         if (vi >= result.uv2.Length) continue;
-                        Vector2 uv = result.uv2[vi];
-                        if (uv.x >= allowMin.x && uv.x <= allowMax.x &&
-                            uv.y >= allowMin.y && uv.y <= allowMax.y)
+                        if (InSourceUv2Allowance(result.uv2[vi], srcUv2Min[src], srcUv2Max[src]))
                             continue; // within bounds
 
                         // Outlier: re-project from source UV0 BVH
@@ -3983,9 +3974,12 @@ namespace SashaRX.UnityMeshLab
                 var finalUv = ShellCandidate(tgtShells[tsi], result.uv2);
                 var finalQuality = TransferCandidateQuality.Measure(tgtShells[tsi], tgtTris, tVerts, finalUv);
                 // The AABB safety net and final recovery may have moved a fallback shell.
-                // If it no longer passes the fallback gate, restore the unwritten layout.
+                // If it no longer passes the fallback gate, or the safety net could not
+                // bring it into its source's region (no UV0 BVH for a source of 16 faces
+                // or fewer, or no hit), restore the unwritten layout.
                 if (rejectedFallbackShells.TryGetValue(tsi, out int unwrittenSource)
-                    && !StillReplacesUnwrittenShell(tgtShells[tsi], finalQuality))
+                    && (!StillReplacesUnwrittenShell(tgtShells[tsi], finalQuality)
+                        || !WithinSourceUv2Allowance(finalUv.Values, srcUv2Min[src], srcUv2Max[src])))
                 {
                     result.targetShellToSourceShell[tsi] = unwrittenSource;
                     foreach (int vertex in tgtShells[tsi].vertexIndices)
@@ -4718,6 +4712,25 @@ namespace SashaRX.UnityMeshLab
         internal static bool StillReplacesUnwrittenShell(UvShell shell, TransferCandidateQuality final)
             => final.invalidFaces == 0 && final.issues < shell.faceIndices.Count
                 && final.overlapScanComplete && final.overlapPairs == 0;
+
+        /// <summary>Whether every point of a layout lies in the merged-shell AABB safety
+        /// net's allowance around a source shell's UV2 bounds.</summary>
+        internal static bool WithinSourceUv2Allowance(IEnumerable<Vector2> layout, Vector2 sMin, Vector2 sMax)
+        {
+            foreach (var uv in layout)
+                if (!InSourceUv2Allowance(uv, sMin, sMax)) return false;
+            return true;
+        }
+
+        /// <summary>The source shell's UV2 bounds widened by 20% of their size on each side.</summary>
+        static bool InSourceUv2Allowance(Vector2 uv, Vector2 sMin, Vector2 sMax)
+        {
+            Vector2 sSize = sMax - sMin;
+            Vector2 pad = new Vector2(sSize.x * 0.2f, sSize.y * 0.2f);
+            Vector2 allowMin = sMin - pad;
+            Vector2 allowMax = sMax + pad;
+            return uv.x >= allowMin.x && uv.x <= allowMax.x && uv.y >= allowMin.y && uv.y <= allowMax.y;
+        }
 
         static bool CandidateHasOverlap(UvShell shell, int[] triangles, Dictionary<int, Vector2> candidate)
         {
