@@ -1,5 +1,30 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Merged shells record the source their UV2 came from — 2026-10-21
+
+In Phase 3 of `GroupedShellTransfer`, a merged target shell in a source overlap
+group first tries a composite of the group's members. When the composite has
+too many issues, the shell falls through to the ordinary merged path with
+`chosenSrc = bestOverlapSrc`. The written UV2 and `vertexToSourceShell` then
+come from that source, but `targetShellToSourceShell[tsi]` kept the source
+matched before the overlap analysis. Four later readers used the stale value:
+the merged-shell AABB safety net (bounds and UV0 BVH for outlier
+re-projection), `PlanarTransferRecovery` (projection source), classification,
+and the next LOD's overlap and match hints.
+
+The UV2 write now records `chosenSrc` as the shell's source. `chosenSrc` changes
+only at that fall-through, so for every other shell the assignment is a no-op;
+a rejected shell writes no UV2 and keeps its earlier source. PR #305's fallback
+for rejected merged shells already records its candidate's source and restores
+the earlier one when the fallback is withdrawn, which stays consistent with
+this change.
+
+This changes outputs for merged shells that took the fall-through to a
+different source, so it is gated by the corpus rather than by bitwise
+comparison: a standard capture against main, compared with
+`report.py --baseline ... --require-no-regressions` (no worse, tradeoff or
+invalid rows). No synthetic fixture reproduces the fall-through yet.
+
 ## Oversample 8: why a better source does not survive transfer — analysis — 2026-10-21
 
 The furniture corpus baseline on main (`491340a`, 80 files, 255 LOD pairs)
