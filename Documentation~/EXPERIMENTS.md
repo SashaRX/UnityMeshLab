@@ -175,6 +175,16 @@ is the paired benchmark: `run-transfer-performance.ps1 -Repetitions 1
 -Density 32` against main, reporting per model the attempts run, the chosen
 configuration and the Forward pipeline time.
 
+Result (paired benchmark, main `408e16e` with this change and the donor-seam
+trigger below against `0228f46`, 3 repetitions at 32 tex/m on Cafe_Table_A_01,
+Modern_Kitchen_A and kamaz_Off): accepted. All 120 exports are byte-identical.
+Every model still selects configuration #0. Cafe now runs 3 attempts instead of
+1: its #0 has no collapsed face, rejected shell or overlap but a worst
+anisotropy of 2047, so it is no longer perfect; attempts #1 and #2 repeat its
+symmetry split and are reused (3 ms). Kitchen and Kamaz ran 3 attempts before
+and after. Forward pipeline medians 0.420 → 0.428, 3.424 → 3.437 and
+16.435 → 16.425 s: noise.
+
 ## Donor-seam trial: zero-area geometry alone does not start it — 2026-10-21
 
 Item 7 of `TRANSFER_METRICS_AUDIT.md`, the zero-area part of F5. After shell
@@ -200,6 +210,12 @@ not run the donor-seam trial, so validation is the paired benchmark
 (`run-transfer-performance.ps1 -Repetitions 3 -Density 32` against main):
 which exports differ, and the "Forward donor seam trial" samples and median
 per model.
+
+Result (the same paired benchmark as the auto-tune entry above): no change on
+these models. Exports are byte-identical and the trial ran as often as before
+(1, 4 and 6 samples; medians 0.130 → 0.136, 1.447 → 1.495 and 10.931 → 11.093
+s, noise): none of their targets had zero-area geometry as its only defect.
+The change stays as a correctness fix of the trigger.
 
 ## Oversample 8: why a better source does not survive transfer — analysis — 2026-10-21
 
