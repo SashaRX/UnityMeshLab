@@ -186,7 +186,8 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual("OtherPart", document.Scene.GetRootNode().GetChild(1).GetName());
         }
 
-        string WriteSource(bool binary, string version = "FBX201400", bool withCollision = false, bool withMaterial = false)
+        string WriteSource(bool binary, string version = "FBX201400", bool withCollision = false, bool withMaterial = false,
+            string collisionName = "Part_COL")
         {
             string path = Path.Combine(folder, "source.fbx");
             using var manager = FbxManager.Create();
@@ -244,8 +245,8 @@ namespace SashaRX.UnityMeshLab.Tests
                     colors = new double[] { .1, .2, .3, 1, .4, .5, .6, 1, .7, .8, .9, 1 }
                 };
                 data.uvNames.Add("map1"); data.uvs.Add(new double[] { 0, 0, 1, 0, 0, 1 });
-                var collision = FbxNode.Create(scene, "Part_COL");
-                collision.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, "Part_COL", data));
+                var collision = FbxNode.Create(scene, collisionName);
+                collision.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, collisionName, data));
                 scene.GetRootNode().AddChild(collision);
             }
             using var exporter = FbxExporter.Create(manager, "Write");
@@ -1134,6 +1135,39 @@ namespace SashaRX.UnityMeshLab.Tests
                 AssertCollisionUnchanged(path, outputPath);
                 var restored = AssetDatabase.LoadAllAssetsAtPath(outputPath).OfType<Mesh>().Single(m => m.name == imported.name);
                 CollectionAssert.AreEqual(TriangleUvRecords(working), TriangleUvRecords(restored));
+            }
+            finally
+            {
+                if (working) UnityEngine.Object.DestroyImmediate(working);
+                AssetDatabase.DeleteAsset(assetFolder);
+            }
+        }
+
+        [TestCase("Part_COL")] [TestCase("Part_Collider_01")]
+        public void ChannelWrite_BakingGeneratedUv1LeavesAnUnloadedCollisionMeshOut(string collisionName)
+        {
+            // Writing UV1 switches 'Generate Lightmap UVs' off for the whole model. A collision
+            // mesh the save did not load has no lightmap UVs to lose, numbered or not.
+            string assetFolder = "Assets/MeshLabGeneratedUv1Collision_" + Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", assetFolder.Substring(7));
+            string path = assetFolder + "/source.fbx";
+            Mesh working = null;
+            try
+            {
+                File.WriteAllBytes(path, File.ReadAllBytes(WriteSource(true, withCollision: true, collisionName: collisionName)));
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.isReadable = true; importer.generateSecondaryUV = true; importer.SaveAndReimport();
+                var imported = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().Single(m => m.name != collisionName);
+                string partName = imported.name;
+                working = UnityEngine.Object.Instantiate(imported);
+                working.uv2 = working.uv.Select(uv => uv * .5f).ToArray();
+                var entry = new MeshEntry { fbxMesh = imported, originalMesh = working };
+
+                Assert.IsTrue(FbxChannelWrite.Write(path, new[] { entry }, FbxExportIntent.UV1, path, null));
+                Assert.IsFalse(((ModelImporter)AssetImporter.GetAtPath(path)).generateSecondaryUV);
+                var saved = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().Single(m => m.name == partName);
+                CollectionAssert.AreEqual(TriangleUvRecords(working), TriangleUvRecords(saved));
             }
             finally
             {
