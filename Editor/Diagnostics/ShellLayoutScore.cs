@@ -73,9 +73,10 @@ namespace SashaRX.UnityMeshLab
             double cross = frame.length * frame.y;
             if (!Finite(cross)) { ++invalidFaces; return; }
             if (cross <= 0) { ++degenerateFaces; return; }
-            double ratio = TransferUvQuality.TriangleAnisotropy(positions[b] - positions[a], positions[c] - positions[a],
-                uv[a], uv[b], uv[c]);
-            if (double.IsNaN(ratio)) { ++invalidFaces; return; }
+            if (!Finite(uv[a].x) || !Finite(uv[a].y) || !Finite(uv[b].x) || !Finite(uv[b].y)
+                || !Finite(uv[c].x) || !Finite(uv[c].y)) { ++invalidFaces; return; }
+            // The Jacobian in the double-precision frame: Float32 edges turn thin triangles collinear.
+            double ratio = ReverseUvTransfer.TriangleAnisotropy(frame, uv[a], uv[b], uv[c]);
             if (double.IsInfinity(ratio)) { ++degenerateFaces; return; }
             worstAnisotropy = Math.Max(worstAnisotropy, ratio);
             weightedAnisotropy += ratio * cross; weightedArea += cross;

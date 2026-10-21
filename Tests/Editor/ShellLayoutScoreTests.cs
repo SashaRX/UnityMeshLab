@@ -59,6 +59,24 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void AThinTriangleIsScoredInDoublePrecision()
+        {
+            // Float32 edges of this triangle are collinear; its double-precision frame is not.
+            var positions = new[] { new Vector3(1e-8f, 0, 0), new Vector3(1, 1, 0), new Vector3(2, 2, 0) };
+            var triangles = new[] { 0, 1, 2 };
+            var faces = new List<int> { 0 };
+            var vertices = new[] { 0, 1, 2 };
+            ShellLayoutScore Score(Vector2 last) => ShellLayoutScore.Measure(faces, vertices, new List<int>(), triangles, positions,
+                new[] { new Vector2(1e-8f, 0), new Vector2(1, 1), last });
+            var isometric = Score(new Vector2(2, 2));
+            var moved = Score(new Vector2(.5f, .75f));
+            Assert.AreEqual(0, isometric.degenerateFaces); Assert.AreEqual(1, isometric.outOfBoundsVertices);
+            Assert.AreEqual(1, isometric.worstAnisotropy, 1e-3);
+            Assert.Greater(moved.worstAnisotropy, 1e6);
+            Assert.IsFalse(ShellLayoutScore.Dominates(moved, isometric, 0, 0), "back in bounds, but stretched");
+        }
+
+        [Test]
         public void TheAreaWeightedAnisotropyIsTheWholeMeshs()
         {
             // Both layouts stretch the square 2:1; the second also collapses face 1 onto a line.
