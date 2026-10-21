@@ -30,9 +30,14 @@ force3D shells keep their existing degraded-write path.
 
 The fallback records the source its candidate was built from (the overlap
 fall-through may have changed it), so the AABB safety net and next-LOD hints
-use that source. At classification the same gate is applied to the final
-layout; a shell that no longer passes returns to (0,0) and `Rejected` with its
-earlier source. That is main's result when the source has no BVH or its
+use that source. After the safety net and the topology pass, before final
+recovery, the same gate is applied to the measured layout; a shell that no
+longer passes returns to (0,0) and `Rejected` with its earlier source. Planar
+and exact-family recovery scan the whole target for new contacts, so a
+provisional fallback left in place would block another shell's recovery, and
+that recovery is not retried after a later withdrawal. A fallback recovery
+might have repaired is withdrawn as well; recovery skips `Rejected` shells.
+Classification checks the gate once more, in case recovery moved the shell. That is main's result when the source has no BVH or its
 allowance contains the origin; otherwise main would leave the safety net's
 re-projection there instead. A written fallback does not
 claim its source for overlap-group dedup and is not counted against force3D
