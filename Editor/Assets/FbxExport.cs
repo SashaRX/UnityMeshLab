@@ -1346,19 +1346,18 @@ namespace SashaRX.UnityMeshLab
             var recenter = Matrix4x4.Translate(-root.transform.position);
             // Capture every accumulated matrix before changing any ancestor. This also
             // preserves shear from rotated children under non-uniformly scaled parents.
-            for (int i = 0; i < filters.Length; ++i) {
+            for (int i = 0; i < filters.Length; ++i)
                 matrices[i] = recenter * filters[i].transform.localToWorldMatrix;
-                var mesh = filters[i].sharedMesh;
-                if (mesh != null && !mesh.isReadable)
-                    throw new InvalidOperationException($"Cannot normalize unreadable mesh '{mesh.name}'. Enable Read/Write before exporting.");
-            }
             for (int i = 0; i < filters.Length; ++i) {
                 var mesh = filters[i].sharedMesh;
-                if (mesh == null || matrices[i] == Matrix4x4.identity) continue;
-                var baked = Object.Instantiate(mesh);
+                bool bake = matrices[i] != Matrix4x4.identity;
+                if (mesh == null || (!bake && mesh.isReadable)) continue;
+                // The exporter reads every mesh. One the save did not load (a collision node of
+                // a Read/Write-off import) is read through MeshAccess, baked or not.
+                var baked = mesh.isReadable ? Object.Instantiate(mesh) : MeshAccess.ReadableCopy(mesh);
                 baked.name = mesh.name;
                 bakedMeshSink.Add(baked);
-                MeshTransform.BakeMatrix(baked, matrices[i]);
+                if (bake) MeshTransform.BakeMatrix(baked, matrices[i]);
                 filters[i].sharedMesh = baked;
             }
             foreach (var t in root.GetComponentsInChildren<Transform>(true)) {
