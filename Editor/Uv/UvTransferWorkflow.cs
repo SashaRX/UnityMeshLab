@@ -2402,7 +2402,11 @@ namespace SashaRX.UnityMeshLab
 
             Mesh srcMesh = srcEntry.repackedMesh ?? srcEntry.originalMesh;
             Mesh tgtMesh = tgt.originalMesh;
-            if (srcMesh == null || tgtMesh == null) { if (scoringAttempt) ++attemptScore.failedTargets; return; }
+            if (srcMesh == null || tgtMesh == null)
+            {
+                if (scoringAttempt) ++attemptScore.failedTargets;
+                return;
+            }
 
             string meshGroupKey = tgt.meshGroupKey ?? tgt.renderer.name;
             var hintKey = (source: srcEntry, meshGroupKey: meshGroupKey);
@@ -2414,7 +2418,11 @@ namespace SashaRX.UnityMeshLab
                 crossLodHints[hintKey] = hintState;
             }
 
-            if (!HasSourceUvChannels(srcMesh)) { if (scoringAttempt) ++attemptScore.failedTargets; return; }
+            if (!HasSourceUvChannels(srcMesh))
+            {
+                if (scoringAttempt) ++attemptScore.failedTargets;
+                return;
+            }
 
             UvProgress.Report(-1f, $"Transfer LOD{tLod} ← '{tgt.renderer.name}'");
             var pair = ctx.DiagnosticCapture?.BeforePair(srcEntry, tgt, srcMesh, tgtMesh, hintState.overlapHints, hintState.matchHints, TransferBoundaryToleranceTexels);
