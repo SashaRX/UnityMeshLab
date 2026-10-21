@@ -95,9 +95,11 @@ def oversample_reached(index, profile=PROFILE):
 def analyze(rows, profile=PROFILE):
     """Everything the oversample report shows, as plain data."""
     index = index_rows(rows)
+    pairs = {key[:3] for key in index}
     return dict(
-        profile=profile, pairs=len({key[:3] for key in index}),
-        atlasSideControl=any(key[4] == AT_RESOLUTION for key in index),
+        profile=profile, pairs=len(pairs),
+        # Pairs with the control row in both profiles; the rest compare as missing.
+        atlasSideControlPairs=sum(all(pair + (p, AT_RESOLUTION) in index for p in ("default", profile)) for pair in pairs),
         comparisons={label: compare_group(index, candidate, baseline)
                      for label, candidate, baseline in comparisons(profile)},
         retention={method: retention(index, method, profile) for method in ("grouped", AT_RESOLUTION)},
@@ -107,9 +109,13 @@ def analyze(rows, profile=PROFILE):
 def render(analysis):
     """A summary that can be posted without any geometry or per-model rows."""
     lines = [f"# {analysis['profile']} against default: {analysis['pairs']} LOD pairs", ""]
-    if not analysis["atlasSideControl"]:
+    controlled = analysis["atlasSideControlPairs"]
+    if controlled == 0:
         lines += ["No `grouped-at-resolution` rows: record with MESHLAB_CORPUS_OVERSAMPLE_ANALYSIS=1 "
                   "to separate the pack from the transfer's atlas side.", ""]
+    elif controlled < analysis["pairs"]:
+        lines += [f"Only {controlled} of {analysis['pairs']} pairs have `grouped-at-resolution` rows in both "
+                  "profiles; the others count as missing in the requested-resolution comparisons.", ""]
     lines += ["## Verdicts", "", "| comparison | better | worse | tradeoff | same | other |", "|---|---|---|---|---|---|"]
     for label, group in analysis["comparisons"].items():
         v = group["verdicts"]

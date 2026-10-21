@@ -28,7 +28,7 @@ class OversampleTests(unittest.TestCase):
     def test_separates_the_pack_from_the_transfer_side(self):
         analysis = analyze(self.capture())
         groups = analysis["comparisons"]
-        self.assertTrue(analysis["atlasSideControl"])
+        self.assertEqual(analysis["atlasSideControlPairs"], 1)
         self.assertEqual(groups["packed source: oversample 8 vs 4"]["verdicts"], {"better": 1})
         internal = groups["transfer, internal atlas side: oversample 8 vs 4"]
         self.assertEqual(internal["verdicts"], {"tradeoff": 1})
@@ -54,9 +54,15 @@ class OversampleTests(unittest.TestCase):
     def test_capture_without_the_control_reports_missing_rows(self):
         rows = [r for r in self.capture() if r["method"] != AT_RESOLUTION]
         analysis = analyze(rows)
-        self.assertFalse(analysis["atlasSideControl"])
+        self.assertEqual(analysis["atlasSideControlPairs"], 0)
         self.assertEqual(analysis["comparisons"]["transfer, requested resolution: oversample 8 vs 4"]["verdicts"], {"missing": 1})
         self.assertIn("MESHLAB_CORPUS_OVERSAMPLE_ANALYSIS=1", render(analysis))
+
+    def test_partial_control_is_reported_as_partial(self):
+        other = [dict(r, target="chair_LOD2") for r in self.capture() if r["method"] != AT_RESOLUTION]
+        analysis = analyze(self.capture() + other)
+        self.assertEqual((analysis["pairs"], analysis["atlasSideControlPairs"]), (2, 1))
+        self.assertIn("Only 1 of 2 pairs", render(analysis))
 
     def test_incomplete_scans_are_counted_but_not_broken_down(self):
         rows = self.capture()
