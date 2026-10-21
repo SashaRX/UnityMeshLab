@@ -113,7 +113,11 @@ namespace SashaRX.UnityMeshLab
                 }
             }
             foreach(int shell in previous.Keys)
-                if (trace!=null) trace.ForShell(shell).projectionMethod="planar-world";
+            {
+                // The trace keeps the first 10000 shells only.
+                var shellTrace=trace?.ForShell(shell);
+                if (shellTrace!=null) shellTrace.projectionMethod="planar-world";
+            }
             return previous.Count;
         }
     }
