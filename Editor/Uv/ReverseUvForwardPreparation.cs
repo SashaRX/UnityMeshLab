@@ -155,7 +155,7 @@ namespace SashaRX.UnityMeshLab
             if (!await pipeline.ExecFullPipelineCoreImpl(useAsync))
             {
                 // The detached pipeline stops at a cancel request; Reverse ends as cancelled, not failed.
-                if (UvProgress.CancelRequested) throw new OperationCanceledException(token);
+                if (pipeline.fullPipelineCancelled || UvProgress.CancelRequested) throw new OperationCanceledException(token);
                 throw new InvalidOperationException("Ordinary Transfer preparation did not complete; previous UVs were preserved.");
             }
             return work.MeshEntries.ToArray();

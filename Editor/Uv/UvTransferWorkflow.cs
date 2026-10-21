@@ -258,6 +258,8 @@ namespace SashaRX.UnityMeshLab
         // runs neither measure nor retain anything for scoring.
         AutoTuneScore attemptScore;
         bool scoringAttempt;
+        // Whether the last full pipeline stopped at a cancel request rather than a failure.
+        bool fullPipelineCancelled;
 
         // ── Preview ──
         // Three mutually-exclusive preview modes. Only one should be active at a time.
@@ -1763,7 +1765,9 @@ namespace SashaRX.UnityMeshLab
             }
             finally
             {
-                if (UvProgress.CancelRequested) UvProgress.Cancel(); else UvProgress.End();
+                // Recorded before Cancel: ending the last open operation clears the request.
+                fullPipelineCancelled = UvProgress.CancelRequested;
+                if (fullPipelineCancelled) UvProgress.Cancel(); else UvProgress.End();
                 foreach (var m in savedMeshes.Values) UnityEngine.Object.DestroyImmediate(m);
             }
 
