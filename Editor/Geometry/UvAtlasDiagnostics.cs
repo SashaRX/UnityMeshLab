@@ -69,10 +69,14 @@ namespace SashaRX.UnityMeshLab
         /// test) and cancellation is the time guard. A non-negative <paramref name="comparisonBudget"/>
         /// bounds the candidate pairs examined instead; a scan that runs out, or that finds
         /// more than <see cref="MaxConflicts"/> overlapping pairs, reports <c>complete = false</c>
-        /// and its counts are lower bounds.</summary>
+        /// and its counts are lower bounds.
+        /// <paramref name="crossChartOnly"/> is for audits that act only on pairs from different
+        /// charts: a same-chart pair is still charged to the budget, so completeness and
+        /// comparisons match the whole scan whenever the budget is below <see cref="MaxConflicts"/>,
+        /// but it is never clipped or counted as an overlap.</summary>
         internal static Report Measure(RemeshNative.Geometry g, CancellationToken token,
             bool sameChartOnly = false, long comparisonBudget = -1, bool collectConflicts = false,
-            Vector2 coordinateOrigin=default,double coordinateScale=1)
+            Vector2 coordinateOrigin=default,double coordinateScale=1, bool crossChartOnly = false)
         {
             token.ThrowIfCancellationRequested();
             var report = new Report();
@@ -183,7 +187,8 @@ namespace SashaRX.UnityMeshLab
                             if (Math.Max(cells[i * 4], cells[j * 4]) != cx || Math.Max(cells[i * 4 + 1], cells[j * 4 + 1]) != cy) continue;
                             if (++report.comparisons > comparisonBudget) { report.complete = false; return; }
                             var b = triangles[j];
-                            if (sameChartOnly && a.chart != b.chart || b.minX >= a.maxX || a.minX >= b.maxX || b.minY >= a.maxY || a.minY >= b.maxY) continue;
+                            if ((sameChartOnly && a.chart != b.chart) || (crossChartOnly && a.chart == b.chart)
+                                || b.minX >= a.maxX || a.minX >= b.maxX || b.minY >= a.maxY || a.minY >= b.maxY) continue;
                             if (Separated(a, b)) continue;
                             double area = IntersectionArea(a, b, bufferA, bufferB);
                             // Ignore numerical slivers, not all neighbours. Relative tolerance
