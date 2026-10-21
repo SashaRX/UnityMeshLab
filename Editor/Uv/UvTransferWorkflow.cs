@@ -1922,9 +1922,60 @@ namespace SashaRX.UnityMeshLab
             internal void Clear() { Meshes.Clear(); Atlases.Clear(); Transfers.Clear(); States.Clear(); }
         }
 
+        /// <summary>
+        /// Skips an attempt whose symmetry split reproduced an earlier attempt's
+        /// working meshes. Repack and transfer are deterministic functions of
+        /// those meshes, and selection needs a strict improvement, so the repeat
+        /// could neither win nor stop the search. False keeps every repeat.
+        /// </summary>
+        internal bool reuseIdenticalAutoTuneAttempts = true;
+
+        /// <summary>The state an executed attempt leaves for a later identical one to reproduce.</summary>
+        readonly struct AutoTuneAttempt
+        {
+            internal readonly string inputs;
+            internal readonly bool hasRepack, hasTransfer;
+            internal readonly StageStatus repack, transfer;
+
+            internal AutoTuneAttempt(string inputs, bool hasRepack, bool hasTransfer, StageStatus repack, StageStatus transfer)
+            {
+                this.inputs = inputs; this.hasRepack = hasRepack; this.hasTransfer = hasTransfer;
+                this.repack = repack; this.transfer = transfer;
+            }
+        }
+
+        /// <summary>
+        /// Fingerprints what the symmetry stage can change: each included working
+        /// mesh's content and its split flag. Names are excluded because retries
+        /// restore "(Clone)"-suffixed copies; they only name derived meshes and
+        /// logs. Unreadable meshes cannot have been split and contribute a fixed
+        /// marker. Returns null, so the attempt simply runs, if hashing fails.
+        /// </summary>
+        string AutoTuneInputSignature()
+        {
+            try
+            {
+                using var hash = new TransferMeshSnapshot.ContentHash();
+                foreach (var e in ctx.MeshEntries)
+                {
+                    if (!e.include) continue;
+                    hash.Add(e.wasSymmetrySplit ? 1 : 0);
+                    if (e.originalMesh != null && e.originalMesh.isReadable) hash.Add(e.originalMesh);
+                    else hash.Add(-1);
+                }
+                return hash.Finish();
+            }
+            catch (Exception error)
+            {
+                UvtLog.Warn($"[Pipeline] Auto-tune input could not be fingerprinted; the attempt runs in full: {error.Message}");
+                return null;
+            }
+        }
+
         async Task<bool> RunAutoTuneAttempts(float[] separationConfigs, Dictionary<MeshEntry, Mesh> savedMeshes,
             AutoTuneChoice best, bool hasTransferTargets, bool useAsync)
         {
+            var attempts = new List<AutoTuneAttempt>(separationConfigs.Length);
             for (int ci = 0; ci < separationConfigs.Length; ci++)
             {
                 float sepThresh = separationConfigs[ci];
@@ -1946,6 +1997,23 @@ namespace SashaRX.UnityMeshLab
 
                 using (ForwardPerformance?.Accumulated("Forward symmetry split")) RunSymmetryStage(sepThresh);
                 ctx.DiagnosticCapture?.StageSafe(this, $"attempt-{ci}-symmetry-separation-{sepThresh:R}");
+                string inputs = null;
+                if (reuseIdenticalAutoTuneAttempts && hasTransferTargets && separationConfigs.Length > 1)
+                    using (ForwardPerformance?.Accumulated("Forward auto-tune input signature")) inputs = AutoTuneInputSignature();
+                int repeated = inputs == null ? -1 : attempts.FindIndex(a => a.inputs == inputs);
+                if (repeated >= 0)
+                {
+                    // The executed attempt's repack/transfer flags are what this
+                    // one would have produced; the chosen meshes are restored later.
+                    var same = attempts[repeated];
+                    ctx.HasRepack = same.hasRepack; ctx.HasTransfer = same.hasTransfer;
+                    stageOutcome[4] = same.repack; stageOutcome[5] = same.transfer;
+                    attempts.Add(same);
+                    UvtLog.Info($"[Pipeline] Config #{ci} (sep={sepThresh:P0}) repeats config #{repeated}'s " +
+                        "symmetry split; its repack, transfer and evaluation are reused.");
+                    if (UvProgress.CancelRequested) return true;
+                    continue;
+                }
                 using (ForwardPerformance?.Accumulated("Forward repack")) await RunRepackStage(useAsync);
                 ctx.DiagnosticCapture?.StageSafe(this, $"attempt-{ci}-repack");
                 if (UvProgress.CancelRequested) return true;
@@ -1958,6 +2026,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 using (ForwardPerformance?.Accumulated("Forward transfer")) await RunTransferStage(useAsync, hasTransferTargets);
                 ctx.DiagnosticCapture?.StageSafe(this, $"attempt-{ci}-transfer");
+                attempts.Add(new AutoTuneAttempt(inputs, ctx.HasRepack, ctx.HasTransfer, stageOutcome[4], stageOutcome[5]));
 
                 if (!hasTransferTargets)
                     break;

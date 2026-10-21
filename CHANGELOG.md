@@ -6,6 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- Full Pipeline auto-tune skips repack and transfer for a separation whose symmetry split reproduces an earlier attempt's working meshes, reusing that attempt's result. The selected outputs are unchanged.
 - Point-branch UV recovery skips its whole-chart contact scan when no branch is held by exactly one shared point, which is the common case for charts split by hard normal edges. Recovered UVs and refusals are unchanged.
 - Exclusive Reverse packing reuses one operation's native charts and owned input buffers across identical trials, rebuilding them when footprint data changes. Paired Kamaz/CementWall runs retain exact outputs; native placement and all quality audits still run.
 - Reverse final packing reuses per-LOD face/index lists and mesh group keys, defers shared-corner precision snapshots until a repair is needed, and avoids unused orientation searches and duplicate failed rescue phases. Placement order, quality gates and native binaries are unchanged.
