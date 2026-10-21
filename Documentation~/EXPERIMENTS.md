@@ -18,9 +18,20 @@ same scans and the same shared comparison budget as before. The early return
 checks cancellation first, so a cancelled token still throws where the skipped
 scan would have thrown.
 
-Measurement pending: `Tools~/run-transfer-performance.ps1 -Repetitions 3
--Density 32` control (main) against this branch, with
-`compare-transfer-performance.py` confirming all exports are byte-identical.
+Measured with the paired benchmark (density 32, Cafe_Table_A_01 /
+Modern_Kitchen_A / kamaz_Off), Unity 6000.2.6f2 batchmode on an i9-14900K,
+three runs per arm, control `76d1c36` against `285147e`.
+`compare-transfer-performance.py`: all 120 exports per run have identical
+binary numeric values; sample counts match. Medians (s):
+
+| Model | Forward pipeline | Forward transfer | Reverse exclusive | Reverse overlap |
+|---|---:|---:|---:|---:|
+| Cafe_Table_A_01 | 0.39 → 0.38 | 0.21 → 0.20 | 1.66 → 1.62 | 2.90 → 2.84 |
+| Modern_Kitchen_A | 3.18 → 3.11 | 2.66 → 2.60 | 4.32 → 4.27 | 5.78 → 5.66 |
+| kamaz_Off | 49.61 → 47.80 | 46.21 → 44.63 | 12.79 → 12.82 | 31.24 → 29.85 |
+
+The 1–5% differences stay within the run-to-run spread: exact, no regression,
+no resolved gain.
 
 ## Separate overlapped source branches at a single UV point — 2026-10-20
 
