@@ -30,11 +30,24 @@ published atlas bytes and stage outcomes.
 Logs gain one Info line per reused attempt. Diagnostic captures omit that
 attempt's repack/transfer stages because they were not executed.
 
-Measurement pending: `Tools~/run-transfer-performance.ps1 -Repetitions 3
--Density 32` control (main) against this branch, with all exports
-byte-identical through `compare-transfer-performance.py`, plus the
-`autoTuneDistinctInputs` field of the corpus variant matrix (PR #294) to show
-how often attempts repeat.
+Measured with the paired benchmark (`FrozenForwardReverseComparison`, density
+32, Cafe_Table_A_01 / Modern_Kitchen_A / kamaz_Off), Unity 6000.2.6f2 batchmode
+on an i9-14900K, three runs per arm, control `285147e` against `f2bcc88`.
+`compare-transfer-performance.py`: all 120 exports per run have identical binary
+numeric values; inputs, atlas dimensions and audit counts match. Medians (s):
+
+| Model | Forward pipeline | Detached forward preparation | Forward repack (samples / s) | Forward transfer (samples / s) |
+|---|---:|---:|---:|---:|
+| Cafe_Table_A_01 | 0.38 → 0.39 | 0.17 → 0.17 | 1 / 0.14 → 1 / 0.14 | 1 / 0.20 → 1 / 0.20 |
+| Modern_Kitchen_A | 3.11 → 3.15 | 3.14 → 3.07 | 1 / 0.42 → 1 / 0.43 | 1 / 2.60 → 1 / 2.62 |
+| kamaz_Off | 47.80 → 16.34 | 47.79 → 16.52 | 3 / 2.34 → 1 / 0.77 | 3 / 44.63 → 1 / 14.70 |
+
+On Kamaz all three separations produce the same symmetry split, so two of the
+three attempts are reused: shell transfer falls from 30 to 10 samples and the
+donor-seam trial from 18 to 6. Cafe and Kitchen stop after their first attempt
+and are unchanged. Reverse is unchanged (Kamaz exclusive 12.82 → 12.70 s,
+overlap 29.85 → 29.80 s). How often attempts repeat across the furniture corpus
+is left to the variant matrix's `autoTuneDistinctInputs` field (PR #294).
 
 ## Point-branch recovery: skip the contact scan without a single-point branch — 2026-10-21
 
