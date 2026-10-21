@@ -280,12 +280,21 @@ namespace SashaRX.UnityMeshLab
             var resultVertices = result.vertices;
             for (int s = 0; s < imported.subMeshCount; s++)
             {
-                if (imported.GetTopology(s) != result.GetTopology(s)) return true;
-                int size = imported.GetTopology(s) == MeshTopology.Quads ? 4 : 3;
-                if (!SameFaces(importedVertices, imported.GetIndices(s), resultVertices, result.GetIndices(s), size)) return true;
+                var topology = imported.GetTopology(s);
+                if (topology == result.GetTopology(s))
+                {
+                    int size = topology == MeshTopology.Quads ? 4 : 3;
+                    if (!SameFaces(importedVertices, imported.GetIndices(s), resultVertices, result.GetIndices(s), size)) return true;
+                }
+                // A Keep Quads import whose result stores each quad as Unity's two triangles has the
+                // same faces; channels are written onto the quad polygons corner by corner.
+                else if (!Polygonal(topology) || !Polygonal(result.GetTopology(s))
+                    || !SameFaces(importedVertices, imported.GetTriangles(s), resultVertices, result.GetTriangles(s), 3)) return true;
             }
             return false;
         }
+
+        static bool Polygonal(MeshTopology topology) => topology == MeshTopology.Triangles || topology == MeshTopology.Quads;
 
         static bool SameFaces(Vector3[] aVertices, int[] aIndices, Vector3[] bVertices, int[] bIndices, int size)
         {
