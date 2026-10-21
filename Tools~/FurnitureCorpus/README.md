@@ -21,7 +21,7 @@ matching file/pair/error counts and all nine measurements per pair are required 
 the summary's `complete` flag. Errors and incomplete intersection scans remain
 visible. A completed audit is **not** a clean-UV certification.
 
-The twelve portable report checks also run in `meta-check.yml` without private meshes,
+The portable report and analysis checks also run in `meta-check.yml` without private meshes,
 Unity licensing or SLIM dependencies. The private corpus audit remains local.
 An additional optional solver test rejects a closed low-stretch patch before the
 probe threshold; it runs with the SLIM environment and is explicitly skipped without it.
@@ -77,6 +77,48 @@ model/LOD result. The optional gate exits with code 1 for any worse, tradeoff or
 invalid comparison, preserving the report for inspection. Omitting the flag only
 reports differences. Passing means no measured regression relative to the chosen
 baseline; it does not certify a defect-free atlas or correct correspondence.
+
+## Oversample analysis
+
+On the full corpus, `oversample-8` improves 137 packed sources against `default`
+(17 worse, 101 tradeoff), yet its grouped transfer splits 65 better / 61 worse /
+129 tradeoff. Oversampling changes two things at once. The pack reports its
+internal atlas (requested resolution × reached oversample), and grouped transfer
+takes that size as the side of its texel tolerances (1.25 px out-of-bounds margin,
+2.5 px bounds tolerance, the planar-recovery band). When the packs reach oversample 8
+and 4, these are half as wide in UV space at 8 as at the default 4, although the
+lightmap is 512 px in both; the reached factor is reported below.
+
+To separate the pack from the transfer side, record with
+`MESHLAB_CORPUS_OVERSAMPLE_ANALYSIS=1`. The `default` and `oversample-8` profiles
+then add a `grouped-at-resolution` row: the same source transferred against the
+requested resolution. Its `atlasSide` is that resolution. Grouped rows are also
+traced: `sourceAtlasRecoveryAllowed` is the source-atlas recovery gate and
+`cleanChartRecoveries` counts the target shells clean-chart recovery ran on (among
+the first 10000, which the trace keeps). The gate also lets merged and overlap-group
+candidate selection recover; that path is not counted. Traced times include the
+trace. A capture with these rows has eleven measurements per pair, and `report.py`
+then counts it complete only when every pair has both control rows; compare it only
+with captures recorded the same way.
+
+```powershell
+$env:MESHLAB_CORPUS_OVERSAMPLE_ANALYSIS = '1'
+# Run the corpus test as above, then:
+python Tools~/FurnitureCorpus/report.py D:/private-results/oversample.jsonl --out D:/private-results/oversample-report
+python Tools~/FurnitureCorpus/oversample.py D:/private-results/oversample.jsonl --out D:/private-results/oversample-report
+```
+
+`oversample.md` contains:
+- verdicts for the packed source, the transfer at the internal side, the transfer at
+  the requested resolution, and the side change alone at oversample 4 and at 8;
+- per-metric better/worse/same counts and the most common tradeoff patterns;
+- a table of how each pair's packed-source verdict carries through each transfer;
+- a table of the recovery gate (closed/open at oversample 4 -> 8) and the clean-chart
+  recovery count against each transfer verdict;
+- the oversample each pack reached (`atlasSide / resolution` per source mesh), which
+  shows where the pack budget lowered the requested factor.
+
+It names no models and can be posted as a summary.
 
 ## Optional SLIM control
 
