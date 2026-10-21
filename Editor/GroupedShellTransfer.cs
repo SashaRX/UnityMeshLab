@@ -2211,6 +2211,8 @@ namespace SashaRX.UnityMeshLab
             }
 
             int transferred = 0;
+            // Rejected merged shells written by the fallback; re-checked at classification.
+            var rejectedFallbackShells = new HashSet<int>();
             int shellsMatched = 0;
             int shellsTransform = 0, shellsInterpolation = 0, shellsMerged = 0;
             var sourceAtlas = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {
@@ -3427,13 +3429,14 @@ namespace SashaRX.UnityMeshLab
                                 }
                             }
                         }
-                        else if (CanReplaceUnwrittenShell(tShell, tgtTris, bestMergedUv2, bestMergedIssues))
+                        else if (CanReplaceUnwrittenShell(tShell, tgtTris, tVerts, bestMergedUv2))
                         {
                             // An unwritten shell keeps UV2 at (0,0): every face collapses onto
                             // the atlas corner. A complete, fold-free candidate in the matched
                             // region collapses fewer faces; it is written and classified with
                             // the other shells, so final recovery can still improve it.
                             chosenUv2 = bestMergedUv2;
+                            rejectedFallbackShells.Add(tsi);
                             shellsMerged++;
                             result.consistencyCorrected += bestMergedConsistencyFixes;
                             UvtLog.Warn($"[GroupedTransfer]   t{tsi} rejected-merged fallback({faceCount}f): " +
@@ -3975,6 +3978,23 @@ namespace SashaRX.UnityMeshLab
 
                 var finalUv = ShellCandidate(tgtShells[tsi], result.uv2);
                 var finalQuality = TransferCandidateQuality.Measure(tgtShells[tsi], tgtTris, tVerts, finalUv);
+                // The AABB safety net and final recovery may have moved a fallback shell.
+                // If it no longer passes the fallback gate, restore the unwritten layout.
+                if (rejectedFallbackShells.Contains(tsi) && !StillReplacesUnwrittenShell(tgtShells[tsi], finalQuality))
+                {
+                    foreach (int vertex in tgtShells[tsi].vertexIndices)
+                    {
+                        if (vertex >= result.uv2.Length) continue;
+                        result.uv2[vertex] = Vector2.zero;
+                        result.vertexToSourceShell[vertex] = -1;
+                        result.verticesTransferred--;
+                    }
+                    result.targetShellStatus[tsi] = ShellStatus.Rejected;
+                    result.shellsRejected++;
+                    statusRejected++;
+                    UvtLog.Warn($"[GroupedTransfer]   t{tsi} rejected-merged fallback withdrawn after final checks — UV2 not written");
+                    continue;
+                }
                 int issues = Mathf.Max(finalQuality.issues, finalQuality.stretchedFaces + finalQuality.invalidFaces);
                 if (finalQuality.overlapPairs > 0 || !finalQuality.overlapScanComplete) issues = Mathf.Max(issues, 1);
                 result.targetShellIssues[tsi] = issues;
@@ -4674,16 +4694,24 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>Whether a rejected merged shell's best candidate may replace the
         /// unwritten (0,0) layout: it maps every shell vertex to a finite point,
-        /// collapses fewer faces than the shell has, and its complete self-overlap
-        /// scan is clean. A partial map would stretch faces from (0,0) across the atlas.</summary>
-        internal static bool CanReplaceUnwrittenShell(UvShell shell, int[] triangles, Dictionary<int, Vector2> candidate, int issues)
+        /// collapses fewer faces than the shell has (counted on the candidate as it
+        /// is now), and its complete self-overlap scan is clean. A partial map would
+        /// stretch faces from (0,0) across the atlas.</summary>
+        internal static bool CanReplaceUnwrittenShell(UvShell shell, int[] triangles, Vector3[] positions,
+            Dictionary<int, Vector2> candidate)
         {
-            if (candidate == null || issues >= shell.faceIndices.Count) return false;
+            if (candidate == null) return false;
             foreach (int vertex in shell.vertexIndices)
                 if (!candidate.TryGetValue(vertex, out var point) || !float.IsFinite(point.x) || !float.IsFinite(point.y))
                     return false;
+            if (CountShellIssues(shell.faceIndices, triangles, positions, candidate) >= shell.faceIndices.Count) return false;
             return !CandidateHasOverlap(shell, triangles, candidate);
         }
+
+        /// <summary>The same gate on a shell's final measured layout.</summary>
+        internal static bool StillReplacesUnwrittenShell(UvShell shell, TransferCandidateQuality final)
+            => final.invalidFaces == 0 && final.issues < shell.faceIndices.Count
+                && final.overlapScanComplete && final.overlapPairs == 0;
 
         static bool CandidateHasOverlap(UvShell shell, int[] triangles, Dictionary<int, Vector2> candidate)
         {
