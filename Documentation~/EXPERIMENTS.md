@@ -132,6 +132,35 @@ stretch cannot dominate it. `ShellLayoutScoreTests` covers the domination rule;
 Measurement pending: the furniture corpus against main with
 `report.py --baseline … --require-no-regressions`; rows must be better or same.
 Count `Post-fix:` (applied) and `Post-fix declined:` (kept, through a BVH) lines.
+## Auto-tune: stretch and out-of-bounds vertices are defects — 2026-10-21
+
+Item 1 of `TRANSFER_METRICS_AUDIT.md`. `AutoTuneScore` (PR #297) ranks attempts
+by failed targets, incomplete scans, collapsed faces, rejected shells, overlap
+area, force3D detections and coverage, and stops the search at an attempt with
+none of these defects. It had no stretch or bounds term. An attempt whose final
+`TransferUvQuality` still had a face at 50:1, or a vertex outside [0,1] when
+the publication clamp is off, could be called perfect and end the search,
+although the workflow itself treats worst anisotropy above 4 as a reason for
+the donor-seam trial.
+
+The score now also keeps the worst anisotropy over all targets (rendered frame,
+as measured) and the summed out-of-bounds vertices. `Perfect` additionally
+requires zero out-of-bounds vertices and a worst anisotropy of at most 4
+(`AutoTuneScore.PerfectAnisotropy`, the trial threshold). When all earlier
+criteria tie, coverage included, fewer out-of-bounds vertices win, then a worst
+anisotropy lower by more than 1%. The earlier criteria keep their order, so an
+attempt can only win on stretch where it was tied before.
+
+Cost: a model whose every attempt keeps a face above 4:1 no longer stops after
+the first attempt and runs all separations; PR #295 still reuses attempts whose
+symmetry split repeats. Auto-tune can now pick a different separation only
+among attempts that tied on every earlier criterion.
+
+`AutoTuneScoreTests` cover the perfect condition, the worst-target aggregate
+and the tie order. The furniture corpus does not run auto-tune, so validation
+is the paired benchmark: `run-transfer-performance.ps1 -Repetitions 1
+-Density 32` against main, reporting per model the attempts run, the chosen
+configuration and the Forward pipeline time.
 
 ## Oversample 8: why a better source does not survive transfer — analysis — 2026-10-21
 
