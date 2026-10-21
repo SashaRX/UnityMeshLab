@@ -2211,8 +2211,9 @@ namespace SashaRX.UnityMeshLab
             }
 
             int transferred = 0;
-            // Rejected merged shells written by the fallback; re-checked at classification.
-            var rejectedFallbackShells = new HashSet<int>();
+            // Rejected merged shells written by the fallback, with the source each had
+            // before it; re-checked at classification.
+            var rejectedFallbackShells = new Dictionary<int, int>();
             int shellsMatched = 0;
             int shellsTransform = 0, shellsInterpolation = 0, shellsMerged = 0;
             var sourceAtlas = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {
@@ -3436,7 +3437,10 @@ namespace SashaRX.UnityMeshLab
                             // region collapses fewer faces; it is written and classified with
                             // the other shells, so final recovery can still improve it.
                             chosenUv2 = bestMergedUv2;
-                            rejectedFallbackShells.Add(tsi);
+                            // The overlap fall-through may have moved chosenSrc; the AABB
+                            // safety net and next-LOD hints read the shell's source.
+                            rejectedFallbackShells[tsi] = result.targetShellToSourceShell[tsi];
+                            result.targetShellToSourceShell[tsi] = chosenSrc;
                             shellsMerged++;
                             result.consistencyCorrected += bestMergedConsistencyFixes;
                             UvtLog.Warn($"[GroupedTransfer]   t{tsi} rejected-merged fallback({faceCount}f): " +
@@ -3980,8 +3984,10 @@ namespace SashaRX.UnityMeshLab
                 var finalQuality = TransferCandidateQuality.Measure(tgtShells[tsi], tgtTris, tVerts, finalUv);
                 // The AABB safety net and final recovery may have moved a fallback shell.
                 // If it no longer passes the fallback gate, restore the unwritten layout.
-                if (rejectedFallbackShells.Contains(tsi) && !StillReplacesUnwrittenShell(tgtShells[tsi], finalQuality))
+                if (rejectedFallbackShells.TryGetValue(tsi, out int unwrittenSource)
+                    && !StillReplacesUnwrittenShell(tgtShells[tsi], finalQuality))
                 {
+                    result.targetShellToSourceShell[tsi] = unwrittenSource;
                     foreach (int vertex in tgtShells[tsi].vertexIndices)
                     {
                         if (vertex >= result.uv2.Length) continue;

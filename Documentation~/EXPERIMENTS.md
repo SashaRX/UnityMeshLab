@@ -19,6 +19,12 @@ quality like any other shell, so `RecoverFinalProjection` can still improve
 it. A shell without a safe candidate stays unwritten and `Rejected`, as before.
 force3D shells keep their existing degraded-write path.
 
+The fallback records the source its candidate was built from (the overlap
+fall-through may have changed it), so the AABB safety net and next-LOD hints
+use that source. At classification the same gate is applied to the final
+layout; a shell that no longer passes returns to (0,0) and `Rejected` with its
+earlier source, exactly as before this change.
+
 This changes outputs, so it is gated by the corpus rather than by bitwise
 comparison. `RejectedMergedShellReplacesItsCornerCollapseOnlyWithACompleteFoldFreeCandidate`
 covers the gate (complete, finite, fewer issues, no self-overlap).
