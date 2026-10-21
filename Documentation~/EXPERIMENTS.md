@@ -99,6 +99,9 @@ comparison: a standard capture against main, compared with
 `report.py --baseline ... --require-no-regressions` (no worse, tradeoff or
 invalid rows). No synthetic fixture reproduces the fall-through yet.
 
+Result: measured together with the safety-net change below (main `408e16e`); see
+that entry. The combined gate passed.
+
 ## Merged-shell safety net: judge a shell's re-projection as one change — 2026-10-21
 
 After Phase 3, the safety net re-projects every merged vertex outside its
@@ -130,9 +133,17 @@ corner layout cannot dominate a re-projection and a re-projection with any finit
 stretch cannot dominate it. `ShellLayoutScoreTests` covers the domination rule;
 `SafetyNetScanOfASmallSourceFindsTheFaceItsBvhWould` the scan.
 
-Measurement pending: the furniture corpus against main with
-`report.py --baseline … --require-no-regressions`; rows must be better or same.
-Count `Post-fix:` (applied) and `Post-fix declined:` (kept, through a BVH) lines.
+Result (main `408e16e`, which carries this change and the merged-shell source
+record above, against a control on `7aaecf9`): accepted. Both captures ran on a
+frozen copy of the corpus, because 13 of its 89 files had changed since the
+previous control; 256 LOD pairs, 2304 measured rows each, no input hash differs.
+`report.py --baseline … --require-no-regressions` exits 0: 2302 rows same and 2
+better (one LOD1 target, default and oversample-8: collapsed UV faces 13 → 12,
+overlap pairs 151 → 149 and 157 → 155, area-weighted anisotropy lower), no
+worse, tradeoff or invalid rows. `Post-fix:` lines 56 → 54; `Post-fix declined:`
+0 → 3, all one shell in three repeats keeping its transferred layout over
+re-projecting 4 outlier vertices. Rejected shells 2966 in both, 29 of them with
+a `Post-fix` line in both.
 
 ## Auto-tune: stretch and out-of-bounds vertices are defects — 2026-10-21
 
