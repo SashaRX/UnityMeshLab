@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 - Reverse UV with "Prepare with ordinary Transfer" reuses the last Full Pipeline result instead of repeating the pipeline on detached copies, when its settings key, imported inputs, renderer frames, texture metric and published results (compared by reference and content fingerprint) still match what the detached preparation would use. Any change, a scene edit, per-mesh atlases or a non-finest source LOD repeats the preparation as before.
+- Full Pipeline auto-tune ranks separation attempts by the UV defects their targets actually carry (failed targets, incomplete scans, collapsed/invalid UV faces, rejected shells, overlap area) before the force3D overlap counter and vertex coverage, and stops early only when no such defect remains. Zero-area 3D faces are not counted.
 - Full Pipeline auto-tune skips repack and transfer for a separation whose symmetry split reproduces an earlier attempt's working meshes, reusing that attempt's result. The selected outputs are unchanged.
 - Point-branch UV recovery skips its whole-chart contact scan when no branch is held by exactly one shared point, which is the common case for charts split by hard normal edges. Recovered UVs and refusals are unchanged.
 - Exclusive Reverse packing reuses one operation's native charts and owned input buffers across identical trials, rebuilding them when footprint data changes. Paired Kamaz/CementWall runs retain exact outputs; native placement and all quality audits still run.

@@ -36,6 +36,48 @@ with `compare-transfer-performance.py` confirming all exports are
 byte-identical. The cost of fingerprinting is the "Forward run fingerprint"
 sample of the Forward pipeline.
 
+## Auto-tune: choose attempts by measured UV defects — 2026-10-21
+
+Full Pipeline auto-tune tries up to three binary-split separations and keeps
+the best attempt. It scored an attempt as `shellsRejected + shellsOverlapFixed`,
+with vertex coverage as the tie-break. `shellsOverlapFixed` only counts force3D
+shells whose UV2 bounding boxes overlap. Collapsed UV faces, overlap pairs and
+overlap area did not count at all, and seam-prepared targets always report zero
+for both counters. An attempt with collapsed faces could therefore beat a clean
+one that had a single force3D box overlap. The search also stopped as
+"perfect" while targets still carried collapsed faces or overlaps.
+
+Every target's final `TransferUvQuality` is already measured in the rendered
+frame to decide the donor-seam trial. When the trial is accepted, the prepared
+mesh is measured as well. Auto-tune now records that final quality per target,
+re-measured after the publication clamp to [0,1] whenever the clamp moved a
+coordinate, because clamping can collapse a face. Only aggregates are kept,
+and only during an auto-tune attempt's transfer stage. Attempts are compared
+lexicographically (`AutoTuneScore`), in this order:
+
+1. targets whose transfer produced no UVs;
+2. incomplete overlap scans;
+3. invalid plus collapsed UV faces;
+4. rejected shells;
+5. summed overlap area (relative tolerance 1e-6), not pair count, which seam
+   subdivision inflates;
+6. the previous force3D counter;
+7. vertex coverage.
+
+Selection still needs a strict improvement. A perfect result now also requires
+zero collapsed or invalid faces and zero overlap pairs. Zero-area 3D faces are
+counted with `TransferUvQuality.Measure`'s own predicate and excluded. They
+exist in every attempt and cannot be repaired by a separation.
+
+This can select a different separation than before, so outputs may change
+where attempts differ. The stricter perfect condition can also run more
+attempts. PR #295 removes attempts whose symmetry split repeats.
+
+Validation pending: Full Pipeline on the private corpus (PR #294 matrix,
+`autoTuneChosen`), comparing collapsed faces, overlap area and time per model
+against main. Unit tests cover the ordering, tolerance, perfect condition and
+the geometry-degenerate count.
+
 ## Auto-tune: reuse attempts whose symmetry split repeats — 2026-10-21
 
 Full Pipeline auto-tune runs symmetry split, repack and transfer for up to
