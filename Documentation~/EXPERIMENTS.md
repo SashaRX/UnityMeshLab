@@ -11,9 +11,13 @@ splits are all N-fold, and every run with the symmetry step skipped give all
 attempts identical working meshes. Each such attempt still repeated the whole
 repack and transfer.
 
-After the symmetry stage, the pipeline hashes every included working mesh
-(`TransferMeshSnapshot.Capture`) together with its split flag. If an earlier
-attempt had the same hash, the attempt skips repack, transfer and evaluation.
+After the symmetry stage, the pipeline streams the content of every included
+working mesh (positions, normals, tangents, colours, all UV channels and
+indices, but not its name) into one SHA-256 hash together with its split flag.
+Names are excluded because retries restore "(Clone)"-suffixed copies; names
+only label derived meshes and logs. If hashing fails, the attempt runs in
+full. If an earlier attempt had the same hash, the attempt skips repack,
+transfer and evaluation.
 It restores that attempt's `HasRepack`/`HasTransfer` and stage outcomes, then
 continues. Repack and transfer are deterministic for identical meshes and
 settings, and a new best attempt requires a strict improvement, so a repeat

@@ -1946,31 +1946,30 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>
         /// Fingerprints what the symmetry stage can change: each included working
-        /// mesh and its split flag. Unreadable meshes cannot have been split; they
-        /// contribute a fixed marker.
+        /// mesh's content and its split flag. Names are excluded because retries
+        /// restore "(Clone)"-suffixed copies; they only name derived meshes and
+        /// logs. Unreadable meshes cannot have been split and contribute a fixed
+        /// marker. Returns null, so the attempt simply runs, if hashing fails.
         /// </summary>
         string AutoTuneInputSignature()
         {
-            using var sha = System.Security.Cryptography.SHA256.Create();
-            var marker = new byte[1];
-            foreach (var e in ctx.MeshEntries)
+            try
             {
-                if (!e.include) continue;
-                marker[0] = (byte)(e.wasSymmetrySplit ? 1 : 0);
-                sha.TransformBlock(marker, 0, 1, null, 0);
-                if (e.originalMesh != null && e.originalMesh.isReadable)
+                using var hash = new TransferMeshSnapshot.ContentHash();
+                foreach (var e in ctx.MeshEntries)
                 {
-                    var data = TransferMeshSnapshot.Capture(e.originalMesh);
-                    sha.TransformBlock(data, 0, data.Length, null, 0);
+                    if (!e.include) continue;
+                    hash.Add(e.wasSymmetrySplit ? 1 : 0);
+                    if (e.originalMesh != null && e.originalMesh.isReadable) hash.Add(e.originalMesh);
+                    else hash.Add(-1);
                 }
-                else
-                {
-                    marker[0] = 2;
-                    sha.TransformBlock(marker, 0, 1, null, 0);
-                }
+                return hash.Finish();
             }
-            sha.TransformFinalBlock(System.Array.Empty<byte>(), 0, 0);
-            return System.Convert.ToBase64String(sha.Hash);
+            catch (Exception error)
+            {
+                UvtLog.Warn($"[Pipeline] Auto-tune input could not be fingerprinted; the attempt runs in full: {error.Message}");
+                return null;
+            }
         }
 
         async Task<bool> RunAutoTuneAttempts(float[] separationConfigs, Dictionary<MeshEntry, Mesh> savedMeshes,
