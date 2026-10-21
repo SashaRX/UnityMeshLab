@@ -1623,6 +1623,46 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsNotNull(source.repackedMesh); Assert.IsNotNull(target.transferredMesh);
         }
 
+        /// <summary>Repeated symmetry splits reuse the executed attempt and publish the same source atlas.</summary>
+        [Test]
+        public void AutoTuneReusesAttemptsWhoseSymmetrySplitRepeats()
+        {
+            // Transfer is off, so no attempt is perfect and all three separations
+            // run; two-triangle quads never split, so every attempt's input repeats.
+            var repeated = RunAutoTuneWithoutTransfer(false, out long repeatedRepacks, out var repeatedStages, out bool repeatedHasRepack);
+            var reused = RunAutoTuneWithoutTransfer(true, out long reusedRepacks, out var reusedStages, out bool reusedHasRepack);
+            Assert.AreEqual(3, repeatedRepacks);
+            Assert.AreEqual(1, reusedRepacks, "Identical attempts must not repack again.");
+            CollectionAssert.AreEqual(repeated, reused, "Reuse must publish the identical source atlas.");
+            Assert.AreEqual(repeatedHasRepack, reusedHasRepack);
+            CollectionAssert.AreEqual(repeatedStages, reusedStages);
+        }
+
+        /// <summary>Runs the auto-tune pipeline on a fresh quad LOD pair; returns the published source atlas bytes.</summary>
+        byte[] RunAutoTuneWithoutTransfer(bool reuse, out long repacks, out string[] stages, out bool hasRepack)
+        {
+            if (hub != null) Object.DestroyImmediate(hub);
+            var ctx = Open(Group(true, out var sourceRenderer, out _));
+            ctx.AtlasResolution = 64; ctx.InternalOversample = 1; ctx.RepackResolutionMode = ResolutionMode.Manual;
+            var workflow = hub.DiagnosticWorkflow;
+            foreach (string stage in new[] { "stageRunAnalyzeUv0", "stageRunWeldUv0", "stageRunTransfer" })
+                typeof(UvTransferWorkflow).GetField(stage, Private).SetValue(workflow, false);
+            workflow.reuseIdenticalAutoTuneAttempts = reuse;
+            var profile = new TransferPerformanceProfile();
+            workflow.ForwardPerformance = profile;
+            try
+            {
+                var completed = ((System.Threading.Tasks.Task<bool>)CallWorkflow("ExecFullPipelineCoreImpl", false)).GetAwaiter().GetResult();
+                Assert.IsTrue(completed);
+            }
+            finally { workflow.ForwardPerformance = null; }
+            repacks = profile.samples.Single(s => s.stage == "Forward repack").count;
+            stages = ((System.Array)typeof(UvTransferWorkflow).GetField("stageOutcome", Private).GetValue(workflow))
+                .Cast<object>().Select(s => s.ToString()).ToArray();
+            hasRepack = ctx.HasRepack;
+            return TransferMeshSnapshot.Capture(ctx.MeshEntries.Find(e => e.renderer == sourceRenderer).repackedMesh);
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void FullPipelineCannotTransferOrCompleteAfterFailedSourceRepack(bool partialSuccess)

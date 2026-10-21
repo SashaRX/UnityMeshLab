@@ -36,6 +36,55 @@ with `compare-transfer-performance.py` confirming all exports are
 byte-identical. The cost of fingerprinting is the "Forward run fingerprint"
 sample of the Forward pipeline.
 
+## Auto-tune: reuse attempts whose symmetry split repeats — 2026-10-21
+
+Full Pipeline auto-tune runs symmetry split, repack and transfer for up to
+three binary-split separations (10%, 5%, 20%). It stops early only after a
+result with zero issues and at least 99% vertex coverage, which Kamaz never
+reaches. The separation is read only by `ApplyBinarySplit`. A model without a
+shell whose 3D separation ratio falls between the thresholds, a model whose
+splits are all N-fold, and every run with the symmetry step skipped give all
+attempts identical working meshes. Each such attempt still repeated the whole
+repack and transfer.
+
+After the symmetry stage, the pipeline streams the content of every included
+working mesh (positions, normals, tangents, colours, all UV channels and
+indices, but not its name) into one SHA-256 hash together with its split flag.
+Names are excluded because retries restore "(Clone)"-suffixed copies; names
+only label derived meshes and logs. If hashing fails, the attempt runs in
+full. If an earlier attempt had the same hash, the attempt skips repack,
+transfer and evaluation.
+It restores that attempt's `HasRepack`/`HasTransfer` and stage outcomes, then
+continues. Repack and transfer are deterministic for identical meshes and
+settings, and a new best attempt requires a strict improvement, so a repeat
+can neither be selected nor stop the search. The chosen meshes are restored
+exactly as before. `UvTransferWorkflow.reuseIdenticalAutoTuneAttempts = false`
+keeps the old path. A differential test compares both paths on a quad LOD
+pair with transfer disabled: three repacks against one, with the same
+published atlas bytes and stage outcomes.
+
+Logs gain one Info line per reused attempt. Diagnostic captures omit that
+attempt's repack/transfer stages because they were not executed.
+
+Measured with the paired benchmark (`FrozenForwardReverseComparison`, density
+32, Cafe_Table_A_01 / Modern_Kitchen_A / kamaz_Off), Unity 6000.2.6f2 batchmode
+on an i9-14900K, three runs per arm, control `285147e` against `f2bcc88`.
+`compare-transfer-performance.py`: all 120 exports per run have identical binary
+numeric values; inputs, atlas dimensions and audit counts match. Medians (s):
+
+| Model | Forward pipeline | Detached forward preparation | Forward repack (samples / s) | Forward transfer (samples / s) |
+|---|---:|---:|---:|---:|
+| Cafe_Table_A_01 | 0.38 → 0.39 | 0.17 → 0.17 | 1 / 0.14 → 1 / 0.14 | 1 / 0.20 → 1 / 0.20 |
+| Modern_Kitchen_A | 3.11 → 3.15 | 3.14 → 3.07 | 1 / 0.42 → 1 / 0.43 | 1 / 2.60 → 1 / 2.62 |
+| kamaz_Off | 47.80 → 16.34 | 47.79 → 16.52 | 3 / 2.34 → 1 / 0.77 | 3 / 44.63 → 1 / 14.70 |
+
+On Kamaz all three separations produce the same symmetry split, so two of the
+three attempts are reused: shell transfer falls from 30 to 10 samples and the
+donor-seam trial from 18 to 6. Cafe and Kitchen stop after their first attempt
+and are unchanged. Reverse is unchanged (Kamaz exclusive 12.82 → 12.70 s,
+overlap 29.85 → 29.80 s). How often attempts repeat across the furniture corpus
+is left to the variant matrix's `autoTuneDistinctInputs` field (PR #294).
+
 ## Point-branch recovery: skip the contact scan without a single-point branch — 2026-10-21
 
 `UvPointJunctionRecovery` runs on every unpacked chart in

@@ -175,11 +175,12 @@ namespace SashaRX.UnityMeshLab
             var verts = source.vertices;
             var normals = source.normals;
             var uv0 = source.uv;
-            var tris = source.triangles;
+            var topology = SubmeshTopology.Capture(source);
             int vertCount = source.vertexCount;
 
-            if (uv0 == null || uv0.Length == 0)
+            if (uv0 == null || uv0.Length == 0 || !CanWeld(topology, source, "WeldUv0"))
                 return UnityEngine.Object.Instantiate(source);
+            var tris = topology.Triangles;
 
             bool hasNormals = normals != null && normals.Length == vertCount;
             var weldMap = BuildWeldMap(verts, uv0, normals, hasNormals);
@@ -267,18 +268,7 @@ namespace SashaRX.UnityMeshLab
             if (hasBW) result.boneWeights = newBW;
 
             // Handle submeshes
-            int subCount = source.subMeshCount;
-            result.subMeshCount = subCount;
-            int triOffset = 0;
-            for (int s = 0; s < subCount; s++)
-            {
-                var desc = source.GetSubMesh(s);
-                int idxCount = desc.indexCount;
-                int[] subTris = new int[idxCount];
-                System.Array.Copy(newTris, triOffset, subTris, 0, idxCount);
-                result.SetTriangles(subTris, s);
-                triOffset += idxCount;
-            }
+            topology.Apply(result, newTris);
 
             // Copy bind poses if skinned
             if (source.bindposes != null && source.bindposes.Length > 0)
@@ -306,10 +296,11 @@ namespace SashaRX.UnityMeshLab
             var verts = mesh.vertices;
             var normals = mesh.normals;
             var uv0 = mesh.uv;
-            var tris = mesh.triangles;
+            var topology = SubmeshTopology.Capture(mesh);
             int vertCount = mesh.vertexCount;
 
-            if (uv0 == null || uv0.Length == 0) return false;
+            if (uv0 == null || uv0.Length == 0 || !CanWeld(topology, mesh, "WeldInPlace")) return false;
+            var tris = topology.Triangles;
 
             // Snapshot tangent presence before the in-place rebuild so the post-weld
             // validation can detect TBN data going missing during the merge.
@@ -380,12 +371,6 @@ namespace SashaRX.UnityMeshLab
                 if (hasBW) newBW[ni] = boneWeights[i];
             }
 
-            // Capture submesh layout before Clear
-            int subCount = mesh.subMeshCount;
-            var subDescs = new UnityEngine.Rendering.SubMeshDescriptor[subCount];
-            for (int s = 0; s < subCount; s++)
-                subDescs[s] = mesh.GetSubMesh(s);
-
             // Copy bind poses if skinned
             var bindPoses = mesh.bindposes;
 
@@ -401,17 +386,8 @@ namespace SashaRX.UnityMeshLab
             if (bindPoses != null && bindPoses.Length > 0)
                 mesh.bindposes = bindPoses;
 
-            // Restore submeshes with compacted triangles
-            mesh.subMeshCount = subCount;
-            int triOffset = 0;
-            for (int s = 0; s < subCount; s++)
-            {
-                int idxCount = subDescs[s].indexCount;
-                int[] subTris = new int[idxCount];
-                System.Array.Copy(newTris, triOffset, subTris, 0, idxCount);
-                mesh.SetTriangles(subTris, s);
-                triOffset += idxCount;
-            }
+            // Restore submeshes with compacted indices, each at its captured topology
+            topology.Apply(mesh, newTris);
 
             mesh.RecalculateBounds();
 
@@ -440,12 +416,13 @@ namespace SashaRX.UnityMeshLab
             var tVerts = target.vertices;
             var tNormals = target.normals;
             var tUv0 = target.uv;
-            var tTris = target.triangles;
+            var tTopology = SubmeshTopology.Capture(target);
             int tVertCount = target.vertexCount;
             bool tHasNormals = tNormals != null && tNormals.Length == tVertCount;
 
-            if (tUv0 == null || tUv0.Length == 0)
+            if (tUv0 == null || tUv0.Length == 0 || !CanWeld(tTopology, target, "SourceGuidedWeld"))
                 return UnityEngine.Object.Instantiate(target);
+            var tTris = tTopology.Triangles;
 
             // ── Build source: vertex → shell ID lookup ──
             var sUv0 = source.uv;
@@ -662,18 +639,7 @@ namespace SashaRX.UnityMeshLab
             if (hasColors) result.colors = newColors;
             if (hasBW) result.boneWeights = newBW;
 
-            int subCount = target.subMeshCount;
-            result.subMeshCount = subCount;
-            int triOffset = 0;
-            for (int s = 0; s < subCount; s++)
-            {
-                var desc = target.GetSubMesh(s);
-                int idxCount = desc.indexCount;
-                int[] subTris = new int[idxCount];
-                System.Array.Copy(newTris, triOffset, subTris, 0, idxCount);
-                result.SetTriangles(subTris, s);
-                triOffset += idxCount;
-            }
+            tTopology.Apply(result, newTris);
 
             if (target.bindposes != null && target.bindposes.Length > 0)
                 result.bindposes = target.bindposes;
@@ -700,6 +666,14 @@ namespace SashaRX.UnityMeshLab
         //  No source mesh needed. Works purely in UV space.
         // ═══════════════════════════════════════════════════════════
 
+        // Lines and points have no triangles to weld through; such a mesh is left as it is.
+        static bool CanWeld(SubmeshTopology topology, Mesh mesh, string pass)
+        {
+            if (topology != null) return true;
+            UvtLog.Warn($"[UV0Fix] {pass} '{mesh.name}': a submesh is neither triangles nor quads; weld skipped.");
+            return false;
+        }
+
         public static Mesh UvEdgeWeld(Mesh mesh, float uvThreshold = 0.002f)
         {
             if (mesh == null) return null;
@@ -715,14 +689,10 @@ namespace SashaRX.UnityMeshLab
             var tangents = mesh.tangents;
             bool hasTangents = tangents != null && tangents.Length == vertCount;
 
-            // Flatten all submesh triangles into one array
-            int[] tris;
-            {
-                var allTris = new List<int>();
-                for (int s = 0; s < mesh.subMeshCount; s++)
-                    allTris.AddRange(mesh.GetTriangles(s));
-                tris = allTris.ToArray();
-            }
+            // All submesh triangles in one array; Apply restores each submesh's topology.
+            var topology = SubmeshTopology.Capture(mesh);
+            if (!CanWeld(topology, mesh, "UvEdgeWeld")) return mesh;
+            int[] tris = topology.Triangles;
             int triCount = tris.Length / 3;
             if (triCount == 0) return mesh;
 
@@ -1085,7 +1055,8 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
-            var result = new Mesh();
+            // A welded mesh keeps the source's 32-bit indices when it still needs them.
+            var result = new Mesh { indexFormat = newVertCount > 65535 ? UnityEngine.Rendering.IndexFormat.UInt32 : mesh.indexFormat };
             result.name = mesh.name;
             result.vertices = newVerts;
             result.uv = newUv0;
@@ -1097,18 +1068,7 @@ namespace SashaRX.UnityMeshLab
             for (int ch = UV_INTERP_START; ch < UV_INTERP_END; ch++)
                 if (hasExtraUv[ch]) result.SetUVs(ch, newExtraUv[ch]);
 
-            int subCount = mesh.subMeshCount;
-            result.subMeshCount = subCount;
-            int triOffset = 0;
-            for (int s = 0; s < subCount; s++)
-            {
-                var desc = mesh.GetSubMesh(s);
-                int idxCount = desc.indexCount;
-                int[] subTris = new int[idxCount];
-                System.Array.Copy(newTris, triOffset, subTris, 0, idxCount);
-                result.SetTriangles(subTris, s);
-                triOffset += idxCount;
-            }
+            topology.Apply(result, newTris);
 
             if (mesh.bindposes != null && mesh.bindposes.Length > 0)
                 result.bindposes = mesh.bindposes;

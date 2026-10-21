@@ -20,12 +20,16 @@ namespace SashaRX.UnityMeshLab
         internal ReverseUvNativeChartSession(TransferPerformanceProfile performance = null)
             => this.performance = performance;
 
-        internal bool TryAcquire(CancellationToken token)
+        /// <summary>Claims the global native lease once. A worker waits for a busy session;
+        /// see <see cref="XatlasRepack.AcquireNativeSessionForRequiredWork"/>.</summary>
+        /// <exception cref="InvalidOperationException">The session is busy and cannot be awaited on this thread.</exception>
+        internal void Acquire(CancellationToken token)
         {
             if (disposed) throw new ObjectDisposedException(nameof(ReverseUvNativeChartSession));
             token.ThrowIfCancellationRequested();
-            if (!acquired) acquired = XatlasRepack.TryAcquireNativeSession();
-            return acquired;
+            if (acquired) return;
+            XatlasRepack.AcquireNativeSessionForRequiredWork("Reverse final packing", token);
+            acquired = true;
         }
 
         internal sealed class PreparedInput
