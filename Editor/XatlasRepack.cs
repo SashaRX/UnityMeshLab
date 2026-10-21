@@ -188,6 +188,8 @@ namespace SashaRX.UnityMeshLab
         public int  snappedVertices;
         public int  flippedShells;
         public string error;
+        /// <summary>The pack stopped at a cancel request; <see cref="error"/> reads "cancelled".</summary>
+        public bool cancelled;
     }
 
     public static class XatlasRepack
@@ -1320,6 +1322,7 @@ namespace SashaRX.UnityMeshLab
                 if (!packed)
                 {
                     result.error = "cancelled";
+                    result.cancelled = true;
                     return result;
                 }
 
@@ -1745,7 +1748,10 @@ namespace SashaRX.UnityMeshLab
                 if (!packedM)
                 {
                     for (int m = 0; m < meshCount; m++)
+                    {
                         results[m].error = "cancelled";
+                        results[m].cancelled = true;
+                    }
                     return results;
                 }
 

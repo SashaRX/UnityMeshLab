@@ -153,7 +153,11 @@ namespace SashaRX.UnityMeshLab
             var pipeline = result.workflow = DetachedPreparation(work, this);
             pipeline.canvas = new UvCanvasView();
             if (!await pipeline.ExecFullPipelineCoreImpl(useAsync))
+            {
+                // The detached pipeline stops at a cancel request; Reverse ends as cancelled, not failed.
+                if (UvProgress.CancelRequested) throw new OperationCanceledException(token);
                 throw new InvalidOperationException("Ordinary Transfer preparation did not complete; previous UVs were preserved.");
+            }
             return work.MeshEntries.ToArray();
         }
 
