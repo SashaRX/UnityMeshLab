@@ -29,12 +29,20 @@ namespace SashaRX.UnityMeshLab
         internal int overlapsFixed;
         /// <summary>Transferred fraction of target vertices; higher is better.</summary>
         internal float coverage;
+        /// <summary>Published vertices outside [0,1] over all targets.</summary>
+        internal int outOfBoundsVertices;
+        /// <summary>Worst face anisotropy over all targets, in the rendered frame.</summary>
+        internal double worstAnisotropy;
+
+        /// <summary>The anisotropy above which the workflow starts the donor-seam trial.</summary>
+        internal const double PerfectAnisotropy = 4;
 
         /// <summary>A score no measured attempt can lose to.</summary>
         internal static AutoTuneScore Worst => new AutoTuneScore {
             failedTargets = int.MaxValue, incompleteScans = int.MaxValue, collapsedFaces = int.MaxValue,
             rejectedShells = int.MaxValue, overlapArea = double.PositiveInfinity, overlapPairs = int.MaxValue,
-            overlapsFixed = int.MaxValue, coverage = float.NegativeInfinity };
+            overlapsFixed = int.MaxValue, coverage = float.NegativeInfinity,
+            outOfBoundsVertices = int.MaxValue, worstAnisotropy = double.PositiveInfinity };
 
         /// <summary>
         /// Builds a score from every target's final quality, paired with that
@@ -58,6 +66,8 @@ namespace SashaRX.UnityMeshLab
             collapsedFaces += quality.invalidFaces + Math.Max(0, quality.degenerateFaces - geometryDegenerateFaces);
             overlapArea += quality.overlapPairArea;
             overlapPairs += quality.overlapPairs;
+            outOfBoundsVertices += quality.outOfBoundsVertices;
+            worstAnisotropy = Math.Max(worstAnisotropy, quality.worstAnisotropy);
         }
 
         /// <summary>
@@ -80,9 +90,13 @@ namespace SashaRX.UnityMeshLab
             return count;
         }
 
-        /// <summary>No measured defect and at least 99% vertex coverage; auto-tune stops here.</summary>
+        /// <summary>
+        /// No measured defect, at least 99% vertex coverage, no vertex outside [0,1]
+        /// and no face stretched past the seam-trial threshold; auto-tune stops here.
+        /// </summary>
         internal bool Perfect => failedTargets == 0 && incompleteScans == 0 && collapsedFaces == 0
-            && rejectedShells == 0 && overlapPairs == 0 && overlapsFixed == 0 && coverage >= .99f;
+            && rejectedShells == 0 && overlapPairs == 0 && overlapsFixed == 0 && coverage >= .99f
+            && outOfBoundsVertices == 0 && worstAnisotropy <= PerfectAnisotropy;
 
         /// <summary>Strict lexicographic improvement; equal attempts never replace each other.</summary>
         internal bool IsBetterThan(AutoTuneScore other)
@@ -100,11 +114,16 @@ namespace SashaRX.UnityMeshLab
                     && Math.Sign(overlapArea) == Math.Sign(other.overlapArea);
             if (!sameArea) return overlapArea < other.overlapArea;
             if (overlapsFixed != other.overlapsFixed) return overlapsFixed < other.overlapsFixed;
-            return coverage > other.coverage;
+            if (coverage > other.coverage) return true;
+            if (coverage < other.coverage) return false;
+            if (outOfBoundsVertices != other.outOfBoundsVertices) return outOfBoundsVertices < other.outOfBoundsVertices;
+            // Within 1% the worst face is the same defect, not an improvement.
+            return worstAnisotropy < other.worstAnisotropy * .99;
         }
 
         public override string ToString() =>
             $"failed={failedTargets}, incompleteScans={incompleteScans}, collapsed={collapsedFaces}, rejected={rejectedShells}, " +
-            $"overlapArea={overlapArea:G4}, overlapPairs={overlapPairs}, force3DOverlaps={overlapsFixed}, vertexCoverage={coverage:P0}";
+            $"overlapArea={overlapArea:G4}, overlapPairs={overlapPairs}, force3DOverlaps={overlapsFixed}, vertexCoverage={coverage:P0}, " +
+            $"outOfBounds={outOfBoundsVertices}, worstAnisotropy={worstAnisotropy:G4}";
     }
 }

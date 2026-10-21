@@ -4,9 +4,10 @@ namespace SashaRX.UnityMeshLab.Tests
 {
     public class AutoTuneScoreTests
     {
-        static TransferUvQuality Quality(int degenerate = 0, int invalid = 0, int pairs = 0, double area = 0, bool complete = true)
+        static TransferUvQuality Quality(int degenerate = 0, int invalid = 0, int pairs = 0, double area = 0, bool complete = true,
+            double worst = 1, int outOfBounds = 0)
             => new TransferUvQuality { degenerateFaces = degenerate, invalidFaces = invalid, overlapPairs = pairs,
-                overlapPairArea = area, overlapScanComplete = complete };
+                overlapPairArea = area, overlapScanComplete = complete, worstAnisotropy = worst, outOfBoundsVertices = outOfBounds };
 
         static AutoTuneScore Score(TransferUvQuality quality, int rejected = 0, int force3D = 0, float coverage = 1,
             int failed = 0, int geometryDegenerate = 0)
@@ -63,6 +64,31 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsFalse(Score(Quality(pairs: 1, area: 1e-9)).Perfect);
             Assert.IsFalse(Score(Quality(complete: false)).Perfect);
             Assert.IsFalse(Score(Quality(), coverage: .98f).Perfect);
+        }
+
+        /// <summary>A stretched face or a vertex outside [0,1] is still a defect: the search must not stop there.</summary>
+        [Test]
+        public void PerfectRequiresNoStretchedFaceOrOutOfBoundsVertex()
+        {
+            Assert.IsTrue(Score(Quality(worst: AutoTuneScore.PerfectAnisotropy)).Perfect);
+            Assert.IsFalse(Score(Quality(worst: 50)).Perfect);
+            Assert.IsFalse(Score(Quality(outOfBounds: 1)).Perfect);
+            var targets = new[] { (Quality(worst: 2), 0), (Quality(worst: 9), 0) };
+            Assert.AreEqual(9d, AutoTuneScore.From(targets, 0, 0, 0, 1).worstAnisotropy, "The worst target counts.");
+        }
+
+        /// <summary>Bounds and stretch only break ties after every earlier criterion, coverage included.</summary>
+        [Test]
+        public void StretchAndBoundsBreakTiesAfterTheEarlierCriteria()
+        {
+            Assert.IsTrue(Score(Quality(worst: 50)).IsBetterThan(Score(Quality(degenerate: 1))),
+                "A stretched attempt still beats one with a collapsed face.");
+            Assert.IsTrue(Score(Quality(worst: 50), coverage: 1).IsBetterThan(Score(Quality(), coverage: .9f)));
+            Assert.IsTrue(Score(Quality(worst: 50)).IsBetterThan(Score(Quality(outOfBounds: 1))));
+            Assert.IsTrue(Score(Quality(worst: 5)).IsBetterThan(Score(Quality(worst: 50))));
+            Assert.IsFalse(Score(Quality(worst: 49.9)).IsBetterThan(Score(Quality(worst: 50))),
+                "Within 1% the worst face is the same defect.");
+            Assert.IsTrue(Score(Quality(worst: 50)).IsBetterThan(AutoTuneScore.Worst));
         }
 
         /// <summary>Zero-area 3D faces are present in every attempt; they do not count as collapsed UVs.</summary>
