@@ -91,7 +91,10 @@ namespace SashaRX.UnityMeshLab
             // Float sums: differences within one part in a million are noise, not an improvement.
             bool finiteAreas = !double.IsInfinity(overlapArea) && !double.IsInfinity(other.overlapArea);
             double tolerance = 1e-6 * Math.Max(Math.Max(Math.Abs(overlapArea), Math.Abs(other.overlapArea)), 1e-12);
-            bool sameArea = overlapArea == other.overlapArea || (finiteAreas && Math.Abs(overlapArea - other.overlapArea) <= tolerance);
+            bool sameArea = finiteAreas
+                ? Math.Abs(overlapArea - other.overlapArea) <= tolerance
+                : double.IsInfinity(overlapArea) && double.IsInfinity(other.overlapArea)
+                    && Math.Sign(overlapArea) == Math.Sign(other.overlapArea);
             if (!sameArea) return overlapArea < other.overlapArea;
             if (overlapsFixed != other.overlapsFixed) return overlapsFixed < other.overlapsFixed;
             return coverage > other.coverage;
