@@ -1176,6 +1176,47 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        [Test]
+        public void ChannelWrite_BakingGeneratedUv1KeepsAnUnloadedMeshsImportedLightmapUvs()
+        {
+            // Another object of the same file (a cabinet's door) was not loaded: writing UV1
+            // switches generation off for it too, so it keeps the UV1 it imports with now.
+            string assetFolder = "Assets/MeshLabGeneratedUv1Unloaded_" + Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", assetFolder.Substring(7));
+            string path = assetFolder + "/source.fbx";
+            const string doorName = "Door_LOD0";
+            Mesh working = null;
+            try
+            {
+                // The fixture's second mesh, under a lit name.
+                File.WriteAllBytes(path, File.ReadAllBytes(WriteSource(true, withCollision: true, collisionName: doorName)));
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.isReadable = true; importer.generateSecondaryUV = true; importer.SaveAndReimport();
+                var meshes = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().ToArray();
+                var door = meshes.Single(m => m.name == doorName);
+                Assert.AreEqual(door.vertexCount, door.uv2.Length, "Unity generates the door's lightmap UVs.");
+                var doorBefore = TriangleUvRecords(door);
+                var imported = meshes.Single(m => m.name != doorName);
+                string partName = imported.name;
+                working = UnityEngine.Object.Instantiate(imported);
+                working.uv2 = working.uv.Select(uv => uv * .5f).ToArray();
+                var entry = new MeshEntry { fbxMesh = imported, originalMesh = working };
+
+                Assert.IsTrue(FbxChannelWrite.Write(path, new[] { entry }, FbxExportIntent.UV1, path, null));
+                Assert.IsFalse(((ModelImporter)AssetImporter.GetAtPath(path)).generateSecondaryUV);
+                meshes = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().ToArray();
+                CollectionAssert.AreEqual(TriangleUvRecords(working), TriangleUvRecords(meshes.Single(m => m.name == partName)));
+                CollectionAssert.AreEqual(doorBefore, TriangleUvRecords(meshes.Single(m => m.name == doorName)),
+                    "The unloaded mesh keeps its lightmap UVs once Unity no longer generates them.");
+            }
+            finally
+            {
+                if (working) UnityEngine.Object.DestroyImmediate(working);
+                AssetDatabase.DeleteAsset(assetFolder);
+            }
+        }
+
         static void AssertCollisionUnchanged(string sourcePath, string outputPath)
         {
             using var source = FbxSourceDocument.Load(Path.GetFullPath(sourcePath));
