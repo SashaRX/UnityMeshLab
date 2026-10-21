@@ -112,6 +112,49 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(3, data.CornerCount);
         }
 
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        /// <summary>
+        /// A Keep Quads import whose result stores each quad as Unity's own two triangles has
+        /// the same faces, so the save writes channels instead of rewriting the mesh as
+        /// triangles. The other diagonal is a re-triangulated quad and stays geometry.
+        /// </summary>
+        [Test]
+        public void GeometryDiffersIgnoresQuadsStoredAsTheirOwnTriangles()
+        {
+            var imported = new UnityEngine.Mesh { vertices = new[] { UnityEngine.Vector3.zero, UnityEngine.Vector3.right,
+                new UnityEngine.Vector3(1, 1, 0), UnityEngine.Vector3.up, new UnityEngine.Vector3(2, 0, 0), new UnityEngine.Vector3(2, 1, 0) } };
+            UnityEngine.Mesh triangulated = null, otherDiagonal = null, moved = null;
+            try
+            {
+                imported.SetIndices(new[] { 0, 1, 2, 3, 1, 4, 5, 2 }, UnityEngine.MeshTopology.Quads, 0);
+                var split = imported.GetTriangles(0);
+                triangulated = UnityEngine.Object.Instantiate(imported);
+                triangulated.SetTriangles(split, 0);
+                Assert.IsFalse(FbxStructureWrite.GeometryDiffers(imported, triangulated));
+
+                // Split the first quad (corners 0..3) along the diagonal Unity did not use.
+                var diagonal = split.Take(3).Intersect(split.Skip(3).Take(3)).ToArray();
+                var other = Enumerable.Range(0, 4).Except(diagonal).OrderBy(c => c).ToArray();
+                int a = other[0], b = other[1];
+                var resplit = new[] { a, (a + 1) % 4, b, b, (b + 1) % 4, a }.Concat(split.Skip(6)).ToArray();
+                otherDiagonal = UnityEngine.Object.Instantiate(imported);
+                otherDiagonal.SetTriangles(resplit, 0);
+                Assert.IsTrue(FbxStructureWrite.GeometryDiffers(imported, otherDiagonal), "A re-triangulated quad is geometry.");
+
+                moved = UnityEngine.Object.Instantiate(triangulated);
+                var vertices = moved.vertices; vertices[5].z = .25f; moved.vertices = vertices;
+                Assert.IsTrue(FbxStructureWrite.GeometryDiffers(imported, moved), "A moved corner is geometry.");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(imported);
+                if (triangulated) UnityEngine.Object.DestroyImmediate(triangulated);
+                if (otherDiagonal) UnityEngine.Object.DestroyImmediate(otherDiagonal);
+                if (moved) UnityEngine.Object.DestroyImmediate(moved);
+            }
+        }
+#endif
+
         static FbxSpaceFit CubeFit()
         {
             var points = CubePoints();
