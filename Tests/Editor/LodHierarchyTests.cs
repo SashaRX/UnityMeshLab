@@ -113,6 +113,48 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void CreateByNameGathersEveryRendererByItsLodSuffix()
+        {
+            var root = Node("Cabinet", null);
+            var body0 = Node("Body_LOD0", root.transform, Tris(4)).GetComponent<Renderer>();
+            var body1 = Node("Body_LOD1", root.transform, Tris(2)).GetComponent<Renderer>();
+            var door = Node("Door", root.transform);
+            door.AddComponent<LODGroup>();
+            var door0 = Node("Door_LOD0", door.transform, Tris(4)).GetComponent<Renderer>();
+            var door1Node = Node("Door_LOD1", door.transform, Tris(2));
+            var door1 = door1Node.GetComponent<Renderer>();
+            door1.enabled = false;
+            door1Node.SetActive(false);
+            var handle = Node("Handle", door.transform, Tris(1)).GetComponent<Renderer>();
+            var lamp = Node("Lamp_LOD3", root.transform, Tris(1)).GetComponent<Renderer>();
+            var collision = Node("Cabinet_COL", root.transform, Tris(1)).GetComponent<Renderer>();
+
+            var lg = LodHierarchy.CreateByName(root, out int levels, out int removed);
+            Assert.AreSame(root.GetComponent<LODGroup>(), lg);
+            Assert.AreEqual(3, levels, "LOD0, LOD1 and LOD3: gaps close up");
+            Assert.AreEqual(1, removed);
+            Assert.IsTrue(door.GetComponent<LODGroup>() == null, "the nested group is replaced");
+            var lods = lg.GetLODs();
+            CollectionAssert.AreEquivalent(new[] { body0, door0, handle }, lods[0].renderers, "a name without a suffix goes to LOD0");
+            CollectionAssert.AreEquivalent(new[] { body1, door1 }, lods[1].renderers);
+            CollectionAssert.AreEquivalent(new[] { lamp }, lods[2].renderers);
+            CollectionAssert.DoesNotContain(lods[0].renderers, collision);
+            Assert.AreEqual(new[] { .5f, .25f, .125f }, new[] { lods[0].screenRelativeTransitionHeight, lods[1].screenRelativeTransitionHeight, lods[2].screenRelativeTransitionHeight });
+            Assert.IsTrue(door1.enabled && door1Node.activeSelf, "a renderer that goes in is drawn");
+            Assert.AreEqual(LODFadeMode.CrossFade, lg.fadeMode);
+
+            var table = Node("Table", null);
+            Node("Top", table.transform, Tris(2));
+            Node("Leg", table.transform, Tris(1));
+            var single = LodHierarchy.CreateByName(table, out levels, out removed);
+            Assert.AreEqual(1, levels);
+            Assert.AreEqual(2, single.GetLODs()[0].renderers.Length);
+            Assert.AreEqual(.01f, single.GetLODs()[0].screenRelativeTransitionHeight, "a single level never culls");
+
+            Assert.IsNull(LodHierarchy.CreateByName(Node("Empty", null), out _, out _));
+        }
+
+        [Test]
         public void CreateFromRenderersAndSiblings()
         {
             var root = Node("Chair", null);

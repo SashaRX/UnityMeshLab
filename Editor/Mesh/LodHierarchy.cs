@@ -1,9 +1,10 @@
 // LodHierarchy.cs — a LODGroup read from and written to its hierarchy: the LOD
 // renderers a root's children name, the LOD array built from them, a group created
-// from renderers or detected siblings, the compaction of a LOD array, a root mesh moved
-// into a LOD0 child with the children sorted by polycount, and the root MeshCollider
-// fed from a collision child. The Cleanup, Prefab Builder and LOD Generation tabs and
-// the tool context each carried their own; this is the one implementation.
+// from renderers, detected siblings or every renderer by its name, the compaction of
+// a LOD array, a root mesh moved into a LOD0 child with the children sorted by
+// polycount, and the root MeshCollider fed from a collision child. The Cleanup,
+// Prefab Builder and LOD Generation tabs and the tool context each carried their
+// own; this is the one implementation.
 // LodGroupUtility stays the component-level half (recreate, apply, transitions).
 using System;
 using System.Collections.Generic;
@@ -132,6 +133,58 @@ namespace SashaRX.UnityMeshLab
                 lodGroup.RecalculateBounds();
             }
             return lodGroup;
+        }
+
+        /// <summary>
+        /// Gathers every renderer below <paramref name="root"/> (its own included, collision
+        /// objects left out) into one LODGroup on it: a renderer whose node name carries a
+        /// LOD index goes to that level, any other to LOD0. One slot per index found (gaps
+        /// close up) with halving transitions; a single level gets 0.01 so it never culls.
+        /// LODGroups further down are removed, one on the root is reused, and the renderers
+        /// that go in are enabled with their objects activated. One Undo step. Null, and
+        /// nothing changed, when there is no renderer.
+        /// </summary>
+        internal static LODGroup CreateByName(GameObject root, out int levels, out int removedGroups)
+        {
+            levels = removedGroups = 0;
+            if (root == null) return null;
+            var colSet = new HashSet<GameObject>(MeshHygieneUtility.FindCollisionObjects(root.transform));
+            var byIndex = new SortedDictionary<int, List<Renderer>>();
+            foreach (var r in root.GetComponentsInChildren<Renderer>(true))
+            {
+                if (colSet.Contains(r.gameObject) || MeshNaming.IsCollision(r.gameObject.name)) continue;
+                int index = r.transform != root.transform && MeshNaming.TryParseLod(r.gameObject.name, out _, out int lod) ? lod : 0;
+                if (!byIndex.TryGetValue(index, out var list)) byIndex[index] = list = new List<Renderer>();
+                list.Add(r);
+            }
+            if (byIndex.Count == 0) return null;
+
+            int undoGroup = Undo.GetCurrentGroup();
+            Undo.SetCurrentGroupName("Create LODGroup by name");
+            foreach (var nested in root.GetComponentsInChildren<LODGroup>(true))
+                if (nested.gameObject != root) { Undo.DestroyObjectImmediate(nested); removedGroups++; }
+            foreach (var list in byIndex.Values)
+                foreach (var r in list) Show(r, root.transform);
+
+            var lods = LodsFromNames(byIndex, keepEmptySlots: false, Transitions.Halving);
+            if (lods.Length == 1) lods[0].screenRelativeTransitionHeight = 0.01f;
+            var lodGroup = GroupOn(root);
+            lodGroup.fadeMode = LODFadeMode.CrossFade;
+            lodGroup.animateCrossFading = false;
+            lodGroup.SetLODs(lods);
+            lodGroup.RecalculateBounds();
+            Undo.CollapseUndoOperations(undoGroup);
+            levels = lods.Length;
+            return lodGroup;
+        }
+
+        // A renderer going into the group is drawn: enabled, with its object and every
+        // object between it and the root active.
+        static void Show(Renderer renderer, Transform root)
+        {
+            if (!renderer.enabled) { Undo.RecordObject(renderer, "Create LODGroup by name"); renderer.enabled = true; }
+            for (var t = renderer.transform; t != null && t != root; t = t.parent)
+                if (!t.gameObject.activeSelf) { Undo.RecordObject(t.gameObject, "Create LODGroup by name"); t.gameObject.SetActive(true); }
         }
 
         /// <summary>
