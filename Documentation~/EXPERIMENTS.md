@@ -3737,3 +3737,39 @@ skips, followed by 18 focused checks (14 target-recovery controls plus shelving
 geometry/three symmetry modes), all passing. The corpus and kitchen symmetry
 checks pass as well. Both FBX compile variants and dependency/identifier guards
 pass. No proprietary assets or probe captures are committed.
+
+### Incident-patch continuation: bounded corner motion
+
+The countertop's immutable free-corner proposal remains refused. A second stage
+instead develops each corner of an effectively collapsed triangle against its
+opposite edge, then audits every face incident to that moved corner. It requires
+a healthy incident anchor, manifold edges, preserved nonzero winding, anisotropy
+at most four and the existing relative-stretch allowance on healthy faces.
+Whole-face donor coverage still uses the actual packed atlas size and the same
+quarter-texel band. Existing-contact faces cannot move; complete global scans,
+ownership checks, cancellation and bounded work retain atomic publication.
+
+The first corpus trial reduced collapse but introduced three weighted-stretch
+tradeoffs: DressingTable_A_Frame_LOD1 in default/no-reparameterization and
+Kitchen_Island_A_Countertop_LOD1 in oversample-8. That trial was rejected by the
+capture comparison gate. The accepted policy additionally compares whole-model
+finite stretch to the original buffer: maximum, area-weighted and stretched-face
+counts cannot increase at the report's relative 1e-6 precision. The reference
+stays fixed across repairs so rounding allowances do not accumulate.
+
+The guarded 80-file / 255-pair / 2295-row repeat passes the regression gate:
+eight better rows, 2287 equal, no worse/tradeoff rows, errors or incomplete scans.
+The cumulative result against the corrected diagnostic baseline is ten better
+rows. Countertop_LOD1 loses its one collapsed face in all three corpus profiles
+and all three symmetry controls; its existing contacts remain. Dressing-table
+frame/oversample-8 loses two collapsed faces and Shelf_C/default loses one.
+Three further rows improve weighted stretch only. All source and alternate
+projection measurements remain unchanged; shelving-unit collapse remains four.
+
+Local Unity regression verification: 610 passed, zero failed, 45 optional fixture
+skips across target recovery, transfer quality/captures, Forward, Reverse,
+point-junction and source-precision suites. The full-corpus run passes all 26
+checks, including the 22 target recovery controls and three kitchen symmetry
+cases. A separate shelving run passes all 26 checks, including source geometry
+preservation and three symmetry cases. C# compilation passes both FBX define
+variants; dependency and identifier guards pass.

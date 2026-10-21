@@ -1043,6 +1043,8 @@ namespace SashaRX.UnityMeshLab
             {
                 int bevelRecovered = TargetBevelUvRecovery.Apply(result, target.shells, target.indices, target.positions,
                     source.shells, source.indices, source.uv, atlasSize, boundaryToleranceTexels, trace);
+                bevelRecovered += TargetBevelUvRecovery.Apply(result, target.shells, target.indices, target.positions,
+                    source.shells, source.indices, source.uv, atlasSize, boundaryToleranceTexels, trace, allowPatch: true);
                 if (bevelRecovered > 0)
                 {
                     result.shellsGeometryFallback += bevelRecovered;

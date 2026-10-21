@@ -166,18 +166,62 @@ All intersection scans complete and there are no processing errors.
 | Target | Profile | Collapsed UV faces before → after | Overlap pairs before → after |
 |---|---|---:|---:|
 | Modern_DressingTable_B_Shelf_LOD1 | default | 7 → 6 | 4 → 4 |
-| Modern_DressingTable_B_Shelf_LOD1 | no-reparameterization | 7 → 6 | 4 → 4 |
-| Modern_DressingTable_B_Shelf_LOD1 | oversample-8 | 7 → 6 | 4 → 4 |
+| Modern_DressingTable_B_Shelf_LOD1 | no-reparameterization | 7 → 6 | 6 → 6 |
+| Modern_DressingTable_B_Shelf_LOD1 | oversample-8 | 7 → 6 | 7 → 7 |
 | Modern_Bed_A_Blanket_LOD2 | no-reparameterization | 3074 → 3073 | 808 → 808 |
 
-The countertop remains a documented refusal, not a repaired fixture. Developing
+At this immutable-anchor stage the countertop remained a documented refusal. Developing
 its free corner removes the collapsed face geometrically, but moves it about
 0.7 texel beyond the donor at its actual atlas side of 2344. Testing against the
 requested 512 instead would incorrectly treat that displacement as only 0.153
 texel. The production check retains the 0.25-texel limit and its original one
 collapsed face. The shelving fixture's four collapsed UV faces also remain.
-Moving a healthy neighbour could offer another candidate, but is outside this
-accepted immutable-anchor repair and requires separate qualification.
+Moving a healthy neighbour required the separate qualification below.
+
+## Incident-patch recovery — retaining whole-model stretch
+
+The next stage permits one corner to move and audits all of its incident faces.
+For each effectively collapsed triangle it tries intrinsic development against
+each opposite edge, in both orientations. A healthy incident face must anchor
+the patch; nonmanifold edges and changed nonzero winding refuse it. Healthy
+incident faces retain the existing relative metric allowance, and every changed
+face must have anisotropy at most four. Donor-union coverage, the actual atlas
+size, quarter-texel band and complete contact audits remain enforced.
+
+The initial trial improved 32 of 2,295 rows but introduced three tradeoffs:
+weighted stretch increased on DressingTable_A_Frame_LOD1 in default and
+no-reparameterization, and Kitchen_Island_A_Countertop_LOD1 in oversample-8.
+The regression gate rejected this trial. The qualified version additionally
+requires whole-model maximum and area-weighted finite stretch and stretched-face
+counts to retain the original quality, at the report's relative 1e-6 precision.
+That original reference is fixed across repairs, preventing cumulative drift.
+
+For Modern_Kitchen_A_Countertop_LOD1, moving one shared corner recovers the
+collapsed triangle while its four healthy incident faces remain near-isometric
+(worst about 1.023). The original free-corner proposal is still outside the donor
+and still refused. This patch fits within the donor band at atlas side 2344,
+preserves existing nonzero winding and retains four unrelated overlap pairs.
+The prepared LOD0 source, geometry, native packing and mesh indices are unchanged.
+
+The guarded repeat completes all 80 files / 255 pairs / 2,295 rows, with zero
+errors or incomplete intersection scans. Against the immutable-anchor stage:
+eight rows improve and 2,287 stay equal under the comparison; zero rows worsen
+or trade quality. All source and alternate projection rows retain their measured
+quality. Both this comparison and the cumulative comparison against the corrected
+diagnostic baseline pass `--require-no-regressions` (ten better rows cumulatively).
+
+| Target | Profile | Collapsed UV faces before → after | Overlap pairs before → after |
+|---|---|---:|---:|
+| Modern_Kitchen_A_Countertop_LOD1 | default | 1 → 0 | 4 → 4 |
+| Modern_Kitchen_A_Countertop_LOD1 | no-reparameterization | 1 → 0 | 2 → 2 |
+| Modern_Kitchen_A_Countertop_LOD1 | oversample-8 | 1 → 0 | 5 → 5 |
+| Modern_DressingTable_A_Frame_LOD1 | oversample-8 | 11 → 9 | 4 → 4 |
+| Shelf_C_LOD1 | default | 9 → 8 | 72 → 72 |
+
+The other three improvements reduce weighted stretch without changing collapse
+counts: Blanket_LOD2/default and DressingTable_B_Shelf_LOD1/default/oversample-8.
+The shelving-unit target still has four collapsed UV faces. Existing overlaps,
+extreme distortion elsewhere and shared-atlas padding remain unresolved.
 
 ## Algorithm investigation
 

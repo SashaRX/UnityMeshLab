@@ -21,15 +21,9 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Audits per-face metric stretch and atlas contacts without modifying the mesh or UV buffer.</summary>
         internal static TransferUvQuality Measure(Mesh mesh, Vector2[] uv, Vector2 metric, Matrix4x4 localToWorld)
         {
-            var report = new TransferUvQuality();
             var positions = mesh.vertices; var triangles = mesh.triangles;
-            report.faces = triangles.Length / 3;
-            report.faceAnisotropy = new float[report.faces];
-            if (uv == null || uv.Length != positions.Length) { report.invalidFaces = report.faces; return report; }
-            double weighted = 0, totalArea = 0;
-            for (int f = 0; f < report.faces; ++f)
-                MeasureFace(report, f, positions, triangles, uv, metric, localToWorld, ref weighted, ref totalArea);
-            report.areaWeightedAnisotropy = totalArea > 0 ? weighted / totalArea : 0;
+            var report = MeasureTriangles(positions, triangles, uv, metric, localToWorld);
+            if (uv == null || uv.Length != positions.Length) return report;
             // Includes positive-area overlaps within the same shell/source; shared edges are legal.
             var atlas = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {
                 positions = positions, uv = uv, indices = triangles, charts = new int[positions.Length]
@@ -38,6 +32,21 @@ namespace SashaRX.UnityMeshLab
             report.outOfBoundsVertices = atlas.outOfBoundsVertices;
             report.overlapScanComplete = atlas.complete; report.overlapComparisons = atlas.comparisons;
             report.overlapSamples.AddRange(atlas.samples);
+            return report;
+        }
+
+        /// <summary>Measures intrinsic per-face metrics on plain arrays, independently of the separate atlas-contact audit.</summary>
+        internal static TransferUvQuality MeasureTriangles(Vector3[] positions, int[] triangles, Vector2[] uv,
+            Vector2 metric, Matrix4x4 localToWorld)
+        {
+            var report = new TransferUvQuality();
+            report.faces = triangles.Length / 3;
+            report.faceAnisotropy = new float[report.faces];
+            if (uv == null || uv.Length != positions.Length) { report.invalidFaces = report.faces; return report; }
+            double weighted = 0, totalArea = 0;
+            for (int f = 0; f < report.faces; ++f)
+                MeasureFace(report, f, positions, triangles, uv, metric, localToWorld, ref weighted, ref totalArea);
+            report.areaWeightedAnisotropy = totalArea > 0 ? weighted / totalArea : 0;
             return report;
         }
 

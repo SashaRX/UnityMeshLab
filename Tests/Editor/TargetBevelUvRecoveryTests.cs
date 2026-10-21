@@ -25,6 +25,8 @@ namespace SashaRX.UnityMeshLab.Tests
             if (contact == "new") Triangle(.36f, .36f);
             if (contact == "existing") { Triangle(.7f, .7f); Triangle(.72f, .72f); }
             if (contact == "crowded") for (int i = 0; i < 100; ++i) Triangle(.7f, .7f);
+            if (contact == "metric-anchor") { Triangle(.7f, .7f); uv[uv.Count - 1] = new Vector2(.7f, .708f); }
+            if (contact == "existing-changed") { uv[3] = new Vector2(.3f, .300001f); Triangle(.29f, .29f); }
             var shells = new List<UvShell> { new UvShell { shellId = 0,
                 vertexIndices = new HashSet<int> { 0, 1, 2, 3 }, faceIndices = new List<int> { 0, 1 } } };
             for (int f = 2; f < indices.Count / 3; ++f)
@@ -40,7 +42,7 @@ namespace SashaRX.UnityMeshLab.Tests
         /// <summary>Runs target recovery against either a full square donor or a donor missing the collapsed face's footprint.</summary>
         static int Recover((GroupedShellTransfer.TransferResult result, List<UvShell> shells, int[] indices, Vector3[] positions) input,
             bool covered = true, CancellationToken token = default, long budget = 2000000,
-            int atlasSize = 512, Vector2[] donorUv = null, TransferMatchTrace trace = null)
+            int atlasSize = 512, Vector2[] donorUv = null, TransferMatchTrace trace = null, bool allowPatch = false)
         {
             var uv = covered ? new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.one }
                 : new[] { new Vector2(.2f, .2f), new Vector2(.4f, .2f), new Vector2(.2f, .4f), new Vector2(.3f, .3f) };
@@ -48,7 +50,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var indices = new[] { 0, 1, 2, 2, 1, 3 };
             var sources = new List<UvShell> { new UvShell { faceIndices = new List<int> { 0, 1 }, vertexIndices = new HashSet<int> { 0, 1, 2, 3 } } };
             return TargetBevelUvRecovery.Apply(input.result, input.shells, input.indices, input.positions,
-                sources, indices, uv, atlasSize, UvTransferTolerance.BoundaryTexels, trace, token, budget);
+                sources, indices, uv, atlasSize, UvTransferTolerance.BoundaryTexels, trace, token, budget, allowPatch);
         }
 
         /// <summary>Repairs a collapsed boundary without moving anchors or unrelated existing contacts.</summary>
@@ -147,6 +149,77 @@ namespace SashaRX.UnityMeshLab.Tests
             var trace = new TransferMatchTrace();
             Assert.AreEqual(1, Recover(input, trace: trace));
             Assert.IsTrue(trace.truncated);
+        }
+
+        /// <summary>A small incident patch can recover inside the donor when its free-corner development would exceed the texel band.</summary>
+        [TestCase(false, .001f, 1)] [TestCase(true, .001f, 1)] [TestCase(false, .1f, 0)]
+        public void PatchRespectsNeighbourMetricsAndMirroredWinding(bool mirrored, float width, int expected)
+        {
+            var input = Fixture("metric-anchor");
+            input.positions[2] = new Vector3(1, 1, 0); input.positions[3] = new Vector3(1 + width, 1, 0);
+            var uv = new[] { new Vector2(.1f, .1f), new Vector2(.4f, .1f), new Vector2(.4f, .4f), new Vector2(.4f, .4f) }
+                .Concat(input.result.uv2.Skip(4)).ToArray();
+            var donor = new[] { new Vector2(.1f, .1f), new Vector2(.4f, .1f), new Vector2(.1f, .4f), new Vector2(.4f, .4f) };
+            if (mirrored) { uv = uv.Select(p => new Vector2(1 - p.x, p.y)).ToArray(); donor = donor.Select(p => new Vector2(1 - p.x, p.y)).ToArray(); }
+            input.result.uv2 = uv;
+            Assert.AreEqual(0, Recover(input, atlasSize: 2344, donorUv: donor));
+            Assert.AreEqual(expected, Recover(input, atlasSize: 2344, donorUv: donor, allowPatch: true));
+            if (expected == 0) Assert.AreSame(uv, input.result.uv2);
+            else
+            {
+                Assert.AreEqual(uv[0], input.result.uv2[0]); Assert.AreEqual(uv[1], input.result.uv2[1]);
+                Assert.Less(ReverseUvTransfer.TriangleAnisotropy(input.positions[0], input.positions[1], input.positions[2],
+                    input.result.uv2[0], input.result.uv2[1], input.result.uv2[2]), 1.01);
+                Assert.Less(ReverseUvTransfer.TriangleAnisotropy(input.positions[2], input.positions[1], input.positions[3],
+                    input.result.uv2[2], input.result.uv2[1], input.result.uv2[3]), 1.01);
+            }
+        }
+
+        /// <summary>Fewer collapsed faces cannot compensate for increased whole-mesh finite stretch.</summary>
+        [Test]
+        public void PatchRefusesGlobalStretchTradeoff()
+        {
+            var input = Fixture();
+            input.positions[2] = new Vector3(1, 1, 0); input.positions[3] = new Vector3(1.001f, 1, 0);
+            input.result.uv2 = new[] { new Vector2(.1f, .1f), new Vector2(.4f, .1f), new Vector2(.4f, .4f), new Vector2(.4f, .4f) };
+            var original = input.result.uv2;
+            var donor = new[] { new Vector2(.1f, .1f), new Vector2(.4f, .1f), new Vector2(.1f, .4f), new Vector2(.4f, .4f) };
+            Assert.AreEqual(0, Recover(input, atlasSize: 2344, donorUv: donor, allowPatch: true));
+            Assert.AreSame(original, input.result.uv2);
+        }
+
+        /// <summary>A completely collapsed triangle has no healthy incident face to determine its UV orientation.</summary>
+        [Test]
+        public void PatchRefusesAnUnanchoredMirrorChoice()
+        {
+            var input = Fixture("metric-anchor"); input.indices = new[] { 0, 1, 2, 4, 5, 6 };
+            input.shells[0].faceIndices = new List<int> { 0 };
+            input.shells[0].vertexIndices = new HashSet<int> { 0, 1, 2 };
+            input.shells[1].faceIndices = new List<int> { 1 };
+            input.result.uv2[2] = new Vector2(.3f, .2f);
+            var original = input.result.uv2;
+            Assert.AreEqual(0, Recover(input, allowPatch: true));
+            Assert.AreSame(original, input.result.uv2);
+        }
+
+        /// <summary>Moving a face already in contact is refused even when it would retain the same overlapping pair identities.</summary>
+        [TestCase(false)] [TestCase(true)]
+        public void ExistingContactCannotGrowDuringRepair(bool allowPatch)
+        {
+            var input = Fixture("existing-changed"); var original = input.result.uv2;
+            Assert.AreEqual(0, Recover(input, allowPatch: allowPatch));
+            Assert.AreSame(original, input.result.uv2);
+        }
+
+        /// <summary>Three faces using one edge cannot establish an unambiguous incident patch.</summary>
+        [Test]
+        public void PatchRefusesNonmanifoldEdges()
+        {
+            var input = Fixture(); input.indices = input.indices.Concat(new[] { 2, 1, 0 }).ToArray();
+            input.shells[0].faceIndices.Add(2);
+            var original = input.result.uv2;
+            Assert.AreEqual(0, Recover(input, allowPatch: true));
+            Assert.AreSame(original, input.result.uv2);
         }
     }
 }
