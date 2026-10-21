@@ -536,7 +536,7 @@ namespace SashaRX.UnityMeshLab
             return densities.Count==0?0:(float)densities[densities.Count / 2];
         }
 
-        static List<Chart> Charts(Surface[] donor)
+        internal static List<Chart> Charts(Surface[] donor)
         {
             var grouped = new SortedDictionary<int, List<(Surface s, int f)>>();
             foreach (var s in donor)
@@ -644,7 +644,6 @@ namespace SashaRX.UnityMeshLab
         internal sealed class ChartBoundsIndex
         {
             readonly TriangleBvh bvh;
-            readonly List<int> nearby = new List<int>();
             ChartBoundsIndex(TriangleBvh bvh) { this.bvh = bvh; }
 
             /// <returns>Null when every chart must be scanned: no charts, an
@@ -667,8 +666,9 @@ namespace SashaRX.UnityMeshLab
                 return new ChartBoundsIndex(new TriangleBvh(corners, Enumerable.Range(0, corners.Length).ToArray()));
             }
 
-            /// <summary>Candidate chart indices in ascending order; reused per call.</summary>
-            internal List<int> Near(Vector3 point)
+            /// <summary>Candidate chart indices in ascending order, written to the
+            /// caller's buffer so concurrent queries never share one.</summary>
+            internal List<int> Near(Vector3 point, List<int> nearby)
             {
                 nearby.Clear();
                 bvh.CollectOverlapping(new Bounds(point, Vector3.zero), nearby);
@@ -677,88 +677,16 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static void ProjectFaces(Surface[] donor, Surface[] targets, List<Chart> charts, Options options,
+        internal static void ProjectFaces(Surface[] donor, Surface[] targets, List<Chart> charts, Options options,
             ref long queries, CancellationToken token)
         {
             if (targets.Length == 0) return;
             using var projectionTiming = options.performance?.Measure("Face projection", targets[0].lod);
-            long candidates = 0, footprintTicks = 0, footprintCalls = 0;
             using var batch=new ProjectionBatch(charts,options,token);
-            var chartIndex = ChartBoundsIndex.Create(charts, options.projectionReach, token);
-            foreach (var target in targets)
-                for (int f = 0; f < target.faces.Length; ++f)
-                {
-                    token.ThrowIfCancellationRequested();
-                    if(f%ReverseUvQueryBackend.BatchSize==0) batch.Prepare(target,f);
-                    if (target.faces[f].inherited) continue;
-                    int t = f * 3;
-                    var a = target.positions[target.indices[t]]; var b = target.positions[target.indices[t + 1]];
-                    var c = target.positions[target.indices[t + 2]]; var center = (a + b + c) / 3;
-                    var normal = Normal(target, f);
-                    Chart winner = null;
-                    var best = new TriangleBvh.HitResult { triangleIndex = -1, distSq = float.MaxValue };
-                    bool ambiguous = false;
-                    var nearby = chartIndex?.Near(center);
-                    int count = nearby?.Count ?? charts.Count;
-                    for (int n = 0; n < count; ++n)
-                    {
-                        var chart = charts[nearby == null ? n : nearby[n]];
-                        ++candidates;
-                        if (chart.bounds.SqrDistance(center) > options.projectionReach * options.projectionReach) continue;
-                        if (++queries > options.comparisonBudget) throw new InvalidOperationException("Reverse UV projection query budget exceeded.");
-                        var cached=batch.Get(target,f,chart,out var cachedHit)?(TriangleBvh.HitResult?)cachedHit:null;
-                        var hit = NearestDonor(chart, center, normal, options, ref queries, token, out bool chartAmbiguous,cached);
-                        if (hit.triangleIndex < 0) continue;
-                        float tolerance = Math.Max(1e-12f, options.projectionReach * options.projectionReach * 1e-6f);
-                        if (hit.distSq < best.distSq - tolerance) { winner = chart; best = hit; ambiguous = chartAmbiguous; }
-                        else if (Math.Abs(hit.distSq - best.distSq) <= tolerance) ambiguous = true;
-                    }
-                    var record = target.faces[f];
-                    record.ambiguous = ambiguous;
-                    record.rejection = winner == null ? "no-donor" : ambiguous ? "donor-tie" : null;
-                    if (winner == null || ambiguous) continue;
-                    bool valid = true;
-                    float maxDistance = best.distSq;
-                    for (int k = 0; k < 3; ++k)
-                    {
-                        if (++queries > options.comparisonBudget) throw new InvalidOperationException("Reverse UV projection query budget exceeded.");
-                        var hit = NearestDonor(winner, target.positions[target.indices[t + k]], normal, options,
-                            ref queries, token, out bool cornerAmbiguous);
-                        if (hit.triangleIndex < 0 || cornerAmbiguous) { valid = false; break; }
-                        target.pixels[t + k] = Pixel(winner, hit);
-                        maxDistance = Math.Max(maxDistance, hit.distSq);
-                    }
-                    int donorCorner = best.triangleIndex * 3;
-                    int expectedSign = Math.Sign(Cross(winner.pixels[donorCorner + 1] - winner.pixels[donorCorner],
-                        winner.pixels[donorCorner + 2] - winner.pixels[donorCorner])) * winner.orientations[best.triangleIndex];
-                    int actualSign = Math.Sign(Cross(target.pixels[t + 1] - target.pixels[t], target.pixels[t + 2] - target.pixels[t])) * target.orientation;
-                    if (!valid || actualSign != expectedSign || Anisotropy(target, f, options.stretchFrame) > options.maxAnisotropy)
-                    { record.ambiguous = true; record.rejection = "corner-or-metric"; continue; }
-                    float span = Math.Max((target.pixels[t + 1] - target.pixels[t]).magnitude, (target.pixels[t + 2] - target.pixels[t]).magnitude);
-                    foreach (var bary in Interior)
-                    {
-                        if (++queries > options.comparisonBudget) throw new InvalidOperationException("Reverse UV projection query budget exceeded.");
-                        var hit = NearestDonor(winner, a * bary.x + b * bary.y + c * bary.z, normal, options,
-                            ref queries, token, out bool probeAmbiguous);
-                        var interpolated = target.pixels[t] * bary.x + target.pixels[t + 1] * bary.y + target.pixels[t + 2] * bary.z;
-                        if (hit.triangleIndex < 0 || probeAmbiguous || (Pixel(winner, hit) - interpolated).magnitude > Math.Max(.25f, span * .02f))
-                        { valid = false; break; }
-                    }
-                    if (!valid) { record.ambiguous = true; record.rejection = "non-affine-or-hole"; continue; }
-                    long footprintStarted = options.performance == null ? 0 : System.Diagnostics.Stopwatch.GetTimestamp();
-                    bool covered = CoveredByParentLayer(winner, winner.layers[best.triangleIndex], target.pixels, t,
-                        options, ref queries, token);
-                    if (options.performance != null)
-                    { footprintTicks += System.Diagnostics.Stopwatch.GetTimestamp() - footprintStarted; ++footprintCalls; }
-                    if (!covered) { record.ambiguous = true; record.rejection = "parent-footprint"; continue; }
-                    record.inherited = true; record.chart = winner.id; record.distance = Mathf.Sqrt(maxDistance);
-                    record.coordinateDomain=winner.coordinateDomain;
-                    record.ambiguous = false; record.rejection = null;
-                    record.parentLod = donor[0].lod; record.parentMesh = winner.nodes[best.triangleIndex];
-                    record.parentFace = winner.faces[best.triangleIndex]; record.layer = record.projectionLayer = winner.layers[best.triangleIndex];
-                }
-            options.performance?.Record("Chart bounds tested", 0, candidates, targets[0].lod);
-            options.performance?.Record("Parent footprint coverage", footprintTicks, footprintCalls, targets[0].lod);
+            var projector = new FaceProjector(donor, charts, options, token);
+            var counters = projector.ProjectInParallel(targets, ref queries) ?? projector.ProjectInOrder(targets, batch, ref queries);
+            options.performance?.Record("Chart bounds tested", 0, counters.candidates, targets[0].lod);
+            options.performance?.Record("Parent footprint coverage", counters.footprintTicks, counters.footprintCalls, targets[0].lod);
         }
 
         // Interior probes alone miss holes between probes. Parent faces in one

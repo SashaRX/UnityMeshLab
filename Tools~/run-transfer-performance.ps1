@@ -16,6 +16,7 @@ param(
     [switch]$RequireBurstRaster,
     [switch]$CaptureNativePacking,
     [switch]$DisableForwardReuse,
+    [switch]$DisableParallelProjection,
     [string]$NativePackingReplayExecutable='',
     [string]$AdditionalTestFilter='',
     [ValidateSet('legacy','auto')][string]$QueryBackend='auto',
@@ -46,6 +47,7 @@ $savedNativeCapture=$env:MESHLAB_CAPTURE_NATIVE_PACKING
 $savedNativeReplay=$env:MESHLAB_NATIVE_PACKING_REPLAY_EXECUTABLE
 $savedForward=$env:MESHLAB_REVERSE_FROM_FORWARD
 $savedForwardReuse=$env:MESHLAB_DISABLE_FORWARD_REUSE
+$savedParallelProjection=$env:MESHLAB_DISABLE_PARALLEL_PROJECTION
 $savedExisting=$env:MESHLAB_PAIRED_EXISTING_SEED
 $savedQuery=$env:MESHLAB_QUERY_BACKEND
 $savedQueryLibrary=$env:MESHLAB_NATIVE_QUERY_LIBRARY
@@ -75,6 +77,7 @@ try {
     $env:MESHLAB_DISABLE_COLLISION_ROW_CACHE=if($DisableCollisionRowCache){'1'}else{'0'}
     $env:MESHLAB_REVERSE_FROM_FORWARD='1'
     $env:MESHLAB_DISABLE_FORWARD_REUSE=if($DisableForwardReuse){'1'}else{'0'}
+    $env:MESHLAB_DISABLE_PARALLEL_PROJECTION=if($DisableParallelProjection){'1'}else{'0'}
     $env:MESHLAB_PAIRED_EXISTING_SEED='0'
     for($perfRun=1;$perfRun -le $Repetitions;++$perfRun) {
         $perfDirectory=Join-Path $perfRoot ('run-'+$perfRun.ToString('00'))
@@ -120,6 +123,7 @@ finally {
     $env:MESHLAB_NATIVE_PACKING_REPLAY_EXECUTABLE=$savedNativeReplay
     $env:MESHLAB_REVERSE_FROM_FORWARD=$savedForward
     $env:MESHLAB_DISABLE_FORWARD_REUSE=$savedForwardReuse
+    $env:MESHLAB_DISABLE_PARALLEL_PROJECTION=$savedParallelProjection
     $env:MESHLAB_PAIRED_EXISTING_SEED=$savedExisting
     $env:MESHLAB_QUERY_BACKEND=$savedQuery
     $env:MESHLAB_NATIVE_QUERY_LIBRARY=$savedQueryLibrary
