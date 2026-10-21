@@ -1,5 +1,31 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Donor-seam trial: zero-area geometry alone does not start it — 2026-10-21
+
+Item 7 of `TRANSFER_METRICS_AUDIT.md`, the zero-area part of F5. After shell
+transfer the workflow starts the donor-seam trial when the target's
+`TransferUvQuality` has worst anisotropy above 4, an overlap pair, or any
+degenerate face. `TransferUvQuality` counts a face as degenerate when its 3D
+frame has zero length or area, before it looks at the UVs. A target with one
+zero-area 3D face therefore ran the whole trial (the most expensive Forward
+stage; 12 of 21 s on Kamaz) even with a perfect layout. Seam preparation
+removes exactly zero-area faces, so such a trial could even be accepted for
+the deletion alone.
+
+The trigger (`UvTransferWorkflow.NeedsDonorSeamTrial`) now subtracts the
+zero-area 3D faces counted by `AutoTuneScore.GeometryDegenerateFaces`, the same
+predicate in the same rendered frame that auto-tune already uses. Stretch,
+overlap and collapsed UV faces start the trial as before; a degenerate count
+above the zero-area geometry still does.
+
+This changes outputs for targets whose only defect was zero-area geometry: they
+keep the shell-transfer layout and their faces instead of a seam-prepared mesh.
+`DonorSeamTrialTriggerTests` cover the predicate. The furniture corpus does
+not run the donor-seam trial, so validation is the paired benchmark
+(`run-transfer-performance.ps1 -Repetitions 3 -Density 32` against main):
+which exports differ, and the "Forward donor seam trial" samples and median
+per model.
+
 ## Oversample 8: why a better source does not survive transfer — analysis — 2026-10-21
 
 The furniture corpus baseline on main (`491340a`, 80 files, 255 LOD pairs)

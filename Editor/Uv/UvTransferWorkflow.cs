@@ -2517,7 +2517,7 @@ namespace SashaRX.UnityMeshLab
             using (ForwardPerformance?.Accumulated("Forward quality measure"))
                 beforeQuality=TransferUvQuality.Measure(tgtMesh,tr.uv2,Vector2.one,renderedFrame);
             var finalQuality=beforeQuality;
-            if (beforeQuality.worstAnisotropy>4 || beforeQuality.overlapPairs>0 || beforeQuality.degenerateFaces>0)
+            if (NeedsDonorSeamTrial(beforeQuality,AutoTuneScore.GeometryDegenerateFaces(tgtMesh,renderedFrame)))
             {
                 using var seamTiming = ForwardPerformance?.Accumulated("Forward donor seam trial");
                 Mesh prepared=null;
@@ -2599,6 +2599,14 @@ namespace SashaRX.UnityMeshLab
             }
             ctx.DiagnosticCapture?.AfterPair(pair, tgt, tr);
         }
+
+        /// <summary>
+        /// Whether a transferred layout calls for the donor-seam trial: a face stretched
+        /// past 4:1, an overlap, or a collapsed UV face. Zero-area 3D faces are degenerate
+        /// in every layout, so they alone do not start it.
+        /// </summary>
+        internal static bool NeedsDonorSeamTrial(TransferUvQuality quality, int geometryDegenerateFaces)
+            => quality.worstAnisotropy > 4 || quality.overlapPairs > 0 || quality.degenerateFaces > geometryDegenerateFaces;
 
         static bool HasSourceUvChannels(Mesh source)
         {
