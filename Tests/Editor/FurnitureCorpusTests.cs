@@ -21,6 +21,10 @@ namespace SashaRX.UnityMeshLab.Tests
             public int fileCount, pairCount, errorCount;
             public double milliseconds, uvTriangleAreaSum;
             public int geometryDegenerateFaces, uvDegenerateFaces;
+            // Traced grouped rows (oversample analysis only): the source-atlas recovery gate
+            // and the target shells recovery ran on.
+            public bool traced, sourceAtlasRecoveryAllowed;
+            public int recoveredShells;
             public TransferUvQuality quality;
         }
 
@@ -150,9 +154,12 @@ namespace SashaRX.UnityMeshLab.Tests
                         watch.Restart();
                         Vector2[] uv; int misses = 0, fallback = 0;
                         int transferSide = method == "grouped-at-resolution" ? pair.settings.resolution : side;
+                        TransferMatchTrace trace = null;
                         if (method == "grouped" || method == "grouped-at-resolution")
                         {
-                            var result = GroupedShellTransfer.Transfer(input.target, source, null, null, transferSide, transferSide);
+                            // The analysis traces grouped transfer; its times then include the trace.
+                            if (atlasSideControl) trace = new TransferMatchTrace();
+                            var result = GroupedShellTransfer.TransferWithDiagnostics(input.target, source, null, null, transferSide, transferSide, trace);
                             uv = result.uv2; misses = result.verticesTotal - result.verticesTransferred;
                         }
                         else
@@ -168,6 +175,12 @@ namespace SashaRX.UnityMeshLab.Tests
                         XatlasRepack.ClampUvsToUnit(uv);
                         var row = Measure(model, pair, profile, method, input.target, uv, transferSide, hash);
                         row.rawOutOfBounds = outside; row.misses = misses; row.fallbackVertices = fallback;
+                        if (trace != null)
+                        {
+                            // Recovery records the legacy candidate first on every shell it runs on.
+                            row.traced = true; row.sourceAtlasRecoveryAllowed = trace.sourceAtlasRecoveryAllowed;
+                            row.recoveredShells = trace.shells.Count(s => s.projections.Any(p => p.method == "legacy-selected"));
+                        }
                         row.milliseconds = elapsed; Write(writer, row);
                     }
                 }

@@ -69,14 +69,18 @@ On the full corpus, `oversample-8` improves 137 packed sources against `default`
 129 tradeoff. Oversampling changes two things at once. The pack reports its
 internal atlas (requested resolution × reached oversample), and grouped transfer
 takes that size as the side of its texel tolerances (1.25 px out-of-bounds margin,
-2.5 px bounds tolerance, the planar-recovery band). At oversample 8 these are half
-as wide in UV space as at the default 4, although the lightmap is 512 px in both.
+2.5 px bounds tolerance, the planar-recovery band). When the packs reach oversample 8
+and 4, these are half as wide in UV space at 8 as at the default 4, although the
+lightmap is 512 px in both; the reached factor is reported below.
 
 To separate the pack from the transfer side, record with
 `MESHLAB_CORPUS_OVERSAMPLE_ANALYSIS=1`. The `default` and `oversample-8` profiles
 then add a `grouped-at-resolution` row: the same source transferred against the
-requested resolution. Its `atlasSide` is that resolution. A capture with these rows
-has eleven measurements per pair; compare it only with captures recorded the same way.
+requested resolution. Its `atlasSide` is that resolution. Grouped rows are also
+traced: `sourceAtlasRecoveryAllowed` is the source-atlas recovery gate and
+`recoveredShells` counts the target shells recovery ran on (among the first 10000,
+which the trace keeps); their times include the trace. A capture with these rows has eleven measurements per pair; compare it only
+with captures recorded the same way.
 
 ```powershell
 $env:MESHLAB_CORPUS_OVERSAMPLE_ANALYSIS = '1'
@@ -90,6 +94,8 @@ python Tools~/FurnitureCorpus/oversample.py D:/private-results/oversample.jsonl 
   the requested resolution, and the side change alone at oversample 4 and at 8;
 - per-metric better/worse/same counts and the most common tradeoff patterns;
 - a table of how each pair's packed-source verdict carries through each transfer;
+- a table of the recovery gate (closed/open at oversample 4 -> 8) and the recovered
+  shell count against each transfer verdict;
 - the oversample each pack reached (`atlasSide / resolution` per source mesh), which
   shows where the pack budget lowered the requested factor.
 

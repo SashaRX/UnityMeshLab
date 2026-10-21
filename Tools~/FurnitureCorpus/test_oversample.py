@@ -64,6 +64,22 @@ class OversampleTests(unittest.TestCase):
         self.assertEqual((analysis["pairs"], analysis["atlasSideControlPairs"]), (2, 1))
         self.assertIn("Only 1 of 2 pairs", render(analysis))
 
+    def test_recovery_gate_pairs_the_traced_gate_with_the_transfer_verdict(self):
+        rows = self.capture()
+        rows[2] |= dict(traced=True, sourceAtlasRecoveryAllowed=False, recoveredShells=0)
+        rows[3] |= dict(traced=True, sourceAtlasRecoveryAllowed=True, recoveredShells=2)
+        analysis = analyze(rows)
+        self.assertEqual(analysis["recoveryGate"]["grouped"],
+                         {"gate closed->open, recovered shells more -> transfer tradeoff": 1})
+        self.assertEqual(analysis["recoveryGate"][AT_RESOLUTION], {}, "Untraced rows are left out.")
+        self.assertIn("Source-atlas recovery gate and `grouped`", render(analysis))
+
+    def test_duplicate_or_mismatched_rows_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Duplicate"):
+            analyze(self.capture() + [row()])
+        with self.assertRaisesRegex(ValueError, "Mismatched"):
+            analyze(self.capture() + [dict(row(method="uv0-nearest"), inputHash="other")])
+
     def test_incomplete_scans_are_counted_but_not_broken_down(self):
         rows = self.capture()
         rows[3]["quality"]["overlapScanComplete"] = False

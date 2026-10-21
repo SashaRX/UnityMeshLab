@@ -22,8 +22,9 @@ Findings from the code:
 - Grouped transfer derives its UV2 tolerances from that side:
   `ComputeUv2PixelMargin(side, 1.25 px)` for out-of-bounds margins and `2.5 px`
   for bounds (transform and candidate rejection), and the planar-recovery band in
-  `RecoverFinalProjection`. At oversample 8 each is half as wide in UV space as at
-  oversample 4, and both are 4–8× narrower than a texel of the 512 px lightmap.
+  `RecoverFinalProjection`. When the packs reach oversample 8 and 4, each is half as
+  wide in UV space at 8 as at 4, and both are 4–8× narrower than a texel of the
+  512 px lightmap.
 - The pack budget may lower the requested oversample (`TryResolveInternalPackDimensions`);
   the corpus row does not record the reached factor, but `atlasSide / resolution`
   shows it.
@@ -39,9 +40,11 @@ Hypotheses, each with the measurement that settles it:
 2. **Source-atlas gate (H2).** A cleaner source opens the source-atlas recovery gate
    (`GroupedShellTransfer` recovery is disabled for a source with overlaps,
    collapsed faces or out-of-bounds UV2). Recovery then runs where it did not, which
-   can trade one metric for another. Settled by the tradeoff patterns and the
-   source→transfer retention table: a source that turns clean (`better`) with a
-   transfer that turns `tradeoff` points here.
+   can trade one metric for another. A `better` source verdict does not open the
+   gate by itself: the source may still keep a blocking defect. Settled by the traced
+   gate table: pairs whose gate goes from closed to open with more recovered shells
+   and a `tradeoff` or `worse` transfer point here; the retention table only shows
+   whether the source gain survives.
 3. **Reached oversample (H3).** Some packs do not reach 8. Settled by the reached
    oversample distribution.
 4. **Metric noise (H4).** Many tradeoffs differ only in the area-weighted or worst
@@ -50,7 +53,8 @@ Hypotheses, each with the measurement that settles it:
    `uvDegenerateFaces`) are mostly `same`, the mixed verdicts are stretch-only.
 
 Tooling: `FurnitureCorpusTests` adds the `grouped-at-resolution` rows under
-`MESHLAB_CORPUS_OVERSAMPLE_ANALYSIS=1` (standard captures are unchanged);
+`MESHLAB_CORPUS_OVERSAMPLE_ANALYSIS=1` and traces grouped transfer there
+(`sourceAtlasRecoveryAllowed`, `recoveredShells`); standard captures run untraced;
 `Tools~/FurnitureCorpus/oversample.py` writes the breakdown; `report.py` now
 compares each profile with the default row of the same method and shares its
 per-metric verdicts with the analysis.

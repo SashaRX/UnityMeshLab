@@ -3,9 +3,11 @@
 The pack reports its internal (oversampled) atlas size, and grouped transfer takes
 that size as the atlas side for its texel tolerances. Oversample 8 therefore changes
 two things at once: the packed source layout and the transfer's tolerances (half as
-wide in UV space as at the default oversample 4). A capture recorded with
-MESHLAB_CORPUS_OVERSAMPLE_ANALYSIS=1 adds `grouped-at-resolution` rows, which transfer
-against the requested lightmap resolution instead, so the two effects separate.
+wide in UV space as at the default oversample 4 when the packs reach 4 and 8; the
+reached factor is reported). A capture recorded with MESHLAB_CORPUS_OVERSAMPLE_ANALYSIS=1
+adds `grouped-at-resolution` rows, which transfer against the requested lightmap
+resolution instead, so the two effects separate, and traces grouped transfer: the
+source-atlas recovery gate and the shells recovery ran on.
 """
 import argparse
 import collections
@@ -31,9 +33,20 @@ def comparisons(profile=PROFILE):
 
 
 def index_rows(rows):
-    """Measured rows by (model, source, target, profile, method)."""
+    """Measured rows by (model, source, target, profile, method); one row per key and
+    one input hash per (model, source, target), as report.summarize requires."""
     fields = ("model", "source", "target", "profile", "method")
-    return {tuple(row[k] for k in fields): row for row in rows if row.get("status") == "measured"}
+    index, hashes = {}, {}
+    for row in rows:
+        if row.get("status") != "measured":
+            continue
+        key = tuple(row[k] for k in fields)
+        if key in index:
+            raise ValueError("Duplicate measurement: " + str(key))
+        if hashes.setdefault(key[:3], row["inputHash"]) != row["inputHash"]:
+            raise ValueError("Mismatched input hashes for " + str(key))
+        index[key] = row
+    return index
 
 
 def pattern(verdicts):
@@ -77,6 +90,21 @@ def retention(index, method, profile=PROFILE):
     return dict(sorted(table.items()))
 
 
+def recovery_gate(index, method, profile=PROFILE):
+    """For each traced pair: the source-atlas recovery gate and the recovered shell count
+    from oversample 4 to 8, against the transfer verdict of `method`."""
+    table = collections.Counter()
+    for pair in sorted({key[:3] for key in index}):
+        base, row = index.get(pair + ("default", method)), index.get(pair + (profile, method))
+        if base is None or row is None or not (base.get("traced") and row.get("traced")):
+            continue
+        gate = "->".join("open" if r["sourceAtlasRecoveryAllowed"] else "closed" for r in (base, row))
+        delta = row["recoveredShells"] - base["recoveredShells"]
+        shells = "more" if delta > 0 else "fewer" if delta < 0 else "same"
+        table[f"gate {gate}, recovered shells {shells} -> transfer {compare(row, base)}"] += 1
+    return dict(sorted(table.items()))
+
+
 def oversample_reached(index, profile=PROFILE):
     """atlasSide / requested resolution of each packed source, once per (model, source mesh)."""
     reached = collections.defaultdict(collections.Counter)
@@ -103,6 +131,7 @@ def analyze(rows, profile=PROFILE):
         comparisons={label: compare_group(index, candidate, baseline)
                      for label, candidate, baseline in comparisons(profile)},
         retention={method: retention(index, method, profile) for method in ("grouped", AT_RESOLUTION)},
+        recoveryGate={method: recovery_gate(index, method, profile) for method in ("grouped", AT_RESOLUTION)},
         oversampleReached=oversample_reached(index, profile))
 
 
@@ -132,6 +161,9 @@ def render(analysis):
     for method, table in analysis["retention"].items():
         if table:
             lines += ["", f"## Does a source verdict survive `{method}`?", ""] + [f"- {n} × {k}" for k, n in table.items()]
+    for method, table in analysis["recoveryGate"].items():
+        if table:
+            lines += ["", f"## Source-atlas recovery gate and `{method}`", ""] + [f"- {n} × {k}" for k, n in table.items()]
     lines += ["", "## Internal oversample reached (atlasSide / requested resolution, per source mesh)", ""]
     for profile, ratios in analysis["oversampleReached"].items():
         lines.append(f"- {profile}: " + ", ".join(f"{k}× {n}" for k, n in ratios.items()))
