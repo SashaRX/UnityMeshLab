@@ -664,11 +664,13 @@ namespace SashaRX.UnityMeshLab.Tests
         GameObject previousSelection;
         string previousHubPreferences;
         bool hadHubPreferences;
+        int previousParallelProjection;
 
         [SetUp]
         public void RememberSelection()
         {
             previousSelection = UnityEditor.Selection.activeGameObject;
+            previousParallelProjection = ReverseUvTransfer.ParallelProjectionMinimumFaces;
             string key = MeshLabWindowPreferences.Key("Hub");
             hadHubPreferences = UnityEditor.EditorPrefs.HasKey(key);
             previousHubPreferences = UnityEditor.EditorPrefs.GetString(key, "");
@@ -689,6 +691,7 @@ namespace SashaRX.UnityMeshLab.Tests
             string key = MeshLabWindowPreferences.Key("Hub");
             if (hadHubPreferences) UnityEditor.EditorPrefs.SetString(key, previousHubPreferences);
             else UnityEditor.EditorPrefs.DeleteKey(key);
+            ReverseUvTransfer.ParallelProjectionMinimumFaces = previousParallelProjection;
         }
 
         Mesh Quad(string name, bool withUv1)
@@ -2102,6 +2105,9 @@ namespace SashaRX.UnityMeshLab.Tests
             hub.DiagnosticWorkflow.TransferBoundaryToleranceTexels = tolerance;
             // The control repeats the detached preparation instead of reusing the forward result.
             hub.DiagnosticWorkflow.reuseForwardRunForReverse = System.Environment.GetEnvironmentVariable("MESHLAB_DISABLE_FORWARD_REUSE") != "1";
+            // The control projects every face pass in order, in Forward and Reverse alike.
+            if (System.Environment.GetEnvironmentVariable("MESHLAB_DISABLE_PARALLEL_PROJECTION") == "1")
+                ReverseUvTransfer.ParallelProjectionMinimumFaces = int.MaxValue;
             hub.DiagnosticWorkflow.PrepareTransferInputs();
             var entries = ctx.MeshEntries.Where(e => e.include).ToArray();
             var originals = entries.Select(e => PairedSnapshot(e.fbxMesh)).ToArray();
