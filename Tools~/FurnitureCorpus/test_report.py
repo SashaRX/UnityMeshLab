@@ -59,6 +59,19 @@ class ReportTests(unittest.TestCase):
         failed.insert(-1, dict(status="error", model="broken"))
         self.assertFalse(summarize(failed)["complete"])
 
+    def test_profiles_compare_with_the_default_row_of_the_same_method(self):
+        """An extra transfer method is compared with the default profile's row of that method."""
+        rows = [row(method=m) for m in ("source", "grouped", "uv0-nearest", "surface-nearest", "surface-normal")]
+        rows += [row(p, m) for p in ("no-reparameterization", "oversample-8") for m in ("source", "grouped")]
+        control, candidate = row(method="grouped-at-resolution"), row("oversample-8", "grouped-at-resolution")
+        control["quality"]["overlapPairs"] = 3
+        candidate["quality"]["overlapPairs"] = 2
+        comparisons = summarize(rows + [control, candidate])["comparisons"]
+        self.assertEqual(comparisons["oversample-8/grouped-at-resolution"], {"better": 1})
+        self.assertEqual(comparisons["default/grouped-at-resolution"], {"worse": 1},
+                         "Another default-profile method is compared with default grouped transfer.")
+        self.assertEqual(comparisons["oversample-8/grouped"], {"same": 1})
+
     def test_missing_whole_pair_or_entire_file_is_not_complete(self):
         """Terminal inventory detects missing groups even if all surviving rows exist."""
         rows = [row(method=m) for m in ("source", "grouped", "uv0-nearest", "surface-nearest", "surface-normal")]

@@ -11,19 +11,27 @@ METRICS = ("invalidFaces", "degenerateFaces", "overlapPairs", "outOfBoundsVertic
            "worstAnisotropy", "areaWeightedAnisotropy", "overlapPairArea")
 
 
+def metric_verdicts(candidate, baseline):
+    """Better, worse or same for each compared metric; None when any value is not finite."""
+    values = [(key, candidate["quality"][key], baseline["quality"][key]) for key in METRICS]
+    values += [(key, candidate[key], baseline[key]) for key in ("geometryDegenerateFaces", "uvDegenerateFaces")]
+    verdicts = {}
+    for key, value, original in values:
+        if not math.isfinite(value) or not math.isfinite(original):
+            return None
+        tolerance = 1e-6 * max(abs(value), abs(original), 1e-12) if isinstance(value, float) else 0
+        verdicts[key] = "better" if value < original - tolerance else "worse" if value > original + tolerance else "same"
+    return verdicts
+
+
 def compare(candidate, baseline):
     """Report tradeoffs instead of hiding regressions behind a weighted score."""
     if not all(row["quality"].get("overlapScanComplete") for row in (candidate, baseline)):
         return "incomplete"
-    better = worse = False
-    values = [(candidate["quality"][key], baseline["quality"][key]) for key in METRICS]
-    values += [(candidate[key], baseline[key]) for key in ("geometryDegenerateFaces", "uvDegenerateFaces")]
-    for value, original in values:
-        if not math.isfinite(value) or not math.isfinite(original):
-            return "invalid"
-        tolerance = 1e-6 * max(abs(value), abs(original), 1e-12) if isinstance(value, float) else 0
-        better |= value < original - tolerance
-        worse |= value > original + tolerance
+    verdicts = metric_verdicts(candidate, baseline)
+    if verdicts is None:
+        return "invalid"
+    better, worse = "better" in verdicts.values(), "worse" in verdicts.values()
     return "tradeoff" if better and worse else "better" if better else "worse" if worse else "same"
 
 
@@ -49,7 +57,9 @@ def summarize(rows):
     for key, row in index.items():
         if key[-2:] == ("default", "source") or key[-2:] == ("default", "grouped"):
             continue
-        base_key = key[:3] + ("default", "source" if key[-1] == "source" else "grouped")
+        # Another profile is compared with the default profile's row of the same method;
+        # another default-profile method with default grouped transfer.
+        base_key = key[:3] + ("default", key[-1] if key[3] != "default" else "grouped")
         baseline = index.get(base_key)
         if baseline is None:
             continue

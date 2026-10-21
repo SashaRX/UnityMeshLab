@@ -1,5 +1,65 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Oversample 8: why a better source does not survive transfer — analysis — 2026-10-21
+
+The furniture corpus baseline on main (`491340a`, 80 files, 255 LOD pairs)
+compares each profile with `default`. `oversample-8` improves the packed source
+(137 better, 17 worse, 101 tradeoff), but its grouped transfer is mixed
+(65 better, 61 worse, 129 tradeoff). In the corpus, `default` and `oversample-8`
+pack the same welded, pre-optimized source at 512 px with density normalization
+and reparameterization; for the square texture metric the aspect preparation is
+the identity. The requested internal oversample (4 against 8) is the only pack
+setting that differs.
+
+Findings from the code:
+
+- `XatlasRepack.RepackSingle` returns xatlas's own atlas size, which is the
+  internal oversampled raster (about requested × oversample), not the requested
+  resolution. `NormalizePackedLightmap` keeps it as the square side.
+- The corpus passes that side to `GroupedShellTransfer.Transfer`, and so does the
+  workflow: `repackedAtlasWidth` is the same side, used by Forward transfer, the
+  donor-seam trial resolution and Reverse's seed resolution.
+- Grouped transfer derives its UV2 tolerances from that side:
+  `ComputeUv2PixelMargin(side, 1.25 px)` for out-of-bounds margins and `2.5 px`
+  for bounds (transform and candidate rejection), and the planar-recovery band in
+  `RecoverFinalProjection`. At oversample 8 each is half as wide in UV space as at
+  oversample 4, and both are 4–8× narrower than a texel of the 512 px lightmap.
+- The pack budget may lower the requested oversample (`TryResolveInternalPackDimensions`);
+  the corpus row does not record the reached factor, but `atlasSide / resolution`
+  shows it.
+
+Hypotheses, each with the measurement that settles it:
+
+1. **Transfer side (H1).** The mixed transfer comes mostly from the narrower
+   tolerances, not from the packed layout. Settled by
+   `grouped-at-resolution` (transfer at the requested 512 px): if oversample 8
+   against 4 becomes mostly better at the same side, H1 holds. The side change
+   alone (requested vs internal, at oversample 4 and at 8) also shows whether the
+   production default (internal side at oversample 4) costs quality.
+2. **Source-atlas gate (H2).** A cleaner source opens the source-atlas recovery gate
+   (`GroupedShellTransfer` recovery is disabled for a source with overlaps,
+   collapsed faces or out-of-bounds UV2). Recovery then runs where it did not, which
+   can trade one metric for another. Settled by the tradeoff patterns and the
+   source→transfer retention table: a source that turns clean (`better`) with a
+   transfer that turns `tradeoff` points here.
+3. **Reached oversample (H3).** Some packs do not reach 8. Settled by the reached
+   oversample distribution.
+4. **Metric noise (H4).** Many tradeoffs differ only in the area-weighted or worst
+   anisotropy within a few percent while defect counts are equal. Settled by the
+   per-metric table: if defects (`degenerateFaces`, `overlapPairs`,
+   `uvDegenerateFaces`) are mostly `same`, the mixed verdicts are stretch-only.
+
+Tooling: `FurnitureCorpusTests` adds the `grouped-at-resolution` rows under
+`MESHLAB_CORPUS_OVERSAMPLE_ANALYSIS=1` (standard captures are unchanged);
+`Tools~/FurnitureCorpus/oversample.py` writes the breakdown; `report.py` now
+compares each profile with the default row of the same method and shares its
+per-metric verdicts with the analysis.
+
+Measurement pending: one corpus capture with the control on main, then
+`oversample.py`. No production change follows until the numbers settle H1–H4;
+if H1 holds, the candidate change is to pass the requested resolution (or the
+internal side divided by the reached oversample) to transfer and recovery.
+
 ## Atlas overlap scan: triangles by reference — 2026-10-21
 
 `UvAtlasDiagnostics.Measure` is the overlap scan behind every transfer quality

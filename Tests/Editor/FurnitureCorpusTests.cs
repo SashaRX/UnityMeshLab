@@ -115,6 +115,10 @@ namespace SashaRX.UnityMeshLab.Tests
         /// <summary>Compares pack profiles and transfer baselines without using a baseline as correspondence truth.</summary>
         static void AuditPair(StreamWriter writer, TransferBenchmarkAssets.Pair pair, string model, string hash)
         {
+            // A pack reports its internal (oversampled) atlas, which grouped transfer takes as
+            // the side of its texel tolerances. The opt-in control transfers the default and
+            // oversample-8 sources again against the requested resolution (oversample.py).
+            bool atlasSideControl = Environment.GetEnvironmentVariable("MESHLAB_CORPUS_OVERSAMPLE_ANALYSIS") == "1";
             using var input = TransferBenchmarkAssets.Prepare(pair);
             byte[] originalSource = TransferMeshSnapshot.Capture(input.source), originalTarget = TransferMeshSnapshot.Capture(input.target);
             foreach (string profile in new[] { "default", "no-reparameterization", "oversample-8" })
@@ -138,14 +142,17 @@ namespace SashaRX.UnityMeshLab.Tests
                     // Default preparation was already performed by Prepare; its time is not comparable.
                     sourceRow.milliseconds = profile == "default" ? -1 : packMilliseconds;
                     Write(writer, sourceRow);
-                    foreach (string method in profile == "default"
-                        ? new[] { "grouped", "uv0-nearest", "surface-nearest", "surface-normal" } : new[] { "grouped" })
+                    var methods = profile == "default"
+                        ? new List<string> { "grouped", "uv0-nearest", "surface-nearest", "surface-normal" } : new List<string> { "grouped" };
+                    if (atlasSideControl && profile != "no-reparameterization") methods.Add("grouped-at-resolution");
+                    foreach (string method in methods)
                     {
                         watch.Restart();
                         Vector2[] uv; int misses = 0, fallback = 0;
-                        if (method == "grouped")
+                        int transferSide = method == "grouped-at-resolution" ? pair.settings.resolution : side;
+                        if (method == "grouped" || method == "grouped-at-resolution")
                         {
-                            var result = GroupedShellTransfer.Transfer(input.target, source, null, null, side, side);
+                            var result = GroupedShellTransfer.Transfer(input.target, source, null, null, transferSide, transferSide);
                             uv = result.uv2; misses = result.verticesTotal - result.verticesTransferred;
                         }
                         else
@@ -159,7 +166,7 @@ namespace SashaRX.UnityMeshLab.Tests
                         if (uv == null) throw new InvalidDataException("Transfer returned no UVs.");
                         int outside = uv.Count(p => p.x < 0 || p.y < 0 || p.x > 1 || p.y > 1);
                         XatlasRepack.ClampUvsToUnit(uv);
-                        var row = Measure(model, pair, profile, method, input.target, uv, side, hash);
+                        var row = Measure(model, pair, profile, method, input.target, uv, transferSide, hash);
                         row.rawOutOfBounds = outside; row.misses = misses; row.fallbackVertices = fallback;
                         row.milliseconds = elapsed; Write(writer, row);
                     }
