@@ -98,9 +98,12 @@ namespace SashaRX.UnityMeshLab
             && rejectedShells == 0 && overlapPairs == 0 && overlapsFixed == 0 && coverage >= .99f
             && outOfBoundsVertices == 0 && worstAnisotropy <= PerfectAnisotropy;
 
-        /// <summary>Strict lexicographic improvement; equal attempts never replace each other.</summary>
+        /// <summary>Strict lexicographic improvement; equal attempts never replace each other.
+        /// A perfect attempt beats every imperfect one: auto-tune stops at it and restores
+        /// the best attempt, so it must not lose to a tolerance or a later tie-break.</summary>
         internal bool IsBetterThan(AutoTuneScore other)
         {
+            if (Perfect != other.Perfect) return Perfect;
             if (failedTargets != other.failedTargets) return failedTargets < other.failedTargets;
             if (incompleteScans != other.incompleteScans) return incompleteScans < other.incompleteScans;
             if (collapsedFaces != other.collapsedFaces) return collapsedFaces < other.collapsedFaces;

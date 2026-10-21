@@ -91,6 +91,18 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(Score(Quality(worst: 50)).IsBetterThan(AutoTuneScore.Worst));
         }
 
+        /// <summary>Auto-tune stops at a perfect attempt and restores the best one, so the perfect attempt must be the best.</summary>
+        [Test]
+        public void APerfectAttemptBeatsEveryImperfectOne()
+        {
+            var perfect = Score(Quality(worst: 3.99));
+            Assert.IsTrue(perfect.Perfect); Assert.IsFalse(Score(Quality(worst: 4.01)).Perfect);
+            Assert.IsTrue(perfect.IsBetterThan(Score(Quality(worst: 4.01))), "Crossing the threshold is an improvement within 1%.");
+            Assert.IsFalse(Score(Quality(worst: 4.01)).IsBetterThan(perfect));
+            Assert.IsTrue(Score(Quality(), coverage: .995f).IsBetterThan(Score(Quality(worst: 4.5), coverage: 1)),
+                "Higher coverage does not outrank a perfect attempt.");
+        }
+
         /// <summary>Zero-area 3D faces are present in every attempt; they do not count as collapsed UVs.</summary>
         [Test]
         public void GeometryDegenerateFacesDoNotBlockAPerfectResult()
