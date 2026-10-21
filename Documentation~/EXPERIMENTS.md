@@ -1,5 +1,79 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Rejected merged shells: write a safe candidate instead of (0,0) — rejected — 2026-10-21
+
+`GroupedShellTransfer` rejects a merged target shell when more than half of its
+faces have issues (missing UV2, collapsed UV faces, or stretch above 10,000:1)
+and it is not a force3D shell. The shell's UV2 is not written: its vertices stay
+at (0,0) and every face collapses onto the atlas corner. Rejected shells keep
+the "merged" method, so the merged-shell AABB safety net still visits them; when
+the origin lies outside the source's allowance and the source has a UV0 BVH
+(more than 16 faces), the net re-projects the whole shell vertex by vertex
+without a quality check, while the shell stays `Rejected`. In the corpus control
+log 24 of the 4587 `REJECTED(` lines (counted over every repeat of a mesh) are
+followed by such a `Post-fix:` re-projection.
+
+Tried (PR #305): write the shell's best merged candidate instead, when it maps
+every vertex to a finite point, has fewer issues than the shell has faces, has
+no positive-area self-overlap and lies within the safety net's allowance around
+its source. The same gate was applied again at classification, withdrawing a
+fallback that no longer passed; the PR's last revision also applies it before
+final recovery, which the measured revision did not.
+
+Measured on the furniture corpus (89 files, 256 LOD pairs) together with PR #308
+against main, `report.py --baseline … --require-no-regressions`: failed. Grouped
+transfer has 4 / 3 / 4 tradeoff pairs (default / no-reparameterization /
+oversample-8), no worse or invalid rows; source packing and the comparison
+methods are unchanged. The log shows 47 fallback writes and no withdrawal after
+the final checks. In the changed pairs collapsed UV faces and missing UV2 fall
+(3083 → 3073; 12 → 10 with misses 12 → 0), but overlap pairs grow in every one
+(780 → 807, 72 → 80, 3 → 7), and worst anisotropy jumps where the corner layout
+had none (3.27 → 4.6e18). PR #308 was in the same run; its own run is pending,
+and these shifts follow the fallback's mechanism. The earlier withdrawal checks
+the same gate, which lets slivers and overlaps with other shells through, so it
+would not remove them.
+
+Why it fails: the candidate unfolds part of the shell, and the faces it cannot
+map become near-zero slivers instead of points at the corner, which the quality
+metric scores as extreme anisotropy rather than as collapsed. The gate checked
+self-overlap only, so the unfolded shell lands on neighbouring charts. Requiring
+no slivers and no new overlap with other shells leaves practically no candidate.
+
+Do not repeat: writing a rejected merged shell's candidate gated by issue count
+and self-overlap. A future attempt needs an overlap check against the other
+written shells and a bound on sliver anisotropy, and must beat the corner
+layout in the corpus.
+
+## Merged-shell safety net: small sources — rejected — 2026-10-21
+
+After Phase 3 writes the merged shells, a safety net re-projects every merged
+vertex outside its source's UV2 bounds widened by 20% of their size: it finds
+the nearest source face in UV0 and takes that face's UV2. The search goes only
+through the source shell's UV0 BVH, built for shells of more than 16 faces
+(`kMinFacesForShellBvh`), so outliers of a smaller source stay where they are.
+
+Tried (PR #310): without a BVH, scan the source's faces with the BVH's rule
+(faces whose normal agrees first, then any face), skipping `Rejected` shells.
+
+Measured on the furniture corpus (89 files, 256 LOD pairs) against main,
+`report.py --baseline … --require-no-regressions`: failed. Grouped transfer:
+default 247 same / 1 better / 5 tradeoff / 3 worse, no-reparameterization
+247 / 0 / 9 / 0, oversample-8 248 / 0 / 7 / 1; other methods unchanged. Of the
+26 changed pairs, overlap pairs fall in 6 default pairs (350 → 267, 30 → 19),
+but collapsed UV faces rise in 4 / 5 / 4 pairs per profile and fall in none, and
+worst anisotropy rises in 5 / 4 / 4 and falls in none (291 → 5.9e17). The log
+has 162 `Post-fix:` lines against 51 on main (53 shell totals against 22).
+
+Why it fails: the net moves each outlier vertex on its own, while the other
+vertices of its faces stay, so a face with a moved vertex becomes a sliver or
+folds. A small source's allowance is small in absolute terms, so far more of
+its vertices count as outliers than for a large source. The same per-vertex
+move runs on main through the BVH; it is not measured separately.
+
+Do not repeat: extending the per-vertex re-projection to more shells. The
+follow-up treats a shell as one unit: re-project its outliers and keep the
+result only when the shell's collapsed faces and worst anisotropy do not grow.
+
 ## Oversample 8: why a better source does not survive transfer — analysis — 2026-10-21
 
 The furniture corpus baseline on main (`491340a`, 80 files, 255 LOD pairs)
@@ -362,6 +436,15 @@ binary numeric values; sample counts match. Medians (s):
 
 The 1–5% differences stay within the run-to-run spread: exact, no regression,
 no resolved gain.
+
+Correction: "refusals are unchanged" did not hold for a chart with a
+non-finite UV. The old code reached the shared-point lookup only after the scan
+had refused such a chart (`invalidFaces > 0`). Looking the anchors up first
+asked the counts dictionary for a key with NaN, which never equals itself, and
+threw `KeyNotFoundException` instead of refusing.
+`UvPointJunctionRecoveryTests.RefusalIsAtomic("invalid")` failed from this
+commit on (local run on main, 2026-10-21). The lookup now uses `TryGetValue`:
+such a vertex is no anchor, and the scan refuses the chart as before.
 
 ## Separate overlapped source branches at a single UV point — 2026-10-20
 

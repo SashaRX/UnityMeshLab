@@ -34,8 +34,10 @@ namespace SashaRX.UnityMeshLab
             bool rotatable = false;
             for (int p = 0; p < patches.Count; ++p)
             {
+                // A non-finite UV never equals itself, so its key is not found; such a
+                // vertex is no anchor, and the scan below refuses the invalid chart.
                 var shared = p == main ? Array.Empty<int>()
-                    : vertices[p].Where(v => counts[(positions[v], original[v])] > 1).Take(2).ToArray();
+                    : vertices[p].Where(v => counts.TryGetValue((positions[v], original[v]), out int n) && n > 1).Take(2).ToArray();
                 anchors[p] = shared.Length == 1 ? shared[0] : -1;
                 rotatable |= shared.Length == 1;
             }
