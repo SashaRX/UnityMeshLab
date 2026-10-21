@@ -31,6 +31,15 @@ class RankTests(unittest.TestCase):
         self.assertEqual(found["overlap"], 2)
         self.assertIn("stretch>4", found)
 
+    def test_unwritten_shell_is_a_defect_but_disabled_recovery_scores_nothing(self):
+        """Vertices left at the default UV2 rank as a defect; the source gate state is diagnostic only."""
+        row = measured()
+        row["unwrittenVertices"], row["sourceAtlasRecoveryAllowed"] = 12, 0
+        found = rank.defects(row)
+        self.assertEqual(found["unwritten-shell"], 12)
+        self.assertIn("recovery-disabled", found)
+        self.assertEqual(rank.score(row), rank.WEIGHTS["unwritten"] * 12)
+
     def test_incomplete_scan_scores_infinite(self):
         """An unfinished intersection scan can never rank as the best variant."""
         self.assertTrue(math.isinf(rank.score(measured(overlapScanComplete=False))))

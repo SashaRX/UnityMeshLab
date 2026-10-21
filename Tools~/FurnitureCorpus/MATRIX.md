@@ -59,12 +59,19 @@ Every row is one JSON object per line (`JsonUtility` compatible) and has
   - `quality` is `TransferUvQuality.Measure(mesh, uv, Vector2.one, Matrix4x4.identity)` with `faceAnisotropy` emptied.
   - Counters: `uvDegenerateFaces` (exact zero stored UV area), `geometryDegenerateFaces` (exact zero 3D area), `rawOutOfBounds` (before the final clamp, or -1 when the pipeline already clamped), `misses` and `fallbackVertices` (grouped methods; otherwise 0), `atlasSide`.
   - Optional fields use -1 when unknown:
-    - forward only: `shellsRejected`, `shellsPoor`, `shellsDegraded` and `seamTrialAccepted` (0/1);
+    - forward only: `shellsRejected`, `shellsPoor`, `shellsDegraded`, `seamTrialAccepted` (0/1),
+      `sourceAtlasRecoveryAllowed` (0/1; the whole-source atlas gate that enables Phase-3 recovery)
+      and `unwrittenVertices` (vertices of rejected or unmatched shells left at the default UV2);
     - reverse only: `alignedArea`, `inheritedArea`.
 - **`run`**: one variant execution of one model (or pair, for `grouped`).
   - `milliseconds` is wall time.
   - `stages`: `[{stage, lod, milliseconds, count}]` from `TransferPerformanceProfile` when available.
   - Also `atlasSide`, `fill` (LOD0 bbox fill fraction, -1 if unknown) and `repetition` (0-based).
+  - Forward runs: `autoTuneAttempts` (configurations actually executed), `autoTuneChosen` (index)
+    and `autoTuneDistinctInputs` (distinct post-symmetry working-mesh hashes among the attempts;
+    equal inputs mean repeated identical work).
+  - Reverse runs: `requestedDensity` and `finalDensity` (texels per unit after Fill), to expose
+    atlas inflation.
 - **`error`**: an exception escaped the variant.
   - Fields: `errorType` (exception type name), `error` (message plus first stack frame), `stage` if known.
   - The run continues with the next variant.
@@ -81,7 +88,7 @@ copy and deleted afterwards, as in `FurnitureCorpusTests`.
 
 - **Failures:** run errors and refusals grouped by level, type and digit-free message, ranked by status, then affected models.
 - **Defects:** classes of the `default` variant, ranked by severity, then affected models.
-  - Order: error, refused, incomplete scan, invalid UV, collapsed UV, overlap, extreme stretch (>10000 or non-finite), stretch >4, unmatched vertices, out of bounds.
+  - Order: error, refused, incomplete scan, invalid UV, collapsed UV, unwritten shell, overlap, extreme stretch (>10000 or non-finite), stretch >4, unmatched vertices, out of bounds, and the diagnostic `recovery-disabled` (dirty source atlas gate; adds nothing to the score).
   - Collapsed UVs use the direct stored-area counter, never 3D zero-area faces.
 - **Variants:** per level, each variant against `default` on identical model/target keys, using `report.compare`.
   - Counts: better, worse, tradeoff and same; runs that fail where `default` succeeds (`failed`) or the reverse (`recovered`).

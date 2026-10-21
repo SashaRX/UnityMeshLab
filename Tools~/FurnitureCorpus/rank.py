@@ -19,10 +19,10 @@ DEFAULT_VARIANT = "default"
 
 # Severity order and weights for the per-target defect score. Counts are raw
 # per-face/per-pair counts; stretch contributes per target, not per face.
-WEIGHTS = dict(invalid=1000.0, collapsed=100.0, overlap=10.0, extreme=50.0, stretch=5.0,
+WEIGHTS = dict(invalid=1000.0, collapsed=100.0, unwritten=30.0, overlap=10.0, extreme=50.0, stretch=5.0,
                unmatched=1.0, outOfBounds=0.1)
-SEVERITY = ("error", "refused", "incomplete-scan", "invalid-uv", "collapsed-uv", "overlap",
-            "extreme-stretch", "stretch>4", "unmatched", "out-of-bounds")
+SEVERITY = ("error", "refused", "incomplete-scan", "invalid-uv", "collapsed-uv", "unwritten-shell", "overlap",
+            "extreme-stretch", "stretch>4", "unmatched", "out-of-bounds", "recovery-disabled")
 
 
 def load(paths):
@@ -61,6 +61,8 @@ def defects(row):
         found["invalid-uv"] = q["invalidFaces"]
     if collapsed(row) > 0:
         found["collapsed-uv"] = collapsed(row)
+    if row.get("unwrittenVertices", 0) > 0:
+        found["unwritten-shell"] = row["unwrittenVertices"]
     if q.get("overlapPairs", 0) > 0:
         found["overlap"] = q["overlapPairs"]
     if not finite(worst) or worst > 10000:
@@ -72,6 +74,9 @@ def defects(row):
     outside = max(row.get("rawOutOfBounds", 0), q.get("outOfBoundsVertices", 0))
     if outside > 0:
         found["out-of-bounds"] = outside
+    if row.get("sourceAtlasRecoveryAllowed") == 0:
+        # Diagnostic, not a UV defect: a dirty source atlas disabled Phase-3 recovery.
+        found["recovery-disabled"] = 1
     return found
 
 
@@ -82,6 +87,7 @@ def score(row):
         return math.inf
     worst = row["quality"].get("worstAnisotropy", 0.0)
     value = WEIGHTS["invalid"] * found.get("invalid-uv", 0) + WEIGHTS["collapsed"] * found.get("collapsed-uv", 0)
+    value += WEIGHTS["unwritten"] * found.get("unwritten-shell", 0)
     value += WEIGHTS["overlap"] * found.get("overlap", 0) + WEIGHTS["unmatched"] * found.get("unmatched", 0)
     value += WEIGHTS["outOfBounds"] * found.get("out-of-bounds", 0)
     if "extreme-stretch" in found:
