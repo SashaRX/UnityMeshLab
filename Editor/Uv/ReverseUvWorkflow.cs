@@ -29,10 +29,41 @@ namespace SashaRX.UnityMeshLab
                 "After all correspondences, try higher texel densities with fresh packing of every group. Padding stays in final pixels; actual density can exceed the requested minimum."),reverseFillAtlas);
             reverseReach = EditorGUILayout.FloatField(new GUIContent("Projection reach (model units)"), reverseReach);
             using (new EditorGUI.DisabledScope(!ctx.LodGroup || ctx.MeshEntries.Where(e => e.include).Select(e => e.lodIndex).Distinct().Count() < 2))
-                if (GUILayout.Button("Run Reverse UV", GUILayout.Height(24)))
+                if (GUILayout.Button("Run Reverse UV", GUILayout.Height(24)) && ConfirmReverseReimport())
                     FireAndForget(() => RunReverseTransfer(true), "Reverse UV");
             if (!string.IsNullOrEmpty(reverseSummary)) EditorGUILayout.HelpBox(reverseSummary, MessageType.Info);
         }
+
+        // Preparation reimports models that are not yet imported for precision, and the reimport
+        // resets the whole working chain without undo. Ask before that discards a result;
+        // regrouping the existing forward result never reimports.
+        bool ConfirmReverseReimport()
+        {
+            if (!reverseUseForwardCharts || !reversePrepareSeed) return true;
+            // The reset clears every entry, not only the reimported models.
+            var discarded = ctx.MeshEntries.Where(HasWorkingResult).ToList();
+            if (discarded.Count == 0) return true;
+            var paths = UvTransferInputPreparation.FindPaths(ctx.MeshEntries);
+            if (paths.Count == 0) return true;
+            return EditorUtility.DisplayDialog("Reimport for Reverse UV?",
+                "'Prepare with ordinary Transfer' reads the imported meshes without mesh compression, optimization or importer welding. "
+                + $"Reimported that way first: {NameList(paths.Select(System.IO.Path.GetFileName))}.\n\n"
+                + "The reimport resets the working chain without undo, discarding the weld, symmetry, repack, Transfer and Reverse results of "
+                + $"{NameList(discarded.Select(e => e.fbxMesh ? e.fbxMesh.name : e.originalMesh.name))}.\n\n"
+                + "To keep the chain, cancel and turn off 'Prepare with ordinary Transfer' to regroup the existing forward result.",
+                "Reimport and run", CancelButton);
+        }
+
+        static string NameList(IEnumerable<string> names)
+        {
+            var list = names.ToList();
+            return string.Join(", ", list.Take(3)) + (list.Count > 3 ? $" and {list.Count - 3} more" : string.Empty);
+        }
+
+        /// <summary>A result the working-mesh reset discards: a derived mesh, a working clone or Reverse provenance.</summary>
+        internal static bool HasWorkingResult(MeshEntry entry) => entry != null
+            && (entry.transferredMesh || entry.repackedMesh || !string.IsNullOrEmpty(entry.reverseTransferJson)
+                || (entry.originalMesh && entry.Baseline && entry.originalMesh != entry.Baseline));
 
         // An unrelated or failed operation must not remove the export guard from
         // reverse-generated meshes that are still owned by their entries.
@@ -45,8 +76,14 @@ namespace SashaRX.UnityMeshLab
             if(float.IsNaN(reverseReach) || float.IsInfinity(reverseReach) || reverseReach<=0)
                 throw new ArgumentException("Projection reach must be finite and positive.");
             // Precision preparation needs the imported asset paths, before the
-            // ordinary pipeline receives detached in-memory copies.
-            if(reverseUseForwardCharts && reversePrepareSeed) PrepareTransferInputs();
+            // ordinary pipeline receives detached in-memory copies. Its reimport resets
+            // the working chain first; record that even when the reimport then fails.
+            if(reverseUseForwardCharts && reversePrepareSeed && UvTransferInputPreparation.FindPaths(ctx.MeshEntries).Count>0)
+            {
+                bool discards=ctx.MeshEntries.Any(HasWorkingResult);
+                try {PrepareTransferInputs();}
+                finally {if(discards) UvtLog.Warn("[ReverseUV] Preparing inputs without mesh compression, optimization or importer welding reset the previous working chain.");}
+            }
             using var previewChange = PreservePreviewDuringMeshChange();
             var groups = ctx.MeshEntries.Where(e => e.include && e.originalMesh)
                 .GroupBy(e => e.lodIndex).OrderByDescending(g => g.Key).Select(g => g.ToList()).ToList();
