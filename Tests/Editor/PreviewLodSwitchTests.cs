@@ -2381,6 +2381,26 @@ namespace SashaRX.UnityMeshLab.Tests
             Prepare(true,out repeated); Assert.IsTrue(repeated,"A result edited in place must not be reused.");
         }
 
+        /// <summary>Run Reverse UV asks before a reimport only when the reset discards a result: every kind the reset clears counts.</summary>
+        [Test]
+        public void ReverseReimportCountsEveryResultTheResetDiscards()
+        {
+            var imported=Quad("Imported",true);
+            var entry=new MeshEntry {fbxMesh=imported,originalMesh=imported};
+            Assert.IsFalse(UvTransferWorkflow.HasWorkingResult(entry),"An entry at its import has nothing to lose.");
+            var derived=Object.Instantiate(imported);owned.Add(derived);
+            entry.originalMesh=derived;
+            Assert.IsTrue(UvTransferWorkflow.HasWorkingResult(entry),"A weld or symmetry clone is reset to the import.");
+            entry.originalMesh=imported;entry.repackedMesh=derived;
+            Assert.IsTrue(UvTransferWorkflow.HasWorkingResult(entry),"A repacked atlas is discarded.");
+            entry.repackedMesh=null;entry.transferredMesh=derived;
+            Assert.IsTrue(UvTransferWorkflow.HasWorkingResult(entry),"A Transfer result is discarded.");
+            entry.transferredMesh=null;entry.reverseTransferJson="ancestry";
+            Assert.IsTrue(UvTransferWorkflow.HasWorkingResult(entry),"Reverse provenance is discarded.");
+            entry.reverseTransferJson=null;entry.sceneEditMesh=derived;entry.originalMesh=derived;
+            Assert.IsFalse(UvTransferWorkflow.HasWorkingResult(entry),"A scene edit is the baseline the reset keeps.");
+        }
+
         [Test] public void FailedReverseTransferKeepsThePreviousChainAndProvenance()
         {
             var ctx = Open(Group(true,out var fineRenderer,out var coarseRenderer));
