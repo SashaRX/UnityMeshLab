@@ -212,7 +212,7 @@ namespace SashaRX.UnityMeshLab
         {
             // Rebuild only the failed shell, using native chart parameterization.
             // The original triangle count and corner identities must survive.
-            if(!XatlasRepack.TryAcquireNativeSession()) throw new InvalidOperationException("An xatlas operation is already in progress.");
+            XatlasRepack.AcquireNativeSessionForRequiredWork("Reverse shell parameterization",token);
             bool created=false;
             try
             {
