@@ -1586,20 +1586,11 @@ namespace SashaRX.UnityMeshLab
                 splitTargetsInSymmetryStep, SymmetrySplitMode);
             BenchmarkRecorder.Current?.StageBegin("pipeline");
             bool completedSuccessfully = false;
-            ForwardRun start = null;
-            // A fingerprint failure only costs Reverse its reuse; it never fails the pipeline.
-            try { if (reuseForwardRunForReverse) start = CaptureForwardRunStart(); }
-            catch (Exception error) { UvtLog.Warn("[Pipeline] Inputs not fingerprinted for Reverse reuse: " + error.Message); }
+            var start = reuseForwardRunForReverse ? TryCaptureForwardRunStart() : null;
             try
             {
                 completedSuccessfully = await ExecFullPipelineCoreImpl(useAsync);
-                if (completedSuccessfully && start != null)
-                    try { RecordForwardRun(start); }
-                    catch (Exception error)
-                    {
-                        lastForwardRun = null;
-                        UvtLog.Warn("[Pipeline] Full Pipeline result not recorded for Reverse reuse: " + error.Message);
-                    }
+                if (completedSuccessfully && start != null) TryRecordForwardRun(start);
             }
             finally
             {

@@ -87,28 +87,7 @@ namespace SashaRX.UnityMeshLab
                 var entries = ReverseSourceEntries();
                 if (!runPipeline && ctx.RepackPerMesh)
                     throw new InvalidOperationException("Reverse regrouping needs a shared forward atlas. Enable ordinary Transfer preparation.");
-                if (runPipeline)
-                {
-                    foreach (var entry in entries)
-                    {
-                        // The renderer's baseline: a scene edit (MeshEntry.sceneEditMesh) when there is one, else the import.
-                        var baseline=entry.Baseline; var source=baseline ? baseline : entry.originalMesh;
-                        if(!source.isReadable && (source.blendShapeCount>0
-                            || source.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.BlendWeight)
-                            || source.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.BlendIndices)))
-                            throw new InvalidOperationException($"Enable Read/Write for '{source.name}' to preserve skinning and blend shapes during reverse preparation.");
-                    }
-                    token.ThrowIfCancellationRequested();
-                    string refusal = ForwardRunRefusal(entries);
-                    if (refusal == null)
-                        UvtLog.Info($"[ReverseUV] Reusing the Full Pipeline result of {entries.Length} meshes: "
-                            + "its inputs, settings and results match the detached preparation.");
-                    else
-                    {
-                        if (lastForwardRun != null) UvtLog.Info($"[ReverseUV] Repeating ordinary Transfer preparation: {refusal}.");
-                        entries = await RunDetachedPreparation(result, entries, useAsync, token);
-                    }
-                }
+                if (runPipeline) entries = await PrepareForwardEntries(result, entries, useAsync, token);
                 token.ThrowIfCancellationRequested();
                 if (entries.Any(e => !(e.repackedMesh || e.transferredMesh) || !string.IsNullOrEmpty(e.reverseTransferJson)))
                     throw new InvalidOperationException("Reverse regrouping requires ordinary Transfer results for every included LOD. Enable preparation or run the full forward pipeline first.");
@@ -128,6 +107,36 @@ namespace SashaRX.UnityMeshLab
         }
 
         MeshEntry[] ReverseSourceEntries() => ctx.MeshEntries.Where(e => e.include && e.originalMesh).ToArray();
+
+        /// <summary>The ordinary Transfer entries for Reverse: the last Full Pipeline's when reusable, else a detached preparation's.</summary>
+        async Task<MeshEntry[]> PrepareForwardEntries(ForwardReverseInputs result, MeshEntry[] entries, bool useAsync, CancellationToken token)
+        {
+            RequireReadableDeformation(entries);
+            token.ThrowIfCancellationRequested();
+            string refusal = ForwardRunRefusal(entries);
+            if (refusal == null)
+            {
+                UvtLog.Info($"[ReverseUV] Reusing the Full Pipeline result of {entries.Length} meshes: "
+                    + "its inputs, settings and results match the detached preparation.");
+                return entries;
+            }
+            if (lastForwardRun != null) UvtLog.Info($"[ReverseUV] Repeating ordinary Transfer preparation: {refusal}.");
+            return await RunDetachedPreparation(result, entries, useAsync, token);
+        }
+
+        // Skinning and blend shapes reach a detached copy only from a readable source.
+        static void RequireReadableDeformation(MeshEntry[] entries)
+        {
+            foreach (var entry in entries)
+            {
+                // The renderer's baseline: a scene edit (MeshEntry.sceneEditMesh) when there is one, else the import.
+                var baseline=entry.Baseline; var source=baseline ? baseline : entry.originalMesh;
+                if(!source.isReadable && (source.blendShapeCount>0
+                    || source.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.BlendWeight)
+                    || source.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.BlendIndices)))
+                    throw new InvalidOperationException($"Enable Read/Write for '{source.name}' to preserve skinning and blend shapes during reverse preparation.");
+            }
+        }
 
         async Task<MeshEntry[]> RunDetachedPreparation(ForwardReverseInputs result, MeshEntry[] entries, bool useAsync, CancellationToken token)
         {
@@ -232,6 +241,27 @@ namespace SashaRX.UnityMeshLab
         }
 
         const string ForwardRunFingerprintTiming = "Forward run fingerprint";
+
+        // A fingerprint failure only costs Reverse its reuse; it never fails the pipeline.
+        ForwardRun TryCaptureForwardRunStart()
+        {
+            try { return CaptureForwardRunStart(); }
+            catch (Exception error)
+            {
+                UvtLog.Warn("[Pipeline] Inputs not fingerprinted for Reverse reuse: " + error.Message);
+                return null;
+            }
+        }
+
+        void TryRecordForwardRun(ForwardRun start)
+        {
+            try { RecordForwardRun(start); }
+            catch (Exception error)
+            {
+                lastForwardRun = null;
+                UvtLog.Warn("[Pipeline] Full Pipeline result not recorded for Reverse reuse: " + error.Message);
+            }
+        }
 
         /// <summary>Null when the last Full Pipeline result can stand in for a detached preparation of <paramref name="entries"/>, else why not.</summary>
         string ForwardRunRefusal(MeshEntry[] entries)
