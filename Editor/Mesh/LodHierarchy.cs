@@ -231,7 +231,9 @@ namespace SashaRX.UnityMeshLab
             if (rootMr != null)
             {
                 var newMr = lod0Child.AddComponent<MeshRenderer>();
-                newMr.sharedMaterials = rootMr.sharedMaterials;
+                // A visible preview's material is not the root's own: the child would keep it
+                // after the preview restores the root, which this move destroys.
+                newMr.sharedMaterials = UvToolHub.OriginalPreviewMaterials(rootMr, forAssetWrite: true);
                 RendererSettings.Copy(rootMr, newMr, includeMaterials: false);
                 GameObjectUtility.SetStaticEditorFlags(lod0Child, GameObjectUtility.GetStaticEditorFlags(root));
                 Undo.DestroyObjectImmediate(rootMr);
