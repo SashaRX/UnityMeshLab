@@ -24,9 +24,21 @@ The kept fragments now take the transform on a tie: it maps the fragment's
 own UV0 through the source's UV0 → UV2 fit, so they overlap only where their
 UV0 does. Other shells keep the interpolation preference.
 
-Measurement pending: model A (overlap pairs, collapsed faces and UV quality per
-LOD) and the furniture corpus against main with
-`report.py --baseline … --require-no-regressions`.
+Measured (item 23 in PR #294). Model A, Full Pipeline against main: overlap
+pairs fall 5450 → 1257 (LOD1) and 11992 → 6528 (LOD2), 7077 → 1330 and
+12753 → 6991 right after the first pass; collapsed faces stay 18 → 19 and
+63 → 58, unwritten vertices 0 and 93 → 94; UV quality 37 → 39 and 27 → 31.
+The transform now wins for all 241 kept LOD1 shells and 807 of 843 in LOD2.
+LOD2 still has 13 times the overlaps it had before the dedup change (496).
+
+Furniture corpus against the main capture (pure effect): the gate fails,
+exit 1. 36 pairs change; default has 4 better, 6 tradeoff and 2 worse. The
+better pairs are model A's (overlap pairs 7094 → 1345 and 13379 → 5859)
+and two small ones; the two worse pairs gain a few overlaps (15 → 19 and
+36 → 61), as do most tradeoff pairs, against lower anisotropy or stretch.
+Against the capture before the dedup change: 12 tradeoff, none worse;
+model A's collapsed faces 1303 → 29 and 3335 → 58, overlap pairs 597 → 1345
+and 668 → 5859.
 
 ## Partitions facing the same way are told apart by position — 2026-10-22
 
