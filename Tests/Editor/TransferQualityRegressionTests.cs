@@ -727,6 +727,36 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void AShellReachingPastItsSourceKeepsTheUnclampedSimilarity()
+        {
+            var source = new Mesh { name = "Small chart" };
+            var target = new Mesh { name = "Strip reaching past the chart" };
+            try {
+                // The right column lies beyond the chart's UV0 edge: interpolation presses it onto
+                // that edge, and clamping the similarity presses it onto the chart's UV2 box.
+                var chart = new[] { Vector2.zero, new Vector2(.1f, 0), new Vector2(.1f, .1f), new Vector2(0, .1f) };
+                source.vertices = chart.Select(uv => (Vector3)(uv * 10)).ToArray();
+                source.uv = chart;
+                source.uv2 = chart.Select(uv => uv * 3 + Vector2.one * .1f).ToArray();
+                source.triangles = new[] { 0, 1, 2, 0, 2, 3 }; source.RecalculateNormals();
+                var strip = new[] { new Vector2(.05f, 0), new Vector2(.12f, 0), new Vector2(.15f, 0),
+                    new Vector2(.05f, .1f), new Vector2(.12f, .1f), new Vector2(.15f, .1f) };
+                target.vertices = strip.Select(uv => (Vector3)(uv * 10)).ToArray();
+                target.uv = strip;
+                target.triangles = new[] { 0, 1, 4, 0, 4, 3, 1, 2, 5, 1, 5, 4 }; target.RecalculateNormals();
+                var result = GroupedShellTransfer.Transfer(target, source, sourceAtlasWidth: 512, sourceAtlasHeight: 512);
+                for (int i = 0; i < strip.Length; i++)
+                    Assert.That(Vector2.Distance(strip[i] * 3 + Vector2.one * .1f, result.uv2[i]), Is.LessThan(1e-4f));
+                var tris = target.triangles;
+                for (int f = 0; f < tris.Length / 3; f++) {
+                    Vector2 a = result.uv2[tris[f * 3]], b = result.uv2[tris[f * 3 + 1]], c = result.uv2[tris[f * 3 + 2]];
+                    Assert.That(Mathf.Abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)), Is.GreaterThan(1e-6f), $"face {f}");
+                }
+            }
+            finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
+        [Test]
         public void ARescueStaysOutOfSourcesOtherShellsAreMatchedToAndOutOfEarlierRescues()
         {
             var srcMin = new[] { Vector2.zero, new Vector2(.5f, 0) };

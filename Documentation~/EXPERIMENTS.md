@@ -1,5 +1,45 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## A shell reaching past its source keeps the unclamped similarity — 2026-10-22
+
+After PR #339 model K's LOD2 has 24 faces with a UV2 area under 1e-10 in
+written shells (item 39 in PR #294); none is degenerate in 3D or in UV0.
+
+12 are in 8 interpolated shells. Their vertices sit on the source chart's
+UV0 corners or past them (14 of 36 inside, median 6.8% of the chart's UV0
+diagonal away), so interpolation presses a face's vertices onto one edge.
+The similarity of the source maps every one of the 8 shells with no issues,
+worst anisotropy 1.27 and no overlap with itself or the written shells, but
+8 of its 40 vertices leave the source's UV2 box: when its bounds meet no
+other source the code clamps those vertices to the box, which collapses the
+same faces (4 issues), and adds one issue per outside vertex, so
+interpolation wins. Recovery can run for 1 of the 8 (3 share their source,
+4 have partitioned sources) and does not help it.
+
+The other 12 are in 4 merged force3D shells accepted as Poor: each face's
+three vertices lie 76 chart diagonals from a 1-2 face source and map to one
+of its corners. No candidate measured (constrained, all-source, 3D-primary)
+has fewer issues; they stay as they are.
+
+Change: when the clamped similarity was penalised, the unclamped one is
+kept and taken when it has fewer issues than interpolation (after its
+aligned and geometric alternatives) and than the clamped one, stays in
+[0,1] within the bounds tolerance, does not fold over itself, and its
+bounds meet neither another source's UV2 box (the check that already
+refuses the similarity) nor a shell placed outside the sources (rescues,
+earlier unclamped similarities), nor merged all-source or force3D regions.
+A taken one reserves its bounds, and every later all-source candidate and
+rescue avoids them.
+
+This is not the rejected "transform by local quality" trial (Source UV
+packing, 2026-10-09: 44 strict regressions, "local improvement does not
+certify cross-chart footprints"): the similarity is taken only where it
+lands in no other source's UV2 box and no placed region, and only where
+interpolation already has collapsed faces.
+
+Pending measurement: models K and A, Full Pipeline against main, and the
+furniture corpus with `--require-no-regressions`.
+
 ## Small merged shells try all sources before rejection — 2026-10-22
 
 Model K's last LOD (LOD2, items 35 and 36 in PR #294) has 62 vertices left

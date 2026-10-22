@@ -2253,8 +2253,9 @@ namespace SashaRX.UnityMeshLab
             // UV2 bounds of merged shells written from the all-source pass, small-shell rescues
             // included: their UV2 may lie away from the source they record
             var allSourceRegions = new List<(Vector2 min, Vector2 max)>();
-            // UV2 bounds of the rescues alone, which every later all-source candidate avoids
-            var rescueRegions = new List<(Vector2 min, Vector2 max)>();
+            // UV2 bounds of shells placed where no source's UV2 lies (small-shell rescues,
+            // unclamped similarities), which every later all-source candidate avoids
+            var outsideSourceRegions = new List<(Vector2 min, Vector2 max)>();
 
             // Track which source shells are already claimed by overlap group targets.
             // Prevents multiple targets from mapping to the same source, which causes
@@ -3205,10 +3206,8 @@ namespace SashaRX.UnityMeshLab
                                     }
                                 }
                             }
-                            // Small shells rescued earlier hold UV2 no claimed source covers
-                            if (issues < int.MaxValue && rescueRegions.Exists(region =>
-                                candMin.x < region.max.x && candMax.x > region.min.x &&
-                                candMin.y < region.max.y && candMax.y > region.min.y))
+                            // Shells placed earlier outside the sources hold UV2 no claimed source covers
+                            if (issues < int.MaxValue && MeetsRegions((candMin, candMax), outsideSourceRegions))
                                 issues = int.MaxValue;
                         }
 
@@ -3217,7 +3216,8 @@ namespace SashaRX.UnityMeshLab
                         if (smallShellRescue && !constrained && issues < int.MaxValue
                             && (CandidateHasOverlap(tShell, tgtTris, candidate)
                                 || RescueMeetsPlacedShells(UvBounds(candidate), tsi, result.targetShellToSourceShell,
-                                    result.targetShellStatus, srcUv2Min, srcUv2Max, allSourceRegions, force3DUsedRegions)))
+                                    result.targetShellStatus, srcUv2Min, srcUv2Max,
+                                    allSourceRegions, force3DUsedRegions, outsideSourceRegions)))
                             issues = int.MaxValue;
 
                         // Prefer all-source on tie when both have issues:
@@ -3575,7 +3575,7 @@ namespace SashaRX.UnityMeshLab
                         shellsMerged++;
                         result.consistencyCorrected += bestMergedConsistencyFixes;
                         if (!bestWasConstrained && !force3D) allSourceRegions.Add(UvBounds(chosenUv2));
-                        if (smallShellRescued) rescueRegions.Add(UvBounds(chosenUv2));
+                        if (smallShellRescued) outsideSourceRegions.Add(UvBounds(chosenUv2));
                         string mergedLabel = "all-source";
                         if (force3D) mergedLabel = "3D-primary";
                         else if (bestWasConstrained) mergedLabel = "src-constrained";
@@ -3591,6 +3591,9 @@ namespace SashaRX.UnityMeshLab
 
                     Dictionary<int, Vector2> uv2_transform = null;
                     int issuesTransform = int.MaxValue;
+                    // The similarity before its out-of-bounds vertices are clamped
+                    Dictionary<int, Vector2> uv2_transformUnclamped = null;
+                    int issuesTransformUnclamped = int.MaxValue;
 
                     if (xf.valid)
                     {
@@ -3638,6 +3641,8 @@ namespace SashaRX.UnityMeshLab
                             }
                             if (!crossesOther)
                             {
+                                uv2_transformUnclamped = new Dictionary<int, Vector2>(uv2_transform);
+                                issuesTransformUnclamped = issuesTransform;
                                 // Doesn't cross another shell, but still OOB — clamp to source AABB
                                 Vector2 cMin = srcBMin2 - new Vector2(kOobMargin, kOobMargin);
                                 Vector2 cMax = srcBMax2 + new Vector2(kOobMargin, kOobMargin);
@@ -3784,6 +3789,23 @@ namespace SashaRX.UnityMeshLab
                         }
                     }
 
+                    // Clamping presses the similarity's outside vertices onto the source's UV2
+                    // box, as interpolation presses them onto its UV0 boundary, and both collapse
+                    // faces there. The unclamped similarity is taken when it has fewer issues,
+                    // stays in the atlas, does not fold and its bounds meet no other source (as
+                    // checked above) nor a shell placed outside the sources.
+                    bool unclampedSimilarity = false;
+                    if (uv2_transformUnclamped != null && issuesTransformUnclamped < issuesInterp
+                        && issuesTransformUnclamped < issuesTransform
+                        && InUnitSquare(uv2_transformUnclamped, uv2BoundsTolerance)
+                        && !MeetsRegions(UvBounds(uv2_transformUnclamped), outsideSourceRegions, allSourceRegions, force3DUsedRegions)
+                        && !CandidateHasOverlap(tShell, tgtTris, uv2_transformUnclamped))
+                    {
+                        uv2_transform = uv2_transformUnclamped;
+                        issuesTransform = issuesTransformUnclamped;
+                        unclampedSimilarity = true;
+                    }
+
                     // A corrected curved-chart match can still fold during a
                     // normal-filtered UV0 query. On equal face-issue counts, use
                     // the existing transform only when its overlap scan is clean
@@ -3798,6 +3820,11 @@ namespace SashaRX.UnityMeshLab
                         shellsTransform++;
                         result.targetShellMethod[tsi] = 1; // xform
                         result.targetShellIssues[tsi] = issuesTransform;
+                        if (unclampedSimilarity) {
+                            outsideSourceRegions.Add(UvBounds(uv2_transform));
+                            UvtLog.Info($"[GroupedTransfer] t{tsi}: unclamped similarity of src{chosenSrc} " +
+                                $"({issuesTransform} issues, interpolation {issuesInterp})");
+                        }
                     }
                     else
                     {
@@ -4888,6 +4915,24 @@ namespace SashaRX.UnityMeshLab
             return (min, max);
         }
 
+        /// <summary>Whether bounds meet any of the placed regions.</summary>
+        internal static bool MeetsRegions((Vector2 min, Vector2 max) bounds,
+            params List<(Vector2 min, Vector2 max)>[] placed)
+        {
+            foreach (var regions in placed)
+                if (regions.Exists(region => bounds.min.x < region.max.x && bounds.max.x > region.min.x
+                    && bounds.min.y < region.max.y && bounds.max.y > region.min.y)) return true;
+            return false;
+        }
+
+        static bool InUnitSquare(Dictionary<int, Vector2> uv, float tolerance)
+        {
+            foreach (var point in uv.Values)
+                if (point.x < -tolerance || point.x > 1f + tolerance
+                    || point.y < -tolerance || point.y > 1f + tolerance) return false;
+            return true;
+        }
+
         /// <summary>
         /// Whether a rescued shell's UV2 bounds meet the UV2 bounds of a source another target
         /// shell is matched to, or one of the placed regions. A rejected shell wrote no UV2.
@@ -4904,9 +4949,7 @@ namespace SashaRX.UnityMeshLab
                 if (t != shell && src >= 0 && shellStatus[t] != ShellStatus.Rejected
                     && Meets(srcUv2Min[src], srcUv2Max[src])) return true;
             }
-            foreach (var regions in placed)
-                if (regions.Exists(region => Meets(region.min, region.max))) return true;
-            return false;
+            return MeetsRegions(bounds, placed);
         }
 
         static bool CandidateHasOverlap(UvShell shell, int[] triangles, Dictionary<int, Vector2> candidate)
