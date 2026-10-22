@@ -2253,6 +2253,8 @@ namespace SashaRX.UnityMeshLab
             // UV2 bounds of merged shells written from the all-source pass, small-shell rescues
             // included: their UV2 may lie away from the source they record
             var allSourceRegions = new List<(Vector2 min, Vector2 max)>();
+            // UV2 bounds of the rescues alone, which every later all-source candidate avoids
+            var rescueRegions = new List<(Vector2 min, Vector2 max)>();
 
             // Track which source shells are already claimed by overlap group targets.
             // Prevents multiple targets from mapping to the same source, which causes
@@ -3203,6 +3205,11 @@ namespace SashaRX.UnityMeshLab
                                     }
                                 }
                             }
+                            // Small shells rescued earlier hold UV2 no claimed source covers
+                            if (issues < int.MaxValue && rescueRegions.Exists(region =>
+                                candMin.x < region.max.x && candMax.x > region.min.x &&
+                                candMin.y < region.max.y && candMax.y > region.min.y))
+                                issues = int.MaxValue;
                         }
 
                         // A small shell's rescue must not fold over itself, nor reach a source
@@ -3568,6 +3575,7 @@ namespace SashaRX.UnityMeshLab
                         shellsMerged++;
                         result.consistencyCorrected += bestMergedConsistencyFixes;
                         if (!bestWasConstrained && !force3D) allSourceRegions.Add(UvBounds(chosenUv2));
+                        if (smallShellRescued) rescueRegions.Add(UvBounds(chosenUv2));
                         string mergedLabel = "all-source";
                         if (force3D) mergedLabel = "3D-primary";
                         else if (bestWasConstrained) mergedLabel = "src-constrained";

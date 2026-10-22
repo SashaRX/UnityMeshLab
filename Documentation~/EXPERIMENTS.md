@@ -32,7 +32,9 @@ of the UV2 bounds of every source another target shell is matched to
 (merged shells included, which the claimed set leaves out), of earlier
 merged shells written from the all-source pass or as force3D (rescues
 included; their UV2 may lie away from the source they record), and it still
-passes the reject gate. The coherence fix does not
+passes the reject gate. Every later all-source candidate, of an ordinary
+merged or a force3D shell, also avoids the accepted rescues, which no
+claimed source covers. The coherence fix does not
 pull a rescued shell back onto the picked source, and the shell records the
 source most of its vertices came from (the safety net, recovery,
 classification and the next LOD's hints read it). Everything else keeps the
