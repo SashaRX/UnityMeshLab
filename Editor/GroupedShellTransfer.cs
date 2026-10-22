@@ -2250,8 +2250,9 @@ namespace SashaRX.UnityMeshLab
 
             // Track UV2 AABBs of placed force3D shells to prevent mutual overlap
             var force3DUsedRegions = new List<(Vector2 min, Vector2 max)>();
-            // UV2 bounds of small merged shells rescued by the all-source pass
-            var rescueRegions = new List<(Vector2 min, Vector2 max)>();
+            // UV2 bounds of merged shells written from the all-source pass, small-shell rescues
+            // included: their UV2 may lie away from the source they record
+            var allSourceRegions = new List<(Vector2 min, Vector2 max)>();
 
             // Track which source shells are already claimed by overlap group targets.
             // Prevents multiple targets from mapping to the same source, which causes
@@ -3205,11 +3206,11 @@ namespace SashaRX.UnityMeshLab
                         }
 
                         // A small shell's rescue must not fold over itself, nor reach a source
-                        // another target shell is matched to or an earlier rescue.
+                        // another target shell is matched to or a merged shell placed elsewhere.
                         if (smallShellRescue && !constrained && issues < int.MaxValue
                             && (CandidateHasOverlap(tShell, tgtTris, candidate)
-                                || RescueMeetsPlacedShells(UvBounds(candidate), tsi,
-                                    result.targetShellToSourceShell, srcUv2Min, srcUv2Max, rescueRegions)))
+                                || RescueMeetsPlacedShells(UvBounds(candidate), tsi, result.targetShellToSourceShell,
+                                    srcUv2Min, srcUv2Max, allSourceRegions, force3DUsedRegions)))
                             issues = int.MaxValue;
 
                         // Prefer all-source on tie when both have issues:
@@ -3352,6 +3353,8 @@ namespace SashaRX.UnityMeshLab
                         foreach (var kv in bestMergedSources)
                             if (kv.Value > votes || (kv.Value == votes && kv.Key < chosenSrc))
                             { chosenSrc = kv.Key; votes = kv.Value; }
+                        result.targetShellMatchDistSqr[tsi] =
+                            (result.targetShellCentroids[tsi] - srcCentroid3D[chosenSrc]).sqrMagnitude;
                     }
                     if (bestMergedUv2 != null && bestMergedUv2.Count > 1 && chosenSrc >= 0 && !smallShellRescued)
                     {
@@ -3564,7 +3567,7 @@ namespace SashaRX.UnityMeshLab
                         chosenUv2 = bestMergedUv2;
                         shellsMerged++;
                         result.consistencyCorrected += bestMergedConsistencyFixes;
-                        if (smallShellRescued) rescueRegions.Add(UvBounds(chosenUv2));
+                        if (!bestWasConstrained && !force3D) allSourceRegions.Add(UvBounds(chosenUv2));
                         string mergedLabel = "all-source";
                         if (force3D) mergedLabel = "3D-primary";
                         else if (bestWasConstrained) mergedLabel = "src-constrained";
@@ -4879,10 +4882,11 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>
         /// Whether a rescued shell's UV2 bounds meet the UV2 bounds of a source another target
-        /// shell is matched to, or an earlier rescue.
+        /// shell is matched to, or one of the placed regions.
         /// </summary>
         internal static bool RescueMeetsPlacedShells((Vector2 min, Vector2 max) bounds, int shell,
-            int[] shellSources, Vector2[] srcUv2Min, Vector2[] srcUv2Max, List<(Vector2 min, Vector2 max)> rescues)
+            int[] shellSources, Vector2[] srcUv2Min, Vector2[] srcUv2Max,
+            params List<(Vector2 min, Vector2 max)>[] placed)
         {
             bool Meets(Vector2 min, Vector2 max) => bounds.min.x < max.x && bounds.max.x > min.x
                 && bounds.min.y < max.y && bounds.max.y > min.y;
@@ -4891,8 +4895,8 @@ namespace SashaRX.UnityMeshLab
                 int src = shellSources[t];
                 if (t != shell && src >= 0 && Meets(srcUv2Min[src], srcUv2Max[src])) return true;
             }
-            foreach (var region in rescues)
-                if (Meets(region.min, region.max)) return true;
+            foreach (var regions in placed)
+                if (regions.Exists(region => Meets(region.min, region.max))) return true;
             return false;
         }
 

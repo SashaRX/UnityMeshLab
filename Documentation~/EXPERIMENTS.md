@@ -29,8 +29,10 @@ would be rejected tries the all-source pass, with the claimed-source AABB
 check it already has. The candidate counts only when it does not fold over
 itself (exact triangle overlap inside the shell), its UV2 bounds stay clear
 of the UV2 bounds of every source another target shell is matched to
-(merged shells included, which the claimed set leaves out) and of earlier
-rescues, and it still passes the reject gate. The coherence fix does not
+(merged shells included, which the claimed set leaves out), of earlier
+merged shells written from the all-source pass or as force3D (rescues
+included; their UV2 may lie away from the source they record), and it still
+passes the reject gate. The coherence fix does not
 pull a rescued shell back onto the picked source, and the shell records the
 source most of its vertices came from (the safety net, recovery,
 classification and the next LOD's hints read it). Everything else keeps the
