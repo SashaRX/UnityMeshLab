@@ -27,6 +27,7 @@ digit: both of its large folded shells are split by normal (2010 + 10 and
 1704 + 12 faces, the small partitions facing 86° and 147° away), so no two of
 their partitions face the same way. The corpus has no source this rule
 reaches; it stays as the correct choice for those that come.
+
 ## Dedup: fragments of a source that folds over its UV0 share it — 2026-10-22
 
 Corpus model A (a blanket; the owner's "torn to pieces" report, LOD1 UV quality
@@ -53,20 +54,26 @@ path, constrained to that source (a shared source whose claimants overlap is a
 duplicate source in Phase 3). Tiling targets of a source without folds are
 evicted as before.
 
-First revision: the kept fragments used the merged path's UV0 projection,
-restricted to the partition each vertex's normal picks. Model A, Full Pipeline
-against main: the tearing is gone (collapsed faces LOD1 856 → 18, LOD2
-2770 → 63; unwritten vertices 828 → 0 and 4047 → 93; first-pass rejected
+First revision: the kept fragments are merged shells of their source. Model A,
+Full Pipeline against main: the tearing is gone (collapsed faces LOD1 856 → 18,
+LOD2 2770 → 63; unwritten vertices 828 → 0 and 4047 → 93; first-pass rejected
 shells 47 → 0 and 707 → 30; UV quality 19 → 37 and 10 → 27), but overlap pairs
-grow 1095 → 5450 and 496 → 11992. Two partitions cannot separate every fold
-of a source with 6675 overlapping UV0 pairs, so UV0 still picks a layer at
-random within a partition, and the normal alone picks the partition (PR #332
-fixes that choice for partitions facing the same way).
+grow 1095 → 5450 and 496 → 11992. Furniture corpus against `main-5e9f9c0`:
+the gate fails (exit 1). 36 pairs change, none worse or invalid; default has
+1 better and 11 tradeoff pairs: collapsed faces fall (1303 → 30 and 3335 → 168
+in the two pairs hit hardest) while overlaps grow (597 → 7061, 668 → 12067).
+`REJECTED(` log lines fall 2966 → 191.
 
-Second revision: the kept fragments are projected by 3D, onto the nearest
-same-facing face of the whole source, as force3D shells are; UV0 decides only
-where no face is found. Measurement pending: model A as above and the furniture
-corpus against `main-5e9f9c0` with `report.py --baseline … --require-no-regressions`.
+Second revision: kept fragments that take the plain merged path are projected
+by 3D onto the nearest same-facing face of the whole source. Model A is
+unchanged to the last digit; in the corpus six pairs of one model change
+(collapsed faces 168 → 60, overlap pairs 12067 → 13379 in its LOD2), and
+`REJECTED(` falls to 168. Model A's fragments do not take that path: both of
+its large shells overlap other source shells in UV0, so their merged targets
+go through the overlap-group candidates (ray, partition UV0 interpolation,
+partition and full transforms), picked by issue count. Both are also split by
+normal into 2010 + 10 and 1704 + 12 faces, so a partition does not separate
+the layers. Where the added overlaps come from is being traced.
 
 ## Rejected merged shells: write a safe candidate instead of (0,0) — rejected — 2026-10-21
 
