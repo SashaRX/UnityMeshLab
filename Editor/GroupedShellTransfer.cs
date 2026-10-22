@@ -2421,6 +2421,15 @@ namespace SashaRX.UnityMeshLab
                     // Collect valid UV2 candidates from all group members.
                     // Each source produces UV2 for the target vertices via its own UV0→UV2 mapping.
                     var validCandidates = new Dictionary<int, OverlapCandidate>();
+                    // A fold-share fragment's own UV0 defects: a transform keeps them, no more.
+                    int ownUv0Issues = 0;
+                    if (tgtFoldShare[tsi])
+                    {
+                        var ownUv0 = new Dictionary<int, Vector2>();
+                        foreach (int vi in tShell.vertexIndices)
+                            if (vi < tUv0.Length) ownUv0[vi] = tUv0[vi];
+                        ownUv0Issues = CountShellIssues(tShell.faceIndices, tgtTris, tVerts, ownUv0);
+                    }
 
                     foreach (int si in groupMembers)
                     {
@@ -2440,7 +2449,7 @@ namespace SashaRX.UnityMeshLab
                             kRayMaxDist, uv2BoundsTolerance);
 
                         var best = SelectBestCandidate(allCandidates, tShell, tgtTris, tVerts, sourceAtlasRecoveryAllowed,
-                            preferTransform: tgtFoldShare[tsi]);
+                            preferTransform: tgtFoldShare[tsi], ownUv0Issues: ownUv0Issues);
                         if (best.HasValue)
                         {
                             validCandidates[si] = best.Value;
@@ -5343,14 +5352,16 @@ namespace SashaRX.UnityMeshLab
         /// Ties broken by coverage (more vertices covered wins).
         /// Xform candidates only win on strictly fewer issues (not equal), unless
         /// <paramref name="preferTransform"/>: a fragment kept on a source that folds over its
-        /// UV0 takes a transform on a tie. The transform keeps the fragment's own UV0 layout;
-        /// interpolation and strip parameterisation over the folded source lay its fragments
+        /// UV0 takes a transform whose issues are no more than the best candidate's or its own
+        /// UV0's (<paramref name="ownUv0Issues"/>), while it stays below the rejection threshold.
+        /// The transform keeps the fragment's own UV0 layout, defects included; interpolation and
+        /// strip parameterisation over the folded source mend those faces but lay its fragments
         /// onto one another, and the issue count does not see overlaps.
         /// </summary>
         static OverlapCandidate? SelectBestCandidate(
             List<OverlapCandidate> candidates,
             UvShell shell, int[] tgtTris, Vector3[] positions, bool allowQualityRecovery,
-            bool preferTransform = false)
+            bool preferTransform = false, int ownUv0Issues = 0)
         {
             if (candidates == null || candidates.Count == 0) return null;
 
@@ -5391,6 +5402,22 @@ namespace SashaRX.UnityMeshLab
                         bestIdx = i;
                     }
                 }
+            }
+
+            if (preferTransform)
+            {
+                int allowed = Mathf.Max(candidates[bestIdx].issues, ownUv0Issues);
+                int transformIdx = -1;
+                for (int i = 0; i < candidates.Count; i++)
+                {
+                    var c = candidates[i];
+                    if (c.method != "full-xform" && c.method != "partition-xform") continue;
+                    if (c.issues > allowed || c.issues * 2 > shell.faceIndices.Count) continue;
+                    var t = transformIdx >= 0 ? candidates[transformIdx] : c;
+                    if (transformIdx < 0 || c.issues < t.issues || (c.issues == t.issues && c.coverage > t.coverage))
+                        transformIdx = i;
+                }
+                if (transformIdx >= 0) bestIdx = transformIdx;
             }
 
             var selected = candidates[bestIdx];
