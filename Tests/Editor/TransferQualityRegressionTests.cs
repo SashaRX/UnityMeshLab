@@ -918,13 +918,13 @@ namespace SashaRX.UnityMeshLab.Tests
                 Vector3.zero, Vector3.right * 1e-4f, Vector3.up * 1e-4f };
             var uv0 = new Dictionary<int, Vector2> { [0] = Vector2.zero, [1] = Vector2.right, [2] = Vector2.up,
                 [3] = new Vector2(.5f, .5f), [4] = new Vector2(.5f + 4.47e-5f, .5f), [5] = new Vector2(.5f, .5f + 4.47e-5f) };
-            var shrunk = uv0.ToDictionary(kv => kv.Key, kv => kv.Value * .2f + new Vector2(.3f, .3f));
+            var shrink = new GroupedShellTransfer.SimilarityTransform { a = .2f, tx = .3f, ty = .3f, valid = true };
+            var shrunk = uv0.ToDictionary(kv => kv.Key, kv => shrink.Apply(kv.Value));
             Assert.AreEqual(0, GroupedShellTransfer.CountShellIssues(faces, triangles, positions, uv0));
             Assert.AreEqual(1, GroupedShellTransfer.CountShellIssues(faces, triangles, positions, shrunk));
+            Assert.AreEqual(.04f, GroupedShellTransfer.AreaScale(shrink), 1e-6f);
             Assert.AreEqual(1, GroupedShellTransfer.CountShellIssues(faces, triangles, positions,
-                GroupedShellTransfer.ScaledToArea(uv0, shrunk, faces, triangles)));
-            // Nothing in common to compare: the layout stays as it is.
-            Assert.AreSame(uv0, GroupedShellTransfer.ScaledToArea(uv0, new Dictionary<int, Vector2>(), faces, triangles));
+                GroupedShellTransfer.ScaledUv(uv0, Mathf.Sqrt(GroupedShellTransfer.AreaScale(shrink)))));
         }
 
         [TestCase(false)]
