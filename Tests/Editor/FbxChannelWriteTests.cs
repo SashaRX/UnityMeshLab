@@ -1265,6 +1265,73 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
+        [Test]
+        public void ChannelWrite_ALargeMeshUnderMeshCompressionKeepsItsCornerTags()
+        {
+            // 6400 corners: the tag's corner component spans 0..4095, more than High
+            // compression keeps whole. The corners are read from an uncompressed import.
+            const int n = 40;
+            string source = Path.Combine(folder, "grid.fbx");
+            using (var manager = FbxManager.Create())
+            {
+                var io = FbxIOSettings.Create(manager, Globals.IOSROOT); manager.SetIOSettings(io);
+                var scene = FbxScene.Create(manager, "Grid");
+                var points = new List<double>();
+                for (int y = 0; y <= n; y++) for (int x = 0; x <= n; x++) points.AddRange(new double[] { x, y, 0 });
+                var sizes = new List<int>(); var corners = new List<int>();
+                for (int y = 0; y < n; y++) for (int x = 0; x < n; x++)
+                {
+                    int a = y * (n + 1) + x;
+                    sizes.Add(4); corners.AddRange(new[] { a, a + 1, a + n + 2, a + n + 1 });
+                }
+                var data = new FbxMeshData { controlPoints = points.ToArray(), polygonSizes = sizes.ToArray(),
+                    polygonVertices = corners.ToArray(), polygonMaterials = new int[sizes.Count] };
+                data.uvNames.Add("map1");
+                data.uvs.Add(corners.SelectMany(v => new[] { v % (n + 1) / (double)n, v / (n + 1) / (double)n }).ToArray());
+                var node = FbxNode.Create(scene, "Grid");
+                node.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, "GridMesh", data));
+                node.AddMaterial(FbxSurfacePhong.Create(scene, "Stone"));
+                scene.GetRootNode().AddChild(node);
+                using var exporter = FbxExporter.Create(manager, "Write");
+                int format = manager.GetIOPluginRegistry().FindWriterIDByDescription("FBX binary (*.fbx)");
+                Assert.IsTrue(exporter.Initialize(source, format, io) && exporter.Export(scene));
+            }
+            string assetFolder = "Assets/MeshLabCompressedTags_" + Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", assetFolder.Substring(7));
+            string path = assetFolder + "/grid.fbx", output = assetFolder + "/saved.fbx";
+            Mesh working = null;
+            try
+            {
+                File.Copy(source, path);
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.isReadable = true; importer.generateSecondaryUV = false;
+                importer.meshCompression = ModelImporterMeshCompression.High;
+                importer.SaveAndReimport();
+                var imported = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().Single();
+                working = UnityEngine.Object.Instantiate(imported);
+                working.uv2 = working.uv;
+                var entry = new MeshEntry { fbxMesh = imported, originalMesh = working };
+
+                Assert.IsTrue(FbxChannelWrite.Write(path, new[] { entry }, FbxExportIntent.UV1, output, null));
+                using var written = FbxSourceDocument.Load(Path.GetFullPath(output));
+                var mesh = written.Meshes.Single();
+                var topology = new FbxLayerChannels.Topology(mesh);
+                var sets = FbxLayerChannels.UvElements(mesh);
+                var uv0 = FbxLayerChannels.ReadUv(sets[0], topology);
+                var uv1 = FbxLayerChannels.ReadUv(sets[1], topology);
+                // Each corner takes its own vertex's UV1 (its UV0 under compression); a corner
+                // paired with a neighbouring vertex would be a grid step (0.025) off.
+                for (int c = 0; c < topology.CornerCount; c++)
+                    Assert.That(Math.Abs(uv1[c * 2] - uv0[c * 2]) + Math.Abs(uv1[c * 2 + 1] - uv0[c * 2 + 1]), Is.LessThan(.008), $"corner {c}");
+            }
+            finally
+            {
+                if (working) UnityEngine.Object.DestroyImmediate(working);
+                AssetDatabase.DeleteAsset(assetFolder);
+            }
+        }
+
         static void AssertCollisionUnchanged(string sourcePath, string outputPath)
         {
             using var source = FbxSourceDocument.Load(Path.GetFullPath(sourcePath));
