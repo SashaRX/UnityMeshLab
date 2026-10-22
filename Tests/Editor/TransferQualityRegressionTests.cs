@@ -908,6 +908,63 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(0, GroupedShellTransfer.CountShellIssues(faces, triangle, positions, uv));
         }
 
+        [Test]
+        public void OwnUv0DefectsAreCountedAtTheTransformsScale()
+        {
+            // A large face and a tiny one (UV area 1e-9): the zero-area test (1e-10) passes it in
+            // UV0, fails it once a similarity shrinks the layout to a fifth.
+            var triangles = new[] { 0, 1, 2, 3, 4, 5 }; var faces = new List<int> { 0, 1 };
+            var positions = new[] { Vector3.zero, Vector3.right, Vector3.up,
+                Vector3.zero, Vector3.right * 1e-4f, Vector3.up * 1e-4f };
+            var uv0 = new Dictionary<int, Vector2> { [0] = Vector2.zero, [1] = Vector2.right, [2] = Vector2.up,
+                [3] = new Vector2(.5f, .5f), [4] = new Vector2(.5f + 4.47e-5f, .5f), [5] = new Vector2(.5f, .5f + 4.47e-5f) };
+            var shrink = new GroupedShellTransfer.SimilarityTransform { a = .2f, tx = .3f, ty = .3f, valid = true };
+            var shrunk = uv0.ToDictionary(kv => kv.Key, kv => shrink.Apply(kv.Value));
+            Assert.AreEqual(0, GroupedShellTransfer.CountShellIssues(faces, triangles, positions, uv0));
+            Assert.AreEqual(1, GroupedShellTransfer.CountShellIssues(faces, triangles, positions, shrunk));
+            Assert.AreEqual(.04f, GroupedShellTransfer.AreaScale(shrink), 1e-6f);
+            Assert.AreEqual(1, GroupedShellTransfer.CountShellIssues(faces, triangles, positions,
+                GroupedShellTransfer.ScaledUv(uv0, Mathf.Sqrt(GroupedShellTransfer.AreaScale(shrink)))));
+        }
+
+        [TestCase(.04f, "partition-xform")]
+        [TestCase(0f, "ray+partition")]
+        public void FoldShareFragmentTakesASimilarityThatOnlyShrinksItsOwnUv0(float areaScale, string expected)
+        {
+            // Three large faces and a tiny one (UV area 1e-9). The partition transform shrinks the
+            // layout to a fifth, which takes the tiny face below the zero-area test: one issue that
+            // the UV0 has at that scale. Ray projection mends the face, issue-free. A transform split
+            // between partitions (no single similarity, area scale 0) is held to the unscaled UV0.
+            var triangles = new[] { 0, 1, 2, 1, 3, 2, 3, 4, 2, 5, 6, 7 };
+            var positions = new[] { Vector3.zero, Vector3.right, Vector3.up, new Vector3(1, 1, 0), new Vector3(0, 2, 0),
+                new Vector3(.5f, .5f, 0), new Vector3(.5f + 1e-4f, .5f, 0), new Vector3(.5f, .5f + 1e-4f, 0) };
+            var uv0 = new Dictionary<int, Vector2>();
+            for (int i = 0; i < positions.Length; i++) uv0[i] = (Vector2)positions[i] * .25f;
+            uv0[6] = uv0[5] + new Vector2(4.47e-5f, 0); uv0[7] = uv0[5] + new Vector2(0, 4.47e-5f);
+            var shrink = new GroupedShellTransfer.SimilarityTransform { a = .2f, tx = .3f, ty = .3f, valid = true };
+            var shell = new UvShell { faceIndices = new List<int> { 0, 1, 2, 3 }, vertexIndices = new HashSet<int>(uv0.Keys) };
+            var mended = uv0.ToDictionary(kv => kv.Key, kv => kv.Value * .2f + new Vector2(.3f, .3f));
+            mended[6] = mended[5] + new Vector2(.01f, 0); mended[7] = mended[5] + new Vector2(0, .01f);
+
+            const BindingFlags flags = BindingFlags.Static | BindingFlags.NonPublic;
+            var candidateType = typeof(GroupedShellTransfer).GetNestedType("OverlapCandidate", BindingFlags.NonPublic);
+            var candidates = (System.Collections.IList)System.Activator.CreateInstance(typeof(List<>).MakeGenericType(candidateType));
+            object Candidate(string method, Dictionary<int, Vector2> uv2, float scale)
+            {
+                object candidate = System.Activator.CreateInstance(candidateType);
+                candidateType.GetField("method").SetValue(candidate, method);
+                candidateType.GetField("uv2").SetValue(candidate, uv2);
+                candidateType.GetField("coverage").SetValue(candidate, uv2.Count);
+                candidateType.GetField("areaScale").SetValue(candidate, scale);
+                return candidate;
+            }
+            candidates.Add(Candidate("ray+partition", mended, 0));
+            candidates.Add(Candidate("partition-xform", uv0.ToDictionary(kv => kv.Key, kv => shrink.Apply(kv.Value)), areaScale));
+            var selected = typeof(GroupedShellTransfer).GetMethod("SelectBestCandidate", flags).Invoke(null,
+                new object[] { candidates, shell, triangles, positions, false, true, uv0 });
+            Assert.AreEqual(expected, candidateType.GetField("method").GetValue(selected));
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void ReparameterizationDoesNotRestoreZeroAreaAfterRepairingCollapsedUv0(bool singleFace)

@@ -21,6 +21,9 @@ namespace SashaRX.UnityMeshLab
 {
     public static class GroupedShellTransfer
     {
+        const string kMethodPartitionXform = "partition-xform";
+        const string kMethodFullXform = "full-xform";
+
         // Keep overlap detection bounded: FindOverlapGroups compares every shell pair.
         // Typical production meshes stay well below this limit; pathological meshes
         // fall back to the original fixed retry count instead of stalling the Editor.
@@ -2421,14 +2424,13 @@ namespace SashaRX.UnityMeshLab
                     // Collect valid UV2 candidates from all group members.
                     // Each source produces UV2 for the target vertices via its own UV0→UV2 mapping.
                     var validCandidates = new Dictionary<int, OverlapCandidate>();
-                    // A fold-share fragment's own UV0 defects: a transform keeps them, no more.
-                    int ownUv0Issues = 0;
+                    // A fold-share fragment's own UV0: a transform keeps its defects, no more.
+                    Dictionary<int, Vector2> ownUv0 = null;
                     if (tgtFoldShare[tsi])
                     {
-                        var ownUv0 = new Dictionary<int, Vector2>();
+                        ownUv0 = new Dictionary<int, Vector2>();
                         foreach (int vi in tShell.vertexIndices)
                             if (vi < tUv0.Length) ownUv0[vi] = tUv0[vi];
-                        ownUv0Issues = CountShellIssues(tShell.faceIndices, tgtTris, tVerts, ownUv0);
                     }
 
                     foreach (int si in groupMembers)
@@ -2449,7 +2451,7 @@ namespace SashaRX.UnityMeshLab
                             kRayMaxDist, uv2BoundsTolerance);
 
                         var best = SelectBestCandidate(allCandidates, tShell, tgtTris, tVerts, sourceAtlasRecoveryAllowed,
-                            preferTransform: tgtFoldShare[tsi], ownUv0Issues: ownUv0Issues);
+                            preferTransform: tgtFoldShare[tsi], ownUv0: ownUv0);
                         if (best.HasValue)
                         {
                             validCandidates[si] = best.Value;
@@ -4620,6 +4622,18 @@ namespace SashaRX.UnityMeshLab
         static double UvArea(Vector2 a, Vector2 b, Vector2 c)
             => ((double)b.x - a.x) * ((double)c.y - a.y) - ((double)b.y - a.y) * ((double)c.x - a.x);
 
+        /// <summary>The UV area a similarity gives per unit of UV0 area.</summary>
+        internal static float AreaScale(SimilarityTransform transform)
+            => transform.a * transform.a + transform.b * transform.b;
+
+        /// <summary><paramref name="uv"/> with every coordinate times <paramref name="scale"/>.</summary>
+        internal static Dictionary<int, Vector2> ScaledUv(Dictionary<int, Vector2> uv, float scale)
+        {
+            var scaled = new Dictionary<int, Vector2>(uv.Count);
+            foreach (var kv in uv) scaled[kv.Key] = kv.Value * scale;
+            return scaled;
+        }
+
         static Dictionary<(Vector3 position, Vector2 uv0), Vector2> ExactVertexUvs(
             UvShell shell, Vector3[] positions, Vector2[] uv0, Vector2[] uv2)
         {
@@ -4997,6 +5011,8 @@ namespace SashaRX.UnityMeshLab
             public int issues;
             public int coverage;
             public string method;
+            /// <summary>UV area per UV0 area when one similarity maps every vertex of the shell; 0 otherwise.</summary>
+            public float areaScale;
         }
 
         /// <summary>
@@ -5196,6 +5212,7 @@ namespace SashaRX.UnityMeshLab
             if (hasPart && perPartXform != null)
             {
                 var uv2Map = new Dictionary<int, Vector2>();
+                int onePid = -1; bool severalPids = false;
 
                 foreach (int vi in tShell.vertexIndices)
                 {
@@ -5203,6 +5220,8 @@ namespace SashaRX.UnityMeshLab
                     int pid = vertexPartition[vi];
                     if (pid < 0 || !perPartXform[pid].valid) continue;
 
+                    severalPids |= onePid >= 0 && pid != onePid;
+                    onePid = pid;
                     uv2Map[vi] = perPartXform[pid].Apply(tUv0[vi]);
                 }
 
@@ -5259,7 +5278,9 @@ namespace SashaRX.UnityMeshLab
                     candidates.Add(new OverlapCandidate
                     {
                         uv2 = uv2Map, issues = -1, coverage = uv2Map.Count,
-                        method = "partition-xform"
+                        method = kMethodPartitionXform,
+                        areaScale = severalPids || uv2Map.Count < tShell.vertexIndices.Count
+                            ? 0f : AreaScale(perPartXform[onePid])
                     });
             }
 
@@ -5343,7 +5364,8 @@ namespace SashaRX.UnityMeshLab
                     candidates.Add(new OverlapCandidate
                     {
                         uv2 = uv2Map, issues = -1, coverage = uv2Map.Count,
-                        method = "full-xform"
+                        method = kMethodFullXform,
+                        areaScale = uv2Map.Count < tShell.vertexIndices.Count ? 0f : AreaScale(fullXform)
                     });
             }
 
@@ -5356,8 +5378,9 @@ namespace SashaRX.UnityMeshLab
         /// Ties broken by coverage (more vertices covered wins).
         /// Xform candidates only win on strictly fewer issues (not equal), unless
         /// <paramref name="preferTransform"/>: a fragment kept on a source that folds over its
-        /// UV0 takes a transform on a tie, or when its issues are no more than its own UV0's
-        /// (<paramref name="ownUv0Issues"/>) and stay below half of the fragment's faces.
+        /// UV0 takes a transform on a tie, or when its issues are no more than those of its own UV0
+        /// (<paramref name="ownUv0"/>), at the scale of the similarity if one maps it all, and stay
+        /// below half of its faces.
         /// The transform keeps the fragment's own UV0 layout, defects included; interpolation and
         /// strip parameterisation over the folded source mend those faces but lay its fragments
         /// onto one another, and the issue count does not see overlaps.
@@ -5365,7 +5388,7 @@ namespace SashaRX.UnityMeshLab
         static OverlapCandidate? SelectBestCandidate(
             List<OverlapCandidate> candidates,
             UvShell shell, int[] tgtTris, Vector3[] positions, bool allowQualityRecovery,
-            bool preferTransform = false, int ownUv0Issues = 0)
+            bool preferTransform = false, Dictionary<int, Vector2> ownUv0 = null)
         {
             if (candidates == null || candidates.Count == 0) return null;
 
@@ -5385,8 +5408,8 @@ namespace SashaRX.UnityMeshLab
                 var curr = candidates[i];
                 var best = candidates[bestIdx];
 
-                bool currIsXform = curr.method == "full-xform" || curr.method == "partition-xform";
-                bool bestIsXform = best.method == "full-xform" || best.method == "partition-xform";
+                bool currIsXform = curr.method == kMethodFullXform || curr.method == kMethodPartitionXform;
+                bool bestIsXform = best.method == kMethodFullXform || best.method == kMethodPartitionXform;
 
                 if (curr.issues < best.issues)
                 {
@@ -5408,16 +5431,22 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
-            if (preferTransform)
+            if (preferTransform && ownUv0 != null)
             {
                 // No worse than the best candidate is settled above; here a transform may also
-                // carry the fragment's own UV0 defects, no more.
+                // carry the fragment's own UV0 defects, no more. Under one similarity they are
+                // counted at its scale: the zero-area test is absolute, so a similarity that
+                // shrinks the UV0 turns its smallest faces into defects it did not make. Vertices
+                // split between partitions' transforms bend the faces between them; those
+                // defects are the transform's own, so the UV0 is then counted as it is.
                 int transformIdx = -1;
                 for (int i = 0; i < candidates.Count; i++)
                 {
                     var c = candidates[i];
-                    if (c.method != "full-xform" && c.method != "partition-xform") continue;
-                    if (c.issues > ownUv0Issues || c.issues * 2 >= shell.faceIndices.Count) continue;
+                    if (c.method != kMethodFullXform && c.method != kMethodPartitionXform) continue;
+                    if (c.issues * 2 >= shell.faceIndices.Count) continue;
+                    if (c.issues > CountShellIssues(shell.faceIndices, tgtTris, positions,
+                            c.areaScale > 0 ? ScaledUv(ownUv0, Mathf.Sqrt(c.areaScale)) : ownUv0)) continue;
                     var t = transformIdx >= 0 ? candidates[transformIdx] : c;
                     if (transformIdx < 0 || c.issues < t.issues || (c.issues == t.issues && c.coverage > t.coverage))
                         transformIdx = i;
@@ -5431,7 +5460,7 @@ namespace SashaRX.UnityMeshLab
                 quality = TransferCandidateQuality.Measure(shell, tgtTris, positions, selected.uv2);
                 foreach (var candidate in candidates) {
                     // Extrapolating transforms retain their existing coverage gate.
-                    if (candidate.method == "full-xform" || candidate.method == "partition-xform"
+                    if (candidate.method == kMethodFullXform || candidate.method == kMethodPartitionXform
                         || candidate.coverage < selected.coverage) continue;
                     var alternative = TransferCandidateQuality.Measure(shell, tgtTris, positions, candidate.uv2);
                     if (!alternative.Improves(quality)) continue;

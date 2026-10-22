@@ -1,5 +1,45 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Own UV0 defects are counted at the transform's scale — 2026-10-22
+
+Follow-up to the own-UV0 rule below, found while measuring the nearest-face
+partition match (item 27 in PR #294). With that match, model A's largest LOD2
+fragment (253 faces, kept on a folded source) lies wholly on one partition.
+Its candidates' issues: ray + partition 4, partition transform 8, full
+transform 8, partition UV0 interpolation 8, strip parameterisation 12. The
+transform should have won under the own-UV0 rule, so its eight issues were
+more than the fragment's own UV0 has. Ray + partition won, and the fragment's
+overlap pairs went from 238 to 1101, 309 of them inside the fragment itself.
+
+A similarity cannot add a defect of its own kind: it keeps the stretch ratio
+(which `TriangleStretch` measures) and maps every vertex it is given. Only the
+zero-area test differs, and it is absolute (|UV area| < 1e-10): a transform
+that shrinks the UV0 into a smaller UV2 region turns the fragment's smallest
+faces into zero-area defects. When one similarity maps every vertex of the
+fragment (the full transform, or the partition transform with every vertex
+on one partition whose fit is valid), the own-UV0 count now scales the
+fragment's UV0 by that similarity before counting; a vertex left unmapped
+keeps the count unscaled, so a missing face is never excused (Codex review). A fragment split between partitions' transforms
+is counted as before: the faces between them are bent by the transform
+itself, so their defects are not the UV0's (raised by the Codex review).
+
+Measured with the nearest-face partition match (item 28 in PR #294). The
+fragment's own UV0 has 5 issues unscaled and 8 at its partition transform's
+scale (area × 0.536), the transform's own count: it takes the transform
+again, with 8 issues and 121 overlap pairs (238 on main, 1101 with the match
+alone), none inside itself. Model A, Full Pipeline against main: LOD2 overlap
+pairs 4544 → 3077, the same after the first pass (4803 → 3077); LOD1
+1257 → 930, from the match. Collapsed faces 61 → 59, unwritten LOD2 vertices
+99 → 92, UV quality unchanged (39 and 35).
+
+Furniture corpus: against main's capture the gate fails as for the match
+alone (default 9 better, 2 tradeoff, 3 worse; same pairs and values).
+Against the match alone, this change moves one record of 768: a LOD2 in the
+no-reparameterisation profile, overlap pairs 73 → 75 at the same overlap
+area (a tradeoff, so the gate fails). In the corpus audit model A's LOD2
+stays at 3578 either way; the audit and the Full Pipeline measure it
+differently.
+
 ## A vertex takes the layer of the nearest facing source face — 2026-10-22
 
 Follow-up to the own-UV0 rule below. Model A's LOD2 keeps 4803 overlap pairs
