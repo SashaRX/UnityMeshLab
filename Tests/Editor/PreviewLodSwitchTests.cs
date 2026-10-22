@@ -200,10 +200,10 @@ namespace SashaRX.UnityMeshLab.Tests
 
                 // Undo of the save brings the edit back under the renderer, still known as an edit of the imported mesh.
                 UnityEditor.Undo.PerformUndo();
-                Assert.IsTrue(edited,"Undo restores the released edit"); Assert.AreSame(edited,filter.sharedMesh);
+                Assert.IsTrue(edited,"Undo restores the released edit"); AssertSameObject(edited,filter.sharedMesh);
                 Assert.IsTrue(SceneEditRegistry.TryGetImported(filter,edited,out behind)); Assert.AreSame(imported,behind);
                 ctx.Refresh(group); entry=ctx.MeshEntries.Find(e=>e.renderer==renderer);
-                Assert.AreSame(imported,entry.fbxMesh); Assert.AreSame(edited,entry.sceneEditMesh); Assert.AreSame(edited,entry.originalMesh);
+                Assert.AreSame(imported,entry.fbxMesh); AssertSameObject(edited,entry.sceneEditMesh); AssertSameObject(edited,entry.originalMesh);
             }
             finally { UnityEditor.AssetDatabase.DeleteAsset(folder); }
         }
@@ -239,10 +239,10 @@ namespace SashaRX.UnityMeshLab.Tests
                 // Undo: the copy is back under the renderer as the pipeline copy it was, not as a
                 // scene edit, and the next restore releases it as before.
                 UnityEditor.Undo.PerformUndo();
-                Assert.IsTrue(working); Assert.IsFalse(edited); Assert.AreSame(working,filter.sharedMesh);
+                Assert.IsTrue(working); Assert.IsFalse(edited); AssertSameObject(working,filter.sharedMesh);
                 Assert.IsTrue(SceneEditRegistry.TryGetImported(filter,working,out behind,out bool workingCopy)); Assert.AreSame(imported,behind); Assert.IsTrue(workingCopy);
                 entry=ctx.MeshEntries.Find(e=>e.renderer==renderer); // the hub refreshed on the Undo
-                Assert.AreSame(imported,entry.fbxMesh); Assert.IsNull(entry.sceneEditMesh); Assert.AreSame(working,entry.originalMesh);
+                Assert.AreSame(imported,entry.fbxMesh); Assert.IsNull(entry.sceneEditMesh); AssertSameObject(working,entry.originalMesh);
                 Call(hub,"RestoreWorkingMeshes");
                 Assert.IsFalse(working,"a pipeline copy is released as before"); Assert.AreSame(imported,filter.sharedMesh);
             }
@@ -266,9 +266,9 @@ namespace SashaRX.UnityMeshLab.Tests
                 UnityEditor.Undo.IncrementCurrentGroup();
                 Assert.IsTrue(MeshHygieneUtility.PrepareWritable(entry,"Remove Degenerate Triangles",out var edited)); owned.Add(edited);
                 UnityEditor.Undo.PerformUndo();
-                Assert.IsTrue(working); Assert.AreSame(working,filter.sharedMesh);
+                Assert.IsTrue(working); AssertSameObject(working,filter.sharedMesh);
                 entry=ctx.MeshEntries.Find(e=>e.renderer==renderer); // the hub refreshed on the Undo
-                Assert.AreSame(working,entry.originalMesh); Assert.AreSame(imported,entry.fbxMesh); Assert.IsNull(entry.sceneEditMesh);
+                AssertSameObject(working,entry.originalMesh); Assert.AreSame(imported,entry.fbxMesh); Assert.IsNull(entry.sceneEditMesh);
 
                 // The save's import replaces the file's mesh by another object of the same name.
                 var replacement=Object.Instantiate(imported); replacement.name=imported.name; owned.Add(replacement);
@@ -339,9 +339,9 @@ namespace SashaRX.UnityMeshLab.Tests
             // edit; the imported mesh the entry knew may be gone with that import, and the edit's
             // link finds the one that replaced it.
             string folder="Assets/__MeshLabSceneEditTests_"+System.Guid.NewGuid().ToString("N"); string asset=folder+"/imported.asset";
-            var group=Group(true,out var renderer,out _); var filter=renderer.GetComponent<MeshFilter>(); var imported=filter.sharedMesh; string name=imported.name;
+            var group=Group(true,out var renderer,out _); var filter=renderer.GetComponent<MeshFilter>(); var imported=filter.sharedMesh;
             UnityEditor.AssetDatabase.CreateFolder("Assets",folder.Substring("Assets/".Length));
-            UnityEditor.AssetDatabase.CreateAsset(imported,asset);
+            UnityEditor.AssetDatabase.CreateAsset(imported,asset); string name=imported.name; // the asset names its mesh after the file
             try {
                 var ctx=Open(group); var entry=ctx.MeshEntries.Find(e=>e.renderer==renderer);
                 Assert.IsTrue(MeshHygieneUtility.PrepareWritable(entry,"Scene edit",out var edit)); owned.Add(edit);
@@ -411,7 +411,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsNotNull(entry0); Assert.IsNull(entry0.sceneEditMesh); Assert.AreNotSame(edit0,entry0.fbxMesh); Assert.AreSame(filter0.sharedMesh,entry0.fbxMesh);
 
                 UnityEditor.Undo.PerformUndo();
-                Assert.IsTrue(edit1); Assert.IsTrue(lod1); Assert.AreSame(edit1,filter1.sharedMesh); Assert.AreSame(edit0,filter0.sharedMesh);
+                Assert.IsTrue(edit1); Assert.IsTrue(lod1); AssertSameObject(edit1,filter1.sharedMesh); AssertSameObject(edit0,filter0.sharedMesh);
                 Assert.IsTrue(SceneEditRegistry.TryGetImported(filter1,edit1,out var behind)); Assert.AreSame(imported1,behind);
                 Assert.IsTrue(SceneEditRegistry.TryGetImported(filter0,edit0,out behind)); Assert.AreSame(imported0,behind);
             }
@@ -498,7 +498,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsFalse(edit,"the saved edit went through Undo"); Assert.AreSame(imported,filter.sharedMesh);
                 Assert.AreSame(imported,copyFilter.sharedMesh,"the duplicate takes the file's mesh too");
                 UnityEditor.Undo.PerformUndo();
-                Assert.IsTrue(edit); Assert.AreSame(edit,filter.sharedMesh); Assert.AreSame(edit,copyFilter.sharedMesh);
+                Assert.IsTrue(edit); AssertSameObject(edit,filter.sharedMesh); AssertSameObject(edit,copyFilter.sharedMesh);
                 Assert.IsTrue(SceneEditRegistry.TryGetImported(copyFilter,edit,out var behind)); Assert.AreSame(imported,behind);
             }
             finally { UnityEditor.AssetDatabase.DeleteAsset(folder); }
@@ -593,13 +593,13 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsTrue(SceneEditRegistry.TryGetImported(filter,second,out var behind)); Assert.AreSame(imported,behind);
 
                 UnityEditor.Undo.PerformUndo();
-                Assert.IsTrue(first); Assert.IsTrue(working); Assert.IsFalse(second); Assert.AreSame(working,filter.sharedMesh);
+                Assert.IsTrue(first); Assert.IsTrue(working); Assert.IsFalse(second); AssertSameObject(working,filter.sharedMesh);
                 Assert.IsTrue(SceneEditRegistry.TryGetImported(filter,working,out behind,out bool workingCopy,out var baseline));
-                Assert.AreSame(imported,behind); Assert.IsTrue(workingCopy); Assert.AreSame(first,baseline);
+                Assert.AreSame(imported,behind); Assert.IsTrue(workingCopy); AssertSameObject(first,baseline);
                 entry=ctx.MeshEntries.Find(e=>e.renderer==renderer); // the hub refreshed on the Undo
-                Assert.AreSame(imported,entry.fbxMesh); Assert.AreSame(working,entry.originalMesh); Assert.AreSame(first,entry.sceneEditMesh); Assert.AreSame(first,entry.Baseline);
+                Assert.AreSame(imported,entry.fbxMesh); AssertSameObject(working,entry.originalMesh); AssertSameObject(first,entry.sceneEditMesh); AssertSameObject(first,entry.Baseline);
                 Call(hub,"RestoreWorkingMeshes");
-                Assert.IsFalse(working,"the pipeline copy is released"); Assert.IsTrue(first); Assert.AreSame(first,filter.sharedMesh,"the earlier edit is the baseline again");
+                Assert.IsFalse(working,"the pipeline copy is released"); Assert.IsTrue(first); AssertSameObject(first,filter.sharedMesh,"the earlier edit is the baseline again");
             }
             finally { UnityEditor.AssetDatabase.DeleteAsset(folder); }
         }
@@ -644,6 +644,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 var before=edited.uv2;
                 var result=Object.Instantiate(edited); owned.Add(result);
                 result.uv2=edited.uv2.Select(uv=>uv*.5f+Vector2.one*.25f).ToArray();
+                UnityEditor.Undo.IncrementCurrentGroup(); // the sync's own step: undoing it must not take the edit's creation too
                 MeshAssetOperations.SyncSceneEditChannels(entry,result,FbxExportIntent.UV1,"Test");
                 CollectionAssert.AreEqual(result.uv2,edited.uv2,"the edit takes the written UV1");
                 CollectionAssert.AreEqual(result.uv,edited.uv,"channels the save did not write are left");
@@ -732,6 +733,15 @@ namespace SashaRX.UnityMeshLab.Tests
         static T Get<T>(object target, string field) => (T)target.GetType().GetField(field, Private).GetValue(target);
         static void Set(object target, string field, object value) => target.GetType().GetField(field, Private).SetValue(target, value);
         static object Call(object target, string method, params object[] args) => target.GetType().GetMethod(method, Private).Invoke(target, args);
+
+        // Undo brings a destroyed object back under its instance id but in a new managed wrapper; the
+        // old wrapper still reaches it, so after an Undo the same object has the same id, not the same reference.
+        static void AssertSameObject(Object expected, Object actual, string message = null)
+        {
+            Assert.IsNotNull(actual, message);
+            Assert.AreEqual(expected.GetInstanceID(), actual.GetInstanceID(), $"{message} expected {expected}, was {actual}".TrimStart());
+        }
+
         static Bounds PreviewBounds(IReadOnlyList<MeshViewport3D.Item> items) => (Bounds)typeof(MeshViewport3D)
             .GetMethod("BoundsOf", BindingFlags.Static | BindingFlags.NonPublic).Invoke(null, new object[] { items, false });
         static bool ShowsChecker(Renderer renderer) => CheckerTexturePreview.IsPreviewShader(renderer.sharedMaterial.shader.name);
