@@ -1774,14 +1774,18 @@ namespace SashaRX.UnityMeshLab
                     }
 
                     // A source whose own UV0 folds over itself (cloth, a doubled surface)
-                    // has fragments that overlap in UV0 just as its layers do, and its
-                    // partitions tell the layers apart at transfer. Evicting them sends
-                    // them to unrelated sources as merged shells, which are rejected and
-                    // left collapsed.
+                    // has fragments that overlap in UV0 just as its layers do. Evicting
+                    // them sends them to unrelated sources as merged shells, which are
+                    // rejected and left collapsed. They keep the source and take the
+                    // merged path, constrained to it (a shared, overlapping source is a
+                    // duplicate source): its UV0 and 3D projections pick each vertex's
+                    // layer by partition, where plain interpolation would map same-facing
+                    // layers onto the same source faces.
                     if (srcPartitions[srcKey].hasOverlap && srcPartitions[srcKey].partitionCount > 1)
                     {
                         foreach (var c in claimants)
                         {
+                            tgtIsMerged[c.tsi] = true;
                             var foldTrace = trace?.ForShell(c.tsi);
                             if (foldTrace != null) foldTrace.dedupDecision = "Kept shared source: it folds over its own UV0";
                         }

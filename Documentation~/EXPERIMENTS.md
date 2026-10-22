@@ -18,9 +18,12 @@ LOD2) end on the tiny shells, whose UV0 does not hold theirs, as forced merged
 shells, and are rejected. None ends on its nearest source in 3D.
 
 Dedup now lets claimants that overlap in UV0 share a source that itself folds
-over its UV0 and has more than one spatial partition: those partitions already
-tell the layers apart at transfer (per-partition UV0 BVHs and transforms).
-Tiling targets of a source without folds are evicted as before.
+over its UV0 and has more than one spatial partition. They take the merged
+path, constrained to that source (a shared source whose claimants overlap is a
+duplicate source in Phase 3): its UV0 and 3D projections pick each vertex's
+layer by partition, where the non-merged interpolation over the whole shell
+would map same-facing layers onto the same source faces. Tiling targets of a
+source without folds are evicted as before.
 
 Measurement pending: model A's Full Pipeline (UV quality, written vertices and
 rejected shells per LOD) and the furniture corpus against `control-snap`
