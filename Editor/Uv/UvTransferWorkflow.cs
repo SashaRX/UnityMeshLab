@@ -2471,9 +2471,11 @@ namespace SashaRX.UnityMeshLab
             RequireForwardSourceAtlas(sources);
             ClearReverseSummary();
 
-            // Source meshes packed into one atlas: each target keeps clear of the other
-            // sources' faces and of the faces already transferred from them.
+            // Source meshes packed into one atlas: each target keeps clear of the faces already
+            // transferred from the other sources, and of those sources' own faces while targets
+            // that will land on them remain.
             List<(MeshEntry source, Mesh mesh, Vector2[] corners)> atlasFaces = null;
+            Dictionary<MeshEntry, int> pendingTargets = null;
             if (!ctx.RepackPerMesh && sources.Count > 1)
             {
                 atlasFaces = new List<(MeshEntry source, Mesh mesh, Vector2[] corners)>();
@@ -2482,26 +2484,36 @@ namespace SashaRX.UnityMeshLab
                     Mesh mesh = s.repackedMesh ?? s.originalMesh;
                     if (mesh) atlasFaces.Add((s, mesh, GroupedShellTransfer.AtlasCorners(mesh)));
                 }
+                pendingTargets = new Dictionary<MeshEntry, int>();
+                foreach (var tgt in targets)
+                {
+                    var s = SourceFor(tgt, sources);
+                    pendingTargets[s] = pendingTargets.TryGetValue(s, out int count) ? count + 1 : 1;
+                }
             }
 
             foreach (var tgt in targets)
             {
                 if (UvProgress.CancelRequested) break;
-                await TransferTargetMesh(tgt, sources, tLod, useAsync, atlasFaces);
+                await TransferTargetMesh(tgt, sources, tLod, useAsync, atlasFaces, pendingTargets);
             }
         }
 
-        async Task TransferTargetMesh(MeshEntry tgt, List<MeshEntry> sources, int tLod, bool useAsync,
-            List<(MeshEntry source, Mesh mesh, Vector2[] corners)> atlasFaces)
+        // The source a target transfers from: the one of its mesh group, else the first.
+        static MeshEntry SourceFor(MeshEntry tgt, List<MeshEntry> sources)
         {
-            EnsureTransferWorkingMesh(tgt);
-
-            // Find matching source by mesh group key
             MeshEntry srcEntry = null;
             if (!string.IsNullOrEmpty(tgt.meshGroupKey))
                 srcEntry = sources.FirstOrDefault(s => s.meshGroupKey == tgt.meshGroupKey);
-            if (srcEntry == null)
-                srcEntry = sources[0];
+            return srcEntry ?? sources[0];
+        }
+
+        async Task TransferTargetMesh(MeshEntry tgt, List<MeshEntry> sources, int tLod, bool useAsync,
+            List<(MeshEntry source, Mesh mesh, Vector2[] corners)> atlasFaces, Dictionary<MeshEntry, int> pendingTargets)
+        {
+            EnsureTransferWorkingMesh(tgt);
+
+            MeshEntry srcEntry = SourceFor(tgt, sources);
 
             Mesh srcMesh = srcEntry.repackedMesh ?? srcEntry.originalMesh;
             Mesh tgtMesh = tgt.originalMesh;
@@ -2620,7 +2632,12 @@ namespace SashaRX.UnityMeshLab
                 hintState.matchHints.AddRange(tr.matchHints);
 
             int clamped = ApplyTransferResult(tgt, tgtMesh, tr, tLod);
-            atlasFaces?.Add((srcEntry, tgt.transferredMesh, GroupedShellTransfer.AtlasCorners(tgt.transferredMesh)));
+            if (atlasFaces != null)
+            {
+                atlasFaces.Add((srcEntry, tgt.transferredMesh, GroupedShellTransfer.AtlasCorners(tgt.transferredMesh)));
+                // Once every target of a source is placed, their faces stand for it.
+                if (--pendingTargets[srcEntry] == 0) atlasFaces.RemoveAll(f => f.source == srcEntry && f.mesh == srcMesh);
+            }
             if (scoringAttempt)
             {
                 // Score what is published: the unit clamp can collapse a face.

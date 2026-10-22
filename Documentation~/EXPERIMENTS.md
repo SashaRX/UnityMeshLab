@@ -84,7 +84,11 @@ relaxation removed.
 
 Follow-up: the unclamped similarity is taken only where the source's
 UV0 → UV2 similarity fits its UV2 within half a texel (RMS residual), so
-only on charts the repack did not reparameterize. Pending measurement.
+only on charts the repack did not reparameterize. Of the 3 model K shells
+the other mesh check sent back, 2 met faces of other meshes' LOD2 and 1
+only a source face of a mesh already transferred, whose LOD2 has no face
+there: once every target of a source is transferred, their faces now
+stand for the source's. Pending measurement.
 
 ## Small merged shells try all sources before rejection — 2026-10-22
 
