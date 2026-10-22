@@ -22,6 +22,7 @@ does not, since it looks for UV2 space outside the chosen source on purpose.
 
 Measurement pending: the furniture corpus against `main-5e9f9c0` with
 `report.py --baseline … --require-no-regressions`, and model A with PR #329.
+
 ## Dedup: fragments of a source that folds over its UV0 share it — 2026-10-22
 
 Corpus model A (a blanket; the owner's "torn to pieces" report, LOD1 UV quality
