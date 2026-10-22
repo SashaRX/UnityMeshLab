@@ -1,5 +1,34 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## A vertex takes the layer of the nearest facing source face — 2026-10-22
+
+Follow-up to the own-UV0 rule below. Model A's LOD2 keeps 4803 overlap pairs
+after the first pass (4544 after Full Pipeline). The trace (item 26 in
+PR #294):
+
+- 42% of the pairs overlap in the target's UV0 already;
+- each folded source has two partitions, a large one and a tiny one: 2010 +
+  10 faces and 1704 + 12, split by normal, the small ones facing 86° and 147°
+  away. Their UV0 → UV2 similarity fits are exact (RMS below 1e-4 of the
+  partition's UV2 diagonal);
+- yet the tiny partitions take 44–46% of the vertices of the fragments
+  placed by the partition transform. `MatchPartition` compares a vertex
+  normal with each partition's average normal, and a draped cloth faces every
+  way: wherever its normal is nearer the tiny layer's, the vertex goes there;
+- 107 of the 832 fragments placed by the transform have vertices on both
+  partitions (48% of the faces) and take part in 54% of the pairs not in UV0;
+  of the pairs between two fragments on one partition each, 64% join
+  fragments on different partitions of one source.
+
+The partition-aware candidates of the overlap group and the merged path now
+give each vertex the partition of the nearest source face facing it
+(dot ≥ 0.3, the threshold of the 3D searches there). The average normal and
+centroid still decide when no face qualifies. Unlike the centroid matching
+rejected in PR #47, the choice rests on the partitions' faces, not on one
+point per partition.
+
+Measurement pending: model A and the furniture corpus against main.
+
 ## Fold-share transform keeps the fragment's own UV0 defects — 2026-10-22
 
 Follow-up to the tie rule below. Model A's LOD2 still has 6991 overlap pairs
