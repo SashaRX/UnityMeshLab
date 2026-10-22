@@ -1,5 +1,30 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## A composite that tears the shell keeps the best source — 2026-10-22
+
+Model A's LOD2 has 3077 overlap pairs after the own-UV0 scale rule (item 29
+in PR #294). 2116 of them (69%) overlap in the target's UV0 already, nearly
+all on one partition of one source; the source's own UV2 has only 29 pairs,
+and no pair of LOD2 faces overlapping in UV0 lies over source faces that
+overlap in UV2 (item 30.2): the LOD's UV0 overlaps where the source's does
+not, and a similarity keeps it. Of the other 961 pairs, one shell (34 faces)
+takes part in 308.
+
+That shell is matched to a group of 19 sources. Its best candidate (src1,
+partition UV0 interpolation) has no issues. The per-face composite then gave
+the 10 faces that voted for src6 that source's ray + partition UV2 (17
+stretched faces, 65 overlap pairs on its own), and 11 of the shell's 35
+vertices took it: the composite has 11 issues and 63 overlap pairs inside
+the shell, and no later step undoes it (item 30.3). The jump guard, the
+outlier-face check and the spatial coherence check did not reject it.
+
+A composite of several sources for a shell that is not fragment-merged now
+has its issues counted, and when they are more than the best source's alone
+the shell keeps that source. Fragment-merged shells, whose single sources
+each cover only a part, keep the composite as before.
+
+Measurement pending: model A and the furniture corpus against main.
+
 ## Own UV0 defects are counted at the transform's scale — 2026-10-22
 
 Follow-up to the own-UV0 rule below, found while measuring the nearest-face
