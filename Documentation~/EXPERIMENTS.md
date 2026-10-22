@@ -26,10 +26,16 @@ of 33 faces, and no candidate clears the 1e-10 UV2 area for 27 of them.
 
 Change: a merged shell of up to four faces whose constrained candidate
 would be rejected tries the all-source pass, with the claimed-source AABB
-check it already has; the candidate counts only when it does not fold over
-itself (exact triangle overlap inside the shell) and must still pass the
-reject gate. The coherence fix does not pull a rescued shell back onto the
-picked source. Everything else keeps the constrained result.
+check it already has. The candidate counts only when it does not fold over
+itself (exact triangle overlap inside the shell), its UV2 bounds stay clear
+of the UV2 bounds of every source another target shell is matched to
+(merged shells included, which the claimed set leaves out) and of earlier
+rescues, and it still passes the reject gate. The coherence fix does not
+pull a rescued shell back onto the picked source, and the shell records the
+source most of its vertices came from (the safety net, recovery,
+classification and the next LOD's hints read it). Everything else keeps the
+constrained result. The 6 shells of item 36 were checked against the
+claimed set only, so the stricter check may keep fewer.
 
 Pending measurement: models K and A, Full Pipeline against main, and the
 furniture corpus with `--require-no-regressions`.

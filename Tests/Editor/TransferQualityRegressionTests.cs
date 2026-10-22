@@ -719,10 +719,27 @@ namespace SashaRX.UnityMeshLab.Tests
                 var result = GroupedShellTransfer.Transfer(target, source, sourceAtlasWidth: 512, sourceAtlasHeight: 512);
                 Assert.AreNotEqual(GroupedShellTransfer.ShellStatus.Rejected, result.targetShellStatus[0]);
                 Assert.AreEqual(4, result.verticesTransferred);
+                Assert.AreEqual(1, result.targetShellToSourceShell[0], "The shell records the source its UV2 came from.");
                 for (int i = 0; i < uv0.Length; i++)
                     Assert.That(Vector2.Distance(uv0[i] * 3 + Vector2.one * .6f, result.uv2[i]), Is.LessThan(1e-4f));
             }
             finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
+        [Test]
+        public void ARescueStaysOutOfSourcesOtherShellsAreMatchedToAndOutOfEarlierRescues()
+        {
+            var srcMin = new[] { Vector2.zero, new Vector2(.5f, 0) };
+            var srcMax = new[] { new Vector2(.4f, .4f), new Vector2(.9f, .4f) };
+            var bounds = (new Vector2(.6f, .1f), new Vector2(.7f, .2f));
+            var rescues = new List<(Vector2 min, Vector2 max)>();
+            // Source 1 is matched only to the rescued shell itself.
+            Assert.IsFalse(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 1, 0 }, srcMin, srcMax, rescues));
+            Assert.IsTrue(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 0, 1 }, srcMin, srcMax, rescues));
+            // An unmatched shell reserves nothing; an earlier rescue does.
+            Assert.IsFalse(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 0, -1 }, srcMin, srcMax, rescues));
+            rescues.Add((new Vector2(.65f, .15f), new Vector2(.8f, .3f)));
+            Assert.IsTrue(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 0, -1 }, srcMin, srcMax, rescues));
         }
 
         [TestCase(12f, 0f)]
