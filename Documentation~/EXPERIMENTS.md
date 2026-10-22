@@ -1,5 +1,33 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Fold-share fragments take the transform on a tie — 2026-10-22
+
+Follow-up to the folded-source dedup below. With it, model A's LOD1 has 7077
+UV2 overlap pairs after the first pass (main before it: 1277). The trace of
+all 7077 (item 22 in PR #294):
+
+- every pair joins shells of one source (src6 4696, src1 2378, src0 3);
+  45% lie inside one target shell, 55% join two shells;
+- 99.9% of the pair ends are merged shells placed through the overlap-group
+  candidates, 98.3% of them fragments kept by the fold rule. The winning
+  candidate is strip parameterisation in 60% of the ends, the partition
+  transform in 20%, ray + partition in 20%;
+- only 8% of the pairs overlap in the target's UV0 already: the transfer
+  makes the rest. 67% join faces 1–10% or more than 10% of the mesh diagonal
+  apart in 3D;
+- of the 241 kept shells placed through the group, the partition transform
+  reaches the fewest issues in all 241, but loses every tie to interpolation
+  and strip parameterisation by design ("interp stays within the source UV2
+  hull"). The issue count does not include overlaps.
+
+The kept fragments now take the transform on a tie: it maps the fragment's
+own UV0 through the source's UV0 → UV2 fit, so they overlap only where their
+UV0 does. Other shells keep the interpolation preference.
+
+Measurement pending: model A (overlap pairs, collapsed faces and UV quality per
+LOD) and the furniture corpus against main with
+`report.py --baseline … --require-no-regressions`.
+
 ## Partitions facing the same way are told apart by position — 2026-10-22
 
 Raised by the Codex review of PR #329. `SpatialPartitioner.MatchPartition`
