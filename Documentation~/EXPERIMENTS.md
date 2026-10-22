@@ -1,5 +1,26 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Own UV0 defects are counted at the transform's scale — 2026-10-22
+
+Follow-up to the own-UV0 rule below, found while measuring the nearest-face
+partition match (item 27 in PR #294). With that match, model A's largest LOD2
+fragment (253 faces, kept on a folded source) lies wholly on one partition.
+Its candidates' issues: ray + partition 4, partition transform 8, full
+transform 8, partition UV0 interpolation 8, strip parameterisation 12. The
+transform should have won under the own-UV0 rule, so its eight issues were
+more than the fragment's own UV0 has. Ray + partition won, and the fragment's
+overlap pairs went from 238 to 1101, 309 of them inside the fragment itself.
+
+A similarity cannot add a defect of its own kind: it keeps the stretch ratio
+(which `TriangleStretch` measures) and maps every vertex it is given. Only the
+zero-area test differs, and it is absolute (|UV area| < 1e-10): a transform
+that shrinks the UV0 into a smaller UV2 region turns the fragment's smallest
+faces into zero-area defects. The own-UV0 count now scales the fragment's UV0
+to the area the transform gives it before counting.
+
+Measurement pending: model A and the furniture corpus, together with the
+nearest-face partition match.
+
 ## A vertex takes the layer of the nearest facing source face — 2026-10-22
 
 Follow-up to the own-UV0 rule below. Model A's LOD2 keeps 4803 overlap pairs
