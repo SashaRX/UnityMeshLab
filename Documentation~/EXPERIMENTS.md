@@ -1,5 +1,32 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Partitions facing the same way are told apart by position — 2026-10-22
+
+Raised by the Codex review of PR #329. `SpatialPartitioner.MatchPartition`
+picks a source partition for each target vertex by normal alone whenever the
+partitions have normals, which every successful split has (flood-fill
+components and the normal, UV0-winding and position splits). Partitions facing
+the same way tie on the normal and the first one wins wherever the vertex lies:
+a position split, parallel panels, the halves of a mirrored layout, or a fold
+that flips the UV0 winding but leaves the surface facing up. The merged path
+then restricts its UV0 and 3D projections to that partition, so the vertex can
+take the other layer's UV2. That path also skipped the exact source-vertex
+lookup the interpolation path uses.
+
+Among partitions whose average normals lie within 15° of the best match, the
+nearest 3D centroid now decides, the position split's own assignment rule.
+Partitions facing apart (the front and back of a strap) are still chosen by
+normal. A constrained merged pass keeps the UV2 of a retained source vertex
+(same position and UV0, with one UV2) as interpolation does; an all-source pass
+does not, since it looks for UV2 space outside the chosen source on purpose.
+
+Measured: the furniture corpus against `main-5e9f9c0` with
+`report.py --baseline … --require-no-regressions` passes, 256 of 256 pairs
+the same in all nine variants. Model A with PR #329 is unchanged to the last
+digit: both of its large folded shells are split by normal (2010 + 10 and
+1704 + 12 faces, the small partitions facing 86° and 147° away), so no two of
+their partitions face the same way. The corpus has no source this rule
+reaches; it stays as the correct choice for those that come.
 ## Dedup: fragments of a source that folds over its UV0 share it — 2026-10-22
 
 Corpus model A (a blanket; the owner's "torn to pieces" report, LOD1 UV quality
