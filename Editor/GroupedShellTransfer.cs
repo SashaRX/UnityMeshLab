@@ -3935,8 +3935,11 @@ namespace SashaRX.UnityMeshLab
                 int pairs = OtherShellPairs(tShell, tsi, tgtTris, result.uv2, result.faceToTargetShell,
                     ShellCandidate(tShell, result.uv2));
                 if (pairs == 0) continue;
-                int fallbackPairs = OtherShellPairs(tShell, tsi, tgtTris, result.uv2, result.faceToTargetShell, fallback.uv2);
-                if (fallbackPairs >= pairs) continue;
+                // A scan that does not finish cannot certify the similarity: the shell takes its fallback
+                bool counted = pairs != int.MaxValue;
+                int fallbackPairs = counted
+                    ? OtherShellPairs(tShell, tsi, tgtTris, result.uv2, result.faceToTargetShell, fallback.uv2) : 0;
+                if (counted && fallbackPairs >= pairs) continue;
                 foreach (var point in fallback.uv2) result.uv2[point.Key] = point.Value;
                 result.targetShellIssues[tsi] = fallback.issues;
                 if (!fallback.transform)
@@ -3949,8 +3952,10 @@ namespace SashaRX.UnityMeshLab
                     if (shellTrace != null) shellTrace.projectionMethod = fallback.geometric ? "geometry"
                         : fallback.aligned ? "uv0-aligned" : "uv0-filtered";
                 }
-                UvtLog.Info($"[GroupedTransfer] t{tsi}: unclamped similarity overlaps other shells in {pairs} pairs " +
-                    $"({fallbackPairs} without it); kept {(fallback.transform ? "the clamped similarity" : "interpolation")}");
+                string overlap = counted ? $"overlaps other shells in {pairs} pairs ({fallbackPairs} without it)"
+                    : "overlap scan with other shells did not finish";
+                UvtLog.Info($"[GroupedTransfer] t{tsi}: unclamped similarity {overlap}; " +
+                    $"kept {(fallback.transform ? "the clamped similarity" : "interpolation")}");
             }
 
             // ── Post-transfer UV2 AABB safety net for merged shells ──

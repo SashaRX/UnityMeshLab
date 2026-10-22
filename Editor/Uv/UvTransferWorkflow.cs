@@ -2472,8 +2472,8 @@ namespace SashaRX.UnityMeshLab
             ClearReverseSummary();
 
             // Source meshes packed into one atlas: each target keeps clear of the faces already
-            // transferred from the other sources, and of those sources' own faces while targets
-            // that will land on them remain.
+            // transferred, whatever their source, and of the other sources' own faces while
+            // targets that will land on them remain.
             List<(MeshEntry source, Mesh mesh, Vector2[] corners)> atlasFaces = null;
             Dictionary<MeshEntry, int> pendingTargets = null;
             if (!ctx.RepackPerMesh && sources.Count > 1)
@@ -2540,7 +2540,7 @@ namespace SashaRX.UnityMeshLab
             }
 
             UvProgress.Report(-1f, $"Transfer LOD{tLod} ← '{tgt.renderer.name}'");
-            var neighbours = atlasFaces?.Where(f => f.source != srcEntry).ToList();
+            var neighbours = atlasFaces?.Where(f => f.source != srcEntry || f.mesh != srcMesh).ToList();
             var pair = ctx.DiagnosticCapture?.BeforePair(srcEntry, tgt, srcMesh, tgtMesh, hintState.overlapHints, hintState.matchHints, TransferBoundaryToleranceTexels,
                 atlasNeighbours: neighbours?.Select(f => f.mesh).ToList());
             Vector2[] atlasNeighbours = neighbours?.SelectMany(f => f.corners).ToArray();

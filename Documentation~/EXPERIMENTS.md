@@ -59,14 +59,14 @@ pair alone, so it cannot see pairs between meshes.
 
 Follow-up: when the source LOD's meshes share one atlas (Repack Per Mesh
 off), each transfer receives the UV2 faces of the other source meshes and
-of the targets already transferred from them, and the unclamped similarity
-is refused when one of its faces overlaps one of those. Transfer capture
+of the targets already transferred (from any source), and the unclamped
+similarity is refused when one of its faces overlaps one of those. Transfer capture
 records those meshes, so a replay sees the same faces. Within the mesh,
 shells interpolated into the same source chart are seen by neither the
 choice nor the placed regions: once every shell is placed, a shell on the
 unclamped similarity that overlaps the others in more face pairs than its
-fallback (the clamped similarity or interpolation it had without it) takes
-the fallback.
+fallback (the clamped similarity or interpolation it had without it), or
+whose overlap scan does not finish, takes the fallback.
 
 Measured at 186dfa7 (item 41): both kinds of new overlap are gone. Model
 K's LOD2 equals main in UV quality, collapsed faces and overlap pairs; 6
