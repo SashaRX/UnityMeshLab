@@ -1,5 +1,39 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Rejected: placing UV0-shifted LOD fragments by 3D — 2026-10-22
+
+Diagnostic only, nothing changed in the code. After the composite issue check
+model A's LOD2 has 2783 overlap pairs after the first pass; 2128 of them
+overlap in the target's UV0 already, and the source does not explain them
+(its UV2 has 29 pairs, none under them).
+
+The LOD moved some fragments' UV0 (item 32 in PR #294). For each vertex of
+the 830 fragments placed by the partition transform, its UV0 was compared
+with the source's UV0 at the nearest source face facing it: 723 fragments
+(87%) agree to under 1% of the partition's UV0 diagonal (median 0.06%), 107
+(13%) are shifted by 1–83%, and these 107 sit at an end of 77% of the pairs
+that overlap in UV0. Most of them are tiny: 62 single faces, 28 of 2–4.
+
+Two ways of placing those fragments by 3D instead of by their UV0, measured
+offline on the same first pass:
+
+| placement of the shifted fragments | pairs | UV0 pairs left | new pairs | their issues |
+|---|---|---|---|---|
+| partition transform of their UV0 (main) | 2783 | 2128 | — | 14 |
+| each vertex at the source's UV2 under it | 5894 | 532 | 4745 | 107 |
+| one similarity fitted to those 3D correspondences | 4613 | 523 | 3473 | 29 |
+| the same, refitted on the best 80% | 4472 | 524 | 3331 | 30 |
+
+The similarity fits closely (median RMS 0.16% of the partition's UV2
+diagonal), and both placements clear three quarters of the pairs inherited
+from UV0, but the fragments then land on the UV2 of the fragments that
+already cover the same part of the source, and two to three times as many
+new pairs appear as are cleared (4745 against 1596 vertex by vertex, 3473
+against 1605 for the similarity, 3331 against 1604 refitted). Projecting all 830 fragments vertex by vertex is worse still (7900
+pairs, 182 → 371 issues). The pairs a LOD inherits from a shifted UV0 are not
+worth trading for these; placing such fragments would need room in the atlas
+that the source's UV2 does not have.
+
 ## A composite that tears the shell keeps the best source — 2026-10-22
 
 Model A's LOD2 has 3077 overlap pairs after the own-UV0 scale rule (item 29
