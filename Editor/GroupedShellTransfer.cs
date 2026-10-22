@@ -3821,7 +3821,6 @@ namespace SashaRX.UnityMeshLab
                         result.targetShellMethod[tsi] = 1; // xform
                         result.targetShellIssues[tsi] = issuesTransform;
                         if (unclampedSimilarity) {
-                            outsideSourceRegions.Add(UvBounds(uv2_transform));
                             UvtLog.Info($"[GroupedTransfer] t{tsi}: unclamped similarity of src{chosenSrc} " +
                                 $"({issuesTransform} issues, interpolation {issuesInterp})");
                         }
@@ -3873,6 +3872,9 @@ namespace SashaRX.UnityMeshLab
                         }
                         result.targetShellIssues[tsi] = selectedQuality.issues;
                     }
+                    // Reserve the unclamped similarity's bounds only if recovery kept it
+                    if (preferTransform && unclampedSimilarity && ReferenceEquals(chosenUv2, uv2_transform))
+                        outsideSourceRegions.Add(UvBounds(uv2_transform));
                 }
 
                 // Write chosen UV2
