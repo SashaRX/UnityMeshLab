@@ -20,8 +20,13 @@ normal. A constrained merged pass keeps the UV2 of a retained source vertex
 (same position and UV0, with one UV2) as interpolation does; an all-source pass
 does not, since it looks for UV2 space outside the chosen source on purpose.
 
-Measurement pending: the furniture corpus against `main-5e9f9c0` with
-`report.py --baseline … --require-no-regressions`, and model A with PR #329.
+Measured: the furniture corpus against `main-5e9f9c0` with
+`report.py --baseline … --require-no-regressions` passes, 256 of 256 pairs
+the same in all nine variants. Model A with PR #329 is unchanged to the last
+digit: both of its large folded shells are split by normal (2010 + 10 and
+1704 + 12 faces, the small partitions facing 86° and 147° away), so no two of
+their partitions face the same way. The corpus has no source this rule
+reaches; it stays as the correct choice for those that come.
 
 ## Rejected merged shells: write a safe candidate instead of (0,0) — rejected — 2026-10-21
 
