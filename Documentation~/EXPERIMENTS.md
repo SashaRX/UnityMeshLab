@@ -23,14 +23,23 @@ change does not reach them.
 Dedup now lets claimants that overlap in UV0 share a source that itself folds
 over its UV0 and has more than one spatial partition. They take the merged
 path, constrained to that source (a shared source whose claimants overlap is a
-duplicate source in Phase 3): its UV0 and 3D projections pick each vertex's
-layer by partition, where the non-merged interpolation over the whole shell
-would map same-facing layers onto the same source faces. Tiling targets of a
-source without folds are evicted as before.
+duplicate source in Phase 3). Tiling targets of a source without folds are
+evicted as before.
 
-Measurement pending: model A's Full Pipeline (UV quality, written vertices and
-rejected shells per LOD) and the furniture corpus against `control-snap`
-with `report.py --baseline … --require-no-regressions`.
+First revision: the kept fragments used the merged path's UV0 projection,
+restricted to the partition each vertex's normal picks. Model A, Full Pipeline
+against main: the tearing is gone (collapsed faces LOD1 856 → 18, LOD2
+2770 → 63; unwritten vertices 828 → 0 and 4047 → 93; first-pass rejected
+shells 47 → 0 and 707 → 30; UV quality 19 → 37 and 10 → 27), but overlap pairs
+grow 1095 → 5450 and 496 → 11992. Two partitions cannot separate every fold
+of a source with 6675 overlapping UV0 pairs, so UV0 still picks a layer at
+random within a partition, and the normal alone picks the partition (PR #332
+fixes that choice for partitions facing the same way).
+
+Second revision: the kept fragments are projected by 3D, onto the nearest
+same-facing face of the whole source, as force3D shells are; UV0 decides only
+where no face is found. Measurement pending: model A as above and the furniture
+corpus against `main-5e9f9c0` with `report.py --baseline … --require-no-regressions`.
 
 ## Rejected merged shells: write a safe candidate instead of (0,0) — rejected — 2026-10-21
 
