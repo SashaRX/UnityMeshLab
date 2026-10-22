@@ -21,7 +21,10 @@ their own UV0, unless they reach half of the fragment's faces.
 Of the two worse corpus pairs of the tie rule, J's growth predates it (it is
 already on main before the tie rule), and A's four pairs come from quality
 recovery replacing the newly chosen transform with partition UV0
-interpolation.
+interpolation. J's growth comes from the dedup change (item 25.3): 3 overlap
+pairs before it, with or without the position rule for same-facing
+partitions, 36 with its second revision and 61 with the final one; two of
+its kept fragments go from one issue to three.
 
 Measured (item 25 in PR #294). Model A, Full Pipeline against main: LOD2
 overlap pairs fall 6528 → 4544, 6991 → 4803 right after the first pass; UV
