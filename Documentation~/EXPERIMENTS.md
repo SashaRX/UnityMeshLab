@@ -1,5 +1,31 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Dedup: fragments of a source that folds over its UV0 share it — 2026-10-22
+
+Corpus model A (a blanket; the owner's "torn to pieces" report, LOD1 UV quality
+19/100 on every commit back to 14.10). Its LOD0 blanket mesh has two large UV0
+shells whose UV0 folds over itself (6675 overlapping UV0 face pairs; the repack
+separates all but 29) and 17 tiny shells of 1–4 faces. The LODs keep the UV0:
+96.8% of LOD1 vertices lie inside a LOD0 UV0 triangle. Yet only 65% of LOD1
+and 19% of LOD2 vertices were written: the first pass rejected 47 LOD1 and 707
+LOD2 target shells, all merged, and left them collapsed.
+
+The trace shows why. The target fragments of the large shells first match a
+large shell, and overlap one another in UV0 as the source's layers do. Phase 2b
+dedup reads any UV0 overlap among a source's claimants as tiling, keeps one
+claimant and re-matches the rest to unclaimed sources: all 47 (705 of 707 in
+LOD2) end on the tiny shells, whose UV0 does not hold theirs, as forced merged
+shells, and are rejected. None ends on its nearest source in 3D.
+
+Dedup now lets claimants that overlap in UV0 share a source that itself folds
+over its UV0 and has more than one spatial partition: those partitions already
+tell the layers apart at transfer (per-partition UV0 BVHs and transforms).
+Tiling targets of a source without folds are evicted as before.
+
+Measurement pending: model A's Full Pipeline (UV quality, written vertices and
+rejected shells per LOD) and the furniture corpus against `control-snap`
+with `report.py --baseline … --require-no-regressions`.
+
 ## Rejected merged shells: write a safe candidate instead of (0,0) — rejected — 2026-10-21
 
 `GroupedShellTransfer` rejects a merged target shell when more than half of its

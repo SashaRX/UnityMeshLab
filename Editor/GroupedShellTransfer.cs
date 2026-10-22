@@ -1773,6 +1773,23 @@ namespace SashaRX.UnityMeshLab
                         continue;
                     }
 
+                    // A source whose own UV0 folds over itself (cloth, a doubled surface)
+                    // has fragments that overlap in UV0 just as its layers do, and its
+                    // partitions tell the layers apart at transfer. Evicting them sends
+                    // them to unrelated sources as merged shells, which are rejected and
+                    // left collapsed.
+                    if (srcPartitions[srcKey].hasOverlap && srcPartitions[srcKey].partitionCount > 1)
+                    {
+                        foreach (var c in claimants)
+                        {
+                            var foldTrace = trace?.ForShell(c.tsi);
+                            if (foldTrace != null) foldTrace.dedupDecision = "Kept shared source: it folds over its own UV0";
+                        }
+                        UvtLog.Info($"[GroupedTransfer] Dedup: src{srcKey} folds over its own UV0 — " +
+                            $"{claimants.Count} fragments overlapping in UV0 share it by partition");
+                        continue;
+                    }
+
                     // Cross-LOD hint protection: if multiple claimants were all
                     // matched via cross-LOD hints, the previous LOD told us they
                     // should all use this source (likely symmetric copies of the
