@@ -27,8 +27,9 @@ offline on the same first pass:
 The similarity fits closely (median RMS 0.16% of the partition's UV2
 diagonal), and both placements clear three quarters of the pairs inherited
 from UV0, but the fragments then land on the UV2 of the fragments that
-already cover the same part of the source, and twice as many new pairs
-appear. Projecting all 830 fragments vertex by vertex is worse still (7900
+already cover the same part of the source, and two to three times as many
+new pairs appear as are cleared (4745 against 1596 vertex by vertex, 3473
+against 1605 for the similarity, 3331 against 1604 refitted). Projecting all 830 fragments vertex by vertex is worse still (7900
 pairs, 182 → 371 issues). The pairs a LOD inherits from a shifted UV0 are not
 worth trading for these; placing such fragments would need room in the atlas
 that the source's UV2 does not have.
