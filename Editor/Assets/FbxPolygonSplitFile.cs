@@ -102,7 +102,7 @@ namespace SashaRX.UnityMeshLab
                 throw new IOException($"FBX UV point split cannot preserve {layer.name} reference '{reference}'.");
             bool indexed = reference == "IndexToDirect" || reference == IndexName;
             bool remapped = false;
-            foreach (var data in layer.children.Where(IsArray)) {
+            foreach (var data in LayerArrays(layer)) {
                 bool index = data.name.EndsWith(IndexName, StringComparison.Ordinal) || data.name.EndsWith("Indices", StringComparison.Ordinal);
                 if (indexed && !index) continue;
                 RemapArray(data, sources, oldCount, false); remapped = true;
@@ -274,7 +274,7 @@ namespace SashaRX.UnityMeshLab
             bool indexed = reference == "IndexToDirect" || reference == IndexName;
             if (!indexed && reference != "Direct") throw new IOException($"FBX split does not support '{reference}' references.");
             bool remapped = false;
-            foreach (var data in layer.children.Where(IsArray))
+            foreach (var data in LayerArrays(layer))
                 remapped |= RemapLayerArray(layer, data, mapping, indexed, map, count);
             if (!remapped) throw new IOException($"FBX split found no safely remappable data for {layer.name}.");
         }
@@ -307,6 +307,11 @@ namespace SashaRX.UnityMeshLab
         }
 
         static bool IsArray(Node node) => node.properties.Count == 1 && "fdlibc".IndexOf((char)node.properties[0][0]) >= 0;
+
+        // A layer's data arrays, wherever they sit: LayerElementUserData keeps one array per
+        // attribute inside its own UserDataArray record instead of directly under the layer.
+        static IEnumerable<Node> LayerArrays(Node layer)
+            => layer.children.SelectMany(child => IsArray(child) ? new[] { child } : LayerArrays(child));
 
         static void RemapArray(Node node, int[] map, int oldCount, bool smoothDiagonal)
         {
