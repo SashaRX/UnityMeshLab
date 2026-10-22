@@ -1,5 +1,60 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Small merged shells try all sources before rejection — 2026-10-22
+
+Model K's last LOD (LOD2, items 35 and 36 in PR #294) has 62 vertices left
+at (0,0): all in 11 rejected merged shells (4 of 2 faces, 6 of 3-4, one of
+10), 5.8% of the LOD's 3D area and 18.8% of one mesh's. None of their faces
+is degenerate in 3D or in the target's UV0; every one of their 33 issues is
+a UV2 area under 1e-10. The source picked for them by 3D distance holds none
+of their UV0 (0 of 11), and their vertices' UV0 lies on two or more source
+shells in 9 of 11. The constrained pass projects each vertex onto the
+nearest point of that source in UV0, which presses the corners onto one of
+its edges, and switches to 3D only beyond about 0.22 in UV0. Shells of up
+to four faces stop there ("stay constrained"); the unified overlap
+candidates run only for force3D shells.
+
+Offline, at the point of rejection and before any acceptance check: the
+all-source pass has no issues for all 11, and for the 6 that pass its
+claimed-source AABB check it has no overlap pairs with the written shells
+(10 pairs among their own faces, which the self-overlap check below
+refuses).
+The unified overlap set has no candidate (full-xform fails its own range
+checks); full-xform alone is clean for 9 but places 97% of the vertices
+outside the picked source's box; the nearest facing source face in 3D
+collapses. Model A's 28 rejected LOD2 shells are a different case: 25 are
+single faces of 7.5e-7 of the LOD's area together, degenerate in UV0 in 28
+of 33 faces, and no candidate clears the 1e-10 UV2 area for 27 of them.
+
+Change: a merged shell of up to four faces whose constrained candidate
+would be rejected tries the all-source pass, with the claimed-source AABB
+check it already has. The candidate counts only when it does not fold over
+itself (exact triangle overlap inside the shell), its UV2 bounds stay clear
+of the UV2 bounds of every source another written or pending target shell
+is matched to (merged shells included, which the claimed set leaves out), of earlier
+merged shells written from the all-source pass or as force3D (rescues
+included; their UV2 may lie away from the source they record), and it still
+passes the reject gate. Every later all-source candidate, of an ordinary
+merged or a force3D shell, also avoids the accepted rescues, which no
+claimed source covers. The coherence fix does not
+pull a rescued shell back onto the picked source, and the shell records the
+source most of its vertices came from (the safety net, recovery,
+classification and the next LOD's hints read it). Everything else keeps the
+constrained result. The 6 shells of item 36 were checked against the
+claimed set only, so the stricter check may keep fewer.
+
+Measured (item 37 in PR #294). The new fixture fails on main (the quad is
+rejected) and passes with the change. Model K, Full Pipeline against main:
+of the 10 shells of up to four faces, 4 are rescued (all Accepted, each now
+recording another source), 2 are refused for folding over themselves and 4
+by the claimed-source AABB check; the 10-face shell stays rejected. LOD2
+unwritten vertices 62 → 44, rejected shells 11 → 7, collapsed faces 58 → 48,
+degenerate faces 60 → 50, UV quality 35 → 38 (stretch 3 → 12); overlap
+pairs (1), stretched faces and worst anisotropy unchanged, and the rescued
+shells overlap nothing. LOD0 and LOD1 unchanged. Model A unchanged (no
+rescue). Furniture corpus against main's capture: the gate passes, exit 0,
+all 256 pairs the same in every profile; no corpus shell is rescued.
+
 ## Rejected: placing UV0-shifted LOD fragments by 3D — 2026-10-22
 
 Diagnostic only, nothing changed in the code. After the composite issue check

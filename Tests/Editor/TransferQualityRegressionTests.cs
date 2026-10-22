@@ -698,6 +698,54 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
         }
 
+        [Test]
+        public void ASmallMergedShellTheConstrainedPassCollapsesTakesTheSourceItsUv0LiesOn()
+        {
+            var source = new Mesh { name = "Two charts far apart in 3D" };
+            var target = new Mesh { name = "Quad on the first chart with the second chart's UV0" };
+            try {
+                // Constrained to the chart it lies on in 3D, every corner clamps to one UV0 edge
+                // of that chart, and the reject gate would leave the quad at (0,0).
+                var quad = new[] { Vector3.zero, Vector3.right, new Vector3(1, 1, 0), Vector3.up };
+                var uv0 = new[] { Vector2.zero, new Vector2(.1f, 0), new Vector2(.1f, .1f), new Vector2(0, .1f) };
+                var shifted = uv0.Select(uv => uv + new Vector2(.15f, 0)).ToArray();
+                source.vertices = quad.Concat(quad.Select(p => p + Vector3.forward * 5)).ToArray();
+                source.uv = uv0.Concat(shifted).ToArray();
+                source.uv2 = uv0.Select(uv => uv * 3 + Vector2.one * .1f)
+                    .Concat(uv0.Select(uv => uv * 3 + Vector2.one * .6f)).ToArray();
+                source.triangles = new[] { 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 }; source.RecalculateNormals();
+                target.vertices = quad; target.uv = shifted;
+                target.triangles = new[] { 0, 1, 2, 0, 2, 3 }; target.RecalculateNormals();
+                var result = GroupedShellTransfer.Transfer(target, source, sourceAtlasWidth: 512, sourceAtlasHeight: 512);
+                Assert.AreNotEqual(GroupedShellTransfer.ShellStatus.Rejected, result.targetShellStatus[0]);
+                Assert.AreEqual(4, result.verticesTransferred);
+                Assert.AreEqual(1, result.targetShellToSourceShell[0], "The shell records the source its UV2 came from.");
+                for (int i = 0; i < uv0.Length; i++)
+                    Assert.That(Vector2.Distance(uv0[i] * 3 + Vector2.one * .6f, result.uv2[i]), Is.LessThan(1e-4f));
+            }
+            finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
+        [Test]
+        public void ARescueStaysOutOfSourcesOtherShellsAreMatchedToAndOutOfEarlierRescues()
+        {
+            var srcMin = new[] { Vector2.zero, new Vector2(.5f, 0) };
+            var srcMax = new[] { new Vector2(.4f, .4f), new Vector2(.9f, .4f) };
+            var bounds = (new Vector2(.6f, .1f), new Vector2(.7f, .2f));
+            var rescues = new List<(Vector2 min, Vector2 max)>();
+            var written = new GroupedShellTransfer.ShellStatus[2];
+            // Source 1 is matched only to the rescued shell itself.
+            Assert.IsFalse(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 1, 0 }, written, srcMin, srcMax, rescues));
+            Assert.IsTrue(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 0, 1 }, written, srcMin, srcMax, rescues));
+            // A rejected shell wrote no UV2 on its source.
+            var rejected = new[] { GroupedShellTransfer.ShellStatus.Accepted, GroupedShellTransfer.ShellStatus.Rejected };
+            Assert.IsFalse(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 0, 1 }, rejected, srcMin, srcMax, rescues));
+            // An unmatched shell reserves nothing; an earlier rescue does.
+            Assert.IsFalse(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 0, -1 }, written, srcMin, srcMax, rescues));
+            rescues.Add((new Vector2(.65f, .15f), new Vector2(.8f, .3f)));
+            Assert.IsTrue(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 0, -1 }, written, srcMin, srcMax, rescues));
+        }
+
         [TestCase(12f, 0f)]
         [TestCase(100f, 45f)]
         public void CollapseDiagnosticAcceptsIsometricThinChartsAtAnyRotation(float length, float uvAngle)

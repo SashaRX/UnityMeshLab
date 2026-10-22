@@ -2250,6 +2250,11 @@ namespace SashaRX.UnityMeshLab
 
             // Track UV2 AABBs of placed force3D shells to prevent mutual overlap
             var force3DUsedRegions = new List<(Vector2 min, Vector2 max)>();
+            // UV2 bounds of merged shells written from the all-source pass, small-shell rescues
+            // included: their UV2 may lie away from the source they record
+            var allSourceRegions = new List<(Vector2 min, Vector2 max)>();
+            // UV2 bounds of the rescues alone, which every later all-source candidate avoids
+            var rescueRegions = new List<(Vector2 min, Vector2 max)>();
 
             // Track which source shells are already claimed by overlap group targets.
             // Prevents multiple targets from mapping to the same source, which causes
@@ -2925,6 +2930,8 @@ namespace SashaRX.UnityMeshLab
                     int bestMergedIssues = int.MaxValue;
                     int bestMergedConsistencyFixes = 0;
                     bool bestWasConstrained = false;
+                    bool smallShellRescue = false;
+                    Dictionary<int, int> bestMergedSources = null;
 
                     // force3D: try all-source first (to find UV2 space in a different
                     // source region), fall back to constrained if overlap guard rejects.
@@ -2965,8 +2972,13 @@ namespace SashaRX.UnityMeshLab
                                 if (srcFacesChosen == null) break; // pass 0 was already all-source
                                 if (bestMergedIssues == 0) break;  // constrained was clean
                                 // Small/degenerate shells: stay constrained to avoid
-                                // wandering into wrong source's UV2 region
-                                if (tShell.faceIndices.Count <= 4) break;
+                                // wandering into wrong source's UV2 region, unless the
+                                // reject gate below would leave them at (0,0)
+                                if (tShell.faceIndices.Count <= 4)
+                                {
+                                    if (bestMergedIssues <= tShell.faceIndices.Count / 2) break;
+                                    smallShellRescue = true;
+                                }
                                 // Duplicate-source shells share their source with a
                                 // sibling target — all-source would find faces from
                                 // other shells and drag vertices to wrong UV2 regions.
@@ -2977,6 +2989,8 @@ namespace SashaRX.UnityMeshLab
 
                         var candidate = new Dictionary<int, Vector2>();
                         int localFixes = 0;
+                        // Vertices per source shell for a small shell's rescue, which may leave the matched source
+                        var candidateSources = smallShellRescue && !constrained ? new Dictionary<int, int>() : null;
 
                         // Select BVH for UV0 projection
                         // When source shell has UV0 overlap with partitions,
@@ -3107,11 +3121,13 @@ namespace SashaRX.UnityMeshLab
                                 ? triUv2A[bestF3D] * bestU_3d + triUv2B[bestF3D] * bestV_3d + triUv2C[bestF3D] * bestW_3d
                                 : Vector2.zero;
 
+                            int usedFace = -1;
                             if (primary3D && bestF3D >= 0)
                             {
                                 // 3D-primary: always prefer 3D projection to avoid
                                 // same-source UV2 overlap with dedup siblings.
                                 candidate[vi] = uv2From3D;
+                                usedFace = bestF3D;
                                 if (bestFUv0 >= 0)
                                 {
                                     float delta = (uv2FromUv0 - uv2From3D).magnitude;
@@ -3124,21 +3140,30 @@ namespace SashaRX.UnityMeshLab
                                 if (bestDSqUv0 > kUv0DistantThresh && delta > kConsistencyThresh)
                                 {
                                     candidate[vi] = uv2From3D;
+                                    usedFace = bestF3D;
                                     localFixes++;
                                 }
                                 else
                                 {
                                     candidate[vi] = uv2FromUv0;
+                                    usedFace = bestFUv0;
                                 }
                             }
                             else if (bestFUv0 >= 0)
                             {
                                 candidate[vi] = uv2FromUv0;
+                                usedFace = bestFUv0;
                             }
                             else if (bestF3D >= 0)
                             {
                                 candidate[vi] = uv2From3D;
+                                usedFace = bestF3D;
                                 localFixes++;
+                            }
+                            if (candidateSources != null && usedFace >= 0)
+                            {
+                                int src = faceToSrcShell[usedFace];
+                                candidateSources[src] = candidateSources.TryGetValue(src, out int n) ? n + 1 : 1;
                             }
                         }
 
@@ -3180,7 +3205,20 @@ namespace SashaRX.UnityMeshLab
                                     }
                                 }
                             }
+                            // Small shells rescued earlier hold UV2 no claimed source covers
+                            if (issues < int.MaxValue && rescueRegions.Exists(region =>
+                                candMin.x < region.max.x && candMax.x > region.min.x &&
+                                candMin.y < region.max.y && candMax.y > region.min.y))
+                                issues = int.MaxValue;
                         }
+
+                        // A small shell's rescue must not fold over itself, nor reach a source
+                        // another target shell is matched to or a merged shell placed elsewhere.
+                        if (smallShellRescue && !constrained && issues < int.MaxValue
+                            && (CandidateHasOverlap(tShell, tgtTris, candidate)
+                                || RescueMeetsPlacedShells(UvBounds(candidate), tsi, result.targetShellToSourceShell,
+                                    result.targetShellStatus, srcUv2Min, srcUv2Max, allSourceRegions, force3DUsedRegions)))
+                            issues = int.MaxValue;
 
                         // Prefer all-source on tie when both have issues:
                         // UV0 flipped winding causes false positives in CountShellIssues,
@@ -3193,6 +3231,7 @@ namespace SashaRX.UnityMeshLab
                             bestMergedUv2 = candidate;
                             bestMergedConsistencyFixes = localFixes;
                             bestWasConstrained = constrained;
+                            bestMergedSources = candidateSources;
                         }
                     }
 
@@ -3310,7 +3349,21 @@ namespace SashaRX.UnityMeshLab
                     // source's UV2 region, creating long diagonal lines in UV2 space.
                     // If the majority of vertices are inside the correct region, re-project
                     // the outliers using the matched source's constrained UV0 lookup.
-                    if (bestMergedUv2 != null && bestMergedUv2.Count > 1 && chosenSrc >= 0)
+                    // A small shell's rescue left the matched source on purpose and was
+                    // judged as it is.
+                    bool smallShellRescued = smallShellRescue && !bestWasConstrained;
+                    // The shell records the source most of the rescue's vertices came from; the
+                    // safety net, recovery, classification and next LOD's hints read it.
+                    if (smallShellRescued && bestMergedSources != null)
+                    {
+                        int votes = 0;
+                        foreach (var kv in bestMergedSources)
+                            if (kv.Value > votes || (kv.Value == votes && kv.Key < chosenSrc))
+                            { chosenSrc = kv.Key; votes = kv.Value; }
+                        result.targetShellMatchDistSqr[tsi] =
+                            (result.targetShellCentroids[tsi] - srcCentroid3D[chosenSrc]).sqrMagnitude;
+                    }
+                    if (bestMergedUv2 != null && bestMergedUv2.Count > 1 && chosenSrc >= 0 && !smallShellRescued)
                     {
                         float kUv2Margin = uv2OobMargin;
                         Vector2 sMin = srcUv2Min[chosenSrc];
@@ -3521,8 +3574,12 @@ namespace SashaRX.UnityMeshLab
                         chosenUv2 = bestMergedUv2;
                         shellsMerged++;
                         result.consistencyCorrected += bestMergedConsistencyFixes;
-                        string mergedLabel = force3D ? "3D-primary"
-                            : (bestWasConstrained ? "src-constrained" : "all-source");
+                        if (!bestWasConstrained && !force3D) allSourceRegions.Add(UvBounds(chosenUv2));
+                        if (smallShellRescued) rescueRegions.Add(UvBounds(chosenUv2));
+                        string mergedLabel = "all-source";
+                        if (force3D) mergedLabel = "3D-primary";
+                        else if (bestWasConstrained) mergedLabel = "src-constrained";
+                        else if (smallShellRescued) mergedLabel = "small-shell rescue";
                         UvtLog.Info($"[GroupedTransfer]   t{tsi} merged({faceCount}f): " +
                             $"{mergedLabel} ({bestMergedIssues} issues)");
                     }
@@ -4822,6 +4879,34 @@ namespace SashaRX.UnityMeshLab
                     if (intersection.Overlaps(geometry, faceA, faceB)) return ShellUvOverlap.Confirmed;
                 }
             return ShellUvOverlap.None;
+        }
+
+        static (Vector2 min, Vector2 max) UvBounds(Dictionary<int, Vector2> uv)
+        {
+            Vector2 min = new Vector2(float.MaxValue, float.MaxValue), max = -min;
+            foreach (var point in uv.Values) { min = Vector2.Min(min, point); max = Vector2.Max(max, point); }
+            return (min, max);
+        }
+
+        /// <summary>
+        /// Whether a rescued shell's UV2 bounds meet the UV2 bounds of a source another target
+        /// shell is matched to, or one of the placed regions. A rejected shell wrote no UV2.
+        /// </summary>
+        internal static bool RescueMeetsPlacedShells((Vector2 min, Vector2 max) bounds, int shell,
+            int[] shellSources, ShellStatus[] shellStatus, Vector2[] srcUv2Min, Vector2[] srcUv2Max,
+            params List<(Vector2 min, Vector2 max)>[] placed)
+        {
+            bool Meets(Vector2 min, Vector2 max) => bounds.min.x < max.x && bounds.max.x > min.x
+                && bounds.min.y < max.y && bounds.max.y > min.y;
+            for (int t = 0; t < shellSources.Length; t++)
+            {
+                int src = shellSources[t];
+                if (t != shell && src >= 0 && shellStatus[t] != ShellStatus.Rejected
+                    && Meets(srcUv2Min[src], srcUv2Max[src])) return true;
+            }
+            foreach (var regions in placed)
+                if (regions.Exists(region => Meets(region.min, region.max))) return true;
+            return false;
         }
 
         static bool CandidateHasOverlap(UvShell shell, int[] triangles, Dictionary<int, Vector2> candidate)
