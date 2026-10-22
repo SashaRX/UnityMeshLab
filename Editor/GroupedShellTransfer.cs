@@ -5352,8 +5352,8 @@ namespace SashaRX.UnityMeshLab
         /// Ties broken by coverage (more vertices covered wins).
         /// Xform candidates only win on strictly fewer issues (not equal), unless
         /// <paramref name="preferTransform"/>: a fragment kept on a source that folds over its
-        /// UV0 takes a transform whose issues are no more than the best candidate's or its own
-        /// UV0's (<paramref name="ownUv0Issues"/>), while it stays below the rejection threshold.
+        /// UV0 takes a transform on a tie, or when its issues are no more than its own UV0's
+        /// (<paramref name="ownUv0Issues"/>) and stay below half of the fragment's faces.
         /// The transform keeps the fragment's own UV0 layout, defects included; interpolation and
         /// strip parameterisation over the folded source mend those faces but lay its fragments
         /// onto one another, and the issue count does not see overlaps.
@@ -5406,13 +5406,14 @@ namespace SashaRX.UnityMeshLab
 
             if (preferTransform)
             {
-                int allowed = Mathf.Max(candidates[bestIdx].issues, ownUv0Issues);
+                // No worse than the best candidate is settled above; here a transform may also
+                // carry the fragment's own UV0 defects, no more.
                 int transformIdx = -1;
                 for (int i = 0; i < candidates.Count; i++)
                 {
                     var c = candidates[i];
                     if (c.method != "full-xform" && c.method != "partition-xform") continue;
-                    if (c.issues > allowed || c.issues * 2 > shell.faceIndices.Count) continue;
+                    if (c.issues > ownUv0Issues || c.issues * 2 >= shell.faceIndices.Count) continue;
                     var t = transformIdx >= 0 ? candidates[transformIdx] : c;
                     if (transformIdx < 0 || c.issues < t.issues || (c.issues == t.issues && c.coverage > t.coverage))
                         transformIdx = i;

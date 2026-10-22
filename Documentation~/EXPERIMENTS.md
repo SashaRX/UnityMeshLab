@@ -6,9 +6,9 @@ Follow-up to the tie rule below. Model A's LOD2 still has 6991 overlap pairs
 after the first pass (main before the dedup change: 522). The trace (item 24 in
 PR #294): 88% of the pairs join different shells; 94.7% of the pair ends are
 kept fragments, 65% placed by the partition transform; 29% overlap in the
-target's UV0 already. The 36 kept LOD2 shells whose winner is not a transform
-(ray + partition 25, full transform 6, strip parameterisation 5) take part in
-53.8% of the pairs (median 50 pairs each): there the transform loses on
+target's UV0 already. The 36 kept LOD2 shells that did not choose the partition
+transform (ray + partition 25, full transform 6, strip parameterisation 5) take part in
+53.8% of the pairs (median 50 pairs each): there the partition transform loses on
 strictly more issues, by one in 27 of the 36, by two in 7.
 
 An issue is a missing, zero-area or more than 10,000:1 stretched UV2 face. A
@@ -16,8 +16,7 @@ transform keeps the fragment's UV0 shape, so its issues are the UV0's own
 zero-area and sliver faces; the other candidates mend those faces by
 re-projecting them and lay the fragment over its neighbours. The kept
 fragments now take the transform when its issues are no more than those of
-their own UV0, unless they reach half of the fragment's faces (where a merged
-shell would be rejected).
+their own UV0, unless they reach half of the fragment's faces.
 
 Of the two worse corpus pairs of the tie rule, J's growth predates it (it is
 already on main before the tie rule), and A's four pairs come from quality
