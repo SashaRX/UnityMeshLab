@@ -5011,7 +5011,7 @@ namespace SashaRX.UnityMeshLab
             public int issues;
             public int coverage;
             public string method;
-            /// <summary>UV area per UV0 area when one similarity maps the whole shell; 0 otherwise.</summary>
+            /// <summary>UV area per UV0 area when one similarity maps every vertex of the shell; 0 otherwise.</summary>
             public float areaScale;
         }
 
@@ -5279,7 +5279,8 @@ namespace SashaRX.UnityMeshLab
                     {
                         uv2 = uv2Map, issues = -1, coverage = uv2Map.Count,
                         method = kMethodPartitionXform,
-                        areaScale = severalPids ? 0f : AreaScale(perPartXform[onePid])
+                        areaScale = severalPids || uv2Map.Count < tShell.vertexIndices.Count
+                            ? 0f : AreaScale(perPartXform[onePid])
                     });
             }
 
@@ -5363,7 +5364,8 @@ namespace SashaRX.UnityMeshLab
                     candidates.Add(new OverlapCandidate
                     {
                         uv2 = uv2Map, issues = -1, coverage = uv2Map.Count,
-                        method = kMethodFullXform, areaScale = AreaScale(fullXform)
+                        method = kMethodFullXform,
+                        areaScale = uv2Map.Count < tShell.vertexIndices.Count ? 0f : AreaScale(fullXform)
                     });
             }
 

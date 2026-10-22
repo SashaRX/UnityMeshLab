@@ -15,10 +15,11 @@ A similarity cannot add a defect of its own kind: it keeps the stretch ratio
 (which `TriangleStretch` measures) and maps every vertex it is given. Only the
 zero-area test differs, and it is absolute (|UV area| < 1e-10): a transform
 that shrinks the UV0 into a smaller UV2 region turns the fragment's smallest
-faces into zero-area defects. When one similarity maps the whole fragment
-(the full transform, or the partition transform with every vertex on one
-partition), the own-UV0 count now scales the fragment's UV0 by that
-similarity before counting. A fragment split between partitions' transforms
+faces into zero-area defects. When one similarity maps every vertex of the
+fragment (the full transform, or the partition transform with every vertex
+on one partition whose fit is valid), the own-UV0 count now scales the
+fragment's UV0 by that similarity before counting; a vertex left unmapped
+keeps the count unscaled, so a missing face is never excused (Codex review). A fragment split between partitions' transforms
 is counted as before: the faces between them are bent by the transform
 itself, so their defects are not the UV0's (raised by the Codex review).
 
