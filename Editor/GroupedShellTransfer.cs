@@ -3352,7 +3352,6 @@ namespace SashaRX.UnityMeshLab
                         foreach (var kv in bestMergedSources)
                             if (kv.Value > votes || (kv.Value == votes && kv.Key < chosenSrc))
                             { chosenSrc = kv.Key; votes = kv.Value; }
-                        srcFacesChosen = srcShells[chosenSrc].faceIndices;
                     }
                     if (bestMergedUv2 != null && bestMergedUv2.Count > 1 && chosenSrc >= 0 && !smallShellRescued)
                     {
