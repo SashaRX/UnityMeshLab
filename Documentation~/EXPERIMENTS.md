@@ -10,12 +10,15 @@ separates all but 29) and 17 tiny shells of 1–4 faces. The LODs keep the UV0:
 and 19% of LOD2 vertices were written: the first pass rejected 47 LOD1 and 707
 LOD2 target shells, all merged, and left them collapsed.
 
-The trace shows why. The target fragments of the large shells first match a
-large shell, and overlap one another in UV0 as the source's layers do. Phase 2b
-dedup reads any UV0 overlap among a source's claimants as tiling, keeps one
-claimant and re-matches the rest to unclaimed sources: all 47 (705 of 707 in
-LOD2) end on the tiny shells, whose UV0 does not hold theirs, as forced merged
-shells, and are rejected. None ends on its nearest source in 3D.
+The trace shows why. All 47 rejected LOD1 shells (705 of 707 in LOD2) end on
+the tiny shells, whose UV0 does not hold theirs, as merged shells; none ends on
+its nearest source in 3D, always a large shell. 31 of the 47 (585 of 707) first
+matched a large shell, and 43 of 47 (675 of 707) end on a source other than
+their first match: those fragments overlap one another in UV0 as the source's
+layers do, and Phase 2b dedup reads any UV0 overlap among a source's claimants
+as tiling, keeps one claimant and re-matches the rest to unclaimed sources. The
+other 16 of 47 (122 of 707) were matched to a tiny shell from the start; this
+change does not reach them.
 
 Dedup now lets claimants that overlap in UV0 share a source that itself folds
 over its UV0 and has more than one spatial partition. They take the merged
