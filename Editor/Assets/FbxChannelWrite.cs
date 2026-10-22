@@ -250,15 +250,15 @@ namespace SashaRX.UnityMeshLab
                 fbxPath = targetFbxPath,
                 sourceFbxPath = sourceFbxPath,
             };
-            // Capture geometry names before structural replacement destroys old meshes.
-            // Unity mesh names may differ from FBX geometry names.
+            // The FBX meshes the channels write UV1 into, captured before the structure step
+            // changes the mesh list; it writes none of them whole.
             var uvMeshes = donors.Where(d => d.uvs[1] != null && tagged.ContainsKey(d.name))
-                .Select(d => document.Meshes[tagged[d.name].ordinal].GetName()).ToHashSet();
+                .Select(d => document.Meshes[tagged[d.name].ordinal]).ToHashSet();
             int structural = hasStructure ? FbxStructureWrite.Apply(document, tagged, structure, options, structureLog) : 0;
             if (structural > 0) document.RefreshMeshes();
             bool uv1Written = channelsWritten.Contains("UV1") || (options.uv1Written && structural > 0);
             if (uv1Written) {
-                if (hasStructure && options.uv1Written) uvMeshes.UnionWith(structure.WholeMeshNames());
+                if (hasStructure && options.uv1Written) uvMeshes.UnionWith(options.wholeMeshes);
                 int points = document.PreserveSmallUvSeams(uvMeshes, FbxUvSet(1, swapUv));
                 if (points > 0) UvtLog.Info($"[FBX Export] Preserved nearby lightmap seams with {points} duplicate control points; positions and UVs unchanged.");
             }
