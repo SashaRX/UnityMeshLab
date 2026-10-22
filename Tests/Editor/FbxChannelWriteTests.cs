@@ -882,6 +882,65 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { if (working) UnityEngine.Object.DestroyImmediate(working); AssetDatabase.DeleteAsset(assetFolder); }
         }
 
+        /// <summary>Small UV seams split only the meshes given, even when every geometry in the file is unnamed.</summary>
+        [Test]
+        public void SmallUvSeamSplitsOnlyTheGivenMeshAmongUnnamedGeometries()
+        {
+            string path = Path.Combine(folder, "unnamed.fbx");
+            using (var manager = FbxManager.Create())
+            {
+                var io = FbxIOSettings.Create(manager, Globals.IOSROOT);
+                manager.SetIOSettings(io);
+                var scene = FbxScene.Create(manager, "Unnamed");
+                for (int m = 0; m < 2; m++)
+                {
+                    // Two triangles on the edge 1-2; in UV set 1 the second's copies of points 1
+                    // and 2 lie 0.001 from the first's, a seam Unity's import could merge.
+                    var mesh = FbxMesh.Create(scene, "");
+                    mesh.InitControlPoints(4);
+                    for (int i = 0; i < 4; i++) mesh.SetControlPointAt(new FbxVector4(i % 2 * 10 + m * 20, i / 2 * 10, 0), i);
+                    int[][] triangles = { new[] { 0, 1, 2 }, new[] { 2, 1, 3 } };
+                    foreach (var triangle in triangles)
+                    {
+                        mesh.BeginPolygon();
+                        foreach (int i in triangle) mesh.AddPolygon(i);
+                        mesh.EndPolygon();
+                    }
+                    var node = FbxNode.Create(scene, "Part" + m);
+                    node.SetNodeAttribute(mesh);
+                    scene.GetRootNode().AddChild(node);
+                    for (int set = 0; set < 2; set++)
+                    {
+                        mesh.CreateLayer();
+                        var uv = FbxLayerElementUV.Create(mesh, "map" + (set + 1));
+                        uv.SetMappingMode(FbxLayerElement.EMappingMode.eByPolygonVertex);
+                        uv.SetReferenceMode(FbxLayerElement.EReferenceMode.eDirect);
+                        double seam = set == 1 ? .001 : 0;
+                        uv.GetDirectArray().Add(new FbxVector2(0, 0));
+                        uv.GetDirectArray().Add(new FbxVector2(1, 0));
+                        uv.GetDirectArray().Add(new FbxVector2(0, 1));
+                        uv.GetDirectArray().Add(new FbxVector2(seam, 1));
+                        uv.GetDirectArray().Add(new FbxVector2(1 + seam, 0));
+                        uv.GetDirectArray().Add(new FbxVector2(1, 1));
+                        mesh.GetLayer(set).SetUVs(uv, FbxLayerElement.EType.eTextureDiffuse);
+                    }
+                }
+                using var exporter = FbxExporter.Create(manager, "Write");
+                int format = manager.GetIOPluginRegistry().FindWriterIDByDescription("FBX binary (*.fbx)");
+                Assert.IsTrue(exporter.Initialize(path, format, io) && exporter.SetFileExportVersion("FBX201400") && exporter.Export(scene));
+            }
+            using var document = FbxSourceDocument.Load(path);
+            Assert.AreEqual(2, document.Meshes.Count);
+            Assert.That(document.Meshes.Select(m => m.GetName()), Is.All.Empty);
+            // A structural write refreshes the mesh list between the capture and the split.
+            var given = new HashSet<FbxMesh> { document.Meshes[0] };
+            document.RefreshMeshes();
+            Assert.That(document.PreserveSmallUvSeams(given, 1), Is.GreaterThan(0));
+            document.RefreshMeshes();
+            Assert.That(document.Meshes[0].GetControlPointsCount(), Is.GreaterThan(4), "the given mesh keeps its seam apart");
+            Assert.AreEqual(4, document.Meshes[1].GetControlPointsCount(), "the other unnamed mesh is not touched");
+        }
+
         /// <summary>Splitting small UV seams preserves skin weights and blend-shape deltas through an FBX round trip.</summary>
         [Test]
         public void SmallUvPointSplitsPreserveSkinAndBlendShapeBindings()
