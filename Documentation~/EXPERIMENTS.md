@@ -23,7 +23,19 @@ already on main before the tie rule), and A's four pairs come from quality
 recovery replacing the newly chosen transform with partition UV0
 interpolation.
 
-Measurement pending: model A and the furniture corpus against main.
+Measured (item 25 in PR #294). Model A, Full Pipeline against main: LOD2
+overlap pairs fall 6528 → 4544, 6991 → 4803 right after the first pass; UV
+quality 31 → 35; collapsed faces 58 → 61, unwritten vertices 94 → 99,
+degenerate UV2 faces 68 → 67. LOD0 and LOD1 do not change. The winner
+changes for 15 kept LOD2 shells (14 to the partition transform, one to the
+full transform), and 11 shells move from Poor to Degraded. LOD2 still has
+nine times the overlaps it had before the dedup change (496).
+
+Furniture corpus against the tie rule's capture (same transfer code as
+main): the gate fails, exit 1. Two of 256 pairs change. Model A's LOD2 is
+better in all three grouped profiles (overlap pairs 5859 → 5168 in default);
+one small LOD2 is worse in two (overlap pairs 97 → 108, degenerate faces
+30 → 32).
 
 ## Fold-share fragments take the transform on a tie — 2026-10-22
 
