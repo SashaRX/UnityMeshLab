@@ -14,9 +14,11 @@ its edges, and switches to 3D only beyond about 0.22 in UV0. Shells of up
 to four faces stop there ("stay constrained"); the unified overlap
 candidates run only for force3D shells.
 
-Offline, at the point of rejection: the all-source pass has no issues for
-all 11, and for the 6 that pass its claimed-source AABB check it has no
-overlap pairs with the written shells (10 pairs among their own faces).
+Offline, at the point of rejection and before any acceptance check: the
+all-source pass has no issues for all 11, and for the 6 that pass its
+claimed-source AABB check it has no overlap pairs with the written shells
+(10 pairs among their own faces, which the self-overlap check below
+refuses).
 The unified overlap set has no candidate (full-xform fails its own range
 checks); full-xform alone is clean for 9 but places 97% of the vertices
 outside the picked source's box; the nearest facing source face in 3D
@@ -28,8 +30,8 @@ Change: a merged shell of up to four faces whose constrained candidate
 would be rejected tries the all-source pass, with the claimed-source AABB
 check it already has. The candidate counts only when it does not fold over
 itself (exact triangle overlap inside the shell), its UV2 bounds stay clear
-of the UV2 bounds of every source another target shell is matched to
-(merged shells included, which the claimed set leaves out), of earlier
+of the UV2 bounds of every source another written or pending target shell
+is matched to (merged shells included, which the claimed set leaves out), of earlier
 merged shells written from the all-source pass or as force3D (rescues
 included; their UV2 may lie away from the source they record), and it still
 passes the reject gate. Every later all-source candidate, of an ordinary

@@ -733,13 +733,17 @@ namespace SashaRX.UnityMeshLab.Tests
             var srcMax = new[] { new Vector2(.4f, .4f), new Vector2(.9f, .4f) };
             var bounds = (new Vector2(.6f, .1f), new Vector2(.7f, .2f));
             var rescues = new List<(Vector2 min, Vector2 max)>();
+            var written = new GroupedShellTransfer.ShellStatus[2];
             // Source 1 is matched only to the rescued shell itself.
-            Assert.IsFalse(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 1, 0 }, srcMin, srcMax, rescues));
-            Assert.IsTrue(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 0, 1 }, srcMin, srcMax, rescues));
+            Assert.IsFalse(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 1, 0 }, written, srcMin, srcMax, rescues));
+            Assert.IsTrue(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 0, 1 }, written, srcMin, srcMax, rescues));
+            // A rejected shell wrote no UV2 on its source.
+            var rejected = new[] { GroupedShellTransfer.ShellStatus.Accepted, GroupedShellTransfer.ShellStatus.Rejected };
+            Assert.IsFalse(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 0, 1 }, rejected, srcMin, srcMax, rescues));
             // An unmatched shell reserves nothing; an earlier rescue does.
-            Assert.IsFalse(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 0, -1 }, srcMin, srcMax, rescues));
+            Assert.IsFalse(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 0, -1 }, written, srcMin, srcMax, rescues));
             rescues.Add((new Vector2(.65f, .15f), new Vector2(.8f, .3f)));
-            Assert.IsTrue(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 0, -1 }, srcMin, srcMax, rescues));
+            Assert.IsTrue(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 0, -1 }, written, srcMin, srcMax, rescues));
         }
 
         [TestCase(12f, 0f)]

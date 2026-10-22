@@ -3217,7 +3217,7 @@ namespace SashaRX.UnityMeshLab
                         if (smallShellRescue && !constrained && issues < int.MaxValue
                             && (CandidateHasOverlap(tShell, tgtTris, candidate)
                                 || RescueMeetsPlacedShells(UvBounds(candidate), tsi, result.targetShellToSourceShell,
-                                    srcUv2Min, srcUv2Max, allSourceRegions, force3DUsedRegions)))
+                                    result.targetShellStatus, srcUv2Min, srcUv2Max, allSourceRegions, force3DUsedRegions)))
                             issues = int.MaxValue;
 
                         // Prefer all-source on tie when both have issues:
@@ -4890,10 +4890,10 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>
         /// Whether a rescued shell's UV2 bounds meet the UV2 bounds of a source another target
-        /// shell is matched to, or one of the placed regions.
+        /// shell is matched to, or one of the placed regions. A rejected shell wrote no UV2.
         /// </summary>
         internal static bool RescueMeetsPlacedShells((Vector2 min, Vector2 max) bounds, int shell,
-            int[] shellSources, Vector2[] srcUv2Min, Vector2[] srcUv2Max,
+            int[] shellSources, ShellStatus[] shellStatus, Vector2[] srcUv2Min, Vector2[] srcUv2Max,
             params List<(Vector2 min, Vector2 max)>[] placed)
         {
             bool Meets(Vector2 min, Vector2 max) => bounds.min.x < max.x && bounds.max.x > min.x
@@ -4901,7 +4901,8 @@ namespace SashaRX.UnityMeshLab
             for (int t = 0; t < shellSources.Length; t++)
             {
                 int src = shellSources[t];
-                if (t != shell && src >= 0 && Meets(srcUv2Min[src], srcUv2Max[src])) return true;
+                if (t != shell && src >= 0 && shellStatus[t] != ShellStatus.Rejected
+                    && Meets(srcUv2Min[src], srcUv2Max[src])) return true;
             }
             foreach (var regions in placed)
                 if (regions.Exists(region => Meets(region.min, region.max))) return true;
