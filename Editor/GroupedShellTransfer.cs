@@ -2925,6 +2925,7 @@ namespace SashaRX.UnityMeshLab
                     int bestMergedIssues = int.MaxValue;
                     int bestMergedConsistencyFixes = 0;
                     bool bestWasConstrained = false;
+                    bool smallShellRescue = false;
 
                     // force3D: try all-source first (to find UV2 space in a different
                     // source region), fall back to constrained if overlap guard rejects.
@@ -2965,8 +2966,13 @@ namespace SashaRX.UnityMeshLab
                                 if (srcFacesChosen == null) break; // pass 0 was already all-source
                                 if (bestMergedIssues == 0) break;  // constrained was clean
                                 // Small/degenerate shells: stay constrained to avoid
-                                // wandering into wrong source's UV2 region
-                                if (tShell.faceIndices.Count <= 4) break;
+                                // wandering into wrong source's UV2 region, unless the
+                                // reject gate below would leave them at (0,0)
+                                if (tShell.faceIndices.Count <= 4)
+                                {
+                                    if (bestMergedIssues <= tShell.faceIndices.Count / 2) break;
+                                    smallShellRescue = true;
+                                }
                                 // Duplicate-source shells share their source with a
                                 // sibling target — all-source would find faces from
                                 // other shells and drag vertices to wrong UV2 regions.
@@ -3182,6 +3188,11 @@ namespace SashaRX.UnityMeshLab
                             }
                         }
 
+                        // A small shell's rescue must not fold over itself.
+                        if (smallShellRescue && !constrained && issues < int.MaxValue
+                            && CandidateHasOverlap(tShell, tgtTris, candidate))
+                            issues = int.MaxValue;
+
                         // Prefer all-source on tie when both have issues:
                         // UV0 flipped winding causes false positives in CountShellIssues,
                         // so equal non-zero scores mean all-source (wider search) is safer.
@@ -3310,7 +3321,10 @@ namespace SashaRX.UnityMeshLab
                     // source's UV2 region, creating long diagonal lines in UV2 space.
                     // If the majority of vertices are inside the correct region, re-project
                     // the outliers using the matched source's constrained UV0 lookup.
-                    if (bestMergedUv2 != null && bestMergedUv2.Count > 1 && chosenSrc >= 0)
+                    // A small shell's rescue left the matched source on purpose and was
+                    // judged as it is.
+                    bool smallShellRescued = smallShellRescue && !bestWasConstrained;
+                    if (bestMergedUv2 != null && bestMergedUv2.Count > 1 && chosenSrc >= 0 && !smallShellRescued)
                     {
                         float kUv2Margin = uv2OobMargin;
                         Vector2 sMin = srcUv2Min[chosenSrc];
@@ -3522,7 +3536,8 @@ namespace SashaRX.UnityMeshLab
                         shellsMerged++;
                         result.consistencyCorrected += bestMergedConsistencyFixes;
                         string mergedLabel = force3D ? "3D-primary"
-                            : (bestWasConstrained ? "src-constrained" : "all-source");
+                            : (bestWasConstrained ? "src-constrained"
+                                : smallShellRescued ? "small-shell rescue" : "all-source");
                         UvtLog.Info($"[GroupedTransfer]   t{tsi} merged({faceCount}f): " +
                             $"{mergedLabel} ({bestMergedIssues} issues)");
                     }

@@ -1,5 +1,39 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Small merged shells try all sources before rejection — 2026-10-22
+
+Model K's last LOD (LOD2, items 35 and 36 in PR #294) has 62 vertices left
+at (0,0): all in 11 rejected merged shells (4 of 2 faces, 6 of 3-4, one of
+10), 5.8% of the LOD's 3D area and 18.8% of one mesh's. None of their faces
+is degenerate in 3D or in the target's UV0; every one of their 33 issues is
+a UV2 area under 1e-10. The source picked for them by 3D distance holds none
+of their UV0 (0 of 11), and their vertices' UV0 lies on two or more source
+shells in 9 of 11. The constrained pass projects each vertex onto the
+nearest point of that source in UV0, which presses the corners onto one of
+its edges, and switches to 3D only beyond about 0.22 in UV0. Shells of up
+to four faces stop there ("stay constrained"); the unified overlap
+candidates run only for force3D shells.
+
+Offline, at the point of rejection: the all-source pass has no issues for
+all 11, and for the 6 that pass its claimed-source AABB check it has no
+overlap pairs with the written shells (10 pairs among their own faces).
+The unified overlap set has no candidate (full-xform fails its own range
+checks); full-xform alone is clean for 9 but places 97% of the vertices
+outside the picked source's box; the nearest facing source face in 3D
+collapses. Model A's 28 rejected LOD2 shells are a different case: 25 are
+single faces of 7.5e-7 of the LOD's area together, degenerate in UV0 in 28
+of 33 faces, and no candidate clears the 1e-10 UV2 area for 27 of them.
+
+Change: a merged shell of up to four faces whose constrained candidate
+would be rejected tries the all-source pass, with the claimed-source AABB
+check it already has; the candidate counts only when it does not fold over
+itself (exact triangle overlap inside the shell) and must still pass the
+reject gate. The coherence fix does not pull a rescued shell back onto the
+picked source. Everything else keeps the constrained result.
+
+Pending measurement: models K and A, Full Pipeline against main, and the
+furniture corpus with `--require-no-regressions`.
+
 ## Rejected: placing UV0-shifted LOD fragments by 3D — 2026-10-22
 
 Diagnostic only, nothing changed in the code. After the composite issue check
