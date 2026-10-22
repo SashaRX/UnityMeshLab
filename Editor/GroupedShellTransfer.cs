@@ -1435,6 +1435,8 @@ namespace SashaRX.UnityMeshLab
             var tgtExactAreaProtected = new bool[tgtShells.Count];
             var tgtIsMerged = new bool[tgtShells.Count];
             var tgtForce3DFallback = new bool[tgtShells.Count];
+            // Fragments sharing a source that folds over its own UV0: projected by 3D within it.
+            var tgtFoldShare = new bool[tgtShells.Count];
 
             // Precompute per-target-shell average face normal + total UV0 area
             var tgtAvgNormal = new Vector3[tgtShells.Count];
@@ -1770,6 +1772,28 @@ namespace SashaRX.UnityMeshLab
                         // so standard interpolation produces correct UV2 per fragment.
                         UvtLog.Info($"[GroupedTransfer] Dedup: src{srcKey} has " +
                             $"{claimants.Count} non-overlapping UV0 fragments — allowing shared source");
+                        continue;
+                    }
+
+                    // A source whose own UV0 folds over itself (cloth, a doubled surface)
+                    // has fragments that overlap in UV0 just as its layers do. Evicting
+                    // them sends them to unrelated sources as merged shells, which are
+                    // rejected and left collapsed. They keep the source and take the
+                    // merged path, constrained to it (a shared, overlapping source is a
+                    // duplicate source), projected by 3D onto the nearest same-facing
+                    // face of the whole source: UV0 cannot tell its folded layers apart,
+                    // and a partition does not separate every fold.
+                    if (srcPartitions[srcKey].hasOverlap && srcPartitions[srcKey].partitionCount > 1)
+                    {
+                        foreach (var c in claimants)
+                        {
+                            tgtIsMerged[c.tsi] = true;
+                            tgtFoldShare[c.tsi] = true;
+                            var foldTrace = trace?.ForShell(c.tsi);
+                            if (foldTrace != null) foldTrace.dedupDecision = "Kept shared source: it folds over its own UV0";
+                        }
+                        UvtLog.Info($"[GroupedTransfer] Dedup: src{srcKey} folds over its own UV0 — " +
+                            $"{claimants.Count} fragments overlapping in UV0 share it, projected by 3D");
                         continue;
                     }
 
@@ -2874,6 +2898,7 @@ namespace SashaRX.UnityMeshLab
                     // Exception: duplicate-source shells must stay constrained even in
                     // force3D mode — all-source would match the sibling target's faces.
                     bool force3D = tgtForce3DFallback[tsi];
+                    bool foldShare = tgtFoldShare[tsi];
                     bool isDupSrc = chosenSrc >= 0 && duplicateSources.Contains(chosenSrc);
                     if (isDupSrc) force3D = false; // force constrained-first for dup sources
 
@@ -3019,8 +3044,10 @@ namespace SashaRX.UnityMeshLab
                                 }
                             }
 
-                            // ── 3D projection — also partition-constrained ──
-                            var search3DFaces = (partFaceLists != null && vertexPid >= 0)
+                            // ── 3D projection — also partition-constrained, except for a fold share,
+                            // which takes the nearest same-facing face of any layer ──
+                            bool primary3D = force3D || (foldShare && constrained);
+                            var search3DFaces = (partFaceLists != null && vertexPid >= 0 && !(foldShare && constrained))
                                 ? partFaceLists[vertexPid] : defaultSearchFaces;
                             int search3DCount = constrained && search3DFaces != null
                                 ? search3DFaces.Count : srcTriCount;
@@ -3044,7 +3071,7 @@ namespace SashaRX.UnityMeshLab
                                 ? triUv2A[bestF3D] * bestU_3d + triUv2B[bestF3D] * bestV_3d + triUv2C[bestF3D] * bestW_3d
                                 : Vector2.zero;
 
-                            if (force3D && bestF3D >= 0)
+                            if (primary3D && bestF3D >= 0)
                             {
                                 // 3D-primary: always prefer 3D projection to avoid
                                 // same-source UV2 overlap with dedup siblings.
