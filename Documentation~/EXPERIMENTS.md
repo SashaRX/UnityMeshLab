@@ -41,8 +41,17 @@ classification and the next LOD's hints read it). Everything else keeps the
 constrained result. The 6 shells of item 36 were checked against the
 claimed set only, so the stricter check may keep fewer.
 
-Pending measurement: models K and A, Full Pipeline against main, and the
-furniture corpus with `--require-no-regressions`.
+Measured (item 37 in PR #294). The new fixture fails on main (the quad is
+rejected) and passes with the change. Model K, Full Pipeline against main:
+of the 10 shells of up to four faces, 4 are rescued (all Accepted, each now
+recording another source), 2 are refused for folding over themselves and 4
+by the claimed-source AABB check; the 10-face shell stays rejected. LOD2
+unwritten vertices 62 → 44, rejected shells 11 → 7, collapsed faces 58 → 48,
+degenerate faces 60 → 50, UV quality 35 → 38 (stretch 3 → 12); overlap
+pairs (1), stretched faces and worst anisotropy unchanged, and the rescued
+shells overlap nothing. LOD0 and LOD1 unchanged. Model A unchanged (no
+rescue). Furniture corpus against main's capture: the gate passes, exit 0,
+all 256 pairs the same in every profile; no corpus shell is rescued.
 
 ## Rejected: placing UV0-shifted LOD fragments by 3D — 2026-10-22
 
