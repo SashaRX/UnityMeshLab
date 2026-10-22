@@ -3014,12 +3014,14 @@ namespace SashaRX.UnityMeshLab
                                 continue;
                             }
 
-                            // Per-vertex partition selection based on vertex normal
+                            // Per-vertex partition: that of the nearest source face facing the vertex
                             TriangleBvh2D vertexBvh = defaultUv0Bvh;
                             int vertexPid = -1;
                             if (hasPartitions)
                             {
-                                vertexPid = SpatialPartitioner.MatchPartition(srcPR, tPos, tNrm);
+                                vertexPid = SpatialPartitioner.MatchVertexPartition(srcPR,
+                                    shellBvh3D[chosenSrc], shellBvh3DFaceMap[chosenSrc], shellBvh3DFaceNormals[chosenSrc],
+                                    kBackfaceDot, tPos, tNrm);
                                 if (vertexPid >= 0 && partitionBvh[chosenSrc][vertexPid] != null)
                                     vertexBvh = partitionBvh[chosenSrc][vertexPid];
                             }
@@ -5054,6 +5056,18 @@ namespace SashaRX.UnityMeshLab
             bool hasPart = srcPR != null && srcPR.hasOverlap && srcPR.partitionCount > 1
                 && perPartBvh != null;
 
+            // Each vertex's partition, shared by the partition-aware candidates: that of the
+            // nearest source face facing it.
+            var vertexPartition = new Dictionary<int, int>();
+            if (hasPart)
+                foreach (int vi in tShell.vertexIndices)
+                {
+                    if (vi >= tVerts.Length) continue;
+                    Vector3 tNrm = (tNormals != null && vi < tNormals.Length) ? tNormals[vi] : Vector3.up;
+                    vertexPartition[vi] = SpatialPartitioner.MatchVertexPartition(srcPR,
+                        srcBvh3D, faceMap3D, faceNormals3D, 0.3f, tVerts[vi], tNrm);
+                }
+
             // ── Candidate 1: Ray/nearest with partition filtering ──
             if (srcBvh3D != null)
             {
@@ -5080,9 +5094,7 @@ namespace SashaRX.UnityMeshLab
                     Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
                         ? tNormals[vi] : Vector3.up;
 
-                    int vertexPid = -1;
-                    if (hasPart)
-                        vertexPid = SpatialPartitioner.MatchPartition(srcPR, tPos, tNrm);
+                    int vertexPid = hasPart ? vertexPartition[vi] : -1;
 
                     int hitFace = -1;
                     Vector3 hitBary = Vector3.zero;
@@ -5176,11 +5188,7 @@ namespace SashaRX.UnityMeshLab
                 foreach (int vi in tShell.vertexIndices)
                 {
                     if (vi >= tUv0.Length || vi >= tVerts.Length) continue;
-                    Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
-                        ? tNormals[vi] : Vector3.up;
-                    Vector3 tPos = tVerts[vi];
-
-                    int pid = SpatialPartitioner.MatchPartition(srcPR, tPos, tNrm);
+                    int pid = vertexPartition[vi];
                     if (pid < 0 || perPartBvh[pid] == null) continue;
 
                     var hit = perPartBvh[pid].FindNearest(tUv0[vi]);
@@ -5209,11 +5217,7 @@ namespace SashaRX.UnityMeshLab
                 foreach (int vi in tShell.vertexIndices)
                 {
                     if (vi >= tUv0.Length || vi >= tVerts.Length) continue;
-                    Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
-                        ? tNormals[vi] : Vector3.up;
-                    Vector3 tPos = tVerts[vi];
-
-                    int pid = SpatialPartitioner.MatchPartition(srcPR, tPos, tNrm);
+                    int pid = vertexPartition[vi];
                     if (pid < 0 || !perPartXform[pid].valid) continue;
 
                     severalPids |= onePid >= 0 && pid != onePid;

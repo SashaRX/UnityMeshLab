@@ -207,6 +207,29 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
+        /// The source partition a target vertex lies on: that of the nearest source face facing
+        /// it (dot ≥ <paramref name="normalDotMin"/>) in <paramref name="shellBvh"/>, whose local
+        /// faces <paramref name="faceMap"/> maps to global ones. A partition's average normal says
+        /// little about a curved surface (a draped cloth faces every way) and its centroid little
+        /// about a large one; <see cref="MatchPartition"/> decides only when no face qualifies.
+        /// </summary>
+        internal static int MatchVertexPartition(ShellPartitionResult srcPartition,
+            TriangleBvh shellBvh, int[] faceMap, Vector3[] faceNormals, float normalDotMin,
+            Vector3 position, Vector3 normal)
+        {
+            if (srcPartition == null || srcPartition.partitionCount <= 1)
+                return -1;
+            if (shellBvh != null && faceMap != null && faceNormals != null)
+            {
+                var hit = shellBvh.FindNearestNormalFiltered(position, normal, faceNormals, normalDotMin);
+                if (hit.triangleIndex >= 0 && hit.triangleIndex < faceMap.Length
+                    && srcPartition.facePartitionId.TryGetValue(faceMap[hit.triangleIndex], out int pid))
+                    return pid;
+            }
+            return MatchPartition(srcPartition, position, normal);
+        }
+
+        /// <summary>
         /// Collect global face indices belonging to a specific partition.
         /// </summary>
         public static int[] GetPartitionFaces(

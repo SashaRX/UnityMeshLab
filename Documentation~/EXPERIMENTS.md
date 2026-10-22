@@ -22,8 +22,70 @@ similarity before counting. A fragment split between partitions' transforms
 is counted as before: the faces between them are bent by the transform
 itself, so their defects are not the UV0's (raised by the Codex review).
 
-Measurement pending: model A and the furniture corpus, together with the
-nearest-face partition match.
+Measured with the nearest-face partition match (item 28 in PR #294). The
+fragment's own UV0 has 5 issues unscaled and 8 at its partition transform's
+scale (area × 0.536), the transform's own count: it takes the transform
+again, with 8 issues and 121 overlap pairs (238 on main, 1101 with the match
+alone), none inside itself. Model A, Full Pipeline against main: LOD2 overlap
+pairs 4544 → 3077, the same after the first pass (4803 → 3077); LOD1
+1257 → 930, from the match. Collapsed faces 61 → 59, unwritten LOD2 vertices
+99 → 92, UV quality unchanged (39 and 35).
+
+Furniture corpus: against main's capture the gate fails as for the match
+alone (default 9 better, 2 tradeoff, 3 worse; same pairs and values).
+Against the match alone, this change moves one record of 768: a LOD2 in the
+no-reparameterisation profile, overlap pairs 73 → 75 at the same overlap
+area (a tradeoff, so the gate fails). In the corpus audit model A's LOD2
+stays at 3578 either way; the audit and the Full Pipeline measure it
+differently.
+
+## A vertex takes the layer of the nearest facing source face — 2026-10-22
+
+Follow-up to the own-UV0 rule below. Model A's LOD2 keeps 4803 overlap pairs
+after the first pass (4544 after Full Pipeline). The trace (item 26 in
+PR #294):
+
+- 42% of the pairs overlap in the target's UV0 already;
+- each folded source has two partitions, a large one and a tiny one: 2010 +
+  10 faces and 1704 + 12, split by normal, the small ones facing 86° and 147°
+  away. Their UV0 → UV2 similarity fits are exact (RMS below 1e-4 of the
+  partition's UV2 diagonal);
+- yet the tiny partitions take 44–46% of the vertices of the fragments
+  placed by the partition transform. `MatchPartition` compares a vertex
+  normal with each partition's average normal, and a draped cloth faces every
+  way: wherever its normal is nearer the tiny layer's, the vertex goes there;
+- 107 of the 832 fragments placed by the transform have vertices on both
+  partitions (48% of the faces) and take part in 54% of the pairs not in UV0;
+  of the pairs between two fragments on one partition each, 64% join
+  fragments on different partitions of one source.
+
+The partition-aware candidates of the overlap group and the merged path now
+give each vertex the partition of the nearest source face facing it
+(dot ≥ 0.3, the threshold of the 3D searches there). The average normal and
+centroid still decide when no face qualifies. Unlike the centroid matching
+rejected in PR #47, the choice rests on the partitions' faces, not on one
+point per partition.
+
+Measured (item 27 in PR #294). The fix does what it aims at: the tiny
+partitions now take 1.0% of the transform's vertices (45.3% before), 18
+fragments are split across two partitions (107), and the pairs that overlap
+in UV0 stay 43%. Model A, Full Pipeline against main: LOD1 overlap pairs
+1257 → 930 (below the 1095 of before the dedup change), 1330 → 995 after the
+first pass. LOD2 goes 4544 → 4781 (first pass 4803 → 4781, and the seam trial
+no longer improves on it): its largest fragment (253 faces), now wholly on
+one partition, takes ray + partition with 4 issues over the transform's 8 and
+has 1101 overlap pairs instead of 238; without it LOD2 falls 4565 → 3680.
+The transform's extra issues most likely come from the absolute zero-area
+test at the transform's smaller scale; PR #336 counts the fragment's own UV0
+at that scale. Collapsed faces 19 → 18 and 61 → 59, unwritten LOD2
+vertices 99 → 92.
+
+Furniture corpus against main's capture: the gate fails, exit 1. 14 pairs
+change; default has 9 better, 2 tradeoff and 3 worse. Better: model A's
+LOD2 and LOD1 in the corpus (overlap pairs 5168 → 3578, 1345 → 1024), one
+LOD2 202 → 18, and a LOD1 pair 61 → 0 (the count of pair J, which the
+dedup change had raised from 3). Worse: two pairs by
+under 0.5% of overlap area, one by 3 pairs (12 → 15).
 
 ## Fold-share transform keeps the fragment's own UV0 defects — 2026-10-22
 
