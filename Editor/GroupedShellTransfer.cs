@@ -1076,6 +1076,9 @@ namespace SashaRX.UnityMeshLab
             var result = new TransferResult { matchTrace = trace };
             float uv2OobMargin = ComputeUv2PixelMargin(sourceAtlasWidth, sourceAtlasHeight, 1.25f, 0.005f);
             float uv2BoundsTolerance = ComputeUv2PixelMargin(sourceAtlasWidth, sourceAtlasHeight, 2.5f, 0.01f);
+            // The largest RMS residual of a source's UV0 → UV2 similarity for which its UV2 is
+            // still that similarity of its UV0 rather than a reparameterization of it
+            float similarityResidualTolerance = ComputeUv2PixelMargin(sourceAtlasWidth, sourceAtlasHeight, .5f, .001f);
             if (sourceAtlasWidth > 0 || sourceAtlasHeight > 0)
             {
                 UvtLog.Verbose(UvtLog.Category.Match,
@@ -3797,15 +3800,18 @@ namespace SashaRX.UnityMeshLab
 
                     // Clamping presses the similarity's outside vertices onto the source's UV2
                     // box, as interpolation presses them onto its UV0 boundary, and both collapse
-                    // faces there. The unclamped similarity is taken when it has fewer issues,
-                    // stays in the atlas, does not fold, its bounds meet no other source (as
-                    // checked above) nor a shell placed outside the sources, and its faces
-                    // overlap no other mesh of the source atlas.
+                    // faces there. The unclamped similarity is taken when the source's UV2 is
+                    // that similarity of its UV0 within half a texel (a chart reparameterized
+                    // in UV2, such as an ARAP-relaxed stretched chart, is not, and its UV0
+                    // would bring the stretch back), it has fewer issues, stays in the atlas,
+                    // does not fold, its bounds meet no other source (as checked above) nor a
+                    // shell placed outside the sources, and its faces overlap no other mesh of
+                    // the source atlas.
                     var clampedTransform = uv2_transform;
                     int clampedIssues = issuesTransform;
                     bool unclampedSimilarity = false;
-                    if (uv2_transformUnclamped != null && issuesTransformUnclamped < issuesInterp
-                        && issuesTransformUnclamped < issuesTransform
+                    if (uv2_transformUnclamped != null && xf.residual <= similarityResidualTolerance
+                        && issuesTransformUnclamped < issuesInterp && issuesTransformUnclamped < issuesTransform
                         && InUnitSquare(uv2_transformUnclamped, uv2BoundsTolerance)
                         && !MeetsRegions(UvBounds(uv2_transformUnclamped), outsideSourceRegions, allSourceRegions, force3DUsedRegions)
                         && !CandidateHasOverlap(tShell, tgtTris, uv2_transformUnclamped)
@@ -3926,16 +3932,10 @@ namespace SashaRX.UnityMeshLab
                 int tsi = kv.Key;
                 var fallback = kv.Value;
                 var tShell = tgtShells[tsi];
-                var others = new List<Vector2>();
-                for (int f = 0; f < result.faceToTargetShell.Length; f++)
-                {
-                    if (result.faceToTargetShell[f] == tsi) continue;
-                    for (int corner = 0; corner < 3; corner++) others.Add(result.uv2[tgtTris[f * 3 + corner]]);
-                }
-                var faces = others.ToArray();
-                int pairs = AtlasNeighbourPairs(tShell, tgtTris, ShellCandidate(tShell, result.uv2), faces);
+                int pairs = OtherShellPairs(tShell, tsi, tgtTris, result.uv2, result.faceToTargetShell,
+                    ShellCandidate(tShell, result.uv2));
                 if (pairs == 0) continue;
-                int fallbackPairs = AtlasNeighbourPairs(tShell, tgtTris, fallback.uv2, faces);
+                int fallbackPairs = OtherShellPairs(tShell, tsi, tgtTris, result.uv2, result.faceToTargetShell, fallback.uv2);
                 if (fallbackPairs >= pairs) continue;
                 foreach (var point in fallback.uv2) result.uv2[point.Key] = point.Value;
                 result.targetShellIssues[tsi] = fallback.issues;
@@ -5027,6 +5027,23 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         internal static bool MeetsAtlasNeighbours(UvShell shell, int[] triangles, Dictionary<int, Vector2> candidate,
             Vector2[] neighbours) => AtlasNeighbourPairs(shell, triangles, candidate, neighbours) > 0;
+
+        /// <summary>
+        /// The overlapping pairs between a shell laid out as <paramref name="layout"/> and the
+        /// faces of the mesh's other shells as <paramref name="uv2"/> places them,
+        /// int.MaxValue when the scan does not finish.
+        /// </summary>
+        internal static int OtherShellPairs(UvShell shell, int shellIndex, int[] triangles, Vector2[] uv2,
+            int[] faceToShell, Dictionary<int, Vector2> layout)
+        {
+            var others = new List<Vector2>();
+            for (int f = 0; f < faceToShell.Length; f++)
+            {
+                if (faceToShell[f] == shellIndex) continue;
+                for (int corner = 0; corner < 3; corner++) others.Add(uv2[triangles[f * 3 + corner]]);
+            }
+            return AtlasNeighbourPairs(shell, triangles, layout, others.ToArray());
+        }
 
         /// <summary>
         /// The overlapping pairs between a candidate's faces and the given faces (corners three

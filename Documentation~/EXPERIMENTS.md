@@ -66,7 +66,25 @@ shells interpolated into the same source chart are seen by neither the
 choice nor the placed regions: once every shell is placed, a shell on the
 unclamped similarity that overlaps the others in more face pairs than its
 fallback (the clamped similarity or interpolation it had without it) takes
-the fallback. Pending measurement.
+the fallback.
+
+Measured at 186dfa7 (item 41): both kinds of new overlap are gone. Model
+K's LOD2 equals main in UV quality, collapsed faces and overlap pairs; 6
+shells took the similarity (Poor 17 → 11, stretched faces 57 → 51), 4 of
+the 8 interpolated shells among them, and the other mesh check sent 3 back.
+Model A's LOD2: UV quality 37 → 38, collapsed 59 → 45, overlap pairs equal
+to main. Corpus: exit code 1, 0 worse, 9 tradeoff, 59 better; overlap
+pairs rose in no row, but stretched faces rose in 6 and worst anisotropy
+in 4. The stretch comes with the reparameterizing profiles: stretched
+faces of the changed rows went 5238 → 5467 (default) and 5002 → 5208
+(oversample-8), but 7309 → 7290 without reparameterization. The repack
+relaxes a stretched chart's UV2 (ARAP), so it is no similarity of its UV0,
+and the similarity of the target's UV0 brings back the stretch the
+relaxation removed.
+
+Follow-up: the unclamped similarity is taken only where the source's
+UV0 → UV2 similarity fits its UV2 within half a texel (RMS residual), so
+only on charts the repack did not reparameterize. Pending measurement.
 
 ## Small merged shells try all sources before rejection — 2026-10-22
 
