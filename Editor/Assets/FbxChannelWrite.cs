@@ -928,7 +928,25 @@ namespace SashaRX.UnityMeshLab
                 importer.SaveAndReimport();
 
                 var tagged = new Dictionary<string, Tagged>(StringComparer.Ordinal);
-                ReadImportedTags(tempPath, tagChannels, cornerCounts, takenSets, importedNames, tagged);
+                if (importer.meshCompression == ModelImporterMeshCompression.Off)
+                {
+                    ReadImportedTags(tempPath, tagChannels, cornerCounts, takenSets, importedNames, tagged);
+                    return tagged;
+                }
+                // Mesh Compression quantizes the tag channel too: a large mesh's corner indices
+                // do not survive it. They are read from an uncompressed import of the same copy,
+                // whose vertices are the compressed import's in the same order; positions and
+                // channels stay the compressed import's, which the working meshes share.
+                var compressed = AssetDatabase.LoadAllAssetsAtPath(tempPath).OfType<Mesh>()
+                    .Select(m => { var copy = Object.Instantiate(m); copy.name = m.name; return copy; }).ToList();
+                try
+                {
+                    importer = (ModelImporter)AssetImporter.GetAtPath(tempPath);
+                    importer.meshCompression = ModelImporterMeshCompression.Off;
+                    importer.SaveAndReimport();
+                    ReadImportedTags(tempPath, tagChannels, cornerCounts, takenSets, importedNames, tagged, compressed);
+                }
+                finally { foreach (var copy in compressed) Object.DestroyImmediate(copy); }
                 return tagged;
             }
             finally
@@ -958,13 +976,26 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        // With vertexSources (the compressed import's meshes, in import order) the tags come from
+        // the meshes at path and everything else from the source at the same index; a source
+        // whose vertices or faces differ is read on its own, as without them.
         static void ReadImportedTags(string path, Dictionary<int, int> tagChannels, Dictionary<int, int> cornerCounts, Dictionary<int, double[]> takenSets,
-            HashSet<string> importedNames, Dictionary<string, Tagged> tagged)
+            HashSet<string> importedNames, Dictionary<string, Tagged> tagged, List<Mesh> vertexSources = null)
         {
-            foreach (var mesh in AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>())
+            var meshes = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().ToList();
+            bool paired = vertexSources != null && vertexSources.Count == meshes.Count;
+            for (int i = 0; i < meshes.Count; i++)
             {
+                var mesh = meshes[i];
                 importedNames.Add(mesh.name);
-                var tag = ReadTags(mesh, tagChannels, cornerCounts);
+                Tagged tag;
+                if (vertexSources == null) tag = ReadTags(mesh, tagChannels, cornerCounts);
+                else if (paired && SameFaces(mesh, vertexSources[i])) tag = ReadTags(mesh, tagChannels, cornerCounts, vertexSources[i]);
+                else
+                {
+                    UvtLog.Verbose($"[FBX Export] '{mesh.name}': its uncompressed import differs from the compressed one; its corner tags are read from the compressed import.");
+                    tag = i < vertexSources.Count && vertexSources[i].name == mesh.name ? ReadTags(vertexSources[i], tagChannels, cornerCounts) : null;
+                }
                 if (tag == null) continue;
                 if (tagged.TryGetValue(mesh.name, out var first)) { first.ambiguous = true; continue; }
                 if (takenSets.TryGetValue(tag.ordinal, out var values)) tag.uvs[tagChannels[tag.ordinal]] = PerCornerUvs(values, tag.cornerPositions.Length / 3);
@@ -972,7 +1003,17 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static Tagged ReadTags(Mesh mesh, Dictionary<int, int> tagChannels, Dictionary<int, int> cornerCounts)
+        static bool SameFaces(Mesh a, Mesh b)
+        {
+            if (a.name != b.name || a.vertexCount != b.vertexCount || a.subMeshCount != b.subMeshCount) return false;
+            for (int s = 0; s < a.subMeshCount; s++)
+                if (a.GetTopology(s) != b.GetTopology(s) || !a.GetIndices(s).SequenceEqual(b.GetIndices(s))) return false;
+            return true;
+        }
+
+        // The tag channel is read from mesh; the vertices, faces and other channels from
+        // vertexSource when given (the same vertices, in the same order, see ReadImportedTags).
+        static Tagged ReadTags(Mesh mesh, Dictionary<int, int> tagChannels, Dictionary<int, int> cornerCounts, Mesh vertexSource = null)
         {
             var list = new List<Vector2>();
             for (int ch = 0; ch < 8; ch++)
@@ -983,7 +1024,7 @@ namespace SashaRX.UnityMeshLab
                 if (ordinal < 0 || !tagChannels.TryGetValue(ordinal, out int expected) || expected != ch) continue;
                 int count = cornerCounts[ordinal];
                 if (list.Any(t => TagCorner(t) >= count)) continue;
-                return BuildTagged(mesh, ch, ordinal, list, count);
+                return BuildTagged(vertexSource ?? mesh, ch, ordinal, list, count);
             }
             return null;
         }
