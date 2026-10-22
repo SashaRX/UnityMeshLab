@@ -2700,6 +2700,27 @@ namespace SashaRX.UnityMeshLab
                             }
                         }
 
+                        // ── Composite issue check ──
+                        // A shell that is not fragment-merged has a candidate from the best source
+                        // that covers it whole. Faces voted to another source take that source's
+                        // UV2 while their neighbours keep the best one's, so the vote boundary can
+                        // tear the shell. A composite with more issues than the best source alone
+                        // is that tear, not a closer fit: keep the single source.
+                        bool compositeWorse = false;
+                        if (!compositeSpatiallyBroken && !isFragMergedShell && compositeUsedSources.Count > 1)
+                        {
+                            int compositeIssues = CountShellIssues(tShell.faceIndices, tgtTris, tVerts, compositeUv2);
+                            if (compositeIssues > bestOverlapIssues)
+                            {
+                                compositeWorse = true;
+                                UvtLog.Info($"[GroupedTransfer]   t{tsi}: composite has {compositeIssues} issues, " +
+                                    $"src{bestOverlapSrc} alone {bestOverlapIssues}; keeping the single source");
+                                compositeUv2 = bestOverlapUv2;
+                                compositeUsedSources.Clear();
+                                compositeUsedSources.Add(bestOverlapSrc);
+                            }
+                        }
+
                         // Determine primary source (most faces contributed) for hint/log
                         int primarySrc = bestOverlapSrc;
 
@@ -2711,7 +2732,8 @@ namespace SashaRX.UnityMeshLab
                             ? $", composite={compositeUsedSources.Count}src/{compositeFaces}f"
                             : "";
                         string fragInfo = isFragMergedShell ? ", fragMerged" : "";
-                        string coherenceInfo = compositeSpatiallyBroken ? ", spatial-fix" : "";
+                        string coherenceInfo = compositeSpatiallyBroken ? ", spatial-fix"
+                            : compositeWorse ? ", single-source" : "";
                         // ── Per-vertex outlier correction ──
                         // After composite UV2 is built, check each vertex against the
                         // best source's UV2 AABB. Vertices far outside are re-projected
