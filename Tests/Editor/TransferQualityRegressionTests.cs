@@ -908,6 +908,25 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(0, GroupedShellTransfer.CountShellIssues(faces, triangle, positions, uv));
         }
 
+        [Test]
+        public void OwnUv0DefectsAreCountedAtTheTransformsScale()
+        {
+            // A large face and a tiny one (UV area 1e-9): the zero-area test (1e-10) passes it in
+            // UV0, fails it once a similarity shrinks the layout to a fifth.
+            var triangles = new[] { 0, 1, 2, 3, 4, 5 }; var faces = new List<int> { 0, 1 };
+            var positions = new[] { Vector3.zero, Vector3.right, Vector3.up,
+                Vector3.zero, Vector3.right * 1e-4f, Vector3.up * 1e-4f };
+            var uv0 = new Dictionary<int, Vector2> { [0] = Vector2.zero, [1] = Vector2.right, [2] = Vector2.up,
+                [3] = new Vector2(.5f, .5f), [4] = new Vector2(.5f + 4.47e-5f, .5f), [5] = new Vector2(.5f, .5f + 4.47e-5f) };
+            var shrunk = uv0.ToDictionary(kv => kv.Key, kv => kv.Value * .2f + new Vector2(.3f, .3f));
+            Assert.AreEqual(0, GroupedShellTransfer.CountShellIssues(faces, triangles, positions, uv0));
+            Assert.AreEqual(1, GroupedShellTransfer.CountShellIssues(faces, triangles, positions, shrunk));
+            Assert.AreEqual(1, GroupedShellTransfer.CountShellIssues(faces, triangles, positions,
+                GroupedShellTransfer.ScaledToArea(uv0, shrunk, faces, triangles)));
+            // Nothing in common to compare: the layout stays as it is.
+            Assert.AreSame(uv0, GroupedShellTransfer.ScaledToArea(uv0, new Dictionary<int, Vector2>(), faces, triangles));
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void ReparameterizationDoesNotRestoreZeroAreaAfterRepairingCollapsedUv0(bool singleFace)

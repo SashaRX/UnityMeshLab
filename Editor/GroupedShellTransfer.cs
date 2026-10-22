@@ -2421,14 +2421,13 @@ namespace SashaRX.UnityMeshLab
                     // Collect valid UV2 candidates from all group members.
                     // Each source produces UV2 for the target vertices via its own UV0→UV2 mapping.
                     var validCandidates = new Dictionary<int, OverlapCandidate>();
-                    // A fold-share fragment's own UV0 defects: a transform keeps them, no more.
-                    int ownUv0Issues = 0;
+                    // A fold-share fragment's own UV0: a transform keeps its defects, no more.
+                    Dictionary<int, Vector2> ownUv0 = null;
                     if (tgtFoldShare[tsi])
                     {
-                        var ownUv0 = new Dictionary<int, Vector2>();
+                        ownUv0 = new Dictionary<int, Vector2>();
                         foreach (int vi in tShell.vertexIndices)
                             if (vi < tUv0.Length) ownUv0[vi] = tUv0[vi];
-                        ownUv0Issues = CountShellIssues(tShell.faceIndices, tgtTris, tVerts, ownUv0);
                     }
 
                     foreach (int si in groupMembers)
@@ -2449,7 +2448,7 @@ namespace SashaRX.UnityMeshLab
                             kRayMaxDist, uv2BoundsTolerance);
 
                         var best = SelectBestCandidate(allCandidates, tShell, tgtTris, tVerts, sourceAtlasRecoveryAllowed,
-                            preferTransform: tgtFoldShare[tsi], ownUv0Issues: ownUv0Issues);
+                            preferTransform: tgtFoldShare[tsi], ownUv0: ownUv0);
                         if (best.HasValue)
                         {
                             validCandidates[si] = best.Value;
@@ -4618,6 +4617,30 @@ namespace SashaRX.UnityMeshLab
         static double UvArea(Vector2 a, Vector2 b, Vector2 c)
             => ((double)b.x - a.x) * ((double)c.y - a.y) - ((double)b.y - a.y) * ((double)c.x - a.x);
 
+        /// <summary>
+        /// <paramref name="uv"/> scaled to the area <paramref name="like"/> gives the faces both cover;
+        /// unscaled when either has none.
+        /// </summary>
+        internal static Dictionary<int, Vector2> ScaledToArea(Dictionary<int, Vector2> uv,
+            Dictionary<int, Vector2> like, List<int> faceIndices, int[] tris)
+        {
+            double area = 0, likeArea = 0;
+            foreach (int f in faceIndices)
+            {
+                int i0 = tris[f * 3], i1 = tris[f * 3 + 1], i2 = tris[f * 3 + 2];
+                if (!uv.TryGetValue(i0, out var a) || !uv.TryGetValue(i1, out var b) || !uv.TryGetValue(i2, out var c)
+                    || !like.TryGetValue(i0, out var la) || !like.TryGetValue(i1, out var lb) || !like.TryGetValue(i2, out var lc))
+                    continue;
+                area += System.Math.Abs(UvArea(a, b, c));
+                likeArea += System.Math.Abs(UvArea(la, lb, lc));
+            }
+            if (!(area > 0 && likeArea > 0)) return uv;
+            float k = (float)System.Math.Sqrt(likeArea / area);
+            var scaled = new Dictionary<int, Vector2>(uv.Count);
+            foreach (var kv in uv) scaled[kv.Key] = kv.Value * k;
+            return scaled;
+        }
+
         static Dictionary<(Vector3 position, Vector2 uv0), Vector2> ExactVertexUvs(
             UvShell shell, Vector3[] positions, Vector2[] uv0, Vector2[] uv2)
         {
@@ -5352,8 +5375,8 @@ namespace SashaRX.UnityMeshLab
         /// Ties broken by coverage (more vertices covered wins).
         /// Xform candidates only win on strictly fewer issues (not equal), unless
         /// <paramref name="preferTransform"/>: a fragment kept on a source that folds over its
-        /// UV0 takes a transform on a tie, or when its issues are no more than its own UV0's
-        /// (<paramref name="ownUv0Issues"/>) and stay below half of the fragment's faces.
+        /// UV0 takes a transform on a tie, or when its issues are no more than those of its own UV0
+        /// (<paramref name="ownUv0"/>) at the transform's scale and stay below half of its faces.
         /// The transform keeps the fragment's own UV0 layout, defects included; interpolation and
         /// strip parameterisation over the folded source mend those faces but lay its fragments
         /// onto one another, and the issue count does not see overlaps.
@@ -5361,7 +5384,7 @@ namespace SashaRX.UnityMeshLab
         static OverlapCandidate? SelectBestCandidate(
             List<OverlapCandidate> candidates,
             UvShell shell, int[] tgtTris, Vector3[] positions, bool allowQualityRecovery,
-            bool preferTransform = false, int ownUv0Issues = 0)
+            bool preferTransform = false, Dictionary<int, Vector2> ownUv0 = null)
         {
             if (candidates == null || candidates.Count == 0) return null;
 
@@ -5404,16 +5427,20 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
-            if (preferTransform)
+            if (preferTransform && ownUv0 != null)
             {
                 // No worse than the best candidate is settled above; here a transform may also
-                // carry the fragment's own UV0 defects, no more.
+                // carry the fragment's own UV0 defects, no more. They are counted at the
+                // transform's scale: the zero-area test is absolute, so a transform that shrinks
+                // the UV0 turns its smallest faces into defects of its own making.
                 int transformIdx = -1;
                 for (int i = 0; i < candidates.Count; i++)
                 {
                     var c = candidates[i];
                     if (c.method != "full-xform" && c.method != "partition-xform") continue;
-                    if (c.issues > ownUv0Issues || c.issues * 2 >= shell.faceIndices.Count) continue;
+                    if (c.issues * 2 >= shell.faceIndices.Count) continue;
+                    if (c.issues > CountShellIssues(shell.faceIndices, tgtTris, positions,
+                            ScaledToArea(ownUv0, c.uv2, shell.faceIndices, tgtTris))) continue;
                     var t = transformIdx >= 0 ? candidates[transformIdx] : c;
                     if (transformIdx < 0 || c.issues < t.issues || (c.issues == t.issues && c.coverage > t.coverage))
                         transformIdx = i;
