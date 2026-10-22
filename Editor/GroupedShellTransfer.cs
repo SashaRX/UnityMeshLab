@@ -2975,6 +2975,16 @@ namespace SashaRX.UnityMeshLab
                             }
                         }
 
+                        // A constrained pass keeps a retained source vertex's UV2, whichever layer of a
+                        // folded source the partition match would pick; an all-source pass looks elsewhere on purpose.
+                        Dictionary<(Vector3 position, Vector2 uv0), Vector2> exactVertices = null;
+                        if (constrained && chosenSrc >= 0)
+                        {
+                            if (exactSourceVertices[chosenSrc] == null)
+                                exactSourceVertices[chosenSrc] = ExactVertexUvs(srcShells[chosenSrc], srcVerts, srcUv0, srcUv2);
+                            exactVertices = exactSourceVertices[chosenSrc];
+                        }
+
                         foreach (int vi in tShell.vertexIndices)
                         {
                             if (vi >= tUv0.Length || vi >= tVerts.Length) continue;
@@ -2982,6 +2992,11 @@ namespace SashaRX.UnityMeshLab
                             Vector3 tPos = tVerts[vi];
                             Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
                                 ? tNormals[vi] : Vector3.up;
+                            if (exactVertices != null && exactVertices.TryGetValue((tPos, tUv), out var exactUv))
+                            {
+                                candidate[vi] = exactUv;
+                                continue;
+                            }
 
                             // Per-vertex partition selection based on vertex normal
                             TriangleBvh2D vertexBvh = defaultUv0Bvh;
