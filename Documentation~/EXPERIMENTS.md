@@ -23,7 +23,14 @@ has its issues counted, and when they are more than the best source's alone
 the shell keeps that source. Fragment-merged shells, whose single sources
 each cover only a part, keep the composite as before.
 
-Measurement pending: model A and the furniture corpus against main.
+Measured (item 31 in PR #294). Model A, Full Pipeline against main: one
+shell takes the single source, the 34-face one; its issues fall 11 → 0
+(status Poor → Degraded) and its overlap pairs 348 → 54, none inside it.
+LOD2 overlap pairs 3077 → 2783, the same after the first pass; the other
+2729 pairs do not change. LOD2 UV quality 35 → 37; collapsed faces,
+degenerate faces and unwritten vertices unchanged; LOD0 and LOD1 unchanged.
+Furniture corpus against main's capture: the gate passes, exit 0, all 256
+pairs the same in every profile; no corpus shell takes the single source.
 
 ## Own UV0 defects are counted at the transform's scale — 2026-10-22
 
@@ -62,8 +69,11 @@ alone (default 9 better, 2 tradeoff, 3 worse; same pairs and values).
 Against the match alone, this change moves one record of 768: a LOD2 in the
 no-reparameterisation profile, overlap pairs 73 → 75 at the same overlap
 area (a tradeoff, so the gate fails). In the corpus audit model A's LOD2
-stays at 3578 either way; the audit and the Full Pipeline measure it
-differently.
+stays at 3578 either way (item 30.4): the audit packs the source's UV2
+itself (a 2452-texel atlas against the Full Pipeline's 1163), where the
+large fragment's partition transform grows the UV0 (area × 1.532) instead
+of shrinking it, and the fragment's own UV0 has 4 issues at that scale; the
+transform with 4 issues passes the rule with or without this change.
 
 ## A vertex takes the layer of the nearest facing source face — 2026-10-22
 
