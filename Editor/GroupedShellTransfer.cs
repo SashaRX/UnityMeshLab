@@ -2439,7 +2439,8 @@ namespace SashaRX.UnityMeshLab
                             srcUv2Min, srcUv2Max, groupMembers,
                             kRayMaxDist, uv2BoundsTolerance);
 
-                        var best = SelectBestCandidate(allCandidates, tShell, tgtTris, tVerts, sourceAtlasRecoveryAllowed);
+                        var best = SelectBestCandidate(allCandidates, tShell, tgtTris, tVerts, sourceAtlasRecoveryAllowed,
+                            preferTransform: tgtFoldShare[tsi]);
                         if (best.HasValue)
                         {
                             validCandidates[si] = best.Value;
@@ -5340,11 +5341,16 @@ namespace SashaRX.UnityMeshLab
         /// Preserve the legacy issue/coverage choice, then compare recovery candidates
         /// with the same geometry score used for clean-chart projection.
         /// Ties broken by coverage (more vertices covered wins).
-        /// Xform candidates only win on strictly fewer issues (not equal).
+        /// Xform candidates only win on strictly fewer issues (not equal), unless
+        /// <paramref name="preferTransform"/>: a fragment kept on a source that folds over its
+        /// UV0 takes a transform on a tie. The transform keeps the fragment's own UV0 layout;
+        /// interpolation and strip parameterisation over the folded source lay its fragments
+        /// onto one another, and the issue count does not see overlaps.
         /// </summary>
         static OverlapCandidate? SelectBestCandidate(
             List<OverlapCandidate> candidates,
-            UvShell shell, int[] tgtTris, Vector3[] positions, bool allowQualityRecovery)
+            UvShell shell, int[] tgtTris, Vector3[] positions, bool allowQualityRecovery,
+            bool preferTransform = false)
         {
             if (candidates == null || candidates.Count == 0) return null;
 
@@ -5374,16 +5380,11 @@ namespace SashaRX.UnityMeshLab
                 else if (curr.issues == best.issues)
                 {
                     // On equal issues: interp-based methods are preferred over xform
-                    // because interp stays within source UV2 convex hull.
-                    // Among same-type methods, prefer more coverage.
-                    if (currIsXform && !bestIsXform)
+                    // because interp stays within source UV2 convex hull, unless the
+                    // caller prefers a transform. Among same-type methods, prefer more coverage.
+                    if (currIsXform != bestIsXform)
                     {
-                        // xform doesn't win on tie — keep interp
-                    }
-                    else if (!currIsXform && bestIsXform)
-                    {
-                        // interp replaces xform on tie
-                        bestIdx = i;
+                        if (currIsXform == preferTransform) bestIdx = i;
                     }
                     else if (curr.coverage > best.coverage)
                     {

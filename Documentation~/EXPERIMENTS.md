@@ -1,5 +1,45 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Fold-share fragments take the transform on a tie — 2026-10-22
+
+Follow-up to the folded-source dedup below. With it, model A's LOD1 has 7077
+UV2 overlap pairs after the first pass (main before it: 1277). The trace of
+all 7077 (item 22 in PR #294):
+
+- every pair joins shells of one source (src6 4696, src1 2378, src0 3);
+  45% lie inside one target shell, 55% join two shells;
+- 99.9% of the pair ends are merged shells placed through the overlap-group
+  candidates, 98.3% of them fragments kept by the fold rule. The winning
+  candidate is strip parameterisation in 60% of the ends, the partition
+  transform in 20%, ray + partition in 20%;
+- only 8% of the pairs overlap in the target's UV0 already: the transfer
+  makes the rest. 67% join faces 1–10% or more than 10% of the mesh diagonal
+  apart in 3D;
+- of the 241 kept shells placed through the group, the partition transform
+  reaches the fewest issues in all 241, but loses every tie to interpolation
+  and strip parameterisation by design ("interp stays within the source UV2
+  hull"). The issue count does not include overlaps.
+
+The kept fragments now take the transform on a tie: it maps the fragment's
+own UV0 through the source's UV0 → UV2 fit, so they overlap only where their
+UV0 does. Other shells keep the interpolation preference.
+
+Measured (item 23 in PR #294). Model A, Full Pipeline against main: overlap
+pairs fall 5450 → 1257 (LOD1) and 11992 → 6528 (LOD2), 7077 → 1330 and
+12753 → 6991 right after the first pass; collapsed faces stay 18 → 19 and
+63 → 58, unwritten vertices 0 and 93 → 94; UV quality 37 → 39 and 27 → 31.
+The transform now wins for all 241 kept LOD1 shells and 807 of 843 in LOD2.
+LOD2 still has 13 times the overlaps it had before the dedup change (496).
+
+Furniture corpus against the main capture (pure effect): the gate fails,
+exit 1. 36 pairs change; default has 4 better, 6 tradeoff and 2 worse. The
+better pairs are model A's (overlap pairs 7094 → 1345 and 13379 → 5859)
+and two small ones; the two worse pairs gain a few overlaps (15 → 19 and
+36 → 61), as do most tradeoff pairs, against lower anisotropy or stretch.
+Against the capture before the dedup change: 12 tradeoff, none worse;
+model A's collapsed faces 1303 → 29 and 3335 → 58, overlap pairs 597 → 1345
+and 668 → 5859.
+
 ## Partitions facing the same way are told apart by position — 2026-10-22
 
 Raised by the Codex review of PR #329. `SpatialPartitioner.MatchPartition`
