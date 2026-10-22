@@ -21,6 +21,9 @@ namespace SashaRX.UnityMeshLab
 {
     public static class GroupedShellTransfer
     {
+        const string kMethodPartitionXform = "partition-xform";
+        const string kMethodFullXform = "full-xform";
+
         // Keep overlap detection bounded: FindOverlapGroups compares every shell pair.
         // Typical production meshes stay well below this limit; pathological meshes
         // fall back to the original fixed retry count instead of stalling the Editor.
@@ -5271,7 +5274,7 @@ namespace SashaRX.UnityMeshLab
                     candidates.Add(new OverlapCandidate
                     {
                         uv2 = uv2Map, issues = -1, coverage = uv2Map.Count,
-                        method = "partition-xform",
+                        method = kMethodPartitionXform,
                         areaScale = severalPids ? 0f : AreaScale(perPartXform[onePid])
                     });
             }
@@ -5356,7 +5359,7 @@ namespace SashaRX.UnityMeshLab
                     candidates.Add(new OverlapCandidate
                     {
                         uv2 = uv2Map, issues = -1, coverage = uv2Map.Count,
-                        method = "full-xform", areaScale = AreaScale(fullXform)
+                        method = kMethodFullXform, areaScale = AreaScale(fullXform)
                     });
             }
 
@@ -5399,8 +5402,8 @@ namespace SashaRX.UnityMeshLab
                 var curr = candidates[i];
                 var best = candidates[bestIdx];
 
-                bool currIsXform = curr.method == "full-xform" || curr.method == "partition-xform";
-                bool bestIsXform = best.method == "full-xform" || best.method == "partition-xform";
+                bool currIsXform = curr.method == kMethodFullXform || curr.method == kMethodPartitionXform;
+                bool bestIsXform = best.method == kMethodFullXform || best.method == kMethodPartitionXform;
 
                 if (curr.issues < best.issues)
                 {
@@ -5434,7 +5437,7 @@ namespace SashaRX.UnityMeshLab
                 for (int i = 0; i < candidates.Count; i++)
                 {
                     var c = candidates[i];
-                    if (c.method != "full-xform" && c.method != "partition-xform") continue;
+                    if (c.method != kMethodFullXform && c.method != kMethodPartitionXform) continue;
                     if (c.issues * 2 >= shell.faceIndices.Count) continue;
                     if (c.issues > CountShellIssues(shell.faceIndices, tgtTris, positions,
                             c.areaScale > 0 ? ScaledUv(ownUv0, Mathf.Sqrt(c.areaScale)) : ownUv0)) continue;
@@ -5451,7 +5454,7 @@ namespace SashaRX.UnityMeshLab
                 quality = TransferCandidateQuality.Measure(shell, tgtTris, positions, selected.uv2);
                 foreach (var candidate in candidates) {
                     // Extrapolating transforms retain their existing coverage gate.
-                    if (candidate.method == "full-xform" || candidate.method == "partition-xform"
+                    if (candidate.method == kMethodFullXform || candidate.method == kMethodPartitionXform
                         || candidate.coverage < selected.coverage) continue;
                     var alternative = TransferCandidateQuality.Measure(shell, tgtTris, positions, candidate.uv2);
                     if (!alternative.Improves(quality)) continue;
