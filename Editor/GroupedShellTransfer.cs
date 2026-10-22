@@ -4619,27 +4619,15 @@ namespace SashaRX.UnityMeshLab
         static double UvArea(Vector2 a, Vector2 b, Vector2 c)
             => ((double)b.x - a.x) * ((double)c.y - a.y) - ((double)b.y - a.y) * ((double)c.x - a.x);
 
-        /// <summary>
-        /// <paramref name="uv"/> scaled to the area <paramref name="like"/> gives the faces both cover;
-        /// unscaled when either has none.
-        /// </summary>
-        internal static Dictionary<int, Vector2> ScaledToArea(Dictionary<int, Vector2> uv,
-            Dictionary<int, Vector2> like, List<int> faceIndices, int[] tris)
+        /// <summary>The UV area a similarity gives per unit of UV0 area.</summary>
+        internal static float AreaScale(SimilarityTransform transform)
+            => transform.a * transform.a + transform.b * transform.b;
+
+        /// <summary><paramref name="uv"/> with every coordinate times <paramref name="scale"/>.</summary>
+        internal static Dictionary<int, Vector2> ScaledUv(Dictionary<int, Vector2> uv, float scale)
         {
-            double area = 0, likeArea = 0;
-            foreach (int f in faceIndices)
-            {
-                int i0 = tris[f * 3], i1 = tris[f * 3 + 1], i2 = tris[f * 3 + 2];
-                if (!uv.TryGetValue(i0, out var a) || !uv.TryGetValue(i1, out var b) || !uv.TryGetValue(i2, out var c)
-                    || !like.TryGetValue(i0, out var la) || !like.TryGetValue(i1, out var lb) || !like.TryGetValue(i2, out var lc))
-                    continue;
-                area += System.Math.Abs(UvArea(a, b, c));
-                likeArea += System.Math.Abs(UvArea(la, lb, lc));
-            }
-            if (!(area > 0 && likeArea > 0)) return uv;
-            float k = (float)System.Math.Sqrt(likeArea / area);
             var scaled = new Dictionary<int, Vector2>(uv.Count);
-            foreach (var kv in uv) scaled[kv.Key] = kv.Value * k;
+            foreach (var kv in uv) scaled[kv.Key] = kv.Value * scale;
             return scaled;
         }
 
@@ -5020,6 +5008,8 @@ namespace SashaRX.UnityMeshLab
             public int issues;
             public int coverage;
             public string method;
+            /// <summary>UV area per UV0 area when one similarity maps the whole shell; 0 otherwise.</summary>
+            public float areaScale;
         }
 
         /// <summary>
@@ -5219,6 +5209,7 @@ namespace SashaRX.UnityMeshLab
             if (hasPart && perPartXform != null)
             {
                 var uv2Map = new Dictionary<int, Vector2>();
+                int onePid = -1; bool severalPids = false;
 
                 foreach (int vi in tShell.vertexIndices)
                 {
@@ -5226,6 +5217,8 @@ namespace SashaRX.UnityMeshLab
                     int pid = vertexPartition[vi];
                     if (pid < 0 || !perPartXform[pid].valid) continue;
 
+                    severalPids |= onePid >= 0 && pid != onePid;
+                    onePid = pid;
                     uv2Map[vi] = perPartXform[pid].Apply(tUv0[vi]);
                 }
 
@@ -5282,7 +5275,8 @@ namespace SashaRX.UnityMeshLab
                     candidates.Add(new OverlapCandidate
                     {
                         uv2 = uv2Map, issues = -1, coverage = uv2Map.Count,
-                        method = "partition-xform"
+                        method = "partition-xform",
+                        areaScale = severalPids ? 0f : AreaScale(perPartXform[onePid])
                     });
             }
 
@@ -5366,7 +5360,7 @@ namespace SashaRX.UnityMeshLab
                     candidates.Add(new OverlapCandidate
                     {
                         uv2 = uv2Map, issues = -1, coverage = uv2Map.Count,
-                        method = "full-xform"
+                        method = "full-xform", areaScale = AreaScale(fullXform)
                     });
             }
 
@@ -5380,7 +5374,8 @@ namespace SashaRX.UnityMeshLab
         /// Xform candidates only win on strictly fewer issues (not equal), unless
         /// <paramref name="preferTransform"/>: a fragment kept on a source that folds over its
         /// UV0 takes a transform on a tie, or when its issues are no more than those of its own UV0
-        /// (<paramref name="ownUv0"/>) at the transform's scale and stay below half of its faces.
+        /// (<paramref name="ownUv0"/>), at the scale of the similarity if one maps it all, and stay
+        /// below half of its faces.
         /// The transform keeps the fragment's own UV0 layout, defects included; interpolation and
         /// strip parameterisation over the folded source mend those faces but lay its fragments
         /// onto one another, and the issue count does not see overlaps.
@@ -5434,9 +5429,11 @@ namespace SashaRX.UnityMeshLab
             if (preferTransform && ownUv0 != null)
             {
                 // No worse than the best candidate is settled above; here a transform may also
-                // carry the fragment's own UV0 defects, no more. They are counted at the
-                // transform's scale: the zero-area test is absolute, so a transform that shrinks
-                // the UV0 turns its smallest faces into defects of its own making.
+                // carry the fragment's own UV0 defects, no more. Under one similarity they are
+                // counted at its scale: the zero-area test is absolute, so a similarity that
+                // shrinks the UV0 turns its smallest faces into defects it did not make. Vertices
+                // split between partitions' transforms bend the faces between them; those
+                // defects are the transform's own, so the UV0 is then counted as it is.
                 int transformIdx = -1;
                 for (int i = 0; i < candidates.Count; i++)
                 {
@@ -5444,7 +5441,7 @@ namespace SashaRX.UnityMeshLab
                     if (c.method != "full-xform" && c.method != "partition-xform") continue;
                     if (c.issues * 2 >= shell.faceIndices.Count) continue;
                     if (c.issues > CountShellIssues(shell.faceIndices, tgtTris, positions,
-                            ScaledToArea(ownUv0, c.uv2, shell.faceIndices, tgtTris))) continue;
+                            c.areaScale > 0 ? ScaledUv(ownUv0, Mathf.Sqrt(c.areaScale)) : ownUv0)) continue;
                     var t = transformIdx >= 0 ? candidates[transformIdx] : c;
                     if (transformIdx < 0 || c.issues < t.issues || (c.issues == t.issues && c.coverage > t.coverage))
                         transformIdx = i;
