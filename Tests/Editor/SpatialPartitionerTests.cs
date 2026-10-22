@@ -29,6 +29,25 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void MatchPartitionTellsSameFacingPartitionsApartByPosition()
+        {
+            // Parallel panels (a position split): the normal ties and the nearer centroid decides.
+            var panels = new SpatialPartitioner.ShellPartitionResult {
+                hasOverlap = true, partitionCount = 2,
+                partitionCentroid = new[] { Vector3.zero, Vector3.right * 10 },
+                partitionNormal = new[] { Vector3.up, Vector3.up } };
+            Assert.AreEqual(0, SpatialPartitioner.MatchPartition(panels, Vector3.right, Vector3.up));
+            Assert.AreEqual(1, SpatialPartitioner.MatchPartition(panels, Vector3.right * 9, Vector3.up));
+            // Front and back of a strap at one place: the normal still decides.
+            var strap = new SpatialPartitioner.ShellPartitionResult {
+                hasOverlap = true, partitionCount = 2,
+                partitionCentroid = new[] { Vector3.zero, Vector3.down * .01f },
+                partitionNormal = new[] { Vector3.up, Vector3.down } };
+            Assert.AreEqual(0, SpatialPartitioner.MatchPartition(strap, Vector3.down * .01f, Vector3.up));
+            Assert.AreEqual(1, SpatialPartitioner.MatchPartition(strap, Vector3.zero, Vector3.down));
+        }
+
+        [Test]
         public void PartitionShells_FoldedFacesSharingVertex_DetectsOverlap()
         {
             var uv = BuildFullBoundsUvs(4);
