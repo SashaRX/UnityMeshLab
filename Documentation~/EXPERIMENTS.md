@@ -61,7 +61,12 @@ Follow-up: when the source LOD's meshes share one atlas (Repack Per Mesh
 off), each transfer receives the UV2 faces of the other source meshes and
 of the targets already transferred from them, and the unclamped similarity
 is refused when one of its faces overlaps one of those. Transfer capture
-records those meshes, so a replay sees the same faces. Pending measurement.
+records those meshes, so a replay sees the same faces. Within the mesh,
+shells interpolated into the same source chart are seen by neither the
+choice nor the placed regions: once every shell is placed, a shell on the
+unclamped similarity that overlaps the others in more face pairs than its
+fallback (the clamped similarity or interpolation it had without it) takes
+the fallback. Pending measurement.
 
 ## Small merged shells try all sources before rejection — 2026-10-22
 

@@ -767,6 +767,35 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
         }
 
+        [Test]
+        public void AShellReachingPastItsSourceKeepsInterpolationWhenTheSimilarityOverlapsASibling()
+        {
+            var source = new Mesh { name = "Sheared chart" };
+            var target = new Mesh { name = "Strip and sibling" };
+            try {
+                // The chart's UV2 is sheared, so its similarity turns the strip by about 9.5°
+                // and moves the strip's top-left corner 0.025 towards the sibling, which
+                // interpolation leaves 0.015 away.
+                var chart = new[] { Vector2.zero, new Vector2(.1f, 0), new Vector2(.1f, .1f), new Vector2(0, .1f) };
+                source.vertices = chart.Select(uv => (Vector3)(uv * 10)).ToArray();
+                source.uv = chart;
+                source.uv2 = chart.Select(uv => new Vector2(uv.x * 3 + uv.y + .1f, uv.y * 3 + .1f)).ToArray();
+                source.triangles = new[] { 0, 1, 2, 0, 2, 3 }; source.RecalculateNormals();
+                var uv0 = new[] { new Vector2(.05f, 0), new Vector2(.12f, 0), new Vector2(.15f, 0),
+                    new Vector2(.05f, .1f), new Vector2(.12f, .1f), new Vector2(.15f, .1f),
+                    Vector2.zero, new Vector2(.045f, 0), new Vector2(.045f, .1f), new Vector2(0, .1f) };
+                target.vertices = uv0.Select(uv => (Vector3)(uv * 10)).ToArray();
+                target.uv = uv0;
+                target.triangles = new[] { 0, 1, 4, 0, 4, 3, 1, 2, 5, 1, 5, 4, 6, 7, 8, 6, 8, 9 };
+                target.RecalculateNormals();
+                var result = GroupedShellTransfer.Transfer(target, source, sourceAtlasWidth: 512, sourceAtlasHeight: 512);
+                // Interpolation maps the strip's top-left corner by the chart's own UV2.
+                Assert.That(Vector2.Distance(new Vector2(.35f, .4f), result.uv2[3]), Is.LessThan(1e-4f));
+                Assert.That(Vector2.Distance(new Vector2(.335f, .4f), result.uv2[8]), Is.LessThan(1e-4f));
+            }
+            finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
         // A square chart with UV2 = UV0 * 3 + 0.1 and a two-quad strip whose right column lies
         // beyond the chart's UV0 edge: interpolation presses it onto that edge, and clamping the
         // similarity presses it onto the chart's UV2 box. Returns the strip's UV0.

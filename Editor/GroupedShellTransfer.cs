@@ -2259,6 +2259,9 @@ namespace SashaRX.UnityMeshLab
             // UV2 bounds of shells placed where no source's UV2 lies (small-shell rescues,
             // unclamped similarities), which every later all-source candidate avoids
             var outsideSourceRegions = new List<(Vector2 min, Vector2 max)>();
+            // Shells that took the unclamped similarity, with the layout each had without it
+            var unclampedFallbacks = new Dictionary<int, (Dictionary<int, Vector2> uv2, int issues,
+                bool transform, bool aligned, bool geometric)>();
 
             // Track which source shells are already claimed by overlap group targets.
             // Prevents multiple targets from mapping to the same source, which causes
@@ -3798,6 +3801,8 @@ namespace SashaRX.UnityMeshLab
                     // stays in the atlas, does not fold, its bounds meet no other source (as
                     // checked above) nor a shell placed outside the sources, and its faces
                     // overlap no other mesh of the source atlas.
+                    var clampedTransform = uv2_transform;
+                    int clampedIssues = issuesTransform;
                     bool unclampedSimilarity = false;
                     if (uv2_transformUnclamped != null && issuesTransformUnclamped < issuesInterp
                         && issuesTransformUnclamped < issuesTransform
@@ -3815,10 +3820,11 @@ namespace SashaRX.UnityMeshLab
                     // normal-filtered UV0 query. On equal face-issue counts, use
                     // the existing transform only when its overlap scan is clean
                     // and interpolation has overlaps (or cannot certify its scan).
-                    bool preferTransform = uv2_transform != null && (issuesTransform < issuesInterp
-                        || (issuesTransform == issuesInterp && tgtExactAreaProtected[tsi]
-                            && !CandidateHasOverlap(tShell, tgtTris, uv2_transform)
+                    bool PrefersTransform(Dictionary<int, Vector2> transform, int issues) => transform != null
+                        && (issues < issuesInterp || (issues == issuesInterp && tgtExactAreaProtected[tsi]
+                            && !CandidateHasOverlap(tShell, tgtTris, transform)
                             && CandidateHasOverlap(tShell, tgtTris, uv2_interp)));
+                    bool preferTransform = PrefersTransform(uv2_transform, issuesTransform);
                     if (preferTransform)
                     {
                         chosenUv2 = uv2_transform;
@@ -3877,9 +3883,15 @@ namespace SashaRX.UnityMeshLab
                         }
                         result.targetShellIssues[tsi] = selectedQuality.issues;
                     }
-                    // Reserve the unclamped similarity's bounds only if recovery kept it
+                    // Reserve the unclamped similarity's bounds only if recovery kept it, and
+                    // keep the layout the shell had without it for the check of its siblings
                     if (preferTransform && unclampedSimilarity && ReferenceEquals(chosenUv2, uv2_transform))
+                    {
                         outsideSourceRegions.Add(UvBounds(uv2_transform));
+                        bool clampedWins = PrefersTransform(clampedTransform, clampedIssues);
+                        unclampedFallbacks[tsi] = (clampedWins ? clampedTransform : uv2_interp,
+                            clampedWins ? clampedIssues : issuesInterp, clampedWins, alignedInterpolation, geometricInterpolation);
+                    }
                 }
 
                 // Write chosen UV2
@@ -3902,6 +3914,43 @@ namespace SashaRX.UnityMeshLab
                     if (chosenSrc >= 0 && srcShellOverlapMembers[chosenSrc] != null)
                         overlapClaimedSources.Add(chosenSrc);
                 }
+            }
+
+            // ── An unclamped similarity stays clear of the mesh's other shells ──
+            // Shells that share its source chart are interpolated into that chart before or
+            // after it, and neither its choice nor the placed regions see them. Once every
+            // shell is placed, one that overlaps the others in more face pairs than the
+            // layout it had without the similarity takes that layout.
+            foreach (var kv in unclampedFallbacks)
+            {
+                int tsi = kv.Key;
+                var fallback = kv.Value;
+                var tShell = tgtShells[tsi];
+                var others = new List<Vector2>();
+                for (int f = 0; f < result.faceToTargetShell.Length; f++)
+                {
+                    if (result.faceToTargetShell[f] == tsi) continue;
+                    for (int corner = 0; corner < 3; corner++) others.Add(result.uv2[tgtTris[f * 3 + corner]]);
+                }
+                var faces = others.ToArray();
+                int pairs = AtlasNeighbourPairs(tShell, tgtTris, ShellCandidate(tShell, result.uv2), faces);
+                if (pairs == 0) continue;
+                int fallbackPairs = AtlasNeighbourPairs(tShell, tgtTris, fallback.uv2, faces);
+                if (fallbackPairs >= pairs) continue;
+                foreach (var point in fallback.uv2) result.uv2[point.Key] = point.Value;
+                result.targetShellIssues[tsi] = fallback.issues;
+                if (!fallback.transform)
+                {
+                    result.targetShellMethod[tsi] = 0;
+                    --shellsTransform; ++shellsInterpolation;
+                    if (fallback.aligned) result.shellsUv0Aligned++;
+                    if (fallback.geometric) result.shellsGeometryFallback++;
+                    var shellTrace = trace?.ForShell(tsi);
+                    if (shellTrace != null) shellTrace.projectionMethod = fallback.geometric ? "geometry"
+                        : fallback.aligned ? "uv0-aligned" : "uv0-filtered";
+                }
+                UvtLog.Info($"[GroupedTransfer] t{tsi}: unclamped similarity overlaps other shells in {pairs} pairs " +
+                    $"({fallbackPairs} without it); kept {(fallback.transform ? "the clamped similarity" : "interpolation")}");
             }
 
             // ── Post-transfer UV2 AABB safety net for merged shells ──
@@ -4977,9 +5026,16 @@ namespace SashaRX.UnityMeshLab
         /// candidate's bounds are scanned; an unfinished scan counts as an overlap.
         /// </summary>
         internal static bool MeetsAtlasNeighbours(UvShell shell, int[] triangles, Dictionary<int, Vector2> candidate,
+            Vector2[] neighbours) => AtlasNeighbourPairs(shell, triangles, candidate, neighbours) > 0;
+
+        /// <summary>
+        /// The overlapping pairs between a candidate's faces and the given faces (corners three
+        /// per face), int.MaxValue when the scan does not finish.
+        /// </summary>
+        static int AtlasNeighbourPairs(UvShell shell, int[] triangles, Dictionary<int, Vector2> candidate,
             Vector2[] neighbours)
         {
-            if (neighbours == null || neighbours.Length < 3) return false;
+            if (neighbours == null || neighbours.Length < 3) return 0;
             var (min, max) = UvBounds(candidate);
             var own = UvAtlasDiagnostics.ShellGeometry(shell.faceIndices, triangles,
                 vertex => candidate.TryGetValue(vertex, out var point) ? point : default);
@@ -4996,14 +5052,14 @@ namespace SashaRX.UnityMeshLab
                     uv.Add(neighbours[i + corner]);
                 }
             }
-            if (indices.Count == own.indices.Length) return false;
+            if (indices.Count == own.indices.Length) return 0;
             // Chart 0 is the candidate and chart 1 its neighbours: only pairs across them count.
             var charts = new int[uv.Count];
             for (int v = own.uv.Length; v < charts.Length; v++) charts[v] = 1;
             var quality = UvAtlasDiagnostics.Measure(
                 new RemeshNative.Geometry { uv = uv.ToArray(), indices = indices.ToArray(), charts = charts },
                 System.Threading.CancellationToken.None, comparisonBudget: 200000, crossChartOnly: true);
-            return !quality.complete || quality.crossChartPairs > 0;
+            return quality.complete ? quality.crossChartPairs : int.MaxValue;
         }
 
         static bool CandidateHasOverlap(UvShell shell, int[] triangles, Dictionary<int, Vector2> candidate)
