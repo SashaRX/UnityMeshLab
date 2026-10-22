@@ -894,8 +894,7 @@ namespace SashaRX.UnityMeshLab
         static void PreserveExportedLightmapSeams(string path, FbxWriteSettings settings)
         {
             using var document = FbxSourceDocument.Load(Path.GetFullPath(path));
-            var names = document.Meshes.Select(mesh => mesh.GetName()).ToHashSet();
-            if (document.PreserveSmallUvSeams(names, 1) > 0) document.Save(Path.GetFullPath(path), settings);
+            if (document.PreserveSmallUvSeams(document.Meshes, 1) > 0) document.Save(Path.GetFullPath(path), settings);
         }
 
         // Unity's exporter always writes centimeters/Y-up. A meter-based Max scene

@@ -221,12 +221,14 @@ namespace SashaRX.UnityMeshLab
         public void SplitPolygons(IReadOnlyDictionary<int, FbxPolygonSplit> plans)
             => EditTopology(plans, FbxPolygonSplitFile.Apply);
 
-        internal int PreserveSmallUvSeams(ICollection<string> names, int uvSet)
+        // The meshes are told by identity, not by name: a file whose geometries share a name
+        // (3ds Max often leaves them all unnamed) must not split the points of the others.
+        internal int PreserveSmallUvSeams(ICollection<FbxMesh> meshes, int uvSet)
         {
             var plans = new Dictionary<int, FbxUvPointSplit>();
             for (int ordinal = 0; ordinal < Meshes.Count; ++ordinal) {
                 var mesh = Meshes[ordinal];
-                if (!names.Contains(mesh.GetName())) continue;
+                if (!meshes.Contains(mesh)) continue;
                 var plan = SmallUvSeamPlan(mesh, uvSet);
                 if (plan != null) plans.Add(ordinal, plan);
             }

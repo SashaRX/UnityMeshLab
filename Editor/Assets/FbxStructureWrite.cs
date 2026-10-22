@@ -380,6 +380,8 @@ namespace SashaRX.UnityMeshLab
             public bool uv1Regenerated;
             /// <summary>Set by <see cref="Apply"/>: some mesh got the UV set Unity imports as UV1.</summary>
             public bool uv1Written;
+            /// <summary>Filled by <see cref="Apply"/>: the FBX meshes it wrote whole (generated LODs, replaced geometry).</summary>
+            public readonly List<FbxMesh> wholeMeshes = new List<FbxMesh>();
             /// <summary>The FBX file being written; new materials' texture paths are made relative to it.</summary>
             public string fbxPath;
             /// <summary>The FBX the document was loaded from; its own materials are reused as they are.</summary>
@@ -538,7 +540,9 @@ namespace SashaRX.UnityMeshLab
                 FbxStructureEdit.AddMaterials(node, r.node, Enumerable.Range(0, r.node.GetMaterialCount()));
                 // The LOD's mesh is made from its source's and carries its UV set names.
                 int slots = lod.materials != null ? ReplaceSlots(scene, node, r.mesh.GetName(), r.submeshMaterials, lod.materials, lod.replaced, options) : 0;
-                node.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, lod.name, data));
+                var lodMesh = FbxStructureEdit.CreateMesh(scene, lod.name, data);
+                node.SetNodeAttribute(lodMesh);
+                options.wholeMeshes.Add(lodMesh);
                 log.Add($"'{lod.name}': {data.polygonSizes.Length} polygon(s) next to '{r.node.GetName()}'{(removed > 0 ? " (replacing the node of that name)" : "")}" +
                     (slots > 0 ? $", {slots} material slot(s) of its own" : ""));
                 changes++;
@@ -551,7 +555,9 @@ namespace SashaRX.UnityMeshLab
             {
                 var r = Ref(name);
                 var data = FbxMeshData.FromTriangles(SourceOf(mesh, r, options), r.fit, r.reverse, r.submeshMaterials);
-                int nodes = FbxStructureEdit.ReplaceMesh(r.mesh, FbxStructureEdit.CreateMesh(scene, r.mesh.GetName(), data));
+                var replacement = FbxStructureEdit.CreateMesh(scene, r.mesh.GetName(), data);
+                int nodes = FbxStructureEdit.ReplaceMesh(r.mesh, replacement);
+                options.wholeMeshes.Add(replacement);
                 log.Add($"'{name}': geometry replaced ({data.polygonSizes.Length} polygon(s), {nodes} node(s); node, transform and materials kept)");
                 changes++;
             }
