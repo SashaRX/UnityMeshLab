@@ -2476,7 +2476,7 @@ namespace SashaRX.UnityMeshLab
             // targets that will land on them remain.
             List<(MeshEntry source, Mesh mesh, Vector2[] corners)> atlasFaces = null;
             Dictionary<MeshEntry, int> pendingTargets = null;
-            if (!ctx.RepackPerMesh && sources.Count > 1)
+            if (!ctx.RepackPerMesh && (sources.Count > 1 || targets.Count > 1))
             {
                 atlasFaces = new List<(MeshEntry source, Mesh mesh, Vector2[] corners)>();
                 foreach (var s in sources)
