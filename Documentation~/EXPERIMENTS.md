@@ -37,8 +37,31 @@ certify cross-chart footprints"): the similarity is taken only where it
 lands in no other source's UV2 box and no placed region, and only where
 interpolation already has collapsed faces.
 
-Pending measurement: models K and A, Full Pipeline against main, and the
-furniture corpus with `--require-no-regressions`.
+Measured (item 40 in PR #294): head 569bb1a against main 69e1ccf, Full
+Pipeline 32 tex/m; the corpus against the 6d3c325 capture of item 38.
+
+| | main | 569bb1a |
+|---|---|---|
+| K LOD2 UV quality / collapsed / uvDegenerate / overlap pairs / stretched | 38 / 48 / 50 / 1 / 57 | 39 / 44 / 44 / 14 / 51 |
+| K LOD2 Poor shells / worst anisotropy | 17 / 1.2e21 | 9 / 34.5 |
+| A LOD1 collapsed / uvDegenerate / overlap pairs | 18 / 20 / 930 | 9 / 10 / 932 |
+| A LOD2 UV quality / collapsed / uvDegenerate / overlap pairs | 37 / 59 / 65 / 2783 | 39 / 44 / 47 / 2787 |
+
+7 of model K's 8 interpolated shells took the similarity, and their
+collapsed faces fell from 12 to 2. All 13 new overlap pairs of model K are
+between two of those 7 and shells of other meshes: the LOD's meshes share
+one lightmap atlas, and each transfer saw only its own source mesh's
+charts. Model A's 4 new pairs lie within one mesh. Corpus: exit code 1,
+0 worse, 14 tradeoff rows (stretched faces up in 8, overlap pairs up in 4,
+in two pairs: +3 and +4), 56 better; uvDegenerateFaces fell in 46 rows and
+rose in none; 234 `unclamped similarity` lines. The corpus transfers each
+pair alone, so it cannot see pairs between meshes.
+
+Follow-up: when the source LOD's meshes share one atlas (Repack Per Mesh
+off), each transfer receives the UV2 faces of the other source meshes and
+of the targets already transferred from them, and the unclamped similarity
+is refused when one of its faces overlaps one of those. Transfer capture
+records those meshes, so a replay sees the same faces. Pending measurement.
 
 ## Small merged shells try all sources before rejection — 2026-10-22
 

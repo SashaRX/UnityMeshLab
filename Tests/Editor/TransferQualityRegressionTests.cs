@@ -732,19 +732,11 @@ namespace SashaRX.UnityMeshLab.Tests
             var source = new Mesh { name = "Small chart" };
             var target = new Mesh { name = "Strip reaching past the chart" };
             try {
-                // The right column lies beyond the chart's UV0 edge: interpolation presses it onto
-                // that edge, and clamping the similarity presses it onto the chart's UV2 box.
-                var chart = new[] { Vector2.zero, new Vector2(.1f, 0), new Vector2(.1f, .1f), new Vector2(0, .1f) };
-                source.vertices = chart.Select(uv => (Vector3)(uv * 10)).ToArray();
-                source.uv = chart;
-                source.uv2 = chart.Select(uv => uv * 3 + Vector2.one * .1f).ToArray();
-                source.triangles = new[] { 0, 1, 2, 0, 2, 3 }; source.RecalculateNormals();
-                var strip = new[] { new Vector2(.05f, 0), new Vector2(.12f, 0), new Vector2(.15f, 0),
-                    new Vector2(.05f, .1f), new Vector2(.12f, .1f), new Vector2(.15f, .1f) };
-                target.vertices = strip.Select(uv => (Vector3)(uv * 10)).ToArray();
-                target.uv = strip;
-                target.triangles = new[] { 0, 1, 4, 0, 4, 3, 1, 2, 5, 1, 5, 4 }; target.RecalculateNormals();
-                var result = GroupedShellTransfer.Transfer(target, source, sourceAtlasWidth: 512, sourceAtlasHeight: 512);
+                var strip = ChartAndStripReachingPastIt(source, target);
+                // Another mesh of the atlas lies clear of the strip.
+                var neighbour = new[] { new Vector2(.7f, .1f), new Vector2(.8f, .1f), new Vector2(.7f, .3f) };
+                var result = GroupedShellTransfer.TransferWithDiagnostics(target, source, null, null, 512, 512, null,
+                    UvTransferTolerance.BoundaryTexels, neighbour);
                 for (int i = 0; i < strip.Length; i++)
                     Assert.That(Vector2.Distance(strip[i] * 3 + Vector2.one * .1f, result.uv2[i]), Is.LessThan(1e-4f));
                 var tris = target.triangles;
@@ -754,6 +746,43 @@ namespace SashaRX.UnityMeshLab.Tests
                 }
             }
             finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
+        [Test]
+        public void AShellReachingPastItsSourceKeepsOffAnotherMeshOfTheAtlas()
+        {
+            var source = new Mesh { name = "Small chart" };
+            var target = new Mesh { name = "Strip reaching past the chart" };
+            try {
+                var strip = ChartAndStripReachingPastIt(source, target);
+                // Another mesh of the atlas lies where the strip's right column would land.
+                var neighbour = new[] { new Vector2(.45f, .15f), new Vector2(.6f, .15f), new Vector2(.45f, .35f) };
+                var result = GroupedShellTransfer.TransferWithDiagnostics(target, source, null, null, 512, 512, null,
+                    UvTransferTolerance.BoundaryTexels, neighbour);
+                foreach (int i in new[] { 2, 5 }) {
+                    Assert.That(Vector2.Distance(strip[i] * 3 + Vector2.one * .1f, result.uv2[i]), Is.GreaterThan(1e-2f), $"vertex {i}");
+                    Assert.That(result.uv2[i].x, Is.LessThan(.45f), $"vertex {i}");
+                }
+            }
+            finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
+        // A square chart with UV2 = UV0 * 3 + 0.1 and a two-quad strip whose right column lies
+        // beyond the chart's UV0 edge: interpolation presses it onto that edge, and clamping the
+        // similarity presses it onto the chart's UV2 box. Returns the strip's UV0.
+        static Vector2[] ChartAndStripReachingPastIt(Mesh source, Mesh target)
+        {
+            var chart = new[] { Vector2.zero, new Vector2(.1f, 0), new Vector2(.1f, .1f), new Vector2(0, .1f) };
+            source.vertices = chart.Select(uv => (Vector3)(uv * 10)).ToArray();
+            source.uv = chart;
+            source.uv2 = chart.Select(uv => uv * 3 + Vector2.one * .1f).ToArray();
+            source.triangles = new[] { 0, 1, 2, 0, 2, 3 }; source.RecalculateNormals();
+            var strip = new[] { new Vector2(.05f, 0), new Vector2(.12f, 0), new Vector2(.15f, 0),
+                new Vector2(.05f, .1f), new Vector2(.12f, .1f), new Vector2(.15f, .1f) };
+            target.vertices = strip.Select(uv => (Vector3)(uv * 10)).ToArray();
+            target.uv = strip;
+            target.triangles = new[] { 0, 1, 4, 0, 4, 3, 1, 2, 5, 1, 5, 4 }; target.RecalculateNormals();
+            return strip;
         }
 
         [Test]

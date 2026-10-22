@@ -104,7 +104,8 @@ namespace SashaRX.UnityMeshLab
             try {
                 source = Load(root, pair.sourceMesh); target = Load(root, pair.targetMesh); baseline = Load(root, pair.outputMesh);
                 ValidateInput(source, true); ValidateInput(target, false);
-                var first = await Run(pair, target, source, details.trace);
+                var neighbours = LoadAtlasNeighbours(root, pair.atlasNeighbourMeshes);
+                var first = await Run(pair, target, source, details.trace, neighbours);
                 if (first.uv2 == null) throw new InvalidDataException("Replay produced no UV2.");
                 details.result = first;
                 item.replayHash = TransferMeshSnapshot.UvHash(first.uv2);
@@ -119,7 +120,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 item.changedMappings = MappingChanges(pair.result, first);
                 details.quality = TransferUvQuality.Measure(target, first.uv2, Vector2.one, pair.localToWorld);
-                var repeat = await Run(pair, target, source, null);
+                var repeat = await Run(pair, target, source, null, neighbours);
                 item.repeatHash = TransferMeshSnapshot.UvHash(repeat.uv2);
                 item.repeatEqual = item.repeatHash == item.replayHash && MappingChanges(first, repeat) == 0;
             }
@@ -135,7 +136,23 @@ namespace SashaRX.UnityMeshLab
             return item;
         }
 
-        static async Task<GroupedShellTransfer.TransferResult> Run(TransferCaseCapture.Pair pair, Mesh target, Mesh source, TransferMatchTrace trace)
+        // The faces of the other meshes that shared the source atlas, as the capture stored them.
+        static Vector2[] LoadAtlasNeighbours(string root, string[] meshes)
+        {
+            if (meshes == null) return null;
+            var corners = new List<Vector2>();
+            foreach (string hash in meshes)
+            {
+                if (string.IsNullOrEmpty(hash)) continue;
+                var mesh = Load(root, hash);
+                try { corners.AddRange(GroupedShellTransfer.AtlasCorners(mesh)); }
+                finally { UnityEngine.Object.DestroyImmediate(mesh); }
+            }
+            return corners.ToArray();
+        }
+
+        static async Task<GroupedShellTransfer.TransferResult> Run(TransferCaseCapture.Pair pair, Mesh target, Mesh source, TransferMatchTrace trace,
+            Vector2[] atlasNeighbours)
         {
             GroupedShellTransfer.TransferResult result;
             if (pair.preparedProjection) {
@@ -144,7 +161,7 @@ namespace SashaRX.UnityMeshLab
                 result = ReverseUvTransfer.DescribeForwardProjection(target, source, pair.projectionSources);
             }
             else result = await GroupedShellTransfer.TransferAsyncWithDiagnostics(target, source, pair.overlapHints, pair.matchHints,
-                pair.atlasWidth, pair.atlasHeight, trace, pair.BoundaryToleranceTexels);
+                pair.atlasWidth, pair.atlasHeight, trace, pair.BoundaryToleranceTexels, atlasNeighbours);
             if (pair.clamp && result.uv2 != null) XatlasRepack.ClampUvsToUnit(result.uv2);
             return result;
         }

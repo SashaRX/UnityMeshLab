@@ -949,10 +949,13 @@ namespace SashaRX.UnityMeshLab
             => TransferWithDiagnostics(targetMesh, sourceMesh, previousLodHints, previousLodMatchHints,
                 sourceAtlasWidth, sourceAtlasHeight, null);
 
+        // atlasNeighbours: UV2 corners, three per face, of the other meshes that share the
+        // source atlas, which a shell placed outside its source chart must not overlap; null
+        // when the source mesh has the atlas to itself.
         internal static TransferResult TransferWithDiagnostics(Mesh targetMesh, Mesh sourceMesh,
             List<OverlapSourceHint> previousLodHints, List<CrossLodMatchHint> previousLodMatchHints,
             int sourceAtlasWidth, int sourceAtlasHeight, TransferMatchTrace trace,
-            float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels)
+            float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels, Vector2[] atlasNeighbours = null)
         {
             ExtractMeshData(targetMesh, sourceMesh,
                 out var srcVerts, out var srcTris, out var srcUv0, out var srcUv2, out var srcNormals, out var sourceMeshName,
@@ -961,7 +964,7 @@ namespace SashaRX.UnityMeshLab
                 srcVerts, srcTris, srcUv0, srcUv2, srcNormals, sourceMeshName,
                 tVerts, tNormals, tUv0, tgtTris, vertCount, targetMeshName,
                 previousLodHints, previousLodMatchHints,
-                sourceAtlasWidth, sourceAtlasHeight, trace, boundaryToleranceTexels);
+                sourceAtlasWidth, sourceAtlasHeight, trace, boundaryToleranceTexels, atlasNeighbours);
         }
 
         /// <summary>
@@ -985,7 +988,7 @@ namespace SashaRX.UnityMeshLab
         internal static Task<TransferResult> TransferAsyncWithDiagnostics(Mesh targetMesh, Mesh sourceMesh,
             List<OverlapSourceHint> previousLodHints, List<CrossLodMatchHint> previousLodMatchHints,
             int sourceAtlasWidth, int sourceAtlasHeight, TransferMatchTrace trace,
-            float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels)
+            float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels, Vector2[] atlasNeighbours = null)
         {
             ExtractMeshData(targetMesh, sourceMesh,
                 out var srcVerts, out var srcTris, out var srcUv0, out var srcUv2, out var srcNormals, out var sourceMeshName,
@@ -994,7 +997,7 @@ namespace SashaRX.UnityMeshLab
                 srcVerts, srcTris, srcUv0, srcUv2, srcNormals, sourceMeshName,
                 tVerts, tNormals, tUv0, tgtTris, vertCount, targetMeshName,
                 previousLodHints, previousLodMatchHints,
-                sourceAtlasWidth, sourceAtlasHeight, trace, boundaryToleranceTexels));
+                sourceAtlasWidth, sourceAtlasHeight, trace, boundaryToleranceTexels, atlasNeighbours));
         }
 
         // Main-thread mesh read — splits Mesh API access (Mesh.vertices etc.
@@ -1068,7 +1071,7 @@ namespace SashaRX.UnityMeshLab
             List<OverlapSourceHint> previousLodHints,
             List<CrossLodMatchHint> previousLodMatchHints,
             int sourceAtlasWidth, int sourceAtlasHeight, TransferMatchTrace trace,
-            float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels)
+            float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels, Vector2[] atlasNeighbours = null)
         {
             var result = new TransferResult { matchTrace = trace };
             float uv2OobMargin = ComputeUv2PixelMargin(sourceAtlasWidth, sourceAtlasHeight, 1.25f, 0.005f);
@@ -3792,14 +3795,16 @@ namespace SashaRX.UnityMeshLab
                     // Clamping presses the similarity's outside vertices onto the source's UV2
                     // box, as interpolation presses them onto its UV0 boundary, and both collapse
                     // faces there. The unclamped similarity is taken when it has fewer issues,
-                    // stays in the atlas, does not fold and its bounds meet no other source (as
-                    // checked above) nor a shell placed outside the sources.
+                    // stays in the atlas, does not fold, its bounds meet no other source (as
+                    // checked above) nor a shell placed outside the sources, and its faces
+                    // overlap no other mesh of the source atlas.
                     bool unclampedSimilarity = false;
                     if (uv2_transformUnclamped != null && issuesTransformUnclamped < issuesInterp
                         && issuesTransformUnclamped < issuesTransform
                         && InUnitSquare(uv2_transformUnclamped, uv2BoundsTolerance)
                         && !MeetsRegions(UvBounds(uv2_transformUnclamped), outsideSourceRegions, allSourceRegions, force3DUsedRegions)
-                        && !CandidateHasOverlap(tShell, tgtTris, uv2_transformUnclamped))
+                        && !CandidateHasOverlap(tShell, tgtTris, uv2_transformUnclamped)
+                        && !MeetsAtlasNeighbours(tShell, tgtTris, uv2_transformUnclamped, atlasNeighbours))
                     {
                         uv2_transform = uv2_transformUnclamped;
                         issuesTransform = issuesTransformUnclamped;
@@ -4952,6 +4957,53 @@ namespace SashaRX.UnityMeshLab
                     && Meets(srcUv2Min[src], srcUv2Max[src])) return true;
             }
             return MeetsRegions(bounds, placed);
+        }
+
+        /// <summary>A mesh's UV2 corners, three per face: its faces as an atlas neighbour.</summary>
+        internal static Vector2[] AtlasCorners(Mesh mesh)
+        {
+            var uv2 = UvTopology.ReadUv(mesh, 1);
+            if (uv2 == null) return System.Array.Empty<Vector2>();
+            var triangles = mesh.triangles;
+            var corners = new Vector2[triangles.Length];
+            for (int i = 0; i < triangles.Length; i++)
+                corners[i] = triangles[i] < uv2.Length ? uv2[triangles[i]] : default;
+            return corners;
+        }
+
+        /// <summary>
+        /// Whether a candidate's faces overlap the faces of the other meshes that share the
+        /// source atlas (corners three per face). Only the neighbour faces within the
+        /// candidate's bounds are scanned; an unfinished scan counts as an overlap.
+        /// </summary>
+        internal static bool MeetsAtlasNeighbours(UvShell shell, int[] triangles, Dictionary<int, Vector2> candidate,
+            Vector2[] neighbours)
+        {
+            if (neighbours == null || neighbours.Length < 3) return false;
+            var (min, max) = UvBounds(candidate);
+            var own = UvAtlasDiagnostics.ShellGeometry(shell.faceIndices, triangles,
+                vertex => candidate.TryGetValue(vertex, out var point) ? point : default);
+            var uv = new List<Vector2>(own.uv);
+            var indices = new List<int>(own.indices);
+            for (int i = 0; i + 2 < neighbours.Length; i += 3)
+            {
+                Vector2 a = neighbours[i], b = neighbours[i + 1], c = neighbours[i + 2];
+                if (Mathf.Max(a.x, Mathf.Max(b.x, c.x)) <= min.x || Mathf.Min(a.x, Mathf.Min(b.x, c.x)) >= max.x
+                    || Mathf.Max(a.y, Mathf.Max(b.y, c.y)) <= min.y || Mathf.Min(a.y, Mathf.Min(b.y, c.y)) >= max.y) continue;
+                for (int corner = 0; corner < 3; corner++)
+                {
+                    indices.Add(uv.Count);
+                    uv.Add(neighbours[i + corner]);
+                }
+            }
+            if (indices.Count == own.indices.Length) return false;
+            // Chart 0 is the candidate and chart 1 its neighbours: only pairs across them count.
+            var charts = new int[uv.Count];
+            for (int v = own.uv.Length; v < charts.Length; v++) charts[v] = 1;
+            var quality = UvAtlasDiagnostics.Measure(
+                new RemeshNative.Geometry { uv = uv.ToArray(), indices = indices.ToArray(), charts = charts },
+                System.Threading.CancellationToken.None, comparisonBudget: 200000, crossChartOnly: true);
+            return !quality.complete || quality.crossChartPairs > 0;
         }
 
         static bool CandidateHasOverlap(UvShell shell, int[] triangles, Dictionary<int, Vector2> candidate)
