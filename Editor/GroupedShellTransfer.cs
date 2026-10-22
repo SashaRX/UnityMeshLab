@@ -5341,12 +5341,12 @@ namespace SashaRX.UnityMeshLab
         /// Preserve the legacy issue/coverage choice, then compare recovery candidates
         /// with the same geometry score used for clean-chart projection.
         /// Ties broken by coverage (more vertices covered wins).
-        /// Xform candidates only win on strictly fewer issues (not equal).
+        /// Xform candidates only win on strictly fewer issues (not equal), unless
+        /// <paramref name="preferTransform"/>: a fragment kept on a source that folds over its
+        /// UV0 takes a transform on a tie. The transform keeps the fragment's own UV0 layout;
+        /// interpolation and strip parameterisation over the folded source lay its fragments
+        /// onto one another, and the issue count does not see overlaps.
         /// </summary>
-        // preferTransform: a fragment kept on a source that folds over its UV0 takes a transform
-        // on a tie. The transform keeps the fragment's own UV0 layout; interpolation and strip
-        // parameterisation over the folded source lay its fragments onto one another, and
-        // the issue count does not see overlaps.
         static OverlapCandidate? SelectBestCandidate(
             List<OverlapCandidate> candidates,
             UvShell shell, int[] tgtTris, Vector3[] positions, bool allowQualityRecovery,
