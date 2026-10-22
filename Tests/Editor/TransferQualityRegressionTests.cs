@@ -794,6 +794,25 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void AShellReachingPastItsSourceKeepsInterpolationWhereTheSimilarityStretchesIt()
+        {
+            var source = new Mesh { name = "Small chart" };
+            var target = new Mesh { name = "Strip reaching past the chart" };
+            try {
+                var strip = ChartAndStripReachingPastIt(source, target);
+                // The right column lies 5 units further in 3D than its UV0 says: the similarity
+                // would stretch the faces past the chart about 18:1, where the chart has none.
+                var vertices = target.vertices;
+                foreach (int i in new[] { 2, 5 }) vertices[i].x += 5;
+                target.vertices = vertices; target.RecalculateNormals();
+                var result = GroupedShellTransfer.Transfer(target, source, sourceAtlasWidth: 512, sourceAtlasHeight: 512);
+                foreach (int i in new[] { 2, 5 })
+                    Assert.That(Vector2.Distance(strip[i] * 3 + Vector2.one * .1f, result.uv2[i]), Is.GreaterThan(1e-2f), $"vertex {i}");
+            }
+            finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
+        [Test]
         public void TheOverlapWithOtherShellsCountsTheirFacesAsPlaced()
         {
             // Two quads, separate in UV0; in UV2 the second lies over the right half of the first.

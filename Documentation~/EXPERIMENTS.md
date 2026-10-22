@@ -88,7 +88,26 @@ only on charts the repack did not reparameterize. Of the 3 model K shells
 the other mesh check sent back, 2 met faces of other meshes' LOD2 and 1
 only a source face of a mesh already transferred, whose LOD2 has no face
 there: once every target of a source is transferred, their faces now
-stand for the source's. Pending measurement.
+stand for the source's.
+
+Measured at 0ef3403 (item 42; ARAP on in both models' pipeline). Model K's
+LOD2: collapsed 48 → 46, Poor 17 → 10, stretched faces 57 → 51, UV quality
+and overlap pairs equal to main; 5 of the 8 interpolated shells took the
+similarity (their sources' residuals are 21–88% of the threshold) and their
+collapsed faces went 12 → 6. Model A's LOD2: UV quality 37 → 38, collapsed
+59 → 50, overlap pairs equal to main; the threshold sent back 3 of the 9
+shells of item 41 (residuals 1.3–2.6 times it). Corpus: exit code 1, 0
+worse, 2 tradeoff, 23 better; 61 `unclamped similarity` lines (234 at
+186dfa7), overlap pairs and uvDegenerateFaces rose in no row, and stretched
+faces no longer rise in the reparameterizing profiles. One tradeoff is a
+face more past 4:1 (48 → 49, area-weighted anisotropy 2.101 → 2.102); in the
+other the similarity cut collapsed faces 9 → 4 but stretched one face
+32791:1 (area-weighted anisotropy 1.25 → 7.88): the issue count takes only
+past 10000:1 as collapsed.
+
+Follow-up: the unclamped similarity is also refused when one of its faces
+that keeps an area stretches past the source chart's worst stretch, or past
+4:1 if that is lower. Pending measurement.
 
 ## Small merged shells try all sources before rejection — 2026-10-22
 

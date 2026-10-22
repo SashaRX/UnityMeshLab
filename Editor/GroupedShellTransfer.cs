@@ -2262,6 +2262,15 @@ namespace SashaRX.UnityMeshLab
             // UV2 bounds of shells placed where no source's UV2 lies (small-shell rescues,
             // unclamped similarities), which every later all-source candidate avoids
             var outsideSourceRegions = new List<(Vector2 min, Vector2 max)>();
+            // The worst stretch of each source chart's own UV2, measured when first needed
+            var sourceWorstStretch = new double[srcShells.Count];
+            for (int si = 0; si < sourceWorstStretch.Length; si++) sourceWorstStretch[si] = -1;
+            double SourceWorstStretch(int source)
+            {
+                if (sourceWorstStretch[source] < 0)
+                    sourceWorstStretch[source] = WorstStretch(srcShells[source].faceIndices, srcTris, srcVerts, vertex => srcUv2[vertex]);
+                return sourceWorstStretch[source];
+            }
             // Shells that took the unclamped similarity, with the layout each had without it
             var unclampedFallbacks = new Dictionary<int, (Dictionary<int, Vector2> uv2, int issues,
                 bool transform, bool aligned, bool geometric)>();
@@ -3804,9 +3813,9 @@ namespace SashaRX.UnityMeshLab
                     // that similarity of its UV0 within half a texel (a chart reparameterized
                     // in UV2, such as an ARAP-relaxed stretched chart, is not, and its UV0
                     // would bring the stretch back), it has fewer issues, stays in the atlas,
-                    // does not fold, its bounds meet no other source (as checked above) nor a
-                    // shell placed outside the sources, and its faces overlap no other mesh of
-                    // the source atlas.
+                    // stretches no face past the source chart's worst (or 4:1), does not fold,
+                    // its bounds meet no other source (as checked above) nor a shell placed
+                    // outside the sources, and its faces overlap no other mesh of the source atlas.
                     var clampedTransform = uv2_transform;
                     int clampedIssues = issuesTransform;
                     bool unclampedSimilarity = false;
@@ -3814,6 +3823,9 @@ namespace SashaRX.UnityMeshLab
                         && issuesTransformUnclamped < issuesInterp && issuesTransformUnclamped < issuesTransform
                         && InUnitSquare(uv2_transformUnclamped, uv2BoundsTolerance)
                         && !MeetsRegions(UvBounds(uv2_transformUnclamped), outsideSourceRegions, allSourceRegions, force3DUsedRegions)
+                        && WorstStretch(tShell.faceIndices, tgtTris, tVerts,
+                            vertex => uv2_transformUnclamped.TryGetValue(vertex, out var point) ? point : default)
+                            <= System.Math.Max(4, SourceWorstStretch(chosenSrc))
                         && !CandidateHasOverlap(tShell, tgtTris, uv2_transformUnclamped)
                         && !MeetsAtlasNeighbours(tShell, tgtTris, uv2_transformUnclamped, atlasNeighbours))
                     {
@@ -5110,6 +5122,23 @@ namespace SashaRX.UnityMeshLab
             foreach (int vertex in shell.vertexIndices)
                 if (vertex < uv.Length) candidate[vertex] = uv[vertex];
             return candidate;
+        }
+
+        /// <summary>
+        /// The worst anisotropy of the faces whose layout keeps an area; collapsed faces are the
+        /// issue count's to judge.
+        /// </summary>
+        internal static double WorstStretch(List<int> faces, int[] triangles, Vector3[] positions,
+            System.Func<int, Vector2> uv)
+        {
+            double worst = 0;
+            foreach (int face in faces)
+            {
+                int a = triangles[face * 3], b = triangles[face * 3 + 1], c = triangles[face * 3 + 2];
+                double stretch = TriangleStretch(positions[a], positions[b], positions[c], uv(a), uv(b), uv(c));
+                if (!double.IsInfinity(stretch) && !double.IsNaN(stretch)) worst = System.Math.Max(worst, stretch);
+            }
+            return worst;
         }
 
         internal static double TriangleStretch(Vector3 a, Vector3 b, Vector3 c, Vector2 u, Vector2 v, Vector2 w)
