@@ -1,5 +1,45 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Fold-share transform keeps the fragment's own UV0 defects — 2026-10-22
+
+Follow-up to the tie rule below. Model A's LOD2 still has 6991 overlap pairs
+after the first pass (main before the dedup change: 522). The trace (item 24 in
+PR #294): 88% of the pairs join different shells; 94.7% of the pair ends are
+kept fragments, 65% placed by the partition transform; 29% overlap in the
+target's UV0 already. The 36 kept LOD2 shells that did not choose the partition
+transform (ray + partition 25, full transform 6, strip parameterisation 5) take part in
+53.8% of the pairs (median 50 pairs each): there the partition transform loses on
+strictly more issues, by one in 27 of the 36, by two in 7.
+
+An issue is a missing, zero-area or more than 10,000:1 stretched UV2 face. A
+transform keeps the fragment's UV0 shape, so its issues are the UV0's own
+zero-area and sliver faces; the other candidates mend those faces by
+re-projecting them and lay the fragment over its neighbours. The kept
+fragments now take the transform when its issues are no more than those of
+their own UV0, unless they reach half of the fragment's faces.
+
+Of the two worse corpus pairs of the tie rule, J's growth predates it (it is
+already on main before the tie rule), and A's four pairs come from quality
+recovery replacing the newly chosen transform with partition UV0
+interpolation. J's growth comes from the dedup change (item 25.3): 3 overlap
+pairs before it, with or without the position rule for same-facing
+partitions, 36 with its second revision and 61 with the final one; two of
+its kept fragments go from one issue to three.
+
+Measured (item 25 in PR #294). Model A, Full Pipeline against main: LOD2
+overlap pairs fall 6528 → 4544, 6991 → 4803 right after the first pass; UV
+quality 31 → 35; collapsed faces 58 → 61, unwritten vertices 94 → 99,
+degenerate UV2 faces 68 → 67. LOD0 and LOD1 do not change. The winner
+changes for 15 kept LOD2 shells (14 to the partition transform, one to the
+full transform), and 11 shells move from Poor to Degraded. LOD2 still has
+nine times the overlaps it had before the dedup change (496).
+
+Furniture corpus against the tie rule's capture (same transfer code as
+main): the gate fails, exit 1. Two of 256 pairs change. Model A's LOD2 is
+better in all three grouped profiles (overlap pairs 5859 → 5168 in default);
+one small LOD2 is worse in two (overlap pairs 97 → 108, degenerate faces
+30 → 32).
+
 ## Fold-share fragments take the transform on a tie — 2026-10-22
 
 Follow-up to the folded-source dedup below. With it, model A's LOD1 has 7077
