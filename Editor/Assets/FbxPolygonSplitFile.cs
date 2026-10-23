@@ -241,8 +241,8 @@ namespace SashaRX.UnityMeshLab
         }
 
         // A source edge follows its own corner: the split keeps every polygon side in exactly one
-        // new polygon, so an edge table that names one point pair more than once (neighbours wound
-        // the same way along it, a side three polygons share) keeps every entry. Only the new
+        // new polygon, so an edge table that names one point pair more than once (an exporter can
+        // list a shared side once for each polygon along it) keeps every entry. Only the new
         // diagonals get new entries.
         static (int[] map, int count) RemapEdges(Node node, int[] oldPoints, int[] oldNext, int[] corners, int[] points, int[] next)
         {
