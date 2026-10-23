@@ -1013,7 +1013,7 @@ namespace SashaRX.UnityMeshLab
 
         // The tag channel is read from mesh; the vertices, faces and other channels from
         // vertexSource when given (the same vertices, in the same order, see ReadImportedTags).
-        static Tagged ReadTags(Mesh mesh, Dictionary<int, int> tagChannels, Dictionary<int, int> cornerCounts, Mesh vertexSource = null)
+        internal static Tagged ReadTags(Mesh mesh, Dictionary<int, int> tagChannels, Dictionary<int, int> cornerCounts, Mesh vertexSource = null)
         {
             var list = new List<Vector2>();
             var faceVertices = FaceVertices(mesh);
