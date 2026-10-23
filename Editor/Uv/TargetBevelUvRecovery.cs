@@ -13,7 +13,8 @@ namespace SashaRX.UnityMeshLab
         internal static int Apply(GroupedShellTransfer.TransferResult result, List<UvShell> targets,
             int[] indices, Vector3[] positions, List<UvShell> sources, int[] sourceIndices, Vector2[] sourceUv,
             int atlasSize, float boundaryToleranceTexels, TransferMatchTrace trace = null,
-            CancellationToken token = default, long comparisonBudget = 2000000, bool allowPatch = false, bool refine = false)
+            CancellationToken token = default, long comparisonBudget = 2000000, bool allowPatch = false, bool refine = false,
+            Vector2[] atlasNeighbours = null)
         {
             Check(token);
             if (atlasSize <= 0 || comparisonBudget <= 0) return 0;
@@ -50,6 +51,9 @@ namespace SashaRX.UnityMeshLab
                         boundaryToleranceTexels / atlasSize, token, ref work, comparisonBudget);
                     if (work >= comparisonBudget) return 0;
                     if (!covered) continue;
+                    bool clearOfNeighbours = ClearOfNeighbours(faces, indices, candidate, atlasNeighbours, token, ref work, comparisonBudget);
+                    if (work >= comparisonBudget) return 0;
+                    if (!clearOfNeighbours) continue;
                     if (baseline == null)
                     {
                         baseline = Scan(result.uv2, indices, token, ref work, comparisonBudget);
@@ -220,6 +224,25 @@ namespace SashaRX.UnityMeshLab
                 return true;
             }
             catch (InvalidOperationException) { return false; }
+        }
+
+        /// <summary>Rejects contacts between changed faces and other meshes in the atlas, charging the same shared budget.</summary>
+        static bool ClearOfNeighbours(List<int> faces, int[] indices, Dictionary<int, Vector2> candidate,
+            Vector2[] neighbours, CancellationToken token, ref long work, long budget)
+        {
+            if (neighbours == null || neighbours.Length == 0) return true;
+            work += neighbours.Length + 3L * faces.Count;
+            if (work >= budget || neighbours.Length % 3 != 0) return false;
+            var own = UvAtlasDiagnostics.ShellGeometry(faces, indices, v => candidate[v]);
+            var uv = own.uv.Concat(neighbours).ToArray();
+            var triangles = own.indices.Concat(Enumerable.Range(own.uv.Length, neighbours.Length)).ToArray();
+            var charts = new int[uv.Length];
+            for (int v = own.uv.Length; v < charts.Length; ++v) charts[v] = 1;
+            var report = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry { uv = uv, indices = triangles, charts = charts },
+                token, comparisonBudget: budget - work, crossChartOnly: true);
+            work += report.comparisons;
+            if (!report.complete) { work = budget; return false; }
+            return report.invalidFaces == 0 && report.crossChartPairs == 0;
         }
 
         /// <summary>Charges each complete atlas scan against the call's shared work budget.</summary>

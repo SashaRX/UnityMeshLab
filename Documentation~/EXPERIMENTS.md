@@ -4925,3 +4925,18 @@ A regression sweeps budgets 1 through 200 and requires either both repairs or
 the original buffer and untouched trace; it fails before this fix and passes
 after it. All 29 focused Unity recovery controls pass. Previously completed
 recovery stages retain their separate publication boundary.
+
+The complete furniture rerun after the budget fix again retains all 2349 rows:
+three better, 2346 equal, no errors or incomplete scans. A further review found
+that the quarter-texel donor band could touch a different mesh in a shared atlas.
+Pass the workflow's existing neighbour corners through all three bevel stages;
+changed faces must have zero cross-mesh contacts, with complete scans charged
+against the same per-pass budget. Invalid or partial neighbour data refuses the
+candidate. An exhausted audit refuses the entire proposal. The null-neighbour
+path used by the corpus retains its original work accounting and decisions.
+All 37 focused controls pass, including a neighbouring triangle entirely beyond
+the donor edge but inside the tolerance band, distant neighbours, each recovery
+stage, invalid inputs and budget refusal. Shared-atlas padding is not certified
+by this contact audit.
+The final expanded Transfer/Reverse/shared-atlas run passes 655 tests with zero
+failures and 45 optional fixture skips.

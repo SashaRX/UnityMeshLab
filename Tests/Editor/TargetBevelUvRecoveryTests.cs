@@ -42,7 +42,8 @@ namespace SashaRX.UnityMeshLab.Tests
         /// <summary>Runs target recovery against either a full square donor or a donor missing the collapsed face's footprint.</summary>
         static int Recover((GroupedShellTransfer.TransferResult result, List<UvShell> shells, int[] indices, Vector3[] positions) input,
             bool covered = true, CancellationToken token = default, long budget = 2000000,
-            int atlasSize = 512, Vector2[] donorUv = null, TransferMatchTrace trace = null, bool allowPatch = false, bool refine = false)
+            int atlasSize = 512, Vector2[] donorUv = null, TransferMatchTrace trace = null, bool allowPatch = false, bool refine = false,
+            Vector2[] atlasNeighbours = null)
         {
             var uv = covered ? new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.one }
                 : new[] { new Vector2(.2f, .2f), new Vector2(.4f, .2f), new Vector2(.2f, .4f), new Vector2(.3f, .3f) };
@@ -50,7 +51,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var indices = new[] { 0, 1, 2, 2, 1, 3 };
             var sources = new List<UvShell> { new UvShell { faceIndices = new List<int> { 0, 1 }, vertexIndices = new HashSet<int> { 0, 1, 2, 3 } } };
             return TargetBevelUvRecovery.Apply(input.result, input.shells, input.indices, input.positions,
-                sources, indices, uv, atlasSize, UvTransferTolerance.BoundaryTexels, trace, token, budget, allowPatch, refine);
+                sources, indices, uv, atlasSize, UvTransferTolerance.BoundaryTexels, trace, token, budget, allowPatch, refine, atlasNeighbours);
         }
 
         /// <summary>Repairs a collapsed boundary without moving anchors or unrelated existing contacts.</summary>
@@ -145,6 +146,52 @@ namespace SashaRX.UnityMeshLab.Tests
             var input = Fixture();
             var donor = new[] { Vector2.zero, new Vector2(.3998f, 0), Vector2.up, new Vector2(.3998f, 1) };
             Assert.AreEqual(expected, Recover(input, atlasSize: atlasSize, donorUv: donor));
+        }
+
+        /// <summary>The permitted quarter-texel donor band must not overlap another mesh sharing the atlas.</summary>
+        [TestCase(false)] [TestCase(true)]
+        public void DonorBoundaryBandRespectsAtlasNeighbour(bool touching)
+        {
+            var input = Fixture(); var original = input.result.uv2;
+            var donor = new[] { Vector2.zero, new Vector2(.3998f, 0), Vector2.up, new Vector2(.3998f, 1) };
+            var neighbours = new[] { new Vector2(.39985f, .3997f), new Vector2(.39998f, .3997f), new Vector2(.39985f, .39983f) };
+            if (!touching) neighbours = neighbours.Select(p => p + new Vector2(.2f, .2f)).ToArray();
+            Assert.AreEqual(touching ? 0 : 1, Recover(input, donorUv: donor, atlasNeighbours: neighbours));
+            if (touching) Assert.AreSame(original, input.result.uv2);
+        }
+
+        /// <summary>All recovery stages audit shared-atlas contacts and still accept a distant neighbour.</summary>
+        [TestCase(false, false)] [TestCase(true, false)] [TestCase(true, true)]
+        public void EveryRecoveryStageAuditsAtlasNeighbours(bool patch, bool refine)
+        {
+            foreach (bool touching in new[] { false, true })
+            {
+                var input = Fixture("metric-anchor");
+                if (patch)
+                {
+                    input.positions[2] = new Vector3(1, 1, 0); input.positions[3] = new Vector3(1.001f, 1, 0);
+                    input.result.uv2[0] = new Vector2(.1f, .1f); input.result.uv2[1] = new Vector2(.4f, .1f);
+                    input.result.uv2[2] = input.result.uv2[3] = new Vector2(.4f, .4f);
+                }
+                var original = input.result.uv2;
+                var neighbours = touching ? new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.up, Vector2.right, Vector2.one }
+                    : new[] { new Vector2(.8f, .8f), new Vector2(.9f, .8f), new Vector2(.8f, .9f) };
+                Assert.AreEqual(touching ? 0 : 1, Recover(input, allowPatch: patch, refine: refine, atlasNeighbours: neighbours));
+                if (touching) Assert.AreSame(original, input.result.uv2);
+            }
+        }
+
+        /// <summary>Malformed neighbour data or an unaffordable cross-mesh scan cannot publish a repair.</summary>
+        [TestCase("invalid")] [TestCase("incomplete")] [TestCase("budget")]
+        public void InvalidAtlasNeighbourAuditRefusesPublication(string reason)
+        {
+            var input = Fixture(); var original = input.result.uv2;
+            var neighbours = new[] { new Vector2(.8f, .8f), new Vector2(.9f, .8f), new Vector2(.8f, .9f) };
+            if (reason == "invalid") neighbours[0].x = float.NaN;
+            if (reason == "incomplete") neighbours = neighbours.Take(2).ToArray();
+            if (reason == "budget") neighbours = Enumerable.Repeat(neighbours, 100).SelectMany(p => p).ToArray();
+            Assert.AreEqual(0, Recover(input, budget: 100, atlasNeighbours: neighbours));
+            Assert.AreSame(original, input.result.uv2);
         }
 
         /// <summary>Duplicated donor coverage cannot conceal an uncovered half; nonfinite donor coordinates also refuse publication.</summary>

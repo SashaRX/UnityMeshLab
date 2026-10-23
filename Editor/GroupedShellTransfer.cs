@@ -1034,7 +1034,7 @@ namespace SashaRX.UnityMeshLab
         static bool RecoverFinalProjection(TransferResult result,
             (List<UvShell> shells,int[] indices,Vector3[] positions) target,
             (List<UvShell> shells,int[] indices,Vector3[] positions,Vector2[] uv) source,
-            TransferMatchTrace trace,int atlasSize,float boundaryToleranceTexels)
+            TransferMatchTrace trace,int atlasSize,float boundaryToleranceTexels,Vector2[] atlasNeighbours)
         {
             int planarRecovered = PlanarTransferRecovery.Apply(result,target.shells,target.indices,target.positions,
                 source.shells,source.indices,source.positions,source.uv,trace,atlasSize,boundaryToleranceTexels);
@@ -1048,11 +1048,11 @@ namespace SashaRX.UnityMeshLab
             try
             {
                 int bevelRecovered = TargetBevelUvRecovery.Apply(result, target.shells, target.indices, target.positions,
-                    source.shells, source.indices, source.uv, atlasSize, boundaryToleranceTexels, trace);
+                    source.shells, source.indices, source.uv, atlasSize, boundaryToleranceTexels, trace, atlasNeighbours: atlasNeighbours);
                 bevelRecovered += TargetBevelUvRecovery.Apply(result, target.shells, target.indices, target.positions,
-                    source.shells, source.indices, source.uv, atlasSize, boundaryToleranceTexels, trace, allowPatch: true);
+                    source.shells, source.indices, source.uv, atlasSize, boundaryToleranceTexels, trace, allowPatch: true, atlasNeighbours: atlasNeighbours);
                 bevelRecovered += TargetBevelUvRecovery.Apply(result, target.shells, target.indices, target.positions,
-                    source.shells, source.indices, source.uv, atlasSize, boundaryToleranceTexels, trace, allowPatch: true, refine: true);
+                    source.shells, source.indices, source.uv, atlasSize, boundaryToleranceTexels, trace, allowPatch: true, refine: true, atlasNeighbours: atlasNeighbours);
                 if (bevelRecovered > 0)
                 {
                     result.shellsGeometryFallback += bevelRecovered;
@@ -4223,7 +4223,7 @@ namespace SashaRX.UnityMeshLab
 
             if (!RecoverFinalProjection(result,(tgtShells,tgtTris,tVerts),
                 (srcShells,srcTris,srcVerts,srcUv2),trace,
-                System.Math.Max(sourceAtlasWidth,sourceAtlasHeight),boundaryToleranceTexels))
+                System.Math.Max(sourceAtlasWidth,sourceAtlasHeight),boundaryToleranceTexels,atlasNeighbours))
                 return CancelTransfer(result);
 
             // ── Classify all shells ──
