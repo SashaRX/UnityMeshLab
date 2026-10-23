@@ -67,6 +67,8 @@ namespace SashaRX.UnityMeshLab.Tests
             var positions = new[] { Vector3.zero, Vector3.right, Vector3.up, new Vector3(1000, -50, 7) };
             int[] indices = { 0, 1, 2 };
             Assert.AreEqual(3, MeshGeometry.FaceVertexCount(indices, positions.Length));
+            // A source on the vertex no face uses is not a transferred vertex.
+            Assert.AreEqual((3, 2), MeshGeometry.FaceVertexCoverage(indices, positions.Length, new[] { 0, -1, 4, 7 }));
             var (min, max) = MeshGeometry.FaceBounds(positions, indices);
             Assert.AreEqual(Vector3.zero, min);
             Assert.AreEqual(new Vector3(1, 1, 0), max);

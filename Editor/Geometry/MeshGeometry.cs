@@ -332,13 +332,21 @@ namespace SashaRX.UnityMeshLab
         /// How many vertices a face uses. A vertex outside every face (Unity imports an FBX
         /// control point outside every polygon as one) has no surface to carry a UV.
         /// </summary>
-        internal static int FaceVertexCount(int[] indices, int vertexCount)
+        internal static int FaceVertexCount(int[] indices, int vertexCount) =>
+            FaceVertexCoverage(indices, vertexCount, null).total;
+
+        /// <summary>The vertices a face uses, and how many of them have a source (<paramref name="sources"/>[v] &gt;= 0).</summary>
+        internal static (int total, int transferred) FaceVertexCoverage(int[] indices, int vertexCount, int[] sources)
         {
             var used = new bool[vertexCount];
-            int count = 0;
+            int total = 0, transferred = 0;
             foreach (int i in indices)
-                if (i >= 0 && i < vertexCount && !used[i]) { used[i] = true; ++count; }
-            return count;
+            {
+                if (i < 0 || i >= vertexCount || used[i]) continue;
+                used[i] = true; ++total;
+                if (sources != null && i < sources.Length && sources[i] >= 0) ++transferred;
+            }
+            return (total, transferred);
         }
 
         /// <summary>The corners of the axis-aligned box of the vertices a face uses; of all vertices when there are no faces.</summary>
