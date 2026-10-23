@@ -1782,6 +1782,40 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(-1, FbxChannelWrite.TagOrdinal(new List<Vector2>()));
         }
 
+        [Test]
+        public void CornerTags_AVertexNoFaceUsesDoesNotVote()
+        {
+            var tags = new List<Vector2> { new Vector2(0, -1), Vector2.zero, new Vector2(1, -1) };
+            Assert.AreEqual(-1, FbxChannelWrite.TagOrdinal(tags));
+            Assert.AreEqual(0, FbxChannelWrite.TagOrdinal(tags, new[] { true, false, true }));
+            Assert.AreEqual(-1, FbxChannelWrite.TagOrdinal(tags, new[] { false, false, false }));
+        }
+
+        // A control point outside every polygon can import as a vertex no face uses (Unity
+        // keeps such points from some files, not from a file the FBX SDK writes here); it has
+        // no corner and its tag is (0, 0), which must not refuse the mesh's other tags.
+        [Test]
+        public void CornerTags_AVertexNoFaceUsesDoesNotRefuseTheMeshTags()
+        {
+            int radix = FbxLayerChannels.CornerTagRadix;
+            Vector2 Tag(int corner) => new Vector2(corner % radix, -(corner / radix + 1));
+            var mesh = new Mesh();
+            try
+            {
+                mesh.vertices = new[] { Vector3.zero, Vector3.right, Vector3.up, new Vector3(5, 5, 5) };
+                mesh.SetUVs(0, new List<Vector2> { new Vector2(.1f, .1f), new Vector2(.2f, .2f), new Vector2(.3f, .3f), new Vector2(.9f, .9f) });
+                mesh.SetUVs(1, new List<Vector2> { Tag(0), Tag(1), Tag(2), Vector2.zero });
+                mesh.triangles = new[] { 0, 1, 2 };
+                var tag = FbxChannelWrite.ReadTags(mesh, new Dictionary<int, int> { { 0, 1 } }, new Dictionary<int, int> { { 0, 3 } });
+                Assert.IsNotNull(tag, "the vertex no face uses refused the tag channel");
+                Assert.AreEqual(0, tag.ordinal);
+                CollectionAssert.AreEqual(new float[] { 0, 0, 0, 1, 0, 0, 0, 1, 0 }, tag.cornerPositions);
+                CollectionAssert.AreEqual(new[] { new Vector2(.1f, .1f), new Vector2(.2f, .2f), new Vector2(.3f, .3f) }, tag.uvs[0]);
+                CollectionAssert.AreEqual(new[] { 0, 1, 2 }, tag.submeshCorners[0]);
+            }
+            finally { UnityEngine.Object.DestroyImmediate(mesh); }
+        }
+
         [TestCase(ModelImporterMeshCompression.Off, true)]
         [TestCase(ModelImporterMeshCompression.Low, true)]
         [TestCase(ModelImporterMeshCompression.Medium, true)]

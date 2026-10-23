@@ -1013,28 +1013,48 @@ namespace SashaRX.UnityMeshLab
 
         // The tag channel is read from mesh; the vertices, faces and other channels from
         // vertexSource when given (the same vertices, in the same order, see ReadImportedTags).
-        static Tagged ReadTags(Mesh mesh, Dictionary<int, int> tagChannels, Dictionary<int, int> cornerCounts, Mesh vertexSource = null)
+        internal static Tagged ReadTags(Mesh mesh, Dictionary<int, int> tagChannels, Dictionary<int, int> cornerCounts, Mesh vertexSource = null)
         {
             var list = new List<Vector2>();
+            var faceVertices = FaceVertices(mesh);
             for (int ch = 0; ch < 8; ch++)
             {
                 mesh.GetUVs(ch, list);
                 if (list.Count == 0 || list.Count != mesh.vertexCount) continue;
-                int ordinal = TagOrdinal(list);
+                int ordinal = TagOrdinal(list, faceVertices);
                 if (ordinal < 0 || !tagChannels.TryGetValue(ordinal, out int expected) || expected != ch) continue;
                 int count = cornerCounts[ordinal];
-                if (list.Any(t => TagCorner(t) >= count)) continue;
+                if (list.Any(t => TagCorner(t, ordinal) >= count)) continue;
                 return BuildTagged(vertexSource ?? mesh, ch, ordinal, list, count);
             }
             return null;
         }
 
-        // The ordinal every vertex of the channel agrees on, or -1 when it is not a tag channel.
-        internal static int TagOrdinal(List<Vector2> tags)
+        // The vertices a triangle or quad of the mesh uses.
+        static bool[] FaceVertices(Mesh mesh)
         {
-            if (tags == null || tags.Count == 0 || !DecodeTag(tags[0], out _, out int ordinal)) return -1;
-            foreach (var t in tags)
-                if (!DecodeTag(t, out _, out int candidate) || candidate != ordinal) return -1;
+            var used = new bool[mesh.vertexCount];
+            for (int s = 0; s < mesh.subMeshCount; s++)
+            {
+                var topology = mesh.GetTopology(s);
+                if (topology != MeshTopology.Triangles && topology != MeshTopology.Quads) continue;
+                foreach (int i in mesh.GetIndices(s)) used[i] = true;
+            }
+            return used;
+        }
+
+        // The ordinal every vertex of the channel agrees on, or -1 when it is not a tag channel.
+        // With faceVertices, a vertex no face uses does not vote: a control point outside every
+        // polygon imports as such a vertex with no corner, so its tag is (0, 0).
+        internal static int TagOrdinal(List<Vector2> tags, bool[] faceVertices = null)
+        {
+            int ordinal = -1;
+            for (int v = 0; tags != null && v < tags.Count; v++)
+            {
+                if (faceVertices != null && !faceVertices[v]) continue;
+                if (!DecodeTag(tags[v], out _, out int candidate) || ordinal >= 0 && candidate != ordinal) return -1;
+                ordinal = candidate;
+            }
             return ordinal;
         }
 
@@ -1050,11 +1070,10 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
-        static int TagCorner(Vector2 tag)
-        {
-            DecodeTag(tag, out int corner, out _);
-            return corner;
-        }
+        // The corner a vertex carries, or -1 when its tag is not one of this mesh's (a vertex no
+        // face uses).
+        static int TagCorner(Vector2 tag, int ordinal)
+            => DecodeTag(tag, out int corner, out int tagOrdinal) && tagOrdinal == ordinal ? corner : -1;
 
         // Each varying component spans at most 4095. Real compressed imports can exceed
         // 0.002 even on small meshes; retain a strict margin to the half-integer boundary.
@@ -1084,7 +1103,8 @@ namespace SashaRX.UnityMeshLab
             var cornerOf = new int[vertices.Length];
             for (int v = 0; v < vertices.Length; v++)
             {
-                int c = cornerOf[v] = TagCorner(tags[v]);
+                int c = cornerOf[v] = TagCorner(tags[v], ordinal);
+                if (c < 0) continue;
                 tag.cornerPositions[c * 3] = vertices[v].x; tag.cornerPositions[c * 3 + 1] = vertices[v].y; tag.cornerPositions[c * 3 + 2] = vertices[v].z;
             }
             tag.submeshCorners = new int[mesh.subMeshCount][];
@@ -1110,7 +1130,7 @@ namespace SashaRX.UnityMeshLab
                 mesh.GetUVs(ch, list);
                 if (list.Count != mesh.vertexCount) continue;
                 tag.uvs[ch] = new Vector2[corners];
-                for (int v = 0; v < mesh.vertexCount; v++) tag.uvs[ch][cornerOf[v]] = list[v];
+                for (int v = 0; v < mesh.vertexCount; v++) if (cornerOf[v] >= 0) tag.uvs[ch][cornerOf[v]] = list[v];
             }
         }
 
@@ -1120,13 +1140,13 @@ namespace SashaRX.UnityMeshLab
             if (normals != null && normals.Length == mesh.vertexCount)
             {
                 tag.normals = new Vector3[corners];
-                for (int v = 0; v < mesh.vertexCount; v++) tag.normals[cornerOf[v]] = normals[v];
+                for (int v = 0; v < mesh.vertexCount; v++) if (cornerOf[v] >= 0) tag.normals[cornerOf[v]] = normals[v];
             }
             var tangents = mesh.tangents;
             if (tangents != null && tangents.Length == mesh.vertexCount)
             {
                 tag.tangents = new Vector4[corners];
-                for (int v = 0; v < mesh.vertexCount; v++) tag.tangents[cornerOf[v]] = tangents[v];
+                for (int v = 0; v < mesh.vertexCount; v++) if (cornerOf[v] >= 0) tag.tangents[cornerOf[v]] = tangents[v];
             }
             var colors = mesh.colors;
             if (colors != null && colors.Length == mesh.vertexCount)
@@ -1134,7 +1154,8 @@ namespace SashaRX.UnityMeshLab
                 var colors32 = mesh.colors32;
                 tag.colors = new Color[corners];
                 tag.colors32 = new Color32[corners];
-                for (int v = 0; v < mesh.vertexCount; v++) { tag.colors[cornerOf[v]] = colors[v]; tag.colors32[cornerOf[v]] = colors32[v]; }
+                for (int v = 0; v < mesh.vertexCount; v++)
+                    if (cornerOf[v] >= 0) { tag.colors[cornerOf[v]] = colors[v]; tag.colors32[cornerOf[v]] = colors32[v]; }
             }
         }
 
