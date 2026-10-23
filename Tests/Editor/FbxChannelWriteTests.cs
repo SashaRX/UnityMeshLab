@@ -1763,6 +1763,70 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(-1, FbxChannelWrite.TagOrdinal(new List<Vector2>()));
         }
 
+        [Test]
+        public void CornerTags_AVertexNoFaceUsesDoesNotVote()
+        {
+            var tags = new List<Vector2> { new Vector2(0, -1), Vector2.zero, new Vector2(1, -1) };
+            Assert.AreEqual(-1, FbxChannelWrite.TagOrdinal(tags));
+            Assert.AreEqual(0, FbxChannelWrite.TagOrdinal(tags, new[] { true, false, true }));
+            Assert.AreEqual(-1, FbxChannelWrite.TagOrdinal(tags, new[] { false, false, false }));
+        }
+
+        // A control point outside every polygon imports as a vertex no face uses; it has no
+        // corner and its tag is (0, 0), which must not refuse the mesh's other tags.
+        [TestCase(ModelImporterMeshCompression.Off, true)]
+        [TestCase(ModelImporterMeshCompression.Low, true)]
+        [TestCase(ModelImporterMeshCompression.Off, false)]
+        public void ChannelWrite_AControlPointOutsideEveryPolygonDoesNotRefuseTheTags(ModelImporterMeshCompression compression, bool weld)
+        {
+            const int size = 4;
+            string assetFolder = "Assets/MeshLabLooseTags_" + Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", assetFolder.Substring("Assets/".Length));
+            string sourcePath = assetFolder + "/grid.fbx";
+            string outputPath = Path.Combine(folder, "loose_written.fbx");
+            Mesh working = null;
+            try
+            {
+                WriteGridSource(sourcePath, size, loosePoints: 2);
+                AssetDatabase.ImportAsset(sourcePath, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(sourcePath);
+                importer.isReadable = true;
+                importer.meshCompression = compression;
+                importer.weldVertices = weld;
+                importer.SaveAndReimport();
+                var imported = AssetDatabase.LoadAllAssetsAtPath(sourcePath).OfType<Mesh>().Single();
+                Assert.That(imported.vertexCount, Is.GreaterThan(imported.triangles.Distinct().Count()),
+                    "Unity is expected to import the loose control points as vertices no face uses.");
+                working = UnityEngine.Object.Instantiate(imported);
+                // Rounded to the grid, so compressed UV0 gives the same value as the file's.
+                Vector2 Edited(Vector2 uv) => new Vector2(Mathf.Round(uv.x * size) / 8f + .25f,
+                    Mathf.Round(uv.y * size) / 16f + .5f);
+                working.uv2 = imported.uv.Select(Edited).ToArray();
+                Assert.IsTrue(FbxChannelWrite.Write(sourcePath,
+                    new[] { new MeshEntry { fbxMesh = imported, originalMesh = working } },
+                    FbxExportIntent.UV1, outputPath, null));
+                using var source = FbxSourceDocument.Load(Path.GetFullPath(sourcePath));
+                using var written = FbxSourceDocument.Load(outputPath);
+                var a = source.Meshes.Single(); var b = written.Meshes.Single();
+                var at = new FbxLayerChannels.Topology(a); var bt = new FbxLayerChannels.Topology(b);
+                CollectionAssert.AreEqual(at.polygonSizes, bt.polygonSizes);
+                Assert.AreEqual(a.GetControlPointsCount(), b.GetControlPointsCount());
+                var original = FbxLayerChannels.ReadUv(FbxLayerChannels.UvElements(a)[0], at);
+                var saved = FbxLayerChannels.ReadUv(FbxLayerChannels.UvElements(b)[1], bt);
+                for (int c = 0; c < at.CornerCount; c++)
+                {
+                    var expected = Edited(new Vector2((float)original[c * 2], (float)original[c * 2 + 1]));
+                    Assert.AreEqual((double)expected.x, saved[c * 2], $"Corner {c} U");
+                    Assert.AreEqual((double)expected.y, saved[c * 2 + 1], $"Corner {c} V");
+                }
+            }
+            finally
+            {
+                if (working) UnityEngine.Object.DestroyImmediate(working);
+                AssetDatabase.DeleteAsset(assetFolder);
+            }
+        }
+
         [TestCase(ModelImporterMeshCompression.Off, true)]
         [TestCase(ModelImporterMeshCompression.Low, true)]
         [TestCase(ModelImporterMeshCompression.Medium, true)]
@@ -1824,7 +1888,7 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
-        static void WriteGridSource(string path, int size)
+        static void WriteGridSource(string path, int size, int loosePoints = 0)
         {
             using var manager = FbxManager.Create();
             var io = FbxIOSettings.Create(manager, Globals.IOSROOT);
@@ -1832,7 +1896,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var scene = FbxScene.Create(manager, "Grid");
             var mesh = FbxMesh.Create(scene, "GridMesh");
             int side = size + 1;
-            mesh.InitControlPoints(side * side);
+            mesh.InitControlPoints(side * side + loosePoints);
             mesh.CreateLayer();
             var uv = FbxLayerElementUV.Create(mesh, "map1");
             uv.SetMappingMode(FbxLayerElement.EMappingMode.eByControlPoint);
@@ -1843,6 +1907,12 @@ namespace SashaRX.UnityMeshLab.Tests
                     mesh.SetControlPointAt(new FbxVector4(x, y, 0), y * side + x);
                     uv.GetDirectArray().Add(new FbxVector2((double)x / size, (double)y / size));
                 }
+            // Control points no polygon uses, away from the grid.
+            for (int i = 0; i < loosePoints; i++)
+            {
+                mesh.SetControlPointAt(new FbxVector4(-1 - i, -1, 0), side * side + i);
+                uv.GetDirectArray().Add(new FbxVector2(0, 0));
+            }
             mesh.GetLayer(0).SetUVs(uv, FbxLayerElement.EType.eTextureDiffuse);
             for (int y = 0; y < size; y++)
                 for (int x = 0; x < size; x++)
