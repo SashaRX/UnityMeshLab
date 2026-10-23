@@ -107,7 +107,19 @@ past 10000:1 as collapsed.
 
 Follow-up: the unclamped similarity is also refused when one of its faces
 that keeps an area stretches past the source chart's worst stretch, or past
-4:1 if that is lower. Pending measurement.
+4:1 if that is lower.
+
+Measured at be2a60a (item 43; e9d4d98 with main merged). Models K and A
+equal the 0ef3403 run shell for shell: the stretch bound refused none of
+model K's similarities (stretch 1.0–1.27) and on model A one candidate
+that did not win anyway. Corpus: exit code 1, 0 worse, 1 tradeoff, 21
+better; uvDegenerateFaces and overlap pairs rose in no row, stretched
+faces in none of the reparameterizing profiles; 54 `unclamped
+similarity` lines, 25 candidates refused by the stretch bound. The second
+tradeoff is gone (its face was 32791:1 on a 1.73:1 chart). The one left,
+without reparameterization, turns a collapsed face into one of 2.83:1 on
+a 1.92:1 chart (stretched faces 48 → 49, area-weighted anisotropy
+2.101 → 2.102); it was accepted and the change merged.
 
 ## Small merged shells try all sources before rejection — 2026-10-22
 
