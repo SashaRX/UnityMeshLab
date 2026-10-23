@@ -1106,7 +1106,8 @@ namespace SashaRX.UnityMeshLab
             { UvtLog.Error("[GroupedTransfer] Target missing UV0"); return result; }
 
             result.uv2 = new Vector2[vertCount];
-            result.verticesTotal = vertCount;
+            // A vertex no face uses has nothing to transfer; it is not a miss.
+            result.verticesTotal = MeshGeometry.FaceVertexCount(tgtTris, vertCount);
             result.vertexToSourceShell = new int[vertCount];
             for (int i = 0; i < vertCount; i++) result.vertexToSourceShell[i] = -1;
 
@@ -1334,13 +1335,8 @@ namespace SashaRX.UnityMeshLab
             }
 
             // ── Mesh-scale metrics for adaptive thresholds ──
-            Vector3 srcBoundsMin = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
-            Vector3 srcBoundsMax = new Vector3(float.MinValue, float.MinValue, float.MinValue);
-            for (int i = 0; i < srcVerts.Length; i++)
-            {
-                srcBoundsMin = Vector3.Min(srcBoundsMin, srcVerts[i]);
-                srcBoundsMax = Vector3.Max(srcBoundsMax, srcVerts[i]);
-            }
+            // The source's surface: a far vertex no face uses would widen every distance tolerance.
+            var (srcBoundsMin, srcBoundsMax) = MeshGeometry.FaceBounds(srcVerts, srcTris);
             float meshDiagonal = (srcBoundsMax - srcBoundsMin).magnitude;
 
             // Average UV0 triangle edge length

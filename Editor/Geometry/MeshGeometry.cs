@@ -328,6 +328,29 @@ namespace SashaRX.UnityMeshLab
             return area > 0 && !double.IsInfinity(area);
         }
 
+        /// <summary>
+        /// How many vertices a face uses. A vertex outside every face (Unity imports an FBX
+        /// control point outside every polygon as one) has no surface to carry a UV.
+        /// </summary>
+        internal static int FaceVertexCount(int[] indices, int vertexCount)
+        {
+            var used = new bool[vertexCount];
+            int count = 0;
+            foreach (int i in indices)
+                if (i >= 0 && i < vertexCount && !used[i]) { used[i] = true; ++count; }
+            return count;
+        }
+
+        /// <summary>The corners of the axis-aligned box of the vertices a face uses; of all vertices when there are no faces.</summary>
+        internal static (Vector3 min, Vector3 max) FaceBounds(Vector3[] positions, int[] indices)
+        {
+            Vector3 min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue), max = -min;
+            if (indices.Length == 0)
+                foreach (var p in positions) { min = Vector3.Min(min, p); max = Vector3.Max(max, p); }
+            foreach (int i in indices) { min = Vector3.Min(min, positions[i]); max = Vector3.Max(max, positions[i]); }
+            return (min, max);
+        }
+
         /// <summary>The axis-aligned box that encloses <paramref name="bounds"/> after <paramref name="matrix"/> (all eight corners carried through).</summary>
         public static Bounds TransformBounds(Bounds bounds, Matrix4x4 matrix)
         {

@@ -62,6 +62,19 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void FaceVerticesLeaveOutAVertexNoFaceUses()
+        {
+            var positions = new[] { Vector3.zero, Vector3.right, Vector3.up, new Vector3(1000, -50, 7) };
+            int[] indices = { 0, 1, 2 };
+            Assert.AreEqual(3, MeshGeometry.FaceVertexCount(indices, positions.Length));
+            var (min, max) = MeshGeometry.FaceBounds(positions, indices);
+            Assert.AreEqual(Vector3.zero, min);
+            Assert.AreEqual(new Vector3(1, 1, 0), max);
+            // No faces: every vertex.
+            Assert.AreEqual(new Vector3(1000, 1, 7), MeshGeometry.FaceBounds(positions, new int[0]).max);
+        }
+
+        [Test]
         public void HasAreaUsesDoubleSoATinyTriangleStillCounts()
         {
             // Edges of 1e-25: the float cross product underflows to zero, the double one does not.

@@ -2978,7 +2978,8 @@ namespace SashaRX.UnityMeshLab
             var tr = new GroupedShellTransfer.TransferResult();
             tr.vertexToSourceShell = entry.vertexToSourceShellDescriptor;
             tr.targetShellToSourceShell = entry.targetShellToSourceShellDescriptor;
-            tr.verticesTotal = e.fbxMesh.vertexCount;
+            tr.verticesTotal = e.fbxMesh.isReadable
+                ? MeshGeometry.FaceVertexCount(e.fbxMesh.triangles, e.fbxMesh.vertexCount) : e.fbxMesh.vertexCount;
             int transferred = 0;
             for (int i = 0; i < tr.vertexToSourceShell.Length; i++)
                 if (tr.vertexToSourceShell[i] >= 0) transferred++;
