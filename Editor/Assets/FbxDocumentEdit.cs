@@ -237,6 +237,22 @@ namespace SashaRX.UnityMeshLab
             return plans.Values.Sum(p => p.sources.Length - p.sources.Distinct().Count());
         }
 
+        /// <summary>
+        /// Gives each of <paramref name="meshes"/> that has normals but no smoothing an edge
+        /// smoothing layer following those normals (see <see cref="FbxPolygonSplitFile.ApplyNormalSmoothing"/>).
+        /// The scene is replaced: mesh wrappers taken before the call no longer belong to it.
+        /// Returns how many meshes were offered.
+        /// </summary>
+        internal int SmoothFromNormals(ICollection<FbxMesh> meshes)
+        {
+            var plans = new Dictionary<int, bool>();
+            for (int ordinal = 0; ordinal < Meshes.Count; ++ordinal)
+                if (meshes.Contains(Meshes[ordinal])) plans.Add(ordinal, true);
+            if (plans.Count == 0) return 0;
+            EditTopology(plans, FbxPolygonSplitFile.ApplyNormalSmoothing);
+            return plans.Count;
+        }
+
         static FbxUvPointSplit SmallUvSeamPlan(FbxMesh mesh, int uvSet)
         {
             var sets = FbxLayerChannels.UvElements(mesh);

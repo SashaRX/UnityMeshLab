@@ -256,9 +256,23 @@ namespace SashaRX.UnityMeshLab
                 .Select(d => document.Meshes[tagged[d.name].ordinal]).ToHashSet();
             int structural = hasStructure ? FbxStructureWrite.Apply(document, tagged, structure, options, structureLog) : 0;
             if (structural > 0) document.RefreshMeshes();
+            var wholeMeshes = options.wholeMeshes;
+            if (wholeMeshes.Count > 0)
+            {
+                // Meshes written whole carry Unity's normals but no smoothing; give them smoothing
+                // that follows those normals. The scene is replaced, so carry meshes by ordinal.
+                var uvOrdinals = uvMeshes.Select(m => document.Meshes.IndexOf(m)).ToList();
+                var wholeOrdinals = wholeMeshes.Select(m => document.Meshes.IndexOf(m)).ToList();
+                if (uvOrdinals.Contains(-1) || wholeOrdinals.Contains(-1))
+                    throw new InvalidOperationException("FBX meshes written whole are not in the document; nothing was written.");
+                document.SmoothFromNormals(wholeMeshes);
+                uvMeshes = uvOrdinals.Select(i => document.Meshes[i]).ToHashSet();
+                wholeMeshes = wholeOrdinals.Select(i => document.Meshes[i]).ToList();
+                structureLog.Add($"{wholeMeshes.Count} mesh(es) written whole take edge smoothing that follows their normals");
+            }
             bool uv1Written = channelsWritten.Contains("UV1") || (options.uv1Written && structural > 0);
             if (uv1Written) {
-                if (hasStructure && options.uv1Written) uvMeshes.UnionWith(options.wholeMeshes);
+                if (hasStructure && options.uv1Written) uvMeshes.UnionWith(wholeMeshes);
                 int points = document.PreserveSmallUvSeams(uvMeshes, FbxUvSet(1, swapUv));
                 if (points > 0) UvtLog.Info($"[FBX Export] Preserved nearby lightmap seams with {points} duplicate control points; positions and UVs unchanged.");
             }
