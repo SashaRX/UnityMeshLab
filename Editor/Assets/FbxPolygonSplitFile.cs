@@ -157,7 +157,8 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
             var next = PointCornerSuccessors(original);
-            var (oldSlots, used, edges, sources) = OriginalPointEdges(IntArray(edgesNode), original, points, next);
+            var oldEdges = IntArray(edgesNode);
+            var (oldSlots, used, edges, sources) = OriginalPointEdges(oldEdges, original, points, next);
             for (int c = 0; c < points.Length; ++c) {
                 if (!used.Add(Edge(points[c], points[next[c]]))) continue;
                 if (!oldSlots.TryGetValue(Edge(original[c], original[next[c]]), out int source))
@@ -165,7 +166,7 @@ namespace SashaRX.UnityMeshLab
                 edges.Add(c); sources.Add(source);
             }
             var plan = new FbxPolygonSplit();
-            foreach (var layer in layers) RemapLayer(layer, plan, original.Length, 0, sources.ToArray(), oldSlots.Count);
+            foreach (var layer in layers) RemapLayer(layer, plan, original.Length, 0, sources.ToArray(), oldEdges.Length);
             SetInts(edgesNode, edges.ToArray());
         }
 
@@ -179,6 +180,8 @@ namespace SashaRX.UnityMeshLab
             return next;
         }
 
+        // Corners keep their indices in a point split, so every source edge keeps its own corner,
+        // repeated point pairs included. A seam's new edge takes the first source edge on its pair.
         static (Dictionary<(int,int),int> slots, HashSet<(int,int)> used, List<int> edges, List<int> sources)
             OriginalPointEdges(int[] oldEdges, int[] original, int[] points, int[] next)
         {
@@ -187,9 +190,8 @@ namespace SashaRX.UnityMeshLab
             for (int e = 0; e < oldEdges.Length; ++e) {
                 int c = oldEdges[e];
                 if (c < 0 || c >= original.Length) throw new IOException("FBX has an invalid edge index.");
-                if (!slots.TryAdd(Edge(original[c], original[next[c]]), e))
-                    throw new IOException("FBX point split has ambiguous source edges.");
-                if (!used.Add(Edge(points[c], points[next[c]]))) throw new IOException("FBX point split cannot preserve source edges.");
+                slots.TryAdd(Edge(original[c], original[next[c]]), e);
+                used.Add(Edge(points[c], points[next[c]]));
                 edges.Add(c); sources.Add(e);
             }
             return (slots, used, edges, sources);
@@ -201,7 +203,7 @@ namespace SashaRX.UnityMeshLab
             var (oldPoints, next, polygonCount) = ReadPolygons(polygonNode);
             var points = plan.corners.Select(c => oldPoints[c]).ToArray();
             var newNext = CornerSuccessors(plan.sizes, points.Length);
-            var (edgeMap, oldEdgeCount) = RemapEdges(mesh.Child("Edges"), oldPoints, next, points, newNext);
+            var (edgeMap, oldEdgeCount) = RemapEdges(mesh.Child("Edges"), oldPoints, next, plan.corners, points, newNext);
             foreach (var layer in mesh.children.Where(n => n.name.StartsWith("LayerElement", StringComparison.Ordinal)))
                 RemapLayer(layer, plan, oldPoints.Length, polygonCount, edgeMap, oldEdgeCount);
             int at = 0;
@@ -238,12 +240,16 @@ namespace SashaRX.UnityMeshLab
             return next;
         }
 
-        static (int[] map, int count) RemapEdges(Node node, int[] oldPoints, int[] oldNext, int[] points, int[] next)
+        // A source edge follows its own corner: the split keeps every polygon side in exactly one
+        // new polygon, so an edge table that names one point pair more than once (neighbours wound
+        // the same way along it, a side three polygons share) keeps every entry. Only the new
+        // diagonals get new entries.
+        static (int[] map, int count) RemapEdges(Node node, int[] oldPoints, int[] oldNext, int[] corners, int[] points, int[] next)
         {
             if (node == null) return (null, 0);
             var oldEdges = IntArray(node);
-            var firstCorner = new Dictionary<(int, int), int>();
-            for (int c = 0; c < points.Length; ++c) firstCorner.TryAdd(Edge(points[c], points[next[c]]), c);
+            var sides = new Dictionary<(int, int), int>();
+            for (int c = 0; c < corners.Length; ++c) sides.TryAdd((corners[c], corners[next[c]]), c);
             var newEdges = new List<int>();
             var originals = new List<int>();
             var used = new HashSet<(int, int)>();
@@ -251,14 +257,13 @@ namespace SashaRX.UnityMeshLab
             {
                 int corner = oldEdges[e];
                 if (corner < 0 || corner >= oldPoints.Length) throw new IOException("FBX has an invalid edge index.");
-                var key = Edge(oldPoints[corner], oldPoints[oldNext[corner]]);
-                if (!used.Add(key) || !firstCorner.TryGetValue(key, out int representative))
+                if (!sides.TryGetValue((corner, oldNext[corner]), out int representative))
                     throw new IOException("FBX split cannot preserve the source edge table.");
+                used.Add(Edge(oldPoints[corner], oldPoints[oldNext[corner]]));
                 newEdges.Add(representative); originals.Add(e);
             }
-            foreach (var pair in firstCorner.Where(pair => !used.Contains(pair.Key))) {
-                used.Add(pair.Key); newEdges.Add(pair.Value); originals.Add(-1);
-            }
+            for (int c = 0; c < points.Length; ++c)
+                if (used.Add(Edge(points[c], points[next[c]]))) { newEdges.Add(c); originals.Add(-1); }
             SetInts(node, newEdges.ToArray());
             return (originals.ToArray(), oldEdges.Length);
         }

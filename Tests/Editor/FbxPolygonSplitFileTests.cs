@@ -1,5 +1,6 @@
 // FbxPolygonSplitFileTests.cs — the binary split remaps every per-corner and per-point array a
-// layer holds, including LayerElementUserData's, which sit one record deeper than other layers'.
+// layer holds, including LayerElementUserData's, which sit one record deeper than other layers',
+// and keeps every edge-table entry, including a point pair the table names twice.
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -37,6 +38,34 @@ namespace SashaRX.UnityMeshLab.Tests
                 CollectionAssert.AreEqual(map.Select(i => 10f + i), ReadArray(file, "Weight", "UserData", 4, BitConverter.ToSingle));
                 CollectionAssert.AreEqual(map.SelectMany(i => new[] { i + .5, i + .25 }), ReadArray(file, "Offset", "UserData", 8, BitConverter.ToDouble));
                 CollectionAssert.AreEqual(points ? new[] { 0, 1, 4, ~3 } : new[] { 0, 1, ~2, 0, 2, ~3 },
+                    ReadArray(file, null, "PolygonVertexIndex", 4, BitConverter.ToInt32));
+            }
+            finally { File.Delete(path); }
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void ARepeatedSourceEdgeKeepsItsOwnEntryThroughTheSplit(bool points)
+        {
+            string path = Path.Combine(Path.GetTempPath(), "MeshLabRepeatedEdgeSplit_" + Guid.NewGuid().ToString("N") + ".fbx");
+            try
+            {
+                // A quad and a triangle both run 1 -> 2 (wound opposite ways), so the edge table
+                // names that pair twice.
+                File.WriteAllBytes(path, RepeatedEdgeDocument());
+                if (points)
+                    FbxPolygonSplitFile.ApplyUvPoints(path, new Dictionary<string, FbxUvPointSplit> {
+                        ["PartMesh"] = new FbxUvPointSplit { sources = new[] { 0, 1, 2, 3, 4, 2 }, corners = new[] { 0, 1, 2, 3, 1, 5, 4 } } });
+                else
+                    FbxPolygonSplitFile.Apply(path, new Dictionary<string, FbxPolygonSplit> {
+                        ["PartMesh"] = new FbxPolygonSplit { sizes = new[] { 3, 3, 3 }, corners = new[] { 0, 1, 2, 0, 2, 3, 4, 5, 6 }, polygons = new[] { 0, 0, 1 } } });
+                byte[] file = File.ReadAllBytes(path);
+                // Each source edge stays on the corner it started from; the quad's new diagonal is smooth.
+                CollectionAssert.AreEqual(points ? new[] { 0, 1, 2, 3, 4, 5, 6 } : new[] { 0, 1, 4, 5, 6, 7, 8, 2 },
+                    ReadArray(file, null, "Edges", 4, BitConverter.ToInt32));
+                CollectionAssert.AreEqual(points ? new[] { 10, 11, 12, 13, 14, 15, 16 } : new[] { 10, 11, 12, 13, 14, 15, 16, 1 },
+                    ReadArray(file, null, "Smoothing", 4, BitConverter.ToInt32));
+                CollectionAssert.AreEqual(points ? new[] { 0, 1, 2, ~3, 1, 5, ~4 } : new[] { 0, 1, ~2, 0, 2, ~3, 1, 2, ~4 },
                     ReadArray(file, null, "PolygonVertexIndex", 4, BitConverter.ToInt32));
             }
             finally { File.Delete(path); }
@@ -80,6 +109,27 @@ namespace SashaRX.UnityMeshLab.Tests
                 new Record("Vertices", new[] { ArrayOf('d', 8, new double[] { 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0 }.SelectMany(BitConverter.GetBytes)) }),
                 new Record("PolygonVertexIndex", new[] { ArrayOf('i', 4, new[] { 0, 1, 2, ~3 }.SelectMany(BitConverter.GetBytes)) }),
                 userData);
+            return Binary(geometry);
+        }
+
+        static byte[] RepeatedEdgeDocument()
+        {
+            var smoothing = new Record("LayerElementSmoothing", new[] { Int(0) },
+                new Record("Version", new[] { Int(102) }),
+                new Record("Name", new[] { Text("") }),
+                new Record("MappingInformationType", new[] { Text("ByEdge") }),
+                new Record("ReferenceInformationType", new[] { Text("Direct") }),
+                new Record("Smoothing", new[] { ArrayOf('i', 4, Enumerable.Range(10, 7).SelectMany(BitConverter.GetBytes)) }));
+            var geometry = new Record("Geometry", new[] { Long(1), Text("PartMesh\0\u0001Geometry"), Text("Mesh") },
+                new Record("Vertices", new[] { ArrayOf('d', 8, new double[] { 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 2, 0, 0 }.SelectMany(BitConverter.GetBytes)) }),
+                new Record("PolygonVertexIndex", new[] { ArrayOf('i', 4, new[] { 0, 1, 2, ~3, 1, 2, ~4 }.SelectMany(BitConverter.GetBytes)) }),
+                new Record("Edges", new[] { ArrayOf('i', 4, Enumerable.Range(0, 7).SelectMany(BitConverter.GetBytes)) }),
+                smoothing);
+            return Binary(geometry);
+        }
+
+        static byte[] Binary(Record geometry)
+        {
             using var stream = new MemoryStream();
             using var writer = new BinaryWriter(stream);
             writer.Write(Encoding.ASCII.GetBytes("Kaydara FBX Binary  \0\x1a\0")); writer.Write(7400);
