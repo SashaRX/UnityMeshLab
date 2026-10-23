@@ -42,7 +42,7 @@ namespace SashaRX.UnityMeshLab.Tests
         /// <summary>Runs target recovery against either a full square donor or a donor missing the collapsed face's footprint.</summary>
         static int Recover((GroupedShellTransfer.TransferResult result, List<UvShell> shells, int[] indices, Vector3[] positions) input,
             bool covered = true, CancellationToken token = default, long budget = 2000000,
-            int atlasSize = 512, Vector2[] donorUv = null, TransferMatchTrace trace = null, bool allowPatch = false)
+            int atlasSize = 512, Vector2[] donorUv = null, TransferMatchTrace trace = null, bool allowPatch = false, bool refine = false)
         {
             var uv = covered ? new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.one }
                 : new[] { new Vector2(.2f, .2f), new Vector2(.4f, .2f), new Vector2(.2f, .4f), new Vector2(.3f, .3f) };
@@ -50,7 +50,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var indices = new[] { 0, 1, 2, 2, 1, 3 };
             var sources = new List<UvShell> { new UvShell { faceIndices = new List<int> { 0, 1 }, vertexIndices = new HashSet<int> { 0, 1, 2, 3 } } };
             return TargetBevelUvRecovery.Apply(input.result, input.shells, input.indices, input.positions,
-                sources, indices, uv, atlasSize, UvTransferTolerance.BoundaryTexels, trace, token, budget, allowPatch);
+                sources, indices, uv, atlasSize, UvTransferTolerance.BoundaryTexels, trace, token, budget, allowPatch, refine);
         }
 
         /// <summary>Repairs a collapsed boundary without moving anchors or unrelated existing contacts.</summary>
@@ -97,14 +97,14 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         /// <summary>Cancellation and exhausted coverage work leave the complete original UV array owned by the caller.</summary>
-        [Test]
-        public void CancellationAndBudgetRefusalAreAtomic()
+        [TestCase(false)] [TestCase(true)]
+        public void CancellationAndBudgetRefusalAreAtomic(bool refine)
         {
             var input = Fixture(); var original = input.result.uv2;
-            Assert.AreEqual(0, Recover(input, budget: 1));
+            Assert.AreEqual(0, Recover(input, budget: 1, allowPatch: refine, refine: refine));
             Assert.AreSame(original, input.result.uv2);
             using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
-            Assert.Throws<OperationCanceledException>(() => Recover(input, token: cancelled.Token));
+            Assert.Throws<OperationCanceledException>(() => Recover(input, token: cancelled.Token, allowPatch: refine, refine: refine));
             Assert.AreSame(original, input.result.uv2);
         }
 
@@ -176,21 +176,21 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         /// <summary>Fewer collapsed faces cannot compensate for increased whole-mesh finite stretch.</summary>
-        [Test]
-        public void PatchRefusesGlobalStretchTradeoff()
+        [TestCase(false)] [TestCase(true)]
+        public void PatchRefusesGlobalStretchTradeoff(bool refine)
         {
             var input = Fixture();
             input.positions[2] = new Vector3(1, 1, 0); input.positions[3] = new Vector3(1.001f, 1, 0);
             input.result.uv2 = new[] { new Vector2(.1f, .1f), new Vector2(.4f, .1f), new Vector2(.4f, .4f), new Vector2(.4f, .4f) };
             var original = input.result.uv2;
             var donor = new[] { new Vector2(.1f, .1f), new Vector2(.4f, .1f), new Vector2(.1f, .4f), new Vector2(.4f, .4f) };
-            Assert.AreEqual(0, Recover(input, atlasSize: 2344, donorUv: donor, allowPatch: true));
+            Assert.AreEqual(0, Recover(input, atlasSize: 2344, donorUv: donor, allowPatch: true, refine: refine));
             Assert.AreSame(original, input.result.uv2);
         }
 
         /// <summary>A completely collapsed triangle has no healthy incident face to determine its UV orientation.</summary>
-        [Test]
-        public void PatchRefusesAnUnanchoredMirrorChoice()
+        [TestCase(false)] [TestCase(true)]
+        public void PatchRefusesAnUnanchoredMirrorChoice(bool refine)
         {
             var input = Fixture("metric-anchor"); input.indices = new[] { 0, 1, 2, 4, 5, 6 };
             input.shells[0].faceIndices = new List<int> { 0 };
@@ -198,16 +198,36 @@ namespace SashaRX.UnityMeshLab.Tests
             input.shells[1].faceIndices = new List<int> { 1 };
             input.result.uv2[2] = new Vector2(.3f, .2f);
             var original = input.result.uv2;
-            Assert.AreEqual(0, Recover(input, allowPatch: true));
+            Assert.AreEqual(0, Recover(input, allowPatch: true, refine: refine));
             Assert.AreSame(original, input.result.uv2);
         }
 
-        /// <summary>Moving a face already in contact is refused even when it would retain the same overlapping pair identities.</summary>
+        /// <summary>A shorter intrinsic step can retain the neighbour's metric when the full move exceeds its allowance.</summary>
         [TestCase(false)] [TestCase(true)]
-        public void ExistingContactCannotGrowDuringRepair(bool allowPatch)
+        public void BoundedStepRecoversWithoutRelaxingNeighbourMetric(bool mirrored)
+        {
+            var input = Fixture("metric-anchor");
+            input.positions[2] = new Vector3(1, 1, 0); input.positions[3] = new Vector3(1.011f, 1, 0);
+            var uv = input.result.uv2;
+            uv[0] = new Vector2(.1f, .1f); uv[1] = new Vector2(.4f, .1f);
+            uv[2] = uv[3] = new Vector2(.4f, .4f);
+            var donor = new[] { new Vector2(.1f,.1f), new Vector2(.4f,.1f), new Vector2(.1f,.4f), new Vector2(.4f,.4f) };
+            if (mirrored) { for(int i=0;i<uv.Length;++i) uv[i].x=1-uv[i].x; for(int i=0;i<donor.Length;++i) donor[i].x=1-donor[i].x; }
+            Assert.AreEqual(0, Recover(input, donorUv: donor, allowPatch: true));
+            Assert.AreEqual(1, Recover(input, donorUv: donor, allowPatch: true, refine: true));
+            double healthy = ReverseUvTransfer.TriangleAnisotropy(input.positions[0],input.positions[1],input.positions[2],
+                input.result.uv2[0],input.result.uv2[1],input.result.uv2[2]);
+            Assert.LessOrEqual(healthy, 1.01 + 1e-6);
+            Assert.AreEqual(uv[0],input.result.uv2[0]); Assert.AreEqual(uv[1],input.result.uv2[1]);
+            Assert.AreEqual(0, TransferUvQuality.MeasureTriangles(input.positions,input.indices,input.result.uv2,Vector2.one,Matrix4x4.identity).degenerateFaces);
+        }
+
+        /// <summary>Moving a face already in contact is refused even when it would retain the same overlapping pair identities.</summary>
+        [TestCase(false, false)] [TestCase(true, false)] [TestCase(true, true)]
+        public void ExistingContactCannotGrowDuringRepair(bool allowPatch, bool refine)
         {
             var input = Fixture("existing-changed"); var original = input.result.uv2;
-            Assert.AreEqual(0, Recover(input, allowPatch: allowPatch));
+            Assert.AreEqual(0, Recover(input, allowPatch: allowPatch, refine: refine));
             Assert.AreSame(original, input.result.uv2);
         }
 

@@ -4861,3 +4861,50 @@ checks, including the 22 target recovery controls and three kitchen symmetry
 cases. A separate shelving run passes all 26 checks, including source geometry
 preservation and three symmetry cases. C# compilation passes both FBX define
 variants; dependency and identifier guards pass.
+
+### Bounded incident-patch steps — 2026-10-23
+
+Continue the target recovery experiment against current main merged at
+`22a0d650`. After both existing recovery passes, retry intrinsic corner poses
+at 7/8, 3/4, 1/2 and 1/4 of their full displacement. Interpolate in double and
+audit the stored Float32 coordinates. A shorter step can fit the donor or keep
+a healthy neighbour within its existing metric allowance when the full step
+cannot. Eligibility, winding, ownership, coverage and all local/global quality
+limits are unchanged. The new pass has its own bounded, atomic proposal, so an
+exhausted search cannot undo the preceding accepted repair passes.
+
+The input corpus changed since October 21: 19 retained files have new hashes,
+14 old files are absent and 21 new files are present. Capture a new baseline and
+an owned fixed snapshot: 87 FBX, 73 with matched LODs, 261 pairs, 2349 measurements.
+All snapshot hashes match the baseline. Compare only that identical inventory;
+the older 80-file result is historical evidence, not this experiment's baseline.
+
+The complete repeat has three better rows, 2346 equal, zero worse/tradeoff rows,
+zero processing errors and no incomplete scans. The strict comparison exits zero.
+Kitchen_Cabinet_A_Main_LOD1 weighted anisotropy falls 955.6607 → 282.8957 in default
+and 367.1750 → 281.8426 in oversample-8; degenerate faces remain two and overlap
+pairs remain 15/13. RoomDivider_LOD1 without reparameterization loses one of six
+collapsed faces and one stretched face while retaining 37 overlap pairs. All
+source and alternate projection metrics remain unchanged.
+
+The edited shelving input (`5da5c107…`) already has zero collapsed target faces
+and 28 overlap pairs before this change; its old fixture (`d56abd1a…`) had four
+collapsed faces and zero pairs. The current 28 pairs are between two target
+charts assigned to the same source. Sampled alternatives either retain contacts,
+collapse faces or leave the donor; none is accepted as a shelving fix. Its severe
+stretch also remains. The optional fixture test recognizes the new input by its
+full hash and retains the old input's bounds separately; it does not weaken the
+old regression to fit an edited model. Original FBX files and source preparation
+remain untouched. Refining moderately stretched faces is not part of this change.
+
+Local Unity 6000.2.6f2 verification: 643 regression tests pass, zero fail, 45
+optional fixture cases skip. The full-corpus run passes all 29 selected checks;
+a final shelving run passes 32 controls including source geometry preservation
+and all three symmetry modes.
+Portable controls include mirrored shorter-step recovery and refusal on global
+stretch tradeoffs, unanchored orientation, existing contacts, cancellation and
+exhausted work. Two capture tests initially failed because their reflection call
+still passed four arguments to the workflow method changed to six in main
+(`#342`); they now pass the two null shared-atlas arguments used by production
+for one source/target pair. Both FBX compile configurations and dependency and
+identifier guards pass. No private captures or proprietary models are committed.

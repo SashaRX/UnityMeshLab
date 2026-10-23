@@ -13,7 +13,7 @@ namespace SashaRX.UnityMeshLab
         internal static int Apply(GroupedShellTransfer.TransferResult result, List<UvShell> targets,
             int[] indices, Vector3[] positions, List<UvShell> sources, int[] sourceIndices, Vector2[] sourceUv,
             int atlasSize, float boundaryToleranceTexels, TransferMatchTrace trace = null,
-            CancellationToken token = default, long comparisonBudget = 2000000, bool allowPatch = false)
+            CancellationToken token = default, long comparisonBudget = 2000000, bool allowPatch = false, bool refine = false)
         {
             Check(token);
             if (atlasSize <= 0 || comparisonBudget <= 0) return 0;
@@ -33,7 +33,9 @@ namespace SashaRX.UnityMeshLab
                 if (donor < 0 || result.targetShellStatus[shell.shellId] == GroupedShellTransfer.ShellStatus.Rejected) continue;
                 if (shell.vertexIndices.Any(v => result.vertexToSourceShell[v] != donor)) continue;
                 var original = shell.vertexIndices.ToDictionary(v => v, v => proposal[v]);
-                foreach (var candidate in Candidates(shell, indices, positions, original, allowPatch, token))
+                var candidates = Candidates(shell, indices, positions, original, allowPatch, token);
+                if (refine) candidates = Refine(candidates, original);
+                foreach (var candidate in candidates)
                 {
                     if (allowPatch)
                     {
@@ -89,7 +91,7 @@ namespace SashaRX.UnityMeshLab
             foreach (int shell in accepted)
             {
                 var shellTrace = trace?.ForShell(shell);
-                if (shellTrace != null) shellTrace.projectionMethod = allowPatch ? "boundary-patch" : "boundary-bevel";
+                if (shellTrace != null) shellTrace.projectionMethod = refine ? "boundary-patch-step" : allowPatch ? "boundary-patch" : "boundary-bevel";
             }
             return accepted.Count;
         }
@@ -175,6 +177,24 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Computes signed stored area before any geometry-frame conversion.</summary>
         static double Area(Vector2 a, Vector2 b, Vector2 c) =>
             ((double)b.x - a.x) * ((double)c.y - a.y) - ((double)b.y - a.y) * ((double)c.x - a.x);
+
+        /// <summary>Tries bounded shorter steps toward intrinsic poses; every rounded candidate still needs the complete original audit.</summary>
+        static IEnumerable<Dictionary<int, Vector2>> Refine(IEnumerable<Dictionary<int, Vector2>> candidates,
+            Dictionary<int, Vector2> original)
+        {
+            foreach (var candidate in candidates)
+                foreach (double step in new[] { .875, .75, .5, .25 })
+                {
+                    var partial = new Dictionary<int, Vector2>(original);
+                    foreach (var pair in candidate)
+                    {
+                        var start = original[pair.Key];
+                        partial[pair.Key] = new Vector2((float)(start.x + ((double)pair.Value.x - start.x) * step),
+                            (float)(start.y + ((double)pair.Value.y - start.y) * step));
+                    }
+                    yield return partial;
+                }
+        }
 
         /// <summary>Checks complete changed triangles against the selected donor footprint using the existing texel band.</summary>
         static bool Covered(List<int> faces, int[] indices, Dictionary<int, Vector2> candidate,

@@ -716,7 +716,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 context.MeshEntries.Add(source); context.MeshEntries.Add(target); context.CaptureNextTransfer = true;
                 context.DiagnosticCapture = capture = TransferCaseCapture.Begin(context, workflow, "Replacement boundary tolerance");
                 var method = typeof(UvTransferWorkflow).GetMethod("TransferTargetMesh", BindingFlags.Instance | BindingFlags.NonPublic);
-                ((Task)method.Invoke(workflow, new object[] { target, new List<MeshEntry> { source }, 1, false })).GetAwaiter().GetResult();
+                ((Task)method.Invoke(workflow, new object[] { target, new List<MeshEntry> { source }, 1, false, null, null })).GetAwaiter().GetResult();
                 capture.Finish(true);
                 Assert.Greater(target.originalMesh.vertexCount, targetMesh.vertexCount, "Exercise the accepted donor seam replacement.");
                 Assert.AreEqual(2, capture.Data.pairs.Count, "Capture both the original and the replacement input.");

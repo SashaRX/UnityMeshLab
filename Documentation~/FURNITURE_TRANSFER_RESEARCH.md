@@ -223,6 +223,40 @@ counts: Blanket_LOD2/default and DressingTable_B_Shelf_LOD1/default/oversample-8
 The shelving-unit target still has four collapsed UV faces. Existing overlaps,
 extreme distortion elsewhere and shared-atlas padding remain unresolved.
 
+## Bounded corner steps on the updated corpus — 2026-10-23
+
+The corpus inventory and inputs changed after the earlier measurements. The new
+owned snapshot has 87 files, 73 with matching LODs and 261 pairs (2349 rows).
+Nineteen retained files have new hashes; 14 previous files are absent and 21 are
+new. The baseline includes current main and the preceding target-recovery stages
+at `22a0d650`. The strict comparison uses the same snapshot on both sides.
+
+After full corner development refuses a patch, a separate pass tries 7/8, 3/4,
+1/2 and 1/4 of that displacement. All existing winding, neighbour metric, donor
+coverage, whole-model stretch and contact checks still apply to the rounded
+coordinates. It cannot move a face involved in an existing contact, choose an
+unanchored mirror or publish an incomplete audit. Its work budget is separate
+from the preceding stages, so their accepted UVs survive a refused search.
+
+| Target / profile | Improvement | Retained defects |
+|---|---|---|
+| Kitchen_Cabinet_A_Main_LOD1 / default | Weighted anisotropy 955.6607 → 282.8957 | 2 collapsed faces, 15 overlap pairs |
+| Kitchen_Cabinet_A_Main_LOD1 / oversample-8 | Weighted anisotropy 367.1750 → 281.8426 | 2 collapsed faces, 13 overlap pairs |
+| room_divider1_LOD1 / no-reparameterization | Collapsed faces 6 → 5; stretched faces 453 → 452 | 37 overlap pairs |
+
+The complete comparison reports three better rows, 2346 unchanged and no worse
+or tradeoff rows; there are no errors or incomplete intersection scans. All
+source and alternate projection rows retain measured quality. These are local
+improvements, not clean atlases: maximum stretch remains high in the cabinet.
+
+The current ShelvingUnit file is a different input from the October 21 fixture.
+It already has zero collapsed target faces and 28 overlap pairs in the baseline;
+those counts remain unchanged. The previous four-collapse/zero-contact result
+must not be used to attribute its new state to this code. Captured probes locate
+the current contacts between two charts sharing one source; no tested alternative
+clears the existing acceptance checks. The tests keep separate bounds for the
+two captured files, identifying the edited version by its complete input hash.
+
 ## Algorithm investigation
 
 **SLIM with an injective seed** is a relevant source-parameterization candidate:
