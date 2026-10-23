@@ -104,6 +104,25 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(result.cornerToVertex.All(v => v == -1));
         }
 
+        /// <summary>
+        /// A quad of zero area on its neighbour's edge (two corners at each end) neither
+        /// conflicts with the neighbour's corners nor refuses its own differing values.
+        /// </summary>
+        [TestCase(false)] [TestCase(true)]
+        public void Match_AZeroAreaPolygonOnAnEdgeNeitherConflictsWithItsNeighbourNorRefuses(bool imported)
+        {
+            var corners = Positions((0, 0), (-1, 0), (-1, 1), (0, 1), (0, 0), (-1, 0), (-1, 0), (0, 0));
+            var vertices = Positions((0, 0), (-1, 0), (-1, 1), (0, 1), (0, 0), (-1, 0), (-1, 0), (0, 0));
+            int[] triangles = { 0, 2, 1, 0, 3, 2, 4, 6, 5, 4, 7, 6 };
+            float[] value = { 0, 1, 2, 3, 9, 8, 7, 6 };
+            var result = FbxCornerMatch.Match(new[] { 4, 4 }, corners, vertices, triangles, new[] { 3, 3, 3, 3 }, null,
+                (a, b) => value[a] == value[b], imported ? triangles : null);
+            Assert.AreEqual(0, result.unresolved + result.conflicts + result.missing);
+            CollectionAssert.AreEqual(new[] { 0, 1, 2, 3 }, result.cornerToVertex.Take(4).ToArray());
+            Assert.IsTrue(result.cornerToVertex.Skip(4).All(v => v >= 4), "the zero-area quad takes values of its own faces");
+            Assert.AreEqual(4, result.zeroAreaChoices);
+        }
+
         [Test]
         public void PolygonSplit_UsesAuditedImportTrianglesAndKeepsNeighbour()
         {

@@ -25,6 +25,11 @@ namespace SashaRX.UnityMeshLab
             public bool[] conflictingCorners;
             /// <summary>Corners the tagged import has no vertex for (degenerate polygons).</summary>
             public int missing;
+            /// <summary>
+            /// Corners of polygons with fewer than three distinct positions whose candidates
+            /// disagree; such a polygon covers no area, so they take the first candidate.
+            /// </summary>
+            public int zeroAreaChoices;
         }
 
         internal readonly struct PositionKey : IEquatable<PositionKey>, IComparable<PositionKey>
@@ -69,8 +74,13 @@ namespace SashaRX.UnityMeshLab
         readonly struct Candidate
         {
             public readonly int vertex, orientation;
+            /// <summary>The face has fewer than three distinct positions.</summary>
+            public readonly bool degenerate;
             /// <summary>Records a candidate result vertex and its polygon-normal or imported-triangle orientation.</summary>
-            public Candidate(int vertex, int orientation) { this.vertex = vertex; this.orientation = orientation; }
+            public Candidate(int vertex, int orientation, bool degenerate)
+            {
+                this.vertex = vertex; this.orientation = orientation; this.degenerate = degenerate;
+            }
         }
 
         /// <summary>Maps polygon corners to compatible result vertices, reporting missing, unresolved and conflicting values separately.</summary>
@@ -106,6 +116,7 @@ namespace SashaRX.UnityMeshLab
             readonly List<PositionKey> subset = new List<PositionKey>(4);
             readonly List<int> polygonFaces = new List<int>();
             readonly List<Candidate>[] candidates;
+            readonly bool[] degenerateFaces, zeroAreaCorners;
             readonly List<PositionKey> polygonKeys = new List<PositionKey>(8);
             readonly List<int> distinct = new List<int>(4);
             readonly Dictionary<int, List<int>> importedFaces = new Dictionary<int, List<int>>();
@@ -130,6 +141,8 @@ namespace SashaRX.UnityMeshLab
                 faceStarts = new int[faceSizes.Length];
                 for (int f = 0, s = 0; f < faceSizes.Length; s += faceSizes[f], f++) faceStarts[f] = s;
                 candidates = new List<Candidate>[cornerPositions.Length / 3];
+                zeroAreaCorners = new bool[candidates.Length];
+                degenerateFaces = new bool[faceSizes.Length];
                 IndexFaces();
             }
 
@@ -146,6 +159,7 @@ namespace SashaRX.UnityMeshLab
                         list.Add((f, j));
                         if (!subset.Contains(key)) subset.Add(key);
                     }
+                    degenerateFaces[f] = subset.Count < 3;
                     if (subset.Count > 4) continue; // only triangles and quads are indexed by set
                     subset.Sort();
                     var faceKey = new FaceKey(subset);
@@ -180,12 +194,15 @@ namespace SashaRX.UnityMeshLab
             int CollectPolygon(int start, int size)
             {
                 polygonKeys.Clear();
+                bool complete = true;
                 for (int k = 0; k < size; k++)
                     if (HasPosition(cornerPositions, start + k))
                     {
                         var key = CornerKey(cornerPositions, start + k);
                         if (!polygonKeys.Contains(key)) polygonKeys.Add(key);
                     }
+                    else complete = false;
+                for (int k = 0; k < size; k++) zeroAreaCorners[start + k] = complete && polygonKeys.Count < 3;
                 Normal(cornerPositions, start, size, out double nx, out double ny, out double nz);
 
                 int forward = 0, backward = 0;
@@ -200,7 +217,7 @@ namespace SashaRX.UnityMeshLab
                         for (int c = start; c < start + size; c++)
                             if (HasPosition(cornerPositions, c) && CornerKey(cornerPositions, c).Equals(key))
                                 (candidates[c] ??= new List<Candidate>(2)).Add(new Candidate(vertex,
-                                    imported != 0 ? imported * ImportedSameOrientation : orientation));
+                                    imported != 0 ? imported * ImportedSameOrientation : orientation, degenerateFaces[face]));
                     }
                     if (orientation > 0) forward++;
                     else if (orientation < 0) backward++;
@@ -293,9 +310,13 @@ namespace SashaRX.UnityMeshLab
                 if (!HasPosition(cornerPositions, c)) { result.missing++; return -1; }
                 if (candidates[c] == null) { result.unresolved++; return -1; }
 
+                // A face with fewer than three positions lies on every polygon sharing its
+                // edge, so it stands in only where no face with area reaches the corner.
+                bool solid = false;
+                foreach (var cand in candidates[c]) solid |= Facing(cand, relation) && !cand.degenerate;
                 distinct.Clear();
                 foreach (var cand in candidates[c])
-                    if ((cand.orientation == ImportedSameOrientation || cand.orientation == 0 || cand.orientation == relation) && !distinct.Contains(cand.vertex))
+                    if (Facing(cand, relation) && (!solid || !cand.degenerate) && !distinct.Contains(cand.vertex))
                         distinct.Add(cand.vertex);
                 if (distinct.Count > 1 && signatureMatches != null)
                 {
@@ -306,9 +327,17 @@ namespace SashaRX.UnityMeshLab
 
                 int chosen = distinct[0];
                 for (int i = 1; i < distinct.Count; i++)
-                    if (!sameWrittenValues(chosen, distinct[i])) { result.conflicts++; result.conflictingCorners[c] = true; return -1; }
+                {
+                    if (sameWrittenValues(chosen, distinct[i])) continue;
+                    // A polygon of fewer than three positions shows none of its values.
+                    if (zeroAreaCorners[c]) { result.zeroAreaChoices++; return chosen; }
+                    result.conflicts++; result.conflictingCorners[c] = true; return -1;
+                }
                 return chosen;
             }
+
+            static bool Facing(Candidate cand, int relation)
+                => cand.orientation == ImportedSameOrientation || cand.orientation == 0 || cand.orientation == relation;
 
             static bool HasPosition(float[] p, int i) => !float.IsNaN(p[i * 3]);
             static PositionKey CornerKey(float[] p, int i) => new PositionKey(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]);
