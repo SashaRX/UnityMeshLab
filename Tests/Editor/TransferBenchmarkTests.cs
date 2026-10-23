@@ -28,6 +28,41 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.Throws<InvalidDataException>(() => TransferBenchmark.Validate(new TransferBenchmark.Config { includeSynthetic = false }));
         }
 
+        // A caller blocking the editor thread (as the corpus tests do) must not wait for a
+        // continuation queued to that thread. The context here runs nothing until drained.
+        [TestCase("grouped")] [TestCase("grouped-no-hints")]
+        public void GroupedMethodsCompleteWhileTheCallingThreadBlocks(string method)
+        {
+            var previous = System.Threading.SynchronizationContext.Current;
+            var blocked = new QueuedContext();
+            System.Threading.SynchronizationContext.SetSynchronizationContext(blocked);
+            try {
+                using var input = TransferBenchmarkFixtures.Create(TransferBenchmarkFixtures.Names[0]);
+                var task = TransferBenchmarkMethods.Run(method, input);
+                Assert.IsTrue(task.Wait(TimeSpan.FromMinutes(1)), "the method waited for the blocked calling thread");
+                Assert.AreEqual(input.target.vertexCount, task.Result.uv.Length);
+            }
+            finally {
+                System.Threading.SynchronizationContext.SetSynchronizationContext(previous);
+                blocked.Drain();
+            }
+        }
+
+        sealed class QueuedContext : System.Threading.SynchronizationContext
+        {
+            readonly System.Collections.Generic.Queue<(System.Threading.SendOrPostCallback callback, object state)> queue =
+                new System.Collections.Generic.Queue<(System.Threading.SendOrPostCallback, object)>();
+            public override void Post(System.Threading.SendOrPostCallback d, object state) { lock (queue) queue.Enqueue((d, state)); }
+            public void Drain()
+            {
+                while (true) {
+                    (System.Threading.SendOrPostCallback callback, object state) item;
+                    lock (queue) { if (queue.Count == 0) return; item = queue.Dequeue(); }
+                    item.callback(item.state);
+                }
+            }
+        }
+
         [UnityTest]
         public IEnumerator SyntheticCorpus_DistinguishesStretchOverlapSymmetryAndNonlinearMapping()
         {
