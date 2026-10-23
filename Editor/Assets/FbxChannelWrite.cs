@@ -1420,6 +1420,9 @@ namespace SashaRX.UnityMeshLab
                     "(simplified or edited faces). Channels alone cannot carry that; save with a rebuild. Nothing was written.");
             if (match.missing > 0)
                 UvtLog.Warn($"[FBX Export] '{donor.name}': {match.missing} corner(s) of degenerate polygons have no vertex in Unity's import; they keep their stored values.");
+            if (match.zeroAreaChoices > 0)
+                UvtLog.Info($"[FBX Export] '{donor.name}': {match.zeroAreaChoices} corner(s) of zero-area polygons (fewer than three distinct positions) " +
+                    "get different values from their faces; they take one of them, as such polygons cover no area.");
             return match.cornerToVertex;
         }
 
