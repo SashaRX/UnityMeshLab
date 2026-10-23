@@ -200,10 +200,10 @@ namespace SashaRX.UnityMeshLab.Tests
 
                 // Undo of the save brings the edit back under the renderer, still known as an edit of the imported mesh.
                 UnityEditor.Undo.PerformUndo();
-                Assert.IsTrue(edited,"Undo restores the released edit"); Assert.AreSame(edited,filter.sharedMesh);
+                Assert.IsTrue(edited,"Undo restores the released edit"); AssertSameObject(edited,filter.sharedMesh);
                 Assert.IsTrue(SceneEditRegistry.TryGetImported(filter,edited,out behind)); Assert.AreSame(imported,behind);
                 ctx.Refresh(group); entry=ctx.MeshEntries.Find(e=>e.renderer==renderer);
-                Assert.AreSame(imported,entry.fbxMesh); Assert.AreSame(edited,entry.sceneEditMesh); Assert.AreSame(edited,entry.originalMesh);
+                Assert.AreSame(imported,entry.fbxMesh); AssertSameObject(edited,entry.sceneEditMesh); AssertSameObject(edited,entry.originalMesh);
             }
             finally { UnityEditor.AssetDatabase.DeleteAsset(folder); }
         }
@@ -239,10 +239,10 @@ namespace SashaRX.UnityMeshLab.Tests
                 // Undo: the copy is back under the renderer as the pipeline copy it was, not as a
                 // scene edit, and the next restore releases it as before.
                 UnityEditor.Undo.PerformUndo();
-                Assert.IsTrue(working); Assert.IsFalse(edited); Assert.AreSame(working,filter.sharedMesh);
+                Assert.IsTrue(working); Assert.IsFalse(edited); AssertSameObject(working,filter.sharedMesh);
                 Assert.IsTrue(SceneEditRegistry.TryGetImported(filter,working,out behind,out bool workingCopy)); Assert.AreSame(imported,behind); Assert.IsTrue(workingCopy);
                 entry=ctx.MeshEntries.Find(e=>e.renderer==renderer); // the hub refreshed on the Undo
-                Assert.AreSame(imported,entry.fbxMesh); Assert.IsNull(entry.sceneEditMesh); Assert.AreSame(working,entry.originalMesh);
+                Assert.AreSame(imported,entry.fbxMesh); Assert.IsNull(entry.sceneEditMesh); AssertSameObject(working,entry.originalMesh);
                 Call(hub,"RestoreWorkingMeshes");
                 Assert.IsFalse(working,"a pipeline copy is released as before"); Assert.AreSame(imported,filter.sharedMesh);
             }
@@ -266,9 +266,9 @@ namespace SashaRX.UnityMeshLab.Tests
                 UnityEditor.Undo.IncrementCurrentGroup();
                 Assert.IsTrue(MeshHygieneUtility.PrepareWritable(entry,"Remove Degenerate Triangles",out var edited)); owned.Add(edited);
                 UnityEditor.Undo.PerformUndo();
-                Assert.IsTrue(working); Assert.AreSame(working,filter.sharedMesh);
+                Assert.IsTrue(working); AssertSameObject(working,filter.sharedMesh);
                 entry=ctx.MeshEntries.Find(e=>e.renderer==renderer); // the hub refreshed on the Undo
-                Assert.AreSame(working,entry.originalMesh); Assert.AreSame(imported,entry.fbxMesh); Assert.IsNull(entry.sceneEditMesh);
+                AssertSameObject(working,entry.originalMesh); Assert.AreSame(imported,entry.fbxMesh); Assert.IsNull(entry.sceneEditMesh);
 
                 // The save's import replaces the file's mesh by another object of the same name.
                 var replacement=Object.Instantiate(imported); replacement.name=imported.name; owned.Add(replacement);
@@ -339,9 +339,9 @@ namespace SashaRX.UnityMeshLab.Tests
             // edit; the imported mesh the entry knew may be gone with that import, and the edit's
             // link finds the one that replaced it.
             string folder="Assets/__MeshLabSceneEditTests_"+System.Guid.NewGuid().ToString("N"); string asset=folder+"/imported.asset";
-            var group=Group(true,out var renderer,out _); var filter=renderer.GetComponent<MeshFilter>(); var imported=filter.sharedMesh; string name=imported.name;
+            var group=Group(true,out var renderer,out _); var filter=renderer.GetComponent<MeshFilter>(); var imported=filter.sharedMesh;
             UnityEditor.AssetDatabase.CreateFolder("Assets",folder.Substring("Assets/".Length));
-            UnityEditor.AssetDatabase.CreateAsset(imported,asset);
+            UnityEditor.AssetDatabase.CreateAsset(imported,asset); string name=imported.name; // the asset names its mesh after the file
             try {
                 var ctx=Open(group); var entry=ctx.MeshEntries.Find(e=>e.renderer==renderer);
                 Assert.IsTrue(MeshHygieneUtility.PrepareWritable(entry,"Scene edit",out var edit)); owned.Add(edit);
@@ -411,7 +411,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsNotNull(entry0); Assert.IsNull(entry0.sceneEditMesh); Assert.AreNotSame(edit0,entry0.fbxMesh); Assert.AreSame(filter0.sharedMesh,entry0.fbxMesh);
 
                 UnityEditor.Undo.PerformUndo();
-                Assert.IsTrue(edit1); Assert.IsTrue(lod1); Assert.AreSame(edit1,filter1.sharedMesh); Assert.AreSame(edit0,filter0.sharedMesh);
+                Assert.IsTrue(edit1); Assert.IsTrue(lod1); AssertSameObject(edit1,filter1.sharedMesh); AssertSameObject(edit0,filter0.sharedMesh);
                 Assert.IsTrue(SceneEditRegistry.TryGetImported(filter1,edit1,out var behind)); Assert.AreSame(imported1,behind);
                 Assert.IsTrue(SceneEditRegistry.TryGetImported(filter0,edit0,out behind)); Assert.AreSame(imported0,behind);
             }
@@ -498,7 +498,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsFalse(edit,"the saved edit went through Undo"); Assert.AreSame(imported,filter.sharedMesh);
                 Assert.AreSame(imported,copyFilter.sharedMesh,"the duplicate takes the file's mesh too");
                 UnityEditor.Undo.PerformUndo();
-                Assert.IsTrue(edit); Assert.AreSame(edit,filter.sharedMesh); Assert.AreSame(edit,copyFilter.sharedMesh);
+                Assert.IsTrue(edit); AssertSameObject(edit,filter.sharedMesh); AssertSameObject(edit,copyFilter.sharedMesh);
                 Assert.IsTrue(SceneEditRegistry.TryGetImported(copyFilter,edit,out var behind)); Assert.AreSame(imported,behind);
             }
             finally { UnityEditor.AssetDatabase.DeleteAsset(folder); }
@@ -593,13 +593,13 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsTrue(SceneEditRegistry.TryGetImported(filter,second,out var behind)); Assert.AreSame(imported,behind);
 
                 UnityEditor.Undo.PerformUndo();
-                Assert.IsTrue(first); Assert.IsTrue(working); Assert.IsFalse(second); Assert.AreSame(working,filter.sharedMesh);
+                Assert.IsTrue(first); Assert.IsTrue(working); Assert.IsFalse(second); AssertSameObject(working,filter.sharedMesh);
                 Assert.IsTrue(SceneEditRegistry.TryGetImported(filter,working,out behind,out bool workingCopy,out var baseline));
-                Assert.AreSame(imported,behind); Assert.IsTrue(workingCopy); Assert.AreSame(first,baseline);
+                Assert.AreSame(imported,behind); Assert.IsTrue(workingCopy); AssertSameObject(first,baseline);
                 entry=ctx.MeshEntries.Find(e=>e.renderer==renderer); // the hub refreshed on the Undo
-                Assert.AreSame(imported,entry.fbxMesh); Assert.AreSame(working,entry.originalMesh); Assert.AreSame(first,entry.sceneEditMesh); Assert.AreSame(first,entry.Baseline);
+                Assert.AreSame(imported,entry.fbxMesh); AssertSameObject(working,entry.originalMesh); AssertSameObject(first,entry.sceneEditMesh); AssertSameObject(first,entry.Baseline);
                 Call(hub,"RestoreWorkingMeshes");
-                Assert.IsFalse(working,"the pipeline copy is released"); Assert.IsTrue(first); Assert.AreSame(first,filter.sharedMesh,"the earlier edit is the baseline again");
+                Assert.IsFalse(working,"the pipeline copy is released"); Assert.IsTrue(first); AssertSameObject(first,filter.sharedMesh,"the earlier edit is the baseline again");
             }
             finally { UnityEditor.AssetDatabase.DeleteAsset(folder); }
         }
@@ -644,6 +644,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 var before=edited.uv2;
                 var result=Object.Instantiate(edited); owned.Add(result);
                 result.uv2=edited.uv2.Select(uv=>uv*.5f+Vector2.one*.25f).ToArray();
+                UnityEditor.Undo.IncrementCurrentGroup(); // the sync's own step: undoing it must not take the edit's creation too
                 MeshAssetOperations.SyncSceneEditChannels(entry,result,FbxExportIntent.UV1,"Test");
                 CollectionAssert.AreEqual(result.uv2,edited.uv2,"the edit takes the written UV1");
                 CollectionAssert.AreEqual(result.uv,edited.uv,"channels the save did not write are left");
@@ -732,6 +733,15 @@ namespace SashaRX.UnityMeshLab.Tests
         static T Get<T>(object target, string field) => (T)target.GetType().GetField(field, Private).GetValue(target);
         static void Set(object target, string field, object value) => target.GetType().GetField(field, Private).SetValue(target, value);
         static object Call(object target, string method, params object[] args) => target.GetType().GetMethod(method, Private).Invoke(target, args);
+
+        // Undo brings a destroyed object back under its instance id but in a new managed wrapper; the
+        // old wrapper still reaches it, so after an Undo the same object has the same id, not the same reference.
+        static void AssertSameObject(Object expected, Object actual, string message = null)
+        {
+            Assert.IsNotNull(actual, message);
+            Assert.AreEqual(expected.GetInstanceID(), actual.GetInstanceID(), $"{message} expected {expected}, was {actual}".TrimStart());
+        }
+
         static Bounds PreviewBounds(IReadOnlyList<MeshViewport3D.Item> items) => (Bounds)typeof(MeshViewport3D)
             .GetMethod("BoundsOf", BindingFlags.Static | BindingFlags.NonPublic).Invoke(null, new object[] { items, false });
         static bool ShowsChecker(Renderer renderer) => CheckerTexturePreview.IsPreviewShader(renderer.sharedMaterial.shader.name);
@@ -2414,6 +2424,134 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.Catch(()=>hub.DiagnosticWorkflow.RunReverseTransfer(false).GetAwaiter().GetResult());
             Assert.AreSame(previousFine,fine.transferredMesh); Assert.AreSame(previousCoarse,coarse.repackedMesh);
             Assert.AreEqual("prior",fine.reverseTransferJson); Assert.IsTrue(ctx.HasTransfer); Assert.AreEqual(0,ctx.SourceLodIndex);
+        }
+
+        /// <summary>Two single-quad LODs on one plane: the smallest chain the Reverse regroup path accepts.</summary>
+        UvToolContext OpenReverseRegroupFixture(out MeshEntry fine, out MeshEntry coarse)
+        {
+            var ctx=Open(Group(true,out var fineRenderer,out var coarseRenderer));
+            ctx.AtlasResolution=128;ctx.RepackResolutionMode=ResolutionMode.Manual;ctx.RepackPerMesh=false;
+            foreach(var entry in ctx.MeshEntries)
+                entry.originalMesh.vertices=new[] {Vector3.zero,Vector3.right,new Vector3(1,1,0),Vector3.up};
+            fine=ctx.MeshEntries.Find(e=>e.renderer==fineRenderer);
+            coarse=ctx.MeshEntries.Find(e=>e.renderer==coarseRenderer);
+            return ctx;
+        }
+
+        /// <summary>Each entry's published mesh, Reverse provenance and atlas size, in entry order.</summary>
+        static (byte[] mesh,string provenance,uint atlas)[] PublishedChain(UvToolContext ctx) => ctx.MeshEntries
+            .Select(e=>(TransferMeshSnapshot.Capture(ctx.Assets.GetResultMesh(e)),e.reverseTransferJson,e.repackedAtlasWidth)).ToArray();
+
+        /// <summary>
+        /// Waits for an asynchronous workflow run within a deadline. A run past its deadline is
+        /// cancelled and drained before the test fails, so it cannot resume against the fixture
+        /// that teardown destroys or reach the next test's operation.
+        /// </summary>
+        static IEnumerator AwaitRun(System.Threading.Tasks.Task task,double seconds=120,double drainSeconds=30)
+        {
+            double deadline=EditorApplication.timeSinceStartup+seconds;
+            while(!task.IsCompleted && EditorApplication.timeSinceStartup<deadline) yield return null;
+            if(task.IsCompleted) yield break;
+            UvProgress.RequestCancel();
+            deadline=EditorApplication.timeSinceStartup+drainSeconds;
+            while(!task.IsCompleted && EditorApplication.timeSinceStartup<deadline) yield return null;
+            Assert.Fail($"The run did not finish within {seconds} s"
+                +(task.IsCompleted?"; it ended after cancellation.":$" and still runs {drainSeconds} s after cancellation."));
+        }
+
+        /// <summary>
+        /// The Run Reverse UV button's path: ordinary Transfer charts, regrouped on worker threads.
+        /// It publishes exactly the chain the synchronous path publishes, ends its operation,
+        /// releases every mesh it does not publish and keeps the preview and camera.
+        /// </summary>
+        [UnityTest]
+        public IEnumerator AsyncReverseFromForwardChartsPublishesTheSynchronousChain(
+            [Values(false,true)] bool prepareSeed,[Values(false,true)] bool preserveOverlap)
+        {
+            var ctx=OpenReverseRegroupFixture(out var fine,out _);
+            var workflow=hub.DiagnosticWorkflow;
+            // The hub's workflow is a LightmapTransferTool; the fields are private to its base.
+            typeof(UvTransferWorkflow).GetField("reversePrepareSeed",Private).SetValue(workflow,prepareSeed);
+            typeof(UvTransferWorkflow).GetField("reversePreserveOverlap",Private).SetValue(workflow,preserveOverlap);
+            var originals=ctx.MeshEntries.Select(e=>TransferMeshSnapshot.Capture(e.fbxMesh)).ToArray();
+            // Without preparation, Reverse regroups the published forward result; each run consumes it.
+            void Forward() {if(!prepareSeed) ((System.Threading.Tasks.Task)CallWorkflow("ExecFullPipelineImpl","async-reverse",false)).GetAwaiter().GetResult();}
+
+            Forward();
+            workflow.RunReverseTransfer(false).GetAwaiter().GetResult();
+            Assert.IsFalse(UvProgress.IsActive,"A run must end the operation it began.");
+            var expected=PublishedChain(ctx);
+            Assert.IsTrue(expected.All(p=>!string.IsNullOrEmpty(p.provenance)));
+            Assert.IsTrue(expected.All(p=>p.mesh.Length>0&&p.atlas>0),"The synchronous chain must publish meshes and an atlas to compare.");
+
+            Forward();
+            int meshes=Resources.FindObjectsOfTypeAll<Mesh>().Length;
+            var task=workflow.RunReverseTransfer(true);
+            bool yielded=!task.IsCompleted;
+            yield return AwaitRun(task);
+            Assert.IsTrue(yielded,"The button's path must return to the editor while its work runs.");
+            task.GetAwaiter().GetResult();
+            Assert.IsFalse(UvProgress.IsActive,"A run must end the operation it began.");
+            var actual=PublishedChain(ctx);
+            for(int i=0;i<expected.Length;++i)
+            {
+                CollectionAssert.AreEqual(expected[i].mesh,actual[i].mesh,"Worker threads must publish the synchronous mesh.");
+                Assert.AreEqual(expected[i].provenance,actual[i].provenance);
+                Assert.AreEqual(expected[i].atlas,actual[i].atlas);
+            }
+            Assert.AreEqual(meshes,Resources.FindObjectsOfTypeAll<Mesh>().Length,
+                "A repeated run must release the chain it replaces and every working mesh it does not publish.");
+
+            Forward();
+            Call(hub,"CollectCanvasEntries");SetPreviewFrame();
+            Call(hub,"ApplyPreviewMode",UvCanvasView.PreviewMode.Checker);
+            task=workflow.RunReverseTransfer(true);
+            yield return AwaitRun(task);
+            task.GetAwaiter().GetResult();
+            Call(hub,"CollectCanvasEntries");
+            AssertPreviewFrame();
+            AssertFreshPreview(ctx,fine,UvCanvasView.PreviewMode.Checker);
+            Assert.IsTrue(ctx.HasRepack&&ctx.HasTransfer);Assert.AreEqual(0,ctx.SourceLodIndex);
+            for(int i=0;i<originals.Length;++i)
+                CollectionAssert.AreEqual(originals[i],TransferMeshSnapshot.Capture(ctx.MeshEntries[i].fbxMesh));
+        }
+
+        /// <summary>
+        /// Cancelling the button's path while ordinary Transfer prepares its detached copies publishes
+        /// nothing: the run ends as cancelled, not failed, the previous chain and its provenance stay,
+        /// the operation ends and every working mesh is released.
+        /// </summary>
+        [UnityTest]
+        public IEnumerator CancelledAsyncReverseKeepsThePreviousChainAndReleasesItsMeshes()
+        {
+            var ctx=OpenReverseRegroupFixture(out var fine,out var coarse);
+            fine.transferredMesh=Object.Instantiate(fine.originalMesh);coarse.repackedMesh=Object.Instantiate(coarse.originalMesh);
+            fine.reverseTransferJson="prior";var previousFine=fine.transferredMesh;var previousCoarse=coarse.repackedMesh;
+            var previousBytes=TransferMeshSnapshot.Capture(previousFine);
+            ctx.HasTransfer=true;ctx.HasRepack=true;
+            int meshes=Resources.FindObjectsOfTypeAll<Mesh>().Length;
+            var task=hub.DiagnosticWorkflow.RunReverseTransfer(true);
+            bool yielded=!task.IsCompleted,active=UvProgress.IsActive,ended;
+            try
+            {
+                UvProgress.RequestCancel(); // what the Background Tasks cancel button does
+                yield return AwaitRun(task);
+                ended=!UvProgress.IsActive;
+            }
+            // An operation the finished run left open must not reach the next test. A run still
+            // going keeps its cancel request: ending its operation would clear the request.
+            finally {if(task.IsCompleted) while(UvProgress.IsActive) UvProgress.Cancel();}
+            Assert.IsTrue(yielded,"The button's path must return to the editor while its work runs.");
+            Assert.IsTrue(active,"The run must begin its own operation.");
+            var error=task.Exception?.GetBaseException();
+            TestContext.WriteLine($"Cancelled Reverse ended with {(task.IsCanceled?"cancellation":error?.GetType().Name)}: {error?.Message}");
+            Assert.IsTrue(task.IsCanceled,$"A cancelled run must end as cancelled, not {error?.GetType().Name}: {error?.Message}");
+            Assert.IsTrue(ended,"The run must end the operation it began.");
+            Assert.AreSame(previousFine,fine.transferredMesh);Assert.AreSame(previousCoarse,coarse.repackedMesh);
+            CollectionAssert.AreEqual(previousBytes,TransferMeshSnapshot.Capture(fine.transferredMesh));
+            Assert.AreEqual("prior",fine.reverseTransferJson);Assert.IsTrue(ctx.HasTransfer&&ctx.HasRepack);
+            Assert.AreEqual(meshes,Resources.FindObjectsOfTypeAll<Mesh>().Length,
+                "Detached copies, prepared seeds and staged results must be destroyed on cancellation.");
         }
 
         [Test]

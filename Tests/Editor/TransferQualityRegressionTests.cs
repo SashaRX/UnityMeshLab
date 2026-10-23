@@ -640,6 +640,29 @@ namespace SashaRX.UnityMeshLab.Tests
         static Vector2[] FragmentUvs(float corner) => new[] { Vector2.zero, Vector2.right, Vector2.up,
             Vector2.one, new Vector2(corner, 1), new Vector2(1, corner) };
 
+        [TestCase(1f, 1f, 1)]   // both faces agree with the query: the near one
+        [TestCase(1f, -1f, 0)]  // only the far face agrees: it is preferred
+        [TestCase(-1f, -1f, 1)] // no face agrees: the nearest of any orientation
+        public void SafetyNetScanOfASmallSourceFindsTheFaceItsBvhWould(float farNormalZ, float nearNormalZ, int expected)
+        {
+            // A source too small for a UV0 BVH (16 faces or fewer) is scanned instead.
+            // Face 0 is 0.9 from the point, face 1 is 0.1 from it.
+            var a = new[] { Vector2.zero, new Vector2(2, 0) };
+            var b = new[] { Vector2.right, new Vector2(3, 0) };
+            var c = new[] { Vector2.up, new Vector2(2, 1) };
+            var normals = new[] { new Vector3(0, 0, farNormalZ), new Vector3(0, 0, nearNormalZ) };
+            var faces = new List<int> { 0, 1 };
+            var point = new Vector2(1.9f, .1f);
+            var query = Vector3.forward;
+            int scanned = GroupedShellTransfer.NearestSourceUv0Face(point, query, null, faces, normals, a, b, c,
+                out float u, out float v, out float w);
+            int indexed = GroupedShellTransfer.NearestSourceUv0Face(point, query, new TriangleBvh2D(a, b, c), faces, normals, a, b, c,
+                out float bu, out float bv, out float bw);
+            Assert.AreEqual(expected, scanned);
+            Assert.AreEqual(indexed, scanned, "The scan agrees with the BVH.");
+            Assert.AreEqual(bu, u, 1e-6f); Assert.AreEqual(bv, v, 1e-6f); Assert.AreEqual(bw, w, 1e-6f);
+        }
+
         [Test]
         public void DisjointUvFragmentsWithIntersectingBoundsKeepTheirSharedSource()
         {
@@ -673,6 +696,180 @@ namespace SashaRX.UnityMeshLab.Tests
                     System.Threading.CancellationToken.None).pairs);
             }
             finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
+        [Test]
+        public void ASmallMergedShellTheConstrainedPassCollapsesTakesTheSourceItsUv0LiesOn()
+        {
+            var source = new Mesh { name = "Two charts far apart in 3D" };
+            var target = new Mesh { name = "Quad on the first chart with the second chart's UV0" };
+            try {
+                // Constrained to the chart it lies on in 3D, every corner clamps to one UV0 edge
+                // of that chart, and the reject gate would leave the quad at (0,0).
+                var quad = new[] { Vector3.zero, Vector3.right, new Vector3(1, 1, 0), Vector3.up };
+                var uv0 = new[] { Vector2.zero, new Vector2(.1f, 0), new Vector2(.1f, .1f), new Vector2(0, .1f) };
+                var shifted = uv0.Select(uv => uv + new Vector2(.15f, 0)).ToArray();
+                source.vertices = quad.Concat(quad.Select(p => p + Vector3.forward * 5)).ToArray();
+                source.uv = uv0.Concat(shifted).ToArray();
+                source.uv2 = uv0.Select(uv => uv * 3 + Vector2.one * .1f)
+                    .Concat(uv0.Select(uv => uv * 3 + Vector2.one * .6f)).ToArray();
+                source.triangles = new[] { 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 }; source.RecalculateNormals();
+                target.vertices = quad; target.uv = shifted;
+                target.triangles = new[] { 0, 1, 2, 0, 2, 3 }; target.RecalculateNormals();
+                var result = GroupedShellTransfer.Transfer(target, source, sourceAtlasWidth: 512, sourceAtlasHeight: 512);
+                Assert.AreNotEqual(GroupedShellTransfer.ShellStatus.Rejected, result.targetShellStatus[0]);
+                Assert.AreEqual(4, result.verticesTransferred);
+                Assert.AreEqual(1, result.targetShellToSourceShell[0], "The shell records the source its UV2 came from.");
+                for (int i = 0; i < uv0.Length; i++)
+                    Assert.That(Vector2.Distance(uv0[i] * 3 + Vector2.one * .6f, result.uv2[i]), Is.LessThan(1e-4f));
+            }
+            finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
+        [Test]
+        public void AShellReachingPastItsSourceKeepsTheUnclampedSimilarity()
+        {
+            var source = new Mesh { name = "Small chart" };
+            var target = new Mesh { name = "Strip reaching past the chart" };
+            try {
+                var strip = ChartAndStripReachingPastIt(source, target);
+                // Another mesh of the atlas lies clear of the strip.
+                var neighbour = new[] { new Vector2(.7f, .1f), new Vector2(.8f, .1f), new Vector2(.7f, .3f) };
+                var result = GroupedShellTransfer.TransferWithDiagnostics(target, source, null, null, 512, 512, null,
+                    UvTransferTolerance.BoundaryTexels, neighbour);
+                for (int i = 0; i < strip.Length; i++)
+                    Assert.That(Vector2.Distance(strip[i] * 3 + Vector2.one * .1f, result.uv2[i]), Is.LessThan(1e-4f));
+                var tris = target.triangles;
+                for (int f = 0; f < tris.Length / 3; f++) {
+                    Vector2 a = result.uv2[tris[f * 3]], b = result.uv2[tris[f * 3 + 1]], c = result.uv2[tris[f * 3 + 2]];
+                    Assert.That(Mathf.Abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)), Is.GreaterThan(1e-6f), $"face {f}");
+                }
+            }
+            finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
+        [Test]
+        public void AShellReachingPastItsSourceKeepsOffAnotherMeshOfTheAtlas()
+        {
+            var source = new Mesh { name = "Small chart" };
+            var target = new Mesh { name = "Strip reaching past the chart" };
+            try {
+                var strip = ChartAndStripReachingPastIt(source, target);
+                // Another mesh of the atlas lies where the strip's right column would land.
+                var neighbour = new[] { new Vector2(.45f, .15f), new Vector2(.6f, .15f), new Vector2(.45f, .35f) };
+                var result = GroupedShellTransfer.TransferWithDiagnostics(target, source, null, null, 512, 512, null,
+                    UvTransferTolerance.BoundaryTexels, neighbour);
+                foreach (int i in new[] { 2, 5 }) {
+                    Assert.That(Vector2.Distance(strip[i] * 3 + Vector2.one * .1f, result.uv2[i]), Is.GreaterThan(1e-2f), $"vertex {i}");
+                    Assert.That(result.uv2[i].x, Is.LessThan(.45f), $"vertex {i}");
+                }
+            }
+            finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
+        [Test]
+        public void AShellReachingPastAReparameterizedSourceKeepsInterpolation()
+        {
+            var source = new Mesh { name = "Sheared chart" };
+            var target = new Mesh { name = "Strip reaching past the chart" };
+            try {
+                // The chart's UV2 is a shear of its UV0, as a reparameterized chart is no
+                // similarity of it: the similarity would turn the strip by about 9.5° and move
+                // its top-left corner 0.025 off the chart's own UV2.
+                var chart = new[] { Vector2.zero, new Vector2(.1f, 0), new Vector2(.1f, .1f), new Vector2(0, .1f) };
+                source.vertices = chart.Select(uv => (Vector3)(uv * 10)).ToArray();
+                source.uv = chart;
+                source.uv2 = chart.Select(uv => new Vector2(uv.x * 3 + uv.y + .1f, uv.y * 3 + .1f)).ToArray();
+                source.triangles = new[] { 0, 1, 2, 0, 2, 3 }; source.RecalculateNormals();
+                var strip = new[] { new Vector2(.05f, 0), new Vector2(.12f, 0), new Vector2(.15f, 0),
+                    new Vector2(.05f, .1f), new Vector2(.12f, .1f), new Vector2(.15f, .1f) };
+                target.vertices = strip.Select(uv => (Vector3)(uv * 10)).ToArray();
+                target.uv = strip;
+                target.triangles = new[] { 0, 1, 4, 0, 4, 3, 1, 2, 5, 1, 5, 4 }; target.RecalculateNormals();
+                var result = GroupedShellTransfer.Transfer(target, source, sourceAtlasWidth: 512, sourceAtlasHeight: 512);
+                // Interpolation maps the strip's top-left corner by the chart's own UV2.
+                Assert.That(Vector2.Distance(new Vector2(.35f, .4f), result.uv2[3]), Is.LessThan(1e-4f));
+            }
+            finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
+        [Test]
+        public void AShellReachingPastItsSourceKeepsInterpolationWhereTheSimilarityStretchesIt()
+        {
+            var source = new Mesh { name = "Small chart" };
+            var target = new Mesh { name = "Strip reaching past the chart" };
+            try {
+                var strip = ChartAndStripReachingPastIt(source, target);
+                // The right column lies 5 units further in 3D than its UV0 says: the similarity
+                // would stretch the faces past the chart about 18:1, where the chart has none.
+                var vertices = target.vertices;
+                foreach (int i in new[] { 2, 5 }) vertices[i].x += 5;
+                target.vertices = vertices; target.RecalculateNormals();
+                var result = GroupedShellTransfer.Transfer(target, source, sourceAtlasWidth: 512, sourceAtlasHeight: 512);
+                foreach (int i in new[] { 2, 5 })
+                    Assert.That(Vector2.Distance(strip[i] * 3 + Vector2.one * .1f, result.uv2[i]), Is.GreaterThan(1e-2f), $"vertex {i}");
+            }
+            finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
+        [Test]
+        public void TheOverlapWithOtherShellsCountsTheirFacesAsPlaced()
+        {
+            // Two quads, separate in UV0; in UV2 the second lies over the right half of the first.
+            var uv0 = new[] { Vector2.zero, new Vector2(.2f, 0), new Vector2(.2f, .2f), new Vector2(0, .2f),
+                new Vector2(.5f, 0), new Vector2(.7f, 0), new Vector2(.7f, .2f), new Vector2(.5f, .2f) };
+            var uv2 = new[] { Vector2.zero, new Vector2(.2f, 0), new Vector2(.2f, .2f), new Vector2(0, .2f),
+                new Vector2(.1f, 0), new Vector2(.3f, 0), new Vector2(.3f, .2f), new Vector2(.1f, .2f) };
+            var tris = new[] { 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 };
+            var shells = UvShellExtractor.Extract(uv0, tris);
+            Assert.That(shells.Count, Is.EqualTo(2));
+            var faceToShell = new int[tris.Length / 3];
+            for (int s = 0; s < shells.Count; s++)
+                foreach (int f in shells[s].faceIndices) faceToShell[f] = s;
+            int first = faceToShell[0];
+            var placed = shells[first].vertexIndices.ToDictionary(v => v, v => uv2[v]);
+            Assert.That(GroupedShellTransfer.OtherShellPairs(shells[first], first, tris, uv2, faceToShell, placed), Is.GreaterThan(0));
+            // The shell's own faces never count, and a layout clear of the other shell has no pairs.
+            var clear = shells[first].vertexIndices.ToDictionary(v => v, v => uv2[v] + new Vector2(.5f, .5f));
+            Assert.That(GroupedShellTransfer.OtherShellPairs(shells[first], first, tris, uv2, faceToShell, clear), Is.EqualTo(0));
+        }
+
+        // A square chart with UV2 = UV0 * 3 + 0.1 and a two-quad strip whose right column lies
+        // beyond the chart's UV0 edge: interpolation presses it onto that edge, and clamping the
+        // similarity presses it onto the chart's UV2 box. Returns the strip's UV0.
+        static Vector2[] ChartAndStripReachingPastIt(Mesh source, Mesh target)
+        {
+            var chart = new[] { Vector2.zero, new Vector2(.1f, 0), new Vector2(.1f, .1f), new Vector2(0, .1f) };
+            source.vertices = chart.Select(uv => (Vector3)(uv * 10)).ToArray();
+            source.uv = chart;
+            source.uv2 = chart.Select(uv => uv * 3 + Vector2.one * .1f).ToArray();
+            source.triangles = new[] { 0, 1, 2, 0, 2, 3 }; source.RecalculateNormals();
+            var strip = new[] { new Vector2(.05f, 0), new Vector2(.12f, 0), new Vector2(.15f, 0),
+                new Vector2(.05f, .1f), new Vector2(.12f, .1f), new Vector2(.15f, .1f) };
+            target.vertices = strip.Select(uv => (Vector3)(uv * 10)).ToArray();
+            target.uv = strip;
+            target.triangles = new[] { 0, 1, 4, 0, 4, 3, 1, 2, 5, 1, 5, 4 }; target.RecalculateNormals();
+            return strip;
+        }
+
+        [Test]
+        public void ARescueStaysOutOfSourcesOtherShellsAreMatchedToAndOutOfEarlierRescues()
+        {
+            var srcMin = new[] { Vector2.zero, new Vector2(.5f, 0) };
+            var srcMax = new[] { new Vector2(.4f, .4f), new Vector2(.9f, .4f) };
+            var bounds = (new Vector2(.6f, .1f), new Vector2(.7f, .2f));
+            var rescues = new List<(Vector2 min, Vector2 max)>();
+            var written = new GroupedShellTransfer.ShellStatus[2];
+            // Source 1 is matched only to the rescued shell itself.
+            Assert.IsFalse(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 1, 0 }, written, srcMin, srcMax, rescues));
+            Assert.IsTrue(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 0, 1 }, written, srcMin, srcMax, rescues));
+            // A rejected shell wrote no UV2 on its source.
+            var rejected = new[] { GroupedShellTransfer.ShellStatus.Accepted, GroupedShellTransfer.ShellStatus.Rejected };
+            Assert.IsFalse(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 0, 1 }, rejected, srcMin, srcMax, rescues));
+            // An unmatched shell reserves nothing; an earlier rescue does.
+            Assert.IsFalse(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 0, -1 }, written, srcMin, srcMax, rescues));
+            rescues.Add((new Vector2(.65f, .15f), new Vector2(.8f, .3f)));
+            Assert.IsTrue(GroupedShellTransfer.RescueMeetsPlacedShells(bounds, 0, new[] { 0, -1 }, written, srcMin, srcMax, rescues));
         }
 
         [TestCase(12f, 0f)]
@@ -883,6 +1080,63 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(1, GroupedShellTransfer.CountShellIssues(faces, triangle, positions, uv));
             positions[2] = new Vector3(1, (.1000001f - .1f) / .8f, 0);
             Assert.AreEqual(0, GroupedShellTransfer.CountShellIssues(faces, triangle, positions, uv));
+        }
+
+        [Test]
+        public void OwnUv0DefectsAreCountedAtTheTransformsScale()
+        {
+            // A large face and a tiny one (UV area 1e-9): the zero-area test (1e-10) passes it in
+            // UV0, fails it once a similarity shrinks the layout to a fifth.
+            var triangles = new[] { 0, 1, 2, 3, 4, 5 }; var faces = new List<int> { 0, 1 };
+            var positions = new[] { Vector3.zero, Vector3.right, Vector3.up,
+                Vector3.zero, Vector3.right * 1e-4f, Vector3.up * 1e-4f };
+            var uv0 = new Dictionary<int, Vector2> { [0] = Vector2.zero, [1] = Vector2.right, [2] = Vector2.up,
+                [3] = new Vector2(.5f, .5f), [4] = new Vector2(.5f + 4.47e-5f, .5f), [5] = new Vector2(.5f, .5f + 4.47e-5f) };
+            var shrink = new GroupedShellTransfer.SimilarityTransform { a = .2f, tx = .3f, ty = .3f, valid = true };
+            var shrunk = uv0.ToDictionary(kv => kv.Key, kv => shrink.Apply(kv.Value));
+            Assert.AreEqual(0, GroupedShellTransfer.CountShellIssues(faces, triangles, positions, uv0));
+            Assert.AreEqual(1, GroupedShellTransfer.CountShellIssues(faces, triangles, positions, shrunk));
+            Assert.AreEqual(.04f, GroupedShellTransfer.AreaScale(shrink), 1e-6f);
+            Assert.AreEqual(1, GroupedShellTransfer.CountShellIssues(faces, triangles, positions,
+                GroupedShellTransfer.ScaledUv(uv0, Mathf.Sqrt(GroupedShellTransfer.AreaScale(shrink)))));
+        }
+
+        [TestCase(.04f, "partition-xform")]
+        [TestCase(0f, "ray+partition")]
+        public void FoldShareFragmentTakesASimilarityThatOnlyShrinksItsOwnUv0(float areaScale, string expected)
+        {
+            // Three large faces and a tiny one (UV area 1e-9). The partition transform shrinks the
+            // layout to a fifth, which takes the tiny face below the zero-area test: one issue that
+            // the UV0 has at that scale. Ray projection mends the face, issue-free. A transform split
+            // between partitions (no single similarity, area scale 0) is held to the unscaled UV0.
+            var triangles = new[] { 0, 1, 2, 1, 3, 2, 3, 4, 2, 5, 6, 7 };
+            var positions = new[] { Vector3.zero, Vector3.right, Vector3.up, new Vector3(1, 1, 0), new Vector3(0, 2, 0),
+                new Vector3(.5f, .5f, 0), new Vector3(.5f + 1e-4f, .5f, 0), new Vector3(.5f, .5f + 1e-4f, 0) };
+            var uv0 = new Dictionary<int, Vector2>();
+            for (int i = 0; i < positions.Length; i++) uv0[i] = (Vector2)positions[i] * .25f;
+            uv0[6] = uv0[5] + new Vector2(4.47e-5f, 0); uv0[7] = uv0[5] + new Vector2(0, 4.47e-5f);
+            var shrink = new GroupedShellTransfer.SimilarityTransform { a = .2f, tx = .3f, ty = .3f, valid = true };
+            var shell = new UvShell { faceIndices = new List<int> { 0, 1, 2, 3 }, vertexIndices = new HashSet<int>(uv0.Keys) };
+            var mended = uv0.ToDictionary(kv => kv.Key, kv => kv.Value * .2f + new Vector2(.3f, .3f));
+            mended[6] = mended[5] + new Vector2(.01f, 0); mended[7] = mended[5] + new Vector2(0, .01f);
+
+            const BindingFlags flags = BindingFlags.Static | BindingFlags.NonPublic;
+            var candidateType = typeof(GroupedShellTransfer).GetNestedType("OverlapCandidate", BindingFlags.NonPublic);
+            var candidates = (System.Collections.IList)System.Activator.CreateInstance(typeof(List<>).MakeGenericType(candidateType));
+            object Candidate(string method, Dictionary<int, Vector2> uv2, float scale)
+            {
+                object candidate = System.Activator.CreateInstance(candidateType);
+                candidateType.GetField("method").SetValue(candidate, method);
+                candidateType.GetField("uv2").SetValue(candidate, uv2);
+                candidateType.GetField("coverage").SetValue(candidate, uv2.Count);
+                candidateType.GetField("areaScale").SetValue(candidate, scale);
+                return candidate;
+            }
+            candidates.Add(Candidate("ray+partition", mended, 0));
+            candidates.Add(Candidate("partition-xform", uv0.ToDictionary(kv => kv.Key, kv => shrink.Apply(kv.Value)), areaScale));
+            var selected = typeof(GroupedShellTransfer).GetMethod("SelectBestCandidate", flags).Invoke(null,
+                new object[] { candidates, shell, triangles, positions, false, true, uv0 });
+            Assert.AreEqual(expected, candidateType.GetField("method").GetValue(selected));
         }
 
         [TestCase(false)]

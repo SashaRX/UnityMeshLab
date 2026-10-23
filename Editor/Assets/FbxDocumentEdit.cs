@@ -221,12 +221,14 @@ namespace SashaRX.UnityMeshLab
         public void SplitPolygons(IReadOnlyDictionary<int, FbxPolygonSplit> plans)
             => EditTopology(plans, FbxPolygonSplitFile.Apply);
 
-        internal int PreserveSmallUvSeams(ICollection<string> names, int uvSet)
+        // The meshes are told by identity, not by name: a file whose geometries share a name
+        // (3ds Max often leaves them all unnamed) must not split the points of the others.
+        internal int PreserveSmallUvSeams(ICollection<FbxMesh> meshes, int uvSet)
         {
             var plans = new Dictionary<int, FbxUvPointSplit>();
             for (int ordinal = 0; ordinal < Meshes.Count; ++ordinal) {
                 var mesh = Meshes[ordinal];
-                if (!names.Contains(mesh.GetName())) continue;
+                if (!meshes.Contains(mesh)) continue;
                 var plan = SmallUvSeamPlan(mesh, uvSet);
                 if (plan != null) plans.Add(ordinal, plan);
             }
@@ -265,9 +267,15 @@ namespace SashaRX.UnityMeshLab
             return groups;
         }
 
+        // Unity's import merged UV values closer than about 1e-3 apart (6000.2, welding and
+        // compression off, the same at every atlas size); values within twice that get points
+        // of their own. Each such point is an open edge in a DCC, so farther seams keep theirs.
+        const double NearbyUvSeam = 2e-3;
+
         static bool HasNearbyUvSeam(HashSet<(double,double,double,double)> values)
         {
-            bool Nearby(double au, double av, double bu, double bv) => Math.Abs(au-bu) <= .01 && Math.Abs(av-bv) <= .01;
+            bool Nearby(double au, double av, double bu, double bv)
+                => (au - bu) * (au - bu) + (av - bv) * (av - bv) <= NearbyUvSeam * NearbyUvSeam;
             return values.Any(a => values.Any(b => a != b && Nearby(a.Item1,a.Item2,b.Item1,b.Item2)
                 && Nearby(a.Item3,a.Item4,b.Item3,b.Item4)));
         }

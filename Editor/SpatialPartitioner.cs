@@ -158,9 +158,14 @@ namespace SashaRX.UnityMeshLab
             return results;
         }
 
+        // Partitions whose average normals lie within 15° of each other face the same way:
+        // a normal cannot tell them apart (a position split, parallel panels), position can.
+        const float kSameFacingDot = 0.966f;
+
         /// <summary>
         /// Find the best-matching source partition for a target shell.
-        /// Uses normal similarity when available (thin belts), falls back to 3D centroid.
+        /// Uses normal similarity when available (thin belts); among partitions facing the
+        /// same way as the best one, and without normals, the nearest 3D centroid decides.
         /// </summary>
         public static int MatchPartition(ShellPartitionResult srcPartition,
             Vector3 targetCentroid3D, Vector3 targetNormal)
@@ -169,10 +174,9 @@ namespace SashaRX.UnityMeshLab
                 return -1;
 
             // Prefer normal-based matching when partition normals are available
-            // and normals are sufficiently different between partitions
+            int bestPart = -1;
             if (srcPartition.partitionNormal != null)
             {
-                int bestPart = 0;
                 float bestDot = -2f;
                 for (int pi = 0; pi < srcPartition.partitionCount; pi++)
                 {
@@ -183,14 +187,15 @@ namespace SashaRX.UnityMeshLab
                         bestPart = pi;
                     }
                 }
-                return bestPart;
             }
 
-            // Fallback: 3D centroid distance
-            int bestPartC = 0;
+            // 3D centroid distance: among all partitions, or among those facing like the best one
+            int bestPartC = bestPart >= 0 ? bestPart : 0;
             float bestDistSq = float.MaxValue;
             for (int pi = 0; pi < srcPartition.partitionCount; pi++)
             {
+                if (bestPart >= 0 && Vector3.Dot(srcPartition.partitionNormal[pi],
+                        srcPartition.partitionNormal[bestPart]) < kSameFacingDot) continue;
                 float dSq = (srcPartition.partitionCentroid[pi] - targetCentroid3D).sqrMagnitude;
                 if (dSq < bestDistSq)
                 {
@@ -199,6 +204,29 @@ namespace SashaRX.UnityMeshLab
                 }
             }
             return bestPartC;
+        }
+
+        /// <summary>
+        /// The source partition a target vertex lies on: that of the nearest source face facing
+        /// it (dot ≥ <paramref name="normalDotMin"/>) in <paramref name="shellBvh"/>, whose local
+        /// faces <paramref name="faceMap"/> maps to global ones. A partition's average normal says
+        /// little about a curved surface (a draped cloth faces every way) and its centroid little
+        /// about a large one; <see cref="MatchPartition"/> decides only when no face qualifies.
+        /// </summary>
+        internal static int MatchVertexPartition(ShellPartitionResult srcPartition,
+            TriangleBvh shellBvh, int[] faceMap, Vector3[] faceNormals, float normalDotMin,
+            Vector3 position, Vector3 normal)
+        {
+            if (srcPartition == null || srcPartition.partitionCount <= 1)
+                return -1;
+            if (shellBvh != null && faceMap != null && faceNormals != null)
+            {
+                var hit = shellBvh.FindNearestNormalFiltered(position, normal, faceNormals, normalDotMin);
+                if (hit.triangleIndex >= 0 && hit.triangleIndex < faceMap.Length
+                    && srcPartition.facePartitionId.TryGetValue(faceMap[hit.triangleIndex], out int pid))
+                    return pid;
+            }
+            return MatchPartition(srcPartition, position, normal);
         }
 
         /// <summary>

@@ -104,6 +104,25 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(result.cornerToVertex.All(v => v == -1));
         }
 
+        /// <summary>
+        /// A quad of zero area on its neighbour's edge (two corners at each end) neither
+        /// conflicts with the neighbour's corners nor refuses its own differing values.
+        /// </summary>
+        [TestCase(false)] [TestCase(true)]
+        public void Match_AZeroAreaPolygonOnAnEdgeNeitherConflictsWithItsNeighbourNorRefuses(bool imported)
+        {
+            var corners = Positions((0, 0), (-1, 0), (-1, 1), (0, 1), (0, 0), (-1, 0), (-1, 0), (0, 0));
+            var vertices = Positions((0, 0), (-1, 0), (-1, 1), (0, 1), (0, 0), (-1, 0), (-1, 0), (0, 0));
+            int[] triangles = { 0, 2, 1, 0, 3, 2, 4, 6, 5, 4, 7, 6 };
+            float[] value = { 0, 1, 2, 3, 9, 8, 7, 6 };
+            var result = FbxCornerMatch.Match(new[] { 4, 4 }, corners, vertices, triangles, new[] { 3, 3, 3, 3 }, null,
+                (a, b) => value[a] == value[b], imported ? triangles : null);
+            Assert.AreEqual(0, result.unresolved + result.conflicts + result.missing);
+            CollectionAssert.AreEqual(new[] { 0, 1, 2, 3 }, result.cornerToVertex.Take(4).ToArray());
+            Assert.IsTrue(result.cornerToVertex.Skip(4).All(v => v >= 4), "the zero-area quad takes values of its own faces");
+            Assert.AreEqual(4, result.zeroAreaChoices);
+        }
+
         [Test]
         public void PolygonSplit_UsesAuditedImportTrianglesAndKeepsNeighbour()
         {
@@ -186,7 +205,8 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual("OtherPart", document.Scene.GetRootNode().GetChild(1).GetName());
         }
 
-        string WriteSource(bool binary, string version = "FBX201400", bool withCollision = false, bool withMaterial = false)
+        string WriteSource(bool binary, string version = "FBX201400", bool withCollision = false, bool withMaterial = false,
+            string collisionName = "Part_COL")
         {
             string path = Path.Combine(folder, "source.fbx");
             using var manager = FbxManager.Create();
@@ -244,8 +264,8 @@ namespace SashaRX.UnityMeshLab.Tests
                     colors = new double[] { .1, .2, .3, 1, .4, .5, .6, 1, .7, .8, .9, 1 }
                 };
                 data.uvNames.Add("map1"); data.uvs.Add(new double[] { 0, 0, 1, 0, 0, 1 });
-                var collision = FbxNode.Create(scene, "Part_COL");
-                collision.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, "Part_COL", data));
+                var collision = FbxNode.Create(scene, collisionName);
+                collision.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, collisionName, data));
                 scene.GetRootNode().AddChild(collision);
             }
             using var exporter = FbxExporter.Create(manager, "Write");
@@ -881,6 +901,77 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { if (working) UnityEngine.Object.DestroyImmediate(working); AssetDatabase.DeleteAsset(assetFolder); }
         }
 
+        /// <summary>Small UV seams split only the meshes given, even when every geometry in the file is unnamed.</summary>
+        [Test]
+        public void SmallUvSeamSplitsOnlyTheGivenMeshAmongUnnamedGeometries()
+        {
+            using var document = FbxSourceDocument.Load(WriteUnnamedSeamPair(.001));
+            Assert.AreEqual(2, document.Meshes.Count);
+            Assert.That(document.Meshes.Select(m => m.GetName()), Is.All.Empty);
+            // A structural write refreshes the mesh list between the capture and the split.
+            var given = new HashSet<FbxMesh> { document.Meshes[0] };
+            document.RefreshMeshes();
+            Assert.That(document.PreserveSmallUvSeams(given, 1), Is.GreaterThan(0));
+            document.RefreshMeshes();
+            Assert.That(document.Meshes[0].GetControlPointsCount(), Is.GreaterThan(4), "the given mesh keeps its seam apart");
+            Assert.AreEqual(4, document.Meshes[1].GetControlPointsCount(), "the other unnamed mesh is not touched");
+        }
+
+        /// <summary>A seam wider than Unity's import merges keeps its control points.</summary>
+        [Test]
+        public void SmallUvSeamSplitsLeaveSeamsTheImportKeepsApart()
+        {
+            using var document = FbxSourceDocument.Load(WriteUnnamedSeamPair(.005));
+            Assert.AreEqual(0, document.PreserveSmallUvSeams(document.Meshes, 1));
+            Assert.That(document.Meshes.Select(m => m.GetControlPointsCount()), Is.All.EqualTo(4));
+        }
+
+        // Two unnamed meshes of two triangles on the edge 1-2; in UV set 1 the second
+        // triangle's copies of points 1 and 2 lie `seam` from the first's.
+        string WriteUnnamedSeamPair(double seam)
+        {
+            string path = Path.Combine(folder, "unnamed.fbx");
+            using var manager = FbxManager.Create();
+            var io = FbxIOSettings.Create(manager, Globals.IOSROOT);
+            manager.SetIOSettings(io);
+            var scene = FbxScene.Create(manager, "Unnamed");
+            for (int m = 0; m < 2; m++)
+            {
+                var mesh = FbxMesh.Create(scene, "");
+                mesh.InitControlPoints(4);
+                for (int i = 0; i < 4; i++) mesh.SetControlPointAt(new FbxVector4(i % 2 * 10 + m * 20, i / 2 * 10, 0), i);
+                int[][] triangles = { new[] { 0, 1, 2 }, new[] { 2, 1, 3 } };
+                foreach (var triangle in triangles)
+                {
+                    mesh.BeginPolygon();
+                    foreach (int i in triangle) mesh.AddPolygon(i);
+                    mesh.EndPolygon();
+                }
+                var node = FbxNode.Create(scene, "Part" + m);
+                node.SetNodeAttribute(mesh);
+                scene.GetRootNode().AddChild(node);
+                for (int set = 0; set < 2; set++)
+                {
+                    mesh.CreateLayer();
+                    var uv = FbxLayerElementUV.Create(mesh, "map" + (set + 1));
+                    uv.SetMappingMode(FbxLayerElement.EMappingMode.eByPolygonVertex);
+                    uv.SetReferenceMode(FbxLayerElement.EReferenceMode.eDirect);
+                    double offset = set == 1 ? seam : 0;
+                    uv.GetDirectArray().Add(new FbxVector2(0, 0));
+                    uv.GetDirectArray().Add(new FbxVector2(1, 0));
+                    uv.GetDirectArray().Add(new FbxVector2(0, 1));
+                    uv.GetDirectArray().Add(new FbxVector2(offset, 1));
+                    uv.GetDirectArray().Add(new FbxVector2(1 + offset, 0));
+                    uv.GetDirectArray().Add(new FbxVector2(1, 1));
+                    mesh.GetLayer(set).SetUVs(uv, FbxLayerElement.EType.eTextureDiffuse);
+                }
+            }
+            using var exporter = FbxExporter.Create(manager, "Write");
+            int format = manager.GetIOPluginRegistry().FindWriterIDByDescription("FBX binary (*.fbx)");
+            Assert.IsTrue(exporter.Initialize(path, format, io) && exporter.SetFileExportVersion("FBX201400") && exporter.Export(scene));
+            return path;
+        }
+
         /// <summary>Splitting small UV seams preserves skin weights and blend-shape deltas through an FBX round trip.</summary>
         [Test]
         public void SmallUvPointSplitsPreserveSkinAndBlendShapeBindings()
@@ -1134,6 +1225,195 @@ namespace SashaRX.UnityMeshLab.Tests
                 AssertCollisionUnchanged(path, outputPath);
                 var restored = AssetDatabase.LoadAllAssetsAtPath(outputPath).OfType<Mesh>().Single(m => m.name == imported.name);
                 CollectionAssert.AreEqual(TriangleUvRecords(working), TriangleUvRecords(restored));
+            }
+            finally
+            {
+                if (working) UnityEngine.Object.DestroyImmediate(working);
+                AssetDatabase.DeleteAsset(assetFolder);
+            }
+        }
+
+        [TestCase("Part_COL")] [TestCase("Part_Collider_01")]
+        public void ChannelWrite_BakingGeneratedUv1LeavesAnUnloadedCollisionMeshOut(string collisionName)
+        {
+            // Writing UV1 switches 'Generate Lightmap UVs' off for the whole model. A collision
+            // mesh the save did not load has no lightmap UVs to lose, numbered or not.
+            string assetFolder = "Assets/MeshLabGeneratedUv1Collision_" + Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", assetFolder.Substring(7));
+            string path = assetFolder + "/source.fbx";
+            Mesh working = null;
+            try
+            {
+                File.WriteAllBytes(path, File.ReadAllBytes(WriteSource(true, withCollision: true, collisionName: collisionName)));
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.isReadable = true; importer.generateSecondaryUV = true; importer.SaveAndReimport();
+                var imported = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().Single(m => m.name != collisionName);
+                string partName = imported.name;
+                working = UnityEngine.Object.Instantiate(imported);
+                working.uv2 = working.uv.Select(uv => uv * .5f).ToArray();
+                var entry = new MeshEntry { fbxMesh = imported, originalMesh = working };
+
+                Assert.IsTrue(FbxChannelWrite.Write(path, new[] { entry }, FbxExportIntent.UV1, path, null));
+                Assert.IsFalse(((ModelImporter)AssetImporter.GetAtPath(path)).generateSecondaryUV);
+                var saved = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().Single(m => m.name == partName);
+                CollectionAssert.AreEqual(TriangleUvRecords(working), TriangleUvRecords(saved));
+            }
+            finally
+            {
+                if (working) UnityEngine.Object.DestroyImmediate(working);
+                AssetDatabase.DeleteAsset(assetFolder);
+            }
+        }
+
+        [Test]
+        public void ChannelWrite_BakingGeneratedUv1KeepsAnUnloadedMeshsImportedLightmapUvs()
+        {
+            // Another object of the same file (a cabinet's door) was not loaded: writing UV1
+            // switches generation off for it too, so it keeps the UV1 it imports with now.
+            string assetFolder = "Assets/MeshLabGeneratedUv1Unloaded_" + Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", assetFolder.Substring(7));
+            string path = assetFolder + "/source.fbx";
+            const string doorName = "Door_LOD0";
+            Mesh working = null;
+            try
+            {
+                // The fixture's second mesh, under a lit name.
+                File.WriteAllBytes(path, File.ReadAllBytes(WriteSource(true, withCollision: true, collisionName: doorName)));
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.isReadable = true; importer.generateSecondaryUV = true; importer.SaveAndReimport();
+                var meshes = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().ToArray();
+                var door = meshes.Single(m => m.name == doorName);
+                Assert.AreEqual(door.vertexCount, door.uv2.Length, "Unity generates the door's lightmap UVs.");
+                var doorBefore = TriangleUvRecords(door);
+                var imported = meshes.Single(m => m.name != doorName);
+                string partName = imported.name;
+                working = UnityEngine.Object.Instantiate(imported);
+                working.uv2 = working.uv.Select(uv => uv * .5f).ToArray();
+                var entry = new MeshEntry { fbxMesh = imported, originalMesh = working };
+
+                Assert.IsTrue(FbxChannelWrite.Write(path, new[] { entry }, FbxExportIntent.UV1, path, null));
+                Assert.IsFalse(((ModelImporter)AssetImporter.GetAtPath(path)).generateSecondaryUV);
+                meshes = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().ToArray();
+                CollectionAssert.AreEqual(TriangleUvRecords(working), TriangleUvRecords(meshes.Single(m => m.name == partName)));
+                CollectionAssert.AreEqual(doorBefore, TriangleUvRecords(meshes.Single(m => m.name == doorName)),
+                    "The unloaded mesh keeps its lightmap UVs once Unity no longer generates them.");
+            }
+            finally
+            {
+                if (working) UnityEngine.Object.DestroyImmediate(working);
+                AssetDatabase.DeleteAsset(assetFolder);
+            }
+        }
+
+        [Test]
+        public void ChannelWrite_BakingGeneratedUv1UnwrapsAnUnpairableUnloadedMeshAgain()
+        {
+            // An unloaded mesh whose imported lightmap UVs cannot be paired with the file's
+            // corners (compressed tags, coincident faces) is unwrapped again instead of
+            // refusing the save; pairing is switched off here to take that path.
+            string assetFolder = "Assets/MeshLabGeneratedUv1Unwrap_" + Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", assetFolder.Substring(7));
+            string path = assetFolder + "/source.fbx";
+            const string doorName = "Door_LOD0";
+            Mesh working = null;
+            try
+            {
+                File.WriteAllBytes(path, File.ReadAllBytes(WriteSource(true, withCollision: true, collisionName: doorName)));
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.isReadable = true; importer.generateSecondaryUV = true; importer.SaveAndReimport();
+                var meshes = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().ToArray();
+                var door = meshes.Single(m => m.name == doorName);
+                string partName = meshes.Single(m => m.name != doorName).name;
+                working = UnityEngine.Object.Instantiate(door);
+                working.uv2 = working.uv.Select(uv => uv * .5f).ToArray();
+                var entry = new MeshEntry { fbxMesh = door, originalMesh = working };
+
+                FbxChannelWrite.PairUnloadedUv1 = false;
+                try { Assert.IsTrue(FbxChannelWrite.Write(path, new[] { entry }, FbxExportIntent.UV1, path, null)); }
+                finally { FbxChannelWrite.PairUnloadedUv1 = true; }
+                Assert.IsFalse(((ModelImporter)AssetImporter.GetAtPath(path)).generateSecondaryUV);
+                meshes = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().ToArray();
+                CollectionAssert.AreEqual(TriangleUvRecords(working), TriangleUvRecords(meshes.Single(m => m.name == doorName)));
+                var part = meshes.Single(m => m.name == partName);
+                var lightmap = part.uv2;
+                Assert.AreEqual(part.vertexCount, lightmap.Length, "the unloaded mesh has lightmap UVs once Unity no longer generates them");
+                Assert.IsTrue(lightmap.All(uv => uv.x >= 0 && uv.x <= 1 && uv.y >= 0 && uv.y <= 1));
+                var triangles = part.triangles;
+                for (int t = 0; t < triangles.Length; t += 3)
+                {
+                    Vector2 a = lightmap[triangles[t]], b = lightmap[triangles[t + 1]], c = lightmap[triangles[t + 2]];
+                    Assert.Greater(Mathf.Abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)), 1e-8f, $"triangle {t / 3} has lightmap area");
+                }
+            }
+            finally
+            {
+                if (working) UnityEngine.Object.DestroyImmediate(working);
+                AssetDatabase.DeleteAsset(assetFolder);
+            }
+        }
+
+        [Test]
+        public void ChannelWrite_ALargeMeshUnderMeshCompressionKeepsItsCornerTags()
+        {
+            // 6400 corners: the tag's corner component spans 0..4095, more than High
+            // compression keeps whole. The corners are read from an uncompressed import.
+            const int n = 40;
+            string source = Path.Combine(folder, "grid.fbx");
+            using (var manager = FbxManager.Create())
+            {
+                var io = FbxIOSettings.Create(manager, Globals.IOSROOT); manager.SetIOSettings(io);
+                var scene = FbxScene.Create(manager, "Grid");
+                var points = new List<double>();
+                for (int y = 0; y <= n; y++) for (int x = 0; x <= n; x++) points.AddRange(new double[] { x, y, 0 });
+                var sizes = new List<int>(); var corners = new List<int>();
+                for (int y = 0; y < n; y++) for (int x = 0; x < n; x++)
+                {
+                    int a = y * (n + 1) + x;
+                    sizes.Add(4); corners.AddRange(new[] { a, a + 1, a + n + 2, a + n + 1 });
+                }
+                var data = new FbxMeshData { controlPoints = points.ToArray(), polygonSizes = sizes.ToArray(),
+                    polygonVertices = corners.ToArray(), polygonMaterials = new int[sizes.Count] };
+                data.uvNames.Add("map1");
+                data.uvs.Add(corners.SelectMany(v => new[] { v % (n + 1) / (double)n, v / (n + 1) / (double)n }).ToArray());
+                var node = FbxNode.Create(scene, "Grid");
+                node.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, "GridMesh", data));
+                node.AddMaterial(FbxSurfacePhong.Create(scene, "Stone"));
+                scene.GetRootNode().AddChild(node);
+                using var exporter = FbxExporter.Create(manager, "Write");
+                int format = manager.GetIOPluginRegistry().FindWriterIDByDescription("FBX binary (*.fbx)");
+                Assert.IsTrue(exporter.Initialize(source, format, io) && exporter.Export(scene));
+            }
+            string assetFolder = "Assets/MeshLabCompressedTags_" + Guid.NewGuid().ToString("N");
+            AssetDatabase.CreateFolder("Assets", assetFolder.Substring(7));
+            string path = assetFolder + "/grid.fbx", output = assetFolder + "/saved.fbx";
+            Mesh working = null;
+            try
+            {
+                File.Copy(source, path);
+                AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceSynchronousImport);
+                var importer = (ModelImporter)AssetImporter.GetAtPath(path);
+                importer.isReadable = true; importer.generateSecondaryUV = false;
+                importer.meshCompression = ModelImporterMeshCompression.High;
+                importer.SaveAndReimport();
+                var imported = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().Single();
+                working = UnityEngine.Object.Instantiate(imported);
+                working.uv2 = working.uv;
+                var entry = new MeshEntry { fbxMesh = imported, originalMesh = working };
+
+                Assert.IsTrue(FbxChannelWrite.Write(path, new[] { entry }, FbxExportIntent.UV1, output, null));
+                using var written = FbxSourceDocument.Load(Path.GetFullPath(output));
+                var mesh = written.Meshes.Single();
+                var topology = new FbxLayerChannels.Topology(mesh);
+                var sets = FbxLayerChannels.UvElements(mesh);
+                var uv0 = FbxLayerChannels.ReadUv(sets[0], topology);
+                var uv1 = FbxLayerChannels.ReadUv(sets[1], topology);
+                // Each corner takes its own vertex's UV1 (its UV0 under compression); a corner
+                // paired with a neighbouring vertex would be a grid step (0.025) off.
+                for (int c = 0; c < topology.CornerCount; c++)
+                    Assert.That(Math.Abs(uv1[c * 2] - uv0[c * 2]) + Math.Abs(uv1[c * 2 + 1] - uv0[c * 2 + 1]), Is.LessThan(.008), $"corner {c}");
             }
             finally
             {

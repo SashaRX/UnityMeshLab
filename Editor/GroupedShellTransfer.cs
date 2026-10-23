@@ -21,6 +21,9 @@ namespace SashaRX.UnityMeshLab
 {
     public static class GroupedShellTransfer
     {
+        const string kMethodPartitionXform = "partition-xform";
+        const string kMethodFullXform = "full-xform";
+
         // Keep overlap detection bounded: FindOverlapGroups compares every shell pair.
         // Typical production meshes stay well below this limit; pathological meshes
         // fall back to the original fixed retry count instead of stalling the Editor.
@@ -946,10 +949,13 @@ namespace SashaRX.UnityMeshLab
             => TransferWithDiagnostics(targetMesh, sourceMesh, previousLodHints, previousLodMatchHints,
                 sourceAtlasWidth, sourceAtlasHeight, null);
 
+        // atlasNeighbours: UV2 corners, three per face, of the other meshes that share the
+        // source atlas, which a shell placed outside its source chart must not overlap; null
+        // when the source mesh has the atlas to itself.
         internal static TransferResult TransferWithDiagnostics(Mesh targetMesh, Mesh sourceMesh,
             List<OverlapSourceHint> previousLodHints, List<CrossLodMatchHint> previousLodMatchHints,
             int sourceAtlasWidth, int sourceAtlasHeight, TransferMatchTrace trace,
-            float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels)
+            float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels, Vector2[] atlasNeighbours = null)
         {
             ExtractMeshData(targetMesh, sourceMesh,
                 out var srcVerts, out var srcTris, out var srcUv0, out var srcUv2, out var srcNormals, out var sourceMeshName,
@@ -958,7 +964,7 @@ namespace SashaRX.UnityMeshLab
                 srcVerts, srcTris, srcUv0, srcUv2, srcNormals, sourceMeshName,
                 tVerts, tNormals, tUv0, tgtTris, vertCount, targetMeshName,
                 previousLodHints, previousLodMatchHints,
-                sourceAtlasWidth, sourceAtlasHeight, trace, boundaryToleranceTexels);
+                sourceAtlasWidth, sourceAtlasHeight, trace, boundaryToleranceTexels, atlasNeighbours);
         }
 
         /// <summary>
@@ -982,7 +988,7 @@ namespace SashaRX.UnityMeshLab
         internal static Task<TransferResult> TransferAsyncWithDiagnostics(Mesh targetMesh, Mesh sourceMesh,
             List<OverlapSourceHint> previousLodHints, List<CrossLodMatchHint> previousLodMatchHints,
             int sourceAtlasWidth, int sourceAtlasHeight, TransferMatchTrace trace,
-            float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels)
+            float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels, Vector2[] atlasNeighbours = null)
         {
             ExtractMeshData(targetMesh, sourceMesh,
                 out var srcVerts, out var srcTris, out var srcUv0, out var srcUv2, out var srcNormals, out var sourceMeshName,
@@ -991,7 +997,7 @@ namespace SashaRX.UnityMeshLab
                 srcVerts, srcTris, srcUv0, srcUv2, srcNormals, sourceMeshName,
                 tVerts, tNormals, tUv0, tgtTris, vertCount, targetMeshName,
                 previousLodHints, previousLodMatchHints,
-                sourceAtlasWidth, sourceAtlasHeight, trace, boundaryToleranceTexels));
+                sourceAtlasWidth, sourceAtlasHeight, trace, boundaryToleranceTexels, atlasNeighbours));
         }
 
         // Main-thread mesh read — splits Mesh API access (Mesh.vertices etc.
@@ -1074,11 +1080,14 @@ namespace SashaRX.UnityMeshLab
             List<OverlapSourceHint> previousLodHints,
             List<CrossLodMatchHint> previousLodMatchHints,
             int sourceAtlasWidth, int sourceAtlasHeight, TransferMatchTrace trace,
-            float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels)
+            float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels, Vector2[] atlasNeighbours = null)
         {
             var result = new TransferResult { matchTrace = trace };
             float uv2OobMargin = ComputeUv2PixelMargin(sourceAtlasWidth, sourceAtlasHeight, 1.25f, 0.005f);
             float uv2BoundsTolerance = ComputeUv2PixelMargin(sourceAtlasWidth, sourceAtlasHeight, 2.5f, 0.01f);
+            // The largest RMS residual of a source's UV0 → UV2 similarity for which its UV2 is
+            // still that similarity of its UV0 rather than a reparameterization of it
+            float similarityResidualTolerance = ComputeUv2PixelMargin(sourceAtlasWidth, sourceAtlasHeight, .5f, .001f);
             if (sourceAtlasWidth > 0 || sourceAtlasHeight > 0)
             {
                 UvtLog.Verbose(UvtLog.Category.Match,
@@ -1444,6 +1453,8 @@ namespace SashaRX.UnityMeshLab
             var tgtExactAreaProtected = new bool[tgtShells.Count];
             var tgtIsMerged = new bool[tgtShells.Count];
             var tgtForce3DFallback = new bool[tgtShells.Count];
+            // Fragments sharing a source that folds over its own UV0: projected by 3D within it.
+            var tgtFoldShare = new bool[tgtShells.Count];
 
             // Precompute per-target-shell average face normal + total UV0 area
             var tgtAvgNormal = new Vector3[tgtShells.Count];
@@ -1779,6 +1790,28 @@ namespace SashaRX.UnityMeshLab
                         // so standard interpolation produces correct UV2 per fragment.
                         UvtLog.Info($"[GroupedTransfer] Dedup: src{srcKey} has " +
                             $"{claimants.Count} non-overlapping UV0 fragments — allowing shared source");
+                        continue;
+                    }
+
+                    // A source whose own UV0 folds over itself (cloth, a doubled surface)
+                    // has fragments that overlap in UV0 just as its layers do. Evicting
+                    // them sends them to unrelated sources as merged shells, which are
+                    // rejected and left collapsed. They keep the source and take the
+                    // merged path, constrained to it (a shared, overlapping source is a
+                    // duplicate source), projected by 3D onto the nearest same-facing
+                    // face of the whole source: UV0 cannot tell its folded layers apart,
+                    // and a partition does not separate every fold.
+                    if (srcPartitions[srcKey].hasOverlap && srcPartitions[srcKey].partitionCount > 1)
+                    {
+                        foreach (var c in claimants)
+                        {
+                            tgtIsMerged[c.tsi] = true;
+                            tgtFoldShare[c.tsi] = true;
+                            var foldTrace = trace?.ForShell(c.tsi);
+                            if (foldTrace != null) foldTrace.dedupDecision = "Kept shared source: it folds over its own UV0";
+                        }
+                        UvtLog.Info($"[GroupedTransfer] Dedup: src{srcKey} folds over its own UV0 — " +
+                            $"{claimants.Count} fragments overlapping in UV0 share it, projected by 3D");
                         continue;
                     }
 
@@ -2232,6 +2265,24 @@ namespace SashaRX.UnityMeshLab
 
             // Track UV2 AABBs of placed force3D shells to prevent mutual overlap
             var force3DUsedRegions = new List<(Vector2 min, Vector2 max)>();
+            // UV2 bounds of merged shells written from the all-source pass, small-shell rescues
+            // included: their UV2 may lie away from the source they record
+            var allSourceRegions = new List<(Vector2 min, Vector2 max)>();
+            // UV2 bounds of shells placed where no source's UV2 lies (small-shell rescues,
+            // unclamped similarities), which every later all-source candidate avoids
+            var outsideSourceRegions = new List<(Vector2 min, Vector2 max)>();
+            // The worst stretch of each source chart's own UV2, measured when first needed
+            var sourceWorstStretch = new double[srcShells.Count];
+            for (int si = 0; si < sourceWorstStretch.Length; si++) sourceWorstStretch[si] = -1;
+            double SourceWorstStretch(int source)
+            {
+                if (sourceWorstStretch[source] < 0)
+                    sourceWorstStretch[source] = WorstStretch(srcShells[source].faceIndices, srcTris, srcVerts, vertex => srcUv2[vertex]);
+                return sourceWorstStretch[source];
+            }
+            // Shells that took the unclamped similarity, with the layout each had without it
+            var unclampedFallbacks = new Dictionary<int, (Dictionary<int, Vector2> uv2, int issues,
+                bool transform, bool aligned, bool geometric)>();
 
             // Track which source shells are already claimed by overlap group targets.
             // Prevents multiple targets from mapping to the same source, which causes
@@ -2406,6 +2457,14 @@ namespace SashaRX.UnityMeshLab
                     // Collect valid UV2 candidates from all group members.
                     // Each source produces UV2 for the target vertices via its own UV0→UV2 mapping.
                     var validCandidates = new Dictionary<int, OverlapCandidate>();
+                    // A fold-share fragment's own UV0: a transform keeps its defects, no more.
+                    Dictionary<int, Vector2> ownUv0 = null;
+                    if (tgtFoldShare[tsi])
+                    {
+                        ownUv0 = new Dictionary<int, Vector2>();
+                        foreach (int vi in tShell.vertexIndices)
+                            if (vi < tUv0.Length) ownUv0[vi] = tUv0[vi];
+                    }
 
                     foreach (int si in groupMembers)
                     {
@@ -2424,7 +2483,8 @@ namespace SashaRX.UnityMeshLab
                             srcUv2Min, srcUv2Max, groupMembers,
                             kRayMaxDist, uv2BoundsTolerance);
 
-                        var best = SelectBestCandidate(allCandidates, tShell, tgtTris, tVerts, sourceAtlasRecoveryAllowed);
+                        var best = SelectBestCandidate(allCandidates, tShell, tgtTris, tVerts, sourceAtlasRecoveryAllowed,
+                            preferTransform: tgtFoldShare[tsi], ownUv0: ownUv0);
                         if (best.HasValue)
                         {
                             validCandidates[si] = best.Value;
@@ -2673,6 +2733,27 @@ namespace SashaRX.UnityMeshLab
                             }
                         }
 
+                        // ── Composite issue check ──
+                        // A shell that is not fragment-merged has a candidate from the best source
+                        // that covers it whole. Faces voted to another source take that source's
+                        // UV2 while their neighbours keep the best one's, so the vote boundary can
+                        // tear the shell. A composite with more issues than the best source alone
+                        // is that tear, not a closer fit: keep the single source.
+                        bool compositeWorse = false;
+                        if (!compositeSpatiallyBroken && !isFragMergedShell && compositeUsedSources.Count > 1)
+                        {
+                            int compositeIssues = CountShellIssues(tShell.faceIndices, tgtTris, tVerts, compositeUv2);
+                            if (compositeIssues > bestOverlapIssues)
+                            {
+                                compositeWorse = true;
+                                UvtLog.Info($"[GroupedTransfer]   t{tsi}: composite has {compositeIssues} issues, " +
+                                    $"src{bestOverlapSrc} alone {bestOverlapIssues}; keeping the single source");
+                                compositeUv2 = bestOverlapUv2;
+                                compositeUsedSources.Clear();
+                                compositeUsedSources.Add(bestOverlapSrc);
+                            }
+                        }
+
                         // Determine primary source (most faces contributed) for hint/log
                         int primarySrc = bestOverlapSrc;
 
@@ -2684,7 +2765,8 @@ namespace SashaRX.UnityMeshLab
                             ? $", composite={compositeUsedSources.Count}src/{compositeFaces}f"
                             : "";
                         string fragInfo = isFragMergedShell ? ", fragMerged" : "";
-                        string coherenceInfo = compositeSpatiallyBroken ? ", spatial-fix" : "";
+                        string coherenceInfo = compositeSpatiallyBroken ? ", spatial-fix"
+                            : compositeWorse ? ", single-source" : "";
                         // ── Per-vertex outlier correction ──
                         // After composite UV2 is built, check each vertex against the
                         // best source's UV2 AABB. Vertices far outside are re-projected
@@ -2876,6 +2958,8 @@ namespace SashaRX.UnityMeshLab
                     int bestMergedIssues = int.MaxValue;
                     int bestMergedConsistencyFixes = 0;
                     bool bestWasConstrained = false;
+                    bool smallShellRescue = false;
+                    Dictionary<int, int> bestMergedSources = null;
 
                     // force3D: try all-source first (to find UV2 space in a different
                     // source region), fall back to constrained if overlap guard rejects.
@@ -2883,6 +2967,7 @@ namespace SashaRX.UnityMeshLab
                     // Exception: duplicate-source shells must stay constrained even in
                     // force3D mode — all-source would match the sibling target's faces.
                     bool force3D = tgtForce3DFallback[tsi];
+                    bool foldShare = tgtFoldShare[tsi];
                     bool isDupSrc = chosenSrc >= 0 && duplicateSources.Contains(chosenSrc);
                     if (isDupSrc) force3D = false; // force constrained-first for dup sources
 
@@ -2915,8 +3000,13 @@ namespace SashaRX.UnityMeshLab
                                 if (srcFacesChosen == null) break; // pass 0 was already all-source
                                 if (bestMergedIssues == 0) break;  // constrained was clean
                                 // Small/degenerate shells: stay constrained to avoid
-                                // wandering into wrong source's UV2 region
-                                if (tShell.faceIndices.Count <= 4) break;
+                                // wandering into wrong source's UV2 region, unless the
+                                // reject gate below would leave them at (0,0)
+                                if (tShell.faceIndices.Count <= 4)
+                                {
+                                    if (bestMergedIssues <= tShell.faceIndices.Count / 2) break;
+                                    smallShellRescue = true;
+                                }
                                 // Duplicate-source shells share their source with a
                                 // sibling target — all-source would find faces from
                                 // other shells and drag vertices to wrong UV2 regions.
@@ -2927,6 +3017,8 @@ namespace SashaRX.UnityMeshLab
 
                         var candidate = new Dictionary<int, Vector2>();
                         int localFixes = 0;
+                        // Vertices per source shell for a small shell's rescue, which may leave the matched source
+                        var candidateSources = smallShellRescue && !constrained ? new Dictionary<int, int>() : null;
 
                         // Select BVH for UV0 projection
                         // When source shell has UV0 overlap with partitions,
@@ -2963,6 +3055,16 @@ namespace SashaRX.UnityMeshLab
                             }
                         }
 
+                        // A constrained pass keeps a retained source vertex's UV2, whichever layer of a
+                        // folded source the partition match would pick; an all-source pass looks elsewhere on purpose.
+                        Dictionary<(Vector3 position, Vector2 uv0), Vector2> exactVertices = null;
+                        if (constrained && chosenSrc >= 0)
+                        {
+                            if (exactSourceVertices[chosenSrc] == null)
+                                exactSourceVertices[chosenSrc] = ExactVertexUvs(srcShells[chosenSrc], srcVerts, srcUv0, srcUv2);
+                            exactVertices = exactSourceVertices[chosenSrc];
+                        }
+
                         foreach (int vi in tShell.vertexIndices)
                         {
                             if (vi >= tUv0.Length || vi >= tVerts.Length) continue;
@@ -2970,13 +3072,20 @@ namespace SashaRX.UnityMeshLab
                             Vector3 tPos = tVerts[vi];
                             Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
                                 ? tNormals[vi] : Vector3.up;
+                            if (exactVertices != null && exactVertices.TryGetValue((tPos, tUv), out var exactUv))
+                            {
+                                candidate[vi] = exactUv;
+                                continue;
+                            }
 
-                            // Per-vertex partition selection based on vertex normal
+                            // Per-vertex partition: that of the nearest source face facing the vertex
                             TriangleBvh2D vertexBvh = defaultUv0Bvh;
                             int vertexPid = -1;
                             if (hasPartitions)
                             {
-                                vertexPid = SpatialPartitioner.MatchPartition(srcPR, tPos, tNrm);
+                                vertexPid = SpatialPartitioner.MatchVertexPartition(srcPR,
+                                    shellBvh3D[chosenSrc], shellBvh3DFaceMap[chosenSrc], shellBvh3DFaceNormals[chosenSrc],
+                                    kBackfaceDot, tPos, tNrm);
                                 if (vertexPid >= 0 && partitionBvh[chosenSrc][vertexPid] != null)
                                     vertexBvh = partitionBvh[chosenSrc][vertexPid];
                             }
@@ -3013,8 +3122,10 @@ namespace SashaRX.UnityMeshLab
                                 }
                             }
 
-                            // ── 3D projection — also partition-constrained ──
-                            var search3DFaces = (partFaceLists != null && vertexPid >= 0)
+                            // ── 3D projection — also partition-constrained, except for a fold share,
+                            // which takes the nearest same-facing face of any layer ──
+                            bool primary3D = force3D || (foldShare && constrained);
+                            var search3DFaces = (partFaceLists != null && vertexPid >= 0 && !(foldShare && constrained))
                                 ? partFaceLists[vertexPid] : defaultSearchFaces;
                             int search3DCount = constrained && search3DFaces != null
                                 ? search3DFaces.Count : srcTriCount;
@@ -3038,11 +3149,13 @@ namespace SashaRX.UnityMeshLab
                                 ? triUv2A[bestF3D] * bestU_3d + triUv2B[bestF3D] * bestV_3d + triUv2C[bestF3D] * bestW_3d
                                 : Vector2.zero;
 
-                            if (force3D && bestF3D >= 0)
+                            int usedFace = -1;
+                            if (primary3D && bestF3D >= 0)
                             {
                                 // 3D-primary: always prefer 3D projection to avoid
                                 // same-source UV2 overlap with dedup siblings.
                                 candidate[vi] = uv2From3D;
+                                usedFace = bestF3D;
                                 if (bestFUv0 >= 0)
                                 {
                                     float delta = (uv2FromUv0 - uv2From3D).magnitude;
@@ -3055,21 +3168,30 @@ namespace SashaRX.UnityMeshLab
                                 if (bestDSqUv0 > kUv0DistantThresh && delta > kConsistencyThresh)
                                 {
                                     candidate[vi] = uv2From3D;
+                                    usedFace = bestF3D;
                                     localFixes++;
                                 }
                                 else
                                 {
                                     candidate[vi] = uv2FromUv0;
+                                    usedFace = bestFUv0;
                                 }
                             }
                             else if (bestFUv0 >= 0)
                             {
                                 candidate[vi] = uv2FromUv0;
+                                usedFace = bestFUv0;
                             }
                             else if (bestF3D >= 0)
                             {
                                 candidate[vi] = uv2From3D;
+                                usedFace = bestF3D;
                                 localFixes++;
+                            }
+                            if (candidateSources != null && usedFace >= 0)
+                            {
+                                int src = faceToSrcShell[usedFace];
+                                candidateSources[src] = candidateSources.TryGetValue(src, out int n) ? n + 1 : 1;
                             }
                         }
 
@@ -3111,7 +3233,19 @@ namespace SashaRX.UnityMeshLab
                                     }
                                 }
                             }
+                            // Shells placed earlier outside the sources hold UV2 no claimed source covers
+                            if (issues < int.MaxValue && MeetsRegions((candMin, candMax), outsideSourceRegions))
+                                issues = int.MaxValue;
                         }
+
+                        // A small shell's rescue must not fold over itself, nor reach a source
+                        // another target shell is matched to or a merged shell placed elsewhere.
+                        if (smallShellRescue && !constrained && issues < int.MaxValue
+                            && (CandidateHasOverlap(tShell, tgtTris, candidate)
+                                || RescueMeetsPlacedShells(UvBounds(candidate), tsi, result.targetShellToSourceShell,
+                                    result.targetShellStatus, srcUv2Min, srcUv2Max,
+                                    allSourceRegions, force3DUsedRegions, outsideSourceRegions)))
+                            issues = int.MaxValue;
 
                         // Prefer all-source on tie when both have issues:
                         // UV0 flipped winding causes false positives in CountShellIssues,
@@ -3124,6 +3258,7 @@ namespace SashaRX.UnityMeshLab
                             bestMergedUv2 = candidate;
                             bestMergedConsistencyFixes = localFixes;
                             bestWasConstrained = constrained;
+                            bestMergedSources = candidateSources;
                         }
                     }
 
@@ -3241,7 +3376,21 @@ namespace SashaRX.UnityMeshLab
                     // source's UV2 region, creating long diagonal lines in UV2 space.
                     // If the majority of vertices are inside the correct region, re-project
                     // the outliers using the matched source's constrained UV0 lookup.
-                    if (bestMergedUv2 != null && bestMergedUv2.Count > 1 && chosenSrc >= 0)
+                    // A small shell's rescue left the matched source on purpose and was
+                    // judged as it is.
+                    bool smallShellRescued = smallShellRescue && !bestWasConstrained;
+                    // The shell records the source most of the rescue's vertices came from; the
+                    // safety net, recovery, classification and next LOD's hints read it.
+                    if (smallShellRescued && bestMergedSources != null)
+                    {
+                        int votes = 0;
+                        foreach (var kv in bestMergedSources)
+                            if (kv.Value > votes || (kv.Value == votes && kv.Key < chosenSrc))
+                            { chosenSrc = kv.Key; votes = kv.Value; }
+                        result.targetShellMatchDistSqr[tsi] =
+                            (result.targetShellCentroids[tsi] - srcCentroid3D[chosenSrc]).sqrMagnitude;
+                    }
+                    if (bestMergedUv2 != null && bestMergedUv2.Count > 1 && chosenSrc >= 0 && !smallShellRescued)
                     {
                         float kUv2Margin = uv2OobMargin;
                         Vector2 sMin = srcUv2Min[chosenSrc];
@@ -3452,8 +3601,12 @@ namespace SashaRX.UnityMeshLab
                         chosenUv2 = bestMergedUv2;
                         shellsMerged++;
                         result.consistencyCorrected += bestMergedConsistencyFixes;
-                        string mergedLabel = force3D ? "3D-primary"
-                            : (bestWasConstrained ? "src-constrained" : "all-source");
+                        if (!bestWasConstrained && !force3D) allSourceRegions.Add(UvBounds(chosenUv2));
+                        if (smallShellRescued) outsideSourceRegions.Add(UvBounds(chosenUv2));
+                        string mergedLabel = "all-source";
+                        if (force3D) mergedLabel = "3D-primary";
+                        else if (bestWasConstrained) mergedLabel = "src-constrained";
+                        else if (smallShellRescued) mergedLabel = "small-shell rescue";
                         UvtLog.Info($"[GroupedTransfer]   t{tsi} merged({faceCount}f): " +
                             $"{mergedLabel} ({bestMergedIssues} issues)");
                     }
@@ -3465,6 +3618,9 @@ namespace SashaRX.UnityMeshLab
 
                     Dictionary<int, Vector2> uv2_transform = null;
                     int issuesTransform = int.MaxValue;
+                    // The similarity before its out-of-bounds vertices are clamped
+                    Dictionary<int, Vector2> uv2_transformUnclamped = null;
+                    int issuesTransformUnclamped = int.MaxValue;
 
                     if (xf.valid)
                     {
@@ -3512,6 +3668,8 @@ namespace SashaRX.UnityMeshLab
                             }
                             if (!crossesOther)
                             {
+                                uv2_transformUnclamped = new Dictionary<int, Vector2>(uv2_transform);
+                                issuesTransformUnclamped = issuesTransform;
                                 // Doesn't cross another shell, but still OOB — clamp to source AABB
                                 Vector2 cMin = srcBMin2 - new Vector2(kOobMargin, kOobMargin);
                                 Vector2 cMax = srcBMax2 + new Vector2(kOobMargin, kOobMargin);
@@ -3658,20 +3816,52 @@ namespace SashaRX.UnityMeshLab
                         }
                     }
 
+                    // Clamping presses the similarity's outside vertices onto the source's UV2
+                    // box, as interpolation presses them onto its UV0 boundary, and both collapse
+                    // faces there. The unclamped similarity is taken when the source's UV2 is
+                    // that similarity of its UV0 within half a texel (a chart reparameterized
+                    // in UV2, such as an ARAP-relaxed stretched chart, is not, and its UV0
+                    // would bring the stretch back), it has fewer issues, stays in the atlas,
+                    // stretches no face past the source chart's worst (or 4:1), does not fold,
+                    // its bounds meet no other source (as checked above) nor a shell placed
+                    // outside the sources, and its faces overlap no other mesh of the source atlas.
+                    var clampedTransform = uv2_transform;
+                    int clampedIssues = issuesTransform;
+                    bool unclampedSimilarity = false;
+                    if (uv2_transformUnclamped != null && xf.residual <= similarityResidualTolerance
+                        && issuesTransformUnclamped < issuesInterp && issuesTransformUnclamped < issuesTransform
+                        && InUnitSquare(uv2_transformUnclamped, uv2BoundsTolerance)
+                        && !MeetsRegions(UvBounds(uv2_transformUnclamped), outsideSourceRegions, allSourceRegions, force3DUsedRegions)
+                        && WorstStretch(tShell.faceIndices, tgtTris, tVerts,
+                            vertex => uv2_transformUnclamped.TryGetValue(vertex, out var point) ? point : default)
+                            <= System.Math.Max(4, SourceWorstStretch(chosenSrc))
+                        && !CandidateHasOverlap(tShell, tgtTris, uv2_transformUnclamped)
+                        && !MeetsAtlasNeighbours(tShell, tgtTris, uv2_transformUnclamped, atlasNeighbours))
+                    {
+                        uv2_transform = uv2_transformUnclamped;
+                        issuesTransform = issuesTransformUnclamped;
+                        unclampedSimilarity = true;
+                    }
+
                     // A corrected curved-chart match can still fold during a
                     // normal-filtered UV0 query. On equal face-issue counts, use
                     // the existing transform only when its overlap scan is clean
                     // and interpolation has overlaps (or cannot certify its scan).
-                    bool preferTransform = uv2_transform != null && (issuesTransform < issuesInterp
-                        || (issuesTransform == issuesInterp && tgtExactAreaProtected[tsi]
-                            && !CandidateHasOverlap(tShell, tgtTris, uv2_transform)
+                    bool PrefersTransform(Dictionary<int, Vector2> transform, int issues) => transform != null
+                        && (issues < issuesInterp || (issues == issuesInterp && tgtExactAreaProtected[tsi]
+                            && !CandidateHasOverlap(tShell, tgtTris, transform)
                             && CandidateHasOverlap(tShell, tgtTris, uv2_interp)));
+                    bool preferTransform = PrefersTransform(uv2_transform, issuesTransform);
                     if (preferTransform)
                     {
                         chosenUv2 = uv2_transform;
                         shellsTransform++;
                         result.targetShellMethod[tsi] = 1; // xform
                         result.targetShellIssues[tsi] = issuesTransform;
+                        if (unclampedSimilarity) {
+                            UvtLog.Info($"[GroupedTransfer] t{tsi}: unclamped similarity of src{chosenSrc} " +
+                                $"({issuesTransform} issues, interpolation {issuesInterp})");
+                        }
                     }
                     else
                     {
@@ -3720,12 +3910,25 @@ namespace SashaRX.UnityMeshLab
                         }
                         result.targetShellIssues[tsi] = selectedQuality.issues;
                     }
+                    // Reserve the unclamped similarity's bounds only if recovery kept it, and
+                    // keep the layout the shell had without it for the check of its siblings
+                    if (preferTransform && unclampedSimilarity && ReferenceEquals(chosenUv2, uv2_transform))
+                    {
+                        outsideSourceRegions.Add(UvBounds(uv2_transform));
+                        bool clampedWins = PrefersTransform(clampedTransform, clampedIssues);
+                        unclampedFallbacks[tsi] = (clampedWins ? clampedTransform : uv2_interp,
+                            clampedWins ? clampedIssues : issuesInterp, clampedWins, alignedInterpolation, geometricInterpolation);
+                    }
                 }
 
                 // Write chosen UV2
                 int srcForLog = chosenSrc >= 0 ? chosenSrc : -1;
                 if (chosenUv2 != null)
                 {
+                    // The overlap fall-through may have moved chosenSrc. The AABB safety
+                    // net, planar recovery, classification and next-LOD hints read the
+                    // shell's source: it is the one its written UV2 came from.
+                    result.targetShellToSourceShell[tsi] = chosenSrc;
                     foreach (var kv in chosenUv2)
                     {
                         result.uv2[kv.Key] = kv.Value;
@@ -3740,13 +3943,59 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
+            // ── An unclamped similarity stays clear of the mesh's other shells ──
+            // Shells that share its source chart are interpolated into that chart before or
+            // after it, and neither its choice nor the placed regions see them. Once every
+            // shell is placed, one that overlaps the others in more face pairs than the
+            // layout it had without the similarity takes that layout.
+            foreach (var kv in unclampedFallbacks)
+            {
+                int tsi = kv.Key;
+                var fallback = kv.Value;
+                var tShell = tgtShells[tsi];
+                int pairs = OtherShellPairs(tShell, tsi, tgtTris, result.uv2, result.faceToTargetShell,
+                    ShellCandidate(tShell, result.uv2));
+                if (pairs == 0) continue;
+                // A scan that does not finish cannot certify the similarity: the shell takes its fallback
+                bool counted = pairs != int.MaxValue;
+                int fallbackPairs = counted
+                    ? OtherShellPairs(tShell, tsi, tgtTris, result.uv2, result.faceToTargetShell, fallback.uv2) : 0;
+                if (counted && fallbackPairs >= pairs) continue;
+                foreach (var point in fallback.uv2) result.uv2[point.Key] = point.Value;
+                result.targetShellIssues[tsi] = fallback.issues;
+                if (!fallback.transform)
+                {
+                    result.targetShellMethod[tsi] = 0;
+                    --shellsTransform; ++shellsInterpolation;
+                    if (fallback.aligned) result.shellsUv0Aligned++;
+                    if (fallback.geometric) result.shellsGeometryFallback++;
+                    var shellTrace = trace?.ForShell(tsi);
+                    if (shellTrace != null) shellTrace.projectionMethod = fallback.geometric ? "geometry"
+                        : fallback.aligned ? "uv0-aligned" : "uv0-filtered";
+                }
+                string overlap = counted ? $"overlaps other shells in {pairs} pairs ({fallbackPairs} without it)"
+                    : "overlap scan with other shells did not finish";
+                UvtLog.Info($"[GroupedTransfer] t{tsi}: unclamped similarity {overlap}; " +
+                    $"kept {(fallback.transform ? "the clamped similarity" : "interpolation")}");
+            }
+
             // ── Post-transfer UV2 AABB safety net for merged shells ──
             // Catch any vertex whose UV2 escaped the matched source's UV2 region.
             // This can happen through multiple code paths (overlap composite, standard
             // merged all-source fallback, 3D projection, etc.). Re-project outlier
-            // vertices using the source's UV0 BVH to bring them back into the correct region.
+            // vertices from the source's UV0 faces to bring them back into the correct region.
+            //
+            // Each vertex moves on its own while the rest of its faces stay, so a re-projection
+            // can turn faces into slivers. A shell's re-projection is therefore judged as one
+            // change by the corpus metrics (ShellLayoutScore): through the source's UV0 BVH it is
+            // kept unless the transferred layout is no worse in every metric and better in one;
+            // a source too small for a BVH is scanned, and its re-projection is kept only when
+            // it is that much better than the transferred layout.
             {
                 int totalOutlierVerts = 0;
+                ShellLayoutScore meshStretch = null;
+                int[] faceShell = null;
+                var moved = new List<(int vertex, Vector2 uv)>();
                 for (int tsi = 0; tsi < tgtShells.Count; tsi++)
                 {
                     if (result.targetShellMethod[tsi] != 2) continue; // only merged shells
@@ -3762,7 +4011,7 @@ namespace SashaRX.UnityMeshLab
                     Vector2 allowMax = sMax + new Vector2(padX, padY);
 
                     var tShell = tgtShells[tsi];
-                    int shellOutliers = 0;
+                    moved.Clear();
 
                     foreach (int vi in tShell.vertexIndices)
                     {
@@ -3772,33 +4021,57 @@ namespace SashaRX.UnityMeshLab
                             uv.y >= allowMin.y && uv.y <= allowMax.y)
                             continue; // within bounds
 
-                        // Outlier: re-project from source UV0 BVH
-                        if (vi < tUv0.Length && shellUv0Bvh[src] != null)
+                        // Outlier: re-project from the source's UV0 faces
+                        if (vi < tUv0.Length)
                         {
                             Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
                                 ? tNormals[vi] : Vector3.up;
-                            TriangleBvh2D.HitResult2D hit;
-                            if (tNrm.sqrMagnitude > 0.5f)
-                                hit = shellUv0Bvh[src].FindNearestNormalFiltered(
-                                    tUv0[vi], tNrm, triNormal, 0.0f);
-                            else
-                                hit = shellUv0Bvh[src].FindNearest(tUv0[vi]);
-
-                            if (hit.faceIndex >= 0)
-                            {
-                                int f = hit.faceIndex;
-                                result.uv2[vi] = triUv2A[f] * hit.u + triUv2B[f] * hit.v + triUv2C[f] * hit.w;
-                                shellOutliers++;
-                            }
+                            int f = NearestSourceUv0Face(tUv0[vi], tNrm, shellUv0Bvh[src], srcShells[src].faceIndices,
+                                triNormal, triUv0A, triUv0B, triUv0C, out float hitU, out float hitV, out float hitW);
+                            if (f >= 0)
+                                moved.Add((vi, triUv2A[f] * hitU + triUv2B[f] * hitV + triUv2C[f] * hitW));
                         }
                     }
+                    if (moved.Count == 0) continue;
 
-                    if (shellOutliers > 0)
+                    if (faceShell == null)
                     {
-                        UvtLog.Info($"[GroupedTransfer] Post-fix: t{tsi} — {shellOutliers} outlier " +
-                            $"verts re-projected to src{src} UV2 AABB");
-                        totalOutlierVerts += shellOutliers;
+                        faceShell = new int[tgtTris.Length / 3];
+                        for (int f = 0; f < faceShell.Length; f++) faceShell[f] = -1;
+                        for (int s = 0; s < tgtShells.Count; s++)
+                            foreach (int f in tgtShells[s].faceIndices) faceShell[f] = s;
+                        meshStretch = ShellLayoutScore.MeasureStretch(tgtTris, tVerts, result.uv2);
                     }
+                    var neighbours = SafetyNetNeighbours(tsi, tShell, moved, faceShell, tgtTris, result.uv2);
+                    var current = ShellLayoutScore.Measure(tShell.faceIndices, tShell.vertexIndices, neighbours,
+                        tgtTris, tVerts, result.uv2);
+                    for (int i = 0; i < moved.Count; i++)
+                    {
+                        var move = moved[i];
+                        moved[i] = (move.vertex, result.uv2[move.vertex]);
+                        result.uv2[move.vertex] = move.uv;
+                    }
+                    var reprojected = ShellLayoutScore.Measure(tShell.faceIndices, tShell.vertexIndices, neighbours,
+                        tgtTris, tVerts, result.uv2);
+                    double restWeighted = meshStretch.weightedAnisotropy - current.weightedAnisotropy;
+                    double restArea = meshStretch.weightedArea - current.weightedArea;
+                    bool indexed = shellUv0Bvh[src] != null;
+                    bool keep = indexed
+                        ? !ShellLayoutScore.Dominates(current, reprojected, restWeighted, restArea)
+                        : ShellLayoutScore.Dominates(reprojected, current, restWeighted, restArea);
+                    if (!keep)
+                    {
+                        foreach (var move in moved) result.uv2[move.vertex] = move.uv;
+                        if (indexed)
+                            UvtLog.Info($"[GroupedTransfer] Post-fix declined: t{tsi} — keeps its transferred layout, " +
+                                $"no worse than re-projecting {moved.Count} outlier verts to src{src}");
+                        continue;
+                    }
+                    meshStretch.weightedAnisotropy = restWeighted + reprojected.weightedAnisotropy;
+                    meshStretch.weightedArea = restArea + reprojected.weightedArea;
+                    UvtLog.Info($"[GroupedTransfer] Post-fix: t{tsi} — {moved.Count} outlier " +
+                        $"verts re-projected to src{src} UV2 AABB");
+                    totalOutlierVerts += moved.Count;
                 }
                 if (totalOutlierVerts > 0)
                     UvtLog.Info($"[GroupedTransfer] Post-fix total: {totalOutlierVerts} outlier verts corrected");
@@ -4537,6 +4810,18 @@ namespace SashaRX.UnityMeshLab
         static double UvArea(Vector2 a, Vector2 b, Vector2 c)
             => ((double)b.x - a.x) * ((double)c.y - a.y) - ((double)b.y - a.y) * ((double)c.x - a.x);
 
+        /// <summary>The UV area a similarity gives per unit of UV0 area.</summary>
+        internal static float AreaScale(SimilarityTransform transform)
+            => transform.a * transform.a + transform.b * transform.b;
+
+        /// <summary><paramref name="uv"/> with every coordinate times <paramref name="scale"/>.</summary>
+        internal static Dictionary<int, Vector2> ScaledUv(Dictionary<int, Vector2> uv, float scale)
+        {
+            var scaled = new Dictionary<int, Vector2>(uv.Count);
+            foreach (var kv in uv) scaled[kv.Key] = kv.Value * scale;
+            return scaled;
+        }
+
         static Dictionary<(Vector3 position, Vector2 uv0), Vector2> ExactVertexUvs(
             UvShell shell, Vector3[] positions, Vector2[] uv0, Vector2[] uv2)
         {
@@ -4627,6 +4912,42 @@ namespace SashaRX.UnityMeshLab
             return candidate.Count == target.vertexIndices.Count;
         }
 
+        /// <summary>The source face nearest a UV0 point: through the source's UV0 BVH, or by a
+        /// scan of its faces for a source too small for one. Like the BVH, the scan prefers
+        /// faces whose normal agrees and falls back to the nearest face of any orientation.</summary>
+        internal static int NearestSourceUv0Face(Vector2 point, Vector3 normal, TriangleBvh2D bvh, List<int> faces,
+            Vector3[] faceNormals, Vector2[] a, Vector2[] b, Vector2[] c, out float u, out float v, out float w)
+        {
+            if (bvh != null) return FindNearest2DSourceFaceBvh(point, normal, bvh, faceNormals, out u, out v, out w);
+            int face = FindNearest2DSourceFace(point, normal, faces, faceNormals, a, b, c, out u, out v, out w);
+            return face >= 0 ? face : FindNearest2DSourceFace(point, Vector3.zero, faces, faceNormals, a, b, c, out u, out v, out w);
+        }
+
+        /// <summary>The faces of other shells whose UV2 bounds meet the shell's bounds over both
+        /// its current layout and <paramref name="moved"/>: every face either layout could overlap.</summary>
+        static List<int> SafetyNetNeighbours(int shellIndex, UvShell shell, List<(int vertex, Vector2 uv)> moved,
+            int[] faceShell, int[] triangles, Vector2[] uv)
+        {
+            Vector2 min = new Vector2(float.PositiveInfinity, float.PositiveInfinity), max = -min;
+            void Include(Vector2 p)
+            {
+                if (float.IsNaN(p.x) || float.IsInfinity(p.x) || float.IsNaN(p.y) || float.IsInfinity(p.y)) return;
+                min = Vector2.Min(min, p); max = Vector2.Max(max, p);
+            }
+            foreach (int vertex in shell.vertexIndices) if (vertex < uv.Length) Include(uv[vertex]);
+            foreach (var move in moved) Include(move.uv);
+            var neighbours = new List<int>();
+            for (int f = 0; f < faceShell.Length; f++)
+            {
+                if (faceShell[f] == shellIndex) continue;
+                Vector2 a = uv[triangles[f * 3]], b = uv[triangles[f * 3 + 1]], c = uv[triangles[f * 3 + 2]];
+                if (Mathf.Max(a.x, Mathf.Max(b.x, c.x)) < min.x || Mathf.Min(a.x, Mathf.Min(b.x, c.x)) > max.x
+                    || Mathf.Max(a.y, Mathf.Max(b.y, c.y)) < min.y || Mathf.Min(a.y, Mathf.Min(b.y, c.y)) > max.y) continue;
+                neighbours.Add(f);
+            }
+            return neighbours;
+        }
+
         static int FindNearest2DSourceFaceBvh(Vector2 point, Vector3 normal, TriangleBvh2D bvh,
             Vector3[] faceNormals, out float u, out float v, out float w)
         {
@@ -4669,6 +4990,121 @@ namespace SashaRX.UnityMeshLab
             return ShellUvOverlap.None;
         }
 
+        static (Vector2 min, Vector2 max) UvBounds(Dictionary<int, Vector2> uv)
+        {
+            Vector2 min = new Vector2(float.MaxValue, float.MaxValue), max = -min;
+            foreach (var point in uv.Values) { min = Vector2.Min(min, point); max = Vector2.Max(max, point); }
+            return (min, max);
+        }
+
+        /// <summary>Whether bounds meet any of the placed regions.</summary>
+        internal static bool MeetsRegions((Vector2 min, Vector2 max) bounds,
+            params List<(Vector2 min, Vector2 max)>[] placed)
+        {
+            foreach (var regions in placed)
+                if (regions.Exists(region => bounds.min.x < region.max.x && bounds.max.x > region.min.x
+                    && bounds.min.y < region.max.y && bounds.max.y > region.min.y)) return true;
+            return false;
+        }
+
+        static bool InUnitSquare(Dictionary<int, Vector2> uv, float tolerance)
+        {
+            foreach (var point in uv.Values)
+                if (point.x < -tolerance || point.x > 1f + tolerance
+                    || point.y < -tolerance || point.y > 1f + tolerance) return false;
+            return true;
+        }
+
+        /// <summary>
+        /// Whether a rescued shell's UV2 bounds meet the UV2 bounds of a source another target
+        /// shell is matched to, or one of the placed regions. A rejected shell wrote no UV2.
+        /// </summary>
+        internal static bool RescueMeetsPlacedShells((Vector2 min, Vector2 max) bounds, int shell,
+            int[] shellSources, ShellStatus[] shellStatus, Vector2[] srcUv2Min, Vector2[] srcUv2Max,
+            params List<(Vector2 min, Vector2 max)>[] placed)
+        {
+            bool Meets(Vector2 min, Vector2 max) => bounds.min.x < max.x && bounds.max.x > min.x
+                && bounds.min.y < max.y && bounds.max.y > min.y;
+            for (int t = 0; t < shellSources.Length; t++)
+            {
+                int src = shellSources[t];
+                if (t != shell && src >= 0 && shellStatus[t] != ShellStatus.Rejected
+                    && Meets(srcUv2Min[src], srcUv2Max[src])) return true;
+            }
+            return MeetsRegions(bounds, placed);
+        }
+
+        /// <summary>A mesh's UV2 corners, three per face: its faces as an atlas neighbour.</summary>
+        internal static Vector2[] AtlasCorners(Mesh mesh)
+        {
+            var uv2 = UvTopology.ReadUv(mesh, 1);
+            if (uv2 == null) return System.Array.Empty<Vector2>();
+            var triangles = mesh.triangles;
+            var corners = new Vector2[triangles.Length];
+            for (int i = 0; i < triangles.Length; i++)
+                corners[i] = triangles[i] < uv2.Length ? uv2[triangles[i]] : default;
+            return corners;
+        }
+
+        /// <summary>
+        /// Whether a candidate's faces overlap the faces of the other meshes that share the
+        /// source atlas (corners three per face). Only the neighbour faces within the
+        /// candidate's bounds are scanned; an unfinished scan counts as an overlap.
+        /// </summary>
+        internal static bool MeetsAtlasNeighbours(UvShell shell, int[] triangles, Dictionary<int, Vector2> candidate,
+            Vector2[] neighbours) => AtlasNeighbourPairs(shell, triangles, candidate, neighbours) > 0;
+
+        /// <summary>
+        /// The overlapping pairs between a shell laid out as <paramref name="layout"/> and the
+        /// faces of the mesh's other shells as <paramref name="uv2"/> places them,
+        /// int.MaxValue when the scan does not finish.
+        /// </summary>
+        internal static int OtherShellPairs(UvShell shell, int shellIndex, int[] triangles, Vector2[] uv2,
+            int[] faceToShell, Dictionary<int, Vector2> layout)
+        {
+            var others = new List<Vector2>();
+            for (int f = 0; f < faceToShell.Length; f++)
+            {
+                if (faceToShell[f] == shellIndex) continue;
+                for (int corner = 0; corner < 3; corner++) others.Add(uv2[triangles[f * 3 + corner]]);
+            }
+            return AtlasNeighbourPairs(shell, triangles, layout, others.ToArray());
+        }
+
+        /// <summary>
+        /// The overlapping pairs between a candidate's faces and the given faces (corners three
+        /// per face), int.MaxValue when the scan does not finish.
+        /// </summary>
+        static int AtlasNeighbourPairs(UvShell shell, int[] triangles, Dictionary<int, Vector2> candidate,
+            Vector2[] neighbours)
+        {
+            if (neighbours == null || neighbours.Length < 3) return 0;
+            var (min, max) = UvBounds(candidate);
+            var own = UvAtlasDiagnostics.ShellGeometry(shell.faceIndices, triangles,
+                vertex => candidate.TryGetValue(vertex, out var point) ? point : default);
+            var uv = new List<Vector2>(own.uv);
+            var indices = new List<int>(own.indices);
+            for (int i = 0; i + 2 < neighbours.Length; i += 3)
+            {
+                Vector2 a = neighbours[i], b = neighbours[i + 1], c = neighbours[i + 2];
+                if (Mathf.Max(a.x, Mathf.Max(b.x, c.x)) <= min.x || Mathf.Min(a.x, Mathf.Min(b.x, c.x)) >= max.x
+                    || Mathf.Max(a.y, Mathf.Max(b.y, c.y)) <= min.y || Mathf.Min(a.y, Mathf.Min(b.y, c.y)) >= max.y) continue;
+                for (int corner = 0; corner < 3; corner++)
+                {
+                    indices.Add(uv.Count);
+                    uv.Add(neighbours[i + corner]);
+                }
+            }
+            if (indices.Count == own.indices.Length) return 0;
+            // Chart 0 is the candidate and chart 1 its neighbours: only pairs across them count.
+            var charts = new int[uv.Count];
+            for (int v = own.uv.Length; v < charts.Length; v++) charts[v] = 1;
+            var quality = UvAtlasDiagnostics.Measure(
+                new RemeshNative.Geometry { uv = uv.ToArray(), indices = indices.ToArray(), charts = charts },
+                System.Threading.CancellationToken.None, comparisonBudget: 200000, crossChartOnly: true);
+            return quality.complete ? quality.crossChartPairs : int.MaxValue;
+        }
+
         static bool CandidateHasOverlap(UvShell shell, int[] triangles, Dictionary<int, Vector2> candidate)
         {
             var quality = UvAtlasDiagnostics.Measure(UvAtlasDiagnostics.ShellGeometry(shell.faceIndices, triangles,
@@ -4695,6 +5131,23 @@ namespace SashaRX.UnityMeshLab
             foreach (int vertex in shell.vertexIndices)
                 if (vertex < uv.Length) candidate[vertex] = uv[vertex];
             return candidate;
+        }
+
+        /// <summary>
+        /// The worst anisotropy of the faces whose layout keeps an area; collapsed faces are the
+        /// issue count's to judge.
+        /// </summary>
+        internal static double WorstStretch(List<int> faces, int[] triangles, Vector3[] positions,
+            System.Func<int, Vector2> uv)
+        {
+            double worst = 0;
+            foreach (int face in faces)
+            {
+                int a = triangles[face * 3], b = triangles[face * 3 + 1], c = triangles[face * 3 + 2];
+                double stretch = TriangleStretch(positions[a], positions[b], positions[c], uv(a), uv(b), uv(c));
+                if (!double.IsInfinity(stretch) && !double.IsNaN(stretch)) worst = System.Math.Max(worst, stretch);
+            }
+            return worst;
         }
 
         internal static double TriangleStretch(Vector3 a, Vector3 b, Vector3 c, Vector2 u, Vector2 v, Vector2 w)
@@ -4878,6 +5331,8 @@ namespace SashaRX.UnityMeshLab
             public int issues;
             public int coverage;
             public string method;
+            /// <summary>UV area per UV0 area when one similarity maps every vertex of the shell; 0 otherwise.</summary>
+            public float areaScale;
         }
 
         /// <summary>
@@ -4921,6 +5376,18 @@ namespace SashaRX.UnityMeshLab
             bool hasPart = srcPR != null && srcPR.hasOverlap && srcPR.partitionCount > 1
                 && perPartBvh != null;
 
+            // Each vertex's partition, shared by the partition-aware candidates: that of the
+            // nearest source face facing it.
+            var vertexPartition = new Dictionary<int, int>();
+            if (hasPart)
+                foreach (int vi in tShell.vertexIndices)
+                {
+                    if (vi >= tVerts.Length) continue;
+                    Vector3 tNrm = (tNormals != null && vi < tNormals.Length) ? tNormals[vi] : Vector3.up;
+                    vertexPartition[vi] = SpatialPartitioner.MatchVertexPartition(srcPR,
+                        srcBvh3D, faceMap3D, faceNormals3D, 0.3f, tVerts[vi], tNrm);
+                }
+
             // ── Candidate 1: Ray/nearest with partition filtering ──
             if (srcBvh3D != null)
             {
@@ -4947,9 +5414,7 @@ namespace SashaRX.UnityMeshLab
                     Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
                         ? tNormals[vi] : Vector3.up;
 
-                    int vertexPid = -1;
-                    if (hasPart)
-                        vertexPid = SpatialPartitioner.MatchPartition(srcPR, tPos, tNrm);
+                    int vertexPid = hasPart ? vertexPartition[vi] : -1;
 
                     int hitFace = -1;
                     Vector3 hitBary = Vector3.zero;
@@ -5043,11 +5508,7 @@ namespace SashaRX.UnityMeshLab
                 foreach (int vi in tShell.vertexIndices)
                 {
                     if (vi >= tUv0.Length || vi >= tVerts.Length) continue;
-                    Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
-                        ? tNormals[vi] : Vector3.up;
-                    Vector3 tPos = tVerts[vi];
-
-                    int pid = SpatialPartitioner.MatchPartition(srcPR, tPos, tNrm);
+                    int pid = vertexPartition[vi];
                     if (pid < 0 || perPartBvh[pid] == null) continue;
 
                     var hit = perPartBvh[pid].FindNearest(tUv0[vi]);
@@ -5071,17 +5532,16 @@ namespace SashaRX.UnityMeshLab
             if (hasPart && perPartXform != null)
             {
                 var uv2Map = new Dictionary<int, Vector2>();
+                int onePid = -1; bool severalPids = false;
 
                 foreach (int vi in tShell.vertexIndices)
                 {
                     if (vi >= tUv0.Length || vi >= tVerts.Length) continue;
-                    Vector3 tNrm = (tNormals != null && vi < tNormals.Length)
-                        ? tNormals[vi] : Vector3.up;
-                    Vector3 tPos = tVerts[vi];
-
-                    int pid = SpatialPartitioner.MatchPartition(srcPR, tPos, tNrm);
+                    int pid = vertexPartition[vi];
                     if (pid < 0 || !perPartXform[pid].valid) continue;
 
+                    severalPids |= onePid >= 0 && pid != onePid;
+                    onePid = pid;
                     uv2Map[vi] = perPartXform[pid].Apply(tUv0[vi]);
                 }
 
@@ -5138,7 +5598,9 @@ namespace SashaRX.UnityMeshLab
                     candidates.Add(new OverlapCandidate
                     {
                         uv2 = uv2Map, issues = -1, coverage = uv2Map.Count,
-                        method = "partition-xform"
+                        method = kMethodPartitionXform,
+                        areaScale = severalPids || uv2Map.Count < tShell.vertexIndices.Count
+                            ? 0f : AreaScale(perPartXform[onePid])
                     });
             }
 
@@ -5222,7 +5684,8 @@ namespace SashaRX.UnityMeshLab
                     candidates.Add(new OverlapCandidate
                     {
                         uv2 = uv2Map, issues = -1, coverage = uv2Map.Count,
-                        method = "full-xform"
+                        method = kMethodFullXform,
+                        areaScale = uv2Map.Count < tShell.vertexIndices.Count ? 0f : AreaScale(fullXform)
                     });
             }
 
@@ -5233,11 +5696,19 @@ namespace SashaRX.UnityMeshLab
         /// Preserve the legacy issue/coverage choice, then compare recovery candidates
         /// with the same geometry score used for clean-chart projection.
         /// Ties broken by coverage (more vertices covered wins).
-        /// Xform candidates only win on strictly fewer issues (not equal).
+        /// Xform candidates only win on strictly fewer issues (not equal), unless
+        /// <paramref name="preferTransform"/>: a fragment kept on a source that folds over its
+        /// UV0 takes a transform on a tie, or when its issues are no more than those of its own UV0
+        /// (<paramref name="ownUv0"/>), at the scale of the similarity if one maps it all, and stay
+        /// below half of its faces.
+        /// The transform keeps the fragment's own UV0 layout, defects included; interpolation and
+        /// strip parameterisation over the folded source mend those faces but lay its fragments
+        /// onto one another, and the issue count does not see overlaps.
         /// </summary>
         static OverlapCandidate? SelectBestCandidate(
             List<OverlapCandidate> candidates,
-            UvShell shell, int[] tgtTris, Vector3[] positions, bool allowQualityRecovery)
+            UvShell shell, int[] tgtTris, Vector3[] positions, bool allowQualityRecovery,
+            bool preferTransform = false, Dictionary<int, Vector2> ownUv0 = null)
         {
             if (candidates == null || candidates.Count == 0) return null;
 
@@ -5257,8 +5728,8 @@ namespace SashaRX.UnityMeshLab
                 var curr = candidates[i];
                 var best = candidates[bestIdx];
 
-                bool currIsXform = curr.method == "full-xform" || curr.method == "partition-xform";
-                bool bestIsXform = best.method == "full-xform" || best.method == "partition-xform";
+                bool currIsXform = curr.method == kMethodFullXform || curr.method == kMethodPartitionXform;
+                bool bestIsXform = best.method == kMethodFullXform || best.method == kMethodPartitionXform;
 
                 if (curr.issues < best.issues)
                 {
@@ -5267,16 +5738,11 @@ namespace SashaRX.UnityMeshLab
                 else if (curr.issues == best.issues)
                 {
                     // On equal issues: interp-based methods are preferred over xform
-                    // because interp stays within source UV2 convex hull.
-                    // Among same-type methods, prefer more coverage.
-                    if (currIsXform && !bestIsXform)
+                    // because interp stays within source UV2 convex hull, unless the
+                    // caller prefers a transform. Among same-type methods, prefer more coverage.
+                    if (currIsXform != bestIsXform)
                     {
-                        // xform doesn't win on tie — keep interp
-                    }
-                    else if (!currIsXform && bestIsXform)
-                    {
-                        // interp replaces xform on tie
-                        bestIdx = i;
+                        if (currIsXform == preferTransform) bestIdx = i;
                     }
                     else if (curr.coverage > best.coverage)
                     {
@@ -5285,13 +5751,36 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
+            if (preferTransform && ownUv0 != null)
+            {
+                // No worse than the best candidate is settled above; here a transform may also
+                // carry the fragment's own UV0 defects, no more. Under one similarity they are
+                // counted at its scale: the zero-area test is absolute, so a similarity that
+                // shrinks the UV0 turns its smallest faces into defects it did not make. Vertices
+                // split between partitions' transforms bend the faces between them; those
+                // defects are the transform's own, so the UV0 is then counted as it is.
+                int transformIdx = -1;
+                for (int i = 0; i < candidates.Count; i++)
+                {
+                    var c = candidates[i];
+                    if (c.method != kMethodFullXform && c.method != kMethodPartitionXform) continue;
+                    if (c.issues * 2 >= shell.faceIndices.Count) continue;
+                    if (c.issues > CountShellIssues(shell.faceIndices, tgtTris, positions,
+                            c.areaScale > 0 ? ScaledUv(ownUv0, Mathf.Sqrt(c.areaScale)) : ownUv0)) continue;
+                    var t = transformIdx >= 0 ? candidates[transformIdx] : c;
+                    if (transformIdx < 0 || c.issues < t.issues || (c.issues == t.issues && c.coverage > t.coverage))
+                        transformIdx = i;
+                }
+                if (transformIdx >= 0) bestIdx = transformIdx;
+            }
+
             var selected = candidates[bestIdx];
             var quality = TransferCandidateQuality.Measure(shell, tgtTris, positions, selected.uv2, scanOverlap: false);
             if (allowQualityRecovery && quality.NeedsRecovery) {
                 quality = TransferCandidateQuality.Measure(shell, tgtTris, positions, selected.uv2);
                 foreach (var candidate in candidates) {
                     // Extrapolating transforms retain their existing coverage gate.
-                    if (candidate.method == "full-xform" || candidate.method == "partition-xform"
+                    if (candidate.method == kMethodFullXform || candidate.method == kMethodPartitionXform
                         || candidate.coverage < selected.coverage) continue;
                     var alternative = TransferCandidateQuality.Measure(shell, tgtTris, positions, candidate.uv2);
                     if (!alternative.Improves(quality)) continue;

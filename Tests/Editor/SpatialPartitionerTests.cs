@@ -29,6 +29,55 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void MatchPartitionTellsSameFacingPartitionsApartByPosition()
+        {
+            // Parallel panels (a position split): the normal ties and the nearer centroid decides.
+            var panels = new SpatialPartitioner.ShellPartitionResult {
+                hasOverlap = true, partitionCount = 2,
+                partitionCentroid = new[] { Vector3.zero, Vector3.right * 10 },
+                partitionNormal = new[] { Vector3.up, Vector3.up } };
+            Assert.AreEqual(0, SpatialPartitioner.MatchPartition(panels, Vector3.right, Vector3.up));
+            Assert.AreEqual(1, SpatialPartitioner.MatchPartition(panels, Vector3.right * 9, Vector3.up));
+            // Front and back of a strap at one place: the normal still decides.
+            var strap = new SpatialPartitioner.ShellPartitionResult {
+                hasOverlap = true, partitionCount = 2,
+                partitionCentroid = new[] { Vector3.zero, Vector3.down * .01f },
+                partitionNormal = new[] { Vector3.up, Vector3.down } };
+            Assert.AreEqual(0, SpatialPartitioner.MatchPartition(strap, Vector3.down * .01f, Vector3.up));
+            Assert.AreEqual(1, SpatialPartitioner.MatchPartition(strap, Vector3.zero, Vector3.down));
+        }
+
+        [Test]
+        public void MatchVertexPartitionTakesTheNearestFacingFace()
+        {
+            // A large floor (global faces 4 and 5, partition 0) and a small wall off it (face 9, partition 1).
+            var corners = new[] {
+                new Vector3(0, 0, 0), new Vector3(0, 0, 10), new Vector3(10, 0, 10),
+                new Vector3(0, 0, 0), new Vector3(10, 0, 10), new Vector3(10, 0, 0),
+                new Vector3(20, 0, 0), new Vector3(20, 1, 0), new Vector3(20, 0, 1) };
+            var bvh = new TriangleBvh(corners, new[] { 0, 1, 2, 3, 4, 5, 6, 7, 8 });
+            var faceMap = new[] { 4, 5, 9 };
+            var faceNormals = new[] { Vector3.up, Vector3.up, Vector3.right };
+            var cloth = new SpatialPartitioner.ShellPartitionResult {
+                hasOverlap = true, partitionCount = 2,
+                facePartitionId = new Dictionary<int, int> { [4] = 0, [5] = 0, [9] = 1 },
+                partitionCentroid = new[] { new Vector3(5, 0, 5), new Vector3(20, .3f, .3f) },
+                partitionNormal = new[] { Vector3.up, Vector3.right } };
+
+            // A floor vertex leaning towards the wall: the average normals pick the wall, the faces the floor.
+            var leaning = new Vector3(.8f, .6f, 0);
+            Assert.AreEqual(1, SpatialPartitioner.MatchPartition(cloth, new Vector3(5, 0, 5), leaning));
+            Assert.AreEqual(0, SpatialPartitioner.MatchVertexPartition(cloth, bvh, faceMap, faceNormals, .3f,
+                new Vector3(5, 0, 5), leaning));
+            Assert.AreEqual(1, SpatialPartitioner.MatchVertexPartition(cloth, bvh, faceMap, faceNormals, .3f,
+                new Vector3(20, .2f, .2f), Vector3.right));
+            // No face faces the vertex: the average normals decide.
+            Assert.AreEqual(SpatialPartitioner.MatchPartition(cloth, new Vector3(5, -1, 5), Vector3.down),
+                SpatialPartitioner.MatchVertexPartition(cloth, bvh, faceMap, faceNormals, .3f,
+                    new Vector3(5, -1, 5), Vector3.down));
+        }
+
+        [Test]
         public void PartitionShells_FoldedFacesSharingVertex_DetectsOverlap()
         {
             var uv = BuildFullBoundsUvs(4);

@@ -151,8 +151,9 @@ namespace SashaRX.UnityMeshLab
         static void CaptureGeneratedLodMaterials(FbxStructurePlan.NewLod lod, MeshEntry entry, MeshEntry source, string fbxPath)
         {
             if (entry.renderer == null || source?.renderer == null || !ImportsMaterials(fbxPath)) return;
-            var materials = UvToolHub.OriginalPreviewMaterials(entry.renderer, forAssetWrite: true);
             var sourceMaterials = UvToolHub.OriginalPreviewMaterials(source.renderer, forAssetWrite: true);
+            var materials = WithoutStrayPreviews(UvToolHub.OriginalPreviewMaterials(entry.renderer, forAssetWrite: true),
+                sourceMaterials, entry.renderer.name);
             if (materials.SequenceEqual(sourceMaterials)) return;
             lod.materials = (Material[])materials.Clone();
             lod.replaced = (Material[])sourceMaterials.Clone();
@@ -215,12 +216,33 @@ namespace SashaRX.UnityMeshLab
                 else if (counterparts.Count == 0 || counterparts.Any(r => materials.SequenceEqual(r.sharedMaterials))) return null;
                 else model = counterparts[0].sharedMaterials;
             }
+            materials = WithoutStrayPreviews(materials, model, entry.renderer.name);
             if (materials.SequenceEqual(model)) return null;
             return new FbxStructurePlan.MaterialEdit
                 // A prefab instance's child may be renamed, at any level of nested prefabs: its
                 // model node is its original source's name.
                 { meshName = entry.fbxMesh.name, nodeName = source != null ? PrefabUtility.GetCorrespondingObjectFromOriginalSource(entry.renderer).name : entry.renderer.name,
                   nameOnly = source == null, materials = (Material[])materials.Clone(), replaced = (Material[])model.Clone() };
+        }
+
+        /// <summary>
+        /// The slots still holding a Mesh Lab preview material that no active preview accounts for
+        /// (copied onto another renderer or brought back by Undo) keep the model's material: a
+        /// preview is never an authored assignment, and the FBX cannot map it to an asset.
+        /// </summary>
+        internal static Material[] WithoutStrayPreviews(Material[] materials, Material[] model, string what)
+        {
+            Material[] kept = null;
+            for (int s = 0; s < materials.Length; s++)
+            {
+                var material = materials[s];
+                if (material == null || material.shader == null || !CheckerTexturePreview.IsPreviewShader(material.shader.name)) continue;
+                kept ??= (Material[])materials.Clone();
+                kept[s] = s < model.Length ? model[s] : null;
+                UvtLog.Warn($"[FBX Export] '{what}': submesh {s} still shows the preview material '{material.name}' without its preview; " +
+                    $"the save keeps the model's '{(kept[s] != null ? kept[s].name : "None")}'. Reassign the renderer's material to clear it from the scene.");
+            }
+            return kept ?? materials;
         }
 
         /// <summary>
@@ -358,6 +380,8 @@ namespace SashaRX.UnityMeshLab
             public bool uv1Regenerated;
             /// <summary>Set by <see cref="Apply"/>: some mesh got the UV set Unity imports as UV1.</summary>
             public bool uv1Written;
+            /// <summary>Filled by <see cref="Apply"/>: the FBX meshes it wrote whole (generated LODs, replaced geometry).</summary>
+            public readonly List<FbxMesh> wholeMeshes = new List<FbxMesh>();
             /// <summary>The FBX file being written; new materials' texture paths are made relative to it.</summary>
             public string fbxPath;
             /// <summary>The FBX the document was loaded from; its own materials are reused as they are.</summary>
@@ -516,7 +540,9 @@ namespace SashaRX.UnityMeshLab
                 FbxStructureEdit.AddMaterials(node, r.node, Enumerable.Range(0, r.node.GetMaterialCount()));
                 // The LOD's mesh is made from its source's and carries its UV set names.
                 int slots = lod.materials != null ? ReplaceSlots(scene, node, r.mesh.GetName(), r.submeshMaterials, lod.materials, lod.replaced, options) : 0;
-                node.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, lod.name, data));
+                var lodMesh = FbxStructureEdit.CreateMesh(scene, lod.name, data);
+                node.SetNodeAttribute(lodMesh);
+                options.wholeMeshes.Add(lodMesh);
                 log.Add($"'{lod.name}': {data.polygonSizes.Length} polygon(s) next to '{r.node.GetName()}'{(removed > 0 ? " (replacing the node of that name)" : "")}" +
                     (slots > 0 ? $", {slots} material slot(s) of its own" : ""));
                 changes++;
@@ -529,7 +555,9 @@ namespace SashaRX.UnityMeshLab
             {
                 var r = Ref(name);
                 var data = FbxMeshData.FromTriangles(SourceOf(mesh, r, options), r.fit, r.reverse, r.submeshMaterials);
-                int nodes = FbxStructureEdit.ReplaceMesh(r.mesh, FbxStructureEdit.CreateMesh(scene, r.mesh.GetName(), data));
+                var replacement = FbxStructureEdit.CreateMesh(scene, r.mesh.GetName(), data);
+                int nodes = FbxStructureEdit.ReplaceMesh(r.mesh, replacement);
+                options.wholeMeshes.Add(replacement);
                 log.Add($"'{name}': geometry replaced ({data.polygonSizes.Length} polygon(s), {nodes} node(s); node, transform and materials kept)");
                 changes++;
             }

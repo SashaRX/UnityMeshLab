@@ -1,5 +1,710 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## A shell reaching past its source keeps the unclamped similarity — 2026-10-22
+
+After PR #339 model K's LOD2 has 24 faces with a UV2 area under 1e-10 in
+written shells (item 39 in PR #294); none is degenerate in 3D or in UV0.
+
+12 are in 8 interpolated shells. Their vertices sit on the source chart's
+UV0 corners or past them (14 of 36 inside, median 6.8% of the chart's UV0
+diagonal away), so interpolation presses a face's vertices onto one edge.
+The similarity of the source maps every one of the 8 shells with no issues,
+worst anisotropy 1.27 and no overlap with itself or the written shells, but
+8 of its 40 vertices leave the source's UV2 box: when its bounds meet no
+other source the code clamps those vertices to the box, which collapses the
+same faces (4 issues), and adds one issue per outside vertex, so
+interpolation wins. Recovery can run for 1 of the 8 (3 share their source,
+4 have partitioned sources) and does not help it.
+
+The other 12 are in 4 merged force3D shells accepted as Poor: each face's
+three vertices lie 76 chart diagonals from a 1-2 face source and map to one
+of its corners. No candidate measured (constrained, all-source, 3D-primary)
+has fewer issues; they stay as they are.
+
+Change: when the clamped similarity was penalised, the unclamped one is
+kept and taken when it has fewer issues than interpolation (after its
+aligned and geometric alternatives) and than the clamped one, stays in
+[0,1] within the bounds tolerance, does not fold over itself, and its
+bounds meet neither another source's UV2 box (the check that already
+refuses the similarity) nor a shell placed outside the sources (rescues,
+earlier unclamped similarities), nor merged all-source or force3D regions.
+A taken one reserves its bounds, and every later all-source candidate and
+rescue avoids them.
+
+This is not the rejected "transform by local quality" trial (Source UV
+packing, 2026-10-09: 44 strict regressions, "local improvement does not
+certify cross-chart footprints"): the similarity is taken only where it
+lands in no other source's UV2 box and no placed region, and only where
+interpolation already has collapsed faces.
+
+Measured (item 40 in PR #294): head 569bb1a against main 69e1ccf, Full
+Pipeline 32 tex/m; the corpus against the 6d3c325 capture of item 38.
+
+| | main | 569bb1a |
+|---|---|---|
+| K LOD2 UV quality / collapsed / uvDegenerate / overlap pairs / stretched | 38 / 48 / 50 / 1 / 57 | 39 / 44 / 44 / 14 / 51 |
+| K LOD2 Poor shells / worst anisotropy | 17 / 1.2e21 | 9 / 34.5 |
+| A LOD1 collapsed / uvDegenerate / overlap pairs | 18 / 20 / 930 | 9 / 10 / 932 |
+| A LOD2 UV quality / collapsed / uvDegenerate / overlap pairs | 37 / 59 / 65 / 2783 | 39 / 44 / 47 / 2787 |
+
+7 of model K's 8 interpolated shells took the similarity, and their
+collapsed faces fell from 12 to 2. All 13 new overlap pairs of model K are
+between two of those 7 and shells of other meshes: the LOD's meshes share
+one lightmap atlas, and each transfer saw only its own source mesh's
+charts. Model A's 4 new pairs lie within one mesh. Corpus: exit code 1,
+0 worse, 14 tradeoff rows (stretched faces up in 8, overlap pairs up in 4,
+in two pairs: +3 and +4), 56 better; uvDegenerateFaces fell in 46 rows and
+rose in none; 234 `unclamped similarity` lines. The corpus transfers each
+pair alone, so it cannot see pairs between meshes.
+
+Follow-up: when the source LOD's meshes share one atlas (Repack Per Mesh
+off), each transfer receives the UV2 faces of the other source meshes and
+of the targets already transferred (from any source), and the unclamped
+similarity is refused when one of its faces overlaps one of those. Transfer capture
+records those meshes, so a replay sees the same faces. Within the mesh,
+shells interpolated into the same source chart are seen by neither the
+choice nor the placed regions: once every shell is placed, a shell on the
+unclamped similarity that overlaps the others in more face pairs than its
+fallback (the clamped similarity or interpolation it had without it), or
+whose overlap scan does not finish, takes the fallback.
+
+Measured at 186dfa7 (item 41): both kinds of new overlap are gone. Model
+K's LOD2 equals main in UV quality, collapsed faces and overlap pairs; 6
+shells took the similarity (Poor 17 → 11, stretched faces 57 → 51), 4 of
+the 8 interpolated shells among them, and the other mesh check sent 3 back.
+Model A's LOD2: UV quality 37 → 38, collapsed 59 → 45, overlap pairs equal
+to main. Corpus: exit code 1, 0 worse, 9 tradeoff, 59 better; overlap
+pairs rose in no row, but stretched faces rose in 6 and worst anisotropy
+in 4. The stretch comes with the reparameterizing profiles: stretched
+faces of the changed rows went 5238 → 5467 (default) and 5002 → 5208
+(oversample-8), but 7309 → 7290 without reparameterization. The repack
+relaxes a stretched chart's UV2 (ARAP), so it is no similarity of its UV0,
+and the similarity of the target's UV0 brings back the stretch the
+relaxation removed.
+
+Follow-up: the unclamped similarity is taken only where the source's
+UV0 → UV2 similarity fits its UV2 within half a texel (RMS residual), so
+only on charts the repack did not reparameterize. Of the 3 model K shells
+the other mesh check sent back, 2 met faces of other meshes' LOD2 and 1
+only a source face of a mesh already transferred, whose LOD2 has no face
+there: once every target of a source is transferred, their faces now
+stand for the source's.
+
+Measured at 0ef3403 (item 42; ARAP on in both models' pipeline). Model K's
+LOD2: collapsed 48 → 46, Poor 17 → 10, stretched faces 57 → 51, UV quality
+and overlap pairs equal to main; 5 of the 8 interpolated shells took the
+similarity (their sources' residuals are 21–88% of the threshold) and their
+collapsed faces went 12 → 6. Model A's LOD2: UV quality 37 → 38, collapsed
+59 → 50, overlap pairs equal to main; the threshold sent back 3 of the 9
+shells of item 41 (residuals 1.3–2.6 times it). Corpus: exit code 1, 0
+worse, 2 tradeoff, 23 better; 61 `unclamped similarity` lines (234 at
+186dfa7), overlap pairs and uvDegenerateFaces rose in no row, and stretched
+faces no longer rise in the reparameterizing profiles. One tradeoff is a
+face more past 4:1 (48 → 49, area-weighted anisotropy 2.101 → 2.102); in the
+other the similarity cut collapsed faces 9 → 4 but stretched one face
+32791:1 (area-weighted anisotropy 1.25 → 7.88): the issue count takes only
+past 10000:1 as collapsed.
+
+Follow-up: the unclamped similarity is also refused when one of its faces
+that keeps an area stretches past the source chart's worst stretch, or past
+4:1 if that is lower.
+
+Measured at be2a60a (item 43; e9d4d98 with main merged). Models K and A
+equal the 0ef3403 run shell for shell: the stretch bound refused none of
+model K's similarities (stretch 1.0–1.27) and on model A one candidate
+that did not win anyway. Corpus: exit code 1, 0 worse, 1 tradeoff, 21
+better; uvDegenerateFaces and overlap pairs rose in no row, stretched
+faces in none of the reparameterizing profiles; 54 `unclamped
+similarity` lines, 25 candidates refused by the stretch bound. The second
+tradeoff is gone (its face was 32791:1 on a 1.73:1 chart). The one left,
+without reparameterization, turns a collapsed face into one of 2.83:1 on
+a 1.92:1 chart (stretched faces 48 → 49, area-weighted anisotropy
+2.101 → 2.102); it was accepted and the change merged.
+
+## Small merged shells try all sources before rejection — 2026-10-22
+
+Model K's last LOD (LOD2, items 35 and 36 in PR #294) has 62 vertices left
+at (0,0): all in 11 rejected merged shells (4 of 2 faces, 6 of 3-4, one of
+10), 5.8% of the LOD's 3D area and 18.8% of one mesh's. None of their faces
+is degenerate in 3D or in the target's UV0; every one of their 33 issues is
+a UV2 area under 1e-10. The source picked for them by 3D distance holds none
+of their UV0 (0 of 11), and their vertices' UV0 lies on two or more source
+shells in 9 of 11. The constrained pass projects each vertex onto the
+nearest point of that source in UV0, which presses the corners onto one of
+its edges, and switches to 3D only beyond about 0.22 in UV0. Shells of up
+to four faces stop there ("stay constrained"); the unified overlap
+candidates run only for force3D shells.
+
+Offline, at the point of rejection and before any acceptance check: the
+all-source pass has no issues for all 11, and for the 6 that pass its
+claimed-source AABB check it has no overlap pairs with the written shells
+(10 pairs among their own faces, which the self-overlap check below
+refuses).
+The unified overlap set has no candidate (full-xform fails its own range
+checks); full-xform alone is clean for 9 but places 97% of the vertices
+outside the picked source's box; the nearest facing source face in 3D
+collapses. Model A's 28 rejected LOD2 shells are a different case: 25 are
+single faces of 7.5e-7 of the LOD's area together, degenerate in UV0 in 28
+of 33 faces, and no candidate clears the 1e-10 UV2 area for 27 of them.
+
+Change: a merged shell of up to four faces whose constrained candidate
+would be rejected tries the all-source pass, with the claimed-source AABB
+check it already has. The candidate counts only when it does not fold over
+itself (exact triangle overlap inside the shell), its UV2 bounds stay clear
+of the UV2 bounds of every source another written or pending target shell
+is matched to (merged shells included, which the claimed set leaves out), of earlier
+merged shells written from the all-source pass or as force3D (rescues
+included; their UV2 may lie away from the source they record), and it still
+passes the reject gate. Every later all-source candidate, of an ordinary
+merged or a force3D shell, also avoids the accepted rescues, which no
+claimed source covers. The coherence fix does not
+pull a rescued shell back onto the picked source, and the shell records the
+source most of its vertices came from (the safety net, recovery,
+classification and the next LOD's hints read it). Everything else keeps the
+constrained result. The 6 shells of item 36 were checked against the
+claimed set only, so the stricter check may keep fewer.
+
+Measured (item 37 in PR #294). The new fixture fails on main (the quad is
+rejected) and passes with the change. Model K, Full Pipeline against main:
+of the 10 shells of up to four faces, 4 are rescued (all Accepted, each now
+recording another source), 2 are refused for folding over themselves and 4
+by the claimed-source AABB check; the 10-face shell stays rejected. LOD2
+unwritten vertices 62 → 44, rejected shells 11 → 7, collapsed faces 58 → 48,
+degenerate faces 60 → 50, UV quality 35 → 38 (stretch 3 → 12); overlap
+pairs (1), stretched faces and worst anisotropy unchanged, and the rescued
+shells overlap nothing. LOD0 and LOD1 unchanged. Model A unchanged (no
+rescue). Furniture corpus against main's capture: the gate passes, exit 0,
+all 256 pairs the same in every profile; no corpus shell is rescued.
+
+## Rejected: placing UV0-shifted LOD fragments by 3D — 2026-10-22
+
+Diagnostic only, nothing changed in the code. After the composite issue check
+model A's LOD2 has 2783 overlap pairs after the first pass; 2128 of them
+overlap in the target's UV0 already, and the source does not explain them
+(its UV2 has 29 pairs, none under them).
+
+The LOD moved some fragments' UV0 (item 32 in PR #294). For each vertex of
+the 830 fragments placed by the partition transform, its UV0 was compared
+with the source's UV0 at the nearest source face facing it: 723 fragments
+(87%) agree to under 1% of the partition's UV0 diagonal (median 0.06%), 107
+(13%) are shifted by 1–83%, and these 107 sit at an end of 77% of the pairs
+that overlap in UV0. Most of them are tiny: 62 single faces, 28 of 2–4.
+
+Two ways of placing those fragments by 3D instead of by their UV0, measured
+offline on the same first pass:
+
+| placement of the shifted fragments | pairs | UV0 pairs left | new pairs | their issues |
+|---|---|---|---|---|
+| partition transform of their UV0 (main) | 2783 | 2128 | — | 14 |
+| each vertex at the source's UV2 under it | 5894 | 532 | 4745 | 107 |
+| one similarity fitted to those 3D correspondences | 4613 | 523 | 3473 | 29 |
+| the same, refitted on the best 80% | 4472 | 524 | 3331 | 30 |
+
+The similarity fits closely (median RMS 0.16% of the partition's UV2
+diagonal), and both placements clear three quarters of the pairs inherited
+from UV0, but the fragments then land on the UV2 of the fragments that
+already cover the same part of the source, and two to three times as many
+new pairs appear as are cleared (4745 against 1596 vertex by vertex, 3473
+against 1605 for the similarity, 3331 against 1604 refitted). Projecting all 830 fragments vertex by vertex is worse still (7900
+pairs, 182 → 371 issues). The pairs a LOD inherits from a shifted UV0 are not
+worth trading for these; placing such fragments would need room in the atlas
+that the source's UV2 does not have.
+
+## A composite that tears the shell keeps the best source — 2026-10-22
+
+Model A's LOD2 has 3077 overlap pairs after the own-UV0 scale rule (item 29
+in PR #294). 2116 of them (69%) overlap in the target's UV0 already, nearly
+all on one partition of one source; the source's own UV2 has only 29 pairs,
+and no pair of LOD2 faces overlapping in UV0 lies over source faces that
+overlap in UV2 (item 30.2): the LOD's UV0 overlaps where the source's does
+not, and a similarity keeps it. Of the other 961 pairs, one shell (34 faces)
+takes part in 308.
+
+That shell is matched to a group of 19 sources. Its best candidate (src1,
+partition UV0 interpolation) has no issues. The per-face composite then gave
+the 10 faces that voted for src6 that source's ray + partition UV2 (17
+stretched faces, 65 overlap pairs on its own), and 11 of the shell's 35
+vertices took it: the composite has 11 issues and 63 overlap pairs inside
+the shell, and no later step undoes it (item 30.3). The jump guard, the
+outlier-face check and the spatial coherence check did not reject it.
+
+A composite of several sources for a shell that is not fragment-merged now
+has its issues counted, and when they are more than the best source's alone
+the shell keeps that source. Fragment-merged shells, whose single sources
+each cover only a part, keep the composite as before.
+
+Measured (item 31 in PR #294). Model A, Full Pipeline against main: one
+shell takes the single source, the 34-face one; its issues fall 11 → 0
+(status Poor → Degraded) and its overlap pairs 348 → 54, none inside it.
+LOD2 overlap pairs 3077 → 2783, the same after the first pass; the other
+2729 pairs do not change. LOD2 UV quality 35 → 37; collapsed faces,
+degenerate faces and unwritten vertices unchanged; LOD0 and LOD1 unchanged.
+Furniture corpus against main's capture: the gate passes, exit 0, all 256
+pairs the same in every profile; no corpus shell takes the single source.
+
+## Own UV0 defects are counted at the transform's scale — 2026-10-22
+
+Follow-up to the own-UV0 rule below, found while measuring the nearest-face
+partition match (item 27 in PR #294). With that match, model A's largest LOD2
+fragment (253 faces, kept on a folded source) lies wholly on one partition.
+Its candidates' issues: ray + partition 4, partition transform 8, full
+transform 8, partition UV0 interpolation 8, strip parameterisation 12. The
+transform should have won under the own-UV0 rule, so its eight issues were
+more than the fragment's own UV0 has. Ray + partition won, and the fragment's
+overlap pairs went from 238 to 1101, 309 of them inside the fragment itself.
+
+A similarity cannot add a defect of its own kind: it keeps the stretch ratio
+(which `TriangleStretch` measures) and maps every vertex it is given. Only the
+zero-area test differs, and it is absolute (|UV area| < 1e-10): a transform
+that shrinks the UV0 into a smaller UV2 region turns the fragment's smallest
+faces into zero-area defects. When one similarity maps every vertex of the
+fragment (the full transform, or the partition transform with every vertex
+on one partition whose fit is valid), the own-UV0 count now scales the
+fragment's UV0 by that similarity before counting; a vertex left unmapped
+keeps the count unscaled, so a missing face is never excused (Codex review). A fragment split between partitions' transforms
+is counted as before: the faces between them are bent by the transform
+itself, so their defects are not the UV0's (raised by the Codex review).
+
+Measured with the nearest-face partition match (item 28 in PR #294). The
+fragment's own UV0 has 5 issues unscaled and 8 at its partition transform's
+scale (area × 0.536), the transform's own count: it takes the transform
+again, with 8 issues and 121 overlap pairs (238 on main, 1101 with the match
+alone), none inside itself. Model A, Full Pipeline against main: LOD2 overlap
+pairs 4544 → 3077, the same after the first pass (4803 → 3077); LOD1
+1257 → 930, from the match. Collapsed faces 61 → 59, unwritten LOD2 vertices
+99 → 92, UV quality unchanged (39 and 35).
+
+Furniture corpus: against main's capture the gate fails as for the match
+alone (default 9 better, 2 tradeoff, 3 worse; same pairs and values).
+Against the match alone, this change moves one record of 768: a LOD2 in the
+no-reparameterisation profile, overlap pairs 73 → 75 at the same overlap
+area (a tradeoff, so the gate fails). In the corpus audit model A's LOD2
+stays at 3578 either way (item 30.4): the audit packs the source's UV2
+itself (a 2452-texel atlas against the Full Pipeline's 1163), where the
+large fragment's partition transform grows the UV0 (area × 1.532) instead
+of shrinking it, and the fragment's own UV0 has 4 issues at that scale; the
+transform with 4 issues passes the rule with or without this change.
+
+## A vertex takes the layer of the nearest facing source face — 2026-10-22
+
+Follow-up to the own-UV0 rule below. Model A's LOD2 keeps 4803 overlap pairs
+after the first pass (4544 after Full Pipeline). The trace (item 26 in
+PR #294):
+
+- 42% of the pairs overlap in the target's UV0 already;
+- each folded source has two partitions, a large one and a tiny one: 2010 +
+  10 faces and 1704 + 12, split by normal, the small ones facing 86° and 147°
+  away. Their UV0 → UV2 similarity fits are exact (RMS below 1e-4 of the
+  partition's UV2 diagonal);
+- yet the tiny partitions take 44–46% of the vertices of the fragments
+  placed by the partition transform. `MatchPartition` compares a vertex
+  normal with each partition's average normal, and a draped cloth faces every
+  way: wherever its normal is nearer the tiny layer's, the vertex goes there;
+- 107 of the 832 fragments placed by the transform have vertices on both
+  partitions (48% of the faces) and take part in 54% of the pairs not in UV0;
+  of the pairs between two fragments on one partition each, 64% join
+  fragments on different partitions of one source.
+
+The partition-aware candidates of the overlap group and the merged path now
+give each vertex the partition of the nearest source face facing it
+(dot ≥ 0.3, the threshold of the 3D searches there). The average normal and
+centroid still decide when no face qualifies. Unlike the centroid matching
+rejected in PR #47, the choice rests on the partitions' faces, not on one
+point per partition.
+
+Measured (item 27 in PR #294). The fix does what it aims at: the tiny
+partitions now take 1.0% of the transform's vertices (45.3% before), 18
+fragments are split across two partitions (107), and the pairs that overlap
+in UV0 stay 43%. Model A, Full Pipeline against main: LOD1 overlap pairs
+1257 → 930 (below the 1095 of before the dedup change), 1330 → 995 after the
+first pass. LOD2 goes 4544 → 4781 (first pass 4803 → 4781, and the seam trial
+no longer improves on it): its largest fragment (253 faces), now wholly on
+one partition, takes ray + partition with 4 issues over the transform's 8 and
+has 1101 overlap pairs instead of 238; without it LOD2 falls 4565 → 3680.
+The transform's extra issues most likely come from the absolute zero-area
+test at the transform's smaller scale; PR #336 counts the fragment's own UV0
+at that scale. Collapsed faces 19 → 18 and 61 → 59, unwritten LOD2
+vertices 99 → 92.
+
+Furniture corpus against main's capture: the gate fails, exit 1. 14 pairs
+change; default has 9 better, 2 tradeoff and 3 worse. Better: model A's
+LOD2 and LOD1 in the corpus (overlap pairs 5168 → 3578, 1345 → 1024), one
+LOD2 202 → 18, and a LOD1 pair 61 → 0 (the count of pair J, which the
+dedup change had raised from 3). Worse: two pairs by
+under 0.5% of overlap area, one by 3 pairs (12 → 15).
+
+## Fold-share transform keeps the fragment's own UV0 defects — 2026-10-22
+
+Follow-up to the tie rule below. Model A's LOD2 still has 6991 overlap pairs
+after the first pass (main before the dedup change: 522). The trace (item 24 in
+PR #294): 88% of the pairs join different shells; 94.7% of the pair ends are
+kept fragments, 65% placed by the partition transform; 29% overlap in the
+target's UV0 already. The 36 kept LOD2 shells that did not choose the partition
+transform (ray + partition 25, full transform 6, strip parameterisation 5) take part in
+53.8% of the pairs (median 50 pairs each): there the partition transform loses on
+strictly more issues, by one in 27 of the 36, by two in 7.
+
+An issue is a missing, zero-area or more than 10,000:1 stretched UV2 face. A
+transform keeps the fragment's UV0 shape, so its issues are the UV0's own
+zero-area and sliver faces; the other candidates mend those faces by
+re-projecting them and lay the fragment over its neighbours. The kept
+fragments now take the transform when its issues are no more than those of
+their own UV0, unless they reach half of the fragment's faces.
+
+Of the two worse corpus pairs of the tie rule, J's growth predates it (it is
+already on main before the tie rule), and A's four pairs come from quality
+recovery replacing the newly chosen transform with partition UV0
+interpolation. J's growth comes from the dedup change (item 25.3): 3 overlap
+pairs before it, with or without the position rule for same-facing
+partitions, 36 with its second revision and 61 with the final one; two of
+its kept fragments go from one issue to three.
+
+Measured (item 25 in PR #294). Model A, Full Pipeline against main: LOD2
+overlap pairs fall 6528 → 4544, 6991 → 4803 right after the first pass; UV
+quality 31 → 35; collapsed faces 58 → 61, unwritten vertices 94 → 99,
+degenerate UV2 faces 68 → 67. LOD0 and LOD1 do not change. The winner
+changes for 15 kept LOD2 shells (14 to the partition transform, one to the
+full transform), and 11 shells move from Poor to Degraded. LOD2 still has
+nine times the overlaps it had before the dedup change (496).
+
+Furniture corpus against the tie rule's capture (same transfer code as
+main): the gate fails, exit 1. Two of 256 pairs change. Model A's LOD2 is
+better in all three grouped profiles (overlap pairs 5859 → 5168 in default);
+one small LOD2 is worse in two (overlap pairs 97 → 108, degenerate faces
+30 → 32).
+
+## Fold-share fragments take the transform on a tie — 2026-10-22
+
+Follow-up to the folded-source dedup below. With it, model A's LOD1 has 7077
+UV2 overlap pairs after the first pass (main before it: 1277). The trace of
+all 7077 (item 22 in PR #294):
+
+- every pair joins shells of one source (src6 4696, src1 2378, src0 3);
+  45% lie inside one target shell, 55% join two shells;
+- 99.9% of the pair ends are merged shells placed through the overlap-group
+  candidates, 98.3% of them fragments kept by the fold rule. The winning
+  candidate is strip parameterisation in 60% of the ends, the partition
+  transform in 20%, ray + partition in 20%;
+- only 8% of the pairs overlap in the target's UV0 already: the transfer
+  makes the rest. 67% join faces 1–10% or more than 10% of the mesh diagonal
+  apart in 3D;
+- of the 241 kept shells placed through the group, the partition transform
+  reaches the fewest issues in all 241, but loses every tie to interpolation
+  and strip parameterisation by design ("interp stays within the source UV2
+  hull"). The issue count does not include overlaps.
+
+The kept fragments now take the transform on a tie: it maps the fragment's
+own UV0 through the source's UV0 → UV2 fit, so they overlap only where their
+UV0 does. Other shells keep the interpolation preference.
+
+Measured (item 23 in PR #294). Model A, Full Pipeline against main: overlap
+pairs fall 5450 → 1257 (LOD1) and 11992 → 6528 (LOD2), 7077 → 1330 and
+12753 → 6991 right after the first pass; collapsed faces stay 18 → 19 and
+63 → 58, unwritten vertices 0 and 93 → 94; UV quality 37 → 39 and 27 → 31.
+The transform now wins for all 241 kept LOD1 shells and 807 of 843 in LOD2.
+LOD2 still has 13 times the overlaps it had before the dedup change (496).
+
+Furniture corpus against the main capture (pure effect): the gate fails,
+exit 1. 36 pairs change; default has 4 better, 6 tradeoff and 2 worse. The
+better pairs are model A's (overlap pairs 7094 → 1345 and 13379 → 5859)
+and two small ones; the two worse pairs gain a few overlaps (15 → 19 and
+36 → 61), as do most tradeoff pairs, against lower anisotropy or stretch.
+Against the capture before the dedup change: 12 tradeoff, none worse;
+model A's collapsed faces 1303 → 29 and 3335 → 58, overlap pairs 597 → 1345
+and 668 → 5859.
+
+## Partitions facing the same way are told apart by position — 2026-10-22
+
+Raised by the Codex review of PR #329. `SpatialPartitioner.MatchPartition`
+picks a source partition for each target vertex by normal alone whenever the
+partitions have normals, which every successful split has (flood-fill
+components and the normal, UV0-winding and position splits). Partitions facing
+the same way tie on the normal and the first one wins wherever the vertex lies:
+a position split, parallel panels, the halves of a mirrored layout, or a fold
+that flips the UV0 winding but leaves the surface facing up. The merged path
+then restricts its UV0 and 3D projections to that partition, so the vertex can
+take the other layer's UV2. That path also skipped the exact source-vertex
+lookup the interpolation path uses.
+
+Among partitions whose average normals lie within 15° of the best match, the
+nearest 3D centroid now decides, the position split's own assignment rule.
+Partitions facing apart (the front and back of a strap) are still chosen by
+normal. A constrained merged pass keeps the UV2 of a retained source vertex
+(same position and UV0, with one UV2) as interpolation does; an all-source pass
+does not, since it looks for UV2 space outside the chosen source on purpose.
+
+Measured: the furniture corpus against `main-5e9f9c0` with
+`report.py --baseline … --require-no-regressions` passes, 256 of 256 pairs
+the same in all nine variants. Model A with PR #329 is unchanged to the last
+digit: both of its large folded shells are split by normal (2010 + 10 and
+1704 + 12 faces, the small partitions facing 86° and 147° away), so no two of
+their partitions face the same way. The corpus has no source this rule
+reaches; it stays as the correct choice for those that come.
+
+## Dedup: fragments of a source that folds over its UV0 share it — 2026-10-22
+
+Corpus model A (a blanket; the owner's "torn to pieces" report, LOD1 UV quality
+19/100 on every commit back to 14.10). Its LOD0 blanket mesh has two large UV0
+shells whose UV0 folds over itself (6675 overlapping UV0 face pairs; the repack
+separates all but 29) and 17 tiny shells of 1–4 faces. The LODs keep the UV0:
+96.8% of LOD1 vertices lie inside a LOD0 UV0 triangle. Yet only 65% of LOD1
+and 19% of LOD2 vertices were written: the first pass rejected 47 LOD1 and 707
+LOD2 target shells, all merged, and left them collapsed.
+
+The trace shows why. All 47 rejected LOD1 shells (705 of 707 in LOD2) end on
+the tiny shells, whose UV0 does not hold theirs, as merged shells; none ends on
+its nearest source in 3D, always a large shell. 31 of the 47 (585 of 707) first
+matched a large shell, and 43 of 47 (675 of 707) end on a source other than
+their first match: those fragments overlap one another in UV0 as the source's
+layers do, and Phase 2b dedup reads any UV0 overlap among a source's claimants
+as tiling, keeps one claimant and re-matches the rest to unclaimed sources. The
+other 16 of 47 (122 of 707) were matched to a tiny shell from the start; this
+change does not reach them.
+
+Dedup now lets claimants that overlap in UV0 share a source that itself folds
+over its UV0 and has more than one spatial partition. They take the merged
+path, constrained to that source (a shared source whose claimants overlap is a
+duplicate source in Phase 3). Tiling targets of a source without folds are
+evicted as before.
+
+First revision: the kept fragments are merged shells of their source. Model A,
+Full Pipeline against main: the tearing is gone (collapsed faces LOD1 856 → 18,
+LOD2 2770 → 63; unwritten vertices 828 → 0 and 4047 → 93; first-pass rejected
+shells 47 → 0 and 707 → 30; UV quality 19 → 37 and 10 → 27), but overlap pairs
+grow 1095 → 5450 and 496 → 11992. Furniture corpus against `main-5e9f9c0`:
+the gate fails (exit 1). 36 pairs change, none worse or invalid; default has
+1 better and 11 tradeoff pairs: collapsed faces fall (1303 → 30 and 3335 → 168
+in the two pairs hit hardest) while overlaps grow (597 → 7061, 668 → 12067).
+`REJECTED(` log lines fall 2966 → 191.
+
+Second revision: kept fragments that take the plain merged path are projected
+by 3D onto the nearest same-facing face of the whole source. Model A is
+unchanged to the last digit; in the corpus six pairs of one model change
+(collapsed faces 168 → 60, overlap pairs 12067 → 13379 in its LOD2), and
+`REJECTED(` falls to 168. Model A's fragments do not take that path: both of
+its large shells overlap other source shells in UV0, so their merged targets
+go through the overlap-group candidates (ray, partition UV0 interpolation,
+partition and full transforms), picked by issue count. Both are also split by
+normal into 2010 + 10 and 1704 + 12 faces, so a partition does not separate
+the layers. Where the added overlaps come from is being traced.
+
+## Rejected merged shells: write a safe candidate instead of (0,0) — rejected — 2026-10-21
+
+`GroupedShellTransfer` rejects a merged target shell when more than half of its
+faces have issues (missing UV2, collapsed UV faces, or stretch above 10,000:1)
+and it is not a force3D shell. The shell's UV2 is not written: its vertices stay
+at (0,0) and every face collapses onto the atlas corner. Rejected shells keep
+the "merged" method, so the merged-shell AABB safety net still visits them; when
+the origin lies outside the source's allowance and the source has a UV0 BVH
+(more than 16 faces), the net re-projects the whole shell vertex by vertex
+without a quality check, while the shell stays `Rejected`. In the corpus control
+log 24 of the 4587 `REJECTED(` lines (counted over every repeat of a mesh) are
+followed by such a `Post-fix:` re-projection.
+
+Tried (PR #305): write the shell's best merged candidate instead, when it maps
+every vertex to a finite point, has fewer issues than the shell has faces, has
+no positive-area self-overlap and lies within the safety net's allowance around
+its source. The same gate was applied again at classification, withdrawing a
+fallback that no longer passed; the PR's last revision also applies it before
+final recovery, which the measured revision did not.
+
+Measured on the furniture corpus (89 files, 256 LOD pairs) together with PR #308
+against main, `report.py --baseline … --require-no-regressions`: failed. Grouped
+transfer has 4 / 3 / 4 tradeoff pairs (default / no-reparameterization /
+oversample-8), no worse or invalid rows; source packing and the comparison
+methods are unchanged. The log shows 47 fallback writes and no withdrawal after
+the final checks. In the changed pairs collapsed UV faces and missing UV2 fall
+(3083 → 3073; 12 → 10 with misses 12 → 0), but overlap pairs grow in every one
+(780 → 807, 72 → 80, 3 → 7), and worst anisotropy jumps where the corner layout
+had none (3.27 → 4.6e18). PR #308 was in the same run; its own run is pending,
+and these shifts follow the fallback's mechanism. The earlier withdrawal checks
+the same gate, which lets slivers and overlaps with other shells through, so it
+would not remove them.
+
+Why it fails: the candidate unfolds part of the shell, and the faces it cannot
+map become near-zero slivers instead of points at the corner, which the quality
+metric scores as extreme anisotropy rather than as collapsed. The gate checked
+self-overlap only, so the unfolded shell lands on neighbouring charts. Requiring
+no slivers and no new overlap with other shells leaves practically no candidate.
+
+Do not repeat: writing a rejected merged shell's candidate gated by issue count
+and self-overlap. A future attempt needs an overlap check against the other
+written shells and a bound on sliver anisotropy, and must beat the corner
+layout in the corpus.
+
+## Merged-shell safety net: small sources — rejected — 2026-10-21
+
+After Phase 3 writes the merged shells, a safety net re-projects every merged
+vertex outside its source's UV2 bounds widened by 20% of their size: it finds
+the nearest source face in UV0 and takes that face's UV2. The search goes only
+through the source shell's UV0 BVH, built for shells of more than 16 faces
+(`kMinFacesForShellBvh`), so outliers of a smaller source stay where they are.
+
+Tried (PR #310): without a BVH, scan the source's faces with the BVH's rule
+(faces whose normal agrees first, then any face), skipping `Rejected` shells.
+
+Measured on the furniture corpus (89 files, 256 LOD pairs) against main,
+`report.py --baseline … --require-no-regressions`: failed. Grouped transfer:
+default 247 same / 1 better / 5 tradeoff / 3 worse, no-reparameterization
+247 / 0 / 9 / 0, oversample-8 248 / 0 / 7 / 1; other methods unchanged. Of the
+26 changed pairs, overlap pairs fall in 6 default pairs (350 → 267, 30 → 19),
+but collapsed UV faces rise in 4 / 5 / 4 pairs per profile and fall in none, and
+worst anisotropy rises in 5 / 4 / 4 and falls in none (291 → 5.9e17). The log
+has 162 `Post-fix:` lines against 51 on main (53 shell totals against 22).
+
+Why it fails: the net moves each outlier vertex on its own, while the other
+vertices of its faces stay, so a face with a moved vertex becomes a sliver or
+folds. A small source's allowance is small in absolute terms, so far more of
+its vertices count as outliers than for a large source. The same per-vertex
+move runs on main through the BVH; it is not measured separately.
+
+Do not repeat: extending the per-vertex re-projection to more shells. The
+follow-up treats a shell as one unit: re-project its outliers and keep the
+result only when the shell's collapsed faces and worst anisotropy do not grow.
+
+## Merged shells record the source their UV2 came from — 2026-10-21
+
+In Phase 3 of `GroupedShellTransfer`, a merged target shell in a source overlap
+group first tries a composite of the group's members. When the composite has
+too many issues, the shell falls through to the ordinary merged path with
+`chosenSrc = bestOverlapSrc`. The written UV2 and `vertexToSourceShell` then
+come from that source, but `targetShellToSourceShell[tsi]` kept the source
+matched before the overlap analysis. Four later readers used the stale value:
+the merged-shell AABB safety net (bounds and UV0 BVH for outlier
+re-projection), `PlanarTransferRecovery` (projection source), classification,
+and the next LOD's overlap and match hints.
+
+The UV2 write now records `chosenSrc` as the shell's source. `chosenSrc` changes
+only at that fall-through, so for every other shell the assignment is a no-op;
+a rejected shell writes no UV2 and keeps its earlier source. PR #305's fallback
+for rejected merged shells already records its candidate's source and restores
+the earlier one when the fallback is withdrawn, which stays consistent with
+this change.
+
+This changes outputs for merged shells that took the fall-through to a
+different source, so it is gated by the corpus rather than by bitwise
+comparison: a standard capture against main, compared with
+`report.py --baseline ... --require-no-regressions` (no worse, tradeoff or
+invalid rows). No synthetic fixture reproduces the fall-through yet.
+
+Result: measured together with the safety-net change below (main `408e16e`); see
+that entry. The combined gate passed.
+
+## Merged-shell safety net: judge a shell's re-projection as one change — 2026-10-21
+
+After Phase 3, the safety net re-projects every merged vertex outside its
+source's UV2 bounds widened by 20% of their size, through the source's UV0 BVH,
+vertex by vertex: the rest of a moved vertex's faces stay, so a face can become a
+sliver or fold. Extending this to sources too small for a BVH (PR #310) failed the
+furniture corpus: overlaps fell in 6 pairs, but collapsed UV faces and anisotropy
+only rose (4 worse pairs, the rest tradeoffs; recorded in PR #316).
+
+Now a shell's re-projection is one change, scored by the corpus metrics on that
+shell (`ShellLayoutScore`): invalid, degenerate and exactly zero-area UV faces,
+out-of-bounds vertices, worst anisotropy, the whole mesh's area-weighted
+anisotropy, and the overlap pairs and area of the shell with itself and with
+every other face whose UV2 bounds meet it before or after. One layout dominates
+another when it is no worse in any of these and better in one, by the report's
+own rule (integers exactly, real values within a relative 1e-6). Main's behavior
+is the default, and only domination changes it:
+
+- through a BVH (main re-projects), the transferred layout is kept when it
+  dominates the re-projection;
+- for a source of 16 faces or fewer (main leaves the outliers), the source's
+  faces are scanned as in PR #310, and the re-projection is applied when it
+  dominates the transferred layout.
+
+So each shell's result is no worse than main's by the corpus metrics measured at
+this stage; later stages (overlap report, recovery, classification) may still
+react to a different layout. A rejected shell at (0,0) keeps main's result: its
+corner layout cannot dominate a re-projection and a re-projection with any finite
+stretch cannot dominate it. `ShellLayoutScoreTests` covers the domination rule;
+`SafetyNetScanOfASmallSourceFindsTheFaceItsBvhWould` the scan.
+
+Result (main `408e16e`, which carries this change and the merged-shell source
+record above, against a control on `7aaecf9`): accepted. Both captures ran on a
+frozen copy of the corpus, because 13 of its 89 files had changed since the
+previous control; 256 LOD pairs, 2304 measured rows each, no input hash differs.
+`report.py --baseline … --require-no-regressions` exits 0: 2302 rows same and 2
+better (one LOD1 target, default and oversample-8: collapsed UV faces 13 → 12,
+overlap pairs 151 → 149 and 157 → 155, area-weighted anisotropy lower), no
+worse, tradeoff or invalid rows. `Post-fix:` lines 56 → 54; `Post-fix declined:`
+0 → 3, all one shell in three repeats keeping its transferred layout over
+re-projecting 4 outlier vertices. Rejected shells 2966 in both, 29 of them with
+a `Post-fix` line in both.
+
+## Auto-tune: stretch and out-of-bounds vertices are defects — 2026-10-21
+
+Item 1 of `TRANSFER_METRICS_AUDIT.md`. `AutoTuneScore` (PR #297) ranks attempts
+by failed targets, incomplete scans, collapsed faces, rejected shells, overlap
+area, force3D detections and coverage, and stops the search at an attempt with
+none of these defects. It had no stretch or bounds term. An attempt whose final
+`TransferUvQuality` still had a face at 50:1, or a vertex outside [0,1] when
+the publication clamp is off, could be called perfect and end the search,
+although the workflow itself treats worst anisotropy above 4 as a reason for
+the donor-seam trial.
+
+The score now also keeps the worst anisotropy over all targets (rendered frame,
+as measured) and the summed out-of-bounds vertices. `Perfect` additionally
+requires zero out-of-bounds vertices and a worst anisotropy of at most 4
+(`AutoTuneScore.PerfectAnisotropy`, the trial threshold). When all earlier
+criteria tie, coverage included, fewer out-of-bounds vertices win, then a worst
+anisotropy lower by more than 1%. The earlier criteria keep their order, so an
+attempt can only win on stretch where it was tied before.
+
+Cost: a model whose every attempt keeps a face above 4:1 no longer stops after
+the first attempt and runs all separations; PR #295 still reuses attempts whose
+symmetry split repeats. Auto-tune can now pick a different separation only
+among attempts that tied on every earlier criterion.
+
+`AutoTuneScoreTests` cover the perfect condition, the worst-target aggregate
+and the tie order. The furniture corpus does not run auto-tune, so validation
+is the paired benchmark: `run-transfer-performance.ps1 -Repetitions 1
+-Density 32` against main, reporting per model the attempts run, the chosen
+configuration and the Forward pipeline time.
+
+Result (paired benchmark, main `408e16e` with this change and the donor-seam
+trigger below against `0228f46`, 3 repetitions at 32 tex/m on Cafe_Table_A_01,
+Modern_Kitchen_A and kamaz_Off): accepted. All 120 exports are byte-identical.
+Every model still selects configuration #0. Cafe now runs 3 attempts instead of
+1: its #0 has no collapsed face, rejected shell or overlap but a worst
+anisotropy of 2047, so it is no longer perfect; attempts #1 and #2 repeat its
+symmetry split and are reused (3 ms). Kitchen and Kamaz ran 3 attempts before
+and after. Forward pipeline medians 0.420 → 0.428, 3.424 → 3.437 and
+16.435 → 16.425 s: noise.
+
+## Donor-seam trial: zero-area geometry alone does not start it — 2026-10-21
+
+Item 7 of `TRANSFER_METRICS_AUDIT.md`, the zero-area part of F5. After shell
+transfer the workflow starts the donor-seam trial when the target's
+`TransferUvQuality` has worst anisotropy above 4, an overlap pair, or any
+degenerate face. `TransferUvQuality` counts a face as degenerate when its 3D
+frame has zero length or area, before it looks at the UVs. A target with one
+zero-area 3D face therefore ran the whole trial (the most expensive Forward
+stage; 12 of 21 s on Kamaz) even with a perfect layout. Seam preparation
+removes exactly zero-area faces, so such a trial could even be accepted for
+the deletion alone.
+
+The trigger (`UvTransferWorkflow.NeedsDonorSeamTrial`) now subtracts the
+zero-area 3D faces counted by `AutoTuneScore.GeometryDegenerateFaces`, the same
+predicate in the same rendered frame that auto-tune already uses. Stretch,
+overlap and collapsed UV faces start the trial as before; a degenerate count
+above the zero-area geometry still does.
+
+This changes outputs for targets whose only defect was zero-area geometry: they
+keep the shell-transfer layout and their faces instead of a seam-prepared mesh.
+`DonorSeamTrialTriggerTests` cover the predicate. The furniture corpus does
+not run the donor-seam trial, so validation is the paired benchmark
+(`run-transfer-performance.ps1 -Repetitions 3 -Density 32` against main):
+which exports differ, and the "Forward donor seam trial" samples and median
+per model.
+
+Result (the same paired benchmark as the auto-tune entry above): no change on
+these models. Exports are byte-identical and the trial ran as often as before
+(1, 4 and 6 samples; medians 0.130 → 0.136, 1.447 → 1.495 and 10.931 → 11.093
+s, noise): none of their targets had zero-area geometry as its only defect.
+The change stays as a correctness fix of the trigger.
+
 ## Oversample 8: why a better source does not survive transfer — analysis — 2026-10-21
 
 The furniture corpus baseline on main (`491340a`, 80 files, 255 LOD pairs)
@@ -168,12 +873,23 @@ a hole, at budgets that pass exactly, fail by one query, fail halfway and fail
 on the first face, and checks that an over-budget parallel pass leaves the
 targets untouched.
 
-Measurement pending: `Tools~/run-transfer-performance.ps1 -Repetitions 3
--Density 32` with `-DisableParallelProjection` (control) against the default
-run, with `compare-transfer-performance.py` confirming all exports are
-byte-identical. The stages are "Face projection", "Projection initial faces"
-and "Projection refined faces". "Parent footprint coverage" now sums worker
-time, so it can exceed the wall time of its pass.
+Measured with `Tools~/run-transfer-performance.ps1 -Repetitions 3 -Density 32`
+(`d393c61` → `371d90d`, Cafe_Table_A_01 / Modern_Kitchen_A / kamaz_Off, i9-14900K,
+Unity 6000.2.6f2): every export is byte-identical, but the worker threads are
+slower on all three models. "Face projection" in Forward 0.021 → 0.084, 0.79 →
+2.36 and 4.84 → 8.68 s; "Forward pipeline" 0.45 → 0.68, 3.81 → 6.55 and 18.20 →
+27.33 s; Reverse total 1.3–1.5×. "Parent footprint coverage", summed over workers,
+rose 100–137× (Kamaz Forward 1.4 → 186 s over 50,429 calls), far beyond what
+32 threads sharing the work would explain: the workers wait on each other.
+The likely cause is allocation: the footprint check builds new lists for every
+clipped edge and a LINQ region list for the tolerance fallback, and Unity's Mono
+runtime uses the Boehm collector (`mono-2.0-bdwgc`), whose allocation lock and
+stop-the-world collections serialize allocating threads. Not verified.
+
+Result: rejected as the default. `ParallelProjectionMinimumFaces` defaults to
+`int.MaxValue`, so every pass runs in order as before; the parallel path and its
+equivalence test stay for a later attempt, which should first make the footprint
+check and corner probes allocation-free and measure again.
 
 ## Reverse envelope audit: clip only cross-family pairs — 2026-10-21
 
@@ -362,6 +1078,15 @@ binary numeric values; sample counts match. Medians (s):
 
 The 1–5% differences stay within the run-to-run spread: exact, no regression,
 no resolved gain.
+
+Correction: "refusals are unchanged" did not hold for a chart with a
+non-finite UV. The old code reached the shared-point lookup only after the scan
+had refused such a chart (`invalidFaces > 0`). Looking the anchors up first
+asked the counts dictionary for a key with NaN, which never equals itself, and
+threw `KeyNotFoundException` instead of refusing.
+`UvPointJunctionRecoveryTests.RefusalIsAtomic("invalid")` failed from this
+commit on (local run on main, 2026-10-21). The lookup now uses `TryGetValue`:
+such a vertex is no anchor, and the scan refuses the chart as before.
 
 ## Separate overlapped source branches at a single UV point — 2026-10-20
 

@@ -258,6 +258,8 @@ namespace SashaRX.UnityMeshLab
         // runs neither measure nor retain anything for scoring.
         AutoTuneScore attemptScore;
         bool scoringAttempt;
+        // Whether the last full pipeline stopped at a cancel request rather than a failure.
+        bool fullPipelineCancelled;
 
         // ── Preview ──
         // Three mutually-exclusive preview modes. Only one should be active at a time.
@@ -477,7 +479,10 @@ namespace SashaRX.UnityMeshLab
             }
             else if (LodGroupUtility.HasAmbiguousLodChains(selected))
             {
-                EditorGUILayout.HelpBox("Multiple LOD chains detected. Select a mesh from the chain to create its LODGroup.", MessageType.Info);
+                EditorGUILayout.HelpBox("Multiple LOD chains detected. Select a mesh from the chain to create its LODGroup, " +
+                    "or gather every chain into one LODGroup here by the _LOD{N} names.", MessageType.Info);
+                EditorGUILayout.Space(6);
+                DrawAddLodGroupByNameButton(selected);
             }
             else if (selected != null && SetupSelectionHasRenderers(selected))
             {
@@ -522,17 +527,25 @@ namespace SashaRX.UnityMeshLab
         void DrawRendererLodGroupSetup(GameObject selected)
         {
             EditorGUILayout.HelpBox(
-                "No LOD naming detected, but child renderers found.\n" +
-                "Create a LODGroup with all renderers as LOD0.",
+                "No LOD siblings detected, but child renderers found.\n" +
+                "Add LOD Group gathers them into one LODGroup: names ending _LOD{N} go to LOD N, the rest to LOD0; " +
+                "LODGroups below are replaced.",
                 MessageType.Info);
             EditorGUILayout.Space(6);
+            DrawAddLodGroupByNameButton(selected);
+        }
+
+        void DrawAddLodGroupByNameButton(GameObject selected)
+        {
             var bgc = GUI.backgroundColor;
             GUI.backgroundColor = new Color(.4f, .8f, .4f);
             if (GUILayout.Button("Add LOD Group", GUILayout.Height(28)))
             {
-                var lodGroup = LodGroupUtility.CreateLodGroupFromRenderers(selected);
+                var lodGroup = LodHierarchy.CreateByName(selected, out int levels, out int removed);
                 if (lodGroup != null)
                 {
+                    UvtLog.Info($"[Setup] Created LODGroup on '{selected.name}': {levels} LOD level(s) by name" +
+                        (removed > 0 ? $", {removed} LODGroup(s) below replaced." : "."));
                     ctx.Refresh(lodGroup);
                     OnRefresh();
                     RequestRepaint?.Invoke();
@@ -1763,7 +1776,9 @@ namespace SashaRX.UnityMeshLab
             }
             finally
             {
-                if (UvProgress.CancelRequested) UvProgress.Cancel(); else UvProgress.End();
+                // Recorded before Cancel: ending the last open operation clears the request.
+                fullPipelineCancelled = UvProgress.CancelRequested;
+                if (fullPipelineCancelled) UvProgress.Cancel(); else UvProgress.End();
                 foreach (var m in savedMeshes.Values) UnityEngine.Object.DestroyImmediate(m);
             }
 
@@ -2288,7 +2303,9 @@ namespace SashaRX.UnityMeshLab
             {
                 if (!results[i].ok)
                 {
-                    UvtLog.Error("[Repack] " + validEntries[i].renderer.name + ": " + results[i].error);
+                    // A cancel request is the user's choice, not a failure of the pack.
+                    if (results[i].cancelled) UvtLog.Warn("[Repack] " + validEntries[i].renderer.name + ": cancelled");
+                    else UvtLog.Error("[Repack] " + validEntries[i].renderer.name + ": " + results[i].error);
                     UnityEngine.Object.DestroyImmediate(meshCopies[i]);
                     validEntries[i].repackedAtlasWidth = 0;
                     validEntries[i].repackedAtlasHeight = 0;
@@ -2436,11 +2453,11 @@ namespace SashaRX.UnityMeshLab
         static Task<GroupedShellTransfer.TransferResult> TransferMesh(Mesh target, Mesh source,
             List<GroupedShellTransfer.OverlapSourceHint> overlapHints,
             List<GroupedShellTransfer.CrossLodMatchHint> matchHints, int atlasWidth, int atlasHeight, bool useAsync,
-            TransferMatchTrace trace,float boundaryToleranceTexels)
+            TransferMatchTrace trace,float boundaryToleranceTexels,Vector2[] atlasNeighbours)
         {
             if (useAsync)
-                return GroupedShellTransfer.TransferAsyncWithDiagnostics(target, source, overlapHints, matchHints, atlasWidth, atlasHeight, trace,boundaryToleranceTexels);
-            return Task.FromResult(GroupedShellTransfer.TransferWithDiagnostics(target, source, overlapHints, matchHints, atlasWidth, atlasHeight, trace,boundaryToleranceTexels));
+                return GroupedShellTransfer.TransferAsyncWithDiagnostics(target, source, overlapHints, matchHints, atlasWidth, atlasHeight, trace,boundaryToleranceTexels,atlasNeighbours);
+            return Task.FromResult(GroupedShellTransfer.TransferWithDiagnostics(target, source, overlapHints, matchHints, atlasWidth, atlasHeight, trace,boundaryToleranceTexels,atlasNeighbours));
         }
 
         async Task ExecTransferLodImpl(int tLod, bool useAsync)
@@ -2454,23 +2471,49 @@ namespace SashaRX.UnityMeshLab
             RequireForwardSourceAtlas(sources);
             ClearReverseSummary();
 
+            // Source meshes packed into one atlas: each target keeps clear of the faces already
+            // transferred, whatever their source, and of the other sources' own faces while
+            // targets that will land on them remain.
+            List<(MeshEntry source, Mesh mesh, Vector2[] corners)> atlasFaces = null;
+            Dictionary<MeshEntry, int> pendingTargets = null;
+            if (!ctx.RepackPerMesh && (sources.Count > 1 || targets.Count > 1))
+            {
+                atlasFaces = new List<(MeshEntry source, Mesh mesh, Vector2[] corners)>();
+                foreach (var s in sources)
+                {
+                    Mesh mesh = s.repackedMesh ?? s.originalMesh;
+                    if (mesh) atlasFaces.Add((s, mesh, GroupedShellTransfer.AtlasCorners(mesh)));
+                }
+                pendingTargets = new Dictionary<MeshEntry, int>();
+                foreach (var tgt in targets)
+                {
+                    var s = SourceFor(tgt, sources);
+                    pendingTargets[s] = pendingTargets.TryGetValue(s, out int count) ? count + 1 : 1;
+                }
+            }
+
             foreach (var tgt in targets)
             {
                 if (UvProgress.CancelRequested) break;
-                await TransferTargetMesh(tgt, sources, tLod, useAsync);
+                await TransferTargetMesh(tgt, sources, tLod, useAsync, atlasFaces, pendingTargets);
             }
         }
 
-        async Task TransferTargetMesh(MeshEntry tgt, List<MeshEntry> sources, int tLod, bool useAsync)
+        // The source a target transfers from: the one of its mesh group, else the first.
+        static MeshEntry SourceFor(MeshEntry tgt, List<MeshEntry> sources)
         {
-            EnsureTransferWorkingMesh(tgt);
-
-            // Find matching source by mesh group key
             MeshEntry srcEntry = null;
             if (!string.IsNullOrEmpty(tgt.meshGroupKey))
                 srcEntry = sources.FirstOrDefault(s => s.meshGroupKey == tgt.meshGroupKey);
-            if (srcEntry == null)
-                srcEntry = sources[0];
+            return srcEntry ?? sources[0];
+        }
+
+        async Task TransferTargetMesh(MeshEntry tgt, List<MeshEntry> sources, int tLod, bool useAsync,
+            List<(MeshEntry source, Mesh mesh, Vector2[] corners)> atlasFaces, Dictionary<MeshEntry, int> pendingTargets)
+        {
+            EnsureTransferWorkingMesh(tgt);
+
+            MeshEntry srcEntry = SourceFor(tgt, sources);
 
             Mesh srcMesh = srcEntry.repackedMesh ?? srcEntry.originalMesh;
             Mesh tgtMesh = tgt.originalMesh;
@@ -2497,14 +2540,18 @@ namespace SashaRX.UnityMeshLab
             }
 
             UvProgress.Report(-1f, $"Transfer LOD{tLod} ← '{tgt.renderer.name}'");
-            var pair = ctx.DiagnosticCapture?.BeforePair(srcEntry, tgt, srcMesh, tgtMesh, hintState.overlapHints, hintState.matchHints, TransferBoundaryToleranceTexels);
+            var neighbours = atlasFaces?.Where(f => f.source != srcEntry || f.mesh != srcMesh).ToList();
+            var pair = ctx.DiagnosticCapture?.BeforePair(srcEntry, tgt, srcMesh, tgtMesh, hintState.overlapHints, hintState.matchHints, TransferBoundaryToleranceTexels,
+                atlasNeighbours: neighbours?.Select(f => f.mesh).ToList());
+            Vector2[] atlasNeighbours = neighbours?.SelectMany(f => f.corners).ToArray();
             GroupedShellTransfer.TransferResult tr;
             using (ForwardPerformance?.Accumulated("Forward shell transfer"))
                 tr = await TransferMesh(tgtMesh, srcMesh,
                     hintState.overlapHints.Count > 0 ? hintState.overlapHints : null,
                     hintState.matchHints.Count > 0 ? hintState.matchHints : null,
                     srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
-                    srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0, useAsync, pair?.trace,TransferBoundaryToleranceTexels);
+                    srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0, useAsync, pair?.trace,TransferBoundaryToleranceTexels,
+                    atlasNeighbours);
             if (tr.uv2 == null) {
                 if (scoringAttempt) ++attemptScore.failedTargets;
                 ctx.DiagnosticCapture?.AfterPair(pair, tgt, tr);
@@ -2517,7 +2564,7 @@ namespace SashaRX.UnityMeshLab
             using (ForwardPerformance?.Accumulated("Forward quality measure"))
                 beforeQuality=TransferUvQuality.Measure(tgtMesh,tr.uv2,Vector2.one,renderedFrame);
             var finalQuality=beforeQuality;
-            if (beforeQuality.worstAnisotropy>4 || beforeQuality.overlapPairs>0 || beforeQuality.degenerateFaces>0)
+            if (NeedsDonorSeamTrial(beforeQuality,AutoTuneScore.GeometryDegenerateFaces(tgtMesh,renderedFrame)))
             {
                 using var seamTiming = ForwardPerformance?.Accumulated("Forward donor seam trial");
                 Mesh prepared=null;
@@ -2585,6 +2632,12 @@ namespace SashaRX.UnityMeshLab
                 hintState.matchHints.AddRange(tr.matchHints);
 
             int clamped = ApplyTransferResult(tgt, tgtMesh, tr, tLod);
+            if (atlasFaces != null)
+            {
+                atlasFaces.Add((srcEntry, tgt.transferredMesh, GroupedShellTransfer.AtlasCorners(tgt.transferredMesh)));
+                // Once every target of a source is placed, their faces stand for it.
+                if (--pendingTargets[srcEntry] == 0) atlasFaces.RemoveAll(f => f.source == srcEntry && f.mesh == srcMesh);
+            }
             if (scoringAttempt)
             {
                 // Score what is published: the unit clamp can collapse a face.
@@ -2599,6 +2652,14 @@ namespace SashaRX.UnityMeshLab
             }
             ctx.DiagnosticCapture?.AfterPair(pair, tgt, tr);
         }
+
+        /// <summary>
+        /// Whether a transferred layout calls for the donor-seam trial: a face stretched
+        /// past 4:1, an overlap, or a collapsed UV face. Zero-area 3D faces are degenerate
+        /// in every layout, so they alone do not start it.
+        /// </summary>
+        internal static bool NeedsDonorSeamTrial(TransferUvQuality quality, int geometryDegenerateFaces)
+            => quality.worstAnisotropy > 4 || quality.overlapPairs > 0 || quality.degenerateFaces > geometryDegenerateFaces;
 
         static bool HasSourceUvChannels(Mesh source)
         {

@@ -163,7 +163,14 @@ namespace SashaRX.UnityMeshLab
             // mesh's generated UV1 goes into the file with it, edited or not.
             bool bakeUv1 = generatedUv1 && intent.IncludesUv(1)
                 && (donors.Any(d => d.uvs[1] != null) || (hasStructure && structure.wholeMeshUv1Edited));
-            if (bakeUv1) donors = CaptureDonors(entries, capture.WithBake(true), skip);
+            var unloaded = new HashSet<string>(StringComparer.Ordinal);
+            if (bakeUv1)
+            {
+                donors = CaptureDonors(entries, capture.WithBake(true), skip);
+                var captured = CaptureUnloadedUv1(sourceFbxPath, donors, skip);
+                unloaded.UnionWith(captured.Select(d => d.name));
+                donors.AddRange(captured);
+            }
             if (donors.Count == 0 && !hasStructure)
             {
                 UvtLog.Warn($"[FBX Export] No meshes carry data for {intent}.");
@@ -172,15 +179,23 @@ namespace SashaRX.UnityMeshLab
 
             using var document = FbxSourceDocument.Load(Path.GetFullPath(sourceFbxPath));
             var tagged = ImportTagged(sourceFbxPath, swapUv, out var importedNames);
-            int splitPolygons = PrepareSeamSplits(document, donors, tagged);
+            // An unloaded mesh keeps its polygons: one its imported lightmap UVs do not fit
+            // has them unwrapped again instead (WriteRegeneratedUv1).
+            int splitPolygons = PrepareSeamSplits(document, donors.Where(d => !unloaded.Contains(d.name)).ToList(), tagged);
 
             int meshesWritten = 0, cornersWritten = 0;
             var written = new HashSet<int>();
             var channelsWritten = new HashSet<string>();
+            var regenerate = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var donor in donors)
             {
                 if (!tagged.TryGetValue(donor.name, out var tag))
                 {
+                    if (unloaded.Contains(donor.name))
+                    {
+                        regenerate[donor.name] = "its corner tags did not survive the import's mesh compression";
+                        continue;
+                    }
                     if (shadingSelection != null)
                         throw new InvalidOperationException($"'{donor.name}': no exact FBX corner mapping was found; foliage export was refused.");
                     if (importedNames.Contains(donor.name))
@@ -194,12 +209,29 @@ namespace SashaRX.UnityMeshLab
                     throw new FbxStructureRefusalException($"'{donor.name}': several meshes of '{Path.GetFileName(sourceFbxPath)}' import under that name; which one it is cannot be told");
                 var mesh = document.Meshes[tag.ordinal];
                 RequireSelectedInstances(mesh, donor.name, shadingSelection);
-                int corners = WriteMesh(mesh, donor, tag, swapUv, document.HasSmoothing(mesh.GetName()) == false, channelsWritten);
+                if (unloaded.Contains(donor.name) && !PairUnloadedUv1)
+                {
+                    regenerate[donor.name] = "pairing is off";
+                    continue;
+                }
+                int corners;
+                try { corners = WriteMesh(mesh, donor, tag, swapUv, document.HasSmoothing(mesh.GetName()) == false, channelsWritten); }
+                catch (CornerPairingException ex) when (unloaded.Contains(donor.name))
+                {
+                    regenerate[donor.name] = ex.reason;
+                    continue;
+                }
                 if (corners == 0) continue;
                 if (!written.Add(tag.ordinal))
                     throw new InvalidOperationException($"FBX mesh '{mesh.GetName()}' is instanced by several Unity meshes; it cannot take edits from more than one.");
                 meshesWritten++;
                 cornersWritten += corners;
+            }
+            if (regenerate.Count > 0)
+            {
+                cornersWritten += WriteRegeneratedUv1(document, sourceFbxPath, swapUv, regenerate, channelsWritten, out int regeneratedSplits);
+                meshesWritten += regenerate.Count;
+                splitPolygons += regeneratedSplits;
             }
 
             // After the channels: new nodes take the UV sets their source has by now, the ones
@@ -218,15 +250,15 @@ namespace SashaRX.UnityMeshLab
                 fbxPath = targetFbxPath,
                 sourceFbxPath = sourceFbxPath,
             };
-            // Capture geometry names before structural replacement destroys old meshes.
-            // Unity mesh names may differ from FBX geometry names.
+            // The FBX meshes the channels write UV1 into, captured before the structure step
+            // changes the mesh list; it writes none of them whole.
             var uvMeshes = donors.Where(d => d.uvs[1] != null && tagged.ContainsKey(d.name))
-                .Select(d => document.Meshes[tagged[d.name].ordinal].GetName()).ToHashSet();
+                .Select(d => document.Meshes[tagged[d.name].ordinal]).ToHashSet();
             int structural = hasStructure ? FbxStructureWrite.Apply(document, tagged, structure, options, structureLog) : 0;
             if (structural > 0) document.RefreshMeshes();
             bool uv1Written = channelsWritten.Contains("UV1") || (options.uv1Written && structural > 0);
             if (uv1Written) {
-                if (hasStructure && options.uv1Written) uvMeshes.UnionWith(structure.WholeMeshNames());
+                if (hasStructure && options.uv1Written) uvMeshes.UnionWith(options.wholeMeshes);
                 int points = document.PreserveSmallUvSeams(uvMeshes, FbxUvSet(1, swapUv));
                 if (points > 0) UvtLog.Info($"[FBX Export] Preserved nearby lightmap seams with {points} duplicate control points; positions and UVs unchanged.");
             }
@@ -316,8 +348,31 @@ namespace SashaRX.UnityMeshLab
             return configured;
         }
 
+        // A lit mesh of the model the save did not load (another object of the same file)
+        // keeps the lightmap UVs it imports with now: they go into the file as they are.
+        // A name several meshes share cannot be told apart and is left to RequireEveryUv1.
+        static List<Donor> CaptureUnloadedUv1(string sourceFbxPath, List<Donor> donors, ICollection<string> skip)
+        {
+            var loaded = new HashSet<string>(donors.Select(d => d.name), StringComparer.Ordinal);
+            var unloaded = AssetDatabase.LoadAllAssetsAtPath(sourceFbxPath).OfType<Mesh>()
+                .GroupBy(m => m.name, StringComparer.Ordinal)
+                .Where(g => g.Count() == 1 && !loaded.Contains(g.Key) && !MeshNaming.IsCollision(g.Key) && (skip == null || !skip.Contains(g.Key)))
+                .Select(g => g.Single());
+            var uv1Only = new Capture { intent = FbxExportIntent.UV1, generatedUv1 = true, bakeUv1 = true };
+            var captured = new List<Donor>();
+            foreach (var mesh in unloaded)
+            {
+                var donor = CaptureDonor(new MeshEntry { fbxMesh = mesh }, uv1Only);
+                if (donor?.uvs[1] != null) captured.Add(donor);
+            }
+            if (captured.Count > 0)
+                UvtLog.Info($"[FBX Export] 'Generate Lightmap UVs' goes off with this save; {string.Join(", ", captured.Select(d => $"'{d.name}'"))} " +
+                    "(not loaded here) keep the lightmap UVs they import with now, written into the file.");
+            return captured;
+        }
+
         // With generation switched off, a mesh whose UV1 is not in the file has none: refuse
-        // rather than drop the lightmap UVs of meshes the save did not see.
+        // rather than drop the lightmap UVs of meshes the save could not carry.
         static void RequireEveryUv1(string sourceFbxPath, List<Donor> donors, ICollection<string> wholeMeshes, HashSet<string> importedNames)
         {
             var withUv1 = new HashSet<string>(donors.Where(d => d.uvs[1] != null).Select(d => d.name), StringComparer.Ordinal);
@@ -326,8 +381,158 @@ namespace SashaRX.UnityMeshLab
             if (lost.Count == 0) return;
             throw new InvalidOperationException(
                 $"'Generate Lightmap UVs' is on for '{sourceFbxPath}'. Writing UV1 switches it off for the whole model, and " +
-                $"{string.Join(", ", lost.Select(n => $"'{n}'"))} would lose the lightmap UVs Unity generates for them (they are not loaded here). " +
+                $"{string.Join(", ", lost.Select(n => $"'{n}'"))} would lose the lightmap UVs Unity generates for them " +
+                "(their imported lightmap UVs could not be carried into the file: several meshes share the name, or the import has none). " +
                 "Load the whole model, or switch the setting off first; nothing was written.");
+        }
+
+        // ── Lightmap UVs unwrapped again for unloaded meshes ──
+
+        /// <summary>Tests turn this off to send every unloaded mesh to <see cref="WriteRegeneratedUv1"/>.</summary>
+        internal static bool PairUnloadedUv1 { get; set; } = true;
+
+        /// <summary>A donor's vertices cannot be paired with the FBX corners exactly; <see cref="reason"/> says why, briefly.</summary>
+        sealed class CornerPairingException : InvalidOperationException
+        {
+            public readonly string reason;
+            public CornerPairingException(string reason, string message) : base(message) { this.reason = reason; }
+        }
+
+        /// <summary>
+        /// Writes Unity's lightmap unwrap, with the model's own unwrap settings, into the UV1
+        /// set of each mesh in <paramref name="reasons"/>: meshes the save did not load whose
+        /// imported lightmap UVs could not be paired with the file's corners. Their corners
+        /// come from an uncompressed tagged import, welded by position, UV0 and normal as
+        /// Unity's import welds them, so the unwrap sees the import's connectivity; a polygon
+        /// a chart seam runs through is split along the import's triangles. Returns the
+        /// corners written; <paramref name="splitPolygons"/> counts the polygons split.
+        /// </summary>
+        static int WriteRegeneratedUv1(FbxSourceDocument document, string sourceFbxPath, bool swapUv,
+            Dictionary<string, string> reasons, HashSet<string> channelsWritten, out int splitPolygons)
+        {
+            splitPolygons = 0;
+            var tagged = ImportTagged(sourceFbxPath, swapUv, out _, uncompressed: true);
+            var settings = LightmapUnwrapSettings(AssetImporter.GetAtPath(sourceFbxPath) as ModelImporter);
+            int written = 0;
+            foreach (var pair in reasons)
+            {
+                if (!tagged.TryGetValue(pair.Key, out var tag) || tag.ambiguous)
+                    throw new InvalidOperationException(
+                        $"'{pair.Key}': its lightmap UVs could not be carried into the file ({pair.Value}), and its corners cannot be told apart to unwrap it again; nothing was written.");
+                var topology = new FbxLayerChannels.Topology(document.Meshes[tag.ordinal]);
+                var triangles = tag.TriangleCorners();
+                var triangleUvs = UnwrapTriangles(pair.Key, tag, topology.CornerCount, triangles, settings);
+
+                var conflicts = new bool[topology.CornerCount];
+                var first = new Vector2?[topology.CornerCount];
+                for (int i = 0; i < triangles.Length; i++)
+                {
+                    int c = triangles[i];
+                    if (first[c] == null) first[c] = triangleUvs[i];
+                    else if (first[c].Value != triangleUvs[i]) conflicts[c] = true;
+                }
+                var plan = FbxPolygonSplit.Plan(topology.polygonSizes, conflicts, triangles);
+                if (plan.splitCount > 0)
+                {
+                    document.SplitPolygons(new Dictionary<int, FbxPolygonSplit> { [tag.ordinal] = plan });
+                    splitPolygons += plan.splitCount;
+                }
+                var mesh = document.Meshes[tag.ordinal];
+                topology = new FbxLayerChannels.Topology(mesh);
+                var values = SplitCornerUvs(plan, triangles, triangleUvs, first, topology);
+                written += FbxLayerChannels.WriteUv(mesh, FbxUvSet(1, swapUv), topology, values, Enumerable.Repeat(true, topology.CornerCount).ToArray());
+                channelsWritten.Add("UV1");
+                UvtLog.Warn($"[FBX Export] '{pair.Key}' (not loaded here): its imported lightmap UVs could not be carried into the file ({pair.Value}); " +
+                    "Unity's lightmap unwrap of the file's own corners, with this model's unwrap settings, was written instead. Rebake its lightmap if it was baked.");
+            }
+            return written;
+        }
+
+        // The unwrap settings Unity's importer uses for this model's generated lightmap UVs.
+        static UnwrapParam LightmapUnwrapSettings(ModelImporter importer)
+        {
+            UnwrapParam.SetDefaults(out var settings);
+            if (importer == null) return settings;
+            settings.angleError = Mathf.Clamp01(importer.secondaryUVAngleDistortion / 100f);
+            settings.areaError = Mathf.Clamp01(importer.secondaryUVAreaDistortion / 100f);
+            settings.hardAngle = importer.secondaryUVHardAngle;
+            settings.packMargin = importer.secondaryUVPackMargin / 1024f;
+            return settings;
+        }
+
+        // Unity's per-triangle lightmap unwrap of the import's triangles (FBX corners), welded
+        // by position, UV0 and normal so charts follow the import's connectivity.
+        static Vector2[] UnwrapTriangles(string name, Tagged tag, int corners, int[] triangles, UnwrapParam settings)
+        {
+            var weld = new Dictionary<(Vector3, Vector2, Vector3), int>();
+            var vertexOf = new int[corners];
+            var positions = new List<Vector3>();
+            var uvs = new List<Vector2>();
+            var normals = new List<Vector3>();
+            for (int c = 0; c < corners; c++)
+            {
+                vertexOf[c] = -1;
+                if (c * 3 >= tag.cornerPositions.Length || float.IsNaN(tag.cornerPositions[c * 3])) continue;
+                var key = (new Vector3(tag.cornerPositions[c * 3], tag.cornerPositions[c * 3 + 1], tag.cornerPositions[c * 3 + 2]),
+                    tag.uvs[0] != null ? tag.uvs[0][c] : Vector2.zero, tag.normals != null ? tag.normals[c] : Vector3.zero);
+                if (!weld.TryGetValue(key, out int v))
+                {
+                    weld[key] = v = positions.Count;
+                    positions.Add(key.Item1); uvs.Add(key.Item2); normals.Add(key.Item3);
+                }
+                vertexOf[c] = v;
+            }
+            var mesh = new Mesh { indexFormat = IndexFormat.UInt32 };
+            try
+            {
+                mesh.SetVertices(positions);
+                mesh.SetUVs(0, uvs);
+                if (tag.normals != null) mesh.SetNormals(normals);
+                mesh.SetTriangles(Array.ConvertAll(triangles, c => vertexOf[c]), 0);
+                var uv = Unwrapping.GeneratePerTriangleUV(mesh, settings);
+                if (uv == null || uv.Length != triangles.Length)
+                    throw new InvalidOperationException($"'{name}': Unity's lightmap unwrap failed; nothing was written.");
+                return uv;
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
+
+        // UV1 per corner of the (possibly split) mesh: a split polygon's triangles take their
+        // own unwrap values, an unsplit polygon's corners the value all their triangles agree
+        // on, and a corner no triangle covers (a degenerate polygon) another corner's value on
+        // its control point, else zero.
+        static double[] SplitCornerUvs(FbxPolygonSplit plan, int[] triangles, Vector2[] triangleUvs, Vector2?[] first, in FbxLayerChannels.Topology topology)
+        {
+            var values = new double[topology.CornerCount * 2];
+            var covered = new bool[topology.CornerCount];
+            var splitTriangles = SplitTriangleCorners(plan);
+            for (int t = 0; t + 2 < triangles.Length; t += 3)
+            {
+                var old = new[] { triangles[t], triangles[t + 1], triangles[t + 2] };
+                var sorted = old.OrderBy(c => c).ToArray();
+                if (!splitTriangles.TryGetValue((sorted[0], sorted[1], sorted[2]), out var triangle)) continue;
+                for (int k = 0; k < 3; k++)
+                {
+                    int c = triangle.First(n => plan.corners[n] == old[k]);
+                    values[c * 2] = triangleUvs[t + k].x; values[c * 2 + 1] = triangleUvs[t + k].y;
+                    covered[c] = true;
+                }
+            }
+            for (int c = 0; c < topology.CornerCount; c++)
+            {
+                if (covered[c] || first[plan.corners[c]] == null) continue;
+                var uv = first[plan.corners[c]].Value;
+                values[c * 2] = uv.x; values[c * 2 + 1] = uv.y;
+                covered[c] = true;
+            }
+            var byPoint = new Dictionary<int, int>();
+            for (int c = 0; c < topology.CornerCount; c++) if (covered[c]) byPoint[topology.cornerControlPoint[c]] = c;
+            for (int c = 0; c < topology.CornerCount; c++)
+            {
+                if (covered[c] || !byPoint.TryGetValue(topology.cornerControlPoint[c], out int from)) continue;
+                values[c * 2] = values[from * 2]; values[c * 2 + 1] = values[from * 2 + 1];
+            }
+            return values;
         }
 
         // ── Donors ──
@@ -723,7 +928,25 @@ namespace SashaRX.UnityMeshLab
                 importer.SaveAndReimport();
 
                 var tagged = new Dictionary<string, Tagged>(StringComparer.Ordinal);
-                ReadImportedTags(tempPath, tagChannels, cornerCounts, takenSets, importedNames, tagged);
+                if (importer.meshCompression == ModelImporterMeshCompression.Off)
+                {
+                    ReadImportedTags(tempPath, tagChannels, cornerCounts, takenSets, importedNames, tagged);
+                    return tagged;
+                }
+                // Mesh Compression quantizes the tag channel too: a large mesh's corner indices
+                // do not survive it. They are read from an uncompressed import of the same copy,
+                // whose vertices are the compressed import's in the same order; positions and
+                // channels stay the compressed import's, which the working meshes share.
+                var compressed = AssetDatabase.LoadAllAssetsAtPath(tempPath).OfType<Mesh>()
+                    .Select(m => { var copy = Object.Instantiate(m); copy.name = m.name; return copy; }).ToList();
+                try
+                {
+                    importer = (ModelImporter)AssetImporter.GetAtPath(tempPath);
+                    importer.meshCompression = ModelImporterMeshCompression.Off;
+                    importer.SaveAndReimport();
+                    ReadImportedTags(tempPath, tagChannels, cornerCounts, takenSets, importedNames, tagged, compressed);
+                }
+                finally { foreach (var copy in compressed) Object.DestroyImmediate(copy); }
                 return tagged;
             }
             finally
@@ -753,13 +976,26 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        // With vertexSources (the compressed import's meshes, in import order) the tags come from
+        // the meshes at path and everything else from the source at the same index; a source
+        // whose vertices or faces differ is read on its own, as without them.
         static void ReadImportedTags(string path, Dictionary<int, int> tagChannels, Dictionary<int, int> cornerCounts, Dictionary<int, double[]> takenSets,
-            HashSet<string> importedNames, Dictionary<string, Tagged> tagged)
+            HashSet<string> importedNames, Dictionary<string, Tagged> tagged, List<Mesh> vertexSources = null)
         {
-            foreach (var mesh in AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>())
+            var meshes = AssetDatabase.LoadAllAssetsAtPath(path).OfType<Mesh>().ToList();
+            bool paired = vertexSources != null && vertexSources.Count == meshes.Count;
+            for (int i = 0; i < meshes.Count; i++)
             {
+                var mesh = meshes[i];
                 importedNames.Add(mesh.name);
-                var tag = ReadTags(mesh, tagChannels, cornerCounts);
+                Tagged tag;
+                if (vertexSources == null) tag = ReadTags(mesh, tagChannels, cornerCounts);
+                else if (paired && SameFaces(mesh, vertexSources[i])) tag = ReadTags(mesh, tagChannels, cornerCounts, vertexSources[i]);
+                else
+                {
+                    UvtLog.Verbose($"[FBX Export] '{mesh.name}': its uncompressed import differs from the compressed one; its corner tags are read from the compressed import.");
+                    tag = i < vertexSources.Count && vertexSources[i].name == mesh.name ? ReadTags(vertexSources[i], tagChannels, cornerCounts) : null;
+                }
                 if (tag == null) continue;
                 if (tagged.TryGetValue(mesh.name, out var first)) { first.ambiguous = true; continue; }
                 if (takenSets.TryGetValue(tag.ordinal, out var values)) tag.uvs[tagChannels[tag.ordinal]] = PerCornerUvs(values, tag.cornerPositions.Length / 3);
@@ -767,7 +1003,17 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static Tagged ReadTags(Mesh mesh, Dictionary<int, int> tagChannels, Dictionary<int, int> cornerCounts)
+        static bool SameFaces(Mesh a, Mesh b)
+        {
+            if (a.name != b.name || a.vertexCount != b.vertexCount || a.subMeshCount != b.subMeshCount) return false;
+            for (int s = 0; s < a.subMeshCount; s++)
+                if (a.GetTopology(s) != b.GetTopology(s) || !a.GetIndices(s).SequenceEqual(b.GetIndices(s))) return false;
+            return true;
+        }
+
+        // The tag channel is read from mesh; the vertices, faces and other channels from
+        // vertexSource when given (the same vertices, in the same order, see ReadImportedTags).
+        static Tagged ReadTags(Mesh mesh, Dictionary<int, int> tagChannels, Dictionary<int, int> cornerCounts, Mesh vertexSource = null)
         {
             var list = new List<Vector2>();
             for (int ch = 0; ch < 8; ch++)
@@ -778,7 +1024,7 @@ namespace SashaRX.UnityMeshLab
                 if (ordinal < 0 || !tagChannels.TryGetValue(ordinal, out int expected) || expected != ch) continue;
                 int count = cornerCounts[ordinal];
                 if (list.Any(t => TagCorner(t) >= count)) continue;
-                return BuildTagged(mesh, ch, ordinal, list, count);
+                return BuildTagged(vertexSource ?? mesh, ch, ordinal, list, count);
             }
             return null;
         }
@@ -1165,15 +1411,18 @@ namespace SashaRX.UnityMeshLab
         {
             var match = MatchCorners(donor, tag, topology);
             if (match.conflicts > 0)
-                throw new InvalidOperationException(
+                throw new CornerPairingException($"{match.conflicts} corner(s) get different values from different faces",
                     $"'{donor.name}': {match.conflicts} FBX corner(s) get different values from different triangles of the same polygon " +
                     "(a UV seam, colour edge or hard edge runs inside a polygon). The FBX polygon cannot hold that without being split; nothing was written.");
             if (match.unresolved > 0)
-                throw new InvalidOperationException(
+                throw new CornerPairingException($"{match.unresolved} corner(s) have no face in its import",
                     $"'{donor.name}': {match.unresolved} FBX corner(s) have no face in the working mesh — its geometry differs from the file " +
                     "(simplified or edited faces). Channels alone cannot carry that; save with a rebuild. Nothing was written.");
             if (match.missing > 0)
                 UvtLog.Warn($"[FBX Export] '{donor.name}': {match.missing} corner(s) of degenerate polygons have no vertex in Unity's import; they keep their stored values.");
+            if (match.zeroAreaChoices > 0)
+                UvtLog.Info($"[FBX Export] '{donor.name}': {match.zeroAreaChoices} corner(s) of zero-area polygons (fewer than three distinct positions) " +
+                    "get different values from their faces; they take one of them, as such polygons cover no area.");
             return match.cornerToVertex;
         }
 
