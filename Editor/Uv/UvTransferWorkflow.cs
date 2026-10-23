@@ -2453,11 +2453,11 @@ namespace SashaRX.UnityMeshLab
         static Task<GroupedShellTransfer.TransferResult> TransferMesh(Mesh target, Mesh source,
             List<GroupedShellTransfer.OverlapSourceHint> overlapHints,
             List<GroupedShellTransfer.CrossLodMatchHint> matchHints, int atlasWidth, int atlasHeight, bool useAsync,
-            TransferMatchTrace trace,float boundaryToleranceTexels)
+            TransferMatchTrace trace,float boundaryToleranceTexels,Vector2[] atlasNeighbours)
         {
             if (useAsync)
-                return GroupedShellTransfer.TransferAsyncWithDiagnostics(target, source, overlapHints, matchHints, atlasWidth, atlasHeight, trace,boundaryToleranceTexels);
-            return Task.FromResult(GroupedShellTransfer.TransferWithDiagnostics(target, source, overlapHints, matchHints, atlasWidth, atlasHeight, trace,boundaryToleranceTexels));
+                return GroupedShellTransfer.TransferAsyncWithDiagnostics(target, source, overlapHints, matchHints, atlasWidth, atlasHeight, trace,boundaryToleranceTexels,atlasNeighbours);
+            return Task.FromResult(GroupedShellTransfer.TransferWithDiagnostics(target, source, overlapHints, matchHints, atlasWidth, atlasHeight, trace,boundaryToleranceTexels,atlasNeighbours));
         }
 
         async Task ExecTransferLodImpl(int tLod, bool useAsync)
@@ -2471,23 +2471,49 @@ namespace SashaRX.UnityMeshLab
             RequireForwardSourceAtlas(sources);
             ClearReverseSummary();
 
+            // Source meshes packed into one atlas: each target keeps clear of the faces already
+            // transferred, whatever their source, and of the other sources' own faces while
+            // targets that will land on them remain.
+            List<(MeshEntry source, Mesh mesh, Vector2[] corners)> atlasFaces = null;
+            Dictionary<MeshEntry, int> pendingTargets = null;
+            if (!ctx.RepackPerMesh && (sources.Count > 1 || targets.Count > 1))
+            {
+                atlasFaces = new List<(MeshEntry source, Mesh mesh, Vector2[] corners)>();
+                foreach (var s in sources)
+                {
+                    Mesh mesh = s.repackedMesh ?? s.originalMesh;
+                    if (mesh) atlasFaces.Add((s, mesh, GroupedShellTransfer.AtlasCorners(mesh)));
+                }
+                pendingTargets = new Dictionary<MeshEntry, int>();
+                foreach (var tgt in targets)
+                {
+                    var s = SourceFor(tgt, sources);
+                    pendingTargets[s] = pendingTargets.TryGetValue(s, out int count) ? count + 1 : 1;
+                }
+            }
+
             foreach (var tgt in targets)
             {
                 if (UvProgress.CancelRequested) break;
-                await TransferTargetMesh(tgt, sources, tLod, useAsync);
+                await TransferTargetMesh(tgt, sources, tLod, useAsync, atlasFaces, pendingTargets);
             }
         }
 
-        async Task TransferTargetMesh(MeshEntry tgt, List<MeshEntry> sources, int tLod, bool useAsync)
+        // The source a target transfers from: the one of its mesh group, else the first.
+        static MeshEntry SourceFor(MeshEntry tgt, List<MeshEntry> sources)
         {
-            EnsureTransferWorkingMesh(tgt);
-
-            // Find matching source by mesh group key
             MeshEntry srcEntry = null;
             if (!string.IsNullOrEmpty(tgt.meshGroupKey))
                 srcEntry = sources.FirstOrDefault(s => s.meshGroupKey == tgt.meshGroupKey);
-            if (srcEntry == null)
-                srcEntry = sources[0];
+            return srcEntry ?? sources[0];
+        }
+
+        async Task TransferTargetMesh(MeshEntry tgt, List<MeshEntry> sources, int tLod, bool useAsync,
+            List<(MeshEntry source, Mesh mesh, Vector2[] corners)> atlasFaces, Dictionary<MeshEntry, int> pendingTargets)
+        {
+            EnsureTransferWorkingMesh(tgt);
+
+            MeshEntry srcEntry = SourceFor(tgt, sources);
 
             Mesh srcMesh = srcEntry.repackedMesh ?? srcEntry.originalMesh;
             Mesh tgtMesh = tgt.originalMesh;
@@ -2514,14 +2540,18 @@ namespace SashaRX.UnityMeshLab
             }
 
             UvProgress.Report(-1f, $"Transfer LOD{tLod} ← '{tgt.renderer.name}'");
-            var pair = ctx.DiagnosticCapture?.BeforePair(srcEntry, tgt, srcMesh, tgtMesh, hintState.overlapHints, hintState.matchHints, TransferBoundaryToleranceTexels);
+            var neighbours = atlasFaces?.Where(f => f.source != srcEntry || f.mesh != srcMesh).ToList();
+            var pair = ctx.DiagnosticCapture?.BeforePair(srcEntry, tgt, srcMesh, tgtMesh, hintState.overlapHints, hintState.matchHints, TransferBoundaryToleranceTexels,
+                atlasNeighbours: neighbours?.Select(f => f.mesh).ToList());
+            Vector2[] atlasNeighbours = neighbours?.SelectMany(f => f.corners).ToArray();
             GroupedShellTransfer.TransferResult tr;
             using (ForwardPerformance?.Accumulated("Forward shell transfer"))
                 tr = await TransferMesh(tgtMesh, srcMesh,
                     hintState.overlapHints.Count > 0 ? hintState.overlapHints : null,
                     hintState.matchHints.Count > 0 ? hintState.matchHints : null,
                     srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
-                    srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0, useAsync, pair?.trace,TransferBoundaryToleranceTexels);
+                    srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0, useAsync, pair?.trace,TransferBoundaryToleranceTexels,
+                    atlasNeighbours);
             if (tr.uv2 == null) {
                 if (scoringAttempt) ++attemptScore.failedTargets;
                 ctx.DiagnosticCapture?.AfterPair(pair, tgt, tr);
@@ -2602,6 +2632,12 @@ namespace SashaRX.UnityMeshLab
                 hintState.matchHints.AddRange(tr.matchHints);
 
             int clamped = ApplyTransferResult(tgt, tgtMesh, tr, tLod);
+            if (atlasFaces != null)
+            {
+                atlasFaces.Add((srcEntry, tgt.transferredMesh, GroupedShellTransfer.AtlasCorners(tgt.transferredMesh)));
+                // Once every target of a source is placed, their faces stand for it.
+                if (--pendingTargets[srcEntry] == 0) atlasFaces.RemoveAll(f => f.source == srcEntry && f.mesh == srcMesh);
+            }
             if (scoringAttempt)
             {
                 // Score what is published: the unit clamp can collapse a face.

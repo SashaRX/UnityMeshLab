@@ -727,6 +727,132 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void AShellReachingPastItsSourceKeepsTheUnclampedSimilarity()
+        {
+            var source = new Mesh { name = "Small chart" };
+            var target = new Mesh { name = "Strip reaching past the chart" };
+            try {
+                var strip = ChartAndStripReachingPastIt(source, target);
+                // Another mesh of the atlas lies clear of the strip.
+                var neighbour = new[] { new Vector2(.7f, .1f), new Vector2(.8f, .1f), new Vector2(.7f, .3f) };
+                var result = GroupedShellTransfer.TransferWithDiagnostics(target, source, null, null, 512, 512, null,
+                    UvTransferTolerance.BoundaryTexels, neighbour);
+                for (int i = 0; i < strip.Length; i++)
+                    Assert.That(Vector2.Distance(strip[i] * 3 + Vector2.one * .1f, result.uv2[i]), Is.LessThan(1e-4f));
+                var tris = target.triangles;
+                for (int f = 0; f < tris.Length / 3; f++) {
+                    Vector2 a = result.uv2[tris[f * 3]], b = result.uv2[tris[f * 3 + 1]], c = result.uv2[tris[f * 3 + 2]];
+                    Assert.That(Mathf.Abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)), Is.GreaterThan(1e-6f), $"face {f}");
+                }
+            }
+            finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
+        [Test]
+        public void AShellReachingPastItsSourceKeepsOffAnotherMeshOfTheAtlas()
+        {
+            var source = new Mesh { name = "Small chart" };
+            var target = new Mesh { name = "Strip reaching past the chart" };
+            try {
+                var strip = ChartAndStripReachingPastIt(source, target);
+                // Another mesh of the atlas lies where the strip's right column would land.
+                var neighbour = new[] { new Vector2(.45f, .15f), new Vector2(.6f, .15f), new Vector2(.45f, .35f) };
+                var result = GroupedShellTransfer.TransferWithDiagnostics(target, source, null, null, 512, 512, null,
+                    UvTransferTolerance.BoundaryTexels, neighbour);
+                foreach (int i in new[] { 2, 5 }) {
+                    Assert.That(Vector2.Distance(strip[i] * 3 + Vector2.one * .1f, result.uv2[i]), Is.GreaterThan(1e-2f), $"vertex {i}");
+                    Assert.That(result.uv2[i].x, Is.LessThan(.45f), $"vertex {i}");
+                }
+            }
+            finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
+        [Test]
+        public void AShellReachingPastAReparameterizedSourceKeepsInterpolation()
+        {
+            var source = new Mesh { name = "Sheared chart" };
+            var target = new Mesh { name = "Strip reaching past the chart" };
+            try {
+                // The chart's UV2 is a shear of its UV0, as a reparameterized chart is no
+                // similarity of it: the similarity would turn the strip by about 9.5° and move
+                // its top-left corner 0.025 off the chart's own UV2.
+                var chart = new[] { Vector2.zero, new Vector2(.1f, 0), new Vector2(.1f, .1f), new Vector2(0, .1f) };
+                source.vertices = chart.Select(uv => (Vector3)(uv * 10)).ToArray();
+                source.uv = chart;
+                source.uv2 = chart.Select(uv => new Vector2(uv.x * 3 + uv.y + .1f, uv.y * 3 + .1f)).ToArray();
+                source.triangles = new[] { 0, 1, 2, 0, 2, 3 }; source.RecalculateNormals();
+                var strip = new[] { new Vector2(.05f, 0), new Vector2(.12f, 0), new Vector2(.15f, 0),
+                    new Vector2(.05f, .1f), new Vector2(.12f, .1f), new Vector2(.15f, .1f) };
+                target.vertices = strip.Select(uv => (Vector3)(uv * 10)).ToArray();
+                target.uv = strip;
+                target.triangles = new[] { 0, 1, 4, 0, 4, 3, 1, 2, 5, 1, 5, 4 }; target.RecalculateNormals();
+                var result = GroupedShellTransfer.Transfer(target, source, sourceAtlasWidth: 512, sourceAtlasHeight: 512);
+                // Interpolation maps the strip's top-left corner by the chart's own UV2.
+                Assert.That(Vector2.Distance(new Vector2(.35f, .4f), result.uv2[3]), Is.LessThan(1e-4f));
+            }
+            finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
+        [Test]
+        public void AShellReachingPastItsSourceKeepsInterpolationWhereTheSimilarityStretchesIt()
+        {
+            var source = new Mesh { name = "Small chart" };
+            var target = new Mesh { name = "Strip reaching past the chart" };
+            try {
+                var strip = ChartAndStripReachingPastIt(source, target);
+                // The right column lies 5 units further in 3D than its UV0 says: the similarity
+                // would stretch the faces past the chart about 18:1, where the chart has none.
+                var vertices = target.vertices;
+                foreach (int i in new[] { 2, 5 }) vertices[i].x += 5;
+                target.vertices = vertices; target.RecalculateNormals();
+                var result = GroupedShellTransfer.Transfer(target, source, sourceAtlasWidth: 512, sourceAtlasHeight: 512);
+                foreach (int i in new[] { 2, 5 })
+                    Assert.That(Vector2.Distance(strip[i] * 3 + Vector2.one * .1f, result.uv2[i]), Is.GreaterThan(1e-2f), $"vertex {i}");
+            }
+            finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
+        }
+
+        [Test]
+        public void TheOverlapWithOtherShellsCountsTheirFacesAsPlaced()
+        {
+            // Two quads, separate in UV0; in UV2 the second lies over the right half of the first.
+            var uv0 = new[] { Vector2.zero, new Vector2(.2f, 0), new Vector2(.2f, .2f), new Vector2(0, .2f),
+                new Vector2(.5f, 0), new Vector2(.7f, 0), new Vector2(.7f, .2f), new Vector2(.5f, .2f) };
+            var uv2 = new[] { Vector2.zero, new Vector2(.2f, 0), new Vector2(.2f, .2f), new Vector2(0, .2f),
+                new Vector2(.1f, 0), new Vector2(.3f, 0), new Vector2(.3f, .2f), new Vector2(.1f, .2f) };
+            var tris = new[] { 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 };
+            var shells = UvShellExtractor.Extract(uv0, tris);
+            Assert.That(shells.Count, Is.EqualTo(2));
+            var faceToShell = new int[tris.Length / 3];
+            for (int s = 0; s < shells.Count; s++)
+                foreach (int f in shells[s].faceIndices) faceToShell[f] = s;
+            int first = faceToShell[0];
+            var placed = shells[first].vertexIndices.ToDictionary(v => v, v => uv2[v]);
+            Assert.That(GroupedShellTransfer.OtherShellPairs(shells[first], first, tris, uv2, faceToShell, placed), Is.GreaterThan(0));
+            // The shell's own faces never count, and a layout clear of the other shell has no pairs.
+            var clear = shells[first].vertexIndices.ToDictionary(v => v, v => uv2[v] + new Vector2(.5f, .5f));
+            Assert.That(GroupedShellTransfer.OtherShellPairs(shells[first], first, tris, uv2, faceToShell, clear), Is.EqualTo(0));
+        }
+
+        // A square chart with UV2 = UV0 * 3 + 0.1 and a two-quad strip whose right column lies
+        // beyond the chart's UV0 edge: interpolation presses it onto that edge, and clamping the
+        // similarity presses it onto the chart's UV2 box. Returns the strip's UV0.
+        static Vector2[] ChartAndStripReachingPastIt(Mesh source, Mesh target)
+        {
+            var chart = new[] { Vector2.zero, new Vector2(.1f, 0), new Vector2(.1f, .1f), new Vector2(0, .1f) };
+            source.vertices = chart.Select(uv => (Vector3)(uv * 10)).ToArray();
+            source.uv = chart;
+            source.uv2 = chart.Select(uv => uv * 3 + Vector2.one * .1f).ToArray();
+            source.triangles = new[] { 0, 1, 2, 0, 2, 3 }; source.RecalculateNormals();
+            var strip = new[] { new Vector2(.05f, 0), new Vector2(.12f, 0), new Vector2(.15f, 0),
+                new Vector2(.05f, .1f), new Vector2(.12f, .1f), new Vector2(.15f, .1f) };
+            target.vertices = strip.Select(uv => (Vector3)(uv * 10)).ToArray();
+            target.uv = strip;
+            target.triangles = new[] { 0, 1, 4, 0, 4, 3, 1, 2, 5, 1, 5, 4 }; target.RecalculateNormals();
+            return strip;
+        }
+
+        [Test]
         public void ARescueStaysOutOfSourcesOtherShellsAreMatchedToAndOutOfEarlierRescues()
         {
             var srcMin = new[] { Vector2.zero, new Vector2(.5f, 0) };

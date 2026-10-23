@@ -1,5 +1,126 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## A shell reaching past its source keeps the unclamped similarity — 2026-10-22
+
+After PR #339 model K's LOD2 has 24 faces with a UV2 area under 1e-10 in
+written shells (item 39 in PR #294); none is degenerate in 3D or in UV0.
+
+12 are in 8 interpolated shells. Their vertices sit on the source chart's
+UV0 corners or past them (14 of 36 inside, median 6.8% of the chart's UV0
+diagonal away), so interpolation presses a face's vertices onto one edge.
+The similarity of the source maps every one of the 8 shells with no issues,
+worst anisotropy 1.27 and no overlap with itself or the written shells, but
+8 of its 40 vertices leave the source's UV2 box: when its bounds meet no
+other source the code clamps those vertices to the box, which collapses the
+same faces (4 issues), and adds one issue per outside vertex, so
+interpolation wins. Recovery can run for 1 of the 8 (3 share their source,
+4 have partitioned sources) and does not help it.
+
+The other 12 are in 4 merged force3D shells accepted as Poor: each face's
+three vertices lie 76 chart diagonals from a 1-2 face source and map to one
+of its corners. No candidate measured (constrained, all-source, 3D-primary)
+has fewer issues; they stay as they are.
+
+Change: when the clamped similarity was penalised, the unclamped one is
+kept and taken when it has fewer issues than interpolation (after its
+aligned and geometric alternatives) and than the clamped one, stays in
+[0,1] within the bounds tolerance, does not fold over itself, and its
+bounds meet neither another source's UV2 box (the check that already
+refuses the similarity) nor a shell placed outside the sources (rescues,
+earlier unclamped similarities), nor merged all-source or force3D regions.
+A taken one reserves its bounds, and every later all-source candidate and
+rescue avoids them.
+
+This is not the rejected "transform by local quality" trial (Source UV
+packing, 2026-10-09: 44 strict regressions, "local improvement does not
+certify cross-chart footprints"): the similarity is taken only where it
+lands in no other source's UV2 box and no placed region, and only where
+interpolation already has collapsed faces.
+
+Measured (item 40 in PR #294): head 569bb1a against main 69e1ccf, Full
+Pipeline 32 tex/m; the corpus against the 6d3c325 capture of item 38.
+
+| | main | 569bb1a |
+|---|---|---|
+| K LOD2 UV quality / collapsed / uvDegenerate / overlap pairs / stretched | 38 / 48 / 50 / 1 / 57 | 39 / 44 / 44 / 14 / 51 |
+| K LOD2 Poor shells / worst anisotropy | 17 / 1.2e21 | 9 / 34.5 |
+| A LOD1 collapsed / uvDegenerate / overlap pairs | 18 / 20 / 930 | 9 / 10 / 932 |
+| A LOD2 UV quality / collapsed / uvDegenerate / overlap pairs | 37 / 59 / 65 / 2783 | 39 / 44 / 47 / 2787 |
+
+7 of model K's 8 interpolated shells took the similarity, and their
+collapsed faces fell from 12 to 2. All 13 new overlap pairs of model K are
+between two of those 7 and shells of other meshes: the LOD's meshes share
+one lightmap atlas, and each transfer saw only its own source mesh's
+charts. Model A's 4 new pairs lie within one mesh. Corpus: exit code 1,
+0 worse, 14 tradeoff rows (stretched faces up in 8, overlap pairs up in 4,
+in two pairs: +3 and +4), 56 better; uvDegenerateFaces fell in 46 rows and
+rose in none; 234 `unclamped similarity` lines. The corpus transfers each
+pair alone, so it cannot see pairs between meshes.
+
+Follow-up: when the source LOD's meshes share one atlas (Repack Per Mesh
+off), each transfer receives the UV2 faces of the other source meshes and
+of the targets already transferred (from any source), and the unclamped
+similarity is refused when one of its faces overlaps one of those. Transfer capture
+records those meshes, so a replay sees the same faces. Within the mesh,
+shells interpolated into the same source chart are seen by neither the
+choice nor the placed regions: once every shell is placed, a shell on the
+unclamped similarity that overlaps the others in more face pairs than its
+fallback (the clamped similarity or interpolation it had without it), or
+whose overlap scan does not finish, takes the fallback.
+
+Measured at 186dfa7 (item 41): both kinds of new overlap are gone. Model
+K's LOD2 equals main in UV quality, collapsed faces and overlap pairs; 6
+shells took the similarity (Poor 17 → 11, stretched faces 57 → 51), 4 of
+the 8 interpolated shells among them, and the other mesh check sent 3 back.
+Model A's LOD2: UV quality 37 → 38, collapsed 59 → 45, overlap pairs equal
+to main. Corpus: exit code 1, 0 worse, 9 tradeoff, 59 better; overlap
+pairs rose in no row, but stretched faces rose in 6 and worst anisotropy
+in 4. The stretch comes with the reparameterizing profiles: stretched
+faces of the changed rows went 5238 → 5467 (default) and 5002 → 5208
+(oversample-8), but 7309 → 7290 without reparameterization. The repack
+relaxes a stretched chart's UV2 (ARAP), so it is no similarity of its UV0,
+and the similarity of the target's UV0 brings back the stretch the
+relaxation removed.
+
+Follow-up: the unclamped similarity is taken only where the source's
+UV0 → UV2 similarity fits its UV2 within half a texel (RMS residual), so
+only on charts the repack did not reparameterize. Of the 3 model K shells
+the other mesh check sent back, 2 met faces of other meshes' LOD2 and 1
+only a source face of a mesh already transferred, whose LOD2 has no face
+there: once every target of a source is transferred, their faces now
+stand for the source's.
+
+Measured at 0ef3403 (item 42; ARAP on in both models' pipeline). Model K's
+LOD2: collapsed 48 → 46, Poor 17 → 10, stretched faces 57 → 51, UV quality
+and overlap pairs equal to main; 5 of the 8 interpolated shells took the
+similarity (their sources' residuals are 21–88% of the threshold) and their
+collapsed faces went 12 → 6. Model A's LOD2: UV quality 37 → 38, collapsed
+59 → 50, overlap pairs equal to main; the threshold sent back 3 of the 9
+shells of item 41 (residuals 1.3–2.6 times it). Corpus: exit code 1, 0
+worse, 2 tradeoff, 23 better; 61 `unclamped similarity` lines (234 at
+186dfa7), overlap pairs and uvDegenerateFaces rose in no row, and stretched
+faces no longer rise in the reparameterizing profiles. One tradeoff is a
+face more past 4:1 (48 → 49, area-weighted anisotropy 2.101 → 2.102); in the
+other the similarity cut collapsed faces 9 → 4 but stretched one face
+32791:1 (area-weighted anisotropy 1.25 → 7.88): the issue count takes only
+past 10000:1 as collapsed.
+
+Follow-up: the unclamped similarity is also refused when one of its faces
+that keeps an area stretches past the source chart's worst stretch, or past
+4:1 if that is lower.
+
+Measured at be2a60a (item 43; e9d4d98 with main merged). Models K and A
+equal the 0ef3403 run shell for shell: the stretch bound refused none of
+model K's similarities (stretch 1.0–1.27) and on model A one candidate
+that did not win anyway. Corpus: exit code 1, 0 worse, 1 tradeoff, 21
+better; uvDegenerateFaces and overlap pairs rose in no row, stretched
+faces in none of the reparameterizing profiles; 54 `unclamped
+similarity` lines, 25 candidates refused by the stretch bound. The second
+tradeoff is gone (its face was 32791:1 on a 1.73:1 chart). The one left,
+without reparameterization, turns a collapsed face into one of 2.83:1 on
+a 1.92:1 chart (stretched faces 48 → 49, area-weighted anisotropy
+2.101 → 2.102); it was accepted and the change merged.
+
 ## Small merged shells try all sources before rejection — 2026-10-22
 
 Model K's last LOD (LOD2, items 35 and 36 in PR #294) has 62 vertices left

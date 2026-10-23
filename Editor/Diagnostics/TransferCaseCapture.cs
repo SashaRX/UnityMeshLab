@@ -48,6 +48,8 @@ namespace SashaRX.UnityMeshLab
             public Matrix4x4 sourceLocalToWorld;
             public List<GroupedShellTransfer.OverlapSourceHint> overlapHints;
             public List<GroupedShellTransfer.CrossLodMatchHint> matchHints;
+            // The other meshes that shared the source atlas, whose faces the transfer kept clear of.
+            public string[] atlasNeighbourMeshes;
             public GroupedShellTransfer.TransferResult result;
             public TransferMatchTrace trace = new TransferMatchTrace();
             public TransferUvQuality quality;
@@ -161,7 +163,8 @@ namespace SashaRX.UnityMeshLab
 
         internal Pair BeforePair(MeshEntry source, MeshEntry target, Mesh sourceMesh, Mesh targetMesh,
             List<GroupedShellTransfer.OverlapSourceHint> overlapHints, List<GroupedShellTransfer.CrossLodMatchHint> matchHints,
-            float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels, int[] projectionSources = null)
+            float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels, int[] projectionSources = null,
+            IReadOnlyList<Mesh> atlasNeighbours = null)
         {
             Pair pair = null;
             Safe(() => {
@@ -175,7 +178,8 @@ namespace SashaRX.UnityMeshLab
                     hasSourceTransform = true, hasBoundaryTolerance = true, boundaryToleranceTexels = boundaryToleranceTexels,
                     sourceLocalToWorld = context.PreviewMatrix(source.renderer ? source.renderer.transform : null),
                     overlapHints = overlapHints == null || overlapHints.Count == 0 ? null : new List<GroupedShellTransfer.OverlapSourceHint>(overlapHints),
-                    matchHints = matchHints == null || matchHints.Count == 0 ? null : new List<GroupedShellTransfer.CrossLodMatchHint>(matchHints) };
+                    matchHints = matchHints == null || matchHints.Count == 0 ? null : new List<GroupedShellTransfer.CrossLodMatchHint>(matchHints),
+                    atlasNeighbourMeshes = atlasNeighbours?.Select(StoreMesh).ToArray() };
                 StorePairDetails(pair);
                 Data.pairs.Add(pair); Save();
             });
@@ -281,7 +285,8 @@ namespace SashaRX.UnityMeshLab
                 baselineUvHash = pair.baselineUvHash, status = pair.status, clamp = pair.clamp, preparedProjection = pair.preparedProjection,
                 localToWorld = pair.localToWorld, hasSourceTransform = pair.hasSourceTransform,
                 sourceLocalToWorld = pair.sourceLocalToWorld, hasBoundaryTolerance = pair.hasBoundaryTolerance,
-                boundaryToleranceTexels = pair.boundaryToleranceTexels, details = pair.details, trace = null });
+                boundaryToleranceTexels = pair.boundaryToleranceTexels, atlasNeighbourMeshes = pair.atlasNeighbourMeshes,
+                details = pair.details, trace = null });
             byte[] bytes = System.Text.Encoding.UTF8.GetBytes(JsonUtility.ToJson(compact, true));
             if (bytes.LongLength > MaxManifestBytes) throw new InvalidDataException("Transfer manifest exceeds the replay size limit.");
             File.WriteAllBytes(temp, bytes);
