@@ -19,6 +19,13 @@ namespace SashaRX.UnityMeshLab.Tests
             bool shelf = model == "Modern_ShelvingUnit_A";
             if (!shelf && model != "Modern_Kitchen_A") Assert.Ignore("This regression uses the shelving or kitchen fixture.");
             byte[] original = File.ReadAllBytes(fixture);
+            // The edited October 23 fixture has different source UVs and already
+            // has no collapsed target faces; do not compare it to the older input.
+            bool editedShelf = shelf && TransferMeshSnapshot.Hash(original)
+                == "5da5c107e3965662e330d86c96e5742e0b8a63e244dd07513313832c1193f7a2";
+            var shelfLimits = editedShelf
+                ? (sourceContacts: 26, sourceStretch: 182d, contacts: 28, collapsed: 0, stretch: 56643612d)
+                : (sourceContacts: 25, sourceStretch: 153d, contacts: 0, collapsed: 4, stretch: 51561202d);
             string folder = "Assets/FurnitureQuality_" + Guid.NewGuid().ToString("N");
             AssetDatabase.CreateFolder("Assets", folder.Substring(7));
             try
@@ -38,12 +45,14 @@ namespace SashaRX.UnityMeshLab.Tests
                 TestContext.WriteLine($"{sourceName}/{symmetry}: source overlaps={sourceQuality.overlapPairs}, worst={sourceQuality.worstAnisotropy}; " +
                     $"target overlaps={targetQuality.overlapPairs}, worst={targetQuality.worstAnisotropy}, degenerate={targetQuality.degenerateFaces}, invalid={targetQuality.invalidFaces}");
                 Assert.AreEqual(0, sourceQuality.invalidFaces + sourceQuality.degenerateFaces);
-                Assert.LessOrEqual(sourceQuality.overlapPairs, shelf ? 25 : 8);
-                Assert.LessOrEqual(sourceQuality.worstAnisotropy, shelf ? 153 : 56497);
-                Assert.LessOrEqual(targetQuality.overlapPairs, shelf ? 0 : 4);
-                Assert.LessOrEqual(targetQuality.degenerateFaces, shelf ? 4 : 0);
+                Assert.LessOrEqual(sourceQuality.overlapPairs, shelf ? shelfLimits.sourceContacts : 8);
+                Assert.LessOrEqual(sourceQuality.worstAnisotropy, shelf ? shelfLimits.sourceStretch : 56497);
+                Assert.LessOrEqual(targetQuality.overlapPairs, shelf ? shelfLimits.contacts : 4);
+                // The countertop boundary now recovers through a covered incident
+                // patch; the two captured shelving inputs retain their own baselines.
+                Assert.AreEqual(shelf ? shelfLimits.collapsed : 0, targetQuality.degenerateFaces);
                 Assert.AreEqual(0, targetQuality.invalidFaces);
-                Assert.LessOrEqual(targetQuality.worstAnisotropy, shelf ? 51561202 : 5.943e15);
+                Assert.LessOrEqual(targetQuality.worstAnisotropy, shelf ? shelfLimits.stretch : 22127683743);
                 CollectionAssert.AreEqual(original, File.ReadAllBytes(path));
                 CollectionAssert.AreEqual(original, File.ReadAllBytes(fixture));
             }

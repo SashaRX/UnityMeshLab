@@ -1086,9 +1086,11 @@ namespace SashaRX.UnityMeshLab
                 s.pixels[t], s.pixels[t+1], s.pixels[t+2], stretchFrame ?? Matrix4x4.identity);
         }
 
+        /// <summary>Measures intrinsic UV stretch from stored geometry corners without a render transform.</summary>
         internal static double TriangleAnisotropy(Vector3 p, Vector3 q, Vector3 r, Vector2 aUv, Vector2 bUv, Vector2 cUv)
             => TriangleAnisotropy(TriangleFrame(p, q, r), aUv, bUv, cUv);
 
+        /// <summary>Measures stretch in a render frame, promoting stored positions before edge transformation.</summary>
         internal static double TriangleAnisotropy(Vector3 p, Vector3 q, Vector3 r, Vector2 aUv, Vector2 bUv, Vector2 cUv, Matrix4x4 frame)
         {
             double ex = (double)q.x - p.x, ey = (double)q.y - p.y, ez = (double)q.z - p.z;
@@ -1103,6 +1105,7 @@ namespace SashaRX.UnityMeshLab
             return TriangleAnisotropy(transformed, aUv, bUv, cUv);
         }
 
+        /// <summary>Returns UV stretch in an intrinsic frame, or infinity for collapsed UVs and invalid ratios.</summary>
         internal static double TriangleAnisotropy((double length, double x, double y) frame, Vector2 aUv, Vector2 bUv, Vector2 cUv)
         {
             var (length, x, y) = frame;
@@ -1110,6 +1113,9 @@ namespace SashaRX.UnityMeshLab
             // order-dependent shear on nearly collinear captured triangles.
             double ux = (double)bUv.x - aUv.x, uy = (double)bUv.y - aUv.y;
             double vx = (double)cUv.x - aUv.x, vy = (double)cUv.y - aUv.y;
+            // Reject collapsed stored UVs before geometry shear can introduce a
+            // rounding residual in an otherwise zero Jacobian determinant.
+            if (ux * vy - uy * vx == 0) return double.PositiveInfinity;
             double j00 = ux / length, j10 = uy / length, j01 = (vx - ux * x / length) / y, j11 = (vy - uy * x / length) / y;
             double a = j00 * j00 + j10 * j10, b = j01 * j01 + j11 * j11, c = j00 * j01 + j10 * j11;
             double max = (a + b + Math.Sqrt(Math.Max(0, (a - b) * (a - b) + 4 * c * c))) * .5;

@@ -44,9 +44,10 @@ Every transfer uses the same final unit-square clamp. `rawOutOfBounds` records t
 number of vertices outside before that clamp. The source scan uses packed UV2.
 `geometryDegenerateFaces` counts exact zero-area stored 3D triangles independently
 of `uvDegenerateFaces`. Both can apply to the same face. The existing quality
-report's `degenerateFaces` remains its combined counter. A nearly singular
-Jacobian computation can miss an exactly zero stored UV area; comparison therefore
-also includes both direct degeneracy counters instead of trusting only that metric.
+report's `degenerateFaces` remains its combined counter. The original audit found
+that a nearly singular Jacobian computation could miss a zero stored UV area;
+production quality checks now test that area before geometry-frame conversion.
+Comparison retains both independent degeneracy counters for regression detection.
 
 `uvTriangleAreaSum` is a sum with multiplicity, **not occupied atlas area** when
 triangles overlap. `atlasSide` is the normalized pack raster size. Timings are
@@ -61,6 +62,24 @@ same, incomplete, invalid or tradeoff. Float comparisons use relative 1e-6
 tolerance; integer defects must agree exactly. These comparisons are diagnostic,
 not the production candidate acceptance rule. Source rows repeat for each target;
 deduplicate `(model, source)` before claiming a count of unique source meshes.
+
+To compare an algorithm change against an earlier capture, use the same corpus
+and settings, then run:
+
+```powershell
+python Tools~/FurnitureCorpus/report.py after.jsonl --baseline before.jsonl --out comparison --require-no-regressions
+```
+
+Both captures must be complete with complete intersection scans, identical
+model/LOD/variant inventories, input hashes, resolutions and schema versions.
+The inventory and hash checks include excluded files and orphan LOD groups.
+`baselineComparison` in `summary.json` records per-variant counts and every changed
+model/LOD result. The optional gate exits with code 1 for any worse, tradeoff or
+invalid comparison, preserving the report for inspection. Incompatible captures
+retain an `invalid` comparison entry with the reason, alongside the current CSV.
+Omitting the flag only
+reports differences. Passing means no measured regression relative to the chosen
+baseline; it does not certify a defect-free atlas or correct correspondence.
 
 ## Oversample analysis
 

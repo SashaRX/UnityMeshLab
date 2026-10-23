@@ -4763,3 +4763,180 @@ through the same manifold-anchor, metric, finite-area and winding checks instead
 of leaving it pending. Two traversal-order controls reproduce the refusal before
 the fix; both now pass. A distorted closure still refuses the complete candidate.
 All 15 focused shelving/export/recovery tests pass after this correction.
+
+## Stored-UV checks and thin-triangle candidate scoring (2026-10-21)
+
+PR #292 first checks stored UV degeneracy before frame conversion in diagnostic
+and Reverse metrics. On the furniture corpus this exposes 174 missed collapsed
+faces across 30 ordinary transfer results; it does not repair those UVs.
+
+A continuation tested removing the grouped candidate's absolute `1e-10` UV-area
+floor, with and without promoted geometry/area arithmetic. A tiny isometric
+triangle reproduces a false issue and an oblique isometric bevel reproduces false
+stretch (~1.526). Correcting both passes the portable controls, but candidate
+quality also controls source ARAP and downstream selection.
+
+Both trials complete 80 private FBX files / 255 LOD pairs / 2295 rows. Default
+targets classify as 249 unchanged, 2 better and 4 tradeoffs in each trial. Blanket
+LOD2 loses 42 degenerate faces but gains 152 overlaps; an ottoman frame gains a
+degenerate face while losing four overlaps. Better source metrics do not establish
+a better LOD chain. The full trial passes 538 Unity tests with 35 optional skips;
+the area-only trial passes 100. Neither trial is accepted, no quality policy is
+relaxed, and the candidate-scoring changes are not included in production.
+
+The accepted continuation adds capture-to-capture comparisons and an optional
+regression exit gate to `Tools~/FurnitureCorpus/report.py`. It rejects incomplete
+captures/scans and mismatched inputs, inventories, resolution or schema, reports
+every changed model/LOD/variant, and keeps tradeoffs visible. Twelve portable
+report tests cover this behavior, including CLI exit codes and saved evidence.
+See `FURNITURE_TRANSFER_RESEARCH.md` for measurements and remaining limitations.
+
+### Target boundary continuation: immutable anchors and actual donor coverage
+
+Continue PR #292 with a narrowly qualified target repair. Reuse intrinsic bevel
+development after ordinary topology correction, freezing healthy vertices and
+requiring every changed face to recover below anisotropy four. Check whole-face
+coverage against the union of the selected donor's triangles at the actual
+packed atlas size, retaining the existing quarter-texel band. Shared vertices,
+mixed donors and rejected shells cannot enter this recovery.
+
+Before/after full-atlas scans permit unrelated existing defects but refuse any
+new contact. Faces participating in old contacts cannot move, so an unchanged
+pair count cannot conceal increased overlap area. The UV buffer is published
+only after complete checks and cancellation; source preparation and native
+packing are unchanged.
+
+The full 80-FBX / 255-pair / 2295-row corpus gives four better rows and 2291
+unchanged rows with no worse/tradeoff rows or incomplete scans. The dressing-table
+shelf loses one of seven collapsed faces in all three profiles; the blanket
+loses one of 3074 in the no-reparameterization control. All source and alternate
+projection rows retain their measured quality. The comparison CLI exits zero.
+
+The kitchen probe also exposed a false experimental assumption: its requested
+512 resolution produces a packed atlas side of 2344. A free-corner development
+extends about 0.7 actual texel beyond the source, so the production check correctly
+refuses it. Its collapsed face and the shelving target's four collapsed faces
+remain. Portable controls cover actual atlas size, overlapping donor coverage,
+unchanged anchors, unrelated/new contacts, ambiguous ownership, cancellation and
+incomplete audits. See `FURNITURE_TRANSFER_RESEARCH.md` for the measured scope.
+
+Local verification: 601 Unity regression tests pass with 45 optional fixture
+skips, followed by 18 focused checks (14 target-recovery controls plus shelving
+geometry/three symmetry modes), all passing. The corpus and kitchen symmetry
+checks pass as well. Both FBX compile variants and dependency/identifier guards
+pass. No proprietary assets or probe captures are committed.
+
+### Incident-patch continuation: bounded corner motion
+
+The countertop's immutable free-corner proposal remains refused. A second stage
+instead develops each corner of an effectively collapsed triangle against its
+opposite edge, then audits every face incident to that moved corner. It requires
+a healthy incident anchor, manifold edges, preserved nonzero winding, anisotropy
+at most four and the existing relative-stretch allowance on healthy faces.
+Whole-face donor coverage still uses the actual packed atlas size and the same
+quarter-texel band. Existing-contact faces cannot move; complete global scans,
+ownership checks, cancellation and bounded work retain atomic publication.
+
+The first corpus trial reduced collapse but introduced three weighted-stretch
+tradeoffs: DressingTable_A_Frame_LOD1 in default/no-reparameterization and
+Kitchen_Island_A_Countertop_LOD1 in oversample-8. That trial was rejected by the
+capture comparison gate. The accepted policy additionally compares whole-model
+finite stretch to the original buffer: maximum, area-weighted and stretched-face
+counts cannot increase at the report's relative 1e-6 precision. The reference
+stays fixed across repairs so rounding allowances do not accumulate.
+
+The guarded 80-file / 255-pair / 2295-row repeat passes the regression gate:
+eight better rows, 2287 equal, no worse/tradeoff rows, errors or incomplete scans.
+The cumulative result against the corrected diagnostic baseline is ten better
+rows. Countertop_LOD1 loses its one collapsed face in all three corpus profiles
+and all three symmetry controls; its existing contacts remain. Dressing-table
+frame/oversample-8 loses two collapsed faces and Shelf_C/default loses one.
+Three further rows improve weighted stretch only. All source and alternate
+projection measurements remain unchanged; shelving-unit collapse remains four.
+
+Local Unity regression verification: 610 passed, zero failed, 45 optional fixture
+skips across target recovery, transfer quality/captures, Forward, Reverse,
+point-junction and source-precision suites. The full-corpus run passes all 26
+checks, including the 22 target recovery controls and three kitchen symmetry
+cases. A separate shelving run passes all 26 checks, including source geometry
+preservation and three symmetry cases. C# compilation passes both FBX define
+variants; dependency and identifier guards pass.
+
+### Bounded incident-patch steps — 2026-10-23
+
+Continue the target recovery experiment against current main merged at
+`22a0d650`. After both existing recovery passes, retry intrinsic corner poses
+at 7/8, 3/4, 1/2 and 1/4 of their full displacement. Interpolate in double and
+audit the stored Float32 coordinates. A shorter step can fit the donor or keep
+a healthy neighbour within its existing metric allowance when the full step
+cannot. Eligibility, winding, ownership, coverage and all local/global quality
+limits are unchanged. The new pass has its own bounded, atomic proposal, so an
+exhausted search cannot undo the preceding accepted repair passes.
+
+The input corpus changed since October 21: 19 retained files have new hashes,
+14 old files are absent and 21 new files are present. Capture a new baseline and
+an owned fixed snapshot: 87 FBX, 73 with matched LODs, 261 pairs, 2349 measurements.
+All snapshot hashes match the baseline. Compare only that identical inventory;
+the older 80-file result is historical evidence, not this experiment's baseline.
+
+The complete repeat has three better rows, 2346 equal, zero worse/tradeoff rows,
+zero processing errors and no incomplete scans. The strict comparison exits zero.
+Kitchen_Cabinet_A_Main_LOD1 weighted anisotropy falls 955.6607 → 282.8957 in default
+and 367.1750 → 281.8426 in oversample-8; degenerate faces remain two and overlap
+pairs remain 15/13. RoomDivider_LOD1 without reparameterization loses one of six
+collapsed faces and one stretched face while retaining 37 overlap pairs. All
+source and alternate projection metrics remain unchanged.
+
+The edited shelving input (`5da5c107…`) already has zero collapsed target faces
+and 28 overlap pairs before this change; its old fixture (`d56abd1a…`) had four
+collapsed faces and zero pairs. The current 28 pairs are between two target
+charts assigned to the same source. Sampled alternatives either retain contacts,
+collapse faces or leave the donor; none is accepted as a shelving fix. Its severe
+stretch also remains. The optional fixture test recognizes the new input by its
+full hash and retains the old input's bounds separately; it does not weaken the
+old regression to fit an edited model. Original FBX files and source preparation
+remain untouched. Refining moderately stretched faces is not part of this change.
+
+Local Unity 6000.2.6f2 verification: 643 regression tests pass, zero fail, 45
+optional fixture cases skip. The full-corpus run passes all 29 selected checks;
+a final shelving run passes 32 controls including source geometry preservation
+and all three symmetry modes.
+Portable controls include mirrored shorter-step recovery and refusal on global
+stretch tradeoffs, unanchored orientation, existing contacts, cancellation and
+exhausted work. Two capture tests initially failed because their reflection call
+still passed four arguments to the workflow method changed to six in main
+(`#342`); they now pass the two null shared-atlas arguments used by production
+for one source/target pair. Both FBX compile configurations and dependency and
+identifier guards pass. No private captures or proprietary models are committed.
+
+Review follow-up: cross-capture inventory now includes excluded LOD groups and
+their input hashes. An incompatible comparison saves an explicit invalid entry
+and reason before the optional gate exits with code 1, retaining the CSV as well.
+Twenty-five portable corpus-tool tests pass with one optional SLIM skip; the same
+2349-row comparison still passes with three improvements. The nested trace-label
+conditional was simplified without changing the selected label or recovery;
+all 28 focused Unity recovery controls pass after the review changes.
+
+The review's budget-refusal concern also reproduces: two separate recoverable
+shells publish only the first repair when coverage exhausts a 16-operation
+budget on the second shell. Check the shared work counter immediately after
+coverage and refuse the entire current proposal before continuing candidates.
+A regression sweeps budgets 1 through 200 and requires either both repairs or
+the original buffer and untouched trace; it fails before this fix and passes
+after it. All 29 focused Unity recovery controls pass. Previously completed
+recovery stages retain their separate publication boundary.
+
+The complete furniture rerun after the budget fix again retains all 2349 rows:
+three better, 2346 equal, no errors or incomplete scans. A further review found
+that the quarter-texel donor band could touch a different mesh in a shared atlas.
+Pass the workflow's existing neighbour corners through all three bevel stages;
+changed faces must have zero cross-mesh contacts, with complete scans charged
+against the same per-pass budget. Invalid or partial neighbour data refuses the
+candidate. An exhausted audit refuses the entire proposal. The null-neighbour
+path used by the corpus retains its original work accounting and decisions.
+All 37 focused controls pass, including a neighbouring triangle entirely beyond
+the donor edge but inside the tolerance band, distant neighbours, each recovery
+stage, invalid inputs and budget refusal. Shared-atlas padding is not certified
+by this contact audit.
+The final expanded Transfer/Reverse/shared-atlas run passes 655 tests with zero
+failures and 45 optional fixture skips.
