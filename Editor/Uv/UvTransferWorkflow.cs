@@ -2978,11 +2978,17 @@ namespace SashaRX.UnityMeshLab
             var tr = new GroupedShellTransfer.TransferResult();
             tr.vertexToSourceShell = entry.vertexToSourceShellDescriptor;
             tr.targetShellToSourceShell = entry.targetShellToSourceShellDescriptor;
-            tr.verticesTotal = e.fbxMesh.vertexCount;
-            int transferred = 0;
-            for (int i = 0; i < tr.vertexToSourceShell.Length; i++)
-                if (tr.vertexToSourceShell[i] >= 0) transferred++;
-            tr.verticesTransferred = transferred;
+            if (e.fbxMesh.isReadable)
+            {
+                // Both counts over the vertices a face uses, as the transfer reports them.
+                (tr.verticesTotal, tr.verticesTransferred) =
+                    MeshGeometry.FaceVertexCoverage(e.fbxMesh.triangles, e.fbxMesh.vertexCount, tr.vertexToSourceShell);
+            }
+            else
+            {
+                tr.verticesTotal = e.fbxMesh.vertexCount;
+                tr.verticesTransferred = tr.vertexToSourceShell.Count(v => v >= 0);
+            }
             e.shellTransferResult = tr;
         }
 

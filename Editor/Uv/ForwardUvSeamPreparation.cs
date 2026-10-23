@@ -15,8 +15,9 @@ namespace SashaRX.UnityMeshLab
             var donorShells=UvShellExtractor.Extract(source.uv,source.triangles);
             var donorPositions=source.vertices;
             var positions=target.vertices;var indices=target.triangles;var uv=target.uv2;
+            var coverage=MeshGeometry.FaceVertexCoverage(indices,positions.Length,sources);
             var result=new GroupedShellTransfer.TransferResult {
-                uv2=uv,vertexToSourceShell=sources,verticesTotal=positions.Length,verticesTransferred=sources.Count(v=>v>=0),
+                uv2=uv,vertexToSourceShell=sources,verticesTotal=coverage.total,verticesTransferred=coverage.transferred,
                 targetShellToSourceShell=new int[shells.Count],targetShellMethod=new int[shells.Count],
                 targetShellCentroids=new Vector3[shells.Count],targetShellMatchDistSqr=new float[shells.Count],
                 targetShellStatus=new GroupedShellTransfer.ShellStatus[shells.Count],targetShellIssues=new int[shells.Count],

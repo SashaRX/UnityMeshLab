@@ -328,6 +328,37 @@ namespace SashaRX.UnityMeshLab
             return area > 0 && !double.IsInfinity(area);
         }
 
+        /// <summary>
+        /// How many vertices a face uses. A vertex outside every face (Unity imports an FBX
+        /// control point outside every polygon as one) has no surface to carry a UV.
+        /// </summary>
+        internal static int FaceVertexCount(int[] indices, int vertexCount) =>
+            FaceVertexCoverage(indices, vertexCount, null).total;
+
+        /// <summary>The vertices a face uses, and how many of them have a source (<paramref name="sources"/>[v] &gt;= 0).</summary>
+        internal static (int total, int transferred) FaceVertexCoverage(int[] indices, int vertexCount, int[] sources)
+        {
+            var used = new bool[vertexCount];
+            int total = 0, transferred = 0;
+            foreach (int i in indices)
+            {
+                if (i < 0 || i >= vertexCount || used[i]) continue;
+                used[i] = true; ++total;
+                if (sources != null && i < sources.Length && sources[i] >= 0) ++transferred;
+            }
+            return (total, transferred);
+        }
+
+        /// <summary>The corners of the axis-aligned box of the vertices a face uses; of all vertices when there are no faces.</summary>
+        internal static (Vector3 min, Vector3 max) FaceBounds(Vector3[] positions, int[] indices)
+        {
+            Vector3 min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue), max = -min;
+            if (indices.Length == 0)
+                foreach (var p in positions) { min = Vector3.Min(min, p); max = Vector3.Max(max, p); }
+            foreach (int i in indices) { min = Vector3.Min(min, positions[i]); max = Vector3.Max(max, positions[i]); }
+            return (min, max);
+        }
+
         /// <summary>The axis-aligned box that encloses <paramref name="bounds"/> after <paramref name="matrix"/> (all eight corners carried through).</summary>
         public static Bounds TransformBounds(Bounds bounds, Matrix4x4 matrix)
         {

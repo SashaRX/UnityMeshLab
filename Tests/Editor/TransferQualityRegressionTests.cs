@@ -726,6 +726,42 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { Object.DestroyImmediate(source); Object.DestroyImmediate(target); }
         }
 
+        // A control point outside every polygon imports as a vertex no face uses. On the source
+        // it must not widen the distance tolerances; on the target it is not a miss.
+        [Test]
+        public void AVertexNoFaceUsesNeitherScalesTheSourceNorCountsAsAMiss()
+        {
+            var source = new Mesh { name = "Chart" };
+            var target = new Mesh { name = "Strip" };
+            var looseSource = new Mesh { name = "Chart with a far point" };
+            var looseTarget = new Mesh { name = "Strip with a far point" };
+            try {
+                ChartAndStripReachingPastIt(source, target);
+                WithAFarPoint(source, looseSource);
+                WithAFarPoint(target, looseTarget);
+                var plain = GroupedShellTransfer.Transfer(target, source, sourceAtlasWidth: 512, sourceAtlasHeight: 512);
+                var loose = GroupedShellTransfer.Transfer(looseTarget, looseSource, sourceAtlasWidth: 512, sourceAtlasHeight: 512);
+                Assert.AreEqual(target.vertexCount, plain.verticesTotal);
+                Assert.AreEqual(target.vertexCount, loose.verticesTotal, "the far target vertex is not a vertex to transfer");
+                Assert.AreEqual(plain.verticesTransferred, loose.verticesTransferred);
+                for (int i = 0; i < target.vertexCount; i++)
+                    Assert.AreEqual(plain.uv2[i], loose.uv2[i], $"vertex {i}");
+            }
+            finally {
+                Object.DestroyImmediate(source); Object.DestroyImmediate(target);
+                Object.DestroyImmediate(looseSource); Object.DestroyImmediate(looseTarget);
+            }
+        }
+
+        static void WithAFarPoint(Mesh mesh, Mesh copy)
+        {
+            copy.vertices = mesh.vertices.Append(new Vector3(500, -300, 200)).ToArray();
+            copy.normals = mesh.normals.Append(Vector3.up).ToArray();
+            copy.uv = mesh.uv.Append(new Vector2(.9f, .9f)).ToArray();
+            if (mesh.uv2.Length > 0) copy.uv2 = mesh.uv2.Append(new Vector2(.95f, .95f)).ToArray();
+            copy.triangles = mesh.triangles;
+        }
+
         [Test]
         public void AShellReachingPastItsSourceKeepsTheUnclampedSimilarity()
         {
