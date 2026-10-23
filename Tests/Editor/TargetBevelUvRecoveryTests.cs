@@ -108,6 +108,36 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreSame(original, input.result.uv2);
         }
 
+        /// <summary>Coverage exhaustion on a later shell must discard earlier audited repairs in the same pass.</summary>
+        [Test]
+        public void LaterCoverageBudgetRefusalDiscardsEarlierRepairs()
+        {
+            for (long budget = 1; budget <= 200; ++budget)
+            {
+                var input = Fixture();
+                input.positions = input.positions.Concat(input.positions.Select(p => p + Vector3.right * 2)).ToArray();
+                input.indices = input.indices.Concat(input.indices.Select(v => v + 4)).ToArray();
+                input.result.uv2 = input.result.uv2.Concat(input.result.uv2.Select(p => p + new Vector2(.4f, 0))).ToArray();
+                input.shells.Add(new UvShell { shellId = 1, faceIndices = new List<int> { 2, 3 },
+                    vertexIndices = new HashSet<int> { 4, 5, 6, 7 } });
+                input.result.targetShellToSourceShell = new int[2];
+                input.result.targetShellStatus = new GroupedShellTransfer.ShellStatus[2];
+                input.result.vertexToSourceShell = new int[8];
+                var original = input.result.uv2;
+                var snapshot = (Vector2[])original.Clone();
+                var trace = new TransferMatchTrace();
+                int repaired = Recover(input, budget: budget, trace: trace);
+                Assert.That(repaired, Is.EqualTo(0).Or.EqualTo(2), $"Partial publication at budget {budget}.");
+                if (repaired == 0)
+                {
+                    Assert.AreSame(original, input.result.uv2);
+                    CollectionAssert.AreEqual(snapshot, original);
+                    Assert.IsNull(trace.ForShell(0).projectionMethod);
+                }
+                if (budget == 200) Assert.AreEqual(2, repaired);
+            }
+        }
+
         /// <summary>The physical quarter-texel allowance uses the packed atlas size rather than the requested resolution.</summary>
         [TestCase(512, 1)] [TestCase(2344, 0)]
         public void DonorCoverageUsesActualAtlasSize(int atlasSize, int expected)

@@ -4916,3 +4916,12 @@ Twenty-five portable corpus-tool tests pass with one optional SLIM skip; the sam
 2349-row comparison still passes with three improvements. The nested trace-label
 conditional was simplified without changing the selected label or recovery;
 all 28 focused Unity recovery controls pass after the review changes.
+
+The review's budget-refusal concern also reproduces: two separate recoverable
+shells publish only the first repair when coverage exhausts a 16-operation
+budget on the second shell. Check the shared work counter immediately after
+coverage and refuse the entire current proposal before continuing candidates.
+A regression sweeps budgets 1 through 200 and requires either both repairs or
+the original buffer and untouched trace; it fails before this fix and passes
+after it. All 29 focused Unity recovery controls pass. Previously completed
+recovery stages retain their separate publication boundary.

@@ -46,8 +46,10 @@ namespace SashaRX.UnityMeshLab
                     if (changed.Count == 0 || changed.Any(v => owners[v] != 1 || !InAtlas(candidate[v]))) continue;
                     var faces = shell.faceIndices.Where(f => Changed(f, indices, changed)).ToList();
                     if (!ImprovesFaces(faces, indices, positions, original, candidate, allowPatch)) continue;
-                    if (!Covered(faces, indices, candidate, sources[donor], sourceIndices, sourceUv,
-                        boundaryToleranceTexels / atlasSize, token, ref work, comparisonBudget)) continue;
+                    bool covered = Covered(faces, indices, candidate, sources[donor], sourceIndices, sourceUv,
+                        boundaryToleranceTexels / atlasSize, token, ref work, comparisonBudget);
+                    if (work >= comparisonBudget) return 0;
+                    if (!covered) continue;
                     if (baseline == null)
                     {
                         baseline = Scan(result.uv2, indices, token, ref work, comparisonBudget);
