@@ -64,6 +64,48 @@ class ReportTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 compare_runs(baseline, candidate)
 
+    def test_compare_runs_checks_excluded_lod_inventory(self):
+        """Different orphan groups or excluded file bytes cannot pass a comparison."""
+        baseline = self.complete_capture()
+        baseline.insert(-1, dict(status="excluded", model="chair", target="orphan_a", inputHash="same"))
+        for field, value in (("target", "orphan_b"), ("inputHash", "edited")):
+            candidate = copy.deepcopy(baseline)
+            candidate[-2][field] = value
+            self.assertTrue(summarize(candidate)["complete"])
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                compare_runs(candidate, baseline)
+
+    def test_cli_preserves_incompatible_capture_report(self):
+        """An invalid comparison retains its reason and CSV, with a controlled gate exit."""
+        baseline = self.complete_capture()
+        changed_hash = copy.deepcopy(baseline)
+        for measurement in changed_hash[:-1]:
+            measurement["inputHash"] = "edited"
+        incomplete_scan = copy.deepcopy(baseline)
+        incomplete_scan[0]["quality"]["overlapScanComplete"] = False
+        for candidate, reference in ((changed_hash, baseline), (baseline, baseline[:-1]),
+                                     (baseline[:-1], baseline), (incomplete_scan, baseline)):
+            for gate in (False, True):
+                with self.subTest(gate=gate, reference_complete=reference[-1]["status"]), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    for name, rows in (("before", reference), ("after", candidate)):
+                        (root / (name + ".jsonl")).write_text("\n".join(map(json.dumps, rows)), encoding="utf-8")
+                    args = [str(root / "after.jsonl"), "--baseline", str(root / "before.jsonl"), "--out", str(root / "report")]
+                    if gate:
+                        args.append("--require-no-regressions")
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                        if gate:
+                            with self.assertRaises(SystemExit) as failure:
+                                main(args)
+                            self.assertEqual(failure.exception.code, 1)
+                        else:
+                            main(args)
+                    report = json.loads((root / "report/summary.json").read_text(encoding="utf-8"))
+                    invalid = report["baselineComparison"]["changed"][0]
+                    self.assertEqual(invalid["comparison"], "invalid")
+                    self.assertTrue(invalid["error"])
+                    self.assertTrue((root / "report/measurements.csv").is_file())
+
     def test_cli_gate_preserves_report_and_fails_on_regression(self):
         """The executable gate succeeds on identical inputs and retains evidence when a regression fails it."""
         with tempfile.TemporaryDirectory() as directory:

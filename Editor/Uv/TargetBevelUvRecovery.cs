@@ -88,10 +88,12 @@ namespace SashaRX.UnityMeshLab
             Check(token);
             if (accepted.Count == 0) return 0;
             result.uv2 = proposal;
+            string projectionMethod = allowPatch ? "boundary-patch" : "boundary-bevel";
+            if (refine) projectionMethod = "boundary-patch-step";
             foreach (int shell in accepted)
             {
                 var shellTrace = trace?.ForShell(shell);
-                if (shellTrace != null) shellTrace.projectionMethod = refine ? "boundary-patch-step" : allowPatch ? "boundary-patch" : "boundary-bevel";
+                if (shellTrace != null) shellTrace.projectionMethod = projectionMethod;
             }
             return accepted.Count;
         }

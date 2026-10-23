@@ -4908,3 +4908,11 @@ still passed four arguments to the workflow method changed to six in main
 (`#342`); they now pass the two null shared-atlas arguments used by production
 for one source/target pair. Both FBX compile configurations and dependency and
 identifier guards pass. No private captures or proprietary models are committed.
+
+Review follow-up: cross-capture inventory now includes excluded LOD groups and
+their input hashes. An incompatible comparison saves an explicit invalid entry
+and reason before the optional gate exits with code 1, retaining the CSV as well.
+Twenty-five portable corpus-tool tests pass with one optional SLIM skip; the same
+2349-row comparison still passes with three improvements. The nested trace-label
+conditional was simplified without changing the selected label or recovery;
+all 28 focused Unity recovery controls pass after the review changes.

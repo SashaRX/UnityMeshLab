@@ -72,9 +72,12 @@ python Tools~/FurnitureCorpus/report.py after.jsonl --baseline before.jsonl --ou
 
 Both captures must be complete with complete intersection scans, identical
 model/LOD/variant inventories, input hashes, resolutions and schema versions.
+The inventory and hash checks include excluded files and orphan LOD groups.
 `baselineComparison` in `summary.json` records per-variant counts and every changed
 model/LOD result. The optional gate exits with code 1 for any worse, tradeoff or
-invalid comparison, preserving the report for inspection. Omitting the flag only
+invalid comparison, preserving the report for inspection. Incompatible captures
+retain an `invalid` comparison entry with the reason, alongside the current CSV.
+Omitting the flag only
 reports differences. Passing means no measured regression relative to the chosen
 baseline; it does not certify a defect-free atlas or correct correspondence.
 

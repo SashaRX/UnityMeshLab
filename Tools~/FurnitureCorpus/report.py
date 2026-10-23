@@ -86,9 +86,14 @@ def compare_runs(rows, baseline_rows):
     fields = ("model", "source", "target", "profile", "method")
     indices = [{tuple(r[k] for k in fields): r for r in capture if r["status"] == "measured"}
                for capture in (rows, baseline_rows)]
-    inventories = [{r["model"] for r in capture if r.get("model")} for capture in (rows, baseline_rows)]
+    inventories = [{(r["model"], r.get("target", "")) for r in capture if r.get("model")}
+                   for capture in (rows, baseline_rows)]
     if indices[0].keys() != indices[1].keys() or inventories[0] != inventories[1]:
         raise ValueError("Captures contain different model/LOD/variant inventories.")
+    hashes = [{(r["model"], r.get("inputHash", "")) for r in capture if r.get("model")}
+              for capture in (rows, baseline_rows)]
+    if hashes[0] != hashes[1]:
+        raise ValueError("Changed input hash for a measured or excluded model.")
     counts = collections.defaultdict(collections.Counter)
     changed = []
     for key, candidate in sorted(indices[0].items()):
@@ -108,7 +113,11 @@ def export(rows, destination, baseline_rows=None):
     destination.mkdir(parents=True, exist_ok=True)
     summary = summarize(rows)
     if baseline_rows is not None:
-        summary["baselineComparison"] = compare_runs(rows, baseline_rows)
+        try:
+            summary["baselineComparison"] = compare_runs(rows, baseline_rows)
+        except ValueError as error:
+            summary["baselineComparison"] = dict(measuredRows=0, comparisons={},
+                changed=[dict(comparison="invalid", error=str(error))])
     (destination / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     fields = ["model", "source", "target", "profile", "method", "inputHash", "atlasSide", "milliseconds",
               "geometryDegenerateFaces", "uvDegenerateFaces", "uvTriangleAreaSum", "rawOutOfBounds", "misses", "fallbackVertices"]
@@ -139,7 +148,7 @@ def main(argv=None):
     summary = export(rows, args.out, baseline)
     print(json.dumps({k: v for k, v in summary.items() if k not in ("errors", "exclusions", "missing")}, indent=2))
     if args.require_no_regressions and any(row["comparison"] != "better" for row in summary["baselineComparison"]["changed"]):
-        parser.exit(1, "The baseline comparison contains regressions or tradeoffs; see summary.json.\n")
+        parser.exit(1, "The baseline comparison contains regressions, tradeoffs or invalid inputs; see summary.json.\n")
 
 
 if __name__ == "__main__":
