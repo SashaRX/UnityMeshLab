@@ -357,6 +357,48 @@ namespace SashaRX.UnityMeshLab.Tests
             return path;
         }
 
+        // Three quads in a row. The first two meet at a smooth edge (one normal at each shared
+        // point), the last meets the middle one at a hard edge (a second normal there).
+        [Test]
+        public void SmoothFromNormals_MarksAnEdgeHardExactlyWhereTheNormalsSplit()
+        {
+            string source = Path.Combine(folder, "strip.fbx"), output = Path.Combine(folder, "strip_smoothed.fbx");
+            using (var manager = FbxManager.Create())
+            {
+                var io = FbxIOSettings.Create(manager, Globals.IOSROOT);
+                manager.SetIOSettings(io);
+                var scene = FbxScene.Create(manager, "Strip");
+                double s = Math.Sqrt(.5);
+                var up = new double[] { 0, 0, 1 }; var tilted = new double[] { s, 0, s };
+                var data = new FbxMeshData
+                {
+                    controlPoints = new double[] { 0, 0, 0, 1, 0, 0, 2, 0, 0, 3, 0, 0, 0, 1, 0, 1, 1, 0, 2, 1, 0, 3, 1, 0 },
+                    polygonSizes = new[] { 4, 4, 4 },
+                    polygonVertices = new[] { 0, 1, 5, 4, 1, 2, 6, 5, 2, 3, 7, 6 },
+                    normals = Enumerable.Repeat(up, 8).Concat(Enumerable.Repeat(tilted, 4)).SelectMany(n => n).ToArray(),
+                };
+                var node = FbxNode.Create(scene, "Strip");
+                node.SetNodeAttribute(FbxStructureEdit.CreateMesh(scene, "Strip", data));
+                scene.GetRootNode().AddChild(node);
+                using var exporter = FbxExporter.Create(manager, "Write");
+                int format = manager.GetIOPluginRegistry().FindWriterIDByDescription("FBX binary (*.fbx)");
+                Assert.IsTrue(exporter.Initialize(source, format, io) && exporter.SetFileExportVersion("FBX201400") && exporter.Export(scene));
+            }
+            Assert.IsNull(FbxPolygonSplitFile.ReadEdgeSmoothing(source, "Strip"), "a mesh written whole has no smoothing");
+            using (var document = FbxSourceDocument.Load(source))
+            {
+                Assert.AreEqual(1, document.SmoothFromNormals(document.Meshes));
+                document.Save(output, new FbxWriteSettings(true, false));
+            }
+            var smoothing = FbxPolygonSplitFile.ReadEdgeSmoothing(output, "Strip");
+            Assert.IsNotNull(smoothing, "the smoothing layer survives the SDK round trip");
+            Assert.AreEqual(10, smoothing.Count);
+            Assert.AreEqual(1, smoothing[(1, 5)], "one normal on both sides");
+            Assert.AreEqual(0, smoothing[(2, 6)], "the normals split here");
+            Assert.AreEqual(1, smoothing[(0, 1)], "an open edge has nothing to split from");
+            Assert.AreEqual(1, smoothing[(6, 7)]);
+        }
+
         static FbxMeshData Triangle(int material) => new FbxMeshData
         {
             controlPoints = new double[] { 0, 0, 0, 100, 0, 0, 0, 100, 0 },
