@@ -509,6 +509,7 @@ namespace SashaRX.UnityMeshLab
             var values = new double[slots.Length * 2];
             for (int c = 0; c < slots.Length; c++)
             {
+                if (slots[c] == NoValue) { values[c * 2] = values[c * 2 + 1] = double.NaN; continue; }
                 var v = direct.GetAt(slots[c]);
                 values[c * 2] = v.X; values[c * 2 + 1] = v.Y;
             }
@@ -523,6 +524,7 @@ namespace SashaRX.UnityMeshLab
             var values = new double[slots.Length * 4];
             for (int c = 0; c < slots.Length; c++)
             {
+                if (slots[c] == NoValue) { Array.Fill(values, double.NaN, c * 4, 4); continue; }
                 var v = direct.GetAt(slots[c]);
                 values[c * 4] = v.mRed; values[c * 4 + 1] = v.mGreen; values[c * 4 + 2] = v.mBlue; values[c * 4 + 3] = v.mAlpha;
             }
@@ -672,6 +674,7 @@ namespace SashaRX.UnityMeshLab
             var values = new double[slots.Length * 3];
             for (int c = 0; c < slots.Length; c++)
             {
+                if (slots[c] == NoValue) { Array.Fill(values, double.NaN, c * 3, 3); continue; }
                 var v = direct.GetAt(slots[c]);
                 values[c * 3] = v.X; values[c * 3 + 1] = v.Y; values[c * 3 + 2] = v.Z;
             }
@@ -706,7 +709,9 @@ namespace SashaRX.UnityMeshLab
 
         // ── Shared element logic ──
 
-        // Index into the direct array for every corner, by the element's mapping and reference modes.
+        // Index into the direct array for every corner, by the element's mapping and reference modes;
+        // NoValue where an indexed element gives the corner a negative index, as exporters write for
+        // a corner the set does not cover.
         static int[] DirectSlots(FbxLayerElement element, FbxLayerElementArrayTemplateInt index, int directCount, in Topology topology)
         {
             var mapping = element.GetMappingMode();
@@ -720,12 +725,17 @@ namespace SashaRX.UnityMeshLab
                 {
                     if (slot >= indexCount) throw new InvalidDataException("Layer element index array is shorter than its mapping requires.");
                     slot = index.GetAt(slot);
+                    if (slot < 0) { slots[c] = NoValue; continue; }
                 }
-                if (slot < 0 || slot >= directCount) throw new InvalidDataException("Layer element references a value outside its direct array.");
+                if (slot < 0 || slot >= directCount)
+                    throw new InvalidDataException($"{element.GetType().Name} ({mapping}, {element.GetReferenceMode()}) references value {slot} " +
+                        $"outside its direct array of {directCount}.");
                 slots[c] = slot;
             }
             return slots;
         }
+
+        const int NoValue = -1;
 
         // The mapping's slot for corner c, before any index array.
         static int MappedSlot(FbxLayerElement.EMappingMode mapping, int c, in Topology topology)
@@ -807,7 +817,7 @@ namespace SashaRX.UnityMeshLab
             {
                 if (changed[c]) continue;
                 cornerIndex[c] = slots[c];
-                shared[(topology.cornerControlPoint[c], new ValueKey(access.get(slots[c])))] = slots[c];
+                if (slots[c] != NoValue) shared[(topology.cornerControlPoint[c], new ValueKey(access.get(slots[c])))] = slots[c];
             }
             for (int c = 0; c < corners; c++)
             {
