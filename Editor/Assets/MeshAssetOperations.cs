@@ -905,7 +905,7 @@ namespace SashaRX.UnityMeshLab
             var edit = e?.sceneEditMesh;
             intent &= FbxExportIntent.AnyUv | FbxExportIntent.VertexColors | FbxExportIntent.Normals | FbxExportIntent.Tangents;
             if (edit == null || written == null || written == edit || intent == FbxExportIntent.None) return;
-            if (written.vertexCount != edit.vertexCount || !written.vertices.SequenceEqual(edit.vertices))
+            if (!SameVertices(written, edit))
             {
                 UvtLog.Warn($"[{label}] '{edit.name}': the scene edit keeps its vertex channels; the ones written were made for other vertices (the file has them). Save the FBX document to write the edited faces with them.");
                 return;
@@ -923,6 +923,8 @@ namespace SashaRX.UnityMeshLab
             if ((intent & FbxExportIntent.Tangents) != 0) edit.tangents = written.tangents;
             VertexChannels.RaiseChanged(edit);
         }
+
+        static bool SameVertices(Mesh a, Mesh b) => a.vertexCount == b.vertexCount && a.vertices.SequenceEqual(b.vertices);
 
         static FbxExportIntent UvIntent(int channel) => (uint)channel > 7u ? FbxExportIntent.None : (FbxExportIntent)(1 << channel);
 
@@ -1053,7 +1055,9 @@ namespace SashaRX.UnityMeshLab
                     // step writes, after it.
                     var reshaped = new HashSet<MeshEntry>(kv.Value.Select(p => p.entry)
                         .Where(e => e.fbxMesh != null && plan.reshaped.Any(r => r.name == e.fbxMesh.name)));
-                    if (!isVariant) MarkSceneEditsSaved(sourceFbxPath, reshaped, _ => true);
+                    var superseded = new HashSet<MeshEntry>(kv.Value.Where(p => !reshaped.Contains(p.entry) && SaveSupersedesEdit(p.entry, p.resultMesh))
+                        .Select(p => p.entry));
+                    if (!isVariant) MarkSceneEditsSaved(sourceFbxPath, reshaped.Concat(superseded), _ => true);
 
                     bool written;
                     try
@@ -1090,13 +1094,30 @@ namespace SashaRX.UnityMeshLab
                     ApplySidecarSync(sidecar);
                     if (isVariant) continue;
                     foreach (var (entry, resultMesh) in kv.Value)
-                        if (!reshaped.Contains(entry)) SyncSceneEditChannels(entry, resultMesh, FbxChannelWrite.Supported, "FBX Export");
+                    {
+                        if (superseded.Contains(entry))
+                            UvtLog.Warn($"[FBX Export] '{entry.sceneEditMesh.name}': the scene edit has the file's faces on other vertices " +
+                                $"({entry.sceneEditMesh.vertexCount}; the channels were written for {resultMesh.vertexCount}), so it cannot take them. " +
+                                "The renderer shows the file's mesh now; the edit's vertex changes (such as removed unused vertices) are not in the file, and Undo brings the edit back.");
+                        else if (!reshaped.Contains(entry)) SyncSceneEditChannels(entry, resultMesh, FbxChannelWrite.Supported, "FBX Export");
+                    }
                     AfterSourceSave(plan.lods.Count > 0);
                 }
             }
             finally { EndSourceSaves(); }
             if (rebuilds.Groups > 0) FinishHierarchyExports(rebuilds, overwriteSource, rebuilds.AllSucceeded);
             UvtLog.Info($"[FBX Export] FBX document save: {okCount}/{fbxGroups.Count} file(s) written.");
+        }
+
+        // A kept scene edit takes the written channels only while the result has its vertices. An
+        // edit with the file's faces on other vertices (a cleanup that removed or merged vertices)
+        // cannot: kept, it would show, and the next save write, the channels this save replaced.
+        // The file has its faces and the written channels, so the save releases it as one it wrote.
+        internal static bool SaveSupersedesEdit(MeshEntry e, Mesh result)
+        {
+            var edit = e?.sceneEditMesh;
+            if (edit == null || e.fbxMesh == null || result == null || result == edit || SameVertices(edit, result)) return false;
+            return !FbxStructureWrite.GeometryDiffers(e.fbxMesh, edit);
         }
 
         // The document edit refused the structure (the file is untouched): say why and let the
