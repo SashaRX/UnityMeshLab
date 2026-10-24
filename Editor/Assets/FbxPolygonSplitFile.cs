@@ -18,6 +18,15 @@ namespace SashaRX.UnityMeshLab
     internal static class FbxPolygonSplitFile
     {
         const string IndexName = "Index";
+        const string SmoothingLayerName = "LayerElementSmoothing";
+        const string PolygonIndexName = "PolygonVertexIndex";
+        const string EdgesName = "Edges";
+        const string MappingTypeName = "MappingInformationType";
+        const string ByEdgeMapping = "ByEdge";
+        const string DirectReference = "Direct";
+        const string ReferenceTypeName = "ReferenceInformationType";
+        const string LayerElementPrefix = "LayerElement";
+        const string IndexToDirectReference = "IndexToDirect";
 
         sealed class Node
         {
@@ -41,7 +50,178 @@ namespace SashaRX.UnityMeshLab
                 foreach (var pair in plans) SplitPoints(objects, meshes(pair.Key), pair.Value);
             });
 
-        static void Rewrite(string path, Action<Node, Func<string, Node>> edit)
+        /// <summary>
+        /// Gives each named mesh without smoothing an edge smoothing layer that follows its
+        /// normals: an edge is smooth when each of its two ends keeps one normal across the
+        /// polygons that share it. A mesh written whole from Unity's triangles carries normals
+        /// but no smoothing, and a DCC needs smoothing to keep its hard edges once it is edited.
+        /// </summary>
+        internal static void ApplyNormalSmoothing(string path, IReadOnlyDictionary<string, bool> meshes)
+            => Rewrite(path, (objects, find) => {
+                foreach (var name in meshes.Keys) SmoothFromNormals(find(name));
+            });
+
+        static void SmoothFromNormals(Node mesh)
+        {
+            if (mesh.children.Any(n => n.name == SmoothingLayerName)) return;
+            var polygonNode = mesh.Child(PolygonIndexName);
+            var normalLayer = mesh.children.FirstOrDefault(n => n.name == "LayerElementNormal");
+            var layer = mesh.children.FirstOrDefault(n => n.name == "Layer" && n.properties.Count > 0 && n.properties[0][0] == 'I'
+                && BitConverter.ToInt32(n.properties[0], 1) == 0);
+            if (polygonNode == null || normalLayer == null || layer == null) return;
+            var (points, next, _) = ReadPolygons(polygonNode);
+            var normals = CornerNormals(normalLayer, points);
+            if (normals == null) return;
+
+            var edgesNode = mesh.Child(EdgesName);
+            int[] edges;
+            if (edgesNode != null) edges = IntArray(edgesNode);
+            else
+            {
+                var seen = new HashSet<(int, int)>(); var first = new List<int>();
+                for (int c = 0; c < points.Length; ++c) if (seen.Add(Edge(points[c], points[next[c]]))) first.Add(c);
+                edges = first.ToArray();
+                edgesNode = new Node { name = EdgesName }; edgesNode.properties.Add(IntsProperty(edges));
+                mesh.children.Insert(mesh.children.IndexOf(polygonNode) + 1, edgesNode);
+            }
+            var sides = new Dictionary<(int, int), List<int>>();
+            for (int c = 0; c < points.Length; ++c)
+            {
+                var key = Edge(points[c], points[next[c]]);
+                if (!sides.TryGetValue(key, out var corners)) sides[key] = corners = new List<int>(2);
+                corners.Add(c);
+            }
+            var smoothing = new int[edges.Length];
+            for (int e = 0; e < edges.Length; ++e)
+            {
+                int c = edges[e];
+                if (c < 0 || c >= points.Length) throw new IOException("FBX has an invalid edge index.");
+                var key = Edge(points[c], points[next[c]]);
+                smoothing[e] = KeepsNormals(sides[key], key.Item1, points, next, normals)
+                    && KeepsNormals(sides[key], key.Item2, points, next, normals) ? 1 : 0;
+            }
+
+            var element = Parent(SmoothingLayerName, IntProperty(0),
+                Leaf("Version", IntProperty(102)), Leaf("Name", StringProperty("")),
+                Leaf(MappingTypeName, StringProperty(ByEdgeMapping)),
+                Leaf(ReferenceTypeName, StringProperty(DirectReference)),
+                Leaf("Smoothing", IntsProperty(smoothing)));
+            int lastElement = mesh.children.FindLastIndex(n => n.name.StartsWith(LayerElementPrefix, StringComparison.Ordinal));
+            mesh.children.Insert(lastElement + 1, element);
+            layer.children.Add(Parent(LayerElementPrefix, null,
+                Leaf("Type", StringProperty(SmoothingLayerName)), Leaf("TypedIndex", IntProperty(0))));
+        }
+
+        // Whether every polygon sharing the edge has the same normal at its end `point`.
+        static bool KeepsNormals(List<int> corners, int point, int[] points, int[] next, double[] normals)
+        {
+            int first = -1;
+            foreach (int c in corners)
+            {
+                int at = points[c] == point ? c : next[c];
+                if (first < 0) first = at;
+                else if (!SameNormal(normals, first, at)) return false;
+            }
+            return true;
+        }
+
+        static bool SameNormal(double[] normals, int a, int b)
+        {
+            double ax = normals[a * 3], ay = normals[a * 3 + 1], az = normals[a * 3 + 2];
+            double bx = normals[b * 3], by = normals[b * 3 + 1], bz = normals[b * 3 + 2];
+            double la = Math.Sqrt(ax * ax + ay * ay + az * az), lb = Math.Sqrt(bx * bx + by * by + bz * bz);
+            // A missing normal has no direction to disagree with.
+            if (!(la > 1e-12) || !(lb > 1e-12)) return true;
+            return (ax * bx + ay * by + az * bz) / (la * lb) > 1 - 1e-6;
+        }
+
+        // xyz per corner, or null when the layer's mapping does not give one.
+        static double[] CornerNormals(Node layer, int[] points)
+        {
+            string mapping = layer.Child(MappingTypeName)?.Text;
+            string reference = layer.Child(ReferenceTypeName)?.Text;
+            var data = layer.Child("Normals");
+            if (data == null || !IsArray(data)) return null;
+            var values = Doubles(data);
+            int[] index = null;
+            if (reference == IndexToDirectReference || reference == IndexName)
+            {
+                var indexNode = layer.Child("NormalsIndex");
+                if (indexNode == null) return null;
+                index = IntArray(indexNode);
+            }
+            else if (reference != DirectReference) return null;
+            bool perCorner = mapping == "ByPolygonVertex";
+            if (!perCorner && mapping != "ByVertice" && mapping != "ByControlPoint") return null;
+            var result = new double[points.Length * 3];
+            for (int c = 0; c < points.Length; ++c)
+            {
+                int item = perCorner ? c : points[c];
+                if (index != null) item = item < index.Length ? index[item] : -1;
+                if (item < 0 || item * 3 + 2 >= values.Length) return null;
+                Array.Copy(values, item * 3, result, c * 3, 3);
+            }
+            return result;
+        }
+
+        static double[] Doubles(Node node)
+        {
+            char type = (char)node.properties[0][0];
+            byte[] bytes = ArrayData(node.properties[0]);
+            if (type == 'd') { var d = new double[bytes.Length / 8]; Buffer.BlockCopy(bytes, 0, d, 0, bytes.Length); return d; }
+            if (type == 'f') { var f = new float[bytes.Length / 4]; Buffer.BlockCopy(bytes, 0, f, 0, bytes.Length); return Array.ConvertAll(f, v => (double)v); }
+            throw new IOException("FBX normals are not a floating-point array.");
+        }
+
+        static Node Leaf(string name, byte[] property)
+        {
+            var node = new Node { name = name }; node.properties.Add(property); return node;
+        }
+
+        static Node Parent(string name, byte[] property, params Node[] children)
+        {
+            var node = new Node { name = name, terminated = true };
+            if (property != null) node.properties.Add(property);
+            node.children.AddRange(children);
+            return node;
+        }
+
+        static byte[] IntProperty(int value)
+        {
+            var bytes = new byte[5]; bytes[0] = (byte)'I'; Buffer.BlockCopy(BitConverter.GetBytes(value), 0, bytes, 1, 4); return bytes;
+        }
+
+        static byte[] StringProperty(string value)
+        {
+            byte[] text = Encoding.UTF8.GetBytes(value);
+            var bytes = new byte[5 + text.Length]; bytes[0] = (byte)'S';
+            Buffer.BlockCopy(BitConverter.GetBytes(text.Length), 0, bytes, 1, 4); Buffer.BlockCopy(text, 0, bytes, 5, text.Length);
+            return bytes;
+        }
+
+        static byte[] IntsProperty(int[] values)
+        {
+            var bytes = new byte[values.Length * 4]; Buffer.BlockCopy(values, 0, bytes, 0, bytes.Length);
+            return ArrayProperty('i', bytes);
+        }
+
+        /// <summary>The named mesh's edge smoothing in a binary file, by control-point pair; null when it has none.</summary>
+        internal static Dictionary<(int, int), int> ReadEdgeSmoothing(string path, string meshName)
+        {
+            var (_, _, roots, _) = Parse(path);
+            var mesh = roots.Single(n => n.name == "Objects").children.Single(n => n.name == "Geometry"
+                && n.properties.Count >= 3 && GeometryName(n.properties[1]) == meshName);
+            var layer = mesh.children.FirstOrDefault(n => n.name == SmoothingLayerName);
+            if (layer == null || layer.Child(MappingTypeName)?.Text != ByEdgeMapping) return null;
+            var (points, next, _) = ReadPolygons(mesh.Child(PolygonIndexName));
+            var edges = IntArray(mesh.Child(EdgesName));
+            var values = IntArray(layer.Child("Smoothing"));
+            var result = new Dictionary<(int, int), int>();
+            for (int e = 0; e < edges.Length; ++e) result[Edge(points[edges[e]], points[next[edges[e]]])] = values[e];
+            return result;
+        }
+
+        static (byte[] file, bool wide, List<Node> roots, int end) Parse(string path)
         {
             byte[] file = File.ReadAllBytes(path);
             if (file.Length < 27 || Encoding.ASCII.GetString(file, 0, 18) != "Kaydara FBX Binary")
@@ -49,6 +229,12 @@ namespace SashaRX.UnityMeshLab
             bool wide = BitConverter.ToUInt32(file, 23) >= 7500;
             int position = 27;
             var roots = ReadNodes(file, ref position, file.Length, wide);
+            return (file, wide, roots, position);
+        }
+
+        static void Rewrite(string path, Action<Node, Func<string, Node>> edit)
+        {
+            var (file, wide, roots, position) = Parse(path);
             var objects = roots.Single(n => n.name == "Objects");
             objects.parentConnections = roots.Single(n => n.name == "Connections").children
                 .Where(n => n.name == "C" && n.properties.Count >= 3 && StringValue(n.properties[0]) == "OO")
@@ -83,24 +269,24 @@ namespace SashaRX.UnityMeshLab
             var vertices = mesh.Child("Vertices") ?? throw new IOException("FBX has no control points.");
             int oldCount = BitConverter.ToInt32(vertices.properties[0], 1)/3;
             RemapArray(vertices, plan.sources, oldCount, false);
-            var polygons = mesh.Child("PolygonVertexIndex");
+            var polygons = mesh.Child(PolygonIndexName);
             var original = IntArray(polygons);
             if (original.Length != plan.corners.Length) throw new IOException("FBX UV point split changed the polygon count.");
             SetInts(polygons, original.Select((v,c) => v < 0 ? ~plan.corners[c] : plan.corners[c]).ToArray());
             SplitPointEdges(mesh, original, plan.corners);
-            foreach (var layer in mesh.children.Where(n => n.name.StartsWith("LayerElement", StringComparison.Ordinal)))
+            foreach (var layer in mesh.children.Where(n => n.name.StartsWith(LayerElementPrefix, StringComparison.Ordinal)))
                 SplitPointLayer(layer, plan.sources, oldCount);
             SplitPointBindings(objects, BitConverter.ToInt64(mesh.properties[0], 1), plan, oldCount);
         }
 
         static void SplitPointLayer(Node layer, int[] sources, int oldCount)
         {
-            string mapping = layer.Child("MappingInformationType")?.Text;
+            string mapping = layer.Child(MappingTypeName)?.Text;
             if (mapping != "ByVertice" && mapping != "ByControlPoint") return;
-            string reference = layer.Child("ReferenceInformationType")?.Text;
-            if (reference != "Direct" && reference != "IndexToDirect" && reference != IndexName)
+            string reference = layer.Child(ReferenceTypeName)?.Text;
+            if (reference != DirectReference && reference != IndexToDirectReference && reference != IndexName)
                 throw new IOException($"FBX UV point split cannot preserve {layer.name} reference '{reference}'.");
-            bool indexed = reference == "IndexToDirect" || reference == IndexName;
+            bool indexed = reference == IndexToDirectReference || reference == IndexName;
             bool remapped = false;
             foreach (var data in LayerArrays(layer)) {
                 bool index = data.name.EndsWith(IndexName, StringComparison.Ordinal) || data.name.EndsWith("Indices", StringComparison.Ordinal);
@@ -149,9 +335,9 @@ namespace SashaRX.UnityMeshLab
 
         static void SplitPointEdges(Node mesh, int[] original, int[] points)
         {
-            var edgesNode = mesh.Child("Edges");
-            var layers = mesh.children.Where(n => n.name.StartsWith("LayerElement", StringComparison.Ordinal)
-                && n.Child("MappingInformationType")?.Text == "ByEdge").ToArray();
+            var edgesNode = mesh.Child(EdgesName);
+            var layers = mesh.children.Where(n => n.name.StartsWith(LayerElementPrefix, StringComparison.Ordinal)
+                && n.Child(MappingTypeName)?.Text == ByEdgeMapping).ToArray();
             if (edgesNode == null) {
                 if (layers.Length > 0) throw new IOException("FBX edge-mapped data has no edge table.");
                 return;
@@ -199,12 +385,12 @@ namespace SashaRX.UnityMeshLab
 
         static void Split(Node mesh, FbxPolygonSplit plan)
         {
-            var polygonNode = mesh.Child("PolygonVertexIndex") ?? throw new IOException("FBX has no polygon indices.");
+            var polygonNode = mesh.Child(PolygonIndexName) ?? throw new IOException("FBX has no polygon indices.");
             var (oldPoints, next, polygonCount) = ReadPolygons(polygonNode);
             var points = plan.corners.Select(c => oldPoints[c]).ToArray();
             var newNext = CornerSuccessors(plan.sizes, points.Length);
-            var (edgeMap, oldEdgeCount) = RemapEdges(mesh.Child("Edges"), oldPoints, next, plan.corners, points, newNext);
-            foreach (var layer in mesh.children.Where(n => n.name.StartsWith("LayerElement", StringComparison.Ordinal)))
+            var (edgeMap, oldEdgeCount) = RemapEdges(mesh.Child(EdgesName), oldPoints, next, plan.corners, points, newNext);
+            foreach (var layer in mesh.children.Where(n => n.name.StartsWith(LayerElementPrefix, StringComparison.Ordinal)))
                 RemapLayer(layer, plan, oldPoints.Length, polygonCount, edgeMap, oldEdgeCount);
             int at = 0;
             foreach (int size in plan.sizes) { at += size; points[at - 1] = ~points[at - 1]; }
@@ -272,12 +458,12 @@ namespace SashaRX.UnityMeshLab
 
         static void RemapLayer(Node layer, FbxPolygonSplit plan, int corners, int polygons, int[] edges, int edgeCount)
         {
-            string mapping = layer.Child("MappingInformationType")?.Text;
+            string mapping = layer.Child(MappingTypeName)?.Text;
             if (mapping == "ByVertice" || mapping == "ByControlPoint" || mapping == "AllSame" || mapping == "None") return;
             var (map, count) = LayerMap(layer, mapping, plan, corners, polygons, edges, edgeCount);
-            string reference = layer.Child("ReferenceInformationType")?.Text;
-            bool indexed = reference == "IndexToDirect" || reference == IndexName;
-            if (!indexed && reference != "Direct") throw new IOException($"FBX split does not support '{reference}' references.");
+            string reference = layer.Child(ReferenceTypeName)?.Text;
+            bool indexed = reference == IndexToDirectReference || reference == IndexName;
+            if (!indexed && reference != DirectReference) throw new IOException($"FBX split does not support '{reference}' references.");
             bool remapped = false;
             foreach (var data in LayerArrays(layer))
                 remapped |= RemapLayerArray(layer, data, mapping, indexed, map, count);
@@ -291,9 +477,9 @@ namespace SashaRX.UnityMeshLab
             {
                 case "ByPolygonVertex": return (plan.corners, corners);
                 case "ByPolygon": return (plan.polygons, polygons);
-                case "ByEdge":
+                case ByEdgeMapping:
                     if (edges == null) throw new IOException("FBX edge-mapped data has no edge table.");
-                    if (layer.name != "LayerElementSmoothing" && layer.name != "LayerElementVisibility" && layer.name != "LayerElementEdgeCrease")
+                    if (layer.name != SmoothingLayerName && layer.name != "LayerElementVisibility" && layer.name != "LayerElementEdgeCrease")
                         throw new IOException($"FBX split cannot invent diagonal values for {layer.name}.");
                     return (edges, edgeCount);
                 default: throw new IOException($"FBX split does not support {layer.name} mapping '{mapping}'.");
@@ -305,9 +491,9 @@ namespace SashaRX.UnityMeshLab
             bool index = data.name.EndsWith(IndexName, StringComparison.Ordinal) || data.name.EndsWith("Indices", StringComparison.Ordinal)
                 || layer.name == "LayerElementMaterial" || layer.name == "LayerElementTexture";
             if (indexed && !index) return false;
-            if (mapping == "ByEdge" && indexed && map.Any(e => e < 0))
+            if (mapping == ByEdgeMapping && indexed && map.Any(e => e < 0))
                 throw new IOException($"FBX split cannot invent indexed diagonal values for {layer.name}.");
-            RemapArray(data, map, count, layer.name == "LayerElementSmoothing");
+            RemapArray(data, map, count, layer.name == SmoothingLayerName);
             return true;
         }
 
@@ -389,11 +575,7 @@ namespace SashaRX.UnityMeshLab
             var values = new int[bytes.Length / 4]; Buffer.BlockCopy(bytes, 0, values, 0, bytes.Length); return values;
         }
 
-        static void SetInts(Node node, int[] values)
-        {
-            var bytes = new byte[values.Length * 4]; Buffer.BlockCopy(values, 0, bytes, 0, bytes.Length);
-            node.properties[0] = ArrayProperty('i', bytes);
-        }
+        static void SetInts(Node node, int[] values) => node.properties[0] = IntsProperty(values);
 
         static List<Node> ReadNodes(byte[] file, ref int at, int limit, bool wide)
         {
