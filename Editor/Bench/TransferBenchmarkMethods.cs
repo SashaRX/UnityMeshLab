@@ -24,8 +24,11 @@ namespace SashaRX.UnityMeshLab
         {
             if (method == "grouped" || method == "grouped-no-hints") {
                 bool hints = method == "grouped";
+                // Corpus tests wait for this synchronously on the editor thread: resuming on
+                // that thread's context would wait for the thread that is waiting for us.
                 var result = await GroupedShellTransfer.TransferAsyncWithDiagnostics(input.target, input.source,
-                    hints ? input.overlapHints : null, hints ? input.matchHints : null, input.atlasWidth, input.atlasHeight, trace);
+                    hints ? input.overlapHints : null, hints ? input.matchHints : null, input.atlasWidth, input.atlasHeight, trace)
+                    .ConfigureAwait(false);
                 return new Output { uv = result.uv2, misses = result.verticesTotal - result.verticesTransferred, result = result };
             }
             if (method == "uv0-nearest") return UvNearest(input);
