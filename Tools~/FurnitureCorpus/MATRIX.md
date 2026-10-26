@@ -22,8 +22,8 @@ python Tools~/FurnitureCorpus/rank.py D:/private-results/matrix-*.jsonl --out D:
 ```
 
 The output file must be new and outside `Assets`/`Packages`. Each row is flushed.
-A terminal `complete` row marks a finished capture. Without it, `rank.py` still
-writes the report but exits with code 2.
+A terminal `complete` row marks a finished capture. When any input capture lacks
+it, `rank.py` still writes the report but exits with code 2.
 
 ## Variants
 
@@ -90,10 +90,11 @@ copy and deleted afterwards, as in `FurnitureCorpusTests`.
 - **Defects:** classes of the `default` variant, ranked by severity, then affected models.
   - Order: error, refused, incomplete scan, invalid UV, collapsed UV, unwritten shell, overlap, extreme stretch (>10000 or non-finite), stretch >4, unmatched vertices, out of bounds, and the diagnostic `recovery-disabled` (dirty source atlas gate; adds nothing to the score).
   - Collapsed UVs use the direct stored-area counter, never 3D zero-area faces.
-- **Variants:** per level, each variant against `default` on identical model/target keys, using `report.compare`.
+- **Variants:** per level, each variant against `default` on the same model, source/target pair and role (source or target row). Method and profile stay out of the key: they are what a variant changes.
+  - Rows compare by `report.compare`, extended with `unwrittenVertices`, `misses` and `rawOutOfBounds` (lower is better, -1 unknown) under the same dominance rule. `misses` compare only between rows of one method: the non-grouped methods write 0.
   - Counts: better, worse, tradeoff and same; runs that fail where `default` succeeds (`failed`) or the reverse (`recovered`).
   - Also: total and median heuristic defect score, median time, median time ratio against `default`.
-- **Best variant per model:** lowest heuristic defect score among successful runs; ties go to the faster run.
+- **Best variant per model:** lowest heuristic defect score among successful runs; ties go to the faster run. A candidate needs a `run` row without errors, a finite score and every target any successful variant of that model measured.
 - **Slow stages:** per-model median time of each `default` stage, summed over models.
 
 The defect score weights (`rank.WEIGHTS`) are a heuristic used for ordering

@@ -119,18 +119,48 @@ def runs(rows):
 
 
 def targets(rows):
-    """Index measured rows by (level, model, variant) → {target key: first repetition}."""
+    """Index measured rows by (level, model, variant) → {target key: first repetition}.
+
+    The key is the mesh pair and whether the row measures the source or the target. Method
+    and profile stay out of it: they are what a variant changes, so a key holding them would
+    never meet the default's."""
     index = collections.defaultdict(dict)
     for row in rows:
         if row.get("status") != "measured" or row.get("schema", 1) < 2:
             continue
-        key = (row.get("source", ""), row.get("target", ""), row.get("method", ""), row.get("profile", ""))
+        role = "source" if row.get("method") == "source" else "target"
+        key = (row.get("source", ""), row.get("target", ""), role)
         index[(row["level"], row["model"], row["variant"])].setdefault(key, row)
     return index
 
 
 def failed(run_rows):
     return any(r["status"] in ("error", "refused") for r in run_rows)
+
+
+def succeeded(run_rows):
+    return any(r["status"] == "run" for r in run_rows) and not failed(run_rows)
+
+
+# Schema-2 counters that enter the score but not report.compare; lower is better, -1 is unknown.
+# Only grouped methods count misses (the others write 0), so misses compare within one method.
+COUNTERS = ("unwrittenVertices", "misses", "rawOutOfBounds")
+
+
+def compare_rows(candidate, baseline):
+    """report.compare, with the schema-2 counters folded into the same dominance rule."""
+    result = compare(candidate, baseline)
+    if result in ("incomplete", "invalid"):
+        return result
+    better, worse = result in ("better", "tradeoff"), result in ("worse", "tradeoff")
+    for key in COUNTERS:
+        if key == "misses" and candidate.get("method") != baseline.get("method"):
+            continue
+        value, original = candidate.get(key, -1), baseline.get(key, -1)
+        if value >= 0 and original >= 0:
+            better |= value < original
+            worse |= value > original
+    return "tradeoff" if better and worse else "better" if better else "worse" if worse else "same"
 
 
 def rank_failures(rows):
@@ -194,7 +224,7 @@ def rank_variants(rows):
                     counts["recovered"] += 1
                 if name != DEFAULT_VARIANT:
                     for key in sorted(set(base) & set(cand)):
-                        counts[compare(cand[key], base[key])] += 1
+                        counts[compare_rows(cand[key], base[key])] += 1
                 if cand and not failed(cand_runs):
                     totals.append(sum(score(r) for r in cand.values()))
                 elapsed, base_elapsed = run_time(cand_runs), run_time(base_runs)
@@ -214,18 +244,27 @@ def rank_variants(rows):
 
 
 def best_variants(rows):
-    """Per level and model: lowest total score among successful variants; ties go to the faster run."""
+    """Per level and model: lowest total score among successful variants; ties go to the faster run.
+
+    A candidate needs a successful run, a finite score and every target any successful variant
+    of that model measured: a variant that lost a target would otherwise win on a shorter sum."""
     measured, executed = targets(rows), runs(rows)
-    choices = collections.defaultdict(dict)
+    eligible = collections.defaultdict(dict)
     for (level, model, name), items in measured.items():
-        if failed(executed.get((level, model, name), [])):
-            continue
-        total = sum(score(r) for r in items.values())
-        elapsed = run_time(executed.get((level, model, name), []))
-        current = choices[level].get(model)
-        candidate = (total, elapsed if elapsed is not None else math.inf, name)
-        if current is None or candidate < current:
-            choices[level][model] = candidate
+        if succeeded(executed.get((level, model, name), [])):
+            eligible[(level, model)][name] = items
+    choices = collections.defaultdict(dict)
+    for (level, model), variants in eligible.items():
+        required = set().union(*variants.values())
+        for name, items in variants.items():
+            total = sum(score(r) for r in items.values())
+            if set(items) != required or not finite(total):
+                continue
+            elapsed = run_time(executed.get((level, model, name), []))
+            current = choices[level].get(model)
+            candidate = (total, elapsed if elapsed is not None else math.inf, name)
+            if current is None or candidate < current:
+                choices[level][model] = candidate
     wins = {level: collections.Counter(choice[2] for choice in models.values()) for level, models in choices.items()}
     return {level: dict(sorted(counter.items(), key=lambda item: -item[1])) for level, counter in wins.items()}, \
         {level: {model: dict(variant=c[2], score=c[0], ms=c[1]) for model, c in sorted(models.items())}
@@ -276,10 +315,12 @@ def markdown(report):
     return "\n".join(out)
 
 
-def build(rows):
-    complete = [r for r in rows if r.get("status") == "complete"]
+def build(captures):
+    """One row list per input capture; the report is complete only when every capture ends complete."""
+    rows = [row for capture in captures for row in capture]
+    complete = all(capture and capture[-1].get("status") == "complete" for capture in captures)
     wins, best = best_variants(rows)
-    return dict(terminalMarker=bool(complete), rows=len(rows),
+    return dict(terminalMarker=complete, rows=len(rows),
                 models=len({r.get("model") for r in rows if r.get("model")}),
                 failures=rank_failures(rows), defects=rank_defects(rows), variants=rank_variants(rows),
                 bestWins=wins, best=best, stages=rank_stages(rows))
@@ -290,7 +331,7 @@ def main(argv=None):
     parser.add_argument("captures", type=Path, nargs="+", help="Schema-2 JSONL captures (several runs may be combined).")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args(argv)
-    report = build(load(args.captures))
+    report = build([load([path]) for path in args.captures])
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "ranking.json").write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
     (args.out / "ranking.md").write_text(markdown(report), encoding="utf-8")
