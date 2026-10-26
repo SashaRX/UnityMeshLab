@@ -105,9 +105,29 @@ class RankTests(unittest.TestCase):
                 run(variant="lost"), measured(variant="lost", overlapPairs=1)]
         self.assertEqual(rank.best_variants(rows)[1]["forward"]["chair"]["variant"], "default")
 
+    def test_variant_that_lost_a_target_is_uncovered_not_better(self):
+        """A shorter clean output must not hide a lost target behind a lower score sum."""
+        rows = [run(), measured(overlapPairs=3), measured(target="chair_LOD2", overlapPairs=3),
+                run(variant="lost"), measured(variant="lost")]
+        table = {r["variant"]: r for r in rank.rank_variants(rows)["forward"]}
+        self.assertEqual((table["lost"]["uncovered"], table["lost"]["models"], table["lost"]["scoreTotal"]), (1, 0, 0))
+
     def test_stage_ranking_uses_median_repetition(self):
         rows = [run(stages=[{"stage": "pack", "milliseconds": v}]) for v in (10.0, 30.0, 1000.0)]
         self.assertEqual(rank.rank_stages(rows)[0]["msTotal"], 30.0)
+
+    def test_stage_occurrences_of_one_run_are_summed_before_the_median(self):
+        """A stage timed once per LOD costs its sum in that run."""
+        rows = [run(stages=[{"stage": "pack", "lod": 1, "milliseconds": 100.0},
+                            {"stage": "pack", "lod": 2, "milliseconds": 300.0},
+                            {"stage": "seams", "lod": 1, "milliseconds": 250.0}])]
+        self.assertEqual([(r["stage"], r["msTotal"]) for r in rank.rank_stages(rows)], [("pack", 400.0), ("seams", 250.0)])
+
+    def test_captures_of_different_model_bytes_are_refused(self):
+        changed = measured()
+        changed["inputHash"] = "other"
+        with self.assertRaises(ValueError):
+            rank.build([[run(), measured()], [changed]])
 
     def test_cli_reports_partial_capture(self):
         with tempfile.TemporaryDirectory() as directory:

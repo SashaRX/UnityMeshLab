@@ -222,10 +222,15 @@ def rank_variants(rows):
                     counts["failed"] += 1
                 elif failed(base_runs) and not failed(cand_runs) and cand:
                     counts["recovered"] += 1
+                # A variant that measured other targets than the default lost or added output:
+                # its shared targets still compare, but its score sum is not comparable.
+                covered = not base or set(cand) == set(base)
                 if name != DEFAULT_VARIANT:
+                    if not covered and not failed(cand_runs):
+                        counts["uncovered"] += 1
                     for key in sorted(set(base) & set(cand)):
                         counts[compare_rows(cand[key], base[key])] += 1
-                if cand and not failed(cand_runs):
+                if cand and covered and not failed(cand_runs):
                     totals.append(sum(score(r) for r in cand.values()))
                 elapsed, base_elapsed = run_time(cand_runs), run_time(base_runs)
                 if elapsed is not None:
@@ -235,6 +240,7 @@ def rank_variants(rows):
             table.append(dict(variant=name, models=len(totals), better=counts["better"], worse=counts["worse"],
                               tradeoff=counts["tradeoff"], same=counts["same"], incomplete=counts["incomplete"],
                               invalid=counts["invalid"], failed=counts["failed"], recovered=counts["recovered"],
+                              uncovered=counts["uncovered"],
                               scoreTotal=sum(t for t in totals if finite(t)), scoreMedian=median(totals),
                               infiniteScores=sum(not finite(t) for t in totals),
                               msMedian=median(times), timeRatioMedian=median(ratios)))
@@ -272,13 +278,19 @@ def best_variants(rows):
 
 
 def rank_stages(rows, variant=DEFAULT_VARIANT):
-    """Median per-model stage time of one variant; stages ranked by their summed medians."""
+    """Median per-model stage time of one variant; stages ranked by their summed medians.
+
+    A stage recorded several times in one run (once per LOD, or inside a loop) is summed
+    for that run first: the median runs over repetitions, not over occurrences."""
     samples = collections.defaultdict(lambda: collections.defaultdict(list))
     for row in rows:
         if row.get("status") != "run" or row.get("variant") != variant:
             continue
+        per_run = collections.defaultdict(float)
         for stage in row.get("stages") or []:
-            samples[(row.get("level"), stage.get("stage"))][row.get("model")].append(stage.get("milliseconds", 0.0))
+            per_run[stage.get("stage")] += stage.get("milliseconds", 0.0)
+        for name, milliseconds in per_run.items():
+            samples[(row.get("level"), name)][row.get("model")].append(milliseconds)
     table = []
     for (level, stage), models in samples.items():
         medians = {model: median(values) or 0.0 for model, values in models.items()}
@@ -307,7 +319,8 @@ def markdown(report):
            table(report["defects"], ["level", "defect", "models", "targets", "magnitude", "worst"])]
     for level, rows in report["variants"].items():
         out += [f"## Variants: {level}\n", table(rows, ["variant", "models", "better", "worse", "tradeoff", "same",
-                                                       "failed", "recovered", "scoreTotal", "msMedian", "timeRatioMedian"])]
+                                                       "failed", "recovered", "uncovered", "scoreTotal", "msMedian",
+                                                       "timeRatioMedian"])]
     out += ["## Best variant wins per level\n"]
     for level, wins in report["bestWins"].items():
         out.append(f"- **{level}**: " + ", ".join(f"{name} {count}" for name, count in wins.items()) + "\n")
@@ -315,9 +328,22 @@ def markdown(report):
     return "\n".join(out)
 
 
+def check_inputs(rows):
+    """Refuse to combine rows measured on different bytes of one model, as report.summarize does."""
+    hashes = collections.defaultdict(set)
+    for row in rows:
+        if row.get("model") and row.get("inputHash"):
+            hashes[row["model"]].add(row["inputHash"])
+    mixed = sorted(model for model, values in hashes.items() if len(values) > 1)
+    if mixed:
+        raise ValueError("Captures measure different FBX bytes for: " + ", ".join(mixed) +
+                         ". Rank one corpus revision at a time.")
+
+
 def build(captures):
     """One row list per input capture; the report is complete only when every capture ends complete."""
     rows = [row for capture in captures for row in capture]
+    check_inputs(rows)
     complete = all(capture and capture[-1].get("status") == "complete" for capture in captures)
     wins, best = best_variants(rows)
     return dict(terminalMarker=complete, rows=len(rows),

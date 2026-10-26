@@ -23,7 +23,9 @@ python Tools~/FurnitureCorpus/rank.py D:/private-results/matrix-*.jsonl --out D:
 
 The output file must be new and outside `Assets`/`Packages`. Each row is flushed.
 A terminal `complete` row marks a finished capture. When any input capture lacks
-it, `rank.py` still writes the report but exits with code 2.
+it, `rank.py` still writes the report but exits with code 2. Captures that measure
+different bytes of one model (different `inputHash`) are refused: rank one corpus
+revision at a time.
 
 ## Variants
 
@@ -92,10 +94,10 @@ copy and deleted afterwards, as in `FurnitureCorpusTests`.
   - Collapsed UVs use the direct stored-area counter, never 3D zero-area faces.
 - **Variants:** per level, each variant against `default` on the same model, source/target pair and role (source or target row). Method and profile stay out of the key: they are what a variant changes.
   - Rows compare by `report.compare`, extended with `unwrittenVertices`, `misses` and `rawOutOfBounds` (lower is better, -1 unknown) under the same dominance rule. `misses` compare only between rows of one method: the non-grouped methods write 0.
-  - Counts: better, worse, tradeoff and same; runs that fail where `default` succeeds (`failed`) or the reverse (`recovered`).
-  - Also: total and median heuristic defect score, median time, median time ratio against `default`.
+  - Counts: better, worse, tradeoff and same; runs that fail where `default` succeeds (`failed`) or the reverse (`recovered`); models where the variant measured other targets than `default` (`uncovered`).
+  - Also: total and median heuristic defect score (models with the default's targets only), median time, median time ratio against `default`.
 - **Best variant per model:** lowest heuristic defect score among successful runs; ties go to the faster run. A candidate needs a `run` row without errors, a finite score and every target any successful variant of that model measured.
-- **Slow stages:** per-model median time of each `default` stage, summed over models.
+- **Slow stages:** per-model median time of each `default` stage, summed over models. A stage timed several times in one run (per LOD) counts its sum for that run.
 
 The defect score weights (`rank.WEIGHTS`) are a heuristic used for ordering
 only. Dominance counts (`better`/`worse`/`tradeoff`) remain the evidence, and a
