@@ -95,9 +95,10 @@ copy and deleted afterwards, as in `FurnitureCorpusTests`.
 - **Variants:** per level, each variant against `default` on the same model, source/target pair and role (source or target row). Method and profile stay out of the key: they are what a variant changes.
   - Rows compare by `report.compare`, extended with `unwrittenVertices`, `misses` and `rawOutOfBounds` (lower is better, -1 unknown) under the same dominance rule. `misses` compare only between rows of one method: the non-grouped methods write 0.
   - Counts: better, worse, tradeoff and same; runs that fail where `default` succeeds (`failed`) or the reverse (`recovered`); models where the variant measured other targets than `default` (`uncovered`).
-  - Also: total and median heuristic defect score (models with the default's targets only), median time, median time ratio against `default`.
+  - Also: total and median heuristic defect score (models with the default's targets only), the count of infinite scores (unfinished overlap scans), median time, median time ratio against `default`.
+  - Time is per execution (one capture's repetition): the run rows of one execution, such as the LOD pairs of a `grouped` model, are summed before the median.
 - **Best variant per model:** lowest heuristic defect score among successful runs; ties go to the faster run. A candidate needs a `run` row without errors, a finite score and every target any successful variant of that model measured.
-- **Slow stages:** per-model median time of each `default` stage, summed over models. A stage timed several times in one run (per LOD) counts its sum for that run.
+- **Slow stages:** per-model median time of each `default` stage, summed over models. A stage timed several times in one execution (per LOD, or once per `grouped` pair) counts its sum for that execution.
 
 The defect score weights (`rank.WEIGHTS`) are a heuristic used for ordering
 only. Dominance counts (`better`/`worse`/`tradeoff`) remain the evidence, and a

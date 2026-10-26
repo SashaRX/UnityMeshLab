@@ -198,8 +198,22 @@ def rank_defects(rows, variant=DEFAULT_VARIANT):
     return sorted(table, key=lambda r: (r["level"], order.get(r["defect"], 99), -r["models"], -r["magnitude"]))
 
 
+# build() tags each row with its input file, so repetitions of different captures stay apart.
+CAPTURE = "_capture"
+
+
+def execution(row):
+    """One model execution: a capture's repetition. A grouped run row is one LOD pair of it."""
+    return row.get(CAPTURE, 0), row.get("repetition", 0)
+
+
 def run_time(run_rows):
-    return median([r.get("milliseconds") for r in run_rows if r["status"] == "run"])
+    """Median over executions of the summed wall time of their run rows."""
+    totals = collections.defaultdict(float)
+    for row in run_rows:
+        if row["status"] == "run" and finite(row.get("milliseconds")):
+            totals[execution(row)] += row["milliseconds"]
+    return median(list(totals.values()))
 
 
 def rank_variants(rows):
@@ -280,17 +294,20 @@ def best_variants(rows):
 def rank_stages(rows, variant=DEFAULT_VARIANT):
     """Median per-model stage time of one variant; stages ranked by their summed medians.
 
-    A stage recorded several times in one run (once per LOD, or inside a loop) is summed
-    for that run first: the median runs over repetitions, not over occurrences."""
-    samples = collections.defaultdict(lambda: collections.defaultdict(list))
+    A stage recorded several times in one execution (once per LOD, inside a loop, or in each
+    grouped pair's run row) is summed for that execution first: the median runs over
+    repetitions, not over occurrences."""
+    per_execution = collections.defaultdict(lambda: collections.defaultdict(float))
     for row in rows:
         if row.get("status") != "run" or row.get("variant") != variant:
             continue
-        per_run = collections.defaultdict(float)
         for stage in row.get("stages") or []:
-            per_run[stage.get("stage")] += stage.get("milliseconds", 0.0)
-        for name, milliseconds in per_run.items():
-            samples[(row.get("level"), name)][row.get("model")].append(milliseconds)
+            per_execution[(row.get("level"), row.get("model")) + execution(row)][stage.get("stage")] += \
+                stage.get("milliseconds", 0.0)
+    samples = collections.defaultdict(lambda: collections.defaultdict(list))
+    for (level, model, *_), stages in per_execution.items():
+        for name, milliseconds in stages.items():
+            samples[(level, name)][model].append(milliseconds)
     table = []
     for (level, stage), models in samples.items():
         medians = {model: median(values) or 0.0 for model, values in models.items()}
@@ -319,8 +336,8 @@ def markdown(report):
            table(report["defects"], ["level", "defect", "models", "targets", "magnitude", "worst"])]
     for level, rows in report["variants"].items():
         out += [f"## Variants: {level}\n", table(rows, ["variant", "models", "better", "worse", "tradeoff", "same",
-                                                       "failed", "recovered", "uncovered", "scoreTotal", "msMedian",
-                                                       "timeRatioMedian"])]
+                                                       "incomplete", "invalid", "failed", "recovered", "uncovered",
+                                                       "scoreTotal", "infiniteScores", "msMedian", "timeRatioMedian"])]
     out += ["## Best variant wins per level\n"]
     for level, wins in report["bestWins"].items():
         out.append(f"- **{level}**: " + ", ".join(f"{name} {count}" for name, count in wins.items()) + "\n")
@@ -342,7 +359,7 @@ def check_inputs(rows):
 
 def build(captures):
     """One row list per input capture; the report is complete only when every capture ends complete."""
-    rows = [row for capture in captures for row in capture]
+    rows = [dict(row, **{CAPTURE: index}) for index, capture in enumerate(captures) for row in capture]
     check_inputs(rows)
     complete = all(capture and capture[-1].get("status") == "complete" for capture in captures)
     wins, best = best_variants(rows)

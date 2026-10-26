@@ -16,8 +16,8 @@ def measured(model="chair", variant="default", level="forward", target="chair_LO
                 uvDegenerateFaces=0, rawOutOfBounds=0, misses=0, quality=values)
 
 
-def run(model="chair", variant="default", level="forward", ms=100.0, status="run", error="", stages=None):
-    return dict(schema=2, status=status, level=level, model=model, variant=variant, milliseconds=ms,
+def run(model="chair", variant="default", level="forward", ms=100.0, status="run", error="", stages=None, repetition=0):
+    return dict(schema=2, status=status, level=level, model=model, variant=variant, milliseconds=ms, repetition=repetition,
                 error=error, errorType="InvalidOperationException" if error else "", stages=stages or [])
 
 
@@ -113,8 +113,17 @@ class RankTests(unittest.TestCase):
         self.assertEqual((table["lost"]["uncovered"], table["lost"]["models"], table["lost"]["scoreTotal"]), (1, 0, 0))
 
     def test_stage_ranking_uses_median_repetition(self):
-        rows = [run(stages=[{"stage": "pack", "milliseconds": v}]) for v in (10.0, 30.0, 1000.0)]
+        rows = [run(stages=[{"stage": "pack", "milliseconds": v}], repetition=i) for i, v in enumerate((10.0, 30.0, 1000.0))]
         self.assertEqual(rank.rank_stages(rows)[0]["msTotal"], 30.0)
+
+    def test_grouped_pair_runs_sum_into_one_execution(self):
+        """Grouped run rows are LOD pairs of one execution, not repetitions; captures stay separate repetitions."""
+        rows = [run(variant=v, level="grouped", ms=ms) for v, times in (("a", (1, 1, 100)), ("b", (2, 2, 2))) for ms in times]
+        rows += [measured(variant="a", level="grouped"), measured(variant="b", level="grouped")]
+        self.assertEqual(rank.best_variants(rows)[1]["grouped"]["chair"]["variant"], "b")
+        self.assertEqual(rank.rank_stages([run(level="grouped", stages=[{"stage": "pack", "milliseconds": 5.0}])] * 3)[0]["msTotal"], 15.0)
+        report = rank.build([[run(ms=100), measured()], [run(ms=300), measured()]])
+        self.assertEqual(report["variants"]["forward"][0]["msMedian"], 200.0)
 
     def test_stage_occurrences_of_one_run_are_summed_before_the_median(self):
         """A stage timed once per LOD costs its sum in that run."""
@@ -128,6 +137,15 @@ class RankTests(unittest.TestCase):
         changed["inputHash"] = "other"
         with self.assertRaises(ValueError):
             rank.build([[run(), measured()], [changed]])
+
+    def test_markdown_shows_unfinished_quality(self):
+        """A candidate whose overlap scan did not finish must not read as a clean zero score."""
+        report = rank.build([[run(), measured(overlapPairs=5), run(variant="v"), measured(variant="v", overlapScanComplete=False)]])
+        lines = rank.markdown(report).splitlines()
+        header = next(line for line in lines if line.startswith("| variant |"))
+        row = next(line for line in lines if line.startswith("| v |"))
+        cells = dict(zip(header.strip("| ").split(" | "), row.strip("| ").split(" | ")))
+        self.assertEqual((cells["incomplete"], cells["infiniteScores"]), ("1", "1"))
 
     def test_cli_reports_partial_capture(self):
         with tempfile.TemporaryDirectory() as directory:
