@@ -2564,7 +2564,15 @@ namespace SashaRX.UnityMeshLab
             using (ForwardPerformance?.Accumulated("Forward quality measure"))
                 beforeQuality=TransferUvQuality.Measure(tgtMesh,tr.uv2,Vector2.one,renderedFrame);
             var finalQuality=beforeQuality;
-            if (NeedsDonorSeamTrial(beforeQuality,AutoTuneScore.GeometryDegenerateFaces(tgtMesh,renderedFrame)))
+            bool seamTrial=NeedsDonorSeamTrial(beforeQuality,AutoTuneScore.GeometryDegenerateFaces(tgtMesh,renderedFrame));
+            if (seamTrial && KeepsFaces(tgt))
+            {
+                seamTrial=false;
+                if(pair?.trace!=null) pair.trace.forwardSeamRefusal="Skinned or blend-shape target keeps its faces.";
+                UvtLog.Info($"[Transfer] '{tgt.renderer.name}': skinned or has blend shapes; donor seam trial skipped: "
+                    +"its subdivision would drop the deformation, and the FBX cannot take new faces on a deformed mesh.");
+            }
+            if (seamTrial)
             {
                 using var seamTiming = ForwardPerformance?.Accumulated("Forward donor seam trial");
                 Mesh prepared=null;
@@ -2660,6 +2668,20 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         internal static bool NeedsDonorSeamTrial(TransferUvQuality quality, int geometryDegenerateFaces)
             => quality.worstAnisotropy > 4 || quality.overlapPairs > 0 || quality.degenerateFaces > geometryDegenerateFaces;
+
+        /// <summary>
+        /// Whether a target keeps its faces through the donor-seam trial: its subdivision
+        /// carries neither skinning nor blend shapes, and the FBX takes no new faces on a
+        /// deformed mesh. A scene edit of a skinned import is read without its skinning,
+        /// so the import is asked too, and an import can leave blend shapes out, so the file
+        /// is asked last.
+        /// </summary>
+        internal static bool KeepsFaces(MeshEntry target)
+            => MeshAccess.IsDeformed(target.fbxMesh) || MeshAccess.IsDeformed(target.Baseline)
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+                || FbxStructureWrite.FileDeforms(target.fbxMesh)
+#endif
+            ;
 
         static bool HasSourceUvChannels(Mesh source)
         {

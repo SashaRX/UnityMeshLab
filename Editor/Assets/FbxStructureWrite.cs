@@ -272,6 +272,42 @@ namespace SashaRX.UnityMeshLab
             => renderer is SkinnedMeshRenderer skinned ? skinned.sharedMesh
              : renderer.TryGetComponent<MeshFilter>(out var filter) ? filter.sharedMesh : null;
 
+        // Per file and write time: the names of its deformed meshes and of their nodes.
+        static readonly Dictionary<string, (DateTime stamp, HashSet<string> names)> deformedNames
+            = new Dictionary<string, (DateTime, HashSet<string>)>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Whether the FBX that <paramref name="mesh"/> was imported from skins it or gives it
+        /// blend shapes (a mesh or node of its name has a deformer), which the save refuses to
+        /// give new faces. The import can leave them out (Import BlendShapes off), so the file
+        /// is asked. False for a mesh not imported from an FBX, or a file the SDK cannot read.
+        /// </summary>
+        internal static bool FileDeforms(Mesh mesh)
+        {
+            string path = mesh ? AssetDatabase.GetAssetPath(mesh) : null;
+            if (string.IsNullOrEmpty(path) || !path.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase)) return false;
+            string full = PhysicalPath(path);
+            var stamp = System.IO.File.GetLastWriteTimeUtc(full);
+            if (!deformedNames.TryGetValue(full, out var cached) || cached.stamp != stamp)
+            {
+                var names = new HashSet<string>(StringComparer.Ordinal);
+                try
+                {
+                    using var document = FbxSourceDocument.Load(full);
+                    foreach (var fileMesh in document.Meshes)
+                    {
+                        if (!FbxStructureEdit.HasDeformers(fileMesh)) continue;
+                        names.Add(fileMesh.GetName());
+                        for (int i = 0; i < fileMesh.GetNodeCount(); i++)
+                            if (fileMesh.GetNode(i) is FbxNode node) names.Add(node.GetName());
+                    }
+                }
+                catch (Exception error) when (error is InvalidOperationException || error is System.IO.IOException) { return false; }
+                deformedNames[full] = cached = (stamp, names);
+            }
+            return cached.names.Contains(mesh.name);
+        }
+
         // Faces differ from the import: per submesh, the same faces (as position loops, any
         // starting corner, same winding) in any order and any vertex numbering. Vertex dedup,
         // UV welds and symmetry splits keep that and are channel work, not geometry; a

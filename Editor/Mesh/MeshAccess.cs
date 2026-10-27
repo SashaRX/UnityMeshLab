@@ -466,6 +466,10 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        /// <summary>Whether the mesh is skinned or has blend shapes; Read/Write is not needed to tell.</summary>
+        internal static bool IsDeformed(Mesh mesh) => mesh != null && (mesh.blendShapeCount > 0
+            || mesh.HasVertexAttribute(VertexAttribute.BlendWeight) || mesh.HasVertexAttribute(VertexAttribute.BlendIndices));
+
         /// <summary>
         /// SHA-256 of what a mesh stores: vertex layout and raw vertex streams, every
         /// submesh's topology, base vertex and indices, bounds, and, when readable, bind
@@ -476,8 +480,7 @@ namespace SashaRX.UnityMeshLab
         internal static byte[] Fingerprint(Mesh mesh)
         {
             if (mesh == null) return null;
-            bool deformed = mesh.blendShapeCount > 0 || mesh.HasVertexAttribute(VertexAttribute.BlendWeight)
-                || mesh.HasVertexAttribute(VertexAttribute.BlendIndices);
+            bool deformed = IsDeformed(mesh);
             if (deformed && !mesh.isReadable) return null;
             using var hash = new FingerprintHash();
             using (var data = MeshUtility.AcquireReadOnlyMeshData(mesh))
