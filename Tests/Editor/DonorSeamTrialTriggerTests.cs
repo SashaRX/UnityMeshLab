@@ -27,6 +27,23 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(UvTransferWorkflow.NeedsDonorSeamTrial(Quality(degenerate: 1), 0));
         }
 
+        /// <summary>
+        /// A kept-face rescue at up to 4:1 replaces collapsed faces beside healthier ones,
+        /// even with zero-area triangles left; a subdivision must stay within the old stretch.
+        /// </summary>
+        [Test]
+        public void KeptFaceRescueIsJudgedAgainstTheTrialBound()
+        {
+            var before = new TransferUvQuality { overlapScanComplete = true, degenerateFaces = 3, worstAnisotropy = 1, areaWeightedAnisotropy = 1 };
+            var after = new TransferUvQuality { overlapScanComplete = true, degenerateFaces = 1, worstAnisotropy = 2, areaWeightedAnisotropy = 1.5 };
+            Assert.IsTrue(UvTransferWorkflow.TrialImproves(after, before, true));
+            Assert.IsFalse(UvTransferWorkflow.TrialImproves(after, before, false));
+            after.worstAnisotropy = 4.5;
+            Assert.IsFalse(UvTransferWorkflow.TrialImproves(after, before, true), "No rescue goes past 4:1.");
+            after.worstAnisotropy = 2; after.degenerateFaces = 4;
+            Assert.IsFalse(UvTransferWorkflow.TrialImproves(after, before, true), "A rescue adds no collapsed face.");
+        }
+
         static Mesh Triangle()
         {
             var mesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, Vector3.up } };

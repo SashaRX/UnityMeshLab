@@ -2599,23 +2599,8 @@ namespace SashaRX.UnityMeshLab
                     if (prepared)
                     {
                         var quality=preparedQuality??TransferUvQuality.Measure(prepared,prepared.uv2,Vector2.one,renderedFrame);
-                        bool Improves(TransferUvQuality after,TransferUvQuality before)=>after.overlapScanComplete && after.invalidFaces<=before.invalidFaces
-                            && after.degenerateFaces<=before.degenerateFaces && after.outOfBoundsVertices<=before.outOfBoundsVertices
-                            // Preparation audits original face-pair identities.
-                            // Subdivision can multiply the number of contacts
-                            // inside an existing pair without adding an overlap.
-                            && after.overlapPairArea<=before.overlapPairArea*1.001+1e-14
-                            // An invalid atlas is not a meaningful stretch baseline
-                            // for its bad faces. Preparation still bounds healthy
-                            // faces individually and proves every changed donor.
-                            && (((before.overlapPairs>0 || before.degenerateFaces>0)
-                                    && after.overlapPairs==0 && after.degenerateFaces==0 && after.invalidFaces==0
-                                    && after.worstAnisotropy<=4)
-                                || (UvTransferTolerance.MetricFits(after.worstAnisotropy,before.worstAnisotropy)
-                                    && (after.degenerateFaces<before.degenerateFaces || after.invalidFaces<before.invalidFaces
-                                        || after.areaWeightedAnisotropy<before.areaWeightedAnisotropy*.99)));
                         if(pair?.trace!=null) pair.trace.projectedSeamQuality=quality;
-                        if (Improves(quality,beforeQuality))
+                        if (TrialImproves(quality,beforeQuality,keepFaces))
                         {
                             var supersededResult = tr;
                             if(tgt.originalMesh!=tgt.fbxMesh) DestroyWorkingMesh(ref tgt.originalMesh);
@@ -2679,6 +2664,32 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         internal static bool NeedsDonorSeamTrial(TransferUvQuality quality, int geometryDegenerateFaces)
             => quality.worstAnisotropy > 4 || quality.overlapPairs > 0 || quality.degenerateFaces > geometryDegenerateFaces;
+
+        /// <summary>
+        /// Whether a donor-seam trial result replaces the transfer: no new invalid,
+        /// collapsed or out-of-bounds faces, no more overlap area, and either a clean
+        /// atlas or progress within the legacy stretch. A kept-face rescue gives each
+        /// face at most the trial's 4:1, so its stretch baseline is at least 4:1, and a
+        /// removed overlap counts as progress: a target that keeps its zero-area
+        /// triangles never reaches the clean atlas.
+        /// </summary>
+        internal static bool TrialImproves(TransferUvQuality after, TransferUvQuality before, bool keepFaces)
+            => after.overlapScanComplete && after.invalidFaces<=before.invalidFaces
+                && after.degenerateFaces<=before.degenerateFaces && after.outOfBoundsVertices<=before.outOfBoundsVertices
+                // Preparation audits original face-pair identities.
+                // Subdivision can multiply the number of contacts
+                // inside an existing pair without adding an overlap.
+                && after.overlapPairArea<=before.overlapPairArea*1.001+1e-14
+                // An invalid atlas is not a meaningful stretch baseline
+                // for its bad faces. Preparation still bounds healthy
+                // faces individually and proves every changed donor.
+                && (((before.overlapPairs>0 || before.degenerateFaces>0)
+                        && after.overlapPairs==0 && after.degenerateFaces==0 && after.invalidFaces==0
+                        && after.worstAnisotropy<=4)
+                    || (UvTransferTolerance.MetricFits(after.worstAnisotropy,keepFaces?Math.Max(before.worstAnisotropy,4):before.worstAnisotropy)
+                        && (after.degenerateFaces<before.degenerateFaces || after.invalidFaces<before.invalidFaces
+                            || (keepFaces && after.overlapPairs<before.overlapPairs)
+                            || after.areaWeightedAnisotropy<before.areaWeightedAnisotropy*.99)));
 
         /// <summary>
         /// Whether a target keeps its faces through the donor-seam trial: its subdivision

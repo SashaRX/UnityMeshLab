@@ -252,6 +252,9 @@ namespace SashaRX.UnityMeshLab.Tests
                 256, false, Matrix4x4.identity, keepFaces: true).GetAwaiter().GetResult();
             output = result.mesh;
             Assert.NotNull(output);
+            Assert.IsTrue(UvTransferWorkflow.TrialImproves(result.quality,
+                TransferUvQuality.Measure(target, legacy, Vector2.one, Matrix4x4.identity), true),
+                "The workflow publishes the rescue although the zero-area triangle stays degenerate.");
             CollectionAssert.AreEqual(target.triangles.Select(i => target.vertices[i]), output.triangles.Select(i => output.vertices[i]));
             for (int corner = 12; corner < 15; ++corner)
                 Assert.AreEqual(legacy[target.triangles[corner]], output.uv2[output.triangles[corner]]);
