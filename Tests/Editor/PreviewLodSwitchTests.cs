@@ -659,6 +659,36 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { UnityEditor.AssetDatabase.DeleteAsset(folder); }
         }
 
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        [Test]
+        public void ADocumentSaveSupersedesASceneEditWithTheFilesFacesOnOtherVertices()
+        {
+            // A cleanup that removes or merges vertices keeps the file's faces: channels a save writes for
+            // a result with other vertices fit the file's mesh, not the edit, so the save releases the edit.
+            // An edit the result's vertices fit takes the channels; an edit with other faces is kept.
+            string folder="Assets/__MeshLabSceneEditTests_"+System.Guid.NewGuid().ToString("N");
+            var group=Group(true,out var renderer,out _); var filter=renderer.GetComponent<MeshFilter>(); var imported=filter.sharedMesh;
+            UnityEditor.AssetDatabase.CreateFolder("Assets",folder.Substring("Assets/".Length));
+            UnityEditor.AssetDatabase.CreateAsset(imported,folder+"/imported.asset");
+            try {
+                var ctx=Open(group); var entry=ctx.MeshEntries.Find(e=>e.renderer==renderer);
+                Assert.IsTrue(MeshHygieneUtility.PrepareWritable(entry,"Scene edit",out var edited)); owned.Add(edited);
+                // The result splits corner 2 of the second triangle off for a new seam: the same faces on five vertices.
+                var result=new Mesh { name=edited.name, vertices=edited.vertices.Append(edited.vertices[2]).ToArray(),
+                    triangles=new[] {0,1,2,0,4,3}, uv2=edited.uv2.Append(new Vector2(.9f,.9f)).ToArray() }; owned.Add(result);
+                Assert.IsTrue(MeshAssetOperations.SaveSupersedesEdit(entry,result),"the file's faces on other vertices");
+
+                var sameVertices=Object.Instantiate(edited); owned.Add(sameVertices);
+                Assert.IsFalse(MeshAssetOperations.SaveSupersedesEdit(entry,sameVertices),"the edit takes the channels of a result with its vertices");
+                Assert.IsFalse(MeshAssetOperations.SaveSupersedesEdit(entry,edited),"a save of the edit itself writes its channels");
+
+                var moved=edited.vertices; moved[2]+=Vector3.forward; edited.vertices=moved;
+                Assert.IsFalse(MeshAssetOperations.SaveSupersedesEdit(entry,result),"an edit with other faces is the only record of them");
+            }
+            finally { UnityEditor.AssetDatabase.DeleteAsset(folder); }
+        }
+#endif
+
         const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
         readonly List<Object> owned = new List<Object>();
         UvToolHub hub;
