@@ -199,6 +199,64 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsNull(output);
         }
 
+        Vector2[] CollapsedSecondQuad() => source.uv2.Take(4).Concat(Enumerable.Repeat(Vector2.zero, 4)).ToArray();
+
+        /// <summary>
+        /// A skinned target keeps its triangles: the collapsed quad is projected onto
+        /// its donor, only UV seams split, the healthy quad and the skinning stay.
+        /// </summary>
+        [Test]
+        public void KeptFacesRescueACollapsedShellWithoutNewFaces()
+        {
+            target.bindposes = new[] {Matrix4x4.identity, Matrix4x4.identity};
+            target.boneWeights = Enumerable.Range(0, 8).Select(i => new BoneWeight {boneIndex0 = i / 4, weight0 = 1}).ToArray();
+            var legacy = CollapsedSecondQuad();
+            var result = ReverseUvTransfer.RecoverForwardSurfaceAsync(source, target, legacy, new int[8],
+                256, false, Matrix4x4.identity, keepFaces: true).GetAwaiter().GetResult();
+            output = result.mesh;
+            Assert.NotNull(output);
+            Assert.AreEqual(0, result.quality.degenerateFaces + result.quality.overlapPairs);
+            Assert.IsTrue(result.reference.Matches(output));
+            CollectionAssert.AreEqual(target.triangles.Select(i => target.vertices[i]), output.triangles.Select(i => output.vertices[i]),
+                "The faces are the target's, corner for corner.");
+            CollectionAssert.AreEqual(target.triangles.Select(i => target.boneWeights[i].boneIndex0),
+                output.triangles.Select(i => output.boneWeights[i].boneIndex0));
+            for (int corner = 0; corner < 6; ++corner)
+                Assert.AreEqual(legacy[target.triangles[corner]], output.uv2[output.triangles[corner]], "A healthy face keeps its UVs.");
+            for (int corner = 6; corner < 12; ++corner)
+                Assert.That(Vector2.Distance(source.uv2[source.triangles[corner]], output.uv2[output.triangles[corner]]), Is.LessThan(1e-5));
+        }
+
+        /// <summary>A rescue landing on another face is undone; with nothing left there is no result.</summary>
+        [Test]
+        public void KeptFacesAreNeverRescuedOntoAnotherFace()
+        {
+            var positions = target.vertices;
+            for (int i = 4; i < 8; ++i) positions[i] = positions[i - 4];
+            target.vertices = positions;
+            int meshes = Resources.FindObjectsOfTypeAll<Mesh>().Length;
+            var result = ReverseUvTransfer.RecoverForwardSurfaceAsync(source, target, CollapsedSecondQuad(), new int[8],
+                256, false, Matrix4x4.identity, keepFaces: true).GetAwaiter().GetResult();
+            output = result.mesh;
+            Assert.IsNull(output, "The collapsed copy projects onto the healthy quad it duplicates.");
+            Assert.AreEqual(meshes, Resources.FindObjectsOfTypeAll<Mesh>().Length);
+        }
+
+        /// <summary>A zero-area triangle, which cleanup leaves out of the projection, keeps its UVs.</summary>
+        [Test]
+        public void KeptFacesKeepTheZeroAreaTrianglesCleanupDrops()
+        {
+            target.triangles = target.triangles.Concat(new[] {0, 1, 1}).ToArray();
+            var legacy = CollapsedSecondQuad();
+            var result = ReverseUvTransfer.RecoverForwardSurfaceAsync(source, target, legacy, new int[8],
+                256, false, Matrix4x4.identity, keepFaces: true).GetAwaiter().GetResult();
+            output = result.mesh;
+            Assert.NotNull(output);
+            CollectionAssert.AreEqual(target.triangles.Select(i => target.vertices[i]), output.triangles.Select(i => output.vertices[i]));
+            for (int corner = 12; corner < 15; ++corner)
+                Assert.AreEqual(legacy[target.triangles[corner]], output.uv2[output.triangles[corner]]);
+        }
+
         [Test]
         public void CancelledRecoveryDoesNotAllocateWorkingMeshes()
         {

@@ -2565,13 +2565,12 @@ namespace SashaRX.UnityMeshLab
                 beforeQuality=TransferUvQuality.Measure(tgtMesh,tr.uv2,Vector2.one,renderedFrame);
             var finalQuality=beforeQuality;
             bool seamTrial=NeedsDonorSeamTrial(beforeQuality,AutoTuneScore.GeometryDegenerateFaces(tgtMesh,renderedFrame));
-            if (seamTrial && KeepsFaces(tgt))
-            {
-                seamTrial=false;
-                if(pair?.trace!=null) pair.trace.forwardSeamRefusal="Skinned or blend-shape target keeps its faces.";
-                UvtLog.Info($"[Transfer] '{tgt.renderer.name}': skinned or has blend shapes; donor seam trial skipped: "
-                    +"its subdivision would drop the deformation, and the FBX cannot take new faces on a deformed mesh.");
-            }
+            // Subdivision would drop a skinned or blend-shape target's deformation,
+            // and the FBX cannot take new faces on a deformed mesh: such a target
+            // keeps its triangles, and the trial only splits UV seams on it.
+            bool keepFaces=seamTrial && KeepsFaces(tgt);
+            if (keepFaces)
+                UvtLog.Info($"[Transfer] '{tgt.renderer.name}': skinned or has blend shapes; donor seam trial keeps its faces and splits only UV seams.");
             if (seamTrial)
             {
                 using var seamTiming = ForwardPerformance?.Accumulated("Forward donor seam trial");
@@ -2580,12 +2579,22 @@ namespace SashaRX.UnityMeshLab
                 TransferUvQuality preparedQuality=null;
                 try
                 {
-                    // The preparation reuses this measure of the legacy layout and
-                    // returns its measure of the prepared mesh, in the same frame.
-                    var projection=await ReverseUvTransfer.PrepareForwardSeamsAsync(srcMesh,tgtMesh,tr.uv2,tr.vertexToSourceShell,
-                        Mathf.Max(16,(int)Math.Max(srcEntry.repackedAtlasWidth,srcEntry.repackedAtlasHeight)),useAsync,trace:pair?.trace,
-                        boundaryToleranceTexels:TransferBoundaryToleranceTexels,targetLocalToWorld:renderedFrame,performance:ForwardPerformance,captureReference:value=>selectedReference=value,
-                        legacyQuality:beforeQuality,captureQuality:value=>preparedQuality=value);
+                    int resolution=Mathf.Max(16,(int)Math.Max(srcEntry.repackedAtlasWidth,srcEntry.repackedAtlasHeight));
+                    (Mesh mesh,int[] sources) projection;
+                    if (keepFaces)
+                    {
+                        var recovered=await ReverseUvTransfer.RecoverForwardSurfaceAsync(srcMesh,tgtMesh,tr.uv2,tr.vertexToSourceShell,
+                            resolution,useAsync,renderedFrame,performance:ForwardPerformance,keepFaces:true,legacyQuality:beforeQuality);
+                        projection=(recovered.mesh,recovered.sources);
+                        selectedReference=recovered.reference;preparedQuality=recovered.quality;
+                    }
+                    else
+                        // The preparation reuses this measure of the legacy layout and
+                        // returns its measure of the prepared mesh, in the same frame.
+                        projection=await ReverseUvTransfer.PrepareForwardSeamsAsync(srcMesh,tgtMesh,tr.uv2,tr.vertexToSourceShell,
+                            resolution,useAsync,trace:pair?.trace,
+                            boundaryToleranceTexels:TransferBoundaryToleranceTexels,targetLocalToWorld:renderedFrame,performance:ForwardPerformance,captureReference:value=>selectedReference=value,
+                            legacyQuality:beforeQuality,captureQuality:value=>preparedQuality=value);
                     prepared=projection.mesh;var projectedSources=projection.sources;
                     if (prepared)
                     {
@@ -2615,11 +2624,13 @@ namespace SashaRX.UnityMeshLab
                             tgtMesh=tgt.originalMesh;tr=ReverseUvTransfer.DescribeForwardProjection(tgtMesh,srcMesh,projectedSources);
                             hintState.overlapHints.Clear();hintState.matchHints.Clear();
                             pair=ctx.DiagnosticCapture?.ReplacePair(pair,srcEntry,tgt,srcMesh,tgtMesh,supersededResult,TransferBoundaryToleranceTexels,projectedSources);
-                            UvtLog.Info($"[Transfer] '{tgt.renderer.name}': surface projection: overlaps {beforeQuality.overlapPairs} → {quality.overlapPairs}, collapsed faces {beforeQuality.degenerateFaces} → {quality.degenerateFaces}, average stretch {beforeQuality.areaWeightedAnisotropy:G5} → {quality.areaWeightedAnisotropy:G5}.");
+                            UvtLog.Info($"[Transfer] '{tgt.renderer.name}': surface projection{(keepFaces?" (faces kept)":"")}: overlaps {beforeQuality.overlapPairs} → {quality.overlapPairs}, collapsed faces {beforeQuality.degenerateFaces} → {quality.degenerateFaces}, average stretch {beforeQuality.areaWeightedAnisotropy:G5} → {quality.areaWeightedAnisotropy:G5}.");
                         }
                         else if(pair?.trace!=null) pair.trace.forwardSeamRefusal="Whole-mesh quality did not improve without regressions.";
                     }
-                    else if(pair?.trace!=null) pair.trace.forwardSeamRefusal="No supported donor projection.";
+                    else if(pair?.trace!=null) pair.trace.forwardSeamRefusal=keepFaces
+                        ?"Skinned or blend-shape target keeps its faces; no defective face could be rescued without new faces."
+                        :"No supported donor projection.";
                 }
                 catch(InvalidOperationException error)
                 {
