@@ -263,6 +263,40 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.Greater((double)shells * resolution * (actual + 1) * resolution * (actual + 1), 20_000_000_000d);
         }
 
+        [TestCase(4096u, 4, 3795, 2u, true)]
+        [TestCase(16384u, 1, 30000, 2u, false)]
+        public void PackBudgetRefusesAtUnitOversampleOnlyPastTheHeuristicPackersOwnWork(
+            uint resolution, int oversample, int shells, uint padding, bool packs)
+        {
+            // Past the precision budget even at factor 1, the heuristic packer runs unless its
+            // own work, shells × side + side², is past its budget (3795 shells at 4096: 1.8 s).
+            var method = typeof(XatlasRepack).GetMethod("TryResolveBudgetedPackDimensions",
+                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+            var options = RepackOptions.Default; options.resolution = resolution;
+            options.internalOversample = oversample; options.padding = padding;
+            object[] args = { options, shells, 0, 0u, 0u, null };
+            Assert.AreEqual(packs, (bool)method.Invoke(null, args), (string)args[5]);
+            if (!packs) { StringAssert.Contains("budget", (string)args[5]); return; }
+            Assert.AreEqual(1, (int)args[2]);
+            Assert.AreEqual(resolution, (uint)args[3]);
+            Assert.AreEqual(padding, (uint)args[4]);
+        }
+
+        [Test]
+        public void APackPastThePrecisionBudgetAtUnitOversampleRunsTheHeuristicPacker()
+        {
+            if (!NativeAvailable()) Assert.Ignore("xatlas native plugin not available");
+            var mesh = BuildTiledMesh(1428, .02f);
+            try {
+                var options = RepackOptions.Default; options.resolution = 4096;
+                options.reparameterizeStretchedShells = false;
+                var result = XatlasRepack.RepackSingle(mesh, options);
+                Assert.IsTrue(result.ok, result.error);
+                Assert.GreaterOrEqual(result.atlasWidth, 4096, "The requested resolution is kept; only oversample drops to 1.");
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
+
         [Test]
         public void PackRefusalAtUnitOversampleReportsBudgetAndPreservesUv2()
         {
@@ -270,7 +304,8 @@ namespace SashaRX.UnityMeshLab.Tests
             var mesh = BuildTiledMesh(1428, .02f);
             try {
                 var original = mesh.uv; mesh.uv2 = original;
-                var options = RepackOptions.Default; options.resolution = 4096;
+                // Past the heuristic packer's own budget: (1428 + 65536) × 65536 units.
+                var options = RepackOptions.Default; options.resolution = 65536;
                 options.reparameterizeStretchedShells = false;
                 var result = XatlasRepack.RepackSingle(mesh, options);
                 Assert.IsFalse(result.ok);
