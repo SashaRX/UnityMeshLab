@@ -1055,7 +1055,11 @@ namespace SashaRX.UnityMeshLab
                     // step writes, after it.
                     var reshaped = new HashSet<MeshEntry>(kv.Value.Select(p => p.entry)
                         .Where(e => e.fbxMesh != null && plan.reshaped.Any(r => r.name == e.fbxMesh.name)));
-                    var superseded = new HashSet<MeshEntry>(kv.Value.Where(p => !reshaped.Contains(p.entry) && SaveSupersedesEdit(p.entry, p.resultMesh))
+                    // Only an edit whose mesh the channel step writes: a name the structure step writes
+                    // whole (a generated LOD may take it) keeps its channels out of the file.
+                    var whole = plan.WholeMeshNames();
+                    var superseded = new HashSet<MeshEntry>(kv.Value.Where(p => !reshaped.Contains(p.entry)
+                            && SaveSupersedesEdit(p.entry, p.resultMesh) && !whole.Contains(p.entry.fbxMesh.name))
                         .Select(p => p.entry));
                     if (!isVariant) MarkSceneEditsSaved(sourceFbxPath, reshaped.Concat(superseded), _ => true);
 
