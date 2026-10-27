@@ -2673,10 +2673,15 @@ namespace SashaRX.UnityMeshLab
         /// Whether a target keeps its faces through the donor-seam trial: its subdivision
         /// carries neither skinning nor blend shapes, and the FBX takes no new faces on a
         /// deformed mesh. A scene edit of a skinned import is read without its skinning,
-        /// so the import is asked too.
+        /// so the import is asked too, and an import can leave blend shapes out, so the file
+        /// is asked last.
         /// </summary>
         internal static bool KeepsFaces(MeshEntry target)
-            => MeshAccess.IsDeformed(target.fbxMesh) || MeshAccess.IsDeformed(target.Baseline);
+            => MeshAccess.IsDeformed(target.fbxMesh) || MeshAccess.IsDeformed(target.Baseline)
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+                || FbxStructureWrite.FileDeforms(target.fbxMesh)
+#endif
+            ;
 
         static bool HasSourceUvChannels(Mesh source)
         {
