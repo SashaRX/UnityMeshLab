@@ -261,7 +261,15 @@ namespace SashaRX.UnityMeshLab
 
         const uint ORPHAN_CHART = uint.MaxValue;
         const long kBruteCostBudget = 500_000_000L;        // ~5-10s wall
-        const long kHeuristicCostBudget = 20_000_000_000L; // ~30-60s wall
+        // Spends optional internal oversample (the highest factor under it) and bounds
+        // brute-force-shaped native packs. It is not the heuristic packer's time limit.
+        const long kHeuristicCostBudget = 20_000_000_000L;
+        // The heuristic packer rasterises each chart once and tries a fixed number of random
+        // placements per chart, so its work grows with shells × side plus the atlas pixels,
+        // not shells × side² (brute force's scan). Measured on the Native~ xatlas with
+        // irregular synthetic charts: 40–100 ns per unit; 3795 shells at 4096 in 1.8 s,
+        // 10000 at 16384 in 19 s.
+        const long kHeuristicPackBudget = 600_000_000L;    // ~30-60s wall
 
         /// <summary>
         /// Flip UV0 shells with negative signed area (mirrored) so all charts
@@ -811,6 +819,17 @@ namespace SashaRX.UnityMeshLab
             return shellPixels * res;
         }
 
+        /// <summary>The heuristic packer's work, shells × side + side² (saturating); see
+        /// <see cref="kHeuristicPackBudget"/>.</summary>
+        static long ComputeHeuristicPackCost(int shellCount, uint internalRes)
+        {
+            long res = internalRes;
+            long units = Math.Max(0, shellCount) + res;
+            if (res != 0 && units > long.MaxValue / res)
+                return long.MaxValue;
+            return units * res;
+        }
+
         static bool TryResolveInternalPackDimensions(
             RepackOptions opts, out int oversample, out uint resolution, out uint padding)
         {
@@ -855,10 +874,12 @@ namespace SashaRX.UnityMeshLab
                 resolution = opts.resolution * (uint)oversample;
                 padding = opts.padding * (uint)oversample;
             }
-            long cost = ComputePackCost(shellCount, resolution);
-            if (cost > kHeuristicCostBudget)
+            // Past the precision budget even at factor 1, brute force is off, so the pack
+            // is heuristic: refuse only when the heuristic packer's own work is too large.
+            long cost = ComputeHeuristicPackCost(shellCount, resolution);
+            if (ComputePackCost(shellCount, resolution) > kHeuristicCostBudget && cost > kHeuristicPackBudget)
             {
-                error = $"pack cost {cost / 1_000_000_000L}B exceeds the {kHeuristicCostBudget / 1_000_000_000L}B safety budget even at internal oversample 1; lower atlas resolution (requested {opts.resolution}, {shellCount} shells)";
+                error = $"heuristic pack cost {cost / 1_000_000L}M exceeds the {kHeuristicPackBudget / 1_000_000L}M safety budget even at internal oversample 1; lower atlas resolution (requested {opts.resolution}, {shellCount} shells)";
                 return false;
             }
             if (oversample != requestedOversample)
@@ -933,8 +954,10 @@ namespace SashaRX.UnityMeshLab
             bool pumpEditor = true)
         {
             // Cost preflight — refuse impossibly large packs up front instead
-            // of hanging for hours. Brute force is O(shells × W × H); the
-            // random heuristic is much cheaper but still scales with area.
+            // of hanging for hours. Brute force is O(shells × W × H) and stays
+            // on only within its budget; past the precision budget the pack is
+            // heuristic and is refused only when its own work, shells × side +
+            // side², is too large as well (see kHeuristicPackBudget).
             long packCost = ComputePackCost(shellCount, internalRes);
             bruteForce = ResolvePackBruteForce(
                 bruteForce, internalOversample, shellCount, internalRes,
@@ -944,10 +967,11 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Info(UvtLog.Category.Repack,
                     $"[xatlas] Brute force pack disabled — {bruteDisabledReason}");
             }
-            if (packCost > kHeuristicCostBudget)
+            long heuristicCost = ComputeHeuristicPackCost(shellCount, internalRes);
+            if (packCost > kHeuristicCostBudget && heuristicCost > kHeuristicPackBudget)
             {
                 UvtLog.Warn(UvtLog.Category.Repack,
-                    $"[xatlas] Pack cost {packCost / 1_000_000_000L}B ops is past the {kHeuristicCostBudget / 1_000_000_000L}B safety budget — refusing to start pack. Lower internal oversample or atlas resolution.");
+                    $"[xatlas] Heuristic pack cost {heuristicCost / 1_000_000L}M is past the {kHeuristicPackBudget / 1_000_000L}M safety budget — refusing to start pack. Lower internal oversample or atlas resolution.");
                 return Task.FromResult(false);
             }
 
