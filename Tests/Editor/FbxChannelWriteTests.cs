@@ -140,6 +140,39 @@ namespace SashaRX.UnityMeshLab.Tests
             => Assert.Throws<InvalidOperationException>(() => FbxPolygonSplit.Plan(new[] { 4 }, new[] { true, false, true, false }, triangles));
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        /// <summary>A negative layer index (a corner Maya leaves without a UV) reads as no value and survives a write of the other corners.</summary>
+        [Test]
+        public void Layers_ACornerWithANegativeIndexHasNoValueAndKeepsItThroughAWrite()
+        {
+            using var manager = FbxManager.Create();
+            var scene = FbxScene.Create(manager, "Source");
+            var mesh = FbxMesh.Create(scene, "Triangle");
+            mesh.InitControlPoints(3);
+            for (int i = 0; i < 3; i++) mesh.SetControlPointAt(new FbxVector4(i == 1 ? 1 : 0, i == 2 ? 1 : 0, 0), i);
+            mesh.BeginPolygon(); for (int i = 0; i < 3; i++) mesh.AddPolygon(i); mesh.EndPolygon();
+            mesh.CreateLayer();
+            var uv = FbxLayerElementUV.Create(mesh, "map1");
+            uv.SetMappingMode(FbxLayerElement.EMappingMode.eByPolygonVertex);
+            uv.SetReferenceMode(FbxLayerElement.EReferenceMode.eIndexToDirect);
+            uv.GetDirectArray().Add(new FbxVector2(0.25, 0.5)); uv.GetDirectArray().Add(new FbxVector2(0.75, 0.5));
+            foreach (int index in new[] { 0, 1, -1 }) uv.GetIndexArray().Add(index);
+            mesh.GetLayer(0).SetUVs(uv, FbxLayerElement.EType.eTextureDiffuse);
+            var topology = new FbxLayerChannels.Topology(mesh);
+
+            var read = FbxLayerChannels.ReadUv(uv, topology);
+            CollectionAssert.AreEqual(new[] { 0.25, 0.5, 0.75, 0.5 }, read.Take(4));
+            Assert.IsTrue(double.IsNaN(read[4]) && double.IsNaN(read[5]), "the corner without an index has no value");
+
+            FbxLayerChannels.WriteUv(mesh, 0, topology, new[] { 0.1, 0.2, 0, 0, 0, 0 }, new[] { true, false, false });
+            var written = FbxLayerChannels.ReadUv(FbxLayerChannels.UvElements(mesh)[0], topology);
+            CollectionAssert.AreEqual(new[] { 0.1, 0.2, 0.75, 0.5 }, written.Take(4));
+            Assert.AreEqual(-1, FbxLayerChannels.UvElements(mesh)[0].GetIndexArray().GetAt(2), "an unwritten corner keeps its -1");
+
+            FbxLayerChannels.WriteUv(mesh, 0, topology, new[] { 0.1, 0.2, 0.75, 0.5, 0.3, 0.4 }, new[] { false, false, true });
+            CollectionAssert.AreEqual(new[] { 0.3, 0.4 }, FbxLayerChannels.ReadUv(FbxLayerChannels.UvElements(mesh)[0], topology).Skip(4),
+                "a written corner takes its value");
+        }
+
         [TestCase(false)] [TestCase(true)]
         public void SplitMaterialSelectionIncludesEveryExpandedCorner(bool keepQuads)
         {
