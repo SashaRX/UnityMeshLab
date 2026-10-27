@@ -286,7 +286,7 @@ namespace SashaRX.UnityMeshLab
         {
             string path = mesh ? AssetDatabase.GetAssetPath(mesh) : null;
             if (string.IsNullOrEmpty(path) || !path.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase)) return false;
-            string full = System.IO.Path.GetFullPath(path);
+            string full = PhysicalPath(path);
             var stamp = System.IO.File.GetLastWriteTimeUtc(full);
             if (!deformedNames.TryGetValue(full, out var cached) || cached.stamp != stamp)
             {
