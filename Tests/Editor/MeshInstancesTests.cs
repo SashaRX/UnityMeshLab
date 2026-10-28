@@ -53,6 +53,19 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsFalse(copies.ContainsKey(source));
         }
 
+        /// <summary>A target of a copy's mesh group transfers from the copy's processed entry, not from the first source.</summary>
+        [Test]
+        public void ATargetOfACopysGroupTransfersFromItsProcessedEntry()
+        {
+            MeshEntry unrelated = Entry(Quad("Door"), 0), processed = Entry(Quad("Relief"), 0), target = Entry(Quad("Relief_LOD1"), 1);
+            unrelated.meshGroupKey = "Door"; processed.meshGroupKey = "Relief_A"; target.meshGroupKey = "Relief_B";
+            var sources = new List<MeshEntry> { unrelated, processed };
+            Assert.AreSame(unrelated, UvTransferWorkflow.SourceFor(target, sources), "Without the copy's group the first source is taken.");
+            Assert.AreSame(processed, UvTransferWorkflow.SourceFor(target, sources, new Dictionary<string, MeshEntry> { ["Relief_B"] = processed }));
+            Assert.AreSame(unrelated, UvTransferWorkflow.SourceFor(unrelated, sources, new Dictionary<string, MeshEntry> { ["Door"] = processed }),
+                "A group with a source of its own keeps it.");
+        }
+
         /// <summary>Different meshes under one name, other files' meshes, excluded entries and meshes outside an asset stay apart.</summary>
         [Test]
         public void OnlyIncludedCopiesOfOneAssetMeshAreShared()

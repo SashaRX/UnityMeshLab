@@ -1739,14 +1739,24 @@ namespace SashaRX.UnityMeshLab
                     $"on '{(copied.renderer ? copied.renderer.name : copied.fbxMesh.name)}' (LOD{copied.lodIndex}), and the others take its result.");
             }
             foreach (var copy in copies.Keys) copy.include = false;
+            // A target of a copy's mesh group transfers from the copy's processed entry.
+            copySources = copies.Where(kv => kv.Key.lodIndex == ctx.SourceLodIndex && !string.IsNullOrEmpty(kv.Key.meshGroupKey))
+                .GroupBy(kv => kv.Key.meshGroupKey).ToDictionary(g => g.Key, g => g.First().Value);
             try
             {
                 bool completed = await RunFullPipelineCore(useAsync);
                 if (completed) ShareCopyResults(copies);
                 return completed;
             }
-            finally { foreach (var copy in copies.Keys) copy.include = true; }
+            finally
+            {
+                copySources = null;
+                foreach (var copy in copies.Keys) copy.include = true;
+            }
         }
+
+        // The processed entry for each mesh group of a source-LOD copy sitting the run out.
+        Dictionary<string, MeshEntry> copySources;
 
         // Each copy takes the result of the entry it copies: the file holds one mesh for both.
         void ShareCopyResults(Dictionary<MeshEntry, MeshEntry> copies)
@@ -1754,10 +1764,18 @@ namespace SashaRX.UnityMeshLab
             foreach (var kv in copies)
             {
                 MeshEntry copy = kv.Key, copied = kv.Value;
-                var result = copied.repackedMesh ? copied.repackedMesh : copied.transferredMesh;
-                if (!result) continue;
+                // The working mesh too: weld and symmetry split change it without a UV result.
                 ReleaseAttemptMeshes(copy);
                 copy.originalMesh = !copied.originalMesh || copied.originalMesh == copied.Baseline ? copy.Baseline : CopyOf(copied.originalMesh);
+                copy.wasWelded = copied.wasWelded;
+                copy.wasEdgeWelded = copied.wasEdgeWelded;
+                copy.wasSymmetrySplit = copied.wasSymmetrySplit;
+                copy.forwardUvReference = copied.forwardUvReference;
+                copy.reverseTransferJson = copied.reverseTransferJson;
+                copy.shellTransferResult = copied.shellTransferResult;
+                copy.validationReport = copied.validationReport;
+                var result = copied.repackedMesh ? copied.repackedMesh : copied.transferredMesh;
+                if (!result) continue;
                 if (copy.lodIndex == ctx.SourceLodIndex)
                 {
                     copy.repackedMesh = CopyOf(result);
@@ -1767,13 +1785,6 @@ namespace SashaRX.UnityMeshLab
                     copy.diagnosticPackedAtlasHeight = copied.diagnosticPackedAtlasHeight;
                 }
                 else copy.transferredMesh = CopyOf(result);
-                copy.wasWelded = copied.wasWelded;
-                copy.wasEdgeWelded = copied.wasEdgeWelded;
-                copy.wasSymmetrySplit = copied.wasSymmetrySplit;
-                copy.forwardUvReference = copied.forwardUvReference;
-                copy.reverseTransferJson = copied.reverseTransferJson;
-                copy.shellTransferResult = copied.shellTransferResult;
-                copy.validationReport = copied.validationReport;
             }
             if (copies.Count > 0) ctx.ClearAllCaches();
 
@@ -2545,7 +2556,7 @@ namespace SashaRX.UnityMeshLab
                 pendingTargets = new Dictionary<MeshEntry, int>();
                 foreach (var tgt in targets)
                 {
-                    var s = SourceFor(tgt, sources);
+                    var s = SourceFor(tgt, sources, copySources);
                     pendingTargets[s] = pendingTargets.TryGetValue(s, out int count) ? count + 1 : 1;
                 }
             }
@@ -2557,12 +2568,17 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        // The source a target transfers from: the one of its mesh group, else the first.
-        static MeshEntry SourceFor(MeshEntry tgt, List<MeshEntry> sources)
+        // The source a target transfers from: the one of its mesh group, else the processed
+        // entry of a copy in that group sitting the run out (copySources), else the first.
+        internal static MeshEntry SourceFor(MeshEntry tgt, List<MeshEntry> sources, IReadOnlyDictionary<string, MeshEntry> copySources = null)
         {
             MeshEntry srcEntry = null;
             if (!string.IsNullOrEmpty(tgt.meshGroupKey))
+            {
                 srcEntry = sources.FirstOrDefault(s => s.meshGroupKey == tgt.meshGroupKey);
+                if (srcEntry == null && copySources != null && copySources.TryGetValue(tgt.meshGroupKey, out var copied) && sources.Contains(copied))
+                    srcEntry = copied;
+            }
             return srcEntry ?? sources[0];
         }
 
@@ -2571,7 +2587,7 @@ namespace SashaRX.UnityMeshLab
         {
             EnsureTransferWorkingMesh(tgt);
 
-            MeshEntry srcEntry = SourceFor(tgt, sources);
+            MeshEntry srcEntry = SourceFor(tgt, sources, copySources);
 
             Mesh srcMesh = srcEntry.repackedMesh ?? srcEntry.originalMesh;
             Mesh tgtMesh = tgt.originalMesh;
