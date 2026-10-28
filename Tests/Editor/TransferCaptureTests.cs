@@ -720,6 +720,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 ((Task)method.Invoke(workflow, new object[] { target, new List<MeshEntry> { source }, 1, false, null, null })).GetAwaiter().GetResult();
                 capture.Finish(true);
                 Assert.Greater(target.originalMesh.vertexCount, targetMesh.vertexCount, "Exercise the accepted donor seam replacement.");
+                Assert.Greater(target.originalMesh.triangles.Length, targetMesh.triangles.Length, "The opt-in replacement splits faces.");
                 Assert.AreEqual(2, capture.Data.pairs.Count, "Capture both the original and the replacement input.");
                 foreach (var pair in capture.Data.pairs) {
                     Assert.IsTrue(pair.hasBoundaryTolerance);

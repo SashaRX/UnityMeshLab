@@ -143,6 +143,7 @@ namespace SashaRX.UnityMeshLab
             Add(nameof(SymmetrySplitMode), SymmetrySplitMode);
             Add(nameof(splitTargetsInSymmetryStep), splitTargetsInSymmetryStep);
             Add(nameof(skipSymmetrySplitStep), skipSymmetrySplitStep);
+            Add(nameof(splitFacesAtDonorSeams), splitFacesAtDonorSeams);
             Add(nameof(stageRunAnalyzeUv0), stageRunAnalyzeUv0);
             Add(nameof(stageRunWeldUv0), stageRunWeldUv0);
             Add(nameof(stageRunRepack), stageRunRepack);
