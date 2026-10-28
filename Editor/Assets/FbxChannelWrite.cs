@@ -55,6 +55,8 @@ namespace SashaRX.UnityMeshLab
             public float[] positions;
             public int[] faces, faceSizes;
             public readonly Vector2[][] uvs = new Vector2[8][];
+            /// <summary>The UV channels the entry's baseline (its scene edit, else the import) carries; null when unknown.</summary>
+            public bool[] baselineUvs;
             /// <summary>UV channels the write leaves alone, for telling coincident candidates apart.</summary>
             public readonly Vector2[][] signatureUvs = new Vector2[8][];
             /// <summary>Colours the save does not write, compared like <see cref="signatureUvs"/>: bytes for an 8-bit stream, floats otherwise.</summary>
@@ -556,7 +558,9 @@ namespace SashaRX.UnityMeshLab
         internal static int FbxUvSet(int unityChannel, bool swapUv) => swapUv && unityChannel < 2 ? 1 - unityChannel : unityChannel;
 
         // A channel the file cannot take (UV3 on a mesh with UV0 and UV1 only) stays out of
-        // it, and the save goes on with the others.
+        // it when the baseline carries it: the scene edit keeps it, or the import adds it
+        // again. One added since (an AO bake into the working copy) lives nowhere else, so
+        // the save is refused as before.
         static void LeaveOutUnplaceableUvs(FbxSourceDocument document, List<Donor> donors, Dictionary<string, Tagged> tagged, bool swapUv)
         {
             foreach (var donor in donors)
@@ -565,8 +569,11 @@ namespace SashaRX.UnityMeshLab
                 int sets = FbxLayerChannels.UvElements(document.Meshes[tag.ordinal]).Count;
                 foreach (int ch in UnplaceableUvChannels(donor.uvs.Select(uv => uv != null).ToArray(), sets, swapUv))
                 {
+                    string reason = $"its FBX mesh has {sets} UV set(s), and UV{ch} cannot be added without inventing the sets before it";
+                    if (donor.baselineUvs?[ch] != true)
+                        throw new InvalidOperationException($"'{donor.name}': UV{ch} was added here, but {reason}; write it to UV{sets} instead. Nothing was written.");
                     donor.uvs[ch] = null;
-                    UvtLog.Warn($"[FBX Export] '{donor.name}': UV{ch} is not saved: its FBX mesh has {sets} UV set(s), and UV{ch} cannot be added without inventing the sets before it. The other channels are saved.");
+                    UvtLog.Warn($"[FBX Export] '{donor.name}': UV{ch} is not saved: {reason}. Its scene edit or import keeps it; the other channels are saved.");
                 }
             }
         }
@@ -678,7 +685,9 @@ namespace SashaRX.UnityMeshLab
         {
             var intent = capture.intent;
             bool generatedUv1 = capture.generatedUv1;
-            var donor = new Donor { name = name };
+            var baseline = entry.Baseline;
+            var donor = new Donor { name = name, baselineUvs = baseline == null ? null : Enumerable.Range(0, 8)
+                .Select(ch => baseline.HasVertexAttribute((VertexAttribute)((int)VertexAttribute.TexCoord0 + ch))).ToArray() };
             if (capture.shadingSelection != null)
             {
                 if (!capture.shadingSelection.submeshes.TryGetValue(name, out donor.shadingSubmeshes) || donor.shadingSubmeshes.Length != mesh.subMeshCount)
