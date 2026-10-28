@@ -2126,6 +2126,20 @@ namespace SashaRX.UnityMeshLab.Tests
                 FbxLayerChannels.WriteUv(mesh, 2, topology, new double[topology.CornerCount * 2], Enumerable.Repeat(true, topology.CornerCount).ToArray()));
         }
 
+        /// <summary>A save leaves out only the channels a gap keeps from the file: UV3 next to UV0 and UV1, not a UV2 that follows them.</summary>
+        [Test]
+        public void Save_LeavesOutOnlyTheUvSetsPastAGap()
+        {
+            static bool[] Present(params int[] channels) => Enumerable.Range(0, 8).Select(c => channels.Contains(c)).ToArray();
+            CollectionAssert.AreEqual(new[] { 3 }, FbxChannelWrite.UnplaceableUvChannels(Present(0, 1, 3), 2, false));
+            CollectionAssert.AreEqual(new[] { 3, 5 }, FbxChannelWrite.UnplaceableUvChannels(Present(1, 3, 5), 2, false));
+            CollectionAssert.IsEmpty(FbxChannelWrite.UnplaceableUvChannels(Present(1, 2, 3), 2, false), "UV2 goes in first, then UV3 follows it");
+            CollectionAssert.IsEmpty(FbxChannelWrite.UnplaceableUvChannels(Present(0, 1, 7), 8, false));
+            // With 'Swap UVs' Unity UV1 is FBX set 0, so a file with no sets takes it but not UV0 alone.
+            CollectionAssert.IsEmpty(FbxChannelWrite.UnplaceableUvChannels(Present(1), 0, true));
+            CollectionAssert.AreEqual(new[] { 0 }, FbxChannelWrite.UnplaceableUvChannels(Present(0), 0, true));
+        }
+
         [Test]
         public void CornerTag_TakesTheNextChannel()
         {
