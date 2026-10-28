@@ -658,20 +658,23 @@ namespace SashaRX.UnityMeshLab
         static List<Donor> CaptureDonors(IEnumerable<MeshEntry> entries, Capture capture, ICollection<string> skip)
         {
             var donors = new List<Donor>();
-            var byName = new Dictionary<string, Donor>(StringComparer.Ordinal);
+            var byName = new Dictionary<string, (Donor donor, MeshEntry entry)>(StringComparer.Ordinal);
             foreach (var entry in entries.Where(e => e != null && e.include))
             {
                 var donor = CaptureDonor(entry, capture);
                 if (donor == null || (skip != null && skip.Contains(donor.name))) continue;
                 // Instances of one FBX mesh share its data: the same edit twice is one edit,
-                // different edits cannot both be written.
+                // different edits cannot both be written. Imports that differ are not instances
+                // but different meshes under one name, which the save cannot tell apart.
                 if (byName.TryGetValue(donor.name, out var first))
                 {
-                    if (!SameEdit(first, donor))
-                        throw new InvalidOperationException($"'{donor.name}' is instanced and its instances were edited differently; they share one FBX mesh, so only one edit can be written. Nothing was written.");
+                    if (!SameEdit(first.donor, donor))
+                        throw new InvalidOperationException(MeshInstances.SameContent(first.entry.fbxMesh, entry.fbxMesh)
+                            ? $"'{donor.name}' is instanced and its instances were edited differently; they share one FBX mesh, so only one edit can be written. Nothing was written."
+                            : $"'{donor.name}' names several different meshes of the FBX, and the save tells the file's meshes apart by name; give them unique names in the DCC. Nothing was written.");
                     continue;
                 }
-                byName[donor.name] = donor;
+                byName[donor.name] = (donor, entry);
                 donors.Add(donor);
             }
             return donors;
