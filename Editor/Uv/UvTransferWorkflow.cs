@@ -2515,6 +2515,14 @@ namespace SashaRX.UnityMeshLab
 
         internal float TransferBoundaryToleranceTexels = UvTransferTolerance.BoundaryTexels;
 
+        /// <summary>
+        /// Whether the donor-seam trial may split a static target's faces at donor seams.
+        /// Off: every target keeps its triangles and the trial splits only UV seams, since
+        /// new faces are edges the asset never had. A skinned or blend-shape target keeps
+        /// its faces either way.
+        /// </summary>
+        internal bool splitFacesAtDonorSeams;
+
         // Opt-in benchmark wall times of ordinary Transfer stages; null outside the
         // paired performance test. Nested stages overlap and must not be summed.
         internal TransferPerformanceProfile ForwardPerformance;
@@ -2639,11 +2647,13 @@ namespace SashaRX.UnityMeshLab
                 beforeQuality=TransferUvQuality.Measure(tgtMesh,tr.uv2,Vector2.one,renderedFrame);
             var finalQuality=beforeQuality;
             bool seamTrial=NeedsDonorSeamTrial(beforeQuality,AutoTuneScore.GeometryDegenerateFaces(tgtMesh,renderedFrame));
-            // Subdivision would drop a skinned or blend-shape target's deformation,
-            // and the FBX cannot take new faces on a deformed mesh: such a target
-            // keeps its triangles, and the trial only splits UV seams on it.
-            bool keepFaces=seamTrial && KeepsFaces(tgt);
-            if (keepFaces)
+            // New faces at donor seams are edges the asset never had, and a skinned or
+            // blend-shape target would lose its deformation with them (the FBX takes no
+            // new faces on a deformed mesh): the trial keeps the target's triangles and
+            // splits only UV seams, unless splitFacesAtDonorSeams allows new faces on a
+            // static target.
+            bool keepFaces=seamTrial && (!splitFacesAtDonorSeams || KeepsFaces(tgt));
+            if (keepFaces && splitFacesAtDonorSeams)
                 UvtLog.Info($"[Transfer] '{tgt.renderer.name}': skinned or has blend shapes; donor seam trial keeps its faces and splits only UV seams.");
             if (seamTrial)
             {
@@ -2688,7 +2698,7 @@ namespace SashaRX.UnityMeshLab
                         else if(pair?.trace!=null) pair.trace.forwardSeamRefusal="Whole-mesh quality did not improve without regressions.";
                     }
                     else if(pair?.trace!=null) pair.trace.forwardSeamRefusal=keepFaces
-                        ?"Skinned or blend-shape target keeps its faces; no defective face could be rescued without new faces."
+                        ?"The target keeps its faces; no defective face could be rescued without new faces."
                         :"No supported donor projection.";
                 }
                 catch(InvalidOperationException error)
