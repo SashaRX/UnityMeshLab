@@ -1726,8 +1726,66 @@ namespace SashaRX.UnityMeshLab
         /// the just-completed run; returns <c>false</c> when the user
         /// cancelled or a required repack failed so the caller can skip artefact recording
         /// (stale state from a prior run would otherwise be written).
+        /// Renderers showing copies of one FBX mesh (<see cref="MeshInstances"/>) are
+        /// processed once: the other copies sit the run out and take its result.
         /// </summary>
         async Task<bool> ExecFullPipelineCoreImpl(bool useAsync)
+        {
+            var copies = MeshInstances.Copies(ctx.MeshEntries, ctx.SourceLodIndex);
+            foreach (var group in copies.GroupBy(kv => kv.Value))
+            {
+                var copied = group.Key;
+                UvtLog.Info($"[Pipeline] '{copied.fbxMesh.name}': {group.Count() + 1} renderers show one FBX mesh; it is processed once, " +
+                    $"on '{(copied.renderer ? copied.renderer.name : copied.fbxMesh.name)}' (LOD{copied.lodIndex}), and the others take its result.");
+            }
+            foreach (var copy in copies.Keys) copy.include = false;
+            try
+            {
+                bool completed = await RunFullPipelineCore(useAsync);
+                if (completed) ShareCopyResults(copies);
+                return completed;
+            }
+            finally { foreach (var copy in copies.Keys) copy.include = true; }
+        }
+
+        // Each copy takes the result of the entry it copies: the file holds one mesh for both.
+        void ShareCopyResults(Dictionary<MeshEntry, MeshEntry> copies)
+        {
+            foreach (var kv in copies)
+            {
+                MeshEntry copy = kv.Key, copied = kv.Value;
+                var result = copied.repackedMesh ? copied.repackedMesh : copied.transferredMesh;
+                if (!result) continue;
+                ReleaseAttemptMeshes(copy);
+                copy.originalMesh = !copied.originalMesh || copied.originalMesh == copied.Baseline ? copy.Baseline : CopyOf(copied.originalMesh);
+                if (copy.lodIndex == ctx.SourceLodIndex)
+                {
+                    copy.repackedMesh = CopyOf(result);
+                    copy.repackedAtlasWidth = copied.repackedAtlasWidth;
+                    copy.repackedAtlasHeight = copied.repackedAtlasHeight;
+                    copy.diagnosticPackedAtlasWidth = copied.diagnosticPackedAtlasWidth;
+                    copy.diagnosticPackedAtlasHeight = copied.diagnosticPackedAtlasHeight;
+                }
+                else copy.transferredMesh = CopyOf(result);
+                copy.wasWelded = copied.wasWelded;
+                copy.wasEdgeWelded = copied.wasEdgeWelded;
+                copy.wasSymmetrySplit = copied.wasSymmetrySplit;
+                copy.forwardUvReference = copied.forwardUvReference;
+                copy.reverseTransferJson = copied.reverseTransferJson;
+                copy.shellTransferResult = copied.shellTransferResult;
+                copy.validationReport = copied.validationReport;
+            }
+            if (copies.Count > 0) ctx.ClearAllCaches();
+
+            static Mesh CopyOf(Mesh mesh)
+            {
+                var copy = UnityEngine.Object.Instantiate(mesh);
+                copy.name = mesh.name;
+                return copy;
+            }
+        }
+
+        async Task<bool> RunFullPipelineCore(bool useAsync)
         {
             PrepareTransferInputs();
             string version = UnityEditor.PackageManager.PackageInfo
