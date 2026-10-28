@@ -561,7 +561,7 @@ namespace SashaRX.UnityMeshLab
         /// the import cannot be told (a sidecar may add the channel, an AO bake may have
         /// changed it), so leaving them out is the user's call. Batch mode refuses.
         /// </summary>
-        internal static Func<string, bool> ConfirmLeavingOutUvs = message => !Application.isBatchMode
+        internal static Func<string, bool> ConfirmLeavingOutUvs { get; set; } = message => !Application.isBatchMode
             && EditorUtility.DisplayDialog("UV channels the FBX cannot take", message, "Save without them", "Cancel");
 
         // A channel the file cannot take (UV3 on a mesh with UV0 and UV1 only) refuses the
