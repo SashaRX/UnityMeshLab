@@ -179,6 +179,7 @@ namespace SashaRX.UnityMeshLab
 
             using var document = FbxSourceDocument.Load(Path.GetFullPath(sourceFbxPath));
             var tagged = ImportTagged(sourceFbxPath, swapUv, out var importedNames);
+            LeaveOutUnplaceableUvs(document, donors, tagged, swapUv);
             // An unloaded mesh keeps its polygons: one its imported lightmap UVs do not fit
             // has them unwrapped again instead (WriteRegeneratedUv1).
             int splitPolygons = PrepareSeamSplits(document, donors.Where(d => !unloaded.Contains(d.name)).ToList(), tagged);
@@ -553,6 +554,41 @@ namespace SashaRX.UnityMeshLab
 
         // Unity UV channel ↔ FBX UV set: 'Swap UVs' on the importer exchanges the first two.
         internal static int FbxUvSet(int unityChannel, bool swapUv) => swapUv && unityChannel < 2 ? 1 - unityChannel : unityChannel;
+
+        // A channel the file cannot take (UV3 on a mesh with UV0 and UV1 only) stays out of
+        // it, and the save goes on with the others.
+        static void LeaveOutUnplaceableUvs(FbxSourceDocument document, List<Donor> donors, Dictionary<string, Tagged> tagged, bool swapUv)
+        {
+            foreach (var donor in donors)
+            {
+                if (!tagged.TryGetValue(donor.name, out var tag) || tag.ambiguous) continue;
+                int sets = FbxLayerChannels.UvElements(document.Meshes[tag.ordinal]).Count;
+                foreach (int ch in UnplaceableUvChannels(donor.uvs.Select(uv => uv != null).ToArray(), sets, swapUv))
+                {
+                    donor.uvs[ch] = null;
+                    UvtLog.Warn($"[FBX Export] '{donor.name}': UV{ch} is not saved: its FBX mesh has {sets} UV set(s), and UV{ch} cannot be added without inventing the sets before it. The other channels are saved.");
+                }
+            }
+        }
+
+        /// <summary>
+        /// The Unity UV channels of <paramref name="present"/> a mesh with <paramref name="existingSets"/>
+        /// UV sets cannot take. A new set goes right after the last one, in FBX set order, so a
+        /// channel past a gap is left out, and every channel after it.
+        /// </summary>
+        internal static List<int> UnplaceableUvChannels(bool[] present, int existingSets, bool swapUv)
+        {
+            var left = new List<int>();
+            int sets = existingSets;
+            foreach (int ch in Enumerable.Range(0, present.Length).Where(c => present[c]).OrderBy(c => FbxUvSet(c, swapUv)))
+            {
+                int set = FbxUvSet(ch, swapUv);
+                if (set < sets) continue;
+                if (set == sets && set < FbxLayerChannels.MaxUnityUvChannels) { sets++; continue; }
+                left.Add(ch);
+            }
+            return left;
+        }
 
         // What a capture takes from each working mesh.
         sealed class Capture
