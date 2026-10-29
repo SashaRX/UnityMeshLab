@@ -28,8 +28,9 @@ apart; they still hold there.
 
 Change, only with "LODs share the LOD0 lightmap" (Transfer stage, saved in
 the sidecar, off by default): after the donor-seam trial, every face with
-3D area of a target shell whose UV2 is under 1e-5 wide or high (a point or
-a line; rejected shells stay at (0,0)) takes the UV2 of the LOD0 surface
+3D area of a target shell whose UV2 is under 1e-5 wide or high, or covers
+under 1e-10 of UV2 area (a point, or a line at any angle; rejected shells
+stay at (0,0)), takes the UV2 of the LOD0 surface
 under it. The LOD0 face nearest its centroid among those within 60° of its
 orientation, else among those facing its way, picks one chart; each corner
 takes the UV2 of the nearest point of that chart facing alike, so every

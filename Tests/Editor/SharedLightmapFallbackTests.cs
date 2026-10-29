@@ -118,6 +118,9 @@ namespace SashaRX.UnityMeshLab.Tests
             var line = source.uv2.Take(4).Concat(new[] {Vector2.zero, Vector2.right * .1f, Vector2.right * .1f, Vector2.zero}).ToArray();
             CollectionAssert.AreEqual(new[] {2, 3}, SharedLightmapFallback.CollapsedShellFaces(target.triangles, target.vertices, line,
                 new SharedLightmapFallback.Report()), "A shell collapsed to a line reads one row of texels.");
+            var diagonal = source.uv2.Take(4).Concat(new[] {Vector2.zero, Vector2.one * .05f, Vector2.one * .1f, Vector2.one * .05f}).ToArray();
+            CollectionAssert.AreEqual(new[] {2, 3}, SharedLightmapFallback.CollapsedShellFaces(target.triangles, target.vertices, diagonal,
+                new SharedLightmapFallback.Report()), "So does a line at any angle.");
             var flat = target.vertices;
             for (int i = 4; i < 8; ++i) flat[i] = flat[4];
             CollectionAssert.IsEmpty(SharedLightmapFallback.CollapsedShellFaces(target.triangles, flat, RejectedSecondQuad(),

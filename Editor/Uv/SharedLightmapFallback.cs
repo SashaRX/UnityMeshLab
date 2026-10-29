@@ -89,18 +89,22 @@ namespace SashaRX.UnityMeshLab
         /// <summary>
         /// The faces with 3D area of the target shells (connected by shared vertices,
         /// as the transfer extracts them) whose UV2 is less than
-        /// <see cref="GroupedShellTransfer.CollapsedUvExtent"/> wide or high.
+        /// <see cref="GroupedShellTransfer.CollapsedUvExtent"/> wide or high, or whose faces
+        /// with 3D area cover less UV2 than that extent squared: a line at any angle.
         /// </summary>
         internal static List<int> CollapsedShellFaces(int[] triangles, Vector3[] positions, Vector2[] uv2, Report report)
         {
             var faces = new List<int>();
             foreach (var shell in UvShellExtractor.Extract(uv2, triangles))
             {
-                var size = shell.boundsMax - shell.boundsMin;
-                if (size.x >= GroupedShellTransfer.CollapsedUvExtent && size.y >= GroupedShellTransfer.CollapsedUvExtent) continue;
                 var withArea = shell.faceIndices.Where(f => MeshGeometry.HasArea(positions[triangles[f * 3]],
                     positions[triangles[f * 3 + 1]], positions[triangles[f * 3 + 2]])).ToList();
                 if (withArea.Count == 0) continue;
+                var size = shell.boundsMax - shell.boundsMin;
+                const double extent = GroupedShellTransfer.CollapsedUvExtent;
+                bool thin = size.x < extent || size.y < extent;
+                if (!thin && withArea.Sum(f => System.Math.Abs(ForwardUvReference.Area(uv2[triangles[f * 3]],
+                    uv2[triangles[f * 3 + 1]], uv2[triangles[f * 3 + 2]]))) * .5 >= extent * extent) continue;
                 ++report.shells;
                 report.faces += withArea.Count;
                 faces.AddRange(withArea);
