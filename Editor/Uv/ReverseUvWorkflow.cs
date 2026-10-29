@@ -65,6 +65,21 @@ namespace SashaRX.UnityMeshLab
             && (entry.transferredMesh || entry.repackedMesh || !string.IsNullOrEmpty(entry.reverseTransferJson)
                 || (entry.originalMesh && entry.Baseline && entry.originalMesh != entry.Baseline));
 
+        /// <summary>"Atlas 512²", or each mesh atlas's side when the meshes were packed on their own.</summary>
+        internal static string ReverseAtlases(ReverseUvTransfer.Report report)
+        {
+            var sides = report.nodes.GroupBy(n => n.packingSet).Select(g => g.First().Atlas(report)).ToList();
+            return sides.Count > 1 ? $"Atlases {string.Join(" + ", sides.Select(s => $"{s}²"))}" : $"Atlas {report.atlasSize}²";
+        }
+
+        /// <summary>The final texel density, as a range when the mesh atlases differ.</summary>
+        internal static string ReverseDensity(ReverseUvTransfer.Report report)
+        {
+            var densities = report.nodes.Select(n => n.texelsPerUnit > 0 ? n.texelsPerUnit : report.texelsPerUnit).DefaultIfEmpty(report.texelsPerUnit).ToList();
+            float low = densities.Min(), high = densities.Max();
+            return high > low ? $"{low:G4}–{high:G4}" : $"{low:G4}";
+        }
+
         // An unrelated or failed operation must not remove the export guard from
         // reverse-generated meshes that are still owned by their entries.
         void ClearReverseSummary() => reverseSummary = null;
@@ -116,7 +131,7 @@ namespace SashaRX.UnityMeshLab
                     padding = SanitizePadding(ctx.ShellPaddingPx), projectionReach = reverseReach,
                     preserveProjectedOverlap = reversePreserveOverlap, cutNarrowJunctions = ctx.CutNarrowUvJunctions,
                     rotateCharts = ctx.XatlasRotateCharts, rotateChartsToAxis = ctx.XatlasRotateChartsToAxis,
-                    repackFinalAtlas = true, fillFinalAtlas = reverseFillAtlas,
+                    repackFinalAtlas = true, fillFinalAtlas = reverseFillAtlas, packPerMesh = ctx.RepackPerMesh,
                     regroupPreparedAtlas = forward != null,
                     frozenShellCascade = forward != null && !reversePreserveOverlap,
                     rebuildSeedWithUnity = false
@@ -154,16 +169,16 @@ namespace SashaRX.UnityMeshLab
                         if (level == 0) entry.repackedMesh = result.meshes[level][node];
                         else entry.transferredMesh = result.meshes[level][node];
                         result.meshes[level][node] = null;
-                        entry.repackedAtlasWidth = entry.repackedAtlasHeight = (uint)result.report.atlasSize;
+                        entry.repackedAtlasWidth = entry.repackedAtlasHeight = (uint)result.report.nodes[reportNode].Atlas(result.report);
                         entry.shellTransferResult = null; entry.transferState = null; entry.validationReport = null;
                         entry.reverseTransferJson = json[reportNode++];
                     }
                 ctx.HasRepack = ctx.HasTransfer = true;
                 lastForwardRun = null;
                 ctx.ClearAllCaches();
-                reverseSummary = $"Atlas {result.report.atlasSize}² · inherited {result.report.inheritedFaces} · new {result.report.newFaces}"
+                reverseSummary = $"{ReverseAtlases(result.report)} · inherited {result.report.inheritedFaces} · new {result.report.newFaces}"
                     + $" · overlap {result.report.overlapFaces} · ambiguous {result.report.ambiguousFaces} · split source faces {result.report.splitSourceFaces} · removed zero-area {removed}";
-                reverseSummary += $" · {result.report.texelsPerUnit:G4} tex/m · fully repacked";
+                reverseSummary += $" · {ReverseDensity(result.report)} tex/m · fully repacked";
                 if (result.report.finalPackingRefusal != null) reverseSummary += " · " + result.report.finalPackingRefusal;
                 if (prepared.refusal != null) reverseSummary += " · retained safer layout: " + prepared.refusal;
                 if (result.report.refinementRefusal != null) reverseSummary += " · donor seam cuts skipped: " + result.report.refinementRefusal;

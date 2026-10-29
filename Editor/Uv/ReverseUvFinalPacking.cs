@@ -10,14 +10,38 @@ namespace SashaRX.UnityMeshLab
     /// descendant and intentional overlay receives its parent's rigid move.</summary>
     internal static partial class ReverseUvFinalPacking
     {
+        /// <summary>
+        /// The surfaces that must share one atlas when each mesh is packed on its own:
+        /// the LODs of one mesh (by group key) and every surface an island ancestry or
+        /// an ordered overlay links to them. No chart family spans two sets.
+        /// </summary>
+        internal static List<ReverseUvTransfer.Surface[]> MeshSets(List<ReverseUvTransfer.Surface[]> levels,ReverseUvTransfer.Report report)
+        {
+            var surfaces=levels.SelectMany(l=>l).ToArray();
+            var index=new Dictionary<ReverseUvTransfer.Surface,int>();
+            for(int i=0;i<surfaces.Length;++i) index.Add(surfaces[i],i);
+            var sets=new DisjointSet(surfaces.Length);
+            foreach(var mesh in surfaces.GroupBy(s=>UvToolContext.ExtractGroupKey(s.input.key??string.Empty)))
+                foreach(var surface in mesh) sets.Union(index[mesh.First()],index[surface]);
+            var byLod=levels.ToDictionary(l=>l[0].lod);
+            foreach(var surface in surfaces)
+                foreach(var face in surface.faces.Where(f=>f.inherited && f.parentLod>surface.lod))
+                    sets.Union(index[surface],index[byLod[face.parentLod][face.parentMesh]]);
+            foreach(var relation in report.overlaps)
+                sets.Union(index[byLod[relation.lod][relation.underMesh]],index[byLod[relation.lod][relation.overMesh]]);
+            return surfaces.GroupBy(s=>sets.Find(index[s])).Select(g=>g.ToArray()).ToList();
+        }
+
+        /// <param name="only">The mesh set to pack, from <see cref="MeshSets"/>; null packs the whole chain.</param>
         internal static int Pack(List<ReverseUvTransfer.Surface[]> levels, ReverseUvTransfer.Options options,
-            ReverseUvTransfer.Report report, int previousSide, CancellationToken token)
+            ReverseUvTransfer.Report report, int previousSide, CancellationToken token, ReverseUvTransfer.Surface[] only = null)
         {
             report.finalPacking=null;report.finalPackingRefusal=null;report.finalPackingRectangleRefusal=null;
             report.finalPackingFootprints=false;report.finalPackingNative=false;
             report.finalPackingFamilies=0;report.finalPackingScale=0;
             report.resolutionLimitedFaces=0;
-            var surfaces = levels.SelectMany(l => l).ToArray();
+            var included=only==null?null:new HashSet<ReverseUvTransfer.Surface>(only);
+            var surfaces = levels.SelectMany(l => l).Where(s=>included==null || included.Contains(s)).ToArray();
             // A region label can survive independent placement/rescue of its
             // disconnected pieces. It is not a rigid packing item: using that
             // label reserves the empty space between unrelated UV islands.
@@ -67,7 +91,7 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
             foreach (var level in levels)
-                foreach (var relation in report.overlaps.Where(r => r.lod == level[0].lod))
+                foreach (var relation in report.overlaps.Where(r => r.lod == level[0].lod && offsets.ContainsKey(level[r.underMesh])))
                     families.Union(offsets[level[relation.underMesh]]+relation.underFace,
                         offsets[level[relation.overMesh]]+relation.overFace);
             var corners = new SortedDictionary<int,List<(ReverseUvTransfer.Surface surface,int corner)>>();
@@ -209,6 +233,7 @@ namespace SashaRX.UnityMeshLab
                     for(int l=0;l<levelFaces.Length;++l)
                     {
                         var faces=levelFaces[l];
+                        if(faces.Length==0) continue;
                         var uv=faces.SelectMany(x=>Enumerable.Range(0,3).Select(k=>placement[x.id][x.f*3+k]/canvas)).ToArray();
                         var min=uv.Aggregate(Vector2.Min);var max=uv.Aggregate(Vector2.Max);
                         double span=Math.Max((double)max.x-min.x,(double)max.y-min.y);
