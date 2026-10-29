@@ -577,11 +577,16 @@ namespace SashaRX.UnityMeshLab
                     left.Add((donor, ch, sets));
             }
             if (left.Count == 0) return;
-            string list = string.Join("\n", left.Select(l => $"'{l.donor.name}': UV{l.channel} (its FBX mesh has {l.sets} UV set(s))"));
+            // The dialog shows a few; the Console has them all (a long dialog text is cut off).
+            const int Shown = 3;
+            var channels = left.Select(l => $"'{l.donor.name}': UV{l.channel}").ToList();
+            UvtLog.Info($"[FBX Export] '{fileName}': UV channels the file cannot take: " +
+                string.Join(", ", left.Select(l => $"'{l.donor.name}' UV{l.channel} ({l.sets} UV set(s) in the file)")) + ".");
+            string list = string.Join("\n", channels.Take(Shown))
+                + (channels.Count > Shown ? $"\n…and {channels.Count - Shown} more (see the Console)" : "");
             if (ConfirmLeavingOutUvs == null || !ConfirmLeavingOutUvs(
-                    $"'{fileName}': these UV channels cannot be added to their FBX meshes without inventing the UV sets before them:\n\n{list}\n\n" +
-                    "Save the rest without them? After the import the meshes have them only if the import adds them again (a sidecar). " +
-                    "Cancel writes nothing and keeps the scene as it is."))
+                    $"'{fileName}': {channels.Count} UV channel(s) cannot be added without inventing the UV sets before them:\n\n{list}\n\n" +
+                    "Save the rest without them? Cancel writes nothing."))
                 throw new InvalidOperationException($"{string.Join("; ", left.Select(l => $"'{l.donor.name}': UV{l.channel}"))} cannot be added without inventing " +
                     "the UV sets before them; write the channel to the next free UV set, or save without it. Nothing was written.");
             foreach (var (donor, channel, sets) in left)
