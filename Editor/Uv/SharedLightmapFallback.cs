@@ -73,21 +73,11 @@ namespace SashaRX.UnityMeshLab
             return (mesh, sources.ToArray());
         }
 
-        static bool Finite(Vector2 p) => !float.IsNaN(p.x) && !float.IsNaN(p.y) && !float.IsInfinity(p.x) && !float.IsInfinity(p.y);
-
         /// <summary>The squared UV2 distance within which a point counts as on a chart: far below a texel.</summary>
         const float OnChart = 1e-12f;
 
         /// <summary>The cosine within which a LOD0 face counts as oriented like the target face.</summary>
         const float Facing = .5f;
-
-        /// <summary>The unit normal of a face; zero when its float cross product underflows.</summary>
-        static Vector3 Normal(Vector3 a, Vector3 b, Vector3 c)
-        {
-            var cross = Vector3.Cross(b - a, c - a);
-            float length = cross.magnitude;
-            return length > 0 ? cross / length : Vector3.zero;
-        }
 
         /// <summary>
         /// The faces with 3D area of the target shells (connected by shared vertices,
@@ -246,6 +236,16 @@ namespace SashaRX.UnityMeshLab
                         if (hit.faceIndex < 0 || hit.distSq > OnChart) return false;
                     }
                 return true;
+            }
+
+            static bool Finite(Vector2 p) => !float.IsNaN(p.x) && !float.IsNaN(p.y) && !float.IsInfinity(p.x) && !float.IsInfinity(p.y);
+
+            /// <summary>The unit normal of a face; zero when its float cross product underflows.</summary>
+            static Vector3 Normal(Vector3 a, Vector3 b, Vector3 c)
+            {
+                var cross = Vector3.Cross(b - a, c - a);
+                float length = cross.magnitude;
+                return length > 0 ? cross / length : Vector3.zero;
             }
 
             Vector3 FaceNormal(int face)
