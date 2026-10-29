@@ -84,6 +84,7 @@ namespace SashaRX.UnityMeshLab
             public List<MeshAttributeInfo> attributes = new List<MeshAttributeInfo>();
             public List<DegenerateEntry> degenerateEntries = new List<DegenerateEntry>();
             public List<UnusedVertEntry> unusedVertEntries = new List<UnusedVertEntry>();
+            public List<string> unreadMeshes = new List<string>();
         }
 
         struct DegenerateEntry
@@ -1545,7 +1546,15 @@ namespace SashaRX.UnityMeshLab
 
             if (meshReport == null) return;
 
-            if (meshReport.weldCandidates.Count == 0 &&
+            if (meshReport.unreadMeshes.Count > 0)
+            {
+                EditorGUILayout.Space(4);
+                EditorGUILayout.HelpBox(
+                    $"{meshReport.unreadMeshes.Count} mesh(es) could not be read and were not checked: " +
+                    string.Join(", ", meshReport.unreadMeshes) + ".",
+                    MessageType.Warning);
+            }
+            else if (meshReport.weldCandidates.Count == 0 &&
                 meshReport.emptyUvEntries.Count == 0 &&
                 meshReport.degenerateEntries.Count == 0 &&
                 meshReport.unusedVertEntries.Count == 0)
@@ -1667,77 +1676,19 @@ namespace SashaRX.UnityMeshLab
                             UnityEngine.Rendering.VertexAttribute.TexCoord0 + ch);
                     meshReport.attributes.Add(attrInfo);
 
-                    // Skip vertex-data operations for non-readable meshes
-                    if (!mesh.isReadable) continue;
-
-                    // Weld check
-                    var report = Uv0Analyzer.Analyze(mesh);
-                    if (report.HasIssues)
-                        meshReport.weldCandidates.Add(e);
-
-                    // Empty UV channels
-                    var emptyChannels = new List<int>();
-                    for (int ch = 0; ch < 8; ch++)
+                    // An unreadable mesh is checked through a readable copy: skipped, it was
+                    // reported as "No mesh issues found" without any check having read it.
+                    Mesh readable;
+                    bool isCopy;
+                    try { readable = MeshAccess.Readable(mesh, out isCopy); }
+                    catch (Exception error)
                     {
-                        tmpUv.Clear();
-                        mesh.GetUVs(ch, tmpUv);
-                        if (tmpUv.Count == 0) continue; // channel not set at all, skip
-
-                        bool allZero = true;
-                        for (int vi = 0; vi < tmpUv.Count; vi++)
-                        {
-                            if (tmpUv[vi].sqrMagnitude > 0f) { allZero = false; break; }
-                        }
-                        if (allZero)
-                            emptyChannels.Add(ch);
+                        meshReport.unreadMeshes.Add(mesh.name);
+                        UvtLog.Warn($"[Cleanup] '{mesh.name}' could not be read and is not checked: {error.Message}");
+                        continue;
                     }
-                    // Check for zero vertex colors
-                    bool hasZeroColors = false;
-                    var colors = mesh.colors;
-                    if (colors != null && colors.Length > 0)
-                    {
-                        bool allZero = true;
-                        for (int vi = 0; vi < colors.Length; vi++)
-                        {
-                            var c = colors[vi];
-                            if (c.r > 0f || c.g > 0f || c.b > 0f || c.a > 0f)
-                            { allZero = false; break; }
-                        }
-                        hasZeroColors = allZero;
-                    }
-
-                    if (emptyChannels.Count > 0 || hasZeroColors)
-                    {
-                        meshReport.emptyUvEntries.Add(new EmptyUvEntry
-                        {
-                            entry = e,
-                            channels = emptyChannels,
-                            hasZeroColors = hasZeroColors
-                        });
-                    }
-
-                    // Degenerate triangles
-                    int degenerate = MeshHygieneUtility.CountDegenerateTriangles(mesh);
-                    if (degenerate > 0)
-                    {
-                        meshReport.degenerateEntries.Add(new DegenerateEntry
-                        {
-                            entry = e,
-                            count = degenerate
-                        });
-                    }
-
-                    // Unused vertices
-                    int unused = MeshHygieneUtility.CountUnusedVertices(mesh);
-                    if (unused > 0)
-                    {
-                        meshReport.unusedVertEntries.Add(new UnusedVertEntry
-                        {
-                            entry = e,
-                            count = unused,
-                            hasBlendShapes = mesh.blendShapeCount > 0
-                        });
-                    }
+                    try { CheckMeshData(e, readable, mesh.blendShapeCount > 0, tmpUv); }
+                    finally { if (isCopy) UnityEngine.Object.DestroyImmediate(readable); }
                 }
 
                 meshReport.lods.Add(lodInfo);
@@ -1764,6 +1715,7 @@ namespace SashaRX.UnityMeshLab
                         (colorCount > 0 ? $" ({colorCount} with zero vertex colors)" : "") +
                         (totalDegen > 0 ? $", {totalDegen} degenerate tri(s) across {meshReport.degenerateEntries.Count} mesh(es)" : "") +
                         (totalUnused > 0 ? $", {totalUnused} unused vert(s) across {meshReport.unusedVertEntries.Count} mesh(es)" : "") +
+                        (meshReport.unreadMeshes.Count > 0 ? $", {meshReport.unreadMeshes.Count} mesh(es) not read" : "") +
                         ".");
 
             // Initialize desired-state toggles from current mesh attributes (union),
@@ -1780,6 +1732,79 @@ namespace SashaRX.UnityMeshLab
                     for (int ch = 0; ch < 8; ch++)
                         if (attr.hasUv[ch]) ensureUv[ch] = true;
                 }
+            }
+        }
+
+        // The vertex-data checks of one entry's mesh, which is readable.
+        void CheckMeshData(MeshEntry e, Mesh mesh, bool hasBlendShapes, List<Vector2> tmpUv)
+        {
+            // Weld check
+            var report = Uv0Analyzer.Analyze(mesh);
+            if (report.HasIssues)
+                meshReport.weldCandidates.Add(e);
+
+            // Empty UV channels
+            var emptyChannels = new List<int>();
+            for (int ch = 0; ch < 8; ch++)
+            {
+                tmpUv.Clear();
+                mesh.GetUVs(ch, tmpUv);
+                if (tmpUv.Count == 0) continue; // channel not set at all, skip
+
+                bool allZero = true;
+                for (int vi = 0; vi < tmpUv.Count; vi++)
+                {
+                    if (tmpUv[vi].sqrMagnitude > 0f) { allZero = false; break; }
+                }
+                if (allZero)
+                    emptyChannels.Add(ch);
+            }
+            // Check for zero vertex colors
+            bool hasZeroColors = false;
+            var colors = mesh.colors;
+            if (colors != null && colors.Length > 0)
+            {
+                bool allZero = true;
+                for (int vi = 0; vi < colors.Length; vi++)
+                {
+                    var c = colors[vi];
+                    if (c.r > 0f || c.g > 0f || c.b > 0f || c.a > 0f)
+                    { allZero = false; break; }
+                }
+                hasZeroColors = allZero;
+            }
+
+            if (emptyChannels.Count > 0 || hasZeroColors)
+            {
+                meshReport.emptyUvEntries.Add(new EmptyUvEntry
+                {
+                    entry = e,
+                    channels = emptyChannels,
+                    hasZeroColors = hasZeroColors
+                });
+            }
+
+            // Degenerate triangles
+            int degenerate = MeshHygieneUtility.CountDegenerateTriangles(mesh);
+            if (degenerate > 0)
+            {
+                meshReport.degenerateEntries.Add(new DegenerateEntry
+                {
+                    entry = e,
+                    count = degenerate
+                });
+            }
+
+            // Unused vertices
+            int unused = MeshHygieneUtility.CountUnusedVertices(mesh);
+            if (unused > 0)
+            {
+                meshReport.unusedVertEntries.Add(new UnusedVertEntry
+                {
+                    entry = e,
+                    count = unused,
+                    hasBlendShapes = hasBlendShapes
+                });
             }
         }
 

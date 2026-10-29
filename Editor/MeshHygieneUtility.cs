@@ -197,7 +197,8 @@ namespace SashaRX.UnityMeshLab
         /// Prepares a MeshEntry for in-place mutation:
         /// <list type="bullet">
         /// <item>Resolves writable mesh (<c>originalMesh ?? fbxMesh</c>).</item>
-        /// <item>Bails out with a warning if missing or non-readable.</item>
+        /// <item>Bails out with a warning if missing, or non-readable where it would be edited in place or
+        /// is skinned or has blend shapes; else a non-readable mesh is cloned through <see cref="MeshAccess"/>.</item>
         /// <item>Clones asset-backed meshes, pipeline working copies and a scene edit another renderer
         /// shows too (a duplicated object), and re-wires <c>MeshFilter</c> + <c>entry.originalMesh</c>: the
         /// clone is <c>entry.sceneEditMesh</c>, which no reset destroys.</item>
@@ -211,19 +212,24 @@ namespace SashaRX.UnityMeshLab
             if (entry == null) return false;
             var source = entry.originalMesh ?? entry.fbxMesh;
             if (source == null) return false;
-            if (!source.isReadable)
-            {
-                UvtLog.Warn($"[Cleanup] Skipped '{source.name}': mesh not readable (enable Read/Write in import settings).");
-                return false;
-            }
 
             // A scene edit another renderer shows too (the object was duplicated with it on) is
             // copied before it is edited: the edit on this renderer must leave the other as it is.
             bool shared = source == entry.sceneEditMesh && source != entry.fbxMesh
                 && LodGroupUtility.IsMeshReferenced(source, entry.meshFilter);
-            if (AssetDatabase.Contains(source) || shared)
+            bool assetOrShared = AssetDatabase.Contains(source) || shared;
+            bool workingCopy = !assetOrShared && source != entry.fbxMesh && source != entry.sceneEditMesh;
+            // An unreadable mesh is edited in a readable copy (MeshAccess), which carries no
+            // skinning or blend shapes; one that would be edited in place cannot be.
+            if (!source.isReadable && (MeshAccess.IsDeformed(source) || !(assetOrShared || workingCopy)))
             {
-                var clone = UnityEngine.Object.Instantiate(source);
+                UvtLog.Warn($"[Cleanup] Skipped '{source.name}': mesh not readable (enable Read/Write in import settings).");
+                return false;
+            }
+
+            if (assetOrShared)
+            {
+                var clone = EditableCopy(source);
                 clone.name = source.name;
                 // The clone is the renderer's new mesh, not a pipeline working copy: Undo
                 // destroys it together with the swap, and a context refresh keeps it
@@ -242,7 +248,7 @@ namespace SashaRX.UnityMeshLab
                 SceneEditRegistry.Register(entry.meshFilter, shared ? entry.fbxMesh : source, clone);
                 mesh = clone;
             }
-            else if (source != entry.fbxMesh && source != entry.sceneEditMesh)
+            else if (workingCopy)
             {
                 // A pipeline working copy (the transfer workflow's weld or symmetry split) is not
                 // Undo's to keep, so the edit goes into a clone that is: the clone is the renderer's
@@ -252,7 +258,7 @@ namespace SashaRX.UnityMeshLab
                 // leaving a stray mesh on the renderer. That earlier edit, now part of the clone,
                 // goes through Undo with the copy.
                 var prior = entry.sceneEditMesh;
-                var clone = UnityEngine.Object.Instantiate(source);
+                var clone = EditableCopy(source);
                 clone.name = entry.fbxMesh != null ? entry.fbxMesh.name : source.name;
                 Undo.RegisterCreatedObjectUndo(clone, undoLabel);
                 if (entry.meshFilter != null)
@@ -281,6 +287,8 @@ namespace SashaRX.UnityMeshLab
             Undo.RecordObject(mesh, undoLabel);
             return true;
         }
+
+        static Mesh EditableCopy(Mesh source) => source.isReadable ? UnityEngine.Object.Instantiate(source) : MeshAccess.ReadableCopy(source);
 
         // ── Degenerate triangle detection / removal ──
 
