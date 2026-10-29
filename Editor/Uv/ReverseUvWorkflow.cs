@@ -68,7 +68,7 @@ namespace SashaRX.UnityMeshLab
         /// <summary>"Atlas 512²", or each mesh atlas's side when the meshes were packed on their own.</summary>
         internal static string ReverseAtlases(ReverseUvTransfer.Report report)
         {
-            var sides = report.nodes.GroupBy(n => n.packingSet).Select(g => g.First().Atlas(report)).ToList();
+            var sides = report.nodes.GroupBy(n => n.packingSet).Select(g => g.First().AtlasSide(report)).ToList();
             return sides.Count > 1 ? $"Atlases {string.Join(" + ", sides.Select(s => $"{s}²"))}" : $"Atlas {report.atlasSize}²";
         }
 
@@ -169,7 +169,7 @@ namespace SashaRX.UnityMeshLab
                         if (level == 0) entry.repackedMesh = result.meshes[level][node];
                         else entry.transferredMesh = result.meshes[level][node];
                         result.meshes[level][node] = null;
-                        entry.repackedAtlasWidth = entry.repackedAtlasHeight = (uint)result.report.nodes[reportNode].Atlas(result.report);
+                        entry.repackedAtlasWidth = entry.repackedAtlasHeight = (uint)result.report.nodes[reportNode].AtlasSide(result.report);
                         entry.shellTransferResult = null; entry.transferState = null; entry.validationReport = null;
                         entry.reverseTransferJson = json[reportNode++];
                     }

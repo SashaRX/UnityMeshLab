@@ -94,7 +94,7 @@ namespace SashaRX.UnityMeshLab
                     for(int node=0;node<state.result.meshes[level].Length;++node)
                     {
                         var mesh=state.result.meshes[level][node];
-                        int atlas=state.result.report.nodes[reportNode++].Atlas(state.result.report);
+                        int atlas=state.result.report.nodes[reportNode++].AtlasSide(state.result.report);
                         var quality=TransferUvQuality.Measure(mesh,mesh.uv2,Vector2.one,state.inputs.levels[level].inputs[node].toWorld);
                         if(!quality.overlapScanComplete || quality.invalidFaces>0 || quality.degenerateFaces>0
                             || quality.outOfBoundsVertices>0 || double.IsNaN(quality.worstAnisotropy))

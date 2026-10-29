@@ -137,7 +137,7 @@ namespace SashaRX.UnityMeshLab
             {
                 var surface = report.nodes[i];
                 var entry = ProvenanceEntry.Of(keys[i].lod, surface.key, surface.faces ?? Array.Empty<ReverseUvTransfer.Face>(), surface.removedSourceFaces);
-                entry.atlasSize = surface.Atlas(report); entry.seedResolution = report.seedResolution;
+                entry.atlasSize = surface.AtlasSide(report); entry.seedResolution = report.seedResolution;
                 entry.texelsPerUnit = surface.texelsPerUnit > 0 ? surface.texelsPerUnit : report.texelsPerUnit;
                 entry.chain = keys;
                 entry.overlaps = report.overlaps.Where(r => r.lod == keys[i].lod && (r.underMesh == keys[i].node || r.overMesh == keys[i].node)).ToArray();
@@ -232,7 +232,7 @@ namespace SashaRX.UnityMeshLab
                 overlapPairs = quality.overlapPairs, complete = quality.overlapScanComplete });
             var meshPositions = mesh.vertices; var meshUv = mesh.uv2; var meshTriangles = mesh.triangles;
             var transform = inputs[level].inputs[node].toWorld;
-            int atlasSize = nodeReport.Atlas(result.report);
+            int atlasSize = nodeReport.AtlasSide(result.report);
             AuditPrecision(meshPositions, meshUv, meshTriangles, transform, atlasSize, inputs[level].lod, inputs[level].inputs[node].key);
             AccumulateFaces(meshPositions, meshUv, meshTriangles, transform, atlasSize, nodeReport, state);
             state.faces.AddRange(nodeReport.faces);

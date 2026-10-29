@@ -115,7 +115,7 @@ namespace SashaRX.UnityMeshLab
             public float texelsPerUnit;
 
             /// <summary>This node's final atlas side; the report's for a report without one per node.</summary>
-            internal int Atlas(Report report) => atlasSize > 0 ? atlasSize : report.atlasSize;
+            internal int AtlasSide(Report report) => atlasSize > 0 ? atlasSize : report.atlasSize;
         }
 
         [Serializable] internal sealed class Report
