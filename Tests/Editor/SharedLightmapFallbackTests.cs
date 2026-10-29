@@ -88,6 +88,20 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual((2, 0, 2), (report.faces, report.placed, report.withoutSurface));
         }
 
+        /// <summary>
+        /// The affine extension fixes the plane of a thin LOD0 face in double precision, where
+        /// float dot products round its determinant to zero, and refuses a face without a plane.
+        /// </summary>
+        [Test]
+        public void TheAffineExtensionHoldsOnAThinFaceAndRefusesALine()
+        {
+            Assert.IsTrue(SharedLightmapFallback.Extend(Vector3.zero, Vector3.right, new Vector3(1, .0001f, 0),
+                Vector2.zero, Vector2.right, Vector2.one, new Vector3(.5f, .00005f, 0), out var uv));
+            Assert.That(Vector2.Distance(new Vector2(.5f, .5f), uv), Is.LessThan(1e-3));
+            Assert.IsFalse(SharedLightmapFallback.Extend(Vector3.zero, Vector3.right, Vector3.right * 2,
+                Vector2.zero, Vector2.right, Vector2.one, Vector3.one, out _));
+        }
+
         /// <summary>A layout without a collapsed shell, or a collapsed shell without 3D area, is left alone.</summary>
         [Test]
         public void OnlyShellsWithAreaCollapsedInUv2AreReplaced()

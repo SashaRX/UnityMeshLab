@@ -83,9 +83,14 @@ namespace SashaRX.UnityMeshLab
                 }
                 // A face reaching past its chart presses its corners onto the chart's
                 // border; the plane of the face under it keeps its shape instead.
-                if (ForwardUvReference.Area(placedUv[0], placedUv[1], placedUv[2]) == 0)
-                    for (int k = 0; k < 3; ++k) placedUv[k] = surface.Extend(under, positions[triangles[f * 3 + k]]);
-                if (ForwardUvReference.Area(placedUv[0], placedUv[1], placedUv[2]) == 0) { ++report.collapsed; continue; }
+                if (!Placed(placedUv))
+                {
+                    var extended = new Vector2[3];
+                    bool planar = true;
+                    for (int k = 0; k < 3 && planar; ++k) planar = surface.Extend(under, positions[triangles[f * 3 + k]], out extended[k]);
+                    if (!planar || !Placed(extended)) { ++report.collapsed; continue; }
+                    placedUv = extended;
+                }
                 for (int k = 0; k < 3; ++k) { cornerUv[f * 3 + k] = placedUv[k]; cornerSources[f * 3 + k] = surface.shellOf[under]; }
                 report.farthest = Mathf.Max(report.farthest, Mathf.Sqrt(hit.distSq));
                 ++placed;
@@ -98,6 +103,34 @@ namespace SashaRX.UnityMeshLab
             var mesh = ReverseUvRefinedMesh.Copy(target, Enumerable.Range(0, triangles.Length / 3).ToArray(), identity, cornerUv,
                 (vertex, corner) => sources.Add(cornerSources[corner]));
             return (mesh, sources.ToArray());
+        }
+
+        /// <summary>A face layout with finite corners and UV area.</summary>
+        static bool Placed(Vector2[] uv)
+            => uv.All(p => Finite(p.x) && Finite(p.y)) && ForwardUvReference.Area(uv[0], uv[1], uv[2]) != 0;
+
+        static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
+
+        /// <summary>
+        /// The UV of a point projected onto the plane of triangle abc, extending the triangle's
+        /// affine map; false for a triangle too thin to fix a plane in double precision.
+        /// </summary>
+        internal static bool Extend(Vector3 a, Vector3 b, Vector3 c, Vector2 ua, Vector2 ub, Vector2 uc, Vector3 point, out Vector2 uv)
+        {
+            double abx = (double)b.x - a.x, aby = (double)b.y - a.y, abz = (double)b.z - a.z;
+            double acx = (double)c.x - a.x, acy = (double)c.y - a.y, acz = (double)c.z - a.z;
+            double apx = (double)point.x - a.x, apy = (double)point.y - a.y, apz = (double)point.z - a.z;
+            double d00 = abx * abx + aby * aby + abz * abz, d01 = abx * acx + aby * acy + abz * acz;
+            double d11 = acx * acx + acy * acy + acz * acz;
+            double d20 = apx * abx + apy * aby + apz * abz, d21 = apx * acx + apy * acy + apz * acz;
+            double denominator = d00 * d11 - d01 * d01;
+            uv = default;
+            if (!(denominator > 0) || !Finite(denominator)) return false;
+            double v = (d11 * d20 - d01 * d21) / denominator, w = (d00 * d21 - d01 * d20) / denominator, u = 1 - v - w;
+            double x = ua.x * u + ub.x * v + uc.x * w, y = ua.y * u + ub.y * v + uc.y * w;
+            if (!Finite(x) || !Finite(y)) return false;
+            uv = new Vector2((float)x, (float)y);
+            return Finite(uv.x) && Finite(uv.y);
         }
 
         /// <summary>The cosine within which a LOD0 face counts as oriented like the target face.</summary>
@@ -191,16 +224,10 @@ namespace SashaRX.UnityMeshLab
                     + uv2[triangles[face * 3 + 2]] * barycentric.z;
 
             /// <summary>The UV2 of a point projected onto the plane of a face, extending the face's affine map.</summary>
-            internal Vector2 Extend(int face, Vector3 point)
-            {
-                Vector3 a = positions[triangles[face * 3]], b = positions[triangles[face * 3 + 1]], c = positions[triangles[face * 3 + 2]];
-                Vector3 ab = b - a, ac = c - a, ap = point - a;
-                double d00 = Vector3.Dot(ab, ab), d01 = Vector3.Dot(ab, ac), d11 = Vector3.Dot(ac, ac);
-                double d20 = Vector3.Dot(ap, ab), d21 = Vector3.Dot(ap, ac);
-                double denominator = d00 * d11 - d01 * d01;
-                double v = (d11 * d20 - d01 * d21) / denominator, w = (d00 * d21 - d01 * d20) / denominator;
-                return Uv(face, new Vector3((float)(1 - v - w), (float)v, (float)w));
-            }
+            internal bool Extend(int face, Vector3 point, out Vector2 uv)
+                => SharedLightmapFallback.Extend(positions[triangles[face * 3]], positions[triangles[face * 3 + 1]],
+                    positions[triangles[face * 3 + 2]], uv2[triangles[face * 3]], uv2[triangles[face * 3 + 1]],
+                    uv2[triangles[face * 3 + 2]], point, out uv);
 
             Vector3 Normal(int face)
                 => SharedLightmapFallback.Normal(positions[triangles[face * 3]], positions[triangles[face * 3 + 1]],
