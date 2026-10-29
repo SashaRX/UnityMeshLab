@@ -47,7 +47,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var result = SharedLightmapFallback.Apply(source, target, legacy, Sources(), report);
             output = result.mesh;
             Assert.NotNull(output);
-            Assert.AreEqual((1, 2, 2, 0, 0), (report.shells, report.faces, report.placed, report.withoutSurface, report.collapsed));
+            Assert.AreEqual((1, 2, 2, 0, 0), (report.shells, report.faces, report.placed, report.withoutSurface, report.atPoint));
             CollectionAssert.AreEqual(target.triangles.Select(i => target.vertices[i]), output.triangles.Select(i => output.vertices[i]),
                 "The faces are the target's, corner for corner.");
             for (int corner = 0; corner < 6; ++corner)
@@ -89,17 +89,22 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         /// <summary>
-        /// The affine extension fixes the plane of a thin LOD0 face in double precision, where
-        /// float dot products round its determinant to zero, and refuses a face without a plane.
+        /// A face far past its chart presses every corner onto one point of the chart's border; it
+        /// takes the one point under its centre, still on its own surface, never an extension that
+        /// could reach into another chart.
         /// </summary>
         [Test]
-        public void TheAffineExtensionHoldsOnAThinFaceAndRefusesALine()
+        public void AFaceFarPastItsChartTakesThePointUnderItsCentre()
         {
-            Assert.IsTrue(SharedLightmapFallback.Extend(Vector3.zero, Vector3.right, new Vector3(1, .0001f, 0),
-                Vector2.zero, Vector2.right, Vector2.one, new Vector3(.5f, .00005f, 0), out var uv));
-            Assert.That(Vector2.Distance(new Vector2(.5f, .5f), uv), Is.LessThan(1e-3));
-            Assert.IsFalse(SharedLightmapFallback.Extend(Vector3.zero, Vector3.right, Vector3.right * 2,
-                Vector2.zero, Vector2.right, Vector2.one, Vector3.one, out _));
+            Object.DestroyImmediate(target);
+            target = new Mesh { vertices = new[] {new Vector3(5, 2), new Vector3(6, 2), new Vector3(5, 3)}, triangles = new[] {0, 1, 2} };
+            var report = new SharedLightmapFallback.Report();
+            output = SharedLightmapFallback.Apply(source, target, new Vector2[3], new[] {-1, -1, -1}, report).mesh;
+            Assert.NotNull(output);
+            Assert.AreEqual((1, 1), (report.placed, report.atPoint));
+            var corner = source.uv2[6];
+            foreach (int i in output.triangles) Assert.That(Vector2.Distance(corner, output.uv2[i]), Is.LessThan(1e-5),
+                "Every corner reads the LOD0 corner nearest the face, inside its own chart.");
         }
 
         /// <summary>A layout without a collapsed shell, or a collapsed shell without 3D area, is left alone.</summary>

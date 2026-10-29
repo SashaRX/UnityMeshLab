@@ -32,11 +32,13 @@ the sidecar, off by default): after the donor-seam trial, every face with
 a line; rejected shells stay at (0,0)) takes the UV2 of the LOD0 surface
 under it. The LOD0 face nearest its centroid among those within 60° of its
 orientation, else among those facing its way, picks one chart; each corner
-takes the UV2 of the nearest point of that chart facing alike, and a face
-that collapses there extends the affine map of the face under its centroid
-instead. Faces keep their triangles; vertices split where their UV2
-differs. A face with no LOD0 face facing its way keeps its layout. Overlap
-with other faces is allowed.
+takes the UV2 of the nearest point of that chart facing alike, so every
+corner reads light of that chart's surface. A face whose corners all meet
+at one point of the chart's border takes the one point under its centre:
+an affine extension past the chart could land in another chart and read
+unrelated light (Codex review of PR #364). Faces keep their triangles;
+vertices split where their UV2 differs. A face with no LOD0 face facing its
+way keeps its layout. Overlap with other faces is allowed.
 
 Not measured yet: the next K run logs `[Transfer] '…': shared LOD0
 lightmap: …` with the faces placed and the collapsed-face and overlap

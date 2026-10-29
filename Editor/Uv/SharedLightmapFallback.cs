@@ -23,19 +23,18 @@ namespace SashaRX.UnityMeshLab
             public int faces;
             /// <summary>Faces given the UV2 of the LOD0 surface under them.</summary>
             public int placed;
+            /// <summary>Placed faces whose corners met at one point of their chart: they take the one point under their centre.</summary>
+            public int atPoint;
             /// <summary>Faces with no LOD0 face facing their way.</summary>
             public int withoutSurface;
-            /// <summary>Faces whose LOD0 surface still gave them no UV2 area.</summary>
-            public int collapsed;
             /// <summary>The farthest LOD0 surface a placed face took its UV2 from, in model units.</summary>
             public float farthest;
 
             public override string ToString()
             {
                 string text = $"{placed} of {faces} face(s) of {shells} shell(s) collapsed to a point or a line take the UV2 of the LOD0 surface under them";
-                if (placed > 0) text += $" (farthest {farthest:G3})";
+                if (placed > 0) text += $" (farthest {farthest:G3}" + (atPoint > 0 ? $"; {atPoint} at the one point under their centre)" : ")");
                 if (withoutSurface > 0) text += $", {withoutSurface} without a LOD0 face facing their way";
-                if (collapsed > 0) text += $", {collapsed} still collapsed";
                 return text;
             }
         }
@@ -74,33 +73,7 @@ namespace SashaRX.UnityMeshLab
             return (mesh, sources.ToArray());
         }
 
-        /// <summary>A face layout with finite corners and UV area.</summary>
-        static bool Placed(Vector2[] uv)
-            => uv.All(p => Finite(p.x) && Finite(p.y)) && ForwardUvReference.Area(uv[0], uv[1], uv[2]) != 0;
-
-        static bool Finite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
-
-        /// <summary>
-        /// The UV of a point projected onto the plane of triangle abc, extending the triangle's
-        /// affine map; false for a triangle too thin to fix a plane in double precision.
-        /// </summary>
-        internal static bool Extend(Vector3 a, Vector3 b, Vector3 c, Vector2 ua, Vector2 ub, Vector2 uc, Vector3 point, out Vector2 uv)
-        {
-            double abx = (double)b.x - a.x, aby = (double)b.y - a.y, abz = (double)b.z - a.z;
-            double acx = (double)c.x - a.x, acy = (double)c.y - a.y, acz = (double)c.z - a.z;
-            double apx = (double)point.x - a.x, apy = (double)point.y - a.y, apz = (double)point.z - a.z;
-            double d00 = abx * abx + aby * aby + abz * abz, d01 = abx * acx + aby * acy + abz * acz;
-            double d11 = acx * acx + acy * acy + acz * acz;
-            double d20 = apx * abx + apy * aby + apz * abz, d21 = apx * acx + apy * acy + apz * acz;
-            double denominator = d00 * d11 - d01 * d01;
-            uv = default;
-            if (!(denominator > 0) || !Finite(denominator)) return false;
-            double v = (d11 * d20 - d01 * d21) / denominator, w = (d00 * d21 - d01 * d20) / denominator, u = 1 - v - w;
-            double x = ua.x * u + ub.x * v + uc.x * w, y = ua.y * u + ub.y * v + uc.y * w;
-            if (!Finite(x) || !Finite(y)) return false;
-            uv = new Vector2((float)x, (float)y);
-            return Finite(uv.x) && Finite(uv.y);
-        }
+        static bool Finite(Vector2 p) => !float.IsNaN(p.x) && !float.IsNaN(p.y) && !float.IsInfinity(p.x) && !float.IsInfinity(p.y);
 
         /// <summary>The cosine within which a LOD0 face counts as oriented like the target face.</summary>
         const float Facing = .5f;
@@ -200,8 +173,10 @@ namespace SashaRX.UnityMeshLab
             /// The UV2 of a target face from the LOD0 surface under it: the face nearest its centroid
             /// (within 60° of its orientation first, so a nearer perpendicular side does not lend it
             /// its light, then any facing its way) picks one chart, and each corner takes the UV2 of
-            /// that chart's nearest point. A face reaching past its chart presses its corners onto the
-            /// chart's border; the plane of the face under its centroid keeps its shape instead.
+            /// that chart's nearest point, so every corner reads light of that chart's surface. A face
+            /// reaching far past its chart can press all its corners onto one point of the chart's
+            /// border; it takes the one point under its centre instead, still on its own surface, never
+            /// an extension that could reach into another chart.
             /// </summary>
             internal bool Place(Vector3[] corners, Report report, out Vector2[] uv, out int shell)
             {
@@ -225,23 +200,18 @@ namespace SashaRX.UnityMeshLab
                     if (nearest.triangleIndex < 0) nearest = chart.bvh.FindNearest(corners[k]);
                     projected[k] = Uv(chart.faces[nearest.triangleIndex], nearest.barycentric);
                 }
-                if (!Placed(projected))
+                if (!projected.All(Finite) || ForwardUvReference.Area(projected[0], projected[1], projected[2]) == 0)
                 {
-                    for (int k = 0; k < 3; ++k)
-                        if (!ExtendFace(under, corners[k], out projected[k])) { ++report.collapsed; return false; }
-                    if (!Placed(projected)) { ++report.collapsed; return false; }
+                    var point = Uv(under, hit.barycentric);
+                    if (!Finite(point)) { ++report.withoutSurface; return false; }
+                    projected = new[] {point, point, point};
+                    ++report.atPoint;
                 }
                 uv = projected; shell = shellOf[under];
                 report.farthest = Mathf.Max(report.farthest, Mathf.Sqrt(hit.distSq));
                 ++report.placed;
                 return true;
             }
-
-            /// <summary>The UV2 of a point projected onto the plane of a face, extending the face's affine map.</summary>
-            bool ExtendFace(int face, Vector3 point, out Vector2 uv)
-                => SharedLightmapFallback.Extend(positions[triangles[face * 3]], positions[triangles[face * 3 + 1]],
-                    positions[triangles[face * 3 + 2]], uv2[triangles[face * 3]], uv2[triangles[face * 3 + 1]],
-                    uv2[triangles[face * 3 + 2]], point, out uv);
 
             Vector3 FaceNormal(int face)
                 => Normal(positions[triangles[face * 3]], positions[triangles[face * 3 + 1]],
