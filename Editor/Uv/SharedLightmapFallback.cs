@@ -186,7 +186,8 @@ namespace SashaRX.UnityMeshLab
                     {
                         Vector2 p = uv2[triangles[t + k]], q = uv2[triangles[t + (k + 1) % 3]];
                         // A face wound counter-clockwise in UV2 lies left of its edge p→q.
-                        bool forward = p.x < q.x || (p.x == q.x && p.y < q.y);
+                        int byX = p.x.CompareTo(q.x);
+                        bool forward = byX < 0 || (byX == 0 && p.y < q.y);
                         var key = forward ? (p, q) : (q, p);
                         sides.TryGetValue(key, out var edge);
                         sides[key] = (edge.count + 1, edge.side + (forward ? sign : -sign));
