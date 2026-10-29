@@ -564,6 +564,20 @@ namespace SashaRX.UnityMeshLab
         internal static Func<string, bool> ConfirmLeavingOutUvs { get; set; } = message => !Application.isBatchMode
             && EditorUtility.DisplayDialog("UV channels the FBX cannot take", message, "Save without them", "Cancel");
 
+        /// <summary>
+        /// The question for <see cref="ConfirmLeavingOutUvs"/>. A long dialog text is cut off, so
+        /// it shows a few channels when the Console has them all, and every one when the Console
+        /// line is muted: the user decides with the whole list either way.
+        /// </summary>
+        internal static string LeaveOutMessage(string fileName, IReadOnlyList<string> channels, bool consoleListsAll)
+        {
+            int shown = consoleListsAll ? Math.Min(3, channels.Count) : channels.Count;
+            string list = string.Join("\n", channels.Take(shown))
+                + (channels.Count > shown ? $"\n…and {channels.Count - shown} more (see the Console)" : "");
+            return $"'{fileName}': {channels.Count} UV channel(s) cannot be added without inventing the UV sets before them:\n\n{list}\n\n" +
+                "Save the rest without them? Cancel writes nothing.";
+        }
+
         // A channel the file cannot take (UV3 on a mesh with UV0 and UV1 only) refuses the
         // save unless the user agrees to save the rest without it.
         static void LeaveOutUnplaceableUvs(FbxSourceDocument document, List<Donor> donors, Dictionary<string, Tagged> tagged, bool swapUv, string fileName)
@@ -577,16 +591,11 @@ namespace SashaRX.UnityMeshLab
                     left.Add((donor, ch, sets));
             }
             if (left.Count == 0) return;
-            // The dialog shows a few; the Console has them all (a long dialog text is cut off).
-            const int Shown = 3;
-            var channels = left.Select(l => $"'{l.donor.name}': UV{l.channel}").ToList();
+            bool logged = UvtLog.Current >= UvtLog.Level.Info && UvtLog.IsCategoryEnabled(UvtLog.Category.General);
             UvtLog.Info($"[FBX Export] '{fileName}': UV channels the file cannot take: " +
                 string.Join(", ", left.Select(l => $"'{l.donor.name}' UV{l.channel} ({l.sets} UV set(s) in the file)")) + ".");
-            string list = string.Join("\n", channels.Take(Shown))
-                + (channels.Count > Shown ? $"\n…and {channels.Count - Shown} more (see the Console)" : "");
             if (ConfirmLeavingOutUvs == null || !ConfirmLeavingOutUvs(
-                    $"'{fileName}': {channels.Count} UV channel(s) cannot be added without inventing the UV sets before them:\n\n{list}\n\n" +
-                    "Save the rest without them? Cancel writes nothing."))
+                    LeaveOutMessage(fileName, left.Select(l => $"'{l.donor.name}': UV{l.channel}").ToList(), logged)))
                 throw new InvalidOperationException($"{string.Join("; ", left.Select(l => $"'{l.donor.name}': UV{l.channel}"))} cannot be added without inventing " +
                     "the UV sets before them; write the channel to the next free UV set, or save without it. Nothing was written.");
             foreach (var (donor, channel, sets) in left)
