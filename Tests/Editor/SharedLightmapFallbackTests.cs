@@ -107,6 +107,29 @@ namespace SashaRX.UnityMeshLab.Tests
                 "Every corner reads the LOD0 corner nearest the face, inside its own chart.");
         }
 
+        /// <summary>
+        /// On a concave chart a face with every corner on the chart can still span the gap where
+        /// another chart is packed; it takes the point under its centre instead.
+        /// </summary>
+        [Test]
+        public void AFaceAcrossAConcaveChartsGapTakesThePointUnderItsCentre()
+        {
+            Object.DestroyImmediate(source);
+            // An L of three unit quads, (0..2)x(0..1) and (0..1)x(1..2), its UV2 the same shape scaled by .25.
+            var l = new[] {Vector3.zero, Vector3.right, new Vector3(2, 0), new Vector3(0, 1), new Vector3(1, 1), new Vector3(2, 1),
+                new Vector3(0, 2), new Vector3(1, 2)};
+            source = new Mesh { vertices = l, triangles = new[] {0, 1, 4, 0, 4, 3, 1, 2, 5, 1, 5, 4, 3, 4, 7, 3, 7, 6},
+                uv = l.Select(p => (Vector2)p).ToArray(), uv2 = l.Select(p => (Vector2)p * .25f).ToArray() };
+            Object.DestroyImmediate(target);
+            target = new Mesh { vertices = new[] {new Vector3(.5f, .5f), new Vector3(1.9f, .5f), new Vector3(.5f, 1.9f)}, triangles = new[] {0, 1, 2} };
+            var report = new SharedLightmapFallback.Report();
+            output = SharedLightmapFallback.Apply(source, target, new Vector2[3], new[] {-1, -1, -1}, report).mesh;
+            Assert.NotNull(output);
+            Assert.AreEqual((1, 1), (report.placed, report.atPoint), "Its hypotenuse crosses the L's missing corner.");
+            var centre = new Vector2(2.9f / 3, 2.9f / 3) * .25f;
+            foreach (int i in output.triangles) Assert.That(Vector2.Distance(centre, output.uv2[i]), Is.LessThan(1e-4));
+        }
+
         /// <summary>A layout without a collapsed shell, or a collapsed shell without 3D area, is left alone.</summary>
         [Test]
         public void OnlyShellsWithAreaCollapsedInUv2AreReplaced()

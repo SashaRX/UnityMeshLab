@@ -75,6 +75,9 @@ namespace SashaRX.UnityMeshLab
 
         static bool Finite(Vector2 p) => !float.IsNaN(p.x) && !float.IsNaN(p.y) && !float.IsInfinity(p.x) && !float.IsInfinity(p.y);
 
+        /// <summary>The squared UV2 distance within which a point counts as on a chart: far below a texel.</summary>
+        const float OnChart = 1e-12f;
+
         /// <summary>The cosine within which a LOD0 face counts as oriented like the target face.</summary>
         const float Facing = .5f;
 
@@ -123,6 +126,7 @@ namespace SashaRX.UnityMeshLab
             readonly Vector3[] positions;
             readonly int[] triangles;
             readonly Vector2[] uv2;
+            readonly Vector2[] uvA, uvB, uvC;
             readonly Dictionary<int, Chart> charts = new Dictionary<int, Chart>();
             readonly Dictionary<int, List<int>> chartFaces = new Dictionary<int, List<int>>();
 
@@ -131,6 +135,7 @@ namespace SashaRX.UnityMeshLab
                 internal int[] faces;
                 internal Vector3[] normals;
                 internal TriangleBvh bvh;
+                internal TriangleBvh2D footprint;
             }
 
             internal Surface(Vector3[] positions, int[] triangles, Vector2[] uv2, Vector2[] uv0)
@@ -139,6 +144,9 @@ namespace SashaRX.UnityMeshLab
                 // The transfer records a vertex's source as the source's UV0 shell; the
                 // same vertex-connected shell is one chart of the source's UV2.
                 shellOf = new int[triangles.Length / 3];
+                uvA = new Vector2[shellOf.Length]; uvB = new Vector2[shellOf.Length]; uvC = new Vector2[shellOf.Length];
+                for (int f = 0; f < shellOf.Length; ++f)
+                { uvA[f] = uv2[triangles[f * 3]]; uvB[f] = uv2[triangles[f * 3 + 1]]; uvC[f] = uv2[triangles[f * 3 + 2]]; }
                 foreach (var shell in UvShellExtractor.Extract(uv0.Length == positions.Length ? uv0 : uv2, triangles))
                     foreach (int f in shell.faceIndices) shellOf[f] = shell.shellId;
                 var valid = new List<int>();
@@ -164,7 +172,8 @@ namespace SashaRX.UnityMeshLab
             {
                 if (charts.TryGetValue(shell, out var chart)) return chart;
                 var list = chartFaces[shell].ToArray();
-                chart = new Chart { faces = list, normals = list.Select(FaceNormal).ToArray(), bvh = new TriangleBvh(positions, Corners(list)) };
+                chart = new Chart { faces = list, normals = list.Select(FaceNormal).ToArray(), bvh = new TriangleBvh(positions, Corners(list)),
+                    footprint = new TriangleBvh2D(uvA, uvB, uvC, list) };
                 charts.Add(shell, chart);
                 return chart;
             }
@@ -179,8 +188,9 @@ namespace SashaRX.UnityMeshLab
             /// its light, then any facing its way) picks one chart, and each corner takes the UV2 of
             /// that chart's nearest point, so every corner reads light of that chart's surface. A face
             /// reaching far past its chart can press all its corners onto one point of the chart's
-            /// border; it takes the one point under its centre instead, still on its own surface, never
-            /// an extension that could reach into another chart.
+            /// border, and on a concave chart a face with every corner on it can still span a gap
+            /// where another chart is packed; such a face takes the one point under its centre, still
+            /// on its own surface, never a place in another chart.
             /// </summary>
             internal bool Place(Vector3[] corners, Report report, out Vector2[] uv, out int shell)
             {
@@ -204,7 +214,8 @@ namespace SashaRX.UnityMeshLab
                     if (nearest.triangleIndex < 0) nearest = chart.bvh.FindNearest(corners[k]);
                     projected[k] = Uv(chart.faces[nearest.triangleIndex], nearest.barycentric);
                 }
-                if (!projected.All(Finite) || ForwardUvReference.Area(projected[0], projected[1], projected[2]) == 0)
+                if (!projected.All(Finite) || ForwardUvReference.Area(projected[0], projected[1], projected[2]) == 0
+                    || !Covers(chart, projected))
                 {
                     var point = Uv(under, hit.barycentric);
                     if (!Finite(point)) { ++report.withoutSurface; return false; }
@@ -214,6 +225,26 @@ namespace SashaRX.UnityMeshLab
                 uv = projected; shell = shellOf[under];
                 report.farthest = Mathf.Max(report.farthest, Mathf.Sqrt(hit.distSq));
                 ++report.placed;
+                return true;
+            }
+
+            /// <summary>
+            /// Whether a UV2 triangle lies on its chart: its lattice points at quarters of each
+            /// edge (centre and edge midpoints among them) are on the chart's faces, so a
+            /// footprint across a concave chart's gap is refused. The corners lie on it by construction.
+            /// </summary>
+            static bool Covers(Chart chart, Vector2[] uv)
+            {
+                const int steps = 4;
+                for (int i = 0; i <= steps; ++i)
+                    for (int j = 0; i + j <= steps; ++j)
+                    {
+                        int k = steps - i - j;
+                        if (i == steps || j == steps || k == steps) continue;
+                        var point = (uv[0] * i + uv[1] * j + uv[2] * k) / steps;
+                        var hit = chart.footprint.FindNearest(point);
+                        if (hit.faceIndex < 0 || hit.distSq > OnChart) return false;
+                    }
                 return true;
             }
 

@@ -35,9 +35,11 @@ under it. The LOD0 face nearest its centroid among those within 60° of its
 orientation, else among those facing its way, picks one chart; each corner
 takes the UV2 of the nearest point of that chart facing alike, so every
 corner reads light of that chart's surface. A face whose corners all meet
-at one point of the chart's border takes the one point under its centre:
-an affine extension past the chart could land in another chart and read
-unrelated light (Codex review of PR #364). Faces keep their triangles;
+at one point of the chart's border, or whose triangle leaves the chart (on
+a concave chart it can span the gap where another chart is packed; its
+lattice points at quarters of each edge are checked), takes the one point
+under its centre: an affine extension past the chart could land in another
+chart and read unrelated light (Codex review of PR #364). Faces keep their triangles;
 vertices split where their UV2 differs. A face with no LOD0 face facing its
 way keeps its layout. Overlap with other faces is allowed.
 
