@@ -98,6 +98,8 @@ namespace SashaRX.UnityMeshLab
             if (pass.unusable) return Refuse("the donor has no UV2 face within 4:1");
             var donorShells = pass.SourceFaceShells(source);
             var projectedFaces = new HashSet<int>();
+            // Without kept faces a healthy face may be replaced too; the report counts defective ones.
+            var defectiveFaces = new HashSet<int>();
             int faceCount = indices.Length / 3;
             Vector2[] uv = null;
             int[] cornerSources = null;
@@ -130,7 +132,7 @@ namespace SashaRX.UnityMeshLab
                     // Overlapped, collapsed or stretched past the bound; cleanup's
                     // zero-area triangles have no projection and are not counted.
                     bool defective = p >= 0 && (conflicts.Contains(f) || oldMetric > options.maxAnisotropy);
-                    if (report != null && defective) ++report.defective;
+                    if (defective) defectiveFaces.Add(f);
                     if (p >= 0 && projected.faces[p].inherited) {
                         double newMetric = ForwardAnisotropy(positions[indices[start]], positions[indices[start + 1]],
                             positions[indices[start + 2]], projected.pixels[p * 3], projected.pixels[p * 3 + 1], projected.pixels[p * 3 + 2], renderedFrame);
@@ -148,7 +150,7 @@ namespace SashaRX.UnityMeshLab
                         cornerSources[corner] = replace ? donorShells[pass.validFaces[projected.faces[p].parentFace]] : legacySources[indices[corner]];
                     }
                 }
-                if (report != null) report.projected = projectedFaces.Count;
+                if (report != null) report.projected = projectedFaces.Count(defectiveFaces.Contains);
                 // Revert every rescue touching another face until none does; a
                 // reverted face may uncover a contact with another rescue.
                 while (keepFaces && projectedFaces.Count > 0) {
@@ -174,7 +176,10 @@ namespace SashaRX.UnityMeshLab
                 if (projectedFaces.Count == 0 && report != null) report.refusal = "no defective face could be rescued";
                 return projectedFaces.Count > 0;
             }, useAsync, token);
-            if (report != null) report.rescued = ready ? projectedFaces.Count : 0;
+            if (report != null) {
+                report.defective = defectiveFaces.Count;
+                report.rescued = ready ? projectedFaces.Count(defectiveFaces.Contains) : 0;
+            }
             if (!ready) return default;
             var faces = Enumerable.Range(0, faceCount).ToArray();
             var barycentrics = Enumerable.Range(0, indices.Length)
