@@ -2140,6 +2140,40 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(new[] { 0 }, FbxChannelWrite.UnplaceableUvChannels(Present(0), 0, true));
         }
 
+        /// <summary>
+        /// A weld changes the vertex count; an imported UV channel it left unchanged is not an
+        /// edit (the save would try to write it, and ask to leave out a UV3 the file cannot take).
+        /// </summary>
+        [Test]
+        public void Save_ComparesAnImportedUvChannelAcrossAWeld()
+        {
+            static Mesh Build(int count, List<Vector2> uv3)
+            {
+                var mesh = new Mesh();
+                mesh.SetVertices(new List<Vector3> { Vector3.zero, Vector3.right, Vector3.up, Vector3.right }.GetRange(0, count));
+                mesh.SetUVs(0, new List<Vector2> { Vector2.zero, Vector2.right, Vector2.up, Vector2.right }.GetRange(0, count));
+                if (uv3 != null) mesh.SetUVs(3, uv3.GetRange(0, count));
+                mesh.SetTriangles(new[] { 0, 1, 2 }, 0);
+                return mesh;
+            }
+            var values = new List<Vector2> { new Vector2(.1f, .2f), new Vector2(.3f, .4f), new Vector2(.5f, .6f), new Vector2(.3f, .4f) };
+            Mesh imported = Build(4, values), bare = Build(4, null), welded = Build(3, values);
+            try
+            {
+                var kept = values.GetRange(0, 3);
+                Assert.IsTrue(FbxChannelWrite.KeepsImportedUvs(welded, kept, imported, 3), "the weld dropped a duplicate vertex only");
+                var baked = new List<Vector2>(kept) { [1] = new Vector2(.9f, .4f) };
+                Assert.IsFalse(FbxChannelWrite.KeepsImportedUvs(welded, baked, imported, 3), "a changed value is an edit");
+                Assert.IsFalse(FbxChannelWrite.KeepsImportedUvs(welded, kept, bare, 3), "a channel the import lacks is an edit");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(imported);
+                UnityEngine.Object.DestroyImmediate(bare);
+                UnityEngine.Object.DestroyImmediate(welded);
+            }
+        }
+
         /// <summary>The leave-out question lists every channel unless the Console line has them all.</summary>
         [Test]
         public void Save_LeaveOutQuestionListsEveryChannelTheConsoleDoesNot()

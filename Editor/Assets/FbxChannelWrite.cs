@@ -62,6 +62,8 @@ namespace SashaRX.UnityMeshLab
             public Color[] signatureColors;
             /// <summary>Channels the import has and the working mesh no longer does (Cleanup removed them).</summary>
             public readonly bool[] removedUvs = new bool[8];
+            /// <summary>UV channels the import has; a channel it lacks was added after the import.</summary>
+            public readonly bool[] importedUvs = new bool[8];
             public bool removedColors, removedNormals, removedTangents;
             /// <summary>Unity-space normals the save writes; with <see cref="tangents"/>, the normals the binormals are built from.</summary>
             public Vector3[] normals, frameNormals;
@@ -593,7 +595,8 @@ namespace SashaRX.UnityMeshLab
             if (left.Count == 0) return;
             bool logged = UvtLog.Current >= UvtLog.Level.Info && UvtLog.IsCategoryEnabled(UvtLog.Category.General);
             UvtLog.Info($"[FBX Export] '{fileName}': UV channels the file cannot take: " +
-                string.Join(", ", left.Select(l => $"'{l.donor.name}' UV{l.channel} ({l.sets} UV set(s) in the file)")) + ".");
+                string.Join(", ", left.Select(l => $"'{l.donor.name}' UV{l.channel} ({l.sets} UV set(s) in the file" +
+                    (l.donor.importedUvs[l.channel] ? "" : $"; the import has no UV{l.channel}") + ")")) + ".");
             if (ConfirmLeavingOutUvs == null || !ConfirmLeavingOutUvs(
                     LeaveOutMessage(fileName, left.Select(l => $"'{l.donor.name}': UV{l.channel}").ToList(), logged)))
                 throw new InvalidOperationException($"{string.Join("; ", left.Select(l => $"'{l.donor.name}': UV{l.channel}"))} cannot be added without inventing " +
@@ -731,7 +734,21 @@ namespace SashaRX.UnityMeshLab
             bool inPlace = working == entry.fbxMesh;
             var imported = entry.fbxMesh != null && !inPlace && entry.fbxMesh.isReadable
                 && entry.fbxMesh.vertexCount == mesh.vertexCount ? entry.fbxMesh : null;
-            bool any = CaptureUvs(donor, mesh, imported, capture);
+            for (int ch = 0; ch < 8; ch++)
+                donor.importedUvs[ch] = entry.fbxMesh != null && entry.fbxMesh.HasVertexAttribute((VertexAttribute)((int)VertexAttribute.TexCoord0 + ch));
+            // A weld or a seam split changes the vertex count, and a Read/Write-disabled import
+            // cannot be compared in place: its channels are then compared vertex by vertex
+            // through a readable copy, by position and UV0. One that cannot be read counts as edited.
+            Mesh weldedImport = null;
+            bool importCopy = false;
+            if (imported == null && entry.fbxMesh != null && !inPlace)
+            {
+                try { weldedImport = MeshAccess.Readable(entry.fbxMesh, out importCopy); }
+                catch (Exception error) { UvtLog.Verbose($"[FBX Export] '{name}': the import cannot be read to compare its UV channels: {error.Message}"); }
+            }
+            bool any;
+            try { any = CaptureUvs(donor, mesh, imported, weldedImport, capture); }
+            finally { if (importCopy) UnityEngine.Object.DestroyImmediate(weldedImport); }
             if ((intent & FbxExportIntent.VertexColors) != 0) any |= CaptureColors(donor, mesh, imported);
             any |= CaptureRemovals(donor, mesh, inPlace ? null : entry.fbxMesh, intent, generatedUv1);
             any |= CaptureShading(donor, mesh, imported, inPlace ? null : entry.fbxMesh, capture);
@@ -753,7 +770,7 @@ namespace SashaRX.UnityMeshLab
             return donor;
         }
 
-        static bool CaptureUvs(Donor donor, Mesh mesh, Mesh imported, Capture capture)
+        static bool CaptureUvs(Donor donor, Mesh mesh, Mesh imported, Mesh weldedImport, Capture capture)
         {
             bool any = false;
             bool generatedUv1 = capture.generatedUv1;
@@ -790,10 +807,40 @@ namespace SashaRX.UnityMeshLab
                         continue;
                     }
                 }
+                else if (weldedImport != null && KeepsImportedUvs(mesh, list, weldedImport, ch))
+                {
+                    donor.signatureUvs[ch] = list.ToArray();
+                    continue;
+                }
                 donor.uvs[ch] = list.ToArray();
                 any = true;
             }
             return any;
+        }
+
+        /// <summary>
+        /// True when every vertex of <paramref name="mesh"/> holds, on UV <paramref name="channel"/>,
+        /// a value the import gives a vertex at the same position and UV0: the channel came through
+        /// a weld or a seam split unchanged. Both meshes readable.
+        /// </summary>
+        internal static bool KeepsImportedUvs(Mesh mesh, List<Vector2> values, Mesh imported, int channel)
+        {
+            var importedValues = new List<Vector2>();
+            imported.GetUVs(channel, importedValues);
+            if (importedValues.Count != imported.vertexCount || values.Count != mesh.vertexCount) return false;
+            var importedUv0 = new List<Vector2>();
+            var uv0 = new List<Vector2>();
+            imported.GetUVs(0, importedUv0);
+            mesh.GetUVs(0, uv0);
+            bool withUv0 = importedUv0.Count == imported.vertexCount && uv0.Count == mesh.vertexCount;
+            var importedPositions = imported.vertices;
+            var known = new HashSet<(Vector3, Vector2, Vector2)>();
+            for (int i = 0; i < importedPositions.Length; i++)
+                known.Add((importedPositions[i], withUv0 ? importedUv0[i] : default, importedValues[i]));
+            var positions = mesh.vertices;
+            for (int i = 0; i < positions.Length; i++)
+                if (!known.Contains((positions[i], withUv0 ? uv0[i] : default, values[i]))) return false;
+            return true;
         }
 
         static bool CaptureColors(Donor donor, Mesh mesh, Mesh imported)
