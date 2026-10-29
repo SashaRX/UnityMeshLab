@@ -137,7 +137,8 @@ namespace SashaRX.UnityMeshLab
             {
                 var surface = report.nodes[i];
                 var entry = ProvenanceEntry.Of(keys[i].lod, surface.key, surface.faces ?? Array.Empty<ReverseUvTransfer.Face>(), surface.removedSourceFaces);
-                entry.atlasSize = report.atlasSize; entry.seedResolution = report.seedResolution; entry.texelsPerUnit = report.texelsPerUnit;
+                entry.atlasSize = surface.AtlasSide(report); entry.seedResolution = report.seedResolution;
+                entry.texelsPerUnit = surface.texelsPerUnit > 0 ? surface.texelsPerUnit : report.texelsPerUnit;
                 entry.chain = keys;
                 entry.overlaps = report.overlaps.Where(r => r.lod == keys[i].lod && (r.underMesh == keys[i].node || r.overMesh == keys[i].node)).ToArray();
                 json[i] = JsonUtility.ToJson(entry);
@@ -150,6 +151,8 @@ namespace SashaRX.UnityMeshLab
             internal readonly List<Vector2> pixels = new List<Vector2>();
             internal readonly List<ReverseUvTransfer.Face> faces = new List<ReverseUvTransfer.Face>();
             internal readonly List<(int mesh,int face)> faceKeys = new List<(int,int)>();
+            /// <summary>Each face's atlas: meshes packed on their own share [0,1].</summary>
+            internal readonly List<int> sets = new List<int>();
             internal readonly LevelMeasurement measurement;
             internal double surfaceArea, inheritedArea;
             internal LevelAudit(int lod) => measurement = new LevelMeasurement { lod = lod, texelsPerUnitMin = double.MaxValue };
@@ -229,10 +232,11 @@ namespace SashaRX.UnityMeshLab
                 overlapPairs = quality.overlapPairs, complete = quality.overlapScanComplete });
             var meshPositions = mesh.vertices; var meshUv = mesh.uv2; var meshTriangles = mesh.triangles;
             var transform = inputs[level].inputs[node].toWorld;
-            AuditPrecision(meshPositions, meshUv, meshTriangles, transform, result.report.atlasSize, inputs[level].lod, inputs[level].inputs[node].key);
-            AccumulateFaces(meshPositions, meshUv, meshTriangles, transform, result.report.atlasSize, nodeReport, state);
+            int atlasSize = nodeReport.AtlasSide(result.report);
+            AuditPrecision(meshPositions, meshUv, meshTriangles, transform, atlasSize, inputs[level].lod, inputs[level].inputs[node].key);
+            AccumulateFaces(meshPositions, meshUv, meshTriangles, transform, atlasSize, nodeReport, state);
             state.faces.AddRange(nodeReport.faces);
-            for (int f = 0; f < nodeReport.faces.Length; ++f) state.faceKeys.Add((node,f));
+            for (int f = 0; f < nodeReport.faces.Length; ++f) { state.faceKeys.Add((node,f)); state.sets.Add(nodeReport.packingSet); }
         }
 
         static void AuditPrecision(Vector3[] positions, Vector2[] uv, int[] triangles, Matrix4x4 transform, int atlasSize, int lod, string key)
@@ -269,26 +273,37 @@ namespace SashaRX.UnityMeshLab
         {
             var pixels = state.pixels; var faces = state.faces; var faceKeys = state.faceKeys; var measurement = state.measurement;
             double surfaceArea = state.surfaceArea, inheritedArea = state.inheritedArea;
-            var scan = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry { uv = pixels.ToArray(),
-                indices = System.Linq.Enumerable.Range(0, pixels.Count).ToArray(), charts = new int[pixels.Count] }, default,
-                comparisonBudget: 2000000, collectConflicts: true);
-            measurement.triangles = faces.Count; measurement.complete = scan.complete;
+            measurement.triangles = faces.Count; measurement.complete = true;
             measurement.inheritedAreaFraction = surfaceArea > 0 ? inheritedArea / surfaceArea : 0;
             measurement.charts = faces.Select(f => f.chart).Distinct().Count();
             measurement.groups = faces.Select(f => f.group).Distinct().Count();
             var allowed = new HashSet<((int mesh,int face) under,(int mesh,int face) over)>(result.report.overlaps
                 .Where(r => r.lod == measurement.lod)
                 .Select(r => ((r.underMesh,r.underFace),(r.overMesh,r.overFace))));
-            foreach (var (a, b) in scan.conflicts)
+            int collapsed = 0, invalid = 0, outside = 0; var samples = new List<string>();
+            // Each atlas is scanned on its own: meshes packed separately share [0,1].
+            foreach (var set in Enumerable.Range(0, faces.Count).GroupBy(f => state.sets[f]))
             {
-                int under = faces[a].layer < faces[b].layer ? a : b;
-                int over = faces[a].layer < faces[b].layer ? b : a;
-                if (AllowsOverlap(faces[under], faces[over]) && allowed.Contains((faceKeys[under],faceKeys[over]))) ++measurement.allowedOverlapPairs;
-                else ++measurement.unexpectedOverlapPairs;
+                var ids = set.ToArray();
+                var uv = ids.SelectMany(f => Enumerable.Range(f * 3, 3).Select(c => pixels[c])).ToArray();
+                var scan = UvAtlasDiagnostics.Measure(new RemeshNative.Geometry { uv = uv,
+                    indices = Enumerable.Range(0, uv.Length).ToArray(), charts = new int[uv.Length] }, default,
+                    comparisonBudget: 2000000, collectConflicts: true);
+                measurement.complete &= scan.complete;
+                collapsed += scan.degenerateFaces; invalid += scan.invalidFaces; outside += scan.outOfBoundsVertices;
+                samples.AddRange(scan.samples);
+                foreach (var (x, y) in scan.conflicts)
+                {
+                    int a = ids[x], b = ids[y];
+                    int under = faces[a].layer < faces[b].layer ? a : b;
+                    int over = faces[a].layer < faces[b].layer ? b : a;
+                    if (AllowsOverlap(faces[under], faces[over]) && allowed.Contains((faceKeys[under],faceKeys[over]))) ++measurement.allowedOverlapPairs;
+                    else ++measurement.unexpectedOverlapPairs;
+                }
             }
-            if (!scan.complete || measurement.unexpectedOverlapPairs > 0 || scan.degenerateFaces > 0 || scan.invalidFaces > 0 || scan.outOfBoundsVertices > 0)
-                throw new InvalidOperationException($"Final reverse UV audit failed for LOD{measurement.lod}: complete={scan.complete}, unexpected overlaps={measurement.unexpectedOverlapPairs}, "
-                    + $"collapsed={scan.degenerateFaces}, invalid={scan.invalidFaces}, outside={scan.outOfBoundsVertices}; {string.Join("; ",scan.samples)}. No result was published.");
+            if (!measurement.complete || measurement.unexpectedOverlapPairs > 0 || collapsed > 0 || invalid > 0 || outside > 0)
+                throw new InvalidOperationException($"Final reverse UV audit failed for LOD{measurement.lod}: complete={measurement.complete}, unexpected overlaps={measurement.unexpectedOverlapPairs}, "
+                    + $"collapsed={collapsed}, invalid={invalid}, outside={outside}; {string.Join("; ",samples)}. No result was published.");
         }
 
         static bool AllowsOverlap(ReverseUvTransfer.Face under, ReverseUvTransfer.Face over)

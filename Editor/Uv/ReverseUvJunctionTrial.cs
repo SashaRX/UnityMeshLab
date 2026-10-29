@@ -80,7 +80,7 @@ namespace SashaRX.UnityMeshLab
                     frozenShellCascade=options.frozenShellCascade, beforeFinalPacking=options.beforeFinalPacking,
                     splitDonorSeams = options.splitDonorSeams, fillAtlasVacancies = options.fillAtlasVacancies,
                     rotateCharts = options.rotateCharts, rotateChartsToAxis = options.rotateChartsToAxis,
-                    repackFinalAtlas = options.repackFinalAtlas, fillFinalAtlas = options.fillFinalAtlas,
+                    repackFinalAtlas = options.repackFinalAtlas, fillFinalAtlas = options.fillFinalAtlas, packPerMesh = options.packPerMesh,
                     seedDensity=options.regroupPreparedAtlas?density:prepareSeed?state.inputs.seedDensity:options.seedDensity };
                 if(UvProgress.IsActive) UvProgress.Report(.25f,cuts?"Project with junction cuts":"Validate packing across the LOD chain");
                 state.result = await ReverseUvTransfer.Build(state.inputs.levels, trial, useAsync, token);
@@ -89,10 +89,12 @@ namespace SashaRX.UnityMeshLab
                     :options.regroupPreparedAtlas?"ordinary-transfer-charts":prepareSeed?(options.rebuildSeedWithUnity?"unity-unwrapping":"source-charts-local-repair"):"existing-uv2";
                 state.result.report.seedChartRotation=prepareSeed && compact && options.rotateCharts;
                 using var auditTiming = options.performance?.Measure("Final layout validation");
+                int reportNode=0;
                 for(int level=0;level<state.result.meshes.Count;++level)
                     for(int node=0;node<state.result.meshes[level].Length;++node)
                     {
                         var mesh=state.result.meshes[level][node];
+                        int atlas=state.result.report.nodes[reportNode++].AtlasSide(state.result.report);
                         var quality=TransferUvQuality.Measure(mesh,mesh.uv2,Vector2.one,state.inputs.levels[level].inputs[node].toWorld);
                         if(!quality.overlapScanComplete || quality.invalidFaces>0 || quality.degenerateFaces>0
                             || quality.outOfBoundsVertices>0 || double.IsNaN(quality.worstAnisotropy))
@@ -103,12 +105,12 @@ namespace SashaRX.UnityMeshLab
                             var frame=TransferUvQuality.WorldFrame(vertices[indices[f]],vertices[indices[f+1]],vertices[indices[f+2]],
                                 state.inputs.levels[level].inputs[node].toWorld);
                             if(!options.regroupPreparedAtlas && ReverseUvTransfer.TriangleAnisotropy(frame,uv[indices[f]],uv[indices[f+1]],uv[indices[f+2]])>4.001
-                                || options.regroupPreparedAtlas && !ReverseUvShellPrecision.Fits(frame,uv[indices[f]]*state.result.report.atlasSize,
-                                    uv[indices[f+1]]*state.result.report.atlasSize,uv[indices[f+2]]*state.result.report.atlasSize,4.001))
+                                || options.regroupPreparedAtlas && !ReverseUvShellPrecision.Fits(frame,uv[indices[f]]*atlas,
+                                    uv[indices[f+1]]*atlas,uv[indices[f+2]]*atlas,4.001))
                                 throw new InvalidOperationException($"Reverse shell metric failed for LOD{state.inputs.levels[level].lod} '{state.inputs.levels[level].inputs[node].key}' face {f/3} "
-                                    + $"(anisotropy {ReverseUvTransfer.TriangleAnisotropy(frame,uv[indices[f]],uv[indices[f+1]],uv[indices[f+2]]):G9}; atlas {state.result.report.atlasSize}; "
+                                    + $"(anisotropy {ReverseUvTransfer.TriangleAnisotropy(frame,uv[indices[f]],uv[indices[f+1]],uv[indices[f+2]]):G9}; atlas {atlas}; "
                                     + $"frame {frame.length:R}/{frame.x:R}/{frame.y:R}; pixels "
-                                    + string.Join("; ",Enumerable.Range(f,3).Select(c=>{var p=uv[indices[c]]*state.result.report.atlasSize;return $"{p.x:R}/{p.y:R}";}))+").");
+                                    + string.Join("; ",Enumerable.Range(f,3).Select(c=>{var p=uv[indices[c]]*atlas;return $"{p.x:R}/{p.y:R}";}))+").");
                         }
 
                     }

@@ -47,6 +47,9 @@ namespace SashaRX.UnityMeshLab
             internal float seedDensity;
             internal bool repackFinalAtlas;
             public bool fillFinalAtlas;
+            // Per-mesh repack: each set of meshes that share no island with the
+            // rest fills an atlas of its own (ReverseUvFinalPacking.MeshSets).
+            public bool packPerMesh;
             public bool splitDonorSeams = true, fillAtlasVacancies = true;
             public long comparisonBudget = 2000000;
             internal Dictionary<(int lod, int node), HashSet<int>> seamCutExclusions;
@@ -106,6 +109,13 @@ namespace SashaRX.UnityMeshLab
             public int[] sourceFaces, removedSourceFaces;
             public int splitSourceFaces;
             public Vector3[] sourceBarycentrics;
+            // The final atlas this node was packed into: its side and density,
+            // and its mesh set. With one shared atlas every node has the report's.
+            public int atlasSize, packingSet;
+            public float texelsPerUnit;
+
+            /// <summary>This node's final atlas side; the report's for a report without one per node.</summary>
+            internal int AtlasSide(Report report) => atlasSize > 0 ? atlasSize : report.atlasSize;
         }
 
         [Serializable] internal sealed class Report
@@ -326,14 +336,44 @@ namespace SashaRX.UnityMeshLab
             if(!options.repackFinalAtlas) return;
             CapturePackingEdges(result,token);
             options.beforeFinalPacking?.Invoke(result);
-            int previousSide=result.report.atlasSize;
-            int side;
-            using (options.performance?.Measure("Final packing and atlas audits"))
-                side=useAsync?await Task.Run(()=>ReverseUvFinalPacking.Pack(result.surfaces,options,result.report,previousSide,token),token)
-                    :ReverseUvFinalPacking.Pack(result.surfaces,options,result.report,previousSide,token);
-            if(result.report.finalPacking==null)
-                throw new InvalidOperationException("Reverse UV final atlas packing failed; no result was published: "
-                    +result.report.finalPackingRefusal);
+            var report=result.report;
+            int previousSide=report.atlasSize;
+            var sets=options.packPerMesh?ReverseUvFinalPacking.MeshSets(result.surfaces,report):new List<Surface[]> {null};
+            var atlases=new Dictionary<Surface,(int side,float density,int set)>();
+            float requested=report.texelsPerUnit;
+            int families=0,limited=0;bool footprints=false,native=true;float scale=0;string rectangleRefusal=null;
+            for(int set=0;set<sets.Count;++set)
+            {
+                // One set packs the whole chain, as a shared atlas always has.
+                var only=sets.Count>1?sets[set]:null;
+                report.texelsPerUnit=requested;
+                int packed;
+                using (options.performance?.Measure("Final packing and atlas audits"))
+                    packed=useAsync?await Task.Run(()=>ReverseUvFinalPacking.Pack(result.surfaces,options,report,previousSide,token,only),token)
+                        :ReverseUvFinalPacking.Pack(result.surfaces,options,report,previousSide,token,only);
+                if(report.finalPacking==null)
+                    throw new InvalidOperationException("Reverse UV final atlas packing failed; no result was published: "
+                        +report.finalPackingRefusal);
+                foreach(var surface in only??result.surfaces.SelectMany(l=>l)) atlases.Add(surface,(packed,report.texelsPerUnit,set));
+                families+=report.finalPackingFamilies;limited+=report.resolutionLimitedFaces;
+                footprints|=report.finalPackingFootprints;native&=report.finalPackingNative;
+                scale=Math.Max(scale,report.finalPackingScale);rectangleRefusal=report.finalPackingRectangleRefusal??rectangleRefusal;
+            }
+            report.finalPackingFamilies=families;report.resolutionLimitedFaces=limited;
+            report.finalPackingFootprints=footprints;report.finalPackingNative=native;
+            report.finalPackingScale=scale;report.finalPackingRectangleRefusal=rectangleRefusal;
+            report.texelsPerUnit=atlases.Values.Min(a=>a.density);
+            int side=atlases.Values.Max(a=>a.side);
+            // Report nodes follow the chain's level and node order.
+            var nodes=result.surfaces.SelectMany(l=>l).ToArray();
+            for(int n=0;n<nodes.Length && n<report.nodes.Count;++n)
+            {
+                var atlas=atlases[nodes[n]];
+                report.nodes[n].atlasSize=atlas.side;report.nodes[n].texelsPerUnit=atlas.density;report.nodes[n].packingSet=atlas.set;
+            }
+            if(sets.Count>1)
+                UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Per-mesh packing: {sets.Count} atlases, "
+                    +string.Join(", ",sets.Select(set=>$"{string.Join("+",set.Select(s=>UvToolContext.ExtractGroupKey(s.input.key??string.Empty)).Distinct())} {atlases[set[0]].side}px")) +".");
             using var replacement=new Result();
             using var meshTiming = options.performance?.Measure("Final output meshes");
             foreach(var level in result.surfaces)
@@ -342,7 +382,8 @@ namespace SashaRX.UnityMeshLab
                 var outputs=new Mesh[level.Length];replacement.meshes.Add(outputs);
                 foreach(var surface in level)
                 {
-                    var normalized=surface.pixels.Select(p=>p/side).ToArray();
+                    int own=atlases[surface].side;
+                    var normalized=surface.pixels.Select(p=>p/own).ToArray();
                     outputs[surface.node]=surface.sourceBarycentrics==null
                         ?ReverseUvMesh.Copy(surface.input.mesh,surface.indices,normalized)
                         :ReverseUvRefinedMesh.Copy(surface.input.mesh,surface.sourceFaces,surface.sourceBarycentrics,normalized);

@@ -334,5 +334,46 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(6,result.meshes[1][0].triangles.Length);
             Assert.AreEqual(0,result.report.splitSourceFaces);
         }
+
+        static ReverseUvTransfer.Result BuildPerMesh(params ReverseUvTransfer.Level[] levels)=>ReverseUvTransfer.Build(levels,
+            new ReverseUvTransfer.Options {seedResolution=128,seedDensity=32,projectionReach=.1f,
+                regroupPreparedAtlas=true,frozenShellCascade=true,repackFinalAtlas=true,packPerMesh=true}).GetAwaiter().GetResult();
+
+        static Rect UvBounds(Mesh mesh)
+        {
+            var uv=mesh.uv2;var min=uv.Aggregate(Vector2.Min);var max=uv.Aggregate(Vector2.Max);
+            return Rect.MinMaxRect(min.x,min.y,max.x,max.y);
+        }
+
+        [TestCase(false)] [TestCase(true)]
+        public void PerMeshPackingGivesEachIndependentMeshAnAtlasOfItsOwn(bool perMesh)
+        {
+            // Two meshes, each a coarse and a fine LOD; no island links one to the other.
+            var levels=new[] {Level(1,Quad(),Quad(3)),Level(0,Quad(),Quad(3))};
+            using var result=perMesh?BuildPerMesh(levels):Build(levels);
+            var nodes=result.report.nodes;
+            Assert.AreEqual(perMesh?2:1,nodes.Select(n=>n.packingSet).Distinct().Count());
+            Assert.AreEqual(perMesh,UvBounds(result.meshes[1][0]).Overlaps(UvBounds(result.meshes[1][1])),
+                "Meshes packed on their own share [0,1]; one shared atlas keeps them apart.");
+            for(int mesh=0;mesh<2;++mesh)
+            {
+                Assert.AreEqual(nodes[mesh].atlasSize,nodes[2+mesh].atlasSize,"A mesh's LODs share its atlas.");
+                var coarse=result.meshes[0][mesh].uv2;var fine=result.meshes[1][mesh].uv2;
+                for(int i=0;i<coarse.Length;++i) Assert.LessOrEqual(Vector2.Distance(coarse[i],fine[i])*nodes[mesh].atlasSize,.01);
+            }
+            Assert.DoesNotThrow(()=>ReverseUvAudit.Measure(result,levels));
+        }
+
+        [Test]
+        public void AnIslandInheritedAcrossMeshesKeepsThemInOneAtlas()
+        {
+            var coarse=Quad();var a=Quad(.1f,.1f,.3f);var b=Quad(.6f,.6f,.3f);
+            var levels=new[] {Level(1,coarse),Level(0,a,b)};
+            using var result=BuildPerMesh(levels);
+            Assert.AreEqual(1,result.report.finalPackingFamilies);
+            Assert.AreEqual(1,result.report.nodes.Select(n=>n.packingSet).Distinct().Count());
+            Assert.IsTrue(result.report.nodes.All(n=>n.atlasSize==result.report.atlasSize));
+            Assert.DoesNotThrow(()=>ReverseUvAudit.Measure(result,levels));
+        }
     }
 }
