@@ -2143,35 +2143,31 @@ namespace SashaRX.UnityMeshLab.Tests
         /// <summary>
         /// A weld changes the vertex count; an imported UV channel it left unchanged is not an
         /// edit (the save would try to write it, and ask to leave out a UV3 the file cannot take).
+        /// A changed value, a merge that dropped one of a position's values, or a position and
+        /// UV0 with two values in the import is.
         /// </summary>
         [Test]
         public void Save_ComparesAnImportedUvChannelAcrossAWeld()
         {
-            static Mesh Build(int count, List<Vector2> uv3)
-            {
-                var mesh = new Mesh();
-                mesh.SetVertices(new List<Vector3> { Vector3.zero, Vector3.right, Vector3.up, Vector3.right }.GetRange(0, count));
-                mesh.SetUVs(0, new List<Vector2> { Vector2.zero, Vector2.right, Vector2.up, Vector2.right }.GetRange(0, count));
-                if (uv3 != null) mesh.SetUVs(3, uv3.GetRange(0, count));
-                mesh.SetTriangles(new[] { 0, 1, 2 }, 0);
-                return mesh;
-            }
-            var values = new List<Vector2> { new Vector2(.1f, .2f), new Vector2(.3f, .4f), new Vector2(.5f, .6f), new Vector2(.3f, .4f) };
-            Mesh imported = Build(4, values), bare = Build(4, null), welded = Build(3, values);
-            try
-            {
-                var kept = values.GetRange(0, 3);
-                Assert.IsTrue(FbxChannelWrite.KeepsImportedUvs(welded, kept, imported, 3), "the weld dropped a duplicate vertex only");
-                var baked = new List<Vector2>(kept) { [1] = new Vector2(.9f, .4f) };
-                Assert.IsFalse(FbxChannelWrite.KeepsImportedUvs(welded, baked, imported, 3), "a changed value is an edit");
-                Assert.IsFalse(FbxChannelWrite.KeepsImportedUvs(welded, kept, bare, 3), "a channel the import lacks is an edit");
-            }
-            finally
-            {
-                UnityEngine.Object.DestroyImmediate(imported);
-                UnityEngine.Object.DestroyImmediate(bare);
-                UnityEngine.Object.DestroyImmediate(welded);
-            }
+            Vector2 a = new Vector2(.1f, .2f), b = new Vector2(.3f, .4f), c = new Vector2(.5f, .6f);
+            // Vertex 3 duplicates vertex 1 (a false seam); the weld drops it.
+            var importedPositions = new[] { Vector3.zero, Vector3.right, Vector3.up, Vector3.right };
+            var importedUv0 = new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.right };
+            var importedCorners = new[] { 0, 1, 2, 2, 3, 0 };
+            var positions = new[] { Vector3.zero, Vector3.right, Vector3.up };
+            var uv0 = new[] { Vector2.zero, Vector2.right, Vector2.up };
+            bool Keeps(Vector2[] values, Vector2[] imported, Vector3[] at = null, Vector2[] atUv0 = null)
+                => FbxChannelWrite.KeepsImportedUvs(at ?? positions, atUv0 ?? uv0, values,
+                    importedPositions, importedUv0, imported, importedCorners);
+
+            Assert.IsTrue(Keeps(new[] { a, b, c }, new[] { a, b, c, b }), "the weld dropped a duplicate vertex only");
+            Assert.IsFalse(Keeps(new[] { a, Vector2.one, c }, new[] { a, b, c, b }), "a changed value is an edit");
+            Assert.IsFalse(Keeps(new[] { a, b, c }, null), "a channel the import lacks is an edit");
+            Assert.IsFalse(Keeps(new[] { a, b, c }, new[] { a, b, c, c }), "one position and UV0 with two values cannot be told apart");
+            // A UV0 seam (the same position under two UV0s) merged into one UV0 drops a key.
+            var seamUv0 = new[] { Vector2.zero, Vector2.right, Vector2.up, Vector2.one };
+            Assert.IsFalse(FbxChannelWrite.KeepsImportedUvs(positions, uv0, uv0,
+                importedPositions, seamUv0, seamUv0, importedCorners), "a collapsed seam is an edit");
         }
 
         /// <summary>The leave-out question lists every channel unless the Console line has them all.</summary>
