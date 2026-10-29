@@ -230,6 +230,7 @@ namespace SashaRX.UnityMeshLab
             if (assetOrShared)
             {
                 var clone = EditableCopy(source);
+                if (clone == null) return false;
                 clone.name = source.name;
                 // The clone is the renderer's new mesh, not a pipeline working copy: Undo
                 // destroys it together with the swap, and a context refresh keeps it
@@ -259,6 +260,7 @@ namespace SashaRX.UnityMeshLab
                 // goes through Undo with the copy.
                 var prior = entry.sceneEditMesh;
                 var clone = EditableCopy(source);
+                if (clone == null) return false;
                 clone.name = entry.fbxMesh != null ? entry.fbxMesh.name : source.name;
                 Undo.RegisterCreatedObjectUndo(clone, undoLabel);
                 if (entry.meshFilter != null)
@@ -288,7 +290,18 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
-        static Mesh EditableCopy(Mesh source) => source.isReadable ? UnityEngine.Object.Instantiate(source) : MeshAccess.ReadableCopy(source);
+        // The mesh to edit in place of source; null (with a warning) when an unreadable one cannot
+        // be copied, so a batch fix skips that mesh instead of stopping halfway.
+        static Mesh EditableCopy(Mesh source)
+        {
+            if (source.isReadable) return UnityEngine.Object.Instantiate(source);
+            try { return MeshAccess.ReadableCopy(source); }
+            catch (Exception error)
+            {
+                UvtLog.Warn($"[Cleanup] Skipped '{source.name}': its readable copy failed: {error.Message}");
+                return null;
+            }
+        }
 
         // ── Degenerate triangle detection / removal ──
 
