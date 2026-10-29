@@ -126,6 +126,8 @@ namespace SashaRX.UnityMeshLab
                 internal Vector3[] normals;
                 internal TriangleBvh bvh;
                 internal TriangleBvh2D footprint;
+                /// <summary>Endpoint pairs of the UV2 edges bounding the chart's faces.</summary>
+                internal Vector2[] border;
             }
 
             internal Surface(Vector3[] positions, int[] triangles, Vector2[] uv2, Vector2[] uv0)
@@ -163,9 +165,35 @@ namespace SashaRX.UnityMeshLab
                 if (charts.TryGetValue(shell, out var chart)) return chart;
                 var list = chartFaces[shell].ToArray();
                 chart = new Chart { faces = list, normals = list.Select(FaceNormal).ToArray(), bvh = new TriangleBvh(positions, Corners(list)),
-                    footprint = new TriangleBvh2D(uvA, uvB, uvC, list) };
+                    footprint = new TriangleBvh2D(uvA, uvB, uvC, list), border = Border(list) };
                 charts.Add(shell, chart);
                 return chart;
+            }
+
+            /// <summary>
+            /// The UV2 edges of a chart's faces not lying between exactly two of them, one on
+            /// either side: its outline and its holes. A fold or a vertex split inside the
+            /// chart adds a border edge, which only refuses more.
+            /// </summary>
+            Vector2[] Border(int[] list)
+            {
+                var sides = new Dictionary<(Vector2, Vector2), (int count, int side)>();
+                foreach (int f in list)
+                {
+                    int t = f * 3;
+                    int sign = System.Math.Sign(ForwardUvReference.Area(uv2[triangles[t]], uv2[triangles[t + 1]], uv2[triangles[t + 2]]));
+                    for (int k = 0; k < 3; ++k)
+                    {
+                        Vector2 p = uv2[triangles[t + k]], q = uv2[triangles[t + (k + 1) % 3]];
+                        // A face wound counter-clockwise in UV2 lies left of its edge p→q.
+                        bool forward = p.x < q.x || (p.x == q.x && p.y < q.y);
+                        var key = forward ? (p, q) : (q, p);
+                        sides.TryGetValue(key, out var edge);
+                        sides[key] = (edge.count + 1, edge.side + (forward ? sign : -sign));
+                    }
+                }
+                return sides.Where(e => e.Value.count != 2 || e.Value.side != 0)
+                    .SelectMany(e => new[] {e.Key.Item1, e.Key.Item2}).ToArray();
             }
 
             Vector2 Uv(int face, Vector3 barycentric)
@@ -179,8 +207,8 @@ namespace SashaRX.UnityMeshLab
             /// that chart's nearest point, so every corner reads light of that chart's surface. A face
             /// reaching far past its chart can press all its corners onto one point of the chart's
             /// border, and on a concave chart a face with every corner on it can still span a gap
-            /// where another chart is packed; such a face takes the one point under its centre, still
-            /// on its own surface, never a place in another chart.
+            /// where another chart is packed, or a hole; such a face takes the one point under its
+            /// centre, still on its own surface, never a place in another chart.
             /// </summary>
             internal bool Place(Vector3[] corners, Report report, out Vector2[] uv, out int shell)
             {
@@ -219,22 +247,65 @@ namespace SashaRX.UnityMeshLab
             }
 
             /// <summary>
-            /// Whether a UV2 triangle lies on its chart: its lattice points at quarters of each
-            /// edge (centre and edge midpoints among them) are on the chart's faces, so a
-            /// footprint across a concave chart's gap is refused. The corners lie on it by construction.
+            /// The share of a corner's reach from the face's centre by which <see cref="Covers"/>
+            /// pulls it in: a corner pressed onto the chart's border sits on it, and a border
+            /// reaching no further into the face leaves far less than a texel of it off the chart.
+            /// </summary>
+            const double Margin = 1e-4;
+
+            /// <summary>
+            /// Whether a UV2 triangle lies on its chart: its centre is on the chart's faces and
+            /// no border edge of the chart meets it with its corners pulled in by
+            /// <see cref="Margin"/>, so no gap of a concave chart and no hole, however narrow,
+            /// lies under it. The corners lie on the chart by construction.
             /// </summary>
             static bool Covers(Chart chart, Vector2[] uv)
             {
-                const int steps = 4;
-                for (int i = 0; i <= steps; ++i)
-                    for (int j = 0; i + j <= steps; ++j)
+                var hit = chart.footprint.FindNearest((uv[0] + uv[1] + uv[2]) / 3f);
+                if (hit.faceIndex < 0 || hit.distSq > OnChart) return false;
+                double cx = ((double)uv[0].x + uv[1].x + uv[2].x) / 3, cy = ((double)uv[0].y + uv[1].y + uv[2].y) / 3;
+                var x = new double[3]; var y = new double[3];
+                for (int k = 0; k < 3; ++k)
+                {
+                    x[k] = cx + (uv[k].x - cx) * (1 - Margin);
+                    y[k] = cy + (uv[k].y - cy) * (1 - Margin);
+                }
+                int sign = System.Math.Sign((x[1] - x[0]) * (y[2] - y[0]) - (y[1] - y[0]) * (x[2] - x[0]));
+                double minX = x.Min(), maxX = x.Max(), minY = y.Min(), maxY = y.Max();
+                var border = chart.border;
+                for (int s = 0; s < border.Length; s += 2)
+                {
+                    Vector2 p = border[s], q = border[s + 1];
+                    if (System.Math.Max(p.x, q.x) < minX || System.Math.Min(p.x, q.x) > maxX
+                        || System.Math.Max(p.y, q.y) < minY || System.Math.Min(p.y, q.y) > maxY) continue;
+                    if (Meets(x, y, sign, p, q)) return false;
+                }
+                return true;
+            }
+
+            /// <summary>
+            /// Whether segment pq meets the closed triangle (x, y) wound by sign: clipped to the
+            /// inner side of each of its edges, pq keeps a part.
+            /// </summary>
+            static bool Meets(double[] x, double[] y, int sign, Vector2 p, Vector2 q)
+            {
+                double from = 0, to = 1, dx = (double)q.x - p.x, dy = (double)q.y - p.y;
+                for (int k = 0; k < 3; ++k)
+                {
+                    int n = (k + 1) % 3;
+                    double ex = x[n] - x[k], ey = y[n] - y[k];
+                    double inside = sign * (ex * (p.y - y[k]) - ey * (p.x - x[k]));
+                    double rate = sign * (ex * dy - ey * dx);
+                    if (rate == 0)
                     {
-                        int k = steps - i - j;
-                        if (i == steps || j == steps || k == steps) continue;
-                        var point = (uv[0] * i + uv[1] * j + uv[2] * k) / steps;
-                        var hit = chart.footprint.FindNearest(point);
-                        if (hit.faceIndex < 0 || hit.distSq > OnChart) return false;
+                        if (inside < 0) return false;
+                        continue;
                     }
+                    double t = -inside / rate;
+                    if (rate > 0) from = System.Math.Max(from, t);
+                    else to = System.Math.Min(to, t);
+                    if (from > to) return false;
+                }
                 return true;
             }
 

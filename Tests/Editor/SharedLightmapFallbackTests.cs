@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.Linq;
 using NUnit.Framework;
 using UnityEngine;
@@ -127,6 +128,37 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.NotNull(output);
             Assert.AreEqual((1, 1), (report.placed, report.atPoint), "Its hypotenuse crosses the L's missing corner.");
             var centre = new Vector2(2.9f / 3, 2.9f / 3) * .25f;
+            foreach (int i in output.triangles) Assert.That(Vector2.Distance(centre, output.uv2[i]), Is.LessThan(1e-4));
+        }
+
+        /// <summary>
+        /// A notch narrower than any fixed spacing of sample points still refuses the face: a
+        /// border edge of the chart enters its triangle.
+        /// </summary>
+        [Test]
+        public void AFaceOverANarrowNotchTakesThePointUnderItsCentre()
+        {
+            Object.DestroyImmediate(source);
+            // A unit square chart in z = 0, its UV2 the same, with the cell (.12..18) x (.6..1) cut out.
+            float[] xs = {0, .12f, .18f, 1}, ys = {0, .6f, 1};
+            var grid = ys.SelectMany(y => xs.Select(x => new Vector3(x, y))).ToArray();
+            var cells = new List<int>();
+            for (int j = 0; j < 2; ++j)
+                for (int i = 0; i < 3; ++i)
+                {
+                    if (i == 1 && j == 1) continue;
+                    int a = j * 4 + i, b = a + 1, c = a + 5, d = a + 4;
+                    cells.AddRange(new[] {a, b, c, a, c, d});
+                }
+            source = new Mesh { vertices = grid, triangles = cells.ToArray(),
+                uv = grid.Select(p => (Vector2)p).ToArray(), uv2 = grid.Select(p => (Vector2)p).ToArray() };
+            Object.DestroyImmediate(target);
+            target = new Mesh { vertices = new[] {new Vector3(.02f, .02f), new Vector3(.9f, .02f), new Vector3(.02f, .9f)}, triangles = new[] {0, 1, 2} };
+            var report = new SharedLightmapFallback.Report();
+            output = SharedLightmapFallback.Apply(source, target, new Vector2[3], new[] {-1, -1, -1}, report).mesh;
+            Assert.NotNull(output);
+            Assert.AreEqual((1, 1), (report.placed, report.atPoint), "The notch's bottom edge lies inside the face.");
+            var centre = Vector2.one * (.94f / 3);
             foreach (int i in output.triangles) Assert.That(Vector2.Distance(centre, output.uv2[i]), Is.LessThan(1e-4));
         }
 
