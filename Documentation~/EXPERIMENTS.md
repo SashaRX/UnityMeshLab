@@ -1,5 +1,55 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Shared LOD0 lightmap: collapsed shells take the LOD0 surface's UV2 — 2026-10-29
+
+Model K, Full Pipeline 1.2.86 with per-mesh repack, in a Bakery scene whose
+LODs read the LOD0 lightmap (one atlas and scale/offset per LODGroup, as in
+`LOD_SHARED_LIGHTMAP.md`). Its LOD2 armour keeps 62 of 324 vertices at (0,0)
+in 9 rejected merged shells, and 4 force3D shells accepted as Poor collapse
+to a point (12 faces). The donor-seam trial was not accepted for this mesh,
+and before PR #363 the log did not say why. A kept-face rescue is undone
+when it touches another face, and the LOD0 surface under a merged LOD2
+shell can lie under shells already written there, so the rule that keeps a
+separately baked LOD clean may be what leaves them. Each of these faces
+reads one texel (the rejected ones the corner of the LOD0 rectangle), and
+the bake has dark patches on the side skirts, where these meshes are.
+
+The record stood at 44 vertices and 7 rejected shells since PR #339 (items
+37–47 in PR #294). `GroupedShellTransfer.cs` has not changed since (#347
+was bit-identical), but those runs used one shared atlas; this one packs
+each LOD0 mesh on its own, and the two 7-face shells t34/t35 (18 vertices)
+are rejected here and never were there.
+
+Under a shared lightmap an overlap is not a defect when both faces lie on
+the LOD0 surface they take their light from: they read the same light.
+The entries below that refuse placements for new overlaps (#305, and
+"placing UV0-shifted LOD fragments by 3D") measure LODs that would bake
+apart; they still hold there.
+
+Change, only with "LODs share the LOD0 lightmap" (Transfer stage, saved in
+the sidecar, off by default): after the donor-seam trial, every face with
+3D area of a target shell whose UV2 is under 1e-5 wide or high, or covers
+under 1e-10 of UV2 area (a point, or a line at any angle; rejected shells
+stay at (0,0)), takes the UV2 of the LOD0 surface
+under it. The LOD0 face nearest its centroid among those within 60° of its
+orientation, else among those facing its way, picks one chart; each corner
+takes the UV2 of the nearest point of that chart facing alike, so every
+corner reads light of that chart's surface. A face whose corners all meet
+at one point of the chart's border, or whose triangle leaves the chart (on
+a concave chart it can span the gap where another chart is packed, or a
+hole; its centre must lie on the chart and no border edge of the chart may
+enter it, as a lattice of sample points missed a narrow notch), takes the
+one point under its centre: an affine extension past the chart could land
+in another chart and read unrelated light (Codex and CodeRabbit reviews of
+PR #364). Faces keep their triangles;
+vertices split where their UV2 differs. A face with no LOD0 face facing its
+way keeps its layout. Overlap with other faces is allowed.
+
+Not measured yet: the next K run logs `[Transfer] '…': shared LOD0
+lightmap: …` with the faces placed and the collapsed-face and overlap
+counts before and after; the bake is the check. The furniture corpus does
+not enable the setting.
+
 ## A shell reaching past its source keeps the unclamped similarity — 2026-10-22
 
 After PR #339 model K's LOD2 has 24 faces with a UV2 area under 1e-10 in

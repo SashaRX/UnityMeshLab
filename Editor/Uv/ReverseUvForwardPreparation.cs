@@ -198,7 +198,7 @@ namespace SashaRX.UnityMeshLab
             Add(c.XatlasRotateCharts); Add(c.XatlasRotateChartsToAxis); Add(c.NormalizeTexelDensity);
             Add(c.CorrectSourceTextureAspect); Add(c.CutNarrowUvJunctions); Add(c.ReparameterizeStretchedShells);
             Add(c.StretchThreshold); Add(c.ArapIterations); Add(c.ClampLightmapToUnit); Add(c.PostPackDensityCorrection);
-            Add(c.InternalOversample); Add(c.TargetUvCoverage);
+            Add(c.InternalOversample); Add(c.TargetUvCoverage); Add(c.LodsShareLod0Lightmap);
             Add(w.SymmetrySplitMode); Add(w.splitTargetsInSymmetryStep); Add(w.skipSymmetrySplitStep);
             Add(w.stageRunAnalyzeUv0); Add(w.stageRunWeldUv0); Add(w.stageWeldRunMeshopt);
             Add(w.stageRunRepack); Add(w.stageRunTransfer); Add(w.TransferBoundaryToleranceTexels);
