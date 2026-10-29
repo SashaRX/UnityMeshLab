@@ -59,47 +59,16 @@ namespace SashaRX.UnityMeshLab
 
             var cornerUv = triangles.Select(v => uv2[v]).ToArray();
             var cornerSources = triangles.Select(v => vertexSources[v]).ToArray();
-            int placed = 0;
             foreach (int f in faces)
             {
-                Vector3 a = positions[triangles[f * 3]], b = positions[triangles[f * 3 + 1]], c = positions[triangles[f * 3 + 2]];
-                var normal = Normal(a, b, c);
-                // A face within 60° of the face's own orientation first, so a nearer
-                // perpendicular side does not lend it its light; then any facing its way.
-                float facing = Facing;
-                var hit = surface.all.FindNearestNormalFiltered((a + b + c) / 3f, normal, surface.normals, facing);
-                if (hit.triangleIndex < 0)
-                    hit = surface.all.FindNearestNormalFiltered((a + b + c) / 3f, normal, surface.normals, facing = 0f);
-                if (hit.triangleIndex < 0) { ++report.withoutSurface; continue; }
-                int under = surface.faces[hit.triangleIndex];
-                var chart = surface.ChartFor(surface.shellOf[under]);
-                var placedUv = new Vector2[3];
-                for (int k = 0; k < 3; ++k)
-                {
-                    var corner = positions[triangles[f * 3 + k]];
-                    var nearest = chart.bvh.FindNearestNormalFiltered(corner, normal, chart.normals, facing);
-                    if (nearest.triangleIndex < 0) nearest = chart.bvh.FindNearest(corner);
-                    placedUv[k] = surface.Uv(chart.faces[nearest.triangleIndex], nearest.barycentric);
-                }
-                // A face reaching past its chart presses its corners onto the chart's
-                // border; the plane of the face under it keeps its shape instead.
-                if (!Placed(placedUv))
-                {
-                    var extended = new Vector2[3];
-                    bool planar = true;
-                    for (int k = 0; k < 3 && planar; ++k) planar = surface.Extend(under, positions[triangles[f * 3 + k]], out extended[k]);
-                    if (!planar || !Placed(extended)) { ++report.collapsed; continue; }
-                    placedUv = extended;
-                }
-                for (int k = 0; k < 3; ++k) { cornerUv[f * 3 + k] = placedUv[k]; cornerSources[f * 3 + k] = surface.shellOf[under]; }
-                report.farthest = Mathf.Max(report.farthest, Mathf.Sqrt(hit.distSq));
-                ++placed;
+                var corners = new[] {positions[triangles[f * 3]], positions[triangles[f * 3 + 1]], positions[triangles[f * 3 + 2]]};
+                if (!surface.Place(corners, report, out var placedUv, out int shell)) continue;
+                for (int k = 0; k < 3; ++k) { cornerUv[f * 3 + k] = placedUv[k]; cornerSources[f * 3 + k] = shell; }
             }
-            report.placed = placed;
-            if (placed == 0) return default;
+            if (report.placed == 0) return default;
             var sources = new List<int>();
-            var identity = Enumerable.Range(0, triangles.Length)
-                .Select(i => i % 3 == 0 ? Vector3.right : i % 3 == 1 ? Vector3.up : Vector3.forward).ToArray();
+            var unit = new[] {Vector3.right, Vector3.up, Vector3.forward};
+            var identity = Enumerable.Range(0, triangles.Length).Select(i => unit[i % 3]).ToArray();
             var mesh = ReverseUvRefinedMesh.Copy(target, Enumerable.Range(0, triangles.Length / 3).ToArray(), identity, cornerUv,
                 (vertex, corner) => sources.Add(cornerSources[corner]));
             return (mesh, sources.ToArray());
@@ -202,35 +171,80 @@ namespace SashaRX.UnityMeshLab
                     if (!MeshGeometry.HasArea(positions[triangles[t]], positions[triangles[t + 1]], positions[triangles[t + 2]])
                         || ForwardUvReference.Area(uv2[triangles[t]], uv2[triangles[t + 1]], uv2[triangles[t + 2]]) == 0) continue;
                     valid.Add(f);
-                    if (!chartFaces.TryGetValue(shellOf[f], out var list)) chartFaces.Add(shellOf[f], list = new List<int>());
+                    if (!chartFaces.TryGetValue(shellOf[f], out var list))
+                    {
+                        list = new List<int>();
+                        chartFaces.Add(shellOf[f], list);
+                    }
                     list.Add(f);
                 }
                 faces = valid.ToArray();
-                normals = faces.Select(Normal).ToArray();
+                normals = faces.Select(FaceNormal).ToArray();
                 all = new TriangleBvh(positions, Corners(faces));
             }
 
-            internal Chart ChartFor(int shell)
+            Chart ChartFor(int shell)
             {
                 if (charts.TryGetValue(shell, out var chart)) return chart;
                 var list = chartFaces[shell].ToArray();
-                chart = new Chart { faces = list, normals = list.Select(Normal).ToArray(), bvh = new TriangleBvh(positions, Corners(list)) };
+                chart = new Chart { faces = list, normals = list.Select(FaceNormal).ToArray(), bvh = new TriangleBvh(positions, Corners(list)) };
                 charts.Add(shell, chart);
                 return chart;
             }
 
-            internal Vector2 Uv(int face, Vector3 barycentric)
+            Vector2 Uv(int face, Vector3 barycentric)
                 => uv2[triangles[face * 3]] * barycentric.x + uv2[triangles[face * 3 + 1]] * barycentric.y
                     + uv2[triangles[face * 3 + 2]] * barycentric.z;
 
+            /// <summary>
+            /// The UV2 of a target face from the LOD0 surface under it: the face nearest its centroid
+            /// (within 60° of its orientation first, so a nearer perpendicular side does not lend it
+            /// its light, then any facing its way) picks one chart, and each corner takes the UV2 of
+            /// that chart's nearest point. A face reaching past its chart presses its corners onto the
+            /// chart's border; the plane of the face under its centroid keeps its shape instead.
+            /// </summary>
+            internal bool Place(Vector3[] corners, Report report, out Vector2[] uv, out int shell)
+            {
+                uv = null; shell = -1;
+                var normal = Normal(corners[0], corners[1], corners[2]);
+                var center = (corners[0] + corners[1] + corners[2]) / 3f;
+                float facing = Facing;
+                var hit = all.FindNearestNormalFiltered(center, normal, normals, facing);
+                if (hit.triangleIndex < 0)
+                {
+                    facing = 0f;
+                    hit = all.FindNearestNormalFiltered(center, normal, normals, facing);
+                }
+                if (hit.triangleIndex < 0) { ++report.withoutSurface; return false; }
+                int under = faces[hit.triangleIndex];
+                var chart = ChartFor(shellOf[under]);
+                var projected = new Vector2[3];
+                for (int k = 0; k < 3; ++k)
+                {
+                    var nearest = chart.bvh.FindNearestNormalFiltered(corners[k], normal, chart.normals, facing);
+                    if (nearest.triangleIndex < 0) nearest = chart.bvh.FindNearest(corners[k]);
+                    projected[k] = Uv(chart.faces[nearest.triangleIndex], nearest.barycentric);
+                }
+                if (!Placed(projected))
+                {
+                    for (int k = 0; k < 3; ++k)
+                        if (!ExtendFace(under, corners[k], out projected[k])) { ++report.collapsed; return false; }
+                    if (!Placed(projected)) { ++report.collapsed; return false; }
+                }
+                uv = projected; shell = shellOf[under];
+                report.farthest = Mathf.Max(report.farthest, Mathf.Sqrt(hit.distSq));
+                ++report.placed;
+                return true;
+            }
+
             /// <summary>The UV2 of a point projected onto the plane of a face, extending the face's affine map.</summary>
-            internal bool Extend(int face, Vector3 point, out Vector2 uv)
+            bool ExtendFace(int face, Vector3 point, out Vector2 uv)
                 => SharedLightmapFallback.Extend(positions[triangles[face * 3]], positions[triangles[face * 3 + 1]],
                     positions[triangles[face * 3 + 2]], uv2[triangles[face * 3]], uv2[triangles[face * 3 + 1]],
                     uv2[triangles[face * 3 + 2]], point, out uv);
 
-            Vector3 Normal(int face)
-                => SharedLightmapFallback.Normal(positions[triangles[face * 3]], positions[triangles[face * 3 + 1]],
+            Vector3 FaceNormal(int face)
+                => Normal(positions[triangles[face * 3]], positions[triangles[face * 3 + 1]],
                     positions[triangles[face * 3 + 2]]);
 
             int[] Corners(int[] list)
