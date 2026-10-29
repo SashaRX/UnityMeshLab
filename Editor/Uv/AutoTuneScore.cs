@@ -19,7 +19,7 @@ namespace SashaRX.UnityMeshLab
         internal int incompleteScans;
         /// <summary>Invalid plus collapsed UV faces over all targets; zero-area 3D faces are excluded.</summary>
         internal int collapsedFaces;
-        /// <summary>Target shells left unwritten after rejection.</summary>
+        /// <summary>Target shells left unwritten after rejection, or written with UV2 collapsed to a point.</summary>
         internal int rejectedShells;
         /// <summary>Summed positive overlap area; unlike pair counts it is not inflated by seam subdivision.</summary>
         internal double overlapArea;

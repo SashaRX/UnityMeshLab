@@ -47,6 +47,7 @@ namespace SashaRX.UnityMeshLab
                 result.targetShellStatus[id]=donor<0?GroupedShellTransfer.ShellStatus.Unmatched:
                     issues==0?GroupedShellTransfer.ShellStatus.Accepted:
                     issues<=shell.faceIndices.Count*.3?GroupedShellTransfer.ShellStatus.Degraded:GroupedShellTransfer.ShellStatus.Poor;
+                if(GroupedShellTransfer.CollapsedToPoint(shell,indices,positions,uv)) ++result.shellsCollapsedToPoint;
                 foreach(int face in shell.faceIndices) result.faceToTargetShell[face]=id;
             }
             return result;
