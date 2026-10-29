@@ -167,6 +167,16 @@ namespace SashaRX.UnityMeshLab
         public bool ClampLightmapToUnit = true;
 
         /// <summary>
+        /// The LODs read the LOD0 lightmap (one atlas and scale/offset for the whole
+        /// LODGroup), so a face takes the light of the LOD0 surface its UV2 lies on.
+        /// Transfer then gives each face of a target shell collapsed to a point or a
+        /// line (a rejected shell stays at (0,0)) the UV2 of the LOD0 surface under it,
+        /// overlapping other faces there by design. Off by default: a LOD baked into a
+        /// lightmap of its own needs those faces apart. Saved in the sidecar.
+        /// </summary>
+        public bool LodsShareLod0Lightmap;
+
+        /// <summary>
         /// Post-pack density correction. xatlas internally applies per-chart
         /// scaling (sub-pixel anisotropic ceil + per-chart normalization for
         /// extreme aspect ratios) that breaks uniform density. This pass

@@ -687,11 +687,22 @@ namespace SashaRX.UnityMeshLab
                 hasTargets
                     ? "Project source UV2 onto every included target LOD."
                     : "No target LODs included — Transfer will skip even when enabled.",
-                ref stageRunTransfer, hasSettings: false, drawSettings: null, dimmed: !hasTargets);
+                ref stageRunTransfer, hasSettings: true, drawSettings: DrawTransferStageSettings, dimmed: !hasTargets);
 
             DrawPipelineActions(hasTargets);
         }
 
+
+        void DrawTransferStageSettings()
+        {
+            ctx.LodsShareLod0Lightmap = EditorGUILayout.ToggleLeft(
+                new GUIContent("LODs share the LOD0 lightmap",
+                    "The LODs read LOD0's lightmap (one atlas and scale/offset for the LODGroup, as in Bakery). "
+                    + "A target shell collapsed to a point or a line (a rejected shell stays at 0,0) would read one texel; "
+                    + "its faces take the UV2 of the LOD0 surface under them instead, overlapping other faces there. "
+                    + "Leave off when each LOD bakes into a lightmap of its own. Saved in the sidecar."),
+                ctx.LodsShareLod0Lightmap);
+        }
 
         void DrawWeldStageSettings()
         {
@@ -2722,6 +2733,35 @@ namespace SashaRX.UnityMeshLab
                 finally {if(prepared) UnityEngine.Object.DestroyImmediate(prepared);}
             }
 
+            // Under a shared LOD0 lightmap a face reads the light of the LOD0 surface its UV2
+            // lies on, so a shell collapsed to a point or a line reads one texel or one row.
+            // Its faces take the UV2 of the LOD0 surface under them, overlapping by design.
+            if (ctx.LodsShareLod0Lightmap)
+            {
+                var fallback=new SharedLightmapFallback.Report();
+                (Mesh mesh,int[] sources) placed;
+                using (ForwardPerformance?.Accumulated("Forward shared-lightmap fallback"))
+                    placed=SharedLightmapFallback.Apply(srcMesh,tgtMesh,tr.uv2,tr.vertexToSourceShell,fallback);
+                if (placed.mesh)
+                {
+                    var supersededResult=tr;
+                    if(tgt.originalMesh!=tgt.fbxMesh) DestroyWorkingMesh(ref tgt.originalMesh);
+                    tgt.originalMesh=placed.mesh;tgtMesh=placed.mesh;
+                    // The reference records the rescue's corners, which the split no longer matches.
+                    tgt.forwardUvReference=null;
+                    tr=ReverseUvTransfer.DescribeForwardProjection(tgtMesh,srcMesh,placed.sources);
+                    // Only collapsed shells moved: the next LOD keeps this one's matches.
+                    tr.overlapHints=supersededResult.overlapHints;tr.matchHints=supersededResult.matchHints;
+                    pair=ctx.DiagnosticCapture?.ReplacePair(pair,srcEntry,tgt,srcMesh,tgtMesh,supersededResult,TransferBoundaryToleranceTexels,placed.sources);
+                    TransferUvQuality placedQuality;
+                    using (ForwardPerformance?.Accumulated("Forward quality measure"))
+                        placedQuality=TransferUvQuality.Measure(tgtMesh,tr.uv2,Vector2.one,renderedFrame);
+                    UvtLog.Info($"[Transfer] '{tgt.renderer.name}': shared LOD0 lightmap: {fallback}; collapsed faces {finalQuality.degenerateFaces} → {placedQuality.degenerateFaces}, overlaps {finalQuality.overlapPairs} → {placedQuality.overlapPairs}.");
+                    finalQuality=placedQuality;
+                }
+                else if (fallback.faces>0) UvtLog.Info($"[Transfer] '{tgt.renderer.name}': shared LOD0 lightmap: {fallback}.");
+            }
+
             // Accumulate overlap hints for subsequent LODs
             if (tr.overlapHints != null && tr.overlapHints.Count > 0)
                 hintState.overlapHints.AddRange(tr.overlapHints);
@@ -3061,6 +3101,7 @@ namespace SashaRX.UnityMeshLab
             ctx.ShellPaddingPx = SanitizePadding(s.shellPaddingPx);
             ctx.BorderPaddingPx = SanitizePadding(s.borderPaddingPx);
             ctx.RepackPerMesh = s.repackPerMesh;
+            ctx.LodsShareLod0Lightmap = s.lodsShareLod0Lightmap;
             SymmetrySplitMode = Enum.IsDefined(typeof(SymmetrySplitShells.ThresholdMode), s.symmetrySplitThresholdMode)
                 ? (SymmetrySplitShells.ThresholdMode)s.symmetrySplitThresholdMode
                 : SymmetrySplitShells.ThresholdMode.LegacyFixed;
@@ -3099,6 +3140,7 @@ namespace SashaRX.UnityMeshLab
                 s.shellPaddingPx = ctx.ShellPaddingPx;
                 s.borderPaddingPx = ctx.BorderPaddingPx;
                 s.repackPerMesh = ctx.RepackPerMesh;
+                s.lodsShareLod0Lightmap = ctx.LodsShareLod0Lightmap;
                 s.symmetrySplitThresholdMode = (int)SymmetrySplitMode;
                 s.sourceLodIndex = ctx.SourceLodIndex;
                 s.saveNewMeshAssets = ctx.PipeSettings.saveNewMeshAssets;

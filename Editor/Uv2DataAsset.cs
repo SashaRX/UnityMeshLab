@@ -204,6 +204,8 @@ namespace SashaRX.UnityMeshLab
         public bool repackPerMesh;
         public int symmetrySplitThresholdMode; // SymmetrySplitShells.ThresholdMode
         public int sourceLodIndex;
+        /// <summary>The LODs read the LOD0 lightmap: collapsed target shells take the LOD0 surface's UV2.</summary>
+        public bool lodsShareLod0Lightmap;
 
         // Pipeline
         public bool saveNewMeshAssets = true;
