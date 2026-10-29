@@ -174,6 +174,20 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void NewIslandLogNamesEachIslandsReasonLargestFirst()
+        {
+            var unanchored=ReverseUvTransfer.UnanchoredIsland(new[] {"parent-footprint","no-donor",null,"no-donor"});
+            Assert.AreEqual("no face projected onto a donor chart (no-donor 2, parent-footprint 1, unprojected 1)",unanchored);
+            var refused=ReverseUvTransfer.RefusedIsland(new List<string> {"a","b","a","c","d","e"});
+            Assert.AreEqual("a; b; c; 2 more",refused);
+            var line=ReverseUvTransfer.DescribeNewIslands("Net_LOD0",0,9,39,new[] {(4,refused),(18,unanchored)},2,3);
+            Assert.AreEqual("[ReverseUV] LOD0 'Net_LOD0': 2 of 9 island(s) new, 22 of 39 face(s) (reach 2, anchor tolerance 3 px). "
+                +"Largest: 18 faces: "+unanchored+" | 4 faces: a; b; c; 2 more.",line);
+            var many=ReverseUvTransfer.DescribeNewIslands("Bed",1,20,90,Enumerable.Range(1,8).Select(i=>(i,"r")),2,3);
+            StringAssert.EndsWith("Largest: 8 faces: r | 7 faces: r | 6 faces: r | 5 faces: r | 4 faces: r | 3 faces: r | 2 more.",many);
+        }
+
+        [Test]
         public void RelaxedWholeIslandFitStillRejectsSiblingOverlap()
         {
             var coarse=Quad();var a=Quad(.1f,.1f,.6f);var b=Quad(.2f,.2f,.6f);
