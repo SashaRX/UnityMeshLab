@@ -2140,6 +2140,22 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(new[] { 0 }, FbxChannelWrite.UnplaceableUvChannels(Present(0), 0, true));
         }
 
+        /// <summary>The leave-out question lists every channel unless the Console line has them all.</summary>
+        [Test]
+        public void Save_LeaveOutQuestionListsEveryChannelTheConsoleDoesNot()
+        {
+            var channels = Enumerable.Range(0, 5).Select(i => $"'Part{i}': UV3").ToList();
+            string shortened = FbxChannelWrite.LeaveOutMessage("Model.fbx", channels, true);
+            StringAssert.Contains("'Part2': UV3", shortened);
+            StringAssert.DoesNotContain("'Part3': UV3", shortened);
+            StringAssert.Contains("…and 2 more (see the Console)", shortened);
+
+            string whole = FbxChannelWrite.LeaveOutMessage("Model.fbx", channels, false);
+            StringAssert.Contains("'Part4': UV3", whole);
+            StringAssert.DoesNotContain("see the Console", whole);
+            StringAssert.DoesNotContain("more", FbxChannelWrite.LeaveOutMessage("Model.fbx", channels.Take(2).ToList(), true));
+        }
+
         [Test]
         public void CornerTag_TakesTheNextChannel()
         {
