@@ -697,13 +697,18 @@ namespace SashaRX.UnityMeshLab
 
         void DrawTransferStageSettings()
         {
-            ctx.LodsShareLod0Lightmap = EditorGUILayout.ToggleLeft(
+            EditorGUI.BeginChangeCheck();
+            bool share = EditorGUILayout.ToggleLeft(
                 new GUIContent("LODs share the LOD0 lightmap",
                     "The LODs read LOD0's lightmap (one atlas and scale/offset for the LODGroup, as in Bakery). "
                     + "A target shell collapsed to a point or a line (a rejected shell stays at 0,0) would read one texel; "
                     + "its faces take the UV2 of the LOD0 surface under them instead, overlapping other faces there. "
                     + "Leave off when each LOD bakes into a lightmap of its own. Saved in the sidecar."),
                 ctx.LodsShareLod0Lightmap);
+            if (!EditorGUI.EndChangeCheck()) return;
+            ctx.LodsShareLod0Lightmap = share;
+            // A refresh of the same model before the next save must not restore the stored value.
+            lodsShareLod0LightmapChanged = true;
         }
 
         void DrawWeldStageSettings()
@@ -2752,8 +2757,11 @@ namespace SashaRX.UnityMeshLab
                     // The reference records the rescue's corners, which the split no longer matches.
                     tgt.forwardUvReference=null;
                     tr=ReverseUvTransfer.DescribeForwardProjection(tgtMesh,srcMesh,placed.sources);
-                    // Only collapsed shells moved: the next LOD keeps this one's matches.
+                    // Only collapsed shells moved: the next LOD keeps this one's matches, and the
+                    // published result keeps the matching's counters. Rejected shells now have UV2;
+                    // those still unplaced count with the shells collapsed to a point.
                     tr.overlapHints=supersededResult.overlapHints;tr.matchHints=supersededResult.matchHints;
+                    KeepMatchingCounters(tr,supersededResult);
                     pair=ctx.DiagnosticCapture?.ReplacePair(pair,srcEntry,tgt,srcMesh,tgtMesh,supersededResult,TransferBoundaryToleranceTexels,placed.sources);
                     TransferUvQuality placedQuality;
                     using (ForwardPerformance?.Accumulated("Forward quality measure"))
@@ -2794,6 +2802,25 @@ namespace SashaRX.UnityMeshLab
                 attemptScore.AddTarget(finalQuality, AutoTuneScore.GeometryDegenerateFaces(tgtMesh, renderedFrame));
             }
             ctx.DiagnosticCapture?.AfterPair(pair, tgt, tr);
+        }
+
+        /// <summary>The counters of the shell matching that a description of the published mesh cannot recount.</summary>
+        static void KeepMatchingCounters(GroupedShellTransfer.TransferResult described, GroupedShellTransfer.TransferResult matched)
+        {
+            described.matchTrace = matched.matchTrace;
+            described.shellsTransform = matched.shellsTransform;
+            described.shellsUv0Aligned = matched.shellsUv0Aligned;
+            described.shellsGeometryFallback = matched.shellsGeometryFallback;
+            described.consistencyCorrected = matched.consistencyCorrected;
+            described.dedupConflicts = matched.dedupConflicts;
+            described.fragmentsMerged = matched.fragmentsMerged;
+            described.shellsOverlapFixed = matched.shellsOverlapFixed;
+            described.uv2DuplicatePairs = matched.uv2DuplicatePairs;
+            described.compositeBrokenCount = matched.compositeBrokenCount;
+            described.severeMismatchCount = matched.severeMismatchCount;
+            described.topologyIterations = matched.topologyIterations;
+            described.topologyFixed = matched.topologyFixed;
+            described.topologyCapHit = matched.topologyCapHit;
         }
 
         /// <summary>
@@ -2916,7 +2943,13 @@ namespace SashaRX.UnityMeshLab
         public void BeforeAssetWrite() => RestoreAllPreviews();
         // The write was made with the session's settings: they are saved, not replaced by the
         // sidecar's older ones, which would undo every change since the previous save.
-        public void AfterAssetWrite() { RefreshState(reloadSettings: false); SaveSettingsToSidecar(); RequestRepaint?.Invoke(); }
+        public void AfterAssetWrite()
+        {
+            RefreshState(reloadSettings: false);
+            SaveSettingsToSidecar();
+            lodsShareLod0LightmapChanged = false;
+            RequestRepaint?.Invoke();
+        }
 
         IDisposable PreservePreviewDuringMeshChange()
         {
@@ -3103,14 +3136,19 @@ namespace SashaRX.UnityMeshLab
             // option: it changes the transferred UV2. A refresh of the same model keeps it.
             UnityEngine.Object model = ctx.LodGroup;
             if (!model && ctx.MeshEntries.Count > 0) model = ctx.MeshEntries[0].renderer;
-            if (model != settingsModel) { settingsModel = model; ctx.LodsShareLod0Lightmap = false; }
+            if (model != settingsModel)
+            {
+                settingsModel = model;
+                lodsShareLod0LightmapChanged = false;
+                ctx.LodsShareLod0Lightmap = false;
+            }
             var s = SidecarStore.LoadSettings(selectedSidecarPath);
             if (s == null) return;
             ctx.AtlasResolution = SanitizeAtlasResolution(s.atlasResolution);
             ctx.ShellPaddingPx = SanitizePadding(s.shellPaddingPx);
             ctx.BorderPaddingPx = SanitizePadding(s.borderPaddingPx);
             ctx.RepackPerMesh = s.repackPerMesh;
-            ctx.LodsShareLod0Lightmap = s.lodsShareLod0Lightmap;
+            if (!lodsShareLod0LightmapChanged) ctx.LodsShareLod0Lightmap = s.lodsShareLod0Lightmap;
             SymmetrySplitMode = Enum.IsDefined(typeof(SymmetrySplitShells.ThresholdMode), s.symmetrySplitThresholdMode)
                 ? (SymmetrySplitShells.ThresholdMode)s.symmetrySplitThresholdMode
                 : SymmetrySplitShells.ThresholdMode.LegacyFixed;
@@ -3142,6 +3180,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         UnityEngine.Object settingsModel;
+        bool lodsShareLod0LightmapChanged;
 
         void SaveSettingsToSidecar()
         {
