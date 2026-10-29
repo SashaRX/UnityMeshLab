@@ -130,6 +130,12 @@ namespace SashaRX.UnityMeshLab
                 .OrderByDescending(p=>p.faces.Sum(f=>p.surface.metricFrames[f].length*p.surface.metricFrames[f].y)).ToArray();
             var accepted=new Dictionary<int,List<Vector2>>();int matches=0,newborn=0;
             var sharedPoints=new Dictionary<int,Dictionary<Vector3,Vector2?>>();
+            var fresh=new List<(Surface surface,int faces,string reason)>();
+            // Whole-island correspondence is an approximation between LOD
+            // surfaces. Its fit budget follows the permitted geometric reach;
+            // the seam/contact budget remains a separate subpixel quantity.
+            float fitTolerance=Math.Max(options.boundaryToleranceTexels,
+                options.projectionReach*options.seedDensity);
             foreach(var shell in shells)
             {
                 token.ThrowIfCancellationRequested();var s=shell.surface;var faces=shell.faces;
@@ -137,11 +143,6 @@ namespace SashaRX.UnityMeshLab
                 var frozen=corners.Select(c=>originals[s][c]).ToArray();
                 var cornerIndex=corners.Select((corner,index)=>(corner,index)).ToDictionary(p=>p.corner,p=>p.index);
                 var refusals=new List<string>();
-                // Whole-island correspondence is an approximation between LOD
-                // surfaces. Its fit budget follows the permitted geometric reach;
-                // the seam/contact budget remains a separate subpixel quantity.
-                float fitTolerance=Math.Max(options.boundaryToleranceTexels,
-                    options.projectionReach*options.seedDensity);
                 bool Match(Vector2[] shape,out Vector2[] placement,out int group)
                 {
                     placement=null;group=-1;
@@ -207,6 +208,7 @@ namespace SashaRX.UnityMeshLab
                     {
                         placed=PlaceFrozenNewIsland(placed,options,ref width,ref height);
                         parent=nextChart++;++newborn;
+                        fresh.Add((s,faces.Length,refusals.Count==0?UnanchoredIsland(faces.Select(f=>records[s][f].rejection)):RefusedIsland(refusals)));
                         foreach(int f in faces) {records[s][f].inherited=false;records[s][f].parentLod=-1;
                             records[s][f].parentMesh=records[s][f].parentFace=-1;records[s][f].rejection="new-whole-island";
                             records[s][f].wholeMatchRefusal=refusals.Count==0?"no complete face anchors":string.Join("; ",refusals.Distinct());}
@@ -240,6 +242,37 @@ namespace SashaRX.UnityMeshLab
                     }
             }
             UvtLog.Info(UvtLog.Category.General,$"[ReverseUV] Frozen cascade LOD{donor[0].lod} -> LOD{targets[0].lod}: {matches} whole-island matches, {newborn} new islands; all become the next donors; {queries} anchor queries. No finer cuts or per-face placement.");
+            foreach(var s in targets.Where(t=>fresh.Any(i=>i.surface==t)))
+                UvtLog.Info(UvtLog.Category.General,DescribeNewIslands(s.input.key,s.lod,shells.Count(p=>p.surface==s),s.faces.Length,
+                    fresh.Where(i=>i.surface==s).Select(i=>(i.faces,i.reason)),options.projectionReach,fitTolerance));
+        }
+
+        /// <summary>
+        /// One target mesh's islands that matched no donor island, largest first,
+        /// each with why: a new island takes atlas space of its own, which the
+        /// donor LOD leaves empty.
+        /// </summary>
+        internal static string DescribeNewIslands(string key,int lod,int islands,int faces,
+            IEnumerable<(int faces,string reason)> fresh,float reach,float tolerance)
+        {
+            const int listed=6;
+            var largest=fresh.OrderByDescending(i=>i.faces).ToArray();
+            var parts=largest.Take(listed).Select(i=>$"{i.faces} faces: {i.reason}").ToList();
+            if(largest.Length>listed) parts.Add($"{largest.Length-listed} more");
+            return $"[ReverseUV] LOD{lod} '{key}': {largest.Length} of {islands} island(s) new, {largest.Sum(i=>i.faces)} of {faces} face(s) "
+                +$"(reach {reach:G3}, anchor tolerance {tolerance:G3} px). Largest: {string.Join(" | ",parts)}.";
+        }
+
+        /// <summary>An island none of whose faces projected onto a donor chart, with its faces' rejections.</summary>
+        internal static string UnanchoredIsland(IEnumerable<string> rejections)
+            =>"no face projected onto a donor chart ("+string.Join(", ",rejections.GroupBy(r=>r??"unprojected")
+                .OrderByDescending(g=>g.Count()).ThenBy(g=>g.Key,StringComparer.Ordinal).Select(g=>$"{g.Key} {g.Count()}"))+")";
+
+        /// <summary>An anchored island's refusals by its candidate donor charts, at most three.</summary>
+        internal static string RefusedIsland(List<string> refusals)
+        {
+            var distinct=refusals.Distinct().ToArray();
+            return string.Join("; ",distinct.Take(3))+(distinct.Length>3?$"; {distinct.Length-3} more":"");
         }
 
         internal static Vector2[] NormalizeFrozenDensity(Vector2[] uv,
