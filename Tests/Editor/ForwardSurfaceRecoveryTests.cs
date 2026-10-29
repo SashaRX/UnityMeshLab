@@ -193,10 +193,12 @@ namespace SashaRX.UnityMeshLab.Tests
         [Test]
         public void HealthyAtlasIsLeftUntouched()
         {
+            var report = new ReverseUvTransfer.ForwardRescueReport();
             var result = ReverseUvTransfer.RecoverForwardSurfaceAsync(source, target, source.uv2, new int[8],
-                256, false, Matrix4x4.identity).GetAwaiter().GetResult();
+                256, false, Matrix4x4.identity, report: report).GetAwaiter().GetResult();
             output = result.mesh;
             Assert.IsNull(output);
+            Assert.AreEqual("no defective face", report.refusal);
         }
 
         Vector2[] CollapsedSecondQuad() => source.uv2.Take(4).Concat(Enumerable.Repeat(Vector2.zero, 4)).ToArray();
@@ -211,10 +213,14 @@ namespace SashaRX.UnityMeshLab.Tests
             target.bindposes = new[] {Matrix4x4.identity, Matrix4x4.identity};
             target.boneWeights = Enumerable.Range(0, 8).Select(i => new BoneWeight {boneIndex0 = i / 4, weight0 = 1}).ToArray();
             var legacy = CollapsedSecondQuad();
+            var report = new ReverseUvTransfer.ForwardRescueReport();
             var result = ReverseUvTransfer.RecoverForwardSurfaceAsync(source, target, legacy, new int[8],
-                256, false, Matrix4x4.identity, keepFaces: true).GetAwaiter().GetResult();
+                256, false, Matrix4x4.identity, keepFaces: true, report: report).GetAwaiter().GetResult();
             output = result.mesh;
             Assert.NotNull(output);
+            Assert.IsNull(report.refusal);
+            Assert.AreEqual((2, 2, 2, 0), (report.defective, report.projected, report.rescued, report.touching));
+            Assert.AreEqual("rescued 2 of 2 defective face(s)", report.ToString());
             Assert.AreEqual(0, result.quality.degenerateFaces + result.quality.overlapPairs);
             Assert.IsTrue(result.reference.Matches(output));
             CollectionAssert.AreEqual(target.triangles.Select(i => target.vertices[i]), output.triangles.Select(i => output.vertices[i]),
@@ -235,10 +241,15 @@ namespace SashaRX.UnityMeshLab.Tests
             for (int i = 4; i < 8; ++i) positions[i] = positions[i - 4];
             target.vertices = positions;
             int meshes = Resources.FindObjectsOfTypeAll<Mesh>().Length;
+            var report = new ReverseUvTransfer.ForwardRescueReport();
             var result = ReverseUvTransfer.RecoverForwardSurfaceAsync(source, target, CollapsedSecondQuad(), new int[8],
-                256, false, Matrix4x4.identity, keepFaces: true).GetAwaiter().GetResult();
+                256, false, Matrix4x4.identity, keepFaces: true, report: report).GetAwaiter().GetResult();
             output = result.mesh;
             Assert.IsNull(output, "The collapsed copy projects onto the healthy quad it duplicates.");
+            Assert.AreEqual((2, 2, 0, 2), (report.defective, report.projected, report.rescued, report.touching));
+            Assert.AreEqual("no defective face could be rescued", report.refusal);
+            StringAssert.EndsWith("rescued 0 of 2 defective face(s) (2 touching another face)", report.ToString(),
+                "The log says why the collapsed faces stay.");
             Assert.AreEqual(meshes, Resources.FindObjectsOfTypeAll<Mesh>().Length);
         }
 

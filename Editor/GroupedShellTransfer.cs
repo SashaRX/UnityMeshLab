@@ -111,6 +111,9 @@ namespace SashaRX.UnityMeshLab
             public ShellStatus[] targetShellStatus; // per-shell quality classification
             public int[] targetShellIssues;  // per-shell issue count (inverted/degenerate faces)
             public int shellsRejected;       // shells where UV2 was not written (too many issues)
+            /// <summary>Other shells with 3D area whose UV2 collapsed to a point: like a
+            /// rejected shell, every face reads one lightmap texel.</summary>
+            public int shellsCollapsedToPoint;
             public int shellsOverlapFixed;   // force3D shells relocated due to UV2 overlap
 
             // ─── Visual-defect counters (added for sweep visibility) ───
@@ -4232,6 +4235,7 @@ namespace SashaRX.UnityMeshLab
                     statusRejected++;
                     continue;
                 }
+                if (CollapsedToPoint(tgtShells[tsi], tgtTris, tVerts, result.uv2)) result.shellsCollapsedToPoint++;
 
                 int src = result.targetShellToSourceShell[tsi];
                 if (src < 0)
@@ -4268,7 +4272,7 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
-            LogShellQuality(statusAccepted, statusDegraded, statusPoor, statusRejected, statusUnmatched);
+            LogShellQuality(statusAccepted, statusDegraded, statusPoor, statusRejected, statusUnmatched, result.shellsCollapsedToPoint);
 
             // ── Visual-defect counters (computed on the FINAL UV2) ──
             // Post-topology so duplicate-pair detection runs on the bytes that
@@ -4496,7 +4500,7 @@ namespace SashaRX.UnityMeshLab
                     $"'{targetMeshName}' ← '{sourceMeshName}': " +
                     $"shells src={srcShells.Count} tgt={tgtShells.Count} | " +
                     $"matched={result.shellsMatched} unmatched={unmatched} " +
-                    $"rejected={result.shellsRejected} | " +
+                    $"rejected={result.shellsRejected} atPoint={result.shellsCollapsedToPoint} | " +
                     $"status A={accepted}/D={degraded}/P={poor}/R={rejected}/U={unmatched} | " +
                     $"method interp={methodInterp} xform={methodXform} merged={methodMerged} | " +
                     $"fragMerged={result.fragmentsMerged} dedupConf={result.dedupConflicts} " +
@@ -5111,7 +5115,7 @@ namespace SashaRX.UnityMeshLab
             return !quality.complete || quality.pairs > 0;
         }
 
-        static void LogShellQuality(int accepted, int degraded, int poor, int rejected, int unmatched)
+        static void LogShellQuality(int accepted, int degraded, int poor, int rejected, int unmatched, int collapsedToPoint)
         {
             var sb = new System.Text.StringBuilder();
             sb.Append($"[GroupedTransfer] Quality: {accepted} accepted");
@@ -5119,8 +5123,37 @@ namespace SashaRX.UnityMeshLab
             if (poor > 0) sb.Append($", {poor} poor");
             if (rejected > 0) sb.Append($", {rejected} rejected");
             if (unmatched > 0) sb.Append($", {unmatched} unmatched");
-            if (rejected > 0 || poor > 0) UvtLog.Warn(sb.ToString());
+            if (collapsedToPoint > 0) sb.Append($"; {collapsedToPoint} of the others collapsed to a point, unlit like rejected ones");
+            if (rejected > 0 || poor > 0 || collapsedToPoint > 0) UvtLog.Warn(sb.ToString());
             else UvtLog.Info(sb.ToString());
+        }
+
+        /// <summary>A UV2 extent this small in both directions is a point; in one, a line.</summary>
+        internal const float CollapsedUvExtent = 1e-5f;
+
+        /// <summary>
+        /// Whether a shell with 3D area has its UV2 collapsed to a point, so that
+        /// every face reads one lightmap texel. A shell without 3D area has nothing to light.
+        /// </summary>
+        internal static bool CollapsedToPoint(UvShell shell, int[] triangles, Vector3[] positions, Vector2[] uv2)
+        {
+            if (shell?.faceIndices == null || uv2 == null) return false;
+            Vector2 min = new Vector2(float.MaxValue, float.MaxValue), max = -min;
+            bool area = false;
+            foreach (int f in shell.faceIndices)
+            {
+                int t = f * 3;
+                if (t + 2 >= triangles.Length) continue;
+                for (int k = 0; k < 3; ++k)
+                {
+                    int v = triangles[t + k];
+                    if ((uint)v >= (uint)uv2.Length || (uint)v >= (uint)positions.Length) return false;
+                    min = Vector2.Min(min, uv2[v]);
+                    max = Vector2.Max(max, uv2[v]);
+                }
+                area |= MeshGeometry.HasArea(positions[triangles[t]], positions[triangles[t + 1]], positions[triangles[t + 2]]);
+            }
+            return area && max.x - min.x < CollapsedUvExtent && max.y - min.y < CollapsedUvExtent;
         }
 
         static Dictionary<int, Vector2> ShellCandidate(UvShell shell, Vector2[] uv)
@@ -6090,7 +6123,7 @@ namespace SashaRX.UnityMeshLab
             List<UvShell> tgtShells, int[] tgtTris, Vector3[] tVerts, Vector2[] uv2)
         {
             if (tgtShells == null || tgtTris == null || tVerts == null || uv2 == null) return 0;
-            const float LINE_EPS = 1e-5f;
+            const float LINE_EPS = CollapsedUvExtent;
             const float STRETCH_RATIO_THRESHOLD = 5f;
             const float FILL_RATIO_THRESHOLD = 0.05f;
             int reported = 0;

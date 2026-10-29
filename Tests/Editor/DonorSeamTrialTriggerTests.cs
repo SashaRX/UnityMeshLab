@@ -44,6 +44,20 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsFalse(UvTransferWorkflow.TrialImproves(after, before, true), "A rescue adds no collapsed face.");
         }
 
+        /// <summary>A refused trial logs every measure the acceptance weighs, before and after.</summary>
+        [Test]
+        public void TrialChangeNamesEveryMeasureTheAcceptanceWeighs()
+        {
+            var before = new TransferUvQuality { overlapScanComplete = true, overlapPairs = 3, overlapPairArea = .5, degenerateFaces = 2,
+                invalidFaces = 1, outOfBoundsVertices = 4, worstAnisotropy = 9, areaWeightedAnisotropy = 2 };
+            var after = new TransferUvQuality { overlapScanComplete = false, overlapPairs = 4, overlapPairArea = .25, degenerateFaces = 1,
+                worstAnisotropy = 3, areaWeightedAnisotropy = 1 };
+            string change = UvTransferWorkflow.TrialChange(before, after);
+            foreach (var part in new[] { "overlaps 3 → 4", "scan unfinished", "collapsed faces 2 → 1", "invalid faces 1 → 0",
+                "vertices outside 0–1 4 → 0", "worst stretch 9 → 3", "average stretch 2 → 1" })
+                StringAssert.Contains(part, change);
+        }
+
         static Mesh Triangle()
         {
             var mesh = new Mesh { vertices = new[] { Vector3.zero, Vector3.right, Vector3.up } };

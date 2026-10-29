@@ -1405,7 +1405,8 @@ namespace SashaRX.UnityMeshLab
                 if (result == null) continue;
                 vertices += result.verticesTotal;
                 transferred += result.verticesTransferred;
-                rejected += result.shellsRejected;
+                // A shell collapsed to a point reads one texel, as unlit as a rejected one.
+                rejected += result.shellsRejected + result.shellsCollapsedToPoint;
                 overlaps += result.shellsOverlapFixed;
             }
             return (vertices, transferred, rejected, overlaps);
@@ -2662,6 +2663,9 @@ namespace SashaRX.UnityMeshLab
                 Mesh prepared=null;
                 ForwardUvReference selectedReference=null;
                 TransferUvQuality preparedQuality=null;
+                // The kept-face rescue reports what it did with each defective face,
+                // so a trial that keeps the transferred layout says why in the log.
+                var rescue=keepFaces?new ReverseUvTransfer.ForwardRescueReport():null;
                 try
                 {
                     int resolution=Mathf.Max(16,(int)Math.Max(srcEntry.repackedAtlasWidth,srcEntry.repackedAtlasHeight));
@@ -2669,7 +2673,7 @@ namespace SashaRX.UnityMeshLab
                     if (keepFaces)
                     {
                         var recovered=await ReverseUvTransfer.RecoverForwardSurfaceAsync(srcMesh,tgtMesh,tr.uv2,tr.vertexToSourceShell,
-                            resolution,useAsync,renderedFrame,performance:ForwardPerformance,keepFaces:true,legacyQuality:beforeQuality);
+                            resolution,useAsync,renderedFrame,performance:ForwardPerformance,keepFaces:true,legacyQuality:beforeQuality,report:rescue);
                         projection=(recovered.mesh,recovered.sources);
                         selectedReference=recovered.reference;preparedQuality=recovered.quality;
                     }
@@ -2694,13 +2698,21 @@ namespace SashaRX.UnityMeshLab
                             tgtMesh=tgt.originalMesh;tr=ReverseUvTransfer.DescribeForwardProjection(tgtMesh,srcMesh,projectedSources);
                             hintState.overlapHints.Clear();hintState.matchHints.Clear();
                             pair=ctx.DiagnosticCapture?.ReplacePair(pair,srcEntry,tgt,srcMesh,tgtMesh,supersededResult,TransferBoundaryToleranceTexels,projectedSources);
-                            UvtLog.Info($"[Transfer] '{tgt.renderer.name}': surface projection{(keepFaces?" (faces kept)":"")}: overlaps {beforeQuality.overlapPairs} → {quality.overlapPairs}, collapsed faces {beforeQuality.degenerateFaces} → {quality.degenerateFaces}, average stretch {beforeQuality.areaWeightedAnisotropy:G5} → {quality.areaWeightedAnisotropy:G5}.");
+                            UvtLog.Info($"[Transfer] '{tgt.renderer.name}': surface projection{(keepFaces?" (faces kept)":"")}: overlaps {beforeQuality.overlapPairs} → {quality.overlapPairs}, collapsed faces {beforeQuality.degenerateFaces} → {quality.degenerateFaces}, average stretch {beforeQuality.areaWeightedAnisotropy:G5} → {quality.areaWeightedAnisotropy:G5}{(rescue!=null?"; "+rescue.Faces():string.Empty)}.");
                         }
-                        else if(pair?.trace!=null) pair.trace.forwardSeamRefusal="Whole-mesh quality did not improve without regressions.";
+                        else
+                        {
+                            if(pair?.trace!=null) pair.trace.forwardSeamRefusal="Whole-mesh quality did not improve without regressions.";
+                            UvtLog.Info($"[Transfer] '{tgt.renderer.name}': donor seam trial kept the transferred layout; the trial does not improve the whole mesh: {TrialChange(beforeQuality,quality)}{(rescue!=null?"; "+rescue.Faces():string.Empty)}.");
+                        }
                     }
-                    else if(pair?.trace!=null) pair.trace.forwardSeamRefusal=keepFaces
-                        ?"The target keeps its faces; no defective face could be rescued without new faces."
-                        :"No supported donor projection.";
+                    else
+                    {
+                        if(pair?.trace!=null) pair.trace.forwardSeamRefusal=keepFaces
+                            ?"The target keeps its faces; no defective face could be rescued without new faces."
+                            :"No supported donor projection.";
+                        UvtLog.Info($"[Transfer] '{tgt.renderer.name}': donor seam trial kept the transferred layout; {(rescue!=null?rescue.ToString():"no supported donor projection")}.");
+                    }
                 }
                 catch(InvalidOperationException error)
                 {
@@ -2775,6 +2787,15 @@ namespace SashaRX.UnityMeshLab
                         && (after.degenerateFaces<before.degenerateFaces || after.invalidFaces<before.invalidFaces
                             || (keepFaces && after.overlapPairs<before.overlapPairs)
                             || after.areaWeightedAnisotropy<before.areaWeightedAnisotropy*.99)));
+
+        /// <summary>The measures <see cref="TrialImproves"/> weighs, each as "before → after", for the log.</summary>
+        internal static string TrialChange(TransferUvQuality before, TransferUvQuality after)
+            => $"overlaps {before.overlapPairs} → {after.overlapPairs} (area {before.overlapPairArea:G4} → {after.overlapPairArea:G4}"
+                + (after.overlapScanComplete ? ")" : ", scan unfinished)")
+                + $", collapsed faces {before.degenerateFaces} → {after.degenerateFaces}, invalid faces {before.invalidFaces} → {after.invalidFaces}"
+                + $", vertices outside 0–1 {before.outOfBoundsVertices} → {after.outOfBoundsVertices}"
+                + $", worst stretch {before.worstAnisotropy:G4} → {after.worstAnisotropy:G4}"
+                + $", average stretch {before.areaWeightedAnisotropy:G5} → {after.areaWeightedAnisotropy:G5}";
 
         /// <summary>
         /// Whether a target keeps its faces through the donor-seam trial: its subdivision

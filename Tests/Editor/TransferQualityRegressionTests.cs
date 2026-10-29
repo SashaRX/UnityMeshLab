@@ -939,6 +939,26 @@ namespace SashaRX.UnityMeshLab.Tests
                 UvShellExtractor.Extract(uv, triangles), triangles, vertices, packed));
         }
 
+        /// <summary>
+        /// A shell whose UV2 is one point reads one lightmap texel and counts with the
+        /// rejected shells; a line, an ordinary layout or a shell without 3D area does not.
+        /// </summary>
+        [Test]
+        public void OnlyAShellWithAreaCollapsedToOnePointCountsAsUnlit()
+        {
+            var uv = new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up };
+            var vertices = new[] { Vector3.zero, Vector3.right, new Vector3(1, 1, 0), Vector3.up };
+            var triangles = new[] { 0, 1, 2, 0, 2, 3 };
+            var shell = UvShellExtractor.Extract(uv, triangles).Single();
+            var point = Enumerable.Repeat(new Vector2(.3f, .3f), 4).ToArray();
+            Assert.IsTrue(GroupedShellTransfer.CollapsedToPoint(shell, triangles, vertices, point));
+            Assert.IsFalse(GroupedShellTransfer.CollapsedToPoint(shell, triangles, vertices,
+                new[] { Vector2.zero, Vector2.right * .1f, Vector2.right * .1f, Vector2.zero }), "A line is not a point.");
+            Assert.IsFalse(GroupedShellTransfer.CollapsedToPoint(shell, triangles, vertices, uv));
+            Assert.IsFalse(GroupedShellTransfer.CollapsedToPoint(shell, triangles, new Vector3[4], point),
+                "A shell without 3D area has nothing to light.");
+        }
+
         [TestCase(.0001f)]
         [TestCase(1f)]
         [TestCase(1000f)]
