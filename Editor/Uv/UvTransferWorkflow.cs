@@ -319,7 +319,9 @@ namespace SashaRX.UnityMeshLab
             foreach (var key in keys) crossLodHints.Remove(key);
         }
 
-        public void OnRefresh()
+        public void OnRefresh() => RefreshState(reloadSettings: true);
+
+        void RefreshState(bool reloadSettings)
         {
             uv0Reports.Clear();
             uv0Analyzed = uv0Welded = false;
@@ -330,7 +332,7 @@ namespace SashaRX.UnityMeshLab
             cachedSetupDetectedLods.Clear();
             TryRestoreShellMatchFromSidecar();
             UpdateSelectedSidecar();
-            TryLoadSettingsFromSidecar();
+            if (reloadSettings) TryLoadSettingsFromSidecar();
         }
 
         // ════════════════════════════════════════════════════════════
@@ -2912,7 +2914,9 @@ namespace SashaRX.UnityMeshLab
             => ctx.Assets.ExportIsolatedChannelsToFbx(path, entries, intent);
 
         public void BeforeAssetWrite() => RestoreAllPreviews();
-        public void AfterAssetWrite() { OnRefresh(); SaveSettingsToSidecar(); RequestRepaint?.Invoke(); }
+        // The write was made with the session's settings: they are saved, not replaced by the
+        // sidecar's older ones, which would undo every change since the previous save.
+        public void AfterAssetWrite() { RefreshState(reloadSettings: false); SaveSettingsToSidecar(); RequestRepaint?.Invoke(); }
 
         IDisposable PreservePreviewDuringMeshChange()
         {
@@ -3095,6 +3099,11 @@ namespace SashaRX.UnityMeshLab
 
         void TryLoadSettingsFromSidecar()
         {
+            // Another model without stored settings must not inherit the shared-lightmap
+            // option: it changes the transferred UV2. A refresh of the same model keeps it.
+            UnityEngine.Object model = ctx.LodGroup;
+            if (!model && ctx.MeshEntries.Count > 0) model = ctx.MeshEntries[0].renderer;
+            if (model != settingsModel) { settingsModel = model; ctx.LodsShareLod0Lightmap = false; }
             var s = SidecarStore.LoadSettings(selectedSidecarPath);
             if (s == null) return;
             ctx.AtlasResolution = SanitizeAtlasResolution(s.atlasResolution);
@@ -3131,6 +3140,8 @@ namespace SashaRX.UnityMeshLab
                 if (segment.Length == 0 || segment == "." || segment == "..") return false;
             return true;
         }
+
+        UnityEngine.Object settingsModel;
 
         void SaveSettingsToSidecar()
         {
