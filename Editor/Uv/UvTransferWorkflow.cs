@@ -855,10 +855,10 @@ namespace SashaRX.UnityMeshLab
                                 "Run Repack only");
                         }
                     }
-                    using (new EditorGUI.DisabledScope(!HasForwardSourceAtlas() || !hasTargets))
+                    using (new EditorGUI.DisabledScope(!HasTransferSource() || !hasTargets))
                     {
                         if (GUILayout.Button(new GUIContent("Run Transfer only",
-                                "Re-run Transfer against the existing source UV2 (requires a prior Repack)."),
+                                "Re-run Transfer against the source UV2: the repacked atlas, else the source LOD's own UV2."),
                                 GUILayout.Height(22)))
                         {
                             FireAndForget(ExecTransferAllAsync, "Run Transfer only");
@@ -1259,7 +1259,7 @@ namespace SashaRX.UnityMeshLab
         {
             H("UV Transfer (Source → Targets)");
             if (ctx.LodGroup == null) { Warn("Set LODGroup first."); return; }
-            if (!HasForwardSourceAtlas()) { Warn("Run Repack on the selected forward source LOD first."); return; }
+            if (!HasTransferSource()) { Warn("Run Repack on the selected forward source LOD first, or give it a UV2 of its own."); return; }
 
             // Per-LOD summary card. ✓ when every included entry in the LOD
             // has a transferredMesh, dimmed dot otherwise. Header carries
@@ -1506,6 +1506,14 @@ namespace SashaRX.UnityMeshLab
             foreach (var e in ctx.MeshEntries)
             {
                 if (!e.include || e.originalMesh == null) continue;
+                // Without Repack the source LOD's own UV2 is what Transfer reads. The weld
+                // compares UV0 only and keeps one vertex's UV2, so it would close a seam
+                // the source has in its UV2 alone.
+                if (ReadsOwnUv2(e))
+                {
+                    UvtLog.Info($"[EdgeWeld] '{e.originalMesh.name}' LOD{e.lodIndex}: not welded; Repack is off and Transfer reads its own UV2");
+                    continue;
+                }
                 // Materialise a working copy if we skipped meshopt (which
                 // is what normally clones the baseline).
                 if (e.originalMesh == e.Baseline)
@@ -1960,7 +1968,7 @@ namespace SashaRX.UnityMeshLab
             else
             {
                 stageOutcome[4] = StageStatus.Skipped;
-                UvtLog.Info("[Pipeline] Repack stage SKIPPED by user toggle");
+                UvtLog.Info("[Pipeline] Repack stage SKIPPED by user toggle; Transfer reads the source LOD's own UV2");
             }
 
         }
@@ -1969,7 +1977,9 @@ namespace SashaRX.UnityMeshLab
         {
             attemptScore = default;
             // 5. Transfer (skipped via Setup stage toggle)
-            if (stageRunTransfer && ctx.HasRepack && hasTransferTargets)
+            // A failed Repack does not fall back to the source's own UV2; a skipped one does.
+            bool hasSource = ctx.HasRepack || (!stageRunRepack && HasTransferSource());
+            if (stageRunTransfer && hasSource && hasTransferTargets)
             {
                 stageOutcome[5] = StageStatus.Running;
                 scoringAttempt = true;
@@ -1981,7 +1991,7 @@ namespace SashaRX.UnityMeshLab
                 catch { stageOutcome[5] = StageStatus.Failed; throw; }
                 finally { scoringAttempt = false; }
             }
-            else if (ctx.HasRepack)
+            else if (hasSource)
             {
                 ctx.HasTransfer = false;
                 stageOutcome[5] = StageStatus.Skipped;
@@ -1991,6 +2001,8 @@ namespace SashaRX.UnityMeshLab
             else
             {
                 stageOutcome[5] = StageStatus.Skipped;
+                if (stageRunTransfer && hasTransferTargets && !stageRunRepack)
+                    UvtLog.Warn("[Pipeline] Transfer SKIPPED: Repack is off and a source LOD mesh has no UV0 and UV2 of its own to transfer");
             }
 
         }
@@ -2445,6 +2457,51 @@ namespace SashaRX.UnityMeshLab
             return sources.Count>0 && sources.All(e=>e.repackedMesh!=null);
         }
 
+        /// <summary>
+        /// Whether Transfer has a source UV2 for every source entry: its repacked atlas, or
+        /// its own UV2 (an authored lightmap unwrap read without Repack).
+        /// </summary>
+        bool HasTransferSource()
+        {
+            var sources=ctx.ForLod(ctx.SourceLodIndex);
+            return sources.Count>0 && sources.All(e=>e.repackedMesh!=null || HasOwnUv2(e));
+        }
+
+        // An edge-welded mesh kept one vertex's UV2 where only its UV2 had a seam: not its own UV2 any more.
+        // Transfer matches by the source's UV0 shells, so it needs UV0 as well (HasSourceUvChannels).
+        static bool HasOwnUv2(MeshEntry e) => e.originalMesh && string.IsNullOrEmpty(e.reverseTransferJson) && !e.wasEdgeWelded
+            && e.originalMesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.TexCoord0)
+            && e.originalMesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.TexCoord1);
+
+        /// <summary>
+        /// A readable working copy of each source Transfer reads with its own UV2: an imported
+        /// mesh without Read/Write cannot supply its vertices and UV channels.
+        /// </summary>
+        static void PrepareOwnUv2Sources(List<MeshEntry> sources)
+        {
+            foreach (var source in sources)
+                if (source.repackedMesh == null && HasOwnUv2(source)) EnsureTransferWorkingMesh(source);
+        }
+
+        /// <summary>A source entry whose own UV2 Transfer reads because the pipeline runs without Repack.</summary>
+        bool ReadsOwnUv2(MeshEntry e) => !stageRunRepack && e.lodIndex == ctx.SourceLodIndex && HasOwnUv2(e);
+
+        /// <summary>
+        /// The atlas side a source's UV2 is measured at in texels: its repacked atlas, else, for
+        /// its own UV2, the side Repack would pack it at (its mesh group alone with Per-mesh repack).
+        /// </summary>
+        int SourceAtlasSide(MeshEntry src)
+        {
+            int packed=(int)Math.Max(src.repackedAtlasWidth,src.repackedAtlasHeight);
+            if (packed>0) return packed;
+            if (ctx.RepackResolutionMode!=ResolutionMode.AutoFromTexelDensity) return SanitizeAtlasResolution(ctx.AtlasResolution);
+            var meshes=ctx.ForLod(ctx.SourceLodIndex)
+                .Where(e=>e.originalMesh!=null && (!ctx.RepackPerMesh || e.meshGroupKey==src.meshGroupKey))
+                .Select(e=>e.originalMesh).ToList();
+            return (int)MeshAreaHelper.ComputeAutoResolution(MeshAreaHelper.ComputeTotal3DAreaMeters(meshes),
+                ctx.LightmapDensity,ctx.TargetUvCoverage);
+        }
+
         static void RequireForwardSourceAtlas(List<MeshEntry> sources)
         {
             if (sources.Any(e=>!e.repackedMesh && !string.IsNullOrEmpty(e.reverseTransferJson)))
@@ -2456,6 +2513,7 @@ namespace SashaRX.UnityMeshLab
             using var previewChange = PreservePreviewDuringMeshChange();
             RequirePreparedTransferInputs();
             RequireForwardSourceAtlas(ctx.ForLod(ctx.SourceLodIndex));
+            PrepareOwnUv2Sources(ctx.ForLod(ctx.SourceLodIndex));
             var capture = TransferCaseCapture.Begin(ctx, this, "TransferAll");
             using var _bench = BenchmarkRecorder.NewRun(ctx, "TransferAll",
                 splitTargetsInSymmetryStep, SymmetrySplitMode);
@@ -2486,6 +2544,9 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 crossLodHints.Clear();
+                foreach (var source in ctx.ForLod(ctx.SourceLodIndex).Where(e => e.repackedMesh == null && HasOwnUv2(e)))
+                    UvtLog.Info($"[Transfer] '{source.originalMesh.name}' LOD{source.lodIndex} has no repacked atlas; Transfer reads its own UV2 "
+                        + $"(texel tolerances at {SourceAtlasSide(source)} px)");
                 await TransferTargetLods(useAsync, targetLodCount);
                 ctx.HasTransfer = !UvProgress.CancelRequested;
                 completedSuccessfully = !UvProgress.CancelRequested;
@@ -2567,6 +2628,7 @@ namespace SashaRX.UnityMeshLab
             var sources = ctx.ForLod(ctx.SourceLodIndex);
             if (sources.Count == 0) return;
             RequireForwardSourceAtlas(sources);
+            PrepareOwnUv2Sources(sources);
             ClearReverseSummary();
 
             // Source meshes packed into one atlas: each target keeps clear of the faces already
@@ -2644,16 +2706,19 @@ namespace SashaRX.UnityMeshLab
 
             UvProgress.Report(-1f, $"Transfer LOD{tLod} ← '{tgt.renderer.name}'");
             var neighbours = atlasFaces?.Where(f => f.source != srcEntry || f.mesh != srcMesh).ToList();
+            // A source read with its own UV2 has no packed size: its texel tolerances use the
+            // side Repack would pack it at.
+            int atlasWidth = srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : SourceAtlasSide(srcEntry);
+            int atlasHeight = srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : atlasWidth;
             var pair = ctx.DiagnosticCapture?.BeforePair(srcEntry, tgt, srcMesh, tgtMesh, hintState.overlapHints, hintState.matchHints, TransferBoundaryToleranceTexels,
-                atlasNeighbours: neighbours?.Select(f => f.mesh).ToList());
+                atlasNeighbours: neighbours?.Select(f => f.mesh).ToList(), atlas: (atlasWidth, atlasHeight));
             Vector2[] atlasNeighbours = neighbours?.SelectMany(f => f.corners).ToArray();
             GroupedShellTransfer.TransferResult tr;
             using (ForwardPerformance?.Accumulated("Forward shell transfer"))
                 tr = await TransferMesh(tgtMesh, srcMesh,
                     hintState.overlapHints.Count > 0 ? hintState.overlapHints : null,
                     hintState.matchHints.Count > 0 ? hintState.matchHints : null,
-                    srcEntry.repackedAtlasWidth > 0 ? (int)srcEntry.repackedAtlasWidth : 0,
-                    srcEntry.repackedAtlasHeight > 0 ? (int)srcEntry.repackedAtlasHeight : 0, useAsync, pair?.trace,TransferBoundaryToleranceTexels,
+                    atlasWidth, atlasHeight, useAsync, pair?.trace,TransferBoundaryToleranceTexels,
                     atlasNeighbours);
             if (tr.uv2 == null) {
                 if (scoringAttempt) ++attemptScore.failedTargets;
@@ -2687,7 +2752,7 @@ namespace SashaRX.UnityMeshLab
                 var rescue=keepFaces?new ReverseUvTransfer.ForwardRescueReport():null;
                 try
                 {
-                    int resolution=Mathf.Max(16,(int)Math.Max(srcEntry.repackedAtlasWidth,srcEntry.repackedAtlasHeight));
+                    int resolution=Mathf.Max(16,Math.Max(atlasWidth,atlasHeight));
                     (Mesh mesh,int[] sources) projection;
                     if (keepFaces)
                     {

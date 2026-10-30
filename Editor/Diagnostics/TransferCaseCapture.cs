@@ -164,7 +164,7 @@ namespace SashaRX.UnityMeshLab
         internal Pair BeforePair(MeshEntry source, MeshEntry target, Mesh sourceMesh, Mesh targetMesh,
             List<GroupedShellTransfer.OverlapSourceHint> overlapHints, List<GroupedShellTransfer.CrossLodMatchHint> matchHints,
             float boundaryToleranceTexels = UvTransferTolerance.BoundaryTexels, int[] projectionSources = null,
-            IReadOnlyList<Mesh> atlasNeighbours = null)
+            IReadOnlyList<Mesh> atlasNeighbours = null, (int width, int height)? atlas = null)
         {
             Pair pair = null;
             Safe(() => {
@@ -173,7 +173,8 @@ namespace SashaRX.UnityMeshLab
                     target = target.renderer ? target.renderer.name : targetMesh.name, targetLod = target.lodIndex, group = target.meshGroupKey,
                     sourceMesh = StoreMesh(sourceMesh), targetMesh = StoreMesh(targetMesh), clamp = context.ClampLightmapToUnit,
                     preparedProjection = projectionSources != null, projectionSources = projectionSources == null ? null : (int[])projectionSources.Clone(),
-                    atlasWidth = (int)source.repackedAtlasWidth, atlasHeight = (int)source.repackedAtlasHeight,
+                    // The size Transfer measured the source at: its repacked atlas, or the one given for its own UV2.
+                    atlasWidth = atlas?.width ?? (int)source.repackedAtlasWidth, atlasHeight = atlas?.height ?? (int)source.repackedAtlasHeight,
                     localToWorld = context.PreviewMatrix(target.renderer ? target.renderer.transform : null),
                     hasSourceTransform = true, hasBoundaryTolerance = true, boundaryToleranceTexels = boundaryToleranceTexels,
                     sourceLocalToWorld = context.PreviewMatrix(source.renderer ? source.renderer.transform : null),
