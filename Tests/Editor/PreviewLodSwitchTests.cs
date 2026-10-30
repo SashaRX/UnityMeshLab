@@ -1760,6 +1760,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var welded = ctx.MeshEntries.Find(e => e.renderer == source).originalMesh;
             Assert.AreEqual(repack ? 6 : 8, welded.vertexCount);
             if (!repack) CollectionAssert.AreEqual(strip.uv2, welded.uv2, "The source keeps its own UV2.");
+            Assert.AreEqual(!repack, (bool)CallWorkflow("HasTransferSource"), "A welded source's UV2 is not its own; Transfer needs a Repack then.");
         }
 
         [TestCase(false)]

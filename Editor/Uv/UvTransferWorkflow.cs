@@ -2467,7 +2467,8 @@ namespace SashaRX.UnityMeshLab
             return sources.Count>0 && sources.All(e=>e.repackedMesh!=null || HasOwnUv2(e));
         }
 
-        static bool HasOwnUv2(MeshEntry e) => e.originalMesh && string.IsNullOrEmpty(e.reverseTransferJson)
+        // An edge-welded mesh kept one vertex's UV2 where only its UV2 had a seam: not its own UV2 any more.
+        static bool HasOwnUv2(MeshEntry e) => e.originalMesh && string.IsNullOrEmpty(e.reverseTransferJson) && !e.wasEdgeWelded
             && e.originalMesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.TexCoord1);
 
         /// <summary>A source entry whose own UV2 Transfer reads because the pipeline runs without Repack.</summary>
