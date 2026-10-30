@@ -50,6 +50,10 @@ namespace SashaRX.UnityMeshLab
             // Per-mesh repack: each set of meshes that share no island with the
             // rest fills an atlas of its own (ReverseUvFinalPacking.MeshSets).
             public bool packPerMesh;
+            // The LODs read the LOD0 lightmap (UvToolContext.LodsShareLod0Lightmap): a coarser
+            // island continued on no LOD0 face takes the UV2 of the LOD0 surface under it
+            // instead of atlas space of its own (ReverseUvSharedLightmap).
+            public bool shareLod0Lightmap;
             public bool splitDonorSeams = true, fillAtlasVacancies = true;
             public long comparisonBudget = 2000000;
             internal Dictionary<(int lod, int node), HashSet<int>> seamCutExclusions;
@@ -96,6 +100,9 @@ namespace SashaRX.UnityMeshLab
             public int overlayMesh = -1, overlayFace = -1, layer;
             public bool inherited, intentionalOverlap, ambiguous, localFallback;
             public bool projectionSupport;
+            // Under a shared LOD0 lightmap: the face's family continues on no LOD0 face, so it
+            // is not packed and reads the LOD0 surface under it, overlapping by design.
+            public bool readsLod0;
             public float distance;
             public int group;
             public int packingFamily=-1;
@@ -152,6 +159,8 @@ namespace SashaRX.UnityMeshLab
             public string finalPackingRectangleRefusal;
             public int finalPackingFamilies;
             public float finalPackingScale;
+            // Faces of coarser LODs that read the LOD0 surface under them (shareLod0Lightmap).
+            public int readsLod0Faces;
             public int resolutionLimitedFaces;
         }
 
@@ -373,6 +382,7 @@ namespace SashaRX.UnityMeshLab
                 footprints|=report.finalPackingFootprints;native&=report.finalPackingNative;
                 scale=Math.Max(scale,report.finalPackingScale);rectangleRefusal=report.finalPackingRectangleRefusal??rectangleRefusal;
             }
+            if(options.shareLod0Lightmap) ReverseUvSharedLightmap.Place(result.surfaces,s=>atlases[s].side,report,token);
             report.finalPackingFamilies=families;report.resolutionLimitedFaces=limited;
             report.finalPackingFootprints=footprints;report.finalPackingNative=native;
             report.finalPackingScale=scale;report.finalPackingRectangleRefusal=rectangleRefusal;

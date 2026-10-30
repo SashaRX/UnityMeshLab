@@ -27,6 +27,8 @@ namespace SashaRX.UnityMeshLab
             public int atPoint;
             /// <summary>Faces with no LOD0 face facing their way.</summary>
             public int withoutSurface;
+            /// <summary>Placed faces that read a LOD0 surface facing away, none facing their way (Reverse UV only).</summary>
+            public int facingAway;
             /// <summary>The farthest LOD0 surface a placed face took its UV2 from, in model units.</summary>
             public float farthest;
 
@@ -107,7 +109,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>The LOD0 faces with 3D and UV2 area, searchable whole and per chart.</summary>
-        sealed class Surface
+        internal sealed class Surface
         {
             internal readonly int[] faces;
             internal readonly Vector3[] normals;
@@ -209,9 +211,11 @@ namespace SashaRX.UnityMeshLab
             /// reaching far past its chart can press all its corners onto one point of the chart's
             /// border, and on a concave chart a face with every corner on it can still span a gap
             /// where another chart is packed, or a hole; such a face takes the one point under its
-            /// centre, still on its own surface, never a place in another chart.
+            /// centre, still on its own surface, never a place in another chart. With
+            /// <paramref name="anyFacing"/>, a face with no LOD0 face facing its way reads the
+            /// nearest one facing away (a sheet whose LODs are wound opposite ways).
             /// </summary>
-            internal bool Place(Vector3[] corners, Report report, out Vector2[] uv, out int shell)
+            internal bool Place(Vector3[] corners, Report report, out Vector2[] uv, out int shell, bool anyFacing = false)
             {
                 uv = null; shell = -1;
                 var normal = Normal(corners[0], corners[1], corners[2]);
@@ -221,6 +225,12 @@ namespace SashaRX.UnityMeshLab
                 if (hit.triangleIndex < 0)
                 {
                     facing = 0f;
+                    hit = all.FindNearestNormalFiltered(center, normal, normals, facing);
+                }
+                bool away = hit.triangleIndex < 0 && anyFacing;
+                if (away)
+                {
+                    facing = float.NegativeInfinity;
                     hit = all.FindNearestNormalFiltered(center, normal, normals, facing);
                 }
                 if (hit.triangleIndex < 0) { ++report.withoutSurface; return false; }
@@ -244,6 +254,7 @@ namespace SashaRX.UnityMeshLab
                 uv = projected; shell = shellOf[under];
                 report.farthest = Mathf.Max(report.farthest, Mathf.Sqrt(hit.distSq));
                 ++report.placed;
+                if (away) ++report.facingAway;
                 return true;
             }
 
