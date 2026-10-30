@@ -2002,7 +2002,7 @@ namespace SashaRX.UnityMeshLab
             {
                 stageOutcome[5] = StageStatus.Skipped;
                 if (stageRunTransfer && hasTransferTargets && !stageRunRepack)
-                    UvtLog.Warn("[Pipeline] Transfer SKIPPED: Repack is off and a source LOD mesh has no UV2 to transfer");
+                    UvtLog.Warn("[Pipeline] Transfer SKIPPED: Repack is off and a source LOD mesh has no UV0 and UV2 of its own to transfer");
             }
 
         }
@@ -2468,7 +2468,9 @@ namespace SashaRX.UnityMeshLab
         }
 
         // An edge-welded mesh kept one vertex's UV2 where only its UV2 had a seam: not its own UV2 any more.
+        // Transfer matches by the source's UV0 shells, so it needs UV0 as well (HasSourceUvChannels).
         static bool HasOwnUv2(MeshEntry e) => e.originalMesh && string.IsNullOrEmpty(e.reverseTransferJson) && !e.wasEdgeWelded
+            && e.originalMesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.TexCoord0)
             && e.originalMesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.TexCoord1);
 
         /// <summary>A source entry whose own UV2 Transfer reads because the pipeline runs without Repack.</summary>
