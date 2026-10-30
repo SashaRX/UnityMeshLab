@@ -860,15 +860,21 @@ namespace SashaRX.UnityMeshLab
             // Never denser than the pack just made, so the atlas the retry grows to stays within
             // the one already allocated, which budgets it.
             double coverage = opts.targetUvCoverage > 0f ? opts.targetUvCoverage : 1.0;
-            float texelsPerUnit = (float)Math.Min(opts.densityResolution * oversample * Math.Sqrt(coverage / uvArea),
-                FittedTexelsPerUnit(internalRes, internalPad, uvArea));
+            double requested = opts.densityResolution * oversample * Math.Sqrt(coverage / uvArea);
+            float texelsPerUnit = (float)Math.Min(requested, FittedTexelsPerUnit(internalRes, internalPad, uvArea));
+            // The cap binds only with a coverage other than xatlas's 75% or density normalization off.
+            string density = texelsPerUnit < requested * 0.999
+                ? $"×{texelsPerUnit / requested:F2} of the requested texel density, the fitted pack's"
+                : "the requested texel density";
             uint packedSide = (uint)Math.Min(uint.MaxValue, Math.Ceiling(side * oversample));
             if (PackOverBudget(shellCount, packedSide))
             {
-                UvtLog.Warn(UvtLog.Category.Repack, overflow + scaled + $" Packing them again at the requested texel density is past the safety budget ({shellCount} shells × {packedSide}² atlas); lower the density or the padding.");
+                UvtLog.Warn(UvtLog.Category.Repack, overflow + scaled + $" Packing them again at {density} is past the safety budget ({shellCount} shells × {packedSide}² atlas); lower the density or the padding.");
                 return (true, opts.resolution);
             }
-            UvtLog.Info(UvtLog.Category.Repack, overflow + "; packing them at the requested texel density instead.");
+            if (texelsPerUnit < requested * 0.999)
+                UvtLog.Warn(UvtLog.Category.Repack, overflow + $"; packing them at {density} instead: no denser than the pack the budget was measured on.");
+            else UvtLog.Info(UvtLog.Category.Repack, overflow + "; packing them at the requested texel density instead.");
             // The charts are packed again as they are: computing them again appends copies.
             if (!await packFn(label, shellCount, packedSide, oversample, opts.maxChartSize, internalPad,
                     texelsPerUnit, 0u, bilinear, blockAlign, bruteForce, rotate, toAxis, false))
@@ -877,7 +883,7 @@ namespace SashaRX.UnityMeshLab
             side = Math.Max(width, height);
             uint resolution = MeshAreaHelper.PowerOfTwoResolution(side);
             UvtLog.Info(UvtLog.Category.Repack,
-                $"[xatlas] '{name}': at the requested texel density with {opts.padding} px padding the charts take {width:F0}×{height:F0} px; atlas {resolution} px.");
+                $"[xatlas] '{name}': at {density} with {opts.padding} px padding the charts take {width:F0}×{height:F0} px; atlas {resolution} px.");
             if (side > resolution)
                 UvtLog.Warn(UvtLog.Category.Repack,
                     $"[xatlas] '{name}': past the {resolution} px limit the layout is scaled ×{resolution / side:F2}, so its padding is {opts.padding * resolution / side:F2} px. Lower the texel density or the padding.");
