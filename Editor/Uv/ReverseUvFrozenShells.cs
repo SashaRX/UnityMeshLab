@@ -131,6 +131,8 @@ namespace SashaRX.UnityMeshLab
             var accepted=new Dictionary<int,List<Vector2>>();int matches=0,newborn=0;
             var sharedPoints=new Dictionary<int,Dictionary<Vector3,Vector2?>>();
             var fresh=new List<(Surface surface,int faces,string reason)>();
+            // Each new island that met an accepted sibling: its least overlap and that overlap's share of the island.
+            var contacts=new List<(double area,double share)>();
             // Whole-island correspondence is an approximation between LOD
             // surfaces. Its fit budget follows the permitted geometric reach;
             // the seam/contact budget remains a separate subpixel quantity.
@@ -143,6 +145,15 @@ namespace SashaRX.UnityMeshLab
                 var frozen=corners.Select(c=>originals[s][c]).ToArray();
                 var cornerIndex=corners.Select((corner,index)=>(corner,index)).ToDictionary(p=>p.corner,p=>p.index);
                 var refusals=new List<string>();
+                // Per donor chart, the least overlap with its accepted siblings over every trial.
+                var overlaps=new SortedDictionary<int,(double area,double share,int pairs)>();
+                double Overlap(int chart,List<Vector2> earlier,Vector2[] trial)
+                {
+                    double area=FrozenContact(earlier,trial,options,token,out int pairs);
+                    if(area>0 && (!overlaps.TryGetValue(chart,out var least) || area<least.area))
+                        overlaps[chart]=(area,area/Math.Max(UvArea(trial),double.Epsilon),pairs);
+                    return area;
+                }
                 bool Match(Vector2[] shape,out Vector2[] placement,out int group)
                 {
                     placement=null;group=-1;
@@ -167,17 +178,16 @@ namespace SashaRX.UnityMeshLab
                             if(affine && (trial==null || !FrozenDeformationFits(s,faces,shape,trial,options))) continue;
                             if(trial==null) {refusals.Add($"chart {candidate.Key}: anchor residual {residual:G6} px ({candidate.Count()} faces)");continue;}
                             if(!ValidFrozenShell(s,faces,trial,options,token)) {refusals.Add($"chart {candidate.Key}: whole-island quality");continue;}
-                            if(accepted.TryGetValue(candidate.Key,out var earlier) && HasFrozenContact(earlier,trial,options,token))
+                            if(accepted.TryGetValue(candidate.Key,out var earlier) && Overlap(candidate.Key,earlier,trial)>0)
                             {
-                                if(!method.boundary) {refusals.Add($"chart {candidate.Key}: sibling contact");continue;}
+                                if(!method.boundary) continue;
                                 var positions=corners.Select(c=>s.positions[s.indices[c]]).ToArray();
                                 var anchorFlags=corners.Select(c=>records[s][c/3].inherited && records[s][c/3].chart==candidate.Key).ToArray();
                                 var anchorPixels=corners.Select(c=>proposed[s][c]).ToArray();
                                 var boundary=FitFrozenSharedTranslation(trial,positions,anchorPixels,anchorFlags,
                                     sharedPoints[candidate.Key],fitTolerance,options.boundaryToleranceTexels,token);
                                 if(boundary==null || !FrozenDeformationFits(s,faces,shape,boundary,options)
-                                    || !ValidFrozenShell(s,faces,boundary,options,token) || HasFrozenContact(earlier,boundary,options,token))
-                                {refusals.Add($"chart {candidate.Key}: sibling contact");continue;}
+                                    || !ValidFrozenShell(s,faces,boundary,options,token) || Overlap(candidate.Key,earlier,boundary)>0) continue;
                                 trial=boundary;
                             }
                             placement=trial;group=candidate.Key;return true;
@@ -208,6 +218,9 @@ namespace SashaRX.UnityMeshLab
                     {
                         placed=PlaceFrozenNewIsland(placed,options,ref width,ref height);
                         parent=nextChart++;++newborn;
+                        // First, so the log's three listed refusals keep them.
+                        refusals.InsertRange(0,overlaps.Select(o=>SiblingContact(o.Key,o.Value.area,o.Value.share,o.Value.pairs)));
+                        if(overlaps.Count>0) {var least=overlaps.Values.OrderBy(o=>o.area).First();contacts.Add((least.area,least.share));}
                         fresh.Add((s,faces.Length,refusals.Count==0?UnanchoredIsland(faces.Select(f=>records[s][f].rejection)):RefusedIsland(refusals)));
                         foreach(int f in faces) {records[s][f].inherited=false;records[s][f].parentLod=-1;
                             records[s][f].parentMesh=records[s][f].parentFace=-1;records[s][f].rejection="new-whole-island";
@@ -242,6 +255,7 @@ namespace SashaRX.UnityMeshLab
                     }
             }
             UvtLog.Info(UvtLog.Category.General,$"[ReverseUV] Frozen cascade LOD{donor[0].lod} -> LOD{targets[0].lod}: {matches} whole-island matches, {newborn} new islands; all become the next donors; {queries} anchor queries. No finer cuts or per-face placement.");
+            if(contacts.Count>0) UvtLog.Info(UvtLog.Category.General,DescribeSiblingContacts(donor[0].lod,targets[0].lod,contacts));
             foreach(var s in targets.Where(t=>fresh.Any(i=>i.surface==t)))
                 UvtLog.Info(UvtLog.Category.General,DescribeNewIslands(s.input.key,s.lod,shells.Count(p=>p.surface==s),s.faces.Length,
                     fresh.Where(i=>i.surface==s).Select(i=>(i.faces,i.reason)),options.projectionReach,fitTolerance));
@@ -267,6 +281,28 @@ namespace SashaRX.UnityMeshLab
         internal static string UnanchoredIsland(IEnumerable<string> rejections)
             =>"no face projected onto a donor chart ("+string.Join(", ",rejections.GroupBy(r=>r??"unprojected")
                 .OrderByDescending(g=>g.Count()).ThenBy(g=>g.Key,StringComparer.Ordinal).Select(g=>$"{g.Key} {g.Count()}"))+")";
+
+        /// <summary>
+        /// A donor chart's refusal for the least overlap of an island's placements with the siblings
+        /// already accepted there, in seed texels and as a share of the island. A small share is
+        /// fit noise along a shared seam; a large one is surface the donor LOD does not have.
+        /// </summary>
+        internal static string SiblingContact(int chart,double area,double share,int pairs)
+            =>$"chart {chart}: sibling contact {area:G3} px² ({share*100:G3}% of the island, {pairs} face pair{(pairs==1?"":"s")})";
+
+        /// <summary>
+        /// The new islands of one cascade step that met an accepted sibling, by the share of the
+        /// island their least overlap covers, with the median and largest overlap.
+        /// </summary>
+        internal static string DescribeSiblingContacts(int donorLod,int targetLod,List<(double area,double share)> contacts)
+        {
+            var areas=contacts.Select(c=>c.area).OrderBy(a=>a).ToArray();
+            double median=(areas[(areas.Length-1)/2]+areas[areas.Length/2])/2;
+            var largest=contacts.OrderByDescending(c=>c.area).First();
+            return $"[ReverseUV] Sibling contact LOD{donorLod} -> LOD{targetLod}: {contacts.Count} new island(s) overlapped an accepted sibling; "
+                +$"their least overlap is under 1% of the island in {contacts.Count(c=>c.share<.01)}, 1-10% in {contacts.Count(c=>c.share>=.01 && c.share<.1)}, "
+                +$"over 10% in {contacts.Count(c=>c.share>=.1)} (median {median:G3} px², largest {largest.area:G3} px², {largest.share*100:G3}% of its island).";
+        }
 
         /// <summary>An anchored island's refusals by its candidate donor charts, at most three.</summary>
         internal static string RefusedIsland(List<string> refusals)
@@ -411,13 +447,25 @@ namespace SashaRX.UnityMeshLab
             return audit.invalidFaces==0 && audit.degenerateFaces==0 && audit.pairs==0;
         }
 
-        static bool HasFrozenContact(List<Vector2> earlier,Vector2[] candidate,Options options,CancellationToken token)
+        /// <summary>
+        /// The area, in seed texels, by which a candidate placement overlaps the siblings accepted
+        /// on its donor chart (summed over overlapping face pairs); zero when it only touches them.
+        /// </summary>
+        static double FrozenContact(List<Vector2> earlier,Vector2[] candidate,Options options,CancellationToken token,out int pairs)
         {
             var points=earlier.Concat(candidate).ToArray();
             var scan=UvAtlasDiagnostics.Measure(new RemeshNative.Geometry {uv=points,
                 indices=Enumerable.Range(0,points.Length).ToArray(),charts=new int[points.Length]},token,comparisonBudget:options.comparisonBudget);
             if(!scan.complete) throw new InvalidOperationException("Frozen group contact audit exceeded its comparison budget.");
-            return scan.pairs>0;
+            pairs=scan.pairs;
+            return scan.pairs>0?Math.Max(scan.pairAreaSum,double.Epsilon):0;
+        }
+
+        static double UvArea(Vector2[] uv)
+        {
+            double area=0;
+            for(int t=0;t+2<uv.Length;t+=3) area+=Math.Abs(ForwardUvReference.Area(uv[t],uv[t+1],uv[t+2]))*.5;
+            return area;
         }
 
         static Vector2[] PlaceFrozenNewIsland(Vector2[] uv,Options options,ref float width,ref float height)
