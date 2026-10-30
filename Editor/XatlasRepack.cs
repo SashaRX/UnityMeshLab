@@ -857,11 +857,11 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Warn(UvtLog.Category.Repack, overflow + scaled + $" The requested texel density needs over {opts.resolution} px; lower it or the padding.");
                 return (true, opts.resolution);
             }
-            // Never denser than the pack just made (xatlas's estimate, xatlas.cpp:8250-8266), so the
-            // atlas the retry grows to stays within the one already allocated, which budgets it.
+            // Never denser than the pack just made, so the atlas the retry grows to stays within
+            // the one already allocated, which budgets it.
             double coverage = opts.targetUvCoverage > 0f ? opts.targetUvCoverage : 1.0;
-            double fitted = (internalRes + 2.0 * internalPad) * Math.Sqrt(0.75 / uvArea);
-            float texelsPerUnit = (float)Math.Min(opts.densityResolution * oversample * Math.Sqrt(coverage / uvArea), fitted);
+            float texelsPerUnit = (float)Math.Min(opts.densityResolution * oversample * Math.Sqrt(coverage / uvArea),
+                FittedTexelsPerUnit(internalRes, internalPad, uvArea));
             uint packedSide = (uint)Math.Min(uint.MaxValue, Math.Ceiling(side * oversample));
             if (PackOverBudget(shellCount, packedSide))
             {
@@ -920,6 +920,14 @@ namespace SashaRX.UnityMeshLab
                 return long.MaxValue;
             return units * res;
         }
+
+        /// <summary>
+        /// The texels per unit xatlas estimates for a pack fitted to <paramref name="internalRes"/>
+        /// (xatlas.cpp:8250-8266): the side with padding over the root of the UV area at 75% fill,
+        /// that texel count at least 1, so a UV area under 0.75 does not raise it.
+        /// </summary>
+        internal static double FittedTexelsPerUnit(uint internalRes, uint internalPad, double uvArea)
+            => (internalRes + 2.0 * internalPad) / Math.Sqrt(Math.Max(1.0, uvArea / 0.75));
 
         /// <summary>Whether <see cref="RunPackCancelableAsync"/> refuses a pack: past the precision budget and its heuristic work past its own.</summary>
         static bool PackOverBudget(int shellCount, uint internalRes)

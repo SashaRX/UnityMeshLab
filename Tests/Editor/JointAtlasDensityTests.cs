@@ -115,6 +115,18 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         /// <summary>
+        /// The retry's density cap is xatlas's own estimate for the fitted pack, whose texel count
+        /// is at least 1: a UV area under 0.75 (density normalization off) does not raise it.
+        /// </summary>
+        [TestCase(.75, 288.0)]
+        [TestCase(3.0, 144.0)]
+        [TestCase(.75e-4, 288.0)]
+        public void TheRetryCapIsXatlasEstimateForTheFittedPack(double uvArea, double expected)
+        {
+            Assert.That(XatlasRepack.FittedTexelsPerUnit(256, 16, uvArea), Is.EqualTo(expected).Within(1e-9));
+        }
+
+        /// <summary>
         /// The retry packs the charts the session computed again: computing them again for
         /// UV meshes appends a second copy of every chart.
         /// </summary>
