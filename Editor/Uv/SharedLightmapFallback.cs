@@ -108,6 +108,14 @@ namespace SashaRX.UnityMeshLab
             return faces;
         }
 
+        /// <summary>
+        /// How many faces of <paramref name="mesh"/> <see cref="CollapsedShellFaces"/> finds in
+        /// <paramref name="uv2"/>: the count the log gives before and after the fallback. A shell
+        /// thinner than the extent still has UV2 area, so a measure of faces without it misses them.
+        /// </summary>
+        internal static int CollapsedFaceCount(Mesh mesh, Vector2[] uv2)
+            => uv2 == null || uv2.Length != mesh.vertexCount ? 0 : CollapsedShellFaces(mesh.triangles, mesh.vertices, uv2, new Report()).Count;
+
         /// <summary>The LOD0 faces with 3D and UV2 area, searchable whole and per chart.</summary>
         internal sealed class Surface
         {

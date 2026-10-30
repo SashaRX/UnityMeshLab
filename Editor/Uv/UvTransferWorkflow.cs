@@ -2832,7 +2832,9 @@ namespace SashaRX.UnityMeshLab
                     TransferUvQuality placedQuality;
                     using (ForwardPerformance?.Accumulated("Forward quality measure"))
                         placedQuality=TransferUvQuality.Measure(tgtMesh,tr.uv2,Vector2.one,renderedFrame);
-                    UvtLog.Info($"[Transfer] '{tgt.renderer.name}': shared LOD0 lightmap: {fallback}; collapsed faces {finalQuality.degenerateFaces} → {placedQuality.degenerateFaces}, overlaps {finalQuality.overlapPairs} → {placedQuality.overlapPairs}.");
+                    // Counted as the fallback finds them: a shell thinner than its extent has UV2 area.
+                    UvtLog.Info($"[Transfer] '{tgt.renderer.name}': shared LOD0 lightmap: {fallback}; collapsed faces {fallback.faces} → "
+                        + $"{SharedLightmapFallback.CollapsedFaceCount(tgtMesh,tr.uv2)}, overlaps {finalQuality.overlapPairs} → {placedQuality.overlapPairs}.");
                     finalQuality=placedQuality;
                 }
                 else if (fallback.faces>0) UvtLog.Info($"[Transfer] '{tgt.renderer.name}': shared LOD0 lightmap: {fallback}.");
