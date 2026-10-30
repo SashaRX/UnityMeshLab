@@ -99,7 +99,9 @@ namespace SashaRX.UnityMeshLab
 
         static string Key(ReverseUvTransfer.Surface surface, Dictionary<ReverseUvTransfer.Surface, string> keys)
         {
-            if (!keys.TryGetValue(surface, out var key)) keys.Add(surface, key = UvToolContext.ExtractGroupKey(surface.input.key ?? string.Empty));
+            if (keys.TryGetValue(surface, out var key)) return key;
+            key = UvToolContext.ExtractGroupKey(surface.input.key ?? string.Empty);
+            keys.Add(surface, key);
             return key;
         }
 
