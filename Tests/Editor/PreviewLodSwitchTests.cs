@@ -1706,6 +1706,62 @@ namespace SashaRX.UnityMeshLab.Tests
             return TransferMeshSnapshot.Capture(ctx.MeshEntries.Find(e => e.renderer == sourceRenderer).repackedMesh);
         }
 
+        /// <summary>
+        /// With the Repack stage off, Full Pipeline transfers the source LOD's own UV2 instead of
+        /// skipping Transfer for want of a repacked atlas.
+        /// </summary>
+        [Test]
+        public void FullPipelineWithoutRepackTransfersTheSourcesOwnUv2()
+        {
+            var group = Group(true, out var sourceRenderer, out var targetRenderer);
+            var expected = ShiftedUvs(.5f); sourceRenderer.GetComponent<MeshFilter>().sharedMesh.uv2 = expected;
+            var ctx = Open(group); ctx.AtlasResolution = 64; ctx.RepackResolutionMode = ResolutionMode.Manual;
+            foreach (string stage in new[] { "stageRunAnalyzeUv0", "stageRunRepack" })
+                typeof(UvTransferWorkflow).GetField(stage, Private).SetValue(hub.DiagnosticWorkflow, false);
+            typeof(UvTransferWorkflow).GetField("skipSymmetrySplitStep", Private).SetValue(hub.DiagnosticWorkflow, true);
+            var completed = ((System.Threading.Tasks.Task<bool>)CallWorkflow("ExecFullPipelineCoreImpl", false)).GetAwaiter().GetResult();
+            Assert.IsTrue(completed);
+            Assert.IsFalse(ctx.HasRepack); Assert.IsTrue(ctx.HasTransfer);
+            var stages = (System.Array)typeof(UvTransferWorkflow).GetField("stageOutcome", Private).GetValue(hub.DiagnosticWorkflow);
+            Assert.AreEqual(("Skipped", "Success"), (stages.GetValue(4).ToString(), stages.GetValue(5).ToString()));
+            var output = ctx.MeshEntries.Find(e => e.renderer == targetRenderer).transferredMesh;
+            Assert.IsNotNull(output);
+            for (int i = 0; i < expected.Length; ++i)
+                Assert.That(Vector2.Distance(expected[i], output.uv2[i]), Is.LessThan(1e-5), "The target reads the source's own UV2.");
+        }
+
+        /// <summary>
+        /// The UV0 edge weld keeps one vertex's UV2, so on a source read with its own UV2 it would
+        /// close a seam only that UV2 has. Without Repack the source is not welded; with Repack,
+        /// which unwraps UV2 anew, it is.
+        /// </summary>
+        [TestCase(false)]
+        [TestCase(true)]
+        public void WithoutRepackTheSourceKeepsASeamOnlyItsUv2Has(bool repack)
+        {
+            // Two quads side by side, x 0..1 and 1..2: one UV0 strip, two UV2 islands, so the
+            // vertices at x = 1 are split for UV2 alone.
+            var strip = new Mesh { name = "Strip_LOD0" };
+            strip.vertices = new[] { Vector3.zero, Vector3.right, new Vector3(1, 1), Vector3.up,
+                Vector3.right, new Vector3(2, 0), new Vector3(2, 1), new Vector3(1, 1) };
+            strip.triangles = new[] { 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 };
+            strip.uv = strip.vertices.Select(p => new Vector2(p.x * .5f, p.y)).ToArray();
+            var unit = new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up };
+            strip.uv2 = unit.Select(p => p * .4f).Concat(unit.Select(p => new Vector2(.5f, 0) + p * .4f)).ToArray();
+            strip.RecalculateNormals(); owned.Add(strip);
+            var root = new GameObject("Strip"); owned.Add(root);
+            var source = Lod(root.transform, "Strip_LOD0", strip);
+            var target = Lod(root.transform, "Strip_LOD1", Quad("Strip_LOD1", false));
+            var group = root.AddComponent<LODGroup>();
+            group.SetLODs(new[] { new LOD(.5f, new Renderer[] { source }), new LOD(.1f, new Renderer[] { target }) });
+            var ctx = Open(group);
+            typeof(UvTransferWorkflow).GetField("stageRunRepack", Private).SetValue(hub.DiagnosticWorkflow, repack);
+            CallWorkflow("ExecWeldUv0", false);
+            var welded = ctx.MeshEntries.Find(e => e.renderer == source).originalMesh;
+            Assert.AreEqual(repack ? 6 : 8, welded.vertexCount);
+            if (!repack) CollectionAssert.AreEqual(strip.uv2, welded.uv2, "The source keeps its own UV2.");
+        }
+
         [TestCase(false)]
         [TestCase(true)]
         public void FullPipelineCannotTransferOrCompleteAfterFailedSourceRepack(bool partialSuccess)
