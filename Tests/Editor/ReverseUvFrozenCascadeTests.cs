@@ -198,6 +198,22 @@ namespace SashaRX.UnityMeshLab.Tests
             var fine=result.report.nodes.Where(n=>n.lod==0).ToArray();
             Assert.AreNotEqual(fine[0].faces[0].chart,fine[1].faces[0].chart);
             Assert.IsTrue(fine[1].faces.All(f=>f.wholeMatchRefusal.Contains("sibling contact")));
+            // At 32 texels a unit the second quad, 0.6 wide, overlaps the first by 0.5 x 0.5: 256 of its 368.64 px².
+            var contact=System.Text.RegularExpressions.Regex.Match(fine[1].faces[0].wholeMatchRefusal,
+                @"sibling contact ([\d.,]+) px² \(([\d.,]+)% of the island, (\d+) face pairs?\)");
+            Assert.IsTrue(contact.Success,fine[1].faces[0].wholeMatchRefusal);
+            Assert.AreEqual(256,double.Parse(contact.Groups[1].Value,System.Globalization.CultureInfo.CurrentCulture),1);
+            Assert.AreEqual(69.4,double.Parse(contact.Groups[2].Value,System.Globalization.CultureInfo.CurrentCulture),.1);
+        }
+
+        [Test]
+        public void SiblingContactLogSortsIslandsByTheShareTheirOverlapCovers()
+        {
+            Assert.AreEqual("chart 7: sibling contact 3 px² (25% of the island, 1 face pair)",ReverseUvTransfer.SiblingContact(7,3,.25,1));
+            StringAssert.EndsWith("2 face pairs)",ReverseUvTransfer.SiblingContact(7,3,.25,2));
+            var line=ReverseUvTransfer.DescribeSiblingContacts(2,1,new List<(double,double)> {(30,.4),(2,.005),(5,.05)});
+            Assert.AreEqual("[ReverseUV] Sibling contact LOD2 -> LOD1: 3 new island(s) overlapped an accepted sibling; their least overlap is "
+                +"under 1% of the island in 1, 1-10% in 1, over 10% in 1 (median 5 px², largest 30 px², 40% of its island).",line);
         }
 
         [Test]
