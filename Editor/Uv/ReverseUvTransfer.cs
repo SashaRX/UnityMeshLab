@@ -56,6 +56,20 @@ namespace SashaRX.UnityMeshLab
             internal Dictionary<(int lod,int node,int source),int> overlapPriority;
             internal Dictionary<Input,Vector2[]> newChartParameterizations;
             internal HashSet<(int lod,int node,int source)> inheritedPriority;
+
+            /// <summary>
+            /// A copy for packing at <paramref name="scale"/> times the requested density,
+            /// without the packers' own filling: its gutter grows by the same factor, so a
+            /// bake at the requested density still keeps <see cref="padding"/> texels
+            /// between charts.
+            /// </summary>
+            internal Options AtDensity(double scale)
+            {
+                var copy=(Options)MemberwiseClone();
+                copy.fillFinalAtlas=false;
+                copy.padding=scale>1?(int)Math.Ceiling(padding*scale-1e-6):padding;
+                return copy;
+            }
         }
 
         internal sealed class Input

@@ -321,7 +321,7 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(seed.pixels,fine.pixels); CollectionAssert.AreEqual(fine.pixels,overlay.pixels);
             CollectionAssert.AreEqual(geometry,seed.positions);
             Assert.LessOrEqual(side,64);
-            if(fill) Assert.Greater(report.texelsPerUnit,1); else Assert.AreEqual(1,report.texelsPerUnit);
+            if(fill) Assert.GreaterOrEqual(report.texelsPerUnit,1); else Assert.AreEqual(1,report.texelsPerUnit);
             Assert.AreEqual(report.texelsPerUnit,(seed.pixels[1]-seed.pixels[0]).magnitude/(source[1]-source[0]).magnitude,1e-5);
             foreach(var p in seed.pixels) Assert.IsTrue(p.x>=0 && p.y>=0 && p.x<=side && p.y<=side);
         }

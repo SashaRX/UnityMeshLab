@@ -257,10 +257,10 @@ namespace SashaRX.UnityMeshLab.Tests
             var fine=UnityEngine.Object.Instantiate(coarse);owned.Add(fine);
             var coarseBefore=TransferMeshSnapshot.Capture(coarse);var fineBefore=TransferMeshSnapshot.Capture(fine);
             using var result=ReverseUvTransfer.Build(new[] {Level(1,coarse),Level(0,fine)},
-                new ReverseUvTransfer.Options {seedResolution=128,seedDensity=32,padding=2,projectionReach=.1f,
+                new ReverseUvTransfer.Options {seedResolution=128,seedDensity=256,padding=2,projectionReach=.1f,
                     regroupPreparedAtlas=true,frozenShellCascade=true,rotateCharts=true,rotateChartsToAxis=true,
                     repackFinalAtlas=true,fillFinalAtlas=true}).GetAwaiter().GetResult();
-            Assert.Greater(result.report.texelsPerUnit,32);
+            Assert.GreaterOrEqual(result.report.texelsPerUnit,256);
             foreach(var level in result.meshes) foreach(var mesh in level)
             {
                 Assert.AreEqual(9,mesh.triangles.Length);Assert.AreEqual(1,UvShellExtractor.Extract(mesh.uv2,mesh.triangles).Count);
@@ -273,22 +273,33 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        public void FillAtlasChoosesANewDensityAndReappliesPixelPadding()
+        public void FillGrowsTheGutterWithTheDensityItChooses()
         {
             var coarse=Quad();var inherited=Quad();var fresh=Quad(3);
             using var result=ReverseUvTransfer.Build(new[] {Level(1,coarse),Level(0,inherited,fresh)},
                 new ReverseUvTransfer.Options {seedResolution=128,seedDensity=8,padding=4,projectionReach=.1f,
                     regroupPreparedAtlas=true,frozenShellCascade=true,repackFinalAtlas=true,fillFinalAtlas=true}).GetAwaiter().GetResult();
-            Assert.Greater(result.report.texelsPerUnit,8);Assert.AreEqual(2,result.report.finalPackingFamilies);
+            Assert.GreaterOrEqual(result.report.texelsPerUnit,8);Assert.AreEqual(2,result.report.finalPackingFamilies);
             var a=result.meshes[1][0].uv2.Select(p=>p*result.report.atlasSize).ToArray();
             var b=result.meshes[1][1].uv2.Select(p=>p*result.report.atlasSize).ToArray();
             var lowA=a.Aggregate(Vector2.Min);var highA=a.Aggregate(Vector2.Max);
             var lowB=b.Aggregate(Vector2.Min);var highB=b.Aggregate(Vector2.Max);
             float gap=Math.Max(Math.Max(lowB.x-highA.x,lowA.x-highB.x),Math.Max(lowB.y-highA.y,lowA.y-highB.y));
-            Assert.GreaterOrEqual(gap,3.99f);
-            Assert.Less(gap,12,"New packing must not scale the old 4px gutter with texel density.");
+            Assert.GreaterOrEqual(gap,4*result.report.texelsPerUnit/8-.01f,
+                "Baked at the requested 8 tex/m, the charts keep the requested 4px gutter.");
             Assert.AreEqual(result.report.texelsPerUnit,highA.x-lowA.x,.001);
             Assert.AreEqual(0,result.report.splitSourceFaces);
+        }
+
+        [Test]
+        public void DenserOptionsGrowTheGutterAndStopFilling()
+        {
+            var options=new ReverseUvTransfer.Options {padding=2,fillFinalAtlas=true};
+            var denser=options.AtDensity(3);
+            Assert.AreEqual((6,false),(denser.padding,denser.fillFinalAtlas));
+            Assert.AreEqual(3,options.AtDensity(1.4).padding,"A fractional density rounds the gutter up.");
+            Assert.AreEqual(2,options.AtDensity(.5).padding,"A sparser atlas keeps the requested gutter.");
+            Assert.AreEqual((2,true),(options.padding,options.fillFinalAtlas),"The original options are unchanged.");
         }
 
         [TestCase(1)]

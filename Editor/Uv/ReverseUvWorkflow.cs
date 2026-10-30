@@ -11,7 +11,7 @@ namespace SashaRX.UnityMeshLab
     public partial class UvTransferWorkflow
     {
         bool reversePrepareSeed = true, reversePreserveOverlap;
-        bool reverseFillAtlas = true;
+        bool reverseFillAtlas;
         bool reverseUseForwardCharts = true;
         float reverseReach = .05f;
         string reverseSummary;
@@ -26,7 +26,7 @@ namespace SashaRX.UnityMeshLab
             reversePreserveOverlap = EditorGUILayout.ToggleLeft(new GUIContent("Allow projected detail overlap",
                 "Details can inherit the light under them. Overlap ancestry is saved; ordered baking is not implemented yet."), reversePreserveOverlap);
             reverseFillAtlas = EditorGUILayout.ToggleLeft(new GUIContent("Fill final atlas uniformly",
-                "After all correspondences, try higher texel densities with fresh packing of every group. Padding stays in final pixels; actual density can exceed the requested minimum."),reverseFillAtlas);
+                "After packing at the requested density, try denser atlases whose padding grows by the same factor, so a bake at the requested density keeps the padding between charts. A denser atlas is kept only when it packs tighter."),reverseFillAtlas);
             reverseReach = EditorGUILayout.FloatField(new GUIContent("Projection reach (model units)"), reverseReach);
             using (new EditorGUI.DisabledScope(!ctx.LodGroup || ctx.MeshEntries.Where(e => e.include).Select(e => e.lodIndex).Distinct().Count() < 2))
                 if (GUILayout.Button("Run Reverse UV", GUILayout.Height(24)) && ConfirmReverseReimport())
