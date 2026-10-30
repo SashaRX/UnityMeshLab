@@ -2473,6 +2473,16 @@ namespace SashaRX.UnityMeshLab
             && e.originalMesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.TexCoord0)
             && e.originalMesh.HasVertexAttribute(UnityEngine.Rendering.VertexAttribute.TexCoord1);
 
+        /// <summary>
+        /// A readable working copy of each source Transfer reads with its own UV2: an imported
+        /// mesh without Read/Write cannot supply its vertices and UV channels.
+        /// </summary>
+        static void PrepareOwnUv2Sources(List<MeshEntry> sources)
+        {
+            foreach (var source in sources)
+                if (source.repackedMesh == null && HasOwnUv2(source)) EnsureTransferWorkingMesh(source);
+        }
+
         /// <summary>A source entry whose own UV2 Transfer reads because the pipeline runs without Repack.</summary>
         bool ReadsOwnUv2(MeshEntry e) => !stageRunRepack && e.lodIndex == ctx.SourceLodIndex && HasOwnUv2(e);
 
@@ -2503,6 +2513,7 @@ namespace SashaRX.UnityMeshLab
             using var previewChange = PreservePreviewDuringMeshChange();
             RequirePreparedTransferInputs();
             RequireForwardSourceAtlas(ctx.ForLod(ctx.SourceLodIndex));
+            PrepareOwnUv2Sources(ctx.ForLod(ctx.SourceLodIndex));
             var capture = TransferCaseCapture.Begin(ctx, this, "TransferAll");
             using var _bench = BenchmarkRecorder.NewRun(ctx, "TransferAll",
                 splitTargetsInSymmetryStep, SymmetrySplitMode);
@@ -2617,6 +2628,7 @@ namespace SashaRX.UnityMeshLab
             var sources = ctx.ForLod(ctx.SourceLodIndex);
             if (sources.Count == 0) return;
             RequireForwardSourceAtlas(sources);
+            PrepareOwnUv2Sources(sources);
             ClearReverseSummary();
 
             // Source meshes packed into one atlas: each target keeps clear of the faces already
