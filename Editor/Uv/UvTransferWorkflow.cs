@@ -809,7 +809,7 @@ namespace SashaRX.UnityMeshLab
                     total3DArea, ctx.LightmapDensity, ctx.TargetUvCoverage);
                 previewLine =
                     $"area {total3DArea:F2} m²  ·  density {ctx.LightmapDensity:F1} tex/m  " +
-                    $"→  atlas {autoRes} px";
+                    $"→  atlas ≥ {autoRes} px";
             }
             else
             {
@@ -1077,13 +1077,14 @@ namespace SashaRX.UnityMeshLab
             {
                 ctx.LightmapDensity = EditorGUILayout.Slider(
                     new GUIContent("Texels per meter",
-                        "Target density. Atlas size = ceil_pow2(sqrt(area × density² / coverage)). "
-                        + "Typical: 5–20 for props, 1–5 for large environment pieces."),
+                        "Target density. Atlas size = ceil_pow2(sqrt(area × density² / coverage)); when the charts "
+                        + "and the shell padding overflow it, Repack packs them at this density instead and takes the "
+                        + "power of two their atlas needs. Typical: 5–20 for props, 1–5 for large environment pieces."),
                     ctx.LightmapDensity, 0.5f, 100f);
                 uint autoRes = MeshAreaHelper.ComputeAutoResolution(
                     total3DArea, ctx.LightmapDensity, ctx.TargetUvCoverage);
                 EditorGUILayout.LabelField(" ",
-                    $"area {total3DArea:F2} m² · computed {autoRes} px",
+                    $"area {total3DArea:F2} m² · at least {autoRes} px",
                     EditorStyles.miniLabel);
             }
 
@@ -2292,17 +2293,20 @@ namespace SashaRX.UnityMeshLab
         async Task ExecRepackCoreImpl(List<MeshEntry> entries, bool useAsync)
         {
             uint resolvedResolution = (uint)SanitizeAtlasResolution(ctx.AtlasResolution);
+            double densityResolution = 0;
             if (ctx.RepackResolutionMode == ResolutionMode.AutoFromTexelDensity)
             {
                 var areaMeshes = entries.Where(e => e.originalMesh != null)
                                         .Select(e => e.originalMesh).ToList();
                 double area = CacheAreaPreview(
                     areaMeshes, MeshAreaHelper.ComputeTotal3DAreaMeters(areaMeshes));
-                resolvedResolution = MeshAreaHelper.ComputeAutoResolution(
-                    area, ctx.LightmapDensity, ctx.TargetUvCoverage);
+                densityResolution = MeshAreaHelper.DensityResolution(area, ctx.LightmapDensity, ctx.TargetUvCoverage);
+                resolvedResolution = MeshAreaHelper.PowerOfTwoResolution(densityResolution);
+                // Charts that overflow this side with their padding are packed at the requested
+                // density instead, in the atlas they need (see RepackOptions.densityResolution).
                 UvtLog.Info(
                     $"[Repack] Auto-resolution: area={area:F2} m², density={ctx.LightmapDensity:F2} tex/m, " +
-                    $"coverage={ctx.TargetUvCoverage:F2} → {resolvedResolution} px");
+                    $"coverage={ctx.TargetUvCoverage:F2} → {resolvedResolution} px, more if its charts and padding overflow it");
             }
             // Stamp the recorder with the resolution xatlas will actually use,
             // not the raw UI value — relevant for AutoFromTexelDensity mode
@@ -2369,6 +2373,7 @@ namespace SashaRX.UnityMeshLab
             opts.blockAlign = ctx.XatlasBlockAlign;
             opts.blockSize = ctx.XatlasBlockSize;
             opts.texelsPerUnit = ctx.XatlasTexelsPerUnit;
+            opts.densityResolution = (float)densityResolution;
 
             var originalUv0 = new List<SourceTextureUvMetric.OriginalUv0>();
             RepackResult[] results;
@@ -2401,6 +2406,7 @@ namespace SashaRX.UnityMeshLab
                 foreach (var copy in meshCopies) if (copy) UnityEngine.Object.DestroyImmediate(copy);
                 throw;
             }
+            uint packedResolution = 0;
             for (int i = 0; i < validEntries.Count; i++)
             {
                 if (!results[i].ok)
@@ -2415,12 +2421,15 @@ namespace SashaRX.UnityMeshLab
                 }
                 validEntries[i].repackedMesh = meshCopies[i];
                 uint side = SourceTextureUvMetric.NormalizePackedLightmap(meshCopies[i], results[i].atlasWidth, results[i].atlasHeight);
-                XatlasRepack.ApplyBorderInset(meshCopies[i], safeBorderPadding, resolvedResolution > 0 ? resolvedResolution : side);
+                uint atlas = results[i].resolution > 0 ? results[i].resolution : resolvedResolution;
+                packedResolution = Math.Max(packedResolution, atlas);
+                XatlasRepack.ApplyBorderInset(meshCopies[i], safeBorderPadding, atlas > 0 ? atlas : side);
                 validEntries[i].diagnosticPackedAtlasWidth = results[i].atlasWidth;
                 validEntries[i].diagnosticPackedAtlasHeight = results[i].atlasHeight;
                 validEntries[i].repackedAtlasWidth = side;
                 validEntries[i].repackedAtlasHeight = side;
             }
+            BenchmarkRecorder.Current?.SetResolvedAtlasResolution((int)packedResolution);
 
             // HasRepack gates the Apply UV2 UI, so it must mean "a repacked mesh
             // exists right now", not "a repack was attempted". Setting it

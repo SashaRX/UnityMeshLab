@@ -63,18 +63,29 @@ namespace SashaRX.UnityMeshLab
         /// <c>RepackOptions.resolution</c>.
         /// </summary>
         internal static uint ComputeAutoResolution(double total3DArea, float texelsPerMeter, float coverage)
+            => PowerOfTwoResolution(DensityResolution(total3DArea, texelsPerMeter, coverage));
+
+        /// <summary>
+        /// The atlas side, before rounding, that the requested texel density fills to
+        /// <paramref name="coverage"/>: <c>sqrt(area × density² / coverage)</c>; 0 without area.
+        /// </summary>
+        internal static double DensityResolution(double total3DArea, float texelsPerMeter, float coverage)
         {
             if (texelsPerMeter <= 0f) texelsPerMeter = 1f;
             if (coverage <= 0f) coverage = 1f;
-            if (total3DArea <= 0.0) return 64u;
+            if (total3DArea <= 0.0) return 0.0;
 
             double density = texelsPerMeter;
-            double needed = Math.Sqrt(total3DArea * density * density / coverage);
-            int ceil = (int)Math.Ceiling(needed);
-            uint pow2 = NextPow2((uint)Mathf.Max(1, ceil));
-            if (pow2 < 64u) pow2 = 64u;
-            if (pow2 > 4096u) pow2 = 4096u;
-            return pow2;
+            return Math.Sqrt(total3DArea * density * density / coverage);
+        }
+
+        /// <summary>The smallest power-of-two atlas side holding <paramref name="side"/> pixels, clamped to [64, 4096].</summary>
+        internal static uint PowerOfTwoResolution(double side)
+        {
+            if (!(side > 0.0)) return 64u;
+            if (side >= 4096.0) return 4096u;
+            uint pow2 = NextPow2((uint)Mathf.Max(1, (int)Math.Ceiling(side)));
+            return pow2 < 64u ? 64u : pow2;
         }
 
         /// <summary>Smallest power of two ≥ v (for v ≥ 1).</summary>

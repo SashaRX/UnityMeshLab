@@ -1,5 +1,49 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Repack: an overflowing pack runs again at the requested density — 2026-10-30
+
+Model N, Full Pipeline 1.2.95 with per-mesh repack and the resolution from
+texel density (32 tex/m, coverage 0.75). The main mesh's 209 charts (88 of
+them under a pixel) got an auto 128 px; with 2 px padding xatlas grew its
+atlas to 789×784 for an internal 512 (oversample 4), and the Net mesh's 8
+charts to 718×690. Normalized to [0,1], each layout was scaled down whole,
+padding included: 1.3 px of padding instead of 2, about 26 tex/m instead of
+32, 34% and 42% of the atlas filled.
+
+Cause: with `texelsPerUnit` 0 xatlas estimates it so the charts fill 75% of
+the given resolution and sets no `maxResolution` (xatlas.cpp:8250-8266), so
+charts and padding that do not fit grow the atlas. Many small charts lose
+far more than 25% to padding. Bounding the atlas is not an option: given
+`texelsPerUnit` and `resolution` together, xatlas clamps chart sizes and
+spills charts into further atlases (see the 2026-05 entries below).
+
+Change (`XatlasRepack.PackFitted`, `RepackOptions.densityResolution`, set
+only with the resolution from texel density): the pack runs as before; one
+whose atlas ends within 1% of the requested side is unchanged. Past that,
+the charts are packed again at the requested density, `texelsPerUnit =
+densityResolution × oversample × sqrt(coverage / UV area)` with no
+resolution, so the padding stays its pixels and the atlas takes the side the
+charts and padding need; Repack reports the power of two holding it
+(`RepackResult.resolution`), which the border inset and the benchmark
+recorder use. With a manual resolution the overflow is only logged, with the
+scale and the padding left.
+
+Limits found in review (PR #371):
+- The retry never packs denser than the fitted pack (texels per unit capped
+  at xatlas's own estimate), so its atlas stays within the one already
+  allocated, and it is budgeted on that overflowed side; past the safety
+  budget, or when the density's own side is past the resolution (the
+  resolution stops at 4096), the fitted pack is kept and the log says so.
+- The retry calls only `PackCharts`: `ComputeCharts` again on UV meshes
+  appends a second copy of every chart in the bundled xatlas
+  (`ComputeUvMeshChartsTask` does not clear `charts`). `PackCharts` clears
+  the first pack's output and rebuilds its charts from the computed ones.
+
+Not measured yet: the next N run should log `packing them at the requested
+texel density instead` for the main mesh, then `… the charts take W×H px;
+atlas N px` (256 px expected) with at least 2 px of padding. The bake is
+the check.
+
 ## Shared LOD0 lightmap: collapsed shells take the LOD0 surface's UV2 — 2026-10-29
 
 Model K, Full Pipeline 1.2.86 with per-mesh repack, in a Bakery scene whose
