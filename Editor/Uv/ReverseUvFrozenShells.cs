@@ -218,7 +218,8 @@ namespace SashaRX.UnityMeshLab
                     {
                         placed=PlaceFrozenNewIsland(placed,options,ref width,ref height);
                         parent=nextChart++;++newborn;
-                        refusals.AddRange(overlaps.Select(o=>SiblingContact(o.Key,o.Value.area,o.Value.share,o.Value.pairs)));
+                        // First, so the log's three listed refusals keep them.
+                        refusals.InsertRange(0,overlaps.Select(o=>SiblingContact(o.Key,o.Value.area,o.Value.share,o.Value.pairs)));
                         if(overlaps.Count>0) {var least=overlaps.Values.OrderBy(o=>o.area).First();contacts.Add((least.area,least.share));}
                         fresh.Add((s,faces.Length,refusals.Count==0?UnanchoredIsland(faces.Select(f=>records[s][f].rejection)):RefusedIsland(refusals)));
                         foreach(int f in faces) {records[s][f].inherited=false;records[s][f].parentLod=-1;
@@ -296,10 +297,11 @@ namespace SashaRX.UnityMeshLab
         internal static string DescribeSiblingContacts(int donorLod,int targetLod,List<(double area,double share)> contacts)
         {
             var areas=contacts.Select(c=>c.area).OrderBy(a=>a).ToArray();
+            double median=(areas[(areas.Length-1)/2]+areas[areas.Length/2])/2;
             var largest=contacts.OrderByDescending(c=>c.area).First();
             return $"[ReverseUV] Sibling contact LOD{donorLod} -> LOD{targetLod}: {contacts.Count} new island(s) overlapped an accepted sibling; "
                 +$"their least overlap is under 1% of the island in {contacts.Count(c=>c.share<.01)}, 1-10% in {contacts.Count(c=>c.share>=.01 && c.share<.1)}, "
-                +$"over 10% in {contacts.Count(c=>c.share>=.1)} (median {areas[areas.Length/2]:G3} px², largest {largest.area:G3} px², {largest.share*100:G3}% of its island).";
+                +$"over 10% in {contacts.Count(c=>c.share>=.1)} (median {median:G3} px², largest {largest.area:G3} px², {largest.share*100:G3}% of its island).";
         }
 
         /// <summary>An anchored island's refusals by its candidate donor charts, at most three.</summary>

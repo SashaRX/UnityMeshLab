@@ -214,6 +214,8 @@ namespace SashaRX.UnityMeshLab.Tests
             var line=ReverseUvTransfer.DescribeSiblingContacts(2,1,new List<(double,double)> {(30,.4),(2,.005),(5,.05)});
             Assert.AreEqual("[ReverseUV] Sibling contact LOD2 -> LOD1: 3 new island(s) overlapped an accepted sibling; their least overlap is "
                 +"under 1% of the island in 1, 1-10% in 1, over 10% in 1 (median 5 px², largest 30 px², 40% of its island).",line);
+            StringAssert.Contains("(median 50 px²",ReverseUvTransfer.DescribeSiblingContacts(2,1,new List<(double,double)> {(99,.5),(1,.005)}),
+                "An even count takes the mean of the middle two.");
         }
 
         [Test]
