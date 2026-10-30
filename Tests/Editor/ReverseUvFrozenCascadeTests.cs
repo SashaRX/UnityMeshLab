@@ -200,7 +200,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(fine[1].faces.All(f=>f.wholeMatchRefusal.Contains("sibling contact")));
             // At 32 texels a unit the second quad, 0.6 wide, overlaps the first by 0.5 x 0.5: 256 of its 368.64 px².
             var contact=System.Text.RegularExpressions.Regex.Match(fine[1].faces[0].wholeMatchRefusal,
-                @"sibling contact ([\d.,]+) px² \(([\d.,]+)% of the island, (\d+) face pairs?\)");
+                @"sibling contact (\S+) px² \((\S+)% of the island, (\d+) face pairs?\)");
             Assert.IsTrue(contact.Success,fine[1].faces[0].wholeMatchRefusal);
             Assert.AreEqual(256,double.Parse(contact.Groups[1].Value,System.Globalization.CultureInfo.CurrentCulture),1);
             Assert.AreEqual(69.4,double.Parse(contact.Groups[2].Value,System.Globalization.CultureInfo.CurrentCulture),.1);
