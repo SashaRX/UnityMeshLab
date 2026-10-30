@@ -40,6 +40,10 @@ namespace SashaRX.UnityMeshLab
             report.finalPackingFootprints=false;report.finalPackingNative=false;
             report.finalPackingFamilies=0;report.finalPackingScale=0;
             report.resolutionLimitedFaces=0;
+            // Every path packs at the requested density; Fill then tests denser
+            // atlases whose gutter grows with the density (see the end).
+            bool fill=options.fillFinalAtlas;
+            options=options.AtDensity(1);
             var included=only==null?null:new HashSet<ReverseUvTransfer.Surface>(only);
             var surfaces = levels.SelectMany(l => l).Where(s=>included==null || included.Contains(s)).ToArray();
             // A region label can survive independent placement/rescue of its
@@ -262,18 +266,6 @@ namespace SashaRX.UnityMeshLab
                         out scale,out side,allowLargerCanvas:true,fixedScale:1,validateAtlas:AuditAtlas,footprints:footprints,chartSession:chartSession);
                     if(packed==null) throw new InvalidOperationException("Classic frozen-group Repack failed; no atlas or shell fragments were published. "
                         +string.Join("; ",refusals.Take(12).Select(p=>$"family {p.Key} '{groups[p.Key][0].surface.input.key}': {p.Value}")));
-                    if(options.fillFinalAtlas)
-                        foreach(float density in new[] {2f,3f,4f,6f,8f})
-                        {
-                            // Each trial starts from the frozen families. Its
-                            // padding is specified at the new bake density,
-                            // never enlarged with an already packed atlas.
-                            var candidate=ReverseUvNativeFamilyPacking.TryPack(coordinates,16,options,token,Valid,
-                                out float candidateScale,out int candidateSide,allowLargerCanvas:true,
-                                fixedScale:density,validateAtlas:AuditAtlas,footprints:footprints,chartSession:chartSession);
-                            if(candidate!=null && BoundsCost(candidate,candidateScale)<BoundsCost(packed,scale))
-                            {packed=candidate;scale=candidateScale;side=candidateSide;}
-                        }
                     (packed,side)=AlignAndCompactFrozen(coordinates,groups,options,token,(packed,side,scale),Valid,AuditAtlas);
                     search.nativePacked=true;footprintImproved=true;
                     UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Frozen groups: classic Repack of {groups.Length} families, {side}px, {options.seedDensity*scale:G6} tex/m, final padding {options.padding}px.");
@@ -293,37 +285,12 @@ namespace SashaRX.UnityMeshLab
                             if(packed!=null) break;
                         }
                     bool nativeSelected=packed!=null;
-                    if(options.fillFinalAtlas && packed!=null)
-                        foreach(float density in new[] {1.5f,2f,3f,4f,6f,8f,12f,16f})
-                        {
-                            var candidate=ReverseUvNativeFamilyPacking.TryPack(coordinates,previousSide,options,token,Valid,
-                                out float candidateScale,out int candidateSide,allowLargerCanvas:true,fixedScale:density,validateAtlas:AuditAtlas,footprints:footprints,chartSession:chartSession);
-                            if(candidate!=null && BoundsCost(candidate,candidateScale)<BoundsCost(packed,scale))
-                            {packed=candidate;scale=candidateScale;side=candidateSide;}
-                        }
                     // Different shells favour different packing orders and
                     // resolutions. Compare a complete contour repack with the
                     // native candidate; a smaller density alone cannot win.
                     try
                     {
                         var candidate=ReverseUvFamilyPacking.Pack(coordinates,options,token,out int candidateSide,out float candidateScale,Valid);
-                        if(options.fillFinalAtlas && candidateSide<=options.maxAtlasSize/2)
-                        {
-                            float initialDensity=candidateScale;
-                            foreach(float multiplier in new[] {2f,1.875f,1.75f,1.5f})
-                            {
-                                try
-                                {
-                                    var larger=ReverseUvFamilyPacking.Pack(coordinates,options,token,out int largerSide,
-                                        out float largerScale,Valid,initialScale:initialDensity*multiplier);
-                                    if(BoundsCost(larger,largerScale)<BoundsCost(candidate,candidateScale))
-                                    {candidate=larger;candidateSide=largerSide;candidateScale=largerScale;}
-                                    break;
-                                }
-                                catch(InvalidOperationException error)
-                                {UvtLog.Info(UvtLog.Category.Repack,"[ReverseUV] Higher-density complete shell trial refused: "+error.Message);}
-                            }
-                        }
                         int completedSide=candidateSide;
                         candidate=ReverseUvFootprintPacking.Improve(coordinates,candidate,candidateSide,candidateScale,
                             options,token,Valid,out candidateScale,out _,search,resized=>completedSide=resized,testNative:false);
@@ -347,23 +314,30 @@ namespace SashaRX.UnityMeshLab
                     scale=1;freshFootprints=true;
                     UvtLog.Info(UvtLog.Category.Repack,"[ReverseUV] Rectangle trial refused; packed family footprints on an empty canvas: "+error.Message);
                 }
-                // Thousands of short charts can spend most of a small canvas
-                // on two-pixel gutters. Test higher common pixel density in a
-                // larger canvas; never squeeze charts or reduce their gutter.
-                if(options.fillFinalAtlas && coordinates.Length>256 && side<=options.maxAtlasSize/2)
-                    try
-                    {
-                        var larger=ReverseUvFamilyPacking.Pack(coordinates,options,token,out int largerSide,
-                            out float largerScale,Valid,initialScale:scale*2);
-                        if(BoundsCost(larger,largerScale)<BoundsCost(packed,scale))
-                        {packed=larger;side=largerSide;scale=largerScale;}
-                    }
-                    catch(InvalidOperationException) { /* Retain the already audited placement. */ }
                 if(logTiming) UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Family rectangles: {timing.ElapsedMilliseconds} ms. Test triangle footprints.");
                 int completedSide=side;
                 packed = ReverseUvFootprintPacking.Improve(coordinates,packed,side,scale,options,token,Valid,
                     out scale,out footprintImproved,search,resized=>completedSide=resized);
                 side=completedSide;
+                }
+                if(fill)
+                {
+                    // A denser atlas only packs tighter on a finer pixel grid: its
+                    // gutter grows with the density, so a bake at the requested
+                    // density keeps the requested padding between charts. Float
+                    // noise in the equal cost of a merely scaled placement never wins.
+                    float requested=scale;double cost=BoundsCost(packed,scale);int gutter=options.padding;
+                    foreach(float multiple in new[] {1.5f,2f,3f,4f,6f,8f})
+                    {
+                        float density=requested*multiple;var denser=options.AtDensity(density);
+                        var candidate=ReverseUvNativeFamilyPacking.TryPack(coordinates,16,denser,token,Valid,
+                            out float candidateScale,out int candidateSide,allowLargerCanvas:true,fixedScale:density,
+                            validateAtlas:AuditAtlas,footprints:footprints,chartSession:chartSession);
+                        if(candidate==null || BoundsCost(candidate,candidateScale)>=cost*(1-1e-4)) continue;
+                        packed=candidate;scale=candidateScale;side=candidateSide;cost=BoundsCost(packed,scale);
+                        gutter=denser.padding;search.nativePacked=true;
+                    }
+                    UvtLog.Info(UvtLog.Category.Repack,$"[ReverseUV] Fill: {scale/requested:G3}x the packed density, {side}px, gutter {gutter}px.");
                 }
                 if(AuditAtlas(packed,side).Count>0)
                     throw new InvalidOperationException("Complete shared-shell placement contains an unexpected UV overlap.");
