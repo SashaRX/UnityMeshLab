@@ -132,6 +132,7 @@ namespace SashaRX.UnityMeshLab
                     preserveProjectedOverlap = reversePreserveOverlap, cutNarrowJunctions = ctx.CutNarrowUvJunctions,
                     rotateCharts = ctx.XatlasRotateCharts, rotateChartsToAxis = ctx.XatlasRotateChartsToAxis,
                     repackFinalAtlas = true, fillFinalAtlas = reverseFillAtlas, packPerMesh = ctx.RepackPerMesh,
+                    shareLod0Lightmap = ctx.LodsShareLod0Lightmap,
                     regroupPreparedAtlas = forward != null,
                     frozenShellCascade = forward != null && !reversePreserveOverlap,
                     rebuildSeedWithUnity = false
@@ -179,6 +180,7 @@ namespace SashaRX.UnityMeshLab
                 reverseSummary = $"{ReverseAtlases(result.report)} · inherited {result.report.inheritedFaces} · new {result.report.newFaces}"
                     + $" · overlap {result.report.overlapFaces} · ambiguous {result.report.ambiguousFaces} · split source faces {result.report.splitSourceFaces} · removed zero-area {removed}";
                 reverseSummary += $" · {ReverseDensity(result.report)} tex/m · fully repacked";
+                if (result.report.readsLod0Faces > 0) reverseSummary += $" · on the LOD0 surface {result.report.readsLod0Faces}";
                 if (result.report.finalPackingRefusal != null) reverseSummary += " · " + result.report.finalPackingRefusal;
                 if (prepared.refusal != null) reverseSummary += " · retained safer layout: " + prepared.refusal;
                 if (result.report.refinementRefusal != null) reverseSummary += " · donor seam cuts skipped: " + result.report.refinementRefusal;

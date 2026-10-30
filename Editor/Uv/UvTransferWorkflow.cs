@@ -703,6 +703,7 @@ namespace SashaRX.UnityMeshLab
                     "The LODs read LOD0's lightmap (one atlas and scale/offset for the LODGroup, as in Bakery). "
                     + "A target shell collapsed to a point or a line (a rejected shell stays at 0,0) would read one texel; "
                     + "its faces take the UV2 of the LOD0 surface under them instead, overlapping other faces there. "
+                    + "Reverse UV: an island of a coarser LOD that continues on no LOD0 face does the same and takes no atlas space. "
                     + "Leave off when each LOD bakes into a lightmap of its own. Saved in the sidecar."),
                 ctx.LodsShareLod0Lightmap);
             if (!EditorGUI.EndChangeCheck()) return;

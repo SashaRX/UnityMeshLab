@@ -375,6 +375,60 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.DoesNotThrow(()=>ReverseUvAudit.Measure(result,levels));
         }
 
+        /// <summary>
+        /// Under a shared LOD0 lightmap a coarser island that continues on no LOD0 face would read
+        /// texels where LOD0 bakes nothing. It takes no atlas space and reads the LOD0 surface under
+        /// it instead, also when that surface faces away.
+        /// </summary>
+        [TestCase(false,false)] [TestCase(true,false)] [TestCase(true,true)]
+        public void AnIslandContinuedOnNoLod0FaceReadsTheLod0SurfaceUnderIt(bool share,bool flipped)
+        {
+            // LOD1: a floor and a lid half a unit above it, beyond the projection reach; LOD0: the floor alone.
+            var lid=new[] {new Vector3(.25f,.25f,.5f),new Vector3(.75f,.25f,.5f),new Vector3(.75f,.75f,.5f),new Vector3(.25f,.75f,.5f)};
+            var unit=new[] {Vector2.zero,Vector2.right,Vector2.one,Vector2.up};
+            var coarse=new Mesh {name="Frozen",vertices=Quad().vertices.Concat(lid).ToArray(),
+                triangles=new[] {0,1,2,0,2,3}.Concat(flipped?new[] {4,6,5,4,7,6}:new[] {4,5,6,4,6,7}).ToArray(),
+                uv2=unit.Select(p=>p*.25f).Concat(unit.Select(p=>new Vector2(.5f,.5f)+p*.125f)).ToArray()};
+            owned.Add(coarse);
+            var levels=new[] {Level(1,coarse),Level(0,Quad())};
+            using var result=ReverseUvTransfer.Build(levels,new ReverseUvTransfer.Options {seedResolution=128,seedDensity=32,
+                projectionReach=.1f,regroupPreparedAtlas=true,frozenShellCascade=true,repackFinalAtlas=true,
+                shareLod0Lightmap=share}).GetAwaiter().GetResult();
+            Assert.AreEqual(share?1:2,result.report.finalPackingFamilies,"The lid takes atlas space only of its own.");
+            Assert.AreEqual(share?2:0,result.report.readsLod0Faces);
+            var output=result.meshes[0][0];var floor=result.meshes[1][0];
+            var uv=output.uv2;var positions=output.vertices;var triangles=output.triangles;
+            if(share)
+                for(int c=6;c<12;++c)
+                {
+                    var p=positions[triangles[c]];
+                    Assert.Less(Vector2.Distance(UvAt(floor,new Vector2(p.x,p.y)),uv[triangles[c]]),1e-4f,"The lid reads the floor under it.");
+                }
+            else
+            {
+                Rect Extent(int from)=>Rect.MinMaxRect(Enumerable.Range(from,6).Min(c=>uv[triangles[c]].x),Enumerable.Range(from,6).Min(c=>uv[triangles[c]].y),
+                    Enumerable.Range(from,6).Max(c=>uv[triangles[c]].x),Enumerable.Range(from,6).Max(c=>uv[triangles[c]].y));
+                Assert.IsFalse(Extent(0).Overlaps(Extent(6)),"Each LOD bakes its own light: the lid keeps an island of its own.");
+            }
+            Assert.DoesNotThrow(()=>ReverseUvAudit.Measure(result,levels));
+        }
+
+        /// <summary>The UV2 at <paramref name="point"/> of a mesh lying in z = 0.</summary>
+        static Vector2 UvAt(Mesh mesh,Vector2 point)
+        {
+            var positions=mesh.vertices;var triangles=mesh.triangles;var uv=mesh.uv2;
+            for(int t=0;t<triangles.Length;t+=3)
+            {
+                Vector2 a=positions[triangles[t]],b=positions[triangles[t+1]],c=positions[triangles[t+2]];
+                float area=(b.x-a.x)*(c.y-a.y)-(b.y-a.y)*(c.x-a.x);
+                float u=((b.x-point.x)*(c.y-point.y)-(b.y-point.y)*(c.x-point.x))/area;
+                float v=((c.x-point.x)*(a.y-point.y)-(c.y-point.y)*(a.x-point.x))/area;
+                if(u<-1e-5f || v<-1e-5f || u+v>1+1e-5f) continue;
+                return uv[triangles[t]]*u+uv[triangles[t+1]]*v+uv[triangles[t+2]]*(1-u-v);
+            }
+            throw new ArgumentException("The point lies off the mesh.");
+        }
+
         [Test]
         public void AnIslandInheritedAcrossMeshesKeepsThemInOneAtlas()
         {

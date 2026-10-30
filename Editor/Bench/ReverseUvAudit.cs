@@ -221,28 +221,30 @@ namespace SashaRX.UnityMeshLab
             state.measurement.splitSourceFaces += nodeReport.splitSourceFaces;
             state.measurement.refusedCutFaces += nodeReport.faces.Select((f, i) => (f, i)).Where(p => p.f.cutRefusal != null)
                 .Select(p => nodeReport.sourceFaces[p.i]).Distinct().Count();
-            var quality = TransferUvQuality.Measure(mesh, mesh.uv2, Vector2.one, inputs[level].inputs[node].toWorld);
+            var meshPositions = mesh.vertices; var meshUv = mesh.uv2; var meshTriangles = mesh.triangles;
+            // A face reading the LOD0 surface under it overlaps by design and may meet at one point.
+            var quality = TransferUvQuality.Measure(meshPositions, ReverseUvSharedLightmap.Audited(meshTriangles, nodeReport.faces),
+                meshUv, Vector2.one, inputs[level].inputs[node].toWorld);
             if (!quality.overlapScanComplete || quality.invalidFaces > 0 || quality.degenerateFaces > 0
                 || quality.outOfBoundsVertices > 0 || double.IsNaN(quality.worstAnisotropy) )
                 throw new InvalidOperationException($"Final reverse UV metric failed for LOD{inputs[level].lod} '{inputs[level].inputs[node].key}'; no result was published.");
             audit.measurements.Add(new Measurement { lod = inputs[level].lod, key = inputs[level].inputs[node].key,
-                triangles = mesh.triangles.Length / 3, invalidFaces = quality.invalidFaces,
+                triangles = meshTriangles.Length / 3, invalidFaces = quality.invalidFaces,
                 degenerateFaces = quality.degenerateFaces, stretchedFaces = quality.stretchedFaces,
                 outOfBounds = quality.outOfBoundsVertices, worstAnisotropy = quality.worstAnisotropy,
                 overlapPairs = quality.overlapPairs, complete = quality.overlapScanComplete });
-            var meshPositions = mesh.vertices; var meshUv = mesh.uv2; var meshTriangles = mesh.triangles;
             var transform = inputs[level].inputs[node].toWorld;
             int atlasSize = nodeReport.AtlasSide(result.report);
-            AuditPrecision(meshPositions, meshUv, meshTriangles, transform, atlasSize, inputs[level].lod, inputs[level].inputs[node].key);
-            AccumulateFaces(meshPositions, meshUv, meshTriangles, transform, atlasSize, nodeReport, state);
-            state.faces.AddRange(nodeReport.faces);
-            for (int f = 0; f < nodeReport.faces.Length; ++f) { state.faceKeys.Add((node,f)); state.sets.Add(nodeReport.packingSet); }
+            AuditPrecision(meshPositions, meshUv, meshTriangles, nodeReport.faces, transform, atlasSize, inputs[level].lod, inputs[level].inputs[node].key);
+            AccumulateFaces(meshPositions, meshUv, meshTriangles, transform, atlasSize, nodeReport, node, state);
         }
 
-        static void AuditPrecision(Vector3[] positions, Vector2[] uv, int[] triangles, Matrix4x4 transform, int atlasSize, int lod, string key)
+        static void AuditPrecision(Vector3[] positions, Vector2[] uv, int[] triangles, ReverseUvTransfer.Face[] faces,
+            Matrix4x4 transform, int atlasSize, int lod, string key)
         {
             for(int t=0;t<triangles.Length;t+=3)
             {
+                if(faces[t/3].readsLod0) continue;
                 var frame=TransferUvQuality.WorldFrame(positions[triangles[t]],positions[triangles[t+1]],positions[triangles[t+2]],transform);
                 if(!ReverseUvShellPrecision.Fits(frame,uv[triangles[t]]*atlasSize,
                     uv[triangles[t+1]]*atlasSize,uv[triangles[t+2]]*atlasSize,4.001))
@@ -251,10 +253,14 @@ namespace SashaRX.UnityMeshLab
         }
 
         static void AccumulateFaces(Vector3[] positions, Vector2[] uv, int[] triangles, Matrix4x4 transform,
-            int atlasSize, ReverseUvTransfer.NodeReport nodeReport, LevelAudit state)
+            int atlasSize, ReverseUvTransfer.NodeReport nodeReport, int node, LevelAudit state)
         {
             for (int t = 0; t < triangles.Length; t += 3)
             {
+                var face = nodeReport.faces[t / 3];
+                // Lying on the LOD0 surface by design, it is not part of this level's atlas.
+                if (face.readsLod0) continue;
+                state.faces.Add(face); state.faceKeys.Add((node, t / 3)); state.sets.Add(nodeReport.packingSet);
                 int a = triangles[t], b = triangles[t + 1], c = triangles[t + 2];
                 state.pixels.Add(uv[a]); state.pixels.Add(uv[b]); state.pixels.Add(uv[c]);
                 var u = uv[b] - uv[a]; var v = uv[c] - uv[a];
@@ -262,7 +268,7 @@ namespace SashaRX.UnityMeshLab
                 double worldArea = Vector3.Cross(transform.MultiplyVector(positions[b] - positions[a]), transform.MultiplyVector(positions[c] - positions[a])).magnitude;
                 double density = atlasSize * Math.Sqrt(uvArea / worldArea);
                 state.surfaceArea += worldArea;
-                if (nodeReport.faces[t / 3].inherited) state.inheritedArea += worldArea;
+                if (face.inherited) state.inheritedArea += worldArea;
                 state.measurement.uvAreaFraction += uvArea * .5;
                 state.measurement.texelsPerUnitMin = Math.Min(state.measurement.texelsPerUnitMin, density);
                 state.measurement.texelsPerUnitMax = Math.Max(state.measurement.texelsPerUnitMax, density);
