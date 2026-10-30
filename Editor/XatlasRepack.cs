@@ -838,7 +838,7 @@ namespace SashaRX.UnityMeshLab
             int bilinear = opts.bilinear ? 1 : 0, blockAlign = opts.blockAlign ? 1 : 0, bruteForce = opts.bruteForce ? 1 : 0;
             int rotate = opts.rotateCharts ? 1 : 0, toAxis = opts.rotateChartsToAxis ? 1 : 0;
             if (!await packFn(label, shellCount, internalRes, oversample, opts.maxChartSize, internalPad,
-                    opts.texelsPerUnit, internalRes, bilinear, blockAlign, bruteForce, rotate, toAxis))
+                    opts.texelsPerUnit, internalRes, bilinear, blockAlign, bruteForce, rotate, toAxis, true))
                 return (false, 0u);
             oversample = Math.Max(1, oversample);
             double side = Math.Max(XatlasNative.xatlasGetAtlasWidth(), XatlasNative.xatlasGetAtlasHeight()) / (double)oversample;
@@ -869,8 +869,9 @@ namespace SashaRX.UnityMeshLab
                 return (true, opts.resolution);
             }
             UvtLog.Info(UvtLog.Category.Repack, overflow + "; packing them at the requested texel density instead.");
+            // The charts are packed again as they are: computing them again appends copies.
             if (!await packFn(label, shellCount, packedSide, oversample, opts.maxChartSize, internalPad,
-                    texelsPerUnit, 0u, bilinear, blockAlign, bruteForce, rotate, toAxis))
+                    texelsPerUnit, 0u, bilinear, blockAlign, bruteForce, rotate, toAxis, false))
                 return (false, 0u);
             double width = XatlasNative.xatlasGetAtlasWidth() / (double)oversample, height = XatlasNative.xatlasGetAtlasHeight() / (double)oversample;
             side = Math.Max(width, height);
@@ -1014,7 +1015,7 @@ namespace SashaRX.UnityMeshLab
             string label, int shellCount, uint internalRes, int internalOversample,
             int maxChartSize, uint padding, float texelsPerUnit, uint resolution,
             int bilinear, int blockAlign, int bruteForce,
-            int rotateCharts, int rotateChartsToAxis)
+            int rotateCharts, int rotateChartsToAxis, bool computeCharts = true)
         {
             // Synchronous wrapper used by headless callers (tests). The
             // interactive UI path uses RunPackCancelableAsync via
@@ -1025,7 +1026,7 @@ namespace SashaRX.UnityMeshLab
                 maxChartSize, padding, texelsPerUnit, resolution,
                 bilinear, blockAlign, bruteForce,
                 rotateCharts, rotateChartsToAxis,
-                pumpEditor: false).GetAwaiter().GetResult();
+                computeCharts: computeCharts, pumpEditor: false).GetAwaiter().GetResult();
         }
 
         /// <summary>
@@ -1041,12 +1042,14 @@ namespace SashaRX.UnityMeshLab
         /// caller is already on a thread that cannot be re-entered by
         /// EditorApplication.update, so we fall back to a tight Thread.Sleep
         /// poll. When true (interactive path) the update callback drives polling.</param>
+        /// <param name="computeCharts">False packs the charts the session already computed again:
+        /// computing them again for UV meshes appends a second copy of every chart.</param>
         static Task<bool> RunPackCancelableAsync(
             string label, int shellCount, uint internalRes, int internalOversample,
             int maxChartSize, uint padding, float texelsPerUnit, uint resolution,
             int bilinear, int blockAlign, int bruteForce,
             int rotateCharts, int rotateChartsToAxis,
-            bool pumpEditor = true)
+            bool computeCharts = true, bool pumpEditor = true)
         {
             // Cost preflight — refuse impossibly large packs up front instead
             // of hanging for hours. Brute force is O(shells × W × H) and stays
@@ -1073,7 +1076,7 @@ namespace SashaRX.UnityMeshLab
                 shellCount, internalRes,
                 () =>
                 {
-                    XatlasNative.xatlasComputeCharts();
+                    if (computeCharts) XatlasNative.xatlasComputeCharts();
                     XatlasNative.xatlasPackCharts(
                         maxChartSize, padding, texelsPerUnit, resolution,
                         bilinear, blockAlign, bruteForce,
@@ -1666,30 +1669,30 @@ namespace SashaRX.UnityMeshLab
             string label, int shellCount, uint internalRes, int internalOversample,
             int maxChartSize, uint padding, float texelsPerUnit, uint resolution,
             int bilinear, int blockAlign, int bruteForce,
-            int rotateCharts, int rotateChartsToAxis);
+            int rotateCharts, int rotateChartsToAxis, bool computeCharts);
 
         static Task<bool> RunPackCancelableSync(
             string label, int shellCount, uint internalRes, int internalOversample,
             int maxChartSize, uint padding, float texelsPerUnit, uint resolution,
             int bilinear, int blockAlign, int bruteForce,
-            int rotateCharts, int rotateChartsToAxis)
+            int rotateCharts, int rotateChartsToAxis, bool computeCharts)
             => Task.FromResult(RunPackCancelable(
                 label, shellCount, internalRes, internalOversample,
                 maxChartSize, padding, texelsPerUnit, resolution,
                 bilinear, blockAlign, bruteForce,
-                rotateCharts, rotateChartsToAxis));
+                rotateCharts, rotateChartsToAxis, computeCharts));
 
         static Task<bool> RunPackCancelableAsyncDelegate(
             string label, int shellCount, uint internalRes, int internalOversample,
             int maxChartSize, uint padding, float texelsPerUnit, uint resolution,
             int bilinear, int blockAlign, int bruteForce,
-            int rotateCharts, int rotateChartsToAxis)
+            int rotateCharts, int rotateChartsToAxis, bool computeCharts)
             => RunPackCancelableAsync(
                 label, shellCount, internalRes, internalOversample,
                 maxChartSize, padding, texelsPerUnit, resolution,
                 bilinear, blockAlign, bruteForce,
                 rotateCharts, rotateChartsToAxis,
-                pumpEditor: true);
+                computeCharts: computeCharts, pumpEditor: true);
 
         // ─────────────────────────────────────────────────────────────────
         // Repack multiple meshes into a single shared atlas.

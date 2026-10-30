@@ -115,6 +115,29 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         /// <summary>
+        /// The retry packs the charts the session computed again: computing them again for
+        /// UV meshes appends a second copy of every chart.
+        /// </summary>
+        [Test]
+        public void TheDensityRetryPacksEachChartOnce()
+        {
+            RequireNative();
+            const int tiles = 64; const float size = .1f;
+            var mesh = Tiles(tiles, size);
+            try
+            {
+                var options = Options(); options.padding = 4;
+                double needed = MeshAreaHelper.DensityResolution(tiles * size * size, 32f, options.targetUvCoverage);
+                options.resolution = MeshAreaHelper.PowerOfTwoResolution(needed);
+                options.densityResolution = (float)needed;
+                var result = XatlasRepack.RepackSingle(mesh, options);
+                Assert.IsTrue(result.ok, result.error);
+                Assert.AreEqual(tiles, (int)result.chartCount);
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
+
+        /// <summary>
         /// A density whose own side is past the resolution (where the resolution stops at its
         /// 4096 px limit) is not packed again: that atlas would be larger still.
         /// </summary>
