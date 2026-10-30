@@ -69,6 +69,51 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { Destroy(meshes); }
         }
 
+        [TestCase(8.23, 32f, .75f, 128u)]
+        [TestCase(0.0, 32f, .75f, 64u)]
+        [TestCase(0.01, 32f, .75f, 64u)]
+        [TestCase(1e6, 32f, .75f, 4096u)]
+        public void AutoResolution_RoundsTheDensityResolution(double area, float density, float coverage, uint expected)
+        {
+            Assert.AreEqual(expected, MeshAreaHelper.ComputeAutoResolution(area, density, coverage));
+            Assert.AreEqual(expected, MeshAreaHelper.PowerOfTwoResolution(MeshAreaHelper.DensityResolution(area, density, coverage)));
+        }
+
+        // Many small charts at a low resolution: fitted at xatlas's 75% estimate, they and
+        // their padding overflow the atlas and the whole layout, padding included, is scaled
+        // down. Packed at the requested density they keep it at the resolution reported.
+        [TestCase(false)]
+        [TestCase(true)]
+        public void OverflowingCharts_KeepTheRequestedDensityAndPadding(bool atDensity)
+        {
+            RequireNative();
+            const int tiles = 64; const float size = .1f, density = 32f;
+            var mesh = Tiles(tiles, size);
+            try
+            {
+                var options = Options(); options.padding = 4;
+                double needed = MeshAreaHelper.DensityResolution(tiles * size * size, density, options.targetUvCoverage);
+                options.resolution = MeshAreaHelper.PowerOfTwoResolution(needed);
+                if (atDensity) options.densityResolution = (float)needed;
+                var result = XatlasRepack.RepackMulti(new[] { mesh }, options)[0];
+                Assert.IsTrue(result.ok, result.error);
+                SourceTextureUvMetric.NormalizePackedLightmap(mesh, result.atlasWidth, result.atlasHeight);
+                // The UVs are normalized by the packed atlas: a side past the reported one scales it down.
+                double scale = result.resolution * (double)options.internalOversample / Math.Max(result.atlasWidth, result.atlasHeight);
+                if (!atDensity)
+                {
+                    Assert.AreEqual(options.resolution, result.resolution);
+                    Assert.That(scale, Is.LessThan(1d));
+                    return;
+                }
+                Assert.That(result.resolution, Is.GreaterThanOrEqualTo(options.resolution));
+                Assert.That(scale, Is.GreaterThanOrEqualTo(1d));
+                Assert.That(MinimumGap(mesh, tiles) * result.resolution, Is.GreaterThanOrEqualTo(options.padding));
+                Assert.That(Math.Sqrt(Density(mesh)) * result.resolution, Is.GreaterThanOrEqualTo(density * .999));
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
+
         // Optional local corpus supplied by prepare-transfer-benchmark.ps1.
         // Imported assets stay untouched; both paths pack owned mesh copies.
         [TestCase(false, false), TestCase(true, false), TestCase(true, true), Category("LocalAssetBenchmark")]
@@ -162,6 +207,43 @@ namespace SashaRX.UnityMeshLab.Tests
                 uv = new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up },
                 triangles = QuadTriangles
             };
+        }
+
+        /// <summary>Square tiles of <paramref name="size"/> metres, each its own UV0 shell, apart in 3D and UV0.</summary>
+        static Mesh Tiles(int count, float size)
+        {
+            var vertices = new List<Vector3>(); var uv = new List<Vector2>(); var triangles = new List<int>();
+            for (int t = 0; t < count; ++t)
+            {
+                var cell = new Vector2(t % 8, t / 8);
+                foreach (var corner in new[] { Vector2.zero, Vector2.right, Vector2.one, Vector2.up })
+                {
+                    vertices.Add((Vector3)(cell * 2f + corner) * size);
+                    uv.Add(cell * 2f + corner);
+                }
+                triangles.AddRange(QuadTriangles.Select(i => t * 4 + i));
+            }
+            return new Mesh { name = "DensityTiles", vertices = vertices.ToArray(), uv = uv.ToArray(), triangles = triangles.ToArray() };
+        }
+
+        /// <summary>The least gap between two tiles' UV2 rectangles, along either axis.</summary>
+        static double MinimumGap(Mesh mesh, int tiles)
+        {
+            var uv2 = mesh.uv2;
+            var boxes = Enumerable.Range(0, tiles).Select(t =>
+            {
+                var corners = uv2.Skip(t * 4).Take(4).ToArray();
+                return (min: new Vector2(corners.Min(p => p.x), corners.Min(p => p.y)), max: new Vector2(corners.Max(p => p.x), corners.Max(p => p.y)));
+            }).ToArray();
+            double gap = double.MaxValue;
+            for (int a = 0; a < tiles; ++a)
+                for (int b = a + 1; b < tiles; ++b)
+                {
+                    double dx = Math.Max(boxes[b].min.x - boxes[a].max.x, boxes[a].min.x - boxes[b].max.x);
+                    double dy = Math.Max(boxes[b].min.y - boxes[a].max.y, boxes[a].min.y - boxes[b].max.y);
+                    gap = Math.Min(gap, Math.Max(dx, dy));
+                }
+            return gap;
         }
 
         static float[] Flatten(Vector2[] uv) => uv.SelectMany(p => new[] { p.x, p.y }).ToArray();

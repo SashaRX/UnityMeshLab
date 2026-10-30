@@ -133,6 +133,18 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public float targetUvCoverage;
 
+        /// <summary>
+        /// The texel density to pack at when the charts and their padding overflow
+        /// <see cref="resolution"/>: the side in pixels of an atlas the prepared charts fill to
+        /// <see cref="targetUvCoverage"/> at that density (the resolution from texel density before
+        /// its power-of-two rounding). Fitted to <see cref="resolution"/>, an overflowing pack has
+        /// its whole layout scaled down, padding included; packed at this density instead, the
+        /// padding stays <see cref="padding"/> pixels, the atlas grows to what the charts and their
+        /// padding need, and <see cref="RepackResult.resolution"/> reports the power of two holding
+        /// it. 0 keeps the scaled-down pack and logs it. Ignored when <see cref="texelsPerUnit"/> is set.
+        /// </summary>
+        public float densityResolution;
+
         public static RepackOptions Default => new RepackOptions
         {
             padding    = 4,
@@ -190,6 +202,11 @@ namespace SashaRX.UnityMeshLab
         public string error;
         /// <summary>The pack stopped at a cancel request, not at a refusal or failure; <see cref="error"/> reads "cancelled".</summary>
         public bool cancelled;
+        /// <summary>
+        /// The atlas side in pixels the layout is laid out for: <see cref="RepackOptions.resolution"/>,
+        /// or, packed at <see cref="RepackOptions.densityResolution"/>, the power of two its charts and padding need.
+        /// </summary>
+        public uint resolution;
     }
 
     public static class XatlasRepack
@@ -712,16 +729,7 @@ namespace SashaRX.UnityMeshLab
             float tpu = texelsPerUnit;
             if (!(tpu > 0f))
             {
-                double sumUv = 0.0;
-                for (int t = 0; t + 2 < tris.Length; t += 3)
-                {
-                    int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
-                    if ((uint)i0 >= (uint)vertCount || (uint)i1 >= (uint)vertCount || (uint)i2 >= (uint)vertCount) continue;
-                    double ax = uvFlat[i0 * 2], ay = uvFlat[i0 * 2 + 1];
-                    double bx = uvFlat[i1 * 2], by = uvFlat[i1 * 2 + 1];
-                    double cx = uvFlat[i2 * 2], cy = uvFlat[i2 * 2 + 1];
-                    sumUv += Math.Abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) * 0.5;
-                }
+                double sumUv = UvArea(uvFlat, tris);
                 if (sumUv < 1e-12 || internalRes == 0) return;
                 double texelCount = Math.Max(1.0, sumUv / 0.75);
                 tpu = (float)Math.Sqrt((double)internalRes * internalRes / texelCount);
@@ -791,6 +799,71 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Verbose(UvtLog.Category.Repack,
                     $"[DensityRisk:{stageLabel}]   #{top[i].idx} extent={top[i].ex:F2}×{top[i].ey:F2}px boost={top[i].bx:F2}×{top[i].by:F2} areaBoost={top[i].area:F2}×");
             }
+        }
+
+        /// <summary>The UV area of the triangles of a flattened UV array.</summary>
+        static double UvArea(float[] uvFlat, int[] tris)
+        {
+            int vertCount = uvFlat.Length / 2;
+            double sum = 0.0;
+            for (int t = 0; t + 2 < tris.Length; t += 3)
+            {
+                int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
+                if ((uint)i0 >= (uint)vertCount || (uint)i1 >= (uint)vertCount || (uint)i2 >= (uint)vertCount) continue;
+                double ax = uvFlat[i0 * 2], ay = uvFlat[i0 * 2 + 1];
+                double bx = uvFlat[i1 * 2], by = uvFlat[i1 * 2 + 1];
+                double cx = uvFlat[i2 * 2], cy = uvFlat[i2 * 2 + 1];
+                sum += Math.Abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) * 0.5;
+            }
+            return sum;
+        }
+
+        /// <summary>
+        /// Packs the charts fitted to the internal resolution, at xatlas's 75% estimate. A pack whose
+        /// charts and padding overflow the requested resolution has the whole layout scaled down,
+        /// padding included, once its UVs are normalized by the packed atlas. With
+        /// <see cref="RepackOptions.densityResolution"/> such a pack runs again at the requested
+        /// texel density (the charts' pixel area is <c>targetUvCoverage × densityResolution²</c>,
+        /// oversampled) and with no resolution: xatlas bounds its atlas only when given both, and
+        /// then clamps charts and spills them into more atlases, so this atlas grows to what the
+        /// charts and their padding need. Without it the overflow is logged. A pack that fits is
+        /// left as it is. Returns whether the pack completed and the atlas side in pixels its
+        /// padding holds at.
+        /// </summary>
+        static async Task<(bool packed, uint resolution)> PackFitted(PackFn packFn, string label, string name,
+            RepackOptions opts, int shellCount, uint internalRes, int oversample, uint internalPad, double uvArea)
+        {
+            int bilinear = opts.bilinear ? 1 : 0, blockAlign = opts.blockAlign ? 1 : 0, bruteForce = opts.bruteForce ? 1 : 0;
+            int rotate = opts.rotateCharts ? 1 : 0, toAxis = opts.rotateChartsToAxis ? 1 : 0;
+            if (!await packFn(label, shellCount, internalRes, oversample, opts.maxChartSize, internalPad,
+                    opts.texelsPerUnit, internalRes, bilinear, blockAlign, bruteForce, rotate, toAxis))
+                return (false, 0u);
+            oversample = Math.Max(1, oversample);
+            double side = Math.Max(XatlasNative.xatlasGetAtlasWidth(), XatlasNative.xatlasGetAtlasHeight()) / (double)oversample;
+            // A pack that fits ends within the requested side; well past it, padding is lost.
+            if (opts.resolution == 0 || side <= opts.resolution * 1.01) return (true, opts.resolution);
+            string overflow = $"[xatlas] '{name}': the charts with {opts.padding} px padding need {side:F0} px of the {opts.resolution} px atlas";
+            if (!(opts.densityResolution > 0f) || opts.texelsPerUnit > 0f || !(uvArea > 0.0))
+            {
+                UvtLog.Warn(UvtLog.Category.Repack, overflow + $"; the layout is scaled ×{opts.resolution / side:F2}, so its padding is "
+                    + $"{opts.padding * opts.resolution / side:F2} px. Raise the resolution, lower the padding or take the resolution from texel density.");
+                return (true, opts.resolution);
+            }
+            double coverage = opts.targetUvCoverage > 0f ? opts.targetUvCoverage : 1.0;
+            float texelsPerUnit = (float)(opts.densityResolution * oversample * Math.Sqrt(coverage / uvArea));
+            UvtLog.Info(UvtLog.Category.Repack, overflow + "; packing them at the requested texel density instead.");
+            if (!await packFn(label, shellCount, internalRes, oversample, opts.maxChartSize, internalPad,
+                    texelsPerUnit, 0u, bilinear, blockAlign, bruteForce, rotate, toAxis))
+                return (false, 0u);
+            double width = XatlasNative.xatlasGetAtlasWidth() / (double)oversample, height = XatlasNative.xatlasGetAtlasHeight() / (double)oversample;
+            side = Math.Max(width, height);
+            uint resolution = MeshAreaHelper.PowerOfTwoResolution(side);
+            UvtLog.Info(UvtLog.Category.Repack,
+                $"[xatlas] '{name}': at the requested texel density with {opts.padding} px padding the charts take {width:F0}×{height:F0} px; atlas {resolution} px.");
+            if (side > resolution)
+                UvtLog.Warn(UvtLog.Category.Repack,
+                    $"[xatlas] '{name}': past the {resolution} px limit the layout is scaled ×{resolution / side:F2}, so its padding is {opts.padding * resolution / side:F2} px. Lower the texel density or the padding.");
+            return (true, resolution);
         }
 
         /// <summary>
@@ -1337,14 +1410,9 @@ namespace SashaRX.UnityMeshLab
                 // resolution makes every chart's extent oversample× larger, so
                 // ceil rounding becomes fractional. Padding scales by the same
                 // factor to keep the gap fraction in UV space constant.
-                bool packed = await packFn(
-                    mesh.name, shells.Count, internalRes, oversample,
-                    opts.maxChartSize, internalPad, opts.texelsPerUnit, internalRes,
-                    opts.bilinear  ? 1 : 0,
-                    opts.blockAlign ? 1 : 0,
-                    opts.bruteForce ? 1 : 0,
-                    opts.rotateCharts ? 1 : 0,
-                    opts.rotateChartsToAxis ? 1 : 0);
+                var pack = await PackFitted(packFn, mesh.name, mesh.name, opts, shells.Count,
+                    internalRes, oversample, internalPad, UvArea(uvFlat, tris));
+                bool packed = pack.packed;
                 if (!packed)
                 {
                     // The pack also returns false when it was refused or failed; both log why.
@@ -1365,6 +1433,7 @@ namespace SashaRX.UnityMeshLab
 
                 UvtLog.Info(UvtLog.Category.Repack,
                     $"xatlas pack '{mesh.name}': req={opts.resolution}, actual={result.atlasWidth}x{result.atlasHeight}, charts={result.chartCount}");
+                result.resolution = pack.resolution;
 
                 ReadSingleRepackOutput(mesh, opts, ref result, tris, positions, shells, faceShellIds);
             }
@@ -1540,8 +1609,8 @@ namespace SashaRX.UnityMeshLab
                 // Inset is computed against user-facing resolution, not the
                 // oversampled internal atlas dims — otherwise border pixels
                 // become sub-pixel in the final lightmap.
-                uint refAtlasW = opts.resolution > 0 ? opts.resolution : result.atlasWidth;
-                uint refAtlasH = opts.resolution > 0 ? opts.resolution : result.atlasHeight;
+                uint refAtlasW = result.resolution > 0 ? result.resolution : result.atlasWidth;
+                uint refAtlasH = result.resolution > 0 ? result.resolution : result.atlasHeight;
                 ApplyBorderInset(uv2, opts.borderPadding, refAtlasW, refAtlasH);
                 LogPostPackDensity(uv2, tris, positions, shells, mesh.name + " [postBorder]");
             }
@@ -1764,14 +1833,11 @@ namespace SashaRX.UnityMeshLab
                 // Pack all charts together into one atlas
                 // See RepackSingle for oversample rationale (ceil-stretch fix)
                 // and RunPackCancelable for cost-budget + cancel handling.
-                bool packedM = await packFn(
-                    "MultiMesh", totalShellsM, internalResM, oversampleM,
-                    opts.maxChartSize, internalPadM, opts.texelsPerUnit, internalResM,
-                    opts.bilinear  ? 1 : 0,
-                    opts.blockAlign ? 1 : 0,
-                    opts.bruteForce ? 1 : 0,
-                    opts.rotateCharts ? 1 : 0,
-                    opts.rotateChartsToAxis ? 1 : 0);
+                double uvAreaM = 0.0;
+                for (int m = 0; m < meshCount; m++) uvAreaM += UvArea(allUvFlat[m], allTris[m]);
+                var packM = await PackFitted(packFn, "MultiMesh", meshCount == 1 ? meshes[0].name : $"{meshes[0].name} +{meshCount - 1}",
+                    opts, totalShellsM, internalResM, oversampleM, internalPadM, uvAreaM);
+                bool packedM = packM.packed;
                 if (!packedM)
                 {
                     bool cancelledM = UvProgress.CancelRequested;
@@ -1796,6 +1862,7 @@ namespace SashaRX.UnityMeshLab
                 uint totalCharts = XatlasNative.xatlasGetChartCount();
 
                     UvtLog.Info($"[xatlas] Joint atlas: {atlasW}x{atlasH}, total_charts={totalCharts}, meshes={outMeshCount}");
+                uint resolutionM = packM.resolution;
 
                 // ── Per-mesh output extraction ──
                 var allUv2 = new Vector2[meshCount][];
@@ -1809,6 +1876,7 @@ namespace SashaRX.UnityMeshLab
 
                     results[m].atlasWidth  = atlasW;
                     results[m].atlasHeight = atlasH;
+                    results[m].resolution  = resolutionM;
 
                     int outVertCount  = XatlasNative.xatlasGetOutputVertexCount(m);
                     int outIndexCount = XatlasNative.xatlasGetOutputIndexCount(m);
@@ -1905,8 +1973,8 @@ namespace SashaRX.UnityMeshLab
                     if (opts.borderPadding > 0 && atlasW > 0)
                     {
                         // Inset against user-facing resolution, not oversampled atlas.
-                        uint refAtlasW = opts.resolution > 0 ? opts.resolution : atlasW;
-                        uint refAtlasH = opts.resolution > 0 ? opts.resolution : atlasH;
+                        uint refAtlasW = resolutionM > 0 ? resolutionM : atlasW;
+                        uint refAtlasH = resolutionM > 0 ? resolutionM : atlasH;
                         ApplyBorderInset(allUv2[m], opts.borderPadding, refAtlasW, refAtlasH);
                         LogPostPackDensity(allUv2[m], allTris[m], allPositions[m], allShells[m], meshes[m].name + " [postBorder]");
                     }
