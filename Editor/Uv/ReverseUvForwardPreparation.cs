@@ -329,6 +329,7 @@ namespace SashaRX.UnityMeshLab
             StretchThreshold=ctx.StretchThreshold, ArapIterations=ctx.ArapIterations,
             ClampLightmapToUnit=ctx.ClampLightmapToUnit, PostPackDensityCorrection=ctx.PostPackDensityCorrection,
             InternalOversample=ctx.InternalOversample, TargetUvCoverage=ctx.TargetUvCoverage,
+            LodsShareLod0Lightmap=ctx.LodsShareLod0Lightmap,
             PipeSettings=new UvTransferPipeline.PipelineSettings { saveNewMeshAssets=false }
         };
     }

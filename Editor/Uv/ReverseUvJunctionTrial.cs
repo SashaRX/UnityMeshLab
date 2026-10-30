@@ -81,6 +81,7 @@ namespace SashaRX.UnityMeshLab
                     splitDonorSeams = options.splitDonorSeams, fillAtlasVacancies = options.fillAtlasVacancies,
                     rotateCharts = options.rotateCharts, rotateChartsToAxis = options.rotateChartsToAxis,
                     repackFinalAtlas = options.repackFinalAtlas, fillFinalAtlas = options.fillFinalAtlas, packPerMesh = options.packPerMesh,
+                    shareLod0Lightmap = options.shareLod0Lightmap,
                     seedDensity=options.regroupPreparedAtlas?density:prepareSeed?state.inputs.seedDensity:options.seedDensity };
                 if(UvProgress.IsActive) UvProgress.Report(.25f,cuts?"Project with junction cuts":"Validate packing across the LOD chain");
                 state.result = await ReverseUvTransfer.Build(state.inputs.levels, trial, useAsync, token);
@@ -94,14 +95,18 @@ namespace SashaRX.UnityMeshLab
                     for(int node=0;node<state.result.meshes[level].Length;++node)
                     {
                         var mesh=state.result.meshes[level][node];
+                        var faces=state.result.report.nodes[reportNode].faces;
                         int atlas=state.result.report.nodes[reportNode++].AtlasSide(state.result.report);
-                        var quality=TransferUvQuality.Measure(mesh,mesh.uv2,Vector2.one,state.inputs.levels[level].inputs[node].toWorld);
+                        var vertices=mesh.vertices;var indices=mesh.triangles;var uv=mesh.uv2;
+                        // A face reading the LOD0 surface under it overlaps by design and may meet at one point.
+                        var quality=TransferUvQuality.Measure(vertices,ReverseUvSharedLightmap.Audited(indices,faces),uv,
+                            Vector2.one,state.inputs.levels[level].inputs[node].toWorld);
                         if(!quality.overlapScanComplete || quality.invalidFaces>0 || quality.degenerateFaces>0
                             || quality.outOfBoundsVertices>0 || double.IsNaN(quality.worstAnisotropy))
                             throw new InvalidOperationException($"Reverse layout metric failed for LOD{state.inputs.levels[level].lod} '{state.inputs.levels[level].inputs[node].key}' (anisotropy {quality.worstAnisotropy:G6}, invalid {quality.invalidFaces}, collapsed {quality.degenerateFaces}, outside {quality.outOfBoundsVertices}).");
-                        var vertices=mesh.vertices;var indices=mesh.triangles;var uv=mesh.uv2;
                         for(int f=0;f<indices.Length;f+=3)
                         {
+                            if(faces!=null && faces[f/3].readsLod0) continue;
                             var frame=TransferUvQuality.WorldFrame(vertices[indices[f]],vertices[indices[f+1]],vertices[indices[f+2]],
                                 state.inputs.levels[level].inputs[node].toWorld);
                             if(!options.regroupPreparedAtlas && ReverseUvTransfer.TriangleAnisotropy(frame,uv[indices[f]],uv[indices[f+1]],uv[indices[f+2]])>4.001

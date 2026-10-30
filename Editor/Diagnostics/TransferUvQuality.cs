@@ -20,8 +20,11 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>Audits per-face metric stretch and atlas contacts without modifying the mesh or UV buffer.</summary>
         internal static TransferUvQuality Measure(Mesh mesh, Vector2[] uv, Vector2 metric, Matrix4x4 localToWorld)
+            => Measure(mesh.vertices, mesh.triangles, uv, metric, localToWorld);
+
+        /// <summary>The same audit of <paramref name="triangles"/> over a vertex array; every vertex is checked against [0,1].</summary>
+        internal static TransferUvQuality Measure(Vector3[] positions, int[] triangles, Vector2[] uv, Vector2 metric, Matrix4x4 localToWorld)
         {
-            var positions = mesh.vertices; var triangles = mesh.triangles;
             var report = MeasureTriangles(positions, triangles, uv, metric, localToWorld);
             if (uv == null || uv.Length != positions.Length) return report;
             // Includes positive-area overlaps within the same shell/source; shared edges are legal.

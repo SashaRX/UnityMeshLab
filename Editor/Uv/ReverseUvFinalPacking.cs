@@ -108,6 +108,7 @@ namespace SashaRX.UnityMeshLab
                     { list = new List<(ReverseUvTransfer.Surface,int)>(); corners.Add(family,list); }
                     for (int k = 0; k < 3; ++k) list.Add((surface,f*3+k));
                 }
+            if(options.shareLod0Lightmap) ReverseUvSharedLightmap.SetAside(levels,surfaces,corners,token);
             try
             {
                 using var footprints = new ReverseUvNativeFamilyPacking.FootprintCache(options.cachePackingFootprints, options.performance);
@@ -355,6 +356,8 @@ namespace SashaRX.UnityMeshLab
                     for (int f = 0; f < surface.faces.Length; ++f)
                     {
                         token.ThrowIfCancellationRequested();
+                        // Placed on the LOD0 surface once every atlas is packed.
+                        if (surface.faces[f].readsLod0) continue;
                         int t = f*3; var uv = replacements[surface];
                         var input=surface.pixels;
                         double oldMetric = Metric(surface,t,input[t],input[t+1],input[t+2],previousSide);
