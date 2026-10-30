@@ -180,6 +180,20 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(0, SharedLightmapFallback.CollapsedFaceCount(output, output.uv2));
         }
 
+        /// <summary>
+        /// A face without UV2 area in a shell that is not collapsed (a face placed at one point
+        /// beside a healthy one it shares a vertex with) reads one texel and counts too.
+        /// </summary>
+        [Test]
+        public void TheCollapsedCountTakesAFaceWithoutUv2AreaInAHealthyShell()
+        {
+            var uv2 = source.uv2.ToArray();
+            uv2[3] = uv2[0];
+            CollectionAssert.IsEmpty(SharedLightmapFallback.CollapsedShellFaces(target.triangles, target.vertices, uv2,
+                new SharedLightmapFallback.Report()), "The first quad's other face keeps its shell wide.");
+            Assert.AreEqual(1, SharedLightmapFallback.CollapsedFaceCount(target, uv2));
+        }
+
         /// <summary>A layout without a collapsed shell, or a collapsed shell without 3D area, is left alone.</summary>
         [Test]
         public void OnlyShellsWithAreaCollapsedInUv2AreReplaced()
