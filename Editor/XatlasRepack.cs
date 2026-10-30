@@ -826,9 +826,11 @@ namespace SashaRX.UnityMeshLab
         /// texel density (the charts' pixel area is <c>targetUvCoverage × densityResolution²</c>,
         /// oversampled) and with no resolution: xatlas bounds its atlas only when given both, and
         /// then clamps charts and spills them into more atlases, so this atlas grows to what the
-        /// charts and their padding need. Without it the overflow is logged. A pack that fits is
-        /// left as it is. Returns whether the pack completed and the atlas side in pixels its
-        /// padding holds at.
+        /// charts and their padding need. The retry is never denser than the first pack, so its
+        /// atlas stays within the one already allocated, and is skipped when that density needs
+        /// more than the resolution limit or the pack is past the safety budget. Without the
+        /// retry the overflow is logged. A pack that fits is left as it is. Returns whether the
+        /// pack completed and the atlas side in pixels its padding holds at.
         /// </summary>
         static async Task<(bool packed, uint resolution)> PackFitted(PackFn packFn, string label, string name,
             RepackOptions opts, int shellCount, uint internalRes, int oversample, uint internalPad, double uvArea)
@@ -843,16 +845,31 @@ namespace SashaRX.UnityMeshLab
             // A pack that fits ends within the requested side; well past it, padding is lost.
             if (opts.resolution == 0 || side <= opts.resolution * 1.01) return (true, opts.resolution);
             string overflow = $"[xatlas] '{name}': the charts with {opts.padding} px padding need {side:F0} px of the {opts.resolution} px atlas";
+            string scaled = $"; the layout is scaled ×{opts.resolution / side:F2}, so its padding is {opts.padding * opts.resolution / side:F2} px.";
             if (!(opts.densityResolution > 0f) || opts.texelsPerUnit > 0f || !(uvArea > 0.0))
             {
-                UvtLog.Warn(UvtLog.Category.Repack, overflow + $"; the layout is scaled ×{opts.resolution / side:F2}, so its padding is "
-                    + $"{opts.padding * opts.resolution / side:F2} px. Raise the resolution, lower the padding or take the resolution from texel density.");
+                UvtLog.Warn(UvtLog.Category.Repack, overflow + scaled + " Raise the resolution, lower the padding or take the resolution from texel density.");
                 return (true, opts.resolution);
             }
+            // The density's own side is past the resolution only where the resolution stops at its limit.
+            if (opts.densityResolution > opts.resolution)
+            {
+                UvtLog.Warn(UvtLog.Category.Repack, overflow + scaled + $" The requested texel density needs over {opts.resolution} px; lower it or the padding.");
+                return (true, opts.resolution);
+            }
+            // Never denser than the pack just made (xatlas's estimate, xatlas.cpp:8250-8266), so the
+            // atlas the retry grows to stays within the one already allocated, which budgets it.
             double coverage = opts.targetUvCoverage > 0f ? opts.targetUvCoverage : 1.0;
-            float texelsPerUnit = (float)(opts.densityResolution * oversample * Math.Sqrt(coverage / uvArea));
+            double fitted = (internalRes + 2.0 * internalPad) * Math.Sqrt(0.75 / uvArea);
+            float texelsPerUnit = (float)Math.Min(opts.densityResolution * oversample * Math.Sqrt(coverage / uvArea), fitted);
+            uint packedSide = (uint)Math.Min(uint.MaxValue, Math.Ceiling(side * oversample));
+            if (PackOverBudget(shellCount, packedSide))
+            {
+                UvtLog.Warn(UvtLog.Category.Repack, overflow + scaled + $" Packing them again at the requested texel density is past the safety budget ({shellCount} shells × {packedSide}² atlas); lower the density or the padding.");
+                return (true, opts.resolution);
+            }
             UvtLog.Info(UvtLog.Category.Repack, overflow + "; packing them at the requested texel density instead.");
-            if (!await packFn(label, shellCount, internalRes, oversample, opts.maxChartSize, internalPad,
+            if (!await packFn(label, shellCount, packedSide, oversample, opts.maxChartSize, internalPad,
                     texelsPerUnit, 0u, bilinear, blockAlign, bruteForce, rotate, toAxis))
                 return (false, 0u);
             double width = XatlasNative.xatlasGetAtlasWidth() / (double)oversample, height = XatlasNative.xatlasGetAtlasHeight() / (double)oversample;
@@ -902,6 +919,11 @@ namespace SashaRX.UnityMeshLab
                 return long.MaxValue;
             return units * res;
         }
+
+        /// <summary>Whether <see cref="RunPackCancelableAsync"/> refuses a pack: past the precision budget and its heuristic work past its own.</summary>
+        static bool PackOverBudget(int shellCount, uint internalRes)
+            => ComputePackCost(shellCount, internalRes) > kHeuristicCostBudget
+                && ComputeHeuristicPackCost(shellCount, internalRes) > kHeuristicPackBudget;
 
         static bool TryResolveInternalPackDimensions(
             RepackOptions opts, out int oversample, out uint resolution, out uint padding)
@@ -1031,7 +1053,6 @@ namespace SashaRX.UnityMeshLab
             // on only within its budget; past the precision budget the pack is
             // heuristic and is refused only when its own work, shells × side +
             // side², is too large as well (see kHeuristicPackBudget).
-            long packCost = ComputePackCost(shellCount, internalRes);
             bruteForce = ResolvePackBruteForce(
                 bruteForce, internalOversample, shellCount, internalRes,
                 out string bruteDisabledReason);
@@ -1041,7 +1062,7 @@ namespace SashaRX.UnityMeshLab
                     $"[xatlas] Brute force pack disabled — {bruteDisabledReason}");
             }
             long heuristicCost = ComputeHeuristicPackCost(shellCount, internalRes);
-            if (packCost > kHeuristicCostBudget && heuristicCost > kHeuristicPackBudget)
+            if (PackOverBudget(shellCount, internalRes))
             {
                 UvtLog.Warn(UvtLog.Category.Repack,
                     $"[xatlas] Heuristic pack cost {heuristicCost / 1_000_000L}M is past the {kHeuristicPackBudget / 1_000_000L}M safety budget — refusing to start pack. Lower internal oversample or atlas resolution.");

@@ -114,6 +114,27 @@ namespace SashaRX.UnityMeshLab.Tests
             finally { Object.DestroyImmediate(mesh); }
         }
 
+        /// <summary>
+        /// A density whose own side is past the resolution (where the resolution stops at its
+        /// 4096 px limit) is not packed again: that atlas would be larger still.
+        /// </summary>
+        [Test]
+        public void ADensityPastTheResolutionKeepsTheFittedPack()
+        {
+            RequireNative();
+            var mesh = Tiles(64, .1f);
+            try
+            {
+                var options = Options(); options.padding = 4; options.resolution = 64;
+                options.densityResolution = 65f;
+                var result = XatlasRepack.RepackMulti(new[] { mesh }, options)[0];
+                Assert.IsTrue(result.ok, result.error);
+                Assert.AreEqual(64u, result.resolution);
+                Assert.That(Math.Max(result.atlasWidth, result.atlasHeight), Is.GreaterThan(64 * options.internalOversample), "The fitted pack overflowed.");
+            }
+            finally { Object.DestroyImmediate(mesh); }
+        }
+
         // Optional local corpus supplied by prepare-transfer-benchmark.ps1.
         // Imported assets stay untouched; both paths pack owned mesh copies.
         [TestCase(false, false), TestCase(true, false), TestCase(true, true), Category("LocalAssetBenchmark")]
