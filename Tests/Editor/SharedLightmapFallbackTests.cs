@@ -162,6 +162,38 @@ namespace SashaRX.UnityMeshLab.Tests
             foreach (int i in output.triangles) Assert.That(Vector2.Distance(centre, output.uv2[i]), Is.LessThan(1e-4));
         }
 
+        /// <summary>
+        /// The log counts collapsed faces as the fallback finds them. A shell thinner than the
+        /// extent still has UV2 area, so a measure of faces without it counted none before the
+        /// fallback and the faces left at one point after it: "collapsed faces 0 → 2".
+        /// </summary>
+        [Test]
+        public void TheCollapsedCountFindsAThinShellTheAreaMeasureMisses()
+        {
+            var thin = source.uv2.Take(4).Concat(new[] {Vector2.zero, Vector2.right * .1f, new Vector2(.1f, 1e-6f), new Vector2(0, 1e-6f)}).ToArray();
+            Assert.AreEqual(0, TransferUvQuality.Measure(target, thin, Vector2.one, Matrix4x4.identity).degenerateFaces);
+            Assert.AreEqual(2, SharedLightmapFallback.CollapsedFaceCount(target, thin));
+            var report = new SharedLightmapFallback.Report();
+            output = SharedLightmapFallback.Apply(source, target, thin, Sources(), report).mesh;
+            Assert.NotNull(output);
+            Assert.AreEqual((2, 2, 0), (report.faces, report.placed, report.atPoint));
+            Assert.AreEqual(0, SharedLightmapFallback.CollapsedFaceCount(output, output.uv2));
+        }
+
+        /// <summary>
+        /// A face without UV2 area in a shell that is not collapsed (a face placed at one point
+        /// beside a healthy one it shares a vertex with) reads one texel and counts too.
+        /// </summary>
+        [Test]
+        public void TheCollapsedCountTakesAFaceWithoutUv2AreaInAHealthyShell()
+        {
+            var uv2 = source.uv2.ToArray();
+            uv2[3] = uv2[0];
+            CollectionAssert.IsEmpty(SharedLightmapFallback.CollapsedShellFaces(target.triangles, target.vertices, uv2,
+                new SharedLightmapFallback.Report()), "The first quad's other face keeps its shell wide.");
+            Assert.AreEqual(1, SharedLightmapFallback.CollapsedFaceCount(target, uv2));
+        }
+
         /// <summary>A layout without a collapsed shell, or a collapsed shell without 3D area, is left alone.</summary>
         [Test]
         public void OnlyShellsWithAreaCollapsedInUv2AreReplaced()

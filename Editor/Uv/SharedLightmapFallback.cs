@@ -108,6 +108,27 @@ namespace SashaRX.UnityMeshLab
             return faces;
         }
 
+        /// <summary>
+        /// How many faces with 3D area of <paramref name="mesh"/> read one texel or one row in
+        /// <paramref name="uv2"/>: those <see cref="CollapsedShellFaces"/> finds, and any other
+        /// with no UV2 area (a face placed at one point can share a vertex with a healthy one).
+        /// The count the log gives before and after the fallback: a shell thinner than the
+        /// extent still has UV2 area, so a measure of faces without it alone misses them.
+        /// </summary>
+        internal static int CollapsedFaceCount(Mesh mesh, Vector2[] uv2)
+        {
+            if (uv2 == null || uv2.Length != mesh.vertexCount) return 0;
+            var triangles = mesh.triangles; var positions = mesh.vertices;
+            var faces = new HashSet<int>(CollapsedShellFaces(triangles, positions, uv2, new Report()));
+            for (int f = 0; f < triangles.Length / 3; ++f)
+            {
+                int a = triangles[f * 3], b = triangles[f * 3 + 1], c = triangles[f * 3 + 2];
+                if (ForwardUvReference.Area(uv2[a], uv2[b], uv2[c]) == 0 && MeshGeometry.HasArea(positions[a], positions[b], positions[c]))
+                    faces.Add(f);
+            }
+            return faces.Count;
+        }
+
         /// <summary>The LOD0 faces with 3D and UV2 area, searchable whole and per chart.</summary>
         internal sealed class Surface
         {
