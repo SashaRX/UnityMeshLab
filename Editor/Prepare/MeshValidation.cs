@@ -202,12 +202,19 @@ namespace SashaRX.UnityMeshLab
             return (bad.Count(b => b), streams);
         }
 
-        /// <summary>The triangle indices of every triangle submesh, in submesh order.</summary>
+        /// <summary>
+        /// The triangle indices of every triangle and quad submesh, in submesh order: a quad
+        /// submesh (Keep Quads) is read triangulated, two triangles per quad, as
+        /// <see cref="SubmeshTopology"/> reads it. Line and point submeshes have no faces.
+        /// </summary>
         static int[] Triangles(Mesh mesh)
         {
             var all = new List<int>();
             for (int sub = 0; sub < mesh.subMeshCount; ++sub)
-                if (mesh.GetTopology(sub) == MeshTopology.Triangles) all.AddRange(mesh.GetTriangles(sub));
+            {
+                var topology = mesh.GetTopology(sub);
+                if (topology == MeshTopology.Triangles || topology == MeshTopology.Quads) all.AddRange(mesh.GetTriangles(sub));
+            }
             return all.ToArray();
         }
 

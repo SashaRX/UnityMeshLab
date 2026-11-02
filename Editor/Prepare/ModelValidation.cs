@@ -1,8 +1,8 @@
 // ModelValidation.cs — checks every mesh of a model (an FBX or prefab asset, or a scene
 // object) against ModelRequirements into a PrepareReport. A collision mesh (a _COL node,
-// or a MeshCollider's mesh) is held to the geometry checks only. Each mesh is checked
-// once, however many nodes share it; an unreadable one through a readable copy that is
-// destroyed afterwards.
+// or a MeshCollider's mesh, that no node renders) is held to the geometry checks only.
+// Each mesh is checked once, however many nodes share it; an unreadable one through a
+// readable copy that is destroyed afterwards.
 //
 // Assets ▸ Mesh Lab ▸ Validate Models logs the report of each selected model.
 
@@ -33,11 +33,10 @@ namespace SashaRX.UnityMeshLab
         internal static void Validate(GameObject root, ModelRequirements requirements, PrepareReport report)
         {
             requirements = requirements ?? ModelRequirements.Default;
-            var checkedMeshes = new HashSet<Mesh>();
-            foreach (var (node, mesh, collider) in Meshes(root))
+            var uses = Uses(root);
+            foreach (var use in uses)
             {
-                if (mesh == null || !checkedMeshes.Add(mesh)) continue;
-                bool collision = collider || MeshNaming.IsCollision(node.name) || MeshNaming.IsCollision(mesh.name);
+                var (mesh, node, render) = use;
                 string subject = Subject(root.transform, node, mesh);
                 Mesh readable;
                 bool isCopy;
@@ -47,10 +46,29 @@ namespace SashaRX.UnityMeshLab
                     report.Add(PrepareLevel.Error, subject, "Read", $"the mesh could not be read: {error.Message}");
                     continue;
                 }
-                try { MeshValidation.Check(readable, subject, collision, requirements, report); }
+                try { MeshValidation.Check(readable, subject, !render, requirements, report); }
                 finally { if (isCopy) UnityEngine.Object.DestroyImmediate(readable); }
             }
-            if (checkedMeshes.Count == 0) report.Add(PrepareLevel.Warning, root.name, "Model", "no meshes to check");
+            if (uses.Count == 0) report.Add(PrepareLevel.Warning, root.name, "Model", "no meshes to check");
+        }
+
+        /// <summary>
+        /// Each mesh once, in hierarchy order, with the node it is reported under: a render
+        /// mesh when any node renders it (from the first such node), else a collision mesh
+        /// held to the geometry checks.
+        /// </summary>
+        static List<(Mesh mesh, Transform node, bool render)> Uses(GameObject root)
+        {
+            var uses = new List<(Mesh mesh, Transform node, bool render)>();
+            var index = new Dictionary<Mesh, int>();
+            foreach (var (node, mesh, collider) in Meshes(root))
+            {
+                if (mesh == null) continue;
+                bool render = !collider && !MeshNaming.IsCollision(node.name) && !MeshNaming.IsCollision(mesh.name);
+                if (!index.TryGetValue(mesh, out int at)) { index[mesh] = uses.Count; uses.Add((mesh, node, render)); }
+                else if (render && !uses[at].render) uses[at] = (mesh, node, true);
+            }
+            return uses;
         }
 
         /// <summary>Each node's render mesh, then its collider's mesh (flagged as collision).</summary>

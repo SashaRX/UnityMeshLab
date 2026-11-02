@@ -141,6 +141,36 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Check_ReadsTheFacesOfAQuadSubmesh()
+        {
+            var mesh = QuadMesh();
+            mesh.SetIndices(new[] {0, 1, 2, 3}, MeshTopology.Quads, 0);
+            mesh.normals = Enumerable.Repeat(Vector3.back, 4).ToArray();
+            var report = new PrepareReport("Bench.fbx");
+            MeshValidation.Check(mesh, "'Seat'", false, ModelRequirements.Default, report);
+            var line = report.Lines.Single();
+            Assert.AreEqual("Flipped normals", line.check, "the quad's vertices are in a face, not unused");
+            StringAssert.Contains("2 faces whose vertex normals point against the face winding", line.message, "a quad is two triangles");
+        }
+
+        [Test]
+        public void Validate_ChecksAMeshARenderNodeSharesWithACollisionNodeAsARenderMesh()
+        {
+            var mesh = QuadMesh(tangents: false);
+            var root = new GameObject("Bench"); owned.Add(root);
+            foreach (string name in new[] {"Seat_COL", "Seat"})
+            {
+                var node = new GameObject(name);
+                node.transform.SetParent(root.transform);
+                node.AddComponent<MeshFilter>().sharedMesh = mesh;
+            }
+            var report = new PrepareReport("Bench.fbx");
+            ModelValidation.Validate(root, null, report);
+            var channels = report.Lines.Single(l => l.check == "Channels");
+            Assert.AreEqual("'Seat' (mesh 'Quad')", channels.subject, "reported under the node that renders it, whatever the sibling order");
+        }
+
+        [Test]
         public void Validate_ChecksEachMeshOnceAndACollisionNodeForGeometryOnly()
         {
             var mesh = QuadMesh(tangents: false);
