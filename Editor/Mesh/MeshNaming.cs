@@ -195,7 +195,7 @@ namespace SashaRX.UnityMeshLab
             /// <summary>The LOD index (0 to <see cref="MaxLodLevels"/> - 1), or -1.</summary>
             public int Lod = -1;
             /// <summary>Whether the name is a collision node or mesh (<see cref="IsCollision"/>).</summary>
-            public bool IsCollision;
+            public bool Collision;
             /// <summary>N of a <c>_COL_Hull{N}</c> suffix, or -1.</summary>
             public int Hull = -1;
             /// <summary>The pipeline suffixes the transfer tools append (wc, repack, uvTransfer, optimized), in name order.</summary>
@@ -233,11 +233,11 @@ namespace SashaRX.UnityMeshLab
             }
             tags.PipelineTags = pipeline.ToArray();
 
-            tags.IsCollision = IsCollision(core);
+            tags.Collision = IsCollision(core);
             var hull = HullSuffix.Match(core);
             if (hull.Success && int.TryParse(hull.Groups[1].Value, System.Globalization.NumberStyles.None,
                     System.Globalization.CultureInfo.InvariantCulture, out int hullIndex)) tags.Hull = hullIndex;
-            string asset = tags.IsCollision ? StripCollision(core) : core;
+            string asset = tags.Collision ? StripCollision(core) : core;
             tags.Lod = LodIndex(asset);
 
             // Every collision form, then the LOD and collision suffixes GroupKey pairs (Wall_LOD1_COL).
