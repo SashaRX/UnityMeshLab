@@ -2304,7 +2304,7 @@ namespace SashaRX.UnityMeshLab
             var fbxPaths = SidecarStore.FbxPaths(ctx?.MeshEntries);
             if (fbxPaths.Count == 0)
                 fbxPaths = SidecarStore.FbxPaths(Selection.activeGameObject);
-            if (!SidecarStore.TryFindFirst(fbxPaths, out selectedFbxPath, out selectedSidecarPath))
+            if (!SidecarStore.TryFindFirst(fbxPaths, out selectedFbxPath, out selectedSidecarPath, withUv2: true))
                 return;
             selectedResetLabel = System.IO.Path.GetFileNameWithoutExtension(selectedFbxPath);
         }

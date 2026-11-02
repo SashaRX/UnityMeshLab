@@ -94,17 +94,19 @@ namespace SashaRX.UnityMeshLab
             => !string.IsNullOrEmpty(path) && path.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase);
 
         /// <summary>
-        /// The first of <paramref name="fbxPaths"/> that has a sidecar, with that sidecar's
-        /// path; false when none has one.
+        /// The first of <paramref name="fbxPaths"/> that has a sidecar (with UV2 entries, for
+        /// <paramref name="withUv2"/>: one holding only collision is no UV2 to reset), with that
+        /// sidecar's path; false when none has one.
         /// </summary>
-        internal static bool TryFindFirst(IEnumerable<string> fbxPaths, out string fbxPath, out string sidecarPath)
+        internal static bool TryFindFirst(IEnumerable<string> fbxPaths, out string fbxPath, out string sidecarPath, bool withUv2 = false)
         {
             fbxPath = sidecarPath = null;
             if (fbxPaths == null) return false;
             foreach (string fbx in fbxPaths)
             {
                 string sp = PathFor(fbx);
-                if (AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(sp) == null) continue;
+                var data = AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(sp);
+                if (data == null || (withUv2 && (data.entries == null || data.entries.Count == 0))) continue;
                 fbxPath = fbx;
                 sidecarPath = sp;
                 return true;
