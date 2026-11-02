@@ -1445,7 +1445,7 @@ namespace SashaRX.UnityMeshLab
         // model is an FBX, its offsets can be baked into the meshes in the file itself.
         static void DrawCollisionOffsetBake(Transform root, List<GameObject> colObjects)
         {
-            var offset = colObjects.Where(c => c != null && c.GetComponent<MeshFilter>() != null
+            var offset = colObjects.Where(c => c != null && MeshNaming.IsCollision(c.name) && c.GetComponent<MeshFilter>() != null
                 && LodHierarchy.OffsetFromRoot(root, c.transform) != null).ToList();
             if (offset.Count == 0) return;
             EditorGUILayout.HelpBox($"{string.Join(", ", offset.Select(c => c.name))} sit{(offset.Count == 1 ? "s" : "")} off the root's placement: "

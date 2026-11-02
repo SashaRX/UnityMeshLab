@@ -968,7 +968,7 @@ namespace SashaRX.UnityMeshLab
                 return $"shares its mesh with {mesh.GetNodeCount() - 1} other node(s), which baking this node's offset into it would move";
             if (FbxStructureEdit.HasDeformers(mesh)) return "is skinned or has blend shapes";
             if (node.GetChildCount() > 0) return "has child nodes, which would move with it";
-            if (FbxStructureEdit.HasTransformAnimation(node)) return "has an animated transform";
+            if (FbxStructureEdit.HasTransformCurves(node)) return "has transform curves, which would put the offset back when they play";
             var root = scene.GetRootNode();
             var importedRoot = !preserveHierarchy && root.GetChildCount() == 1 ? root.GetChild(0) : root;
             return node.GetParent() == importedRoot ? null

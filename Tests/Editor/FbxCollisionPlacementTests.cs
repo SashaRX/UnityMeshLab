@@ -72,6 +72,10 @@ namespace SashaRX.UnityMeshLab.Tests
             col.transform.localPosition = new Vector3(.392f, 0, .002f);
             col.transform.localRotation = Quaternion.Euler(0, 30, 0);
             col.AddComponent<MeshFilter>().sharedMesh = Box("Seat_COL"); col.AddComponent<MeshRenderer>();
+            // "_COLOR" is no collision name: an offset render node named so is left as it is.
+            var colour = new GameObject("Chair_COLOR"); colour.transform.SetParent(root.transform, false);
+            colour.transform.localPosition = new Vector3(0, .5f, 0);
+            colour.AddComponent<MeshFilter>().sharedMesh = Box("Chair_COLOR"); colour.AddComponent<MeshRenderer>();
 
             if (!AssetDatabase.IsValidFolder("Assets/UnityMeshLab")) AssetDatabase.CreateFolder("Assets", "UnityMeshLab");
             string fbxPath = "Assets/UnityMeshLab/CollisionOffset-" + Guid.NewGuid().ToString("N") + ".fbx";
@@ -85,6 +89,12 @@ namespace SashaRX.UnityMeshLab.Tests
             var toRoot = before.transform.worldToLocalMatrix * importedCol.transform.localToWorldMatrix;
             var expected = MeshAccess.ReadableCopy(importedCol.sharedMesh); owned.Add(expected);
             expected.vertices = expected.vertices.Select(v => toRoot.MultiplyPoint3x4(v)).ToArray();
+            // An unpacked copy in the scene keeps its own transforms: it is moved to keep its collision in place.
+            var copy = (GameObject)Object.Instantiate(before); owned.Add(copy);
+            copy.transform.position = new Vector3(3, 0, -2);
+            var copyCol = copy.GetComponentsInChildren<MeshFilter>(true).Single(f => f.name == "Seat_COL");
+            var copyWorld = MeshAccess.ReadableCopy(copyCol.sharedMesh); owned.Add(copyWorld);
+            copyWorld.vertices = copyWorld.vertices.Select(v => copyCol.transform.localToWorldMatrix.MultiplyPoint3x4(v)).ToArray();
 
             Assert.IsTrue(FbxCollisionPlacement.BakeOffsets(fbxPath));
 
@@ -93,6 +103,13 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsNull(LodHierarchy.OffsetFromRoot(after.transform, baked.transform), "the node sits at the root's placement");
             var bakedMesh = MeshAccess.ReadableCopy(baked.sharedMesh); owned.Add(bakedMesh);
             Assert.IsNull(FbxCollisionPlacement.SurfaceDifference(bakedMesh, expected), "its surface stays where it was");
+            Assert.IsNotNull(LodHierarchy.OffsetFromRoot(after.transform, after.GetComponentsInChildren<MeshFilter>(true).Single(f => f.name == "Chair_COLOR").transform),
+                "a render node named _COLOR is not baked");
+
+            Assert.IsNull(LodHierarchy.OffsetFromRoot(copy.transform, copyCol.transform), "the scene copy's node takes the root's placement");
+            var copyAfter = MeshAccess.ReadableCopy(copyCol.sharedMesh); owned.Add(copyAfter);
+            copyAfter.vertices = copyAfter.vertices.Select(v => copyCol.transform.localToWorldMatrix.MultiplyPoint3x4(v)).ToArray();
+            Assert.IsNull(FbxCollisionPlacement.SurfaceDifference(copyAfter, copyWorld), "and its collision stays where it was in the world");
             Assert.IsFalse(FbxCollisionPlacement.BakeOffsets(fbxPath), "nothing is left to bake");
         }
 #endif

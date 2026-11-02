@@ -238,6 +238,13 @@ namespace SashaRX.UnityMeshLab
         internal static bool HasTransformAnimation(FbxNode node)
             => Animated(node.LclTranslation) || Animated(node.LclRotation) || Animated(node.LclScaling);
 
+        /// <summary>
+        /// Whether any curve drives the node's local translation, rotation or scaling, even one
+        /// that only holds the value: a reset of the transform would leave it restoring the old one.
+        /// </summary>
+        internal static bool HasTransformCurves(FbxNode node)
+            => node.LclTranslation.GetSrcObjectCount() > 0 || node.LclRotation.GetSrcObjectCount() > 0 || node.LclScaling.GetSrcObjectCount() > 0;
+
         // Curves this cannot read (another stack or layer than the current one) count as animation.
         static bool Animated(FbxPropertyDouble3 property)
         {
