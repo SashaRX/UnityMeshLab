@@ -937,33 +937,42 @@ namespace SashaRX.UnityMeshLab
         static Reference RootPlacementTarget(FbxSourceDocument document, Dictionary<string, FbxChannelWrite.Tagged> tagged,
             string importedPath, bool preserveHierarchy)
         {
-            string path = ImportedCollisionDocumentPath(document, importedPath);
-            FbxNode node = null;
-            foreach (var candidate in document.Meshes)
-                for (int i = 0; i < candidate.GetNodeCount(); i++)
-                    if (CollisionNodePath(candidate.GetNode(i)) == path) node = candidate.GetNode(i);
-            if (node == null) throw new FbxStructureRefusalException($"collision path '{importedPath}' has no mesh node in the FBX");
+            var node = MeshNodeAt(document, ImportedCollisionDocumentPath(document, importedPath))
+                ?? throw new FbxStructureRefusalException($"collision path '{importedPath}' has no mesh node in the FBX");
             string name = node.GetName();
             var mesh = node.GetMesh();
             int ordinal = document.Meshes.IndexOf(mesh);
             var tag = tagged.Values.FirstOrDefault(t => t.ordinal == ordinal);
             if (tag == null || tag.ambiguous)
                 throw new FbxStructureRefusalException($"'{name}': its mesh cannot be told apart in the import (its corner tags did not survive, or another mesh imports under its name)");
-            if (mesh.GetNodeCount() > 1)
-                throw new FbxStructureRefusalException($"'{name}': its mesh is shared by {mesh.GetNodeCount()} nodes, so baking this node's offset into it would move the others");
-            if (FbxStructureEdit.HasDeformers(mesh))
-                throw new FbxStructureRefusalException($"'{name}' is skinned or has blend shapes");
-            if (node.GetChildCount() > 0)
-                throw new FbxStructureRefusalException($"'{name}' has child nodes, which would move with it");
-            if (FbxStructureEdit.HasTransformAnimation(node))
-                throw new FbxStructureRefusalException($"'{name}' has an animated transform");
-            var root = document.Scene.GetRootNode();
-            var importedRoot = !preserveHierarchy && root.GetChildCount() == 1 ? root.GetChild(0) : root;
-            if (node.GetParent() != importedRoot)
-                throw new FbxStructureRefusalException(
-                    $"'{name}' sits under '{node.GetParent()?.GetName()}', not directly under the model root; only a direct child takes the root's placement by resetting its transform");
+            string refusal = ResetRefusal(document.Scene, node, mesh, preserveHierarchy);
+            if (refusal != null) throw new FbxStructureRefusalException($"'{name}' {refusal}");
             var (fit, reverse) = FitOf(mesh, tag, name);
             return new Reference { name = name, mesh = mesh, node = node, fit = fit, reverse = reverse, instanceResolved = true };
+        }
+
+        // The mesh node at a document path (CollisionNodePath), or null.
+        static FbxNode MeshNodeAt(FbxSourceDocument document, string path)
+        {
+            foreach (var mesh in document.Meshes)
+                for (int i = 0; i < mesh.GetNodeCount(); i++)
+                    if (CollisionNodePath(mesh.GetNode(i)) == path) return mesh.GetNode(i);
+            return null;
+        }
+
+        // Why resetting the node's transform would not put its mesh at the imported root's
+        // placement and nothing else, or null when it would.
+        static string ResetRefusal(FbxScene scene, FbxNode node, FbxMesh mesh, bool preserveHierarchy)
+        {
+            if (mesh.GetNodeCount() > 1)
+                return $"shares its mesh with {mesh.GetNodeCount() - 1} other node(s), which baking this node's offset into it would move";
+            if (FbxStructureEdit.HasDeformers(mesh)) return "is skinned or has blend shapes";
+            if (node.GetChildCount() > 0) return "has child nodes, which would move with it";
+            if (FbxStructureEdit.HasTransformAnimation(node)) return "has an animated transform";
+            var root = scene.GetRootNode();
+            var importedRoot = !preserveHierarchy && root.GetChildCount() == 1 ? root.GetChild(0) : root;
+            return node.GetParent() == importedRoot ? null
+                : $"sits under '{node.GetParent()?.GetName()}', not directly under the model root; only a direct child takes the root's placement by resetting its transform";
         }
 
         // Removes the siblings a new node replaces (same name, same parent); a node with children

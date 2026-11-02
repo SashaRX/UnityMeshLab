@@ -1443,7 +1443,7 @@ namespace SashaRX.UnityMeshLab
 
         // Collision nodes off the root's placement: their collider cannot go on the root. When the
         // model is an FBX, its offsets can be baked into the meshes in the file itself.
-        void DrawCollisionOffsetBake(Transform root, List<GameObject> colObjects)
+        static void DrawCollisionOffsetBake(Transform root, List<GameObject> colObjects)
         {
             var offset = colObjects.Where(c => c != null && c.GetComponent<MeshFilter>() != null
                 && LodHierarchy.OffsetFromRoot(root, c.transform) != null).ToList();

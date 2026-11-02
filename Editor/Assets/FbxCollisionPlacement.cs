@@ -46,11 +46,7 @@ namespace SashaRX.UnityMeshLab
                 {
                     var mesh = node.TryGetComponent(out MeshFilter filter) ? filter.sharedMesh : null;
                     if (mesh == null || LodHierarchy.OffsetFromRoot(root.transform, node.transform) == null) continue;
-                    string key = managed.FirstOrDefault(k => MeshNaming.IsCollisionOf(node.name, k));
-                    string reason = key != null ? $"is written from the sidecar's collision entry '{key}'; the next save would put it back next to its source"
-                        : node.transform.parent != root.transform ? $"sits under '{node.transform.parent.name}', not directly under the model root"
-                        : node.transform.childCount > 0 ? "has child nodes, which would move with it"
-                        : null;
+                    string reason = SkipReason(root.transform, node.transform, managed);
                     if (reason != null)
                     {
                         skipped.Add($"'{node.name}' {reason}");
@@ -71,6 +67,16 @@ namespace SashaRX.UnityMeshLab
             return plan;
         }
 
+        // Why a collision node off the root's placement is left as it is, or null when it is baked.
+        static string SkipReason(Transform root, Transform node, List<string> managed)
+        {
+            string key = managed.FirstOrDefault(k => MeshNaming.IsCollisionOf(node.name, k));
+            if (key != null) return $"is written from the sidecar's collision entry '{key}'; the next save would put it back next to its source";
+            if (node.parent != root) return $"sits under '{node.parent.name}', not directly under the model root";
+            if (node.childCount > 0) return "has child nodes, which would move with it";
+            return null;
+        }
+
         /// <summary>
         /// Imports the edited <paramref name="document"/> once with the source's settings and
         /// checks each node of <paramref name="placements"/>: at the root's placement, its
@@ -82,20 +88,22 @@ namespace SashaRX.UnityMeshLab
             {
                 var root = AssetDatabase.LoadAssetAtPath<GameObject>(path);
                 if (root == null) return "the edited file did not import as a model";
-                foreach (var (nodePath, expected) in placements)
-                {
-                    var node = CollisionHierarchyAnalyzer.Find(root.transform, nodePath);
-                    var mesh = node != null && node.TryGetComponent(out MeshFilter filter) ? filter.sharedMesh : null;
-                    if (mesh == null) return $"'{nodePath}' has no mesh in the edited file";
-                    string offset = LodHierarchy.OffsetFromRoot(root.transform, node);
-                    if (offset != null) return $"'{node.name}' imports off the root's placement ({offset})";
-                    string surface = SurfaceDifference(mesh, expected);
-                    if (surface != null) return $"'{node.name}': {surface}";
-                }
-                return null;
+                return placements.Select(p => PlacementProblem(root.transform, p.path, p.mesh)).FirstOrDefault(p => p != null);
             });
             if (problem != null)
                 throw new FbxStructureRefusalException($"{problem}; the collision offsets were not baked and the file is unchanged");
+        }
+
+        // What is wrong with the baked node at nodePath in the imported edit, or null.
+        static string PlacementProblem(Transform root, string nodePath, Mesh expected)
+        {
+            var node = CollisionHierarchyAnalyzer.Find(root, nodePath);
+            var mesh = node != null && node.TryGetComponent(out MeshFilter filter) ? filter.sharedMesh : null;
+            if (mesh == null) return $"'{nodePath}' has no mesh in the edited file";
+            string offset = LodHierarchy.OffsetFromRoot(root, node);
+            if (offset != null) return $"'{node.name}' imports off the root's placement ({offset})";
+            string surface = SurfaceDifference(mesh, expected);
+            return surface == null ? null : $"'{node.name}': {surface}";
         }
 
         /// <summary>
