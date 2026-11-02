@@ -1,8 +1,9 @@
-// ModelValidation.cs — checks every mesh of a model (an FBX or prefab asset, or a scene
-// object) against ModelRequirements into a PrepareReport. A collision mesh (a _COL node,
-// or a MeshCollider's mesh, that no node renders) is held to the geometry checks only.
-// Each mesh is checked once, however many nodes share it; an unreadable one through a
-// readable copy that is destroyed afterwards.
+// ModelValidation.cs — checks a model (an FBX or prefab asset, or a scene object) against
+// ModelRequirements into a PrepareReport: the file (import scale, units, smoothing groups,
+// ModelFileChecks), the nodes' scale and the model's size, then every mesh. A collision
+// mesh (a _COL node, or a MeshCollider's mesh, that no node renders) is held to the
+// geometry checks only. Each mesh is checked once, however many nodes share it; an
+// unreadable one through a readable copy that is destroyed afterwards.
 //
 // Assets ▸ Mesh Lab ▸ Validate Models logs the report of each selected model.
 
@@ -22,17 +23,31 @@ namespace SashaRX.UnityMeshLab
         /// <summary>The report of the model or prefab asset at <paramref name="assetPath"/>.</summary>
         internal static PrepareReport Validate(string assetPath, ModelRequirements requirements = null)
         {
+            requirements = requirements ?? ModelRequirements.Default;
             var report = new PrepareReport(assetPath);
             var root = AssetDatabase.LoadAssetAtPath<GameObject>(assetPath);
-            if (root == null) report.Add(PrepareLevel.Error, assetPath, "Model", "not a model or prefab asset");
-            else Validate(root, requirements, report);
+            if (root == null)
+            {
+                report.Add(PrepareLevel.Error, assetPath, "Model", "not a model or prefab asset");
+                return report;
+            }
+            if (AssetImporter.GetAtPath(assetPath) is ModelImporter importer)
+                ModelFileChecks.CheckImporter(importer, assetPath, requirements, report);
+            ModelFileChecks.CheckSmoothing(assetPath, requirements, report);
+            Validate(root, requirements, report, includeRootScale: true);
             return report;
         }
 
-        /// <summary>Checks every mesh under <paramref name="root"/> into <paramref name="report"/>.</summary>
-        internal static void Validate(GameObject root, ModelRequirements requirements, PrepareReport report)
+        /// <summary>
+        /// Checks the nodes' scale, the size and every mesh under <paramref name="root"/> into
+        /// <paramref name="report"/>. The root's own scale counts for an asset
+        /// (<paramref name="includeRootScale"/>), not for a placed scene object.
+        /// </summary>
+        internal static void Validate(GameObject root, ModelRequirements requirements, PrepareReport report, bool includeRootScale = false)
         {
             requirements = requirements ?? ModelRequirements.Default;
+            ModelFileChecks.CheckNodeScales(root, includeRootScale, requirements, report);
+            ModelFileChecks.CheckSize(root, requirements, report);
             var uses = Uses(root);
             foreach (var use in uses)
             {
