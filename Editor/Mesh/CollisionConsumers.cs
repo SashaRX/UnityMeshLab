@@ -27,8 +27,9 @@ namespace SashaRX.UnityMeshLab
         // contents are loaded again for each pass); each with its old placement (in the prefab's
         // root space for a prefab) and the path of the model node whose mesh it shows.
         readonly List<(Transform node, Matrix4x4 world, string path)> scene = new List<(Transform, Matrix4x4, string)>();
-        readonly Dictionary<string, List<(string node, Matrix4x4 world, string path)>> prefabs
-            = new Dictionary<string, List<(string, Matrix4x4, string)>>(StringComparer.Ordinal);
+        // In the order they were scanned: a base before the prefabs built on it.
+        readonly List<KeyValuePair<string, List<(string node, Matrix4x4 world, string path)>>> prefabs
+            = new List<KeyValuePair<string, List<(string, Matrix4x4, string)>>>();
         readonly List<string> refusals = new List<string>();
 
         /// <summary>Why the change must not happen; empty when it may.</summary>
@@ -75,7 +76,10 @@ namespace SashaRX.UnityMeshLab
 
         List<(string, Matrix4x4, string)> Uses(string prefab)
         {
-            if (!prefabs.TryGetValue(prefab, out var uses)) prefabs[prefab] = uses = new List<(string, Matrix4x4, string)>();
+            int at = prefabs.FindIndex(p => p.Key == prefab);
+            if (at >= 0) return prefabs[at].Value;
+            var uses = new List<(string, Matrix4x4, string)>();
+            prefabs.Add(new KeyValuePair<string, List<(string, Matrix4x4, string)>>(prefab, uses));
             return uses;
         }
 
@@ -170,12 +174,20 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        /// <summary>The project's prefab assets that use the model at <paramref name="fbxPath"/> directly (its meshes, or an instance of it).</summary>
+        /// <summary>
+        /// The project's prefab assets that use the model at <paramref name="fbxPath"/>, directly (its
+        /// meshes, or an instance of it) or through another prefab (a variant of one that does), a
+        /// base before the prefabs built on it: a prefab that follows its base needs nothing once
+        /// the base is saved.
+        /// </summary>
         static IEnumerable<string> DependentPrefabs(string fbxPath)
             => AssetDatabase.FindAssets("t:Prefab", new[] { "Assets" })
                 .Select(AssetDatabase.GUIDToAssetPath)
-                .Where(path => AssetDatabase.GetDependencies(path, false).Contains(fbxPath, StringComparer.OrdinalIgnoreCase))
                 .Distinct(StringComparer.Ordinal)
+                .Select(path => (path, dependencies: AssetDatabase.GetDependencies(path, true)))
+                .Where(p => p.dependencies.Contains(fbxPath, StringComparer.OrdinalIgnoreCase))
+                .OrderBy(p => p.dependencies.Length)
+                .Select(p => p.path)
                 .ToList();
 
         // Loads the prefab's contents, runs work on them and saves them when it reports a change.

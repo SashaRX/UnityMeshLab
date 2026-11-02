@@ -4,6 +4,9 @@
 // a MeshCollider on the root lands where the mesh lies. FbxCollisionPlacement is the version
 // that writes the same into the FBX itself.
 //
+// Nodes are listed in sidecar mode only; once listed they stay placed on every import, whatever
+// the mode, until Clear drops them (and keeps the objects that use them in place again).
+//
 // A listed node is a direct child of the root named as collision (MeshNaming), holding only
 // collision nodes (a hull container); each mesh in it is used by that node alone. A node that
 // stops qualifying is left where the file puts it, with a warning, and the import goes on.

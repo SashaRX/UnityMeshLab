@@ -197,15 +197,15 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
-        /// The transform paths each model's clips animate in its current import (sidecar mode, a
-        /// sidecar placing collision at the root): a node they move is not placed. Clips are
-        /// postprocessed before the model.
+        /// The transform paths each model's clips animate in its current import (a sidecar placing
+        /// collision at the root): a node they move is not placed. Clips are postprocessed before
+        /// the model.
         /// </summary>
         static readonly Dictionary<string, HashSet<string>> animatedPaths = new Dictionary<string, HashSet<string>>(System.StringComparer.Ordinal);
 
         void OnPostprocessAnimation(GameObject root, AnimationClip clip)
         {
-            if (bypassPaths.Contains(assetPath) || !PostprocessorDefineManager.IsEnabled()) return;
+            if (bypassPaths.Contains(assetPath)) return;
             var placed = SidecarStore.Load(assetPath)?.collisionAtRoot;
             if (placed == null || placed.Count == 0) return;
             if (!animatedPaths.TryGetValue(assetPath, out var paths)) animatedPaths[assetPath] = paths = new HashSet<string>(System.StringComparer.Ordinal);
@@ -227,11 +227,12 @@ namespace SashaRX.UnityMeshLab
 
             ReplaySidecar(root, modelPath);
 
-            // Sidecar mode: collision nodes the sidecar puts at the root's placement (the FBX keeps
-            // their offset). Every import, FBX overwrites included: the file never has it. After
-            // the replay, which may write a mesh's stored positions.
-            if (PostprocessorDefineManager.IsEnabled())
-                CollisionRootPlacement.ApplyOnImport(root, SidecarStore.Load(modelPath)?.collisionAtRoot, modelPath, animated);
+            // Collision nodes the sidecar puts at the root's placement (the FBX keeps their offset).
+            // Every import, FBX overwrites included: the file never has it. Listed in sidecar mode,
+            // they stay placed whatever the mode until cleared, so the scene objects and prefabs
+            // kept in place for them stay right. After the replay, which may write a mesh's stored
+            // positions.
+            CollisionRootPlacement.ApplyOnImport(root, SidecarStore.Load(modelPath)?.collisionAtRoot, modelPath, animated);
         }
 
         void ReplaySidecar(GameObject root, string modelPath)
