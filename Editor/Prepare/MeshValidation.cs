@@ -1,6 +1,6 @@
 // MeshValidation.cs — the checks of one mesh against ModelRequirements: finite values,
-// degenerate faces, unused vertices, non-manifold edges, flipped normals, the required
-// channels and a lightmap UV inside [0,1]. The counting helpers read plain arrays; Check
+// degenerate faces, the vertex limit, unused vertices, non-manifold edges, flipped
+// normals, the required channels and a lightmap UV inside [0,1]. The counting helpers read plain arrays; Check
 // reads a readable mesh (the caller supplies a readable copy and destroys it).
 
 using System.Collections.Generic;
@@ -124,6 +124,10 @@ namespace SashaRX.UnityMeshLab
             }
 
             if (collision) return;
+
+            if (requirements.maxVertices > 0 && positions.Length > requirements.maxVertices)
+                report.Add(requirements.vertexLimit, subject, "Vertex limit",
+                    $"{positions.Length} vertices, over the limit of {requirements.maxVertices}");
 
             if (requirements.unusedVertices != RequirementLevel.Off)
             {
