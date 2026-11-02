@@ -24,8 +24,9 @@ namespace SashaRX.UnityMeshLab
     internal sealed class CollisionConsumers
     {
         // Scene objects, and per prefab asset its objects by path below the prefab's root (the
-        // contents are loaded again for each pass); each with its old placement (in the prefab's
-        // root space for a prefab) and the path of the model node whose mesh it shows.
+        // contents are loaded again for each pass); each with its old placement, as scanned (for a
+        // prefab, in its contents: a root a saved base has already moved is not moved again), and
+        // the path of the model node whose mesh it shows.
         readonly List<(Transform node, Matrix4x4 world, string path)> scene = new List<(Transform, Matrix4x4, string)>();
         // In the order they were scanned: a base before the prefabs built on it.
         readonly List<KeyValuePair<string, List<(string node, Matrix4x4 world, string path)>>> prefabs
@@ -62,7 +63,7 @@ namespace SashaRX.UnityMeshLab
                 else if (prefab == null)
                     scene.Add((node, node.localToWorldMatrix, path));
                 else
-                    Uses(prefab).Add((CollisionHierarchyAnalyzer.RelativePath(root.transform, node), root.transform.worldToLocalMatrix * node.localToWorldMatrix, path));
+                    Uses(prefab).Add((CollisionHierarchyAnalyzer.RelativePath(root.transform, node), node.localToWorldMatrix, path));
             }
             foreach (var collider in root.GetComponentsInChildren<MeshCollider>(true))
             {
@@ -142,7 +143,7 @@ namespace SashaRX.UnityMeshLab
             {
                 var node = CollisionHierarchyAnalyzer.Find(root.transform, nodePath);
                 if (node != null && after.TryGetValue(path, out var placed))
-                    yield return (node, UnderParent(node, root.transform.localToWorldMatrix * world * before[path].inverse * placed));
+                    yield return (node, UnderParent(node, world * before[path].inverse * placed));
             }
         }
 

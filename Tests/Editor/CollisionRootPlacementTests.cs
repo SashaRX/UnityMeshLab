@@ -2,10 +2,12 @@
 // sidecar: the import step on a built hierarchy (a single node and a hull container keep
 // their surface, a node sharing its mesh is left as it is), the choice of nodes, and the
 // consumers both versions keep in place (CollisionConsumers: refusals, shear, the moves).
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
 using NUnit.Framework;
+using UnityEditor;
 using UnityEngine;
 using UnityEngine.TestTools;
 using Object = UnityEngine.Object;
@@ -156,6 +158,26 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsNull(LodHierarchy.OffsetFromRoot(copy, node), "the copy's node takes the root's placement");
             var moved = World(node);
             for (int i = 0; i < world.Length; i++) Assert.Less(Vector3.Distance(world[i], moved[i]), 1e-4f, "its collision stays where it was");
+        }
+
+        [Test]
+        public void DeleteKeepingCollisionPlacement_KeepsOnlyTheNodesPlacedAtTheRoot()
+        {
+            if (!AssetDatabase.IsValidFolder("Assets/UnityMeshLab")) AssetDatabase.CreateFolder("Assets", "UnityMeshLab");
+            string fbx = "Assets/UnityMeshLab/Placement-" + Guid.NewGuid().ToString("N") + ".fbx";
+            string sidecar = SidecarStore.PathFor(fbx);
+            try
+            {
+                SidecarStore.SetCollisionAtRoot(fbx, new[] { "Seat_COL[0]" });
+                SidecarStore.SaveSettings(sidecar, settings => { });
+                Assert.IsNotNull(SidecarStore.LoadSettings(sidecar));
+
+                Assert.AreEqual(1, SidecarStore.DeleteKeepingCollisionPlacement(new[] { fbx }));
+
+                CollectionAssert.AreEqual(new[] { "Seat_COL[0]" }, SidecarStore.CollisionAtRoot(fbx), "a UV2 reset keeps the nodes placed at the root");
+                Assert.IsNull(SidecarStore.LoadSettings(sidecar), "and drops the rest of the sidecar");
+            }
+            finally { AssetDatabase.DeleteAsset(sidecar); }
         }
 
         [Test]

@@ -203,6 +203,23 @@ namespace SashaRX.UnityMeshLab
             else Save(data);
         }
 
+        /// <summary>
+        /// Deletes the sidecars behind <paramref name="fbxPaths"/> for a UV2 reset, except the
+        /// collision nodes they put at the root's placement: the scene objects and prefabs kept in
+        /// place for those would move if the import stopped placing them (CollisionRootPlacement.
+        /// ClearSidecar removes them and keeps those in step). Returns how many existed.
+        /// </summary>
+        internal static int DeleteKeepingCollisionPlacement(IEnumerable<string> fbxPaths)
+        {
+            if (fbxPaths == null) return 0;
+            var paths = fbxPaths.Where(p => !string.IsNullOrEmpty(p)).ToList();
+            var placements = paths.Distinct(StringComparer.Ordinal).ToDictionary(p => p, CollisionAtRoot, StringComparer.Ordinal);
+            int deleted = Delete(paths);
+            foreach (var placed in placements.Where(p => p.Value.Count > 0))
+                SetCollisionAtRoot(placed.Key, placed.Value);
+            return deleted;
+        }
+
         /// <summary>Deletes the sidecars behind <paramref name="fbxPaths"/>. Returns how many existed.</summary>
         internal static int Delete(IEnumerable<string> fbxPaths)
         {

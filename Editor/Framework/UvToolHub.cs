@@ -2321,7 +2321,7 @@ namespace SashaRX.UnityMeshLab
 
             using var previewWrite = ctx.Assets.PreservePreviewDuringWrite();
             BeforeAssetWrite();
-            SidecarStore.Delete(new[] { selectedFbxPath });
+            SidecarStore.DeleteKeepingCollisionPlacement(new[] { selectedFbxPath });
             AssetDatabase.Refresh();
 
             {
