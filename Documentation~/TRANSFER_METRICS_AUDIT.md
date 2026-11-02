@@ -43,7 +43,8 @@ out-of-bounds, degenerate and invalid faces for TUQ and the source-atlas gate.
 | GST merged safety net (after the shell loop) | source shell UV2 AABB ± 20% of its size | outlier vertices re-projected through UV0, no acceptance check |
 | GST overlap composite and 3D reprojection | ± 50% and ± 30% of the source AABB, 2× its area or diagonal | composite rejected or face replaced |
 | ForwardUvSurfaceProjection.cs:85 | no OOB vertex in the whole candidate mesh | surface recovery candidate refused |
-| UTW publication clamp, XatlasRepack | strict [0, 1] | clamped when `ClampLightmapToUnit`; TUQ re-measured only for auto-tune |
+| UTW publication clamp, XatlasRepack | strict [0, 1] | always clamped; past half a texel of the atlas side a warning (faces squashed); TUQ re-measured only for auto-tune |
+| UTW own-UV2 source (Repack off) | [0, 1] ± half a texel of the side Repack would pack it at | Transfer refused |
 | `Editor/TransferValidator.cs`:251 | ± 0.01 | diagnostics overlay only |
 
 Grouped transfer divides its pixel margins by min(W, H); planar recovery and

@@ -1198,10 +1198,6 @@ namespace SashaRX.UnityMeshLab
                     ctx.TargetUvCoverage, 0.3f, 0.95f);
                 EditorGUI.indentLevel--;
             }
-            ctx.ClampLightmapToUnit = EditorGUILayout.ToggleLeft(
-                new GUIContent("Clamp UV2 to [0,1]",
-                    "Cheap safety net against verts pushed a fraction of a texel outside the unit square."),
-                ctx.ClampLightmapToUnit);
         }
 
         void DrawRepackCompressionControls()
@@ -2364,7 +2360,6 @@ namespace SashaRX.UnityMeshLab
             opts.reparameterizeStretchedShells = ctx.ReparameterizeStretchedShells;
             opts.stretchThreshold = ctx.StretchThreshold;
             opts.arapIterations = ctx.ArapIterations;
-            opts.clampLightmapToUnit = ctx.ClampLightmapToUnit;
             opts.targetUvCoverage = ctx.TargetUvCoverage;
             opts.postPackDensityCorrection = ctx.PostPackDensityCorrection;
             opts.internalOversample = ctx.InternalOversample > 0 ? ctx.InternalOversample : 1;
@@ -2484,12 +2479,40 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>
         /// A readable working copy of each source Transfer reads with its own UV2: an imported
-        /// mesh without Read/Write cannot supply its vertices and UV channels.
+        /// mesh without Read/Write cannot supply its vertices and UV channels. That UV2 must lie
+        /// inside [0,1] (<see cref="RequireOwnUv2InsideUnit"/>).
         /// </summary>
-        static void PrepareOwnUv2Sources(List<MeshEntry> sources)
+        void PrepareOwnUv2Sources(List<MeshEntry> sources)
         {
             foreach (var source in sources)
-                if (source.repackedMesh == null && HasOwnUv2(source)) EnsureTransferWorkingMesh(source);
+            {
+                if (source.repackedMesh != null || !HasOwnUv2(source)) continue;
+                EnsureTransferWorkingMesh(source);
+                RequireOwnUv2InsideUnit(source.originalMesh.uv2, $"'{source.originalMesh.name}' LOD{source.lodIndex}", SourceAtlasSide(source));
+            }
+        }
+
+        /// <summary>
+        /// Refuses a source's own UV2 that lies outside [0,1] past half a texel at
+        /// <paramref name="atlasSide"/>: its LODs follow it out, and the unit clamp at publication
+        /// would squash every face past the edge. Rounding past the edge is clamped as usual.
+        /// </summary>
+        internal static void RequireOwnUv2InsideUnit(Vector2[] uv2, string label, int atlasSide)
+        {
+            float overshoot = 0f; int outside = 0;
+            var min = new Vector2(float.PositiveInfinity, float.PositiveInfinity);
+            var max = new Vector2(float.NegativeInfinity, float.NegativeInfinity);
+            foreach (var uv in uv2)
+            {
+                min = Vector2.Min(min, uv); max = Vector2.Max(max, uv);
+                float distance = XatlasRepack.UnitOvershoot(uv);
+                if (distance <= 0f) continue;
+                ++outside; overshoot = Mathf.Max(overshoot, distance);
+            }
+            if (!XatlasRepack.ClampSquashes(overshoot, (uint)Math.Max(1, atlasSide))) return;
+            throw new InvalidOperationException($"{label}: its own UV2 lies outside [0,1] (U {min.x:F3}..{max.x:F3}, V {min.y:F3}..{max.y:F3}; "
+                + $"{outside} vertices, up to {overshoot * atlasSide:F1} px at {atlasSide} px). Its LODs would be clamped flat against the atlas edge. "
+                + "Turn Repack on to lay the lightmap out inside [0,1].");
         }
 
         /// <summary>A source entry whose own UV2 Transfer reads because the pipeline runs without Repack.</summary>
@@ -2860,7 +2883,7 @@ namespace SashaRX.UnityMeshLab
             if (tr.matchHints != null && tr.matchHints.Count > 0)
                 hintState.matchHints.AddRange(tr.matchHints);
 
-            int clamped = ApplyTransferResult(tgt, tgtMesh, tr, tLod);
+            int clamped = ApplyTransferResult(tgt, tgtMesh, tr, tLod, (uint)Math.Max(atlasWidth, atlasHeight));
             if (atlasFaces != null)
             {
                 atlasFaces.Add((srcEntry, tgt.transferredMesh, GroupedShellTransfer.AtlasCorners(tgt.transferredMesh)));
@@ -2969,22 +2992,21 @@ namespace SashaRX.UnityMeshLab
             return false;
         }
 
-        /// <summary>Publishes the transfer result; returns the number of UV2 coordinates the unit clamp moved.</summary>
-        int ApplyTransferResult(MeshEntry tgt, Mesh tgtMesh, GroupedShellTransfer.TransferResult tr, int tLod)
+        /// <summary>
+        /// Publishes the transfer result, its UV2 inside [0,1]; returns the number of UV2
+        /// coordinates the unit clamp moved. <paramref name="atlasSide"/> (the source atlas
+        /// side in texels) tells a rounding clamp from one that squashes faces.
+        /// </summary>
+        int ApplyTransferResult(MeshEntry tgt, Mesh tgtMesh, GroupedShellTransfer.TransferResult tr, int tLod, uint atlasSide)
         {
             // Build output mesh with UV2 applied
             var om = UnityEngine.Object.Instantiate(tgtMesh);
             om.name = tgtMesh.name + "_uvTransfer";
-            int clamped = 0;
-            if (ctx.ClampLightmapToUnit)
+            int clamped = XatlasRepack.ClampUvsToUnit(tr.uv2, out float overshoot);
+            if (clamped > 0)
             {
-                clamped = XatlasRepack.ClampUvsToUnit(tr.uv2);
-                if (clamped > 0)
-                {
-                    tgt.forwardUvReference=tgt.forwardUvReference?.ClampPublishedCoordinates(tgtMesh);
-                    UvtLog.Verbose(UvtLog.Category.Match,
-                        $"Clamped {clamped} UV2 vert(s) into [0,1] on '{tgt.renderer.name}'");
-                }
+                tgt.forwardUvReference=tgt.forwardUvReference?.ClampPublishedCoordinates(tgtMesh);
+                XatlasRepack.LogUnitClamp(UvtLog.Category.Match, $"[Transfer] '{tgt.renderer.name}' LOD{tLod}", clamped, overshoot, atlasSide);
             }
             om.SetUVs(1, new List<Vector2>(tr.uv2));
             DestroyWorkingMesh(ref tgt.transferredMesh);
