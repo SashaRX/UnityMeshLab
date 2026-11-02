@@ -55,6 +55,25 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual("Seat", tags.Body); CollectionAssert.IsEmpty(tags.PipelineTags);
         }
 
+        // The trailing layers come in any order: pipeline suffixes before a LOD suffix, _wc after
+        // an instance-numbered source, a LOD suffix after a _COL_* form.
+        [TestCase("Chair_wc_repack_LOD0", "Chair", 0, false, -1, "wc repack", null)]
+        [TestCase("Seat_LOD0.001_wc", "Seat", 0, false, -1, "wc", ".001")]
+        [TestCase("Seat_COL_Hull2_wc.003", "Seat", -1, true, 2, "wc", ".003")]
+        [TestCase("Crate_COL_Box_LOD1", "Crate", 1, true, -1, "", null)]
+        [TestCase("Wall_LOD9", "Wall", -1, false, -1, "", null)]
+        public void ParseTags_PeelsTrailingLayersInAnyOrder(string name, string body, int lod, bool collision, int hull,
+            string pipeline, string instance)
+        {
+            var tags = MeshNaming.ParseTags(name);
+            Assert.AreEqual(body, tags.Body, "body");
+            Assert.AreEqual(lod, tags.Lod, "LOD");
+            Assert.AreEqual(collision, tags.IsCollision, "collision");
+            Assert.AreEqual(hull, tags.Hull, "hull");
+            Assert.AreEqual(pipeline, string.Join(" ", tags.PipelineTags), "pipeline");
+            Assert.AreEqual(instance, tags.Instance, "instance");
+        }
+
         [Test]
         public void ParseTags_ReadsAgainstTheGivenVocabulary()
         {

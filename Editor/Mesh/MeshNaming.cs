@@ -122,9 +122,11 @@ namespace SashaRX.UnityMeshLab
 
         // ── Name tags ──
 
-        static readonly Regex InstanceSuffix = new Regex(@"^(.*?)(\.\d+)?$", RegexOptions.Compiled | RegexOptions.Singleline, MatchTimeout);
+        // The trailing layers a name can carry, in any order: Chair_wc_repack_LOD0, Seat_LOD0.001_wc.
+        static readonly Regex InstanceTail = new Regex(@"\.\d+$", RegexOptions.Compiled, MatchTimeout);
         static readonly Regex PipelineTag = new Regex(@"_(wc|repack|uvTransfer|optimized)$", RegexOptions.Compiled, MatchTimeout);
-        static readonly Regex HullSuffix = new Regex(@"[_\-\s]+COL_Hull(\d+)$", Ci, MatchTimeout);
+        static readonly Regex LodTail = new Regex(@"[_\-\s]+LOD(\d+)$", Ci, MatchTimeout);
+        static readonly Regex HullSuffix = new Regex(@"^[_\-\s]+COL_Hull(\d+)$", Ci, MatchTimeout);
         static readonly Regex WordSeparators = new Regex(@"[_\-\s.]+", RegexOptions.Compiled, MatchTimeout);
         // camelCase, ABBRWord and letter/digit boundaries: "BaseAtlas01" → Base Atlas 01, "UVMap" → UV Map.
         static readonly Regex WordBoundaries = new Regex(@"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])|(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])",
@@ -221,27 +223,32 @@ namespace SashaRX.UnityMeshLab
             if (string.IsNullOrEmpty(name)) return tags;
             vocabulary = vocabulary ?? Vocabulary.Default;
 
-            var instance = InstanceSuffix.Match(name);
-            string core = instance.Groups[1].Value;
-            if (instance.Groups[2].Success) tags.Instance = instance.Groups[2].Value;
-
+            // Peel the trailing layers one at a time, whatever their order. LOD before collision:
+            // a _COL_* form would take a LOD suffix after it as part of its own word.
+            string core = name;
             var pipeline = new System.Collections.Generic.List<string>();
-            for (var tag = PipelineTag.Match(core); tag.Success; tag = PipelineTag.Match(core))
+            for (bool peeled = true; peeled && core.Length > 0;)
             {
-                pipeline.Insert(0, tag.Groups[1].Value);
-                core = core.Substring(0, tag.Index);
+                Match layer;
+                if ((layer = InstanceTail.Match(core)).Success) { if (tags.Instance == null) tags.Instance = layer.Value; }
+                else if ((layer = PipelineTag.Match(core)).Success) pipeline.Insert(0, layer.Groups[1].Value);
+                else if ((layer = LodTail.Match(core)).Success)
+                {
+                    if (tags.Lod < 0 && int.TryParse(layer.Groups[1].Value, out int lod) && lod < MaxLodLevels) tags.Lod = lod;
+                }
+                else if ((layer = CollisionSuffix.Match(core)).Success)
+                {
+                    tags.IsCollision = true;
+                    var hull = HullSuffix.Match(layer.Value);
+                    if (tags.Hull < 0 && hull.Success && int.TryParse(hull.Groups[1].Value, System.Globalization.NumberStyles.None,
+                            System.Globalization.CultureInfo.InvariantCulture, out int hullIndex)) tags.Hull = hullIndex;
+                }
+                peeled = layer.Success && layer.Length > 0;
+                if (peeled) core = core.Substring(0, layer.Index);
             }
             tags.PipelineTags = pipeline.ToArray();
 
-            tags.IsCollision = IsCollision(core);
-            var hull = HullSuffix.Match(core);
-            if (hull.Success && int.TryParse(hull.Groups[1].Value, System.Globalization.NumberStyles.None,
-                    System.Globalization.CultureInfo.InvariantCulture, out int hullIndex)) tags.Hull = hullIndex;
-            string asset = tags.IsCollision ? StripCollision(core) : core;
-            tags.Lod = LodIndex(asset);
-
-            // Every collision form, then the LOD and collision suffixes GroupKey pairs (Wall_LOD1_COL).
-            tags.ClassPrefix = vocabulary.SplitClassPrefix(GroupKey(asset), out string body);
+            tags.ClassPrefix = vocabulary.SplitClassPrefix(core, out string body);
             tags.Body = body;
             tags.Words = WordSeparators.Split(body).Where(part => part.Length > 0)
                 .SelectMany(part => WordBoundaries.Split(part)).Where(word => word.Length > 0).ToArray();
