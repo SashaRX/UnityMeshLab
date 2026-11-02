@@ -238,6 +238,13 @@ namespace SashaRX.UnityMeshLab
         internal static bool HasTransformAnimation(FbxNode node)
             => Animated(node.LclTranslation) || Animated(node.LclRotation) || Animated(node.LclScaling);
 
+        /// <summary>
+        /// Whether any curve drives the node's local translation, rotation or scaling, even one
+        /// that only holds the value: a reset of the transform would leave it restoring the old one.
+        /// </summary>
+        internal static bool HasTransformCurves(FbxNode node)
+            => node.LclTranslation.GetSrcObjectCount() > 0 || node.LclRotation.GetSrcObjectCount() > 0 || node.LclScaling.GetSrcObjectCount() > 0;
+
         // Curves this cannot read (another stack or layer than the current one) count as animation.
         static bool Animated(FbxPropertyDouble3 property)
         {
@@ -369,6 +376,26 @@ namespace SashaRX.UnityMeshLab
         }
 
         // ── Transforms ──
+
+        /// <summary>
+        /// Makes <paramref name="node"/>'s local transform identity: translation, rotation and
+        /// scaling, their offsets and pivots, pre- and post-rotation. Its geometric transform
+        /// and inherit type stay, so its mesh maps to its import as before.
+        /// </summary>
+        internal static void ResetTransform(FbxNode node)
+        {
+            const FbxNode.EPivotSet pivot = FbxNode.EPivotSet.eSourcePivot;
+            var none = new FbxVector4(0, 0, 0, 0);
+            node.LclTranslation.Set(new FbxDouble3(0, 0, 0));
+            node.LclRotation.Set(new FbxDouble3(0, 0, 0));
+            node.LclScaling.Set(new FbxDouble3(1, 1, 1));
+            node.SetRotationOffset(pivot, none);
+            node.SetRotationPivot(pivot, none);
+            node.SetPreRotation(pivot, none);
+            node.SetPostRotation(pivot, none);
+            node.SetScalingOffset(pivot, none);
+            node.SetScalingPivot(pivot, none);
+        }
 
         static void CopyTransform(FbxNode from, FbxNode to, bool geometric)
         {

@@ -1374,6 +1374,8 @@ namespace SashaRX.UnityMeshLab
                 }
             }
 
+            DrawCollisionOffsetBake(root, colObjects);
+
             // Action buttons
             EditorGUILayout.Space(4);
             var bgc = GUI.backgroundColor;
@@ -1437,6 +1439,27 @@ namespace SashaRX.UnityMeshLab
 
             GUI.backgroundColor = bgc;
             EditorGUILayout.EndHorizontal();
+        }
+
+        // Collision nodes off the root's placement: their collider cannot go on the root. When the
+        // model is an FBX, its offsets can be baked into the meshes in the file itself.
+        static void DrawCollisionOffsetBake(Transform root, List<GameObject> colObjects)
+        {
+            var offset = colObjects.Where(c => c != null && MeshNaming.IsCollision(c.name) && c.GetComponent<MeshFilter>() != null
+                && LodHierarchy.OffsetFromRoot(root, c.transform) != null).ToList();
+            if (offset.Count == 0) return;
+            EditorGUILayout.HelpBox($"{string.Join(", ", offset.Select(c => c.name))} sit{(offset.Count == 1 ? "s" : "")} off the root's placement: "
+                + "its mesh on the root's MeshCollider would land elsewhere. Give the collision node its own collider (Cleanup does), "
+                + "or bake the offset into the FBX.", MessageType.Info);
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+            var source = PrefabUtility.GetCorrespondingObjectFromOriginalSource(root.gameObject);
+            string fbxPath = source != null ? AssetDatabase.GetAssetPath(source) : null;
+            if (string.IsNullOrEmpty(fbxPath) || !fbxPath.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase)) return;
+            if (GUILayout.Button(new GUIContent("Bake Collision Offsets into FBX",
+                    "Writes each such collision node at the root's placement, its mesh where it lies, in the FBX itself (no mesh copies). "
+                    + "The edited file is imported once and checked before it replaces the original.")))
+                FbxCollisionPlacement.BakeOffsets(fbxPath);
+#endif
         }
 
         // A mesh from a node off the root's placement is refused: on the root it would land elsewhere.

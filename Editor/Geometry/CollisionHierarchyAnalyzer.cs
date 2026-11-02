@@ -27,6 +27,27 @@ namespace SashaRX.UnityMeshLab
             return parts.Count == 0 ? "." : string.Join("/", parts);
         }
 
+        /// <summary>The node at <paramref name="path"/> (as <see cref="RelativePath"/> writes it) below <paramref name="root"/>; null when there is none.</summary>
+        internal static Transform Find(Transform root, string path)
+        {
+            if (root == null || string.IsNullOrEmpty(path)) return null;
+            if (path == ".") return root;
+            var node = root;
+            foreach (string part in path.Split('/'))
+            {
+                Transform next = null;
+                for (int i = 0, seen = 0; i < node.childCount && next == null; i++)
+                {
+                    var child = node.GetChild(i);
+                    if (PathPart(child.name, seen) == part) next = child;
+                    else if (part.StartsWith(System.Uri.EscapeDataString(child.name) + "[", System.StringComparison.Ordinal)) seen++;
+                }
+                if (next == null) return null;
+                node = next;
+            }
+            return node;
+        }
+
         internal static string PathPart(string name, int ordinal)
             => $"{System.Uri.EscapeDataString(name)}[{ordinal}]";
 
