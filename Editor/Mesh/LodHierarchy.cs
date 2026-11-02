@@ -340,7 +340,7 @@ namespace SashaRX.UnityMeshLab
 
         // ── the collider ──
 
-        /// <summary>How far a placement may lie from the root's: metres for the position, matrix entries for rotation and scale.</summary>
+        /// <summary>How far a placement may lie from the root's: world metres for the position, matrix entries for rotation and scale.</summary>
         const float PlacementTolerance = 1e-4f;
 
         /// <summary>
@@ -351,25 +351,29 @@ namespace SashaRX.UnityMeshLab
         internal static string OffsetFromRoot(Transform root, Transform node)
         {
             var m = root.worldToLocalMatrix * node.localToWorldMatrix;
-            bool at = true;
+            // The position apart, in world metres: a scaled root scales its local units.
+            bool at = root.TransformVector(m.GetColumn(3)).magnitude <= PlacementTolerance;
             for (int r = 0; r < 3 && at; r++)
-                for (int c = 0; c < 4 && at; c++)
+                for (int c = 0; c < 3 && at; c++)
                     at = Mathf.Abs(m[r, c] - (r == c ? 1f : 0f)) <= PlacementTolerance;
             if (at) return null;
             Vector3 p = m.GetColumn(3), e = m.rotation.eulerAngles, s = m.lossyScale;
             return $"position ({p.x:F3}, {p.y:F3}, {p.z:F3}), rotation ({e.x:F1}, {e.y:F1}, {e.z:F1}), scale ({s.x:F3}, {s.y:F3}, {s.z:F3})";
         }
 
-        /// <summary>Whether the root or one of its collision nodes has a MeshCollider.</summary>
+        /// <summary>Whether the root, or one of its active collision nodes with an enabled one, has a MeshCollider.</summary>
         internal static bool HasCollisionCollider(GameObject root)
             => root != null && (root.GetComponent<MeshCollider>() != null
-                || MeshHygieneUtility.FindCollisionObjects(root.transform).Any(o => o.GetComponent<MeshCollider>() != null));
+                || MeshHygieneUtility.FindCollisionObjects(root.transform).Any(o =>
+                    o.activeInHierarchy && o.TryGetComponent(out MeshCollider c) && c.enabled));
 
         /// <summary>
         /// Gives the first collision child that carries a mesh a MeshCollider over it and
         /// disables that child's renderer: on the root when the child sits at the root's
-        /// placement, else on the child itself, where its mesh lies. Null when the root or a
-        /// collision child already has a MeshCollider, or no collision child carries a mesh.
+        /// placement, else on the child itself, where its mesh lies (activated when it alone
+        /// is inactive; skipped, with a warning, under an inactive node). Null when the root
+        /// or an active collision child already has a MeshCollider, or no collision child
+        /// carries a mesh it can take.
         /// </summary>
         internal static MeshCollider AddColliderFromCollisionMesh(GameObject root)
         {
@@ -379,7 +383,23 @@ namespace SashaRX.UnityMeshLab
                 var mf = colObj.GetComponent<MeshFilter>();
                 if (mf == null || mf.sharedMesh == null) continue;
                 string offset = OffsetFromRoot(root.transform, colObj.transform);
-                var collider = Undo.AddComponent<MeshCollider>(offset == null ? root : colObj);
+                if (offset != null && !colObj.activeInHierarchy)
+                {
+                    var parent = colObj.transform.parent;
+                    if (parent != null && !parent.gameObject.activeInHierarchy)
+                    {
+                        UvtLog.Warn($"{colObj.name} sits off {root.name}'s placement under an inactive node, so a collider on it would not collide; "
+                            + "activate that node, or bake its offset into the FBX.");
+                        continue;
+                    }
+                    Undo.RecordObject(colObj, "Activate COL");
+                    colObj.SetActive(true);
+                }
+                var host = offset == null ? root : colObj;
+                var collider = host.GetComponent<MeshCollider>();
+                if (collider == null) collider = Undo.AddComponent<MeshCollider>(host);
+                else Undo.RecordObject(collider, "Assign Collision Mesh");
+                collider.enabled = true;
                 collider.sharedMesh = mf.sharedMesh;
                 UvtLog.Info(offset == null
                     ? $"Added MeshCollider to {root.name} from {colObj.name}"

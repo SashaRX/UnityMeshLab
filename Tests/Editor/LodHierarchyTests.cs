@@ -264,6 +264,42 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void AnInactiveOffsetCollisionNodeIsActivatedForItsCollider()
+        {
+            var root = Node("Bench", null);
+            var col = Node("Seat_COL", root.transform, Tris(2));
+            col.transform.localPosition = Vector3.right;
+            var oldCollider = col.AddComponent<MeshCollider>();
+            col.SetActive(false);
+            Assert.IsFalse(LodHierarchy.HasCollisionCollider(root), "an inactive collider does not collide");
+            Assert.AreSame(oldCollider, LodHierarchy.AddColliderFromCollisionMesh(root), "its own collider is reused");
+            Assert.IsTrue(col.activeSelf); Assert.IsTrue(LodHierarchy.HasCollisionCollider(root));
+        }
+
+        [Test]
+        public void AnOffsetCollisionNodeUnderAnInactiveGroupIsSkipped()
+        {
+            var root = Node("Bench", null);
+            var group = Node("Group", root.transform);
+            var nested = Node("Back_COL", group.transform, Tris(1));
+            nested.transform.localPosition = Vector3.up;
+            group.SetActive(false);
+            Assert.IsNull(LodHierarchy.AddColliderFromCollisionMesh(root));
+            Assert.IsNull(nested.GetComponent<MeshCollider>());
+            Assert.IsFalse(group.activeSelf, "an inactive group is not switched on");
+        }
+
+        [Test]
+        public void TheOffsetIsMeasuredInWorldMetresUnderAScaledRoot()
+        {
+            var root = Node("Bench", null);
+            root.transform.localScale = Vector3.one * 100f;
+            var col = Node("Bench_COL", root.transform, Tris(1));
+            col.transform.localPosition = new Vector3(5e-5f, 0, 0);
+            Assert.IsNotNull(LodHierarchy.OffsetFromRoot(root.transform, col.transform), "5 mm in the world");
+        }
+
+        [Test]
         public void ACollisionNodeAtTheRootsPlacementGivesTheRootItsCollider()
         {
             var root = Node("Bench", null);
