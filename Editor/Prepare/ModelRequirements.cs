@@ -60,6 +60,25 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Each render mesh of an FBX carries smoothing groups.</summary>
         public RequirementLevel smoothingGroups = RequirementLevel.Error;
 
+        // ── LODs, limits, names ──
+
+        /// <summary>A render mesh with more than <see cref="maxVertices"/> vertices (65535: 16-bit indices).</summary>
+        public RequirementLevel vertexLimit = RequirementLevel.Error;
+        public int maxVertices = 65535;
+
+        /// <summary>A part's LOD with at least as many triangles as the LOD before it.</summary>
+        public RequirementLevel lodReduction = RequirementLevel.Error;
+
+        /// <summary>A part's LOD keeping more than <see cref="maxLodRatio"/> of the triangles of the LOD before it.</summary>
+        public RequirementLevel lodRatio = RequirementLevel.Warning;
+        public float maxLodRatio = .8f;
+
+        /// <summary>A part missing a LOD level that it or another part has, or a LOD past the eight a LODGroup holds.</summary>
+        public RequirementLevel lodChain = RequirementLevel.Warning;
+
+        /// <summary>Sibling nodes with one name: steps that pair nodes by name cannot tell them apart.</summary>
+        public RequirementLevel duplicateNames = RequirementLevel.Warning;
+
         internal static ModelRequirements Default => new ModelRequirements();
     }
 }
