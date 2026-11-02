@@ -91,10 +91,24 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Size_MeasuresASkinnedModelToo()
+        {
+            var root = new GameObject("Hero"); owned.Add(root);
+            var body = new GameObject("Body"); body.transform.SetParent(root.transform, false);
+            body.transform.localScale = Vector3.one * 300f;
+            var mesh = new Mesh {name = "Body", vertices = new[] {Vector3.zero, Vector3.right, Vector3.up}, triangles = new[] {0, 1, 2}};
+            mesh.RecalculateBounds(); owned.Add(mesh);
+            body.AddComponent<SkinnedMeshRenderer>().sharedMesh = mesh;
+            Assert.AreEqual(300f, ModelFileChecks.RenderSize(root).Value, 1e-2f);
+        }
+
+        [Test]
         public void Smoothing_ListsTheRenderMeshesWithoutIt()
         {
             var smoothing = new Dictionary<string, bool> {{"Seat", false}, {"Base", true}, {"Seat_COL", false}, {"Back", false}};
             CollectionAssert.AreEqual(new[] {"Back", "Seat"}, ModelFileChecks.WithoutSmoothing(smoothing));
+            CollectionAssert.AreEqual(new[] {"Seat"}, ModelFileChecks.WithoutSmoothing(smoothing, new[] {"Back"}),
+                "a mesh the model uses for collision alone, whatever its name");
         }
 
         [Test]

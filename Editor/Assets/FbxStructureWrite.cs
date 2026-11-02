@@ -718,15 +718,7 @@ namespace SashaRX.UnityMeshLab
                 file, relative, uvSet);
         }
 
-        // An asset path (or a path outside the project) as a full path on disk: a package's
-        // assets resolve to the package's folder.
-        static string PhysicalPath(string path)
-        {
-            var package = UnityEditor.PackageManager.PackageInfo.FindForAssetPath(path);
-            if (package != null && !string.IsNullOrEmpty(package.resolvedPath) && path.StartsWith(package.assetPath + "/", StringComparison.Ordinal))
-                path = System.IO.Path.Combine(package.resolvedPath, path.Substring(package.assetPath.Length + 1));
-            return System.IO.Path.GetFullPath(path).Replace('\\', '/');
-        }
+        static string PhysicalPath(string path) => AssetFilePath.Physical(path);
 
         // The texture the shader declares as its main one ([MainTexture]), else the first of the
         // common base-colour names. material.mainTexture would log an error on a shader with neither.

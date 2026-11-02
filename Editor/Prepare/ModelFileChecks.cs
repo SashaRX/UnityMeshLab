@@ -91,16 +91,20 @@ namespace SashaRX.UnityMeshLab
                     $"the model is {F(size.Value)} m at its largest, outside {F(requirements.minSize)}–{F(requirements.maxSize)} m; check the units");
         }
 
-        /// <summary>The largest extent of the bounds of every render (not collision) mesh in the root's space; null without one.</summary>
+        /// <summary>
+        /// The largest extent of the bounds of every render (not collision) mesh, static or
+        /// skinned (in its bind pose), in the root's space; null without one.
+        /// </summary>
         internal static float? RenderSize(GameObject root)
         {
             Bounds? all = null;
             var toRoot = root.transform.worldToLocalMatrix;
-            foreach (var filter in root.GetComponentsInChildren<MeshFilter>(true))
+            var meshes = root.GetComponentsInChildren<MeshFilter>(true).Select(f => (node: f.transform, mesh: f.sharedMesh))
+                .Concat(root.GetComponentsInChildren<SkinnedMeshRenderer>(true).Select(r => (node: r.transform, mesh: r.sharedMesh)));
+            foreach (var (node, mesh) in meshes)
             {
-                var mesh = filter.sharedMesh;
-                if (mesh == null || MeshNaming.IsCollision(filter.name) || MeshNaming.IsCollision(mesh.name)) continue;
-                var bounds = MeshGeometry.TransformBounds(mesh.bounds, toRoot * filter.transform.localToWorldMatrix);
+                if (mesh == null || MeshNaming.IsCollision(node.name) || MeshNaming.IsCollision(mesh.name)) continue;
+                var bounds = MeshGeometry.TransformBounds(mesh.bounds, toRoot * node.localToWorldMatrix);
                 if (all is Bounds b) { b.Encapsulate(bounds); all = b; } else all = bounds;
             }
             if (all == null) return null;
@@ -108,28 +112,35 @@ namespace SashaRX.UnityMeshLab
             return Mathf.Max(extent.x, Mathf.Max(extent.y, extent.z));
         }
 
-        /// <summary>The FBX meshes without smoothing groups, from the file at <paramref name="assetPath"/>.</summary>
-        internal static void CheckSmoothing(string assetPath, ModelRequirements requirements, PrepareReport report)
+        /// <summary>
+        /// The FBX meshes without smoothing groups, from the file at <paramref name="assetPath"/>.
+        /// <paramref name="collisionOnly"/> names the meshes the model uses for collision alone
+        /// (a <c>_COL</c> node's mesh of any name), which need none.
+        /// </summary>
+        internal static void CheckSmoothing(string assetPath, ModelRequirements requirements, PrepareReport report, ICollection<string> collisionOnly = null)
         {
             if (requirements.smoothingGroups == RequirementLevel.Off
                 || !assetPath.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase)) return;
             Dictionary<string, bool> smoothing;
-            try { smoothing = FbxUvSetNames.ReadLayers(Path.GetFullPath(assetPath)).smoothing; }
+            try { smoothing = FbxUvSetNames.ReadLayers(AssetFilePath.Physical(assetPath)).smoothing; }
             catch (Exception error) when (error is IOException || error is UnauthorizedAccessException
                 || error is ArgumentException || error is IndexOutOfRangeException)
             {
                 report.Add(PrepareLevel.Warning, assetPath, "Smoothing groups", $"the file could not be read: {error.Message}");
                 return;
             }
-            var missing = WithoutSmoothing(smoothing);
+            var missing = WithoutSmoothing(smoothing, collisionOnly);
             if (missing.Count > 0)
                 report.Add(requirements.smoothingGroups, assetPath, "Smoothing groups",
                     $"{MeshValidation.Plural(missing.Count, "mesh has", "meshes have")} no smoothing groups in the FBX: {List(missing.Select(n => $"'{n}'").ToList())}; export with smoothing groups");
         }
 
-        /// <summary>The render meshes (not collision) whose geometry has no smoothing element, by name.</summary>
-        internal static List<string> WithoutSmoothing(Dictionary<string, bool> smoothing) => smoothing
-            .Where(kv => !kv.Value && !MeshNaming.IsCollision(kv.Key))
+        /// <summary>
+        /// The render meshes whose geometry has no smoothing element, by name: neither named as
+        /// collision nor in <paramref name="collisionOnly"/>.
+        /// </summary>
+        internal static List<string> WithoutSmoothing(Dictionary<string, bool> smoothing, ICollection<string> collisionOnly = null) => smoothing
+            .Where(kv => !kv.Value && !MeshNaming.IsCollision(kv.Key) && !(collisionOnly?.Contains(kv.Key) ?? false))
             .Select(kv => kv.Key)
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToList();

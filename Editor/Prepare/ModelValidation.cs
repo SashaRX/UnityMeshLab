@@ -33,7 +33,8 @@ namespace SashaRX.UnityMeshLab
             }
             if (AssetImporter.GetAtPath(assetPath) is ModelImporter importer)
                 ModelFileChecks.CheckImporter(importer, assetPath, requirements, report);
-            ModelFileChecks.CheckSmoothing(assetPath, requirements, report);
+            var collisionOnly = new HashSet<string>(Uses(root).Where(u => !u.render).Select(u => u.mesh.name), StringComparer.Ordinal);
+            ModelFileChecks.CheckSmoothing(assetPath, requirements, report, collisionOnly);
             Validate(root, requirements, report, includeRootScale: true);
             return report;
         }
