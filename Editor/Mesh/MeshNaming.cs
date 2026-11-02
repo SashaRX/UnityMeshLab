@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Text.RegularExpressions;
 
 namespace SashaRX.UnityMeshLab
@@ -118,5 +119,134 @@ namespace SashaRX.UnityMeshLab
         /// order), the base a generated LOD is named from.
         /// </summary>
         public static string StripPipelineSuffixes(string name) => string.IsNullOrEmpty(name) ? name : PipelineSuffixes.Replace(name, "");
+
+        // ── Name tags ──
+
+        static readonly Regex InstanceSuffix = new Regex(@"^(.*?)(\.\d+)?$", RegexOptions.Compiled | RegexOptions.Singleline, MatchTimeout);
+        static readonly Regex PipelineTag = new Regex(@"_(wc|repack|uvTransfer|optimized)$", RegexOptions.Compiled, MatchTimeout);
+        static readonly Regex HullSuffix = new Regex(@"[_\-\s]+COL_Hull(\d+)$", Ci, MatchTimeout);
+        static readonly Regex WordSeparators = new Regex(@"[_\-\s.]+", RegexOptions.Compiled, MatchTimeout);
+        // camelCase, ABBRWord and letter/digit boundaries: "BaseAtlas01" → Base Atlas 01, "UVMap" → UV Map.
+        static readonly Regex WordBoundaries = new Regex(@"(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])|(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])",
+            RegexOptions.Compiled, MatchTimeout);
+
+        /// <summary>
+        /// The words a name tag is read against: the class prefixes an asset name starts with,
+        /// and the keywords that name a surface. A word names a surface when it starts with one
+        /// of its keywords, case-insensitively ("Wood", "Wooden", "wood"); a keyword inside a
+        /// word ("Textile") does not count.
+        /// </summary>
+        internal sealed class Vocabulary
+        {
+            /// <summary>Static and skeletal mesh prefixes, and the reference surfaces: wood, concrete, metal, glass, plastic, tile, cardboard.</summary>
+            public static readonly Vocabulary Default = new Vocabulary(new[] {"SM", "SK"}, new[]
+            {
+                ("wood", "Wood"), ("concrete", "Concrete"), ("metal", "Metal"), ("glass", "Glass"),
+                ("plastic", "Plastic"), ("tile", "Tile"), ("cardboard", "Cardboard"),
+            });
+
+            /// <summary>Class prefixes in canonical case, without their separator ("SM").</summary>
+            public readonly string[] ClassPrefixes;
+            /// <summary>Keyword → surface, tried in order; the first keyword a word starts with names its surface.</summary>
+            public readonly (string keyword, string surface)[] SurfaceKeywords;
+            readonly Regex classPrefix;
+
+            public Vocabulary(string[] classPrefixes, (string keyword, string surface)[] surfaceKeywords)
+            {
+                ClassPrefixes = (classPrefixes ?? Array.Empty<string>()).Where(p => !string.IsNullOrEmpty(p)).ToArray();
+                SurfaceKeywords = (surfaceKeywords ?? Array.Empty<(string, string)>())
+                    .Where(k => !string.IsNullOrEmpty(k.keyword) && !string.IsNullOrEmpty(k.surface)).ToArray();
+                classPrefix = ClassPrefixes.Length == 0 ? null : new Regex(
+                    "^(" + string.Join("|", ClassPrefixes.Select(Regex.Escape)) + @")[_\-\s]+", Ci, MatchTimeout);
+            }
+
+            /// <summary>The class prefix the name starts with, in its canonical case, and the name after it and its separator.</summary>
+            internal string SplitClassPrefix(string name, out string rest)
+            {
+                rest = name;
+                var match = classPrefix?.Match(name);
+                if (match == null || !match.Success || match.Length == name.Length) return null;
+                rest = name.Substring(match.Length);
+                return ClassPrefixes.First(p => string.Equals(p, match.Groups[1].Value, StringComparison.OrdinalIgnoreCase));
+            }
+
+            /// <summary>The surface a word names, or null.</summary>
+            internal string SurfaceOf(string word)
+            {
+                foreach (var (keyword, surface) in SurfaceKeywords)
+                    if (word.StartsWith(keyword, StringComparison.OrdinalIgnoreCase)) return surface;
+                return null;
+            }
+        }
+
+        /// <summary>What an asset or node name says, as <see cref="ParseTags"/> reads it.</summary>
+        internal sealed class Tags
+        {
+            /// <summary>The name as given.</summary>
+            public string Name = "";
+            /// <summary>The class prefix in canonical case ("SM", "SK"), or null.</summary>
+            public string ClassPrefix;
+            /// <summary>The name without class prefix, LOD, collision and pipeline suffixes and instance number: "University_Bench_Straight _Seat_Wood".</summary>
+            public string Body = "";
+            /// <summary>The words of <see cref="Body"/>, split at separators, case changes and digits.</summary>
+            public string[] Words = Array.Empty<string>();
+            /// <summary>The surfaces the words name, in name order, each once.</summary>
+            public string[] Surfaces = Array.Empty<string>();
+            /// <summary>The LOD index (0 to <see cref="MaxLodLevels"/> - 1), or -1.</summary>
+            public int Lod = -1;
+            /// <summary>Whether the name is a collision node or mesh (<see cref="IsCollision"/>).</summary>
+            public bool IsCollision;
+            /// <summary>N of a <c>_COL_Hull{N}</c> suffix, or -1.</summary>
+            public int Hull = -1;
+            /// <summary>The pipeline suffixes the transfer tools append (wc, repack, uvTransfer, optimized), in name order.</summary>
+            public string[] PipelineTags = Array.Empty<string>();
+            /// <summary>The numeric instance suffix a DCC appends (".001"), or null.</summary>
+            public string Instance;
+
+            /// <summary>The first surface the name names, or null.</summary>
+            public string Surface => Surfaces.Length > 0 ? Surfaces[0] : null;
+        }
+
+        /// <summary>
+        /// Reads the tags of an asset or node name: the class prefix it starts with
+        /// (<paramref name="vocabulary"/>, <see cref="Vocabulary.Default"/> when null), its LOD
+        /// and collision suffixes, the pipeline suffixes and instance number the tools and DCCs
+        /// append, and the words of what is left with the surfaces they name. Separators are
+        /// <c>_</c>, <c>-</c>, whitespace and dots, so "University_Bench_Straight _Seat_Wood_COL"
+        /// reads as a collision node of the words University Bench Straight Seat Wood, surface Wood.
+        /// </summary>
+        public static Tags ParseTags(string name, Vocabulary vocabulary = null)
+        {
+            var tags = new Tags {Name = name ?? ""};
+            if (string.IsNullOrEmpty(name)) return tags;
+            vocabulary = vocabulary ?? Vocabulary.Default;
+
+            var instance = InstanceSuffix.Match(name);
+            string core = instance.Groups[1].Value;
+            if (instance.Groups[2].Success) tags.Instance = instance.Groups[2].Value;
+
+            var pipeline = new System.Collections.Generic.List<string>();
+            for (var tag = PipelineTag.Match(core); tag.Success; tag = PipelineTag.Match(core))
+            {
+                pipeline.Insert(0, tag.Groups[1].Value);
+                core = core.Substring(0, tag.Index);
+            }
+            tags.PipelineTags = pipeline.ToArray();
+
+            tags.IsCollision = IsCollision(core);
+            var hull = HullSuffix.Match(core);
+            if (hull.Success && int.TryParse(hull.Groups[1].Value, System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out int hullIndex)) tags.Hull = hullIndex;
+            string asset = tags.IsCollision ? StripCollision(core) : core;
+            tags.Lod = LodIndex(asset);
+
+            // Every collision form, then the LOD and collision suffixes GroupKey pairs (Wall_LOD1_COL).
+            tags.ClassPrefix = vocabulary.SplitClassPrefix(GroupKey(asset), out string body);
+            tags.Body = body;
+            tags.Words = WordSeparators.Split(body).Where(part => part.Length > 0)
+                .SelectMany(part => WordBoundaries.Split(part)).Where(word => word.Length > 0).ToArray();
+            tags.Surfaces = tags.Words.Select(vocabulary.SurfaceOf).Where(surface => surface != null).Distinct().ToArray();
+            return tags;
+        }
     }
 }
