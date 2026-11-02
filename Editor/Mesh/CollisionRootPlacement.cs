@@ -30,16 +30,18 @@ namespace SashaRX.UnityMeshLab
         /// <summary>
         /// Puts each listed collision node of the imported model at the root's placement: its
         /// meshes take the positions they have in the root's space and its transforms are reset.
-        /// One that no longer qualifies is named in a warning and left as it is.
+        /// One that no longer qualifies, or that the import's clips animate (<paramref name="animated"/>,
+        /// their transform paths), is named in a warning and left as it is.
         /// </summary>
-        internal static void ApplyOnImport(GameObject root, IList<string> paths, string modelPath)
+        internal static void ApplyOnImport(GameObject root, IList<string> paths, string modelPath, ICollection<string> animated = null)
         {
             if (root == null || paths == null || paths.Count == 0) return;
             var users = MeshUsers(root);
             foreach (string path in paths)
             {
                 var node = CollisionHierarchyAnalyzer.Find(root.transform, path);
-                string problem = node == null ? "is not in the model" : Refusal(root.transform, node, users) ?? UnreadableMesh(node);
+                string problem = node == null ? "is not in the model"
+                    : Refusal(root.transform, node, users) ?? CurveRefusal(root.transform, node, animated) ?? UnreadableMesh(node);
                 if (problem != null)
                 {
                     UvtLog.Warn($"[Collision] '{modelPath}': '{CollisionHierarchyAnalyzer.NodeName(path)}' {problem}; the sidecar does not place it at the root.");
@@ -88,15 +90,17 @@ namespace SashaRX.UnityMeshLab
             return mesh != null ? $"has '{mesh.name}' unreadable" : null;
         }
 
+        // How many renderers (static or skinned) show each mesh of the model.
         static Dictionary<Mesh, int> MeshUsers(GameObject root)
         {
             var users = new Dictionary<Mesh, int>();
-            foreach (var filter in root.GetComponentsInChildren<MeshFilter>(true))
-                if (filter.sharedMesh != null)
-                {
-                    users.TryGetValue(filter.sharedMesh, out int count);
-                    users[filter.sharedMesh] = count + 1;
-                }
+            var meshes = root.GetComponentsInChildren<MeshFilter>(true).Select(f => f.sharedMesh)
+                .Concat(root.GetComponentsInChildren<SkinnedMeshRenderer>(true).Select(s => s.sharedMesh));
+            foreach (var mesh in meshes.Where(m => m != null))
+            {
+                users.TryGetValue(mesh, out int count);
+                users[mesh] = count + 1;
+            }
             return users;
         }
 
@@ -147,13 +151,13 @@ namespace SashaRX.UnityMeshLab
         {
             var paths = new HashSet<string>(StringComparer.Ordinal);
             foreach (var clip in AssetDatabase.LoadAllAssetRepresentationsAtPath(fbxPath).OfType<AnimationClip>())
-            {
-                if (clip.name.StartsWith("__preview__", StringComparison.Ordinal)) continue;
-                foreach (var binding in AnimationUtility.GetCurveBindings(clip))
-                    if (binding.type == typeof(Transform)) paths.Add(binding.path);
-            }
+                if (!clip.name.StartsWith("__preview__", StringComparison.Ordinal)) paths.UnionWith(TransformPaths(clip));
             return paths;
         }
+
+        /// <summary>The transform paths <paramref name="clip"/> has curves on.</summary>
+        internal static IEnumerable<string> TransformPaths(AnimationClip clip)
+            => AnimationUtility.GetCurveBindings(clip).Where(b => b.type == typeof(Transform)).Select(b => b.path);
 
         // ── Place and clear ──
 

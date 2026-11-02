@@ -196,9 +196,27 @@ namespace SashaRX.UnityMeshLab
             return changed;
         }
 
+        /// <summary>
+        /// The transform paths each model's clips animate in its current import (sidecar mode, a
+        /// sidecar placing collision at the root): a node they move is not placed. Clips are
+        /// postprocessed before the model.
+        /// </summary>
+        static readonly Dictionary<string, HashSet<string>> animatedPaths = new Dictionary<string, HashSet<string>>(System.StringComparer.Ordinal);
+
+        void OnPostprocessAnimation(GameObject root, AnimationClip clip)
+        {
+            if (bypassPaths.Contains(assetPath) || !PostprocessorDefineManager.IsEnabled()) return;
+            var placed = SidecarStore.Load(assetPath)?.collisionAtRoot;
+            if (placed == null || placed.Count == 0) return;
+            if (!animatedPaths.TryGetValue(assetPath, out var paths)) animatedPaths[assetPath] = paths = new HashSet<string>(System.StringComparer.Ordinal);
+            paths.UnionWith(CollisionRootPlacement.TransformPaths(clip));
+        }
+
         void OnPostprocessModel(GameObject root)
         {
             string modelPath = assetPath;
+            animatedPaths.TryGetValue(modelPath, out var animated);
+            animatedPaths.Remove(modelPath);
 
             // Bypass: ApplyUv2ToFbx needs the raw FBX mesh without any modifications.
             if (bypassPaths.Remove(modelPath))
@@ -207,11 +225,17 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
 
-            // Sidecar mode: collision nodes the sidecar puts at the root's placement (the FBX keeps
-            // their offset). Every import, FBX overwrites included: the file never has it.
-            if (PostprocessorDefineManager.IsEnabled())
-                CollisionRootPlacement.ApplyOnImport(root, SidecarStore.Load(modelPath)?.collisionAtRoot, modelPath);
+            ReplaySidecar(root, modelPath);
 
+            // Sidecar mode: collision nodes the sidecar puts at the root's placement (the FBX keeps
+            // their offset). Every import, FBX overwrites included: the file never has it. After
+            // the replay, which may write a mesh's stored positions.
+            if (PostprocessorDefineManager.IsEnabled())
+                CollisionRootPlacement.ApplyOnImport(root, SidecarStore.Load(modelPath)?.collisionAtRoot, modelPath, animated);
+        }
+
+        void ReplaySidecar(GameObject root, string modelPath)
+        {
             // FBX overwrite: UV2 is already baked into the FBX — skip sidecar application
             // to avoid corrupting the mesh with stale remap data from the old topology.
             if (fbxOverwritePaths.Remove(modelPath))

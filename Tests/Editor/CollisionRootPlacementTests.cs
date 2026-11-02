@@ -84,6 +84,23 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void ApplyOnImport_LeavesANodeTheClipsAnimateOrWhoseMeshASkinnedRendererShows()
+        {
+            var root = new GameObject("Bench"); owned.Add(root);
+            var animated = Node(root.transform, "Seat_COL", Box("Seat_COL"), new Vector3(.4f, 0, 0), Quaternion.identity);
+            var skinnedMesh = Box("Back_COL");
+            var shown = Node(root.transform, "Back_COL", skinnedMesh, new Vector3(0, 1, 0), Quaternion.identity);
+            Node(root.transform, "Back", null, Vector3.zero, Quaternion.identity).gameObject.AddComponent<SkinnedMeshRenderer>().sharedMesh = skinnedMesh;
+
+            LogAssert.Expect(LogType.Warning, new Regex("'Seat_COL' has transform curves"));
+            LogAssert.Expect(LogType.Warning, new Regex("'Back_COL' shares its mesh 'Back_COL' with another node"));
+            CollisionRootPlacement.ApplyOnImport(root, new List<string> { "Seat_COL[0]", "Back_COL[0]" }, "Bench.fbx", new HashSet<string> { "Seat_COL" });
+
+            Assert.AreEqual(new Vector3(.4f, 0, 0), animated.localPosition, "a node the clips animate is left as it is");
+            Assert.AreEqual(new Vector3(0, 1, 0), shown.localPosition, "a mesh a skinned renderer shows too is left as it is");
+        }
+
+        [Test]
         public void Candidates_TakeOffsetCollisionChildrenOfTheRootThatCanMove()
         {
             var root = new GameObject("Bench"); owned.Add(root);
