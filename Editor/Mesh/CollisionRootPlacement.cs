@@ -308,7 +308,7 @@ namespace SashaRX.UnityMeshLab
         // ── Menu ──
 
         static IEnumerable<string> SelectedModels() => ModelSelection.Paths(path
-            => path.StartsWith("Assets/", StringComparison.Ordinal) && AssetImporter.GetAtPath(path) is ModelImporter);
+            => path.StartsWith("Assets/", StringComparison.Ordinal) && AssetImporter.GetAtPath(path) is ModelImporter, original: true);
 
         [MenuItem(PlaceMenu, true)]
         [MenuItem(ToolsPlaceMenu, true)]

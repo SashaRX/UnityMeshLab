@@ -188,7 +188,7 @@ namespace SashaRX.UnityMeshLab
         }
 
         static IEnumerable<string> SelectedModels() => ModelSelection.Paths(path
-            => path.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase) && AssetImporter.GetAtPath(path) is ModelImporter);
+            => path.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase) && AssetImporter.GetAtPath(path) is ModelImporter, original: true);
 
         [MenuItem(MenuPath, true)]
         [MenuItem(ToolsMenuPath, true)]
