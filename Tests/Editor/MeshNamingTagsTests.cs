@@ -35,7 +35,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(surfaces, string.Join(" ", tags.Surfaces), "surfaces");
             Assert.AreEqual(surfaces.Length == 0 ? null : surfaces.Split(' ')[0], tags.Surface, "first surface");
             Assert.AreEqual(lod, tags.Lod, "LOD");
-            Assert.AreEqual(collision, tags.IsCollision, "collision");
+            Assert.AreEqual(collision, tags.Collision, "collision");
             Assert.AreEqual(collision, MeshNaming.IsCollision(name), "agrees with IsCollision");
             Assert.AreEqual(hull, tags.Hull, "hull");
         }
@@ -51,7 +51,7 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual("Wood", tags.Surface);
 
             tags = MeshNaming.ParseTags("Seat_COL_Hull3.002");
-            Assert.IsTrue(tags.IsCollision); Assert.AreEqual(3, tags.Hull); Assert.AreEqual(".002", tags.Instance);
+            Assert.IsTrue(tags.Collision); Assert.AreEqual(3, tags.Hull); Assert.AreEqual(".002", tags.Instance);
             Assert.AreEqual("Seat", tags.Body); CollectionAssert.IsEmpty(tags.PipelineTags);
         }
 
@@ -68,7 +68,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var tags = MeshNaming.ParseTags(name);
             Assert.AreEqual(body, tags.Body, "body");
             Assert.AreEqual(lod, tags.Lod, "LOD");
-            Assert.AreEqual(collision, tags.IsCollision, "collision");
+            Assert.AreEqual(collision, tags.Collision, "collision");
             Assert.AreEqual(hull, tags.Hull, "hull");
             Assert.AreEqual(pipeline, string.Join(" ", tags.PipelineTags), "pipeline");
             Assert.AreEqual(instance, tags.Instance, "instance");
@@ -93,7 +93,7 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             var tags = MeshNaming.ParseTags(name);
             Assert.AreEqual("", tags.Name); Assert.AreEqual("", tags.Body); Assert.IsNull(tags.ClassPrefix);
-            Assert.AreEqual(-1, tags.Lod); Assert.IsFalse(tags.IsCollision); Assert.AreEqual(-1, tags.Hull);
+            Assert.AreEqual(-1, tags.Lod); Assert.IsFalse(tags.Collision); Assert.AreEqual(-1, tags.Hull);
             CollectionAssert.IsEmpty(tags.Words); CollectionAssert.IsEmpty(tags.Surfaces);
             CollectionAssert.IsEmpty(tags.PipelineTags); Assert.IsNull(tags.Instance); Assert.IsNull(tags.Surface);
         }
