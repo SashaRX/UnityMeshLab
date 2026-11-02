@@ -243,5 +243,92 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreSame(other, LodHierarchy.AssignCollider(root, other).sharedMesh);
             Assert.IsNull(LodHierarchy.AddColliderFromCollisionMesh(Node("Bare", null)));
         }
+
+        [Test]
+        public void AnOffsetCollisionNodeKeepsItsCollider()
+        {
+            var root = Node("Bench", null);
+            root.transform.position = new Vector3(5, 0, 0);
+            var col = Node("Base_Concrete_COL", root.transform, Tris(2));
+            col.transform.localPosition = new Vector3(.392f, 0, .002f);
+            StringAssert.Contains($"position ({.392f:F3}, {0f:F3}, {.002f:F3})", LodHierarchy.OffsetFromRoot(root.transform, col.transform));
+
+            var collider = LodHierarchy.AddColliderFromCollisionMesh(root);
+            Assert.AreSame(col, collider.gameObject, "the collider stays where the mesh lies");
+            Assert.IsNull(root.GetComponent<MeshCollider>());
+            Assert.IsTrue(LodHierarchy.HasCollisionCollider(root));
+            Assert.IsNull(LodHierarchy.AddColliderFromCollisionMesh(root), "a collision node with a collider counts");
+
+            Assert.IsNull(LodHierarchy.AssignCollider(root, Tris(1), col.transform), "on the root the mesh would land elsewhere");
+            Assert.IsNull(root.GetComponent<MeshCollider>());
+        }
+
+        [Test]
+        public void AnInactiveOffsetCollisionNodeIsActivatedForItsCollider()
+        {
+            var root = Node("Bench", null);
+            var col = Node("Seat_COL", root.transform, Tris(2));
+            col.transform.localPosition = Vector3.right;
+            var oldCollider = col.AddComponent<MeshCollider>();
+            col.SetActive(false);
+            Assert.IsFalse(LodHierarchy.HasCollisionCollider(root), "an inactive collider does not collide");
+            Assert.AreSame(oldCollider, LodHierarchy.AddColliderFromCollisionMesh(root), "its own collider is reused");
+            Assert.IsTrue(col.activeSelf); Assert.IsTrue(LodHierarchy.HasCollisionCollider(root));
+        }
+
+        [Test]
+        public void AColliderWithoutAMeshDoesNotCount()
+        {
+            var root = Node("Bench", null);
+            var col = Node("Seat_COL", root.transform, Tris(2));
+            col.transform.localPosition = Vector3.right;
+            var empty = col.AddComponent<MeshCollider>();
+            empty.sharedMesh = null;
+            Assert.IsFalse(LodHierarchy.HasCollisionCollider(root), "an empty collider does not collide");
+            Assert.AreSame(empty, LodHierarchy.AddColliderFromCollisionMesh(root), "the empty collider takes the collision mesh");
+            Assert.AreSame(col.GetComponent<MeshFilter>().sharedMesh, empty.sharedMesh);
+
+            var other = Node("Chair", null);
+            Node("Chair_COL", other.transform, Tris(1));
+            other.AddComponent<MeshCollider>().sharedMesh = null;
+            Assert.IsFalse(LodHierarchy.HasCollisionCollider(other));
+            Assert.AreSame(other.GetComponent<MeshCollider>(), LodHierarchy.AddColliderFromCollisionMesh(other), "the root's empty collider is filled, not doubled");
+            Assert.AreEqual(1, other.GetComponents<MeshCollider>().Length);
+        }
+
+        [Test]
+        public void AnOffsetCollisionNodeUnderAnInactiveGroupIsSkipped()
+        {
+            var root = Node("Bench", null);
+            var group = Node("Group", root.transform);
+            var nested = Node("Back_COL", group.transform, Tris(1));
+            nested.transform.localPosition = Vector3.up;
+            group.SetActive(false);
+            Assert.IsNull(LodHierarchy.AddColliderFromCollisionMesh(root));
+            Assert.IsNull(nested.GetComponent<MeshCollider>());
+            Assert.IsFalse(group.activeSelf, "an inactive group is not switched on");
+        }
+
+        [Test]
+        public void TheOffsetIsMeasuredInWorldMetresUnderAScaledRoot()
+        {
+            var root = Node("Bench", null);
+            root.transform.localScale = Vector3.one * 100f;
+            var col = Node("Bench_COL", root.transform, Tris(1));
+            col.transform.localPosition = new Vector3(5e-5f, 0, 0);
+            Assert.IsNotNull(LodHierarchy.OffsetFromRoot(root.transform, col.transform), "5 mm in the world");
+        }
+
+        [Test]
+        public void ACollisionNodeAtTheRootsPlacementGivesTheRootItsCollider()
+        {
+            var root = Node("Bench", null);
+            root.transform.SetPositionAndRotation(new Vector3(5, 1, 0), Quaternion.Euler(0, 30, 0));
+            var col = Node("Bench_COL", root.transform, Tris(2));
+            col.transform.localPosition = new Vector3(0, 0, 5e-5f);
+            Assert.IsNull(LodHierarchy.OffsetFromRoot(root.transform, col.transform), "within the tolerance");
+            Assert.AreSame(root, LodHierarchy.AddColliderFromCollisionMesh(root).gameObject);
+            Assert.AreSame(root.GetComponent<MeshCollider>(), LodHierarchy.AssignCollider(root, Tris(1), col.transform));
+        }
     }
 }

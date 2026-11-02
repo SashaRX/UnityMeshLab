@@ -1367,7 +1367,7 @@ namespace SashaRX.UnityMeshLab
                     if (mesh != null && (rootCollider == null || rootCollider.sharedMesh != mesh))
                     {
                         if (GUILayout.Button("Assign", GUILayout.Width(50), GUILayout.Height(16)))
-                            AssignCollisionToRoot(mesh);
+                            AssignCollisionToRoot(mesh, colGo.transform);
                     }
 
                     EditorGUILayout.EndHorizontal();
@@ -1388,7 +1388,7 @@ namespace SashaRX.UnityMeshLab
                     var firstCol = colObjects[0];
                     var colMf = firstCol.GetComponent<MeshFilter>();
                     if (colMf != null && colMf.sharedMesh != null)
-                        AssignCollisionToRoot(colMf.sharedMesh);
+                        AssignCollisionToRoot(colMf.sharedMesh, firstCol.transform);
                 }
             }
 
@@ -1403,7 +1403,7 @@ namespace SashaRX.UnityMeshLab
                     {
                         Mesh lod0Mesh = lod0Entries[0].originalMesh ?? lod0Entries[0].fbxMesh;
                         if (lod0Mesh != null)
-                            AssignCollisionToRoot(lod0Mesh);
+                            AssignCollisionToRoot(lod0Mesh, lod0Entries[0].renderer != null ? lod0Entries[0].renderer.transform : null);
                     }
                 }
             }
@@ -1439,11 +1439,12 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.EndHorizontal();
         }
 
-        void AssignCollisionToRoot(Mesh mesh)
+        // A mesh from a node off the root's placement is refused: on the root it would land elsewhere.
+        void AssignCollisionToRoot(Mesh mesh, Transform from)
         {
             if (ctx.LodGroup == null || mesh == null) return;
-            LodHierarchy.AssignCollider(ctx.LodGroup.gameObject, mesh);
-            UvtLog.Info($"Assigned collision mesh: {mesh.name}");
+            if (LodHierarchy.AssignCollider(ctx.LodGroup.gameObject, mesh, from) != null)
+                UvtLog.Info($"Assigned collision mesh: {mesh.name}");
             requestRepaint?.Invoke();
         }
 
