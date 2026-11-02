@@ -1,7 +1,7 @@
 // CollisionRootPlacementTests.cs — collision put at the model root's placement through the
 // sidecar: the import step on a built hierarchy (a single node and a hull container keep
 // their surface, a node sharing its mesh is left as it is), the choice of nodes, and the
-// shear check the scene moves share with the FBX bake.
+// consumers both versions keep in place (CollisionConsumers: refusals, shear, the moves).
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -50,9 +50,9 @@ namespace SashaRX.UnityMeshLab.Tests
         public void IsTrs_RejectsAShearedMatrix()
         {
             var offset = Matrix4x4.TRS(new Vector3(.4f, 0, 0), Quaternion.Euler(0, 0, 45), new Vector3(2, 1, 1));
-            Assert.IsTrue(CollisionRootPlacement.IsTrs(offset));
-            Assert.IsTrue(CollisionRootPlacement.IsTrs(offset * offset.inverse), "an object that follows the node is set to identity");
-            Assert.IsFalse(CollisionRootPlacement.IsTrs(offset.inverse), "an override at identity against a rotated, unevenly scaled node would need shear");
+            Assert.IsTrue(CollisionConsumers.IsTrs(offset));
+            Assert.IsTrue(CollisionConsumers.IsTrs(offset * offset.inverse), "an object that follows the node is set to identity");
+            Assert.IsFalse(CollisionConsumers.IsTrs(offset.inverse), "an override at identity against a rotated, unevenly scaled node would need shear");
         }
 
         [Test]
@@ -101,6 +101,44 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(2, skipped.Count);
             StringAssert.Contains("'Arm_COL' holds 'Arm', which is no collision node", skipped[0]);
             StringAssert.Contains("'Leg_COL' has transform curves", skipped[1]);
+        }
+
+        [Test]
+        public void Consumers_RefuseAnObjectWithChildrenAndAColliderAwayFromItsNode()
+        {
+            var mesh = Box("Seat_COL");
+            var copy = Node(null, "Seat_COL", mesh, Vector3.zero, Quaternion.identity); owned.Add(copy.gameObject);
+            Node(copy, "Added", null, Vector3.zero, Quaternion.identity);
+            var holder = new GameObject("Holder"); owned.Add(holder);
+            holder.AddComponent<MeshCollider>().sharedMesh = mesh;
+
+            var consumers = CollisionConsumers.Scan("Assets/None.fbx", null, new Dictionary<Mesh, string> { { mesh, "Seat_COL[0]" } });
+
+            Assert.AreEqual(2, consumers.Refusals.Count);
+            StringAssert.Contains("'Seat_COL' has child objects of its own, which would move with 'Seat_COL'", consumers.Refusals[0]);
+            StringAssert.Contains("'Holder' has a MeshCollider using 'Seat_COL' away from its node", consumers.Refusals[1]);
+        }
+
+        [Test]
+        public void Consumers_KeepAnUnpackedCopyWhereItWas()
+        {
+            var mesh = Box("Seat_COL");
+            var copy = Node(null, "Bench copy", null, new Vector3(3, 0, -2), Quaternion.Euler(0, 90, 0)); owned.Add(copy.gameObject);
+            var node = Node(copy, "Seat_COL", mesh, new Vector3(.4f, 0, 0), Quaternion.Euler(0, 30, 0));
+            var offset = CollisionConsumers.Local(node);
+            var before = new Dictionary<string, Matrix4x4> { { "Seat_COL[0]", offset } };
+            var after = new Dictionary<string, Matrix4x4> { { "Seat_COL[0]", Matrix4x4.identity } };
+            var world = World(node);
+
+            var consumers = CollisionConsumers.Scan("Assets/None.fbx", null, new Dictionary<Mesh, string> { { mesh, "Seat_COL[0]" } });
+            CollectionAssert.IsEmpty(consumers.Refusals);
+            CollectionAssert.IsEmpty(consumers.Problems(before, after));
+            MeshTransform.BakeMatrix(mesh, offset);   // the change: the mesh takes its node's offset
+            Assert.AreEqual((1, 0), consumers.Apply(before, after));
+
+            Assert.IsNull(LodHierarchy.OffsetFromRoot(copy, node), "the copy's node takes the root's placement");
+            var moved = World(node);
+            for (int i = 0; i < world.Length; i++) Assert.Less(Vector3.Distance(world[i], moved[i]), 1e-4f, "its collision stays where it was");
         }
 
         [Test]

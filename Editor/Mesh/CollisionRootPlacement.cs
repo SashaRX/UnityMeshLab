@@ -8,17 +8,15 @@
 // collision nodes (a hull container); each mesh in it is used by that node alone. A node that
 // stops qualifying is left where the file puts it, with a warning, and the import goes on.
 //
-// The scene follows: an object that shows a moved mesh without following the model's
-// transforms (an unpacked copy, an instance with its own transform override) is moved, with
-// Undo, so its collision stays where it was. The checks it shares with the FBX version (a
-// collider that would move, a transform that would need shear) live here too.
+// The objects that use a moved mesh follow (CollisionConsumers): an unpacked copy or an
+// instance with its own transform override, in a scene (with Undo) or saved in a prefab asset,
+// is moved so its collision stays where it was.
 
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using UnityEditor;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 
 namespace SashaRX.UnityMeshLab
 {
@@ -71,6 +69,8 @@ namespace SashaRX.UnityMeshLab
             var other = node.GetComponentsInChildren<Transform>(true).FirstOrDefault(t => !MeshNaming.IsCollision(t.name));
             if (other != null) return $"holds '{other.name}', which is no collision node and would move with it";
             if (node.GetComponentsInChildren<SkinnedMeshRenderer>(true).Length > 0) return "is skinned";
+            var parent = node.GetComponentsInChildren<MeshFilter>(true).FirstOrDefault(f => f.transform.childCount > 0);
+            if (parent != null) return $"has '{parent.name}' with a mesh and child nodes (only a container without a mesh holds hulls)";
             return node.GetComponentsInChildren<MeshFilter>(true).Select(f => MeshRefusal(f.sharedMesh, users)).FirstOrDefault(r => r != null);
         }
 
@@ -202,8 +202,9 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
-        static string Summary(SceneEffect effect, string rootColliders)
+        static string Summary(Effect effect, string rootColliders)
             => (effect.moved > 0 ? $"; {effect.moved} scene object(s) that do not follow the model's transforms were moved to keep their collision where it was" : "")
+            + (effect.prefabs > 0 ? $"; {effect.prefabs} prefab asset(s) holding their own copy were saved with it kept where it was" : "")
             + (effect.rootColliders > 0 ? $"; {effect.rootColliders} MeshCollider(s) on the model's root {rootColliders}" : "");
 
         // The listed paths whose nodes now sit at the root's placement; the rest the import refused (and named).
@@ -219,37 +220,37 @@ namespace SashaRX.UnityMeshLab
             return placed;
         }
 
-        // ── The sidecar change and the scene ──
+        // ── The sidecar change and its consumers ──
 
-        /// <summary>What a reimport did to the loaded scenes.</summary>
-        sealed class SceneEffect
+        /// <summary>What a sidecar change did to the objects that use the moved meshes.</summary>
+        sealed class Effect
         {
-            public readonly List<(Transform node, Matrix4x4 world, string path)> uses = new List<(Transform, Matrix4x4, string)>();
-            public readonly List<string> refusals = new List<string>();
-            public int rootColliders, moved;
+            public int moved, prefabs, rootColliders;
         }
 
         /// <summary>
         /// Sets the sidecar's list to <paramref name="paths"/> and reimports the model, keeping
-        /// every scene object that shows a mesh of <paramref name="tops"/> where it was. Refused
-        /// before anything changes when a collider elsewhere would move; undone (the list put
-        /// back and the model reimported) when an object would need a sheared transform.
+        /// every object that shows a mesh of <paramref name="tops"/> where it was (CollisionConsumers:
+        /// loaded scenes and prefab assets). Refused before anything changes when an object
+        /// cannot follow; undone (the list put back and the model reimported) when one would need
+        /// a sheared transform.
         /// </summary>
-        static bool Reimport(string fbxPath, List<Transform> tops, List<string> paths, out SceneEffect effect)
+        static bool Reimport(string fbxPath, List<Transform> tops, List<string> paths, out Effect effect)
         {
+            effect = new Effect();
             var model = AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath);
             var before = RootSpace(model, tops);
-            effect = SceneUses(before.meshes, model);
-            if (effect.refusals.Count > 0)
+            var consumers = CollisionConsumers.Scan(fbxPath, model, before.meshes);
+            if (consumers.Refusals.Count > 0)
             {
-                UvtLog.Error($"[Collision] '{fbxPath}': the sidecar was not changed: {string.Join("; ", effect.refusals)}.");
+                UvtLog.Error($"[Collision] '{fbxPath}': the sidecar was not changed: {string.Join("; ", consumers.Refusals)}.");
                 return false;
             }
             var previous = SidecarStore.CollisionAtRoot(fbxPath);
             SidecarStore.SetCollisionAtRoot(fbxPath, paths);
             Import(fbxPath);
             var after = RootSpace(AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath), before.matrices.Keys);
-            var moves = Moves(effect, before.matrices, after, out var problems);
+            var problems = consumers.Problems(before.matrices, after);
             if (problems.Count > 0)
             {
                 SidecarStore.SetCollisionAtRoot(fbxPath, previous);
@@ -257,7 +258,8 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Error($"[Collision] '{fbxPath}': the sidecar was put back: {string.Join("; ", problems)}.");
                 return false;
             }
-            effect.moved = Apply(moves);
+            (effect.moved, effect.prefabs) = consumers.Apply(before.matrices, after);
+            effect.rootColliders = consumers.RootColliders;
             return true;
         }
 
@@ -290,133 +292,9 @@ namespace SashaRX.UnityMeshLab
             return matrices;
         }
 
-        static SceneEffect SceneUses(Dictionary<Mesh, string> meshes, GameObject model)
-        {
-            var effect = new SceneEffect();
-            foreach (var root in LoadedSceneRoots())
-            {
-                foreach (var filter in root.GetComponentsInChildren<MeshFilter>(true))
-                    if (filter.sharedMesh != null && meshes.TryGetValue(filter.sharedMesh, out string path))
-                        effect.uses.Add((filter.transform, filter.transform.localToWorldMatrix, path));
-                effect.rootColliders += CheckColliders(root, meshes.ContainsKey, model, effect.refusals);
-            }
-            return effect;
-        }
-
         // Prefab instances in the loaded scenes are merged with the reimported model as part of the import.
         static void Import(string fbxPath)
             => AssetDatabase.ImportAsset(fbxPath, ImportAssetOptions.ForceUpdate | ImportAssetOptions.ForceSynchronousImport);
-
-        /// <summary>
-        /// The local transform that keeps each scene object's mesh where it was: its old world
-        /// placement, less the move of its mesh into the new node placement (old × before⁻¹ ×
-        /// after), under its parent as it is now. One a Transform cannot hold is a problem.
-        /// </summary>
-        static List<(Transform node, Matrix4x4 local)> Moves(SceneEffect effect, Dictionary<string, Matrix4x4> before,
-            Dictionary<string, Matrix4x4> after, out List<string> problems)
-        {
-            problems = new List<string>();
-            var moves = new List<(Transform, Matrix4x4)>();
-            foreach (var (node, world, path) in effect.uses)
-            {
-                if (node == null || !after.TryGetValue(path, out var placed)) continue;
-                var desired = world * before[path].inverse * placed;
-                var local = node.parent != null ? node.parent.worldToLocalMatrix * desired : desired;
-                if (IsTrs(local)) moves.Add((node, local));
-                else problems.Add($"'{node.name}' would need a sheared transform to keep its collision where it was");
-            }
-            return moves;
-        }
-
-        /// <summary>
-        /// Sets each object's local transform, with Undo and the prefab override recorded; an
-        /// object already there (an instance that follows the model) is left alone.
-        /// </summary>
-        internal static int Apply(List<(Transform node, Matrix4x4 local)> moves)
-        {
-            int moved = 0;
-            foreach (var (node, local) in moves)
-            {
-                if (node == null || SameMatrix(Local(node), local)) continue;
-                Undo.RecordObject(node, "Keep Collision in Place");
-                node.localPosition = local.GetColumn(3);
-                node.localRotation = local.rotation;
-                node.localScale = local.lossyScale;
-                if (PrefabUtility.IsPartOfPrefabInstance(node)) PrefabUtility.RecordPrefabInstancePropertyModifications(node);
-                moved++;
-            }
-            return moved;
-        }
-
-        // ── Shared with FbxCollisionPlacement ──
-
-        /// <summary>How a MeshCollider follows when meshes move into the root's space.</summary>
-        enum ColliderFollow
-        {
-            /// <summary>Its mesh does not move, or it has none.</summary>
-            Unaffected,
-            /// <summary>Its object shows the mesh too and is kept in place with it.</summary>
-            WithItsObject,
-            /// <summary>On the root of an instance of the model: it lands where the model shows the node, which is the point.</summary>
-            OnModelRoot,
-            /// <summary>Anywhere else its collision would move.</summary>
-            Moves,
-        }
-
-        static ColliderFollow Follow(MeshCollider collider, Func<Mesh, bool> moving, GameObject model)
-        {
-            var mesh = collider.sharedMesh;
-            if (mesh == null || !moving(mesh)) return ColliderFollow.Unaffected;
-            if (collider.TryGetComponent(out MeshFilter filter) && filter.sharedMesh == mesh) return ColliderFollow.WithItsObject;
-            return model != null && PrefabUtility.GetCorrespondingObjectFromOriginalSource(collider.gameObject) == model
-                ? ColliderFollow.OnModelRoot
-                : ColliderFollow.Moves;
-        }
-
-        /// <summary>
-        /// The MeshColliders under <paramref name="sceneRoot"/> using a mesh that moves: each one
-        /// whose collision would move is named in <paramref name="refusals"/>; returns how many
-        /// sit on the root of an instance of <paramref name="model"/>.
-        /// </summary>
-        internal static int CheckColliders(GameObject sceneRoot, Func<Mesh, bool> moving, GameObject model, List<string> refusals)
-        {
-            int onRoot = 0;
-            foreach (var collider in sceneRoot.GetComponentsInChildren<MeshCollider>(true))
-            {
-                var follow = Follow(collider, moving, model);
-                if (follow == ColliderFollow.OnModelRoot) onRoot++;
-                else if (follow == ColliderFollow.Moves) refusals.Add(MovesMessage(collider));
-            }
-            return onRoot;
-        }
-
-        static string MovesMessage(MeshCollider collider)
-            => $"'{collider.name}' has a MeshCollider using '{collider.sharedMesh.name}' away from its node; moving that mesh into the root's space "
-            + "would move this collision (give the node its own collider, or clear this one)";
-
-        /// <summary>The roots of every loaded scene (inactive objects are under them too).</summary>
-        internal static IEnumerable<GameObject> LoadedSceneRoots()
-        {
-            for (int s = 0; s < SceneManager.sceneCount; s++)
-            {
-                var scene = SceneManager.GetSceneAt(s);
-                if (!scene.isLoaded) continue;
-                foreach (var root in scene.GetRootGameObjects()) yield return root;
-            }
-        }
-
-        internal static Matrix4x4 Local(Transform t) => Matrix4x4.TRS(t.localPosition, t.localRotation, t.localScale);
-
-        /// <summary>Whether a Transform's position, rotation and scale can hold <paramref name="m"/>: it has no shear.</summary>
-        internal static bool IsTrs(Matrix4x4 m) => SameMatrix(Matrix4x4.TRS(m.GetColumn(3), m.rotation, m.lossyScale), m, 1e-4f);
-
-        /// <summary>Entry by entry, within the tolerance relative to the entry's size (at least 1).</summary>
-        internal static bool SameMatrix(Matrix4x4 a, Matrix4x4 b, float tolerance = 1e-5f)
-        {
-            for (int i = 0; i < 16; i++)
-                if (Mathf.Abs(a[i] - b[i]) > tolerance * Mathf.Max(1f, Mathf.Abs(b[i]))) return false;
-            return true;
-        }
 
         // ── Menu ──
 
