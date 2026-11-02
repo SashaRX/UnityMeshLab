@@ -277,6 +277,26 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void AColliderWithoutAMeshDoesNotCount()
+        {
+            var root = Node("Bench", null);
+            var col = Node("Seat_COL", root.transform, Tris(2));
+            col.transform.localPosition = Vector3.right;
+            var empty = col.AddComponent<MeshCollider>();
+            empty.sharedMesh = null;
+            Assert.IsFalse(LodHierarchy.HasCollisionCollider(root), "an empty collider does not collide");
+            Assert.AreSame(empty, LodHierarchy.AddColliderFromCollisionMesh(root), "the empty collider takes the collision mesh");
+            Assert.AreSame(col.GetComponent<MeshFilter>().sharedMesh, empty.sharedMesh);
+
+            var other = Node("Chair", null);
+            Node("Chair_COL", other.transform, Tris(1));
+            other.AddComponent<MeshCollider>().sharedMesh = null;
+            Assert.IsFalse(LodHierarchy.HasCollisionCollider(other));
+            Assert.AreSame(other.GetComponent<MeshCollider>(), LodHierarchy.AddColliderFromCollisionMesh(other), "the root's empty collider is filled, not doubled");
+            Assert.AreEqual(1, other.GetComponents<MeshCollider>().Length);
+        }
+
+        [Test]
         public void AnOffsetCollisionNodeUnderAnInactiveGroupIsSkipped()
         {
             var root = Node("Bench", null);

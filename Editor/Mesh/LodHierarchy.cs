@@ -361,11 +361,14 @@ namespace SashaRX.UnityMeshLab
             return $"position ({p.x:F3}, {p.y:F3}, {p.z:F3}), rotation ({e.x:F1}, {e.y:F1}, {e.z:F1}), scale ({s.x:F3}, {s.y:F3}, {s.z:F3})";
         }
 
-        /// <summary>Whether the root, or one of its active collision nodes with an enabled one, has a MeshCollider.</summary>
+        /// <summary>
+        /// Whether the model has a MeshCollider that can collide: one with a mesh on the root,
+        /// or an enabled one with a mesh on an active collision node.
+        /// </summary>
         internal static bool HasCollisionCollider(GameObject root)
-            => root != null && (root.GetComponent<MeshCollider>() != null
+            => root != null && ((root.TryGetComponent(out MeshCollider own) && own.sharedMesh != null)
                 || MeshHygieneUtility.FindCollisionObjects(root.transform).Any(o =>
-                    o.activeInHierarchy && o.TryGetComponent(out MeshCollider c) && c.enabled));
+                    o.activeInHierarchy && o.TryGetComponent(out MeshCollider c) && c.enabled && c.sharedMesh != null));
 
         /// <summary>
         /// Gives the first collision child that carries a mesh a MeshCollider over it and
@@ -394,13 +397,16 @@ namespace SashaRX.UnityMeshLab
                     }
                     Undo.RecordObject(colObj, "Activate COL");
                     colObj.SetActive(true);
+                    RecordInstanceOverride(colObj);
                 }
                 var host = offset == null ? root : colObj;
                 var collider = host.GetComponent<MeshCollider>();
-                if (collider == null) collider = Undo.AddComponent<MeshCollider>(host);
+                bool added = collider == null;
+                if (added) collider = Undo.AddComponent<MeshCollider>(host);
                 else Undo.RecordObject(collider, "Assign Collision Mesh");
                 collider.enabled = true;
                 collider.sharedMesh = mf.sharedMesh;
+                if (!added) RecordInstanceOverride(collider);
                 UvtLog.Info(offset == null
                     ? $"Added MeshCollider to {root.name} from {colObj.name}"
                     : $"Added MeshCollider to {colObj.name}: it sits off {root.name}'s placement ({offset}), so on the root its mesh would land elsewhere");
@@ -413,6 +419,12 @@ namespace SashaRX.UnityMeshLab
                 return collider;
             }
             return null;
+        }
+
+        // A change to an object of a prefab instance is kept as an override of that instance.
+        static void RecordInstanceOverride(UnityEngine.Object target)
+        {
+            if (PrefabUtility.IsPartOfPrefabInstance(target)) PrefabUtility.RecordPrefabInstancePropertyModifications(target);
         }
 
         /// <summary>
