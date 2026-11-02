@@ -1,5 +1,34 @@
 # Transfer Pipeline — Experiments & Lessons
 
+## Lightmap UV2 always inside [0,1] — 2026-11-02
+
+Requirement: a lightmap UV outside [0,1] samples another chart's texels, so
+nothing MeshLab writes may leave the unit square. Audit of every UV2 writer:
+
+- Repack: xatlas places charts inside its atlas and the output is divided by
+  the atlas side; the border inset maps [0,1] into [inset, 1 - inset]; the
+  post-pack density correction only shrinks a chart around its own centroid.
+  Inside by construction; the clamp catches rounding. The UV1 hierarchy pack
+  (`UvPackHierarchyTool`) built its options without `clampLightmapToUnit`,
+  so it never clamped.
+- Forward transfer: a vertex fitted past its source chart can leave the
+  square; the publication clamp caught it only while "Clamp UV2 to [0,1]"
+  was on, and logged it as a verbose line.
+- Shared-LOD transfer and the shared-lightmap fallback: barycentric
+  combinations of LOD0 UV2, inside whenever LOD0 is.
+- Reverse UV: the final audit refuses to publish any vertex outside.
+- Full Pipeline with Repack off: the source LOD's own UV2 is read as it is.
+  One outside [0,1] stays outside, and its LODs follow it and are clamped flat.
+
+Change: no clamp option (`RepackOptions.clampLightmapToUnit` and
+`UvToolContext.ClampLightmapToUnit` removed); Repack and the Transfer
+publication always clamp. `XatlasRepack.ClampUvsToUnit` reports the farthest
+overshoot; past half a texel of the atlas side (`ClampSquashes`) the clamp
+moved geometry and squashed faces, which is now a warning. Transfer refuses
+an own UV2 that leaves the square past half a texel of the side Repack would
+pack it at (`UvTransferWorkflow.RequireOwnUv2InsideUnit`). No layout changes
+for a result that was inside [0,1].
+
 ## Repack: an overflowing pack runs again at the requested density — 2026-10-30
 
 Model N, Full Pipeline 1.2.95 with per-mesh repack and the resolution from

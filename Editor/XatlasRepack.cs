@@ -86,14 +86,6 @@ namespace SashaRX.UnityMeshLab
         public int arapIterations;
 
         /// <summary>
-        /// Clamp the source mesh's UV2 channel into [0,1] right after xatlas
-        /// writes the atlas. Cheap safety net against verts pushed slightly
-        /// outside the unit square by border padding or perturb fixups.
-        /// Default true.
-        /// </summary>
-        public bool clampLightmapToUnit;
-
-        /// <summary>
         /// Post-pack density correction (experimental). xatlas internally applies
         /// per-chart ceil(extents) stretch which breaks uniform density for thin
         /// shells. This pass measures per-shell au2/a3 after pack and SHRINKS
@@ -174,7 +166,6 @@ namespace SashaRX.UnityMeshLab
             reparameterizeStretchedShells = true,
             stretchThreshold = 1.5f,
             arapIterations = 50,
-            clampLightmapToUnit = true,
             postPackDensityCorrection = false,
             // Pack at 4× user-facing resolution internally. xatlas's
             // per-chart ceil(extents) Stage B amplifies sub-pixel
@@ -1654,13 +1645,11 @@ namespace SashaRX.UnityMeshLab
             }
 
             // ── Apply UV2 (channel 1 — Unity lightmap channel, mesh.uv2) ──
-            int clampedOutOfUnit = 0;
-            if (opts.clampLightmapToUnit)
-                clampedOutOfUnit = ClampUvsToUnit(uv2);
+            // A lightmap UV outside [0,1] samples another chart: the result always stays inside.
+            int clampedOutOfUnit = ClampUvsToUnit(uv2, out float overshoot);
             mesh.SetUVs(1, uv2);
-            if (clampedOutOfUnit > 0)
-                UvtLog.Verbose(UvtLog.Category.Repack,
-                    $"Clamped {clampedOutOfUnit} UV2 vert(s) into [0,1]");
+            LogUnitClamp(UvtLog.Category.Repack, $"'{mesh.name}'", clampedOutOfUnit, overshoot,
+                result.resolution > 0 ? result.resolution : result.atlasWidth);
             result.ok = true;
 
             double coverage = ComputeUv2CoverageFraction(uv2, tris);
@@ -1996,7 +1985,6 @@ namespace SashaRX.UnityMeshLab
                 }
 
                 // Apply UV2, border padding, and atlas-fill normalization
-                int clampedTotal = 0;
                 for (int m = 0; m < meshCount; m++)
                 {
                     if (allUv2[m] == null || !results[m].ok) continue;
@@ -2017,8 +2005,9 @@ namespace SashaRX.UnityMeshLab
                         LogPostPackDensity(allUv2[m], allTris[m], allPositions[m], allShells[m], meshes[m].name + " [postBorder]");
                     }
 
-                    if (opts.clampLightmapToUnit)
-                        clampedTotal += ClampUvsToUnit(allUv2[m]);
+                    int clampedM = ClampUvsToUnit(allUv2[m], out float overshootM);
+                    LogUnitClamp(UvtLog.Category.Repack, $"'{meshes[m].name}'", clampedM, overshootM,
+                        resolutionM > 0 ? resolutionM : atlasW);
 
                     meshes[m].SetUVs(1, allUv2[m]);
 
@@ -2027,9 +2016,6 @@ namespace SashaRX.UnityMeshLab
                     UvtLog.Info(UvtLog.Category.Repack,
                         $"Atlas utilization mesh {m}: {coverageM * 100.0:F1}% of [0,1]² covered ({allShells[m].Count} shells)");
                 }
-                if (clampedTotal > 0)
-                    UvtLog.Verbose(UvtLog.Category.Repack,
-                        $"Clamped {clampedTotal} UV2 vert(s) into [0,1] across {meshCount} mesh(es)");
             }
             finally
             {
@@ -2279,21 +2265,51 @@ namespace SashaRX.UnityMeshLab
         /// vertices that had at least one axis outside the unit square (only
         /// counts vertices, not axes, so a vert with both axes out is still 1).
         /// </summary>
-        internal static int ClampUvsToUnit(Vector2[] uv2)
+        internal static int ClampUvsToUnit(Vector2[] uv2) => ClampUvsToUnit(uv2, out _);
+
+        /// <summary>
+        /// <see cref="ClampUvsToUnit(Vector2[])"/>; <paramref name="overshoot"/> is the
+        /// farthest any coordinate lay outside [0,1], in UV units.
+        /// </summary>
+        internal static int ClampUvsToUnit(Vector2[] uv2, out float overshoot)
         {
+            overshoot = 0f;
             if (uv2 == null) return 0;
             int n = 0;
             for (int i = 0; i < uv2.Length; i++)
             {
                 Vector2 v = uv2[i];
-                bool outside = v.x < 0f || v.x > 1f || v.y < 0f || v.y > 1f;
-                if (outside)
+                float outside = UnitOvershoot(v);
+                if (outside > 0f)
                 {
                     uv2[i] = new Vector2(Mathf.Clamp01(v.x), Mathf.Clamp01(v.y));
+                    overshoot = Mathf.Max(overshoot, outside);
                     n++;
                 }
             }
             return n;
+        }
+
+        /// <summary>How far <paramref name="uv"/> lies outside [0,1] on its farther axis; 0 inside.</summary>
+        internal static float UnitOvershoot(Vector2 uv)
+            => Mathf.Max(Mathf.Max(-uv.x, uv.x - 1f), Mathf.Max(Mathf.Max(-uv.y, uv.y - 1f), 0f));
+
+        /// <summary>
+        /// A clamp past half a texel of <paramref name="atlasSide"/> moved geometry, not
+        /// rounding: the faces on those vertices are squashed against the atlas edge.
+        /// </summary>
+        internal static bool ClampSquashes(float overshoot, uint atlasSide)
+            => overshoot * Math.Max(1u, atlasSide) > 0.5f;
+
+        internal static void LogUnitClamp(UvtLog.Category category, string label, int clamped, float overshoot, uint atlasSide)
+        {
+            if (clamped == 0) return;
+            float texels = overshoot * Math.Max(1u, atlasSide);
+            if (ClampSquashes(overshoot, atlasSide))
+                UvtLog.Warn(category, $"{label}: {clamped} UV2 vert(s) lay outside [0,1], up to {texels:F1} px at {atlasSide} px; "
+                    + "clamped onto the atlas edge, their faces are squashed there");
+            else
+                UvtLog.Verbose(category, $"{label}: clamped {clamped} UV2 vert(s) into [0,1] (up to {texels:F2} px)");
         }
 
         static void ApplyBorderInset(Vector2[] uv2, uint borderPx, uint atlasW, uint atlasH)

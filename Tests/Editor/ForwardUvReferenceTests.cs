@@ -67,8 +67,8 @@ namespace SashaRX.UnityMeshLab.Tests
             CollectionAssert.AreEqual(before,mesh.uv2);
         }
 
-        [TestCase(true,false)] [TestCase(false,false)] [TestCase(true,true)]
-        public void PublishedAtlasCoordinatesRetainOnlyTheSelectedLegacyReference(bool clamp,bool stale)
+        [TestCase(false)] [TestCase(true)]
+        public void PublishedAtlasCoordinatesRetainOnlyTheSelectedLegacyReference(bool stale)
         {
             Surface();mesh.uv=mesh.vertices.Select(p=>new Vector2(p.x,p.y)).ToArray();
             mesh.uv2=mesh.uv.Select(p=>p*1.00002f-Vector2.one*.00001f).ToArray();
@@ -79,14 +79,14 @@ namespace SashaRX.UnityMeshLab.Tests
             var prepared=mesh.uv2;var savedCurrent=(Vector2[])selected.current.Clone();
             var go=new GameObject("Published reference regression");
             var entry=new MeshEntry {fbxMesh=mesh,originalMesh=mesh,renderer=go.AddComponent<MeshRenderer>(),forwardUvReference=selected};
-            var workflow=new UvTransferWorkflow();var context=new UvToolContext {ClampLightmapToUnit=clamp};context.MeshEntries.Add(entry);
+            var workflow=new UvTransferWorkflow();var context=new UvToolContext();context.MeshEntries.Add(entry);
             typeof(UvTransferWorkflow).GetField("ctx",BindingFlags.Instance|BindingFlags.NonPublic).SetValue(workflow,context);
             try
             {
                 var result=new GroupedShellTransfer.TransferResult {uv2=mesh.uv2,vertexToSourceShell=Enumerable.Repeat(7,6).ToArray(),
                     verticesTotal=6,verticesTransferred=6};
                 typeof(UvTransferWorkflow).GetMethod("ApplyTransferResult",BindingFlags.Instance|BindingFlags.NonPublic)
-                    .Invoke(workflow,new object[] {entry,mesh,result,1});
+                    .Invoke(workflow,new object[] {entry,mesh,result,1,64u});
                 CollectionAssert.AreEqual(prepared,mesh.uv2,"Publishing must not mutate the prepared source");
                 CollectionAssert.AreEqual(savedCurrent,selected.current,"The selected reference remains immutable");
                 if(!stale) Assert.IsTrue(entry.forwardUvReference.Matches(entry.transferredMesh),"Reference must describe the actual published UVs after clamp");
@@ -101,7 +101,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     CollectionAssert.AreEqual(selected.legacy,actual.forwardReference.legacy);
                     CollectionAssert.AreEqual(selected.donors,actual.forwardReference.donors);
                     CollectionAssert.AreEqual(selected.rescued,actual.forwardReference.rescued);
-                    var expected=(Vector2[])prepared.Clone();if(clamp) XatlasRepack.ClampUvsToUnit(expected);
+                    var expected=(Vector2[])prepared.Clone();XatlasRepack.ClampUvsToUnit(expected);
                     CollectionAssert.AreEqual(expected,entry.transferredMesh.uv2);
                 }
             }

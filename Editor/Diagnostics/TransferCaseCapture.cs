@@ -171,7 +171,7 @@ namespace SashaRX.UnityMeshLab
                 if (Data.pairs.Count >= MaxPairs) throw new InvalidDataException("Transfer capture exceeds the replay pair limit.");
                 pair = new Pair { index = Data.pairs.Count, source = source.renderer ? source.renderer.name : sourceMesh.name,
                     target = target.renderer ? target.renderer.name : targetMesh.name, targetLod = target.lodIndex, group = target.meshGroupKey,
-                    sourceMesh = StoreMesh(sourceMesh), targetMesh = StoreMesh(targetMesh), clamp = context.ClampLightmapToUnit,
+                    sourceMesh = StoreMesh(sourceMesh), targetMesh = StoreMesh(targetMesh), clamp = true,
                     preparedProjection = projectionSources != null, projectionSources = projectionSources == null ? null : (int[])projectionSources.Clone(),
                     // The size Transfer measured the source at: its repacked atlas, or the one given for its own UV2.
                     atlasWidth = atlas?.width ?? (int)source.repackedAtlasWidth, atlasHeight = atlas?.height ?? (int)source.repackedAtlasHeight,

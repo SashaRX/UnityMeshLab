@@ -156,17 +156,6 @@ namespace SashaRX.UnityMeshLab
         public int ArapIterations = 50;
 
         /// <summary>
-        /// Clamp final lightmap UV2 coordinates into [0,1] on both source
-        /// (post-xatlas) and target (post-transfer) meshes. Stray UVs outside
-        /// the unit square sample neighbouring atlas regions and bleed wrong
-        /// light onto the surface. xatlas + transfer normally stay in-range
-        /// but border padding, perturb fixups, and the topology enforcer can
-        /// push a few verts a fraction of a texel over. Cheap safety net,
-        /// default ON.
-        /// </summary>
-        public bool ClampLightmapToUnit = true;
-
-        /// <summary>
         /// The LODs read the LOD0 lightmap (one atlas and scale/offset for the whole
         /// LODGroup), so a face takes the light of the LOD0 surface its UV2 lies on.
         /// Transfer then gives each face of a target shell collapsed to a point or a
