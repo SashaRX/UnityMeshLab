@@ -207,6 +207,11 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
 
+            // Sidecar mode: collision nodes the sidecar puts at the root's placement (the FBX keeps
+            // their offset). Every import, FBX overwrites included: the file never has it.
+            if (PostprocessorDefineManager.IsEnabled())
+                CollisionRootPlacement.ApplyOnImport(root, SidecarStore.Load(modelPath)?.collisionAtRoot, modelPath);
+
             // FBX overwrite: UV2 is already baked into the FBX — skip sidecar application
             // to avoid corrupting the mesh with stale remap data from the old topology.
             if (fbxOverwritePaths.Remove(modelPath))

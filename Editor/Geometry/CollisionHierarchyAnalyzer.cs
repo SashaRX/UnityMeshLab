@@ -51,6 +51,15 @@ namespace SashaRX.UnityMeshLab
         internal static string PathPart(string name, int ordinal)
             => $"{System.Uri.EscapeDataString(name)}[{ordinal}]";
 
+        /// <summary>The name of the node at the end of <paramref name="path"/> (as <see cref="RelativePath"/> writes it), for messages.</summary>
+        internal static string NodeName(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return path;
+            string part = path.Substring(path.LastIndexOf('/') + 1);
+            int ordinal = part.LastIndexOf('[');
+            return System.Uri.UnescapeDataString(ordinal > 0 ? part.Substring(0, ordinal) : part);
+        }
+
         internal static string InstanceKey(string meshName, string path)
         {
             if (string.IsNullOrEmpty(path)) return meshName;

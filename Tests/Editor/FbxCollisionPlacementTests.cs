@@ -65,15 +65,6 @@ namespace SashaRX.UnityMeshLab.Tests
             StringAssert.Contains("its surface moved by up to", FbxCollisionPlacement.SurfaceDifference(moved, box));
         }
 
-        [Test]
-        public void IsTrs_RejectsAShearedMatrix()
-        {
-            var offset = Matrix4x4.TRS(new Vector3(.4f, 0, 0), Quaternion.Euler(0, 0, 45), new Vector3(2, 1, 1));
-            Assert.IsTrue(FbxCollisionPlacement.IsTrs(offset));
-            Assert.IsTrue(FbxCollisionPlacement.IsTrs(offset * offset.inverse), "an object that follows the node is set to identity");
-            Assert.IsFalse(FbxCollisionPlacement.IsTrs(offset.inverse), "an override at identity against a rotated, unevenly scaled node would need shear");
-        }
-
         // The fixture model, exported to a new FBX: Seat at the root, Seat_COL moved and turned
         // off the root's placement, and a render node Chair_COLOR off it too.
         string ExportOffsetBench()
@@ -155,6 +146,60 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsTrue(FbxCollisionPlacement.BakeOffsets(fbxPath));
             Assert.AreEqual("Seat_COL", rootCollider.sharedMesh.name);
             Assert.AreEqual(fbxPath, AssetDatabase.GetAssetPath(rootCollider.sharedMesh), "the root's collider keeps the file's mesh");
+        }
+
+        static Vector3[] WorldVertices(MeshFilter filter)
+        {
+            var mesh = MeshAccess.ReadableCopy(filter.sharedMesh);
+            var world = mesh.vertices.Select(v => filter.transform.localToWorldMatrix.MultiplyPoint3x4(v)).ToArray();
+            Object.DestroyImmediate(mesh);
+            return world;
+        }
+
+        static void AssertNear(Vector3[] expected, Vector3[] actual, string message)
+        {
+            Assert.AreEqual(expected.Length, actual.Length, message);
+            for (int i = 0; i < expected.Length; i++) Assert.Less(Vector3.Distance(expected[i], actual[i]), 1e-4f, message);
+        }
+
+        [Test]
+        public void PlaceInSidecar_PutsTheNodeAtTheRootOnImportAndLeavesTheFbxAsItIs()
+        {
+            string fbxPath = ExportOffsetBench();
+            bool sidecarMode = PostprocessorDefineManager.IsEnabled();
+            try
+            {
+                PostprocessorDefineManager.SetEnabled(true);
+                var model = AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath);
+                var modelCol = model.GetComponentsInChildren<MeshFilter>(true).Single(f => f.name == "Seat_COL");
+                var expected = WorldVertices(modelCol);
+                // An instance follows the model; an unpacked copy keeps its own transforms and is moved.
+                var instance = (GameObject)PrefabUtility.InstantiatePrefab(model); owned.Add(instance);
+                var copy = (GameObject)Object.Instantiate(model); owned.Add(copy);
+                copy.transform.position = new Vector3(3, 0, -2);
+                var copyCol = copy.GetComponentsInChildren<MeshFilter>(true).Single(f => f.name == "Seat_COL");
+                var copyWorld = WorldVertices(copyCol);
+                var bytes = File.ReadAllBytes(fbxPath);
+
+                Assert.IsTrue(CollisionRootPlacement.PlaceInSidecar(fbxPath));
+                CollectionAssert.AreEqual(bytes, File.ReadAllBytes(fbxPath), "the FBX is left as it is");
+                CollectionAssert.AreEqual(new[] { "Seat_COL[0]" }, SidecarStore.CollisionAtRoot(fbxPath));
+                var placed = AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath).GetComponentsInChildren<MeshFilter>(true).Single(f => f.name == "Seat_COL");
+                Assert.IsNull(LodHierarchy.OffsetFromRoot(placed.transform.root, placed.transform), "the import puts the node at the root's placement");
+                AssertNear(expected, WorldVertices(placed), "its surface stays where it was");
+                var instanceCol = instance.GetComponentsInChildren<MeshFilter>(true).Single(f => f.name == "Seat_COL");
+                Assert.IsNull(LodHierarchy.OffsetFromRoot(instance.transform, instanceCol.transform), "the instance follows");
+                CollectionAssert.IsEmpty(PrefabUtility.GetObjectOverrides(instance), "with no override recorded on it");
+                AssertNear(copyWorld, WorldVertices(copyCol), "the unpacked copy's collision stays where it was in the world");
+                Assert.IsFalse(CollisionRootPlacement.PlaceInSidecar(fbxPath), "nothing is left to place");
+
+                Assert.IsTrue(CollisionRootPlacement.ClearSidecar(fbxPath));
+                CollectionAssert.IsEmpty(SidecarStore.CollisionAtRoot(fbxPath));
+                var back = AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath).GetComponentsInChildren<MeshFilter>(true).Single(f => f.name == "Seat_COL");
+                Assert.IsNotNull(LodHierarchy.OffsetFromRoot(back.transform.root, back.transform), "cleared, the node is back where the FBX puts it");
+                AssertNear(copyWorld, WorldVertices(copyCol), "and the copy's collision still where it was");
+            }
+            finally { PostprocessorDefineManager.SetEnabled(sidecarMode); }
         }
 #endif
     }

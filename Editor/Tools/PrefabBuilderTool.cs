@@ -1442,24 +1442,61 @@ namespace SashaRX.UnityMeshLab
         }
 
         // Collision nodes off the root's placement: their collider cannot go on the root. When the
-        // model is an FBX, its offsets can be baked into the meshes in the file itself.
+        // model is an FBX, they can be put at the root's placement: in sidecar mode through the
+        // sidecar on every import (the file is left as it is), otherwise in the FBX itself.
         static void DrawCollisionOffsetBake(Transform root, List<GameObject> colObjects)
         {
+            string fbxPath = ModelFbxPath(root);
+            bool sidecar = PostprocessorDefineManager.IsEnabled();
+            if (fbxPath != null) DrawSidecarCollisionPlacement(fbxPath);
+
             var offset = colObjects.Where(c => c != null && MeshNaming.IsCollision(c.name) && c.GetComponent<MeshFilter>() != null
                 && LodHierarchy.OffsetFromRoot(root, c.transform) != null).ToList();
             if (offset.Count == 0) return;
+            string way = sidecar ? "or place it at the root through the sidecar (the FBX is left as it is)." : "or bake the offset into the FBX.";
             EditorGUILayout.HelpBox($"{string.Join(", ", offset.Select(c => c.name))} sit{(offset.Count == 1 ? "s" : "")} off the root's placement: "
-                + "its mesh on the root's MeshCollider would land elsewhere. Give the collision node its own collider (Cleanup does), "
-                + "or bake the offset into the FBX.", MessageType.Info);
-#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+                + "its mesh on the root's MeshCollider would land elsewhere. Give the collision node its own collider (Cleanup does), " + way, MessageType.Info);
+            if (fbxPath != null) DrawCollisionPlacementButton(fbxPath, sidecar);
+        }
+
+        // The FBX the root is an instance of, or null.
+        static string ModelFbxPath(Transform root)
+        {
             var source = PrefabUtility.GetCorrespondingObjectFromOriginalSource(root.gameObject);
-            string fbxPath = source != null ? AssetDatabase.GetAssetPath(source) : null;
-            if (string.IsNullOrEmpty(fbxPath) || !fbxPath.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase)) return;
+            string path = source != null ? AssetDatabase.GetAssetPath(source) : null;
+            return !string.IsNullOrEmpty(path) && path.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase) ? path : null;
+        }
+
+        // Sidecar mode puts the collision at the root on import; otherwise it is baked into the FBX.
+        static void DrawCollisionPlacementButton(string fbxPath, bool sidecar)
+        {
+            if (sidecar)
+            {
+                if (GUILayout.Button(new GUIContent("Place Collision at Root (Sidecar)",
+                        "Lists each such collision node in the sidecar: every import puts it at the root's placement, its mesh where it lies. "
+                        + "The FBX is left as it is.")))
+                    CollisionRootPlacement.PlaceInSidecar(fbxPath);
+                return;
+            }
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             if (GUILayout.Button(new GUIContent("Bake Collision Offsets into FBX",
                     "Writes each such collision node at the root's placement, its mesh where it lies, in the FBX itself (no mesh copies). "
                     + "The edited file is imported once and checked before it replaces the original.")))
                 FbxCollisionPlacement.BakeOffsets(fbxPath);
 #endif
+        }
+
+        // The collision nodes the sidecar puts at the root's placement, with a way back.
+        static void DrawSidecarCollisionPlacement(string fbxPath)
+        {
+            var placed = SidecarStore.CollisionAtRoot(fbxPath);
+            if (placed.Count == 0) return;
+            EditorGUILayout.BeginHorizontal();
+            EditorGUILayout.LabelField($"At the root by the sidecar: {string.Join(", ", placed.Select(CollisionHierarchyAnalyzer.NodeName))}", EditorStyles.miniLabel);
+            if (GUILayout.Button(new GUIContent("Clear", "Drops them from the sidecar and reimports the model: they are back where the FBX puts them."),
+                    GUILayout.Width(50)))
+                CollisionRootPlacement.ClearSidecar(fbxPath);
+            EditorGUILayout.EndHorizontal();
         }
 
         // A mesh from a node off the root's placement is refused: on the root it would land elsewhere.
