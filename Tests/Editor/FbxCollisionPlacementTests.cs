@@ -3,10 +3,13 @@
 // where it was; the path lookup and the surface comparison the check after the bake uses.
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using NUnit.Framework;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.TestTools;
 using Object = UnityEngine.Object;
 
 namespace SashaRX.UnityMeshLab.Tests
@@ -63,7 +66,17 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        public void BakeOffsets_PutsAnOffsetCollisionNodeAtTheRootsPlacement()
+        public void IsTrs_RejectsAShearedMatrix()
+        {
+            var offset = Matrix4x4.TRS(new Vector3(.4f, 0, 0), Quaternion.Euler(0, 0, 45), new Vector3(2, 1, 1));
+            Assert.IsTrue(FbxCollisionPlacement.IsTrs(offset));
+            Assert.IsTrue(FbxCollisionPlacement.IsTrs(offset * offset.inverse), "an object that follows the node is set to identity");
+            Assert.IsFalse(FbxCollisionPlacement.IsTrs(offset.inverse), "an override at identity against a rotated, unevenly scaled node would need shear");
+        }
+
+        // The fixture model, exported to a new FBX: Seat at the root, Seat_COL moved and turned
+        // off the root's placement, and a render node Chair_COLOR off it too.
+        string ExportOffsetBench()
         {
             var root = new GameObject("Bench"); owned.Add(root);
             var seat = new GameObject("Seat"); seat.transform.SetParent(root.transform, false);
@@ -82,7 +95,13 @@ namespace SashaRX.UnityMeshLab.Tests
             assets.Add(fbxPath); assets.Add(SidecarStore.PathFor(fbxPath));
             FbxExport.Write(fbxPath, root);
             AssetDatabase.ImportAsset(fbxPath, ImportAssetOptions.ForceSynchronousImport);
+            return fbxPath;
+        }
 
+        [Test]
+        public void BakeOffsets_PutsAnOffsetCollisionNodeAtTheRootsPlacement()
+        {
+            string fbxPath = ExportOffsetBench();
             var before = AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath);
             var importedCol = before.GetComponentsInChildren<MeshFilter>(true).Single(f => f.name == "Seat_COL");
             Assert.IsNotNull(LodHierarchy.OffsetFromRoot(before.transform, importedCol.transform), "the fixture's collision node is offset");
@@ -111,6 +130,31 @@ namespace SashaRX.UnityMeshLab.Tests
             copyAfter.vertices = copyAfter.vertices.Select(v => copyCol.transform.localToWorldMatrix.MultiplyPoint3x4(v)).ToArray();
             Assert.IsNull(FbxCollisionPlacement.SurfaceDifference(copyAfter, copyWorld), "and its collision stays where it was in the world");
             Assert.IsFalse(FbxCollisionPlacement.BakeOffsets(fbxPath), "nothing is left to bake");
+        }
+
+        [Test]
+        public void BakeOffsets_RefusesAColliderAwayFromItsNodeAndAlignsOneOnTheRoot()
+        {
+            string fbxPath = ExportOffsetBench();
+            var model = AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath);
+            var colMesh = model.GetComponentsInChildren<MeshFilter>(true).Single(f => f.name == "Seat_COL").sharedMesh;
+
+            // A collider elsewhere would move with the mesh: the file is left as it was.
+            var holder = new GameObject("Seat collision"); owned.Add(holder);
+            holder.AddComponent<MeshCollider>().sharedMesh = colMesh;
+            var bytes = File.ReadAllBytes(fbxPath);
+            LogAssert.Expect(LogType.Error, new Regex("'Seat collision' has a MeshCollider using 'Seat_COL' away from its node"));
+            Assert.IsFalse(FbxCollisionPlacement.BakeOffsets(fbxPath));
+            CollectionAssert.AreEqual(bytes, File.ReadAllBytes(fbxPath), "the file is unchanged");
+            Object.DestroyImmediate(holder);
+
+            // On the root of an instance of the model, the collision is meant to land where the model shows the node.
+            var instance = (GameObject)PrefabUtility.InstantiatePrefab(model); owned.Add(instance);
+            var rootCollider = instance.AddComponent<MeshCollider>();
+            rootCollider.sharedMesh = colMesh;
+            Assert.IsTrue(FbxCollisionPlacement.BakeOffsets(fbxPath));
+            Assert.AreEqual("Seat_COL", rootCollider.sharedMesh.name);
+            Assert.AreEqual(fbxPath, AssetDatabase.GetAssetPath(rootCollider.sharedMesh), "the root's collider keeps the file's mesh");
         }
 #endif
     }
