@@ -210,6 +210,43 @@ namespace SashaRX.UnityMeshLab
         }
 
         /// <summary>
+        /// Reads the outermost trailing layer of a name into <paramref name="tags"/>: an instance
+        /// number, a pipeline suffix, a LOD suffix or a collision suffix, tried in that order (LOD
+        /// before collision: a <c>_COL_*</c> form would take a LOD suffix after it as its own word).
+        /// An unsuccessful match when none is left.
+        /// </summary>
+        static Match PeelLayer(string core, Tags tags, System.Collections.Generic.List<string> pipeline)
+        {
+            var layer = InstanceTail.Match(core);
+            if (layer.Success)
+            {
+                if (tags.Instance == null) tags.Instance = layer.Value;
+                return layer;
+            }
+            layer = PipelineTag.Match(core);
+            if (layer.Success)
+            {
+                pipeline.Insert(0, layer.Groups[1].Value);
+                return layer;
+            }
+            layer = LodTail.Match(core);
+            if (layer.Success)
+            {
+                if (tags.Lod < 0 && int.TryParse(layer.Groups[1].Value, out int lod) && lod < MaxLodLevels) tags.Lod = lod;
+                return layer;
+            }
+            layer = CollisionSuffix.Match(core);
+            if (layer.Success)
+            {
+                tags.Collision = true;
+                var hull = HullSuffix.Match(layer.Value);
+                if (tags.Hull < 0 && hull.Success && int.TryParse(hull.Groups[1].Value, System.Globalization.NumberStyles.None,
+                        System.Globalization.CultureInfo.InvariantCulture, out int hullIndex)) tags.Hull = hullIndex;
+            }
+            return layer;
+        }
+
+        /// <summary>
         /// Reads the tags of an asset or node name: the class prefix it starts with
         /// (<paramref name="vocabulary"/>, <see cref="Vocabulary.Default"/> when null), its LOD
         /// and collision suffixes, the pipeline suffixes and instance number the tools and DCCs
@@ -223,28 +260,14 @@ namespace SashaRX.UnityMeshLab
             if (string.IsNullOrEmpty(name)) return tags;
             vocabulary = vocabulary ?? Vocabulary.Default;
 
-            // Peel the trailing layers one at a time, whatever their order. LOD before collision:
-            // a _COL_* form would take a LOD suffix after it as part of its own word.
+            // Peel the trailing layers one at a time, whatever their order.
             string core = name;
             var pipeline = new System.Collections.Generic.List<string>();
-            for (bool peeled = true; peeled && core.Length > 0;)
+            while (core.Length > 0)
             {
-                Match layer;
-                if ((layer = InstanceTail.Match(core)).Success) { if (tags.Instance == null) tags.Instance = layer.Value; }
-                else if ((layer = PipelineTag.Match(core)).Success) pipeline.Insert(0, layer.Groups[1].Value);
-                else if ((layer = LodTail.Match(core)).Success)
-                {
-                    if (tags.Lod < 0 && int.TryParse(layer.Groups[1].Value, out int lod) && lod < MaxLodLevels) tags.Lod = lod;
-                }
-                else if ((layer = CollisionSuffix.Match(core)).Success)
-                {
-                    tags.Collision = true;
-                    var hull = HullSuffix.Match(layer.Value);
-                    if (tags.Hull < 0 && hull.Success && int.TryParse(hull.Groups[1].Value, System.Globalization.NumberStyles.None,
-                            System.Globalization.CultureInfo.InvariantCulture, out int hullIndex)) tags.Hull = hullIndex;
-                }
-                peeled = layer.Success && layer.Length > 0;
-                if (peeled) core = core.Substring(0, layer.Index);
+                var layer = PeelLayer(core, tags, pipeline);
+                if (!layer.Success || layer.Length == 0) break;
+                core = core.Substring(0, layer.Index);
             }
             tags.PipelineTags = pipeline.ToArray();
 
