@@ -27,6 +27,8 @@ namespace SashaRX.UnityMeshLab
     {
         const string PlaceMenu = "Assets/Mesh Lab/Place Collision at Root (Sidecar)";
         const string ClearMenu = "Assets/Mesh Lab/Clear Collision Placement (Sidecar)";
+        const string ToolsPlaceMenu = "Tools/Mesh Lab/Collision/Place at Root (Sidecar)";
+        const string ToolsClearMenu = "Tools/Mesh Lab/Collision/Clear Root Placement (Sidecar)";
 
         // ── On import ──
 
@@ -305,24 +307,26 @@ namespace SashaRX.UnityMeshLab
 
         // ── Menu ──
 
-        static IEnumerable<string> SelectedModels() => Selection.assetGUIDs
-            .Select(AssetDatabase.GUIDToAssetPath)
-            .Where(path => path.StartsWith("Assets/", StringComparison.Ordinal) && AssetImporter.GetAtPath(path) is ModelImporter)
-            .Distinct();
+        static IEnumerable<string> SelectedModels() => ModelSelection.Paths(path
+            => path.StartsWith("Assets/", StringComparison.Ordinal) && AssetImporter.GetAtPath(path) is ModelImporter);
 
         [MenuItem(PlaceMenu, true)]
+        [MenuItem(ToolsPlaceMenu, true)]
         static bool CanPlaceSelection() => PostprocessorDefineManager.IsEnabled() && SelectedModels().Any();
 
         [MenuItem(PlaceMenu, false, 2002)]
+        [MenuItem(ToolsPlaceMenu, false, 41)]
         static void PlaceSelection()
         {
             foreach (string path in SelectedModels().ToList()) PlaceInSidecar(path);
         }
 
         [MenuItem(ClearMenu, true)]
+        [MenuItem(ToolsClearMenu, true)]
         static bool CanClearSelection() => SelectedModels().Any(path => SidecarStore.CollisionAtRoot(path).Count > 0);
 
         [MenuItem(ClearMenu, false, 2003)]
+        [MenuItem(ToolsClearMenu, false, 42)]
         static void ClearSelection()
         {
             foreach (string path in SelectedModels().ToList()) ClearSidecar(path);

@@ -24,7 +24,7 @@ namespace SashaRX.UnityMeshLab
 {
     internal static class HierarchicalApply
     {
-        const string kMenuPath = "Mesh Lab/Hier/Apply UV2 to Selected LODGroup";
+        const string kMenuPath = "Tools/Mesh Lab/Diagnostics/Hierarchical UV2 to Selected LODGroup";
 
         [MenuItem(kMenuPath)]
         static void ApplyToSelectedLodGroup()

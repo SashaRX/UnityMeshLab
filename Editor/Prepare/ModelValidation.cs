@@ -20,6 +20,7 @@ namespace SashaRX.UnityMeshLab
     {
         internal const string Tag = "Validate";
         const string MenuPath = "Assets/Mesh Lab/Validate Models";
+        const string ToolsMenuPath = "Tools/Mesh Lab/Validate Models";
 
         /// <summary>The report of the model or prefab asset at <paramref name="assetPath"/>.</summary>
         internal static PrepareReport Validate(string assetPath, ModelRequirements requirements = null)
@@ -126,16 +127,15 @@ namespace SashaRX.UnityMeshLab
             return mesh.name == node.name ? $"'{path}'" : $"'{path}' (mesh '{mesh.name}')";
         }
 
-        static IEnumerable<string> SelectedModels() => Selection.assetGUIDs
-            .Select(AssetDatabase.GUIDToAssetPath)
-            .Where(path => !string.IsNullOrEmpty(path)
-                && (AssetImporter.GetAtPath(path) is ModelImporter || path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase)))
-            .Distinct();
+        static IEnumerable<string> SelectedModels() => ModelSelection.Paths(path
+            => AssetImporter.GetAtPath(path) is ModelImporter || path.EndsWith(".prefab", StringComparison.OrdinalIgnoreCase));
 
         [MenuItem(MenuPath, true)]
+        [MenuItem(ToolsMenuPath, true)]
         static bool CanValidateSelection() => SelectedModels().Any();
 
         [MenuItem(MenuPath, false, 2000)]
+        [MenuItem(ToolsMenuPath, false, 20)]
         static void ValidateSelection()
         {
             var paths = SelectedModels().ToList();
