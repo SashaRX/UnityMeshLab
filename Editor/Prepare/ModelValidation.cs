@@ -1,9 +1,10 @@
 // ModelValidation.cs — checks a model (an FBX or prefab asset, or a scene object) against
 // ModelRequirements into a PrepareReport: the file (import scale, units, smoothing groups,
-// ModelFileChecks), the nodes' scale and the model's size, then every mesh. A collision
-// mesh (a _COL node, or a MeshCollider's mesh, that no node renders) is held to the
-// geometry checks only. Each mesh is checked once, however many nodes share it; an
-// unreadable one through a readable copy that is destroyed afterwards.
+// ModelFileChecks), the nodes' scale, the model's size, the LOD chain and node names
+// (ModelLodChecks), then every mesh. A collision mesh (a _COL node, or a MeshCollider's
+// mesh, that no node renders) is held to the geometry checks only. Each mesh is checked
+// once, however many nodes share it; an unreadable one through a readable copy that is
+// destroyed afterwards.
 //
 // Assets ▸ Mesh Lab ▸ Validate Models logs the report of each selected model.
 
@@ -49,6 +50,8 @@ namespace SashaRX.UnityMeshLab
             requirements = requirements ?? ModelRequirements.Default;
             ModelFileChecks.CheckNodeScales(root, includeRootScale, requirements, report);
             ModelFileChecks.CheckSize(root, requirements, report);
+            ModelLodChecks.CheckLods(RenderNodes(root), requirements, report);
+            ModelLodChecks.CheckNames(root, requirements, report);
             var uses = Uses(root);
             foreach (var use in uses)
             {
@@ -96,6 +99,23 @@ namespace SashaRX.UnityMeshLab
                 if (transform.TryGetComponent(out SkinnedMeshRenderer skinned)) yield return (transform, skinned.sharedMesh, false);
                 foreach (var meshCollider in transform.GetComponents<MeshCollider>())
                     yield return (transform, meshCollider.sharedMesh, true);
+            }
+        }
+
+        /// <summary>Each render (not collision) node's name and triangle count (a quad is two); an unreadable mesh counts its indices too.</summary>
+        static IEnumerable<(string name, int triangles)> RenderNodes(GameObject root)
+        {
+            foreach (var (node, mesh, collider) in Meshes(root))
+            {
+                if (collider || mesh == null || MeshNaming.IsCollision(node.name) || MeshNaming.IsCollision(mesh.name)) continue;
+                long triangles = 0;
+                for (int sub = 0; sub < mesh.subMeshCount; ++sub)
+                {
+                    var topology = mesh.GetTopology(sub);
+                    if (topology == MeshTopology.Triangles) triangles += mesh.GetIndexCount(sub) / 3;
+                    else if (topology == MeshTopology.Quads) triangles += mesh.GetIndexCount(sub) / 2;   // two triangles per quad
+                }
+                yield return (node.name, (int)triangles);
             }
         }
 
