@@ -243,5 +243,36 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreSame(other, LodHierarchy.AssignCollider(root, other).sharedMesh);
             Assert.IsNull(LodHierarchy.AddColliderFromCollisionMesh(Node("Bare", null)));
         }
+
+        [Test]
+        public void AnOffsetCollisionNodeKeepsItsCollider()
+        {
+            var root = Node("Bench", null);
+            root.transform.position = new Vector3(5, 0, 0);
+            var col = Node("Base_Concrete_COL", root.transform, Tris(2));
+            col.transform.localPosition = new Vector3(.392f, 0, .002f);
+            StringAssert.Contains($"position ({.392f:F3}, {0f:F3}, {.002f:F3})", LodHierarchy.OffsetFromRoot(root.transform, col.transform));
+
+            var collider = LodHierarchy.AddColliderFromCollisionMesh(root);
+            Assert.AreSame(col, collider.gameObject, "the collider stays where the mesh lies");
+            Assert.IsNull(root.GetComponent<MeshCollider>());
+            Assert.IsTrue(LodHierarchy.HasCollisionCollider(root));
+            Assert.IsNull(LodHierarchy.AddColliderFromCollisionMesh(root), "a collision node with a collider counts");
+
+            Assert.IsNull(LodHierarchy.AssignCollider(root, Tris(1), col.transform), "on the root the mesh would land elsewhere");
+            Assert.IsNull(root.GetComponent<MeshCollider>());
+        }
+
+        [Test]
+        public void ACollisionNodeAtTheRootsPlacementGivesTheRootItsCollider()
+        {
+            var root = Node("Bench", null);
+            root.transform.SetPositionAndRotation(new Vector3(5, 1, 0), Quaternion.Euler(0, 30, 0));
+            var col = Node("Bench_COL", root.transform, Tris(2));
+            col.transform.localPosition = new Vector3(0, 0, 5e-5f);
+            Assert.IsNull(LodHierarchy.OffsetFromRoot(root.transform, col.transform), "within the tolerance");
+            Assert.AreSame(root, LodHierarchy.AddColliderFromCollisionMesh(root).gameObject);
+            Assert.AreSame(root.GetComponent<MeshCollider>(), LodHierarchy.AssignCollider(root, Tris(1), col.transform));
+        }
     }
 }

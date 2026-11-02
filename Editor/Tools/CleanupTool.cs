@@ -1243,14 +1243,15 @@ namespace SashaRX.UnityMeshLab
                 });
             }
 
-            // Check if collision mesh exists but root has no MeshCollider
-            if (colObjects.Count > 0 && root.GetComponent<MeshCollider>() == null)
+            // Check if collision mesh exists but neither the root nor a collision node has a
+            // MeshCollider (a collision node off the root's placement carries its own)
+            if (colObjects.Count > 0 && !LodHierarchy.HasCollisionCollider(root.gameObject))
             {
                 sceneIssues.Add(new SceneIssue
                 {
                     kind = SceneIssue.Kind.MissingCollider,
                     gameObject = root.gameObject,
-                    description = $"{root.name}: has collision mesh but no MeshCollider on root"
+                    description = $"{root.name}: has collision mesh but no MeshCollider"
                 });
             }
 
