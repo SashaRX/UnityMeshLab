@@ -161,17 +161,46 @@ namespace SashaRX.UnityMeshLab
                 var data = AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(sidecarPath);
                 if (data == null) continue;
 
-                bool hasCollision = data.collisionEntries != null && data.collisionEntries.Count > 0;
                 bool hasUv2 = data.entries != null && data.entries.Count > 0;
                 if (!hasUv2) continue;
 
                 data.entries.Clear();
                 cleared++;
-                if (hasCollision || data.toolSettings != null) EditorUtility.SetDirty(data);
+                if (!IsEmpty(data)) EditorUtility.SetDirty(data);
                 else AssetDatabase.DeleteAsset(sidecarPath);
             }
             if (cleared > 0) AssetDatabase.SaveAssets();
             return cleared;
+        }
+
+        // Nothing left to keep: no UV2 entries, collision, collision placements or tool settings.
+        static bool IsEmpty(Uv2DataAsset data)
+            => (data.entries == null || data.entries.Count == 0)
+            && (data.collisionEntries == null || data.collisionEntries.Count == 0)
+            && (data.collisionAtRoot == null || data.collisionAtRoot.Count == 0)
+            && data.toolSettings == null;
+
+        // ── Collision placed at the root (sidecar mode) ──
+
+        /// <summary>
+        /// The collision nodes the sidecar of <paramref name="fbxPath"/> has every import put at
+        /// the root's placement (paths below the imported root); a copy, empty when there are none.
+        /// </summary>
+        internal static List<string> CollisionAtRoot(string fbxPath)
+            => new List<string>(Load(fbxPath)?.collisionAtRoot ?? new List<string>());
+
+        /// <summary>
+        /// Sets them: a sidecar is created for a first one, and one left with nothing else is
+        /// deleted. The model is not reimported here.
+        /// </summary>
+        internal static void SetCollisionAtRoot(string fbxPath, IEnumerable<string> paths)
+        {
+            var list = paths.Where(p => !string.IsNullOrEmpty(p)).Distinct(StringComparer.Ordinal).ToList();
+            var data = list.Count > 0 ? LoadOrCreate(fbxPath) : Load(fbxPath);
+            if (data == null) return;
+            data.collisionAtRoot = list;
+            if (IsEmpty(data)) AssetDatabase.DeleteAsset(PathFor(fbxPath));
+            else Save(data);
         }
 
         /// <summary>Deletes the sidecars behind <paramref name="fbxPaths"/>. Returns how many existed.</summary>

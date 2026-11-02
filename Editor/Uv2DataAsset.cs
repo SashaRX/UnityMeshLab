@@ -292,6 +292,12 @@ namespace SashaRX.UnityMeshLab
 
         public List<MeshUv2Entry> entries = new List<MeshUv2Entry>();
         public List<CollisionMeshEntry> collisionEntries = new List<CollisionMeshEntry>();
+        /// <summary>
+        /// Collision nodes (paths below the imported root, CollisionHierarchyAnalyzer.RelativePath)
+        /// that every import puts at the root's placement in sidecar mode, their offset baked into
+        /// the imported mesh; the FBX keeps the offset (CollisionRootPlacement).
+        /// </summary>
+        public List<string> collisionAtRoot = new List<string>();
         public ToolSettings toolSettings;
 
         /// <summary>Find entry by mesh name, or null.</summary>

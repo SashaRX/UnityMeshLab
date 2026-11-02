@@ -10,6 +10,10 @@
 //
 // A collision node the sidecar's collision entries write is left alone: the next save
 // would write it back next to its source node.
+//
+// In sidecar mode, CollisionRootPlacement puts collision at the root through the sidecar on
+// every import instead, leaving the file as it is. Both keep the objects that use a moved mesh
+// (scenes, prefab assets) in place through CollisionConsumers.
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
 using System;
@@ -17,7 +21,6 @@ using System.Collections.Generic;
 using System.Linq;
 using UnityEditor;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 using Object = UnityEngine.Object;
 
 namespace SashaRX.UnityMeshLab
@@ -32,14 +35,17 @@ namespace SashaRX.UnityMeshLab
         /// <summary>
         /// The collision nodes of the model at <paramref name="fbxPath"/> (named as collision by
         /// MeshNaming) that sit off the root's placement, each with its mesh in the root's space;
-        /// <paramref name="skipped"/> names the ones left as they are and why, and
-        /// <paramref name="offsets"/> gives each baked mesh's node placement in the root's space.
+        /// <paramref name="skipped"/> names the ones left as they are and why;
+        /// <paramref name="meshes"/> gives each baked mesh's node path, and
+        /// <paramref name="offsets"/> each such node's placement in the root's space.
         /// The caller disposes the plan.
         /// </summary>
-        internal static FbxStructurePlan Plan(string fbxPath, out List<string> skipped, out Dictionary<Mesh, Matrix4x4> offsets)
+        internal static FbxStructurePlan Plan(string fbxPath, out List<string> skipped, out Dictionary<Mesh, string> meshes,
+            out Dictionary<string, Matrix4x4> offsets)
         {
             skipped = new List<string>();
-            offsets = new Dictionary<Mesh, Matrix4x4>();
+            meshes = new Dictionary<Mesh, string>();
+            offsets = new Dictionary<string, Matrix4x4>(StringComparer.Ordinal);
             var plan = new FbxStructurePlan();
             var root = AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath);
             if (root == null) return plan;
@@ -63,8 +69,10 @@ namespace SashaRX.UnityMeshLab
                     rootMesh.name = mesh.name;
                     MeshGeometry.TransformCollisionMesh(rootMesh, offset);
                     rootMesh.RecalculateNormals();
-                    offsets[mesh] = offset;
-                    plan.rootPlacements.Add((CollisionHierarchyAnalyzer.RelativePath(root.transform, node.transform), rootMesh));
+                    string path = CollisionHierarchyAnalyzer.RelativePath(root.transform, node.transform);
+                    meshes[mesh] = path;
+                    offsets[path] = offset;
+                    plan.rootPlacements.Add((path, rootMesh));
                 }
             }
             catch
@@ -143,17 +151,21 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         internal static bool BakeOffsets(string fbxPath)
         {
-            using var plan = Plan(fbxPath, out var skipped, out var offsets);
+            using var plan = Plan(fbxPath, out var skipped, out var meshes, out var offsets);
             foreach (string reason in skipped) UvtLog.Warn($"[Collision] {reason}; not baked.");
             if (plan.rootPlacements.Count == 0)
             {
                 UvtLog.Info($"[Collision] '{fbxPath}': no collision node off the root's placement to bake.");
                 return false;
             }
-            var scene = SceneEffectOf(offsets, AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath));
-            if (scene.refusals.Count > 0)
+            // Every baked node goes to the root's placement; the objects that use its mesh (in the
+            // loaded scenes and in prefab assets) are checked now and kept in place after the write.
+            var atRoot = offsets.Keys.ToDictionary(path => path, _ => Matrix4x4.identity, StringComparer.Ordinal);
+            var consumers = CollisionConsumers.Scan(fbxPath, AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath), meshes);
+            var refusals = consumers.Refusals.Concat(consumers.Problems(offsets, atRoot)).ToList();
+            if (refusals.Count > 0)
             {
-                UvtLog.Error($"[Collision] '{fbxPath}' was not written: {string.Join("; ", scene.refusals)}.");
+                UvtLog.Error($"[Collision] '{fbxPath}' was not written: {string.Join("; ", refusals)}.");
                 return false;
             }
             var bindings = FbxExport.CaptureSceneMeshReferences(fbxPath, Array.Empty<MeshEntry>());
@@ -166,110 +178,11 @@ namespace SashaRX.UnityMeshLab
             }
             finally { bindings?.Relink(fbxPath); }
             if (!written) return false;
-            int moved = KeepScenePlacements(scene.moves);
+            var (moved, prefabs) = consumers.Apply(offsets, atRoot);
             UvtLog.Info($"[Collision] '{fbxPath}': {plan.rootPlacements.Count} collision node(s) baked to the root's placement"
                 + (moved > 0 ? $"; {moved} scene object(s) that do not follow the model's transforms were moved to keep their collision where it was" : "")
-                + (scene.rootColliders > 0 ? $"; {scene.rootColliders} MeshCollider(s) on the model's root now lie where the model shows their node" : "") + ".");
-            return true;
-        }
-
-        /// <summary>
-        /// What the bake does to the loaded scenes: the objects showing a baked mesh, each with
-        /// the local transform that keeps it where it was; how many MeshColliders on the root of
-        /// an instance of the model take their node's placement; and why the bake is refused, if it is.
-        /// </summary>
-        sealed class SceneEffect
-        {
-            public readonly List<(Transform node, Matrix4x4 local)> moves = new List<(Transform, Matrix4x4)>();
-            public readonly List<string> refusals = new List<string>();
-            public int rootColliders;
-        }
-
-        // Every object of the loaded scenes (inactive ones too) whose MeshFilter or MeshCollider uses one of the meshes.
-        static SceneEffect SceneEffectOf(Dictionary<Mesh, Matrix4x4> offsets, GameObject model)
-        {
-            var effect = new SceneEffect();
-            foreach (var root in LoadedSceneRoots())
-            {
-                foreach (var filter in root.GetComponentsInChildren<MeshFilter>(true))
-                    if (filter.sharedMesh != null && offsets.TryGetValue(filter.sharedMesh, out var offset))
-                        AddMove(effect, filter.transform, filter.sharedMesh, offset);
-                foreach (var collider in root.GetComponentsInChildren<MeshCollider>(true))
-                    AddCollider(effect, collider, offsets, model);
-            }
-            return effect;
-        }
-
-        static IEnumerable<GameObject> LoadedSceneRoots()
-        {
-            for (int s = 0; s < SceneManager.sceneCount; s++)
-            {
-                var scene = SceneManager.GetSceneAt(s);
-                if (!scene.isLoaded) continue;
-                foreach (var root in scene.GetRootGameObjects()) yield return root;
-            }
-        }
-
-        /// <summary>
-        /// The baked mesh moved by its offset, so an object showing it keeps it in place at its
-        /// old local transform times the offset's inverse. A Transform holds no shear: when that
-        /// needs one (the node rotated and unevenly scaled against the object), the bake is refused.
-        /// </summary>
-        static void AddMove(SceneEffect effect, Transform node, Mesh mesh, Matrix4x4 offset)
-        {
-            var local = Local(node) * offset.inverse;
-            if (IsTrs(local)) effect.moves.Add((node, local));
-            else effect.refusals.Add($"'{node.name}' would need a sheared transform to keep '{mesh.name}' where it shows it "
-                + "(the node is rotated and unevenly scaled against that object's transform)");
-        }
-
-        /// <summary>
-        /// A MeshCollider using a baked mesh without its object showing it: its collision moves
-        /// with the mesh. On the root of an instance of the model that is the point (it lands
-        /// where the model shows the node); anywhere else the bake is refused.
-        /// </summary>
-        static void AddCollider(SceneEffect effect, MeshCollider collider, Dictionary<Mesh, Matrix4x4> offsets, GameObject model)
-        {
-            var mesh = collider.sharedMesh;
-            if (mesh == null || !offsets.ContainsKey(mesh)) return;
-            if (collider.TryGetComponent(out MeshFilter filter) && filter.sharedMesh == mesh) return;   // moved with its MeshFilter
-            if (model != null && PrefabUtility.GetCorrespondingObjectFromOriginalSource(collider.gameObject) == model) effect.rootColliders++;
-            else effect.refusals.Add($"'{collider.name}' has a MeshCollider using '{mesh.name}' away from its node, so the bake would move that collision "
-                + "(give the node its own collider, or clear this one)");
-        }
-
-        /// <summary>
-        /// Sets each object's local transform to the one that keeps its baked mesh in place. A
-        /// prefab instance that follows the model already has it (identity) after the import; an
-        /// unpacked copy or an instance with its own transform override is moved, with Undo and
-        /// the override recorded.
-        /// </summary>
-        static int KeepScenePlacements(List<(Transform node, Matrix4x4 local)> moves)
-        {
-            int moved = 0;
-            foreach (var (node, local) in moves)
-            {
-                if (node == null || SameMatrix(Local(node), local)) continue;
-                Undo.RecordObject(node, "Keep Baked Collision in Place");
-                node.localPosition = local.GetColumn(3);
-                node.localRotation = local.rotation;
-                node.localScale = local.lossyScale;
-                if (PrefabUtility.IsPartOfPrefabInstance(node)) PrefabUtility.RecordPrefabInstancePropertyModifications(node);
-                moved++;
-            }
-            return moved;
-        }
-
-        static Matrix4x4 Local(Transform t) => Matrix4x4.TRS(t.localPosition, t.localRotation, t.localScale);
-
-        /// <summary>Whether a Transform's position, rotation and scale can hold <paramref name="m"/>: it has no shear.</summary>
-        internal static bool IsTrs(Matrix4x4 m) => SameMatrix(Matrix4x4.TRS(m.GetColumn(3), m.rotation, m.lossyScale), m, 1e-4f);
-
-        // Entry by entry, within the tolerance relative to the entry's size (at least 1).
-        static bool SameMatrix(Matrix4x4 a, Matrix4x4 b, float tolerance = 1e-5f)
-        {
-            for (int i = 0; i < 16; i++)
-                if (Mathf.Abs(a[i] - b[i]) > tolerance * Mathf.Max(1f, Mathf.Abs(b[i]))) return false;
+                + (prefabs > 0 ? $"; {prefabs} prefab asset(s) holding their own copy were saved with it kept where it was" : "")
+                + (consumers.RootColliders > 0 ? $"; {consumers.RootColliders} MeshCollider(s) on the model's root now lie where the model shows their node" : "") + ".");
             return true;
         }
 
