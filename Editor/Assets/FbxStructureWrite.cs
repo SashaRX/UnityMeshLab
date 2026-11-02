@@ -61,11 +61,18 @@ namespace SashaRX.UnityMeshLab
         internal readonly List<(string key, List<Mesh> meshes, bool convex)> collisions = new List<(string, List<Mesh>, bool)>();
         internal readonly Dictionary<string, CollisionMeshEntry> collisionSources = new Dictionary<string, CollisionMeshEntry>(StringComparer.Ordinal);
         internal readonly List<MaterialEdit> materials = new List<MaterialEdit>();
+        /// <summary>
+        /// Collision nodes to put at the model root's placement: each node's path below the
+        /// imported root (CollisionHierarchyAnalyzer.RelativePath) and its mesh in the root's
+        /// space, owned by the plan.
+        /// </summary>
+        internal readonly List<(string path, Mesh mesh)> rootPlacements = new List<(string, Mesh)>();
         internal readonly List<string> refusals = new List<string>();
         /// <summary>A mesh written whole carries UV1 work (repack, transfer) of its own.</summary>
         internal bool wholeMeshUv1Edited;
 
-        public bool IsEmpty => lods.Count == 0 && reshaped.Count == 0 && collisions.Count == 0 && materials.Count == 0 && refusals.Count == 0;
+        public bool IsEmpty => lods.Count == 0 && reshaped.Count == 0 && collisions.Count == 0 && materials.Count == 0 && refusals.Count == 0
+            && rootPlacements.Count == 0;
 
         /// <summary>Meshes written whole by the structure step; the channel step leaves them out.</summary>
         internal ICollection<string> WholeMeshNames() => new HashSet<string>(lods.Select(l => l.name).Concat(reshaped.Select(r => r.name)), StringComparer.Ordinal);
@@ -76,6 +83,9 @@ namespace SashaRX.UnityMeshLab
                 foreach (var mesh in meshes)
                     if (mesh != null) Object.DestroyImmediate(mesh);
             collisions.Clear();
+            foreach (var (_, mesh) in rootPlacements)
+                if (mesh != null) Object.DestroyImmediate(mesh);
+            rootPlacements.Clear();
         }
     }
 
@@ -534,6 +544,8 @@ namespace SashaRX.UnityMeshLab
                     RequireOwnedCollisionSubtree(old, key);
             }
             foreach (var (name, mesh) in plan.reshaped) RequirePlaceable(Ref(name), mesh, name);
+            var placements = plan.rootPlacements.Select(p => (target: RootPlacementTarget(document, tagged, p.path, preserveHierarchy), p.mesh)).ToList();
+            foreach (var (target, mesh) in placements) RequirePlaceable(target, mesh, target.name);
             foreach (var lod in plan.lods.Where(l => l.materials != null))
                 RequireMaterials(Ref(lod.sourceName).submeshMaterials, lod.materials, lod.replaced, lod.name);
             var materialTargets = new List<(FbxStructurePlan.MaterialEdit edit, FbxNode node, int[] slots)>();
@@ -586,6 +598,16 @@ namespace SashaRX.UnityMeshLab
             foreach (var collision in collisions)
             {
                 changes += WriteCollision(scene, CollisionRef(collision.key), collision, log);
+            }
+            foreach (var (target, mesh) in placements)
+            {
+                FbxStructureEdit.ResetTransform(target.node);
+                if (!FbxStructureEdit.SamePlacement(target.node.GetParent(), target.node, false))
+                    throw new FbxStructureRefusalException($"'{target.node.GetName()}' does not sit at the model root's placement after its transform was reset");
+                var replacement = FbxStructureEdit.CreateMesh(scene, target.mesh.GetName(), CollisionData(mesh, target));
+                FbxStructureEdit.ReplaceMesh(target.mesh, replacement);
+                log.Add($"'{target.node.GetName()}': its offset from the model root baked into its mesh; the node sits at the root's placement");
+                changes++;
             }
             foreach (var (name, mesh) in plan.reshaped)
             {
@@ -903,6 +925,45 @@ namespace SashaRX.UnityMeshLab
                 throw new FbxStructureRefusalException(
                     $"'{source.node.GetName()}' is the FBX's only top-level node, which Unity imports as the model root; a node next to it " +
                     "would change the imported hierarchy (normalise it in Prefab Builder first)");
+        }
+
+        /// <summary>
+        /// The collision node at <paramref name="importedPath"/> (below the imported root) as a
+        /// reference to its own mesh, refused unless its transform can simply be reset: a
+        /// child of the node Unity imports as the root (the FBX's only top-level node, unless
+        /// Preserve Hierarchy is on; else the scene root), with no child nodes, no animated
+        /// transform, and a mesh of its own that nothing deforms.
+        /// </summary>
+        static Reference RootPlacementTarget(FbxSourceDocument document, Dictionary<string, FbxChannelWrite.Tagged> tagged,
+            string importedPath, bool preserveHierarchy)
+        {
+            string path = ImportedCollisionDocumentPath(document, importedPath);
+            FbxNode node = null;
+            foreach (var candidate in document.Meshes)
+                for (int i = 0; i < candidate.GetNodeCount(); i++)
+                    if (CollisionNodePath(candidate.GetNode(i)) == path) node = candidate.GetNode(i);
+            if (node == null) throw new FbxStructureRefusalException($"collision path '{importedPath}' has no mesh node in the FBX");
+            string name = node.GetName();
+            var mesh = node.GetMesh();
+            int ordinal = document.Meshes.IndexOf(mesh);
+            var tag = tagged.Values.FirstOrDefault(t => t.ordinal == ordinal);
+            if (tag == null || tag.ambiguous)
+                throw new FbxStructureRefusalException($"'{name}': its mesh cannot be told apart in the import (its corner tags did not survive, or another mesh imports under its name)");
+            if (mesh.GetNodeCount() > 1)
+                throw new FbxStructureRefusalException($"'{name}': its mesh is shared by {mesh.GetNodeCount()} nodes, so baking this node's offset into it would move the others");
+            if (FbxStructureEdit.HasDeformers(mesh))
+                throw new FbxStructureRefusalException($"'{name}' is skinned or has blend shapes");
+            if (node.GetChildCount() > 0)
+                throw new FbxStructureRefusalException($"'{name}' has child nodes, which would move with it");
+            if (FbxStructureEdit.HasTransformAnimation(node))
+                throw new FbxStructureRefusalException($"'{name}' has an animated transform");
+            var root = document.Scene.GetRootNode();
+            var importedRoot = !preserveHierarchy && root.GetChildCount() == 1 ? root.GetChild(0) : root;
+            if (node.GetParent() != importedRoot)
+                throw new FbxStructureRefusalException(
+                    $"'{name}' sits under '{node.GetParent()?.GetName()}', not directly under the model root; only a direct child takes the root's placement by resetting its transform");
+            var (fit, reverse) = FitOf(mesh, tag, name);
+            return new Reference { name = name, mesh = mesh, node = node, fit = fit, reverse = reverse, instanceResolved = true };
         }
 
         // Removes the siblings a new node replaces (same name, same parent); a node with children

@@ -259,6 +259,10 @@ namespace SashaRX.UnityMeshLab
                 .Select(d => document.Meshes[tagged[d.name].ordinal]).ToHashSet();
             int structural = hasStructure ? FbxStructureWrite.Apply(document, tagged, structure, options, structureLog) : 0;
             if (structural > 0) document.RefreshMeshes();
+            // A collision node put at the root's placement is imported once more before the
+            // file is replaced: it must land at the root, its mesh where it was.
+            if (hasStructure && structure.rootPlacements.Count > 0)
+                FbxCollisionPlacement.Verify(document, sourceFbxPath, structure.rootPlacements);
             var wholeMeshes = options.wholeMeshes;
             if (wholeMeshes.Count > 0)
             {
@@ -1035,6 +1039,45 @@ namespace SashaRX.UnityMeshLab
             {
                 Uv2AssetPostprocessor.bypassPaths.Remove(tempPath);
                 AssetDatabase.DeleteAsset(tempPath);
+                if (AssetDatabase.IsValidFolder(TempFolder) && AssetDatabase.FindAssets(string.Empty, new[] { TempFolder }).Length == 0)
+                    AssetDatabase.DeleteAsset(TempFolder);
+            }
+        }
+
+        /// <summary>
+        /// Imports <paramref name="document"/> as it stands into a temporary asset with the
+        /// source's import settings (readable and uncompressed, no materials or animation), hands its path to
+        /// <paramref name="read"/>, and deletes it. The document is not changed.
+        /// </summary>
+        internal static T ImportEditedCopy<T>(FbxSourceDocument document, string sourceFbxPath, Func<string, T> read)
+        {
+            if (!AssetDatabase.IsValidFolder(TempFolder)) AssetDatabase.CreateFolder("Assets", TempFolder.Substring("Assets/".Length));
+            string tempPath = $"{TempFolder}/edited_copy_{Guid.NewGuid():N}.fbx";
+            Uv2AssetPostprocessor.bypassPaths.Add(tempPath);
+            try
+            {
+                document.SaveForImport(Path.GetFullPath(tempPath));
+                AssetDatabase.ImportAsset(tempPath, ImportAssetOptions.ForceSynchronousImport);
+                var importer = AssetImporter.GetAtPath(tempPath) as ModelImporter
+                    ?? throw new InvalidOperationException("The edited copy did not import as a model.");
+                if (AssetImporter.GetAtPath(sourceFbxPath) is ModelImporter source) new Preset(source).ApplyTo(importer);
+                // Positions at full precision: compression would quantize them by the edited bounds.
+                importer.meshCompression = ModelImporterMeshCompression.Off;
+                importer.isReadable = true;
+                importer.generateSecondaryUV = false;
+                importer.importAnimation = false;
+                importer.materialImportMode = ModelImporterMaterialImportMode.None;
+                importer.SaveAndReimport();
+                return read(tempPath);
+            }
+            finally
+            {
+                Uv2AssetPostprocessor.bypassPaths.Remove(tempPath);
+                if (!AssetDatabase.DeleteAsset(tempPath))
+                {
+                    File.Delete(Path.GetFullPath(tempPath));
+                    File.Delete(Path.GetFullPath(tempPath + ".meta"));
+                }
                 if (AssetDatabase.IsValidFolder(TempFolder) && AssetDatabase.FindAssets(string.Empty, new[] { TempFolder }).Length == 0)
                     AssetDatabase.DeleteAsset(TempFolder);
             }

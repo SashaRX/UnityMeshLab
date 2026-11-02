@@ -370,6 +370,26 @@ namespace SashaRX.UnityMeshLab
 
         // ── Transforms ──
 
+        /// <summary>
+        /// Makes <paramref name="node"/>'s local transform identity: translation, rotation and
+        /// scaling, their offsets and pivots, pre- and post-rotation. Its geometric transform
+        /// and inherit type stay, so its mesh maps to its import as before.
+        /// </summary>
+        internal static void ResetTransform(FbxNode node)
+        {
+            const FbxNode.EPivotSet pivot = FbxNode.EPivotSet.eSourcePivot;
+            var none = new FbxVector4(0, 0, 0, 0);
+            node.LclTranslation.Set(new FbxDouble3(0, 0, 0));
+            node.LclRotation.Set(new FbxDouble3(0, 0, 0));
+            node.LclScaling.Set(new FbxDouble3(1, 1, 1));
+            node.SetRotationOffset(pivot, none);
+            node.SetRotationPivot(pivot, none);
+            node.SetPreRotation(pivot, none);
+            node.SetPostRotation(pivot, none);
+            node.SetScalingOffset(pivot, none);
+            node.SetScalingPivot(pivot, none);
+        }
+
         static void CopyTransform(FbxNode from, FbxNode to, bool geometric)
         {
             const FbxNode.EPivotSet pivot = FbxNode.EPivotSet.eSourcePivot;

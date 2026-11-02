@@ -477,6 +477,80 @@ namespace SashaRX.UnityMeshLab.Tests
             }).OrderBy(k => k, StringComparer.Ordinal).ToArray();
         }
 
+        // Bench (the only top-level node) holds Seat_COL, a triangle offset and turned from it with a
+        // geometric offset of its own; nested, Seat_COL sits in a Parts group.
+        string WriteOffsetCollision(bool nested)
+        {
+            string path = Path.Combine(folder, nested ? "nested.fbx" : "offset.fbx");
+            using var manager = FbxManager.Create();
+            var io = FbxIOSettings.Create(manager, Globals.IOSROOT);
+            manager.SetIOSettings(io);
+            var scene = FbxScene.Create(manager, "Offset");
+            var bench = FbxNode.Create(scene, "Bench");
+            scene.GetRootNode().AddChild(bench);
+            var parent = bench;
+            if (nested) { parent = FbxNode.Create(scene, "Parts"); bench.AddChild(parent); }
+            var mesh = FbxMesh.Create(scene, "Seat_COL");
+            mesh.InitControlPoints(3);
+            double[,] points = { { 0, 0, 0 }, { 100, 0, 0 }, { 0, 100, 0 } };
+            for (int i = 0; i < 3; i++) mesh.SetControlPointAt(new FbxVector4(points[i, 0], points[i, 1], points[i, 2]), i);
+            mesh.BeginPolygon();
+            for (int i = 0; i < 3; i++) mesh.AddPolygon(i);
+            mesh.EndPolygon();
+            var node = FbxNode.Create(scene, "Seat_COL");
+            node.SetNodeAttribute(mesh);
+            node.LclTranslation.Set(new FbxDouble3(39.2, 0, 0.2));
+            node.LclRotation.Set(new FbxDouble3(0, 30, 0));
+            node.SetRotationPivot(FbxNode.EPivotSet.eSourcePivot, new FbxVector4(4, 5, 6));
+            node.SetGeometricTranslation(FbxNode.EPivotSet.eSourcePivot, new FbxVector4(7, 8, 9));
+            parent.AddChild(node);
+            using var exporter = FbxExporter.Create(manager, "Write");
+            int format = manager.GetIOPluginRegistry().FindWriterIDByDescription("FBX binary (*.fbx)");
+            Assert.IsTrue(exporter.Initialize(path, format, io) && exporter.SetFileExportVersion("FBX201400") && exporter.Export(scene));
+            return path;
+        }
+
+        [TestCase(false, false)]
+        [TestCase(true, false)]
+        [TestCase(false, true)]
+        public void Structure_RootPlacementResetsADirectChildOfTheImportedRoot(bool nested, bool preserveHierarchy)
+        {
+            using var document = FbxSourceDocument.Load(WriteOffsetCollision(nested));
+            var (positions, triangles) = SimulatedImport(document.Meshes[0]);
+            var tagged = new Dictionary<string, FbxChannelWrite.Tagged> {
+                ["Seat_COL"] = new FbxChannelWrite.Tagged {
+                    ordinal = 0, cornerPositions = positions, submeshCorners = new[] { triangles }, submeshFaceSizes = new[] { 3 }
+                }
+            };
+            // The triangle as it lies in the root's space: one metre along X from its import.
+            var planned = new UnityEngine.Vector3[positions.Length / 3];
+            for (int i = 0; i < planned.Length; ++i)
+                planned[i] = new UnityEngine.Vector3(positions[i * 3] + 1, positions[i * 3 + 1], positions[i * 3 + 2]);
+            var mesh = new UnityEngine.Mesh { name = "Seat_COL", vertices = planned, triangles = triangles };
+            using var plan = new FbxStructurePlan();
+            plan.rootPlacements.Add((nested ? "Parts[0]/Seat_COL[0]" : "Seat_COL[0]", mesh));
+            var options = new FbxStructureWrite.Options { preserveHierarchy = preserveHierarchy };
+            if (nested || preserveHierarchy)
+            {
+                var refusal = Assert.Throws<FbxStructureRefusalException>(() =>
+                    FbxStructureWrite.Apply(document, tagged, plan, options, new List<string>()));
+                StringAssert.Contains("not directly under the model root", refusal.Message);
+                return;
+            }
+            Assert.AreEqual(1, FbxStructureWrite.Apply(document, tagged, plan, options, new List<string>()));
+            var node = FbxStructureEdit.FindNodes(document.Scene, "Seat_COL").Single();
+            Assert.AreEqual("Bench", node.GetParent().GetName());
+            Assert.IsTrue(FbxStructureEdit.SamePlacement(node.GetParent(), node, false), "the node sits at the root's placement");
+            Assert.AreEqual(new FbxVector4(7, 8, 9), node.GetGeometricTranslation(FbxNode.EPivotSet.eSourcePivot), "its geometric offset stays");
+            var (after, _) = SimulatedImport(node.GetMesh());
+            for (int i = 0; i < after.Length / 3; ++i)
+            {
+                var corner = new UnityEngine.Vector3(after[i * 3], after[i * 3 + 1], after[i * 3 + 2]);
+                Assert.Less(planned.Min(p => UnityEngine.Vector3.Distance(p, corner)), 1e-4f, "its import lies where the plan put it");
+            }
+            UnityEngine.Object.DestroyImmediate(mesh);
+        }
+
         [Test]
         public void Structure_CollisionUsesSourceLocalGeometryAndKeepsSourceNodePlacement()
         {
