@@ -14,7 +14,7 @@
 // stops the steps after it (the importer's changes stay, as a fix towards the requirements).
 //
 // Tools ▸ Mesh Lab ▸ Prepare ▸ Preview / Apply run each selected target's chain (its recipe's,
-// PrepareRecipe) and log each result, until the Prefab Builder carries the prepare section.
+// PrepareRecipe) and log each result; the Prepare tab (PrepareTool) runs it with its result shown.
 
 using System.Collections.Generic;
 using System.Linq;
@@ -102,7 +102,8 @@ namespace SashaRX.UnityMeshLab
             return text.ToString();
         }
 
-        string State()
+        /// <summary>"applied", "preview", or "not applied, " and why.</summary>
+        internal string State()
         {
             if (Refused != null) return "not applied, " + Refused;
             return Applied ? "applied" : "preview";
@@ -264,7 +265,7 @@ namespace SashaRX.UnityMeshLab
             return results;
         }
 
-        // ── Menu (until the Prefab Builder carries the prepare section) ──
+        // ── Menu (the Prepare tab runs the same chains with the result shown) ──
 
         [MenuItem(MenuRoot + "Preview", true)]
         [MenuItem(MenuRoot + "Apply", true)]

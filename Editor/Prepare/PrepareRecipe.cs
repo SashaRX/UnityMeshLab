@@ -136,6 +136,17 @@ namespace SashaRX.UnityMeshLab
         internal string Match { get; }
 
         internal IReadOnlyList<IPrepareStep> Steps { get; }
+
+        /// <summary>
+        /// This chain with each step named in <paramref name="off"/> skipped for
+        /// <paramref name="reason"/> (a run's choice; the recipe is unchanged), the others as they are.
+        /// </summary>
+        internal PrepareChain Without(ICollection<string> off, string reason)
+        {
+            if (off == null || off.Count == 0) return this;
+            return new PrepareChain(Recipe, Match,
+                Steps.Select(s => off.Contains(s.Name) && !(s is SkippedStep) ? new SkippedStep(s, reason) : s).ToList());
+        }
     }
 
     internal static class PrepareRecipes
