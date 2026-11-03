@@ -109,8 +109,9 @@ namespace SashaRX.UnityMeshLab
                 report.Add(PrepareLevel.Warning, subject, Check, $"no {data.Name} asset named '{surface}' ({origin} says {surface})");
                 return;
             }
-            report.Add(PrepareLevel.Changed, subject, Check, $"{component.Name} '{asset.name}' ({origin} says {surface})");
-            if (apply) Set(context, existing != null ? existing : context.AddComponent(host, component), asset, subject, report);
+            // Applied, the change is reported once it is made.
+            if (!apply || Set(context, existing != null ? existing : context.AddComponent(host, component), asset, subject, report))
+                report.Add(PrepareLevel.Changed, subject, Check, $"{component.Name} '{asset.name}' ({origin} says {surface})");
         }
 
         // A surface already set stays: the binding is the game's to change.
@@ -123,24 +124,26 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
-        void Set(PrepareContext context, Component target, Object asset, string subject, PrepareReport report)
+        // Whether the surface was set; a line says why not.
+        bool Set(PrepareContext context, Component target, Object asset, string subject, PrepareReport report)
         {
             if (target == null)
             {
                 // Unity refused to add it (a script in an editor assembly, say) and said why in the Console.
                 report.Add(PrepareLevel.Warning, subject, Check, $"Unity did not add {component.Name} (see the Console); its surface is not set");
-                return;
+                return false;
             }
             var serialized = new SerializedObject(target);
             var property = serialized.FindProperty(field);
             if (property == null || property.propertyType != SerializedPropertyType.ObjectReference)
             {
                 report.Add(PrepareLevel.Warning, subject, Check, $"{component.Name} has no serialized object field '{field}'; its surface is not set");
-                return;
+                return false;
             }
             property.objectReferenceValue = asset;
             if (context.UsesUndo) serialized.ApplyModifiedProperties();
             else serialized.ApplyModifiedPropertiesWithoutUndo();
+            return true;
         }
 
         /// <summary>The type of that full or short name derived from <paramref name="baseType"/>; the full name wins.</summary>

@@ -291,8 +291,8 @@ namespace SashaRX.UnityMeshLab.Tests
                 var result = Apply(root, new ColliderStep(binding));
 
                 Assert.IsNull(seat.GetComponent<PrepareEditorOnlySurface>());
-                var line = result.Steps.Single().Report.Lines.Last(l => l.check == ComponentSurfaceBinding.Check);
-                Assert.AreEqual(PrepareLevel.Warning, line.level, result.ToString());
+                var line = result.Steps.Single().Report.Lines.Single(l => l.check == ComponentSurfaceBinding.Check);
+                Assert.AreEqual(PrepareLevel.Warning, line.level, "no change is reported for it: " + result);
                 StringAssert.Contains("Unity did not add PrepareEditorOnlySurface", line.message);
             }
             finally { LogAssert.ignoreFailingMessages = false; }
