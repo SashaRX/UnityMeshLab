@@ -37,6 +37,12 @@ namespace SashaRX.UnityMeshLab
         void Apply(PrepareContext context, PrepareReport report);
     }
 
+    /// <summary>
+    /// A step that changes a model asset's importer: it applies before the model's prefab
+    /// variant is opened, so the steps after it see the reimported model.
+    /// </summary>
+    internal interface IImporterStep : IPrepareStep { }
+
     internal enum PrepareTargetKind { ModelAsset, PrefabAsset, SceneObject }
 
     /// <summary>A model asset, a prefab asset or a scene object to prepare.</summary>
