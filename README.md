@@ -18,6 +18,7 @@ Open the window with **Tools → Mesh Lab → Open Mesh Lab**. The toolbar selec
 | **UV1 Hierarchy** | Per-mesh UV1 repack across a GameObject subtree, with or without a LODGroup |
 | **Prefab Builder** | Hierarchy, LOD levels, split / merge by material and collision of a prefab in one place, with edge and problem previews in the 3D view |
 | **Cleanup** | Scan and fix mesh, material, collider and scene hygiene after UV, LOD, collision and FBX operations |
+| **Prepare** | Prepare FBX models, prefabs and scene objects for the game through their recipe: validate, importer preset, materials, colliders with surfaces, prefab variant; Preview, then Apply |
 | **Vertex Color Baking** | Vertex AO (GPU hemisphere depth sampling) and Solid Color batch export with FBX + prefab variants |
 | **Texture Packer** | Albedo, MRCA and Normal textures assembled from whole RGB images or selected source channels, with shared dimensions and TGA RLE export |
 | **Diagnostics** | Parameter sweep, multi-model benchmark, log filters, hierarchical probe, FBX metrics (debug UI only) |
@@ -124,6 +125,10 @@ Per-mesh UV1 pack or repack across a GameObject subtree, no LODGroup required: e
 ## Prefab Builder
 
 One tab for assembling a prefab: **Hierarchy** (rebuild the LODGroup from `_LOD{n}` names, move a root mesh into a LOD0 child), **LOD Levels**, **Split / Merge** by material (every vertex attribute carried, static flags and renderer settings kept), **Collision** (collider from the collision child) and a **Build Pipeline** that runs them in order. Its *Edges* and *Problems* previews colour edge classes and unused vertices in the Scene view and in the 3D canvas.
+
+## Prepare
+
+Runs the prepare chain on what is selected in the Project window or a scene: **Validate** (the recipe's requirements; an error blocks Apply), **Preset** (the recipe's importer preset, except remaps, mesh IDs and LOD percentages), **Materials** (each unremapped slot to the project's material of that name), **Colliders** (a MeshCollider per `_COL`, the largest on the root, renderers removed, each collider's surface) and **Prefab** (an FBX's Prefab Variant next to it). Each target takes the first recipe its name and folder match (Project Settings ▸ Mesh Lab ▸ Prepare: Recipes); a step's card can leave it out of one run. **Preview** changes nothing; **Apply** makes the changes, and the **Result** page shows each target's steps and their findings.
 
 ## Cleanup
 

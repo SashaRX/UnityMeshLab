@@ -58,6 +58,8 @@ namespace SashaRX.UnityMeshLab
         public List<string> disabledToolIds = new List<string>();
         public List<string> disabledLibraryIds = new List<string>();
         internal static event Action ModulesChanged;
+        // Raised when a setting is changed in Project Settings (the Prepare tab reads its recipes again).
+        internal static event Action Changed;
 
 
         static MeshLabProjectSettings s_Instance;
@@ -219,7 +221,10 @@ namespace SashaRX.UnityMeshLab
             DrawSurfaceBinding(inst.surfaceBinding ?? (inst.surfaceBinding = new SurfaceBindingSettings()));
 
             if (EditorGUI.EndChangeCheck())
+            {
                 Save();
+                Changed?.Invoke();
+            }
 
             // Log Level — stays per-user in EditorPrefs via UvtLog.
             EditorGUILayout.Space(12);

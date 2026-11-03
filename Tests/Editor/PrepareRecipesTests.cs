@@ -124,6 +124,23 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Without_SkipsTheStepsLeftOutOfThisRunAndKeepsTheRecipe()
+        {
+            var recipe = new PrepareRecipe { name = "Bench only", materials = false, colliderSurfaces = false };
+            var chain = PrepareRecipes.Chain(PrepareTarget.ForSceneObject(Root("SM_Bench")), new[] { recipe });
+
+            var run = chain.Without(new[] { ColliderStep.StepName, MaterialStep.StepName }, "off for this run");
+
+            Assert.AreSame(recipe, run.Recipe);
+            Assert.AreEqual(chain.Match, run.Match);
+            Assert.IsNotInstanceOf<SkippedStep>(run.Steps[0], "Validate runs");
+            Assert.AreEqual("off in the recipe 'Bench only'", ((SkippedStep)run.Steps[2]).Reason, "a step the recipe turns off keeps its reason");
+            Assert.AreEqual("off for this run", ((SkippedStep)run.Steps[3]).Reason);
+            Assert.IsInstanceOf<ColliderStep>(((SkippedStep)run.Steps[3]).Step);
+            Assert.AreSame(chain, chain.Without(new string[0], "off for this run"), "nothing left out: the same chain");
+        }
+
+        [Test]
         public void Settings_MoveTheImporterPresetSetBeforeRecipesIntoTheRecipe()
         {
             var host = Root("Host");
