@@ -40,18 +40,12 @@ namespace SashaRX.UnityMeshLab
 
         // ── Hierarchy editing state ──
         Dictionary<int, string> pendingNames; // instanceID → edited name
-        bool hierarchyFoldout = true;
 
         // ── Split/Merge state ──
         List<MeshSplitMerge.SplitCandidate> splitCandidates;
         List<MeshSplitMerge.MergeGroup> mergeCandidates;
-        bool splitMergeFoldout;
-
-        // ── LOD management state ──
-        bool lodFoldout = true;
 
         // ── Build pipeline state ──
-        bool buildFoldout;
         bool editInPrefabStage;
         int buildLodCount = 2;
         float[] buildLodRatios = { 0.5f, 0.25f, 0.125f, 0.0625f };
@@ -62,9 +56,6 @@ namespace SashaRX.UnityMeshLab
         List<BuildValidator.Issue> buildIssues;
         Dictionary<BuildValidator.IssueGroup, bool> buildIssueFoldouts =
             new Dictionary<BuildValidator.IssueGroup, bool>();
-
-        // Collision management state
-        bool collisionFoldout;
 
         // ── Edge report cache ──
         struct MeshEdgeReport
@@ -117,8 +108,6 @@ namespace SashaRX.UnityMeshLab
 
         public void OnDrawSidebar()
         {
-            EditorGUILayout.Space(8);
-            EditorGUILayout.LabelField("Prefab Builder", EditorStyles.boldLabel);
             EditorGUILayout.Space(4);
 
             if (ctx == null || (ctx.LodGroup == null && !ctx.StandaloneMesh))
@@ -150,65 +139,43 @@ namespace SashaRX.UnityMeshLab
         // Preview mode toolbar
         // ═══════════════════════════════════════════════════════════
 
+        static readonly (string label, PreviewMode mode)[] PreviewModes =
+        {
+            ("Off", PreviewMode.None), ("Vertex Colors", PreviewMode.VertexColors), ("Normals", PreviewMode.Normals),
+            ("Tangents", PreviewMode.Tangents), ("UV0", PreviewMode.UV0), ("UV1", PreviewMode.UV1), ("UV2", PreviewMode.UV2),
+            ("UV3", PreviewMode.UV3), ("Edges", PreviewMode.EdgeWireframe), ("Problems", PreviewMode.ProblemAreas),
+        };
+        static readonly string[] PreviewLabels = System.Array.ConvertAll(PreviewModes, m => m.label);
+
+        // One row: what the scene shows on the model's renderers.
         void DrawPreviewModeToolbar()
         {
-            EditorGUILayout.Space(4);
-            EditorGUILayout.LabelField("Scene Preview", EditorStyles.miniLabel);
-
-            // Row 1: Off, Vert Colors, Normals, Tangents
-            EditorGUILayout.BeginHorizontal();
-            DrawModeButton("Off", PreviewMode.None);
-            DrawModeButton("Vert Colors", PreviewMode.VertexColors);
-            DrawModeButton("Normals", PreviewMode.Normals);
-            DrawModeButton("Tangents", PreviewMode.Tangents);
-            EditorGUILayout.EndHorizontal();
-
-            // Row 2: UV channels
-            EditorGUILayout.BeginHorizontal();
-            DrawModeButton("UV0", PreviewMode.UV0);
-            DrawModeButton("UV1", PreviewMode.UV1);
-            DrawModeButton("UV2", PreviewMode.UV2);
-            DrawModeButton("UV3", PreviewMode.UV3);
-            EditorGUILayout.EndHorizontal();
-
-            // Row 3: Edges, Problems
-            EditorGUILayout.BeginHorizontal();
-            DrawModeButton("Edges", PreviewMode.EdgeWireframe);
-            DrawModeButton("Problems", PreviewMode.ProblemAreas);
-            EditorGUILayout.EndHorizontal();
-
-            EditorGUILayout.Space(4);
+            int current = System.Array.FindIndex(PreviewModes, m => m.mode == previewMode);
+            int chosen = EditorGUILayout.Popup("Scene Preview", Mathf.Max(0, current), PreviewLabels);
+            if (chosen != current && chosen >= 0) SetPreview(PreviewModes[chosen].mode);
         }
 
-        void DrawModeButton(string label, PreviewMode mode)
+        void SetPreview(PreviewMode mode)
         {
-            var bgc = GUI.backgroundColor;
-            if (previewMode == mode)
-                GUI.backgroundColor = new Color(0.3f, 0.7f, 1f);
+            preview.Restore();
+            previewMode = mode;
+            edgeReports = null;
+            problemSummaries = null;
+            if (mode != PreviewMode.None) ActivateCurrentPreview();
+            SceneView.RepaintAll();
+            requestRepaint?.Invoke();
+        }
 
-            if (GUILayout.Button(label, GUILayout.Height(20)))
-            {
-                if (previewMode == mode)
-                {
-                    // Toggle off
-                    preview.Restore();
-                    previewMode = PreviewMode.None;
-                    edgeReports = null;
-                    problemSummaries = null;
-                }
-                else
-                {
-                    preview.Restore();
-                    previewMode = mode;
-                    edgeReports = null;
-                    problemSummaries = null;
-                    ActivateCurrentPreview();
-                }
-                SceneView.RepaintAll();
-                requestRepaint?.Invoke();
-            }
-
-            GUI.backgroundColor = bgc;
+        // A section header whose open state is remembered per user; the summary shows on the header line.
+        static bool Section(string key, string title, bool openByDefault, string summary = null)
+        {
+            string pref = "MeshLab.PrefabBuilder." + key;
+            bool open = EditorPrefs.GetBool(pref, openByDefault);
+            EditorGUILayout.Space(4);
+            string label = string.IsNullOrEmpty(summary) ? title : $"{title}  —  {summary}";
+            bool now = EditorGUILayout.Foldout(open, label, true, EditorStyles.foldoutHeader);
+            if (now != open) EditorPrefs.SetBool(pref, now);
+            return now;
         }
 
         void ActivateCurrentPreview()
@@ -248,9 +215,7 @@ namespace SashaRX.UnityMeshLab
 
         void DrawHierarchySection()
         {
-            EditorGUILayout.Space(8);
-            hierarchyFoldout = EditorGUILayout.Foldout(hierarchyFoldout, "Hierarchy", true);
-            if (!hierarchyFoldout) return;
+            if (!Section("Hierarchy", "Hierarchy", true)) return;
 
             if (ctx.LodGroup == null && !ctx.StandaloneMesh) return;
 
@@ -771,9 +736,7 @@ namespace SashaRX.UnityMeshLab
 
         void DrawBuildPipelineSection()
         {
-            EditorGUILayout.Space(8);
-            buildFoldout = EditorGUILayout.Foldout(buildFoldout, "Build Pipeline", true);
-            if (!buildFoldout) return;
+            if (!Section("Build", "Build Pipeline", false)) return;
 
             if (ctx.LodGroup == null)
             {
@@ -989,9 +952,7 @@ namespace SashaRX.UnityMeshLab
 
         void DrawLodManagementSection()
         {
-            EditorGUILayout.Space(8);
-            lodFoldout = EditorGUILayout.Foldout(lodFoldout, "LOD Levels", true);
-            if (!lodFoldout) return;
+            if (!Section("Lods", "LOD Levels", true, ctx.LodGroup != null ? $"{ctx.LodCount} level(s)" : null)) return;
 
             if (ctx.LodGroup == null)
             {
@@ -1295,13 +1256,20 @@ namespace SashaRX.UnityMeshLab
         // Collision management section
         // ═══════════════════════════════════════════════════════════
 
+        // The collision header line: how many collision nodes, the root's collider, and a nudge when one sits off the root.
+        static string CollisionSummary(Transform root)
+        {
+            var nodes = MeshHygieneUtility.FindCollisionObjects(root);
+            bool offRoot = nodes.Any(n => n.GetComponent<MeshFilter>() != null && LodHierarchy.OffsetFromRoot(root, n.transform) != null);
+            string summary = nodes.Count == 0 ? "no _COL" : $"{nodes.Count} _COL";
+            if (root.GetComponent<MeshCollider>() != null) summary += ", root collider";
+            return offRoot ? summary + ", off the root — open to fix" : summary;
+        }
+
         void DrawCollisionSection()
         {
-            EditorGUILayout.Space(8);
-            collisionFoldout = EditorGUILayout.Foldout(collisionFoldout, "Collision", true);
-            if (!collisionFoldout) return;
-
             if (ctx.LodGroup == null) return;
+            if (!Section("Collision", "Collision", false, CollisionSummary(ctx.LodGroup.transform))) return;
 
             var root = ctx.LodGroup.transform;
             var colObjects = MeshHygieneUtility.FindCollisionObjects(root);
@@ -1514,9 +1482,7 @@ namespace SashaRX.UnityMeshLab
 
         void DrawSplitMergeSection()
         {
-            EditorGUILayout.Space(8);
-            splitMergeFoldout = EditorGUILayout.Foldout(splitMergeFoldout, "Split / Merge", true);
-            if (!splitMergeFoldout) return;
+            if (!Section("SplitMerge", "Split / Merge", false)) return;
 
             var bgc = GUI.backgroundColor;
             GUI.backgroundColor = new Color(0.6f, 0.75f, 0.9f);
@@ -1683,9 +1649,7 @@ namespace SashaRX.UnityMeshLab
         void DrawMeshInfo()
         {
             if (ctx.MeshEntries == null || ctx.MeshEntries.Count == 0) return;
-
-            EditorGUILayout.Space(4);
-            EditorGUILayout.LabelField("Mesh Entries", EditorStyles.boldLabel);
+            if (!Section("MeshInfo", "Mesh Entries", false, $"{ctx.MeshEntries.Count} mesh(es)")) return;
 
             int lodCount = ctx.LodCount;
             for (int li = 0; li < lodCount; li++)
