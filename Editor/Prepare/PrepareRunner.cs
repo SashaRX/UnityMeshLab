@@ -5,7 +5,9 @@
 //
 // A prefab asset's contents are loaded, edited and saved only when a step changed something,
 // so a second run over a prepared prefab writes nothing; a scene object is edited with Undo,
-// all of one run in one Undo step.
+// all of one run in one Undo step. A model asset is edited through its prefab variant when the
+// chain has the Prefab step (PrefabOutput: the variant's contents, or the model's instance a
+// first run saves as the variant), else its hierarchy is left to the steps that need none.
 //
 // Tools ▸ Mesh Lab ▸ Prepare ▸ Preview / Apply run the chain on the selection and log each
 // result, until the Prefab Builder carries the prepare section.
@@ -95,7 +97,7 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>The steps a run takes when none are given, in chain order.</summary>
         internal static List<IPrepareStep> DefaultSteps()
-            => new List<IPrepareStep> { new ColliderStep(SurfaceBinding.FromSettings(), SurfaceBinding.Vocabulary()) };
+            => new List<IPrepareStep> { new ColliderStep(SurfaceBinding.FromSettings(), SurfaceBinding.Vocabulary()), new PrefabStep() };
 
         /// <summary>What each step would change on <paramref name="target"/>; changes nothing.</summary>
         internal static PrepareResult Preview(PrepareTarget target, IReadOnlyList<IPrepareStep> steps) => Run(target, steps, false);
@@ -112,7 +114,7 @@ namespace SashaRX.UnityMeshLab
                     Undo.IncrementCurrentGroup();
                     int group = Undo.GetCurrentGroup();
                     Undo.SetCurrentGroupName($"Prepare {target.Name}");
-                    var result = Run(new PrepareContext(target, target.SceneObject, true), steps, apply);
+                    var result = RunSteps(new PrepareContext(target, target.SceneObject, true), steps, apply);
                     Undo.CollapseUndoOperations(group);
                     return result;
                 }
@@ -121,18 +123,33 @@ namespace SashaRX.UnityMeshLab
                     var root = PrefabUtility.LoadPrefabContents(target.AssetPath);
                     try
                     {
-                        var result = Run(new PrepareContext(target, root, false), steps, apply);
-                        if (result.Applied && result.Changes) PrefabUtility.SaveAsPrefabAsset(root, target.AssetPath);
-                        return result;
+                        var result = RunSteps(new PrepareContext(target, root, false), steps, apply);
+                        if (!result.Applied || !result.Changes) return result;
+                        PrefabUtility.SaveAsPrefabAsset(root, target.AssetPath, out bool saved);
+                        return saved ? result : NotSaved(result, "Unity refused to save the prefab");
                     }
                     finally { PrefabUtility.UnloadPrefabContents(root); }
                 }
                 default:
-                    return Run(new PrepareContext(target, null, false), steps, apply);
+                {
+                    if (!steps.OfType<PrefabStep>().Any())
+                        return RunSteps(new PrepareContext(target, null, false,
+                            "a model's own hierarchy cannot be changed; add the Prefab step, or prepare a prefab or scene object made from it"), steps, apply);
+                    using (var output = PrefabOutput.Open(target.AssetPath, PrefabStep.VariantPath(target.AssetPath)))
+                    {
+                        var result = RunSteps(new PrepareContext(target, output.Root, false, output.Refusal, output), steps, apply);
+                        if (!result.Applied || !result.Changes) return result;
+                        return output.Save(out string error) ? result : NotSaved(result, $"the prefab variant could not be saved: {error}");
+                    }
+                }
             }
         }
 
-        static PrepareResult Run(PrepareContext context, IReadOnlyList<IPrepareStep> steps, bool apply)
+        // The steps' changes were made in memory, but nothing was written.
+        static PrepareResult NotSaved(PrepareResult result, string why)
+            => new PrepareResult(result.Target, result.Steps.ToList(), false, why);
+
+        static PrepareResult RunSteps(PrepareContext context, IReadOnlyList<IPrepareStep> steps, bool apply)
         {
             var plans = Pass(context, steps, false);
             if (!apply) return new PrepareResult(context.Target, plans, false);
