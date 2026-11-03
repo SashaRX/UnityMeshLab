@@ -30,6 +30,11 @@ namespace SashaRX.UnityMeshLab
         public int aoChannelType;   // 0=VertexColor, 1-5=UV0-UV4
         public int aoChannelComp;   // 0=R/X, 1=G/Y, 2=B, 3=A, 4=RGB
 
+        // ── Prepare ──
+        // What the Colliders step gives each collider's object so a game knows its surface
+        // (a component by type name, its asset field, the asset type) and the surface words.
+        [SerializeField] internal SurfaceBindingSettings surfaceBinding = new SurfaceBindingSettings();
+
         // ── Developer UI ──
         // When true, the UV2 Transfer tool exposes diagnostic / benchmarking
         // sections (Parameter Sweep, Log Filters, UV0 Analysis & Fix, the
@@ -83,7 +88,8 @@ namespace SashaRX.UnityMeshLab
                 keywords = new HashSet<string>
                 {
                     "mesh", "lab", "atlas", "repack", "padding",
-                    "uv", "sidecar", "ao", "vertex", "lightmap", "fbx", "binary", "textures"
+                    "uv", "sidecar", "ao", "vertex", "lightmap", "fbx", "binary", "textures",
+                    "prepare", "collider", "surface"
                 }
             };
         }
@@ -155,6 +161,10 @@ namespace SashaRX.UnityMeshLab
             string label = channelTypeNames[inst.aoChannelType] + " " + compNames[inst.aoChannelComp];
             EditorGUILayout.LabelField("Default target:", label, EditorStyles.miniLabel);
 
+            EditorGUILayout.Space(12);
+            EditorGUILayout.LabelField("Prepare: Collider Surfaces", EditorStyles.boldLabel);
+            DrawSurfaceBinding(inst.surfaceBinding ?? (inst.surfaceBinding = new SurfaceBindingSettings()));
+
             if (EditorGUI.EndChangeCheck())
                 Save();
 
@@ -184,7 +194,7 @@ namespace SashaRX.UnityMeshLab
                 if (GUILayout.Button(
                         new GUIContent("Reset to defaults",
                             "Reset every Mesh Lab project setting (Repack defaults, Output path, FBX export, "
-                            + "Sidecar mode, Vertex AO defaults, Show Debug UI) back to its built-in "
+                            + "Sidecar mode, Vertex AO defaults, collider surfaces, Show Debug UI) back to its built-in "
                             + "default value. Does NOT touch existing sidecar files or scene state."),
                         GUILayout.Height(22), GUILayout.MaxWidth(180)))
                 {
@@ -195,6 +205,43 @@ namespace SashaRX.UnityMeshLab
                         ResetToDefaults();
                     }
                 }
+            }
+        }
+
+        static void DrawSurfaceBinding(SurfaceBindingSettings binding)
+        {
+            binding.componentType = EditorGUILayout.TextField(new GUIContent("Component",
+                "The component the Colliders step puts on each collider's object so the game knows what it is made of, "
+                + "by type name (full or short). Empty: colliders get no surface."), binding.componentType);
+            binding.field = EditorGUILayout.TextField(new GUIContent("Field",
+                "The component's field (public or serialized private) that takes the surface asset."), binding.field);
+            binding.dataType = EditorGUILayout.TextField(new GUIContent("Asset Type",
+                "The type of the surface assets; the one named as the surface is picked, the nearest to the model when several are."), binding.dataType);
+            string unavailable = new ComponentSurfaceBinding(binding).Unavailable;
+            EditorGUILayout.LabelField(" ", unavailable ?? "Each collider gets the surface asset its part's name, materials or model name names.",
+                EditorStyles.wordWrappedMiniLabel);
+
+            EditorGUILayout.LabelField(new GUIContent("Surface words",
+                "A word of a name that starts with the keyword names the surface asset on the right (Seat_Wood_COL → Wood)."),
+                new GUIContent("keyword → asset name"), EditorStyles.miniLabel);
+            int remove = -1;
+            for (int i = 0; i < binding.rules.Count; i++)
+            {
+                var rule = binding.rules[i] ?? (binding.rules[i] = new SurfaceRule());
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    GUILayout.Space(EditorGUIUtility.labelWidth);
+                    rule.keyword = EditorGUILayout.TextField(rule.keyword);
+                    GUILayout.Label("→", GUILayout.Width(16));
+                    rule.asset = EditorGUILayout.TextField(rule.asset);
+                    if (GUILayout.Button("−", GUILayout.Width(22))) remove = i;
+                }
+            }
+            if (remove >= 0) binding.rules.RemoveAt(remove);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.Space(EditorGUIUtility.labelWidth);
+                if (GUILayout.Button("+ Surface word", GUILayout.Width(120))) binding.rules.Add(new SurfaceRule("", ""));
             }
         }
 
@@ -261,6 +308,7 @@ namespace SashaRX.UnityMeshLab
                 inst.showDebugUI     = fresh.showDebugUI;
                 inst.disabledToolIds = fresh.disabledToolIds;
                 inst.disabledLibraryIds = fresh.disabledLibraryIds;
+                inst.surfaceBinding  = fresh.surfaceBinding;
                 ModulesChanged?.Invoke();
                 Save();
             }

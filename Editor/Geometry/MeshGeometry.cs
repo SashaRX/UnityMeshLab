@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using UnityEngine;
 
@@ -268,6 +269,33 @@ namespace SashaRX.UnityMeshLab
             }
             count = map.Count;
             return slots;
+        }
+
+        /// <summary>
+        /// Whether the faces enclose a volume: every edge, by position, borders exactly two
+        /// faces. Faces with a repeated position or an index out of range are left out; no
+        /// faces enclose nothing.
+        /// </summary>
+        internal static bool IsClosed(Vector3[] positions, int[] indices)
+        {
+            var slots = WeldPositions(positions, out _);
+            var faces = new Dictionary<long, int>();
+            for (int t = 0; t + 2 < indices.Length; t += 3)
+            {
+                int i0 = indices[t], i1 = indices[t + 1], i2 = indices[t + 2];
+                if ((uint)i0 >= (uint)slots.Length || (uint)i1 >= (uint)slots.Length || (uint)i2 >= (uint)slots.Length) continue;
+                int a = slots[i0], b = slots[i1], c = slots[i2];
+                if (a == b || b == c || a == c) continue;
+                CountEdge(faces, a, b); CountEdge(faces, b, c); CountEdge(faces, c, a);
+            }
+            return faces.Count > 0 && faces.Values.All(n => n == 2);
+        }
+
+        static void CountEdge(Dictionary<long, int> faces, int a, int b)
+        {
+            long key = a < b ? ((long)a << 32) | (uint)b : ((long)b << 32) | (uint)a;
+            faces.TryGetValue(key, out int n);
+            faces[key] = n + 1;
         }
 
         /// <summary>Transform an owned collision mesh, preserving outward winding under reflection.</summary>
