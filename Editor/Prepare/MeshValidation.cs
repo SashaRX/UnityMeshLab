@@ -194,6 +194,14 @@ namespace SashaRX.UnityMeshLab
             return mask;
         }
 
+        /// <summary>The faces (in triangle order) <see cref="DegenerateFaces"/> counts: no area for their size.</summary>
+        internal static bool[] DegenerateFaceMask(Vector3[] positions, int[] triangles)
+        {
+            var mask = new bool[triangles.Length / 3];
+            for (int f = 0; f < mask.Length; ++f) mask[f] = Degenerate(positions, triangles, f * 3);
+            return mask;
+        }
+
         /// <summary>
         /// The edges (by position, each once) at most <paramref name="maxLength"/> metres long,
         /// how many of them have zero length, and the vertices on them.

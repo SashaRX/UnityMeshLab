@@ -357,41 +357,6 @@ namespace SashaRX.UnityMeshLab
             return removed;
         }
 
-        /// <summary>
-        /// Returns a per-face boolean mask where true = degenerate triangle.
-        /// Face index is global across all submeshes (submesh 0 faces first, then submesh 1, etc.).
-        /// Returns null for unreadable meshes.
-        /// </summary>
-        internal static bool[] GetDegenerateTriangleMask(Mesh mesh, float epsilon = 1e-12f)
-        {
-            if (mesh == null || !mesh.isReadable) return null;
-            var verts = mesh.vertices;
-            int totalFaces = 0;
-            int subCount = mesh.subMeshCount;
-            for (int s = 0; s < subCount; s++)
-                totalFaces += mesh.GetTriangles(s).Length / 3;
-
-            var mask = new bool[totalFaces];
-            int fi = 0;
-            for (int s = 0; s < subCount; s++)
-            {
-                var tris = mesh.GetTriangles(s);
-                for (int t = 0; t + 2 < tris.Length; t += 3, fi++)
-                {
-                    int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
-                    if (i0 == i1 || i0 == i2 || i1 == i2) { mask[fi] = true; continue; }
-                    if (i0 < 0 || i0 >= verts.Length ||
-                        i1 < 0 || i1 >= verts.Length ||
-                        i2 < 0 || i2 >= verts.Length) { mask[fi] = true; continue; }
-                    var a = verts[i0];
-                    var b = verts[i1];
-                    var c = verts[i2];
-                    if (Vector3.Cross(b - a, c - a).sqrMagnitude < epsilon) mask[fi] = true;
-                }
-            }
-            return mask;
-        }
-
         // ── Unused vertex detection / compaction ──
 
         /// <summary>

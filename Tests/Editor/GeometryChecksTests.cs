@@ -52,5 +52,20 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(1, seamEdges, "one edge, counted once");
             Assert.IsTrue(seamOn[0] && seamOn[1] && seamOn[3] && seamOn[4], "both sides' copies are marked");
         }
+
+        [Test]
+        public void DegenerateFaceMask_LeavesATinyFaceWithAreaToTheTinyCheck()
+        {
+            // Legs of 0.1 mm: 5e-9 m², under the tiny-face threshold, yet a well-shaped face.
+            var positions = new[]
+            {
+                new Vector3(0, 0, 0), new Vector3(1e-4f, 0, 0), new Vector3(0, 1e-4f, 0),
+                new Vector3(1, 0, 0), new Vector3(2, 0, 0), new Vector3(3, 1e-8f, 0),
+            };
+            var triangles = new[] { 0, 1, 2, 3, 4, 5, 0, 0, 1 };
+            CollectionAssert.AreEqual(new[] { false, true, true }, MeshValidation.DegenerateFaceMask(positions, triangles));
+            CollectionAssert.AreEqual(new[] { true, true, true }, MeshValidation.SmallFaceMask(positions, triangles, 1e-8));
+            Assert.AreEqual(2, MeshValidation.DegenerateFaces(positions, triangles).faces, "the mask marks the faces the count counts");
+        }
     }
 }

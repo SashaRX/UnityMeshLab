@@ -1737,13 +1737,16 @@ namespace SashaRX.UnityMeshLab
                 Mesh mesh = e.originalMesh ?? e.fbxMesh;
                 if (mesh == null || !mesh.isReadable) continue;
 
-                int degCount = MeshHygieneUtility.CountDegenerateTriangles(mesh);
                 int unusedCount = MeshHygieneUtility.CountUnusedVertices(mesh);
                 var seamVerts = Uv0Analyzer.GetFalseSeamVertices(mesh);
                 int seamCount = seamVerts?.Count ?? 0;
+                // Degenerate and tiny faces as Validate Models counts them: a tiny face is one with area.
                 var positions = mesh.vertices;
                 var triangles = MeshValidation.Triangles(mesh);
-                int smallCount = MeshValidation.SmallFaceMask(positions, triangles, MaxFaceArea).Count(small => small);
+                var degenerate = MeshValidation.DegenerateFaceMask(positions, triangles);
+                var small = MeshValidation.SmallFaceMask(positions, triangles, MaxFaceArea);
+                int degCount = degenerate.Count(d => d);
+                int smallCount = small.Where((s, f) => s && !degenerate[f]).Count();
                 int shortCount = MeshValidation.ShortEdges(positions, triangles, MaxEdgeLength).edges;
 
                 if (degCount > 0 || unusedCount > 0 || seamCount > 0 || smallCount > 0 || shortCount > 0)
