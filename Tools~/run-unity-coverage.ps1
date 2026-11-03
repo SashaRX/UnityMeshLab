@@ -80,7 +80,12 @@ try {
             $transferPreparationSuites += $suite
         }
     }
-    $requiredSuites = $texturePackingSuites + $assetTransferSuites + $viewportSuites + $transferPreparationSuites
+    # The prepare chain (Tools > Mesh Lab > Prepare, the Prepare tab) and the checks and collision
+    # placement it builds on: every suite runs here, since no other job runs Unity tests.
+    $prepareSuites = @('MeshNamingTagsTests','GeometryChecksTests','ModelFileChecksTests','ModelLodChecksTests',
+        'ModelValidationTests','FindCollisionObjectsTests','CollisionRootPlacementTests','FbxCollisionPlacementTests',
+        'PrepareCollidersTests','PreparePrefabTests','PrepareMaterialsTests','PrepareRecipesTests','PrepareValidateTests')
+    $requiredSuites = $texturePackingSuites + $assetTransferSuites + $viewportSuites + $transferPreparationSuites + $prepareSuites
     $testFilter = 'LodHardEdgeTests;LodSmoothingRegionTests;LodQslimTransferTests;LodAttributeCorrectionTests;LodQualitySelectionTests;LodGenerationToolTests;LodLoopSimplifierTests;LodSmallPartsTests;LodScreenAcceptanceTests;LodScreenValidationTests;LodProjectVisualQualityTests;CollisionElementTests;CollisionMeshToolTests;LodSharedUvTransferTests;LodPaintRetriangulationTests;' + ($requiredSuites -join ';')
     $testFilter += ';' + (($viewportRegressions | ForEach-Object { "PreviewLodSwitchTests.$_" }) -join ';')
     $testFilter += ';' + (($assetPreviewRegressions.Keys | ForEach-Object { "FbxChannelWriteTests.$_" }) -join ';')
