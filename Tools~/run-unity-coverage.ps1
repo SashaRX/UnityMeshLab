@@ -124,6 +124,15 @@ try {
                 if ($text.Length -gt 800) { $text = $text.Substring(0, 800) + '...' }
                 Write-Output "FAILED $($case.fullname): $text"
                 if ($stack) { ($stack.InnerText.Trim() -split "`n" | Select-Object -First 3) | ForEach-Object { Write-Output "    $($_.Trim())" } }
+                # The last lines the test logged: a warning there often says why it failed.
+                $logged = $case.SelectSingleNode('output')
+                if ($logged -and $logged.InnerText.Trim()) {
+                    ($logged.InnerText.Trim() -split "`n" | Select-Object -Last 20) | ForEach-Object {
+                        $line = $_.Trim()
+                        if ($line.Length -gt 300) { $line = $line.Substring(0, 300) + '...' }
+                        Write-Output "    | $line"
+                    }
+                }
             }
         }
         throw "Unity coverage failed with exit code $($process.ExitCode)"
