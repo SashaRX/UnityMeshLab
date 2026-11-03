@@ -307,6 +307,9 @@ namespace SashaRX.UnityMeshLab
             recipe.folderPattern = EditorGUILayout.TextField(new GUIContent("Folder",
                 "The folder it must be in, or under (Assets/Art/Props): * part of one folder's name, ** any folders; "
                 + "several separated by ';'; empty: any folder."), recipe.folderPattern);
+            recipe.runOnImport = EditorGUILayout.Toggle(new GUIContent("Run on Import",
+                "Prepare a model this recipe matches by itself the first time it is imported (a file new to the project). "
+                + "Off: the recipe runs only from the Prepare tab, Tools ▸ Mesh Lab ▸ Prepare or a batch run."), recipe.runOnImport);
 
             recipe.validate = EditorGUILayout.ToggleLeft(new GUIContent("1  " + ValidateStep.StepName, new ValidateStep().Purpose), recipe.validate);
             using (new EditorGUI.DisabledScope(!recipe.validate))

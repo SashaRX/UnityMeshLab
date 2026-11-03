@@ -37,6 +37,12 @@ namespace SashaRX.UnityMeshLab
         /// </summary>
         public string folderPattern = "";
 
+        /// <summary>
+        /// Whether a model this recipe matches is prepared by itself the first time it is imported
+        /// (PrepareOnImport); off by default: the recipe runs from the Prepare tab, the menu or a batch.
+        /// </summary>
+        public bool runOnImport;
+
         public bool validate = true;
 
         /// <summary>What the Validate step holds the model to, each check Off, Warning or Error.</summary>

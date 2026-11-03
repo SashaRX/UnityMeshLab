@@ -230,6 +230,49 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsNull(AssetDatabase.LoadAssetAtPath<GameObject>($"{folder}/Bench.prefab"), "no variant was saved");
         }
 
+        // A recipe for SM_ models without Validate (the test meshes have no UVs) or surfaces.
+        static PrepareRecipe BenchRecipe(bool runOnImport = false)
+            => new PrepareRecipe { validate = false, colliderSurfaces = false, runOnImport = runOnImport };
+
+        [Test]
+        public void OnImport_ANewModelWaitsAndOnlyARecipeThatRunsOnImportPreparesIt()
+        {
+            string fbxPath = ExportBench();
+            Assert.IsTrue(PrepareOnImport.IsPending(fbxPath), "a model imported for the first time waits for the import to end");
+
+            Assert.IsNull(PrepareOnImport.Run(fbxPath, new[] { BenchRecipe() }), "its recipe does not run on import");
+            Assert.IsNull(AssetDatabase.LoadAssetAtPath<GameObject>($"{folder}/Bench.prefab"));
+
+            var result = PrepareOnImport.Run(fbxPath, new[] { BenchRecipe(runOnImport: true) });
+            Assert.IsTrue(result.Applied, result.ToString());
+            Assert.IsNotNull(AssetDatabase.LoadAssetAtPath<GameObject>($"{folder}/Bench.prefab"), "prepared as Apply would");
+        }
+
+        [Test]
+        public void Batch_PreparesTheModelsARecipeMatchesUnderTheFolders()
+        {
+            string fbxPath = ExportBench();
+            var models = PrepareBatch.Models(new[] { folder });
+            CollectionAssert.AreEqual(new[] { fbxPath }, models);
+
+            var preview = PrepareBatch.Prepare(models, new[] { BenchRecipe() }, apply: false);
+            Assert.IsTrue(preview.results.Single().Changes, PrepareBatch.Report(preview));
+            Assert.IsNull(AssetDatabase.LoadAssetAtPath<GameObject>($"{folder}/Bench.prefab"), "a preview changes nothing");
+
+            var other = PrepareBatch.Prepare(models, new[] { new PrepareRecipe { namePattern = "SK_*" } }, apply: true);
+            Assert.AreEqual(0, other.results.Count);
+            Assert.AreEqual(1, other.unmatched);
+            Assert.IsFalse(other.Failed);
+
+            var refused = PrepareBatch.Prepare(models, new[] { new PrepareRecipe { colliderSurfaces = false } }, apply: true);
+            Assert.IsTrue(refused.Failed, "Validate's errors (no UVs) refuse it: " + PrepareBatch.Report(refused));
+
+            var applied = PrepareBatch.Prepare(models, new[] { BenchRecipe() }, apply: true);
+            Assert.IsFalse(applied.Failed, PrepareBatch.Report(applied));
+            Assert.IsNotNull(AssetDatabase.LoadAssetAtPath<GameObject>($"{folder}/Bench.prefab"));
+            StringAssert.Contains("1 model prepared, 1 with changes, 0 not applied, 0 matched no recipe", PrepareBatch.Report(applied));
+        }
+
         [Test]
         public void Plan_WarnsOfASlotWithNoProjectMaterial()
         {

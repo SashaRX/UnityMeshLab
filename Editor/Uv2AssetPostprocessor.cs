@@ -215,6 +215,9 @@ namespace SashaRX.UnityMeshLab
         void OnPostprocessModel(GameObject root)
         {
             string modelPath = assetPath;
+            // A model new to the project may be prepared by its recipe once the import is over
+            // (PrepareOnImport: only for a recipe with Run on Import on; nothing else here changes).
+            PrepareOnImport.Imported(modelPath, assetImporter.importSettingsMissing);
             animatedPaths.TryGetValue(modelPath, out var animated);
             animatedPaths.Remove(modelPath);
 
