@@ -4,7 +4,8 @@
 // folder path with the model, the others listed. A slot with no such material keeps the
 // model's own, with a warning. It changes the importer (IImporterStep), so it applies before
 // the model's variant is opened; a prefab or a scene object is skipped, its materials are the
-// model's. A slot already remapped is left as it is, so a second run changes nothing.
+// model's. A slot already remapped is left as it is, so a second run changes nothing. A model
+// with the legacy external material location is only warned about: Unity ignores its remaps.
 
 using System;
 using System.Collections.Generic;
@@ -40,6 +41,13 @@ namespace SashaRX.UnityMeshLab
             if (importer.materialImportMode == ModelImporterMaterialImportMode.None)
             {
                 report.Add(PrepareLevel.Unchanged, $"'{path}'", Check, "the model imports no materials");
+                return;
+            }
+            if (importer.materialLocation == ModelImporterMaterialLocation.External)
+            {
+                // Legacy external materials are found by Unity's own search; the importer ignores remaps.
+                report.Add(PrepareLevel.Warning, $"'{path}'", Check,
+                    "the model keeps its materials as external files (legacy location): Unity finds them itself and ignores remaps; switch Location to 'Use Embedded Materials' to remap them");
                 return;
             }
             // A remap whose material is gone (its value null) is no remap, as the importer's inspector reads it.
