@@ -1,6 +1,6 @@
 // ModelValidation.cs — checks a model (an FBX or prefab asset, or a scene object) against
 // ModelRequirements into a PrepareReport: the file (import scale, units, smoothing groups,
-// ModelFileChecks), the nodes' scale, the model's size, the LOD chain and node names
+// ModelFileChecks; concave polygons, FbxPolygonChecks), the nodes' scale, the model's size, the LOD chain and node names
 // (ModelLodChecks), then every mesh. A collision mesh (a _COL node, or a MeshCollider's
 // mesh, that no node renders) is held to the geometry checks only. Each mesh is checked
 // once, however many nodes share it; an unreadable one through a readable copy that is
@@ -37,6 +37,9 @@ namespace SashaRX.UnityMeshLab
                 ModelFileChecks.CheckImporter(importer, assetPath, requirements, report);
             var collisionOnly = new HashSet<string>(Uses(root).Where(u => !u.render).Select(u => u.mesh.name), StringComparer.Ordinal);
             ModelFileChecks.CheckSmoothing(assetPath, requirements, report, collisionOnly);
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+            FbxPolygonChecks.CheckConcave(assetPath, requirements, report);
+#endif
             Validate(root, requirements, report, includeRootScale: true);
             return report;
         }

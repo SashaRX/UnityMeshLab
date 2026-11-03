@@ -260,12 +260,45 @@ namespace SashaRX.UnityMeshLab
         static readonly Color32 ColorHealthy    = new Color32(60, 180, 80, 255);
         static readonly Color32 ColorDegenerate = new Color32(255, 40, 40, 255);
         static readonly Color32 ColorWeld       = new Color32(40, 220, 220, 255);
+        internal static readonly Color32 ColorSmallFace = new Color32(255, 150, 30, 255);
+        internal static readonly Color32 ColorShortEdge = new Color32(230, 60, 230, 255);
 
         /// <summary>
         /// Highlight degenerate triangles (red) and weld candidate vertices (cyan)
         /// via vertex colors. Unused vertices shown as dots in OnSceneGUI.
         /// </summary>
+        // Tiny faces (orange) and the vertices on short edges (magenta), by MeshValidation's thresholds.
+        static void MarkSmallGeometry(Mesh mesh, Color32[] colors, double maxFaceArea, double maxEdgeLength)
+        {
+            var positions = mesh.vertices;
+            var triangles = MeshValidation.Triangles(mesh);
+            var small = MeshValidation.SmallFaceMask(positions, triangles, maxFaceArea);
+            for (int f = 0; f < small.Length; f++)
+            {
+                if (!small[f]) continue;
+                for (int k = 0; k < 3; k++)
+                {
+                    int v = triangles[f * 3 + k];
+                    if (v >= 0 && v < colors.Length) colors[v] = ColorSmallFace;
+                }
+            }
+            var (_, _, onShort) = MeshValidation.ShortEdges(positions, triangles, maxEdgeLength);
+            for (int v = 0; v < onShort.Length && v < colors.Length; v++)
+                if (onShort[v]) colors[v] = ColorShortEdge;
+        }
+
+        /// <summary>
+        /// Colours each mesh's problems: degenerate faces red, faces of at most
+        /// <paramref name="maxFaceArea"/> m² orange, edges of at most <paramref name="maxEdgeLength"/> m
+        /// magenta, weld candidates cyan; unused vertices as dots.
+        /// </summary>
         public void ActivateProblemPreview(UvToolContext ctx)
+        {
+            var defaults = ModelRequirements.Default;
+            ActivateProblemPreview(ctx, defaults.maxFaceArea, defaults.maxEdgeLength);
+        }
+
+        public void ActivateProblemPreview(UvToolContext ctx, double maxFaceArea, double maxEdgeLength)
         {
             Restore();
             EnsureMaterial();
@@ -283,6 +316,7 @@ namespace SashaRX.UnityMeshLab
 
                 var colors = new Color32[mesh.vertexCount];
                 for (int i = 0; i < colors.Length; i++) colors[i] = ColorHealthy;
+                MarkSmallGeometry(mesh, colors, maxFaceArea, maxEdgeLength);
 
                 // Degenerate triangles → red
                 var degMask = MeshHygieneUtility.GetDegenerateTriangleMask(mesh);
@@ -308,7 +342,7 @@ namespace SashaRX.UnityMeshLab
                 if (seamVerts != null)
                 {
                     foreach (int vi in seamVerts)
-                        if (vi >= 0 && vi < colors.Length && colors[vi].r != ColorDegenerate.r)
+                        if (vi >= 0 && vi < colors.Length && colors[vi].Equals(ColorHealthy))
                             colors[vi] = ColorWeld;
                 }
 

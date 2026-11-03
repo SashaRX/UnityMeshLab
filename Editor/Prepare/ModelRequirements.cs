@@ -29,6 +29,17 @@ namespace SashaRX.UnityMeshLab
         /// <summary>A face whose three vertex normals all point against its winding.</summary>
         public RequirementLevel flippedNormals = RequirementLevel.Warning;
 
+        /// <summary>A face with an area of at most <see cref="maxFaceArea"/> square metres (one with no area is a degenerate face).</summary>
+        public RequirementLevel smallFaces = RequirementLevel.Warning;
+        public float maxFaceArea = 1e-8f;
+
+        /// <summary>An edge at most <see cref="maxEdgeLength"/> metres long.</summary>
+        public RequirementLevel shortEdges = RequirementLevel.Warning;
+        public float maxEdgeLength = 1e-4f;
+
+        /// <summary>A polygon of the FBX (four corners or more) that is concave: it triangulates unevenly.</summary>
+        public RequirementLevel concaveFaces = RequirementLevel.Warning;
+
         // ── Channels (render meshes; collision meshes need none) ──
 
         /// <summary>The level of a missing required channel below.</summary>

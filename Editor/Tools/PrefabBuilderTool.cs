@@ -72,6 +72,8 @@ namespace SashaRX.UnityMeshLab
             public int degenerateTris;
             public int unusedVerts;
             public int falseSeamVerts;
+            public int smallFaces;
+            public int shortEdges;
         }
         List<ProblemSummary> problemSummaries;
 
@@ -203,7 +205,7 @@ namespace SashaRX.UnityMeshLab
                     BuildEdgeReports();
                     break;
                 case PreviewMode.ProblemAreas:
-                    preview.ActivateProblemPreview(ctx);
+                    preview.ActivateProblemPreview(ctx, MaxFaceArea, MaxEdgeLength);
                     BuildProblemSummaries();
                     break;
             }
@@ -1739,15 +1741,21 @@ namespace SashaRX.UnityMeshLab
                 int unusedCount = MeshHygieneUtility.CountUnusedVertices(mesh);
                 var seamVerts = Uv0Analyzer.GetFalseSeamVertices(mesh);
                 int seamCount = seamVerts?.Count ?? 0;
+                var positions = mesh.vertices;
+                var triangles = MeshValidation.Triangles(mesh);
+                int smallCount = MeshValidation.SmallFaceMask(positions, triangles, MaxFaceArea).Count(small => small);
+                int shortCount = MeshValidation.ShortEdges(positions, triangles, MaxEdgeLength).edges;
 
-                if (degCount > 0 || unusedCount > 0 || seamCount > 0)
+                if (degCount > 0 || unusedCount > 0 || seamCount > 0 || smallCount > 0 || shortCount > 0)
                 {
                     problemSummaries.Add(new ProblemSummary
                     {
                         meshName = mesh.name,
                         degenerateTris = degCount,
                         unusedVerts = unusedCount,
-                        falseSeamVerts = seamCount
+                        falseSeamVerts = seamCount,
+                        smallFaces = smallCount,
+                        shortEdges = shortCount
                     });
                 }
             }
@@ -1773,6 +1781,8 @@ namespace SashaRX.UnityMeshLab
                 if (ps.degenerateTris > 0) parts.Add($"degen:{ps.degenerateTris}");
                 if (ps.unusedVerts > 0) parts.Add($"unused:{ps.unusedVerts}");
                 if (ps.falseSeamVerts > 0) parts.Add($"weld:{ps.falseSeamVerts}");
+                if (ps.smallFaces > 0) parts.Add($"tiny:{ps.smallFaces}");
+                if (ps.shortEdges > 0) parts.Add($"short:{ps.shortEdges}");
 
                 EditorGUILayout.LabelField($"  {name}", string.Join(", ", parts),
                     EditorStyles.miniLabel);
@@ -1802,12 +1812,32 @@ namespace SashaRX.UnityMeshLab
             }
             else if (previewMode == PreviewMode.ProblemAreas)
             {
+                DrawProblemThresholds();
                 EditorGUILayout.LabelField("Legend", EditorStyles.boldLabel);
                 DrawLegendItem(new Color(1f, 0.16f, 0.16f), "Degenerate Tri");
+                DrawLegendItem(PrefabBuilderPreview.ColorSmallFace, $"Tiny Face (≤ {MaxFaceArea:G3} m²)");
+                DrawLegendItem(PrefabBuilderPreview.ColorShortEdge, $"Short Edge (≤ {MaxEdgeLength:G3} m)");
                 DrawLegendItem(new Color(0.16f, 0.86f, 0.86f), "Weld Candidate");
                 DrawLegendItem(new Color(1f, 0.86f, 0.16f), "Unused Vertex (dot)");
                 DrawLegendItem(new Color(0.24f, 0.71f, 0.31f), "Healthy");
             }
+        }
+
+        // The Problems preview's thresholds (the Zero Area Faces / Zero Length Edges of a DCC's
+        // cleanup), remembered per user; a change re-runs the preview.
+        const string MaxFaceAreaPref = "MeshLab.PrefabBuilder.MaxFaceArea", MaxEdgeLengthPref = "MeshLab.PrefabBuilder.MaxEdgeLength";
+        static float MaxFaceArea => EditorPrefs.GetFloat(MaxFaceAreaPref, ModelRequirements.Default.maxFaceArea);
+        static float MaxEdgeLength => EditorPrefs.GetFloat(MaxEdgeLengthPref, ModelRequirements.Default.maxEdgeLength);
+
+        void DrawProblemThresholds()
+        {
+            EditorGUI.BeginChangeCheck();
+            float area = Mathf.Max(0f, EditorGUILayout.FloatField("Tiny face ≤ (m²)", MaxFaceArea));
+            float length = Mathf.Max(0f, EditorGUILayout.FloatField("Short edge ≤ (m)", MaxEdgeLength));
+            if (!EditorGUI.EndChangeCheck()) return;
+            EditorPrefs.SetFloat(MaxFaceAreaPref, area);
+            EditorPrefs.SetFloat(MaxEdgeLengthPref, length);
+            SetPreview(PreviewMode.ProblemAreas);
         }
 
         void DrawLegendItem(Color color, string label)
