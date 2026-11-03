@@ -98,12 +98,20 @@ namespace SashaRX.UnityMeshLab
             var recipes = MeshLabProjectSettings.Instance.recipes;
             if (recipes == null || !recipes.Any(r => r != null && r.runOnImport)) return;
             if (EditorApplication.isPlayingOrWillChangePlaymode || BuildPipeline.isBuildingPlayer) return;
+            // One model's failure is logged with its path and leaves the others to be prepared.
             foreach (string path in paths)
             {
-                var result = Run(path, recipes);
-                if (result == null) continue;
-                UvtLog.Info($"[{PrepareRunner.Tag}] '{path}' was imported for the first time: its recipe runs on import");
-                result.Log();
+                try
+                {
+                    var result = Run(path, recipes);
+                    if (result == null) continue;
+                    UvtLog.Info($"[{PrepareRunner.Tag}] '{path}' was imported for the first time: its recipe runs on import");
+                    result.Log();
+                }
+                catch (Exception error)
+                {
+                    UvtLog.Error($"[{PrepareRunner.Tag}] '{path}': preparing it on import failed: {error}");
+                }
             }
         }
 
