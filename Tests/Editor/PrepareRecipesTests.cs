@@ -143,6 +143,24 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Settings_GiveARecipeFromBeforeValidateTheStepOnce()
+        {
+            var settings = ScriptableObject.CreateInstance<MeshLabProjectSettings>();
+            owned.Add(settings);
+            var recipe = settings.recipes[0];
+            recipe.validate = false;                         // as a recipe saved before the field loads
+            recipe.requirements = new ModelRequirements { channels = RequirementLevel.Off };
+
+            Assert.IsTrue(settings.MigrateRecipes());
+
+            Assert.IsTrue(recipe.validate, "Validate on, as in a new recipe");
+            Assert.AreEqual(RequirementLevel.Error, recipe.requirements.channels, "the default requirements");
+            recipe.validate = false;
+            Assert.IsFalse(settings.MigrateRecipes(), "once only");
+            Assert.IsFalse(recipe.validate, "a later choice is kept");
+        }
+
+        [Test]
         public void Steps_CarryTheRecipesSettings()
         {
             var recipe = new PrepareRecipe { colliderSurfaces = false, colliderFallbackLod = 1 };

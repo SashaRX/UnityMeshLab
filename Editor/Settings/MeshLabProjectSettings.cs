@@ -37,6 +37,10 @@ namespace SashaRX.UnityMeshLab
         // Which steps a target takes and with what settings: the first recipe whose name and
         // folder patterns match it (PrepareRecipe); one for SM_ models to begin with.
         [SerializeField] internal List<PrepareRecipe> recipes = new List<PrepareRecipe> { PrepareRecipe.StaticMeshes() };
+        // The recipes' format, so a recipe saved before a field existed gets that field's default
+        // once (MigrateRecipes); 1 added Validate and its requirements.
+        const int RecipesVersion = 1;
+        [SerializeField] int recipesVersion;
         // The importer preset before recipes (1.2.112): read once, moved into a recipe (MoveLegacyPreset).
         [SerializeField] internal UnityEditor.Presets.Preset importerPreset;
         [SerializeField] internal bool presetLodScreenPercentages;
@@ -67,16 +71,35 @@ namespace SashaRX.UnityMeshLab
                     .LoadSerializedFileAndForget(AssetPath);
                 if (objs != null && objs.Length > 0)
                     s_Instance = objs[0] as MeshLabProjectSettings;
-                if (s_Instance != null && s_Instance.MoveLegacyPreset())
-                    Save();
-                if (s_Instance == null)
+                bool created = s_Instance == null;
+                if (created)
                 {
                     s_Instance = CreateInstance<MeshLabProjectSettings>();
                     s_Instance.hideFlags = HideFlags.HideAndDontSave;
-                    Save();
                 }
+                bool migrated = s_Instance.MigrateRecipes();
+                bool moved = s_Instance.MoveLegacyPreset();
+                if (created || migrated || moved)
+                    Save();
                 return s_Instance;
             }
+        }
+
+        /// <summary>
+        /// Brings recipes saved in an older format up to date, once: each recipe from before
+        /// Validate has it on with the default requirements (fields its file lacked, which load
+        /// unset). Whether anything changed; a recipe's later choice is kept.
+        /// </summary>
+        internal bool MigrateRecipes()
+        {
+            if (recipesVersion >= RecipesVersion) return false;
+            foreach (var recipe in (recipes ?? new List<PrepareRecipe>()).Where(r => r != null))
+            {
+                recipe.validate = true;
+                recipe.requirements = new ModelRequirements();
+            }
+            recipesVersion = RecipesVersion;
+            return true;
         }
 
         /// <summary>
