@@ -35,7 +35,7 @@ namespace SashaRX.UnityMeshLab.Tests
             => Assert.AreEqual(variant, PrefabStep.VariantPath(model));
 
         // A stand-in for an imported model: a prefab with a render node and a collision node.
-        string Model(string name)
+        string Model(string name, bool inactiveCollision = false)
         {
             var mesh = new Mesh
             {
@@ -54,6 +54,7 @@ namespace SashaRX.UnityMeshLab.Tests
                     child.transform.localPosition = new Vector3(0, 1, 0);
                     child.AddComponent<MeshFilter>().sharedMesh = mesh;
                     child.AddComponent<MeshRenderer>();
+                    if (inactiveCollision && MeshNaming.IsCollision(node)) child.SetActive(false);
                 }
                 string path = $"{folder}/{name}.prefab";
                 PrefabUtility.SaveAsPrefabAsset(root, path);
@@ -100,6 +101,24 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.AreEqual(PrepareLevel.Unchanged, Run(new PrefabStep(), output, model, false).Level);
                 Assert.AreEqual(0, Run(new ColliderStep(), output, model, false).Count(PrepareLevel.Changed), "a second run changes nothing");
             }
+        }
+
+        [Test]
+        public void Output_KeepsAnActivatedCollisionNodeAsAnOverrideOfTheVariant()
+        {
+            string model = Model("SM_Bench", inactiveCollision: true);
+            string variant = $"{folder}/Bench.prefab";
+
+            using (var output = PrefabOutput.Open(model, variant))
+            {
+                Run(new ColliderStep(), output, model, true);
+                Assert.IsTrue(output.Save(out string error), error);
+            }
+
+            var col = AssetDatabase.LoadAssetAtPath<GameObject>(variant).transform.Find("Seat_Wood_COL");
+            Assert.IsTrue(col.gameObject.activeSelf, "the activation is saved with the variant");
+            Assert.IsFalse(AssetDatabase.LoadAssetAtPath<GameObject>(model).transform.Find("Seat_Wood_COL").gameObject.activeSelf,
+                "the model keeps its own state");
         }
 
         [Test]

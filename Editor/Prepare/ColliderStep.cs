@@ -168,7 +168,7 @@ namespace SashaRX.UnityMeshLab
             if (!apply) return;
             context.Record(node, "Activate Collision");
             node.SetActive(true);
-            context.Changed(node);
+            PrepareContext.Changed(node);
         }
 
         static void RemoveRenderers(PrepareContext context, PrepareReport report, bool apply, Transform node, string subject)

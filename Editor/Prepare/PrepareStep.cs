@@ -135,10 +135,13 @@ namespace SashaRX.UnityMeshLab
             if (UsesUndo) Undo.RecordObject(target, name);
         }
 
-        /// <summary>After a change to a recorded object: an object of a prefab instance keeps it as an override.</summary>
-        internal void Changed(Object target)
+        /// <summary>
+        /// After a change made through the object's API: an object of a prefab instance keeps it
+        /// as an override (a model's variant is an instance too, edited without Undo).
+        /// </summary>
+        internal static void Changed(Object target)
         {
-            if (UsesUndo && PrefabUtility.IsPartOfPrefabInstance(target)) PrefabUtility.RecordPrefabInstancePropertyModifications(target);
+            if (PrefabUtility.IsPartOfPrefabInstance(target)) PrefabUtility.RecordPrefabInstancePropertyModifications(target);
         }
 
         internal void Destroy(Object target)
