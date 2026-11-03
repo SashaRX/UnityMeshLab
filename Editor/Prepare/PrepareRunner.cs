@@ -7,7 +7,8 @@
 // so a second run over a prepared prefab writes nothing; a scene object is edited with Undo,
 // all of one run in one Undo step. A model asset is edited through its prefab variant when the
 // chain has the Prefab step (PrefabOutput: the variant's contents, or the model's instance a
-// first run saves as the variant), else its hierarchy is left to the steps that need none.
+// first run saves as the variant), else its hierarchy is left to the steps that need none. Steps
+// that change a model's importer (IImporterStep: Materials) apply before its variant is opened.
 //
 // Tools ▸ Mesh Lab ▸ Prepare ▸ Preview / Apply run the chain on the selection and log each
 // result, until the Prefab Builder carries the prepare section.
@@ -97,7 +98,7 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>The steps a run takes when none are given, in chain order.</summary>
         internal static List<IPrepareStep> DefaultSteps()
-            => new List<IPrepareStep> { new ColliderStep(SurfaceBinding.FromSettings(), SurfaceBinding.Vocabulary()), new PrefabStep() };
+            => new List<IPrepareStep> { new MaterialStep(), new ColliderStep(SurfaceBinding.FromSettings(), SurfaceBinding.Vocabulary()), new PrefabStep() };
 
         /// <summary>What each step would change on <paramref name="target"/>; changes nothing.</summary>
         internal static PrepareResult Preview(PrepareTarget target, IReadOnlyList<IPrepareStep> steps) => Run(target, steps, false);
@@ -131,19 +132,39 @@ namespace SashaRX.UnityMeshLab
                     finally { PrefabUtility.UnloadPrefabContents(root); }
                 }
                 default:
-                {
-                    if (!steps.OfType<PrefabStep>().Any())
-                        return RunSteps(new PrepareContext(target, null, false,
-                            "a model's own hierarchy cannot be changed; add the Prefab step, or prepare a prefab or scene object made from it"), steps, apply);
-                    using (var output = PrefabOutput.Open(target.AssetPath, PrefabStep.VariantPath(target.AssetPath)))
-                    {
-                        var result = RunSteps(new PrepareContext(target, output.Root, false, output.Refusal, output), steps, apply);
-                        if (!result.Applied || !result.Changes) return result;
-                        return output.Save(out string error) ? result : NotSaved(result, $"the prefab variant could not be saved: {error}");
-                    }
-                }
+                    return RunModel(target, steps, apply);
             }
         }
+
+        // A model: the steps that change its importer apply first (the model is reimported), then
+        // its prefab variant is opened on the result for the others, and saved when they changed it.
+        static PrepareResult RunModel(PrepareTarget target, IReadOnlyList<IPrepareStep> steps, bool apply)
+        {
+            List<PrepareStepResult> plans;
+            using (var output = OpenOutput(target, steps))
+                plans = Pass(ModelContext(target, output), steps, false);
+            string refused = apply ? Refusal(plans) : null;
+            if (!apply || refused != null || !HasChanges(plans)) return new PrepareResult(target, plans, apply && refused == null, refused);
+
+            var done = Pass(ModelContext(target, null), steps.Where(s => s is IImporterStep).ToList(), true);
+            using (var output = OpenOutput(target, steps))
+            {
+                var hierarchy = Pass(ModelContext(target, output), steps.Where(s => !(s is IImporterStep)).ToList(), true);
+                done.AddRange(hierarchy);
+                var result = new PrepareResult(target, steps.Select(s => done.First(d => d.Step == s)).ToList(), true);
+                if (output == null || !HasChanges(hierarchy)) return result;
+                return output.Save(out string error) ? result : NotSaved(result, $"the prefab variant could not be saved: {error}");
+            }
+        }
+
+        static PrefabOutput OpenOutput(PrepareTarget target, IReadOnlyList<IPrepareStep> steps)
+            => steps.OfType<PrefabStep>().Any() ? PrefabOutput.Open(target.AssetPath, PrefabStep.VariantPath(target.AssetPath)) : null;
+
+        static PrepareContext ModelContext(PrepareTarget target, PrefabOutput output)
+            => output != null
+                ? new PrepareContext(target, output.Root, false, output.Refusal, output)
+                : new PrepareContext(target, null, false,
+                    "a model's own hierarchy cannot be changed; add the Prefab step, or prepare a prefab or scene object made from it");
 
         // The steps' changes were made in memory, but nothing was written.
         static PrepareResult NotSaved(PrepareResult result, string why)
@@ -152,14 +173,19 @@ namespace SashaRX.UnityMeshLab
         static PrepareResult RunSteps(PrepareContext context, IReadOnlyList<IPrepareStep> steps, bool apply)
         {
             var plans = Pass(context, steps, false);
-            if (!apply) return new PrepareResult(context.Target, plans, false);
-            var errors = plans.Where(p => p.Report.BlocksApply).Select(p => p.Step.Name).ToList();
-            if (errors.Count > 0)
-                return new PrepareResult(context.Target, plans, false, $"{string.Join(", ", errors)} reported errors; fix them and apply again");
-            if (!plans.Any(p => p.Report.Count(PrepareLevel.Changed) > 0))
-                return new PrepareResult(context.Target, plans, true);
+            string refused = apply ? Refusal(plans) : null;
+            if (!apply || refused != null || !HasChanges(plans)) return new PrepareResult(context.Target, plans, apply && refused == null, refused);
             return new PrepareResult(context.Target, Pass(context, steps, true), true);
         }
+
+        // An Error line in any plan blocks Apply.
+        static string Refusal(IEnumerable<PrepareStepResult> plans)
+        {
+            var errors = plans.Where(p => p.Report.BlocksApply).Select(p => p.Step.Name).ToList();
+            return errors.Count > 0 ? $"{string.Join(", ", errors)} reported errors; fix them and apply again" : null;
+        }
+
+        static bool HasChanges(IEnumerable<PrepareStepResult> results) => results.Any(r => r.Report.Count(PrepareLevel.Changed) > 0);
 
         static List<PrepareStepResult> Pass(PrepareContext context, IReadOnlyList<IPrepareStep> steps, bool apply)
         {
