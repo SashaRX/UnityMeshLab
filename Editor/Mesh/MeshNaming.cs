@@ -23,7 +23,6 @@ namespace SashaRX.UnityMeshLab
         static readonly TimeSpan MatchTimeout = TimeSpan.FromSeconds(1);
         static readonly Regex LodSuffix = new Regex(@"^(.*?)([_\-\s]+LOD(\d+)(?<instance>\.\d+)?)$", Ci, MatchTimeout);
         static readonly Regex CollisionSuffix = new Regex(@"[_\-\s]+(?:COL(?:_\w+)?|(?:Collider|Collision)(?:[_\-\s]*\d+)?)(?<instance>\.\d+)?$", Ci, MatchTimeout);
-        static readonly Regex LodOrCollisionSuffix = new Regex(@"[_\-\s]+(LOD\d+|COL\w*|Collider|Collision)(?:\.\d+)?$", Ci, MatchTimeout);
         static readonly Regex GroupSuffixes = new Regex(@"(?:[_\-\s]+(?:LOD\d+|COL(?:_Hull\d+)?|Collider|Collision))+(?<instance>\.\d+)?$", Ci, MatchTimeout);
         static readonly Regex PipelineSuffixes = new Regex(@"(_wc|_repack|_uvTransfer|_optimized|_LOD\d+)+$", RegexOptions.Compiled, MatchTimeout);
 
@@ -104,8 +103,11 @@ namespace SashaRX.UnityMeshLab
         public static string StripCollision(string name)
             => string.IsNullOrEmpty(name) ? name : CollisionSuffix.Replace(name, "${instance}");
 
-        /// <summary>True when a clean base name still carries a LOD or collision suffix.</summary>
-        public static bool HasLodOrCollisionSuffix(string name) => !string.IsNullOrEmpty(name) && LodOrCollisionSuffix.IsMatch(name);
+        /// <summary>
+        /// True when a clean base name still carries a LOD or collision suffix (the rules of
+        /// <see cref="HasLodSuffix"/> and <see cref="IsCollision"/>); "Inside_Column_U" has none.
+        /// </summary>
+        public static bool HasLodOrCollisionSuffix(string name) => HasLodSuffix(name) || IsCollision(name);
 
         /// <summary>
         /// The stable key that pairs the LOD levels and collision nodes of one asset:

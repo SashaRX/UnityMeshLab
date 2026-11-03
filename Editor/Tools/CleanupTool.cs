@@ -876,7 +876,7 @@ namespace SashaRX.UnityMeshLab
                     var mesh = asset as Mesh;
                     if (mesh == null) continue;
                     if (checkedMeshes.Contains(mesh.GetInstanceID())) continue;
-                    if (!mesh.name.Contains("_COL") && !mesh.name.Contains("_col")) continue;
+                    if (!MeshNaming.IsCollision(mesh.name)) continue;
 
                     checkedMeshes.Add(mesh.GetInstanceID());
                     CheckColliderMesh(mesh, $"{mesh.name} (FBX: {System.IO.Path.GetFileName(fbxPath)})", null);
