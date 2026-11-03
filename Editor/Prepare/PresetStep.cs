@@ -1,6 +1,6 @@
-// PresetStep.cs — the Preset step, first in the chain. The model importer preset set in Project
-// Settings ▸ Mesh Lab ▸ Prepare is applied to a model whose name has the step's class prefix
-// (SM_ by default), all but the properties that hold the model's own links: its material
+// PresetStep.cs — the Preset step, first in the chain. The model importer preset of the
+// model's recipe (Project Settings ▸ Mesh Lab ▸ Prepare: Recipes, SM_ models by default) is
+// applied to the model, all but the properties that hold the model's own links: its material
 // remaps (m_ExternalObjects), the IDs its prefabs and variants find its meshes by
 // (m_InternalIDToNameTable, m_UsedFileIDs) and, unless asked, its LOD screen percentages. The plan lists each
 // setting that differs, was → becomes, as the line's details; Apply applies only those and
@@ -27,32 +27,26 @@ namespace SashaRX.UnityMeshLab
         internal static readonly string[] Kept = { "m_ExternalObjects", "m_InternalIDToNameTable", "m_UsedFileIDs" };
 
         readonly Preset preset;
-        readonly string classPrefix;
         readonly string[] excluded;
 
         /// <param name="preset">The model importer preset; none skips the step.</param>
-        /// <param name="classPrefix">The class prefix a model's name must start with (MeshNaming's vocabulary); null for any model.</param>
         /// <param name="applyLodScreenPercentages">Whether the preset's LOD screen percentages are applied too.</param>
-        internal PresetStep(Preset preset, string classPrefix = "SM", bool applyLodScreenPercentages = false)
+        internal PresetStep(Preset preset, bool applyLodScreenPercentages = false)
         {
             this.preset = preset;
-            this.classPrefix = classPrefix;
             excluded = applyLodScreenPercentages ? Kept : Kept.Append(LodScreenPercentages).ToArray();
         }
 
         public string Name => StepName;
 
-        public string Purpose => "The model's importer takes the project's preset, except its remaps, mesh IDs and LOD percentages.";
+        public string Purpose => "The model's importer takes the recipe's preset, except its remaps, mesh IDs and LOD percentages.";
 
         public string SkipReason(PrepareContext context)
         {
             if (context.Target.Kind != PrepareTargetKind.ModelAsset) return "an importer preset is applied to the model: prepare the FBX";
-            if (preset == null) return "no importer preset is set (Project Settings ▸ Mesh Lab ▸ Prepare)";
+            if (preset == null) return "the recipe sets no importer preset (Project Settings ▸ Mesh Lab ▸ Prepare: Recipes)";
             if (!(AssetImporter.GetAtPath(context.Target.AssetPath) is ModelImporter importer)) return "the model has no model importer";
-            if (!preset.CanBeAppliedTo(importer)) return $"'{preset.name}' is not a model importer preset";
-            if (classPrefix == null) return null;
-            string prefix = MeshNaming.Vocabulary.Default.SplitClassPrefix(context.Target.Name, out _);
-            return string.Equals(prefix, classPrefix, StringComparison.OrdinalIgnoreCase) ? null : $"the model's name does not start with {classPrefix}_";
+            return preset.CanBeAppliedTo(importer) ? null : $"'{preset.name}' is not a model importer preset";
         }
 
         public void Plan(PrepareContext context, PrepareReport report) => Run(context, report, false);

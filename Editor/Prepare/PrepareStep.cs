@@ -1,7 +1,7 @@
-// PrepareStep.cs — one step of preparing a model for the game (Colliders, Prefab; Materials
-// and Preset to come): what it would change, changing nothing (Plan), and the change itself
-// (Apply), each into the step's report line by line. A step that cannot act on a target says
-// why it is skipped.
+// PrepareStep.cs — one step of preparing a model for the game (Preset, Materials, Colliders,
+// Prefab; which of them a target takes is its recipe's, PrepareRecipe): what it would change,
+// changing nothing (Plan), and the change itself (Apply), each into the step's report line by
+// line. A step that cannot act on a target says why it is skipped.
 //
 // PrepareTarget is what a run prepares: a prefab asset (its contents are loaded, edited and
 // saved), a scene object (edited with Undo) or a model asset (its importer; its hierarchy is
@@ -66,6 +66,23 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>The asset's path, or the scene object's path in its scene.</summary>
         internal string Display => SceneObject != null ? ScenePath(SceneObject.transform) : AssetPath;
+
+        /// <summary>
+        /// The model the target is made from: a model's own path; a prefab's or a scene object's
+        /// whose root is an instance of a model's root (a variant of it included); else null.
+        /// </summary>
+        internal string ModelPath
+        {
+            get
+            {
+                if (Kind == PrepareTargetKind.ModelAsset) return AssetPath;
+                var root = SceneObject != null ? SceneObject : AssetDatabase.LoadAssetAtPath<GameObject>(AssetPath);
+                var source = root != null ? PrefabUtility.GetCorrespondingObjectFromOriginalSource(root) : null;
+                if (source == null || source.transform.parent != null) return null;
+                string path = AssetDatabase.GetAssetPath(source);
+                return AssetImporter.GetAtPath(path) is ModelImporter ? path : null;
+            }
+        }
 
         /// <summary>The target for the asset at <paramref name="path"/>: a model or a prefab; null for any other asset.</summary>
         internal static PrepareTarget ForAsset(string path)

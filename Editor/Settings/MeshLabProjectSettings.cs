@@ -34,9 +34,9 @@ namespace SashaRX.UnityMeshLab
         // What the Colliders step gives each collider's object so a game knows its surface
         // (a component by type name, its asset field, the asset type) and the surface words.
         [SerializeField] internal SurfaceBindingSettings surfaceBinding = new SurfaceBindingSettings();
-        // The model importer preset the Preset step applies, and whether its LOD screen percentages go too.
-        [SerializeField] internal UnityEditor.Presets.Preset importerPreset;
-        [SerializeField] internal bool presetLodScreenPercentages;
+        // Which steps a target takes and with what settings: the first recipe whose name and
+        // folder patterns match it (PrepareRecipe); one for SM_ models to begin with.
+        [SerializeField] internal List<PrepareRecipe> recipes = new List<PrepareRecipe> { PrepareRecipe.StaticMeshes() };
 
         // ── Developer UI ──
         // When true, the UV2 Transfer tool exposes diagnostic / benchmarking
@@ -92,7 +92,7 @@ namespace SashaRX.UnityMeshLab
                 {
                     "mesh", "lab", "atlas", "repack", "padding",
                     "uv", "sidecar", "ao", "vertex", "lightmap", "fbx", "binary", "textures",
-                    "prepare", "collider", "surface", "preset"
+                    "prepare", "collider", "surface", "preset", "recipe"
                 }
             };
         }
@@ -165,12 +165,8 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.LabelField("Default target:", label, EditorStyles.miniLabel);
 
             EditorGUILayout.Space(12);
-            EditorGUILayout.LabelField("Prepare: Importer Preset", EditorStyles.boldLabel);
-            inst.importerPreset = (UnityEditor.Presets.Preset)EditorGUILayout.ObjectField(new GUIContent("Preset",
-                "The model importer preset the Preset step applies to SM_ models; its remaps and mesh IDs are never applied. Empty: the step is skipped."),
-                inst.importerPreset, typeof(UnityEditor.Presets.Preset), false);
-            inst.presetLodScreenPercentages = EditorGUILayout.Toggle(new GUIContent("Apply LOD Percentages",
-                "Also apply the preset's LOD screen percentages (off: each model keeps its own)."), inst.presetLodScreenPercentages);
+            EditorGUILayout.LabelField("Prepare: Recipes", EditorStyles.boldLabel);
+            DrawRecipes(inst.recipes ?? (inst.recipes = new List<PrepareRecipe>()));
 
             EditorGUILayout.Space(12);
             EditorGUILayout.LabelField("Prepare: Collider Surfaces", EditorStyles.boldLabel);
@@ -205,7 +201,7 @@ namespace SashaRX.UnityMeshLab
                 if (GUILayout.Button(
                         new GUIContent("Reset to defaults",
                             "Reset every Mesh Lab project setting (Repack defaults, Output path, FBX export, "
-                            + "Sidecar mode, Vertex AO defaults, prepare preset and collider surfaces, Show Debug UI) back to its built-in "
+                            + "Sidecar mode, Vertex AO defaults, prepare recipes and collider surfaces, Show Debug UI) back to its built-in "
                             + "default value. Does NOT touch existing sidecar files or scene state."),
                         GUILayout.Height(22), GUILayout.MaxWidth(180)))
                 {
@@ -217,6 +213,69 @@ namespace SashaRX.UnityMeshLab
                     }
                 }
             }
+        }
+
+        static void DrawRecipes(List<PrepareRecipe> recipes)
+        {
+            EditorGUILayout.LabelField(" ", "A model, prefab or scene object takes the first recipe its name and folder match "
+                + "(a prefab or scene object made from a model, also the model's); the report names it, and why each step was skipped.",
+                EditorStyles.wordWrappedMiniLabel);
+            int remove = -1, up = -1;
+            for (int i = 0; i < recipes.Count; i++)
+            {
+                var recipe = recipes[i] ?? (recipes[i] = PrepareRecipe.StaticMeshes());
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+                {
+                    using (new EditorGUILayout.HorizontalScope())
+                    {
+                        recipe.name = EditorGUILayout.TextField(new GUIContent($"{i + 1}. Recipe", "The recipe's name in the report."), recipe.name);
+                        using (new EditorGUI.DisabledScope(i == 0))
+                            if (GUILayout.Button(new GUIContent("↑", "Try this recipe before the one above."), GUILayout.Width(22))) up = i;
+                        if (GUILayout.Button(new GUIContent("−", "Remove the recipe."), GUILayout.Width(22))) remove = i;
+                    }
+                    DrawRecipe(recipe);
+                }
+            }
+            if (remove >= 0) recipes.RemoveAt(remove);
+            else if (up > 0) (recipes[up - 1], recipes[up]) = (recipes[up], recipes[up - 1]);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.Space(EditorGUIUtility.labelWidth);
+                if (GUILayout.Button("+ Recipe", GUILayout.Width(120)))
+                    recipes.Add(new PrepareRecipe { name = "New recipe", namePattern = "" });
+            }
+        }
+
+        static void DrawRecipe(PrepareRecipe recipe)
+        {
+            recipe.namePattern = EditorGUILayout.TextField(new GUIContent("Name",
+                "The name the model (or the model a prefab or scene object is made from) must have: * any characters, ? one; "
+                + "several separated by ';'; empty: any name. Case is ignored."), recipe.namePattern);
+            recipe.folderPattern = EditorGUILayout.TextField(new GUIContent("Folder",
+                "The folder it must be in, or under (Assets/Art/Props): * part of one folder's name, ** any folders; "
+                + "several separated by ';'; empty: any folder."), recipe.folderPattern);
+
+            recipe.preset = EditorGUILayout.ToggleLeft(new GUIContent("1  " + PresetStep.StepName, new PresetStep(null).Purpose), recipe.preset);
+            using (new EditorGUI.DisabledScope(!recipe.preset))
+            using (new EditorGUI.IndentLevelScope())
+            {
+                recipe.importerPreset = (UnityEditor.Presets.Preset)EditorGUILayout.ObjectField(new GUIContent("Importer Preset",
+                    "The model importer preset. Empty: the step is skipped."), recipe.importerPreset, typeof(UnityEditor.Presets.Preset), false);
+                recipe.presetLodScreenPercentages = EditorGUILayout.Toggle(new GUIContent("Apply LOD Percentages",
+                    "Also apply the preset's LOD screen percentages (off: each model keeps its own)."), recipe.presetLodScreenPercentages);
+            }
+            recipe.materials = EditorGUILayout.ToggleLeft(new GUIContent("2  " + MaterialStep.StepName, new MaterialStep().Purpose), recipe.materials);
+            recipe.colliders = EditorGUILayout.ToggleLeft(new GUIContent("3  " + ColliderStep.StepName, new ColliderStep().Purpose), recipe.colliders);
+            using (new EditorGUI.DisabledScope(!recipe.colliders))
+            using (new EditorGUI.IndentLevelScope())
+            {
+                recipe.colliderSurfaces = EditorGUILayout.Toggle(new GUIContent("Surfaces",
+                    "Each collider gets its surface (Prepare: Collider Surfaces below)."), recipe.colliderSurfaces);
+                recipe.colliderFallbackLod = EditorGUILayout.IntField(new GUIContent("Fallback LOD",
+                    "The LOD level a model without _COL nodes collides with; -1: its coarsest."), recipe.colliderFallbackLod);
+            }
+            recipe.prefab = EditorGUILayout.ToggleLeft(new GUIContent("4  " + PrefabStep.StepName,
+                new PrefabStep().Purpose + " Off: a model's own hierarchy is left as it is, so its Colliders step is skipped."), recipe.prefab);
         }
 
         static void DrawSurfaceBinding(SurfaceBindingSettings binding)
@@ -320,8 +379,7 @@ namespace SashaRX.UnityMeshLab
                 inst.disabledToolIds = fresh.disabledToolIds;
                 inst.disabledLibraryIds = fresh.disabledLibraryIds;
                 inst.surfaceBinding  = fresh.surfaceBinding;
-                inst.importerPreset  = fresh.importerPreset;
-                inst.presetLodScreenPercentages = fresh.presetLodScreenPercentages;
+                inst.recipes         = fresh.recipes;
                 ModulesChanged?.Invoke();
                 Save();
             }
