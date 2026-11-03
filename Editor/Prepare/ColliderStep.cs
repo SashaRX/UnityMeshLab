@@ -112,8 +112,8 @@ namespace SashaRX.UnityMeshLab
             var host = main && offset == null ? root : source.node;
             string subject = Subject(root, source.node);
             GiveCollider(context, report, apply, source, host, subject, Placement(main, offset, host == root));
-            if (host == root) DropNodeCollider(context, report, apply, source, subject);
-            else Activate(context, report, apply, source, subject);
+            if (host != source.node) DropNodeCollider(context, report, apply, source, subject);
+            else if (host != root) Activate(context, report, apply, source, subject);
             if (source.collisionNode) RemoveRenderers(context, report, apply, source.node, subject);
             if (binding == null || binding.Unavailable != null) return;
             var (surface, origin) = SurfaceBinding.Resolve(source.node.name, MaterialNames(root, source), context.Target.Name, vocabulary);
@@ -259,9 +259,17 @@ namespace SashaRX.UnityMeshLab
             finally { if (copy) Object.DestroyImmediate(readable); }
         }
 
-        /// <summary>A closed mesh's enclosed volume, else its bounds' volume.</summary>
+        /// <summary>
+        /// A closed mesh's enclosed volume, else its bounds' volume. A closed shell that encloses
+        /// next to nothing (a sheet doubled back on itself, its two sides facing apart) counts by its bounds.
+        /// </summary>
         internal static double Volume(Vector3[] positions, int[] triangles, Bounds bounds)
-            => MeshGeometry.IsClosed(positions, triangles) ? Math.Abs(FoliageProxyBuilder.SignedVolume(positions, triangles)) : BoundsVolume(bounds);
+        {
+            double box = BoundsVolume(bounds);
+            if (!MeshGeometry.IsClosed(positions, triangles)) return box;
+            double enclosed = Math.Abs(FoliageProxyBuilder.SignedVolume(positions, triangles));
+            return enclosed > 1e-6 * box ? enclosed : box;
+        }
 
         static double BoundsVolume(Bounds bounds) => (double)bounds.size.x * bounds.size.y * bounds.size.z;
 

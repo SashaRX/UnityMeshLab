@@ -142,6 +142,20 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Apply_KeepsTheColliderOfAModelWhoseOnlyMeshIsOnItsRoot()
+        {
+            var root = Root("Crate");
+            root.AddComponent<MeshFilter>().sharedMesh = Box("Crate", 1);
+            root.AddComponent<MeshRenderer>();
+
+            Assert.IsTrue(Apply(root, new ColliderStep()).Changes);
+
+            Assert.AreEqual("Crate", root.GetComponent<MeshCollider>().sharedMesh.name);
+            Assert.IsNotNull(root.GetComponent<MeshRenderer>(), "a render node keeps its renderer");
+            Assert.IsFalse(Apply(root, new ColliderStep()).Changes);
+        }
+
+        [Test]
         public void Apply_ASecondTimeChangesNothing()
         {
             foreach (var offset in new[] { Vector3.zero, new Vector3(0.392f, 0, 0.002f) })
@@ -225,6 +239,9 @@ namespace SashaRX.UnityMeshLab.Tests
             var open = box.triangles.Take(30).ToArray();
             Assert.IsFalse(MeshGeometry.IsClosed(box.vertices, open), "a box without its last side is open");
             Assert.AreEqual(8, ColliderStep.Volume(box.vertices, open, box.bounds), 1e-4, "its bounds' volume");
+            var doubled = new[] { 0, 2, 1, 0, 1, 2 };
+            Assert.IsTrue(MeshGeometry.IsClosed(box.vertices, doubled), "each edge of a triangle with its back face borders two faces");
+            Assert.AreEqual(8, ColliderStep.Volume(box.vertices, doubled, box.bounds), 1e-4, "it encloses nothing: its bounds stand for it");
         }
 
         [Test]
