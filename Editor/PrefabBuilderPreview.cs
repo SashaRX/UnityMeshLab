@@ -260,12 +260,47 @@ namespace SashaRX.UnityMeshLab
         static readonly Color32 ColorHealthy    = new Color32(60, 180, 80, 255);
         static readonly Color32 ColorDegenerate = new Color32(255, 40, 40, 255);
         static readonly Color32 ColorWeld       = new Color32(40, 220, 220, 255);
+        internal static readonly Color32 ColorSmallFace = new Color32(255, 150, 30, 255);
+        internal static readonly Color32 ColorShortEdge = new Color32(230, 60, 230, 255);
+
+        // Tiny faces (orange), the vertices on short edges (magenta) and degenerate faces (red),
+        // by MeshValidation's thresholds and its degenerate test, the one Validate Models reports by.
+        static void MarkGeometry(Mesh mesh, Color32[] colors, double maxFaceArea, double maxEdgeLength)
+        {
+            var positions = mesh.vertices;
+            var triangles = MeshValidation.Triangles(mesh);
+            MarkFaces(triangles, MeshValidation.SmallFaceMask(positions, triangles, maxFaceArea), colors, ColorSmallFace);
+            var (_, _, onShort) = MeshValidation.ShortEdges(positions, triangles, maxEdgeLength);
+            for (int v = 0; v < onShort.Length && v < colors.Length; v++)
+                if (onShort[v]) colors[v] = ColorShortEdge;
+            MarkFaces(triangles, MeshValidation.DegenerateFaceMask(positions, triangles), colors, ColorDegenerate);
+        }
+
+        static void MarkFaces(int[] triangles, bool[] faces, Color32[] colors, Color32 color)
+        {
+            for (int f = 0; f < faces.Length; f++)
+            {
+                if (!faces[f]) continue;
+                for (int k = 0; k < 3; k++)
+                {
+                    int v = triangles[f * 3 + k];
+                    if (v >= 0 && v < colors.Length) colors[v] = color;
+                }
+            }
+        }
 
         /// <summary>
-        /// Highlight degenerate triangles (red) and weld candidate vertices (cyan)
-        /// via vertex colors. Unused vertices shown as dots in OnSceneGUI.
+        /// Colours each mesh's problems: degenerate faces red, faces of at most
+        /// <paramref name="maxFaceArea"/> m² orange, edges of at most <paramref name="maxEdgeLength"/> m
+        /// magenta, weld candidates cyan; unused vertices as dots.
         /// </summary>
         public void ActivateProblemPreview(UvToolContext ctx)
+        {
+            var defaults = ModelRequirements.Default;
+            ActivateProblemPreview(ctx, defaults.maxFaceArea, defaults.maxEdgeLength);
+        }
+
+        public void ActivateProblemPreview(UvToolContext ctx, double maxFaceArea, double maxEdgeLength)
         {
             Restore();
             EnsureMaterial();
@@ -283,32 +318,14 @@ namespace SashaRX.UnityMeshLab
 
                 var colors = new Color32[mesh.vertexCount];
                 for (int i = 0; i < colors.Length; i++) colors[i] = ColorHealthy;
-
-                // Degenerate triangles → red
-                var degMask = MeshHygieneUtility.GetDegenerateTriangleMask(mesh);
-                if (degMask != null)
-                {
-                    int fi = 0;
-                    for (int s = 0; s < mesh.subMeshCount; s++)
-                    {
-                        var tris = mesh.GetTriangles(s);
-                        for (int t = 0; t + 2 < tris.Length; t += 3, fi++)
-                        {
-                            if (!degMask[fi]) continue;
-                            int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
-                            if (i0 >= 0 && i0 < colors.Length) colors[i0] = ColorDegenerate;
-                            if (i1 >= 0 && i1 < colors.Length) colors[i1] = ColorDegenerate;
-                            if (i2 >= 0 && i2 < colors.Length) colors[i2] = ColorDegenerate;
-                        }
-                    }
-                }
+                MarkGeometry(mesh, colors, maxFaceArea, maxEdgeLength);
 
                 // Weld candidates → cyan (false seams via Uv0Analyzer)
                 var seamVerts = Uv0Analyzer.GetFalseSeamVertices(mesh);
                 if (seamVerts != null)
                 {
                     foreach (int vi in seamVerts)
-                        if (vi >= 0 && vi < colors.Length && colors[vi].r != ColorDegenerate.r)
+                        if (vi >= 0 && vi < colors.Length && colors[vi].Equals(ColorHealthy))
                             colors[vi] = ColorWeld;
                 }
 

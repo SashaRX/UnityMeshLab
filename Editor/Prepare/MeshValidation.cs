@@ -1,6 +1,7 @@
 // MeshValidation.cs — the checks of one mesh against ModelRequirements: finite values,
 // degenerate faces, the vertex limit, unused vertices, non-manifold edges, flipped
-// normals, the required channels and a lightmap UV inside [0,1]. The counting helpers read plain arrays; Check
+// normals, tiny faces and short edges (below a threshold), the required channels and a
+// lightmap UV inside [0,1]; and the concavity test FbxPolygonChecks runs on the FBX's polygons. The counting helpers read plain arrays; Check
 // reads a readable mesh (the caller supplies a readable copy and destroys it).
 
 using System.Collections.Generic;
@@ -143,6 +144,8 @@ namespace SashaRX.UnityMeshLab
                     report.Add(requirements.nonManifoldEdges, subject, "Non-manifold edges", $"{Plural(edges, "edge", "edges")} shared by more than two faces");
             }
 
+            CheckSmallGeometry(positions, triangles, subject, requirements, report);
+
             if (requirements.flippedNormals != RequirementLevel.Off && normals != null)
             {
                 int flipped = FlippedFaces(positions, normals, triangles);
@@ -153,6 +156,117 @@ namespace SashaRX.UnityMeshLab
 
             CheckChannels(mesh, subject, requirements, report);
             CheckLightmap(mesh, subject, requirements, report);
+        }
+
+        // Faces with a real but tiny area and edges shorter than the thresholds (Zero Area Faces /
+        // Zero Length Edges); faces without any area are the degenerate check's.
+        static void CheckSmallGeometry(Vector3[] positions, int[] triangles, string subject, ModelRequirements requirements, PrepareReport report)
+        {
+            if (requirements.smallFaces != RequirementLevel.Off)
+            {
+                var small = SmallFaceMask(positions, triangles, requirements.maxFaceArea);
+                int count = 0;
+                for (int f = 0; f < small.Length; ++f)
+                    if (small[f] && !Degenerate(positions, triangles, f * 3)) ++count;
+                if (count > 0)
+                    report.Add(requirements.smallFaces, subject, "Tiny faces",
+                        $"{Plural(count, "face", "faces")} with an area of at most {requirements.maxFaceArea:G3} m²");
+            }
+            if (requirements.shortEdges != RequirementLevel.Off)
+            {
+                var (edges, zero, _) = ShortEdges(positions, triangles, requirements.maxEdgeLength);
+                if (edges > 0)
+                    report.Add(requirements.shortEdges, subject, "Short edges",
+                        $"{Plural(edges, "edge", "edges")} at most {requirements.maxEdgeLength:G3} m long ({zero} of zero length)");
+            }
+        }
+
+        /// <summary>The faces (in triangle order) with an area of at most <paramref name="maxArea"/> square metres, faces without area included.</summary>
+        internal static bool[] SmallFaceMask(Vector3[] positions, int[] triangles, double maxArea)
+        {
+            var mask = new bool[triangles.Length / 3];
+            for (int f = 0; f < mask.Length; ++f)
+            {
+                int i0 = triangles[f * 3], i1 = triangles[f * 3 + 1], i2 = triangles[f * 3 + 2];
+                mask[f] = !InRange(i0, positions) || !InRange(i1, positions) || !InRange(i2, positions)
+                    || DoubleArea(positions[i0], positions[i1], positions[i2]) * 0.5 <= maxArea;
+            }
+            return mask;
+        }
+
+        /// <summary>The faces (in triangle order) <see cref="DegenerateFaces"/> counts: no area for their size.</summary>
+        internal static bool[] DegenerateFaceMask(Vector3[] positions, int[] triangles)
+        {
+            var mask = new bool[triangles.Length / 3];
+            for (int f = 0; f < mask.Length; ++f) mask[f] = Degenerate(positions, triangles, f * 3);
+            return mask;
+        }
+
+        /// <summary>
+        /// The edges (by position, each once) at most <paramref name="maxLength"/> metres long,
+        /// how many of them have zero length, and the vertices on them.
+        /// </summary>
+        internal static (int edges, int zero, bool[] vertices) ShortEdges(Vector3[] positions, int[] triangles, double maxLength)
+        {
+            var slots = MeshGeometry.WeldPositions(positions, out _);
+            var seen = new HashSet<long>();
+            var on = new bool[positions.Length];
+            int edges = 0, zero = 0;
+            double max2 = maxLength * maxLength;
+            for (int t = 0; t + 2 < triangles.Length; t += 3)
+                for (int k = 0; k < 3; ++k)
+                {
+                    int a = triangles[t + k], b = triangles[t + (k + 1) % 3];
+                    if (!InRange(a, positions) || !InRange(b, positions)) continue;
+                    int sa = slots[a], sb = slots[b];
+                    long key = sa < sb ? ((long)sa << 32) | (uint)sb : ((long)sb << 32) | (uint)sa;
+                    double length2 = SquaredLength(positions[a], positions[b]);
+                    if (length2 > max2) continue;
+                    on[a] = on[b] = true;   // every copy of the edge: a seam's other side too
+                    if (!seen.Add(key)) continue;
+                    ++edges;
+                    if (length2 == 0) ++zero;
+                }
+            return (edges, zero, on);
+        }
+
+        /// <summary>
+        /// Whether a polygon (its corners in order, four or more) is concave: a corner turns
+        /// against the polygon's normal (Newell's). Collinear corners and triangles are not.
+        /// </summary>
+        internal static bool IsConcave(IReadOnlyList<Vector3> corners)
+        {
+            int n = corners.Count;
+            if (n < 4) return false;
+            double nx = 0, ny = 0, nz = 0;
+            for (int i = 0; i < n; ++i)
+            {
+                Vector3 c = corners[i], d = corners[(i + 1) % n];
+                nx += ((double)c.y - d.y) * ((double)c.z + d.z);
+                ny += ((double)c.z - d.z) * ((double)c.x + d.x);
+                nz += ((double)c.x - d.x) * ((double)c.y + d.y);
+            }
+            double length = System.Math.Sqrt(nx * nx + ny * ny + nz * nz);
+            if (!(length > 0)) return false;
+            for (int i = 0; i < n; ++i)
+            {
+                Vector3 a = corners[(i + n - 1) % n], b = corners[i], c = corners[(i + 1) % n];
+                double ux = (double)b.x - a.x, uy = (double)b.y - a.y, uz = (double)b.z - a.z;
+                double vx = (double)c.x - b.x, vy = (double)c.y - b.y, vz = (double)c.z - b.z;
+                double turn = ((uy * vz - uz * vy) * nx + (uz * vx - ux * vz) * ny + (ux * vy - uy * vx) * nz) / length;
+                double scale = System.Math.Sqrt((ux * ux + uy * uy + uz * uz) * (vx * vx + vy * vy + vz * vz));
+                if (turn < -1e-6 * scale) return true;
+            }
+            return false;
+        }
+
+        static bool Degenerate(Vector3[] positions, int[] triangles, int t)
+        {
+            int i0 = triangles[t], i1 = triangles[t + 1], i2 = triangles[t + 2];
+            if (i0 == i1 || i0 == i2 || i1 == i2 || !InRange(i0, positions) || !InRange(i1, positions) || !InRange(i2, positions)) return true;
+            Vector3 a = positions[i0], b = positions[i1], c = positions[i2];
+            double longest = System.Math.Max(SquaredLength(a, b), System.Math.Max(SquaredLength(b, c), SquaredLength(c, a)));
+            return !(longest > 0) || DoubleArea(a, b, c) <= FlatRatio * longest;
         }
 
         static void CheckChannels(Mesh mesh, string subject, ModelRequirements requirements, PrepareReport report)
@@ -211,7 +325,7 @@ namespace SashaRX.UnityMeshLab
         /// submesh (Keep Quads) is read triangulated, two triangles per quad, as
         /// <see cref="SubmeshTopology"/> reads it. Line and point submeshes have no faces.
         /// </summary>
-        static int[] Triangles(Mesh mesh)
+        internal static int[] Triangles(Mesh mesh)
         {
             var all = new List<int>();
             for (int sub = 0; sub < mesh.subMeshCount; ++sub)
