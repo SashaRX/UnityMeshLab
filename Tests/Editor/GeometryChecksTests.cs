@@ -45,6 +45,12 @@ namespace SashaRX.UnityMeshLab.Tests
             var (withZero, zeroLength, _) = MeshValidation.ShortEdges(positions, new[] { 0, 1, 2, 1, 5, 6 }, 1e-4);
             Assert.AreEqual(1, withZero);
             Assert.AreEqual(1, zeroLength, "two corners at one point");
+
+            // A short edge on a seam: the faces on its two sides use their own copies of its vertices.
+            var seam = new[] { new Vector3(0, 0, 0), new Vector3(1e-5f, 0, 0), new Vector3(0, 1, 0), new Vector3(0, 0, 0), new Vector3(1e-5f, 0, 0), new Vector3(0, -1, 0) };
+            var (seamEdges, _, seamOn) = MeshValidation.ShortEdges(seam, new[] { 0, 1, 2, 4, 3, 5 }, 1e-4);
+            Assert.AreEqual(1, seamEdges, "one edge, counted once");
+            Assert.IsTrue(seamOn[0] && seamOn[1] && seamOn[3] && seamOn[4], "both sides' copies are marked");
         }
     }
 }

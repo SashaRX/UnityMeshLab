@@ -213,10 +213,11 @@ namespace SashaRX.UnityMeshLab
                     int sa = slots[a], sb = slots[b];
                     long key = sa < sb ? ((long)sa << 32) | (uint)sb : ((long)sb << 32) | (uint)sa;
                     double length2 = SquaredLength(positions[a], positions[b]);
-                    if (length2 > max2 || !seen.Add(key)) continue;
+                    if (length2 > max2) continue;
+                    on[a] = on[b] = true;   // every copy of the edge: a seam's other side too
+                    if (!seen.Add(key)) continue;
                     ++edges;
                     if (length2 == 0) ++zero;
-                    on[a] = on[b] = true;
                 }
             return (edges, zero, on);
         }
