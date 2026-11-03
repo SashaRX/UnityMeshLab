@@ -1,11 +1,11 @@
-// PrepareStep.cs — one step of preparing a model for the game (Colliders; Prefab, Materials
+// PrepareStep.cs — one step of preparing a model for the game (Colliders, Prefab; Materials
 // and Preset to come): what it would change, changing nothing (Plan), and the change itself
 // (Apply), each into the step's report line by line. A step that cannot act on a target says
 // why it is skipped.
 //
 // PrepareTarget is what a run prepares: a prefab asset (its contents are loaded, edited and
 // saved), a scene object (edited with Undo) or a model asset (its importer; its hierarchy is
-// the model's own and is edited through a prefab). PrepareContext is what the steps of one
+// the model's own and is edited through its prefab variant, PrefabStep). PrepareContext is what the steps of one
 // run share: the target, the hierarchy they edit, and the edits themselves, with Undo for a
 // scene object.
 
@@ -100,15 +100,24 @@ namespace SashaRX.UnityMeshLab
     /// <summary>What the steps of one run share: the target, the hierarchy they edit and how they edit it.</summary>
     internal sealed class PrepareContext
     {
-        internal PrepareContext(PrepareTarget target, GameObject root, bool usesUndo)
+        internal PrepareContext(PrepareTarget target, GameObject root, bool usesUndo, string noRoot = null, PrefabOutput output = null)
         {
-            Target = target; Root = root; UsesUndo = usesUndo;
+            Target = target; Root = root; UsesUndo = usesUndo; NoRoot = noRoot; Output = output;
         }
 
         internal PrepareTarget Target { get; }
 
-        /// <summary>The hierarchy the steps edit: the prefab's contents or the scene object; null for a model asset.</summary>
+        /// <summary>
+        /// The hierarchy the steps edit: the prefab's contents, the scene object, or a model's
+        /// prefab variant; null when there is none (<see cref="NoRoot"/> says why).
+        /// </summary>
         internal GameObject Root { get; }
+
+        /// <summary>Why there is no hierarchy to edit, or null.</summary>
+        internal string NoRoot { get; }
+
+        /// <summary>A model's prefab variant (the Prefab step's), or null.</summary>
+        internal PrefabOutput Output { get; }
 
         /// <summary>Whether edits are recorded with Undo (a scene object's are).</summary>
         internal bool UsesUndo { get; }
@@ -126,10 +135,13 @@ namespace SashaRX.UnityMeshLab
             if (UsesUndo) Undo.RecordObject(target, name);
         }
 
-        /// <summary>After a change to a recorded object: an object of a prefab instance keeps it as an override.</summary>
-        internal void Changed(Object target)
+        /// <summary>
+        /// After a change made through the object's API: an object of a prefab instance keeps it
+        /// as an override (a model's variant is an instance too, edited without Undo).
+        /// </summary>
+        internal static void Changed(Object target)
         {
-            if (UsesUndo && PrefabUtility.IsPartOfPrefabInstance(target)) PrefabUtility.RecordPrefabInstancePropertyModifications(target);
+            if (PrefabUtility.IsPartOfPrefabInstance(target)) PrefabUtility.RecordPrefabInstancePropertyModifications(target);
         }
 
         internal void Destroy(Object target)

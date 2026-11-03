@@ -50,8 +50,7 @@ namespace SashaRX.UnityMeshLab
 
         public string Purpose => "Every _COL node gets a MeshCollider, the largest on the root, and loses its renderer; each collider gets its surface.";
 
-        public string SkipReason(PrepareContext context)
-            => context.Root == null ? "a model's own hierarchy cannot be edited; prepare its prefab or a scene object made from it" : null;
+        public string SkipReason(PrepareContext context) => context.Root == null ? context.NoRoot ?? "there is no hierarchy to change" : null;
 
         public void Plan(PrepareContext context, PrepareReport report) => Run(context, report, false);
 
@@ -169,7 +168,7 @@ namespace SashaRX.UnityMeshLab
             if (!apply) return;
             context.Record(node, "Activate Collision");
             node.SetActive(true);
-            context.Changed(node);
+            PrepareContext.Changed(node);
         }
 
         static void RemoveRenderers(PrepareContext context, PrepareReport report, bool apply, Transform node, string subject)
