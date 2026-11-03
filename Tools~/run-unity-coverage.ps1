@@ -110,7 +110,24 @@ try {
     foreach ($argument in $arguments) { $start.ArgumentList.Add($argument) }
     $process = [Diagnostics.Process]::Start($start)
     if (!$process.WaitForExit($TimeoutSeconds * 1000)) { throw 'Owned Unity coverage process timed out' }
-    if ($process.ExitCode -ne 0) { throw "Unity coverage failed with exit code $($process.ExitCode)" }
+    if ($process.ExitCode -ne 0) {
+        # Name each failed test in the job log (the results file is only in the artifact).
+        $testsPath = Join-Path $results 'tests.xml'
+        if (Test-Path -LiteralPath $testsPath) {
+            [xml]$failedRun = Get-Content -LiteralPath $testsPath
+            $failed = @($failedRun.SelectNodes("//test-case[@result='Failed']"))
+            Write-Output "Unity tests: $($failedRun.'test-run'.passed) passed, $($failed.Count) failed"
+            foreach ($case in ($failed | Select-Object -First 60)) {
+                $message = $case.SelectSingleNode('failure/message')
+                $stack = $case.SelectSingleNode('failure/stack-trace')
+                $text = if ($message) { $message.InnerText.Trim() } else { '' }
+                if ($text.Length -gt 800) { $text = $text.Substring(0, 800) + '...' }
+                Write-Output "FAILED $($case.fullname): $text"
+                if ($stack) { ($stack.InnerText.Trim() -split "`n" | Select-Object -First 3) | ForEach-Object { Write-Output "    $($_.Trim())" } }
+            }
+        }
+        throw "Unity coverage failed with exit code $($process.ExitCode)"
+    }
     [xml]$tests = Get-Content -LiteralPath (Join-Path $results 'tests.xml')
     if ([int]$tests.'test-run'.failed -ne 0 -or [int]$tests.'test-run'.passed -le 0) { throw 'Unity tests failed or did not execute' }
     foreach ($suite in $requiredSuites) {
