@@ -183,7 +183,7 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             var words = MeshNaming.Vocabulary.Default;
             Assert.AreEqual("Wood", SurfaceBinding.Resolve("University_Bench_Straight _Seat_Wood_COL", new[] { "M_Metal" }, "SM_Glass", words).surface);
-            Assert.AreEqual("Wood", SurfaceBinding.Resolve("Seat_COL", new[] { "M_SovietBuilding_BaseAtlas_01", "M_Wood_Trim" }, "SM_Glass", words).surface);
+            Assert.AreEqual("Wood", SurfaceBinding.Resolve("Seat_COL", new[] { "M_Building_Atlas_01", "M_Wood_Oak" }, "SM_Glass", words).surface);
             Assert.AreEqual("Glass", SurfaceBinding.Resolve("Seat_COL", new[] { "M_Atlas" }, "SM_Glass_Door", words).surface);
             Assert.IsNull(SurfaceBinding.Resolve("Seat_COL", null, "Bench", words).surface);
         }

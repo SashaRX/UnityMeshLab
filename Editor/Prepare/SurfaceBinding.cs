@@ -6,7 +6,7 @@
 // the surface's name.
 //
 // The surface comes from the part's name (Seat_Wood_COL), else from the names of the part's
-// materials (M_Wood_Trim), else from the model's name, each read by MeshNaming.ParseTags
+// materials (M_Wood_Oak), else from the model's name, each read by MeshNaming.ParseTags
 // against the surface rules (a keyword → the surface asset's name).
 
 using System;
