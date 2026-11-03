@@ -1,7 +1,8 @@
-// PrepareMaterialsTests.cs — the Materials prepare step: the project's material of a slot's
-// name, the nearest of several; and, on an exported FBX, a slot remapped on the importer
+// PrepareMaterialsTests.cs — the importer prepare steps. Materials: the project's material of a
+// slot's name, the nearest of several; on an exported FBX, a slot remapped on the importer
 // before the variant is made, the whole chain (Materials, Colliders, Prefab) applied once and
-// changing nothing the second time.
+// changing nothing the second time. Preset: the settings that differ applied, the model's
+// remaps never, a model without the class prefix skipped.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -97,6 +98,68 @@ namespace SashaRX.UnityMeshLab.Tests
             var second = PrepareRunner.Apply(target, steps);
 
             Assert.IsFalse(second.Changes, second.ToString());
+        }
+
+        [Test]
+        public void Preset_AppliesTheDifferingSettingsButNotTheModelsRemaps()
+        {
+            string fbxPath = ExportBench();
+            var importer = (ModelImporter)AssetImporter.GetAtPath(fbxPath);
+            var mine = new Material(Shader.Find("Standard"));
+            AssetDatabase.CreateAsset(mine, $"{folder}/Mine.mat");
+            var other = new Material(Shader.Find("Standard"));
+            AssetDatabase.CreateAsset(other, $"{folder}/Other.mat");
+            var slot = new AssetImporter.SourceAssetIdentifier(typeof(Material), "M_Wood_Oak");
+            importer.globalScale = 2;
+            importer.AddRemap(slot, other);
+            var preset = new UnityEditor.Presets.Preset(importer);
+            AssetDatabase.CreateAsset(preset, $"{folder}/Importer.preset");
+            importer.globalScale = 1;
+            importer.AddRemap(slot, mine);
+            importer.SaveAndReimport();
+            var target = PrepareTarget.ForAsset(fbxPath);
+            var step = new PresetStep(preset);
+
+            var plan = PrepareRunner.Preview(target, new IPrepareStep[] { step });
+            var line = plan.Steps.Single().Report.Lines.Single();
+            Assert.AreEqual(PrepareLevel.Changed, line.level, plan.ToString());
+            Assert.IsTrue(line.details.Any(d => d.StartsWith("m_GlobalScale: 1 → 2")), string.Join("\n", line.details));
+            Assert.IsFalse(line.details.Any(d => d.StartsWith("m_ExternalObjects")), "the model's remaps are never applied");
+
+            PrepareRunner.Apply(target, new IPrepareStep[] { step });
+
+            importer = (ModelImporter)AssetImporter.GetAtPath(fbxPath);
+            Assert.AreEqual(2f, importer.globalScale);
+            Assert.AreSame(mine, importer.GetExternalObjectMap()[slot], "the model keeps its own remap");
+            Assert.IsFalse(PrepareRunner.Preview(target, new IPrepareStep[] { step }).Changes, "a second run changes nothing");
+        }
+
+        [Test]
+        public void Preset_LeavesOutWhatThePresetItselfExcludes()
+        {
+            string fbxPath = ExportBench();
+            var importer = (ModelImporter)AssetImporter.GetAtPath(fbxPath);
+            importer.globalScale = 2;
+            var preset = new UnityEditor.Presets.Preset(importer) { excludedProperties = new[] { "m_GlobalScale" } };
+            owned.Add(preset);
+            importer.globalScale = 1;
+            importer.SaveAndReimport();
+
+            var plan = PrepareRunner.Preview(PrepareTarget.ForAsset(fbxPath), new IPrepareStep[] { new PresetStep(preset) });
+
+            Assert.IsFalse(plan.Changes, "the preset's own exclusion is not applied, so it is no difference: " + plan);
+        }
+
+        [Test]
+        public void Preset_SkipsAModelWithoutTheClassPrefix()
+        {
+            string fbxPath = ExportBench();
+            var preset = new UnityEditor.Presets.Preset(AssetImporter.GetAtPath(fbxPath));
+            owned.Add(preset);
+            var context = new PrepareContext(PrepareTarget.ForAsset(fbxPath), null, false);
+            Assert.IsNull(new PresetStep(preset).SkipReason(context), "SM_Bench has the prefix");
+            StringAssert.Contains("SK_", new PresetStep(preset, "SK").SkipReason(context));
+            StringAssert.Contains("no importer preset", new PresetStep(null).SkipReason(context));
         }
 
         [Test]

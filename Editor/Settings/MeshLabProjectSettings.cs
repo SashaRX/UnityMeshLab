@@ -34,6 +34,9 @@ namespace SashaRX.UnityMeshLab
         // What the Colliders step gives each collider's object so a game knows its surface
         // (a component by type name, its asset field, the asset type) and the surface words.
         [SerializeField] internal SurfaceBindingSettings surfaceBinding = new SurfaceBindingSettings();
+        // The model importer preset the Preset step applies, and whether its LOD screen percentages go too.
+        [SerializeField] internal UnityEditor.Presets.Preset importerPreset;
+        [SerializeField] internal bool presetLodScreenPercentages;
 
         // ── Developer UI ──
         // When true, the UV2 Transfer tool exposes diagnostic / benchmarking
@@ -89,7 +92,7 @@ namespace SashaRX.UnityMeshLab
                 {
                     "mesh", "lab", "atlas", "repack", "padding",
                     "uv", "sidecar", "ao", "vertex", "lightmap", "fbx", "binary", "textures",
-                    "prepare", "collider", "surface"
+                    "prepare", "collider", "surface", "preset"
                 }
             };
         }
@@ -162,6 +165,14 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.LabelField("Default target:", label, EditorStyles.miniLabel);
 
             EditorGUILayout.Space(12);
+            EditorGUILayout.LabelField("Prepare: Importer Preset", EditorStyles.boldLabel);
+            inst.importerPreset = (UnityEditor.Presets.Preset)EditorGUILayout.ObjectField(new GUIContent("Preset",
+                "The model importer preset the Preset step applies to SM_ models; its remaps and mesh IDs are never applied. Empty: the step is skipped."),
+                inst.importerPreset, typeof(UnityEditor.Presets.Preset), false);
+            inst.presetLodScreenPercentages = EditorGUILayout.Toggle(new GUIContent("Apply LOD Percentages",
+                "Also apply the preset's LOD screen percentages (off: each model keeps its own)."), inst.presetLodScreenPercentages);
+
+            EditorGUILayout.Space(12);
             EditorGUILayout.LabelField("Prepare: Collider Surfaces", EditorStyles.boldLabel);
             DrawSurfaceBinding(inst.surfaceBinding ?? (inst.surfaceBinding = new SurfaceBindingSettings()));
 
@@ -194,7 +205,7 @@ namespace SashaRX.UnityMeshLab
                 if (GUILayout.Button(
                         new GUIContent("Reset to defaults",
                             "Reset every Mesh Lab project setting (Repack defaults, Output path, FBX export, "
-                            + "Sidecar mode, Vertex AO defaults, collider surfaces, Show Debug UI) back to its built-in "
+                            + "Sidecar mode, Vertex AO defaults, prepare preset and collider surfaces, Show Debug UI) back to its built-in "
                             + "default value. Does NOT touch existing sidecar files or scene state."),
                         GUILayout.Height(22), GUILayout.MaxWidth(180)))
                 {
@@ -309,6 +320,8 @@ namespace SashaRX.UnityMeshLab
                 inst.disabledToolIds = fresh.disabledToolIds;
                 inst.disabledLibraryIds = fresh.disabledLibraryIds;
                 inst.surfaceBinding  = fresh.surfaceBinding;
+                inst.importerPreset  = fresh.importerPreset;
+                inst.presetLodScreenPercentages = fresh.presetLodScreenPercentages;
                 ModulesChanged?.Invoke();
                 Save();
             }

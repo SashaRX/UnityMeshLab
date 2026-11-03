@@ -8,7 +8,7 @@
 // all of one run in one Undo step. A model asset is edited through its prefab variant when the
 // chain has the Prefab step (PrefabOutput: the variant's contents, or the model's instance a
 // first run saves as the variant), else its hierarchy is left to the steps that need none. Steps
-// that change a model's importer (IImporterStep: Materials) apply before its variant is opened.
+// that change a model's importer (IImporterStep: Preset, Materials) apply before its variant is opened.
 //
 // Tools ▸ Mesh Lab ▸ Prepare ▸ Preview / Apply run the chain on the selection and log each
 // result, until the Prefab Builder carries the prepare section.
@@ -98,7 +98,16 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>The steps a run takes when none are given, in chain order.</summary>
         internal static List<IPrepareStep> DefaultSteps()
-            => new List<IPrepareStep> { new MaterialStep(), new ColliderStep(SurfaceBinding.FromSettings(), SurfaceBinding.Vocabulary()), new PrefabStep() };
+        {
+            var settings = MeshLabProjectSettings.Instance;
+            return new List<IPrepareStep>
+            {
+                new PresetStep(settings.importerPreset, "SM", settings.presetLodScreenPercentages),
+                new MaterialStep(),
+                new ColliderStep(SurfaceBinding.FromSettings(), SurfaceBinding.Vocabulary()),
+                new PrefabStep(),
+            };
+        }
 
         /// <summary>What each step would change on <paramref name="target"/>; changes nothing.</summary>
         internal static PrepareResult Preview(PrepareTarget target, IReadOnlyList<IPrepareStep> steps) => Run(target, steps, false);
