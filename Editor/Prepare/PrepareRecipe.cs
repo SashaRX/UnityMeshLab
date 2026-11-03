@@ -213,7 +213,8 @@ namespace SashaRX.UnityMeshLab
                 .Replace(@"\*", folder ? "[^/]*" : ".*").Replace(@"\?", folder ? "[^/]" : ".")
                 .Replace("\u0002", "(?:.*/)?").Replace("\u0001", ".*");
             return new System.Text.RegularExpressions.Regex("^" + body + (folder ? "(/.*)?$" : "$"),
-                System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant,
+                TimeSpan.FromSeconds(1));
         }
     }
 }
