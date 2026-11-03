@@ -110,7 +110,7 @@ namespace SashaRX.UnityMeshLab
                     + "sweep, benchmark, log filters, hierarchical probe, FBX metrics) "
                     + "and the UV2 Transfer tool its UV0 Analysis & Fix section and "
                     + "advanced SymSplit / Repack toggles. Also reveals the "
-                    + "'Mesh Lab ▸ Export FBX Metrics' menu items and the "
+                    + "'Tools ▸ Mesh Lab ▸ Diagnostics ▸ Export FBX Metrics' menu items and the "
                     + "'Assets ▸ Create ▸ Mesh Lab ▸ Sweep Test Suite' action. "
                     + "Off by default for a clean production UI."),
                 inst.showDebugUI);

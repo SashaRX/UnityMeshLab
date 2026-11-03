@@ -36,7 +36,7 @@ namespace SashaRX.UnityMeshLab
 {
     internal static class HierarchicalDiag
     {
-        const string MenuPath = "Mesh Lab/Diag/Hierarchical Containment Probe";
+        const string MenuPath = "Tools/Mesh Lab/Diagnostics/Hierarchical Containment Probe";
 
         // θ thresholds in degrees. ~71% area is retained under orthographic
         // projection at θ=45°, ~50% at θ=60°. Below 30° projection is near
