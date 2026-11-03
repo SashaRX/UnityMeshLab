@@ -180,7 +180,13 @@ namespace SashaRX.UnityMeshLab
             => (data.entries == null || data.entries.Count == 0)
             && (data.collisionEntries == null || data.collisionEntries.Count == 0)
             && (data.collisionAtRoot == null || data.collisionAtRoot.Count == 0)
-            && data.toolSettings == null;
+            && !HasSettings(data);
+
+        // Settings saved (or, in a sidecar written before ToolSettings.saved, differing from the
+        // defaults): Unity gives every sidecar a ToolSettings, so a default unsaved one is none.
+        static bool HasSettings(Uv2DataAsset data)
+            => data.toolSettings != null
+            && (data.toolSettings.saved || JsonUtility.ToJson(data.toolSettings) != JsonUtility.ToJson(new ToolSettings()));
 
         // ── Collision placed at the root (sidecar mode) ──
 
@@ -703,11 +709,12 @@ namespace SashaRX.UnityMeshLab
 
         // ── Tool settings ──
 
-        /// <summary>The transfer tool settings stored in the sidecar at <paramref name="sidecarPath"/>, or null.</summary>
+        /// <summary>The transfer tool settings saved in the sidecar at <paramref name="sidecarPath"/>; null when there are none.</summary>
         internal static ToolSettings LoadSettings(string sidecarPath)
         {
             if (string.IsNullOrEmpty(sidecarPath)) return null;
-            return AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(sidecarPath)?.toolSettings;
+            var data = AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(sidecarPath);
+            return data != null && HasSettings(data) ? data.toolSettings : null;
         }
 
         /// <summary>
@@ -722,6 +729,7 @@ namespace SashaRX.UnityMeshLab
             if (data == null) return;
             if (data.toolSettings == null) data.toolSettings = new ToolSettings();
             edit(data.toolSettings);
+            data.toolSettings.saved = true;
             Save(data);
         }
     }

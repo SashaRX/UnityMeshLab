@@ -169,13 +169,18 @@ namespace SashaRX.UnityMeshLab.Tests
             try
             {
                 SidecarStore.SetCollisionAtRoot(fbx, new[] { "Seat_COL[0]" });
+                Assert.IsNull(SidecarStore.LoadSettings(sidecar), "a sidecar no settings were saved in has none");
                 SidecarStore.SaveSettings(sidecar, settings => { });
-                Assert.IsNotNull(SidecarStore.LoadSettings(sidecar));
+                Assert.IsNotNull(SidecarStore.LoadSettings(sidecar), "saved settings, the defaults included");
 
                 Assert.AreEqual(1, SidecarStore.DeleteKeepingCollisionPlacement(new[] { fbx }));
 
                 CollectionAssert.AreEqual(new[] { "Seat_COL[0]" }, SidecarStore.CollisionAtRoot(fbx), "a UV2 reset keeps the nodes placed at the root");
                 Assert.IsNull(SidecarStore.LoadSettings(sidecar), "and drops the rest of the sidecar");
+                var kept = SidecarStore.Load(fbx);
+                kept.toolSettings = new ToolSettings { atlasResolution = 2048 };   // as saved before ToolSettings.saved
+                SidecarStore.Save(kept);
+                Assert.AreEqual(2048, SidecarStore.LoadSettings(sidecar)?.atlasResolution, "older settings count when they differ from the defaults");
             }
             finally { AssetDatabase.DeleteAsset(sidecar); }
         }
