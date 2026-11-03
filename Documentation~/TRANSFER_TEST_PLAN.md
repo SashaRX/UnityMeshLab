@@ -76,7 +76,7 @@ F0–F5 — синтетические, делаются за минуты в Un
 | E3 metrics | `lodN_overlap.png` + CSV | красных текселей нет на плоском; §2 гейты |
 | F meshes | (Apply через меню) | `finalMeshes[li]` face-count == source; submesh'и/материалы целы |
 
-Меню для ручного end-to-end: **`Mesh Lab/Hier/Apply UV2 to Selected LODGroup`**
+Меню для ручного end-to-end: **`Tools/Mesh Lab/Diagnostics/Hierarchical UV2 to Selected LODGroup`**
 (диалог теперь показывает overlap px / unplaced / misaligned — хедлайн E3).
 
 ## 4. Регрессионные тесты из аудита (`TRANSFER_AUDIT_2026-07-18.md`)

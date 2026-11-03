@@ -93,7 +93,10 @@ namespace SashaRX.UnityMeshLab.Tests
         [TestCase("Wall_COL", true)]
         [TestCase("Wall_Collider", true)]
         [TestCase("Wall", false)]
-        [TestCase("Wall_COLOR", true)]   // the hygiene check is deliberately broad: COL\w*
+        [TestCase("Wall_COLOR", false)]
+        [TestCase("SM_University_Inside_Column_U", false)]   // "_Col" inside a word is no collision suffix
+        [TestCase("University_Inside_Column_U_Wood_COL", true)]
+        [TestCase("University_Inside_Column_Concrete_U_LOD0", true)]
         public void HasLodOrCollisionSuffix_MatchesTheHygieneRule(string name, bool expected)
             => Assert.AreEqual(expected, MeshNaming.HasLodOrCollisionSuffix(name));
 

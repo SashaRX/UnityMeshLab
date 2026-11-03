@@ -96,39 +96,23 @@ namespace SashaRX.UnityMeshLab
         // ── Collision enumeration ──
 
         /// <summary>
-        /// Finds direct children (and their direct children) of <paramref name="root"/>
-        /// whose name contains <c>_COL</c> or ends with <c>_Collider</c>. Uses the
-        /// historical loose substring match for backwards compatibility with the
-        /// original CleanupTool implementation.
+        /// Finds the direct children and grandchildren of <paramref name="root"/> named as
+        /// collision (MeshNaming.IsCollision: a <c>_COL</c>, <c>_COL_*</c>, <c>_Collider</c> or
+        /// <c>_Collision</c> suffix), each node judged by its own name: a hull under its
+        /// <c>_COL</c> container, and a <c>_COL</c> node under a group of any name. A name that
+        /// only contains "_Col" elsewhere ("Inside_Column_LOD0", "Chair_COLOR") is no collision node.
         /// </summary>
         public static List<GameObject> FindCollisionObjects(Transform root)
         {
             var result = new List<GameObject>();
             if (root == null) return result;
-            for (int i = 0; i < root.childCount; i++)
+            foreach (Transform child in root)
             {
-                var child = root.GetChild(i);
-                if (IsLooseCollisionName(child.name))
-                {
-                    result.Add(child.gameObject);
-                    for (int j = 0; j < child.childCount; j++)
-                    {
-                        var gc = child.GetChild(j);
-                        if (IsLooseCollisionName(gc.name))
-                            result.Add(gc.gameObject);
-                    }
-                }
+                if (MeshNaming.IsCollision(child.name)) result.Add(child.gameObject);
+                foreach (Transform grandchild in child)
+                    if (MeshNaming.IsCollision(grandchild.name)) result.Add(grandchild.gameObject);
             }
             return result;
-        }
-
-        static bool IsLooseCollisionName(string name)
-        {
-            if (string.IsNullOrEmpty(name)) return false;
-            return name.IndexOf("_COL", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   name.EndsWith("_Col", StringComparison.OrdinalIgnoreCase) ||
-                   name.EndsWith("_Collider", StringComparison.OrdinalIgnoreCase) ||
-                   name.EndsWith("_Collision", StringComparison.OrdinalIgnoreCase);
         }
 
         // ── Mesh stats ──

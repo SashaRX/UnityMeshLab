@@ -28,6 +28,7 @@ namespace SashaRX.UnityMeshLab
     internal static class FbxCollisionPlacement
     {
         const string MenuPath = "Assets/Mesh Lab/Bake Collision Offsets into FBX";
+        const string ToolsMenuPath = "Tools/Mesh Lab/Collision/Bake Offsets into FBX";
 
         /// <summary>How far a baked surface may lie from where it was, relative to the mesh's size (at least 0.1 mm).</summary>
         const float SurfaceTolerance = 1e-4f;
@@ -186,15 +187,15 @@ namespace SashaRX.UnityMeshLab
             return true;
         }
 
-        static IEnumerable<string> SelectedModels() => Selection.assetGUIDs
-            .Select(AssetDatabase.GUIDToAssetPath)
-            .Where(path => path.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase) && AssetImporter.GetAtPath(path) is ModelImporter)
-            .Distinct();
+        static IEnumerable<string> SelectedModels() => ModelSelection.Paths(path
+            => path.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase) && AssetImporter.GetAtPath(path) is ModelImporter, original: true);
 
         [MenuItem(MenuPath, true)]
+        [MenuItem(ToolsMenuPath, true)]
         static bool CanBakeSelection() => SelectedModels().Any();
 
         [MenuItem(MenuPath, false, 2001)]
+        [MenuItem(ToolsMenuPath, false, 40)]
         static void BakeSelection()
         {
             foreach (string path in SelectedModels().ToList()) BakeOffsets(path);
