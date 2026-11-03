@@ -4,10 +4,11 @@
 // added to the project. The model postprocessor (Uv2AssetPostprocessor) reports each import, so
 // no postprocessor is added to the models' import (a new one would reimport every model of a
 // project). The import may run in an import worker (Parallel Import), so a new model is noted
-// as a file under Library/, which the main editor reads once its imports are over
-// (PrepareOnImportWatcher, an all-assets callback, which adds no import dependency): each new
-// model is then taken through its recipe's chain as Prepare ▸ Apply would, one at a time, and
-// the result logged. A reimport never runs it.
+// as a file under Library/, and the notes are the queue: the main editor takes them once its
+// imports are over (PrepareOnImportWatcher, an all-assets callback, which adds no import
+// dependency) or after a domain reload, and removes each only once its model has been taken
+// through its recipe's chain as Prepare ▸ Apply would, the result logged. In play mode or while
+// a player builds, the notes wait. A reimport never runs it.
 
 using System;
 using System.Collections.Generic;
@@ -21,13 +22,13 @@ namespace SashaRX.UnityMeshLab
     internal static class PrepareOnImport
     {
         const string NotesFolder = "MeshLabPrepareOnImport";
-        static readonly TimeSpan StaleAfter = TimeSpan.FromDays(1);
 
-        static readonly List<string> pending = new List<string>();
         static bool scheduled;
 
         /// <summary>Where new models are noted: Library/, shared by the editor and its import workers.</summary>
         static string Notes => Path.Combine(Path.GetDirectoryName(Application.dataPath) ?? ".", "Library", NotesFolder);
+
+        static string NoteOf(string path) => Path.Combine(Notes, Hash128.Compute(path) + ".txt");
 
         /// <summary>A model imported, in whatever process: a new one is noted for the main editor.</summary>
         internal static void Imported(string path, bool isNew)
@@ -36,7 +37,7 @@ namespace SashaRX.UnityMeshLab
             try
             {
                 Directory.CreateDirectory(Notes);
-                File.WriteAllText(Path.Combine(Notes, Hash128.Compute(path) + ".txt"), path);
+                File.WriteAllText(NoteOf(path), path);
             }
             catch (Exception error) when (error is IOException || error is UnauthorizedAccessException)
             {
@@ -44,51 +45,36 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        /// <summary>Whether <paramref name="path"/> waits to be prepared as a new model.</summary>
+        internal static bool IsPending(string path) => File.Exists(NoteOf(path));
+
         /// <summary>
-        /// In the main editor, after imports: each noted model among <paramref name="imported"/>
-        /// waits to be prepared once the editor is idle (a note left a day is dropped); a waiting
-        /// model that was deleted no longer waits, and one that was moved waits at its new path
-        /// (<paramref name="moved"/>[i] from <paramref name="movedFrom"/>[i]).
+        /// In the main editor, after imports: a waiting model that was moved waits at its new
+        /// path (<paramref name="moved"/>[i] from <paramref name="movedFrom"/>[i]), and the
+        /// waiting models are prepared once the editor is idle.
         /// </summary>
-        internal static void AfterImports(IReadOnlyCollection<string> imported, IReadOnlyCollection<string> deleted,
-            IReadOnlyList<string> moved, IReadOnlyList<string> movedFrom)
+        internal static void AfterImports(IReadOnlyList<string> moved, IReadOnlyList<string> movedFrom)
         {
-            pending.RemoveAll(deleted.Contains);
             for (int i = 0; i < Math.Min(moved.Count, movedFrom.Count); i++)
             {
-                int at = pending.IndexOf(movedFrom[i]);
-                if (at >= 0) pending[at] = moved[i];
+                if (!IsPending(movedFrom[i])) continue;
+                Imported(moved[i], true);
+                Remove(NoteOf(movedFrom[i]));
             }
-            if (imported.Count > 0 && Directory.Exists(Notes)) ReadNotes(new HashSet<string>(imported, StringComparer.Ordinal));
-            if (pending.Count == 0 || scheduled) return;
+            Schedule();
+        }
+
+        // After a domain reload (a script change, entering play mode) the notes are still there.
+        [InitializeOnLoadMethod]
+        static void AfterReload() => Schedule();
+
+        static void Schedule()
+        {
+            if (scheduled || AssetDatabase.IsAssetImportWorkerProcess() || !Directory.Exists(Notes)) return;
+            if (!Directory.EnumerateFiles(Notes, "*.txt").Any()) return;
             scheduled = true;
             EditorApplication.delayCall += RunPending;
         }
-
-        // Each note of a model just imported is taken (its model waits); one left a day is dropped.
-        static void ReadNotes(HashSet<string> imported)
-        {
-            foreach (string note in Directory.GetFiles(Notes, "*.txt"))
-            {
-                try
-                {
-                    string path = File.ReadAllText(note);
-                    if (imported.Contains(path))
-                    {
-                        File.Delete(note);
-                        if (!pending.Contains(path)) pending.Add(path);
-                    }
-                    else if (DateTime.UtcNow - File.GetLastWriteTimeUtc(note) > StaleAfter) File.Delete(note);
-                }
-                catch (Exception error) when (error is IOException || error is UnauthorizedAccessException)
-                {
-                    UvtLog.Verbose($"[{PrepareRunner.Tag}] a Run on Import note was not read: {error.Message}");
-                }
-            }
-        }
-
-        /// <summary>Whether <paramref name="path"/> waits to be prepared as a new model.</summary>
-        internal static bool IsPending(string path) => pending.Contains(path);
 
         static void RunPending()
         {
@@ -100,30 +86,56 @@ namespace SashaRX.UnityMeshLab
                 EditorApplication.delayCall += RunPending;
                 return;
             }
-            var paths = pending.ToList();
-            pending.Clear();
+            if (!Directory.Exists(Notes)) return;
             var recipes = MeshLabProjectSettings.Instance.recipes;
-            if (recipes == null || !recipes.Any(r => r != null && r.runOnImport)) return;
-            // One model's failure is logged with its path and leaves the others to be prepared.
-            foreach (string path in paths)
+            bool runs = recipes != null && recipes.Any(r => r != null && r.runOnImport);
+            foreach (string note in Directory.GetFiles(Notes, "*.txt"))
             {
+                string path = Read(note);
+                // A note is removed once its model is done with, prepared or not; a failure is
+                // logged with the model's path and leaves the others to be prepared.
                 try
                 {
-                    var result = Run(path, recipes);
-                    if (result == null) continue;
-                    UvtLog.Info($"[{PrepareRunner.Tag}] '{path}' was imported for the first time: its recipe runs on import");
-                    result.Log();
+                    if (runs && path != null) Prepare(path, recipes);
                 }
                 catch (Exception error)
                 {
                     UvtLog.Error($"[{PrepareRunner.Tag}] '{path}': preparing it on import failed: {error}");
                 }
+                finally { Remove(note); }
+            }
+        }
+
+        static void Prepare(string path, IReadOnlyList<PrepareRecipe> recipes)
+        {
+            var result = Run(path, recipes);
+            if (result == null) return;
+            UvtLog.Info($"[{PrepareRunner.Tag}] '{path}' was imported for the first time: its recipe runs on import");
+            result.Log();
+        }
+
+        static string Read(string note)
+        {
+            try { return File.ReadAllText(note); }
+            catch (Exception error) when (error is IOException || error is UnauthorizedAccessException)
+            {
+                UvtLog.Verbose($"[{PrepareRunner.Tag}] a Run on Import note was not read: {error.Message}");
+                return null;
+            }
+        }
+
+        static void Remove(string note)
+        {
+            try { File.Delete(note); }
+            catch (Exception error) when (error is IOException || error is UnauthorizedAccessException)
+            {
+                UvtLog.Verbose($"[{PrepareRunner.Tag}] a Run on Import note was not removed: {error.Message}");
             }
         }
 
         /// <summary>
         /// Applies the chain of the model at <paramref name="path"/> when its recipe runs on
-        /// import; null when it is no model, or takes no recipe that does.
+        /// import; null when it is no model (any more), or takes no recipe that does.
         /// </summary>
         internal static PrepareResult Run(string path, IReadOnlyList<PrepareRecipe> recipes)
         {
@@ -141,6 +153,10 @@ namespace SashaRX.UnityMeshLab
     internal sealed class PrepareOnImportWatcher : AssetPostprocessor
     {
         static void OnPostprocessAllAssets(string[] importedAssets, string[] deletedAssets, string[] movedAssets, string[] movedFromAssetPaths)
-            => PrepareOnImport.AfterImports(importedAssets, deletedAssets, movedAssets, movedFromAssetPaths);
+        {
+            // A deleted model's note goes when the queue is run: the model is no model any more.
+            if (importedAssets.Length + deletedAssets.Length + movedAssets.Length == 0) return;
+            PrepareOnImport.AfterImports(movedAssets, movedFromAssetPaths);
+        }
     }
 }
