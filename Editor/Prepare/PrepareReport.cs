@@ -11,20 +11,26 @@ namespace SashaRX.UnityMeshLab
     /// <summary>How a check or step left its subject. Ordered: the worst line is the report's level.</summary>
     internal enum PrepareLevel { Unchanged, Changed, Warning, Error }
 
-    /// <summary>One finding: its level, the subject (an asset, node or mesh), the check and what it found.</summary>
+    /// <summary>
+    /// One finding: its level, the subject (an asset, node or mesh), the check and what it
+    /// found, with the details it covers (a property each, say), if any.
+    /// </summary>
     internal readonly struct PrepareLine
     {
         internal readonly PrepareLevel level;
         internal readonly string subject;
         internal readonly string check;
         internal readonly string message;
+        internal readonly IReadOnlyList<string> details;
 
-        internal PrepareLine(PrepareLevel level, string subject, string check, string message)
+        internal PrepareLine(PrepareLevel level, string subject, string check, string message, IReadOnlyList<string> details = null)
         {
             this.level = level; this.subject = subject; this.check = check; this.message = message;
+            this.details = details ?? System.Array.Empty<string>();
         }
 
-        public override string ToString() => $"{level}: {subject} — {check}: {message}";
+        public override string ToString()
+            => $"{level}: {subject} — {check}: {message}" + string.Concat(details.Select(d => "\n    " + d));
     }
 
     /// <summary>The lines of one asset's check or preparation.</summary>
@@ -45,8 +51,8 @@ namespace SashaRX.UnityMeshLab
         /// <summary>An Error line blocks Apply; warnings are only shown.</summary>
         internal bool BlocksApply => Level == PrepareLevel.Error;
 
-        internal void Add(PrepareLevel level, string subject, string check, string message)
-            => lines.Add(new PrepareLine(level, subject, check, message));
+        internal void Add(PrepareLevel level, string subject, string check, string message, IReadOnlyList<string> details = null)
+            => lines.Add(new PrepareLine(level, subject, check, message, details));
 
         /// <summary>Adds a finding at the level a requirement sets; nothing when it is off.</summary>
         internal void Add(RequirementLevel requirement, string subject, string check, string message)
@@ -84,7 +90,8 @@ namespace SashaRX.UnityMeshLab
             else UvtLog.Info(head);
             foreach (var line in lines.OrderByDescending(l => l.level))
             {
-                string text = $"[{tag}] '{Asset}' {line.subject} — {line.check}: {line.message}";
+                string text = $"[{tag}] '{Asset}' {line.subject} — {line.check}: {line.message}"
+                    + string.Concat(line.details.Select(d => "\n    " + d));
                 if (line.level == PrepareLevel.Error) UvtLog.Error(text);
                 else if (line.level == PrepareLevel.Warning) UvtLog.Warn(text);
                 else UvtLog.Info(text);
