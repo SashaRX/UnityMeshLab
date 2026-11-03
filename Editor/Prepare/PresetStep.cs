@@ -2,7 +2,8 @@
 // model's recipe (Project Settings ▸ Mesh Lab ▸ Prepare: Recipes, SM_ models by default) is
 // applied to the model, all but the properties that hold the model's own links: its material
 // remaps (m_ExternalObjects), the IDs its prefabs and variants find its meshes by
-// (m_InternalIDToNameTable, m_UsedFileIDs) and, unless asked, its LOD screen percentages. The plan lists each
+// (m_InternalIDToNameTable, m_UsedFileIDs), its avatar's human description (m_HumanDescription)
+// and, unless asked, its LOD screen percentages. The plan lists each
 // setting that differs, was → becomes, as the line's details; Apply applies only those and
 // reimports the model (IImporterStep: before its variant is opened). A model that already
 // matches the preset is left as it is.
@@ -23,8 +24,11 @@ namespace SashaRX.UnityMeshLab
         const string Check = "Importer";
         const string LodScreenPercentages = "m_LODScreenPercentages";
 
-        /// <summary>The importer properties a preset never sets: the model's remaps and the IDs its prefabs reference meshes by.</summary>
-        internal static readonly string[] Kept = { "m_ExternalObjects", "m_InternalIDToNameTable", "m_UsedFileIDs" };
+        /// <summary>
+        /// The importer properties a preset never sets: the model's remaps, the IDs its prefabs
+        /// reference meshes by, and its avatar's human description (its own bones and scale).
+        /// </summary>
+        internal static readonly string[] Kept = { "m_ExternalObjects", "m_InternalIDToNameTable", "m_UsedFileIDs", "m_HumanDescription" };
 
         readonly Preset preset;
         readonly string[] excluded;
@@ -39,7 +43,7 @@ namespace SashaRX.UnityMeshLab
 
         public string Name => StepName;
 
-        public string Purpose => "The model's importer takes the recipe's preset, except its remaps, mesh IDs and LOD percentages.";
+        public string Purpose => "The model's importer takes the recipe's preset, except its remaps, mesh IDs, avatar description and LOD percentages.";
 
         public string SkipReason(PrepareContext context)
         {

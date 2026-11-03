@@ -125,6 +125,12 @@ namespace SashaRX.UnityMeshLab
 
         void Set(PrepareContext context, Component target, Object asset, string subject, PrepareReport report)
         {
+            if (target == null)
+            {
+                // Unity refused to add it (a script in an editor assembly, say) and said why in the Console.
+                report.Add(PrepareLevel.Warning, subject, Check, $"Unity did not add {component.Name} (see the Console); its surface is not set");
+                return;
+            }
             var serialized = new SerializedObject(target);
             var property = serialized.FindProperty(field);
             if (property == null || property.propertyType != SerializedPropertyType.ObjectReference)

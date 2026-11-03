@@ -89,11 +89,14 @@ namespace SashaRX.UnityMeshLab.Tests
 
             Assert.IsTrue(first.Applied && first.Changes, first.ToString());
             var importer = (ModelImporter)AssetImporter.GetAtPath(fbxPath);
+            // By the asset: the reimport may give the material a new instance.
+            string projectPath = $"{folder}/M_Wood_Oak.mat";
             var remap = importer.GetExternalObjectMap().Single(kv => kv.Key.type == typeof(Material) && kv.Key.name == "M_Wood_Oak");
-            Assert.AreSame(project, remap.Value);
+            Assert.AreEqual(projectPath, AssetDatabase.GetAssetPath(remap.Value));
             var variant = AssetDatabase.LoadAssetAtPath<GameObject>($"{folder}/Bench.prefab");
             Assert.IsNotNull(variant, "the variant next to the model");
-            Assert.AreSame(project, variant.transform.Find("Seat_LOD0").GetComponent<MeshRenderer>().sharedMaterial, "the variant shows the remapped material");
+            Assert.AreEqual(projectPath, AssetDatabase.GetAssetPath(variant.transform.Find("Seat_LOD0").GetComponent<MeshRenderer>().sharedMaterial),
+                "the variant shows the remapped material");
             Assert.IsNotNull(variant.transform.Find("Seat_COL").GetComponent<MeshCollider>());
 
             var second = PrepareRunner.Apply(target, steps);
@@ -137,7 +140,7 @@ namespace SashaRX.UnityMeshLab.Tests
 
             importer = (ModelImporter)AssetImporter.GetAtPath(fbxPath);
             Assert.AreEqual(2f, importer.globalScale);
-            Assert.AreSame(mine, importer.GetExternalObjectMap()[slot], "the model keeps its own remap");
+            Assert.AreEqual($"{folder}/Mine.mat", AssetDatabase.GetAssetPath(importer.GetExternalObjectMap()[slot]), "the model keeps its own remap");
             Assert.IsFalse(PrepareRunner.Preview(target, new IPrepareStep[] { step }).Changes, "a second run changes nothing");
         }
 

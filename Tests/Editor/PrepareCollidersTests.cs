@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Linq;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.TestTools;
 
 namespace SashaRX.UnityMeshLab.Tests
 {
@@ -267,6 +268,34 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(PrepareLevel.Warning, concrete.level, "no Concrete asset");
             var again = Apply(root, new ColliderStep(binding));
             Assert.IsFalse(again.Changes, again.ToString());
+        }
+
+        [Test]
+        public void ComponentBinding_ReportsAComponentUnityDoesNotAdd()
+        {
+            var wood = ScriptableObject.CreateInstance<PrepareTestSurfaceData>();
+            wood.name = "Wood";
+            owned.Add(wood);
+            var settings = new SurfaceBindingSettings
+            {
+                componentType = typeof(PrepareEditorOnlySurface).FullName, field = "_material", dataType = nameof(PrepareTestSurfaceData),
+            };
+            var binding = new ComponentSurfaceBinding(settings, (type, name, near) => name == "Wood" ? wood : null);
+            var root = Root("Bench");
+            var seat = Node(root, "Seat_Wood_COL", Box("Seat_Wood_COL", 1), new Vector3(0, 1, 0));
+
+            // Unity says in the Console why it adds no editor script to an object.
+            LogAssert.ignoreFailingMessages = true;
+            try
+            {
+                var result = Apply(root, new ColliderStep(binding));
+
+                Assert.IsNull(seat.GetComponent<PrepareEditorOnlySurface>());
+                var line = result.Steps.Single().Report.Lines.Last(l => l.check == ComponentSurfaceBinding.Check);
+                Assert.AreEqual(PrepareLevel.Warning, line.level, result.ToString());
+                StringAssert.Contains("Unity did not add PrepareEditorOnlySurface", line.message);
+            }
+            finally { LogAssert.ignoreFailingMessages = false; }
         }
 
         [Test]
