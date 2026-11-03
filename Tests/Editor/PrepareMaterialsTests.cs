@@ -135,6 +135,22 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Preset_LeavesOutWhatThePresetItselfExcludes()
+        {
+            string fbxPath = ExportBench();
+            var importer = (ModelImporter)AssetImporter.GetAtPath(fbxPath);
+            importer.globalScale = 2;
+            var preset = new UnityEditor.Presets.Preset(importer) { excludedProperties = new[] { "m_GlobalScale" } };
+            owned.Add(preset);
+            importer.globalScale = 1;
+            importer.SaveAndReimport();
+
+            var plan = PrepareRunner.Preview(PrepareTarget.ForAsset(fbxPath), new IPrepareStep[] { new PresetStep(preset) });
+
+            Assert.IsFalse(plan.Changes, "the preset's own exclusion is not applied, so it is no difference: " + plan);
+        }
+
+        [Test]
         public void Preset_SkipsAModelWithoutTheClassPrefix()
         {
             string fbxPath = ExportBench();

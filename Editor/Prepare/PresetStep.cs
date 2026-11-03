@@ -63,7 +63,8 @@ namespace SashaRX.UnityMeshLab
         {
             string path = context.Target.AssetPath;
             var importer = (ModelImporter)AssetImporter.GetAtPath(path);
-            var differences = Differences(preset, importer, excluded);
+            // The preset's own exclusions (its Inspector's) are never applied either.
+            var differences = Differences(preset, importer, excluded.Concat(preset.excludedProperties ?? Array.Empty<string>()));
             if (differences.Count == 0)
             {
                 report.Add(PrepareLevel.Unchanged, $"'{path}'", Check, $"the importer already matches '{preset.name}'");
