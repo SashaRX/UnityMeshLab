@@ -93,11 +93,17 @@ namespace SashaRX.UnityMeshLab
         static void RunPending()
         {
             scheduled = false;
+            // In play mode or while a player builds, the models wait for the editor to be idle again.
+            if (EditorApplication.isPlayingOrWillChangePlaymode || BuildPipeline.isBuildingPlayer)
+            {
+                scheduled = true;
+                EditorApplication.delayCall += RunPending;
+                return;
+            }
             var paths = pending.ToList();
             pending.Clear();
             var recipes = MeshLabProjectSettings.Instance.recipes;
             if (recipes == null || !recipes.Any(r => r != null && r.runOnImport)) return;
-            if (EditorApplication.isPlayingOrWillChangePlaymode || BuildPipeline.isBuildingPlayer) return;
             // One model's failure is logged with its path and leaves the others to be prepared.
             foreach (string path in paths)
             {
