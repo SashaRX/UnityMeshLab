@@ -42,8 +42,9 @@ namespace SashaRX.UnityMeshLab
                 report.Add(PrepareLevel.Unchanged, $"'{path}'", Check, "the model imports no materials");
                 return;
             }
-            var remapped = new HashSet<string>(importer.GetExternalObjectMap().Keys
-                .Where(k => k.type == typeof(Material)).Select(k => k.name), StringComparer.Ordinal);
+            // A remap whose material is gone (its value null) is no remap, as the importer's inspector reads it.
+            var remapped = new HashSet<string>(importer.GetExternalObjectMap()
+                .Where(kv => kv.Key.type == typeof(Material) && kv.Value != null).Select(kv => kv.Key.name), StringComparer.Ordinal);
             var slots = Slots(importer, path).Where(name => !remapped.Contains(name)).Distinct(StringComparer.Ordinal).ToList();
             if (slots.Count == 0)
             {

@@ -152,8 +152,9 @@ namespace SashaRX.UnityMeshLab
                 var hierarchy = Pass(ModelContext(target, output), steps.Where(s => !(s is IImporterStep)).ToList(), true);
                 done.AddRange(hierarchy);
                 var result = new PrepareResult(target, steps.Select(s => done.First(d => d.Step == s)).ToList(), true);
-                if (output == null || !HasChanges(hierarchy)) return result;
-                return output.Save(out string error) ? result : NotSaved(result, $"the prefab variant could not be saved: {error}");
+                if (output == null || !HasChanges(hierarchy) || output.Save(out string error)) return result;
+                string imported = HasChanges(done.Except(hierarchy)) ? "the model's importer was changed, but " : "";
+                return NotSaved(result, $"{imported}the prefab variant could not be saved: {error}; apply again to finish");
             }
         }
 
@@ -166,7 +167,8 @@ namespace SashaRX.UnityMeshLab
                 : new PrepareContext(target, null, false,
                     "a model's own hierarchy cannot be changed; add the Prefab step, or prepare a prefab or scene object made from it");
 
-        // The steps' changes were made in memory, but nothing was written.
+        // The hierarchy's changes were made in memory but not written (a model's importer
+        // changes, made before, stay: the reason says so, and a second Apply finds them done).
         static PrepareResult NotSaved(PrepareResult result, string why)
             => new PrepareResult(result.Target, result.Steps.ToList(), false, why);
 
