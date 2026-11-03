@@ -37,6 +37,10 @@ namespace SashaRX.UnityMeshLab
         // Which steps a target takes and with what settings: the first recipe whose name and
         // folder patterns match it (PrepareRecipe); one for SM_ models to begin with.
         [SerializeField] internal List<PrepareRecipe> recipes = new List<PrepareRecipe> { PrepareRecipe.StaticMeshes() };
+        // The recipes' format, so a recipe saved before a field existed gets that field's default
+        // once (MigrateRecipes); 1 added Validate and its requirements.
+        const int RecipesVersion = 1;
+        [SerializeField] int recipesVersion;
         // The importer preset before recipes (1.2.112): read once, moved into a recipe (MoveLegacyPreset).
         [SerializeField] internal UnityEditor.Presets.Preset importerPreset;
         [SerializeField] internal bool presetLodScreenPercentages;
@@ -67,16 +71,35 @@ namespace SashaRX.UnityMeshLab
                     .LoadSerializedFileAndForget(AssetPath);
                 if (objs != null && objs.Length > 0)
                     s_Instance = objs[0] as MeshLabProjectSettings;
-                if (s_Instance != null && s_Instance.MoveLegacyPreset())
-                    Save();
-                if (s_Instance == null)
+                bool created = s_Instance == null;
+                if (created)
                 {
                     s_Instance = CreateInstance<MeshLabProjectSettings>();
                     s_Instance.hideFlags = HideFlags.HideAndDontSave;
-                    Save();
                 }
+                bool migrated = s_Instance.MigrateRecipes();
+                bool moved = s_Instance.MoveLegacyPreset();
+                if (created || migrated || moved)
+                    Save();
                 return s_Instance;
             }
+        }
+
+        /// <summary>
+        /// Brings recipes saved in an older format up to date, once: each recipe from before
+        /// Validate has it on with the default requirements (fields its file lacked, which load
+        /// unset). Whether anything changed; a recipe's later choice is kept.
+        /// </summary>
+        internal bool MigrateRecipes()
+        {
+            if (recipesVersion >= RecipesVersion) return false;
+            foreach (var recipe in (recipes ?? new List<PrepareRecipe>()).Where(r => r != null))
+            {
+                recipe.validate = true;
+                recipe.requirements = new ModelRequirements();
+            }
+            recipesVersion = RecipesVersion;
+            return true;
         }
 
         /// <summary>
@@ -244,6 +267,7 @@ namespace SashaRX.UnityMeshLab
                 + "(a prefab or scene object made from a model, also the model's); the report names it, and why each step was skipped.",
                 EditorStyles.wordWrappedMiniLabel);
             int remove = -1, up = -1;
+            var serialized = new SerializedObject(Instance);
             for (int i = 0; i < recipes.Count; i++)
             {
                 var recipe = recipes[i] ?? (recipes[i] = PrepareRecipe.StaticMeshes());
@@ -256,9 +280,10 @@ namespace SashaRX.UnityMeshLab
                             if (GUILayout.Button(new GUIContent("↑", "Try this recipe before the one above."), GUILayout.Width(22))) up = i;
                         if (GUILayout.Button(new GUIContent("−", "Remove the recipe."), GUILayout.Width(22))) remove = i;
                     }
-                    DrawRecipe(recipe);
+                    DrawRecipe(recipe, serialized.FindProperty($"recipes.Array.data[{i}].requirements"));
                 }
             }
+            serialized.ApplyModifiedPropertiesWithoutUndo();
             if (remove >= 0) recipes.RemoveAt(remove);
             else if (up > 0) (recipes[up - 1], recipes[up]) = (recipes[up], recipes[up - 1]);
             using (new EditorGUILayout.HorizontalScope())
@@ -269,7 +294,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static void DrawRecipe(PrepareRecipe recipe)
+        static void DrawRecipe(PrepareRecipe recipe, SerializedProperty requirements)
         {
             recipe.namePattern = EditorGUILayout.TextField(new GUIContent("Name",
                 "The name the model (or the model a prefab or scene object is made from) must have: * any characters, ? one; "
@@ -278,7 +303,15 @@ namespace SashaRX.UnityMeshLab
                 "The folder it must be in, or under (Assets/Art/Props): * part of one folder's name, ** any folders; "
                 + "several separated by ';'; empty: any folder."), recipe.folderPattern);
 
-            recipe.preset = EditorGUILayout.ToggleLeft(new GUIContent("1  " + PresetStep.StepName, new PresetStep(null).Purpose), recipe.preset);
+            recipe.validate = EditorGUILayout.ToggleLeft(new GUIContent("1  " + ValidateStep.StepName, new ValidateStep().Purpose), recipe.validate);
+            using (new EditorGUI.DisabledScope(!recipe.validate))
+            using (new EditorGUI.IndentLevelScope())
+            {
+                if (requirements != null)
+                    EditorGUILayout.PropertyField(requirements, new GUIContent("Requirements",
+                        "Each check Off, a Warning (shown) or an Error (blocks Apply), with its thresholds."), true);
+            }
+            recipe.preset = EditorGUILayout.ToggleLeft(new GUIContent("2  " + PresetStep.StepName, new PresetStep(null).Purpose), recipe.preset);
             using (new EditorGUI.DisabledScope(!recipe.preset))
             using (new EditorGUI.IndentLevelScope())
             {
@@ -287,8 +320,8 @@ namespace SashaRX.UnityMeshLab
                 recipe.presetLodScreenPercentages = EditorGUILayout.Toggle(new GUIContent("Apply LOD Percentages",
                     "Also apply the preset's LOD screen percentages (off: each model keeps its own)."), recipe.presetLodScreenPercentages);
             }
-            recipe.materials = EditorGUILayout.ToggleLeft(new GUIContent("2  " + MaterialStep.StepName, new MaterialStep().Purpose), recipe.materials);
-            recipe.colliders = EditorGUILayout.ToggleLeft(new GUIContent("3  " + ColliderStep.StepName, new ColliderStep().Purpose), recipe.colliders);
+            recipe.materials = EditorGUILayout.ToggleLeft(new GUIContent("3  " + MaterialStep.StepName, new MaterialStep().Purpose), recipe.materials);
+            recipe.colliders = EditorGUILayout.ToggleLeft(new GUIContent("4  " + ColliderStep.StepName, new ColliderStep().Purpose), recipe.colliders);
             using (new EditorGUI.DisabledScope(!recipe.colliders))
             using (new EditorGUI.IndentLevelScope())
             {
@@ -297,7 +330,7 @@ namespace SashaRX.UnityMeshLab
                 recipe.colliderFallbackLod = EditorGUILayout.IntField(new GUIContent("Fallback LOD",
                     "The LOD level a model without _COL nodes collides with; -1: its coarsest."), recipe.colliderFallbackLod);
             }
-            recipe.prefab = EditorGUILayout.ToggleLeft(new GUIContent("4  " + PrefabStep.StepName,
+            recipe.prefab = EditorGUILayout.ToggleLeft(new GUIContent("5  " + PrefabStep.StepName,
                 new PrefabStep().Purpose + " Off: a model's own hierarchy is left as it is, so its Colliders step is skipped."), recipe.prefab);
         }
 

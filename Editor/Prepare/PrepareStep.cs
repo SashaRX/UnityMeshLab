@@ -43,6 +43,13 @@ namespace SashaRX.UnityMeshLab
     /// </summary>
     internal interface IImporterStep : IPrepareStep { }
 
+    /// <summary>
+    /// A step that only checks the target and changes nothing. On a model whose importer an
+    /// importer step changes first, its plan's errors wait: it checks again once the model is
+    /// reimported, and an error then stops the steps after it.
+    /// </summary>
+    internal interface ICheckStep : IPrepareStep { }
+
     internal enum PrepareTargetKind { ModelAsset, PrefabAsset, SceneObject }
 
     /// <summary>A model asset, a prefab asset or a scene object to prepare.</summary>
