@@ -210,6 +210,12 @@ namespace SashaRX.UnityMeshLab
         // Pipeline
         public bool saveNewMeshAssets = true;
         public string savePath = "Assets/UnityMeshLab/Output";
+
+        /// <summary>
+        /// Set when the settings are saved. Unity never leaves a serialized class field null, so a
+        /// sidecar that never had settings saved still holds a ToolSettings with the defaults.
+        /// </summary>
+        public bool saved;
     }
 
     /// <summary>

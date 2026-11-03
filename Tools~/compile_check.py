@@ -20,7 +20,7 @@ in SHIMS with the reason. Keep that list short: every entry is an API the real
 Unity build sees and this check cannot.
 
 The Unity Test Framework is a separate package, absent from Unity3D.SDK. Its
-UnityTest marker and LogAssert.Expect signatures are stubbed only in the generated
+UnityTest marker and LogAssert surface (Expect, ignoreFailingMessages) are stubbed only in the generated
 compile-check sources; coroutine execution and log assertions are verified by the
 real Unity Test Runner.
 
@@ -105,6 +105,7 @@ namespace UnityEngine.TestTools
     {
         public static void Expect(UnityEngine.LogType type, string message) { }
         public static void Expect(UnityEngine.LogType type, System.Text.RegularExpressions.Regex message) { }
+        public static bool ignoreFailingMessages { get; set; }
     }
 }
 """
