@@ -83,17 +83,17 @@ namespace SashaRX.UnityMeshLab
             var targets = Selection.assetGUIDs.Select(AssetDatabase.GUIDToAssetPath).Distinct(StringComparer.Ordinal)
                 .Select(ForAsset).Where(t => t != null).ToList();
             var objects = Selection.gameObjects.Where(go => go != null && go.scene.IsValid()).ToList();
-            foreach (var go in objects)
-                if (!objects.Any(other => other != go && go.transform.IsChildOf(other.transform)))
-                    targets.Add(ForSceneObject(go));
+            targets.AddRange(objects.Where(go => !objects.Any(other => other != go && go.transform.IsChildOf(other.transform)))
+                .Select(ForSceneObject));
             return targets;
         }
 
         static string ScenePath(Transform node)
         {
-            var path = node.name;
-            for (var parent = node.parent; parent != null; parent = parent.parent) path = parent.name + "/" + path;
-            return path;
+            var names = new List<string>();
+            for (var t = node; t != null; t = t.parent) names.Add(t.name);
+            names.Reverse();
+            return string.Join('/', names);
         }
     }
 

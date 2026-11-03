@@ -73,42 +73,31 @@ namespace SashaRX.UnityMeshLab
         internal ComponentSurfaceBinding(SurfaceBindingSettings settings, Func<Type, string, string, Object> find = null)
         {
             this.find = find ?? FindAsset;
-            if (settings == null || string.IsNullOrWhiteSpace(settings.componentType))
-            {
-                Unavailable = "no surface component is set (Project Settings ▸ Mesh Lab ▸ Prepare)";
-                return;
-            }
-            component = FindType(settings.componentType, typeof(Component));
-            data = FindType(settings.dataType, typeof(Object));
-            field = settings.field?.Trim();
-            if (component == null) Unavailable = $"there is no component type '{settings.componentType}' in this project";
-            else if (data == null) Unavailable = $"there is no asset type '{settings.dataType}' in this project";
-            else
-            {
-                var info = FindField(component, field);
-                if (info == null) Unavailable = $"'{component.Name}' has no field '{field}'";
-                else if (info.IsPublic ? info.IsNotSerialized : !info.IsDefined(typeof(SerializeField), true))
-                    Unavailable = $"'{component.Name}.{field}' is not serialized";
-                else if (!info.FieldType.IsAssignableFrom(data)) Unavailable = $"'{component.Name}.{field}' does not take a '{data.Name}'";
-            }
+            Unavailable = Resolve(settings, out component, out data, out field);
         }
 
         public string Unavailable { get; }
+
+        // The component, asset type and field the settings name; why they cannot bind, or null.
+        static string Resolve(SurfaceBindingSettings settings, out Type component, out Type data, out string field)
+        {
+            component = null; data = null; field = settings?.field?.Trim();
+            if (settings == null || string.IsNullOrWhiteSpace(settings.componentType))
+                return "no surface component is set (Project Settings ▸ Mesh Lab ▸ Prepare)";
+            component = FindType(settings.componentType, typeof(Component));
+            if (component == null) return $"there is no component type '{settings.componentType}' in this project";
+            data = FindType(settings.dataType, typeof(Object));
+            if (data == null) return $"there is no asset type '{settings.dataType}' in this project";
+            var info = FindField(component, field);
+            if (info == null) return $"'{component.Name}' has no serialized field '{field}'";
+            return info.FieldType.IsAssignableFrom(data) ? null : $"'{component.Name}.{field}' does not take a '{data.Name}'";
+        }
 
         public void Bind(PrepareContext context, GameObject host, string surface, string origin, string subject, PrepareReport report, bool apply)
         {
             if (Unavailable != null) return;
             var existing = host.GetComponent(component);
-            if (existing != null)
-            {
-                var current = new SerializedObject(existing).FindProperty(field)?.objectReferenceValue;
-                if (current != null)
-                {
-                    report.Add(PrepareLevel.Unchanged, subject, Check, $"keeps {component.Name} '{current.name}'"
-                        + (surface != null && !string.Equals(current.name, surface, StringComparison.OrdinalIgnoreCase) ? $" ({origin} says {surface})" : ""));
-                    return;
-                }
-            }
+            if (Keeps(existing, surface, origin, subject, report)) return;
             if (surface == null)
             {
                 report.Add(PrepareLevel.Warning, subject, Check, "no surface: neither the part's name, its materials nor the model's name names one");
@@ -121,8 +110,21 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
             report.Add(PrepareLevel.Changed, subject, Check, $"{component.Name} '{asset.name}' ({origin} says {surface})");
-            if (!apply) return;
-            var target = existing != null ? existing : context.AddComponent(host, component);
+            if (apply) Set(context, existing != null ? existing : context.AddComponent(host, component), asset, subject, report);
+        }
+
+        // A surface already set stays: the binding is the game's to change.
+        bool Keeps(Component existing, string surface, string origin, string subject, PrepareReport report)
+        {
+            var current = existing != null ? new SerializedObject(existing).FindProperty(field)?.objectReferenceValue : null;
+            if (current == null) return false;
+            string says = surface != null && !string.Equals(current.name, surface, StringComparison.OrdinalIgnoreCase) ? $" ({origin} says {surface})" : "";
+            report.Add(PrepareLevel.Unchanged, subject, Check, $"keeps {component.Name} '{current.name}'{says}");
+            return true;
+        }
+
+        void Set(PrepareContext context, Component target, Object asset, string subject, PrepareReport report)
+        {
             var serialized = new SerializedObject(target);
             var property = serialized.FindProperty(field);
             if (property == null || property.propertyType != SerializedPropertyType.ObjectReference)
@@ -144,16 +146,17 @@ namespace SashaRX.UnityMeshLab
             return types.FirstOrDefault(t => !t.IsAbstract && t.FullName == name) ?? types.FirstOrDefault(t => !t.IsAbstract && t.Name == name);
         }
 
-        /// <summary>An instance field of that name on the type or a base type, public or not.</summary>
+        /// <summary>
+        /// The field of that name Unity serializes on the type or a base type: a public instance
+        /// field not marked [NonSerialized], or one marked [SerializeField].
+        /// </summary>
         static FieldInfo FindField(Type type, string name)
         {
             if (string.IsNullOrEmpty(name)) return null;
-            for (var t = type; t != null && t != typeof(Component); t = t.BaseType)
-            {
-                var info = t.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
-                if (info != null) return info;
-            }
-            return null;
+            var open = type.GetField(name, BindingFlags.Instance | BindingFlags.Public);
+            if (open != null) return open.IsNotSerialized ? null : open;
+            return TypeCache.GetFieldsWithAttribute<SerializeField>()
+                .FirstOrDefault(f => f.Name == name && !f.IsStatic && f.DeclaringType != null && f.DeclaringType.IsAssignableFrom(type));
         }
 
         /// <summary>The project's asset of <paramref name="type"/> named <paramref name="name"/>; of several, the one sharing the longest folder path with <paramref name="near"/>.</summary>

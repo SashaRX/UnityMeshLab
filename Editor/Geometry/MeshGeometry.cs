@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using UnityEngine;
 
@@ -287,10 +288,7 @@ namespace SashaRX.UnityMeshLab
                 if (a == b || b == c || a == c) continue;
                 CountEdge(faces, a, b); CountEdge(faces, b, c); CountEdge(faces, c, a);
             }
-            if (faces.Count == 0) return false;
-            foreach (int n in faces.Values)
-                if (n != 2) return false;
-            return true;
+            return faces.Count > 0 && faces.Values.All(n => n == 2);
         }
 
         static void CountEdge(Dictionary<long, int> faces, int a, int b)

@@ -16,6 +16,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
@@ -68,48 +69,61 @@ namespace SashaRX.UnityMeshLab
 
         void Run(PrepareContext context, PrepareReport report, bool apply)
         {
-            var root = context.Root;
-            var rootSubject = Subject(root.transform, root.transform);
-            if (root.TryGetComponent(out MeshCollider own))
-            {
-                report.Add(PrepareLevel.Unchanged, rootSubject, Check, own.sharedMesh != null
-                    ? $"the root already has a MeshCollider ('{own.sharedMesh.name}'); the model is left as it is"
-                    : "the root already has a MeshCollider; the model is left as it is");
-                return;
-            }
+            var root = context.Root.transform;
+            if (LeftAsItIs(root, report)) return;
+            var sources = Sources(root, report);
+            if (sources.Count == 0) return;
+            var main = sources.OrderByDescending(s => s.volume).First();
+            if (binding?.Unavailable != null)
+                report.Add(PrepareLevel.Unchanged, Subject(root, root), ComponentSurfaceBinding.Check, $"surfaces are not bound: {binding.Unavailable}");
+            foreach (var source in sources) Prepare(context, report, apply, source, source == main);
+        }
 
-            var sources = CollisionSources(root);
+        static bool LeftAsItIs(Transform root, PrepareReport report)
+        {
+            if (!root.TryGetComponent(out MeshCollider own)) return false;
+            string mesh = own.sharedMesh != null ? $" ('{own.sharedMesh.name}')" : "";
+            report.Add(PrepareLevel.Unchanged, Subject(root, root), Check, $"the root already has a MeshCollider{mesh}; the model is left as it is");
+            return true;
+        }
+
+        // The collision nodes with a mesh, else one LOD level's render nodes; each with its volume.
+        List<Source> Sources(Transform root, PrepareReport report)
+        {
+            var sources = CollisionSources(root.gameObject);
             if (sources.Count == 0)
             {
-                sources = LodSources(root, FallbackLod, out string level);
+                sources = LodSources(root.gameObject, FallbackLod, out string level);
                 if (sources.Count == 0)
                 {
-                    report.Add(PrepareLevel.Warning, rootSubject, Check, "no collision node and no LOD level with a mesh: nothing to collide with");
-                    return;
+                    report.Add(PrepareLevel.Warning, Subject(root, root), Check, "no collision node and no LOD level with a mesh: nothing to collide with");
+                    return sources;
                 }
-                report.Add(PrepareLevel.Unchanged, rootSubject, Check, $"no collision node: it collides with {level}");
+                report.Add(PrepareLevel.Unchanged, Subject(root, root), Check, $"no collision node: it collides with {level}");
             }
-            foreach (var source in sources) source.volume = Volume(root.transform, source.node, source.mesh);
-            var main = sources.OrderByDescending(s => s.volume).First();
+            foreach (var source in sources) source.volume = Volume(root, source.node, source.mesh);
+            return sources;
+        }
 
-            if (binding?.Unavailable != null)
-                report.Add(PrepareLevel.Unchanged, rootSubject, ComponentSurfaceBinding.Check, $"surfaces are not bound: {binding.Unavailable}");
-            foreach (var source in sources)
-            {
-                string offset = source == main ? LodHierarchy.OffsetFromRoot(root.transform, source.node) : null;
-                var host = source == main && offset == null ? root.transform : source.node;
-                string subject = Subject(root.transform, source.node);
-                string where = host == root.transform ? "main, on the root"
-                    : source == main ? $"main, on its node: it sits off the root's placement ({offset})"
-                    : "on its node";
-                GiveCollider(context, report, apply, source, host, subject, where);
-                if (source.collisionNode) RemoveRenderers(context, report, apply, source.node, subject);
-                if (binding != null && binding.Unavailable == null)
-                {
-                    var (surface, origin) = SurfaceBinding.Resolve(source.node.name, MaterialNames(root.transform, source), context.Target.Name, vocabulary);
-                    binding.Bind(context, host.gameObject, surface, origin, Subject(root.transform, host), report, apply);
-                }
-            }
+        void Prepare(PrepareContext context, PrepareReport report, bool apply, Source source, bool main)
+        {
+            var root = context.Root.transform;
+            string offset = main ? LodHierarchy.OffsetFromRoot(root, source.node) : null;
+            var host = main && offset == null ? root : source.node;
+            string subject = Subject(root, source.node);
+            GiveCollider(context, report, apply, source, host, subject, Placement(main, offset, host == root));
+            if (host == root) DropNodeCollider(context, report, apply, source, subject);
+            else Activate(context, report, apply, source, subject);
+            if (source.collisionNode) RemoveRenderers(context, report, apply, source.node, subject);
+            if (binding == null || binding.Unavailable != null) return;
+            var (surface, origin) = SurfaceBinding.Resolve(source.node.name, MaterialNames(root, source), context.Target.Name, vocabulary);
+            binding.Bind(context, host.gameObject, surface, origin, Subject(root, host), report, apply);
+        }
+
+        static string Placement(bool main, string offset, bool onRoot)
+        {
+            if (onRoot) return "main, on the root";
+            return main ? $"main, on its node: it sits off the root's placement ({offset})" : "on its node";
         }
 
         static void GiveCollider(PrepareContext context, PrepareReport report, bool apply, Source source, Transform host, string subject, string where)
@@ -117,27 +131,38 @@ namespace SashaRX.UnityMeshLab
             var existing = host.GetComponents<MeshCollider>().FirstOrDefault(c => c.sharedMesh == source.mesh);
             if (existing != null)
             {
-                report.Add(existing.enabled ? PrepareLevel.Unchanged : PrepareLevel.Warning, subject, Check,
-                    $"has its MeshCollider ('{source.mesh.name}', {where})" + (existing.enabled ? "" : ", disabled: it does not collide"));
+                if (existing.enabled) report.Add(PrepareLevel.Unchanged, subject, Check, $"has its MeshCollider ('{source.mesh.name}', {where})");
+                else report.Add(PrepareLevel.Warning, subject, Check, $"has its MeshCollider ('{source.mesh.name}', {where}), disabled: it does not collide");
                 return;
             }
             report.Add(PrepareLevel.Changed, subject, Check, $"MeshCollider with '{source.mesh.name}' ({where})");
-            if (apply)
-            {
-                var collider = context.AddComponent<MeshCollider>(host.gameObject);
-                collider.sharedMesh = source.mesh;
-                collider.convex = false;
-                collider.cookingOptions = DefaultCooking;
-            }
+            if (!apply) return;
+            var collider = context.AddComponent<MeshCollider>(host.gameObject);
+            collider.sharedMesh = source.mesh;
+            collider.convex = false;
+            collider.cookingOptions = DefaultCooking;
+        }
 
-            // A collider on an inactive object does not collide. An inactive collision node is
-            // switched on (it draws nothing once its renderers go); anything else is only reported.
-            var node = host.gameObject;
+        // The main collider on the root: the node's own collider over the same mesh would collide a second time.
+        static void DropNodeCollider(PrepareContext context, PrepareReport report, bool apply, Source source, string subject)
+        {
+            var own = source.node.GetComponents<MeshCollider>().Where(c => c.sharedMesh == source.mesh).ToList();
+            if (own.Count == 0) return;
+            report.Add(PrepareLevel.Changed, subject, Check, "its own MeshCollider removed: the root's collides in its place");
+            if (!apply) return;
+            foreach (var collider in own) context.Destroy(collider);
+        }
+
+        // A collider on an inactive object does not collide. An inactive collision node is
+        // switched on (it draws nothing once its renderers go); anything else is reported.
+        static void Activate(PrepareContext context, PrepareReport report, bool apply, Source source, string subject)
+        {
+            var node = source.node.gameObject;
             if (node.activeInHierarchy) return;
-            bool parentInactive = host.parent != null && !host.parent.gameObject.activeInHierarchy;
-            if (parentInactive || !source.collisionNode || host != source.node)
+            var parent = source.node.parent;
+            if (!source.collisionNode || (parent != null && !parent.gameObject.activeInHierarchy))
             {
-                report.Add(PrepareLevel.Warning, subject, Check, "its object is inactive, so the collider does not collide");
+                report.Add(PrepareLevel.Warning, subject, Check, "its object is inactive (or under an inactive one), so the collider does not collide");
                 return;
             }
             report.Add(PrepareLevel.Changed, subject, Check, "activated: an inactive object does not collide");
@@ -241,11 +266,6 @@ namespace SashaRX.UnityMeshLab
         static double BoundsVolume(Bounds bounds) => (double)bounds.size.x * bounds.size.y * bounds.size.z;
 
         static string Subject(Transform root, Transform node)
-        {
-            if (node == root) return $"'{root.name}'";
-            var path = node.name;
-            for (var parent = node.parent; parent != null && parent != root; parent = parent.parent) path = parent.name + "/" + path;
-            return $"'{path}'";
-        }
+            => node == root ? $"'{root.name}'" : $"'{AnimationUtility.CalculateTransformPath(node, root)}'";
     }
 }

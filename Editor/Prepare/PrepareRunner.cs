@@ -61,7 +61,7 @@ namespace SashaRX.UnityMeshLab
 
         public override string ToString()
         {
-            var text = new StringBuilder($"{Target.Display}: {(Refused != null ? "not applied, " + Refused : Applied ? "applied" : "preview")}");
+            var text = new StringBuilder($"{Target.Display}: {State()}");
             foreach (var step in Steps)
             {
                 text.Append($"\n  {step.Step.Name}: {step.Summary}");
@@ -70,6 +70,12 @@ namespace SashaRX.UnityMeshLab
                         .Append(string.Concat(line.details.Select(d => "\n      " + d)));
             }
             return text.ToString();
+        }
+
+        string State()
+        {
+            if (Refused != null) return "not applied, " + Refused;
+            return Applied ? "applied" : "preview";
         }
 
         /// <summary>The result at its level: errors as errors, warnings as warnings, the rest as info.</summary>

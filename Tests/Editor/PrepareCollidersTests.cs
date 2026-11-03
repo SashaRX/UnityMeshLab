@@ -114,6 +114,34 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Apply_RemovesTheMainNodesOwnColliderWhenTheRootTakesItsPlace()
+        {
+            var root = Root("Bench");
+            var baseCol = Node(root, "Base_Concrete_COL", Box("Base_Concrete_COL", 2));
+            baseCol.AddComponent<MeshCollider>().sharedMesh = baseCol.GetComponent<MeshFilter>().sharedMesh;
+
+            Apply(root, new ColliderStep());
+
+            Assert.AreEqual("Base_Concrete_COL", root.GetComponent<MeshCollider>().sharedMesh.name);
+            Assert.IsNull(baseCol.GetComponent<MeshCollider>(), "one collider for the mesh, not two");
+        }
+
+        [Test]
+        public void Apply_SwitchesOnAnInactiveCollisionNodeThatAlreadyHasItsCollider()
+        {
+            var root = Root("Bench");
+            var seat = Node(root, "Seat_Wood_COL", Box("Seat_Wood_COL", 1), new Vector3(0, 1, 0));
+            seat.AddComponent<MeshCollider>().sharedMesh = seat.GetComponent<MeshFilter>().sharedMesh;
+            Object.DestroyImmediate(seat.GetComponent<MeshRenderer>());
+            Object.DestroyImmediate(seat.GetComponent<MeshFilter>());
+            seat.SetActive(false);
+
+            var result = Apply(root, new ColliderStep());
+
+            Assert.IsTrue(seat.activeSelf, result.ToString());
+        }
+
+        [Test]
         public void Apply_ASecondTimeChangesNothing()
         {
             foreach (var offset in new[] { Vector3.zero, new Vector3(0.392f, 0, 0.002f) })
@@ -233,7 +261,7 @@ namespace SashaRX.UnityMeshLab.Tests
             {
                 componentType = nameof(PrepareTestSurface), field = "_missing", dataType = nameof(PrepareTestSurfaceData),
             };
-            StringAssert.Contains("no field", new ComponentSurfaceBinding(wrongField).Unavailable);
+            StringAssert.Contains("no serialized field", new ComponentSurfaceBinding(wrongField).Unavailable);
         }
     }
 }
