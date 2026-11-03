@@ -1,8 +1,8 @@
 // PrepareMaterialsTests.cs — the importer prepare steps. Materials: the project's material of a
 // slot's name, the nearest of several; on an exported FBX, a slot remapped on the importer
 // before the variant is made, the whole chain (Materials, Colliders, Prefab) applied once and
-// changing nothing the second time. Preset: the settings that differ applied, the model's
-// remaps never, a model without the class prefix skipped.
+// changing nothing the second time, and the variant matching its model's recipe. Preset: the
+// settings that differ applied, the model's remaps never, the reason a model is skipped.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -98,6 +98,12 @@ namespace SashaRX.UnityMeshLab.Tests
             var second = PrepareRunner.Apply(target, steps);
 
             Assert.IsFalse(second.Changes, second.ToString());
+
+            var variantTarget = PrepareTarget.ForAsset($"{folder}/Bench.prefab");
+            Assert.AreEqual(fbxPath, variantTarget.ModelPath, "the variant is made from the model");
+            var chain = PrepareRecipes.Chain(variantTarget, new[] { new PrepareRecipe { colliderSurfaces = false } });
+            Assert.IsNotNull(chain.Recipe, "the variant takes its model's recipe: " + chain.Match);
+            StringAssert.Contains("its model 'SM_Bench'", chain.Match);
         }
 
         [Test]
@@ -151,15 +157,19 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        public void Preset_SkipsAModelWithoutTheClassPrefix()
+        public void Preset_SaysWhyItIsSkipped()
         {
             string fbxPath = ExportBench();
             var preset = new UnityEditor.Presets.Preset(AssetImporter.GetAtPath(fbxPath));
             owned.Add(preset);
-            var context = new PrepareContext(PrepareTarget.ForAsset(fbxPath), null, false);
-            Assert.IsNull(new PresetStep(preset).SkipReason(context), "SM_Bench has the prefix");
-            StringAssert.Contains("SK_", new PresetStep(preset, "SK").SkipReason(context));
-            StringAssert.Contains("no importer preset", new PresetStep(null).SkipReason(context));
+            var target = PrepareTarget.ForAsset(fbxPath);
+            var context = new PrepareContext(target, null, false);
+            Assert.IsNull(new PresetStep(preset).SkipReason(context));
+            StringAssert.Contains("sets no importer preset", new PresetStep(null).SkipReason(context));
+
+            var other = PrepareRecipes.Chain(target, new[] { new PrepareRecipe { namePattern = "SK_*", importerPreset = preset } });
+            Assert.IsNull(other.Recipe, "a model the recipe's name does not match");
+            StringAssert.Contains("no recipe matches 'SM_Bench'", PrepareRunner.Preview(target, other).Steps[0].Skipped);
         }
 
         [Test]

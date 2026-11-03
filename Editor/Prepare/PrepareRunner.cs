@@ -10,8 +10,8 @@
 // first run saves as the variant), else its hierarchy is left to the steps that need none. Steps
 // that change a model's importer (IImporterStep: Preset, Materials) apply before its variant is opened.
 //
-// Tools ▸ Mesh Lab ▸ Prepare ▸ Preview / Apply run the chain on the selection and log each
-// result, until the Prefab Builder carries the prepare section.
+// Tools ▸ Mesh Lab ▸ Prepare ▸ Preview / Apply run each selected target's chain (its recipe's,
+// PrepareRecipe) and log each result, until the Prefab Builder carries the prepare section.
 
 using System.Collections.Generic;
 using System.Linq;
@@ -55,6 +55,16 @@ namespace SashaRX.UnityMeshLab
         /// <summary>Why Apply made no change, or null.</summary>
         internal string Refused { get; }
 
+        /// <summary>The recipe the steps are from and why (<see cref="PrepareChain.Match"/>); null when the steps were given.</summary>
+        internal string Recipe { get; private set; }
+
+        /// <summary>This result, from the steps of <paramref name="chain"/>.</summary>
+        internal PrepareResult From(PrepareChain chain)
+        {
+            Recipe = chain.Match;
+            return this;
+        }
+
         internal PrepareLevel Level => Steps.Count == 0 ? PrepareLevel.Unchanged : Steps.Max(s => s.Report.Level);
 
         internal bool BlocksApply => Level == PrepareLevel.Error;
@@ -65,6 +75,7 @@ namespace SashaRX.UnityMeshLab
         public override string ToString()
         {
             var text = new StringBuilder($"{Target.Display}: {State()}");
+            if (Recipe != null) text.Append($"\n  {Recipe}");
             foreach (var step in Steps)
             {
                 text.Append($"\n  {step.Step.Name}: {step.Summary}");
@@ -96,24 +107,20 @@ namespace SashaRX.UnityMeshLab
         internal const string Tag = "Prepare";
         const string MenuRoot = "Tools/Mesh Lab/Prepare/";
 
-        /// <summary>The steps a run takes when none are given, in chain order.</summary>
-        internal static List<IPrepareStep> DefaultSteps()
-        {
-            var settings = MeshLabProjectSettings.Instance;
-            return new List<IPrepareStep>
-            {
-                new PresetStep(settings.importerPreset, "SM", settings.presetLodScreenPercentages),
-                new MaterialStep(),
-                new ColliderStep(SurfaceBinding.FromSettings(), SurfaceBinding.Vocabulary()),
-                new PrefabStep(),
-            };
-        }
+        /// <summary>The chain of the first of the project's recipes that matches <paramref name="target"/>.</summary>
+        internal static PrepareChain Chain(PrepareTarget target) => PrepareRecipes.Chain(target, MeshLabProjectSettings.Instance.recipes);
 
         /// <summary>What each step would change on <paramref name="target"/>; changes nothing.</summary>
         internal static PrepareResult Preview(PrepareTarget target, IReadOnlyList<IPrepareStep> steps) => Run(target, steps, false);
 
+        /// <summary>What the target's chain would change; changes nothing.</summary>
+        internal static PrepareResult Preview(PrepareTarget target, PrepareChain chain) => Run(target, chain.Steps, false).From(chain);
+
         /// <summary>Applies the steps to <paramref name="target"/> unless a plan has an Error line.</summary>
         internal static PrepareResult Apply(PrepareTarget target, IReadOnlyList<IPrepareStep> steps) => Run(target, steps, true);
+
+        /// <summary>Applies the target's chain unless a plan has an Error line.</summary>
+        internal static PrepareResult Apply(PrepareTarget target, PrepareChain chain) => Run(target, chain.Steps, true).From(chain);
 
         static PrepareResult Run(PrepareTarget target, IReadOnlyList<IPrepareStep> steps, bool apply)
         {
@@ -174,7 +181,7 @@ namespace SashaRX.UnityMeshLab
             => output != null
                 ? new PrepareContext(target, output.Root, false, output.Refusal, output)
                 : new PrepareContext(target, null, false,
-                    "a model's own hierarchy cannot be changed; add the Prefab step, or prepare a prefab or scene object made from it");
+                    "a model's own hierarchy cannot be changed: turn on the recipe's Prefab step, or prepare a prefab or scene object made from it");
 
         // The hierarchy's changes were made in memory but not written (a model's importer
         // changes, made before, stay: the reason says so, and a second Apply finds them done).
@@ -224,13 +231,13 @@ namespace SashaRX.UnityMeshLab
         [MenuItem(MenuRoot + "Preview", false, 21)]
         static void PreviewSelection()
         {
-            foreach (var target in PrepareTarget.FromSelection()) Preview(target, DefaultSteps()).Log();
+            foreach (var target in PrepareTarget.FromSelection()) Preview(target, Chain(target)).Log();
         }
 
         [MenuItem(MenuRoot + "Apply", false, 22)]
         static void ApplySelection()
         {
-            foreach (var target in PrepareTarget.FromSelection()) Apply(target, DefaultSteps()).Log();
+            foreach (var target in PrepareTarget.FromSelection()) Apply(target, Chain(target)).Log();
         }
     }
 }
