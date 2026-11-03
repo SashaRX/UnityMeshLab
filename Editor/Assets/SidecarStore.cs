@@ -94,17 +94,19 @@ namespace SashaRX.UnityMeshLab
             => !string.IsNullOrEmpty(path) && path.EndsWith(".fbx", StringComparison.OrdinalIgnoreCase);
 
         /// <summary>
-        /// The first of <paramref name="fbxPaths"/> that has a sidecar, with that sidecar's
-        /// path; false when none has one.
+        /// The first of <paramref name="fbxPaths"/> that has a sidecar (with UV2 entries, for
+        /// <paramref name="withUv2"/>: one holding only collision is no UV2 to reset), with that
+        /// sidecar's path; false when none has one.
         /// </summary>
-        internal static bool TryFindFirst(IEnumerable<string> fbxPaths, out string fbxPath, out string sidecarPath)
+        internal static bool TryFindFirst(IEnumerable<string> fbxPaths, out string fbxPath, out string sidecarPath, bool withUv2 = false)
         {
             fbxPath = sidecarPath = null;
             if (fbxPaths == null) return false;
             foreach (string fbx in fbxPaths)
             {
                 string sp = PathFor(fbx);
-                if (AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(sp) == null) continue;
+                var data = AssetDatabase.LoadAssetAtPath<Uv2DataAsset>(sp);
+                if (data == null || (withUv2 && (data.entries == null || data.entries.Count == 0))) continue;
                 fbxPath = fbx;
                 sidecarPath = sp;
                 return true;
@@ -201,6 +203,23 @@ namespace SashaRX.UnityMeshLab
             data.collisionAtRoot = list;
             if (IsEmpty(data)) AssetDatabase.DeleteAsset(PathFor(fbxPath));
             else Save(data);
+        }
+
+        /// <summary>
+        /// Deletes the sidecars behind <paramref name="fbxPaths"/> for a UV2 reset, except the
+        /// collision nodes they put at the root's placement: the scene objects and prefabs kept in
+        /// place for those would move if the import stopped placing them (CollisionRootPlacement.
+        /// ClearSidecar removes them and keeps those in step). Returns how many existed.
+        /// </summary>
+        internal static int DeleteKeepingCollisionPlacement(IEnumerable<string> fbxPaths)
+        {
+            if (fbxPaths == null) return 0;
+            var paths = fbxPaths.Where(p => !string.IsNullOrEmpty(p)).ToList();
+            var placements = paths.Distinct(StringComparer.Ordinal).ToDictionary(p => p, CollisionAtRoot, StringComparer.Ordinal);
+            int deleted = Delete(paths);
+            foreach (var placed in placements.Where(p => p.Value.Count > 0))
+                SetCollisionAtRoot(placed.Key, placed.Value);
+            return deleted;
         }
 
         /// <summary>Deletes the sidecars behind <paramref name="fbxPaths"/>. Returns how many existed.</summary>

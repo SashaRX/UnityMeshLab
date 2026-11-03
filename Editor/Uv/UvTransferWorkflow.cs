@@ -3158,7 +3158,7 @@ namespace SashaRX.UnityMeshLab
             using var previewWrite = ctx.Assets.PreservePreviewDuringWrite();
             ctx.Assets.BeforeWrite?.Invoke();
             var fbxPaths = SidecarStore.FbxPaths(ctx.MeshEntries);
-            SidecarStore.Delete(fbxPaths);
+            SidecarStore.DeleteKeepingCollisionPlacement(fbxPaths);
             AssetDatabase.Refresh();
             foreach (string fbx in fbxPaths)
                 AssetDatabase.ImportAsset(fbx, ImportAssetOptions.ForceUpdate);
@@ -3177,7 +3177,7 @@ namespace SashaRX.UnityMeshLab
             using var previewWrite = ctx.Assets.PreservePreviewDuringWrite();
             ctx.Assets.BeforeWrite?.Invoke();
             var fbxPaths = SidecarStore.FbxPaths(ctx.MeshEntries);
-            SidecarStore.Delete(fbxPaths);
+            SidecarStore.DeleteKeepingCollisionPlacement(fbxPaths);
             AssetDatabase.Refresh();
             foreach (string fbx in fbxPaths)
                 AssetDatabase.ImportAsset(fbx, ImportAssetOptions.ForceUpdate);
