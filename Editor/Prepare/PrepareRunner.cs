@@ -9,6 +9,9 @@
 // chain has the Prefab step (PrefabOutput: the variant's contents, or the model's instance a
 // first run saves as the variant), else its hierarchy is left to the steps that need none. Steps
 // that change a model's importer (IImporterStep: Preset, Materials) apply before its variant is opened.
+// A check (ICheckStep: Validate) of a model whose importer they change waits for the reimport: its
+// plan's errors do not block Apply, it checks again on the reimported model, and an error then
+// stops the steps after it (the importer's changes stay, as a fix towards the requirements).
 //
 // Tools ▸ Mesh Lab ▸ Prepare ▸ Preview / Apply run each selected target's chain (its recipe's,
 // PrepareRecipe) and log each result, until the Prefab Builder carries the prepare section.
@@ -23,9 +26,9 @@ namespace SashaRX.UnityMeshLab
     /// <summary>One step's part of a run: its report, or why it was skipped.</summary>
     internal sealed class PrepareStepResult
     {
-        internal PrepareStepResult(IPrepareStep step, string skipped, PrepareReport report)
+        internal PrepareStepResult(IPrepareStep step, string skipped, PrepareReport report, string deferred = null)
         {
-            Step = step; Skipped = skipped; Report = report;
+            Step = step; Skipped = skipped; Report = report; Deferred = deferred;
         }
 
         internal IPrepareStep Step { get; }
@@ -35,7 +38,20 @@ namespace SashaRX.UnityMeshLab
 
         internal PrepareReport Report { get; }
 
-        internal string Summary => Skipped != null ? $"skipped: {Skipped}" : Report.Summary();
+        /// <summary>Why a check's errors do not block Apply yet (it checks again once the model is reimported), or null.</summary>
+        internal string Deferred { get; }
+
+        /// <summary>Whether the step's report blocks Apply: an Error that is not deferred.</summary>
+        internal bool BlocksApply => Deferred == null && Report.BlocksApply;
+
+        internal string Summary
+        {
+            get
+            {
+                if (Skipped != null) return $"skipped: {Skipped}";
+                return Deferred != null ? $"{Report.Summary()} ({Deferred})" : Report.Summary();
+            }
+        }
     }
 
     /// <summary>A run over one target: each step's result, and whether the changes were made.</summary>
@@ -67,7 +83,7 @@ namespace SashaRX.UnityMeshLab
 
         internal PrepareLevel Level => Steps.Count == 0 ? PrepareLevel.Unchanged : Steps.Max(s => s.Report.Level);
 
-        internal bool BlocksApply => Level == PrepareLevel.Error;
+        internal bool BlocksApply => Steps.Any(s => s.BlocksApply);
 
         /// <summary>Whether any step reports a change (made, or to make in a preview).</summary>
         internal bool Changes => Steps.Any(s => s.Report.Count(PrepareLevel.Changed) > 0);
@@ -158,20 +174,46 @@ namespace SashaRX.UnityMeshLab
         {
             List<PrepareStepResult> plans;
             using (var output = OpenOutput(target, steps))
-                plans = Pass(ModelContext(target, output), steps, false);
+                plans = Defer(Pass(ModelContext(target, output), steps, false));
             string refused = apply ? Refusal(plans) : null;
             if (!apply || refused != null || !HasChanges(plans)) return new PrepareResult(target, plans, apply && refused == null, refused);
 
             var done = Pass(ModelContext(target, null), steps.Where(s => s is IImporterStep).ToList(), true);
             using (var output = OpenOutput(target, steps))
             {
-                var hierarchy = Pass(ModelContext(target, output), steps.Where(s => !(s is IImporterStep)).ToList(), true);
+                var context = ModelContext(target, output);
+                var rest = steps.Where(s => !(s is IImporterStep)).ToList();
+                // The checks that waited for the reimport check the reimported model; an error stops the rest.
+                var waited = rest.Where(s => plans.Any(p => p.Step == s && p.Deferred != null)).ToList();
+                var rechecked = Pass(context, waited, false);
+                string blocked = Refusal(rechecked);
+                if (blocked != null)
+                {
+                    done.AddRange(rechecked);
+                    done.AddRange(rest.Except(waited).Select(s => new PrepareStepResult(s, "not applied: " + blocked, new PrepareReport(target.Display))));
+                    return NotSaved(new PrepareResult(target, Ordered(steps, done), true), $"the model's importer was changed, but {blocked}");
+                }
+                var hierarchy = Pass(context, rest.Except(waited).ToList(), true);
+                done.AddRange(rechecked);
                 done.AddRange(hierarchy);
-                var result = new PrepareResult(target, steps.Select(s => done.First(d => d.Step == s)).ToList(), true);
+                var result = new PrepareResult(target, Ordered(steps, done), true);
                 if (output == null || !HasChanges(hierarchy) || output.Save(out string error)) return result;
                 string imported = HasChanges(done.Except(hierarchy)) ? "the model's importer was changed, but " : "";
                 return NotSaved(result, $"{imported}the prefab variant could not be saved: {error}; apply again to finish");
             }
+        }
+
+        static List<PrepareStepResult> Ordered(IReadOnlyList<IPrepareStep> steps, List<PrepareStepResult> results)
+            => steps.Select(s => results.First(r => r.Step == s)).ToList();
+
+        // When an importer step will change the model, a check's plan describes the model before
+        // the reimport: its errors wait for the check on the reimported model.
+        static List<PrepareStepResult> Defer(List<PrepareStepResult> plans)
+        {
+            var importers = plans.Where(p => p.Step is IImporterStep && p.Report.Count(PrepareLevel.Changed) > 0).Select(p => p.Step.Name).ToList();
+            if (importers.Count == 0) return plans;
+            string deferred = $"checked again once {string.Join(" and ", importers)} {(importers.Count > 1 ? "have" : "has")} reimported the model";
+            return plans.Select(p => p.Step is ICheckStep && p.Skipped == null ? new PrepareStepResult(p.Step, null, p.Report, deferred) : p).ToList();
         }
 
         static PrefabOutput OpenOutput(PrepareTarget target, IReadOnlyList<IPrepareStep> steps)
@@ -199,7 +241,7 @@ namespace SashaRX.UnityMeshLab
         // An Error line in any plan blocks Apply.
         static string Refusal(IEnumerable<PrepareStepResult> plans)
         {
-            var errors = plans.Where(p => p.Report.BlocksApply).Select(p => p.Step.Name).ToList();
+            var errors = plans.Where(p => p.BlocksApply).Select(p => p.Step.Name).ToList();
             return errors.Count > 0 ? $"{string.Join(", ", errors)} reported errors; fix them and apply again" : null;
         }
 

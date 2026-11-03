@@ -25,13 +25,20 @@ namespace SashaRX.UnityMeshLab
         /// <summary>The report of the model or prefab asset at <paramref name="assetPath"/>.</summary>
         internal static PrepareReport Validate(string assetPath, ModelRequirements requirements = null)
         {
-            requirements = requirements ?? ModelRequirements.Default;
             var report = new PrepareReport(assetPath);
+            Validate(assetPath, requirements, report);
+            return report;
+        }
+
+        /// <summary>Checks the model or prefab asset at <paramref name="assetPath"/> into <paramref name="report"/>.</summary>
+        internal static void Validate(string assetPath, ModelRequirements requirements, PrepareReport report)
+        {
+            requirements = requirements ?? ModelRequirements.Default;
             var root = AssetDatabase.LoadAssetAtPath<GameObject>(assetPath);
             if (root == null)
             {
                 report.Add(PrepareLevel.Error, assetPath, "Model", "not a model or prefab asset");
-                return report;
+                return;
             }
             if (AssetImporter.GetAtPath(assetPath) is ModelImporter importer)
                 ModelFileChecks.CheckImporter(importer, assetPath, requirements, report);
@@ -41,7 +48,6 @@ namespace SashaRX.UnityMeshLab
             FbxPolygonChecks.CheckConcave(assetPath, requirements, report);
 #endif
             Validate(root, requirements, report, includeRootScale: true);
-            return report;
         }
 
         /// <summary>

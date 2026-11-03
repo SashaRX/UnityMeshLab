@@ -3,6 +3,7 @@
 // before the variant is made, the whole chain (Materials, Colliders, Prefab) applied once and
 // changing nothing the second time, and the variant matching its model's recipe. Preset: the
 // settings that differ applied, the model's remaps never, the reason a model is skipped.
+// Validate: an error the preset fixes waits for the reimport; one it leaves stops the rest.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -170,6 +171,63 @@ namespace SashaRX.UnityMeshLab.Tests
             var other = PrepareRecipes.Chain(target, new[] { new PrepareRecipe { namePattern = "SK_*", importerPreset = preset } });
             Assert.IsNull(other.Recipe, "a model the recipe's name does not match");
             StringAssert.Contains("no recipe matches 'SM_Bench'", PrepareRunner.Preview(target, other).Steps[0].Skipped);
+        }
+
+        static ModelRequirements OnlyImportScale()
+        {
+            var requirements = new ModelRequirements();
+            foreach (var field in typeof(ModelRequirements).GetFields().Where(f => f.FieldType == typeof(RequirementLevel)))
+                field.SetValue(requirements, RequirementLevel.Off);
+            requirements.importScale = RequirementLevel.Error;
+            return requirements;
+        }
+
+        [Test]
+        public void Validate_ChecksAgainOnceThePresetHasReimportedTheModel()
+        {
+            string fbxPath = ExportBench();
+            var importer = (ModelImporter)AssetImporter.GetAtPath(fbxPath);
+            var preset = new UnityEditor.Presets.Preset(importer);   // Scale Factor 1
+            owned.Add(preset);
+            importer.globalScale = 2;
+            importer.SaveAndReimport();
+            var target = PrepareTarget.ForAsset(fbxPath);
+            var validate = new ValidateStep(OnlyImportScale());
+
+            var alone = PrepareRunner.Apply(target, new IPrepareStep[] { validate });
+            Assert.IsFalse(alone.Applied, "Scale Factor 2 is an error: " + alone);
+
+            var steps = new IPrepareStep[] { validate, new PresetStep(preset) };
+            var plan = PrepareRunner.Preview(target, steps);
+            Assert.AreEqual(PrepareLevel.Error, plan.Steps[0].Report.Level, plan.ToString());
+            StringAssert.Contains("checked again once Preset has reimported", plan.Steps[0].Deferred);
+            Assert.IsFalse(plan.BlocksApply, "the preset sets Scale Factor 1: " + plan);
+
+            var applied = PrepareRunner.Apply(target, steps);
+            Assert.IsTrue(applied.Applied, applied.ToString());
+            Assert.AreEqual(1f, ((ModelImporter)AssetImporter.GetAtPath(fbxPath)).globalScale);
+            Assert.AreEqual(PrepareLevel.Unchanged, applied.Steps[0].Report.Level, "checked again on the reimported model: " + applied);
+        }
+
+        [Test]
+        public void Validate_StopsTheStepsAfterWhenTheReimportedModelStillFails()
+        {
+            string fbxPath = ExportBench();
+            var importer = (ModelImporter)AssetImporter.GetAtPath(fbxPath);
+            importer.globalScale = 3;
+            var preset = new UnityEditor.Presets.Preset(importer);   // Scale Factor 3
+            owned.Add(preset);
+            importer.globalScale = 2;
+            importer.SaveAndReimport();
+            var steps = new IPrepareStep[] { new ValidateStep(OnlyImportScale()), new PresetStep(preset), new ColliderStep(), new PrefabStep() };
+
+            var result = PrepareRunner.Apply(PrepareTarget.ForAsset(fbxPath), steps);
+
+            Assert.IsFalse(result.Applied, result.ToString());
+            StringAssert.Contains("importer was changed", result.Refused);
+            Assert.AreEqual(3f, ((ModelImporter)AssetImporter.GetAtPath(fbxPath)).globalScale, "the preset's change stays");
+            StringAssert.StartsWith("not applied", result.Steps[2].Skipped, "the Colliders step was stopped");
+            Assert.IsNull(AssetDatabase.LoadAssetAtPath<GameObject>($"{folder}/Bench.prefab"), "no variant was saved");
         }
 
         [Test]
