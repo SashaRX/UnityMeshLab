@@ -130,6 +130,14 @@ One tab for assembling a prefab: **Hierarchy** (rebuild the LODGroup from `_LOD{
 
 Runs the prepare chain on what is selected in the Project window or a scene: **Validate** (the recipe's requirements; an error blocks Apply), **Preset** (the recipe's importer preset, except remaps, mesh IDs and LOD percentages), **Materials** (each unremapped slot to the project's material of that name), **Colliders** (a MeshCollider per `_COL`, the largest on the root, renderers removed, each collider's surface) and **Prefab** (an FBX's Prefab Variant next to it). Each target takes the first recipe its name and folder match (Project Settings ▸ Mesh Lab ▸ Prepare: Recipes); a step's card can leave it out of one run. **Preview** changes nothing; **Apply** makes the changes, and the **Result** page shows each target's steps and their findings.
 
+A recipe can also run by itself: with **Run on Import** on (off by default) a model it matches is prepared the first time it is imported. For a whole project or folder from the command line:
+
+```
+Unity -batchmode -quit -projectPath <project> -executeMethod SashaRX.UnityMeshLab.PrepareBatch.Run -prepareFolders "Assets/Art;Assets/Props" [-preparePreview] [-prepareReport prepare.txt]
+```
+
+The exit code is 1 when a model was not applied (with `-preparePreview`: would be refused), else 0.
+
 ## Cleanup
 
 Scan and fix the hygiene issues the other operations leave behind: **Mesh** (empty channels, attribute set, duplicate material slots, Read/Write handling without importer flips), **Colliders** (stray attributes on collider meshes), **Split / Merge** (same-material merge, per-material split), import settings. Every fix records Undo.

@@ -178,6 +178,22 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Batch_ReadsItsArguments()
+        {
+            var options = PrepareBatch.Parse(new[] { "Unity", "-batchmode", "-PREPAREFOLDERS", "Assets/Art; Assets/Props/", "-preparePreview", "-prepareReport", "out.txt" });
+
+            CollectionAssert.AreEqual(new[] { "Assets/Art", "Assets/Props" }, options.folders);
+            Assert.IsTrue(options.preview);
+            Assert.AreEqual("out.txt", options.report);
+
+            var none = PrepareBatch.Parse(new[] { "Unity", "-prepareFolders" });
+            CollectionAssert.AreEqual(new[] { "Assets" }, none.folders, "no folders given: the whole project");
+            Assert.IsFalse(none.preview);
+            Assert.IsNull(none.report);
+            Assert.IsFalse(new PrepareRecipe().runOnImport, "a recipe never runs on import unless asked");
+        }
+
+        [Test]
         public void Steps_CarryTheRecipesSettings()
         {
             var recipe = new PrepareRecipe { colliderSurfaces = false, colliderFallbackLod = 1 };
