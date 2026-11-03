@@ -37,6 +37,9 @@ namespace SashaRX.UnityMeshLab
         // Which steps a target takes and with what settings: the first recipe whose name and
         // folder patterns match it (PrepareRecipe); one for SM_ models to begin with.
         [SerializeField] internal List<PrepareRecipe> recipes = new List<PrepareRecipe> { PrepareRecipe.StaticMeshes() };
+        // The importer preset before recipes (1.2.112): read once, moved into a recipe (MoveLegacyPreset).
+        [SerializeField] internal UnityEditor.Presets.Preset importerPreset;
+        [SerializeField] internal bool presetLodScreenPercentages;
 
         // ── Developer UI ──
         // When true, the UV2 Transfer tool exposes diagnostic / benchmarking
@@ -64,6 +67,8 @@ namespace SashaRX.UnityMeshLab
                     .LoadSerializedFileAndForget(AssetPath);
                 if (objs != null && objs.Length > 0)
                     s_Instance = objs[0] as MeshLabProjectSettings;
+                if (s_Instance != null && s_Instance.MoveLegacyPreset())
+                    Save();
                 if (s_Instance == null)
                 {
                     s_Instance = CreateInstance<MeshLabProjectSettings>();
@@ -72,6 +77,24 @@ namespace SashaRX.UnityMeshLab
                 }
                 return s_Instance;
             }
+        }
+
+        /// <summary>
+        /// Moves the importer preset set before recipes into the first recipe without one, and
+        /// clears the old setting; whether there was one to move.
+        /// </summary>
+        internal bool MoveLegacyPreset()
+        {
+            if (importerPreset == null) return false;
+            var recipe = recipes?.FirstOrDefault(r => r != null && r.importerPreset == null);
+            if (recipe != null)
+            {
+                recipe.importerPreset = importerPreset;
+                recipe.presetLodScreenPercentages = presetLodScreenPercentages;
+            }
+            importerPreset = null;
+            presetLodScreenPercentages = false;
+            return true;
         }
 
         public static void Save()

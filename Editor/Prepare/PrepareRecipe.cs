@@ -197,7 +197,16 @@ namespace SashaRX.UnityMeshLab
         /// patterns names: '*' within one folder's name, '**' across folders; empty matches all.
         /// </summary>
         internal static bool FolderMatches(string patterns, string folder)
-            => Any(patterns, pattern => Regex(pattern.TrimEnd('/'), true).IsMatch((folder ?? "").TrimEnd('/')));
+            => Any(patterns, pattern => Regex(FolderPattern(pattern), true).IsMatch((folder ?? "").TrimEnd('/')));
+
+        // A folder pattern names the folder and every folder under it, so a trailing '/**' adds nothing
+        // ('Assets/Art/**' is 'Assets/Art', which an asset right in Assets/Art matches too).
+        static string FolderPattern(string pattern)
+        {
+            pattern = pattern.TrimEnd('/');
+            while (pattern.EndsWith("/**", StringComparison.Ordinal)) pattern = pattern.Substring(0, pattern.Length - 3).TrimEnd('/');
+            return pattern.Length > 0 ? pattern : "**";
+        }
 
         static bool Any(string patterns, Func<string, bool> matches)
         {

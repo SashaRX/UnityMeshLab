@@ -49,6 +49,9 @@ namespace SashaRX.UnityMeshLab.Tests
         [TestCase("Assets/**/Props", "Assets/City/Old/Props", true)]
         [TestCase("Assets/**/Props", "Assets/Props", true)]
         [TestCase("Assets/Env; Assets/Props", "Assets/Props/Crates", true)]
+        [TestCase("Assets/Art/**", "Assets/Art", true)]
+        [TestCase("Assets/Art/**", "Assets/Art/Props", true)]
+        [TestCase("**", "Assets/Art", true)]
         public void FolderMatches_TheFolderOrOneUnderIt(string pattern, string folder, bool expected)
             => Assert.AreEqual(expected, PrepareRecipes.FolderMatches(pattern, folder));
 
@@ -117,6 +120,25 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.IsFalse(result.Changes, result.ToString());
             StringAssert.Contains("No recipe: the name 'Rock'", result.ToString());
             StringAssert.Contains("matches no recipe", result.ToString());
+        }
+
+        [Test]
+        public void Settings_MoveTheImporterPresetSetBeforeRecipesIntoTheRecipe()
+        {
+            var host = Root("Host");
+            var preset = new UnityEditor.Presets.Preset(host.transform);
+            owned.Add(preset);
+            var settings = ScriptableObject.CreateInstance<MeshLabProjectSettings>();
+            owned.Add(settings);
+            settings.importerPreset = preset;
+            settings.presetLodScreenPercentages = true;
+
+            Assert.IsTrue(settings.MoveLegacyPreset());
+
+            Assert.AreSame(preset, settings.recipes[0].importerPreset, "the default recipe takes it");
+            Assert.IsTrue(settings.recipes[0].presetLodScreenPercentages);
+            Assert.IsNull(settings.importerPreset, "the old setting is cleared");
+            Assert.IsFalse(settings.MoveLegacyPreset(), "nothing left to move");
         }
 
         [Test]
