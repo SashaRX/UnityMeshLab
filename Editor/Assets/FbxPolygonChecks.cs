@@ -20,7 +20,8 @@ namespace SashaRX.UnityMeshLab
             try { concave = ConcavePolygons(AssetFilePath.Physical(fbxPath)); }
             catch (Exception ex)
             {
-                UvtLog.Verbose($"[{ModelValidation.Tag}] '{fbxPath}': polygons not read ({ex.Message}).");
+                // The check did not run: say so, as the smoothing check does for a file it cannot read.
+                report.Add(PrepareLevel.Warning, fbxPath, "Concave faces", $"the file's polygons could not be read: {ex.Message}");
                 return;
             }
             foreach (var mesh in concave)
