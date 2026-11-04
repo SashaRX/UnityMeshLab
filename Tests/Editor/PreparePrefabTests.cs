@@ -73,6 +73,48 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void ComponentBinding_UsesNearestExactAssetAndPersistsAcrossPrefabReload()
+        {
+            string model = Model("SM_Bench");
+            string variant = $"{folder}/Bench.prefab";
+            string assetName = "Surface_" + Guid.NewGuid().ToString("N");
+            var near = ScriptableObject.CreateInstance<PrepareTestSurfaceData>();
+            var far = ScriptableObject.CreateInstance<PrepareTestSurfaceData>();
+            var partial = ScriptableObject.CreateInstance<PrepareTestSurfaceData>();
+            AssetDatabase.CreateAsset(near, $"{folder}/{assetName}.asset");
+            AssetDatabase.CreateFolder(folder, "Other");
+            AssetDatabase.CreateAsset(far, $"{folder}/Other/{assetName}.asset");
+            AssetDatabase.CreateAsset(partial, $"{folder}/{assetName}_Extra.asset");
+            // Only the near asset shares the model's extra folder; filenames on their own
+            // must not outrank proximity, and the partial-name hit must not be assigned.
+            AssetDatabase.CreateFolder(folder, "Model");
+            Assert.IsEmpty(AssetDatabase.MoveAsset(model, $"{folder}/Model/SM_Bench.prefab"));
+            model = $"{folder}/Model/SM_Bench.prefab";
+            Assert.IsEmpty(AssetDatabase.MoveAsset(AssetDatabase.GetAssetPath(near), $"{folder}/Model/{assetName}.asset"));
+            var settings = new SurfaceBindingSettings
+            {
+                componentType = typeof(PrepareTestSurface).FullName,
+                field = "_material",
+                dataType = typeof(PrepareTestSurfaceData).FullName,
+                rules = new System.Collections.Generic.List<SurfaceRule> { new SurfaceRule("wood", assetName) },
+            };
+            var step = new ColliderStep(new ComponentSurfaceBinding(settings), SurfaceBinding.Vocabulary(settings));
+
+            using (var output = PrefabOutput.Open(model, variant))
+            {
+                var report = Run(step, output, model, true);
+                Assert.AreSame(near, output.Root.transform.Find("Seat_Wood_COL").GetComponent<PrepareTestSurface>()?.Material, report.ToString());
+                Assert.IsTrue(output.Save(out string error), error);
+            }
+
+            using (var output = PrefabOutput.Open(model, variant))
+            {
+                Assert.AreSame(near, output.Root.transform.Find("Seat_Wood_COL").GetComponent<PrepareTestSurface>()?.Material);
+                Assert.AreEqual(0, Run(step, output, model, true).Count(PrepareLevel.Changed));
+            }
+        }
+
+        [Test]
         public void Output_SavesTheChangesAsAVariantOfTheModelAndAReopenedOneNeedsNothing()
         {
             string model = Model("SM_Bench");

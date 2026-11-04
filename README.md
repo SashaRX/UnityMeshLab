@@ -138,6 +138,8 @@ Unity -batchmode -quit -projectPath <project> -executeMethod SashaRX.UnityMeshLa
 
 The exit code is 1 when a model was not applied (with `-preparePreview`: would be refused), else 0.
 
+For game surface components, see [binding configuration and limitations](Documentation~/PREPARE_SURFACE_BINDING.md), including mixed materials, existing assignments and root-collider models.
+
 ## Cleanup
 
 Scan and fix the hygiene issues the other operations leave behind: **Mesh** (empty channels, attribute set, duplicate material slots, Read/Write handling without importer flips), **Colliders** (stray attributes on collider meshes), **Split / Merge** (same-material merge, per-material split), import settings. Every fix records Undo.
