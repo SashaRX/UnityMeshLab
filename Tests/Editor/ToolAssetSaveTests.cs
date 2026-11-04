@@ -129,7 +129,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var data = SidecarStore.LoadOrCreate(source.path);
             string meshName = source.entry.fbxMesh.name;
             data.Set(meshName, new[] { Vector2.zero, Vector2.right, Vector2.up });
-            data.toolSettings = new ToolSettings();
+            data.toolSettings = new ToolSettings { saved = true };   // as SaveSettings leaves them
             SidecarStore.Save(data);
             var before = File.ReadAllBytes(source.path);
             int committed = 0, imports = 0;

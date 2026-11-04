@@ -46,7 +46,7 @@ namespace SashaRX.UnityMeshLab
             {
                 var node = CollisionHierarchyAnalyzer.Find(root.transform, path);
                 string problem = node == null ? "is not in the model"
-                    : Refusal(root.transform, node, users) ?? CurveRefusal(root.transform, node, animated) ?? UnreadableMesh(node);
+                    : Refusal(root.transform, node, users) ?? CurveRefusal(root.transform, node, animated);
                 if (problem != null)
                 {
                     UvtLog.Warn($"[Collision] '{modelPath}': '{CollisionHierarchyAnalyzer.NodeName(path)}' {problem}; the sidecar does not place it at the root.");
@@ -60,7 +60,8 @@ namespace SashaRX.UnityMeshLab
         {
             var filters = node.GetComponentsInChildren<MeshFilter>(true).Where(f => f.sharedMesh != null).ToList();
             var toRoot = filters.Select(f => root.worldToLocalMatrix * f.transform.localToWorldMatrix).ToList();
-            for (int i = 0; i < filters.Count; i++) MeshTransform.BakeMatrix(filters[i].sharedMesh, toRoot[i]);
+            // On import a mesh takes the change whether or not the model's Read/Write is on.
+            for (int i = 0; i < filters.Count; i++) MeshTransform.BakeMatrix(filters[i].sharedMesh, toRoot[i], importing: true);
             foreach (var t in node.GetComponentsInChildren<Transform>(true))
             {
                 t.localPosition = Vector3.zero;
@@ -86,13 +87,6 @@ namespace SashaRX.UnityMeshLab
             if (mesh == null) return null;
             if (users.TryGetValue(mesh, out int count) && count > 1) return $"shares its mesh '{mesh.name}' with another node";
             return mesh.blendShapeCount > 0 ? $"has blend shapes on '{mesh.name}'" : null;
-        }
-
-        // On import every mesh is readable; one that is not would keep its old positions while its node moves.
-        static string UnreadableMesh(Transform node)
-        {
-            var mesh = node.GetComponentsInChildren<MeshFilter>(true).Select(f => f.sharedMesh).FirstOrDefault(m => m != null && !m.isReadable);
-            return mesh != null ? $"has '{mesh.name}' unreadable" : null;
         }
 
         // How many renderers (static or skinned) show each mesh of the model.
