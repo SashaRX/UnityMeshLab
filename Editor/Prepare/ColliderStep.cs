@@ -110,12 +110,16 @@ namespace SashaRX.UnityMeshLab
             string offset = main ? LodHierarchy.OffsetFromRoot(root, source.node) : null;
             var host = main && offset == null ? root : source.node;
             string subject = Subject(root, source.node);
+            // Read the collision node's materials before Apply removes its renderer. Preview
+            // and Apply must choose the same surface, including a node with no render sibling.
+            string surface = null, origin = null;
+            if (binding != null && binding.Unavailable == null)
+                (surface, origin) = SurfaceBinding.Resolve(source.node.name, MaterialNames(root, source), context.Target.Name, vocabulary);
             GiveCollider(context, report, apply, source, host, subject, Placement(main, offset, host == root));
             if (host != source.node) DropNodeCollider(context, report, apply, source, subject);
             else if (host != root) Activate(context, report, apply, source, subject);
             if (source.collisionNode) RemoveRenderers(context, report, apply, source.node, subject);
             if (binding == null || binding.Unavailable != null) return;
-            var (surface, origin) = SurfaceBinding.Resolve(source.node.name, MaterialNames(root, source), context.Target.Name, vocabulary);
             binding.Bind(context, host.gameObject, surface, origin, Subject(root, host), report, apply);
         }
 
@@ -229,8 +233,8 @@ namespace SashaRX.UnityMeshLab
             return chosen.sources;
         }
 
-        // The part's materials: a render node's own; a collision node's, those of the render
-        // nodes of its part (the same name once LOD and collision suffixes are off).
+        // The part's materials: its own first, then for a collision node the render nodes of
+        // its part (the same name once LOD and collision suffixes are off).
         static IEnumerable<string> MaterialNames(Transform root, Source source)
         {
             IEnumerable<Renderer> renderers;
@@ -238,8 +242,9 @@ namespace SashaRX.UnityMeshLab
             else
             {
                 string key = MeshNaming.GroupKey(source.node.name);
-                renderers = root.GetComponentsInChildren<Renderer>(true).Where(r => !MeshNaming.IsCollision(r.name)
-                    && string.Equals(MeshNaming.GroupKey(r.name), key, StringComparison.OrdinalIgnoreCase));
+                renderers = source.node.GetComponents<Renderer>().Concat(
+                    root.GetComponentsInChildren<Renderer>(true).Where(r => !MeshNaming.IsCollision(r.name)
+                        && string.Equals(MeshNaming.GroupKey(r.name), key, StringComparison.OrdinalIgnoreCase)));
             }
             return renderers.SelectMany(r => r.sharedMaterials).Where(m => m != null).Select(m => m.name).Distinct();
         }
