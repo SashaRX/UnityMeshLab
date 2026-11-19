@@ -342,7 +342,8 @@ namespace SashaRX.UnityMeshLab
                         + "The file's change has no Undo."), EditorStyles.miniButton, GUILayout.ExpandWidth(false)))
                     Later(() => ClampLightmap(target));
                 if (!draws) return;
-                string key = line.subject + "|" + line.check;
+                // A subject is a path within its target: two instances of one model have the same.
+                string key = TargetKey(target) + "|" + line.subject + "|" + line.check;
                 bool shown = shownKey == key;
                 if (GUILayout.Button(new GUIContent(shown ? "Hide" : "Show in Scene",
                         "Draw the faces, edges or vertices this finding is about on the model, and frame them in the Scene view."),
@@ -376,8 +377,28 @@ namespace SashaRX.UnityMeshLab
             }
             finally { EditorUtility.ClearProgressBar(); }
             report.Log(FixStep.StepName);
-            Run(false);
+            PreviewAgain();
         }
+
+        // The results' own targets previewed again, whatever is selected now: the row a fix was
+        // asked from shows the fixed model. A scene object deleted since keeps its last result.
+        void PreviewAgain()
+        {
+            results = results.Select(result =>
+            {
+                var target = result.Target;
+                if (target.Kind == PrepareTargetKind.SceneObject && target.SceneObject == null) return result;
+                var preview = PrepareRunner.Preview(target, PrepareRunner.Chain(target).Without(offThisRun, OffThisRun));
+                preview.Log();
+                return preview;
+            }).ToList();
+            HideFinding();
+            resultTitle = $"Preview at {DateTime.Now:HH:mm:ss}";
+            RequestRepaint?.Invoke();
+        }
+
+        static string TargetKey(PrepareTarget target)
+            => target.SceneObject != null ? "scene:" + target.SceneObject.GetInstanceID() : "asset:" + target.AssetPath;
 
         // ── A finding drawn on the model ──
 
@@ -408,10 +429,7 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Info($"[{PrepareRunner.Tag}] {line.subject}: the finding is drawn on a scene object; place the model in a scene and prepare that object to see it");
                 return;
             }
-            Mesh mesh = null;
-            SkinnedMeshRenderer skinned = null;
-            if (node.TryGetComponent(out MeshFilter filter)) mesh = filter.sharedMesh;
-            else if (node.TryGetComponent(out skinned)) mesh = skinned.sharedMesh;
+            var mesh = SubjectMesh(node, line.subject, out var skinned);
             if (mesh == null) return;
             var requirements = PrepareRunner.Chain(target).Recipe?.requirements;
             var readable = MeshAccess.Readable(mesh, out bool isCopy);
@@ -429,6 +447,24 @@ namespace SashaRX.UnityMeshLab
             Frame(shownNode, shape);
             SceneView.RepaintAll();
             RequestRepaint?.Invoke();
+        }
+
+        // The mesh a finding is about: the node's render mesh or a collider's (a collision mesh is
+        // checked too), the one the subject names when the node carries several.
+        static Mesh SubjectMesh(GameObject node, string subject, out SkinnedMeshRenderer skinned)
+        {
+            skinned = null;
+            var meshes = new List<Mesh>();
+            if (node.TryGetComponent(out MeshFilter filter) && filter.sharedMesh != null) meshes.Add(filter.sharedMesh);
+            if (node.TryGetComponent(out SkinnedMeshRenderer renderer) && renderer.sharedMesh != null) meshes.Add(renderer.sharedMesh);
+            meshes.AddRange(node.GetComponents<MeshCollider>().Select(c => c.sharedMesh).Where(m => m != null));
+            if (meshes.Count == 0) return null;
+            // 'path' (mesh 'Name'): the second quoted name; without it the mesh is named as its node.
+            var quoted = (subject ?? "").Split('\'');
+            string name = quoted.Length > 3 ? quoted[3] : node.name;
+            var mesh = meshes.FirstOrDefault(m => m.name == name) ?? meshes[0];
+            if (renderer != null && renderer.sharedMesh == mesh) skinned = renderer;
+            return mesh;
         }
 
         // A skinned mesh is drawn where it is rendered: its vertices in the current pose, not in
