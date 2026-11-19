@@ -38,14 +38,14 @@ namespace SashaRX.UnityMeshLab
     }
 
     /// <summary>
-    /// A step that changes a model asset's importer: it applies before the model's prefab
-    /// variant is opened, so the steps after it see the reimported model.
+    /// A step that changes a model asset itself, its importer or its file: it applies before the
+    /// model's prefab variant is opened, so the steps after it see the reimported model.
     /// </summary>
     internal interface IImporterStep : IPrepareStep { }
 
     /// <summary>
-    /// A step that only checks the target and changes nothing. On a model whose importer an
-    /// importer step changes first, its plan's errors wait: it checks again once the model is
+    /// A step that only checks the target and changes nothing. On a model an importer step
+    /// changes first, its plan's errors wait: it checks again once the model is
     /// reimported, and an error then stops the steps after it.
     /// </summary>
     internal interface ICheckStep : IPrepareStep { }
@@ -106,16 +106,25 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>
         /// The selected models and prefabs in the Project window, and the selected scene
-        /// objects (one under another selected object is part of it, not a target of its own).
+        /// objects (one under another selected object is part of it, not a target of its own). A
+        /// selected node inside a model or prefab instance stands for that instance: its root is
+        /// the target, since a recipe is matched by the model, not by one of its parts.
         /// </summary>
         internal static List<PrepareTarget> FromSelection()
         {
             var targets = Selection.assetGUIDs.Select(AssetDatabase.GUIDToAssetPath).Distinct(StringComparer.Ordinal)
                 .Select(ForAsset).Where(t => t != null).ToList();
-            var objects = Selection.gameObjects.Where(go => go != null && go.scene.IsValid()).ToList();
+            var objects = Selection.gameObjects.Where(go => go != null && go.scene.IsValid()).Select(InstanceRoot).Distinct().ToList();
             targets.AddRange(objects.Where(go => !objects.Any(other => other != go && go.transform.IsChildOf(other.transform)))
                 .Select(ForSceneObject));
             return targets;
+        }
+
+        /// <summary>The root of the model or prefab instance a scene object is part of, else the object itself.</summary>
+        internal static GameObject InstanceRoot(GameObject sceneObject)
+        {
+            var root = PrefabUtility.GetNearestPrefabInstanceRoot(sceneObject);
+            return root != null ? root : sceneObject;
         }
 
         static string ScenePath(Transform node)

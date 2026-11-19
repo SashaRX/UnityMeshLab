@@ -8,7 +8,8 @@
 // all of one run in one Undo step. A model asset is edited through its prefab variant when the
 // chain has the Prefab step (PrefabOutput: the variant's contents, or the model's instance a
 // first run saves as the variant), else its hierarchy is left to the steps that need none. Steps
-// that change a model's importer (IImporterStep: Preset, Materials) apply before its variant is opened.
+// that change the model itself (IImporterStep: Fix its file, Preset and Materials its importer) apply
+// before its variant is opened, and before the other steps of a scene object made from the model.
 // A check (ICheckStep: Validate) of a model whose importer they change waits for the reimport: its
 // plan's errors do not block Apply, it checks again on the reimported model, and an error then
 // stops the steps after it (the importer's changes stay, as a fix towards the requirements).
@@ -231,12 +232,29 @@ namespace SashaRX.UnityMeshLab
         static PrepareResult NotSaved(PrepareResult result, string why)
             => new PrepareResult(result.Target, result.Steps.ToList(), false, why);
 
+        // A prefab or a scene object: a step that changes its model's file (Fix) applies first, the
+        // checks that waited for the reimport check again, and an error then stops the rest.
         static PrepareResult RunSteps(PrepareContext context, IReadOnlyList<IPrepareStep> steps, bool apply)
         {
-            var plans = Pass(context, steps, false);
+            var plans = Defer(Pass(context, steps, false));
             string refused = apply ? Refusal(plans) : null;
             if (!apply || refused != null || !HasChanges(plans)) return new PrepareResult(context.Target, plans, apply && refused == null, refused);
-            return new PrepareResult(context.Target, Pass(context, steps, true), true);
+
+            var done = Pass(context, steps.Where(s => s is IImporterStep).ToList(), true);
+            var rest = steps.Where(s => !(s is IImporterStep)).ToList();
+            var waited = rest.Where(s => plans.Any(p => p.Step == s && p.Deferred != null)).ToList();
+            var rechecked = Pass(context, waited, false);
+            done.AddRange(rechecked);
+            string blocked = Refusal(rechecked);
+            if (blocked != null)
+            {
+                done.AddRange(rest.Except(waited).Select(s => new PrepareStepResult(s, "not applied: " + blocked, new PrepareReport(context.Target.Display))));
+                // A fix that was not written changed nothing: only the refusal is reported then.
+                string changed = HasChanges(done) ? "the model's file was changed, but " : "";
+                return NotSaved(new PrepareResult(context.Target, Ordered(steps, done), true), changed + blocked);
+            }
+            done.AddRange(Pass(context, rest.Except(waited).ToList(), true));
+            return new PrepareResult(context.Target, Ordered(steps, done), true);
         }
 
         // An Error line in any plan blocks Apply.

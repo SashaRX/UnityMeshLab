@@ -96,12 +96,13 @@ namespace SashaRX.UnityMeshLab.Tests
             var result = PrepareRunner.Preview(target, chain);
 
             Assert.AreSame(recipe, chain.Recipe);
-            CollectionAssert.AreEqual(new[] { ValidateStep.StepName, PresetStep.StepName, MaterialStep.StepName, ColliderStep.StepName, PrefabStep.StepName },
+            CollectionAssert.AreEqual(new[] { ValidateStep.StepName, FixStep.StepName, PresetStep.StepName, MaterialStep.StepName, ColliderStep.StepName, PrefabStep.StepName },
                 result.Steps.Select(s => s.Step.Name));
             Assert.IsNull(result.Steps[0].Skipped, "Validate checks a scene object");
-            StringAssert.Contains("prepare the FBX", result.Steps[1].Skipped, "the preset is the model's, not a scene object's");
-            Assert.AreEqual("off in the recipe 'Bench only'", result.Steps[2].Skipped, result.ToString());
-            Assert.IsNull(result.Steps[3].Skipped, "Colliders acts on a scene object");
+            StringAssert.Contains("not made from a model", result.Steps[1].Skipped, "there is no file to fix");
+            StringAssert.Contains("prepare the FBX", result.Steps[2].Skipped, "the preset is the model's, not a scene object's");
+            Assert.AreEqual("off in the recipe 'Bench only'", result.Steps[3].Skipped, result.ToString());
+            Assert.IsNull(result.Steps[4].Skipped, "Colliders acts on a scene object");
             StringAssert.Contains("Recipe 'Bench only': the name 'SM_Bench'", result.ToString());
             StringAssert.Contains("matches 'SM_*'", result.ToString());
         }
@@ -116,7 +117,7 @@ namespace SashaRX.UnityMeshLab.Tests
             var result = PrepareRunner.Apply(target, chain);
 
             Assert.IsNull(chain.Recipe);
-            Assert.AreEqual(5, result.Steps.Count);
+            Assert.AreEqual(6, result.Steps.Count);
             Assert.IsTrue(result.Steps.All(s => s.Skipped == "no recipe matches 'Rock'"), result.ToString());
             Assert.IsFalse(result.Changes, result.ToString());
             StringAssert.Contains("No recipe: the name 'Rock'", result.ToString());
@@ -134,9 +135,9 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreSame(recipe, run.Recipe);
             Assert.AreEqual(chain.Match, run.Match);
             Assert.IsNotInstanceOf<SkippedStep>(run.Steps[0], "Validate runs");
-            Assert.AreEqual("off in the recipe 'Bench only'", ((SkippedStep)run.Steps[2]).Reason, "a step the recipe turns off keeps its reason");
-            Assert.AreEqual("off for this run", ((SkippedStep)run.Steps[3]).Reason);
-            Assert.IsInstanceOf<ColliderStep>(((SkippedStep)run.Steps[3]).Step);
+            Assert.AreEqual("off in the recipe 'Bench only'", ((SkippedStep)run.Steps[3]).Reason, "a step the recipe turns off keeps its reason");
+            Assert.AreEqual("off for this run", ((SkippedStep)run.Steps[4]).Reason);
+            Assert.IsInstanceOf<ColliderStep>(((SkippedStep)run.Steps[4]).Step);
             Assert.AreSame(chain, chain.Without(new string[0], "off for this run"), "nothing left out: the same chain");
         }
 
@@ -178,6 +179,24 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Settings_GiveARecipeFromBeforeFixTheStepOnce()
+        {
+            var settings = ScriptableObject.CreateInstance<MeshLabProjectSettings>();
+            owned.Add(settings);
+            var recipe = settings.recipes[0];
+            recipe.fix = false;                              // as a recipe saved before the field loads
+            recipe.fixLightmapClamp = 0f;
+
+            Assert.IsTrue(settings.MigrateRecipes());
+
+            Assert.IsTrue(recipe.fix, "Fix on, as in a new recipe");
+            Assert.AreEqual(FixStep.DefaultMaxClamp, recipe.fixLightmapClamp);
+            recipe.fix = false;
+            Assert.IsFalse(settings.MigrateRecipes(), "once only");
+            Assert.IsFalse(recipe.fix, "a later choice is kept");
+        }
+
+        [Test]
         public void Batch_ReadsItsArguments()
         {
             var options = PrepareBatch.Parse(new[] { "Unity", "-batchmode", "-PREPAREFOLDERS", "Assets/Art; Assets/Props/", "-preparePreview", "-prepareReport", "out.txt" });
@@ -201,10 +220,11 @@ namespace SashaRX.UnityMeshLab.Tests
             var steps = recipe.Steps();
 
             Assert.IsInstanceOf<ValidateStep>(steps[0]);
-            Assert.IsInstanceOf<PresetStep>(steps[1]);
-            Assert.IsInstanceOf<MaterialStep>(steps[2]);
-            Assert.AreEqual(1, ((ColliderStep)steps[3]).FallbackLod);
-            Assert.IsInstanceOf<PrefabStep>(steps[4]);
+            Assert.IsInstanceOf<FixStep>(steps[1]);
+            Assert.IsInstanceOf<PresetStep>(steps[2]);
+            Assert.IsInstanceOf<MaterialStep>(steps[3]);
+            Assert.AreEqual(1, ((ColliderStep)steps[4]).FallbackLod);
+            Assert.IsInstanceOf<PrefabStep>(steps[5]);
             Assert.IsInstanceOf<SkippedStep>(new PrepareRecipe { validate = false }.Steps()[0], "Validate can be turned off");
         }
     }
