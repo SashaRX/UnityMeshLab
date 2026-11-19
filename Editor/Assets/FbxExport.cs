@@ -608,7 +608,8 @@ namespace SashaRX.UnityMeshLab
         /// reimports it: the UV1 of <paramref name="uv1Entries"/> (only its changed corners) and
         /// the geometry of <paramref name="reshaped"/>, each replacing the FBX mesh of its name
         /// whole (node, transform and materials kept). The objects that show the file's meshes
-        /// take the reimported ones. False when nothing was written (a refusal is logged).
+        /// take the reimported ones. False when the write was refused (logged), or when the file
+        /// was written but the import settings it needs could not be set (logged too).
         /// </summary>
         internal static bool WriteRepairs(string fbxPath, IReadOnlyList<MeshEntry> uv1Entries, IReadOnlyList<Mesh> reshaped)
         {

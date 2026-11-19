@@ -106,32 +106,6 @@ namespace SashaRX.UnityMeshLab
             return (outside, overshoot);
         }
 
-        /// <summary>
-        /// The mesh's triangles, submesh by submesh, without its faces that have no area
-        /// (<see cref="MeshValidation.DegenerateFaceMask"/>), and how many those are. A submesh
-        /// that is not triangles is kept as it is (null).
-        /// </summary>
-        internal static (int[][] kept, int removed) WithoutFlatFaces(Mesh mesh)
-        {
-            var positions = mesh.vertices;
-            var kept = new int[mesh.subMeshCount][];
-            int removed = 0;
-            for (int s = 0; s < kept.Length; ++s)
-            {
-                if (mesh.GetTopology(s) != MeshTopology.Triangles) continue;
-                var triangles = mesh.GetTriangles(s);
-                var flat = MeshValidation.DegenerateFaceMask(positions, triangles);
-                var faces = new List<int>(triangles.Length);
-                for (int f = 0; f < flat.Length; ++f)
-                {
-                    if (flat[f]) { ++removed; continue; }
-                    faces.Add(triangles[f * 3]); faces.Add(triangles[f * 3 + 1]); faces.Add(triangles[f * 3 + 2]);
-                }
-                kept[s] = faces.ToArray();
-            }
-            return (kept, removed);
-        }
-
         void Run(PrepareContext context, PrepareReport report, bool apply)
         {
             string model = context.Target.ModelPath;
@@ -194,20 +168,25 @@ namespace SashaRX.UnityMeshLab
             changes.Add(($"'{mesh.name}'", Check, $"{count} clamped into [0,1] (up to {F(overshoot)} outside), in '{model}'"));
         }
 
-        // A collision mesh left without a face is not written: nothing would collide.
+        // The working copy loses its degenerate faces (MeshHygieneUtility: a triangle dropped, a
+        // quad dropped or split along its other diagonal). A collision mesh left without a face
+        // is not written: nothing would collide.
         static void PlanFaces(string model, Mesh working, List<Mesh> reshaped,
             List<(string subject, string check, string message)> changes, PrepareReport report)
         {
-            var (kept, removed) = WithoutFlatFaces(working);
+            int removed = MeshHygieneUtility.RemoveDegenerateFaces(working, out int stuck);
+            if (stuck > 0)
+                report.Add(PrepareLevel.Unchanged, $"'{working.name}'", FacesCheck,
+                    $"{MeshValidation.Plural(stuck, "quad", "quads")} with a doubled corner cannot be fixed as a quad; fix {(stuck == 1 ? "it" : "them")} in the DCC");
             if (removed == 0) return;
             string count = MeshValidation.Plural(removed, "face", "faces");
-            if (kept.All(faces => faces == null || faces.Length == 0))
+            long indices = 0;
+            for (int s = 0; s < working.subMeshCount; ++s) indices += (long)working.GetIndexCount(s);
+            if (indices == 0)
             {
                 report.Add(PrepareLevel.Unchanged, $"'{working.name}'", FacesCheck, $"{count} without area, and no other: the collision mesh would be left empty; fix it in the DCC");
                 return;
             }
-            for (int s = 0; s < kept.Length; ++s)
-                if (kept[s] != null) working.SetTriangles(kept[s], s);
             reshaped.Add(working);
             changes.Add(($"'{working.name}'", FacesCheck, $"{count} without area removed from the collision mesh, in '{model}'"));
         }

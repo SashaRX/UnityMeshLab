@@ -109,17 +109,30 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        public void WithoutFlatFaces_DropsTheFacesValidateCallsDegenerate()
+        public void Cleanup_KeepsAQuadSubmeshQuadsWhenItRemovesItsDegenerateFaces()
         {
-            var mesh = QuadWithAFlatFace();
-            Assert.AreEqual(1, MeshValidation.DegenerateFaces(mesh.vertices, mesh.triangles).faces);
+            // Three quads: a square; one whose first three corners lie on a line (flat on its
+            // first half, a triangle in shape); one with every corner on a line.
+            var mesh = new Mesh
+            {
+                vertices = new[]
+                {
+                    Vector3.zero, Vector3.right, new Vector3(1, 1), Vector3.up,
+                    new Vector3(2, 0), new Vector3(3, 0), new Vector3(4, 0), new Vector3(3, 1),
+                    new Vector3(5, 0), new Vector3(6, 0), new Vector3(7, 0), new Vector3(8, 0),
+                },
+            };
+            owned.Add(mesh);
+            mesh.SetIndices(new[] { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 }, MeshTopology.Quads, 0);
+            Assert.AreEqual(3, MeshHygieneUtility.CountDegenerateTriangles(mesh), "one half of the second quad, both of the third");
 
-            var (kept, removed) = FixStep.WithoutFlatFaces(mesh);
+            Assert.AreEqual(3, MeshHygieneUtility.RemoveDegenerateFaces(mesh, out int stuck));
 
-            Assert.AreEqual(1, removed);
-            CollectionAssert.AreEqual(new[] { 0, 1, 2, 0, 2, 3 }, kept.Single(), "the other faces, in their order");
-            mesh.triangles = kept.Single();
-            Assert.AreEqual(0, FixStep.WithoutFlatFaces(mesh).removed, "nothing is left to remove");
+            Assert.AreEqual(0, stuck);
+            Assert.AreEqual(MeshTopology.Quads, mesh.GetTopology(0));
+            CollectionAssert.AreEqual(new[] { 0, 1, 2, 3, 5, 6, 7, 4 }, mesh.GetIndices(0), "the second quad split along its other diagonal, the third gone");
+            Assert.AreEqual(0, MeshHygieneUtility.CountDegenerateTriangles(mesh));
+            Assert.AreEqual(0, MeshValidation.DegenerateFaces(mesh.vertices, MeshValidation.Triangles(mesh)).faces);
         }
 
         [Test]
