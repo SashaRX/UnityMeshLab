@@ -8,7 +8,8 @@
 // - a lightmap UV (UV1) a little outside [0,1] is clamped onto the unit square's edge, up to the
 //   recipe's limit; farther out the faces would be squashed there, and it needs a repack. Only
 //   the changed corners of that channel are written;
-// - a collision mesh's faces without area (MeshValidation's degenerate faces) are removed: a
+// - a collision mesh's faces without area (MeshValidation's degenerate faces: no area for
+//   their size, a height at most a millionth of their longest edge) are removed: a
 //   collider needs no face that covers nothing, and the mesh holds positions and faces alone,
 //   so it is written whole. A render mesh's are left for Cleanup or the DCC: written whole it
 //   would lose its polygons (quads) and the channels a triangle list does not carry.
@@ -140,9 +141,11 @@ namespace SashaRX.UnityMeshLab
             var changes = new List<(string subject, string check, string message)>();
             try
             {
+                // Validate's rule: a mesh no node renders, used by a collision node or a MeshCollider.
+                var collisionOnly = ModelValidation.CollisionOnlyMeshes(AssetDatabase.LoadAssetAtPath<GameObject>(model));
                 foreach (var mesh in AssetDatabase.LoadAllAssetsAtPath(model).OfType<Mesh>().OrderBy(m => m.name, StringComparer.Ordinal))
                 {
-                    bool collision = MeshNaming.IsCollision(mesh.name);
+                    bool collision = collisionOnly.Contains(mesh) || MeshNaming.IsCollision(mesh.name);
                     if (collision ? (fixes & ModelFixes.CollisionFaces) == 0
                         : (fixes & ModelFixes.LightmapUv) == 0 || !mesh.HasVertexAttribute(VertexAttribute.TexCoord1)) continue;
                     var working = MeshAccess.ReadableCopy(mesh);
@@ -159,7 +162,7 @@ namespace SashaRX.UnityMeshLab
                 }
                 if (apply && !write(model, entries, reshaped))
                 {
-                    report.Add(PrepareLevel.Warning, $"'{model}'", "Fix", "the FBX was not written (see the Console); the model is as it was");
+                    report.Add(PrepareLevel.Warning, $"'{model}'", "Fix", "the fix did not complete (see the Console): the FBX was refused, or written without the import settings it needs");
                     return;
                 }
                 foreach (var (subject, check, message) in changes) report.Add(PrepareLevel.Changed, subject, check, message);

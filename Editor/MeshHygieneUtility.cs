@@ -303,15 +303,18 @@ namespace SashaRX.UnityMeshLab
             int count = 0;
             for (int s = 0; s < mesh.subMeshCount; s++)
             {
-                if (mesh.GetTopology(s) != MeshTopology.Triangles) continue;
+                // A quad counts by its two triangles, as in Validate (MeshValidation.Triangles).
+                var topology = mesh.GetTopology(s);
+                if (topology != MeshTopology.Triangles && topology != MeshTopology.Quads) continue;
                 count += MeshValidation.DegenerateFaceMask(verts, mesh.GetTriangles(s)).Count(flat => flat);
             }
             return count;
         }
 
         /// <summary>
-        /// Rebuilds each submesh's triangle list, skipping the faces
-        /// <see cref="CountDegenerateTriangles"/> counts. Returns the number of triangles
+        /// Rebuilds each triangle submesh's list, skipping the faces
+        /// <see cref="CountDegenerateTriangles"/> counts. A quad submesh is left as it is: half
+        /// a quad cannot be removed and the submesh stay quads. Returns the number of triangles
         /// removed. Caller is responsible for cloning asset-backed meshes and wrapping in an
         /// Undo group.
         /// </summary>

@@ -4,7 +4,8 @@
 // Materials step changes is checked again once it is reimported, since the preset may set what
 // was missing (Scale Factor, generated lightmap UVs, tangents); its errors then stop the steps
 // after it. A model or prefab asset is checked as an asset, a scene object as placed (its own
-// root's scale aside).
+// root's scale aside); one made from a model is held to that model's file checks too (import
+// scale, units, smoothing groups, concave polygons), and one that is not lists none of them.
 
 namespace SashaRX.UnityMeshLab
 {
@@ -35,9 +36,20 @@ namespace SashaRX.UnityMeshLab
         void Run(PrepareContext context, PrepareReport report)
         {
             var target = context.Target;
-            if (target.Kind == PrepareTargetKind.SceneObject) ModelValidation.Validate(target.SceneObject, requirements, report);
-            else ModelValidation.Validate(target.AssetPath, requirements, report);
-            if (report.Lines.Count == 0) report.Add(PrepareLevel.Unchanged, $"'{target.Display}'", Check, "the model meets every requirement", requirements.Checked());
+            // What is made from a model (a scene object, a prefab) is held to its model's file checks too.
+            string model = target.ModelPath;
+            if (target.Kind == PrepareTargetKind.SceneObject)
+            {
+                if (model != null) ModelValidation.ValidateFile(model, requirements, report);
+                ModelValidation.Validate(target.SceneObject, requirements, report);
+            }
+            else
+            {
+                if (model != null && model != target.AssetPath) ModelValidation.ValidateFile(model, requirements, report);
+                ModelValidation.Validate(target.AssetPath, requirements, report);
+            }
+            if (report.Lines.Count == 0)
+                report.Add(PrepareLevel.Unchanged, $"'{target.Display}'", Check, "the model meets every requirement", requirements.Checked(file: model != null));
         }
     }
 }

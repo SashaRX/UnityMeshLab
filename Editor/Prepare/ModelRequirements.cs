@@ -94,9 +94,12 @@ namespace SashaRX.UnityMeshLab
         /// <summary>
         /// The checks that are on, a line per group ("Geometry: finite values, degenerate faces
         /// (error); unused vertices (warning)"): what a model that passes was checked for.
+        /// Without a model's file (<paramref name="file"/> false: a prefab or scene object not
+        /// made from one) the checks that read the file are left out.
         /// </summary>
-        internal IReadOnlyList<string> Checked()
+        internal IReadOnlyList<string> Checked(bool file = true)
         {
+            var off = RequirementLevel.Off;
             var channelNames = new List<string>();
             if (requireUv0) channelNames.Add("UV0");
             if (requireLightmapUv) channelNames.Add("UV1 (lightmap)");
@@ -105,11 +108,11 @@ namespace SashaRX.UnityMeshLab
             var lines = new List<string>();
             Group(lines, "Geometry", ("finite values", finiteValues), ("degenerate faces", degenerateFaces), ("unused vertices", unusedVertices),
                 ("non-manifold edges", nonManifoldEdges), ("flipped normals", flippedNormals), ("tiny faces", smallFaces),
-                ("short edges", shortEdges), ("concave polygons", concaveFaces));
+                ("short edges", shortEdges), ("concave polygons", file ? concaveFaces : off));
             Group(lines, "Channels", (channelNames.Count > 0 ? "has " + string.Join(", ", channelNames) : null, channels),
                 ("lightmap UV inside [0,1]", lightmapInsideUnit));
-            Group(lines, "File", ("import scale", importScale), ("units", fileUnits), ("node scale", nodeScale), ("size", modelSize),
-                ("smoothing groups", smoothingGroups));
+            Group(lines, file ? "File" : "Scale", ("import scale", file ? importScale : off), ("units", file ? fileUnits : off),
+                ("node scale", nodeScale), ("size", modelSize), ("smoothing groups", file ? smoothingGroups : off));
             Group(lines, "LODs and names", ("vertex limit", vertexLimit), ("LOD reduction", lodReduction), ("LOD ratio", lodRatio),
                 ("LOD chain", lodChain), ("duplicate names", duplicateNames));
             return lines;
