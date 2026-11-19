@@ -84,9 +84,11 @@ namespace SashaRX.UnityMeshLab
             PrepareContext.Changed(root);
         }
 
-        /// <summary>Every static flag.</summary>
-        internal static readonly StaticEditorFlags AllStatic = ((StaticEditorFlags[])Enum.GetValues(typeof(StaticEditorFlags)))
-            .Aggregate((StaticEditorFlags)0, (all, flag) => all | flag);
+        /// <summary>Every static flag in use: an obsolete one (navigation's) may not be kept by the editor, and a run would never find it set.</summary>
+        internal static readonly StaticEditorFlags AllStatic = typeof(StaticEditorFlags)
+            .GetFields(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+            .Where(field => !field.IsDefined(typeof(ObsoleteAttribute), false))
+            .Aggregate((StaticEditorFlags)0, (all, field) => all | (StaticEditorFlags)field.GetValue(null));
 
         static void MakeStatic(PrepareContext context, PrepareReport report, bool apply, GameObject root)
         {

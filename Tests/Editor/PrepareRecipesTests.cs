@@ -196,8 +196,10 @@ namespace SashaRX.UnityMeshLab.Tests
 
             Assert.IsTrue(result.Applied, result.ToString());
             Assert.AreEqual("Old_Bench", root.name, "no class prefix, spaces as underscores");
-            Assert.AreEqual(PrefabStep.AllStatic, UnityEditor.GameObjectUtility.GetStaticEditorFlags(root), "every flag");
-            Assert.AreEqual(PrefabStep.AllStatic, UnityEditor.GameObjectUtility.GetStaticEditorFlags(child), "the whole hierarchy, a partly static object too");
+            foreach (var go in new[] { root, child })
+                Assert.AreEqual(PrefabStep.AllStatic, UnityEditor.GameObjectUtility.GetStaticEditorFlags(go) & PrefabStep.AllStatic,
+                    $"{go.name}: every flag, on the whole hierarchy, a partly static object too");
+            Assert.AreNotEqual((UnityEditor.StaticEditorFlags)0, PrefabStep.AllStatic & UnityEditor.StaticEditorFlags.ContributeGI);
             Assert.IsFalse(PrepareRunner.Apply(target, new IPrepareStep[] { new PrefabStep(true) }).Changes, "a second run changes nothing");
         }
 
