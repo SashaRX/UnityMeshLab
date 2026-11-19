@@ -981,9 +981,6 @@ namespace SashaRX.UnityMeshLab
             finally { if (isCopy) UnityEngine.Object.DestroyImmediate(readable); }
         }
 
-        static Vector4[] Shading(Mesh mesh, bool tangents)
-            => tangents ? mesh.tangents : mesh.normals.Select(n => new Vector4(n.x, n.y, n.z, 0f)).ToArray();
-
         /// <summary>Each working value is one an imported vertex at the same position has (a direction within about half a degree, the same handedness).</summary>
         internal static bool KeepsImportedShading(Vector3[] positions, Vector4[] values, Vector3[] importedPositions, Vector4[] importedValues)
         {
@@ -999,18 +996,16 @@ namespace SashaRX.UnityMeshLab
             {
                 if (!at.TryGetValue(ShadingKey(positions[i]), out var candidates)) return false;
                 var value = values[i];
-                bool kept = false;
-                foreach (var candidate in candidates)
-                {
-                    if (Mathf.Abs(candidate.w - value.w) > 1e-3f) continue;
-                    if (((Vector3)candidate - (Vector3)value).sqrMagnitude > 1e-4f) continue;
-                    kept = true;
-                    break;
-                }
-                if (!kept) return false;
+                if (!candidates.Any(candidate => SameShading(candidate, value))) return false;
             }
             return true;
         }
+
+        static bool SameShading(Vector4 a, Vector4 b)
+            => Mathf.Abs(a.w - b.w) <= 1e-3f && ((Vector3)a - (Vector3)b).sqrMagnitude <= 1e-4f;
+
+        static Vector4[] Shading(Mesh mesh, bool tangents)
+            => tangents ? mesh.tangents : mesh.normals.Select(n => new Vector4(n.x, n.y, n.z, 0f)).ToArray();
 
         // A weld and a split keep a vertex's position as it was: a tenth of a millimetre tells the places apart.
         static (int, int, int) ShadingKey(Vector3 p)

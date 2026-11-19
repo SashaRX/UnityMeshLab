@@ -62,23 +62,14 @@ namespace SashaRX.UnityMeshLab
                     AddFaces(shape, triangles, MeshValidation.DegenerateFaceMask(positions, triangles), outline: true);
                     break;
                 case "Tiny faces":
-                {
-                    var small = MeshValidation.SmallFaceMask(positions, triangles, requirements.maxFaceArea);
-                    var degenerate = MeshValidation.DegenerateFaceMask(positions, triangles);
-                    for (int f = 0; f < small.Length; ++f) small[f] &= !degenerate[f];
-                    AddFaces(shape, triangles, small, outline: true);
+                    AddFaces(shape, triangles, TinyFaceMask(positions, triangles, requirements.maxFaceArea), outline: true);
                     break;
-                }
                 case "Short edges":
                     AddPoints(shape, MeshValidation.ShortEdges(positions, triangles, requirements.maxEdgeLength).vertices);
                     break;
                 case "Unused vertices":
-                {
-                    var used = new bool[positions.Length];
-                    foreach (int i in triangles) if (i >= 0 && i < used.Length) used[i] = true;
-                    for (int i = 0; i < used.Length; ++i) if (!used[i]) shape.points.Add(i);
+                    AddUnused(shape, triangles);
                     break;
-                }
                 case "Non-manifold edges":
                     foreach (var (a, b) in MeshValidation.NonManifoldEdgeList(positions, triangles)) { shape.edges.Add(a); shape.edges.Add(b); }
                     break;
@@ -87,6 +78,22 @@ namespace SashaRX.UnityMeshLab
                     break;
             }
             return shape;
+        }
+
+        // The faces of at most that area that have one: a face without area is a degenerate face.
+        static bool[] TinyFaceMask(Vector3[] positions, int[] triangles, double maxArea)
+        {
+            var small = MeshValidation.SmallFaceMask(positions, triangles, maxArea);
+            var degenerate = MeshValidation.DegenerateFaceMask(positions, triangles);
+            for (int f = 0; f < small.Length; ++f) small[f] &= !degenerate[f];
+            return small;
+        }
+
+        static void AddUnused(FindingShape shape, int[] triangles)
+        {
+            var used = new bool[shape.positions.Length];
+            foreach (int i in triangles.Where(i => i >= 0 && i < used.Length)) used[i] = true;
+            for (int i = 0; i < used.Length; ++i) if (!used[i]) shape.points.Add(i);
         }
 
         static void AddLightmapOutside(FindingShape shape, Mesh mesh, int[] triangles)
@@ -98,13 +105,10 @@ namespace SashaRX.UnityMeshLab
             for (int i = 0; i < uv.Count && i < outside.Length; ++i)
                 outside[i] = XatlasRepack.UnitOvershoot(uv[i]) > MeshValidation.LightmapTolerance;
             AddPoints(shape, outside);
+            bool Outside(int i) => i >= 0 && i < outside.Length && outside[i];
             var faces = new bool[triangles.Length / 3];
             for (int f = 0; f < faces.Length; ++f)
-                for (int k = 0; k < 3; ++k)
-                {
-                    int i = triangles[f * 3 + k];
-                    if (i >= 0 && i < outside.Length && outside[i]) faces[f] = true;
-                }
+                faces[f] = Outside(triangles[f * 3]) || Outside(triangles[f * 3 + 1]) || Outside(triangles[f * 3 + 2]);
             AddFaces(shape, triangles, faces);
         }
 
