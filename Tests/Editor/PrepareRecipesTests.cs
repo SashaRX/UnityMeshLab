@@ -100,7 +100,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 result.Steps.Select(s => s.Step.Name));
             Assert.IsNull(result.Steps[0].Skipped, "Validate checks a scene object");
             StringAssert.Contains("not made from a model", result.Steps[1].Skipped, "there is no file to fix");
-            StringAssert.Contains("prepare the FBX", result.Steps[2].Skipped, "the preset is the model's, not a scene object's");
+            StringAssert.Contains("not made from a model", result.Steps[2].Skipped, "the preset is a model's: this object is made from none");
             Assert.AreEqual("off in the recipe 'Bench only'", result.Steps[3].Skipped, result.ToString());
             Assert.IsNull(result.Steps[4].Skipped, "Colliders acts on a scene object");
             StringAssert.Contains("Recipe 'Bench only': the name 'SM_Bench'", result.ToString());

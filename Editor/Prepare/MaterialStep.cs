@@ -3,8 +3,10 @@
 // project's material of the same name (a .mat asset); of several, the one sharing the longest
 // folder path with the model, the others listed. A slot with no such material keeps the
 // model's own, with a warning. It changes the importer (IImporterStep), so it applies before
-// the model's variant is opened; a prefab or a scene object is skipped, its materials are the
-// model's. A slot already remapped is left as it is, so a second run changes nothing. A model
+// the model's variant is opened. The remap is the model's, whichever target the run prepares:
+// a model asset, or a scene object made from one (every object made from the model follows;
+// the importer's change has no Undo). A prefab asset is skipped: its contents are open while
+// the model would reimport. A slot already remapped is left as it is, so a second run changes nothing. A model
 // with the legacy external material location is only warned about: Unity ignores its remaps.
 
 using System;
@@ -26,8 +28,10 @@ namespace SashaRX.UnityMeshLab
 
         public string SkipReason(PrepareContext context)
         {
-            if (context.Target.Kind != PrepareTargetKind.ModelAsset) return "materials are remapped on the model: prepare the FBX";
-            return AssetImporter.GetAtPath(context.Target.AssetPath) is ModelImporter ? null : "the model has no model importer";
+            if (context.Target.Kind == PrepareTargetKind.PrefabAsset) return "materials are remapped on the model: prepare the FBX, or a scene object made from it";
+            string model = context.Target.ModelPath;
+            if (model == null) return "it is not made from a model: there are no model materials to remap";
+            return AssetImporter.GetAtPath(model) is ModelImporter ? null : "the model has no model importer";
         }
 
         public void Plan(PrepareContext context, PrepareReport report) => Run(context, report, false);
@@ -36,7 +40,7 @@ namespace SashaRX.UnityMeshLab
 
         static void Run(PrepareContext context, PrepareReport report, bool apply)
         {
-            string path = context.Target.AssetPath;
+            string path = context.Target.ModelPath;
             var importer = (ModelImporter)AssetImporter.GetAtPath(path);
             if (importer.materialImportMode == ModelImporterMaterialImportMode.None)
             {

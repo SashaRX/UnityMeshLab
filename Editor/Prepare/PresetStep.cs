@@ -5,8 +5,10 @@
 // (m_InternalIDToNameTable, m_UsedFileIDs), its avatar's human description (m_HumanDescription)
 // and, unless asked, its LOD screen percentages. The plan lists each
 // setting that differs, was → becomes, as the line's details; Apply applies only those and
-// reimports the model (IImporterStep: before its variant is opened). A model that already
-// matches the preset is left as it is.
+// reimports the model (IImporterStep: before its variant is opened). The importer is the
+// model's, whichever target the run prepares: a model asset, or a scene object made from one
+// (the importer's change has no Undo); a prefab asset is skipped, its contents being open while
+// the model would reimport. A model that already matches the preset is left as it is.
 
 using System;
 using System.Collections.Generic;
@@ -47,9 +49,11 @@ namespace SashaRX.UnityMeshLab
 
         public string SkipReason(PrepareContext context)
         {
-            if (context.Target.Kind != PrepareTargetKind.ModelAsset) return "an importer preset is applied to the model: prepare the FBX";
+            if (context.Target.Kind == PrepareTargetKind.PrefabAsset) return "an importer preset is applied to the model: prepare the FBX, or a scene object made from it";
+            string model = context.Target.ModelPath;
+            if (model == null) return "it is not made from a model: there is no importer to set";
             if (preset == null) return "the recipe sets no importer preset (Project Settings ▸ Mesh Lab ▸ Prepare: Recipes)";
-            if (!(AssetImporter.GetAtPath(context.Target.AssetPath) is ModelImporter importer)) return "the model has no model importer";
+            if (!(AssetImporter.GetAtPath(model) is ModelImporter importer)) return "the model has no model importer";
             return preset.CanBeAppliedTo(importer) ? null : $"'{preset.name}' is not a model importer preset";
         }
 
@@ -59,7 +63,7 @@ namespace SashaRX.UnityMeshLab
 
         void Run(PrepareContext context, PrepareReport report, bool apply)
         {
-            string path = context.Target.AssetPath;
+            string path = context.Target.ModelPath;
             var importer = (ModelImporter)AssetImporter.GetAtPath(path);
             // The preset's own exclusions (its Inspector's) are never applied either.
             var differences = Differences(preset, importer, excluded.Concat(preset.excludedProperties ?? Array.Empty<string>()));
