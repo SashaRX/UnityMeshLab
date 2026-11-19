@@ -11,7 +11,8 @@
 // root's collider still gets its surface, read from its mesh's name as a part's.
 //
 // Each collider's object is given its surface through the surface binding (SurfaceBinding):
-// from the part's name, else its materials, else the model's name. A collider that already
+// from the part's name, else its materials (a collision node's own, read before its renderer
+// goes, then those of its part's render nodes), else the model's name. A collider that already
 // has its mesh keeps it, and a binding that already has a surface keeps it, so a second run
 // changes nothing.
 
@@ -124,7 +125,7 @@ namespace SashaRX.UnityMeshLab
             string offset = main ? LodHierarchy.OffsetFromRoot(root, source.node) : null;
             var host = main && offset == null ? root : source.node;
             string subject = Subject(root, source.node);
-            // Read before the node may go: the surface is its name's, or its part's materials'.
+            // Read before the node or its renderer goes: the surface is its name's, its own materials' or its part's.
             bool bind = binding != null && binding.Unavailable == null;
             var (surface, origin) = bind
                 ? SurfaceBinding.Resolve(source.node.name, MaterialNames(root, source).ToList(), context.Target.Name, vocabulary)
@@ -266,12 +267,12 @@ namespace SashaRX.UnityMeshLab
             return chosen.sources;
         }
 
-        // The part's materials: a render node's own; a collision node's, those of the render
-        // nodes of its part (the same name once LOD and collision suffixes are off).
+        // The part's materials: the node's own first; then, for a collision node, those of the
+        // render nodes of its part (the same name once LOD and collision suffixes are off).
         static IEnumerable<string> MaterialNames(Transform root, Source source)
         {
-            if (source.collisionNode) return PartMaterials(root, source.node.name);
-            return Names(source.node.GetComponents<Renderer>());
+            var own = Names(source.node.GetComponents<Renderer>());
+            return source.collisionNode ? own.Concat(PartMaterials(root, source.node.name)).Distinct() : own;
         }
 
         // The materials of the render nodes of the part a name belongs to.
