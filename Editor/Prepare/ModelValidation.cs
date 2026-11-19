@@ -40,15 +40,35 @@ namespace SashaRX.UnityMeshLab
                 report.Add(PrepareLevel.Error, assetPath, "Model", "not a model or prefab asset");
                 return;
             }
-            if (AssetImporter.GetAtPath(assetPath) is ModelImporter importer)
-                ModelFileChecks.CheckImporter(importer, assetPath, requirements, report);
-            var collisionOnly = new HashSet<string>(Uses(root).Where(u => !u.render).Select(u => u.mesh.name), StringComparer.Ordinal);
-            ModelFileChecks.CheckSmoothing(assetPath, requirements, report, collisionOnly);
-#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-            FbxPolygonChecks.CheckConcave(assetPath, requirements, report);
-#endif
+            ValidateFile(assetPath, requirements, report);
             Validate(root, requirements, report, includeRootScale: true);
         }
+
+        /// <summary>
+        /// The checks of a model's file into <paramref name="report"/>: its importer (Scale
+        /// Factor, units), its smoothing groups and its concave polygons. They are the model's
+        /// whatever is made from it, so a scene object or a prefab made from a model is held to
+        /// them through its model's path. Nothing for a path that is no model.
+        /// </summary>
+        internal static void ValidateFile(string modelPath, ModelRequirements requirements, PrepareReport report)
+        {
+            requirements = requirements ?? ModelRequirements.Default;
+            if (!(AssetImporter.GetAtPath(modelPath) is ModelImporter importer)) return;
+            ModelFileChecks.CheckImporter(importer, modelPath, requirements, report);
+            var root = AssetDatabase.LoadAssetAtPath<GameObject>(modelPath);
+            var collisionOnly = new HashSet<string>(CollisionOnlyMeshes(root).Select(m => m.name), StringComparer.Ordinal);
+            ModelFileChecks.CheckSmoothing(modelPath, requirements, report, collisionOnly);
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+            FbxPolygonChecks.CheckConcave(modelPath, requirements, report);
+#endif
+        }
+
+        /// <summary>
+        /// The meshes under <paramref name="root"/> that only collide: a collision node's or a
+        /// MeshCollider's, that no node renders. They are held to the geometry checks alone.
+        /// </summary>
+        internal static HashSet<Mesh> CollisionOnlyMeshes(GameObject root)
+            => root == null ? new HashSet<Mesh>() : new HashSet<Mesh>(Uses(root).Where(u => !u.render).Select(u => u.mesh));
 
         /// <summary>
         /// Checks the nodes' scale, the size and every mesh under <paramref name="root"/> into

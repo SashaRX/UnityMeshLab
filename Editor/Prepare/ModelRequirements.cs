@@ -3,6 +3,7 @@
 // carry its own set; Default is the static-prop rule set.
 
 using System;
+using System.Collections.Generic;
 
 namespace SashaRX.UnityMeshLab
 {
@@ -89,6 +90,49 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>Sibling nodes with one name: steps that pair nodes by name cannot tell them apart.</summary>
         public RequirementLevel duplicateNames = RequirementLevel.Warning;
+
+        /// <summary>
+        /// The checks that are on, a line per group ("Geometry: finite values, degenerate faces
+        /// (error); unused vertices (warning)"): what a model that passes was checked for.
+        /// Without a model's file (<paramref name="file"/> false: a prefab or scene object not
+        /// made from one) the checks that read the file are left out; smoothing groups are read
+        /// from an FBX only (<paramref name="fbx"/>), and its concave polygons only where the
+        /// FBX SDK is there to read them (<paramref name="polygons"/>).
+        /// </summary>
+        internal IReadOnlyList<string> Checked(bool file = true, bool fbx = true, bool polygons = true)
+        {
+            var off = RequirementLevel.Off;
+            var channelNames = new List<string>();
+            if (requireUv0) channelNames.Add("UV0");
+            if (requireLightmapUv) channelNames.Add("UV1 (lightmap)");
+            if (requireNormals) channelNames.Add("normals");
+            if (requireTangents) channelNames.Add("tangents");
+            var lines = new List<string>();
+            Group(lines, "Geometry", ("finite values", finiteValues), ("degenerate faces", degenerateFaces), ("unused vertices", unusedVertices),
+                ("non-manifold edges", nonManifoldEdges), ("flipped normals", flippedNormals), ("tiny faces", smallFaces),
+                ("short edges", shortEdges), ("concave polygons", file && fbx && polygons ? concaveFaces : off));
+            Group(lines, "Channels", (channelNames.Count > 0 ? "has " + string.Join(", ", channelNames) : null, channels),
+                ("lightmap UV inside [0,1]", lightmapInsideUnit));
+            Group(lines, file ? "File" : "Scale", ("import scale", file ? importScale : off), ("units", file ? fileUnits : off),
+                ("node scale", nodeScale), ("size", modelSize), ("smoothing groups", file && fbx ? smoothingGroups : off));
+            Group(lines, "LODs and names", ("vertex limit", vertexLimit), ("LOD reduction", lodReduction), ("LOD ratio", lodRatio),
+                ("LOD chain", lodChain), ("duplicate names", duplicateNames));
+            return lines;
+        }
+
+        // "Geometry: a, b (error); c (warning)"; nothing when every check of the group is off.
+        static void Group(List<string> lines, string name, params (string check, RequirementLevel level)[] checks)
+        {
+            var parts = new List<string>();
+            foreach (var level in new[] { RequirementLevel.Error, RequirementLevel.Warning })
+            {
+                var names = new List<string>();
+                foreach (var (check, at) in checks)
+                    if (at == level && check != null) names.Add(check);
+                if (names.Count > 0) parts.Add($"{string.Join(", ", names)} ({(level == RequirementLevel.Error ? "error" : "warning")})");
+            }
+            if (parts.Count > 0) lines.Add($"{name}: {string.Join("; ", parts)}");
+        }
 
         internal static ModelRequirements Default => new ModelRequirements();
     }

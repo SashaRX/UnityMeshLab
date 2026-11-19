@@ -24,7 +24,8 @@ namespace SashaRX.UnityMeshLab
                 "In the lightmap atlas the texels past the unit square belong to another object, so light bleeds across. "
                 + "The Fix step clamps a small overshoot; a larger one needs a repack (UV2 Transfer with Repack) or a fix in the DCC."),
             ["Degenerate faces"] = new PrepareHint(
-                "A face without area has no normal and no UV area: it breaks lightmap UVs, tangents and collision cooking. Remove it in Cleanup or the DCC."),
+                "A face without area has no normal and no UV area: it breaks lightmap UVs, tangents and collision cooking. "
+                + "The Fix step removes it from a collision mesh, in the FBX; on a render mesh remove it in Cleanup or the DCC."),
             ["Tiny faces"] = new PrepareHint(
                 "A face this small renders as noise and gets no lightmap texel; usually a leftover of a boolean or a bevel. Merge or remove it."),
             ["Short edges"] = new PrepareHint(

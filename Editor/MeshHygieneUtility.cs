@@ -4,6 +4,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 using UnityEditor;
 
@@ -290,70 +291,105 @@ namespace SashaRX.UnityMeshLab
         // ── Degenerate triangle detection / removal ──
 
         /// <summary>
-        /// Counts triangles that collapse to a point or line (zero-area faces).
-        /// Requires a readable mesh; returns 0 when unreadable.
+        /// Counts the faces without area: a repeated or missing vertex, or a height that is
+        /// nothing next to the longest edge (<see cref="MeshValidation.DegenerateFaceMask"/>, the
+        /// faces Prepare's Validate reports), however large the face. Requires a readable mesh;
+        /// returns 0 when unreadable.
         /// </summary>
-        public static int CountDegenerateTriangles(Mesh mesh, float epsilon = 1e-12f)
+        public static int CountDegenerateTriangles(Mesh mesh)
         {
             if (mesh == null || !mesh.isReadable) return 0;
             var verts = mesh.vertices;
             int count = 0;
-            int subCount = mesh.subMeshCount;
-            for (int s = 0; s < subCount; s++)
+            for (int s = 0; s < mesh.subMeshCount; s++)
             {
-                var tris = mesh.GetTriangles(s);
-                for (int t = 0; t + 2 < tris.Length; t += 3)
-                {
-                    int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
-                    if (i0 == i1 || i0 == i2 || i1 == i2) { count++; continue; }
-                    if (i0 < 0 || i0 >= verts.Length ||
-                        i1 < 0 || i1 >= verts.Length ||
-                        i2 < 0 || i2 >= verts.Length) { count++; continue; }
-                    var a = verts[i0];
-                    var b = verts[i1];
-                    var c = verts[i2];
-                    if (Vector3.Cross(b - a, c - a).sqrMagnitude < epsilon) count++;
-                }
+                // A quad counts by its two triangles, as in Validate (MeshValidation.Triangles).
+                var topology = mesh.GetTopology(s);
+                if (topology != MeshTopology.Triangles && topology != MeshTopology.Quads) continue;
+                count += MeshValidation.DegenerateFaceMask(verts, mesh.GetTriangles(s)).Count(flat => flat);
             }
             return count;
         }
 
         /// <summary>
-        /// Rebuilds each submesh's triangle list, skipping degenerate faces. Returns
-        /// the number of triangles removed. Caller is responsible for cloning
-        /// asset-backed meshes and wrapping in an Undo group.
+        /// Removes the faces <see cref="CountDegenerateTriangles"/> counts and returns how many
+        /// of them are gone. A triangle is dropped. A quad stays a quad: one with no area on
+        /// either half is dropped, and one flat on one half only (three corners on a line) is
+        /// split along its other diagonal, which gives both halves area. Caller is responsible
+        /// for cloning asset-backed meshes and wrapping in an Undo group.
         /// </summary>
-        public static int RemoveDegenerateTriangles(Mesh mesh, float epsilon = 1e-12f)
+        public static int RemoveDegenerateTriangles(Mesh mesh)
         {
             if (mesh == null || !mesh.isReadable) return 0;
-            var verts = mesh.vertices;
-            int removed = 0;
-            int subCount = mesh.subMeshCount;
-            for (int s = 0; s < subCount; s++)
-            {
-                var tris = mesh.GetTriangles(s);
-                var kept = new List<int>(tris.Length);
-                for (int t = 0; t + 2 < tris.Length; t += 3)
-                {
-                    int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
-                    if (i0 == i1 || i0 == i2 || i1 == i2) { removed++; continue; }
-                    if (i0 < 0 || i0 >= verts.Length ||
-                        i1 < 0 || i1 >= verts.Length ||
-                        i2 < 0 || i2 >= verts.Length) { removed++; continue; }
-                    var a = verts[i0];
-                    var b = verts[i1];
-                    var c = verts[i2];
-                    if (Vector3.Cross(b - a, c - a).sqrMagnitude < epsilon) { removed++; continue; }
-                    kept.Add(i0); kept.Add(i1); kept.Add(i2);
-                }
-                if (kept.Count != tris.Length)
-                    mesh.SetTriangles(kept, s);
-            }
+            int removed = RemoveDegenerateFaces(mesh, out int stuck);
+            if (stuck > 0)
+                UvtLog.Warn($"[Cleanup] {mesh.name}: {stuck} quad(s) with a doubled corner stay degenerate: a quad submesh cannot hold the triangle each is.");
             if (removed > 0)
             {
                 mesh.RecalculateBounds();
                 VertexChannels.RaiseChanged(mesh);
             }
+            return removed;
+        }
+
+        /// <summary>
+        /// <see cref="RemoveDegenerateTriangles"/> without its notifications, for a mesh nothing
+        /// shows yet: the degenerate faces gone, and in <paramref name="stuck"/> the quads left
+        /// flat on one half whichever diagonal splits them (two corners at one point).
+        /// </summary>
+        internal static int RemoveDegenerateFaces(Mesh mesh, out int stuck)
+        {
+            stuck = 0;
+            var verts = mesh.vertices;
+            int removed = 0;
+            for (int s = 0; s < mesh.subMeshCount; s++)
+            {
+                var topology = mesh.GetTopology(s);
+                if (topology == MeshTopology.Triangles) removed += RemoveFlatTriangles(mesh, s, verts);
+                else if (topology == MeshTopology.Quads) removed += RemoveFlatQuads(mesh, s, verts, ref stuck);
+            }
+            return removed;
+        }
+
+        static int RemoveFlatTriangles(Mesh mesh, int submesh, Vector3[] verts)
+        {
+            var tris = mesh.GetTriangles(submesh);
+            var flat = MeshValidation.DegenerateFaceMask(verts, tris);
+            var kept = new List<int>(tris.Length);
+            for (int f = 0; f < flat.Length; f++)
+            {
+                if (flat[f]) continue;
+                kept.Add(tris[f * 3]); kept.Add(tris[f * 3 + 1]); kept.Add(tris[f * 3 + 2]);
+            }
+            if (kept.Count != tris.Length) mesh.SetTriangles(kept, submesh);
+            return (tris.Length - kept.Count) / 3;
+        }
+
+        // A quad a b c d is two triangles along its first diagonal: a b c and a c d (Unity's
+        // split, and Validate's). Started from b it is the same face split along b d.
+        static int RemoveFlatQuads(Mesh mesh, int submesh, Vector3[] verts, ref int stuck)
+        {
+            var quads = mesh.GetIndices(submesh);
+            var halves = new int[quads.Length * 3];   // per quad: a b c, a c d, b c d, b d a
+            for (int q = 0; q + 3 < quads.Length; q += 4)
+            {
+                int a = quads[q], b = quads[q + 1], c = quads[q + 2], d = quads[q + 3];
+                new[] { a, b, c, a, c, d, b, c, d, b, d, a }.CopyTo(halves, q * 3);
+            }
+            var flat = MeshValidation.DegenerateFaceMask(verts, halves);
+            var kept = new List<int>(quads.Length);
+            int removed = 0;
+            bool changed = false;
+            for (int q = 0; q + 3 < quads.Length; q += 4)
+            {
+                bool first = flat[q], second = flat[q + 1];
+                if (first && second) { removed += 2; changed = true; continue; }
+                bool turn = (first || second) && !flat[q + 2] && !flat[q + 3];
+                if (turn) { removed++; changed = true; }
+                else if (first || second) stuck++;
+                for (int k = 0; k < 4; k++) kept.Add(quads[q + (k + (turn ? 1 : 0)) % 4]);
+            }
+            if (changed) mesh.SetIndices(kept.ToArray(), MeshTopology.Quads, submesh);
             return removed;
         }
 

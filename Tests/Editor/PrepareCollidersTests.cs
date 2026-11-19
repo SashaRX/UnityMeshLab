@@ -5,6 +5,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using NUnit.Framework;
+using UnityEditor;
 using UnityEngine;
 using UnityEngine.TestTools;
 
@@ -187,18 +188,25 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        public void Apply_LeavesAModelWhoseRootHasAMeshColliderAsItIs()
+        public void Apply_KeepsTheRootsMeshColliderAndGivesTheOtherCollisionNodesTheirs()
         {
             var root = Root("TrashCan");
-            root.AddComponent<MeshCollider>().sharedMesh = Box("Own", 1);
+            var own = Box("Own", 4);
+            root.AddComponent<MeshCollider>().sharedMesh = own;
+            // Smaller than the root's and at its placement: it still stays on its node.
             var col = Node(root, "Can_Metal_COL", Box("Can_Metal_COL", 1));
+            var binding = new RecordingBinding();
 
-            var result = Apply(root, new ColliderStep(new RecordingBinding()));
+            var result = Apply(root, new ColliderStep(binding));
 
-            Assert.IsFalse(result.Changes);
-            Assert.IsNotNull(col.GetComponent<MeshRenderer>());
-            Assert.IsNull(col.GetComponent<MeshCollider>());
-            StringAssert.Contains("left as it is", result.Steps.Single().Report.Lines.Single().message);
+            Assert.IsTrue(result.Applied && result.Changes, result.ToString());
+            Assert.AreSame(own, root.GetComponent<MeshCollider>().sharedMesh, "the root's collider stays the main one");
+            Assert.AreEqual(1, root.GetComponents<MeshCollider>().Length);
+            Assert.AreEqual("Can_Metal_COL", col.GetComponent<MeshCollider>().sharedMesh.name, "a node added since collides on its node");
+            Assert.IsNull(col.GetComponent<MeshRenderer>());
+            Assert.AreEqual("Metal", binding.bound["Can_Metal_COL"]);
+            StringAssert.Contains("stays the main collider", result.Steps.Single().Report.Lines.First(l => l.check == "Collider" && l.level == PrepareLevel.Unchanged).message);
+            Assert.IsFalse(Apply(root, new ColliderStep(binding)).Changes, "a second run changes nothing");
         }
 
         [Test]
@@ -266,6 +274,9 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual("Wood", SurfaceBinding.Resolve("Seat_COL", new[] { "M_Building_Atlas_01", "M_Wood_Oak" }, "SM_Glass", words).surface);
             Assert.AreEqual("Glass", SurfaceBinding.Resolve("Seat_COL", new[] { "M_Atlas" }, "SM_Glass_Door", words).surface);
             Assert.IsNull(SurfaceBinding.Resolve("Seat_COL", null, "Bench", words).surface);
+            Assert.AreEqual("Wood", SurfaceBinding.Resolve("Seat_COL", new[] { "M_Wood", "M_Metal" }, "Bench", words).surface,
+                "a node of several materials gets one surface: the first one a material names");
+            Assert.AreEqual("Metal", SurfaceBinding.Resolve("Seat_COL", new[] { "M_Metal", "M_Wood" }, "Bench", words).surface);
         }
 
         [Test]
@@ -345,6 +356,127 @@ namespace SashaRX.UnityMeshLab.Tests
                 componentType = nameof(PrepareTestSurface), field = "_missing", dataType = nameof(PrepareTestSurfaceData),
             };
             StringAssert.Contains("no serialized field", new ComponentSurfaceBinding(wrongField).Unavailable);
+        }
+
+        PrepareTestSurfaceData Surface(string name)
+        {
+            var asset = ScriptableObject.CreateInstance<PrepareTestSurfaceData>();
+            asset.name = name;
+            owned.Add(asset);
+            return asset;
+        }
+
+        Material RenderMaterial(string name)
+        {
+            var material = new Material(Shader.Find("Standard")) { name = name };
+            owned.Add(material);
+            return material;
+        }
+
+        static SurfaceBindingSettings BindingSettings() => new SurfaceBindingSettings
+        {
+            componentType = typeof(PrepareTestSurface).FullName,
+            field = "_material",
+            dataType = typeof(PrepareTestSurfaceData).FullName,
+        };
+
+        [TestCase(false)]
+        [TestCase(true)]
+        public void ComponentBinding_ReadsTheCollisionNodesOwnMaterialBeforeItsRendererGoes(bool onRoot)
+        {
+            var wood = Surface("Wood");
+            var root = Root("Bench");
+            var node = Node(root, "Seat_COL", Box("Seat_COL", 1), onRoot ? Vector3.zero : Vector3.up, RenderMaterial("M_Wood_Oak"));
+            var host = onRoot ? root : node;
+            var binding = new ComponentSurfaceBinding(BindingSettings(), (type, name, near) => name == "Wood" ? wood : null);
+            var step = new ColliderStep(binding);
+
+            var preview = PrepareRunner.Preview(PrepareTarget.ForSceneObject(root), new[] { step });
+
+            Assert.IsNull(host.GetComponent<PrepareTestSurface>(), "Preview adds no component");
+            Assert.IsNotNull(node.GetComponent<MeshRenderer>());
+            var planned = preview.Steps.Single().Report.Lines.Single(l => l.check == ComponentSurfaceBinding.Check);
+            Assert.AreEqual(PrepareLevel.Changed, planned.level, preview.ToString());
+
+            var applied = Apply(root, step);
+
+            Assert.AreSame(wood, host.GetComponent<PrepareTestSurface>()?.Material, applied.ToString());
+            // On the root, the emptied node is removed whole; off it, the node stays without its renderer.
+            if (onRoot) Assert.IsTrue(node == null, "the node the root collides for is removed");
+            else Assert.IsNull(node.GetComponent<MeshRenderer>());
+            Assert.AreEqual(planned.message, applied.Steps.Single().Report.Lines.Single(l => l.check == ComponentSurfaceBinding.Check).message);
+            Assert.IsFalse(Apply(root, step).Changes, "a bound collider is stable on a second Apply");
+            Assert.AreEqual(1, host.GetComponents<PrepareTestSurface>().Length);
+        }
+
+        [TestCase("Seat_COL", "M_Wood_Oak", "Wood")]
+        [TestCase("Seat_COL", "M_Atlas", "Metal")]
+        [TestCase("Seat_Glass_COL", "M_Wood_Oak", "Glass")]
+        public void ComponentBinding_ReadsTheNameThenTheNodesOwnMaterialsThenItsRenderParts(string part, string ownMaterial, string expected)
+        {
+            var asset = Surface(expected);
+            var root = Root("Bench");
+            var node = Node(root, part, Box(part, 1), Vector3.up, RenderMaterial(ownMaterial));
+            Node(root, MeshNaming.GroupKey(part) + "_LOD0", Box("Render", 1), Vector3.up, RenderMaterial("M_Metal"));
+            var binding = new ComponentSurfaceBinding(BindingSettings(), (type, name, near) => name == expected ? asset : null);
+
+            var result = Apply(root, new ColliderStep(binding));
+
+            Assert.AreSame(asset, node.GetComponent<PrepareTestSurface>()?.Material, result.ToString());
+        }
+
+        [Test]
+        public void ComponentBinding_KeepsADifferentSurfaceAlreadySetWithoutLookingAnAssetUp()
+        {
+            var original = Surface("CustomSurface");
+            var root = Root("Bench");
+            var node = Node(root, "Seat_Wood_COL", Box("Seat_Wood_COL", 1), Vector3.up);
+            var component = node.AddComponent<PrepareTestSurface>();
+            using (var serialized = new SerializedObject(component))
+            {
+                serialized.FindProperty("_material").objectReferenceValue = original;
+                serialized.ApplyModifiedPropertiesWithoutUndo();
+            }
+            int lookups = 0;
+            var binding = new ComponentSurfaceBinding(BindingSettings(), (type, name, near) => { lookups++; return null; });
+
+            Apply(root, new ColliderStep(binding));
+            var again = Apply(root, new ColliderStep(binding));
+
+            Assert.AreSame(original, component.Material);
+            Assert.AreEqual(0, lookups, "a surface set by hand stays even when the one its name says has no asset");
+            Assert.AreEqual(1, node.GetComponents<PrepareTestSurface>().Length);
+            Assert.IsFalse(again.Changes, again.ToString());
+        }
+
+        [Test]
+        public void ComponentBinding_WithoutTheAssetAddsNoComponentAndBindsOnceItExists()
+        {
+            var root = Root("Bench");
+            var node = Node(root, "Seat_Wood_COL", Box("Seat_Wood_COL", 1), Vector3.up);
+            PrepareTestSurfaceData available = null;
+            var binding = new ComponentSurfaceBinding(BindingSettings(), (type, name, near) => available);
+
+            var first = Apply(root, new ColliderStep(binding));
+
+            Assert.IsNull(node.GetComponent<PrepareTestSurface>());
+            Assert.IsNotNull(node.GetComponent<MeshCollider>());
+            Assert.IsTrue(first.Steps.Single().Report.Lines.Any(l => l.check == ComponentSurfaceBinding.Check && l.level == PrepareLevel.Warning));
+            available = Surface("Wood");
+            Apply(root, new ColliderStep(binding));
+
+            Assert.AreSame(available, node.GetComponent<PrepareTestSurface>()?.Material);
+            Assert.AreEqual(1, node.GetComponents<MeshCollider>().Length);
+            Assert.IsFalse(Apply(root, new ColliderStep(binding)).Changes);
+        }
+
+        [Test]
+        public void ComponentBinding_RefusesAnAssetTypeTheFieldDoesNotTake()
+        {
+            var settings = BindingSettings();
+            settings.dataType = typeof(Material).FullName;
+
+            StringAssert.Contains("does not take", new ComponentSurfaceBinding(settings).Unavailable);
         }
     }
 }

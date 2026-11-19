@@ -1,4 +1,5 @@
-// PrepareFixTests.cs — the Fix prepare step: which lightmap UVs count as outside [0,1], why a
+// PrepareFixTests.cs — the Fix prepare step: which lightmap UVs count as outside [0,1], which
+// faces it removes from a collision mesh (the ones Validate and Cleanup call degenerate), why a
 // target is skipped, and the runner's order on a scene object: a step that changes the model's
 // file applies first, the check that waited checks again, and an error then stops the rest.
 using System.Collections.Generic;
@@ -92,6 +93,59 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(2, outside, "rounding past the edge is not outside");
             Assert.AreEqual(.008f, overshoot, 1e-6f);
             Assert.AreEqual((0, 0f), FixStep.Outside(new[] { Vector2.zero, Vector2.one }));
+        }
+
+        // Two faces of a quad and a third whose corners lie on one line, metres long: no area
+        // for its size, though not small.
+        Mesh QuadWithAFlatFace()
+        {
+            var mesh = new Mesh
+            {
+                vertices = new[] { Vector3.zero, Vector3.right, new Vector3(1, 1), Vector3.up, new Vector3(2.5f, 0), new Vector3(6.5f, 0) },
+                triangles = new[] { 0, 1, 2, 1, 4, 5, 0, 2, 3 },
+            };
+            owned.Add(mesh);
+            return mesh;
+        }
+
+        [Test]
+        public void Cleanup_KeepsAQuadSubmeshQuadsWhenItRemovesItsDegenerateFaces()
+        {
+            // Three quads: a square; one whose first three corners lie on a line (flat on its
+            // first half, a triangle in shape); one with every corner on a line.
+            var mesh = new Mesh
+            {
+                vertices = new[]
+                {
+                    Vector3.zero, Vector3.right, new Vector3(1, 1), Vector3.up,
+                    new Vector3(2, 0), new Vector3(3, 0), new Vector3(4, 0), new Vector3(3, 1),
+                    new Vector3(5, 0), new Vector3(6, 0), new Vector3(7, 0), new Vector3(8, 0),
+                },
+            };
+            owned.Add(mesh);
+            mesh.SetIndices(new[] { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11 }, MeshTopology.Quads, 0);
+            Assert.AreEqual(3, MeshHygieneUtility.CountDegenerateTriangles(mesh), "one half of the second quad, both of the third");
+
+            Assert.AreEqual(3, MeshHygieneUtility.RemoveDegenerateFaces(mesh, out int stuck));
+
+            Assert.AreEqual(0, stuck);
+            Assert.AreEqual(MeshTopology.Quads, mesh.GetTopology(0));
+            CollectionAssert.AreEqual(new[] { 0, 1, 2, 3, 5, 6, 7, 4 }, mesh.GetIndices(0), "the second quad split along its other diagonal, the third gone");
+            Assert.AreEqual(0, MeshHygieneUtility.CountDegenerateTriangles(mesh));
+            Assert.AreEqual(0, MeshValidation.DegenerateFaces(mesh.vertices, MeshValidation.Triangles(mesh)).faces);
+        }
+
+        [Test]
+        public void Cleanup_CountsAndRemovesTheFacesValidateCallsDegenerate()
+        {
+            var mesh = QuadWithAFlatFace();
+
+            Assert.AreEqual(1, MeshHygieneUtility.CountDegenerateTriangles(mesh), "a long face on one line has no area for its size");
+            Assert.AreEqual(1, MeshHygieneUtility.RemoveDegenerateTriangles(mesh));
+
+            CollectionAssert.AreEqual(new[] { 0, 1, 2, 0, 2, 3 }, mesh.triangles);
+            Assert.AreEqual(0, MeshHygieneUtility.CountDegenerateTriangles(mesh));
+            Assert.AreEqual(0, MeshValidation.DegenerateFaces(mesh.vertices, mesh.triangles).faces);
         }
 
         [Test]
