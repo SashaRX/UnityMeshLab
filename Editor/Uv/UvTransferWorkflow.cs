@@ -703,7 +703,7 @@ namespace SashaRX.UnityMeshLab
                     "On: the model is baked once, for LOD0, and every other LOD reads that same lightmap, so its UV2 must lie over "
                     + "LOD0's (one atlas and scale/offset for the LODGroup, as Bakery's shared LOD UVs). Off: each LOD is baked into a lightmap of its own. "
                     + "A target shell collapsed to a point or a line (a rejected shell stays at 0,0) would read one texel; "
-                    + "its faces take the UV2 of the LOD0 surface under them instead, overlapping other faces there. "
+                    + "its faces take the UV2 of the source LOD's surface under them instead (LOD0 unless Source LOD is set to another), overlapping other faces there. "
                     + "Reverse UV: an island of a coarser LOD that continues on no LOD0 face does the same and takes no atlas space. "
                     + "Leave off when each LOD bakes into a lightmap of its own. Saved in the sidecar."),
                 ctx.LodsShareLod0Lightmap);
