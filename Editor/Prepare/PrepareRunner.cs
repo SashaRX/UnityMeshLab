@@ -85,11 +85,40 @@ namespace SashaRX.UnityMeshLab
         internal PrepareLevel Level => Steps.Count == 0 ? PrepareLevel.Unchanged : Steps.Max(s => s.Report.Level);
 
         /// <summary>
-        /// The level the run is logged at: an error that waits for a fix (it is checked again once
-        /// the model is reimported) is a warning yet, so a preview the Fix step cures is no error.
+        /// The level the run is logged at: an error a step of this run is about to cure (a change it
+        /// plans on the same subject for the same check, as the Fix step's clamp of a lightmap UV)
+        /// is a warning yet, so a preview the Fix step cures is no error. An error that only waits
+        /// for a reimport, with nothing planned for it, stays an error: Apply would stop on it.
         /// </summary>
-        internal PrepareLevel LogLevel => Steps.Count == 0 ? PrepareLevel.Unchanged : Steps.Max(s =>
-            s.Deferred != null && s.Report.Level == PrepareLevel.Error ? PrepareLevel.Warning : s.Report.Level);
+        internal PrepareLevel LogLevel
+        {
+            get
+            {
+                if (Steps.Count == 0) return PrepareLevel.Unchanged;
+                var cures = Steps.Where(s => s.Step is IImporterStep)
+                    .SelectMany(s => s.Report.Lines.Where(l => l.level == PrepareLevel.Changed)).ToList();
+                return Steps.Max(s => s.Deferred == null ? s.Report.Level : s.Report.Lines
+                    .Select(l => l.level == PrepareLevel.Error && cures.Any(c => Cures(c, l)) ? PrepareLevel.Warning : l.level)
+                    .DefaultIfEmpty(PrepareLevel.Unchanged).Max());
+            }
+        }
+
+        // The same check on the same thing: the names a subject quotes (a node's path, its last
+        // segment, a mesh's name) share one with the other's.
+        static bool Cures(PrepareLine change, PrepareLine error)
+            => change.check == error.check && SubjectNames(change.subject).Overlaps(SubjectNames(error.subject));
+
+        static HashSet<string> SubjectNames(string subject)
+        {
+            var names = new HashSet<string>(System.StringComparer.Ordinal);
+            var parts = (subject ?? "").Split('\'');
+            for (int i = 1; i < parts.Length; i += 2)
+            {
+                names.Add(parts[i]);
+                names.Add(parts[i].Substring(parts[i].LastIndexOf('/') + 1));
+            }
+            return names;
+        }
 
         internal bool BlocksApply => Steps.Any(s => s.BlocksApply);
 

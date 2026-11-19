@@ -409,8 +409,9 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
             Mesh mesh = null;
+            SkinnedMeshRenderer skinned = null;
             if (node.TryGetComponent(out MeshFilter filter)) mesh = filter.sharedMesh;
-            else if (node.TryGetComponent(out SkinnedMeshRenderer skinned)) mesh = skinned.sharedMesh;
+            else if (node.TryGetComponent(out skinned)) mesh = skinned.sharedMesh;
             if (mesh == null) return;
             var requirements = PrepareRunner.Chain(target).Recipe?.requirements;
             var readable = MeshAccess.Readable(mesh, out bool isCopy);
@@ -422,11 +423,25 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Info($"[{PrepareRunner.Tag}] {line.subject}: nothing of '{line.check}' is left on the mesh to draw; run Preview again");
                 return;
             }
+            if (skinned != null) Pose(shape, skinned);
             shownKey = key; shownNode = node.transform; shownShape = shape;
             shownLabel = $"{line.check}: {line.message}";
             Frame(shownNode, shape);
             SceneView.RepaintAll();
             RequestRepaint?.Invoke();
+        }
+
+        // A skinned mesh is drawn where it is rendered: its vertices in the current pose, not in
+        // the bind pose its shared mesh holds. The bake keeps the vertex order.
+        static void Pose(FindingShape shape, SkinnedMeshRenderer skinned)
+        {
+            var baked = new Mesh { hideFlags = HideFlags.HideAndDontSave };
+            try
+            {
+                skinned.BakeMesh(baked, true);
+                if (baked.vertexCount == shape.positions.Length) shape.positions = baked.vertices;
+            }
+            finally { UnityEngine.Object.DestroyImmediate(baked); }
         }
 
         static void Frame(Transform node, FindingShape shape)
