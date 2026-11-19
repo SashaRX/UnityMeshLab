@@ -891,7 +891,9 @@ namespace SashaRX.UnityMeshLab
                 {
                     var normals = mesh.normals;
                     // An unrenumbered copy compares by index; a renumbered one goes on to the per-corner comparison.
-                    bool unchanged = capture.shadingSelection == null && imported != null && imported.normals.SequenceEqual(normals);
+                    bool unchanged = capture.shadingSelection == null && (imported != null
+                        ? imported.normals.SequenceEqual(normals)
+                        : KeepsImportedShading(mesh, importedAny, tangents: false));
                     if (unchanged) { /* nothing to write */ }
                     else if (capture.fileNormals) { donor.normals = normals; any = true; }
                     else if (imported != null)
@@ -914,7 +916,9 @@ namespace SashaRX.UnityMeshLab
                 if (hasTangents && hasNormals)
                 {
                     var tangents = mesh.tangents;
-                    bool unchanged = donor.normals == null && imported != null && imported.tangents.SequenceEqual(tangents);
+                    bool unchanged = donor.normals == null && (imported != null
+                        ? imported.tangents.SequenceEqual(tangents)
+                        : capture.shadingSelection == null && KeepsImportedShading(mesh, importedAny, tangents: true));
                     if (!unchanged)
                     {
                         donor.tangents = tangents; donor.frameNormals = mesh.normals; any = true;
@@ -952,6 +956,65 @@ namespace SashaRX.UnityMeshLab
                 throw new FbxStructureRefusalException($"'{donor.name}': its normals were removed while the file keeps a tangent frame built on them; save tangents too");
             return any;
         }
+
+        /// <summary>
+        /// Whether a renumbered working mesh only kept normals (or tangents) the import has: each
+        /// of its vertices carries a value some imported vertex at the same position carries. A
+        /// weld for UV work merges the vertices of a hard edge whose UVs meet and keeps one of
+        /// their normals, and a seam split copies one: neither authors a normal, so what is left
+        /// is no edit to write (it would flatten the file's hard edges onto one face's normal).
+        /// False when the import cannot be read, or a vertex has no imported vertex at its place.
+        /// </summary>
+        internal static bool KeepsImportedShading(Mesh mesh, Mesh importedAny, bool tangents)
+        {
+            if (mesh == null || importedAny == null) return false;
+            var attribute = tangents ? VertexAttribute.Tangent : VertexAttribute.Normal;
+            if (!mesh.HasVertexAttribute(attribute) || !importedAny.HasVertexAttribute(attribute)) return false;
+            Mesh readable;
+            bool isCopy;
+            try { readable = MeshAccess.Readable(importedAny, out isCopy); }
+            catch (Exception) { return false; }
+            try
+            {
+                return KeepsImportedShading(mesh.vertices, Shading(mesh, tangents), readable.vertices, Shading(readable, tangents));
+            }
+            finally { if (isCopy) UnityEngine.Object.DestroyImmediate(readable); }
+        }
+
+        static Vector4[] Shading(Mesh mesh, bool tangents)
+            => tangents ? mesh.tangents : mesh.normals.Select(n => new Vector4(n.x, n.y, n.z, 0f)).ToArray();
+
+        /// <summary>Each working value is one an imported vertex at the same position has (a direction within about half a degree, the same handedness).</summary>
+        internal static bool KeepsImportedShading(Vector3[] positions, Vector4[] values, Vector3[] importedPositions, Vector4[] importedValues)
+        {
+            if (positions.Length != values.Length || importedPositions.Length != importedValues.Length || positions.Length == 0) return false;
+            var at = new Dictionary<(int, int, int), List<Vector4>>();
+            for (int i = 0; i < importedPositions.Length; i++)
+            {
+                var key = ShadingKey(importedPositions[i]);
+                if (!at.TryGetValue(key, out var list)) at[key] = list = new List<Vector4>();
+                list.Add(importedValues[i]);
+            }
+            for (int i = 0; i < positions.Length; i++)
+            {
+                if (!at.TryGetValue(ShadingKey(positions[i]), out var candidates)) return false;
+                var value = values[i];
+                bool kept = false;
+                foreach (var candidate in candidates)
+                {
+                    if (Mathf.Abs(candidate.w - value.w) > 1e-3f) continue;
+                    if (((Vector3)candidate - (Vector3)value).sqrMagnitude > 1e-4f) continue;
+                    kept = true;
+                    break;
+                }
+                if (!kept) return false;
+            }
+            return true;
+        }
+
+        // A weld and a split keep a vertex's position as it was: a tenth of a millimetre tells the places apart.
+        static (int, int, int) ShadingKey(Vector3 p)
+            => (Mathf.RoundToInt(p.x * 1e4f), Mathf.RoundToInt(p.y * 1e4f), Mathf.RoundToInt(p.z * 1e4f));
 
         // A channel the import carries and the working mesh dropped is a removal to write.
         // Lightmap UVs Unity generates are not in the file and cannot be removed from it.
