@@ -179,6 +179,24 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Settings_GiveARecipeFromBeforeFixTheStepOnce()
+        {
+            var settings = ScriptableObject.CreateInstance<MeshLabProjectSettings>();
+            owned.Add(settings);
+            var recipe = settings.recipes[0];
+            recipe.fix = false;                              // as a recipe saved before the field loads
+            recipe.fixLightmapClamp = 0f;
+
+            Assert.IsTrue(settings.MigrateRecipes());
+
+            Assert.IsTrue(recipe.fix, "Fix on, as in a new recipe");
+            Assert.AreEqual(FixStep.DefaultMaxClamp, recipe.fixLightmapClamp);
+            recipe.fix = false;
+            Assert.IsFalse(settings.MigrateRecipes(), "once only");
+            Assert.IsFalse(recipe.fix, "a later choice is kept");
+        }
+
+        [Test]
         public void Batch_ReadsItsArguments()
         {
             var options = PrepareBatch.Parse(new[] { "Unity", "-batchmode", "-PREPAREFOLDERS", "Assets/Art; Assets/Props/", "-preparePreview", "-prepareReport", "out.txt" });

@@ -249,7 +249,9 @@ namespace SashaRX.UnityMeshLab
             if (blocked != null)
             {
                 done.AddRange(rest.Except(waited).Select(s => new PrepareStepResult(s, "not applied: " + blocked, new PrepareReport(context.Target.Display))));
-                return NotSaved(new PrepareResult(context.Target, Ordered(steps, done), true), $"the model's file was changed, but {blocked}");
+                // A fix that was not written changed nothing: only the refusal is reported then.
+                string changed = HasChanges(done) ? "the model's file was changed, but " : "";
+                return NotSaved(new PrepareResult(context.Target, Ordered(steps, done), true), changed + blocked);
             }
             done.AddRange(Pass(context, rest.Except(waited).ToList(), true));
             return new PrepareResult(context.Target, Ordered(steps, done), true);
