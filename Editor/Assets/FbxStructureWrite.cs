@@ -636,11 +636,13 @@ namespace SashaRX.UnityMeshLab
             var (quads, ngons) = FbxPolygonChecks.LargePolygons(old);
             int gained = replacement.polygonSizes.Count(size => size == 3) - (old.GetPolygonCount() - quads - ngons);
             if (gained <= 0) return;
-            int lostQuads = Math.Min(quads - replacement.polygonSizes.Count(size => size == 4), gained / 2);
-            int lostNgons = Math.Min(ngons - replacement.polygonSizes.Count(size => size > 4), gained / 3);
-            string lost = FbxPolygonChecks.Triangulated(Math.Max(0, lostQuads), Math.Max(0, lostNgons), 0, 0);
+            // One budget for both: the n-gons take three triangles each, the quads two of what is left.
+            // The faces are not matched one to one, so the count is an upper bound and is worded as one.
+            int lostNgons = Math.Max(0, Math.Min(ngons - replacement.polygonSizes.Count(size => size > 4), gained / 3));
+            int lostQuads = Math.Max(0, Math.Min(quads - replacement.polygonSizes.Count(size => size == 4), (gained - lostNgons * 3) / 2));
+            string lost = FbxPolygonChecks.Triangulated(lostQuads, lostNgons, 0, 0);
             if (lost != null)
-                options.warnings.Add($"'{name}': its geometry is written whole from Unity's mesh, so {lost} of the file became triangles " +
+                options.warnings.Add($"'{name}': its geometry is written whole from Unity's mesh, so up to {lost} of the file became triangles " +
                     "(Unity's import triangulates them; quads stay with Keep Quads on the importer, n-gons never do)");
         }
 
