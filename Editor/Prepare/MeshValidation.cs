@@ -5,6 +5,7 @@
 // reads a readable mesh (the caller supplies a readable copy and destroys it).
 
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -170,14 +171,14 @@ namespace SashaRX.UnityMeshLab
                     if (small[f] && !Degenerate(positions, triangles, f * 3)) ++count;
                 if (count > 0)
                     report.Add(requirements.smallFaces, subject, "Tiny faces",
-                        $"{Plural(count, "face", "faces")} with an area of at most {requirements.maxFaceArea:G3} m²");
+                        $"{Plural(count, "face", "faces")} with an area of at most {Number(requirements.maxFaceArea, "G3")} m²");
             }
             if (requirements.shortEdges != RequirementLevel.Off)
             {
                 var (edges, zero, _) = ShortEdges(positions, triangles, requirements.maxEdgeLength);
                 if (edges > 0)
                     report.Add(requirements.shortEdges, subject, "Short edges",
-                        $"{Plural(edges, "edge", "edges")} at most {requirements.maxEdgeLength:G3} m long ({zero} of zero length)");
+                        $"{Plural(edges, "edge", "edges")} at most {Number(requirements.maxEdgeLength, "G3")} m long ({zero} of zero length)");
             }
         }
 
@@ -288,7 +289,7 @@ namespace SashaRX.UnityMeshLab
             var (outside, min, max) = OutsideUnit(uv, LightmapTolerance);
             if (outside > 0)
                 report.Add(requirements.lightmapInsideUnit, subject, "Lightmap UV",
-                    $"{Plural(outside, "UV1 vertex lies", "UV1 vertices lie")} outside [0,1] (U {min.x:F3}..{max.x:F3}, V {min.y:F3}..{max.y:F3}); they sample other charts' texels");
+                    $"{Plural(outside, "UV1 vertex lies", "UV1 vertices lie")} outside [0,1] (U {Number(min.x, "F3")}..{Number(max.x, "F3")}, V {Number(min.y, "F3")}..{Number(max.y, "F3")}); they sample other charts' texels");
         }
 
         /// <summary>Vertices with a non-finite value in any stream, and the streams that have one.</summary>
@@ -364,5 +365,9 @@ namespace SashaRX.UnityMeshLab
         static bool Finite(Vector4 v) => Finite(v.x) && Finite(v.y) && Finite(v.z) && Finite(v.w);
 
         internal static string Plural(int count, string one, string many) => $"{count} {(count == 1 ? one : many)}";
+
+        // A report reads the same on every machine: a decimal point whatever the system's culture
+        // (a decimal comma next to the commas of a list reads as more values).
+        static string Number(float value, string format) => value.ToString(format, CultureInfo.InvariantCulture);
     }
 }
