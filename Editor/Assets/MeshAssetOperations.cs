@@ -671,12 +671,19 @@ namespace SashaRX.UnityMeshLab
                 SidecarStore.Save(saved);
             }
             bool exported;
+            // The collision is in the file though the save did not finish (an import setting could not be set).
+            bool collisionWrittenOnly = false;
             try
             {
                 if (collisionData != null)
                 {
                     using var plan = FbxStructureWrite.CollisionPlan(collisionData);
-                    try { exported = FbxChannelWrite.Write(sourceFbxPath, Array.Empty<MeshEntry>(), FbxExportIntent.None, outputFbxPathOverride, null, plan); }
+                    try
+                    {
+                        var outcome = FbxChannelWrite.WriteOutcome(sourceFbxPath, Array.Empty<MeshEntry>(), FbxExportIntent.None, outputFbxPathOverride, null, plan);
+                        exported = outcome == FbxWriteOutcome.Written;
+                        collisionWrittenOnly = outcome == FbxWriteOutcome.WrittenUnconfigured;
+                    }
                     catch (Exception ex) when (!(ex is FbxExport.PostCommitException))
                     {
                         UvtLog.Error($"[FBX Export] '{sourceFbxPath}' was not written: {ex.Message}");
@@ -702,7 +709,13 @@ namespace SashaRX.UnityMeshLab
                     FbxExport.RelinkSceneMeshReferences(sourceFbxPath, null, ctx.LodGroup);
                 exported = false;
             }
-            if (!exported) { standaloneRelinks.Clear(); return false; }
+            if (!exported)
+            {
+                // The sidecar holds what the file holds: a file written without an import setting has the collision.
+                if (collisionWrittenOnly) { SaveCollisionSidecar(); RelinkStandalone(); }
+                standaloneRelinks.Clear();
+                return false;
+            }
             ApplySidecarSync(sidecar);
             if (!isVariantExport)
                 foreach (var e in list) SyncSceneEditChannels(e, WorkingMesh(e), intent, "FBX Export");
@@ -1303,7 +1316,7 @@ namespace SashaRX.UnityMeshLab
                 tempRoot.name = prefab.name;
                 FbxExport.PromoteRootMeshToLod0Child(tempRoot);
                 int collisions = PrepareExportHierarchy(tempRoot, sourceFbxPath, entries, tempMeshes, batch);
-                try { WriteHierarchyExport(exportPath, tempRoot, overwriteSource); }
+                try { WriteHierarchyExport(exportPath, tempRoot, overwriteSource, sourceFbxPath); }
                 catch (FbxExport.PostCommitException ex)
                 {
                     // The file is written; the .meta backup restored below covers a failed .meta restore.
@@ -1344,12 +1357,18 @@ namespace SashaRX.UnityMeshLab
                 || path.StartsWith("Packages/", StringComparison.OrdinalIgnoreCase) || path.StartsWith("Packages\\", StringComparison.OrdinalIgnoreCase));
 
         // A source is replaced in one rename once its new file is complete and checked
-        // (FbxExport.WriteAtomic); a new file is written in place.
-        void WriteHierarchyExport(string path, GameObject root, bool overwriteSource)
+        // (FbxExport.WriteAtomic); a new file is written in place. Either way the rebuild is
+        // compared with the source's polygons, to warn of those that became triangles.
+        void WriteHierarchyExport(string path, GameObject root, bool overwriteSource, string sourceFbxPath)
         {
             if (HierarchyWriter != null) HierarchyWriter(path, root);
-            else if (overwriteSource) FbxExport.WriteAtomic(path, root);
-            else FbxExport.Write(path, root);
+            else if (overwriteSource) FbxExport.WriteAtomic(path, root, polygonsOf: sourceFbxPath);
+            else
+            {
+                var before = FbxExport.LargePolygonsOrNull(sourceFbxPath);
+                FbxExport.Write(path, root);
+                FbxExport.WarnOfTriangulation(path, before);
+            }
         }
 
         static bool RestoreHierarchyReadability(ModelImporter importer, string path)

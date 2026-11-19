@@ -428,6 +428,8 @@ namespace SashaRX.UnityMeshLab
             public bool uv1Written;
             /// <summary>Filled by <see cref="Apply"/>: the FBX meshes it wrote whole (generated LODs, replaced geometry).</summary>
             public readonly List<FbxMesh> wholeMeshes = new List<FbxMesh>();
+            /// <summary>Filled by <see cref="Apply"/>: what the save loses of the file, to warn of once it is written (quads and n-gons that become triangles).</summary>
+            public readonly List<string> warnings = new List<string>();
             /// <summary>The FBX file being written; new materials' texture paths are made relative to it.</summary>
             public string fbxPath;
             /// <summary>The FBX the document was loaded from; its own materials are reused as they are.</summary>
@@ -604,7 +606,9 @@ namespace SashaRX.UnityMeshLab
                 FbxStructureEdit.ResetTransform(target.node);
                 if (!FbxStructureEdit.SamePlacement(target.node.GetParent(), target.node, false))
                     throw new FbxStructureRefusalException($"'{target.node.GetName()}' does not sit at the model root's placement after its transform was reset");
-                var replacement = FbxStructureEdit.CreateMesh(scene, target.mesh.GetName(), CollisionData(mesh, target));
+                var placed = CollisionData(mesh, target);
+                NoteTriangulation(options, target.node.GetName(), target.mesh, placed);
+                var replacement = FbxStructureEdit.CreateMesh(scene, target.mesh.GetName(), placed);
                 FbxStructureEdit.ReplaceMesh(target.mesh, replacement);
                 log.Add($"'{target.node.GetName()}': its offset from the model root baked into its mesh; the node sits at the root's placement");
                 changes++;
@@ -613,6 +617,7 @@ namespace SashaRX.UnityMeshLab
             {
                 var r = Ref(name);
                 var data = FbxMeshData.FromTriangles(SourceOf(mesh, r, options), r.fit, r.reverse, r.submeshMaterials);
+                NoteTriangulation(options, name, r.mesh, data);
                 var replacement = FbxStructureEdit.CreateMesh(scene, r.mesh.GetName(), data);
                 int nodes = FbxStructureEdit.ReplaceMesh(r.mesh, replacement);
                 options.wholeMeshes.Add(replacement);
@@ -620,6 +625,25 @@ namespace SashaRX.UnityMeshLab
                 changes++;
             }
             return changes;
+        }
+
+        // A mesh written whole is built from Unity's mesh, which the import triangulated: the quads
+        // and n-gons its FBX mesh had and the new one lacks are triangles from this save on.
+        // Fewer of them with no more triangles than before is faces removed, not triangulated; and
+        // the triangles gained bound how many can have been: a quad makes two, an n-gon three or more.
+        static void NoteTriangulation(Options options, string name, FbxMesh old, FbxMeshData replacement)
+        {
+            var (quads, ngons) = FbxPolygonChecks.LargePolygons(old);
+            int gained = replacement.polygonSizes.Count(size => size == 3) - (old.GetPolygonCount() - quads - ngons);
+            if (gained <= 0) return;
+            // One budget for both: the n-gons take three triangles each, the quads two of what is left.
+            // The faces are not matched one to one, so the count is an upper bound and is worded as one.
+            int lostNgons = Math.Max(0, Math.Min(ngons - replacement.polygonSizes.Count(size => size > 4), gained / 3));
+            int lostQuads = Math.Max(0, Math.Min(quads - replacement.polygonSizes.Count(size => size == 4), (gained - lostNgons * 3) / 2));
+            string lost = FbxPolygonChecks.Triangulated(lostQuads, lostNgons, 0, 0);
+            if (lost != null)
+                options.warnings.Add($"'{name}': its geometry is written whole from Unity's mesh, so up to {lost} of the file became triangles " +
+                    "(Unity's import triangulates them; quads stay with Keep Quads on the importer, n-gons never do)");
         }
 
         // ── Materials ──
