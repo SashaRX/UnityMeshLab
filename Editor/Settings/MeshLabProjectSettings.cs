@@ -52,7 +52,7 @@ namespace SashaRX.UnityMeshLab
         // ── Developer UI ──
         // When true, the UV2 Transfer tool exposes diagnostic / benchmarking
         // sections (Parameter Sweep, Log Filters, UV0 Analysis & Fix, the
-        // SymSplit "Apply to target LODs (advanced)" toggle, Skip SymSplit
+        // SymSplit "Split the other LODs too (debug)" toggle, Skip SymSplit
         // diagnostic). Off by default — keeps the day-to-day UI minimal for
         // production users. Toggleable per project from Project Settings ▸
         // Mesh Lab ▸ Developer.

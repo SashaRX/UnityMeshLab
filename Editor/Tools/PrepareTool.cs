@@ -61,7 +61,11 @@ namespace SashaRX.UnityMeshLab
         public void OnDrawStatusBar() { /* Results are shown on the Result page. */ }
         public void OnDrawCanvasOverlay(UvCanvasView canvas, float cx, float cy, float sz) { /* No mesh canvas. */ }
         public IEnumerable<UvCanvasView.FillModeEntry> GetFillModes() => Array.Empty<UvCanvasView.FillModeEntry>();
-        public void OnSceneGUI(SceneView sv) { /* The steps edit through the runner, not the scene view. */ }
+        // The steps edit through the runner; the scene view only shows a finding asked for (Show in Scene).
+        public void OnSceneGUI(SceneView sv)
+        {
+            if (Event.current.type == EventType.Repaint) DrawFinding();
+        }
 
         // The tab follows the selection and the recipes; their events are static.
         static void Listen(Action handler, bool on)
@@ -256,6 +260,7 @@ namespace SashaRX.UnityMeshLab
             finally { EditorUtility.ClearProgressBar(); }
             results = runs;
             openRows.Clear();
+            HideFinding();   // the run may have changed the mesh it was drawn from
             resultTitle = $"{(apply ? "Apply" : "Preview")} at {DateTime.Now:HH:mm:ss}";
             page = Page.Result;
             ReadSelection();
@@ -319,36 +324,208 @@ namespace SashaRX.UnityMeshLab
         }
 
         // A warning or an error says, under its message, why it matters and how it is fixed
-        // (PrepareHelp), with a button to the tab that shows the faces, edges or UVs in question.
-        static void DrawHint(PrepareLine line, PrepareTarget target)
+        // (PrepareHelp); a mesh finding has a button that draws its faces, edges or vertices on
+        // the model in the Scene view and frames them (FindingGeometry).
+        void DrawHint(PrepareLine line, PrepareTarget target)
         {
-            if (line.level < PrepareLevel.Warning || !PrepareHelp.TryGet(line.check, out var hint)) return;
+            if (line.level < PrepareLevel.Warning) return;
+            bool hasHint = PrepareHelp.TryGet(line.check, out var hint);
+            bool draws = FindingGeometry.Draws(line.check);
+            if (!hasHint && !draws) return;
             using (new EditorGUILayout.HorizontalScope())
             {
                 GUILayout.Space(LineIndent + LevelWidth + 4);
-                GUILayout.Label(hint.Why, EditorStyles.wordWrappedMiniLabel);
-                if (hint.ToolId != null && GUILayout.Button(new GUIContent("Show ▸ " + hint.ToolName,
-                        $"Select the node and open {hint.Where}, where it can be seen."), EditorStyles.miniButton, GUILayout.ExpandWidth(false)))
-                    Later(() => ShowIn(hint, target, line.subject));
-            }
-            if (hint.View == null) return;
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                GUILayout.Space(LineIndent + LevelWidth + 4);
-                GUILayout.Label("See it in " + hint.Where, EditorStyles.miniLabel);
+                GUILayout.Label(hasHint ? hint.Why : "", EditorStyles.wordWrappedMiniLabel);
+                if (line.check == LightmapCheck && GUILayout.Button(new GUIContent("Fix: clamp UV",
+                        "Clamp the model's lightmap UVs that lie outside [0,1] onto the unit square's edge, in its FBX, now, and preview again. "
+                        + "However far out they lie: far out, their faces are squashed on the edge and a repack is the better fix. "
+                        + "The file's change has no Undo."), EditorStyles.miniButton, GUILayout.ExpandWidth(false)))
+                    Later(() => ClampLightmap(target));
+                if (!draws) return;
+                // A subject is a path within its target: two instances of one model have the same.
+                string key = TargetKey(target) + "|" + line.subject + "|" + line.check;
+                bool shown = shownKey == key;
+                if (GUILayout.Button(new GUIContent(shown ? "Hide" : "Show in Scene",
+                        "Draw the faces, edges or vertices this finding is about on the model, and frame them in the Scene view."),
+                        EditorStyles.miniButton, GUILayout.ExpandWidth(false)))
+                {
+                    if (shown) Later(HideFinding);
+                    else Later(() => ShowFinding(key, target, line));
+                }
             }
         }
 
-        // Selects the node the finding is about (the target itself when it names none) and opens the tab.
-        static void ShowIn(PrepareHint hint, PrepareTarget target, string subject)
+        const string LightmapCheck = "Lightmap UV";
+
+        // The Fix step's clamp for this one target, asked for by hand: whatever the recipe's limit
+        // and whether or not the recipe has the step on. The preview follows, on the fixed model.
+        void ClampLightmap(PrepareTarget target)
         {
-            var node = SubjectNode(target, subject);
-            if (node != null)
+            var step = new FixStep(float.MaxValue);
+            var context = new PrepareContext(target, target.SceneObject, target.Kind == PrepareTargetKind.SceneObject);
+            string skipped = step.SkipReason(context);
+            if (skipped != null)
             {
-                Selection.activeObject = node;
-                EditorGUIUtility.PingObject(node);
+                UvtLog.Warn($"[{PrepareRunner.Tag}] {target.Display}: the lightmap UVs were not clamped: {skipped}");
+                return;
             }
-            UvToolHub.OpenWithTool(hint.ToolId);
+            var report = new PrepareReport(target.Display);
+            try
+            {
+                EditorUtility.DisplayProgressBar("Prepare: Fix", "Clamping lightmap UVs into [0,1]…", .5f);
+                step.Apply(context, report);
+            }
+            finally { EditorUtility.ClearProgressBar(); }
+            report.Log(FixStep.StepName);
+            PreviewAgain();
+        }
+
+        // The results' own targets previewed again, whatever is selected now: the row a fix was
+        // asked from shows the fixed model. A scene object deleted since keeps its last result.
+        void PreviewAgain()
+        {
+            results = results.Select(result =>
+            {
+                var target = result.Target;
+                if (target.Kind == PrepareTargetKind.SceneObject && target.SceneObject == null) return result;
+                var preview = PrepareRunner.Preview(target, PrepareRunner.Chain(target).Without(offThisRun, OffThisRun));
+                preview.Log();
+                return preview;
+            }).ToList();
+            HideFinding();
+            resultTitle = $"Preview at {DateTime.Now:HH:mm:ss}";
+            RequestRepaint?.Invoke();
+        }
+
+        static string TargetKey(PrepareTarget target)
+            => target.SceneObject != null ? "scene:" + target.SceneObject.GetInstanceID() : "asset:" + target.AssetPath;
+
+        // ── A finding drawn on the model ──
+
+        string shownKey;
+        Transform shownNode;
+        SkinnedMeshRenderer shownSkin;   // its pose is read again at each repaint: bones and animation previews move it
+        FindingShape shownShape;
+        string shownLabel;
+        const int MaxDrawn = 4000;
+        static readonly Color FindingFill = new Color(1f, .15f, .15f, .45f), FindingLine = new Color(1f, .9f, .1f, 1f);
+
+        void HideFinding()
+        {
+            shownKey = null; shownNode = null; shownShape = null; shownLabel = null; shownSkin = null;
+            SceneView.RepaintAll();
+            RequestRepaint?.Invoke();
+        }
+
+        // Selects the node the finding is about and, when it is in a scene, draws the finding on it.
+        void ShowFinding(string key, PrepareTarget target, PrepareLine line)
+        {
+            HideFinding();
+            var node = SubjectNode(target, line.subject);
+            if (node == null) return;
+            Selection.activeObject = node;
+            EditorGUIUtility.PingObject(node);
+            if (!node.scene.IsValid())
+            {
+                UvtLog.Info($"[{PrepareRunner.Tag}] {line.subject}: the finding is drawn on a scene object; place the model in a scene and prepare that object to see it");
+                return;
+            }
+            var mesh = SubjectMesh(node, line.subject, out var skinned);
+            if (mesh == null) return;
+            var requirements = PrepareRunner.Chain(target).Recipe?.requirements;
+            var readable = MeshAccess.Readable(mesh, out bool isCopy);
+            FindingShape shape;
+            try { shape = FindingGeometry.Build(line.check, readable, requirements); }
+            finally { if (isCopy) UnityEngine.Object.DestroyImmediate(readable); }
+            if (shape == null || shape.IsEmpty)
+            {
+                UvtLog.Info($"[{PrepareRunner.Tag}] {line.subject}: nothing of '{line.check}' is left on the mesh to draw; run Preview again");
+                return;
+            }
+            if (skinned != null) Pose(shape, skinned);
+            shownKey = key; shownNode = node.transform; shownShape = shape; shownSkin = skinned;
+            shownLabel = $"{line.check}: {line.message}";
+            Frame(shownNode, shape);
+            SceneView.RepaintAll();
+            RequestRepaint?.Invoke();
+        }
+
+        // The mesh a finding is about: the node's render mesh or a collider's (a collision mesh is
+        // checked too), the one the subject names when the node carries several.
+        static Mesh SubjectMesh(GameObject node, string subject, out SkinnedMeshRenderer skinned)
+        {
+            skinned = null;
+            var meshes = new List<Mesh>();
+            if (node.TryGetComponent(out MeshFilter filter) && filter.sharedMesh != null) meshes.Add(filter.sharedMesh);
+            if (node.TryGetComponent(out SkinnedMeshRenderer renderer) && renderer.sharedMesh != null) meshes.Add(renderer.sharedMesh);
+            meshes.AddRange(node.GetComponents<MeshCollider>().Select(c => c.sharedMesh).Where(m => m != null));
+            if (meshes.Count == 0) return null;
+            // 'path' (mesh 'Name'): the second quoted name; without it the mesh is named as its node.
+            var quoted = (subject ?? "").Split('\'');
+            string name = quoted.Length > 3 ? quoted[3] : node.name;
+            var mesh = meshes.FirstOrDefault(m => m.name == name) ?? meshes[0];
+            if (renderer != null && renderer.sharedMesh == mesh) skinned = renderer;
+            return mesh;
+        }
+
+        // A skinned mesh is drawn where it is rendered: its vertices in the current pose, not in
+        // the bind pose its shared mesh holds. The bake keeps the vertex order.
+        static void Pose(FindingShape shape, SkinnedMeshRenderer skinned)
+        {
+            var baked = new Mesh { hideFlags = HideFlags.HideAndDontSave };
+            try
+            {
+                skinned.BakeMesh(baked, true);
+                if (baked.vertexCount == shape.positions.Length) shape.positions = baked.vertices;
+            }
+            finally { UnityEngine.Object.DestroyImmediate(baked); }
+        }
+
+        static void Frame(Transform node, FindingShape shape)
+        {
+            var view = SceneView.lastActiveSceneView;
+            if (view == null) return;
+            bool any = false;
+            var bounds = new Bounds();
+            foreach (int i in shape.Vertices())
+            {
+                var p = node.TransformPoint(shape.positions[i]);
+                if (any) bounds.Encapsulate(p);
+                else { bounds = new Bounds(p, Vector3.zero); any = true; }
+            }
+            if (!any) return;
+            // A single vertex or a sliver frames to nothing: keep some of the model around it.
+            float room = Mathf.Max(bounds.size.magnitude, .25f);
+            bounds.Expand(room);
+            view.Frame(bounds, false);
+        }
+
+        void DrawFinding()
+        {
+            if (shownShape == null) return;
+            if (shownNode == null) { HideFinding(); return; }
+            var shape = shownShape;
+            if (shownSkin != null) Pose(shape, shownSkin);
+            var zTest = Handles.zTest;
+            var color = Handles.color;
+            Handles.zTest = UnityEngine.Rendering.CompareFunction.Always;
+            Vector3 P(int i) => shownNode.TransformPoint(shape.positions[i]);
+            Handles.color = FindingFill;
+            for (int t = 0; t + 2 < shape.triangles.Count && t < MaxDrawn * 3; t += 3)
+                Handles.DrawAAConvexPolygon(P(shape.triangles[t]), P(shape.triangles[t + 1]), P(shape.triangles[t + 2]));
+            Handles.color = FindingLine;
+            for (int t = 0; t + 2 < shape.triangles.Count && t < MaxDrawn * 3; t += 3)
+                Handles.DrawAAPolyLine(2f, P(shape.triangles[t]), P(shape.triangles[t + 1]), P(shape.triangles[t + 2]), P(shape.triangles[t]));
+            for (int e = 0; e + 1 < shape.edges.Count && e < MaxDrawn * 2; e += 2)
+                Handles.DrawAAPolyLine(4f, P(shape.edges[e]), P(shape.edges[e + 1]));
+            for (int k = 0; k < shape.points.Count && k < MaxDrawn; ++k)
+            {
+                var p = P(shape.points[k]);
+                Handles.DotHandleCap(0, p, Quaternion.identity, HandleUtility.GetHandleSize(p) * .04f, EventType.Repaint);
+            }
+            Handles.Label(shownNode.position, shownLabel, EditorStyles.whiteBoldLabel);
+            Handles.color = color;
+            Handles.zTest = zTest;
         }
 
         static GameObject SubjectNode(PrepareTarget target, string subject)

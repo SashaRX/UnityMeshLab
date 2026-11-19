@@ -699,11 +699,12 @@ namespace SashaRX.UnityMeshLab
         {
             EditorGUI.BeginChangeCheck();
             bool share = EditorGUILayout.ToggleLeft(
-                new GUIContent("LODs share the LOD0 lightmap",
-                    "The LODs read LOD0's lightmap (one atlas and scale/offset for the LODGroup, as in Bakery). "
+                new GUIContent("One lightmap for all LODs (LOD0's)",
+                    "On: the model is baked once, for LOD0, and every other LOD reads that same lightmap, so its UV2 must lie over "
+                    + "LOD0's (one atlas and scale/offset for the LODGroup, as Bakery's shared LOD UVs). Off: each LOD is baked into a lightmap of its own. "
                     + "A target shell collapsed to a point or a line (a rejected shell stays at 0,0) would read one texel; "
-                    + "its faces take the UV2 of the LOD0 surface under them instead, overlapping other faces there. "
-                    + "Reverse UV: an island of a coarser LOD that continues on no LOD0 face does the same and takes no atlas space. "
+                    + "its faces take the UV2 of the source LOD's surface under them instead (LOD0 unless Source LOD is set to another), overlapping other faces there. "
+                    + "Reverse UV: an island of a coarser LOD that continues on no LOD0 face takes the UV2 of the LOD0 surface under it, and no atlas space. "
                     + "Leave off when each LOD bakes into a lightmap of its own. Saved in the sidecar."),
                 ctx.LodsShareLod0Lightmap);
             if (!EditorGUI.EndChangeCheck()) return;
@@ -735,8 +736,9 @@ namespace SashaRX.UnityMeshLab
             if (DebugUi.Enabled)
             {
                 splitTargetsInSymmetryStep = EditorGUILayout.ToggleLeft(
-                    new GUIContent("Apply to target LODs (advanced)",
-                        "Run SymSplit on every included LOD instead of only the source. "
+                    new GUIContent("Split the other LODs too (debug)",
+                        "Off: only the source LOD's mirrored shells are split; the other LODs take their UV2 from it in Transfer. "
+                        + "On: the split is also run on every included LOD's own mesh. "
                         + "Coordinated across LODs so each surface keeps its identity."),
                     splitTargetsInSymmetryStep);
             }

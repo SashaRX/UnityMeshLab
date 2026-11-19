@@ -2034,6 +2034,35 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void KeepsImportedShading_TellsAWeldsLeftoverNormalFromAnEditedOne()
+        {
+            // A hard edge: two imported vertices at each of two positions, facing -y and -x.
+            var importedPositions = new[] { Vector3.zero, Vector3.zero, Vector3.up, Vector3.up };
+            var importedNormals = new[] { V(Vector3.down), V(Vector3.left), V(Vector3.down), V(Vector3.left) };
+            var welded = new[] { Vector3.zero, Vector3.up };
+
+            Assert.IsTrue(FbxChannelWrite.KeepsImportedShading(welded, new[] { V(Vector3.left), V(Vector3.left) }, importedPositions, importedNormals),
+                "the weld kept one side's normal for both faces: no edit to write");
+            var smoothed = V((Vector3.down + Vector3.left).normalized);
+            Assert.IsFalse(FbxChannelWrite.KeepsImportedShading(welded, new[] { smoothed, smoothed }, importedPositions, importedNormals),
+                "a normal the import has nowhere at that position is an edit");
+            Assert.IsFalse(FbxChannelWrite.KeepsImportedShading(new[] { Vector3.right }, new[] { V(Vector3.left) }, importedPositions, importedNormals),
+                "no imported vertex there");
+            // Two imported vertices a hair apart share a cell of the lookup: a normal is kept only from the vertex's own place.
+            var near = new[] { Vector3.zero, new Vector3(.00004f, 0, 0) };
+            var nearNormals = new[] { V(Vector3.up), V(Vector3.right) };
+            Assert.IsFalse(FbxChannelWrite.KeepsImportedShading(new[] { Vector3.zero }, new[] { V(Vector3.right) }, near, nearNormals),
+                "the neighbour's normal on this vertex is an edit");
+            Assert.IsTrue(FbxChannelWrite.KeepsImportedShading(new[] { Vector3.zero }, new[] { V(Vector3.up) }, near, nearNormals));
+            // Tangents: the same direction with the other handedness is another frame.
+            var tangent = new Vector4(1, 0, 0, 1);
+            Assert.IsFalse(FbxChannelWrite.KeepsImportedShading(new[] { Vector3.zero }, new[] { new Vector4(1, 0, 0, -1) }, new[] { Vector3.zero }, new[] { tangent }));
+            Assert.IsTrue(FbxChannelWrite.KeepsImportedShading(new[] { Vector3.zero }, new[] { tangent }, new[] { Vector3.zero }, new[] { tangent }));
+        }
+
+        static Vector4 V(Vector3 n) => new Vector4(n.x, n.y, n.z, 0f);
+
+        [Test]
         public void WriteNormals_NewElementOnAnUnsmoothedMeshIsPerControlPoint()
         {
             string source = WriteSource(true);

@@ -49,35 +49,43 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>Edges, by vertex position, that more than two faces share. Faces with a repeated position are left out.</summary>
         internal static int NonManifoldEdges(Vector3[] positions, int[] triangles)
+            => NonManifoldEdgeList(positions, triangles).Count;
+
+        /// <summary>The edges <see cref="NonManifoldEdges"/> counts, each as the two vertices of one of its faces.</summary>
+        internal static List<(int a, int b)> NonManifoldEdgeList(Vector3[] positions, int[] triangles)
         {
             var slots = MeshGeometry.WeldPositions(positions, out _);
             var faces = new Dictionary<long, int>();
+            var first = new Dictionary<long, (int a, int b)>();
             for (int t = 0; t + 2 < triangles.Length; t += 3)
             {
                 int i0 = triangles[t], i1 = triangles[t + 1], i2 = triangles[t + 2];
                 if (!InRange(i0, positions) || !InRange(i1, positions) || !InRange(i2, positions)) continue;
                 int a = slots[i0], b = slots[i1], c = slots[i2];
                 if (a == b || b == c || a == c) continue;
-                Count(faces, a, b); Count(faces, b, c); Count(faces, c, a);
+                Count(faces, first, a, b, i0, i1); Count(faces, first, b, c, i1, i2); Count(faces, first, c, a, i2, i0);
             }
-            return faces.Values.Count(n => n > 2);
+            return faces.Where(kv => kv.Value > 2).Select(kv => first[kv.Key]).ToList();
         }
 
         /// <summary>Faces with area whose three vertex normals all point against the winding's normal.</summary>
         internal static int FlippedFaces(Vector3[] positions, Vector3[] normals, int[] triangles)
+            => FlippedFaceMask(positions, normals, triangles).Count(flipped => flipped);
+
+        /// <summary>The faces (in triangle order) <see cref="FlippedFaces"/> counts; none without normals.</summary>
+        internal static bool[] FlippedFaceMask(Vector3[] positions, Vector3[] normals, int[] triangles)
         {
-            if (normals == null || normals.Length != positions.Length) return 0;
-            int flipped = 0;
-            for (int t = 0; t + 2 < triangles.Length; t += 3)
+            var mask = new bool[triangles.Length / 3];
+            if (normals == null || normals.Length != positions.Length) return mask;
+            for (int f = 0; f < mask.Length; ++f)
             {
-                int i0 = triangles[t], i1 = triangles[t + 1], i2 = triangles[t + 2];
+                int i0 = triangles[f * 3], i1 = triangles[f * 3 + 1], i2 = triangles[f * 3 + 2];
                 if (!InRange(i0, positions) || !InRange(i1, positions) || !InRange(i2, positions)) continue;
                 Vector3 face = Vector3.Cross(positions[i1] - positions[i0], positions[i2] - positions[i0]);
                 if (!(face.sqrMagnitude > 0f)) continue;
-                if (Vector3.Dot(face, normals[i0]) < 0f && Vector3.Dot(face, normals[i1]) < 0f && Vector3.Dot(face, normals[i2]) < 0f)
-                    ++flipped;
+                mask[f] = Vector3.Dot(face, normals[i0]) < 0f && Vector3.Dot(face, normals[i1]) < 0f && Vector3.Dot(face, normals[i2]) < 0f;
             }
-            return flipped;
+            return mask;
         }
 
         /// <summary>Vertices no face uses.</summary>
@@ -337,11 +345,13 @@ namespace SashaRX.UnityMeshLab
             return all.ToArray();
         }
 
-        static void Count(Dictionary<long, int> faces, int a, int b)
+        // One more face on the edge of slots a, b; its first face's own vertices are kept to draw it by.
+        static void Count(Dictionary<long, int> faces, Dictionary<long, (int a, int b)> first, int a, int b, int va, int vb)
         {
             long key = a < b ? ((long)a << 32) | (uint)b : ((long)b << 32) | (uint)a;
             faces.TryGetValue(key, out int n);
             faces[key] = n + 1;
+            if (n == 0) first[key] = (va, vb);
         }
 
         static bool InRange(int index, Vector3[] positions) => index >= 0 && index < positions.Length;

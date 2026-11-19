@@ -84,6 +84,41 @@ namespace SashaRX.UnityMeshLab
 
         internal PrepareLevel Level => Steps.Count == 0 ? PrepareLevel.Unchanged : Steps.Max(s => s.Report.Level);
 
+        /// <summary>
+        /// The level the run is logged at: an error a step of this run is about to cure (a change it
+        /// plans on the same subject for the same check, as the Fix step's clamp of a lightmap UV)
+        /// is a warning yet, so a preview the Fix step cures is no error. An error that only waits
+        /// for a reimport, with nothing planned for it, stays an error: Apply would stop on it.
+        /// </summary>
+        internal PrepareLevel LogLevel
+        {
+            get
+            {
+                if (Steps.Count == 0) return PrepareLevel.Unchanged;
+                var cures = Steps.Where(s => s.Step is IImporterStep)
+                    .SelectMany(s => s.Report.Lines.Where(l => l.level == PrepareLevel.Changed)).ToList();
+                return Steps.Max(s => s.Deferred == null ? s.Report.Level : s.Report.Lines
+                    .Select(l => l.level == PrepareLevel.Error && cures.Any(c => Cures(c, l)) ? PrepareLevel.Warning : l.level)
+                    .DefaultIfEmpty(PrepareLevel.Unchanged).Max());
+            }
+        }
+
+        // The same check on the same mesh.
+        static bool Cures(PrepareLine change, PrepareLine error)
+        {
+            string mesh = SubjectMesh(change.subject);
+            return change.check == error.check && mesh != null && mesh == SubjectMesh(error.subject);
+        }
+
+        // The mesh a subject is about: the one it names ('Other/Seat' (mesh 'Back') → Back), else
+        // the one named as its node ('Other/Seat' → Seat); null without a quoted name.
+        static string SubjectMesh(string subject)
+        {
+            var parts = (subject ?? "").Split('\'');
+            if (parts.Length > 3) return parts[3];
+            return parts.Length > 1 ? parts[1].Substring(parts[1].LastIndexOf('/') + 1) : null;
+        }
+
         internal bool BlocksApply => Steps.Any(s => s.BlocksApply);
 
         /// <summary>Whether any step reports a change (made, or to make in a preview).</summary>
@@ -110,12 +145,12 @@ namespace SashaRX.UnityMeshLab
             return Applied ? "applied" : "preview";
         }
 
-        /// <summary>The result at its level: errors as errors, warnings as warnings, the rest as info.</summary>
+        /// <summary>The result at its <see cref="LogLevel"/>: errors as errors, warnings as warnings, the rest as info.</summary>
         internal void Log()
         {
             string message = $"[{PrepareRunner.Tag}] {this}";
-            if (Level == PrepareLevel.Error) UvtLog.Error(message);
-            else if (Level == PrepareLevel.Warning) UvtLog.Warn(message);
+            if (LogLevel == PrepareLevel.Error) UvtLog.Error(message);
+            else if (LogLevel == PrepareLevel.Warning) UvtLog.Warn(message);
             else UvtLog.Info(message);
         }
     }
