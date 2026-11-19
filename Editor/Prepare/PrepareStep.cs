@@ -38,14 +38,14 @@ namespace SashaRX.UnityMeshLab
     }
 
     /// <summary>
-    /// A step that changes a model asset's importer: it applies before the model's prefab
-    /// variant is opened, so the steps after it see the reimported model.
+    /// A step that changes a model asset itself, its importer or its file: it applies before the
+    /// model's prefab variant is opened, so the steps after it see the reimported model.
     /// </summary>
     internal interface IImporterStep : IPrepareStep { }
 
     /// <summary>
-    /// A step that only checks the target and changes nothing. On a model whose importer an
-    /// importer step changes first, its plan's errors wait: it checks again once the model is
+    /// A step that only checks the target and changes nothing. On a model an importer step
+    /// changes first, its plan's errors wait: it checks again once the model is
     /// reimported, and an error then stops the steps after it.
     /// </summary>
     internal interface ICheckStep : IPrepareStep { }

@@ -1,12 +1,12 @@
 // PrepareRecipe.cs — which prepare steps a target takes, and with what settings. A recipe
 // (Project Settings ▸ Mesh Lab ▸ Prepare: Recipes) names the targets it is for by a name
-// pattern and a folder pattern, and turns each step of the chain (Validate → Preset →
+// pattern and a folder pattern, and turns each step of the chain (Validate → Fix → Preset →
 // Materials → Colliders → Prefab) on or off with the step's settings, Validate's being the
 // requirements an error of which blocks Apply. A target takes the first recipe of the list
 // that matches it: by its own name and folder, or, for a prefab or a scene object made from a
 // model, by the model's. The default list holds one recipe, for SM_ models.
 //
-// PrepareChain is a target's chain: the recipe it matched and why, and the five steps, a step
+// PrepareChain is a target's chain: the recipe it matched and why, and the six steps, a step
 // the recipe turns off (or every step, when no recipe matches) skipped with the reason, so the
 // report says why each step did not act.
 
@@ -48,6 +48,11 @@ namespace SashaRX.UnityMeshLab
         /// <summary>What the Validate step holds the model to, each check Off, Warning or Error.</summary>
         public ModelRequirements requirements = new ModelRequirements();
 
+        public bool fix = true;
+
+        /// <summary>The farthest outside [0,1] the Fix step clamps a lightmap UV from, in UV units; farther is left for a repack.</summary>
+        public float fixLightmapClamp = FixStep.DefaultMaxClamp;
+
         public bool preset = true;
 
         /// <summary>The model importer preset the Preset step applies; none skips the step.</summary>
@@ -78,6 +83,7 @@ namespace SashaRX.UnityMeshLab
             return new List<IPrepareStep>
             {
                 validate ? new ValidateStep(requirements) : (IPrepareStep)new SkippedStep(new ValidateStep(), off),
+                fix ? new FixStep(fixLightmapClamp) : (IPrepareStep)new SkippedStep(new FixStep(), off),
                 preset ? new PresetStep(importerPreset, presetLodScreenPercentages) : (IPrepareStep)new SkippedStep(new PresetStep(null), off),
                 materials ? new MaterialStep() : (IPrepareStep)new SkippedStep(new MaterialStep(), off),
                 colliders ? Colliders() : (IPrepareStep)new SkippedStep(new ColliderStep(), off),
