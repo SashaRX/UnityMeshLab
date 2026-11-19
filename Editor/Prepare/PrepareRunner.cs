@@ -84,6 +84,13 @@ namespace SashaRX.UnityMeshLab
 
         internal PrepareLevel Level => Steps.Count == 0 ? PrepareLevel.Unchanged : Steps.Max(s => s.Report.Level);
 
+        /// <summary>
+        /// The level the run is logged at: an error that waits for a fix (it is checked again once
+        /// the model is reimported) is a warning yet, so a preview the Fix step cures is no error.
+        /// </summary>
+        internal PrepareLevel LogLevel => Steps.Count == 0 ? PrepareLevel.Unchanged : Steps.Max(s =>
+            s.Deferred != null && s.Report.Level == PrepareLevel.Error ? PrepareLevel.Warning : s.Report.Level);
+
         internal bool BlocksApply => Steps.Any(s => s.BlocksApply);
 
         /// <summary>Whether any step reports a change (made, or to make in a preview).</summary>
@@ -110,12 +117,12 @@ namespace SashaRX.UnityMeshLab
             return Applied ? "applied" : "preview";
         }
 
-        /// <summary>The result at its level: errors as errors, warnings as warnings, the rest as info.</summary>
+        /// <summary>The result at its <see cref="LogLevel"/>: errors as errors, warnings as warnings, the rest as info.</summary>
         internal void Log()
         {
             string message = $"[{PrepareRunner.Tag}] {this}";
-            if (Level == PrepareLevel.Error) UvtLog.Error(message);
-            else if (Level == PrepareLevel.Warning) UvtLog.Warn(message);
+            if (LogLevel == PrepareLevel.Error) UvtLog.Error(message);
+            else if (LogLevel == PrepareLevel.Warning) UvtLog.Warn(message);
             else UvtLog.Info(message);
         }
     }

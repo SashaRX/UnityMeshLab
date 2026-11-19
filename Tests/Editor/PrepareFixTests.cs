@@ -91,19 +91,57 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        public void Help_ExplainsEveryMeshFindingAndNamesWhereItIsSeen()
+        public void Help_ExplainsEveryMeshFindingAndItsGeometryIsDrawn()
         {
             foreach (string check in new[] { "Lightmap UV", "Degenerate faces", "Tiny faces", "Short edges", "Flipped normals", "Non-manifold edges" })
             {
                 Assert.IsTrue(PrepareHelp.TryGet(check, out var hint), check);
                 Assert.IsNotEmpty(hint.Why, check);
-                StringAssert.StartsWith("Prefab Builder ▸ Scene Preview", hint.Where, check);
+                Assert.IsTrue(FindingGeometry.Draws(check), check);
             }
-            Assert.IsTrue(PrepareHelp.TryGet("Units", out var units));
-            Assert.IsNull(units.Where, "nothing to look at: the file's units");
+            Assert.IsTrue(PrepareHelp.TryGet("Units", out _));
+            Assert.IsFalse(FindingGeometry.Draws("Units"), "nothing to look at: the file's units");
             Assert.IsFalse(PrepareHelp.TryGet("Collider", out _), "a step's own lines need no help");
             Assert.AreEqual("Seat_LOD0", PrepareHelp.SubjectPath("'Seat_LOD0' (mesh 'Seat')"));
             Assert.IsNull(PrepareHelp.SubjectPath("Assets/Bench.fbx"));
+        }
+
+        [Test]
+        public void FindingGeometry_GivesTheFacesAndVerticesAFindingIsAbout()
+        {
+            // A quad towards +z: its second face's normals flipped, its first vertex's lightmap UV outside.
+            var mesh = new Mesh
+            {
+                vertices = new[] { Vector3.zero, Vector3.right, new Vector3(1, 1), Vector3.up, new Vector3(5, 5) },
+                triangles = new[] { 0, 1, 2, 0, 2, 3 },
+                normals = new[] { Vector3.forward, Vector3.forward, Vector3.forward, Vector3.forward, Vector3.forward },
+                uv2 = new[] { new Vector2(-.05f, 0), Vector2.right, Vector2.one, Vector2.up, Vector2.zero },
+            };
+            owned.Add(mesh);
+
+            Assert.IsTrue(FindingGeometry.Build("Flipped normals", mesh, null).IsEmpty, "no face is flipped");
+            CollectionAssert.AreEqual(new[] { 4 }, FindingGeometry.Build("Unused vertices", mesh, null).points);
+            var outside = FindingGeometry.Build("Lightmap UV", mesh, null);
+            CollectionAssert.AreEqual(new[] { 0 }, outside.points, "the vertex outside [0,1]");
+            Assert.AreEqual(6, outside.triangles.Count, "both faces are on it");
+
+            mesh.normals = new[] { Vector3.back, Vector3.forward, Vector3.back, Vector3.back, Vector3.forward };
+            CollectionAssert.AreEqual(new[] { 0, 2, 3 }, FindingGeometry.Build("Flipped normals", mesh, null).triangles, "the face all of whose normals point back");
+            Assert.IsNull(FindingGeometry.Build("Units", mesh, null));
+        }
+
+        [Test]
+        public void Preview_WhoseErrorsAFixCuresIsNotLoggedAsAnError()
+        {
+            var model = new Model();
+            var target = PrepareTarget.ForSceneObject(Root("Bench"));
+
+            var cured = PrepareRunner.Preview(target, new IPrepareStep[] { new Check(model), new FileFix(model) });
+            var left = PrepareRunner.Preview(target, new IPrepareStep[] { new Check(model) });
+
+            Assert.AreEqual(PrepareLevel.Error, cured.Level, "the finding is still an error");
+            Assert.AreEqual(PrepareLevel.Warning, cured.LogLevel, "but it waits for the fix");
+            Assert.AreEqual(PrepareLevel.Error, left.LogLevel, "no fix: an error");
         }
 
         [Test]

@@ -1,88 +1,53 @@
-// PrepareHelp.cs — what a finding means and where it can be seen: for each check of a prepare
-// report, one sentence on why it matters and how it is fixed, and the Mesh Lab tab (with the
-// view to pick in it) that shows the faces, edges or UVs in question. The Prepare tab draws it
-// under a warning or an error; a check without an entry has nothing to add to its message.
+// PrepareHelp.cs — what a finding means: for each check of a prepare report, why it matters and
+// how it is fixed. The Prepare tab draws it under a warning or an error (and draws the faces,
+// edges or vertices in question on the model, FindingGeometry); a check without an entry has
+// nothing to add to its message.
 
 using System.Collections.Generic;
 
 namespace SashaRX.UnityMeshLab
 {
-    /// <summary>Why a finding matters and how it is fixed, and where it is shown.</summary>
+    /// <summary>Why a finding matters and how it is fixed.</summary>
     internal readonly struct PrepareHint
     {
-        internal PrepareHint(string why, string toolId = null, string toolName = null, string view = null)
-        {
-            Why = why; ToolId = toolId; ToolName = toolName; View = view;
-        }
+        internal PrepareHint(string why) { Why = why; }
 
         /// <summary>Why it matters and what fixes it.</summary>
         internal string Why { get; }
-
-        /// <summary>The id of the tab that shows it (<see cref="IUvTool.ToolId"/>), or null.</summary>
-        internal string ToolId { get; }
-
-        /// <summary>That tab's name, or null.</summary>
-        internal string ToolName { get; }
-
-        /// <summary>What to pick in the tab to see it ("Scene Preview ▸ Problems"), or null.</summary>
-        internal string View { get; }
-
-        /// <summary>"Prefab Builder ▸ Scene Preview ▸ Problems", or null without a tab.</summary>
-        internal string Where
-        {
-            get
-            {
-                if (ToolId == null) return null;
-                return View == null ? ToolName : $"{ToolName} ▸ {View}";
-            }
-        }
     }
 
     internal static class PrepareHelp
     {
-        const string Builder = "prefab_builder", BuilderName = "Prefab Builder";
-        const string Problems = "Scene Preview ▸ Problems";
-
         static readonly Dictionary<string, PrepareHint> Hints = new Dictionary<string, PrepareHint>
         {
             ["Lightmap UV"] = new PrepareHint(
                 "In the lightmap atlas the texels past the unit square belong to another object, so light bleeds across. "
-                + "The Fix step clamps a small overshoot; a larger one needs a repack (UV2 Transfer with Repack) or a fix in the DCC.",
-                Builder, BuilderName, "Scene Preview ▸ UV1"),
+                + "The Fix step clamps a small overshoot; a larger one needs a repack (UV2 Transfer with Repack) or a fix in the DCC."),
             ["Degenerate faces"] = new PrepareHint(
-                "A face without area has no normal and no UV area: it breaks lightmap UVs, tangents and collision cooking. Remove it in Cleanup or the DCC.",
-                Builder, BuilderName, Problems + " (red)"),
+                "A face without area has no normal and no UV area: it breaks lightmap UVs, tangents and collision cooking. Remove it in Cleanup or the DCC."),
             ["Tiny faces"] = new PrepareHint(
-                "A face this small renders as noise and gets no lightmap texel; usually a leftover of a boolean or a bevel. Merge or remove it.",
-                Builder, BuilderName, Problems + " (orange)"),
+                "A face this small renders as noise and gets no lightmap texel; usually a leftover of a boolean or a bevel. Merge or remove it."),
             ["Short edges"] = new PrepareHint(
-                "An edge this short is usually two vertices meant to be one. Weld them in Cleanup or the DCC.",
-                Builder, BuilderName, Problems + " (magenta)"),
+                "An edge this short is usually two vertices meant to be one. Weld them in Cleanup or the DCC."),
             ["Unused vertices"] = new PrepareHint(
-                "Vertices no face uses only add to the mesh's size and bounds. Cleanup removes them.",
-                Builder, BuilderName, Problems + " (dots)"),
+                "Vertices no face uses only add to the mesh's size and bounds. Cleanup removes them."),
             ["Non-manifold edges"] = new PrepareHint(
-                "More than two faces share the edge: an inner face or a doubled surface, which LOD generation and unwrapping handle badly. Remove the inner faces in the DCC.",
-                Builder, BuilderName, "Scene Preview ▸ Edges"),
+                "More than two faces share the edge: an inner face or a doubled surface, which LOD generation and unwrapping handle badly. Remove the inner faces in the DCC."),
             ["Flipped normals"] = new PrepareHint(
-                "The faces' normals point into the surface, so they are lit from behind and culled from the front. Flip the faces or recalculate the normals in the DCC.",
-                Builder, BuilderName, "Scene Preview ▸ Normals"),
+                "The faces' normals point into the surface, so they are lit from behind and culled from the front. Flip the faces or recalculate the normals in the DCC."),
             ["Concave faces"] = new PrepareHint(
                 "A concave polygon is triangulated by each tool its own way, so the surface and its shading differ between the DCC and Unity. Triangulate it in the DCC."),
             ["Channels"] = new PrepareHint(
-                "A static prop is lit and textured through these channels. Export them from the DCC, or let the importer generate them (the recipe's preset).",
-                Builder, BuilderName, "Scene Preview (the channel)"),
+                "A static prop is lit and textured through these channels. Export them from the DCC, or let the importer generate them (the recipe's preset)."),
             ["Finite values"] = new PrepareHint(
                 "NaN or infinity in a vertex breaks bounds, lighting and collision. Re-export the mesh; Cleanup can drop the faces on such vertices."),
             ["Vertex limit"] = new PrepareHint(
                 "Past 65535 vertices the mesh needs 32-bit indices, which some platforms lack. Split the mesh or reduce it."),
             ["LOD chain"] = new PrepareHint(
                 "Parts are paired into LOD levels by name: a part whose name differs between levels (a typo, a stray prefix) reads as two parts, each missing a level. "
-                + "Rename the nodes alike, or generate the missing level.",
-                "lod_generation", "LOD Gen"),
+                + "Rename the nodes alike, or generate the missing level."),
             ["LOD triangles"] = new PrepareHint(
-                "A LOD that keeps its triangles costs a draw-call switch for nothing. Reduce it further, or drop the level.",
-                "lod_generation", "LOD Gen"),
+                "A LOD that keeps its triangles costs a draw-call switch for nothing. Reduce it further, or drop the level."),
             ["Names"] = new PrepareHint("Steps find nodes by name; give each sibling its own."),
             ["Import scale"] = new PrepareHint("A scaled import hides a file in the wrong units; the recipe's preset sets Scale Factor 1 and Convert Units."),
             ["Units"] = new PrepareHint("The file is not in metres: export it from the DCC in metres, so that every model shares one scale."),

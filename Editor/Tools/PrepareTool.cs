@@ -61,7 +61,11 @@ namespace SashaRX.UnityMeshLab
         public void OnDrawStatusBar() { /* Results are shown on the Result page. */ }
         public void OnDrawCanvasOverlay(UvCanvasView canvas, float cx, float cy, float sz) { /* No mesh canvas. */ }
         public IEnumerable<UvCanvasView.FillModeEntry> GetFillModes() => Array.Empty<UvCanvasView.FillModeEntry>();
-        public void OnSceneGUI(SceneView sv) { /* The steps edit through the runner, not the scene view. */ }
+        // The steps edit through the runner; the scene view only shows a finding asked for (Show in Scene).
+        public void OnSceneGUI(SceneView sv)
+        {
+            if (Event.current.type == EventType.Repaint) DrawFinding();
+        }
 
         // The tab follows the selection and the recipes; their events are static.
         static void Listen(Action handler, bool on)
@@ -256,6 +260,7 @@ namespace SashaRX.UnityMeshLab
             finally { EditorUtility.ClearProgressBar(); }
             results = runs;
             openRows.Clear();
+            HideFinding();   // the run may have changed the mesh it was drawn from
             resultTitle = $"{(apply ? "Apply" : "Preview")} at {DateTime.Now:HH:mm:ss}";
             page = Page.Result;
             ReadSelection();
@@ -319,36 +324,125 @@ namespace SashaRX.UnityMeshLab
         }
 
         // A warning or an error says, under its message, why it matters and how it is fixed
-        // (PrepareHelp), with a button to the tab that shows the faces, edges or UVs in question.
-        static void DrawHint(PrepareLine line, PrepareTarget target)
+        // (PrepareHelp); a mesh finding has a button that draws its faces, edges or vertices on
+        // the model in the Scene view and frames them (FindingGeometry).
+        void DrawHint(PrepareLine line, PrepareTarget target)
         {
-            if (line.level < PrepareLevel.Warning || !PrepareHelp.TryGet(line.check, out var hint)) return;
+            if (line.level < PrepareLevel.Warning) return;
+            bool hasHint = PrepareHelp.TryGet(line.check, out var hint);
+            bool draws = FindingGeometry.Draws(line.check);
+            if (!hasHint && !draws) return;
             using (new EditorGUILayout.HorizontalScope())
             {
                 GUILayout.Space(LineIndent + LevelWidth + 4);
-                GUILayout.Label(hint.Why, EditorStyles.wordWrappedMiniLabel);
-                if (hint.ToolId != null && GUILayout.Button(new GUIContent("Show ▸ " + hint.ToolName,
-                        $"Select the node and open {hint.Where}, where it can be seen."), EditorStyles.miniButton, GUILayout.ExpandWidth(false)))
-                    Later(() => ShowIn(hint, target, line.subject));
-            }
-            if (hint.View == null) return;
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                GUILayout.Space(LineIndent + LevelWidth + 4);
-                GUILayout.Label("See it in " + hint.Where, EditorStyles.miniLabel);
+                GUILayout.Label(hasHint ? hint.Why : "", EditorStyles.wordWrappedMiniLabel);
+                if (!draws) return;
+                string key = line.subject + "|" + line.check;
+                bool shown = shownKey == key;
+                if (GUILayout.Button(new GUIContent(shown ? "Hide" : "Show in Scene",
+                        "Draw the faces, edges or vertices this finding is about on the model, and frame them in the Scene view."),
+                        EditorStyles.miniButton, GUILayout.ExpandWidth(false)))
+                {
+                    if (shown) Later(HideFinding);
+                    else Later(() => ShowFinding(key, target, line));
+                }
             }
         }
 
-        // Selects the node the finding is about (the target itself when it names none) and opens the tab.
-        static void ShowIn(PrepareHint hint, PrepareTarget target, string subject)
+        // ── A finding drawn on the model ──
+
+        string shownKey;
+        Transform shownNode;
+        FindingShape shownShape;
+        string shownLabel;
+        const int MaxDrawn = 4000;
+        static readonly Color FindingFill = new Color(1f, .15f, .15f, .45f), FindingLine = new Color(1f, .9f, .1f, 1f);
+
+        void HideFinding()
         {
-            var node = SubjectNode(target, subject);
-            if (node != null)
+            shownKey = null; shownNode = null; shownShape = null; shownLabel = null;
+            SceneView.RepaintAll();
+            RequestRepaint?.Invoke();
+        }
+
+        // Selects the node the finding is about and, when it is in a scene, draws the finding on it.
+        void ShowFinding(string key, PrepareTarget target, PrepareLine line)
+        {
+            HideFinding();
+            var node = SubjectNode(target, line.subject);
+            if (node == null) return;
+            Selection.activeObject = node;
+            EditorGUIUtility.PingObject(node);
+            if (!node.scene.IsValid())
             {
-                Selection.activeObject = node;
-                EditorGUIUtility.PingObject(node);
+                UvtLog.Info($"[{PrepareRunner.Tag}] {line.subject}: the finding is drawn on a scene object; place the model in a scene and prepare that object to see it");
+                return;
             }
-            UvToolHub.OpenWithTool(hint.ToolId);
+            Mesh mesh = null;
+            if (node.TryGetComponent(out MeshFilter filter)) mesh = filter.sharedMesh;
+            else if (node.TryGetComponent(out SkinnedMeshRenderer skinned)) mesh = skinned.sharedMesh;
+            if (mesh == null) return;
+            var requirements = PrepareRunner.Chain(target).Recipe?.requirements;
+            var readable = MeshAccess.Readable(mesh, out bool isCopy);
+            FindingShape shape;
+            try { shape = FindingGeometry.Build(line.check, readable, requirements); }
+            finally { if (isCopy) UnityEngine.Object.DestroyImmediate(readable); }
+            if (shape == null || shape.IsEmpty)
+            {
+                UvtLog.Info($"[{PrepareRunner.Tag}] {line.subject}: nothing of '{line.check}' is left on the mesh to draw; run Preview again");
+                return;
+            }
+            shownKey = key; shownNode = node.transform; shownShape = shape;
+            shownLabel = $"{line.check}: {line.message}";
+            Frame(shownNode, shape);
+            SceneView.RepaintAll();
+            RequestRepaint?.Invoke();
+        }
+
+        static void Frame(Transform node, FindingShape shape)
+        {
+            var view = SceneView.lastActiveSceneView;
+            if (view == null) return;
+            bool any = false;
+            var bounds = new Bounds();
+            foreach (int i in shape.Vertices())
+            {
+                var p = node.TransformPoint(shape.positions[i]);
+                if (any) bounds.Encapsulate(p);
+                else { bounds = new Bounds(p, Vector3.zero); any = true; }
+            }
+            if (!any) return;
+            // A single vertex or a sliver frames to nothing: keep some of the model around it.
+            float room = Mathf.Max(bounds.size.magnitude, .25f);
+            bounds.Expand(room);
+            view.Frame(bounds, false);
+        }
+
+        void DrawFinding()
+        {
+            if (shownShape == null) return;
+            if (shownNode == null) { HideFinding(); return; }
+            var shape = shownShape;
+            var zTest = Handles.zTest;
+            var color = Handles.color;
+            Handles.zTest = UnityEngine.Rendering.CompareFunction.Always;
+            Vector3 P(int i) => shownNode.TransformPoint(shape.positions[i]);
+            Handles.color = FindingFill;
+            for (int t = 0; t + 2 < shape.triangles.Count && t < MaxDrawn * 3; t += 3)
+                Handles.DrawAAConvexPolygon(P(shape.triangles[t]), P(shape.triangles[t + 1]), P(shape.triangles[t + 2]));
+            Handles.color = FindingLine;
+            for (int t = 0; t + 2 < shape.triangles.Count && t < MaxDrawn * 3; t += 3)
+                Handles.DrawAAPolyLine(2f, P(shape.triangles[t]), P(shape.triangles[t + 1]), P(shape.triangles[t + 2]), P(shape.triangles[t]));
+            for (int e = 0; e + 1 < shape.edges.Count && e < MaxDrawn * 2; e += 2)
+                Handles.DrawAAPolyLine(4f, P(shape.edges[e]), P(shape.edges[e + 1]));
+            for (int k = 0; k < shape.points.Count && k < MaxDrawn; ++k)
+            {
+                var p = P(shape.points[k]);
+                Handles.DotHandleCap(0, p, Quaternion.identity, HandleUtility.GetHandleSize(p) * .04f, EventType.Repaint);
+            }
+            Handles.Label(shownNode.position, shownLabel, EditorStyles.whiteBoldLabel);
+            Handles.color = color;
+            Handles.zTest = zTest;
         }
 
         static GameObject SubjectNode(PrepareTarget target, string subject)
