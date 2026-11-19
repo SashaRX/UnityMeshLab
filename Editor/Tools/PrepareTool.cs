@@ -404,6 +404,7 @@ namespace SashaRX.UnityMeshLab
 
         string shownKey;
         Transform shownNode;
+        SkinnedMeshRenderer shownSkin;   // its pose is read again at each repaint: bones and animation previews move it
         FindingShape shownShape;
         string shownLabel;
         const int MaxDrawn = 4000;
@@ -411,7 +412,7 @@ namespace SashaRX.UnityMeshLab
 
         void HideFinding()
         {
-            shownKey = null; shownNode = null; shownShape = null; shownLabel = null;
+            shownKey = null; shownNode = null; shownShape = null; shownLabel = null; shownSkin = null;
             SceneView.RepaintAll();
             RequestRepaint?.Invoke();
         }
@@ -442,7 +443,7 @@ namespace SashaRX.UnityMeshLab
                 return;
             }
             if (skinned != null) Pose(shape, skinned);
-            shownKey = key; shownNode = node.transform; shownShape = shape;
+            shownKey = key; shownNode = node.transform; shownShape = shape; shownSkin = skinned;
             shownLabel = $"{line.check}: {line.message}";
             Frame(shownNode, shape);
             SceneView.RepaintAll();
@@ -504,6 +505,7 @@ namespace SashaRX.UnityMeshLab
             if (shownShape == null) return;
             if (shownNode == null) { HideFinding(); return; }
             var shape = shownShape;
+            if (shownSkin != null) Pose(shape, shownSkin);
             var zTest = Handles.zTest;
             var color = Handles.color;
             Handles.zTest = UnityEngine.Rendering.CompareFunction.Always;

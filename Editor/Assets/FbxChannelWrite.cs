@@ -985,21 +985,27 @@ namespace SashaRX.UnityMeshLab
         internal static bool KeepsImportedShading(Vector3[] positions, Vector4[] values, Vector3[] importedPositions, Vector4[] importedValues)
         {
             if (positions.Length != values.Length || importedPositions.Length != importedValues.Length || positions.Length == 0) return false;
-            var at = new Dictionary<(int, int, int), List<Vector4>>();
+            // The key only finds the candidates: two imported vertices a hair apart share a cell, and
+            // a value is kept only from one at the vertex's own place.
+            var at = new Dictionary<(int, int, int), List<(Vector3 position, Vector4 value)>>();
             for (int i = 0; i < importedPositions.Length; i++)
             {
                 var key = ShadingKey(importedPositions[i]);
-                if (!at.TryGetValue(key, out var list)) at[key] = list = new List<Vector4>();
-                list.Add(importedValues[i]);
+                if (!at.TryGetValue(key, out var list)) at[key] = list = new List<(Vector3, Vector4)>();
+                list.Add((importedPositions[i], importedValues[i]));
             }
             for (int i = 0; i < positions.Length; i++)
             {
                 if (!at.TryGetValue(ShadingKey(positions[i]), out var candidates)) return false;
+                var position = positions[i];
                 var value = values[i];
-                if (!candidates.Any(candidate => SameShading(candidate, value))) return false;
+                if (!candidates.Any(c => (c.position - position).sqrMagnitude <= SamePlaceSqr && SameShading(c.value, value))) return false;
             }
             return true;
         }
+
+        // A weld and a split copy a position bit for bit; a micrometre allows for a transform's rounding.
+        const float SamePlaceSqr = 1e-12f;
 
         static bool SameShading(Vector4 a, Vector4 b)
             => Mathf.Abs(a.w - b.w) <= 1e-3f && ((Vector3)a - (Vector3)b).sqrMagnitude <= 1e-4f;
