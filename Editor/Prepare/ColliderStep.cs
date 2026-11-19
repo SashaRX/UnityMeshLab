@@ -4,7 +4,8 @@
 // The main collider, the one of greatest volume in the root's space (a closed mesh's own, else
 // its bounds'), goes on the model root when its node sits at the root's placement
 // (LodHierarchy.OffsetFromRoot), else stays on its node, where its mesh lies; the others stay
-// on their nodes. Collision nodes lose their MeshRenderer and MeshFilter. A model without
+// on their nodes. Collision nodes lose their MeshRenderer and MeshFilter, and the main one,
+// its collider on the root, is removed whole when nothing else is on it or under it. A model without
 // collision nodes collides with one LOD level (the coarsest by default), whose renderers stay.
 // A model whose root already has a MeshCollider keeps its colliders and nodes as they are; the
 // root's collider still gets its surface, read from its mesh's name as a part's.
@@ -123,13 +124,21 @@ namespace SashaRX.UnityMeshLab
             string offset = main ? LodHierarchy.OffsetFromRoot(root, source.node) : null;
             var host = main && offset == null ? root : source.node;
             string subject = Subject(root, source.node);
+            // Read before the node may go: the surface is its name's, or its part's materials'.
+            bool bind = binding != null && binding.Unavailable == null;
+            var (surface, origin) = bind
+                ? SurfaceBinding.Resolve(source.node.name, MaterialNames(root, source).ToList(), context.Target.Name, vocabulary)
+                : (null, null);
             GiveCollider(context, report, apply, source, host, subject, Placement(main, offset, host == root));
-            if (host != source.node) DropNodeCollider(context, report, apply, source, subject);
-            else if (host != root) Activate(context, report, apply, source, subject);
-            if (source.collisionNode) RemoveRenderers(context, report, apply, source.node, subject);
-            if (binding == null || binding.Unavailable != null) return;
-            var (surface, origin) = SurfaceBinding.Resolve(source.node.name, MaterialNames(root, source), context.Target.Name, vocabulary);
-            binding.Bind(context, host.gameObject, surface, origin, Subject(root, host), report, apply);
+            if (host != source.node && source.collisionNode && OnlyCollides(source))
+                RemoveNode(context, report, apply, source.node, subject);
+            else
+            {
+                if (host != source.node) DropNodeCollider(context, report, apply, source, subject);
+                else if (host != root) Activate(context, report, apply, source, subject);
+                if (source.collisionNode) RemoveRenderers(context, report, apply, source.node, subject);
+            }
+            if (bind) binding.Bind(context, host.gameObject, surface, origin, Subject(root, host), report, apply);
         }
 
         static string Placement(bool main, string offset, bool onRoot)
@@ -182,6 +191,21 @@ namespace SashaRX.UnityMeshLab
             context.Record(node, "Activate Collision");
             node.SetActive(true);
             PrepareContext.Changed(node);
+        }
+
+        // A collision node with nothing under it and nothing on it but its mesh, renderer and
+        // colliders over that mesh: once the root collides in its place, nothing of it is left.
+        static bool OnlyCollides(Source source)
+        {
+            if (source.node.childCount > 0) return false;
+            return source.node.GetComponents<Component>().All(c => c is Transform || c is MeshRenderer || c is MeshFilter
+                || (c is MeshCollider collider && collider.sharedMesh == source.mesh));
+        }
+
+        static void RemoveNode(PrepareContext context, PrepareReport report, bool apply, Transform node, string subject)
+        {
+            report.Add(PrepareLevel.Changed, subject, "Node", "removed: the root collides in its place, and nothing else is on it");
+            if (apply) context.Destroy(node.gameObject);
         }
 
         static void RemoveRenderers(PrepareContext context, PrepareReport report, bool apply, Transform node, string subject)

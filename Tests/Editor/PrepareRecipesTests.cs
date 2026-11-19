@@ -179,6 +179,37 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Prefab_GivesASceneObjectThePrefabsNameAndMarksItStatic()
+        {
+            var root = Root("SM_Old Bench");
+            var child = new GameObject("Seat_LOD0");
+            child.transform.SetParent(root.transform, false);
+            var target = PrepareTarget.ForSceneObject(root);
+
+            var plan = PrepareRunner.Preview(target, new IPrepareStep[] { new PrefabStep(true) });
+            Assert.AreEqual("SM_Old Bench", root.name, "a preview changes nothing");
+            Assert.AreEqual(2, plan.Steps.Single().Report.Count(PrepareLevel.Changed), plan.ToString());
+
+            var result = PrepareRunner.Apply(target, new IPrepareStep[] { new PrefabStep(true) });
+
+            Assert.IsTrue(result.Applied, result.ToString());
+            Assert.AreEqual("Old_Bench", root.name, "no class prefix, spaces as underscores");
+            Assert.IsTrue(root.isStatic && child.isStatic, "the whole hierarchy");
+            Assert.IsFalse(PrepareRunner.Apply(target, new IPrepareStep[] { new PrefabStep(true) }).Changes, "a second run changes nothing");
+        }
+
+        [Test]
+        public void Prefab_LeavesTheStaticFlagsWhenTheRecipeDoesNotAsk()
+        {
+            var root = Root("Bench");
+
+            var result = PrepareRunner.Apply(PrepareTarget.ForSceneObject(root), new IPrepareStep[] { new PrefabStep() });
+
+            Assert.IsFalse(result.Changes, result.ToString());
+            Assert.IsFalse(root.isStatic);
+        }
+
+        [Test]
         public void Settings_GiveARecipeFromBeforeFixTheStepOnce()
         {
             var settings = ScriptableObject.CreateInstance<MeshLabProjectSettings>();
@@ -186,11 +217,13 @@ namespace SashaRX.UnityMeshLab.Tests
             var recipe = settings.recipes[0];
             recipe.fix = false;                              // as a recipe saved before the field loads
             recipe.fixLightmapClamp = 0f;
+            recipe.prefabStatic = false;
 
             Assert.IsTrue(settings.MigrateRecipes());
 
             Assert.IsTrue(recipe.fix, "Fix on, as in a new recipe");
             Assert.AreEqual(FixStep.DefaultMaxClamp, recipe.fixLightmapClamp);
+            Assert.IsTrue(recipe.prefabStatic, "the Prefab step's Static on, as in a new recipe");
             recipe.fix = false;
             Assert.IsFalse(settings.MigrateRecipes(), "once only");
             Assert.IsFalse(recipe.fix, "a later choice is kept");

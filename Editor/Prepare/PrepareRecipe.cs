@@ -73,6 +73,9 @@ namespace SashaRX.UnityMeshLab
 
         public bool prefab = true;
 
+        /// <summary>Whether the Prefab step marks the whole hierarchy Static.</summary>
+        public bool prefabStatic = true;
+
         /// <summary>The recipe the project starts with: SM_ models through every step.</summary>
         internal static PrepareRecipe StaticMeshes() => new PrepareRecipe();
 
@@ -87,7 +90,7 @@ namespace SashaRX.UnityMeshLab
                 preset ? new PresetStep(importerPreset, presetLodScreenPercentages) : (IPrepareStep)new SkippedStep(new PresetStep(null), off),
                 materials ? new MaterialStep() : (IPrepareStep)new SkippedStep(new MaterialStep(), off),
                 colliders ? Colliders() : (IPrepareStep)new SkippedStep(new ColliderStep(), off),
-                prefab ? new PrefabStep() : (IPrepareStep)new SkippedStep(new PrefabStep(), off),
+                prefab ? new PrefabStep(prefabStatic) : (IPrepareStep)new SkippedStep(new PrefabStep(), off),
             };
         }
 

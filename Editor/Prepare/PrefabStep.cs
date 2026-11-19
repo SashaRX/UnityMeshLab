@@ -5,11 +5,16 @@
 // of the same model) is edited as it is, and a prefab of another kind in its place blocks
 // Apply. A prefab asset is edited in place, a scene object in place with Undo.
 //
+// What is kept is a prefab, so it is left as one: a scene object takes the prefab's name (its
+// class prefix off, spaces as underscores; a variant's root is named by its file), and, when
+// the recipe asks, the whole hierarchy is marked Static.
+//
 // PrefabOutput opens the hierarchy for a model: the existing variant's contents, or an
 // instance of the model in a preview scene that Save stores as the new variant.
 
 using System;
 using System.IO;
+using System.Linq;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -22,31 +27,72 @@ namespace SashaRX.UnityMeshLab
         internal const string StepName = "Prefab";
         const string Check = "Variant";
 
+        readonly bool makeStatic;
+
+        /// <param name="makeStatic">Whether the hierarchy is marked Static.</param>
+        internal PrefabStep(bool makeStatic = false) { this.makeStatic = makeStatic; }
+
         public string Name => StepName;
 
-        public string Purpose => "An FBX gets a prefab variant next to it that keeps the changes; a prefab or a scene object is changed in place.";
+        public string Purpose => "An FBX gets a prefab variant next to it that keeps the changes; a prefab or a scene object is changed in place. "
+            + "A scene object takes the prefab's name (no class prefix); the hierarchy can be marked Static.";
 
         public string SkipReason(PrepareContext context)
+            => context.Target.Kind == PrepareTargetKind.ModelAsset && context.Output == null ? "the model was not opened" : null;
+
+        public void Plan(PrepareContext context, PrepareReport report) => Run(context, report, false);
+
+        // The runner saves the variant once every step has applied (PrepareRunner).
+        public void Apply(PrepareContext context, PrepareReport report) => Run(context, report, true);
+
+        void Run(PrepareContext context, PrepareReport report, bool apply)
         {
-            switch (context.Target.Kind)
+            var output = context.Output;
+            if (context.Target.Kind == PrepareTargetKind.ModelAsset)
             {
-                case PrepareTargetKind.PrefabAsset: return "a prefab is changed in place";
-                case PrepareTargetKind.SceneObject: return "a scene object is changed in place, with Undo";
-                default: return context.Output == null ? "the model was not opened" : null;
+                if (output.Refusal != null) { report.Add(PrepareLevel.Error, $"'{output.Path}'", Check, output.Refusal); return; }
+                if (output.Creates) report.Add(PrepareLevel.Changed, $"'{output.Path}'", Check, "a new prefab variant of the model, next to it");
+                else report.Add(PrepareLevel.Unchanged, $"'{output.Path}'", Check, "the model's prefab variant; the steps change it");
+            }
+            var root = context.Root;
+            if (root == null) return;
+            if (context.Target.Kind == PrepareTargetKind.SceneObject) Rename(context, report, apply, root);
+            if (makeStatic) MakeStatic(context, report, apply, root);
+            if (report.Lines.Count == 0) report.Add(PrepareLevel.Unchanged, $"'{root.name}'", "Prefab", "changed in place; nothing of the step's to change");
+        }
+
+        // A scene object made into a prefab is named as the prefab: without the model's class prefix.
+        static void Rename(PrepareContext context, PrepareReport report, bool apply, GameObject root)
+        {
+            string name = PrefabName(root.name);
+            if (name == root.name) return;
+            report.Add(PrepareLevel.Changed, $"'{root.name}'", "Name", $"→ '{name}': a prefab has no class prefix");
+            if (!apply) return;
+            context.Record(root, "Rename");
+            root.name = name;
+            PrepareContext.Changed(root);
+        }
+
+        static void MakeStatic(PrepareContext context, PrepareReport report, bool apply, GameObject root)
+        {
+            var objects = root.GetComponentsInChildren<Transform>(true).Select(t => t.gameObject).Where(go => !go.isStatic).ToList();
+            if (objects.Count == 0) return;
+            report.Add(PrepareLevel.Changed, $"'{root.name}'", "Static",
+                $"{objects.Count} {(objects.Count == 1 ? "object" : "objects")} marked Static");
+            if (!apply) return;
+            foreach (var go in objects)
+            {
+                context.Record(go, "Mark Static");
+                go.isStatic = true;
+                PrepareContext.Changed(go);
             }
         }
 
-        public void Plan(PrepareContext context, PrepareReport report) => Report(context, report);
-
-        // The runner saves the variant once every step has applied (PrepareRunner).
-        public void Apply(PrepareContext context, PrepareReport report) => Report(context, report);
-
-        static void Report(PrepareContext context, PrepareReport report)
+        /// <summary>A prefab's name for a model's or object's name: its class prefix (SM_, SK_) off, each space an underscore.</summary>
+        internal static string PrefabName(string name)
         {
-            var output = context.Output;
-            if (output.Refusal != null) report.Add(PrepareLevel.Error, $"'{output.Path}'", Check, output.Refusal);
-            else if (output.Creates) report.Add(PrepareLevel.Changed, $"'{output.Path}'", Check, "a new prefab variant of the model, next to it");
-            else report.Add(PrepareLevel.Unchanged, $"'{output.Path}'", Check, "the model's prefab variant; the steps change it");
+            if (MeshNaming.Vocabulary.Default.SplitClassPrefix(name, out string rest) != null) name = rest;
+            return name.Replace(' ', '_');
         }
 
         /// <summary>
@@ -56,9 +102,7 @@ namespace SashaRX.UnityMeshLab
         internal static string VariantPath(string modelPath)
         {
             string folder = Path.GetDirectoryName(modelPath)?.Replace('\\', '/');
-            string name = Path.GetFileNameWithoutExtension(modelPath);
-            if (MeshNaming.Vocabulary.Default.SplitClassPrefix(name, out string rest) != null) name = rest;
-            name = name.Replace(' ', '_');
+            string name = PrefabName(Path.GetFileNameWithoutExtension(modelPath));
             return string.IsNullOrEmpty(folder) ? name + ".prefab" : $"{folder}/{name}.prefab";
         }
     }

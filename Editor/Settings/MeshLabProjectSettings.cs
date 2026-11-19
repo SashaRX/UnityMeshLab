@@ -38,8 +38,9 @@ namespace SashaRX.UnityMeshLab
         // folder patterns match it (PrepareRecipe); one for SM_ models to begin with.
         [SerializeField] internal List<PrepareRecipe> recipes = new List<PrepareRecipe> { PrepareRecipe.StaticMeshes() };
         // The recipes' format, so a recipe saved before a field existed gets that field's default
-        // once (MigrateRecipes); 1 added Validate and its requirements, 2 Fix and its clamp limit.
-        const int RecipesVersion = 2;
+        // once (MigrateRecipes); 1 added Validate and its requirements, 2 Fix and its clamp limit,
+        // 3 the Prefab step's Static.
+        const int RecipesVersion = 3;
         [SerializeField] int recipesVersion;
         // The importer preset before recipes (1.2.112): read once, moved into a recipe (MoveLegacyPreset).
         [SerializeField] internal UnityEditor.Presets.Preset importerPreset;
@@ -103,8 +104,12 @@ namespace SashaRX.UnityMeshLab
                     recipe.validate = true;
                     recipe.requirements = new ModelRequirements();
                 }
-                recipe.fix = true;
-                recipe.fixLightmapClamp = FixStep.DefaultMaxClamp;
+                if (recipesVersion < 2)
+                {
+                    recipe.fix = true;
+                    recipe.fixLightmapClamp = FixStep.DefaultMaxClamp;
+                }
+                recipe.prefabStatic = true;
             }
             recipesVersion = RecipesVersion;
             return true;
@@ -354,6 +359,12 @@ namespace SashaRX.UnityMeshLab
             }
             recipe.prefab = EditorGUILayout.ToggleLeft(new GUIContent("6  " + PrefabStep.StepName,
                 new PrefabStep().Purpose + " Off: a model's own hierarchy is left as it is, so its Colliders step is skipped."), recipe.prefab);
+            using (new EditorGUI.DisabledScope(!recipe.prefab))
+            using (new EditorGUI.IndentLevelScope())
+            {
+                recipe.prefabStatic = EditorGUILayout.Toggle(new GUIContent("Static",
+                    "Mark the whole hierarchy Static (every static flag), as a static prop is placed."), recipe.prefabStatic);
+            }
         }
 
         static void DrawSurfaceBinding(SurfaceBindingSettings binding)
