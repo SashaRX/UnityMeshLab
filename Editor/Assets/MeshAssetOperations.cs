@@ -671,8 +671,9 @@ namespace SashaRX.UnityMeshLab
                 SidecarStore.Save(saved);
             }
             bool exported;
-            // The collision is in the file though the save did not finish (an import setting could not be set).
-            bool collisionWrittenOnly = false;
+            // The file is written though the save did not finish (an import setting could not be set):
+            // its sidecar follows it, the scene keeps its working copies for the save that completes.
+            bool collisionWrittenOnly = false, channelsWrittenOnly = false;
             try
             {
                 if (collisionData != null)
@@ -691,10 +692,15 @@ namespace SashaRX.UnityMeshLab
                         exported = false;
                     }
                 }
-                else exported = FbxExport.WriteChannels(
-                    sourceFbxPath, list, intent, outputFbxPathOverride,
-                    FbxExport.FirstRealMaterial(refreshContext ? ctx?.MeshEntries : list),
-                    isVariantExport || !refreshContext ? null : ctx?.LodGroup);
+                else
+                {
+                    var outcome = FbxExport.WriteChannelsOutcome(
+                        sourceFbxPath, list, intent, outputFbxPathOverride,
+                        FbxExport.FirstRealMaterial(refreshContext ? ctx?.MeshEntries : list),
+                        isVariantExport || !refreshContext ? null : ctx?.LodGroup);
+                    exported = outcome == FbxWriteOutcome.Written;
+                    channelsWrittenOnly = outcome == FbxWriteOutcome.WrittenUnconfigured;
+                }
             }
             catch (FbxExport.PostCommitException ex)
             {
@@ -713,6 +719,9 @@ namespace SashaRX.UnityMeshLab
             {
                 // The sidecar holds what the file holds: a file written without an import setting has the collision.
                 if (collisionWrittenOnly) { SaveCollisionSidecar(); RelinkStandalone(); }
+                // As after a failure past the replacement: the sidecar takes the written UVs, so a later
+                // import does not replay the old ones over the file.
+                if (channelsWrittenOnly) { ApplySidecarSync(sidecar); RelinkStandalone(); }
                 standaloneRelinks.Clear();
                 return false;
             }
@@ -1076,11 +1085,13 @@ namespace SashaRX.UnityMeshLab
                         .Select(p => p.entry));
                     if (!isVariant) MarkSceneEditsSaved(sourceFbxPath, reshaped.Concat(superseded), _ => true);
 
-                    bool written;
+                    bool written, writtenOnly = false;
                     try
                     {
-                        written = FbxChannelWrite.Write(sourceFbxPath, entries, FbxChannelWrite.Supported, outputFbxPath,
+                        var outcome = FbxChannelWrite.WriteOutcome(sourceFbxPath, entries, FbxChannelWrite.Supported, outputFbxPath,
                             isVariant ? null : ctx?.LodGroup, plan);
+                        written = outcome == FbxWriteOutcome.Written;
+                        writtenOnly = outcome == FbxWriteOutcome.WrittenUnconfigured;
                     }
                     catch (FbxStructureRefusalException refusal)
                     {
@@ -1106,6 +1117,10 @@ namespace SashaRX.UnityMeshLab
                         MarkUnsaved(kv.Value);
                         continue;
                     }
+                    // Written without an import setting it needs: the edits stay unsaved, but the file
+                    // holds them, and its sidecar follows the file as after a failure past the
+                    // replacement. Outside the write's try: a sidecar that cannot be saved is its own error.
+                    if (writtenOnly) ApplySidecarSync(sidecar);
                     if (!written) { UnmarkSceneEditsSaved(sourceFbxPath); standaloneRelinks.Clear(); MarkUnsaved(kv.Value); continue; }
                     okCount++;
                     ApplySidecarSync(sidecar);

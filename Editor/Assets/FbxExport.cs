@@ -669,7 +669,8 @@ namespace SashaRX.UnityMeshLab
         /// locks), clone and overwrite, atomic write, reimport and relink of
         /// <paramref name="sceneRoot"/>'s references (source re-save only). The caller
         /// restores its previews before and its working meshes after. Returns true when
-        /// the file was written.
+        /// the file was written with the import settings it needs;
+        /// <see cref="WriteChannelsOutcome"/> tells a file written without them from one not written.
         /// </summary>
         /// <param name="collisionMaterial">The material `_COL` renderers get when the intent includes Materials; null destroys their renderers.</param>
         internal static bool WriteChannels(
@@ -680,9 +681,24 @@ namespace SashaRX.UnityMeshLab
             Material collisionMaterial,
             LODGroup sceneRoot,
             ShadingSelection shadingSelection = null)
+            => WriteChannelsOutcome(sourceFbxPath, entries, intent, outputFbxPath, collisionMaterial, sceneRoot, shadingSelection) == FbxWriteOutcome.Written;
+
+        /// <summary>
+        /// <see cref="WriteChannels"/> with what the save came to. A caller that keeps records
+        /// of the file (the sidecar) follows it for <see cref="FbxWriteOutcome.WrittenUnconfigured"/>
+        /// too: the file holds what was written. The clone path answers written or not.
+        /// </summary>
+        internal static FbxWriteOutcome WriteChannelsOutcome(
+            string sourceFbxPath,
+            IEnumerable<MeshEntry> entries,
+            FbxExportIntent intent,
+            string outputFbxPath,
+            Material collisionMaterial,
+            LODGroup sceneRoot,
+            ShadingSelection shadingSelection = null)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-            if (string.IsNullOrEmpty(sourceFbxPath) || entries == null) return false;
+            if (string.IsNullOrEmpty(sourceFbxPath) || entries == null) return FbxWriteOutcome.NotWritten;
 
             // UV sets and vertex colours are written into the FBX document itself; nothing
             // else in the file is rebuilt (see FbxChannelWrite).
@@ -690,15 +706,28 @@ namespace SashaRX.UnityMeshLab
             {
                 // A PostCommitException passes through: the file is written, and the caller
                 // decides what of its own follow-up (sidecar, scene) still applies.
-                try { return FbxChannelWrite.Write(sourceFbxPath, entries, intent, outputFbxPath, sceneRoot, shadingSelection: shadingSelection); }
+                try { return FbxChannelWrite.WriteOutcome(sourceFbxPath, entries, intent, outputFbxPath, sceneRoot, shadingSelection: shadingSelection); }
                 catch (Exception ex) when (!(ex is PostCommitException))
                 {
                     string outcome = shadingSelection?.allowSourceOverwrite == true ? "overwrite did not complete" : "was not written";
                     UvtLog.Error($"[FBX Export] '{sourceFbxPath}' {outcome}: {ex.Message}");
                     UvtLog.Verbose(ex.ToString());
-                    return false;
+                    return FbxWriteOutcome.NotWritten;
                 }
             }
+            return WriteByClone(sourceFbxPath, entries, intent, outputFbxPath, collisionMaterial, sceneRoot)
+                ? FbxWriteOutcome.Written : FbxWriteOutcome.NotWritten;
+#else
+            UvtLog.Error("[FBX Export] FBX Exporter package not installed.");
+            return FbxWriteOutcome.NotWritten;
+#endif
+        }
+
+        // Hierarchy, material and collision intents: the file is re-exported from a clone of its import.
+        static bool WriteByClone(string sourceFbxPath, IEnumerable<MeshEntry> entries, FbxExportIntent intent, string outputFbxPath,
+            Material collisionMaterial, LODGroup sceneRoot)
+        {
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
 
             // Hierarchy, material and collision intents (Prefab Builder's explicit rebuild)
             // still re-export the file through Unity's FBX Exporter (polygons are rebuilt
