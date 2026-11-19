@@ -84,9 +84,15 @@ namespace SashaRX.UnityMeshLab
             PrepareContext.Changed(root);
         }
 
+        /// <summary>Every static flag.</summary>
+        internal static readonly StaticEditorFlags AllStatic = ((StaticEditorFlags[])Enum.GetValues(typeof(StaticEditorFlags)))
+            .Aggregate((StaticEditorFlags)0, (all, flag) => all | flag);
+
         static void MakeStatic(PrepareContext context, PrepareReport report, bool apply, GameObject root)
         {
-            var objects = root.GetComponentsInChildren<Transform>(true).Select(t => t.gameObject).Where(go => !go.isStatic).ToList();
+            // isStatic is true with any one flag: Static here is every flag, as the inspector's checkbox sets.
+            var objects = root.GetComponentsInChildren<Transform>(true).Select(t => t.gameObject)
+                .Where(go => (GameObjectUtility.GetStaticEditorFlags(go) & AllStatic) != AllStatic).ToList();
             if (objects.Count == 0) return;
             report.Add(PrepareLevel.Changed, $"'{root.name}'", "Static",
                 $"{objects.Count} {(objects.Count == 1 ? "object" : "objects")} marked Static");
@@ -94,7 +100,7 @@ namespace SashaRX.UnityMeshLab
             foreach (var go in objects)
             {
                 context.Record(go, "Mark Static");
-                go.isStatic = true;
+                GameObjectUtility.SetStaticEditorFlags(go, AllStatic);
                 PrepareContext.Changed(go);
             }
         }

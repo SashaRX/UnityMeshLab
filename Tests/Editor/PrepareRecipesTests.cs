@@ -184,6 +184,8 @@ namespace SashaRX.UnityMeshLab.Tests
             var root = Root("SM_Old Bench");
             var child = new GameObject("Seat_LOD0");
             child.transform.SetParent(root.transform, false);
+            // One flag makes isStatic true; Static is every flag.
+            UnityEditor.GameObjectUtility.SetStaticEditorFlags(child, UnityEditor.StaticEditorFlags.BatchingStatic);
             var target = PrepareTarget.ForSceneObject(root);
 
             var plan = PrepareRunner.Preview(target, new IPrepareStep[] { new PrefabStep(true) });
@@ -194,7 +196,8 @@ namespace SashaRX.UnityMeshLab.Tests
 
             Assert.IsTrue(result.Applied, result.ToString());
             Assert.AreEqual("Old_Bench", root.name, "no class prefix, spaces as underscores");
-            Assert.IsTrue(root.isStatic && child.isStatic, "the whole hierarchy");
+            Assert.AreEqual(PrefabStep.AllStatic, UnityEditor.GameObjectUtility.GetStaticEditorFlags(root), "every flag");
+            Assert.AreEqual(PrefabStep.AllStatic, UnityEditor.GameObjectUtility.GetStaticEditorFlags(child), "the whole hierarchy, a partly static object too");
             Assert.IsFalse(PrepareRunner.Apply(target, new IPrepareStep[] { new PrefabStep(true) }).Changes, "a second run changes nothing");
         }
 

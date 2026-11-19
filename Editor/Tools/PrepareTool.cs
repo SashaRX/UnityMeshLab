@@ -353,8 +353,9 @@ namespace SashaRX.UnityMeshLab
 
         static GameObject SubjectNode(PrepareTarget target, string subject)
         {
-            var root = target.SceneObject != null ? target.SceneObject
-                : AssetDatabase.LoadAssetAtPath<GameObject>(target.ModelPath ?? target.AssetPath ?? "");
+            // A prefab's own hierarchy, not its model's: a node may be the prefab's alone.
+            string asset = target.Kind == PrepareTargetKind.PrefabAsset ? target.AssetPath : target.ModelPath ?? target.AssetPath;
+            var root = target.SceneObject != null ? target.SceneObject : AssetDatabase.LoadAssetAtPath<GameObject>(asset ?? "");
             if (root == null) return null;
             string path = PrepareHelp.SubjectPath(subject);
             if (string.IsNullOrEmpty(path) || path == root.name) return root;
