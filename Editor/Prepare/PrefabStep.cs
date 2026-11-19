@@ -7,12 +7,16 @@
 //
 // What is kept is a prefab, so it is left as one: a scene object takes the prefab's name (its
 // class prefix off, spaces as underscores; a variant's root is named by its file), and, when
-// the recipe asks, the whole hierarchy is marked Static.
+// the recipe asks, the whole hierarchy is marked Static. A model with LODs gets, on each object
+// that holds a LODGroup, the components the project lists for it by type name (Project Settings ▸
+// Mesh Lab ▸ Prepare: LOD Group Components: a lightmapper's LOD sharing, say); the package
+// names no such type itself.
 //
 // PrefabOutput opens the hierarchy for a model: the existing variant's contents, or an
 // instance of the model in a preview scene that Save stores as the new variant.
 
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using UnityEditor;
@@ -28,9 +32,15 @@ namespace SashaRX.UnityMeshLab
         const string Check = "Variant";
 
         readonly bool makeStatic;
+        readonly IReadOnlyList<string> lodComponents;
 
         /// <param name="makeStatic">Whether the hierarchy is marked Static.</param>
-        internal PrefabStep(bool makeStatic = false) { this.makeStatic = makeStatic; }
+        /// <param name="lodComponents">The components each LODGroup's object gets, by full or short type name; none when null.</param>
+        internal PrefabStep(bool makeStatic = false, IReadOnlyList<string> lodComponents = null)
+        {
+            this.makeStatic = makeStatic;
+            this.lodComponents = (lodComponents ?? Array.Empty<string>()).Where(n => !string.IsNullOrWhiteSpace(n)).Select(n => n.Trim()).Distinct().ToList();
+        }
 
         public string Name => StepName;
 
@@ -58,6 +68,7 @@ namespace SashaRX.UnityMeshLab
             if (root == null) return;
             if (context.Target.Kind == PrepareTargetKind.SceneObject) Rename(context, report, apply, root);
             if (makeStatic) MakeStatic(context, report, apply, root);
+            AddLodComponents(context, report, apply, root);
             if (report.Lines.Count == 0) report.Add(PrepareLevel.Unchanged, $"'{root.name}'", "Prefab", "changed in place; nothing of the step's to change");
         }
 
@@ -85,6 +96,35 @@ namespace SashaRX.UnityMeshLab
                 context.Record(go, "Mark Static");
                 go.isStatic = true;
                 PrepareContext.Changed(go);
+            }
+        }
+
+        // Each object with a LODGroup gets the listed components it lacks; one already there stays as it is.
+        void AddLodComponents(PrepareContext context, PrepareReport report, bool apply, GameObject root)
+        {
+            if (lodComponents.Count == 0) return;
+            var groups = root.GetComponentsInChildren<LODGroup>(true);
+            if (groups.Length == 0) return;
+            foreach (string name in lodComponents)
+            {
+                var type = ComponentSurfaceBinding.FindType(name, typeof(Component));
+                if (type == null)
+                {
+                    report.Add(PrepareLevel.Warning, $"'{root.name}'", "LOD", $"there is no component type '{name}' in this project; the LOD group does not get it");
+                    continue;
+                }
+                foreach (var group in groups)
+                {
+                    if (group.GetComponent(type) != null) continue;
+                    string subject = $"'{group.name}'";
+                    if (apply && context.AddComponent(group.gameObject, type) == null)
+                    {
+                        // Unity refused to add it (a script in an editor assembly, say) and said why in the Console.
+                        report.Add(PrepareLevel.Warning, subject, "LOD", $"Unity did not add {type.Name} (see the Console)");
+                        continue;
+                    }
+                    report.Add(PrepareLevel.Changed, subject, "LOD", $"{type.Name} added: the model has LODs");
+                }
             }
         }
 

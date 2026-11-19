@@ -199,6 +199,26 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Prefab_GivesEachLodGroupTheListedComponentsOnce()
+        {
+            var root = Root("Bench");
+            var plain = Root("Crate");
+            root.AddComponent<LODGroup>();
+            var names = new[] { typeof(PrepareTestSurface).FullName, "No.Such.Type" };
+
+            var result = PrepareRunner.Apply(PrepareTarget.ForSceneObject(root), new IPrepareStep[] { new PrefabStep(false, names) });
+
+            Assert.IsNotNull(root.GetComponent<PrepareTestSurface>(), result.ToString());
+            var missing = result.Steps.Single().Report.Lines.Single(l => l.level == PrepareLevel.Warning);
+            StringAssert.Contains("no component type 'No.Such.Type'", missing.message);
+            Assert.IsFalse(PrepareRunner.Apply(PrepareTarget.ForSceneObject(root), new IPrepareStep[] { new PrefabStep(false, names) }).Changes, "a second run adds nothing");
+            Assert.AreEqual(1, root.GetComponents<PrepareTestSurface>().Length);
+
+            Assert.IsFalse(PrepareRunner.Apply(PrepareTarget.ForSceneObject(plain), new IPrepareStep[] { new PrefabStep(false, names) }).Changes, "no LODs, no component");
+            Assert.IsNull(plain.GetComponent<PrepareTestSurface>());
+        }
+
+        [Test]
         public void Prefab_LeavesTheStaticFlagsWhenTheRecipeDoesNotAsk()
         {
             var root = Root("Bench");
@@ -218,12 +238,14 @@ namespace SashaRX.UnityMeshLab.Tests
             recipe.fix = false;                              // as a recipe saved before the field loads
             recipe.fixLightmapClamp = 0f;
             recipe.prefabStatic = false;
+            recipe.prefabLodComponents = false;
 
             Assert.IsTrue(settings.MigrateRecipes());
 
             Assert.IsTrue(recipe.fix, "Fix on, as in a new recipe");
             Assert.AreEqual(FixStep.DefaultMaxClamp, recipe.fixLightmapClamp);
             Assert.IsTrue(recipe.prefabStatic, "the Prefab step's Static on, as in a new recipe");
+            Assert.IsTrue(recipe.prefabLodComponents, "and its LOD components");
             recipe.fix = false;
             Assert.IsFalse(settings.MigrateRecipes(), "once only");
             Assert.IsFalse(recipe.fix, "a later choice is kept");
