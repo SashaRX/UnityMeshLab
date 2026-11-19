@@ -4,6 +4,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 using UnityEditor;
 
@@ -290,61 +291,45 @@ namespace SashaRX.UnityMeshLab
         // ── Degenerate triangle detection / removal ──
 
         /// <summary>
-        /// Counts triangles that collapse to a point or line (zero-area faces).
-        /// Requires a readable mesh; returns 0 when unreadable.
+        /// Counts the faces without area: a repeated or missing vertex, or a height that is
+        /// nothing next to the longest edge (<see cref="MeshValidation.DegenerateFaceMask"/>, the
+        /// faces Prepare's Validate reports), however large the face. Requires a readable mesh;
+        /// returns 0 when unreadable.
         /// </summary>
-        public static int CountDegenerateTriangles(Mesh mesh, float epsilon = 1e-12f)
+        public static int CountDegenerateTriangles(Mesh mesh)
         {
             if (mesh == null || !mesh.isReadable) return 0;
             var verts = mesh.vertices;
             int count = 0;
-            int subCount = mesh.subMeshCount;
-            for (int s = 0; s < subCount; s++)
+            for (int s = 0; s < mesh.subMeshCount; s++)
             {
-                var tris = mesh.GetTriangles(s);
-                for (int t = 0; t + 2 < tris.Length; t += 3)
-                {
-                    int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
-                    if (i0 == i1 || i0 == i2 || i1 == i2) { count++; continue; }
-                    if (i0 < 0 || i0 >= verts.Length ||
-                        i1 < 0 || i1 >= verts.Length ||
-                        i2 < 0 || i2 >= verts.Length) { count++; continue; }
-                    var a = verts[i0];
-                    var b = verts[i1];
-                    var c = verts[i2];
-                    if (Vector3.Cross(b - a, c - a).sqrMagnitude < epsilon) count++;
-                }
+                if (mesh.GetTopology(s) != MeshTopology.Triangles) continue;
+                count += MeshValidation.DegenerateFaceMask(verts, mesh.GetTriangles(s)).Count(flat => flat);
             }
             return count;
         }
 
         /// <summary>
-        /// Rebuilds each submesh's triangle list, skipping degenerate faces. Returns
-        /// the number of triangles removed. Caller is responsible for cloning
-        /// asset-backed meshes and wrapping in an Undo group.
+        /// Rebuilds each submesh's triangle list, skipping the faces
+        /// <see cref="CountDegenerateTriangles"/> counts. Returns the number of triangles
+        /// removed. Caller is responsible for cloning asset-backed meshes and wrapping in an
+        /// Undo group.
         /// </summary>
-        public static int RemoveDegenerateTriangles(Mesh mesh, float epsilon = 1e-12f)
+        public static int RemoveDegenerateTriangles(Mesh mesh)
         {
             if (mesh == null || !mesh.isReadable) return 0;
             var verts = mesh.vertices;
             int removed = 0;
-            int subCount = mesh.subMeshCount;
-            for (int s = 0; s < subCount; s++)
+            for (int s = 0; s < mesh.subMeshCount; s++)
             {
+                if (mesh.GetTopology(s) != MeshTopology.Triangles) continue;
                 var tris = mesh.GetTriangles(s);
+                var flat = MeshValidation.DegenerateFaceMask(verts, tris);
                 var kept = new List<int>(tris.Length);
-                for (int t = 0; t + 2 < tris.Length; t += 3)
+                for (int f = 0; f < flat.Length; f++)
                 {
-                    int i0 = tris[t], i1 = tris[t + 1], i2 = tris[t + 2];
-                    if (i0 == i1 || i0 == i2 || i1 == i2) { removed++; continue; }
-                    if (i0 < 0 || i0 >= verts.Length ||
-                        i1 < 0 || i1 >= verts.Length ||
-                        i2 < 0 || i2 >= verts.Length) { removed++; continue; }
-                    var a = verts[i0];
-                    var b = verts[i1];
-                    var c = verts[i2];
-                    if (Vector3.Cross(b - a, c - a).sqrMagnitude < epsilon) { removed++; continue; }
-                    kept.Add(i0); kept.Add(i1); kept.Add(i2);
+                    if (flat[f]) { removed++; continue; }
+                    kept.Add(tris[f * 3]); kept.Add(tris[f * 3 + 1]); kept.Add(tris[f * 3 + 2]);
                 }
                 if (kept.Count != tris.Length)
                     mesh.SetTriangles(kept, s);

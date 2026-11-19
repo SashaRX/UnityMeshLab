@@ -361,7 +361,7 @@ namespace SashaRX.UnityMeshLab
         // and whether or not the recipe has the step on. The preview follows, on the fixed model.
         void ClampLightmap(PrepareTarget target)
         {
-            var step = new FixStep(float.MaxValue);
+            var step = new FixStep(float.MaxValue, ModelFixes.LightmapUv);
             var context = new PrepareContext(target, target.SceneObject, target.Kind == PrepareTargetKind.SceneObject);
             string skipped = step.SkipReason(context);
             if (skipped != null)

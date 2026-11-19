@@ -1,4 +1,5 @@
-// PrepareFixTests.cs — the Fix prepare step: which lightmap UVs count as outside [0,1], why a
+// PrepareFixTests.cs — the Fix prepare step: which lightmap UVs count as outside [0,1], which
+// faces it removes from a collision mesh (the ones Validate and Cleanup call degenerate), why a
 // target is skipped, and the runner's order on a scene object: a step that changes the model's
 // file applies first, the check that waited checks again, and an error then stops the rest.
 using System.Collections.Generic;
@@ -92,6 +93,46 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(2, outside, "rounding past the edge is not outside");
             Assert.AreEqual(.008f, overshoot, 1e-6f);
             Assert.AreEqual((0, 0f), FixStep.Outside(new[] { Vector2.zero, Vector2.one }));
+        }
+
+        // Two faces of a quad and a third whose corners lie on one line, metres long: no area
+        // for its size, though not small.
+        Mesh QuadWithAFlatFace()
+        {
+            var mesh = new Mesh
+            {
+                vertices = new[] { Vector3.zero, Vector3.right, new Vector3(1, 1), Vector3.up, new Vector3(2.5f, 0), new Vector3(6.5f, 0) },
+                triangles = new[] { 0, 1, 2, 1, 4, 5, 0, 2, 3 },
+            };
+            owned.Add(mesh);
+            return mesh;
+        }
+
+        [Test]
+        public void WithoutFlatFaces_DropsTheFacesValidateCallsDegenerate()
+        {
+            var mesh = QuadWithAFlatFace();
+            Assert.AreEqual(1, MeshValidation.DegenerateFaces(mesh.vertices, mesh.triangles).faces);
+
+            var (kept, removed) = FixStep.WithoutFlatFaces(mesh);
+
+            Assert.AreEqual(1, removed);
+            CollectionAssert.AreEqual(new[] { 0, 1, 2, 0, 2, 3 }, kept.Single(), "the other faces, in their order");
+            mesh.triangles = kept.Single();
+            Assert.AreEqual(0, FixStep.WithoutFlatFaces(mesh).removed, "nothing is left to remove");
+        }
+
+        [Test]
+        public void Cleanup_CountsAndRemovesTheFacesValidateCallsDegenerate()
+        {
+            var mesh = QuadWithAFlatFace();
+
+            Assert.AreEqual(1, MeshHygieneUtility.CountDegenerateTriangles(mesh), "a long face on one line has no area for its size");
+            Assert.AreEqual(1, MeshHygieneUtility.RemoveDegenerateTriangles(mesh));
+
+            CollectionAssert.AreEqual(new[] { 0, 1, 2, 0, 2, 3 }, mesh.triangles);
+            Assert.AreEqual(0, MeshHygieneUtility.CountDegenerateTriangles(mesh));
+            Assert.AreEqual(0, MeshValidation.DegenerateFaces(mesh.vertices, mesh.triangles).faces);
         }
 
         [Test]
