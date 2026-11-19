@@ -177,12 +177,20 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Error($"[Collision] '{fbxPath}' was not written: {ex.Message}");
                 return false;
             }
+            catch (FbxExport.PostCommitException ex)
+            {
+                // The file is replaced; what followed the replacement failed. Its collision lies at
+                // the root from its next import on, so the objects that used the old placement follow.
+                UvtLog.Error($"[Collision] {ex.Message} '{fbxPath}' holds the baked collision; the objects that use it are kept in place, and the file needs a reimport once the cause is fixed.");
+                UvtLog.Verbose(ex.ToString());
+                outcome = FbxWriteOutcome.WrittenUnconfigured;
+            }
             finally { bindings?.Relink(fbxPath); }
             if (outcome == FbxWriteOutcome.NotWritten || outcome == FbxWriteOutcome.Unchanged) return false;
             // The file is written and imported from here on, with or without every import setting:
             // its collision lies at the root, so the objects that used the old placement follow now.
             if (outcome == FbxWriteOutcome.WrittenUnconfigured)
-                UvtLog.Warn($"[Collision] '{fbxPath}' was written, but an import setting it needs could not be set (see the Console); the objects that use its collision are kept in place all the same.");
+                UvtLog.Warn($"[Collision] '{fbxPath}' was written, but the save did not finish (see the Console); the objects that use its collision are kept in place all the same.");
             var (moved, prefabs) = consumers.Apply(offsets, atRoot);
             UvtLog.Info($"[Collision] '{fbxPath}': {plan.rootPlacements.Count} collision node(s) baked to the root's placement"
                 + (moved > 0 ? $"; {moved} scene object(s) that do not follow the model's transforms were moved to keep their collision where it was" : "")
