@@ -1,5 +1,6 @@
 // PrepareTool.cs — the Prepare tab: the prepare chain (PrepareRunner) over the models, prefabs
-// and scene objects selected in the Project window or a scene. The chain's steps head the tab.
+// and scene objects selected in the Project window or a scene. The chain's steps head the tab,
+// Preview and Apply under them, above both pages: after a Preview the Result page still has Apply.
 // The Chain page lists the selection with the recipe each target takes, and a card per step:
 // what it does, and whether it runs this time. That is a run's choice: the recipes stay as they
 // are, and Edit Recipes opens them in Project Settings. Preview plans the chain and changes
@@ -104,6 +105,9 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.Space(4);
             DrawChainHeader();
             EditorGUILayout.Space(4);
+            // Above both pages: Apply follows a Preview without going back to the Chain page.
+            DrawButtons();
+            EditorGUILayout.Space(4);
             page = (Page)GUILayout.Toolbar((int)page, Pages);
             scroll = EditorGUILayout.BeginScrollView(scroll);
             if (page == Page.Chain) DrawChainPage();
@@ -156,7 +160,7 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        // ── Chain page: the selection, a card per step, Preview / Apply ──
+        // ── Chain page: the selection, a card per step ──
 
         void DrawChainPage()
         {
@@ -165,7 +169,8 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.Space(6);
             for (int i = 0; i < chainSteps.Count; i++) DrawCard(i, chainSteps[i]);
             EditorGUILayout.Space(6);
-            DrawButtons();
+            if (GUILayout.Button(new GUIContent("Edit Recipes…", "Open the recipes in Project Settings ▸ Mesh Lab: the steps, their settings and the requirements Validate checks."), GUILayout.Height(20)))
+                SettingsService.OpenProjectSettings("Project/Mesh Lab");
         }
 
         void DrawSelection()
@@ -236,8 +241,6 @@ namespace SashaRX.UnityMeshLab
                     Later(() => Run(true));
                 GUI.backgroundColor = color;
             }
-            if (GUILayout.Button(new GUIContent("Edit Recipes…", "Open the recipes in Project Settings ▸ Mesh Lab."), GUILayout.Height(20)))
-                SettingsService.OpenProjectSettings("Project/Mesh Lab");
         }
 
         void Run(bool apply)

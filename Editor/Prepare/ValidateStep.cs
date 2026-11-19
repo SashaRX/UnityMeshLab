@@ -1,6 +1,6 @@
 // ValidateStep.cs — the Validate step, first in the chain: the model is checked against its
 // recipe's requirements (ModelValidation: the file, the nodes, the LOD chain, every mesh), and
-// an Error blocks Apply. It changes nothing (ICheckStep). A model whose importer the Preset or
+// an Error blocks Apply; a model that passes lists what it was checked for. It changes nothing (ICheckStep). A model whose importer the Preset or
 // Materials step changes is checked again once it is reimported, since the preset may set what
 // was missing (Scale Factor, generated lightmap UVs, tangents); its errors then stop the steps
 // after it. A model or prefab asset is checked as an asset, a scene object as placed (its own
@@ -37,7 +37,7 @@ namespace SashaRX.UnityMeshLab
             var target = context.Target;
             if (target.Kind == PrepareTargetKind.SceneObject) ModelValidation.Validate(target.SceneObject, requirements, report);
             else ModelValidation.Validate(target.AssetPath, requirements, report);
-            if (report.Lines.Count == 0) report.Add(PrepareLevel.Unchanged, $"'{target.Display}'", Check, "the model meets every requirement");
+            if (report.Lines.Count == 0) report.Add(PrepareLevel.Unchanged, $"'{target.Display}'", Check, "the model meets every requirement", requirements.Checked());
         }
     }
 }

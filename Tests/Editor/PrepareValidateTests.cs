@@ -96,6 +96,21 @@ namespace SashaRX.UnityMeshLab.Tests
             var line = result.Steps[0].Report.Lines.Single();
             Assert.AreEqual(PrepareLevel.Unchanged, line.level);
             StringAssert.Contains("meets every requirement", line.message);
+            CollectionAssert.IsEmpty(line.details, "every check is off: there is nothing it was checked for");
+        }
+
+        [Test]
+        public void Requirements_ListTheChecksThatAreOnByGroupAndLevel()
+        {
+            var requirements = new ModelRequirements { requireTangents = false, smoothingGroups = RequirementLevel.Off };
+
+            var lines = requirements.Checked();
+
+            Assert.AreEqual(4, lines.Count, string.Join("\n", lines));
+            StringAssert.StartsWith("Geometry: finite values, degenerate faces (error); unused vertices", lines[0]);
+            Assert.AreEqual("Channels: has UV0, UV1 (lightmap), normals, lightmap UV inside [0,1] (error)", lines[1]);
+            StringAssert.DoesNotContain("smoothing groups", lines[2]);
+            StringAssert.Contains("units", lines[2]);
         }
     }
 }
