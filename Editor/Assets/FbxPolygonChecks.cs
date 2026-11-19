@@ -1,6 +1,7 @@
 // FbxPolygonChecks.cs — checks of the FBX's own polygons, which Unity's import triangulates
 // before any mesh check can see them: a concave polygon (four corners or more) triangulates
-// unevenly, and how depends on the importer. Reported per mesh into a PrepareReport.
+// unevenly, and how depends on the importer. Reported per mesh into a PrepareReport. Also the
+// count of a file's quads and n-gons, for a save to say which of them it turned into triangles.
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
 using System;
@@ -43,6 +44,45 @@ namespace SashaRX.UnityMeshLab
                 result[name] = sum + count;
             }
             return result;
+        }
+
+        /// <summary>The quads and the n-gons (five corners or more) of every mesh of the FBX at <paramref name="path"/>.</summary>
+        internal static (int quads, int ngons) LargePolygons(string path)
+        {
+            using var document = FbxSourceDocument.Load(path);
+            int quads = 0, ngons = 0;
+            foreach (var mesh in document.Meshes)
+            {
+                var (q, n) = LargePolygons(mesh);
+                quads += q; ngons += n;
+            }
+            return (quads, ngons);
+        }
+
+        /// <summary>The quads and the n-gons (five corners or more) of <paramref name="mesh"/>.</summary>
+        internal static (int quads, int ngons) LargePolygons(FbxMesh mesh)
+        {
+            int quads = 0, ngons = 0;
+            for (int polygon = 0; polygon < mesh.GetPolygonCount(); polygon++)
+            {
+                int size = mesh.GetPolygonSize(polygon);
+                if (size == 4) quads++;
+                else if (size > 4) ngons++;
+            }
+            return (quads, ngons);
+        }
+
+        /// <summary>
+        /// The polygons a save turned into triangles, in words ("12 quads and 3 n-gons"), from
+        /// the quads and n-gons before and after it; null when none were.
+        /// </summary>
+        internal static string Triangulated(int quadsBefore, int ngonsBefore, int quadsAfter, int ngonsAfter)
+        {
+            int quads = Math.Max(0, quadsBefore - quadsAfter), ngons = Math.Max(0, ngonsBefore - ngonsAfter);
+            var parts = new List<string>();
+            if (quads > 0) parts.Add(MeshValidation.Plural(quads, "quad", "quads"));
+            if (ngons > 0) parts.Add(MeshValidation.Plural(ngons, "n-gon", "n-gons"));
+            return parts.Count == 0 ? null : string.Join(" and ", parts);
         }
 
         static int Concave(FbxMesh mesh)

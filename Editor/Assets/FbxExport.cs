@@ -20,6 +20,27 @@ using Autodesk.Fbx;
 
 namespace SashaRX.UnityMeshLab
 {
+    /// <summary>
+    /// What a save into an FBX came to. A caller that keeps records of the file (a sidecar, the
+    /// objects placed by its meshes) follows the file: both <see cref="Written"/> and
+    /// <see cref="WrittenUnconfigured"/> changed it.
+    /// </summary>
+    internal enum FbxWriteOutcome
+    {
+        /// <summary>The file is as it was: the save was refused, or had nothing to write (logged either way).</summary>
+        NotWritten,
+        /// <summary>The file is as it was: it already holds what the save would write.</summary>
+        Unchanged,
+        /// <summary>Written and imported with the import settings it needs.</summary>
+        Written,
+        /// <summary>
+        /// Written and imported, but an import setting it needs could not be set (a read-only
+        /// .meta, say; logged): the import may not show what was written (a UV1 the importer
+        /// still regenerates, a material not remapped) until the setting is set and it is saved again.
+        /// </summary>
+        WrittenUnconfigured,
+    }
+
     internal static class FbxExport
     {
         const string MetaExtension = ".meta";
@@ -608,30 +629,30 @@ namespace SashaRX.UnityMeshLab
         /// reimports it: the UV1 of <paramref name="uv1Entries"/> (only its changed corners) and
         /// the geometry of <paramref name="reshaped"/>, each replacing the FBX mesh of its name
         /// whole (node, transform and materials kept). The objects that show the file's meshes
-        /// take the reimported ones. False when the write was refused (logged), or when the file
-        /// was written but the import settings it needs could not be set (logged too).
+        /// take the reimported ones. A refusal is logged and comes back as
+        /// <see cref="FbxWriteOutcome.NotWritten"/>.
         /// </summary>
-        internal static bool WriteRepairs(string fbxPath, IReadOnlyList<MeshEntry> uv1Entries, IReadOnlyList<Mesh> reshaped)
+        internal static FbxWriteOutcome WriteRepairs(string fbxPath, IReadOnlyList<MeshEntry> uv1Entries, IReadOnlyList<Mesh> reshaped)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
-            if (string.IsNullOrEmpty(fbxPath)) return false;
+            if (string.IsNullOrEmpty(fbxPath)) return FbxWriteOutcome.NotWritten;
             uv1Entries = uv1Entries ?? Array.Empty<MeshEntry>();
             using var plan = new FbxStructurePlan();
             foreach (var mesh in reshaped ?? Array.Empty<Mesh>()) plan.reshaped.Add((mesh.name, mesh));
-            if (uv1Entries.Count == 0 && plan.IsEmpty) return false;
+            if (uv1Entries.Count == 0 && plan.IsEmpty) return FbxWriteOutcome.Unchanged;
             var intent = uv1Entries.Count > 0 ? FbxExportIntent.UV1 : FbxExportIntent.None;
             var bindings = CaptureSceneMeshReferences(fbxPath, uv1Entries);
             // A PostCommitException passes through: the file is written.
-            try { return FbxChannelWrite.Write(fbxPath, uv1Entries, intent, null, null, plan); }
+            try { return FbxChannelWrite.WriteOutcome(fbxPath, uv1Entries, intent, null, null, plan); }
             catch (Exception ex) when (!(ex is PostCommitException))
             {
                 UvtLog.Error($"[FBX Export] '{fbxPath}' was not written: {ex.Message}");
                 UvtLog.Verbose(ex.ToString());
-                return false;
+                return FbxWriteOutcome.NotWritten;
             }
             finally { bindings?.Relink(fbxPath); }
 #else
-            return false;
+            return FbxWriteOutcome.NotWritten;
 #endif
         }
 
@@ -789,7 +810,7 @@ namespace SashaRX.UnityMeshLab
                 // write triggers — otherwise an isolated UV2 export would be overwritten by
                 // stale sidecar data at once.
                 Uv2AssetPostprocessor.fbxOverwritePaths.Add(targetFbxPath);
-                WriteAtomic(targetFbxPath, tempRoot, (intent & FbxExportIntent.Hierarchy) != 0);
+                WriteAtomic(targetFbxPath, tempRoot, (intent & FbxExportIntent.Hierarchy) != 0, polygonsOf: sourceFbxPath);
                 UvtLog.Info($"[FBX Export] Isolated channels {intent} ({updated} updates) -> {targetFbxPath}");
                 exported = true;
             }
@@ -990,19 +1011,64 @@ namespace SashaRX.UnityMeshLab
         /// as it was. If the exporter throws or writes an empty file the target on disk is
         /// untouched. Throws on failure after removing the temp file.
         /// </summary>
-        internal static void WriteAtomic(string targetFbxPath, GameObject root, bool normalizedTransforms = false, Action committed = null)
+        /// <param name="polygonsOf">
+        /// The FBX the export stands for, when it is another file than the target (a variant's
+        /// source): its quads and n-gons are what the written file is compared with.
+        /// </param>
+        internal static void WriteAtomic(string targetFbxPath, GameObject root, bool normalizedTransforms = false, Action committed = null,
+            string polygonsOf = null)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             var settings = FbxWriteSettings.FromProject();
-            ReplaceAtomically(targetFbxPath, tmpRelPath =>
+            // A re-export builds every polygon from Unity's mesh: the quads and n-gons the file had
+            // are counted before it is replaced, to say afterwards which of them are triangles now.
+            var before = LargePolygonsOrNull(polygonsOf ?? targetFbxPath);
+            (int quads, int ngons)? after = null;
+            // Said once the file is the target's: on a failure after that, in the finally.
+            bool replaced = false;
+            try
             {
-                ExportFile(tmpRelPath, root, settings, normalizedTransforms);
-                if (normalizedTransforms) ConvertNormalizedFile(Path.GetFullPath(tmpRelPath), settings);
-            }, committed);
+                ReplaceAtomically(targetFbxPath, tmpRelPath =>
+                {
+                    ExportFile(tmpRelPath, root, settings, normalizedTransforms);
+                    if (normalizedTransforms) ConvertNormalizedFile(Path.GetFullPath(tmpRelPath), settings);
+                    after = LargePolygonsOrNull(tmpRelPath);
+                }, committed);
+                replaced = true;
+            }
+            catch (PostCommitException) { replaced = true; throw; }
+            finally { if (replaced) WarnOfTriangulation(targetFbxPath, before, after); }
 #else
             throw new InvalidOperationException("FBX Exporter package not installed.");
 #endif
         }
+
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        // The count is only for a warning: a file that is not there or cannot be read gives none.
+        static (int quads, int ngons)? LargePolygonsOrNull(string fbxPath)
+        {
+            try
+            {
+                string full = AssetFilePath.Physical(fbxPath);
+                if (!File.Exists(full)) return null;
+                return FbxPolygonChecks.LargePolygons(full);
+            }
+            catch (Exception ex)
+            {
+                UvtLog.Verbose($"[FBX Export] '{fbxPath}': its polygons could not be counted: {ex.Message}");
+                return null;
+            }
+        }
+
+        static void WarnOfTriangulation(string targetFbxPath, (int quads, int ngons)? before, (int quads, int ngons)? after)
+        {
+            if (before == null || after == null) return;
+            string lost = FbxPolygonChecks.Triangulated(before.Value.quads, before.Value.ngons, after.Value.quads, after.Value.ngons);
+            if (lost != null)
+                UvtLog.Warn($"[FBX Export] '{Path.GetFileName(targetFbxPath)}' is re-exported from Unity's meshes: {lost} of the file became triangles. " +
+                    "Unity's import triangulates them (quads stay with Keep Quads on the importer; n-gons never do).");
+        }
+#endif
 
         /// <summary>
         /// Thrown by <see cref="ReplaceAtomically"/> for a failure after the target was replaced

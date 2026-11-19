@@ -671,12 +671,19 @@ namespace SashaRX.UnityMeshLab
                 SidecarStore.Save(saved);
             }
             bool exported;
+            // The collision is in the file though the save did not finish (an import setting could not be set).
+            bool collisionWrittenOnly = false;
             try
             {
                 if (collisionData != null)
                 {
                     using var plan = FbxStructureWrite.CollisionPlan(collisionData);
-                    try { exported = FbxChannelWrite.Write(sourceFbxPath, Array.Empty<MeshEntry>(), FbxExportIntent.None, outputFbxPathOverride, null, plan); }
+                    try
+                    {
+                        var outcome = FbxChannelWrite.WriteOutcome(sourceFbxPath, Array.Empty<MeshEntry>(), FbxExportIntent.None, outputFbxPathOverride, null, plan);
+                        exported = outcome == FbxWriteOutcome.Written;
+                        collisionWrittenOnly = outcome == FbxWriteOutcome.WrittenUnconfigured;
+                    }
                     catch (Exception ex) when (!(ex is FbxExport.PostCommitException))
                     {
                         UvtLog.Error($"[FBX Export] '{sourceFbxPath}' was not written: {ex.Message}");
@@ -702,7 +709,13 @@ namespace SashaRX.UnityMeshLab
                     FbxExport.RelinkSceneMeshReferences(sourceFbxPath, null, ctx.LodGroup);
                 exported = false;
             }
-            if (!exported) { standaloneRelinks.Clear(); return false; }
+            if (!exported)
+            {
+                // The sidecar holds what the file holds: a file written without an import setting has the collision.
+                if (collisionWrittenOnly) { SaveCollisionSidecar(); RelinkStandalone(); }
+                standaloneRelinks.Clear();
+                return false;
+            }
             ApplySidecarSync(sidecar);
             if (!isVariantExport)
                 foreach (var e in list) SyncSceneEditChannels(e, WorkingMesh(e), intent, "FBX Export");

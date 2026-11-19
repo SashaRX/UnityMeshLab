@@ -124,9 +124,19 @@ namespace SashaRX.UnityMeshLab
         /// is given, then reimports it and relinks <paramref name="sceneRoot"/>. Everything goes
         /// into one load and one save of the document: a refusal anywhere leaves the file as
         /// it was. Validation-only mode checks the disposable document without saving or importing the output.
-        /// Returns true when validation succeeded or a file was written with the required import settings.
+        /// Returns true when validation succeeded or a file was written with the required import settings;
+        /// <see cref="WriteOutcome"/> tells a file written without them from one not written.
         /// </summary>
         internal static bool Write(string sourceFbxPath, IEnumerable<MeshEntry> entries, FbxExportIntent intent,
+            string outputFbxPath, LODGroup sceneRoot, FbxStructurePlan structure = null, FbxExport.ShadingSelection shadingSelection = null, bool validationOnly = false)
+            => WriteOutcome(sourceFbxPath, entries, intent, outputFbxPath, sceneRoot, structure, shadingSelection, validationOnly) == FbxWriteOutcome.Written;
+
+        /// <summary>
+        /// <see cref="Write"/> with what it came to: not written, nothing to change, written, or
+        /// written without an import setting it needs (the file is changed and imported either
+        /// way). Validation-only mode returns <see cref="FbxWriteOutcome.Written"/> for a save that would be.
+        /// </summary>
+        internal static FbxWriteOutcome WriteOutcome(string sourceFbxPath, IEnumerable<MeshEntry> entries, FbxExportIntent intent,
             string outputFbxPath, LODGroup sceneRoot, FbxStructurePlan structure = null, FbxExport.ShadingSelection shadingSelection = null, bool validationOnly = false)
         {
             string targetFbxPath = string.IsNullOrEmpty(outputFbxPath) ? sourceFbxPath : outputFbxPath;
@@ -176,7 +186,7 @@ namespace SashaRX.UnityMeshLab
             if (donors.Count == 0 && !hasStructure)
             {
                 UvtLog.Warn($"[FBX Export] No meshes carry data for {intent}.");
-                return false;
+                return FbxWriteOutcome.NotWritten;
             }
 
             using var document = FbxSourceDocument.Load(Path.GetFullPath(sourceFbxPath));
@@ -287,7 +297,7 @@ namespace SashaRX.UnityMeshLab
             if (meshesWritten == 0 && structural == 0 && shadingSelection == null)
             {
                 UvtLog.Info($"[FBX Export] '{Path.GetFileName(sourceFbxPath)}': nothing changed; file left as is.");
-                return false;
+                return FbxWriteOutcome.Unchanged;
             }
             if (bakeUv1 && uv1Written) RequireEveryUv1(sourceFbxPath, donors, hasStructure ? structure.WholeMeshNames() : null, importedNames);
 
@@ -295,7 +305,7 @@ namespace SashaRX.UnityMeshLab
             // import brings a UV1 written (or removed) here; otherwise the sidecar still applies.
             bool uv1Changed = uv1Written || channelsWritten.Contains("UV1 (removed)");
             // Preflight exercises the same donor, instance and corner mapping checks in a disposable document.
-            if (validationOnly) return true;
+            if (validationOnly) return FbxWriteOutcome.Written;
             if (uv1Changed) Uv2AssetPostprocessor.fbxOverwritePaths.Add(targetFbxPath);
 
             // A write that did not happen takes its marker back; a written file whose steps after the
@@ -307,12 +317,17 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Info($"[FBX Export] {meshesWritten} mesh(es), {cornersWritten} corner value(s) of {string.Join(", ", channelsWritten.OrderBy(c => c))} -> {targetFbxPath} " +
                     $"({format}; {splitPolygons} polygon(s) split at new internal seams; other channels retained)");
             foreach (string line in structureLog) UvtLog.Info($"[FBX Export] {line} -> {targetFbxPath} ({format})");
+            // What the written file lost of its polygons: said once it is on disk.
+            if (splitPolygons > 0)
+                UvtLog.Warn($"[FBX Export] '{Path.GetFileName(targetFbxPath)}': {splitPolygons} polygon(s) (quads or n-gons) were split into triangles " +
+                    "where a new UV seam runs through them; the file's other polygons are as they were.");
+            foreach (string warning in options.warnings) UvtLog.Warn($"[FBX Export] {warning} -> {targetFbxPath}");
 
             // A save-as outside the project is a plain file; nothing to import.
             if (!inProject)
             {
                 Uv2AssetPostprocessor.fbxOverwritePaths.Remove(targetFbxPath);
-                return true;
+                return FbxWriteOutcome.Written;
             }
             // The file is written from here on. Import settings it needs (UV1 kept, material
             // remaps) that cannot be set (read-only metadata) fail the save: the file is still
@@ -366,7 +381,7 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Error($"[FBX Export] '{targetFbxPath}' was written, but setting up or running its import failed: {ex.Message}. Reimport it once the cause is fixed.");
                 UvtLog.Verbose(ex.ToString());
             }
-            return configured;
+            return configured ? FbxWriteOutcome.Written : FbxWriteOutcome.WrittenUnconfigured;
         }
 
         // A lit mesh of the model the save did not load (another object of the same file)

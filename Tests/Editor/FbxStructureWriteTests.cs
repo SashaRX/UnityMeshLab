@@ -1079,6 +1079,16 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.AreEqual(2, document.Meshes.Count, "the old mesh is gone, the hull stays");
             }
         }
+
+        [Test]
+        public void Triangulated_NamesTheQuadsAndNgonsASaveTurnedIntoTriangles()
+        {
+            Assert.IsNull(FbxPolygonChecks.Triangulated(12, 3, 12, 3), "every polygon is as it was");
+            Assert.IsNull(FbxPolygonChecks.Triangulated(0, 0, 4, 0), "a save that adds quads loses none");
+            Assert.AreEqual("12 quads and 3 n-gons", FbxPolygonChecks.Triangulated(12, 3, 0, 0));
+            Assert.AreEqual("1 n-gon", FbxPolygonChecks.Triangulated(12, 1, 12, 0), "Keep Quads: the quads stay");
+            Assert.AreEqual("2 quads", FbxPolygonChecks.Triangulated(5, 0, 3, 0));
+        }
 #endif
     }
 }

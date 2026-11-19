@@ -53,13 +53,13 @@ namespace SashaRX.UnityMeshLab
 
         readonly float maxClamp;
         readonly ModelFixes fixes;
-        readonly Func<string, IReadOnlyList<MeshEntry>, IReadOnlyList<Mesh>, bool> write;
+        readonly Func<string, IReadOnlyList<MeshEntry>, IReadOnlyList<Mesh>, FbxWriteOutcome> write;
 
         /// <param name="maxClamp">The farthest outside [0,1] a lightmap UV is clamped from; farther is left as it is.</param>
         /// <param name="fixes">The fixes it makes; every one by default.</param>
         /// <param name="write">Writes the entries' UV1 and the meshes' geometry (each the FBX mesh of its name) into the FBX at a path; FbxExport.WriteRepairs when null.</param>
         internal FixStep(float maxClamp = DefaultMaxClamp, ModelFixes fixes = ModelFixes.All,
-            Func<string, IReadOnlyList<MeshEntry>, IReadOnlyList<Mesh>, bool> write = null)
+            Func<string, IReadOnlyList<MeshEntry>, IReadOnlyList<Mesh>, FbxWriteOutcome> write = null)
         {
             this.maxClamp = Mathf.Max(0f, maxClamp);
             this.fixes = fixes;
@@ -134,12 +134,22 @@ namespace SashaRX.UnityMeshLab
                     if (report.Lines.Count == 0) report.Add(PrepareLevel.Unchanged, $"'{model}'", "Fix", "nothing to fix");
                     return;
                 }
-                if (apply && !write(model, entries, reshaped))
+                var outcome = apply ? write(model, entries, reshaped) : FbxWriteOutcome.Written;
+                if (outcome == FbxWriteOutcome.NotWritten)
                 {
-                    report.Add(PrepareLevel.Warning, $"'{model}'", "Fix", "the fix did not complete (see the Console): the FBX was refused, or written without the import settings it needs");
+                    report.Add(PrepareLevel.Warning, $"'{model}'", "Fix", "the FBX was not written (see the Console); the model is as it was");
                     return;
                 }
+                if (outcome == FbxWriteOutcome.Unchanged)
+                {
+                    report.Add(PrepareLevel.Unchanged, $"'{model}'", "Fix", "the FBX already holds the fixes; it is left as it is");
+                    return;
+                }
+                // The file is changed either way: the fixes are in it.
                 foreach (var (subject, check, message) in changes) report.Add(PrepareLevel.Changed, subject, check, message);
+                if (outcome == FbxWriteOutcome.WrittenUnconfigured)
+                    report.Add(PrepareLevel.Warning, $"'{model}'", "Fix",
+                        "the FBX was written, but an import setting it needs could not be set (see the Console; a read-only .meta, say): the import may not show the fix until it is");
             }
             finally
             {
