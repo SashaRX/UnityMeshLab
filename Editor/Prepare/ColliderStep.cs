@@ -6,7 +6,8 @@
 // (LodHierarchy.OffsetFromRoot), else stays on its node, where its mesh lies; the others stay
 // on their nodes. Collision nodes lose their MeshRenderer and MeshFilter. A model without
 // collision nodes collides with one LOD level (the coarsest by default), whose renderers stay.
-// A model whose root already has a MeshCollider is left as it is.
+// A model whose root already has a MeshCollider keeps its colliders and nodes as they are; the
+// root's collider still gets its surface, read from its mesh's name as a part's.
 //
 // Each collider's object is given its surface through the surface binding (SurfaceBinding):
 // from the part's name, else its materials, else the model's name. A collider that already
@@ -69,7 +70,7 @@ namespace SashaRX.UnityMeshLab
         void Run(PrepareContext context, PrepareReport report, bool apply)
         {
             var root = context.Root.transform;
-            if (LeftAsItIs(root, report)) return;
+            if (LeftAsItIs(context, report, apply)) return;
             var sources = Sources(root, report);
             if (sources.Count == 0) return;
             var main = sources.OrderByDescending(s => s.volume).First();
@@ -78,11 +79,23 @@ namespace SashaRX.UnityMeshLab
             foreach (var source in sources) Prepare(context, report, apply, source, source == main);
         }
 
-        static bool LeftAsItIs(Transform root, PrepareReport report)
+        // A root with a MeshCollider: its colliders and nodes stay, whoever set them up; the
+        // root's collider gets its surface, its mesh's name read as the part's.
+        bool LeftAsItIs(PrepareContext context, PrepareReport report, bool apply)
         {
+            var root = context.Root.transform;
             if (!root.TryGetComponent(out MeshCollider own)) return false;
             string mesh = own.sharedMesh != null ? $" ('{own.sharedMesh.name}')" : "";
             report.Add(PrepareLevel.Unchanged, Subject(root, root), Check, $"the root already has a MeshCollider{mesh}; the model is left as it is");
+            if (binding == null) return true;
+            if (binding.Unavailable != null)
+            {
+                report.Add(PrepareLevel.Unchanged, Subject(root, root), ComponentSurfaceBinding.Check, $"surfaces are not bound: {binding.Unavailable}");
+                return true;
+            }
+            string part = own.sharedMesh != null && !string.IsNullOrEmpty(own.sharedMesh.name) ? own.sharedMesh.name : root.name;
+            var (surface, origin) = SurfaceBinding.Resolve(part, PartMaterials(root, part), context.Target.Name, vocabulary);
+            binding.Bind(context, root.gameObject, surface, origin, Subject(root, root), report, apply);
             return true;
         }
 
@@ -233,16 +246,20 @@ namespace SashaRX.UnityMeshLab
         // nodes of its part (the same name once LOD and collision suffixes are off).
         static IEnumerable<string> MaterialNames(Transform root, Source source)
         {
-            IEnumerable<Renderer> renderers;
-            if (!source.collisionNode) renderers = source.node.GetComponents<Renderer>();
-            else
-            {
-                string key = MeshNaming.GroupKey(source.node.name);
-                renderers = root.GetComponentsInChildren<Renderer>(true).Where(r => !MeshNaming.IsCollision(r.name)
-                    && string.Equals(MeshNaming.GroupKey(r.name), key, StringComparison.OrdinalIgnoreCase));
-            }
-            return renderers.SelectMany(r => r.sharedMaterials).Where(m => m != null).Select(m => m.name).Distinct();
+            if (source.collisionNode) return PartMaterials(root, source.node.name);
+            return Names(source.node.GetComponents<Renderer>());
         }
+
+        // The materials of the render nodes of the part a name belongs to.
+        static IEnumerable<string> PartMaterials(Transform root, string name)
+        {
+            string key = MeshNaming.GroupKey(name);
+            return Names(root.GetComponentsInChildren<Renderer>(true).Where(r => !MeshNaming.IsCollision(r.name)
+                && string.Equals(MeshNaming.GroupKey(r.name), key, StringComparison.OrdinalIgnoreCase)));
+        }
+
+        static IEnumerable<string> Names(IEnumerable<Renderer> renderers)
+            => renderers.SelectMany(r => r.sharedMaterials).Where(m => m != null).Select(m => m.name).Distinct();
 
         // ── Volume ──
 
