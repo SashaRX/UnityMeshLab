@@ -320,7 +320,7 @@ namespace SashaRX.UnityMeshLab
 
         // A warning or an error says, under its message, why it matters and how it is fixed
         // (PrepareHelp), with a button to the tab that shows the faces, edges or UVs in question.
-        void DrawHint(PrepareLine line, PrepareTarget target)
+        static void DrawHint(PrepareLine line, PrepareTarget target)
         {
             if (line.level < PrepareLevel.Warning || !PrepareHelp.TryGet(line.check, out var hint)) return;
             using (new EditorGUILayout.HorizontalScope())

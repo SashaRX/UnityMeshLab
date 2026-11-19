@@ -28,7 +28,14 @@ namespace SashaRX.UnityMeshLab
         internal string View { get; }
 
         /// <summary>"Prefab Builder ▸ Scene Preview ▸ Problems", or null without a tab.</summary>
-        internal string Where => ToolId == null ? null : View == null ? ToolName : $"{ToolName} ▸ {View}";
+        internal string Where
+        {
+            get
+            {
+                if (ToolId == null) return null;
+                return View == null ? ToolName : $"{ToolName} ▸ {View}";
+            }
+        }
     }
 
     internal static class PrepareHelp
