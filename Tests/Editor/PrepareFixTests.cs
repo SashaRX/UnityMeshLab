@@ -52,15 +52,18 @@ namespace SashaRX.UnityMeshLab.Tests
         sealed class Check : ICheckStep
         {
             readonly Model model;
-            readonly string check;
-            internal Check(Model model, string check = "Lightmap UV") { this.model = model; this.check = check; }
+            readonly string check, subject;
+            internal Check(Model model, string check = "Lightmap UV", string subject = "'Bench/Seat'")
+            {
+                this.model = model; this.check = check; this.subject = subject;
+            }
             public string Name => ValidateStep.StepName;
             public string Purpose => "";
             public string SkipReason(PrepareContext context) => null;
             public void Plan(PrepareContext context, PrepareReport report) => Apply(context, report);
             public void Apply(PrepareContext context, PrepareReport report)
             {
-                if (model.broken) report.Add(PrepareLevel.Error, "'Bench/Seat' (mesh 'Seat')", check, "outside");
+                if (model.broken) report.Add(PrepareLevel.Error, subject, check, "outside");
             }
         }
 
@@ -145,6 +148,10 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(PrepareLevel.Error, left.LogLevel, "no fix: an error");
             var other = PrepareRunner.Preview(target, new IPrepareStep[] { new Check(model, "Degenerate faces"), new FileFix(model) });
             Assert.AreEqual(PrepareLevel.Error, other.LogLevel, "the fix is for another check: Apply would stop on this error");
+            var named = PrepareRunner.Preview(target, new IPrepareStep[] { new Check(model, subject: "'Bench/Other' (mesh 'Seat')"), new FileFix(model) });
+            Assert.AreEqual(PrepareLevel.Warning, named.LogLevel, "the mesh the fix names, on a node of another name");
+            var back = PrepareRunner.Preview(target, new IPrepareStep[] { new Check(model, subject: "'Other/Seat' (mesh 'Back')"), new FileFix(model) });
+            Assert.AreEqual(PrepareLevel.Error, back.LogLevel, "another mesh on a node named as the fixed one");
         }
 
         [Test]

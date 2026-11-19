@@ -103,21 +103,20 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        // The same check on the same thing: the names a subject quotes (a node's path, its last
-        // segment, a mesh's name) share one with the other's.
+        // The same check on the same mesh.
         static bool Cures(PrepareLine change, PrepareLine error)
-            => change.check == error.check && SubjectNames(change.subject).Overlaps(SubjectNames(error.subject));
-
-        static HashSet<string> SubjectNames(string subject)
         {
-            var names = new HashSet<string>(System.StringComparer.Ordinal);
+            string mesh = SubjectMesh(change.subject);
+            return change.check == error.check && mesh != null && mesh == SubjectMesh(error.subject);
+        }
+
+        // The mesh a subject is about: the one it names ('Other/Seat' (mesh 'Back') → Back), else
+        // the one named as its node ('Other/Seat' → Seat); null without a quoted name.
+        static string SubjectMesh(string subject)
+        {
             var parts = (subject ?? "").Split('\'');
-            for (int i = 1; i < parts.Length; i += 2)
-            {
-                names.Add(parts[i]);
-                names.Add(parts[i].Substring(parts[i].LastIndexOf('/') + 1));
-            }
-            return names;
+            if (parts.Length > 3) return parts[3];
+            return parts.Length > 1 ? parts[1].Substring(parts[1].LastIndexOf('/') + 1) : null;
         }
 
         internal bool BlocksApply => Steps.Any(s => s.BlocksApply);
