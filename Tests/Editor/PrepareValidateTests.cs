@@ -111,6 +111,15 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual("Channels: has UV0, UV1 (lightmap), normals, lightmap UV inside [0,1] (error)", lines[1]);
             StringAssert.DoesNotContain("smoothing groups", lines[2]);
             StringAssert.Contains("units", lines[2]);
+
+            var notFbx = string.Join("\n", new ModelRequirements().Checked(file: true, fbx: false));
+            StringAssert.DoesNotContain("smoothing groups", notFbx, "read from an FBX only");
+            StringAssert.DoesNotContain("concave polygons", notFbx);
+            StringAssert.Contains("import scale", notFbx);
+            var noFile = string.Join("\n", new ModelRequirements().Checked(file: false));
+            StringAssert.DoesNotContain("import scale", noFile);
+            StringAssert.Contains("node scale", noFile, "the hierarchy's own");
+            StringAssert.DoesNotContain("concave polygons", string.Join("\n", new ModelRequirements().Checked(polygons: false)));
         }
     }
 }

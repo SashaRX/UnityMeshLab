@@ -33,6 +33,13 @@ namespace SashaRX.UnityMeshLab
         // Changes nothing: Apply checks again what the steps before it left.
         public void Apply(PrepareContext context, PrepareReport report) => Run(context, report);
 
+        // The FBX's own polygons are read through the FBX SDK, which comes with the FBX Exporter package.
+#if LIGHTMAP_UV_TOOL_FBX_EXPORTER
+        const bool PolygonsRead = true;
+#else
+        const bool PolygonsRead = false;
+#endif
+
         void Run(PrepareContext context, PrepareReport report)
         {
             var target = context.Target;
@@ -48,8 +55,10 @@ namespace SashaRX.UnityMeshLab
                 if (model != null && model != target.AssetPath) ModelValidation.ValidateFile(model, requirements, report);
                 ModelValidation.Validate(target.AssetPath, requirements, report);
             }
-            if (report.Lines.Count == 0)
-                report.Add(PrepareLevel.Unchanged, $"'{target.Display}'", Check, "the model meets every requirement", requirements.Checked(file: model != null));
+            if (report.Lines.Count > 0) return;
+            bool fbx = model != null && model.EndsWith(".fbx", System.StringComparison.OrdinalIgnoreCase);
+            report.Add(PrepareLevel.Unchanged, $"'{target.Display}'", Check, "the model meets every requirement",
+                requirements.Checked(model != null, fbx, PolygonsRead));
         }
     }
 }
