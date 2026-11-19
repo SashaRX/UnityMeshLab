@@ -4,6 +4,7 @@
 // changing nothing the second time, and the variant matching its model's recipe. Preset: the
 // settings that differ applied, the model's remaps never, the reason a model is skipped.
 // Validate: an error the preset fixes waits for the reimport; one it leaves stops the rest.
+// Both importer steps on a scene object made from a model: applied to that model.
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -108,6 +109,45 @@ namespace SashaRX.UnityMeshLab.Tests
             var chain = PrepareRecipes.Chain(variantTarget, new[] { new PrepareRecipe { colliderSurfaces = false } });
             Assert.IsNotNull(chain.Recipe, "the variant takes its model's recipe: " + chain.Match);
             StringAssert.Contains("its model 'SM_Bench'", chain.Match);
+        }
+
+        [Test]
+        public void SceneObject_PresetAndMaterialsApplyToTheModelItIsMadeFrom()
+        {
+            string fbxPath = ExportBench();
+            string projectPath = $"{folder}/M_Wood_Oak.mat";
+            AssetDatabase.CreateAsset(new Material(Shader.Find("Standard")), projectPath);
+            var importer = (ModelImporter)AssetImporter.GetAtPath(fbxPath);
+            importer.globalScale = 2;
+            var preset = new UnityEditor.Presets.Preset(importer);
+            AssetDatabase.CreateAsset(preset, $"{folder}/Importer.preset");
+            importer.globalScale = 1;
+            importer.SaveAndReimport();
+            var instance = (GameObject)PrefabUtility.InstantiatePrefab(AssetDatabase.LoadAssetAtPath<GameObject>(fbxPath));
+            owned.Add(instance);
+            var target = PrepareTarget.ForSceneObject(instance);
+            Assert.AreEqual(fbxPath, target.ModelPath, "the object is made from the model");
+            var steps = new IPrepareStep[] { new PresetStep(preset), new MaterialStep() };
+            bool Remapped() => ((ModelImporter)AssetImporter.GetAtPath(fbxPath)).GetExternalObjectMap()
+                .Any(kv => kv.Key.type == typeof(Material) && kv.Key.name == "M_Wood_Oak" && AssetDatabase.GetAssetPath(kv.Value) == projectPath);
+
+            var preview = PrepareRunner.Preview(target, steps);
+
+            Assert.IsTrue(preview.Changes, preview.ToString());
+            Assert.IsTrue(preview.Steps.All(step => step.Skipped == null), "neither step is skipped on an object made from a model: " + preview);
+            Assert.AreEqual(1f, ((ModelImporter)AssetImporter.GetAtPath(fbxPath)).globalScale, "Preview changes nothing");
+            Assert.IsFalse(Remapped(), "Preview changes nothing");
+
+            var applied = PrepareRunner.Apply(target, steps);
+
+            Assert.IsTrue(applied.Applied && applied.Changes, applied.ToString());
+            Assert.AreEqual(2f, ((ModelImporter)AssetImporter.GetAtPath(fbxPath)).globalScale, "the preset is on the model's importer");
+            Assert.IsTrue(Remapped(), "the slot is remapped on the model's importer");
+            Assert.IsTrue(instance != null, "the object is still there after its model's reimport");
+            Assert.AreEqual(projectPath, AssetDatabase.GetAssetPath(instance.transform.Find("Seat_LOD0").GetComponent<MeshRenderer>().sharedMaterial),
+                "the object shows the project's material");
+
+            Assert.IsFalse(PrepareRunner.Apply(target, steps).Changes, "a second run changes nothing");
         }
 
         [Test]
