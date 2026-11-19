@@ -810,7 +810,7 @@ namespace SashaRX.UnityMeshLab
                 // write triggers — otherwise an isolated UV2 export would be overwritten by
                 // stale sidecar data at once.
                 Uv2AssetPostprocessor.fbxOverwritePaths.Add(targetFbxPath);
-                WriteAtomic(targetFbxPath, tempRoot, (intent & FbxExportIntent.Hierarchy) != 0, polygonsOf: sourceFbxPath);
+                WriteAtomic(targetFbxPath, tempRoot, (intent & FbxExportIntent.Hierarchy) != 0, polygonsOf: sourceFbxPath, renames: renameMap);
                 UvtLog.Info($"[FBX Export] Isolated channels {intent} ({updated} updates) -> {targetFbxPath}");
                 exported = true;
             }
@@ -1016,14 +1016,15 @@ namespace SashaRX.UnityMeshLab
         /// variant's source): the written file is compared with it, mesh by mesh, to warn of the
         /// quads and n-gons that became triangles. Null for new geometry, which is compared with nothing.
         /// </param>
+        /// <param name="renames">The names the export gives the meshes of <paramref name="polygonsOf"/> (a hierarchy normalisation's), old to new; they are matched under the new ones.</param>
         internal static void WriteAtomic(string targetFbxPath, GameObject root, bool normalizedTransforms = false, Action committed = null,
-            string polygonsOf = null)
+            string polygonsOf = null, Dictionary<string, string> renames = null)
         {
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
             var settings = FbxWriteSettings.FromProject();
             // A re-export builds every polygon from Unity's mesh: the quads and n-gons the file had
             // are counted before it is replaced, to say afterwards which of them are triangles now.
-            var before = polygonsOf != null ? LargePolygonsOrNull(polygonsOf) : null;
+            var before = polygonsOf != null ? RenamedCounts(LargePolygonsOrNull(polygonsOf), renames) : null;
             Dictionary<string, (int quads, int ngons)> after = null;
             // Said once the file is the target's: on a failure after that, in the finally.
             bool replaced = false;
@@ -1059,6 +1060,21 @@ namespace SashaRX.UnityMeshLab
                 UvtLog.Verbose($"[FBX Export] '{fbxPath}': its polygons could not be counted: {ex.Message}");
                 return null;
             }
+        }
+
+        // The source's counts under the names the export gives its meshes.
+        static Dictionary<string, (int quads, int ngons)> RenamedCounts(Dictionary<string, (int quads, int ngons)> counts,
+            Dictionary<string, string> renames)
+        {
+            if (counts == null || renames == null || renames.Count == 0) return counts;
+            var result = new Dictionary<string, (int quads, int ngons)>(StringComparer.Ordinal);
+            foreach (var mesh in counts)
+            {
+                string name = renames.TryGetValue(mesh.Key, out string renamed) ? renamed : mesh.Key;
+                result.TryGetValue(name, out var sum);
+                result[name] = (sum.quads + mesh.Value.quads, sum.ngons + mesh.Value.ngons);
+            }
+            return result;
         }
 
         /// <summary>

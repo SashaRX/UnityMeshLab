@@ -629,9 +629,12 @@ namespace SashaRX.UnityMeshLab
 
         // A mesh written whole is built from Unity's mesh, which the import triangulated: the quads
         // and n-gons its FBX mesh had and the new one lacks are triangles from this save on.
+        // Fewer of them with no more triangles than before is faces removed, not triangulated.
         static void NoteTriangulation(Options options, string name, FbxMesh old, FbxMeshData replacement)
         {
             var (quads, ngons) = FbxPolygonChecks.LargePolygons(old);
+            int trianglesBefore = old.GetPolygonCount() - quads - ngons;
+            if (replacement.polygonSizes.Count(size => size == 3) <= trianglesBefore) return;
             string lost = FbxPolygonChecks.Triangulated(quads, ngons,
                 replacement.polygonSizes.Count(size => size == 4), replacement.polygonSizes.Count(size => size > 4));
             if (lost != null)
