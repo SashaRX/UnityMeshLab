@@ -188,18 +188,25 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        public void Apply_LeavesAModelWhoseRootHasAMeshColliderAsItIs()
+        public void Apply_KeepsTheRootsMeshColliderAndGivesTheOtherCollisionNodesTheirs()
         {
             var root = Root("TrashCan");
-            root.AddComponent<MeshCollider>().sharedMesh = Box("Own", 1);
+            var own = Box("Own", 4);
+            root.AddComponent<MeshCollider>().sharedMesh = own;
+            // Smaller than the root's and at its placement: it still stays on its node.
             var col = Node(root, "Can_Metal_COL", Box("Can_Metal_COL", 1));
+            var binding = new RecordingBinding();
 
-            var result = Apply(root, new ColliderStep(new RecordingBinding()));
+            var result = Apply(root, new ColliderStep(binding));
 
-            Assert.IsFalse(result.Changes);
-            Assert.IsNotNull(col.GetComponent<MeshRenderer>());
-            Assert.IsNull(col.GetComponent<MeshCollider>());
-            StringAssert.Contains("left as it is", result.Steps.Single().Report.Lines.Single().message);
+            Assert.IsTrue(result.Applied && result.Changes, result.ToString());
+            Assert.AreSame(own, root.GetComponent<MeshCollider>().sharedMesh, "the root's collider stays the main one");
+            Assert.AreEqual(1, root.GetComponents<MeshCollider>().Length);
+            Assert.AreEqual("Can_Metal_COL", col.GetComponent<MeshCollider>().sharedMesh.name, "a node added since collides on its node");
+            Assert.IsNull(col.GetComponent<MeshRenderer>());
+            Assert.AreEqual("Metal", binding.bound["Can_Metal_COL"]);
+            StringAssert.Contains("stays the main collider", result.Steps.Single().Report.Lines.First(l => l.check == "Collider" && l.level == PrepareLevel.Unchanged).message);
+            Assert.IsFalse(Apply(root, new ColliderStep(binding)).Changes, "a second run changes nothing");
         }
 
         [Test]

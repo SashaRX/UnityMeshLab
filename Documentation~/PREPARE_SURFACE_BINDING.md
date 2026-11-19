@@ -56,7 +56,7 @@ model target. Keep semantic asset names unique where possible.
 | Existing non-null reference on the destination object | Preserved even if naming suggests another surface; no asset lookup |
 | Missing asset or unrecognized surface | Warning; no surface component is added; collider preparation can still succeed |
 | Valid repeated Apply | Existing binding is kept and no duplicate component is added |
-| Root already has any MeshCollider | Colliders and nodes are left as they are; the root's collider still gets its surface, read from its mesh's name as a part's (`SM_Column_Concrete_COL`), then that part's render materials, then the model's name. Colliders below the root get none |
+| Root already has any MeshCollider | It stays the main collider and gets its surface, read from its mesh's name as a part's (`SM_Column_Concrete_COL`), then that part's render materials, then the model's name. No node is moved onto the root. The collision nodes it does not stand for (a `_COL` node added to the model since) get their collider and surface on their own nodes |
 | Asset becomes available after a previous failed binding | A later Apply binds it when the name still says the surface: a non-root collider by its node's name, the root's by its collider mesh's name |
 | Largest collision node moves to root | The root gets the binding. The node is removed when nothing but its mesh, renderer and collider is on it; a node holding anything else (a custom surface component, a child) stays, and its binding is not transferred |
 | Several colliders on one GameObject | One component/reference is shared by that object; not a per-collider mapping |

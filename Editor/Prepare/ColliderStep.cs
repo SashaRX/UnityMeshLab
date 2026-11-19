@@ -7,8 +7,10 @@
 // on their nodes. Collision nodes lose their MeshRenderer and MeshFilter, and the main one,
 // its collider on the root, is removed whole when nothing else is on it or under it. A model without
 // collision nodes collides with one LOD level (the coarsest by default), whose renderers stay.
-// A model whose root already has a MeshCollider keeps its colliders and nodes as they are; the
-// root's collider still gets its surface, read from its mesh's name as a part's.
+// A model whose root already has a MeshCollider (a second run, or one set up by hand) keeps it
+// as its main collider, with its surface read from its mesh's name as a part's; no node is moved
+// onto the root. The collision nodes it does not stand for (a node added to the model since)
+// get their colliders and surfaces on their nodes, as the ones that are not the main do.
 //
 // Each collider's object is given its surface through the surface binding (SurfaceBinding):
 // from the part's name, else its materials (a collision node's own, read before its renderer
@@ -72,7 +74,11 @@ namespace SashaRX.UnityMeshLab
         void Run(PrepareContext context, PrepareReport report, bool apply)
         {
             var root = context.Root.transform;
-            if (LeftAsItIs(context, report, apply)) return;
+            if (root.TryGetComponent(out MeshCollider _))
+            {
+                KeepRootCollider(context, report, apply);
+                return;
+            }
             var sources = Sources(root, report);
             if (sources.Count == 0) return;
             var main = sources.OrderByDescending(s => s.volume).First();
@@ -81,24 +87,27 @@ namespace SashaRX.UnityMeshLab
             foreach (var source in sources) Prepare(context, report, apply, source, source == main);
         }
 
-        // A root with a MeshCollider: its colliders and nodes stay, whoever set them up; the
-        // root's collider gets its surface, its mesh's name read as the part's.
-        bool LeftAsItIs(PrepareContext context, PrepareReport report, bool apply)
+        // A root with a MeshCollider: it is the main collider, whoever set it up, and gets its
+        // surface, its mesh's name read as the part's. The collision nodes it does not stand for
+        // (not its mesh, nor one of its mesh's name) collide on their own nodes.
+        void KeepRootCollider(PrepareContext context, PrepareReport report, bool apply)
         {
             var root = context.Root.transform;
-            if (!root.TryGetComponent(out MeshCollider own)) return false;
-            string mesh = own.sharedMesh != null ? $" ('{own.sharedMesh.name}')" : "";
-            report.Add(PrepareLevel.Unchanged, Subject(root, root), Check, $"the root already has a MeshCollider{mesh}; the model is left as it is");
-            if (binding == null) return true;
-            if (binding.Unavailable != null)
-            {
+            var owned = root.GetComponents<MeshCollider>().Select(c => c.sharedMesh).Where(m => m != null).ToList();
+            string mesh = owned.Count > 0 ? $" ('{owned[0].name}')" : "";
+            report.Add(PrepareLevel.Unchanged, Subject(root, root), Check, $"the root already has a MeshCollider{mesh}: it stays the main collider");
+            bool bind = binding != null && binding.Unavailable == null;
+            if (binding?.Unavailable != null)
                 report.Add(PrepareLevel.Unchanged, Subject(root, root), ComponentSurfaceBinding.Check, $"surfaces are not bound: {binding.Unavailable}");
-                return true;
+            if (bind)
+            {
+                string part = owned.Count > 0 && !string.IsNullOrEmpty(owned[0].name) ? owned[0].name : root.name;
+                var (surface, origin) = SurfaceBinding.Resolve(part, PartMaterials(root, part), context.Target.Name, vocabulary);
+                binding.Bind(context, root.gameObject, surface, origin, Subject(root, root), report, apply);
             }
-            string part = own.sharedMesh != null && !string.IsNullOrEmpty(own.sharedMesh.name) ? own.sharedMesh.name : root.name;
-            var (surface, origin) = SurfaceBinding.Resolve(part, PartMaterials(root, part), context.Target.Name, vocabulary);
-            binding.Bind(context, root.gameObject, surface, origin, Subject(root, root), report, apply);
-            return true;
+            var others = CollisionSources(root.gameObject)
+                .Where(s => !owned.Any(m => m == s.mesh || m.name == s.mesh.name || m.name == s.node.name)).ToList();
+            foreach (var source in others) Prepare(context, report, apply, source, false);
         }
 
         // The collision nodes with a mesh, else one LOD level's render nodes; each with its volume.
