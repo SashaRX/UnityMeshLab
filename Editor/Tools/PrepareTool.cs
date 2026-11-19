@@ -336,6 +336,11 @@ namespace SashaRX.UnityMeshLab
             {
                 GUILayout.Space(LineIndent + LevelWidth + 4);
                 GUILayout.Label(hasHint ? hint.Why : "", EditorStyles.wordWrappedMiniLabel);
+                if (line.check == LightmapCheck && GUILayout.Button(new GUIContent("Fix: clamp UV",
+                        "Clamp the model's lightmap UVs that lie outside [0,1] onto the unit square's edge, in its FBX, now, and preview again. "
+                        + "However far out they lie: far out, their faces are squashed on the edge and a repack is the better fix. "
+                        + "The file's change has no Undo."), EditorStyles.miniButton, GUILayout.ExpandWidth(false)))
+                    Later(() => ClampLightmap(target));
                 if (!draws) return;
                 string key = line.subject + "|" + line.check;
                 bool shown = shownKey == key;
@@ -347,6 +352,31 @@ namespace SashaRX.UnityMeshLab
                     else Later(() => ShowFinding(key, target, line));
                 }
             }
+        }
+
+        const string LightmapCheck = "Lightmap UV";
+
+        // The Fix step's clamp for this one target, asked for by hand: whatever the recipe's limit
+        // and whether or not the recipe has the step on. The preview follows, on the fixed model.
+        void ClampLightmap(PrepareTarget target)
+        {
+            var step = new FixStep(float.MaxValue);
+            var context = new PrepareContext(target, target.SceneObject, target.Kind == PrepareTargetKind.SceneObject);
+            string skipped = step.SkipReason(context);
+            if (skipped != null)
+            {
+                UvtLog.Warn($"[{PrepareRunner.Tag}] {target.Display}: the lightmap UVs were not clamped: {skipped}");
+                return;
+            }
+            var report = new PrepareReport(target.Display);
+            try
+            {
+                EditorUtility.DisplayProgressBar("Prepare: Fix", "Clamping lightmap UVs into [0,1]…", .5f);
+                step.Apply(context, report);
+            }
+            finally { EditorUtility.ClearProgressBar(); }
+            report.Log(FixStep.StepName);
+            Run(false);
         }
 
         // ── A finding drawn on the model ──
