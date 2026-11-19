@@ -295,11 +295,11 @@ namespace SashaRX.UnityMeshLab
                     GUILayout.Label(result.State(), result.Refused != null ? levelStyles[PrepareLevel.Error] : EditorStyles.miniLabel);
                 }
                 if (result.Recipe != null) EditorGUILayout.LabelField(result.Recipe, EditorStyles.wordWrappedMiniLabel);
-                for (int s = 0; s < result.Steps.Count; s++) DrawStepRow($"{index}/{s}", s, result.Steps[s]);
+                for (int s = 0; s < result.Steps.Count; s++) DrawStepRow($"{index}/{s}", s, result.Steps[s], result.Target);
             }
         }
 
-        void DrawStepRow(string key, int index, PrepareStepResult step)
+        void DrawStepRow(string key, int index, PrepareStepResult step, PrepareTarget target)
         {
             bool hasLines = step.Skipped == null && step.Report.Lines.Count > 0;
             if (!openRows.TryGetValue(key, out bool open)) open = step.Report.Level >= PrepareLevel.Warning;
@@ -315,10 +315,58 @@ namespace SashaRX.UnityMeshLab
             }
             openRows[key] = open;
             if (!hasLines || !open) return;
-            foreach (var line in step.Report.Lines.OrderByDescending(l => l.level)) DrawLine(line);
+            foreach (var line in step.Report.Lines.OrderByDescending(l => l.level)) DrawLine(line, target);
         }
 
-        void DrawLine(PrepareLine line)
+        // A warning or an error says, under its message, why it matters and how it is fixed
+        // (PrepareHelp), with a button to the tab that shows the faces, edges or UVs in question.
+        static void DrawHint(PrepareLine line, PrepareTarget target)
+        {
+            if (line.level < PrepareLevel.Warning || !PrepareHelp.TryGet(line.check, out var hint)) return;
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.Space(LineIndent + LevelWidth + 4);
+                GUILayout.Label(hint.Why, EditorStyles.wordWrappedMiniLabel);
+                if (hint.ToolId != null && GUILayout.Button(new GUIContent("Show ▸ " + hint.ToolName,
+                        $"Select the node and open {hint.Where}, where it can be seen."), EditorStyles.miniButton, GUILayout.ExpandWidth(false)))
+                    Later(() => ShowIn(hint, target, line.subject));
+            }
+            if (hint.View == null) return;
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.Space(LineIndent + LevelWidth + 4);
+                GUILayout.Label("See it in " + hint.Where, EditorStyles.miniLabel);
+            }
+        }
+
+        // Selects the node the finding is about (the target itself when it names none) and opens the tab.
+        static void ShowIn(PrepareHint hint, PrepareTarget target, string subject)
+        {
+            var node = SubjectNode(target, subject);
+            if (node != null)
+            {
+                Selection.activeObject = node;
+                EditorGUIUtility.PingObject(node);
+            }
+            UvToolHub.OpenWithTool(hint.ToolId);
+        }
+
+        static GameObject SubjectNode(PrepareTarget target, string subject)
+        {
+            // A prefab's own hierarchy, not its model's: a node may be the prefab's alone.
+            string asset = target.Kind == PrepareTargetKind.PrefabAsset ? target.AssetPath : target.ModelPath ?? target.AssetPath;
+            var root = target.SceneObject != null ? target.SceneObject : AssetDatabase.LoadAssetAtPath<GameObject>(asset ?? "");
+            if (root == null) return null;
+            string path = PrepareHelp.SubjectPath(subject);
+            if (string.IsNullOrEmpty(path) || path == root.name) return root;
+            var node = root.transform.Find(path);
+            // A part (a LOD chain's subject) is named by its group key: its first node.
+            if (node == null)
+                node = root.GetComponentsInChildren<Transform>(true).FirstOrDefault(t => t != root.transform && MeshNaming.GroupKey(t.name) == path);
+            return node != null ? node.gameObject : root;
+        }
+
+        void DrawLine(PrepareLine line, PrepareTarget target)
         {
             using (new EditorGUILayout.HorizontalScope())
             {
@@ -334,6 +382,7 @@ namespace SashaRX.UnityMeshLab
                     GUILayout.Label(detail, EditorStyles.wordWrappedMiniLabel);
                 }
             }
+            DrawHint(line, target);
         }
 
         // Styles are built inside OnGUI, where EditorStyles exist.

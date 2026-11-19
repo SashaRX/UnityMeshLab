@@ -92,10 +92,9 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual("Base_Concrete_COL", main.sharedMesh.name);
             Assert.IsFalse(main.convex);
             Assert.AreEqual(ColliderStep.DefaultCooking, main.cookingOptions);
-            Assert.IsNull(baseCol.GetComponent<MeshCollider>());
+            Assert.IsTrue(baseCol == null, "the node whose collider went to the root is removed");
             Assert.AreEqual("Seat_Wood_COL", seatCol.GetComponent<MeshCollider>().sharedMesh.name, "the others stay on their nodes");
-            foreach (var col in new[] { baseCol, seatCol })
-                Assert.IsTrue(col.GetComponent<MeshRenderer>() == null && col.GetComponent<MeshFilter>() == null, $"{col.name} keeps a renderer");
+            Assert.IsTrue(seatCol.GetComponent<MeshRenderer>() == null && seatCol.GetComponent<MeshFilter>() == null, "Seat_Wood_COL keeps a renderer");
             Assert.IsNotNull(root.transform.Find("Base_Concrete_LOD0").GetComponent<MeshRenderer>(), "render nodes keep theirs");
             Assert.AreEqual("Concrete", binding.bound["Bench"]);
             Assert.AreEqual("Wood", binding.bound["Seat_Wood_COL"]);
@@ -124,7 +123,21 @@ namespace SashaRX.UnityMeshLab.Tests
             Apply(root, new ColliderStep());
 
             Assert.AreEqual("Base_Concrete_COL", root.GetComponent<MeshCollider>().sharedMesh.name);
-            Assert.IsNull(baseCol.GetComponent<MeshCollider>(), "one collider for the mesh, not two");
+            Assert.IsTrue(baseCol == null, "one collider for the mesh, not two: the node is removed");
+        }
+
+        [Test]
+        public void Apply_KeepsTheMainNodeThatHoldsMoreThanItsCollision()
+        {
+            var root = Root("Bench");
+            var baseCol = Node(root, "Base_Concrete_COL", Box("Base_Concrete_COL", 2));
+            Node(baseCol, "Marker", Box("Marker", .1f));
+
+            var result = Apply(root, new ColliderStep());
+
+            Assert.AreEqual("Base_Concrete_COL", root.GetComponent<MeshCollider>().sharedMesh.name);
+            Assert.IsTrue(baseCol != null, "it has a child: " + result);
+            Assert.IsNull(baseCol.GetComponent<MeshRenderer>(), "a collision node is not drawn");
         }
 
         [Test]

@@ -34,12 +34,16 @@ namespace SashaRX.UnityMeshLab
         // What the Colliders step gives each collider's object so a game knows its surface
         // (a component by type name, its asset field, the asset type) and the surface words.
         [SerializeField] internal SurfaceBindingSettings surfaceBinding = new SurfaceBindingSettings();
+        // The components the Prefab step puts on each object with a LODGroup (a lightmapper's LOD
+        // sharing, say), by full or short type name; the package names none itself.
+        [SerializeField] internal List<string> lodGroupComponents = new List<string>();
         // Which steps a target takes and with what settings: the first recipe whose name and
         // folder patterns match it (PrepareRecipe); one for SM_ models to begin with.
         [SerializeField] internal List<PrepareRecipe> recipes = new List<PrepareRecipe> { PrepareRecipe.StaticMeshes() };
         // The recipes' format, so a recipe saved before a field existed gets that field's default
-        // once (MigrateRecipes); 1 added Validate and its requirements, 2 Fix and its clamp limit.
-        const int RecipesVersion = 2;
+        // once (MigrateRecipes); 1 added Validate and its requirements, 2 Fix and its clamp limit,
+        // 3 the Prefab step's Static, 4 its LOD group components.
+        const int RecipesVersion = 4;
         [SerializeField] int recipesVersion;
         // The importer preset before recipes (1.2.112): read once, moved into a recipe (MoveLegacyPreset).
         [SerializeField] internal UnityEditor.Presets.Preset importerPreset;
@@ -103,8 +107,13 @@ namespace SashaRX.UnityMeshLab
                     recipe.validate = true;
                     recipe.requirements = new ModelRequirements();
                 }
-                recipe.fix = true;
-                recipe.fixLightmapClamp = FixStep.DefaultMaxClamp;
+                if (recipesVersion < 2)
+                {
+                    recipe.fix = true;
+                    recipe.fixLightmapClamp = FixStep.DefaultMaxClamp;
+                }
+                if (recipesVersion < 3) recipe.prefabStatic = true;
+                recipe.prefabLodComponents = true;
             }
             recipesVersion = RecipesVersion;
             return true;
@@ -225,6 +234,10 @@ namespace SashaRX.UnityMeshLab
             EditorGUILayout.Space(12);
             EditorGUILayout.LabelField("Prepare: Collider Surfaces", EditorStyles.boldLabel);
             DrawSurfaceBinding(inst.surfaceBinding ?? (inst.surfaceBinding = new SurfaceBindingSettings()));
+
+            EditorGUILayout.Space(12);
+            EditorGUILayout.LabelField("Prepare: LOD Group Components", EditorStyles.boldLabel);
+            DrawLodGroupComponents(inst.lodGroupComponents ?? (inst.lodGroupComponents = new List<string>()));
 
             if (EditorGUI.EndChangeCheck())
             {
@@ -354,6 +367,14 @@ namespace SashaRX.UnityMeshLab
             }
             recipe.prefab = EditorGUILayout.ToggleLeft(new GUIContent("6  " + PrefabStep.StepName,
                 new PrefabStep().Purpose + " Off: a model's own hierarchy is left as it is, so its Colliders step is skipped."), recipe.prefab);
+            using (new EditorGUI.DisabledScope(!recipe.prefab))
+            using (new EditorGUI.IndentLevelScope())
+            {
+                recipe.prefabStatic = EditorGUILayout.Toggle(new GUIContent("Static",
+                    "Mark the whole hierarchy Static (every static flag), as a static prop is placed."), recipe.prefabStatic);
+                recipe.prefabLodComponents = EditorGUILayout.Toggle(new GUIContent("LOD Components",
+                    "A model with LODs gets, on the object with its LODGroup, the components listed in Prepare: LOD Group Components below."), recipe.prefabLodComponents);
+            }
         }
 
         static void DrawSurfaceBinding(SurfaceBindingSettings binding)
@@ -390,6 +411,32 @@ namespace SashaRX.UnityMeshLab
             {
                 GUILayout.Space(EditorGUIUtility.labelWidth);
                 if (GUILayout.Button("+ Surface word", GUILayout.Width(120))) binding.rules.Add(new SurfaceRule("", ""));
+            }
+        }
+
+        // A component per row, by type name, with whether the project has such a type.
+        static void DrawLodGroupComponents(List<string> components)
+        {
+            EditorGUILayout.LabelField(" ", "The Prefab step adds each to the object that holds a model's LODGroup (a lightmapper's LOD sharing component, say), "
+                + "by type name, full or short. A model without LODs gets none.", EditorStyles.wordWrappedMiniLabel);
+            int remove = -1;
+            for (int i = 0; i < components.Count; i++)
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    components[i] = EditorGUILayout.TextField(new GUIContent("Component"), components[i] ?? "");
+                    if (GUILayout.Button("−", GUILayout.Width(22))) remove = i;
+                }
+                if (string.IsNullOrWhiteSpace(components[i])) continue;
+                var type = ComponentSurfaceBinding.FindType(components[i], typeof(Component));
+                EditorGUILayout.LabelField(" ", type != null ? $"{type.FullName}" : $"there is no component type '{components[i].Trim()}' in this project",
+                    EditorStyles.wordWrappedMiniLabel);
+            }
+            if (remove >= 0) components.RemoveAt(remove);
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                GUILayout.Space(EditorGUIUtility.labelWidth);
+                if (GUILayout.Button("+ Component", GUILayout.Width(120))) components.Add("");
             }
         }
 
@@ -457,6 +504,7 @@ namespace SashaRX.UnityMeshLab
                 inst.disabledToolIds = fresh.disabledToolIds;
                 inst.disabledLibraryIds = fresh.disabledLibraryIds;
                 inst.surfaceBinding  = fresh.surfaceBinding;
+                inst.lodGroupComponents = fresh.lodGroupComponents;
                 inst.recipes         = fresh.recipes;
                 ModulesChanged?.Invoke();
                 Save();

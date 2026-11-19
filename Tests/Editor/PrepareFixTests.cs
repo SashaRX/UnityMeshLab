@@ -91,6 +91,22 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Help_ExplainsEveryMeshFindingAndNamesWhereItIsSeen()
+        {
+            foreach (string check in new[] { "Lightmap UV", "Degenerate faces", "Tiny faces", "Short edges", "Flipped normals", "Non-manifold edges" })
+            {
+                Assert.IsTrue(PrepareHelp.TryGet(check, out var hint), check);
+                Assert.IsNotEmpty(hint.Why, check);
+                StringAssert.StartsWith("Prefab Builder ▸ Scene Preview", hint.Where, check);
+            }
+            Assert.IsTrue(PrepareHelp.TryGet("Units", out var units));
+            Assert.IsNull(units.Where, "nothing to look at: the file's units");
+            Assert.IsFalse(PrepareHelp.TryGet("Collider", out _), "a step's own lines need no help");
+            Assert.AreEqual("Seat_LOD0", PrepareHelp.SubjectPath("'Seat_LOD0' (mesh 'Seat')"));
+            Assert.IsNull(PrepareHelp.SubjectPath("Assets/Bench.fbx"));
+        }
+
+        [Test]
         public void Fix_IsSkippedOnWhatIsNotMadeFromAModel()
         {
             var result = PrepareRunner.Preview(PrepareTarget.ForSceneObject(Root("Bench")), new IPrepareStep[] { new FixStep() });

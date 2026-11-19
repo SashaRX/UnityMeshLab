@@ -179,6 +179,62 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Prefab_GivesASceneObjectThePrefabsNameAndMarksItStatic()
+        {
+            var root = Root("SM_Old Bench");
+            var child = new GameObject("Seat_LOD0");
+            child.transform.SetParent(root.transform, false);
+            // One flag makes isStatic true; Static is every flag.
+            UnityEditor.GameObjectUtility.SetStaticEditorFlags(child, UnityEditor.StaticEditorFlags.BatchingStatic);
+            var target = PrepareTarget.ForSceneObject(root);
+
+            var plan = PrepareRunner.Preview(target, new IPrepareStep[] { new PrefabStep(true) });
+            Assert.AreEqual("SM_Old Bench", root.name, "a preview changes nothing");
+            Assert.AreEqual(2, plan.Steps.Single().Report.Count(PrepareLevel.Changed), plan.ToString());
+
+            var result = PrepareRunner.Apply(target, new IPrepareStep[] { new PrefabStep(true) });
+
+            Assert.IsTrue(result.Applied, result.ToString());
+            Assert.AreEqual("Old_Bench", root.name, "no class prefix, spaces as underscores");
+            foreach (var go in new[] { root, child })
+                Assert.AreEqual(PrefabStep.AllStatic, UnityEditor.GameObjectUtility.GetStaticEditorFlags(go) & PrefabStep.AllStatic,
+                    $"{go.name}: every flag, on the whole hierarchy, a partly static object too");
+            Assert.AreNotEqual((UnityEditor.StaticEditorFlags)0, PrefabStep.AllStatic & UnityEditor.StaticEditorFlags.ContributeGI);
+            Assert.IsFalse(PrepareRunner.Apply(target, new IPrepareStep[] { new PrefabStep(true) }).Changes, "a second run changes nothing");
+        }
+
+        [Test]
+        public void Prefab_GivesEachLodGroupTheListedComponentsOnce()
+        {
+            var root = Root("Bench");
+            var plain = Root("Crate");
+            root.AddComponent<LODGroup>();
+            var names = new[] { typeof(PrepareTestSurface).FullName, "No.Such.Type" };
+
+            var result = PrepareRunner.Apply(PrepareTarget.ForSceneObject(root), new IPrepareStep[] { new PrefabStep(false, names) });
+
+            Assert.IsNotNull(root.GetComponent<PrepareTestSurface>(), result.ToString());
+            var missing = result.Steps.Single().Report.Lines.Single(l => l.level == PrepareLevel.Warning);
+            StringAssert.Contains("no component type 'No.Such.Type'", missing.message);
+            Assert.IsFalse(PrepareRunner.Apply(PrepareTarget.ForSceneObject(root), new IPrepareStep[] { new PrefabStep(false, names) }).Changes, "a second run adds nothing");
+            Assert.AreEqual(1, root.GetComponents<PrepareTestSurface>().Length);
+
+            Assert.IsFalse(PrepareRunner.Apply(PrepareTarget.ForSceneObject(plain), new IPrepareStep[] { new PrefabStep(false, names) }).Changes, "no LODs, no component");
+            Assert.IsNull(plain.GetComponent<PrepareTestSurface>());
+        }
+
+        [Test]
+        public void Prefab_LeavesTheStaticFlagsWhenTheRecipeDoesNotAsk()
+        {
+            var root = Root("Bench");
+
+            var result = PrepareRunner.Apply(PrepareTarget.ForSceneObject(root), new IPrepareStep[] { new PrefabStep() });
+
+            Assert.IsFalse(result.Changes, result.ToString());
+            Assert.IsFalse(root.isStatic);
+        }
+
+        [Test]
         public void Settings_GiveARecipeFromBeforeFixTheStepOnce()
         {
             var settings = ScriptableObject.CreateInstance<MeshLabProjectSettings>();
@@ -186,11 +242,15 @@ namespace SashaRX.UnityMeshLab.Tests
             var recipe = settings.recipes[0];
             recipe.fix = false;                              // as a recipe saved before the field loads
             recipe.fixLightmapClamp = 0f;
+            recipe.prefabStatic = false;
+            recipe.prefabLodComponents = false;
 
             Assert.IsTrue(settings.MigrateRecipes());
 
             Assert.IsTrue(recipe.fix, "Fix on, as in a new recipe");
             Assert.AreEqual(FixStep.DefaultMaxClamp, recipe.fixLightmapClamp);
+            Assert.IsTrue(recipe.prefabStatic, "the Prefab step's Static on, as in a new recipe");
+            Assert.IsTrue(recipe.prefabLodComponents, "and its LOD components");
             recipe.fix = false;
             Assert.IsFalse(settings.MigrateRecipes(), "once only");
             Assert.IsFalse(recipe.fix, "a later choice is kept");
