@@ -65,6 +65,19 @@ namespace SashaRX.UnityMeshLab
             return result;
         }
 
+        /// <summary>The quads and the n-gons (five corners or more) of <paramref name="mesh"/>.</summary>
+        internal static (int quads, int ngons) LargePolygons(FbxMesh mesh)
+        {
+            int quads = 0, ngons = 0;
+            for (int polygon = 0; polygon < mesh.GetPolygonCount(); polygon++)
+            {
+                int size = mesh.GetPolygonSize(polygon);
+                if (size == 4) quads++;
+                else if (size > 4) ngons++;
+            }
+            return (quads, ngons);
+        }
+
         /// <summary>
         /// The polygons a re-export turned into triangles, in words, from each mesh's quads and
         /// n-gons before and after it; null when none were. Only a mesh found under its name in
@@ -82,19 +95,6 @@ namespace SashaRX.UnityMeshLab
                 ngons += Math.Max(0, mesh.Value.ngons - now.ngons);
             }
             return Triangulated(quads, ngons, 0, 0);
-        }
-
-        /// <summary>The quads and the n-gons (five corners or more) of <paramref name="mesh"/>.</summary>
-        internal static (int quads, int ngons) LargePolygons(FbxMesh mesh)
-        {
-            int quads = 0, ngons = 0;
-            for (int polygon = 0; polygon < mesh.GetPolygonCount(); polygon++)
-            {
-                int size = mesh.GetPolygonSize(polygon);
-                if (size == 4) quads++;
-                else if (size > 4) ngons++;
-            }
-            return (quads, ngons);
         }
 
         /// <summary>
