@@ -1088,6 +1088,12 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual("12 quads and 3 n-gons", FbxPolygonChecks.Triangulated(12, 3, 0, 0));
             Assert.AreEqual("1 n-gon", FbxPolygonChecks.Triangulated(12, 1, 12, 0), "Keep Quads: the quads stay");
             Assert.AreEqual("2 quads", FbxPolygonChecks.Triangulated(5, 0, 3, 0));
+
+            // Mesh by mesh: a mesh that is gone was removed, and quads another gained hide nothing.
+            var before = new Dictionary<string, (int quads, int ngons)> { ["Seat"] = (6, 1), ["Leg"] = (4, 0), ["Old"] = (9, 2) };
+            var after = new Dictionary<string, (int quads, int ngons)> { ["Seat"] = (0, 0), ["Leg"] = (10, 0), ["New"] = (3, 0) };
+            Assert.AreEqual("6 quads and 1 n-gon", FbxPolygonChecks.Triangulated(before, after));
+            Assert.IsNull(FbxPolygonChecks.Triangulated(before, before));
         }
 #endif
     }

@@ -1012,8 +1012,9 @@ namespace SashaRX.UnityMeshLab
         /// untouched. Throws on failure after removing the temp file.
         /// </summary>
         /// <param name="polygonsOf">
-        /// The FBX the export stands for, when it is another file than the target (a variant's
-        /// source): its quads and n-gons are what the written file is compared with.
+        /// The FBX whose meshes the export rebuilds (the target itself for an overwrite, a
+        /// variant's source): the written file is compared with it, mesh by mesh, to warn of the
+        /// quads and n-gons that became triangles. Null for new geometry, which is compared with nothing.
         /// </param>
         internal static void WriteAtomic(string targetFbxPath, GameObject root, bool normalizedTransforms = false, Action committed = null,
             string polygonsOf = null)
@@ -1022,8 +1023,8 @@ namespace SashaRX.UnityMeshLab
             var settings = FbxWriteSettings.FromProject();
             // A re-export builds every polygon from Unity's mesh: the quads and n-gons the file had
             // are counted before it is replaced, to say afterwards which of them are triangles now.
-            var before = LargePolygonsOrNull(polygonsOf ?? targetFbxPath);
-            (int quads, int ngons)? after = null;
+            var before = polygonsOf != null ? LargePolygonsOrNull(polygonsOf) : null;
+            Dictionary<string, (int quads, int ngons)> after = null;
             // Said once the file is the target's: on a failure after that, in the finally.
             bool replaced = false;
             try
@@ -1032,7 +1033,7 @@ namespace SashaRX.UnityMeshLab
                 {
                     ExportFile(tmpRelPath, root, settings, normalizedTransforms);
                     if (normalizedTransforms) ConvertNormalizedFile(Path.GetFullPath(tmpRelPath), settings);
-                    after = LargePolygonsOrNull(tmpRelPath);
+                    if (before != null) after = LargePolygonsOrNull(tmpRelPath);
                 }, committed);
                 replaced = true;
             }
@@ -1045,7 +1046,7 @@ namespace SashaRX.UnityMeshLab
 
 #if LIGHTMAP_UV_TOOL_FBX_EXPORTER
         // The count is only for a warning: a file that is not there or cannot be read gives none.
-        static (int quads, int ngons)? LargePolygonsOrNull(string fbxPath)
+        internal static Dictionary<string, (int quads, int ngons)> LargePolygonsOrNull(string fbxPath)
         {
             try
             {
@@ -1060,10 +1061,19 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
-        static void WarnOfTriangulation(string targetFbxPath, (int quads, int ngons)? before, (int quads, int ngons)? after)
+        /// <summary>
+        /// Warns of the quads and n-gons a rebuild of <paramref name="before"/>'s meshes turned
+        /// into triangles in the file now at <paramref name="targetFbxPath"/>; nothing when either
+        /// count is missing.
+        /// </summary>
+        internal static void WarnOfTriangulation(string targetFbxPath, Dictionary<string, (int quads, int ngons)> before)
+            => WarnOfTriangulation(targetFbxPath, before, before != null ? LargePolygonsOrNull(targetFbxPath) : null);
+
+        static void WarnOfTriangulation(string targetFbxPath, Dictionary<string, (int quads, int ngons)> before,
+            Dictionary<string, (int quads, int ngons)> after)
         {
             if (before == null || after == null) return;
-            string lost = FbxPolygonChecks.Triangulated(before.Value.quads, before.Value.ngons, after.Value.quads, after.Value.ngons);
+            string lost = FbxPolygonChecks.Triangulated(before, after);
             if (lost != null)
                 UvtLog.Warn($"[FBX Export] '{Path.GetFileName(targetFbxPath)}' is re-exported from Unity's meshes: {lost} of the file became triangles. " +
                     "Unity's import triangulates them (quads stay with Keep Quads on the importer; n-gons never do).");

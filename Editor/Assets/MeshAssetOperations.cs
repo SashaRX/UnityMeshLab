@@ -1316,7 +1316,7 @@ namespace SashaRX.UnityMeshLab
                 tempRoot.name = prefab.name;
                 FbxExport.PromoteRootMeshToLod0Child(tempRoot);
                 int collisions = PrepareExportHierarchy(tempRoot, sourceFbxPath, entries, tempMeshes, batch);
-                try { WriteHierarchyExport(exportPath, tempRoot, overwriteSource); }
+                try { WriteHierarchyExport(exportPath, tempRoot, overwriteSource, sourceFbxPath); }
                 catch (FbxExport.PostCommitException ex)
                 {
                     // The file is written; the .meta backup restored below covers a failed .meta restore.
@@ -1357,12 +1357,18 @@ namespace SashaRX.UnityMeshLab
                 || path.StartsWith("Packages/", StringComparison.OrdinalIgnoreCase) || path.StartsWith("Packages\\", StringComparison.OrdinalIgnoreCase));
 
         // A source is replaced in one rename once its new file is complete and checked
-        // (FbxExport.WriteAtomic); a new file is written in place.
-        void WriteHierarchyExport(string path, GameObject root, bool overwriteSource)
+        // (FbxExport.WriteAtomic); a new file is written in place. Either way the rebuild is
+        // compared with the source's polygons, to warn of those that became triangles.
+        void WriteHierarchyExport(string path, GameObject root, bool overwriteSource, string sourceFbxPath)
         {
             if (HierarchyWriter != null) HierarchyWriter(path, root);
-            else if (overwriteSource) FbxExport.WriteAtomic(path, root);
-            else FbxExport.Write(path, root);
+            else if (overwriteSource) FbxExport.WriteAtomic(path, root, polygonsOf: sourceFbxPath);
+            else
+            {
+                var before = FbxExport.LargePolygonsOrNull(sourceFbxPath);
+                FbxExport.Write(path, root);
+                FbxExport.WarnOfTriangulation(path, before);
+            }
         }
 
         static bool RestoreHierarchyReadability(ModelImporter importer, string path)

@@ -46,17 +46,42 @@ namespace SashaRX.UnityMeshLab
             return result;
         }
 
-        /// <summary>The quads and the n-gons (five corners or more) of every mesh of the FBX at <paramref name="path"/>.</summary>
-        internal static (int quads, int ngons) LargePolygons(string path)
+        /// <summary>
+        /// The quads and the n-gons (five corners or more) of each mesh of the FBX at
+        /// <paramref name="path"/>, by its node's name (meshes of one name summed); a mesh of
+        /// triangles alone is listed with none.
+        /// </summary>
+        internal static Dictionary<string, (int quads, int ngons)> LargePolygons(string path)
         {
+            var result = new Dictionary<string, (int quads, int ngons)>(StringComparer.Ordinal);
             using var document = FbxSourceDocument.Load(path);
-            int quads = 0, ngons = 0;
             foreach (var mesh in document.Meshes)
             {
+                string name = mesh.GetNodeCount() > 0 ? mesh.GetNode(0).GetName() : mesh.GetName();
                 var (q, n) = LargePolygons(mesh);
-                quads += q; ngons += n;
+                result.TryGetValue(name, out var sum);
+                result[name] = (sum.quads + q, sum.ngons + n);
             }
-            return (quads, ngons);
+            return result;
+        }
+
+        /// <summary>
+        /// The polygons a re-export turned into triangles, in words, from each mesh's quads and
+        /// n-gons before and after it; null when none were. Only a mesh found under its name in
+        /// both counts: one that is gone or new was removed or added, not triangulated, and
+        /// quads added to one mesh do not hide those another lost.
+        /// </summary>
+        internal static string Triangulated(IReadOnlyDictionary<string, (int quads, int ngons)> before,
+            IReadOnlyDictionary<string, (int quads, int ngons)> after)
+        {
+            int quads = 0, ngons = 0;
+            foreach (var mesh in before)
+            {
+                if (!after.TryGetValue(mesh.Key, out var now)) continue;
+                quads += Math.Max(0, mesh.Value.quads - now.quads);
+                ngons += Math.Max(0, mesh.Value.ngons - now.ngons);
+            }
+            return Triangulated(quads, ngons, 0, 0);
         }
 
         /// <summary>The quads and the n-gons (five corners or more) of <paramref name="mesh"/>.</summary>
