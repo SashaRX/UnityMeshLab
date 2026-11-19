@@ -189,6 +189,30 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
+        public void Apply_GivesARootThatHasItsMeshColliderItsSurface()
+        {
+            var concrete = ScriptableObject.CreateInstance<PrepareTestSurfaceData>();
+            concrete.name = "Concrete";
+            owned.Add(concrete);
+            var settings = new SurfaceBindingSettings
+            {
+                componentType = typeof(PrepareTestSurface).FullName, field = "_material", dataType = nameof(PrepareTestSurfaceData),
+            };
+            var binding = new ComponentSurfaceBinding(settings, (type, name, near) => name == "Concrete" ? concrete : null);
+            var root = Root("Column");
+            root.AddComponent<MeshCollider>().sharedMesh = Box("Column_Concrete_COL", 1);
+            var col = Node(root, "Column_Concrete_COL", Box("Other", 1));
+
+            var result = Apply(root, new ColliderStep(binding));
+
+            Assert.IsTrue(result.Applied && result.Changes, result.ToString());
+            Assert.AreSame(concrete, root.GetComponent<PrepareTestSurface>().Material, "from the name of the root collider's mesh");
+            Assert.IsNotNull(col.GetComponent<MeshRenderer>(), "the nodes stay as they are");
+            Assert.AreEqual(1, root.GetComponentsInChildren<MeshCollider>().Length);
+            Assert.IsFalse(Apply(root, new ColliderStep(binding)).Changes, "a second run changes nothing");
+        }
+
+        [Test]
         public void Apply_WithoutCollisionNodesCollidesWithTheCoarsestLodAndKeepsItsRenderers()
         {
             var root = Root("Crate");

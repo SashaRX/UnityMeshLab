@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using NUnit.Framework;
 using UnityEngine;
@@ -92,6 +93,26 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.AreEqual(PrepareLevel.Error, channels.level); StringAssert.Contains("missing tangents", channels.message);
             StringAssert.Contains("1 UV1 vertex lies outside [0,1]", report.Lines.Single(l => l.check == "Lightmap UV").message);
             Assert.IsTrue(report.BlocksApply); Assert.AreEqual("2 errors", report.Summary());
+        }
+
+        [Test]
+        public void Check_WritesNumbersWithADecimalPointWhateverTheCulture()
+        {
+            var mesh = QuadMesh(new[] {new Vector2(-.008f, .001f), new Vector2(.697f, .001f), new Vector2(.697f, .895f), new Vector2(-.008f, .895f)});
+            mesh.vertices = Quad.Select(p => p * 2e-5f).ToArray();   // a tiny face, short edges
+            var requirements = ModelRequirements.Default;
+            requirements.maxFaceArea = 2.5e-8f; requirements.maxEdgeLength = 1.5e-4f;
+            var report = new PrepareReport("Column.fbx");
+            var culture = CultureInfo.CurrentCulture;
+            try
+            {
+                CultureInfo.CurrentCulture = new CultureInfo("ru-RU");   // a decimal comma
+                MeshValidation.Check(mesh, "'Column'", false, requirements, report);
+            }
+            finally { CultureInfo.CurrentCulture = culture; }
+            StringAssert.Contains("(U -0.008..0.697, V 0.001..0.895)", report.Lines.Single(l => l.check == "Lightmap UV").message);
+            StringAssert.Contains("at most 2.5E-08 m²", report.Lines.Single(l => l.check == "Tiny faces").message);
+            StringAssert.Contains("at most 0.00015 m long", report.Lines.Single(l => l.check == "Short edges").message);
         }
 
         [Test]
