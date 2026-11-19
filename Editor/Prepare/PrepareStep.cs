@@ -106,16 +106,25 @@ namespace SashaRX.UnityMeshLab
 
         /// <summary>
         /// The selected models and prefabs in the Project window, and the selected scene
-        /// objects (one under another selected object is part of it, not a target of its own).
+        /// objects (one under another selected object is part of it, not a target of its own). A
+        /// selected node inside a model or prefab instance stands for that instance: its root is
+        /// the target, since a recipe is matched by the model, not by one of its parts.
         /// </summary>
         internal static List<PrepareTarget> FromSelection()
         {
             var targets = Selection.assetGUIDs.Select(AssetDatabase.GUIDToAssetPath).Distinct(StringComparer.Ordinal)
                 .Select(ForAsset).Where(t => t != null).ToList();
-            var objects = Selection.gameObjects.Where(go => go != null && go.scene.IsValid()).ToList();
+            var objects = Selection.gameObjects.Where(go => go != null && go.scene.IsValid()).Select(InstanceRoot).Distinct().ToList();
             targets.AddRange(objects.Where(go => !objects.Any(other => other != go && go.transform.IsChildOf(other.transform)))
                 .Select(ForSceneObject));
             return targets;
+        }
+
+        /// <summary>The root of the model or prefab instance a scene object is part of, else the object itself.</summary>
+        internal static GameObject InstanceRoot(GameObject sceneObject)
+        {
+            var root = PrefabUtility.GetNearestPrefabInstanceRoot(sceneObject);
+            return root != null ? root : sceneObject;
         }
 
         static string ScenePath(Transform node)

@@ -202,10 +202,11 @@ namespace SashaRX.UnityMeshLab.Tests
             var steps = recipe.Steps();
 
             Assert.IsInstanceOf<ValidateStep>(steps[0]);
-            Assert.IsInstanceOf<PresetStep>(steps[1]);
-            Assert.IsInstanceOf<MaterialStep>(steps[2]);
-            Assert.AreEqual(1, ((ColliderStep)steps[3]).FallbackLod);
-            Assert.IsInstanceOf<PrefabStep>(steps[4]);
+            Assert.IsInstanceOf<FixStep>(steps[1]);
+            Assert.IsInstanceOf<PresetStep>(steps[2]);
+            Assert.IsInstanceOf<MaterialStep>(steps[3]);
+            Assert.AreEqual(1, ((ColliderStep)steps[4]).FallbackLod);
+            Assert.IsInstanceOf<PrefabStep>(steps[5]);
             Assert.IsInstanceOf<SkippedStep>(new PrepareRecipe { validate = false }.Steps()[0], "Validate can be turned off");
         }
     }
