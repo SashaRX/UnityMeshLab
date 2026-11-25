@@ -1083,6 +1083,8 @@ namespace SashaRX.UnityMeshLab
                     var superseded = new HashSet<MeshEntry>(kv.Value.Where(p => !reshaped.Contains(p.entry)
                             && SaveSupersedesEdit(p.entry, p.resultMesh) && !whole.Contains(p.entry.fbxMesh.name))
                         .Select(p => p.entry));
+                    // Read before the write: its import replaces the file meshes these compare with.
+                    var editsLosingVertices = new HashSet<MeshEntry>(superseded.Where(EditChangesFileVertices));
                     if (!isVariant) MarkSceneEditsSaved(sourceFbxPath, reshaped.Concat(superseded), _ => true);
 
                     bool written, writtenOnly = false;
@@ -1127,7 +1129,11 @@ namespace SashaRX.UnityMeshLab
                     if (isVariant) continue;
                     foreach (var (entry, resultMesh) in kv.Value)
                     {
-                        if (superseded.Contains(entry))
+                        // An edit on the file's own vertices loses nothing: the file has its faces
+                        // and the written channels.
+                        if (superseded.Contains(entry) && !editsLosingVertices.Contains(entry))
+                            UvtLog.Verbose($"[FBX Export] '{entry.sceneEditMesh.name}': released; the file has its faces and the written channels.");
+                        else if (superseded.Contains(entry))
                             UvtLog.Warn($"[FBX Export] '{entry.sceneEditMesh.name}': the scene edit has the file's faces on other vertices " +
                                 $"({entry.sceneEditMesh.vertexCount}; the channels were written for {resultMesh.vertexCount}), so it cannot take them. " +
                                 "The renderer shows the file's mesh now; the edit's vertex changes (such as removed unused vertices) are not in the file, and Undo brings the edit back.");
@@ -1150,6 +1156,20 @@ namespace SashaRX.UnityMeshLab
             var edit = e?.sceneEditMesh;
             if (edit == null || e.fbxMesh == null || result == null || result == edit || SameVertices(edit, result)) return false;
             return !FbxStructureWrite.GeometryDiffers(e.fbxMesh, edit);
+        }
+
+        // Whether a released edit had vertex changes of its own (a cleanup that removed or merged
+        // vertices) that the file does not take. One on the file's vertices loses nothing.
+        internal static bool EditChangesFileVertices(MeshEntry e)
+        {
+            Mesh file = null;
+            bool isCopy = false;
+            try
+            {
+                file = MeshAccess.Readable(e.fbxMesh, out isCopy);
+                return file == null || !SameVertices(file, e.sceneEditMesh);
+            }
+            finally { if (isCopy) UnityEngine.Object.DestroyImmediate(file); }
         }
 
         // The document edit refused the structure (the file is untouched): say why and let the
