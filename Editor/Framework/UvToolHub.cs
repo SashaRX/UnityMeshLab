@@ -1738,9 +1738,18 @@ namespace SashaRX.UnityMeshLab
         void SwitchTool(int index)
         {
             if (index == activeToolIndex) return;
+            // The scene preview the user picked stays on across tabs. The deactivation takes it
+            // off the renderers; the next frame applies it to what the new tab shows, falling
+            // back to a channel those meshes have. A tab that sets its own mode keeps it.
+            var mode = canvas != null ? canvas.CurrentPreviewMode : UvCanvasView.PreviewMode.Off;
             DeactivateTool();
             activeToolIndex = index;
             ActivateTool();
+            if (canvas != null && mode != UvCanvasView.PreviewMode.Off && canvas.CurrentPreviewMode == UvCanvasView.PreviewMode.Off)
+            {
+                canvas.CurrentPreviewMode = mode;
+                reapplyPreview = true;
+            }
             Repaint();
         }
 
