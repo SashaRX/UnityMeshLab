@@ -28,6 +28,7 @@ namespace SashaRX.UnityMeshLab.Tests
                 var report = Uv0Analyzer.Analyze(mesh);
                 Assert.Greater(report.degenerateTriangles, 0, "The case needs a triangle with no UV0 area.");
                 Assert.IsFalse(report.HasFalseSeams);
+                Assert.IsFalse(CleanupTool.IsWeldCandidate(mesh), "The Cleanup scan offers no weld for it.");
                 Assert.IsFalse(Uv0Analyzer.WeldInPlace(mesh), "A weld leaves such a mesh as it is.");
                 Assert.AreEqual(4, mesh.vertexCount);
             }
@@ -47,9 +48,10 @@ namespace SashaRX.UnityMeshLab.Tests
             try
             {
                 Assert.IsTrue(Uv0Analyzer.Analyze(mesh).HasFalseSeams);
+                Assert.IsTrue(CleanupTool.IsWeldCandidate(mesh), "The Cleanup scan offers the weld.");
                 Assert.IsTrue(Uv0Analyzer.WeldInPlace(mesh));
                 Assert.AreEqual(4, mesh.vertexCount);
-                Assert.IsFalse(Uv0Analyzer.Analyze(mesh).HasFalseSeams, "After the weld the scan offers no weld again.");
+                Assert.IsFalse(CleanupTool.IsWeldCandidate(mesh), "After the weld the scan offers no weld again.");
             }
             finally { Object.DestroyImmediate(mesh); }
         }

@@ -1736,13 +1736,14 @@ namespace SashaRX.UnityMeshLab
             }
         }
 
+        // The scan's weld check: only false seams, the one thing a weld merges. A triangle with no
+        // UV0 area is no weld candidate; a weld leaves it as it is.
+        internal static bool IsWeldCandidate(Mesh mesh) => Uv0Analyzer.Analyze(mesh).HasFalseSeams;
+
         // The vertex-data checks of one entry's mesh, which is readable.
         void CheckMeshData(MeshEntry e, Mesh mesh, bool hasBlendShapes, List<Vector2> tmpUv)
         {
-            // Weld check: only false seams, the one thing a weld merges. A triangle with no UV0
-            // area is no weld candidate; a weld leaves it as it is.
-            var report = Uv0Analyzer.Analyze(mesh);
-            if (report.HasFalseSeams)
+            if (IsWeldCandidate(mesh))
                 meshReport.weldCandidates.Add(e);
 
             // Empty UV channels
