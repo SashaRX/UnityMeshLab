@@ -579,7 +579,11 @@ namespace SashaRX.UnityMeshLab
                 if (b.meshFilter == null) continue;
                 b.meshFilter.sharedMesh = b.originalMesh;
                 var mr = b.meshFilter.GetComponent<MeshRenderer>();
-                if (mr != null) mr.sharedMaterials = b.originalMats;
+                if (mr != null)
+                {
+                    mr.sharedMaterials = b.originalMats;
+                    CheckerTexturePreview.ReleasePreviewOverrides(mr);
+                }
             }
             backups.Clear();
             foreach (var mesh in ownedMeshes)

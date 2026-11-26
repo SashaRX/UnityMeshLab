@@ -2277,7 +2277,11 @@ namespace SashaRX.UnityMeshLab
             {
                 var b = lightmapBackups[i];
                 PreviewSafetyGuard.RemoveLightmapPreviewLayer();
-                if (b.renderer != null) b.renderer.sharedMaterials = b.origMaterials;
+                if (b.renderer != null)
+                {
+                    b.renderer.sharedMaterials = b.origMaterials;
+                    CheckerTexturePreview.ReleasePreviewOverrides(b.renderer, b.tempMat);
+                }
                 if (b.meshFilter != null && b.origMesh != null && b.meshFilter.sharedMesh == b.tempMesh)
                     b.meshFilter.sharedMesh = b.origMesh;
                 if (b.tempMesh != null) DestroyImmediate(b.tempMesh);

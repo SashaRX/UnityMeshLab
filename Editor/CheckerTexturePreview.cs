@@ -227,6 +227,47 @@ namespace SashaRX.UnityMeshLab
         /// (tool overlays or vertex-color previews) that should not be
         /// serialized into scenes, prefabs, or FBX exports.
         /// </summary>
+        /// <summary>
+        /// After a preview put the renderer's materials back: a record of the renderer taken while
+        /// the preview was on (an Undo record or a prefab-modification record by any tool) left the
+        /// preview's material as an override of the prefab instance. Each such slot points at the
+        /// restored material again, or keeps no override where that is the prefab's own.
+        /// </summary>
+        /// <param name="preview">The preview's own material when its shader is not a tool shader.</param>
+        internal static void ReleasePreviewOverrides(Renderer renderer, Material preview = null)
+        {
+            if (renderer == null || !PrefabUtility.IsPartOfPrefabInstance(renderer)) return;
+            var source = PrefabUtility.GetCorrespondingObjectFromSource(renderer);
+            var modifications = PrefabUtility.GetPropertyModifications(renderer);
+            if (source == null || modifications == null) return;
+            var live = renderer.sharedMaterials;
+            var own = source.sharedMaterials;
+            var kept = new List<PropertyModification>(modifications.Length);
+            bool changed = false;
+            foreach (var modification in modifications)
+            {
+                if (modification.target == source && modification.objectReference is Material material
+                    && (material == preview || (material != null && material.shader != null && IsPreviewShader(material.shader.name)))
+                    && TryMaterialSlot(modification.propertyPath, out int slot))
+                {
+                    changed = true;
+                    var restored = slot < live.Length ? live[slot] : null;
+                    if (slot < own.Length && restored == own[slot]) continue;
+                    modification.objectReference = restored;
+                }
+                kept.Add(modification);
+            }
+            if (changed) PrefabUtility.SetPropertyModifications(PrefabUtility.GetOutermostPrefabInstanceRoot(renderer), kept.ToArray());
+        }
+
+        static bool TryMaterialSlot(string propertyPath, out int slot)
+        {
+            const string prefix = "m_Materials.Array.data[";
+            slot = -1;
+            return propertyPath.StartsWith(prefix, System.StringComparison.Ordinal) && propertyPath.EndsWith("]", System.StringComparison.Ordinal)
+                && int.TryParse(propertyPath.Substring(prefix.Length, propertyPath.Length - prefix.Length - 1), out slot);
+        }
+
         internal static bool IsPreviewShader(string shaderName)
         {
             if (string.IsNullOrEmpty(shaderName)) return false;
@@ -363,7 +404,10 @@ namespace SashaRX.UnityMeshLab
             foreach (var b in backups)
             {
                 if (b.renderer != null)
+                {
                     b.renderer.sharedMaterials = b.origMaterials;
+                    ReleasePreviewOverrides(b.renderer, checkerMat);
+                }
                 if (b.meshFilter != null && b.origMesh != null && b.meshFilter.sharedMesh == b.previewMesh)
                     b.meshFilter.sharedMesh = b.origMesh;
             }
