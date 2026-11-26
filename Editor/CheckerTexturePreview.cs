@@ -237,27 +237,37 @@ namespace SashaRX.UnityMeshLab
         internal static void ReleasePreviewOverrides(Renderer renderer, Material preview = null)
         {
             if (renderer == null || !PrefabUtility.IsPartOfPrefabInstance(renderer)) return;
-            var source = PrefabUtility.GetCorrespondingObjectFromSource(renderer);
-            var modifications = PrefabUtility.GetPropertyModifications(renderer);
-            if (source == null || modifications == null) return;
-            var live = renderer.sharedMaterials;
-            var own = source.sharedMaterials;
-            var kept = new List<PropertyModification>(modifications.Length);
-            bool changed = false;
-            foreach (var modification in modifications)
+            // A restore finishes whatever this finds: the caller still has meshes to put back.
+            try
             {
-                if (modification.target == source && modification.objectReference is Material material
-                    && (material == preview || (material != null && material.shader != null && IsPreviewShader(material.shader.name)))
-                    && TryMaterialSlot(modification.propertyPath, out int slot))
+                // Read and written on the same instance, so every other modification is kept as read.
+                var root = PrefabUtility.GetOutermostPrefabInstanceRoot(renderer);
+                var source = PrefabUtility.GetCorrespondingObjectFromSource(renderer);
+                var modifications = root == null ? null : PrefabUtility.GetPropertyModifications(root);
+                if (source == null || modifications == null) return;
+                var live = renderer.sharedMaterials;
+                var own = source.sharedMaterials;
+                var kept = new List<PropertyModification>(modifications.Length);
+                bool changed = false;
+                foreach (var modification in modifications)
                 {
-                    changed = true;
-                    var restored = slot < live.Length ? live[slot] : null;
-                    if (slot < own.Length && restored == own[slot]) continue;
-                    modification.objectReference = restored;
+                    if (modification.target == source && modification.objectReference is Material material && material != null
+                        && (material == preview || (material.shader != null && IsPreviewShader(material.shader.name)))
+                        && TryMaterialSlot(modification.propertyPath, out int slot))
+                    {
+                        changed = true;
+                        var restored = slot < live.Length ? live[slot] : null;
+                        if (slot < own.Length && restored == own[slot]) continue;
+                        modification.objectReference = restored;
+                    }
+                    kept.Add(modification);
                 }
-                kept.Add(modification);
+                if (changed) PrefabUtility.SetPropertyModifications(root, kept.ToArray());
             }
-            if (changed) PrefabUtility.SetPropertyModifications(PrefabUtility.GetOutermostPrefabInstanceRoot(renderer), kept.ToArray());
+            catch (System.Exception ex)
+            {
+                UvtLog.Warn($"[Preview] '{renderer.name}': its prefab overrides could not be checked for a preview material ({ex.Message}).");
+            }
         }
 
         static bool TryMaterialSlot(string propertyPath, out int slot)
