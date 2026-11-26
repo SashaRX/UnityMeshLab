@@ -1739,9 +1739,10 @@ namespace SashaRX.UnityMeshLab
         // The vertex-data checks of one entry's mesh, which is readable.
         void CheckMeshData(MeshEntry e, Mesh mesh, bool hasBlendShapes, List<Vector2> tmpUv)
         {
-            // Weld check
+            // Weld check: only false seams, the one thing a weld merges. A triangle with no UV0
+            // area is no weld candidate; a weld leaves it as it is.
             var report = Uv0Analyzer.Analyze(mesh);
-            if (report.HasIssues)
+            if (report.HasFalseSeams)
                 meshReport.weldCandidates.Add(e);
 
             // Empty UV channels
@@ -1821,11 +1822,14 @@ namespace SashaRX.UnityMeshLab
                 if (!MeshHygieneUtility.PrepareWritable(e, "Batch Weld", out var mesh))
                     continue;
 
+                int before = mesh.vertexCount;
                 if (Uv0Analyzer.WeldInPlace(mesh))
                 {
+                    // The optimizer's own line compares its input with its output, both after the weld.
+                    int after = mesh.vertexCount;
                     MeshOptimizer.Optimize(mesh);
                     welded++;
-                    UvtLog.Info($"Welded: {mesh.name}");
+                    UvtLog.Info($"Welded: {mesh.name} ({before} → {after} verts)");
                 }
             }
 
