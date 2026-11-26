@@ -200,8 +200,32 @@ namespace SashaRX.UnityMeshLab
                     bytes = ReadAttribute(mesh, data[0], descriptor);
             }
 
+            RawVertexAttribute(VertexAttributeDescriptor descriptor, VertexAttributeDescriptor[] originalLayout,
+                byte[] bytes, int vertexCount)
+            {
+                this.descriptor = descriptor;
+                this.originalLayout = originalLayout;
+                this.bytes = bytes;
+                this.vertexCount = vertexCount;
+            }
+
             internal static RawVertexAttribute Capture(Mesh mesh, VertexAttribute attribute)
                 => mesh.HasVertexAttribute(attribute) ? new RawVertexAttribute(mesh, attribute) : null;
+
+            /// <summary>Whether the channel's layout is one SetUVs cannot write back (one component, or not Float32).</summary>
+            internal static bool NeedsRaw(Mesh mesh, VertexAttribute attribute)
+                => mesh.HasVertexAttribute(attribute) && (mesh.GetVertexAttributeDimension(attribute) == 1
+                    || mesh.GetVertexAttributeFormat(attribute) != VertexAttributeFormat.Float32);
+
+            /// <summary>The channel of the vertices a weld keeps: compactMap gives each old vertex its new index, or -1.</summary>
+            internal RawVertexAttribute Compacted(int[] compactMap, int newCount)
+            {
+                int size = AttributeSize(descriptor);
+                var kept = new byte[checked(newCount * size)];
+                for (int i = 0; i < compactMap.Length && i < vertexCount; i++)
+                    if (compactMap[i] >= 0) Buffer.BlockCopy(bytes, i * size, kept, compactMap[i] * size, size);
+                return new RawVertexAttribute(descriptor, originalLayout, kept, newCount);
+            }
 
             internal void Restore(Mesh mesh)
             {
