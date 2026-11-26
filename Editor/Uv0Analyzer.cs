@@ -70,7 +70,7 @@ namespace SashaRX.UnityMeshLab
             bool hasNormals = normals != null && normals.Length == vertCount;
 
             // ── 1. False seams ──
-            var weldMap = BuildWeldMap(verts, uv0, normals, hasNormals);
+            var weldMap = BuildWeldMap(verts, uv0, normals, hasNormals, new WeldChannels(mesh));
             report.falseSeamPairs = weldMap.Count;
 
             // Count unique vertices that would be removed
@@ -152,7 +152,7 @@ namespace SashaRX.UnityMeshLab
             var uv0 = mesh.uv;
             if (uv0 == null || uv0.Length == 0) return null;
             bool hasNormals = normals != null && normals.Length == mesh.vertexCount;
-            var weldMap = BuildWeldMap(verts, uv0, normals, hasNormals);
+            var weldMap = BuildWeldMap(verts, uv0, normals, hasNormals, new WeldChannels(mesh));
             if (weldMap.Count == 0) return null;
             // Both keys (source) and values (target) are seam vertices
             var result = new HashSet<int>();
@@ -183,7 +183,8 @@ namespace SashaRX.UnityMeshLab
             var tris = topology.Triangles;
 
             bool hasNormals = normals != null && normals.Length == vertCount;
-            var weldMap = BuildWeldMap(verts, uv0, normals, hasNormals);
+            var channels = new WeldChannels(source);
+            var weldMap = BuildWeldMap(verts, uv0, normals, hasNormals, channels);
 
             if (weldMap.Count == 0)
             {
@@ -222,50 +223,21 @@ namespace SashaRX.UnityMeshLab
             // Build compacted vertex arrays
             var newVerts = new Vector3[newVertCount];
             Vector3[] newNormals = hasNormals ? new Vector3[newVertCount] : null;
-            var newUv0 = new Vector2[newVertCount];
-
-            // Also transfer tangents, uv1, colors if present
-            var tangents = source.tangents;
-            bool hasTangents = tangents != null && tangents.Length == vertCount;
-            Vector4[] newTangents = hasTangents ? new Vector4[newVertCount] : null;
-
-            var uv1List = new List<Vector2>();
-            source.GetUVs(1, uv1List);
-            bool hasUv1 = uv1List.Count == vertCount;
-            Vector2[] uv1 = hasUv1 ? uv1List.ToArray() : null;
-            Vector2[] newUv1 = hasUv1 ? new Vector2[newVertCount] : null;
-
-            var colors = source.colors;
-            bool hasColors = colors != null && colors.Length == vertCount;
-            Color[] newColors = hasColors ? new Color[newVertCount] : null;
-
-            var boneWeights = source.boneWeights;
-            bool hasBW = boneWeights != null && boneWeights.Length == vertCount;
-            BoneWeight[] newBW = hasBW ? new BoneWeight[newVertCount] : null;
-
             for (int i = 0; i < vertCount; i++)
             {
                 int ni = compactMap[i];
                 if (ni < 0) continue;
                 newVerts[ni] = verts[i];
-                newUv0[ni] = uv0[i];
                 if (hasNormals) newNormals[ni] = normals[i];
-                if (hasTangents) newTangents[ni] = tangents[i];
-                if (hasUv1) newUv1[ni] = uv1[i];
-                if (hasColors) newColors[ni] = colors[i];
-                if (hasBW) newBW[ni] = boneWeights[i];
             }
 
             // Build new mesh
             var result = new Mesh();
             result.name = source.name + "_welded";
+            result.indexFormat = source.indexFormat;
             result.vertices = newVerts;
-            result.uv = newUv0;
             if (hasNormals) result.normals = newNormals;
-            if (hasTangents) result.tangents = newTangents;
-            if (hasUv1) result.SetUVs(1, newUv1);
-            if (hasColors) result.colors = newColors;
-            if (hasBW) result.boneWeights = newBW;
+            channels.Write(result, compactMap, newVertCount);
 
             // Handle submeshes
             topology.Apply(result, newTris);
@@ -307,7 +279,8 @@ namespace SashaRX.UnityMeshLab
             bool hadTangentsBefore = TangentValidator.HasTangents(mesh);
 
             bool hasNormals = normals != null && normals.Length == vertCount;
-            var weldMap = BuildWeldMap(verts, uv0, normals, hasNormals);
+            var channels = new WeldChannels(mesh);
+            var weldMap = BuildWeldMap(verts, uv0, normals, hasNormals, channels);
             if (weldMap.Count == 0) return false;
 
             // Remap index buffer
@@ -338,51 +311,22 @@ namespace SashaRX.UnityMeshLab
             // Compact all vertex attributes
             var newVerts = new Vector3[newVertCount];
             Vector3[] newNormals = hasNormals ? new Vector3[newVertCount] : null;
-            var newUv0 = new Vector2[newVertCount];
-
-            var tangents = mesh.tangents;
-            bool hasTangents = tangents != null && tangents.Length == vertCount;
-            Vector4[] newTangents = hasTangents ? new Vector4[newVertCount] : null;
-
-            var uv1List = new List<Vector2>();
-            mesh.GetUVs(1, uv1List);
-            bool hasUv1 = uv1List.Count == vertCount;
-            Vector2[] uv1 = hasUv1 ? uv1List.ToArray() : null;
-            Vector2[] newUv1 = hasUv1 ? new Vector2[newVertCount] : null;
-
-            var colors = mesh.colors;
-            bool hasColors = colors != null && colors.Length == vertCount;
-            Color[] newColors = hasColors ? new Color[newVertCount] : null;
-
-            var boneWeights = mesh.boneWeights;
-            bool hasBW = boneWeights != null && boneWeights.Length == vertCount;
-            BoneWeight[] newBW = hasBW ? new BoneWeight[newVertCount] : null;
-
             for (int i = 0; i < vertCount; i++)
             {
                 int ni = compactMap[i];
                 if (ni < 0) continue;
                 newVerts[ni] = verts[i];
-                newUv0[ni] = uv0[i];
                 if (hasNormals) newNormals[ni] = normals[i];
-                if (hasTangents) newTangents[ni] = tangents[i];
-                if (hasUv1) newUv1[ni] = uv1[i];
-                if (hasColors) newColors[ni] = colors[i];
-                if (hasBW) newBW[ni] = boneWeights[i];
             }
 
             // Copy bind poses if skinned
             var bindPoses = mesh.bindposes;
 
-            // Apply to mesh in-place
+            // Apply to mesh in-place (the channels were read before the Clear)
             mesh.Clear();
             mesh.vertices = newVerts;
-            mesh.uv = newUv0;
             if (hasNormals) mesh.normals = newNormals;
-            if (hasTangents) mesh.tangents = newTangents;
-            if (hasUv1) mesh.SetUVs(1, newUv1);
-            if (hasColors) mesh.colors = newColors;
-            if (hasBW) mesh.boneWeights = newBW;
+            channels.Write(mesh, compactMap, newVertCount);
             if (bindPoses != null && bindPoses.Length > 0)
                 mesh.bindposes = bindPoses;
 
@@ -1167,7 +1111,7 @@ namespace SashaRX.UnityMeshLab
         // ═══════════════════════════════════════════════════════════
 
         static Dictionary<int, int> BuildWeldMap(
-            Vector3[] verts, Vector2[] uv0, Vector3[] normals, bool hasNormals)
+            Vector3[] verts, Vector2[] uv0, Vector3[] normals, bool hasNormals, WeldChannels channels)
         {
             int vertCount = verts.Length;
             var weldMap = new Dictionary<int, int>();
@@ -1206,6 +1150,8 @@ namespace SashaRX.UnityMeshLab
                             !Vec2Equal(uv0[vi], uv0[vj], UV_EPS)) continue;
                         if (hasNormals &&
                             !VecEqual(normals[vi], normals[vj], NORMAL_EPS)) continue;
+                        // A lightmap seam (UV1), a tangent split or a colour edge is no false seam.
+                        if (!channels.Same(vi, vj)) continue;
 
                         // vj is duplicate of vi — map vj → vi (keep lower index)
                         weldMap[vj] = vi;
@@ -1224,6 +1170,88 @@ namespace SashaRX.UnityMeshLab
         {
             return 0.5f * ((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y));
         }
+
+        // The vertex channels a weld keeps besides position and normal: every UV channel at its
+        // own dimension, tangents, colours and bone weights. Two vertices are one only where all
+        // of them agree, and the welded mesh takes all of them for the vertices it keeps.
+        sealed class WeldChannels
+        {
+            readonly List<Vector4>[] uvs = new List<Vector4>[8];
+            readonly int[] dimensions = new int[8];
+            readonly Vector4[] tangents;
+            readonly Color[] colors;
+            readonly BoneWeight[] boneWeights;
+
+            internal WeldChannels(Mesh mesh)
+            {
+                int count = mesh.vertexCount;
+                for (int ch = 0; ch < 8; ch++)
+                {
+                    var attribute = UnityEngine.Rendering.VertexAttribute.TexCoord0 + ch;
+                    if (!mesh.HasVertexAttribute(attribute)) continue;
+                    var list = new List<Vector4>(count);
+                    mesh.GetUVs(ch, list);
+                    if (list.Count != count) continue;
+                    uvs[ch] = list;
+                    dimensions[ch] = mesh.GetVertexAttributeDimension(attribute);
+                }
+                var t = mesh.tangents;
+                if (t != null && t.Length == count) tangents = t;
+                var c = mesh.colors;
+                if (c != null && c.Length == count) colors = c;
+                var w = mesh.boneWeights;
+                if (w != null && w.Length == count) boneWeights = w;
+            }
+
+            internal bool Same(int a, int b)
+            {
+                for (int ch = 0; ch < 8; ch++)
+                    if (uvs[ch] != null && !Vec4Equal(uvs[ch][a], uvs[ch][b], UV_EPS)) return false;
+                if (tangents != null && !Vec4Equal(tangents[a], tangents[b], NORMAL_EPS)) return false;
+                if (colors != null && !Vec4Equal(colors[a], colors[b], NORMAL_EPS)) return false;
+                if (boneWeights != null && !boneWeights[a].Equals(boneWeights[b])) return false;
+                return true;
+            }
+
+            // Writes the kept vertices' channels: compactMap gives each old vertex its new index, or -1.
+            internal void Write(Mesh target, int[] compactMap, int newCount)
+            {
+                for (int ch = 0; ch < 8; ch++)
+                {
+                    var src = uvs[ch];
+                    if (src == null) continue;
+                    switch (dimensions[ch])
+                    {
+                        case 2: target.SetUVs(ch, Compact(src, compactMap, newCount, v => (Vector2)v)); break;
+                        case 3: target.SetUVs(ch, Compact(src, compactMap, newCount, v => (Vector3)v)); break;
+                        default: target.SetUVs(ch, Compact(src, compactMap, newCount, v => v)); break;
+                    }
+                }
+                if (tangents != null) target.tangents = Compact(tangents, compactMap, newCount);
+                if (colors != null) target.colors = Compact(colors, compactMap, newCount);
+                if (boneWeights != null) target.boneWeights = Compact(boneWeights, compactMap, newCount);
+            }
+
+            static List<T> Compact<T>(List<Vector4> src, int[] compactMap, int newCount, Func<Vector4, T> convert)
+            {
+                var result = new T[newCount];
+                for (int i = 0; i < compactMap.Length; i++)
+                    if (compactMap[i] >= 0) result[compactMap[i]] = convert(src[i]);
+                return new List<T>(result);
+            }
+
+            static T[] Compact<T>(T[] src, int[] compactMap, int newCount)
+            {
+                var result = new T[newCount];
+                for (int i = 0; i < compactMap.Length; i++)
+                    if (compactMap[i] >= 0) result[compactMap[i]] = src[i];
+                return result;
+            }
+        }
+
+        static bool Vec4Equal(Vector4 a, Vector4 b, float eps)
+            => Mathf.Abs(a.x - b.x) <= eps && Mathf.Abs(a.y - b.y) <= eps
+            && Mathf.Abs(a.z - b.z) <= eps && Mathf.Abs(a.w - b.w) <= eps;
 
         static long SpatialKey(Vector3 v, float cellSize)
         {
