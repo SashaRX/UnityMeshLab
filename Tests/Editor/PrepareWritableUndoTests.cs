@@ -30,6 +30,8 @@ namespace SashaRX.UnityMeshLab.Tests
             foreach (var item in owned) if (item) Object.DestroyImmediate(item);
             owned.Clear();
             if (!string.IsNullOrEmpty(Folder)) AssetDatabase.DeleteAsset(Folder);
+            // The clones and snapshots these tests recorded name objects that are gone now.
+            Undo.ClearAll();
         }
 
         // A grid of quads with duplicated corners, so the optimizer welds and reorders it.
