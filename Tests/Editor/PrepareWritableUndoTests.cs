@@ -13,13 +13,15 @@ namespace SashaRX.UnityMeshLab.Tests
     // cost seconds, then minutes, from the second mesh on (Optimize Mesh on a six-mesh model).
     public sealed class PrepareWritableUndoTests
     {
-        const string Folder = "Assets/__MeshLabPrepareWritableUndoTests";
+        // A folder of its own per test, so the teardown deletes only what the test made.
+        string Folder;
         readonly List<Object> owned = new List<Object>();
 
         [SetUp]
         public void CreateFolder()
         {
-            if (!AssetDatabase.IsValidFolder(Folder)) AssetDatabase.CreateFolder("Assets", Folder.Substring("Assets/".Length));
+            string name = "__MeshLabPrepareWritableUndoTests_" + System.Guid.NewGuid().ToString("N");
+            Folder = AssetDatabase.GUIDToAssetPath(AssetDatabase.CreateFolder("Assets", name));
         }
 
         [TearDown]
@@ -27,7 +29,7 @@ namespace SashaRX.UnityMeshLab.Tests
         {
             foreach (var item in owned) if (item) Object.DestroyImmediate(item);
             owned.Clear();
-            AssetDatabase.DeleteAsset(Folder);
+            if (!string.IsNullOrEmpty(Folder)) AssetDatabase.DeleteAsset(Folder);
         }
 
         // A grid of quads with duplicated corners, so the optimizer welds and reorders it.
@@ -65,7 +67,8 @@ namespace SashaRX.UnityMeshLab.Tests
         [Test, Timeout(300000)]
         public void ManyRewrittenMeshesInOneUndoGroupStayFast()
         {
-            // Six meshes of 4 000-10 000 vertices, the sizes of the model whose Optimize Mesh took over an hour.
+            // Six meshes of 1 600-10 000 vertices (side² quads, four corners each), around the sizes of
+            // the model whose Optimize Mesh took over an hour.
             var entries = new[] { 50, 40, 32, 30, 25, 20 }.Select((side, i) => AssetEntry("Mesh" + i, side, i / 2)).ToList();
             var watch = Stopwatch.StartNew();
             using (MeshHygieneUtility.BeginUndoGroup("Cleanup: Optimize Mesh"))
