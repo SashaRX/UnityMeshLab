@@ -33,6 +33,9 @@ namespace SashaRX.UnityMeshLab
 
         public bool HasIssues =>
             falseSeamPairs > 0 || degenerateTriangles > 0;
+
+        /// <summary>What <see cref="Uv0Analyzer.WeldInPlace"/> merges: a weld changes this mesh.</summary>
+        public bool HasFalseSeams => falseSeamPairs > 0;
     }
 
     public static class Uv0Analyzer
