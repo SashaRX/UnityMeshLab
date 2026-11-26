@@ -187,9 +187,8 @@ namespace SashaRX.UnityMeshLab
         /// <item>Clones asset-backed meshes, pipeline working copies and a scene edit another renderer
         /// shows too (a duplicated object), and re-wires <c>MeshFilter</c> + <c>entry.originalMesh</c>: the
         /// clone is <c>entry.sceneEditMesh</c>, which no reset destroys.</item>
-        /// <item>Records the resulting mesh and its filter for Undo under <paramref name="undoLabel"/>: a clone
-        /// made here is registered as created (Undo destroys it with the swap); a mesh edited in place
-        /// takes a complete snapshot, never a property record.</item>
+        /// <item>Records the resulting mesh and its filter for Undo under <paramref name="undoLabel"/>, the
+        /// mesh by a complete snapshot (a clone made here also as created), never a property record.</item>
         /// </list>
         /// Returns <c>false</c> when the entry cannot be safely mutated.
         /// </summary>
@@ -271,12 +270,13 @@ namespace SashaRX.UnityMeshLab
             else
             {
                 mesh = source;
-                // A complete snapshot, not RecordObject: the callers rewrite the whole mesh, and the
-                // property diff of a recorded mesh against its rewrite, which Undo makes at its next
-                // operation, grows with every such mesh in the group (minutes from the third mesh of
-                // an Optimize Mesh run).
-                Undo.RegisterCompleteObjectUndo(mesh, undoLabel);
             }
+
+            // A complete snapshot, not RecordObject: the callers rewrite the whole mesh, and the
+            // property diff of a recorded mesh against its rewrite, which Undo makes at its next
+            // operation, grows with every such mesh in the group (minutes from the third mesh of an
+            // Optimize Mesh run). For a clone it also gives Redo the rewritten geometry.
+            Undo.RegisterCompleteObjectUndo(mesh, undoLabel);
             return true;
         }
 

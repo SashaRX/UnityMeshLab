@@ -81,13 +81,15 @@ namespace SashaRX.UnityMeshLab.Tests
         }
 
         [Test]
-        public void UndoRestoresBothTheSwappedAssetAndAMeshEditedInPlace()
+        public void UndoAndRedoRestoreBothTheSwappedAssetAndAMeshEditedInPlace()
         {
             var asset = AssetEntry("Imported", 4, 0);
             var imported = asset.fbxMesh;
             var inPlace = Entry(Grid("SceneEdit", 4), 1); owned.Add(inPlace.fbxMesh);
             inPlace.sceneEditMesh = inPlace.fbxMesh;
             var before = inPlace.fbxMesh.vertices;
+            int optimizedVertices = 0;
+            Vector3[] after = null;
 
             Undo.IncrementCurrentGroup();
             using (MeshHygieneUtility.BeginUndoGroup("Cleanup: Optimize Mesh"))
@@ -95,14 +97,24 @@ namespace SashaRX.UnityMeshLab.Tests
                 Assert.IsTrue(MeshHygieneUtility.PrepareWritable(asset, "Optimize Mesh", out var clone));
                 Assert.AreNotSame(imported, clone, "an asset mesh is edited in a clone");
                 Assert.IsTrue(MeshOptimizer.Optimize(clone).ok);
+                optimizedVertices = clone.vertexCount;
+                Assert.Less(optimizedVertices, 4 * 16, "the optimizer welds the grid's duplicated corners");
                 Assert.IsTrue(MeshHygieneUtility.PrepareWritable(inPlace, "Optimize Mesh", out var edited));
                 Assert.AreSame(inPlace.fbxMesh, edited, "a scene edit is edited in place");
                 edited.vertices = edited.vertices.Select(v => v * 2).ToArray();
+                after = edited.vertices;
             }
             Undo.PerformUndo();
 
             Assert.AreSame(imported, asset.meshFilter.sharedMesh, "Undo puts the imported mesh back on the renderer");
             CollectionAssert.AreEqual(before, inPlace.fbxMesh.vertices, "Undo restores the mesh edited in place");
+
+            Undo.PerformRedo();
+            var redone = asset.meshFilter.sharedMesh;
+            Assert.AreNotSame(imported, redone, "Redo puts the edited clone back on the renderer");
+            owned.Add(redone);
+            Assert.AreEqual(optimizedVertices, redone.vertexCount, "Redo brings the clone back with its rewritten geometry");
+            CollectionAssert.AreEqual(after, inPlace.fbxMesh.vertices, "Redo brings the in-place edit back");
         }
     }
 }
