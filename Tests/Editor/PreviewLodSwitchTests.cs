@@ -1538,6 +1538,25 @@ namespace SashaRX.UnityMeshLab.Tests
             Assert.That(ShowsChecker(lod1), Is.False);
         }
 
+        [Test]
+        public void CheckerStaysOnTheRenderersAcrossATabSwitch()
+        {
+            var group = Group(lod1HasUv1: true, out var lod0, out _);
+            Open(group);
+            var canvas = Get<UvCanvasView>(hub, "canvas");
+            Call(hub, "ApplyPreviewMode", UvCanvasView.PreviewMode.Checker);
+            Assert.That(ShowsChecker(lod0), Is.True);
+
+            var tools = Get<List<IUvTool>>(hub, "tools");
+            int cleanup = tools.FindIndex(t => t is CleanupTool);
+            Assume.That(cleanup, Is.GreaterThanOrEqualTo(0), "the Cleanup tab must be enabled");
+            Call(hub, "SwitchTool", cleanup);
+            Call(hub, "CollectCanvasEntries");
+
+            Assert.That(canvas.CurrentPreviewMode, Is.EqualTo(UvCanvasView.PreviewMode.Checker), "the picked mode survives the tab switch");
+            Assert.That(ShowsChecker(lod0), Is.True, "the next frame puts the checker back on the renderers the new tab shows");
+        }
+
         [UnityTest]
         public IEnumerator ShellPreviewCompletesWhenAnotherVisibleMeshLacksTheChannel()
         {

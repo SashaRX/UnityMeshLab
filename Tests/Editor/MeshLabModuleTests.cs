@@ -141,31 +141,6 @@ namespace SashaRX.UnityMeshLab.Tests
             }
         }
 
-        [Test]
-        public void SwitchingTabsKeepsTheScenePreviewMode()
-        {
-            UvToolHub hub = null;
-            try
-            {
-                hub = ScriptableObject.CreateInstance<UvToolHub>();
-                var flags = BindingFlags.NonPublic | BindingFlags.Instance;
-                var tools = (List<IUvTool>)typeof(UvToolHub).GetField("tools", flags).GetValue(hub);
-                var canvas = (UvCanvasView)typeof(UvToolHub).GetField("canvas", flags).GetValue(hub);
-                int from = tools.FindIndex(t => t is LightmapTransferTool), to = tools.FindIndex(t => t is CleanupTool);
-                Assume.That(from >= 0 && to >= 0, "Both tabs must be enabled.");
-                typeof(UvToolHub).GetMethod("SwitchTool", flags).Invoke(hub, new object[] { from });
-                canvas.CurrentPreviewMode = UvCanvasView.PreviewMode.Checker;
-
-                typeof(UvToolHub).GetMethod("SwitchTool", flags).Invoke(hub, new object[] { to });
-
-                Assert.AreEqual(UvCanvasView.PreviewMode.Checker, canvas.CurrentPreviewMode, "The checker stays picked on the new tab.");
-                var reapply = typeof(UvToolHub).GetField("reapplyPreview", flags);
-                Assert.IsNotNull(reapply, "UvToolHub.reapplyPreview was renamed; update this test.");
-                Assert.IsTrue((bool)reapply.GetValue(hub), "The next frame applies it to what the new tab shows.");
-            }
-            finally { if (hub != null) UnityEngine.Object.DestroyImmediate(hub); }
-        }
-
         sealed class FbxFooterProbe : IUvToolFbxExport
         {
             public bool CanExportFbx { get; set; }
